@@ -2,6 +2,9 @@
 #include "modules/Interfaces.h"
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
+#include "modules/GpuVideoEncoder.h"
+#include "modules/MediaFoundationGpuVideoEncoder.h"
+#include "modules/EncoderCapacityProbe.h"
 #include "modules/EncoderPolicy.h"
 #include "modules/FfmpegSenderDiagnostics.h"
 #include "modules/SrtFfmpegArgs.h"
@@ -598,7 +601,8 @@ class RtmpOutputSender final : public IOutputSender {
       : protocol_(std::move(protocol)),
         runtimeProbe_(std::move(runtimeProbe)),
         runtimeDetail_(runtimeProbe_.detail),
-        runtimeAvailable_(runtimeProbe_.available) {}
+        runtimeAvailable_(runtimeProbe_.available),
+        gpuEncoderFactory_(&createMediaFoundationGpuVideoEncoder) {}
 
   ~RtmpOutputSender() override { stopFfmpegProcess(); }
 
@@ -827,7 +831,11 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
 
-    if (!writeFrameToFfmpeg(*frame)) {
+    // GPU-direct: hand the compositor's encoder texture to the hardware encoder,
+    // whose sink writes the bitstream to FFmpeg. Raw path writes NV12/BGRA itself.
+    const bool videoWriteOk =
+        useGpuDirect_ ? submitFrameToGpuEncoder(*frame) : writeFrameToFfmpeg(*frame);
+    if (!videoWriteOk) {
       sender_.status = "failed";
       ++sender_.retryCount;
       const auto genericFailure =
@@ -1059,6 +1067,11 @@ class RtmpOutputSender final : public IOutputSender {
     const int width = videoWidth(frame);
     const int height = videoHeight(frame);
     const auto pixelFormat = videoPixelFormat(frame);
+    // GPU-direct vs raw is decided at process start; a change (env toggle, codec
+    // change, encoder texture appearing/disappearing) restarts FFmpeg with the
+    // matching argument list.
+    const bool desiredGpuDirect = resolveGpuEncodePath(frame, width, height) == GpuEncodePath::GpuDirect;
+    const bool gpuPathChanged = desiredGpuDirect != activeUseGpuDirect_;
     const bool sizeChanged = width != ffmpegFrameWidth_ || height != ffmpegFrameHeight_;
     const bool pixelFormatChanged = pixelFormat != ffmpegPixelFormat_;
     const bool endpointChanged = configuredEndpoint_ != activeEndpoint_;
@@ -1081,7 +1094,7 @@ class RtmpOutputSender final : public IOutputSender {
     const bool audioChanged = audioPresent != activeAudioPresent_ ||
                               pendingAudioChannels_ != activeAudioChannels_ ||
                               pendingAudioSampleRate_ != activeAudioSampleRate_;
-    if (ffmpegRunning_ && !sizeChanged && !pixelFormatChanged && !endpointChanged && !executableChanged && !fpsChanged && !bitrateChanged && !audioBitrateChanged && !codecChanged && !encoderModeChanged && !keyframeChanged && !rateControlChanged && !h264ProfileChanged && !bFramesChanged && !enhancedChanged && !audioChanged) {
+    if (ffmpegRunning_ && !sizeChanged && !pixelFormatChanged && !endpointChanged && !executableChanged && !fpsChanged && !bitrateChanged && !audioBitrateChanged && !codecChanged && !encoderModeChanged && !keyframeChanged && !rateControlChanged && !h264ProfileChanged && !bFramesChanged && !enhancedChanged && !audioChanged && !gpuPathChanged) {
       return true;
     }
 
@@ -1117,12 +1130,15 @@ class RtmpOutputSender final : public IOutputSender {
     activeAudioPresent_ = audioPresent;
     activeAudioChannels_ = pendingAudioChannels_;
     activeAudioSampleRate_ = pendingAudioSampleRate_;
+    useGpuDirect_ = desiredGpuDirect;  // startFfmpegProcess may downgrade if the encoder fails to start
     if (startFfmpegProcess(width, height, pixelFormat)) {
+      activeUseGpuDirect_ = useGpuDirect_;
       sender_.startedAtMs = elapsedMs;
       sender_.destinationHealth = "starting";
       sender_.lastResultCode = "ffmpeg-started";
       return true;
     }
+    activeUseGpuDirect_ = false;
     scheduleFfmpegRetry();
     return false;
   }
@@ -1203,6 +1219,9 @@ class RtmpOutputSender final : public IOutputSender {
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     config.container = protocol_.container;
+    // GPU-direct: video arrives already H.264-encoded on pipe:0; FFmpeg is a pure
+    // -c:v copy muxer. Raw path leaves this false and re-encodes.
+    config.videoBitstreamInput = useGpuDirect_;
     return buildRtmpFfmpegArguments(config);
   }
 
@@ -1223,6 +1242,13 @@ class RtmpOutputSender final : public IOutputSender {
     const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
     selectedFfmpegVideoEncoder_ = selectFfmpegVideoEncoder(
         ffmpegExecutable_, compatibility.videoCodec, configuredEncoderMode_);
+    // Start the GPU encoder BEFORE FFmpeg so start() is the real capability gate:
+    // on failure it clears useGpuDirect_ and FFmpeg is launched in raw mode below.
+    startGpuEncoderIfChosen(width, height);
+    if (!useGpuDirect_) {
+      ::corevideo::core::nativeLogf("[gpu-encode] path=cpu-fallback reason=%s\n",
+                                   gpuEncodePathReason_.c_str());
+    }
 #if defined(_WIN32)
     SECURITY_ATTRIBUTES securityAttributes{};
     securityAttributes.nLength = sizeof(securityAttributes);
@@ -1497,6 +1523,126 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
   }
 
+  // -------- GPU-direct encode path (#521 slice 1) --------
+
+  bool gpuForcedOffByEnv() const {
+    const char* v = std::getenv("COREVIDEO_GPU_ENCODE");
+    return v && std::string(v) == "0";
+  }
+
+  // A hardware H.264 encoder session is (probably) available. Never REFUSE on a
+  // pending/unknown probe (the TESTER RULE) — encoder->start() is the real gate.
+  bool gpuEncoderProbeAllows(int width, int height) const {
+    const auto cap = EncoderCapacityCache::instance().lookup(
+        EncoderProbeKey{"h264", width, height, (std::max)(1, configuredFps_)});
+    if (!cap.probed) return true;
+    return cap.hardwareAvailable && cap.hardwareSessionCeiling > 0;
+  }
+
+  // The start-time path decision, using the exact pure policy the unit tests pin.
+  GpuEncodePath resolveGpuEncodePath(const ProgramFrame& frame, int width, int height) {
+    GpuEncodePathInputs in;
+    in.platformSupported = static_cast<bool>(gpuEncoderFactory_);
+    in.forcedOffByEnv = gpuForcedOffByEnv();
+    const bool probeAllows = gpuEncoderProbeAllows(width, height);
+    in.hardwareEncoderAvailable = in.platformSupported && probeAllows;
+    in.sessionAvailable = probeAllows;
+    const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+    const bool codecIsH264 = compatibility.videoCodec == "h264";
+    const bool frameHasEncoderTexture = !frame.encoderSharedTexture.sharedHandleHex.empty();
+    const char* reason = "cpu-fallback";
+    const auto path = chooseStreamEncodePath(in, codecIsH264, frameHasEncoderTexture, &reason);
+    gpuEncodePathReason_ = reason;
+    return path;
+  }
+
+  // Called from startFfmpegProcess BEFORE FFmpeg is launched: if we mean to run
+  // GPU-direct, actually start the encoder here so start() is the real capability
+  // gate. On failure we downgrade to raw so FFmpeg is never launched in bitstream
+  // mode with no encoder feeding it. The sink writes the compressed bitstream to
+  // FFmpeg's stdin (populated right after this returns).
+  bool startGpuEncoderIfChosen(int width, int height) {
+    if (!useGpuDirect_) return false;
+    gpuEncoder_ = gpuEncoderFactory_ ? gpuEncoderFactory_() : nullptr;
+    if (!gpuEncoder_) {
+      useGpuDirect_ = false;
+      gpuEncodePathReason_ = "encoder-create-failed";
+      return false;
+    }
+    GpuVideoEncoderConfig cfg;
+    cfg.width = width;
+    cfg.height = height;
+    cfg.fps = (std::max)(1, configuredFps_);
+    cfg.bitrateKbps = static_cast<int>((std::max)(1000.0, sender_.bitrateMbps * 1000.0));
+    cfg.keyframeIntervalSeconds = configuredKeyframeIntervalSeconds_;
+    cfg.rateControl = configuredRateControl_;
+    cfg.h264Profile = configuredH264Profile_.empty() ? "high" : configuredH264Profile_;
+    const bool ok = gpuEncoder_->start(cfg, [this](const GpuEncodedChunk& chunk) {
+      writeBitstreamToFfmpeg(chunk.data, chunk.size);
+    });
+    if (!ok) {
+      gpuEncoder_.reset();
+      useGpuDirect_ = false;
+      gpuEncodePathReason_ = "encoder-start-failed";
+      return false;  // startFfmpegProcess logs the unified cpu-fallback line
+    }
+    ::corevideo::core::nativeLogf("[gpu-encode] path=gpu-direct %dx%d@%d bitrate=%.1fMbps\n", width,
+                                 height, cfg.fps, sender_.bitrateMbps);
+    return true;
+  }
+
+  void stopGpuEncoder() {
+    if (gpuEncoder_) {
+      gpuEncoder_->stop();  // joins the encoder thread before we close FFmpeg's stdin
+      gpuEncoder_.reset();
+    }
+  }
+
+  // Write one encoded chunk to FFmpeg's stdin. Runs on the encoder's own thread;
+  // ffmpegStdin_ is only closed after stopGpuEncoder() has joined that thread.
+  void writeBitstreamToFfmpeg(const uint8_t* data, size_t size) {
+    if (!data || size == 0) return;
+#if defined(_WIN32)
+    if (!ffmpegRunning_ || !ffmpegStdin_) return;
+    size_t remaining = size;
+    while (remaining > 0) {
+      DWORD written = 0;
+      const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
+      if (!WriteFile(ffmpegStdin_, data, chunk, &written, nullptr) || written == 0) return;
+      data += written;
+      remaining -= written;
+    }
+#else
+    if (!ffmpegRunning_ || ffmpegStdinFd_ < 0) return;
+    size_t remaining = size;
+    while (remaining > 0) {
+      const ssize_t written = ::write(ffmpegStdinFd_, data, remaining);
+      if (written <= 0) {
+        if (written < 0 && errno == EINTR) continue;
+        return;
+      }
+      data += static_cast<size_t>(written);
+      remaining -= static_cast<size_t>(written);
+    }
+#endif
+    hasWrittenVideo_ = true;
+  }
+
+  // GPU-direct per-frame path: hand the compositor's dedicated encoder texture to
+  // the hardware encoder. A missing texture this tick is not a failure (hold);
+  // an unhealthy encoder returns false so the failure path restarts the sender.
+  bool submitFrameToGpuEncoder(const ProgramFrame& frame) {
+    if (!gpuEncoder_) return false;
+    if (!gpuEncoder_->healthy()) return false;
+    if (frame.encoderSharedTexture.sharedHandleHex.empty()) return true;
+    GpuVideoEncoderFrame f;
+    f.sharedHandleHex = frame.encoderSharedTexture.sharedHandleHex;
+    f.width = frame.encoderSharedTexture.width;
+    f.height = frame.encoderSharedTexture.height;
+    f.frameNumber = frame.frameNumber;
+    return gpuEncoder_->submit(f);
+  }
+
   bool writeFrameToFfmpeg(const ProgramFrame& frame) {
 #if defined(_WIN32)
     if (!ffmpegRunning_ || !ffmpegStdin_) {
@@ -1760,6 +1906,10 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
 
   void stopFfmpegProcess() {
+    // Stop the GPU encoder FIRST: its sink writes FFmpeg's stdin on the encoder
+    // thread, so joining it here guarantees no write-after-close on the pipe.
+    stopGpuEncoder();
+    activeUseGpuDirect_ = false;
     hasWrittenVideo_ = false;
 #if defined(_WIN32)
     if (ffmpegStdin_) {
@@ -1954,6 +2104,17 @@ class RtmpOutputSender final : public IOutputSender {
   int ffmpegAudioFd_ = -1;
   pid_t ffmpegPid_ = 0;
 #endif
+  // GPU-direct encode (#521 slice 1). When chosen at process start, the compositor's
+  // dedicated keyed-mutex encoder texture is fed to the MF hardware H.264 MFT and the
+  // ~6 Mbps bitstream is written to FFmpeg (demoted to a -c:v copy muxer). The raw
+  // path is the fallback for every non-capable machine and COREVIDEO_GPU_ENCODE=0.
+  // The factory is injectable for tests; default is the real MF encoder.
+  std::function<std::unique_ptr<GpuVideoEncoder>()> gpuEncoderFactory_;
+  std::unique_ptr<GpuVideoEncoder> gpuEncoder_;
+  bool useGpuDirect_ = false;        // desired path for the next/running process
+  bool activeUseGpuDirect_ = false;  // path baked into the RUNNING FFmpeg args
+  std::string gpuEncodePathReason_ = "cpu-fallback";
+
   OutputSender sender_;
   RtmpVideoFramePacer videoFramePacer_;
   bool hasWrittenVideo_ = false;
