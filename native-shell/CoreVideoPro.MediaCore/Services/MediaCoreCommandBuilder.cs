@@ -664,6 +664,23 @@ public static class MediaCoreCommandBuilder
 
     private static IEnumerable<NativeMediaCoreCommand> BuildRecordingCommands(MediaCoreProductionSyncContext context)
     {
+        // Warm the actual recording workload while idle, before streaming occupies
+        // encoder slots. Probes are deliberately suspended during live encoding.
+        var targets = context.RecordingTargets;
+        var isoSourceIds = (IReadOnlyList<string>)(targets.IsoSourceIds ?? []);
+        yield return Command("set-recording-targets", new Dictionary<string, object?>
+        {
+            ["targetFolder"] = targets.TargetFolder,
+            ["filenamePrefix"] = targets.FilenamePrefix,
+            ["format"] = targets.Format,
+            ["quality"] = targets.Quality,
+            ["targetBitrateMbps"] = context.RecordingOutputProfile.TargetBitrateMbps,
+            ["audioBitrateKbps"] = context.RecordingOutputProfile.AudioBitrateKbps,
+            ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
+            ["isoParticipantIds"] = targets.IsoParticipantIds,
+            ["isoSourceIds"] = isoSourceIds
+        });
+
         if (!context.Recording)
         {
             yield return Command("stop-recording-session", new Dictionary<string, object?>
@@ -673,8 +690,6 @@ public static class MediaCoreCommandBuilder
             yield break;
         }
 
-        var targets = context.RecordingTargets;
-        var isoSourceIds = (IReadOnlyList<string>)(targets.IsoSourceIds ?? []);
         // Session-id suffix: prefer the canonical ISO selection, else the legacy bare ids,
         // else "program" (program-only). Sanitized so a `capture:<id>` never breaks the id.
         //
@@ -694,19 +709,6 @@ public static class MediaCoreCommandBuilder
                 .OrderBy(id => id, StringComparer.Ordinal))
             : "program";
         var sessionId = $"{targets.FilenamePrefix}-{isoSuffix}";
-
-        yield return Command("set-recording-targets", new Dictionary<string, object?>
-        {
-            ["targetFolder"] = targets.TargetFolder,
-            ["filenamePrefix"] = targets.FilenamePrefix,
-            ["format"] = targets.Format,
-            ["quality"] = targets.Quality,
-            ["targetBitrateMbps"] = context.RecordingOutputProfile.TargetBitrateMbps,
-            ["audioBitrateKbps"] = context.RecordingOutputProfile.AudioBitrateKbps,
-            ["renderProfile"] = OutputProfilePayload(context.RecordingOutputProfile),
-            ["isoParticipantIds"] = targets.IsoParticipantIds,
-            ["isoSourceIds"] = isoSourceIds
-        });
 
         yield return Command("start-recording-session", new Dictionary<string, object?>
         {

@@ -946,6 +946,25 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("corevideo-recording-capture-cam0-zoom-p2", GetString(recording, "sessionId"));
     }
 
+    [Fact]
+    public void ConfiguresRecordingWorkloadBeforeStreamingWithoutStartingFiles()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "speaker-slides",
+            Recording = false,
+            Streaming = true,
+            StreamDestinations = ["rtmp"],
+            RecordingOutputProfile = new MediaCoreOutputProfileWire("recording-1080p60", "1920x1080", 1920, 1080, 60, 8, "h264")
+        });
+        var targets = commands.Single(command => command.Type == "set-recording-targets");
+        Assert.Equal(60, targets.ExtensionData!["renderProfile"].GetProperty("fps").GetInt32());
+        var types = commands.Select(command => command.Type).ToList();
+        Assert.True(types.IndexOf("set-recording-targets") < types.IndexOf("start-program-output"));
+        Assert.Contains("stop-recording-session", types);
+        Assert.DoesNotContain("start-recording-session", types);
+    }
+
     // ── T1 core wall: the "tiles" wire node ───────────────────────────────────
     //
     // MediaCoreCommandBuilder.SerializeTilesLayer INVENTS every key name and the
