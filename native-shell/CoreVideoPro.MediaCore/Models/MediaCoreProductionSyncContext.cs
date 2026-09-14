@@ -28,7 +28,9 @@ public sealed record MediaCoreSceneRouteWire(
     bool MediaAssetPlaying = false,
     // Operator "loop" for a routed asset (shell: MediaRoutePlaybackService.IsLoopingAsset).
     // Without it a looping route asset plays once and freezes on its last frame.
-    bool MediaAssetLoop = false);
+    bool MediaAssetLoop = false,
+    [property: System.Text.Json.Serialization.JsonPropertyName("exactSourceRef")]
+    ExactSourceReference? ExactSourceRef = null);
 
 /// <summary>
 /// One ordered multiview tile source for <c>set-multiview-layout</c>. <paramref name="Kind"/> is

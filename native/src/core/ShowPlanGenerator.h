@@ -1,0 +1,139 @@
+#pragma once
+#include "core/ShowStateOwner.h"
+#include "core/SourceRegistry.h"
+#include "core/SceneVersionStore.h"
+
+namespace corevideo::core {
+struct ShowPlanStamp {
+  std::string authorityEpoch, registryEpoch;
+  // registryRevision is the registry's decisionRevision, so steady frame
+  // publications do not continuously invalidate prepared plans.
+  std::uint64_t controlRevision{0}, registryRevision{0};
+  // Collision-free canonical encoding of resolved eligibility and exact source
+  // tokens. It changes only when a generated decision changes, not per frame.
+  std::string eligibilityIdentity;
+  bool operator==(const ShowPlanStamp&) const = default;
+};
+struct PlannedSourceToken {
+  std::string sourceId, instanceId, processEpoch;
+  std::uint64_t generation{0};
+  bool operator==(const PlannedSourceToken&) const = default;
+};
+enum class PlannedBindingStatus {
+  Blank, Resolved, Missing, Unavailable, Stale, Excluded, Ambiguous, RequiresSelection
+};
+struct PlannedBinding {
+  ShowRouteTarget intent;
+  PlannedBindingStatus status{PlannedBindingStatus::Blank};
+  std::optional<PlannedSourceToken> source;
+  std::optional<SourceRegistry::Kind> sourceKind;
+  // Historical observation only. Neither this nor Resolved proves current pixels,
+  // deadline freshness, an audio stream, or writer eligibility.
+  bool hasPublication{false};
+  bool operator==(const PlannedBinding&) const = default;
+};
+struct PlannedInput {
+  ShowEntityRef input;
+  PlannedBinding binding;
+  bool operator==(const PlannedInput&) const = default;
+};
+struct PlannedLayer {
+  ShowEntityRef route;
+  ShowLayerIntent intent;
+  PlannedBinding binding;
+  bool operator==(const PlannedLayer&) const = default;
+};
+struct PlannedScene {
+  std::optional<ShowEntityRef> scene;
+  PlannedBindingStatus status{PlannedBindingStatus::Blank};
+  std::vector<PlannedLayer> layers;
+  std::optional<SceneVersionRef> version;
+  SceneVersionStore::Lease versionLease;
+  bool operator==(const PlannedScene&) const = default;
+};
+struct PlannedTileSlot {
+  std::uint32_t slot{0};
+  bool reserved{false};
+  std::optional<ShowEntityRef> input;
+  PlannedBinding binding;
+  bool operator==(const PlannedTileSlot&) const = default;
+};
+struct PlannedTiles {
+  ShowEntityRef tiles;
+  std::vector<PlannedTileSlot> slots;
+  bool operator==(const PlannedTiles&) const = default;
+};
+struct PlannedOverlay {
+  ShowEntityRef overlay;
+  ShowOverlayIntent intent;
+  PlannedBinding binding;
+  bool operator==(const PlannedOverlay&) const = default;
+};
+struct RenderPlan {
+  ShowPlanStamp stamp;
+  std::vector<PlannedInput> inputs;
+  PlannedScene preview, program;
+  std::vector<PlannedTiles> tiles;
+  std::vector<PlannedOverlay> overlays;
+  bool operator==(const RenderPlan&) const = default;
+};
+enum class PlannedAudioEligibility { UnknownCapability, UnresolvedIdentity };
+struct PlannedAudioRoute {
+  ShowEntityRef route;
+  ShowAudioRouteIntent intent;
+  PlannedBinding binding;
+  bool destinationValid{false};
+  PlannedAudioEligibility eligibility{PlannedAudioEligibility::UnresolvedIdentity};
+  bool operator==(const PlannedAudioRoute&) const = default;
+};
+struct AudioPlan {
+  ShowPlanStamp stamp;
+  std::vector<PlannedAudioRoute> routes;
+  bool operator==(const AudioPlan&) const = default;
+};
+struct PlannedIso {
+  ShowEntityRef selection;
+  PlannedBinding videoBinding;
+  PlannedBinding audioBinding;
+  PlannedAudioEligibility audioEligibility{PlannedAudioEligibility::UnresolvedIdentity};
+  bool operator==(const PlannedIso&) const = default;
+};
+struct PlannedOutput {
+  ShowEntityRef output;
+  ShowOutputIntent intent;
+  bool operator==(const PlannedOutput&) const = default;
+};
+struct OutputPlan {
+  ShowPlanStamp stamp;
+  std::vector<PlannedOutput> outputs;
+  std::vector<PlannedIso> isoSelections;
+  bool operator==(const OutputPlan&) const = default;
+};
+struct ShowPlans {
+  RenderPlan render;
+  AudioPlan audio;
+  OutputPlan output;
+  bool operator==(const ShowPlans&) const = default;
+};
+struct ShowPlanGenerationContext {
+  // Supplied by the control-plane freshness authority; the generator reads no clock.
+  std::int64_t videoFreshAfterNs{0};
+};
+// Pure control-plane projection. Inputs must be immutable snapshots. No clock,
+// rendering, source reads, callbacks, global state, or mutation occurs here.
+// Authority/registry revisions plus exact eligibility decisions form plan identity;
+// a runtime publisher assigns its own plan generation when adopting this result.
+std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show,
+                                                 const SourceRegistry::Snapshot& registry,
+                                                 ShowPlanGenerationContext context);
+// Explicit null is blank; no fallback to the mutable scene map. A non-null
+// reference requires its exact immutable lease and the same authority epoch.
+struct VersionedSceneBinding {
+  std::optional<SceneVersionRef> reference;
+  SceneVersionStore::Lease lease;
+};
+struct VersionedSceneBindings { VersionedSceneBinding program, preview; };
+std::shared_ptr<const ShowPlans> generateShowPlans(const ShowStateSnapshot& show,
+    const SourceRegistry::Snapshot& registry, ShowPlanGenerationContext context,
+    const VersionedSceneBindings& scenes);
+} // namespace corevideo::core

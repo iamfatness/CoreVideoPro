@@ -11,6 +11,16 @@
 
 namespace corevideo::modules {
 
+// Producer-issued evidence travels with the immutable pixel allocation. It is
+// not reconstructed from a roster or participant ID by downstream consumers.
+struct SourceFrameEvidence {
+  contracts::SourceInstanceIdentity identity;
+  enum class Kind { Camera, Share } kind{Kind::Camera};
+  uint64_t publicationSequence{0}, publicationFence{0};
+  int64_t observedNs{0};
+  std::shared_ptr<const std::vector<uint8_t>> payload;
+};
+
 struct VideoFrame {
   std::string participantId;
   int width = 0;
@@ -51,6 +61,7 @@ struct VideoFrame {
   // the matrix per frame instead of washing out camera blacks.
   bool i420FullRange = true;
   bool i420Bt601 = false;
+  std::shared_ptr<const SourceFrameEvidence> exactSourceEvidence;
   [[nodiscard]] bool hasPixels() const {
     return pixels && pixelWidth > 0 && pixelHeight > 0 && pixelStride >= pixelWidth * 4 &&
            pixels->size() >= static_cast<size_t>(pixelStride) * static_cast<size_t>(pixelHeight);

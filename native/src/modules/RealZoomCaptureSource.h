@@ -23,6 +23,8 @@ namespace corevideo::modules {
 class RealZoomCaptureSource final : public IZoomCaptureSource {
  public:
   explicit RealZoomCaptureSource(std::unique_ptr<IZoomCaptureSource> fallback = nullptr);
+  // Preserve producer evidence and its exact shared payload; no roster restamping.
+  void ingestVideoFrame(const VideoFrame& frame);
 
   // Ingest a single decoded BGRA frame for a participant. The latest frame per
   // participant is retained; older frames are overwritten. `bgra` is copied so
@@ -77,6 +79,7 @@ class RealZoomCaptureSource final : public IZoomCaptureSource {
 
  private:
   struct StoredFrame {
+    std::optional<VideoFrame> transported;
     // BGRA payload (capture devices / tests). Mutually exclusive with `i420`:
     // whichever representation was ingested last is the one that is set.
     std::shared_ptr<const std::vector<uint8_t>> pixels;

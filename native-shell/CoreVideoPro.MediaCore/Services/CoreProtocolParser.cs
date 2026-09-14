@@ -552,7 +552,46 @@ public static class CoreProtocolParser
             return null;
         }
 
-        return JsonSerializer.Deserialize<NativeMediaCoreWireState>(ValidatedRecordingLifecycleJson(wireElement), MediaCoreJson.Options);
+        return JsonSerializer.Deserialize<NativeMediaCoreWireState>(ValidatedSourceAuthorityJson(ValidatedRecordingLifecycleJson(wireElement)), MediaCoreJson.Options);
+    }
+
+    // Malformed additive authority must not discard otherwise useful core state.
+    private static string ValidatedSourceAuthorityJson(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) return json;
+        var properties = root.EnumerateObject().Where(property =>
+            property.Name.Equals("sourceAuthority", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (properties.Length == 0) return json;
+        var authority = new NativeSourceAuthority { Valid = false, Sources = [] };
+        if (properties.Length == 1)
+        {
+            try
+            {
+                authority = JsonSerializer.Deserialize<NativeSourceAuthority>(properties[0].Value.GetRawText(),
+                    MediaCoreJson.Options)?.Validated() ?? authority;
+            }
+            catch (JsonException) { } // Wrong types, fractional/overflow counters: explicit invalid.
+        }
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            foreach (var property in root.EnumerateObject())
+                if (!property.Name.Equals("sourceAuthority", StringComparison.OrdinalIgnoreCase)) property.WriteTo(writer);
+            writer.WritePropertyName("sourceAuthority");
+            JsonSerializer.Serialize(writer, authority, MediaCoreJson.Options);
+            writer.WriteEndObject();
+        }
+        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    internal static NativeSourceAuthority? AuthorityForMeeting(NativeSourceAuthority? authority, string? state)
+    {
+        var validated = authority?.Validated();
+        return state is not ("in_meeting" or "in-meeting") && validated?.Sources is { Count: > 0 }
+            ? new NativeSourceAuthority { Valid = false, Sources = [] } : validated;
     }
 
     private static string ValidatedRecordingLifecycleJson(JsonElement snapshot)
@@ -606,7 +645,7 @@ public static class CoreProtocolParser
         }
 
         return JsonSerializer.Deserialize<ZoomMediaSpineNativeSnapshot>(
-            spineElement.GetRawText(),
+            ValidatedSourceAuthorityJson(spineElement.GetRawText()),
             MediaCoreJson.Options);
     }
 
@@ -622,7 +661,7 @@ public static class CoreProtocolParser
             return null;
         }
 
-        var snapshot = JsonSerializer.Deserialize<RawCaptureSnapshot>(snapshotElement.GetRawText(), MediaCoreJson.Options);
+        var snapshot = JsonSerializer.Deserialize<RawCaptureSnapshot>(ValidatedSourceAuthorityJson(snapshotElement.GetRawText()), MediaCoreJson.Options);
         if (snapshot is null)
         {
             return null;
@@ -631,6 +670,7 @@ public static class CoreProtocolParser
         return new RawCaptureSnapshot
         {
             MeetingState = ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(snapshot.MeetingState),
+            SourceAuthority = AuthorityForMeeting(snapshot.SourceAuthority, snapshot.MeetingState),
             Participants = snapshot.Participants,
             ActiveSpeakerId = snapshot.ActiveSpeakerId,
             Caption = snapshot.Caption,

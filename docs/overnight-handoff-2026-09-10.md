@@ -73,7 +73,7 @@ All measured on your real 8-source meeting, not the fake engine.
 
 ## Where the beta slice stands
 
-`docs/production-realtime-completion-plan.md` (on the PR #419 branch) §7 has the full framing.
+`docs/production-realtime-completion-plan.md` §7 has the full framing.
 
 | Item | State |
 |---|---|

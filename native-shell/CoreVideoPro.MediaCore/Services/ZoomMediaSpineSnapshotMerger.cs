@@ -56,6 +56,7 @@ public static class ZoomMediaSpineSnapshotMerger
         return new RawCaptureSnapshot
         {
             MeetingState = meetingState,
+            SourceAuthority = CoreProtocolParser.AuthorityForMeeting(spine.SourceAuthority, spine.MeetingState),
             ActiveSpeakerId = spine.ActiveSpeakerId,
             Participants = spine.Participants
                 .Select(participant => new RawParticipantEvent
