@@ -9,46 +9,37 @@ class TilesPlanAnimation {
  public:
   void reset() { animator_.reset(); key_.clear(); sampled_.clear(); }
 
-  // Carry a SETTLED wall from one bus to the other (live-show defect, owner
-  // report 2026-09-09: "I can't have a total rerender from what is in preview
-  // to program like it is loading for the first time").
-  //
-  // The wall key is sceneId + ":" + layerId and the layer id is derived from
-  // the scene id, so the gallery sitting settled in PREVIEW and the same
-  // gallery a Take puts on PROGRAM carry the IDENTICAL key — it is one wall
-  // continuing on another bus, not a new one. Without this, the program
-  // animation saw a key it had never held, reset its animator, and threw away
-  // spring positions and entry alpha that were fully settled an instant
-  // earlier on the other bus.
-  //
-  // Scoped so the two buses can never contaminate each other:
-  //   * only on an EXACT key match (a different wall, or a wall the other bus
-  //     never held, is refused and animates exactly as it does today),
-  //   * only when the other bus's wall is SETTLED (every sampled tile atRest —
-  //     mid-flight state belongs to the bus that is flying it),
-  //   * the state is MOVED, and the source is reset — never aliased, so the
-  //     next wall cued on the source bus starts clean.
-  // Returns true if the state was carried across.
-  bool adoptSettledFrom(TilesPlanAnimation& previous, const std::string& wallKey) {
-    if (wallKey.empty() || key_ == wallKey) return false;
-    if (previous.key_ != wallKey || previous.sampled_.empty()) return false;
-    for (const auto& tile : previous.sampled_) {
-      if (!tile.atRest) return false;
-    }
-    animator_ = std::move(previous.animator_);
-    sampled_ = std::move(previous.sampled_);
-    key_ = wallKey;
-    previous.reset();
-    return true;
-  }
+  // Release a wall that is present but not animating (or not present at all).
+  // Plan-free BY DESIGN (review round 4, Finding 1): the caller has no real
+  // plan to give this wall on this path, and passing a FOREIGN one (e.g. the
+  // program plan, on behalf of a preview wall that shares its object) would
+  // only be safe as long as advance() returns before ever touching `plan` —
+  // an invariant that lives in a different file from the call site depending
+  // on it, and silently breaks into on-air geometry corruption the moment
+  // advance() is reordered or gains code above its early return. Removing the
+  // hazard is cheaper than documenting it: this takes no plan and cannot ever
+  // read one. Idempotent, matching advance()'s early-return semantics
+  // exactly: an ALREADY-released wall (key_ empty) reports it did NOT reset —
+  // without this a caller that releases every tick regardless of presence
+  // would read "reset" forever, turning the generation into a tick counter
+  // instead of a restart signal.
+  bool releaseIfIdle() { const bool had = !key_.empty(); reset(); return had; }
 
-  void advance(modules::CompositorRenderPlan& plan, const std::string& wallKey,
+  // Returns true when this call RESET the animator (a departure/disable, or a
+  // different wall key arriving) - the caller's only truthful signal of "did
+  // this wall restart", with no std::function/allocation on the render tick.
+  // `plan` is read ONLY on this present-and-enabled path (target extraction +
+  // applyLatest at the end) — a caller with no real plan for this wall must
+  // use releaseIfIdle() above instead of passing one in, never a plan built
+  // for a DIFFERENT wall.
+  bool advance(modules::CompositorRenderPlan& plan, const std::string& wallKey,
       bool present, bool enabled, double durationMs, double nowMs) {
-    if (!present || !enabled) { reset(); return; }
+    if (!present || !enabled) return releaseIfIdle();
     // A DIFFERENT wall never inherits this one's geometry. (sampled_ is cleared
     // too: the all-stale guard below would otherwise let a new wall's first
     // frames be drawn at the previous wall's tile rects.)
-    if (key_ != wallKey) { animator_.reset(); key_ = wallKey; sampled_.clear(); }
+    bool didReset = false;
+    if (key_ != wallKey) { animator_.reset(); key_ = wallKey; sampled_.clear(); didReset = true; }
     std::vector<TilesAnimationTarget> targets;
     for (const auto& layer : plan.layers) {
       if (layer.kind == "participant-video" && layer.layerId.rfind("tile:", 0) == 0)
@@ -64,9 +55,10 @@ class TilesPlanAnimation {
     // fix exists to remove. Only a wall that has actually drawn tiles
     // preserves them; a cold wall's first tick is untouched, so a genuinely
     // new wall behaves exactly as it always has.
-    if (targets.empty() && !sampled_.empty()) return;
+    if (targets.empty() && !sampled_.empty()) return didReset;
     sampled_ = animator_.sample(targets, nowMs, enabled, durationMs, plan.width, plan.height);
     applyLatest(plan, wallKey);
+    return didReset;
   }
   void applyLatest(modules::CompositorRenderPlan& plan, const std::string& wallKey) const {
     if (key_ != wallKey) return;
