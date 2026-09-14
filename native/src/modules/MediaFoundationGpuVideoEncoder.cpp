@@ -123,6 +123,11 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     return false;
   }
 
+  // S_OK when the encode device is alive; a DXGI removed/reset/hung HRESULT when
+  // it has been lost (TDR, driver upgrade, hardware fault). The encode loop uses
+  // this to distinguish a genuine device loss from a transient encode miss.
+  HRESULT deviceRemovedReason() const { return device_ ? device_->GetDeviceRemovedReason() : S_OK; }
+
   bool createDevice() {
     UINT flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
     D3D_FEATURE_LEVEL level{};
@@ -371,10 +376,26 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
         if (have) {
           if (convertToNv12(frame.sharedHandleHex)) {
             if (!processInput(frame.frameNumber)) {
-              ::corevideo::core::nativeLogf("[gpu-encode] ProcessInput failed; encoder unhealthy\n");
+              const HRESULT removed = deviceRemovedReason();
+              if (removed != S_OK) {
+                ::corevideo::core::nativeLogf(
+                    "[gpu-encode] device lost (0x%08lx) during encode; encoder unhealthy -> supervisor\n",
+                    static_cast<unsigned long>(removed));
+              } else {
+                ::corevideo::core::nativeLogf("[gpu-encode] ProcessInput failed; encoder unhealthy\n");
+              }
               healthy_.store(false);
               break;
             }
+          } else if (const HRESULT removed = deviceRemovedReason(); removed != S_OK) {
+            // A failed BGRA->NV12 blit with a removed device is a device loss, not
+            // a transient miss: retire so submit() fails and the supervisor restarts
+            // the sender, which re-decides the encode path against the new device.
+            ::corevideo::core::nativeLogf(
+                "[gpu-encode] device lost (0x%08lx) during convert; encoder unhealthy -> supervisor\n",
+                static_cast<unsigned long>(removed));
+            healthy_.store(false);
+            break;
           }
         }
       } else if (type == METransformHaveOutput) {

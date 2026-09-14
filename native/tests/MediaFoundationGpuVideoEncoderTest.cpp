@@ -196,4 +196,26 @@ TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) {
   EXPECT_TRUE(std::fabs(meanLuma - static_cast<double>(kGray)) <= 16.0)
       << "decoded mean coded luma " << meanLuma << " is not within 16 of the encoded gray " << kGray;
 }
+
+// #521 slice 1, Task 5: an unhealthy or not-running encoder fails submit(). This
+// is the contract the OutputDestinationSupervisor rides — a device loss sets
+// healthy_=false in the encode loop (deviceRemovedReason()), after which submit()
+// returns false, the sender reports a video-write failure, and the supervisor
+// restarts it (re-deciding the encode path). A real TDR is not injected here; the
+// device-loss classification is verified by inspection + the round-trip test above
+// proving healthy() stays true on the happy path.
+TEST(MediaFoundationGpuVideoEncoder, SubmitFailsWhenNotRunningSoTheSupervisorRestarts) {
+  MAKE_MEDIA_FOUNDATION_GPU_ENCODER_OR_SKIP();
+  corevideo::modules::GpuVideoEncoderFrame frame;
+  frame.sharedHandleHex = "0x1234";
+  frame.width = 320;
+  frame.height = 180;
+  frame.frameNumber = 1;
+  // Before start(): not running and not healthy, so submit must fail.
+  EXPECT_FALSE(encoder->healthy());
+  EXPECT_FALSE(encoder->submit(frame));
+  // After stop() (idempotent from the never-started state) the contract holds.
+  encoder->stop();
+  EXPECT_FALSE(encoder->submit(frame));
+}
 #endif
