@@ -331,10 +331,14 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) return;
       if (FAILED(hr)) return;
       ComPtr<IMFSample> produced;
-      produced.Attach(out.pSample);
+      if (mftAllocates) produced.Attach(out.pSample);
+      else produced = sample;
       if (out.pEvents) out.pEvents->Release();
-      if (!produced) continue;
+      if (!produced) return;
       emit(produced.Get());
+      // Async MFTs issue one HaveOutput event per output sample. Do not drain
+      // ahead of those events as with a synchronous transform.
+      return;
     }
   }
 
@@ -373,49 +377,60 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       MediaEventType type = MEUnknown;
       event->GetType(&type);
       if (type == METransformNeedInput) {
-        std::string handle;
-        int64_t frameNumber = 0;
-        bool have = false;
-        {
-          std::unique_lock<std::mutex> lock(queueMutex_);
-          // Only wait during startup, before the first frame ever arrives. Once we
-          // have a handle we take the latest immediately: the per-NeedInput wait
-          // used to serialize with the mutex wait (~20ms + ~16ms) and halved the
-          // encode rate to ~30fps. The keyed mutex does the pacing.
-          if (!haveHandle_) {
-            queueCv_.wait_for(lock, std::chrono::milliseconds(20),
-                              [this] { return haveHandle_ || !running_.load(); });
-          }
-          if (haveHandle_) {
-            handle = latestHandle_;
-            frameNumber = latestFrameNumber_;
-            have = true;
-          }
-        }
-        if (!running_.load()) break;
-        if (have) {
-          if (convertToNv12(handle)) {
-            if (!processInput(frameNumber)) {
-              const HRESULT removed = deviceRemovedReason();
-              if (removed != S_OK) {
-                ::corevideo::core::nativeLogf(
-                    "[gpu-encode] device lost (0x%08lx) during encode; encoder unhealthy -> supervisor\n",
-                    static_cast<unsigned long>(removed));
-              } else {
-                ::corevideo::core::nativeLogf("[gpu-encode] ProcessInput failed; encoder unhealthy\n");
-              }
-              healthy_.store(false);
-              break;
+        // A NeedInput event grants an input credit; a missing texture or mutex
+        // timeout does not consume it. Retain it until ProcessInput succeeds.
+        // Dropping credits eventually starves an async MFT permanently.
+        while (running_.load()) {
+          std::string handle;
+          int64_t frameNumber = 0;
+          bool have = false;
+          {
+            std::unique_lock<std::mutex> lock(queueMutex_);
+            // Only wait during startup, before the first frame ever arrives. Once we
+            // have a handle we take the latest immediately: the per-NeedInput wait
+            // used to serialize with the mutex wait (~20ms + ~16ms) and halved the
+            // encode rate to ~30fps. The keyed mutex does the pacing.
+            if (!haveHandle_) {
+              queueCv_.wait_for(lock, std::chrono::milliseconds(20),
+                                [this] { return haveHandle_ || !running_.load(); });
             }
-          } else if (const HRESULT removed = deviceRemovedReason(); removed != S_OK) {
-            // A failed BGRA->NV12 blit with a removed device is a device loss, not
-            // a transient miss: retire so submit() fails and the supervisor restarts
-            // the sender, which re-decides the encode path against the new device.
-            ::corevideo::core::nativeLogf(
-                "[gpu-encode] device lost (0x%08lx) during convert; encoder unhealthy -> supervisor\n",
-                static_cast<unsigned long>(removed));
-            healthy_.store(false);
-            break;
+            if (haveHandle_) {
+              handle = latestHandle_;
+              frameNumber = latestFrameNumber_;
+              have = true;
+            }
+          }
+          if (!running_.load()) break;
+          if (have) {
+            if (convertToNv12(handle)) {
+              if (!processInput(frameNumber)) {
+                const HRESULT removed = deviceRemovedReason();
+                if (removed != S_OK) {
+                  ::corevideo::core::nativeLogf(
+                      "[gpu-encode] device lost (0x%08lx) during encode; encoder unhealthy -> supervisor\n",
+                      static_cast<unsigned long>(removed));
+                } else {
+                  ::corevideo::core::nativeLogf("[gpu-encode] ProcessInput failed; encoder unhealthy\n");
+                }
+                healthy_.store(false);
+                return;
+              }
+              break;  // this input credit was consumed by ProcessInput
+            } else if (const HRESULT removed = deviceRemovedReason(); removed != S_OK) {
+              // A failed BGRA->NV12 blit with a removed device is a device loss, not
+              // a transient miss: retire so submit() fails and the supervisor restarts
+              // the sender, which re-decides the encode path against the new device.
+              ::corevideo::core::nativeLogf(
+                  "[gpu-encode] device lost (0x%08lx) during convert; encoder unhealthy -> supervisor\n",
+                  static_cast<unsigned long>(removed));
+              healthy_.store(false);
+              return;
+            }
+            // An invalid/stale handle can fail before AcquireSync has waited.
+            // Bound retry CPU usage until the producer publishes a usable one.
+            std::unique_lock<std::mutex> retryLock(queueMutex_);
+            queueCv_.wait_for(retryLock, std::chrono::milliseconds(2),
+                              [this] { return !running_.load(); });
           }
         }
       } else if (type == METransformHaveOutput) {

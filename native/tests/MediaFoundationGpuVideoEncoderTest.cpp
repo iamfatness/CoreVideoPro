@@ -116,6 +116,10 @@ TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) {
   }
 
   constexpr int64_t kFrames = 12;
+  // The compositor can start later than the MFT (or temporarily miss its
+  // texture deadline). Input requests must survive this gap, rather than being
+  // discarded until the hardware encoder has no outstanding credits left.
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
   for (int64_t i = 0; i < kFrames; ++i) {
     const auto frame = compositor->render(
         plan, {makeEncoderSourceFrame(start.time_since_epoch().count() + i, kGray)});

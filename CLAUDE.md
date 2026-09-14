@@ -1600,7 +1600,21 @@ realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
   ≥0.97x. SRT (not RTMP) for the sink only because ffmpeg's `-listen 1` RTMP server is
   too flaky to gate on; the GPU path is protocol-agnostic (same sender + `-c:v copy`
   muxer). `--force-raw` sets `COREVIDEO_GPU_ENCODE=0` and confirms the fallback still
-  streams. **Live RTMP to real YouTube is the final MANUAL acceptance step** (speed≈1.0x,
+  streams. GPU-direct RTMP/RTMPS uses `-tcp_nodelay 1` and a 1 MiB
+  compressed-video pipe on Windows. The 2026-09-13 live test isolated seconds of
+  encoder-thread blocking in the FFmpeg bitstream pipe. Transport settings alone
+  remained timing-sensitive; the Windows bitstream writer now runs separately
+  from the MFT event loop, with a queue bounded to 60 chunks / 2 MiB (plus one
+  in-flight chunk). Queue overflow or a broken pipe fails the sender for supervisor
+  recovery; stop cancels pending writes and joins the worker before closing stdin.
+  The asynchronous MFT retains each NeedInput credit across missing-frame and
+  keyed-mutex timeouts until ProcessInput succeeds, and consumes one output per
+  HaveOutput event. Discarding input credits can leave a healthy-looking encoder
+  permanently starved; the real-GPU round-trip test includes a delayed first frame.
+  Always measure actual FFmpeg
+  frame-count deltas against wall time: arrival-time timestamps can report
+  `speed≈1.0x` with only 19 encoded frames/sec. SRT must not receive this RTMP option.
+  **Live RTMP to real YouTube is the final MANUAL acceptance step** (speed≈1.0x,
   `nvidia-smi utilization.encoder` non-trivial, CPU down vs raw) — not this gate.
 - Tests: `GpuVideoEncoderPolicyTest.cpp` (policy + `chooseStreamEncodePath`),
   `MediaFoundationGpuVideoEncoderTest.cpp` (real-GPU compositor→encoder→ffmpeg round-trip:

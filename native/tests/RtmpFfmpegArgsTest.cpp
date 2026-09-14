@@ -146,3 +146,19 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeCopiesVideoAndSkipsRawEncode) {
   EXPECT_NE(args.find("-c:a aac"), std::string::npos);       // audio still encoded
   EXPECT_NE(args.find("-map 0:v:0 -map 1:a:0"), std::string::npos);
 }
+
+TEST(RtmpFfmpegArgs, BitstreamRtmpDisablesTcpDelayWithoutChangingSrt) {
+  auto config = baseConfig();
+  config.videoBitstreamInput = true;
+  for (const auto* endpoint : {"rtmp://live.example/app/test", "rtmps://live.example/app/test"}) {
+    config.endpoint = endpoint;
+    const auto args = buildRtmpFfmpegArguments(config);
+    EXPECT_NE(args.find(" -tcp_nodelay 1 -f flv "), std::string::npos);
+    EXPECT_NE(args.find(" -c:v copy"), std::string::npos);
+  }
+  config.endpoint = "srt://127.0.0.1:9021?mode=caller";
+  config.container = "mpegts";
+  const auto args = buildRtmpFfmpegArguments(config);
+  EXPECT_EQ(args.find("tcp_nodelay"), std::string::npos);
+  EXPECT_NE(args.find(" -f mpegts "), std::string::npos);
+}

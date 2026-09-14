@@ -1256,7 +1256,11 @@ class RtmpOutputSender final : public IOutputSender {
 
     HANDLE childStdinRead = nullptr;
     HANDLE childStdinWrite = nullptr;
-    if (!CreatePipe(&childStdinRead, &childStdinWrite, &securityAttributes, 0)) {
+    // A compressed access unit can exceed the default anonymous-pipe buffer.
+    // Let FFmpeg consume complete bursts without repeatedly blocking the MFT
+    // event thread. Bounded at 1 MiB; the raw fallback retains its existing size.
+    const DWORD videoPipeBufferBytes = useGpuDirect_ ? (1u << 20) : 0;
+    if (!CreatePipe(&childStdinRead, &childStdinWrite, &securityAttributes, videoPipeBufferBytes)) {
       sender_.status = "failed";
       sender_.warning = "Could not create FFmpeg stdin pipe.";
       sender_.destinationHealth = "failed";
@@ -1577,8 +1581,16 @@ class RtmpOutputSender final : public IOutputSender {
     cfg.keyframeIntervalSeconds = configuredKeyframeIntervalSeconds_;
     cfg.rateControl = configuredRateControl_;
     cfg.h264Profile = configuredH264Profile_.empty() ? "high" : configuredH264Profile_;
+#if defined(_WIN32)
+    bitstreamWriterFailed_.store(false);
+    bitstreamWriterStop_.store(false);
+#endif
     const bool ok = gpuEncoder_->start(cfg, [this](const GpuEncodedChunk& chunk) {
+#if defined(_WIN32)
+      enqueueBitstream(chunk);
+#else
       writeBitstreamToFfmpeg(chunk.data, chunk.size);
+#endif
     });
     if (!ok) {
       gpuEncoder_.reset();
@@ -1586,6 +1598,10 @@ class RtmpOutputSender final : public IOutputSender {
       gpuEncodePathReason_ = "encoder-start-failed";
       return false;  // startFfmpegProcess logs the unified cpu-fallback line
     }
+#if defined(_WIN32)
+    bitstreamWriterExited_.store(false);
+    bitstreamWriterThread_ = std::thread([this] { bitstreamWriterLoop(); });
+#endif
     ::corevideo::core::nativeLogf("[gpu-encode] path=gpu-direct %dx%d@%d bitrate=%.1fMbps\n", width,
                                  height, cfg.fps, sender_.bitrateMbps);
     return true;
@@ -1596,10 +1612,61 @@ class RtmpOutputSender final : public IOutputSender {
       gpuEncoder_->stop();  // joins the encoder thread before we close FFmpeg's stdin
       gpuEncoder_.reset();
     }
+#if defined(_WIN32)
+    bitstreamWriterStop_.store(true);
+    bitstreamQueueCv_.notify_all();
+    if (bitstreamWriterThread_.joinable()) {
+      // Repeat cancellation to cover a write entering after the first cancel.
+      while (!bitstreamWriterExited_.load()) {
+        CancelSynchronousIo(static_cast<HANDLE>(bitstreamWriterThread_.native_handle()));
+        Sleep(1);
+      }
+      bitstreamWriterThread_.join();
+    }
+    std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+    bitstreamQueue_.clear();
+    bitstreamQueuedBytes_ = 0;
+#endif
   }
 
-  // Write one encoded chunk to FFmpeg's stdin. Runs on the encoder's own thread;
-  // ffmpegStdin_ is only closed after stopGpuEncoder() has joined that thread.
+#if defined(_WIN32)
+  void enqueueBitstream(const GpuEncodedChunk& chunk) {
+    if (!chunk.data || !chunk.size || bitstreamWriterStop_.load() || bitstreamWriterFailed_.load()) return;
+    {
+      std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+      // Never block the MFT event loop on network I/O or grow latency without
+      // bound. An overrun fails the sender so its supervisor can restart it.
+      constexpr size_t maxBytes = 2u << 20;
+      if (chunk.size > maxBytes || bitstreamQueuedBytes_ > maxBytes - chunk.size || bitstreamQueue_.size() >= 60) {
+        bitstreamWriterFailed_.store(true);
+        ::corevideo::core::nativeLogf("[gpu-encode] bitstream queue overflow; sender unhealthy -> supervisor\n");
+        return;
+      }
+      bitstreamQueue_.emplace_back(chunk.data, chunk.data + chunk.size);
+      bitstreamQueuedBytes_ += chunk.size;
+    }
+    bitstreamQueueCv_.notify_one();
+  }
+
+  void bitstreamWriterLoop() {
+    while (!bitstreamWriterStop_.load() && !bitstreamWriterFailed_.load()) {
+      std::vector<uint8_t> bytes;
+      {
+        std::unique_lock<std::mutex> lock(bitstreamQueueMutex_);
+        bitstreamQueueCv_.wait(lock, [this] { return bitstreamWriterStop_.load() || !bitstreamQueue_.empty(); });
+        if (bitstreamWriterStop_.load()) break;
+        bytes = std::move(bitstreamQueue_.front());
+        bitstreamQueue_.pop_front();
+        bitstreamQueuedBytes_ -= bytes.size();
+      }
+      writeBitstreamToFfmpeg(bytes.data(), bytes.size());
+    }
+    bitstreamWriterExited_.store(true);
+  }
+#endif
+
+  // Write one encoded chunk to FFmpeg's stdin. Windows runs this on its
+  // transport worker; stopGpuEncoder joins both workers before stdin is closed.
   void writeBitstreamToFfmpeg(const uint8_t* data, size_t size) {
     if (!data || size == 0) return;
 #if defined(_WIN32)
@@ -1613,9 +1680,12 @@ class RtmpOutputSender final : public IOutputSender {
     }
     size_t remaining = size;
     while (remaining > 0) {
+      if (bitstreamWriterStop_.load()) return;
       DWORD written = 0;
       const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
       if (!WriteFile(ffmpegStdin_, data, chunk, &written, nullptr) || written == 0) {
+        if (bitstreamWriterStop_.load()) return;
+        bitstreamWriterFailed_.store(true);
         ::corevideo::core::nativeLogf("[gpu-encode] bitstream WriteFile failed err=%lu (encoder->ffmpeg pipe broke)\n",
                                      static_cast<unsigned long>(GetLastError()));
         return;
@@ -1647,6 +1717,9 @@ class RtmpOutputSender final : public IOutputSender {
   // the hardware encoder. A missing texture this tick is not a failure (hold);
   // an unhealthy encoder returns false so the failure path restarts the sender.
   bool submitFrameToGpuEncoder(const ProgramFrame& frame) {
+#if defined(_WIN32)
+    if (bitstreamWriterFailed_.load()) return false;
+#endif
     if (!gpuEncoder_) return false;
     if (!gpuEncoder_->healthy()) return false;
     if (frame.encoderSharedTexture.sharedHandleHex.empty()) return true;
@@ -2130,10 +2203,20 @@ class RtmpOutputSender final : public IOutputSender {
   bool activeUseGpuDirect_ = false;  // path baked into the RUNNING FFmpeg args
   std::string gpuEncodePathReason_ = "cpu-fallback";
   bool firstBitstreamLogged_ = false;
+#if defined(_WIN32)
+  std::mutex bitstreamQueueMutex_;
+  std::condition_variable bitstreamQueueCv_;
+  std::deque<std::vector<uint8_t>> bitstreamQueue_;
+  size_t bitstreamQueuedBytes_ = 0;
+  std::thread bitstreamWriterThread_;
+  std::atomic<bool> bitstreamWriterStop_{true};
+  std::atomic<bool> bitstreamWriterFailed_{false};
+  std::atomic<bool> bitstreamWriterExited_{true};
+#endif
 
   OutputSender sender_;
   RtmpVideoFramePacer videoFramePacer_;
-  bool hasWrittenVideo_ = false;
+  std::atomic<bool> hasWrittenVideo_{false};
   std::ofstream sendProof_;
 };
 #endif
