@@ -968,14 +968,34 @@ comment at the code site; this is the index.
   emptied OHG box.
   **(3) RESOLUTION IS A STABLE TIER, CAPPED, NO RATCHET.**
   `native/src/modules/ZoomSubscriptionResolutionPolicy.h`: FIXED bus routes (purpose
-  program/preview) and screen share at 1080P; Tiles, wall, ISO and a follow route's
-  speaker at 720P. At most
-  `kMaxConcurrentFullResolutionCameras` (4) cameras at 1080P, granted in payload order
+  program/preview), screen share, AND the Tiles wall (program-tiles / preview-tiles)
+  at 1080P; multiview, ISO and a follow route's speaker at 720P. At most
+  `kMaxConcurrentFullResolutionCameras` (**8**) cameras at 1080P, granted in payload order
   (Program routes first, then Program Tiles, then Preview routes); the rest get 720P
   and `zoomSubscriptionChurn.fullResolutionDemoted`
-  counts them. The number comes from commit bd3caf29: SIX concurrent 1080P raw
-  subscriptions crashed the SDK subprocess (0xc000000d), and everything since shipped
-  with ONE camera at 1080P. A guest who leaves the buses DROPS BACK to 720P: the engine
+  counts them.
+  **THE WALL WAS RAISED FROM 720P TO 1080P AND THE CAP FROM 4 TO 8 (2026-09-13,
+  owner "whole wall at 1080p").** The report was "CoreVideo tiles participants are
+  dropping as I go through different people in preview": a wall member was
+  program-tiles (720P), and soloing them in Preview made them a preview route
+  (1080P). Resolution is part of the engine subscription key, so that 720P->1080P
+  was a real renderer teardown/rebuild of a source LIVE ON THE PROGRAM WALL — the
+  drop, and the "few hundred ms then color changes" placeholder flash (one feed
+  flipping, NOT two grabs: `m_subs` is keyed by participant_id, and every surface
+  shares that one decoded frame). Pinning Tiles at 1080P removes the lower tier, so
+  a soloed wall member has nowhere to flip to. The cap-4 came from commit bd3bedf/
+  bd3ca (SIX concurrent 1080P crashed the SDK subprocess, 0xc000000d) on the
+  **CPU-I420 path**; a live soak on today's GPU pipeline (2026-09-13, real 8-person
+  meeting) ran all 8 wall members at 1080P on Program for 30+ min — 60fps delivery,
+  0 underruns, no monitor shedding, no engine crash/respawn, `totalChurn` FLAT
+  across an operator's full preview run (per-source churn = 1, the one-time take).
+  8 is the soak-proven number and the meeting's camera count; **raising it further
+  needs a bigger-meeting soak — never on extrapolation.** Graceful past 8: members
+  are granted before the wall background in payload order, so a 9th 1080P source
+  (a live wall background, a >8 wall, a non-wall bus route) is DEMOTED to 720P
+  stably, never flips a member; screen share is 1080P and bypasses the camera
+  counter (so 8 wall + a share = 9 concurrent 1080P total, one step past what was
+  soaked — watch it if a full wall runs with a share). A guest who leaves the buses DROPS BACK to 720P: the engine
   used to ignore a lower request (`video_subscribe_noop_existing`), which over a show
   ratcheted every rotated guest to 1080P; it now rebuilds when the source is the
   renderer's only target (`zoom-engine/shared/engine-resolution-policy.h`). In-place
