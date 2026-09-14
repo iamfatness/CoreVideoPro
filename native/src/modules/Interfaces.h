@@ -808,6 +808,9 @@ class ICompositor {
   // Startup-only configuration. Unsupported compositors report zero active
   // frames, so consumers must not introduce an unmatched audio delay.
   virtual void configureProgramBuffer(int /*frames*/) {}
+  // Allocate startup resources before the render clock starts. No frames or
+  // delivery timestamps may be produced by this call. Resize stays on render.
+  virtual void prepareProgramBuffer(int /*width*/, int /*height*/) {}
   virtual void setProgramProductionTiming(int64_t /*slot*/, int64_t /*anchorNs*/) {}
   [[nodiscard]] virtual int programBufferFrames() const { return 0; }
   virtual bool latestDeliveredProgramFrame(ProgramFrame& /*out*/) const { return false; }

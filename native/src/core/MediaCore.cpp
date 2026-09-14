@@ -6940,6 +6940,7 @@ void MediaCore::enableAudioOutputWorker() {
   const auto* configured = std::getenv("COREVIDEO_PROGRAM_BUFFER_FRAMES");
   const int frames = configured && std::string_view(configured) == "2" ? 2 : 3;
   modules_.compositor->configureProgramBuffer(frames);
+  modules_.compositor->prepareProgramBuffer(outputWidth_, outputHeight_);
   publishProgramOutputConfiguration();
   audioWorkerActive_ = true;
 }
