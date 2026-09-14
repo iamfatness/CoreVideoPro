@@ -239,12 +239,12 @@ TEST(TakeRecordPolicyRules, TheWallVerdictSeparatesACutFromARebuild) {
   EXPECT_EQ(std::string(TakeRecordPolicy::evaluate(observation).verdict), "no-wall");
 
   observation.hasWallAfter = true;
-  observation.wallAdoptedSettled = false;
+  observation.wallContinuous = false;
   EXPECT_EQ(std::string(TakeRecordPolicy::evaluate(observation).wall), "reset");
   EXPECT_EQ(std::string(TakeRecordPolicy::evaluate(observation).verdict), "rebuilt");
 
-  observation.wallAdoptedSettled = true;
-  EXPECT_EQ(std::string(TakeRecordPolicy::evaluate(observation).wall), "adopted-settled");
+  observation.wallContinuous = true;
+  EXPECT_EQ(std::string(TakeRecordPolicy::evaluate(observation).wall), "continuous");
   EXPECT_EQ(std::string(TakeRecordPolicy::evaluate(observation).verdict), "cut");
 
   // Adopted, but the wall's live background never made the first program frame.
@@ -283,7 +283,7 @@ TEST(TakeRecordPolicyRules, ASharedSourceThatRestartedDeniesTheCut) {
 TEST(TakeRecordPolicyRules, SharedSourcesThatKeptTheirGenerationAllowACut) {
   TakeRecordPolicy::Observation observation;
   observation.hasWallAfter = true;
-  observation.wallAdoptedSettled = true;
+  observation.wallContinuous = true;
   observation.sharedSources.push_back({"background:bg", 1, 1, 40, 45});
   const auto verdict = TakeRecordPolicy::evaluate(observation);
   EXPECT_FALSE(verdict.sharedSourceRestarted);

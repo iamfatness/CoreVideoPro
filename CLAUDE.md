@@ -107,14 +107,25 @@ dotnet build native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Releas
 runs `scripts/app.ps1`; the dev launcher is `scripts/run-studio.ps1` (now respects a
 pre-set `COREVIDEO_ZOOM_ENGINE_PATH`).
 
-**Run the binary the build just wrote.** `native/build-dev/` is a single-config
-generator — the current binaries are `native/build-dev/corevideo-native.exe` and
-`corevideo-native-tests.exe`. A `native/build-dev/Release/` directory also exists,
-left by an older VS-generator build, and **nothing updates it**: a test run from
-there reported a confident "380 tests passed" from a binary a MONTH old, which
-silently omitted every test file added since. The real suite is 529 tests. If a
-newly added test does not appear in the output, check which binary you ran before
-suspecting CMake.
+**Run the binary the build just wrote, and ALWAYS pass `--config Release`.**
+`native/build-dev/` is a **MULTI-CONFIG** generator (`CMAKE_GENERATOR: Visual
+Studio 18 2026`) whose `CMAKE_RUNTIME_OUTPUT_DIRECTORY` is pinned to the binary
+dir for EVERY config (`native/CMakeLists.txt:46-48`). So the exes have no
+per-config suffix: **Debug and Release write to the exact same path**,
+`native/build-dev/corevideo-native.exe`, and `cmake --build native/build-dev
+--target …` with no `--config` silently builds DEBUG over your Release core.
+This cost a full false regression on 2026-09-12 — a drill reported `coreMutex`
+over-budget 1% -> 81% and was reported to the owner as a real regression caused
+by the branch. The tell was uniform inflation across trivial stages (emit 32x,
+plan 19x) and the binary SIZE: 8,322,560 bytes Debug vs 2,168,832 Release. With
+`--config Release` every metric matched baseline and the drill passed. **Check
+the size, or `--config`, before believing any native perf number.** (Libraries
+DO get a per-config dir — `build-dev/Release/corevideo_native.lib` — so a
+`Release/` subdirectory existing proves nothing about the exes.) Separately, a
+test run from a STALE `build-dev/Release/*.exe` left by an older layout once
+reported a confident "380 tests passed" from a binary a MONTH old, silently
+omitting every test file added since. If a newly added test does not appear in
+the output, check which binary you ran before suspecting CMake.
 
 Logs: `%LOCALAPPDATA%\CoreVideoPro\launch.log` (WinUI) and `media-core.log` (core).
 Support bundle (Diagnostics → "Export support bundle"): writes redacted JSON **and a
@@ -342,6 +353,38 @@ off-thread guards never fired). Confirmed and suspected triggers:
   recording/streaming asks first and finishes the files before `ShutdownAsync` starts.)
   The proof is a scripted close-cycle loop on the real app: zero new
   `CoreVideoPro.WinUI.exe.*.dmp` and zero Application Error 1000 events.
+
+- **The GC FINALIZER THREAD releasing a XAML object (#513, 2026-09-13) — the first
+  member of this family that is ASYNCHRONOUS and TIME-DELAYED, and it is NOT
+  reproduced yet.** The app died IDLE, 58 min into a live meeting, 43 min after the
+  last operator action, with `launch.log` silent the whole time. Dump
+  (`CoreVideoPro.WinUI.exe.19580.dmp`, full memory): crashing thread is the CLR
+  **Finalizer** (MTA); stack `GC.RunFinalizers -> WinRT.IObjectReference.Finalize
+  -> Microsoft_UI_Xaml!ctl::ComObject<DirectUI::Border>::Release ->
+  FailFastWithStowedExceptions`, stowed `0x8000000E` = **E_ILLEGAL_METHOD_CALL**.
+  The wrapper was a PLAIN `WinRT.ObjectReference<IUnknownVftbl>` (not
+  `ObjectReferenceWithContext`) with `_referenceTrackerPtr` set, so the release
+  had no UI context to marshal to; the UI thread was idle in `GetMessage`, so a
+  marshaled release would have landed. **What this is NOT:** a finalizer-thread
+  release is the ORDINARY path — a forced full GC (`dotnet-gcdump collect -p`)
+  on a healthy run finalized ~2,700 wrappers and a couple of Borders with no
+  incident, three times (fresh app; after 12 takes; after a record/stop cycle).
+  The dead population at the crash (66 Borders, 1,845 wrappers) was the SAME size
+  as a healthy run's. So the trigger is a specific object STATE, not volume, and
+  it did not reproduce on demand. Our code has no manual CsWinRT marshaling and
+  no element-building control touches XAML off-thread (checked). Framework:
+  WinAppSDK Runtime 2.4.0 / WinUI 2.3.6, CsWinRT 2.2.0. The four code-behind
+  element factories that `Children.Clear()` (`ShowMultiviewHost` overlays,
+  `ScenePreviewControl`, `AudioLevelMeter`, `SceneCanvasEditorControl` — which
+  hooks 4 handlers and unhooks 0) are the likely POPULATION, not a proven cause;
+  pooling them reduces exposure and cannot be claimed to eliminate the crash.
+  **Two rules it teaches.** (1) A stability claim is bounded by the window you
+  watched: 25 clean minutes of takes/drill/soak said nothing about hour 1, and a
+  crash with NO application code on the stack is invisible to every log we write
+  — only the dump sees it, so `setup-crash-dumps.ps1` full dumps are not optional
+  on a test box. (2) Analyze a WinUI dump BEFORE rebuilding the shell (same PDB
+  rule as the core); `!dumpobj` on the finalizer frame's `this` is what
+  distinguishes a marshaled release from an unmarshaled one.
 
 Rules of thumb: never replace a bound collection at frame rate (sync in place / diff);
 keep one stable swap chain per surface (program, preview, one multiview);
@@ -852,20 +895,30 @@ comment at the code site; this is the index.
   what I can't have is a total rerender from what is in preview to program like
   it is loading for the first time." The wall key is `sceneId + ":" + layerId`
   and the layer id is derived from the scene id, so the SAME gallery has the
-  SAME key on both buses — `MediaCore` holds two animation objects
-  (`programTilesAnimation_` / `previewTilesAnimation_`) and the program one used
-  to reset its animator the moment the key it had never held arrived. Two
-  corrections, both in `compositor/TilesPlanAnimation.h`:
-  `adoptSettledFrom()` MOVES a settled wall's state from preview to program on
-  the take tick (exact key match + every sampled tile `atRest` only; the source
-  is reset, never aliased, so the next wall cued in preview starts clean), and
-  `advance()` no longer samples an EMPTY target set for a wall that is still
-  present and has already drawn tiles. That second one is what actually produced
-  the reported replay: an all-stale beat (`kTilesStaleFrameMs`, an ordinary
-  state — see the empty-plan rule above) erased every retained tile AND consumed
-  the animator's adoption, so the instant frames returned the whole wall faded in
-  from alpha 0. A COLD wall's first tick is untouched, so a wall that was never
-  in preview behaves exactly as before. Not a contributor, measured: preview and
+  SAME key on both buses. **This was first fixed with a HAND-OVER and is now
+  fixed STRUCTURALLY — the hand-over is DELETED. See "ONE ANIMATOR PER WALL"
+  below; `TilesPlanAnimation::adoptSettledFrom` no longer exists.** The original
+  shape: `MediaCore` held two animation objects
+  (`programTilesAnimation_` / `previewTilesAnimation_`) and the program one reset
+  its animator the moment the key it had never held arrived. `adoptSettledFrom()`
+  moved a SETTLED wall's state across on the take tick — settled only, because
+  with two animators mid-flight state had no correct owner. The second
+  correction survives and still matters: `advance()` does not sample an EMPTY
+  target set for a wall that is still present and has already drawn tiles. That
+  is what produced the reported rebuild — an all-stale beat
+  (`kTilesStaleFrameMs`, an ordinary state — see the empty-plan rule above)
+  erased every retained tile AND consumed the animator's adoption.
+  **What a reset actually looks like, because the direction is counter-intuitive
+  and the docs had it backwards: it does NOT replay from alpha 0. `TilesAnimator`
+  treats a reset animator's next non-empty `sample()` as an ADOPTION (content
+  already present, not entering), so the wall SNAPS TO ITS FINAL STATE** — alpha
+  pops to 1, mid-spring rects jump to their settled positions. On air that is a
+  wall that stops moving and jumps, which is what "loading for the first time"
+  looked like. The practical consequence for tests: `EXPECT_GE(after, before)` on
+  alpha is satisfied by a snap just as well as by continuity and therefore
+  catches NOTHING — a falsifying assertion has to bound the other side (alpha
+  stays below 0.9, rects stay near their mid-spring values). A COLD wall's first
+  tick is untouched, so a wall that was never in preview behaves as before. Not a contributor, measured: preview and
   program share one device and one `sourceTextures_` cache keyed by
   `participantId` (`D3D11CompositorAdapter`), so tile textures are already warm
   across a take. Tests: `TilesRenderPlan.AWallSettledInPreviewIsAlreadySettledOnItsFirstProgramFrame`,
@@ -1269,7 +1322,11 @@ measurement rather than from the product.
   ONE sync, so that IS the take on this wire) and completed on the first program
   render tick after it — the only place the "after" half exists. Carries scene id
   and renderPlanId on both sides, the layer ids on both sides, the wall keys,
-  whether `TilesPlanAnimation::adoptSettledFrom` **adopted or reset**, whether the
+  whether the wall was **adopted or reset** (since #448: whether the ONE
+  `core::TilesWallSource` for that wall id survived the take with its generation
+  intact — `wallAdoptedSettled` is computed as `wallExistedBefore &&
+  generationAfter == generationBefore`, not from the deleted
+  `TilesPlanAnimation::adoptSettledFrom`), whether the
   wall's live background (`tiles-source-bg:`) made the first program frame, and
   the subscription-churn delta across the take. `core/TakeRecordPolicy.h` turns
   those into the one-word answer to "did the wall rebuild or cut" — and it will
@@ -1344,6 +1401,92 @@ Tests: `native/tests/RenderedSceneAttributionTest.cpp` (the attribution defect
 red/green, the policies, and the take record end to end),
 `native/tests/SourceContinuityLedgerTest.cpp`, and
 `ZoomEngineRuntime.SubscriptionChurnNamesResolutionChangesAndTeardowns`.
+
+## The Tiles wall is a composed source, and composed sources are ERASED not tombstoned (#448 slice 2 task 4, 2026-09-12)
+
+**It has a production WRITER and, as of this slice, no production READER.**
+`MediaCore::renderSyntheticTick` registers and releases walls for real, and the
+only consumers are tests (`sourceRegistrySnapshotForTest`). That is deliberate —
+per `docs/BACKLOG.md`, a #419 foundation lands on `main` only together with a real
+consumer, and wall registration IS that consumer for the registry's write side —
+but it means nothing in the product yet behaves differently because of these
+entries. Do not describe the registry as "wired" beyond that, and expect the
+first real reader (the multiview PVW cell, plan 2) to be where its snapshot shape
+gets its first genuine test.
+
+`SourceRegistry` (`native/src/core/SourceRegistry.h`, carved out of #419 unwired
+onto main) gained `Kind::Composed` for sources the CORE renders rather than
+captures — the Tiles wall is the first one. `MediaCore::renderSyntheticTick`
+registers a live wall as `Kind::Composed` (sourceId = its layerId, `externalId`
+empty, a fixed `kCoreProcessEpoch`) and releases it the tick nothing on either
+bus names it any longer, in lockstep with `tilesWallSources_.releaseAllExcept` —
+the same "referenced by a live scene" lifetime, one level up. `registeredWallIds_`
+is the idempotence guard so a live wall's steady-state tick never touches the
+registry mutex (`unordered_set::contains` before `insert`, not `insert().second`
+— MSVC's `unordered_set::insert` has historically built the node before
+detecting the duplicate, so this file's render-path no-allocation rule holds by
+construction, not by implementation detail). A registration that fails
+(`Invalid`/`Conflict`/`Exhausted`) is NOT remembered as registered, so the next
+liveness transition retries it rather than abandoning the wall silently forever.
+
+**A composed source carries no SDK handle and never claims a subscription
+state.** `personId`, `externalId`, `availability`, `subscriptionRequested`,
+`subscriptionObserved` are all `nullopt` for it — `nullopt` means NOT
+APPLICABLE, never false — because a wall has no provider process and nothing
+ever subscribes to it. `setAvailability`/`setSubscription` refuse `Composed`
+outright for exactly this reason — `setSubscription`'s refusal was MISSING and
+this file asserted it anyway for a day (final-review finding, fixed with
+`SourceRegistryComposed.SetSubscriptionOnAWallIsRefusedOutright`): an
+`observed:true` call was already refused as a side effect, because a nullopt
+availability is not `Available`, but `requested:true, observed:nullopt` applied
+cleanly and turned a NOT-APPLICABLE field into a concrete claim. Nothing in the
+tree called it for a wall, so only the documentation was wrong — which is exactly
+how an invariant rots.
+
+**A wall id too long to register is SKIPPED, not retried** (same finding).
+`SourceRegistry::kMaxIdBytes` (512) is the one declared bound on every id-shaped
+field, and it is public precisely so a caller can tell a PERMANENTLY refusable id
+from a transiently refused one: the registration loop deliberately does not
+remember a failed add as registered (so a transient failure retries on the next
+liveness transition), which turned a spelling-based refusal into a registry-mutex
+acquisition plus a log line on EVERY render tick. `unregisterableWallIds_` skips
+those once and loudly; `warnedWallRegistrationIds_` bounds the retryable
+failures' log line to once per id while keeping the retry. Both are pruned on the
+same liveness rule as `registeredWallIds_`, or a wall re-cued under a corrected
+id would stay skipped or silent for the life of the process.
+
+**A composed source is ERASED (`SourceRegistry::removeComposed`), never
+tombstoned — and this is not a simplification, it is the only mechanism that
+actually works.** Every other kind's departure is `Availability::Departed`
+(kept for diagnostics via `retireProcessEpoch`/`setAvailability`). A composed
+entry CANNOT be tombstoned that way even in principle: `setAvailability`
+refuses `Composed`, so nothing can ever flip it to `Departed`, and because its
+`availability` stays `nullopt` forever, `externalConflict`'s
+`availability != Departed` test reads true for it PERMANENTLY — a tombstoned
+wall id could never be reused by `add()` again. `removeComposed` erases the
+`sources_` entry outright and refuses (`Invalid`) for any non-`Composed` kind.
+It takes a bare `SourceId`, deliberately not a `Token`: the caller must be the
+SOLE owner of a composed source's lifetime (`replace()` exists precisely so an
+OLD callback cannot retire a NEW instance it no longer owns via compare-and-
+replace; removal has no such fence and must never grow a second writer).
+
+**Its lifetime is scene-reference, exactly like `TilesWallSources`
+(`releaseAllExcept`) one level down** — a wall no live scene names is gone from
+the registry the same render tick `tilesWallSources_` releases its animation
+object, and a wall released then re-cued under the same scene id is a
+genuinely NEW registry entry (a fresh `instanceId`, minted from the registry's
+own revision counter), never the old one resurrected.
+
+Tests: `native/tests/SourceRegistryComposedTest.cpp` (`removeComposed`: erases,
+frees the id for reuse, refuses non-composed, `NotFound` on an unknown id) and
+`native/tests/TilesRenderPlanTest.cpp` (a live wall registers as `Composed`
+with all five capture-only fields `nullopt`; an unreferenced wall is gone from
+the registry; a released-then-re-cued wall gets a new `instanceId`; a wall
+staying live across many ticks keeps the SAME registry identity — pinned by
+`instanceId` equality, not a source count, because `sources_` is a
+`std::map` keyed by sourceId where a count assertion cannot distinguish "the
+guard works" from "every tick refuses `Conflict` while quietly taking the
+registry mutex 60x/s").
 
 ## Media is a persistent source (slice 1, 2026-09-10)
 

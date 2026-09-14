@@ -65,6 +65,7 @@ add_library(corevideo_native
   src/core/BoundedAsyncLog.cpp
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
+  src/core/SourceRegistry.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
   src/modules/OutputDestinationSupervisor.cpp
@@ -621,6 +622,8 @@ if(BUILD_TESTING)
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
     tests/RouteSourcePolicyTest.cpp
+    tests/SourceRegistryTest.cpp
+    tests/SourceRegistryComposedTest.cpp
     tests/EmptyRouteBlankTest.cpp
     tests/OutputLifecyclePolicyTest.cpp
     tests/MonitorShedPolicyTest.cpp
@@ -668,6 +671,7 @@ if(BUILD_TESTING)
     tests/TilesAnimatorTest.cpp
     tests/TilesLayerTest.cpp
     tests/TilesMembershipTest.cpp
+    tests/TilesWallSourceTest.cpp
     tests/TilesRenderPlanTest.cpp
     tests/UvcCaptureSupportTest.cpp
     tests/VstHostAbiTest.cpp
