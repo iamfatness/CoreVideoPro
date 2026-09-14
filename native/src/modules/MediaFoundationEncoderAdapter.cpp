@@ -212,7 +212,7 @@ class Mp4Writer {
  public:
   bool open(const std::filesystem::path& path, int width, int height, int fps, int bitrateMbps,
             const std::string& codec, std::string& errorOut, VideoInput videoInput = VideoInput::Bgra,
-            bool enableHardwareTransforms = true) {
+            bool enableHardwareTransforms = true, bool variableVideoDurations = false) {
     // RESET ALL per-session state before configuring the new sink writer. This
     // writer object is REUSED across recording sessions (every encoder start()
     // reopens it), and stream indices / audioConfigured_ describe the PREVIOUS
@@ -230,6 +230,8 @@ class Mp4Writer {
     audioOutputType_.Reset();
     audioInputType_.Reset();
     enableHardwareTransforms_ = enableHardwareTransforms;
+    variableVideoDurations_ = variableVideoDurations;
+    pendingVideoSample_.Reset();
     open_ = false;
     writing_ = false;
     audioConfigured_ = false;
@@ -482,8 +484,8 @@ class Mp4Writer {
     // Shared-epoch wall-clock PTS from RecordingPtsClock (spec 4.3): frames
     // carry the time they were actually composed, so the video timeline stays
     // aligned with the sample-counted audio track instead of drifting at
-    // (muxed fps / nominal fps) of real time. Nominal duration is fine — the
-    // container's frame timing comes from the PTS deltas (VFR MP4).
+    // (muxed fps / nominal fps) of real time. The ISO sample writer replaces
+    // nominal durations with capture PTS deltas before fragmented muxing.
     sample->SetSampleTime(pts100ns);
     sample->SetSampleDuration(frameDuration100ns_);
 
@@ -802,6 +804,7 @@ class Mp4Writer {
   bool finalize(std::string* errorOut = nullptr) {
     HRESULT finalizeResult = S_OK;
     if (writing_ && sinkWriter_) {
+      finalizeResult = flushPendingVideoSample();
       // Finalize is documented to place end-of-segment markers itself, but
       // several concurrent hardware H.264 transforms returned files whose
       // processed video timestamp lagged the last accepted input by up to one
@@ -830,11 +833,13 @@ class Mp4Writer {
                      stats.llLastTimestampReceived / 10'000'000.0,
                      stats.llLastTimestampProcessed / 10'000'000.0);
       }
-      finalizeResult = sinkWriter_->Finalize();
+      const auto closeResult = sinkWriter_->Finalize();
+      if (SUCCEEDED(finalizeResult)) finalizeResult = closeResult;
     }
     writing_ = false;
     open_ = false;
     sinkWriter_.Reset();
+    pendingVideoSample_.Reset();
     lastVideoBuffer_.Reset();
     if (mediaSink_) {
       (void)mediaSink_->Shutdown();
@@ -913,6 +918,34 @@ class Mp4Writer {
   }
 
   HRESULT writeVideoSample(IMFSample* sample) {
+    if (!variableVideoDurations_) return submitVideoSample(sample);
+    // The fragmented MP4 sink does not preserve gaps after a fragment's last
+    // nominal-duration sample. Keep one real frame until the next capture PTS
+    // gives its actual duration; otherwise VFR ISOs gradually outrun their audio.
+    if (pendingVideoSample_) {
+      LONGLONG previous = 0, next = 0;
+      HRESULT hr = pendingVideoSample_->GetSampleTime(&previous);
+      if (FAILED(hr)) return hr;
+      hr = sample->GetSampleTime(&next);
+      if (FAILED(hr)) return hr;
+      if (next <= previous) return E_INVALIDARG;
+      hr = pendingVideoSample_->SetSampleDuration(next - previous);
+      if (FAILED(hr)) return hr;
+      hr = flushPendingVideoSample();
+      if (FAILED(hr)) return hr;
+    }
+    pendingVideoSample_ = sample;
+    return S_OK;
+  }
+
+  HRESULT flushPendingVideoSample() {
+    if (!pendingVideoSample_) return S_OK;
+    const auto hr = submitVideoSample(pendingVideoSample_.Get());
+    pendingVideoSample_.Reset();
+    return hr;
+  }
+
+  HRESULT submitVideoSample(IMFSample* sample) {
     const auto begin = std::chrono::steady_clock::now();
     const HRESULT result = sinkWriter_->WriteSample(videoStreamIndex_, sample);
     const auto end = std::chrono::steady_clock::now();
@@ -1025,6 +1058,8 @@ class Mp4Writer {
   LONGLONG lastAudioEnd100ns_ = 0;
   LONGLONG maxAudioPtsEnd100ns_ = 0;
   bool open_ = false;
+  bool variableVideoDurations_ = false;
+  ComPtr<IMFSample> pendingVideoSample_;
   bool writing_ = false;
   bool audioConfigured_ = false;
   VideoInput videoInput_ = VideoInput::Bgra;
@@ -1117,7 +1152,7 @@ void writeIsoVideo(IsoWriterEntry& entry, const IsoSourceVideoFrame& src,
     // VIDEO-ONLY, so its ISO is honestly video-only, NOT an all-silence AAC
     // track. submitIsoAudio then skips it (audioConfigured() stays false).
     if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input,
-                           entry.encoderPath == IsoEncoderPath::Hardware) ||
+                           entry.encoderPath == IsoEncoderPath::Hardware, true) ||
         (entry.hasAudio &&
          !entry.writer.ensureAudioStream(2, 48000, request.audioBitrateKbps, error)) ||
         !entry.writer.beginWriting(error)) {
@@ -1194,7 +1229,9 @@ void writeIsoVideo(IsoWriterEntry& entry, const IsoSourceVideoFrame& src,
   }
   if (ok) {
     ++entry.videoFrameCount;
-    if (entry.worker && entry.videoFrameCount == 1) entry.worker->finishStartup();
+    // ISO muxing holds one frame to learn its duration. The second accepted
+    // picture proves that the first real picture reached Media Foundation.
+    if (entry.worker && entry.videoFrameCount == 2) entry.worker->finishStartup();
   } else if (entry.warning.empty()) {
     entry.warning = "ISO writer dropped video for " + entry.displayName + " (" + src.sourceId +
                     "): " + error + ".";

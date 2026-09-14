@@ -1187,6 +1187,60 @@ TEST(EncoderRecordingSession, MediaFoundationIsoAudioTrimsCaptureBeforeProgramEp
   encoder->stopRecording(); encoder.reset(); fs::remove_all(dir, ec);
 }
 
+TEST(EncoderRecordingSession, MediaFoundationIsoVariableRateKeepsElapsedTimelineAcrossFragments) {
+#if defined(_WIN32)
+  for (const int hardwareLimit : {1, 8}) {
+  const corevideo::testing::ForcedEncoderCapacity capacity(hardwareLimit);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  ASSERT_NE(encoder, nullptr);
+  namespace fs = std::filesystem;
+  const auto dir = fs::temp_directory_path() / "corevideo-iso-vfr-timeline";
+  std::error_code ec; fs::remove_all(dir, ec);
+  corevideo::modules::RecordingSessionRequest request;
+  request.targetFolder = dir.string(); request.filenamePrefix = "vfr";
+  request.width = 320; request.height = 180; request.fps = 60;
+  request.isoSources = {{"zoom:vfr", "Variable", false}};
+  encoder->configureRecording(request); encoder->start({"recording"}, {});
+  corevideo::modules::ProgramFrame program;
+  program.frameNumber = 1; program.width = 320; program.height = 180;
+  program.preview.width = 320; program.preview.height = 180;
+  program.preview.bgra.assign(320 * 180 * 4, 0x40);
+  encoder->submit(program);
+  const auto epoch = encoder->session().recordingMuxEpoch100ns;
+  ASSERT_GT(epoch, 0);
+  for (int i = 0; i <= 300; ++i) {
+    auto frame = makeIsoI420("zoom:vfr", 320, 180, i + 1, 80 + i % 80);
+    frame.timelineTimestamp100ns = epoch + static_cast<int64_t>(i) * 10'000'000 / 30 +
+        (i % 3 == 1 ? 100'000 : 0);
+    encoder->submitIsoVideo({frame});
+  }
+  encoder->stopRecording();
+  const auto session = encoder->session();
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  const fs::path path = session.isoStreams[0].path;
+  EXPECT_GE(fileAsciiCount(path, "moof"), 2u);
+  Microsoft::WRL::ComPtr<IMFSourceReader> reader;
+  ASSERT_TRUE(SUCCEEDED(MFCreateSourceReaderFromURL(path.wstring().c_str(), nullptr, &reader)));
+  LONGLONG lastPts = -1;
+  int samples = 0;
+  for (;;) {
+    DWORD flags = 0; LONGLONG pts = 0;
+    Microsoft::WRL::ComPtr<IMFSample> sample;
+    const auto hr = reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &pts, &sample);
+    ASSERT_TRUE(SUCCEEDED(hr));
+    if (sample) { lastPts = pts; ++samples; }
+    if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+  }
+  EXPECT_EQ(samples, 301);
+  EXPECT_GE(lastPts, 99'990'000);
+  EXPECT_LE(lastPts, 100'010'000);
+  reader.Reset(); encoder.reset();
+  // Preserve the generated file on failure for independent ffprobe inspection.
+  if (lastPts >= 99'990'000 && lastPts <= 100'010'000) fs::remove_all(dir, ec);
+  }
+#endif
+}
+
 TEST(EncoderRecordingSession, MediaFoundationIsoWritersMuxOwnAudioStems) {
   // This test is about MP4 writers, not capacity: pin an ample machine so the
   // live probe (asynchronous, GPU-dependent) cannot decide the outcome.
