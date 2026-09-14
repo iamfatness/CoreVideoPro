@@ -1544,6 +1544,70 @@ without `--background` it proves Zoom/wall continuity only; no pixel probe acros
 the take (the record is the only judge); and the synthesized scenes are not the
 shell's own scene payloads.
 
+## GPU-direct hardware encode for streaming (#521 slice 1, 2026-09-13)
+
+The live STREAM is now encoded directly from the compositor's GPU texture by the
+Media Foundation hardware H.264 MFT — vMix/Vectar parity — instead of the old
+GPU→CPU-readback→~186 MB/s raw pipe→external ffmpeg path that capped 1080p60 at
+~0.76-0.82x realtime with NVENC idle. Localhost gate now measures **60.0fps of 60,
+realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
+(VideoToolbox) are later slices.
+
+- **The seam is platform-free.** `modules/GpuVideoEncoder.h` — `GpuVideoEncoder`
+  (start/submit/stop/healthy), `GpuVideoEncoderConfig/Frame`, `GpuEncodedChunk(Sink)`,
+  and the pure `GpuEncodePathPolicy` + `chooseStreamEncodePath` (unit-tested, no GPU).
+  It carries an OPAQUE handle (`sharedHandleHex`/`iosurfaceId`), never a D3D11/MF type,
+  so the macOS VideoToolbox impl drops in behind it without touching the sender.
+- **Windows impl:** `modules/MediaFoundationGpuVideoEncoder.cpp` runs its OWN D3D11
+  device + thread (never coreMutex, never the render thread — the vcam-tap rule), binds
+  the hardware H.264 MFT via `IMFDXGIDeviceManager`, opens the compositor's shared
+  texture (legacy `OpenSharedResource`), converts BGRA→NV12 with an `ID3D11VideoProcessor`,
+  and drives the async MFT event loop (`MF_TRANSFORM_ASYNC_UNLOCK`,
+  NeedInput/HaveOutput). Emits an H.264 Annex-B bitstream through the sink.
+- **The compositor exports a DEDICATED keyed-mutex encoder texture**
+  (`exportEncoderSharedTexture`/`ensureEncoderSharedTexture` in `D3D11CompositorAdapter`),
+  separate from `ProgramFrame::sharedTexture` so encode never contends with WinUI's
+  preview consumer. It runs whenever `fullProgramReadback` (streaming), BUFFERED or not:
+  when buffered, `ProgramFrame::encoderSharedTexture` rides the program buffer to the
+  sender — the handle is stable and the copy is the latest composed frame, so the stream
+  taps live pixels rather than inheriting the buffer's delay. Producer keying is
+  `AcquireSync(0,0)`/blit/`ReleaseSync(1)`; the encoder is the consumer
+  `AcquireSync(1,34)`/`ReleaseSync(0)`. **The 34ms (≈2 frame) consumer timeout is
+  load-bearing:** a 4ms wait missed the 16ms production cadence and starved the encoder
+  to ~2fps; and the encoder must NOT also wait for a fresh submit per NeedInput (that
+  serialized with the mutex wait to ~30fps) — it reads the latest handle and lets the
+  keyed mutex alone pace it to the producer's 60fps.
+- **FFmpeg is demoted to a muxer.** `RtmpFfmpegArgs.h` `videoBitstreamInput` mode emits
+  `-use_wallclock_as_timestamps 1 -r <fps> -f h264 -i pipe:0 … -c:v copy`. **Both
+  timestamp args are load-bearing:** a raw Annex-B stream on a live pipe carries no
+  container timestamps, `-r` alone left stream 0's PTS unset once a second (audio) input
+  was present, and `-c:v copy` then muxed a stream the endpoint reads at 0x/stalled;
+  wallclock stamps each arriving access unit at realtime (monotonic for a 60fps feed).
+- **Path is chosen ONCE at stream start**, logged `[gpu-encode] path=<gpu-direct|cpu-fallback>
+  reason=<...>`. GPU-direct requires: an MF encoder impl on the platform, a hardware
+  session the `EncoderCapacityProbe` allows (never REFUSED on a pending probe — the
+  TESTER rule; `encoder->start()` is the real gate), the resolved codec is H.264 (an
+  enhanced-RTMP HEVC/AV1 stream stays raw), the compositor is exporting the encoder
+  texture on the starting frame, and `COREVIDEO_GPU_ENCODE` is not `0`. Otherwise the
+  raw NV12/BGRA pipe path (unchanged) carries the stream. The encoder starts BEFORE
+  ffmpeg so a failed `start()` downgrades to raw before ffmpeg is launched in bitstream
+  mode. On device loss the encoder retires (`GetDeviceRemovedReason`), `healthy()` goes
+  false, `submit()` fails, and the existing `OutputDestinationSupervisor` restarts the
+  sender, which re-decides the path.
+- **Acceptance gate:** `node scripts/validate-gpu-encode.mjs [--seconds N] [--force-raw]
+  [--keep]` streams the fake-engine program to a localhost SRT sink and FAILS unless the
+  GPU path is taken and the RECEIVED stream is ≥58fps and the sink's own `-stats speed`
+  ≥0.97x. SRT (not RTMP) for the sink only because ffmpeg's `-listen 1` RTMP server is
+  too flaky to gate on; the GPU path is protocol-agnostic (same sender + `-c:v copy`
+  muxer). `--force-raw` sets `COREVIDEO_GPU_ENCODE=0` and confirms the fallback still
+  streams. **Live RTMP to real YouTube is the final MANUAL acceptance step** (speed≈1.0x,
+  `nvidia-smi utilization.encoder` non-trivial, CPU down vs raw) — not this gate.
+- Tests: `GpuVideoEncoderPolicyTest.cpp` (policy + `chooseStreamEncodePath`),
+  `MediaFoundationGpuVideoEncoderTest.cpp` (real-GPU compositor→encoder→ffmpeg round-trip:
+  decoded coded-Y-plane luma within 16 of the encoded gray; self-skips without a hardware
+  MFT or ffmpeg; plus the submit-fails-when-not-running supervisor contract),
+  `RtmpFfmpegArgsTest.cpp` (bitstream mode).
+
 ## Secrets at rest + OAuth return URI (beta S4, 2026-07-18)
 
 - **Credentials at rest use DPAPI** via `DpapiSecretProtector` (WinUI, CurrentUser

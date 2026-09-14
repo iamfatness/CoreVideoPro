@@ -208,10 +208,16 @@ class D3D11Compositor final : public ICompositor {
     const auto readbackUs = stageUs();
     if (renderPlan.fullProgramReadback && !buffered) {
       exportVcamSharedTexture();  // fast GPU->GPU copy only; a dedicated device+thread reads it back
-      exportEncoderSharedTexture(frame);  // dedicated encoder tap + keyed-mutex GPU path
     } else if (vcamThread_.joinable()) {
       stopVcamTap();  // vcam disabled -> tear down the tap thread + second device so it
                       // stops spinning keyed-mutex waits that hitch the render (runs once)
+    }
+    // The GPU-direct encoder tap runs whenever the program is streamed, buffered
+    // or not: when buffered, frame.encoderSharedTexture rides the program buffer to
+    // the sender (the handle is stable and the copy is the latest composed frame,
+    // so the stream taps live pixels rather than inheriting the buffer's delay).
+    if (renderPlan.fullProgramReadback) {
+      exportEncoderSharedTexture(frame);
     }
     const auto vcamUs = stageUs();
     if (!buffered) exportSharedTexture(frame);
