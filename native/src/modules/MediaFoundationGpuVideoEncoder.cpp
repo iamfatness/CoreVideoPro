@@ -63,6 +63,8 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     if (config_.width <= 0 || config_.height <= 0 || config_.fps <= 0 || !sink_) {
       return fail("invalid-config");
     }
+    EncoderCapacityCache::instance().beginLiveEncoding();
+    capacityLeaseActive_ = true;
     if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) return fail("mfstartup");
     mfStarted_ = true;
     if (!createDevice()) return false;
@@ -114,6 +116,10 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     if (mfStarted_) {
       MFShutdown();
       mfStarted_ = false;
+    }
+    if (capacityLeaseActive_) {
+      EncoderCapacityCache::instance().endLiveEncoding();
+      capacityLeaseActive_ = false;
     }
   }
 
@@ -444,6 +450,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   std::atomic<bool> running_{false};
   std::atomic<bool> healthy_{false};
   bool mfStarted_ = false;
+  bool capacityLeaseActive_ = false;
   bool firstEmitLogged_ = false;
 
   ComPtr<ID3D11Device> device_;

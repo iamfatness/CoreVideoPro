@@ -295,6 +295,11 @@ ProbedEncoderCapacity probeEncoderCapacity(const EncoderProbeKey& key) {
   out.logicalProcessors = std::thread::hardware_concurrency();
   out.probeSessionCap = probeSessionCap();
   const auto startedAt = std::chrono::steady_clock::now();
+  if (!EncoderCapacityCache::instance().probingAllowed()) {
+    out.status = EncoderProbeStatus::Pending;
+    out.detail = "capacity probe deferred while encoding is active";
+    return out;
+  }
 
   if (probeDisabledByEnv()) {
     out.status = EncoderProbeStatus::Disabled;
@@ -374,7 +379,12 @@ ProbedEncoderCapacity probeEncoderCapacity(const EncoderProbeKey& key) {
     // did we simply fail to get an object (an environmental answer)? The
     // difference decides whether a zero count is trustworthy — see below.
     bool refusedTheWorkload = false;
+    bool interrupted = false;
     for (int index = 0; index < out.probeSessionCap; ++index) {
+      if (!EncoderCapacityCache::instance().probingAllowed()) {
+        interrupted = true;
+        break;
+      }
       ComPtr<IMFTransform> transform;
       HRESULT result = CoCreateInstance(encoderClsid, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&transform));
       if (FAILED(result) || !transform) {
@@ -401,6 +411,13 @@ ProbedEncoderCapacity probeEncoderCapacity(const EncoderProbeKey& key) {
       transform->ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
     }
     sessions.clear();
+    if (interrupted) {
+      out.status = EncoderProbeStatus::Pending;
+      out.detail = "capacity probe interrupted by live encoding";
+      MFShutdown();
+      if (comInitialized) CoUninitialize();
+      return out;
+    }
 
     // A hardware encoder MFT is registered but we could not even CREATE one
     // session, and it never got as far as refusing the format. That is far more
@@ -477,6 +494,7 @@ EncoderCapacityCache& EncoderCapacityCache::instance() {
 
 void EncoderCapacityCache::setProbeFunctionForTesting(ProbeFn fn) {
   std::lock_guard<std::mutex> lock(mutex_);
+  ++cacheEpoch_;
   probeFn_ = std::move(fn);
   cache_.clear();
   inFlight_.clear();
@@ -487,17 +505,43 @@ void EncoderCapacityCache::setProbeFunctionForTesting(ProbeFn fn) {
 
 void EncoderCapacityCache::invalidate() {
   std::lock_guard<std::mutex> lock(mutex_);
+  ++cacheEpoch_;
   cache_.clear();
+  inFlight_.clear();
   lastProbeAt().clear();
 }
 
 void EncoderCapacityCache::setRecordingActive(bool active) {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (active && !recordingActive_) ++activityEpoch_;
   recordingActive_ = active;
+}
+
+void EncoderCapacityCache::beginLiveEncoding() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  ++liveEncoders_; ++activityEpoch_;
+}
+
+void EncoderCapacityCache::endLiveEncoding() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (liveEncoders_ > 0) --liveEncoders_;
+}
+
+bool EncoderCapacityCache::probingAllowed() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return !recordingActive_ && liveEncoders_ == 0;
+}
+
+bool EncoderCapacityCache::probeInFlightForTesting() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto& item : inFlight_) if (item.second) return true;
+  return false;
 }
 
 void EncoderCapacityCache::setForcedCapacityForTesting(const ProbedEncoderCapacity* capacity) {
   std::lock_guard<std::mutex> lock(mutex_);
+  ++cacheEpoch_;
+  inFlight_.clear();
   forcedCapacityActive_ = capacity != nullptr;
   forcedCapacity_ = capacity != nullptr ? *capacity : ProbedEncoderCapacity{};
   cache_.clear();
@@ -542,7 +586,7 @@ void EncoderCapacityCache::prewarm(const EncoderProbeKey& key) {
 }
 
 void EncoderCapacityCache::startProbeLocked(const EncoderProbeKey& key) {
-  if (recordingActive_) {
+  if (recordingActive_ || liveEncoders_ > 0) {
     return;  // Never contend with a live show for encoder sessions.
   }
   if (inFlight_[key]) {
@@ -551,16 +595,27 @@ void EncoderCapacityCache::startProbeLocked(const EncoderProbeKey& key) {
   inFlight_[key] = true;
   lastProbeAt()[key] = std::chrono::steady_clock::now();
   ProbeFn fn = probeFn_;
+  const auto activity = activityEpoch_;
+  const auto cacheEpoch = cacheEpoch_;
 
   // Detached, exactly like startPluginHostScan: COM activation, driver calls and
   // GPU session churn have no business inside anybody's lock budget. The cache
   // is a function-local static that outlives every caller.
-  std::thread([this, key, fn]() {
+  std::thread([this, key, fn, activity, cacheEpoch]() {
     ProbedEncoderCapacity result = fn ? fn(key) : probeEncoderCapacity(key);
     result.key = key;
     result.probed = result.status == EncoderProbeStatus::Ready;
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      if (cacheEpoch != cacheEpoch_) return;
+      if (activity != activityEpoch_ || recordingActive_ || liveEncoders_ > 0) {
+        // Configure can launch a probe immediately before Start. Even if the
+        // show has since stopped, that measurement overlapped occupied slots.
+        inFlight_[key] = false;
+        lastProbeAt().erase(key);
+        ::corevideo::core::nativeLogf("[encoder-probe] discarded result overlapping live encoding\n");
+        return;
+      }
       // ADAPTER CHANGE INVALIDATION: an eGPU unplugged, a driver reinstall or a
       // switchable-graphics flip gives a different LUID. Every entry keyed to
       // the old adapter is now a lie, so drop the lot.

@@ -602,6 +602,7 @@ if(BUILD_TESTING)
     tests/TestMain.cpp
     tests/AsyncEncoderSinkTest.cpp
     tests/RecordingTrackWorkerTest.cpp
+    tests/EncoderCapacityCacheTest.cpp
     tests/AsyncOutputSenderTest.cpp
     tests/IsolatedOutputSenderTest.cpp
     tests/OutputDestinationSupervisorTest.cpp
