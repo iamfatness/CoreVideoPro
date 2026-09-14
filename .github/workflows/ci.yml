@@ -321,6 +321,13 @@ jobs:
           ./scripts/provision-winui-test-runtime.ps1
       - name: MediaCore, Control, WinUI and bridge tests
         run: npm run test:native-shell
+      - name: WinUI control lifetime regression (no window)
+        timeout-minutes: 5
+        run: |
+          dotnet build native-shell/CoreVideoPro.WinUI.LifetimeTests/CoreVideoPro.WinUI.LifetimeTests.csproj -c Release -p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./native-shell/CoreVideoPro.WinUI.LifetimeTests/bin/x64/Release/net9.0-windows10.0.19041.0/win-x64/CoreVideoPro.WinUI.LifetimeTests.exe
+          exit $LASTEXITCODE
       - name: Upload Windows test results
         if: always()
         uses: actions/upload-artifact@v4
