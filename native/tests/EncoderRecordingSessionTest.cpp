@@ -1360,6 +1360,111 @@ TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCa
   fs::remove_all(targetDir, ec);
 }
 
+TEST(EncoderRecordingSession, MediaFoundationIndependentIsoWritersDrainAudioVideoBeforeFinalize) {
+  // Pin EXACTLY the capacity the product used to assume (8 sessions, Program owns
+  // one) so the 8th ISO still has to spill — that spill is what this test is for.
+  const corevideo::testing::ForcedEncoderCapacity eightSessionMachine(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable.
+  }
+  encoder->enableIndependentIsoWriters();
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso8-independent";
+  fs::remove_all(targetDir, ec);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso8-capacity";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 8;
+  for (int source = 0; source < 8; ++source) {
+    request.isoSources.push_back(
+        {"zoom:" + std::to_string(source + 1), "Guest " + std::to_string(source + 1), true});
+  }
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 640;
+  frame.height = 360;
+  frame.preview.width = 640;
+  frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  std::vector<float> programPcm(static_cast<size_t>(960) * 2, 0.2f);
+  std::array<int64_t, 8> sourceFrames{};
+
+  for (int tick = 0; tick < 60; ++tick) {
+    frame.frameNumber = tick + 1;
+    encoder->submit(frame);
+
+    std::vector<corevideo::modules::IsoSourceVideoFrame> isoVideo;
+    std::vector<corevideo::modules::IsoSourceAudio> isoAudio;
+    isoVideo.reserve(8);
+    isoAudio.reserve(8);
+    for (int source = 0; source < 8; ++source) {
+      const std::string sourceId = "zoom:" + std::to_string(source + 1);
+      isoVideo.push_back(makeIsoI420(sourceId, 640, 360, tick,
+                                    static_cast<uint8_t>(40 + source * 20)));
+      isoAudio.push_back(makeIsoTone(sourceId, 960, 1, 180.0 + source * 40.0,
+                                     sourceFrames[static_cast<size_t>(source)]));
+      sourceFrames[static_cast<size_t>(source)] += 960;
+    }
+    encoder->submitIsoVideo(isoVideo);
+    encoder->submitAudio(programPcm.data(), 960, 2, 48000);
+    encoder->submitIsoAudio(isoAudio);
+    std::this_thread::sleep_for(std::chrono::milliseconds(34));
+  }
+
+  encoder->stopRecording();
+  const auto session = encoder->session();
+  EXPECT_EQ(session.encoderQueueDroppedVideoFrames, 0);
+  EXPECT_EQ(session.encoderQueueDroppedAudioPackets, 0);
+  // The spill is REPORTED now, not silent: this used to assert an empty warning
+  // while one stem quietly went to the CPU encoder. Program keeps recording and
+  // all eight ISOs still arm — the change is that the operator is told.
+  EXPECT_NE(session.recordingWarning.find("1 ISO source will record on the CPU software encoder"),
+            std::string::npos)
+      << session.recordingWarning;
+  ASSERT_EQ(session.isoStreams.size(), 8u);
+  int hardwareIsoCount = 0;
+  int softwareIsoCount = 0;
+  for (const auto& iso : session.isoStreams) {
+    EXPECT_TRUE(iso.trackOpen) << iso.sourceId << ": " << iso.warning;
+    EXPECT_TRUE(iso.warning.empty()) << iso.sourceId << ": " << iso.warning;
+    EXPECT_EQ(iso.videoFrameCount, 60) << iso.sourceId;
+    EXPECT_GT(iso.audioSampleCount, 0) << iso.sourceId;
+    hardwareIsoCount += iso.encoderPath == "hardware" ? 1 : 0;
+    softwareIsoCount += iso.encoderPath == "software" ? 1 : 0;
+  }
+  EXPECT_EQ(hardwareIsoCount, 7);
+  EXPECT_EQ(softwareIsoCount, 1);
+
+  ASSERT_FALSE(session.recordingSessionDir.empty());
+  const fs::path dir(session.recordingSessionDir);
+  for (int source = 0; source < 8; ++source) {
+    char filename[64];
+    std::snprintf(filename, sizeof(filename), "ISO-%02d-Guest-%d.mp4", source + 1, source + 1);
+    const auto path = dir / filename;
+    EXPECT_TRUE(fs::exists(path)) << path.string();
+    if (fs::exists(path)) {
+      EXPECT_GT(fs::file_size(path, ec), 0u) << path.string();
+    }
+  }
+
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
 namespace {
 // Build a VideoFrame carrying a synthetic BGRA payload (a flat color field),
 // keyed by `sourceId`/`frameId` — the shape a CAPTURE source (UVC camera /

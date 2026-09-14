@@ -28,6 +28,7 @@ AsyncEncoderSink::AsyncEncoderSink(std::unique_ptr<IEncoderSink> inner, Options 
   state_->maxAudioQueue = std::max<size_t>(1, options_.maxAudioQueue);
   state_->maxIsoAudioQueue = std::max<size_t>(1, options_.maxIsoAudioQueue);
   if (state_->inner) {
+    state_->inner->enableIndependentIsoWriters();
     state_->snapshot = state_->inner->session();
   }
   writer_ = std::thread(&AsyncEncoderSink::writerLoop, state_);
@@ -100,6 +101,8 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
       state_->lastIsoFrameIdBySource.clear();
       state_->isoVideoBySource.clear();
       state_->consecutiveProgramItems = 0;
+      state_->generationDroppedVideoBase = state_->droppedVideo.load();
+      state_->generationDroppedAudioBase = state_->droppedAudio.load();
       // The wrapped writer's open is SYNCHRONOUS and applies as a FIFO item on
       // the writer thread (95-250ms on Windows). Everything the producer submits
       // meanwhile is head-of-show, not steady-state loss.
@@ -418,9 +421,9 @@ OutputSession AsyncEncoderSink::session() const {
     refreshActiveLifecycle(*state_, *snapshot.lifecycle);
     snapshot.active = snapshot.lifecycle->state == "producing";
   }
-  snapshot.encoderQueueDroppedVideoFrames =
+  snapshot.encoderQueueDroppedVideoFrames +=
       static_cast<int64_t>(state_->droppedVideo.load(std::memory_order_relaxed));
-  snapshot.encoderQueueDroppedAudioPackets =
+  snapshot.encoderQueueDroppedAudioPackets +=
       static_cast<int64_t>(state_->droppedAudio.load(std::memory_order_relaxed));
   snapshot.recordingStartupDroppedVideoFrames =
       static_cast<int64_t>(state_->startupDroppedVideo.load(std::memory_order_relaxed));
@@ -659,7 +662,16 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       if (item.generation == state->generation && state->snapshot.lifecycle &&
           (item.kind != Kind::Configure || !failure.empty())) {
         auto lifecycle = *state->snapshot.lifecycle;
-        state->degradedWarning.store(!fresh.recordingWarning.empty(), std::memory_order_release);
+        const bool mediaLost = fresh.encoderQueueDroppedVideoFrames > 0 ||
+            fresh.encoderQueueDroppedAudioPackets > 0 ||
+            state->droppedVideo.load() > state->generationDroppedVideoBase ||
+            state->droppedAudio.load() > state->generationDroppedAudioBase;
+        if (mediaLost) {
+          const std::string loss = "Recording lost video frames or audio packets under encoder load.";
+          if (fresh.recordingWarning.find(loss) == std::string::npos)
+            fresh.recordingWarning = loss + (fresh.recordingWarning.empty() ? "" : " " + fresh.recordingWarning);
+        }
+        state->degradedWarning.store(mediaLost || !fresh.recordingWarning.empty(), std::memory_order_release);
         if (!failure.empty()) {
           const auto decision = ::corevideo::core::OutputLifecyclePolicy::failed();
           lifecycle.state = decision.state;
@@ -674,7 +686,7 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
             const auto decision = ::corevideo::core::OutputLifecyclePolicy::finalized(madeProgress);
             lifecycle.finalized = madeProgress;
             lifecycle.state = decision.state;
-            lifecycle.health = decision.health;
+            lifecycle.health = madeProgress && state->degradedWarning.load() ? "degraded" : decision.health;
             if (!madeProgress) {
               lifecycle.error = "Recording stopped before any media was written";
               if (evidence.firstFailure.empty()) {

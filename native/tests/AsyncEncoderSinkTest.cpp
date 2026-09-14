@@ -51,6 +51,7 @@ class ControllableEncoder final : public IEncoderSink {
   std::atomic<bool> throwOnSubmit{false};
   std::atomic<bool> throwOnStop{false};
   std::atomic<bool> reportWriteFailure{false};
+  std::atomic<int> innerDroppedVideo{0};
 
   ~ControllableEncoder() override { destroyed->store(true); }
 
@@ -142,7 +143,9 @@ class ControllableEncoder final : public IEncoderSink {
 
   OutputSession session() const override {
     std::lock_guard<std::mutex> lock(mutex_);
-    return session_;
+    auto result = session_;
+    result.encoderQueueDroppedVideoFrames = innerDroppedVideo.load();
+    return result;
   }
 
  private:
@@ -960,4 +963,27 @@ TEST(AsyncEncoderSink, AudioProducerTimestampSurvivesWriterQueue) {
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
   EXPECT_EQ(probe->lastAudioTimestamp.load(), 123456789);
   EXPECT_EQ(probe->audioCount.load(), 1);
+}
+
+TEST(AsyncEncoderSink, IndependentWriterLossSurvivesFinalizeAndNextSessionCanBeClean) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  raw->innerDroppedVideo.store(3);
+  sink.submit(videoFrame(1));
+  sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  auto result = sink.session();
+  EXPECT_EQ(result.encoderQueueDroppedVideoFrames, 3);
+  EXPECT_EQ(result.lifecycle->state, "completed");
+  EXPECT_EQ(result.lifecycle->health, "degraded");
+  EXPECT_FALSE(result.recordingWarning.empty());
+  raw->innerDroppedVideo.store(0);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(2));
+  sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->health, "healthy");
 }

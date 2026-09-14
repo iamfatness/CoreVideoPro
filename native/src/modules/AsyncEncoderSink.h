@@ -228,6 +228,7 @@ class AsyncEncoderSink final : public IEncoderSink {
     // every ISO whenever Program audio/video arrived continuously (the live
     // eight-source failure wrote one ISO frame, then never serviced ISO again).
     size_t consecutiveProgramItems = 0;
+    uint64_t generationDroppedVideoBase = 0, generationDroppedAudioBase = 0;
 
     // True from the moment a Start is enqueued until the writer has APPLIED it
     // (the synchronous Media Foundation open). Video shed inside that window is
