@@ -1049,3 +1049,35 @@ TEST(AsyncEncoderSink, IsoAudioSurvivesProgramCodecStartup) {
   EXPECT_EQ(lost, 0u);
   EXPECT_EQ(raw->isoAudioCount.load(), 20);
 }
+
+TEST(AsyncEncoderSink, EightIsoSourcesSurviveABoundedProgramWriteStall) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  raw->submitEntered.store(false);
+  raw->blockSubmit->store(true);
+  sink.submit(videoFrame(2));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->submitEntered.load() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  const bool entered = raw->submitEntered.load();
+  for (int frame = 1; frame <= 24; ++frame) {
+    std::vector<IsoSourceVideoFrame> batch;
+    for (int source = 0; source < 8; ++source) {
+      IsoSourceVideoFrame iso;
+      iso.sourceId = "zoom:" + std::to_string(source);
+      iso.frame.frameId = frame;
+      batch.push_back(std::move(iso));
+    }
+    sink.submitIsoVideo(batch);
+  }
+  const auto lost = sink.droppedVideoFrames();
+  raw->blockSubmit->store(false);
+  ASSERT_TRUE(entered);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(lost, 0u);
+  EXPECT_EQ(raw->isoVideoCount.load(), 192);
+}
