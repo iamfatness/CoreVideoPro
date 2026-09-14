@@ -247,8 +247,8 @@ if(COREVIDEO_WITH_MF_ENCODER)
     message(FATAL_ERROR "COREVIDEO_WITH_MF_ENCODER currently supports the Windows Media Foundation adapter only.")
   endif()
 
-  # dxgi identifies the adapter the hardware encoder sits on (EncoderCapacityProbe.cpp).
-  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid ole32 windowscodecs dxgi)
+  # ISO conformance uses a D3D11 compute filter even without the compositor.
+  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid ole32 windowscodecs dxgi d3d11 d3dcompiler)
 endif()
 
 if(COREVIDEO_WITH_UVC)

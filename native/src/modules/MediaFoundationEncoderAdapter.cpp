@@ -17,10 +17,12 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include "modules/D3DIsoFrameConformer.h"
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include <mftransform.h>
 #include <objbase.h>
 #include <wrl/client.h>
 
@@ -368,6 +370,28 @@ class Mp4Writer {
       return false;
     }
     writing_ = true;
+    sampleWriteUs_ = sampleWriteMaxUs_ = lengthReadUs_ = 0;
+    nextWriterDiagnostic_ = std::chrono::steady_clock::now();
+    ComPtr<IMFSinkWriterEx> extended;
+    if (SUCCEEDED(sinkWriter_.As(&extended))) {
+      for (DWORD index = 0; index < 8; ++index) {
+        GUID category{};
+        ComPtr<IMFTransform> transform;
+        if (FAILED(extended->GetTransformForStream(videoStreamIndex_, index, &category, &transform))) break;
+        ComPtr<IMFAttributes> attributes;
+        GUID clsid{}; WCHAR name[256]{}; UINT32 length = 0;
+        if (SUCCEEDED(transform->GetAttributes(&attributes))) {
+          attributes->GetGUID(MFT_TRANSFORM_CLSID_Attribute, &clsid);
+          attributes->GetString(MFT_FRIENDLY_NAME_Attribute, name, 256, &length);
+        }
+        WCHAR id[40]{}; StringFromGUID2(clsid, id, 40);
+        char idUtf8[80]{}, nameUtf8[768]{};
+        WideCharToMultiByte(CP_UTF8, 0, id, -1, idUtf8, sizeof(idUtf8), nullptr, nullptr);
+        WideCharToMultiByte(CP_UTF8, 0, name, -1, nameUtf8, sizeof(nameUtf8), nullptr, nullptr);
+        ::corevideo::core::nativeLogf("[recording-transform] file=%s index=%lu clsid=%s name=%s\n",
+            path_.filename().string().c_str(), static_cast<unsigned long>(index), idUtf8, nameUtf8);
+      }
+    }
     return true;
   }
 
@@ -439,7 +463,7 @@ class Mp4Writer {
       preroll->AddBuffer(black.Get());
       preroll->SetSampleTime(0);
       preroll->SetSampleDuration(frameDuration100ns_);
-      result = sinkWriter_->WriteSample(videoStreamIndex_, preroll.Get());
+      result = writeVideoSample(preroll.Get());
       if (FAILED(result)) {
         errorOut = "write video pre-roll sample: " + hresultString(result);
         return false;
@@ -463,7 +487,7 @@ class Mp4Writer {
     sample->SetSampleTime(pts100ns);
     sample->SetSampleDuration(frameDuration100ns_);
 
-    result = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
+    result = writeVideoSample(sample.Get());
     if (FAILED(result)) {
       errorOut = "write video sample: " + hresultString(result);
       return false;
@@ -560,7 +584,7 @@ class Mp4Writer {
       preroll->AddBuffer(black.Get());
       preroll->SetSampleTime(0);
       preroll->SetSampleDuration(frameDuration100ns_);
-      result = sinkWriter_->WriteSample(videoStreamIndex_, preroll.Get());
+      result = writeVideoSample(preroll.Get());
       if (FAILED(result)) {
         errorOut = "write NV12 pre-roll sample: " + hresultString(result);
         return false;
@@ -579,7 +603,7 @@ class Mp4Writer {
     sample->SetSampleTime(pts100ns);
     sample->SetSampleDuration(frameDuration100ns_);
 
-    result = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
+    result = writeVideoSample(sample.Get());
     if (FAILED(result)) {
       errorOut = "write NV12 sample: " + hresultString(result);
       return false;
@@ -761,7 +785,7 @@ class Mp4Writer {
       sample->AddBuffer(lastVideoBuffer_.Get());
       sample->SetSampleTime(pts);
       sample->SetSampleDuration(frameDuration100ns_);
-      result = sinkWriter_->WriteSample(videoStreamIndex_, sample.Get());
+      result = writeVideoSample(sample.Get());
       if (FAILED(result)) {
         errorOut = "write held-tail video sample: " + hresultString(result);
         return false;
@@ -873,8 +897,10 @@ class Mp4Writer {
     // reported ~1 GB while the live Program file was only 9 MB and every ISO
     // file was 0 bytes, masking the actual writer failure.
     QWORD length = 0;
+    const auto begin = std::chrono::steady_clock::now();
     if (byteStream_ && SUCCEEDED(byteStream_->GetLength(&length))) {
       bytesWritten_ = static_cast<int64_t>(length);
+      lengthReadUs_ += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin).count();
       return;
     }
     if (!path_.empty()) {
@@ -884,6 +910,27 @@ class Mp4Writer {
         bytesWritten_ = static_cast<int64_t>(size);
       }
     }
+  }
+
+  HRESULT writeVideoSample(IMFSample* sample) {
+    const auto begin = std::chrono::steady_clock::now();
+    const HRESULT result = sinkWriter_->WriteSample(videoStreamIndex_, sample);
+    const auto end = std::chrono::steady_clock::now();
+    const auto us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+    sampleWriteUs_ += us;
+    sampleWriteMaxUs_ = std::max(sampleWriteMaxUs_, us);
+    if (end >= nextWriterDiagnostic_) {
+      nextWriterDiagnostic_ = end + std::chrono::seconds(10);
+      MF_SINK_WRITER_STATISTICS stats{}; stats.cb = sizeof(stats);
+      sinkWriter_->GetStatistics(videoStreamIndex_, &stats);
+      ::corevideo::core::nativeLogf("[recording-writer] file=%s samples=%llu encoded=%llu processed=%llu queued_bytes=%lu write_us=%llu max_write_us=%llu length_us=%llu received_pts=%.3f encoded_pts=%.3f\n",
+          path_.filename().string().c_str(), static_cast<unsigned long long>(stats.qwNumSamplesReceived),
+          static_cast<unsigned long long>(stats.qwNumSamplesEncoded), static_cast<unsigned long long>(stats.qwNumSamplesProcessed),
+          static_cast<unsigned long>(stats.dwByteCountQueued), static_cast<unsigned long long>(sampleWriteUs_),
+          static_cast<unsigned long long>(sampleWriteMaxUs_), static_cast<unsigned long long>(lengthReadUs_),
+          stats.llLastTimestampReceived / 10000000.0, stats.llLastTimestampEncoded / 10000000.0);
+    }
+    return result;
   }
 
   HRESULT createFragmentedSink(std::string& errorOut) {
@@ -953,6 +1000,8 @@ class Mp4Writer {
   // full-resolution CPU copy on every live frame.
   ComPtr<IMFMediaBuffer> lastVideoBuffer_;
   bool enableHardwareTransforms_ = true;
+  uint64_t sampleWriteUs_ = 0, sampleWriteMaxUs_ = 0, lengthReadUs_ = 0;
+  std::chrono::steady_clock::time_point nextWriterDiagnostic_{};
   DWORD videoStreamIndex_ = 0;
   DWORD audioStreamIndex_ = 0;
   int width_ = kDefaultWidth;
@@ -987,6 +1036,7 @@ struct IsoWriterEntry {
   std::string displayName;
   std::filesystem::path path;
   Mp4Writer writer;
+  D3DIsoFrameConformer frameConformer;
   RecordingPtsClock clock;
   std::mutex snapshotMutex;
   IsoStreamStatus snapshot;
@@ -1104,8 +1154,17 @@ void writeIsoVideo(IsoWriterEntry& entry, const IsoSourceVideoFrame& src,
           entry.openedWidth, entry.openedHeight);
     }
     if (sizeChanged) {
-      conformI420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height,
-                        entry.openedWidth, entry.openedHeight, entry.nv12Scratch);
+      if (entry.worker) {
+        if (!entry.frameConformer.convert(*frame.i420, frame.i420Width, frame.i420Height,
+              entry.openedWidth, entry.openedHeight, entry.nv12Scratch, error)) {
+          entry.failed = true;
+          entry.warning = "ISO GPU resize failed for " + entry.displayName + ": " + error;
+          return;
+        }
+      } else {
+        conformI420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height,
+                          entry.openedWidth, entry.openedHeight, entry.nv12Scratch);
+      }
     } else {
       i420ToNv12(frame.i420->data(), frame.i420Width, frame.i420Height, entry.nv12Scratch);
     }
@@ -1798,6 +1857,10 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       const auto hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
       entry.comInitialized = SUCCEEDED(hr);
       if (FAILED(hr)) { entry.failed = true; entry.warning = "ISO COM initialization failed: " + hresultString(hr); }
+      std::string error;
+      if (!entry.failed && !entry.frameConformer.prepare(error)) {
+        entry.failed = true; entry.warning = "ISO GPU initialization failed: " + error;
+      }
       publishIsoTrack(entry);
     }, [&entry] {
       finalizeIsoTrack(entry);
