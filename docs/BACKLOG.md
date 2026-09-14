@@ -54,6 +54,9 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 - [#529](https://github.com/iamfatness/CoreVideoPro/issues/529): ISO recording queue loses
   video during simultaneous 1080p60 streaming, including a stationary eight-person wall.
   Files finalize, but completion/healthy status does not establish loss-free recording.
+- [#530](https://github.com/iamfatness/CoreVideoPro/issues/530): the control API advertises
+  `programPreview`, but the implemented view name is `program-preview`; the advertised
+  name silently selects Program. Live QA uses and verifies the implemented name.
 
 These entries record findings; they do not change the owner-approved order below.
 
