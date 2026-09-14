@@ -115,4 +115,32 @@ struct GpuEncodePathPolicy {
   }
 };
 
+// The stream sender's start-time decision. It folds two sender-specific gates
+// into the base policy, applied ONLY when the base policy already allows
+// GPU-direct so the most specific base blocker (no hardware, no session, env
+// off) keeps precedence in the reason: the GPU-direct MFT is H.264-only (an
+// enhanced-RTMP HEVC/AV1 stream must not be fed an H.264 bitstream), and the
+// compositor must actually be exporting the dedicated encoder texture on the
+// frame that starts the process (otherwise the encoder has nothing to open and
+// the bitstream-mode muxer would stall). `reason` is set to a stable code.
+[[nodiscard]] inline GpuEncodePath chooseStreamEncodePath(const GpuEncodePathInputs& base,
+                                                          bool codecIsH264,
+                                                          bool frameHasEncoderTexture,
+                                                          const char** reason) {
+  if (GpuEncodePathPolicy::choose(base) == GpuEncodePath::CpuFallback) {
+    if (reason) *reason = GpuEncodePathPolicy::reason(base);
+    return GpuEncodePath::CpuFallback;
+  }
+  if (!codecIsH264) {
+    if (reason) *reason = "codec-not-h264";
+    return GpuEncodePath::CpuFallback;
+  }
+  if (!frameHasEncoderTexture) {
+    if (reason) *reason = "no-encoder-texture";
+    return GpuEncodePath::CpuFallback;
+  }
+  if (reason) *reason = "gpu-direct";
+  return GpuEncodePath::GpuDirect;
+}
+
 }  // namespace corevideo::modules
