@@ -1865,11 +1865,15 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       publishIsoTrack(entry);
     }, [&entry] {
       finalizeIsoTrack(entry);
+      // Release this track's GPU context with its staggered writer shutdown,
+      // rather than releasing all eight devices in one burst after joining.
+      entry.frameConformer = D3DIsoFrameConformer();
       if (entry.comInitialized) CoUninitialize();
     // File encoding may stall for hundreds of milliseconds even after startup.
-    // Retain at most 32 source pictures (~95 MiB of 1080p I420) per track;
-    // this absorbs measured MFT jitter without delaying Program delivery.
-    }, 32, 96, 96);
+    // Live 1080p tests measured up to 780 ms stalls after the first write.
+    // Retain at most 64 source pictures (~190 MiB of 1080p I420) per track
+    // so one such stall does not lose accepted source media at 60 Hz.
+    }, 64, 96, 96);
   }
 
   void refreshIsoStreams() {
@@ -1970,7 +1974,16 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
   void closeWriters() {
-    for (auto& iso : isoWriters_) if (iso->worker) iso->worker->close();
+    // The outer Stop barrier has already stopped input dispatch. Tracks keep
+    // draining independently while we spread hardware encoder/device teardown
+    // across time: concurrent Finalize calls coincided with live Program misses.
+    // Only the file-control worker waits; Program delivery never waits here.
+    // Close every ISO before finalizing Program or joining: a hung writer must
+    // not prevent the other files from finalizing.
+    for (auto& iso : isoWriters_) if (iso->worker) {
+      iso->worker->close();
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     startupAudio_.clear();
     std::string programReconcileError;
     if (!program_.reconcileTail(programReconcileError) && session_.recordingWarning.empty()) {
