@@ -139,6 +139,8 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeCopiesVideoAndSkipsRawEncode) {
   EXPECT_NE(args.find("-use_wallclock_as_timestamps 1 -r 60 -f h264 -thread_queue_size 512 -i pipe:0"),
             std::string::npos);
   EXPECT_NE(args.find("-c:v copy"), std::string::npos);
+  // -stats makes the realtime speed readable from ffmpeg's own stderr (diagnosability).
+  EXPECT_NE(args.find("-stats -stats_period 1"), std::string::npos);
   EXPECT_EQ(args.find("-f rawvideo"), std::string::npos);  // no raw video input
   EXPECT_EQ(args.find("-b:v "), std::string::npos);          // no re-encode bitrate
   EXPECT_NE(args.find("-c:a aac"), std::string::npos);       // audio still encoded

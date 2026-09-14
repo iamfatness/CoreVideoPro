@@ -121,7 +121,7 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     // read as 0x/stalled. -use_wallclock_as_timestamps stamps each arriving access
     // unit at its realtime arrival, which for a 60fps live feed is monotonic and
     // ~wall time; -r declares the nominal frame rate alongside it.
-    args << " -hide_banner -loglevel warning"
+    args << " -hide_banner -loglevel warning -stats -stats_period 1"
          << " -use_wallclock_as_timestamps 1 -r " << fps
          << " -f h264 -thread_queue_size 512 -i pipe:0";
     if (config.hasAudio) {
@@ -139,7 +139,7 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
          << quoteRtmpArgument(config.endpoint);
     return args.str();
   }
-  args << " -hide_banner -loglevel warning"
+  args << " -hide_banner -loglevel warning -stats -stats_period 1"
        // Pace raw pipe input by its declared media clock. The application also
        // paces writes, while -re prevents short queue bursts from advancing RTMP
        // timestamps faster than wall time.
