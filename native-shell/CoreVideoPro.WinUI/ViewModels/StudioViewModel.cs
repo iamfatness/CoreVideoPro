@@ -10612,14 +10612,32 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var mapped = ParticipantMapper.ToParticipants(participants);
 
+        // Telemetry must advance even when the structural gate below skips the
+        // expensive bound-list rebuild. Audio mixing and its Zoom mute indicator
+        // read these room snapshots, including guests whose cameras are off.
+        var roomParticipants = ParticipantMapper.ParticipantsInRoom(mapped, _currentRoomId);
+        var muteChanged = ParticipantMapper.HasMuteChanges(RoomParticipantsForInputs, roomParticipants);
+        RoomParticipantsForInputs = roomParticipants;
+        RoomVideoParticipants = ParticipantMapper.VideoParticipantsInRoom(mapped, _currentRoomId);
+        if (muteChanged)
+        {
+            RefreshAudioParticipantRows();
+        }
+
+        // An already queued structural rebuild must not restore an older mute
+        // state after a newer, non-structural snapshot arrives.
+        if (_pendingStructuralParticipants is not null)
+        {
+            _pendingStructuralParticipants = mapped;
+        }
+
         // Only touch the structural UI (the room participant lists, multiview tiles,
         // Sources pickers) when the participant/device SET actually changes. The core
         // pushes a snapshot ~4x/second; reassigning RoomVideoParticipants to a NEW list
         // and firing its bindings EVERY snapshot re-realizes the bound item templates on
         // the UI thread (~5ms measured) and stalls the present -> operator-visible stutter
         // (present-stutter-fix-spec P1). Live video/audio/tally update via their own
-        // binding paths, not these rebuilds, so when the set is unchanged there is nothing
-        // to do here. The signature captures per-participant health/screen-share + the
+        // binding paths, including the telemetry refresh above. The signature captures video/screen-share + the
         // device set, so a genuine change (join/leave/health/screen-share) still refreshes.
         // Signature must flip ONLY on genuinely structural changes: which participants
         // are present, whether each is video-OFF (VideoOff is filtered out of the video

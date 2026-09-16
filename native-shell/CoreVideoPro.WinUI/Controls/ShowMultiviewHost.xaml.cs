@@ -520,6 +520,13 @@ public sealed partial class ShowMultiviewHost : UserControl
 
     private void StartOrStopClock()
     {
+        // Bindings can change on a cached, unloaded page. Only Loaded may
+        // rearm the display clock after Unloaded stopped it.
+        if (!IsLoaded)
+        {
+            StopClock();
+            return;
+        }
         if (ShowClock)
         {
             ClockChrome.Visibility = Visibility.Visible;

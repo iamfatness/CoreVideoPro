@@ -54,45 +54,74 @@ public sealed partial class AudioLevelMeter : UserControl
             typeof(AudioLevelMeter),
             new PropertyMetadata(false, OnMutedPropertyChanged));
 
-    private static readonly SolidColorBrush DimBrush = new(Windows.UI.Color.FromArgb(255, 21, 30, 34));
-    private static readonly SolidColorBrush GreenBrush = new(Windows.UI.Color.FromArgb(255, 46, 210, 116));
-    private static readonly SolidColorBrush YellowBrush = new(Windows.UI.Color.FromArgb(255, 245, 190, 69));
-    private static readonly SolidColorBrush RedBrush = new(Windows.UI.Color.FromArgb(255, 237, 76, 68));
+    private readonly SolidColorBrush DimBrush = new(Windows.UI.Color.FromArgb(255, 21, 30, 34));
+    private readonly SolidColorBrush GreenBrush = new(Windows.UI.Color.FromArgb(255, 46, 210, 116));
+    private readonly SolidColorBrush YellowBrush = new(Windows.UI.Color.FromArgb(255, 245, 190, 69));
+    private readonly SolidColorBrush RedBrush = new(Windows.UI.Color.FromArgb(255, 237, 76, 68));
     // Dimmed blue-gray: distinguishes "muted, but this is the input level" from
     // a normal live green/yellow/red bar at the same height.
-    private static readonly SolidColorBrush MutedInputBrush = new(Windows.UI.Color.FromArgb(255, 92, 122, 145));
+    private readonly SolidColorBrush MutedInputBrush = new(Windows.UI.Color.FromArgb(255, 92, 122, 145));
 
-    // Console meter ballistics (audio overhaul spec 4.4): the snapshot delivers
-    // INSTANTANEOUS per-tick levels, and the audio quanta vary per tick, so a
-    // meter bound raw to Level strobes instead of dancing. Attack is instant
-    // (a transient must show immediately); release decays exponentially with
-    // ~300ms time constant; a peak-hold segment lingers ~800ms then falls.
-    private const double ReleaseFactorPerTick = 0.896;  // exp(-33ms / 300ms)
-    private const double ReleaseFloorKick = 0.25;       // finishes the decay tail
-    private static readonly TimeSpan PeakHold = TimeSpan.FromMilliseconds(800);
-    private const double PeakFallPerTick = 4.0;
-
-    private double _displayedLevel;
-    private double _peakLevel;
-    private DateTimeOffset _peakSetAt = DateTimeOffset.MinValue;
+    private readonly Models.AudioMeterBallistics _ballistics = new();
+    private readonly Border[] _segments = new Border[48];
+    private readonly StackPanel _segmentPanel = new();
+    private readonly Canvas _scale = new();
+    private readonly double[] _tickValues = [0, -6, -12, -24, -30, -36, -48, -60];
+    private readonly Border[] _ticks = new Border[8];
+    private readonly TextBlock[] _labels = new TextBlock[8];
+    private readonly ColumnDefinition _barColumn = new();
     private DispatcherQueueTimer? _decayTimer;
+    private (bool Vertical, bool Scale, int Count, double Size, double Spacing, double Available)? _layout;
 
     public AudioLevelMeter()
     {
         InitializeComponent();
-        Loaded += (_, _) => RenderSegments();
-        // Re-fit on ANY size change: segments scale to the available column (see
-        // RenderSegments). Without this, a window restored from fullscreen kept
-        // the fullscreen-sized stack and clipped the green end of every meter.
-        SizeChanged += (_, e) =>
+        // A bounded, retained visual tree. No level, resize, orientation or
+        // scale update removes controls for the finalizer to race releasing.
+        RootGrid.ColumnDefinitions.Add(_barColumn);
+        RootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        RootGrid.Children.Add(_segmentPanel);
+        Grid.SetColumn(_scale, 1);
+        RootGrid.Children.Add(_scale);
+        for (var i = 0; i < _segments.Length; i++)
         {
-            if (e.NewSize.Height > 0 || e.NewSize.Width > 0)
-            {
-                RenderSegments();
-            }
-        };
-        Unloaded += (_, _) => StopDecayTimer();
+            var segment = new Border { CornerRadius = new CornerRadius(1.5), Visibility = Visibility.Collapsed };
+            _segments[i] = segment;
+            _segmentPanel.Children.Add(segment);
+        }
+        var tickBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(180, 126, 145, 156));
+        var labelBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(220, 160, 177, 187));
+        for (var i = 0; i < _tickValues.Length; i++)
+        {
+            _ticks[i] = new Border { Width = 4, Height = 1, Background = tickBrush };
+            _labels[i] = new TextBlock { Text = _tickValues[i].ToString("0"), FontSize = 7, Foreground = labelBrush };
+            Canvas.SetLeft(_labels[i], 6);
+            _scale.Children.Add(_ticks[i]);
+            _scale.Children.Add(_labels[i]);
+        }
+        Loaded += OnLoaded;
+        SizeChanged += (_, _) => { if (IsLoaded) RenderSegments(); };
+        Unloaded += OnUnloaded;
     }
+
+    private void OnLoaded(object sender, RoutedEventArgs args)
+    {
+        _ballistics.Reset(Level, IsMuted, ShowLevelWhileMuted, Environment.TickCount64);
+        RenderSegments();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs args)
+    {
+        if (_decayTimer is not null)
+        {
+            _decayTimer.Stop();
+            _decayTimer.Tick -= OnDecayTick;
+            _decayTimer = null;
+        }
+    }
+
+    // Exposed only inside this assembly for the isolated real-XAML stress probe.
+    internal bool AnimationRunning => _decayTimer?.IsRunning == true;
 
     public double Level
     {
@@ -148,260 +177,105 @@ public sealed partial class AudioLevelMeter : UserControl
 
     private static void OnMutedPropertyChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
     {
-        if (dependencyObject is not AudioLevelMeter meter)
-        {
-            return;
-        }
-
-        if (meter.IsMuted && !meter.ShowLevelWhileMuted)
-        {
-            // Mute is a routing discontinuity, not a release-ballistics event.
-            // Drop both the live bar and peak hold immediately so the console
-            // never implies that muted audio is reaching Program.
-            meter._displayedLevel = 0;
-            meter._peakLevel = 0;
-            meter._peakSetAt = DateTimeOffset.MinValue;
-            meter.StopDecayTimer();
-            if (meter.IsLoaded)
-            {
-                meter.RenderSegments();
-            }
-            return;
-        }
-
-        // #481: muted but showing the pre-mute input level - keep ballistics
-        // running off Level like a normal (unmuted) meter; RenderSegments picks
-        // the dim color because IsMuted is still true.
-        meter.OnLevelChanged();
+        if (dependencyObject is AudioLevelMeter meter) meter.OnLevelChanged();
     }
 
     private void OnLevelChanged()
     {
-        var target = IsMuted && !ShowLevelWhileMuted ? 0 : Math.Clamp(Level, 0, 100);
-        if (target >= _displayedLevel)
-        {
-            _displayedLevel = target;  // instant attack
-        }
-
-        if (target >= _peakLevel)
-        {
-            _peakLevel = target;
-            _peakSetAt = DateTimeOffset.UtcNow;
-        }
-
-        if (IsLoaded)
-        {
-            RenderSegments();
-        }
-
-        EnsureDecayTimer();
+        // Binding updates can still arrive for an unloaded page. Loaded will
+        // reconcile the newest Level; hidden meters must not restart timers.
+        if (!IsLoaded) return;
+        _ballistics.SetInput(Level, IsMuted, ShowLevelWhileMuted, Environment.TickCount64);
+        RenderSegments();
+        UpdateTimer();
     }
 
-    private void EnsureDecayTimer()
+    private void UpdateTimer()
     {
-        if (_decayTimer is { IsRunning: true })
+        if (!IsLoaded || !_ballistics.NeedsAnimation)
         {
+            _decayTimer?.Stop();
             return;
         }
-
-        _decayTimer ??= CreateDecayTimer();
-        _decayTimer?.Start();
+        if (_decayTimer is null)
+        {
+            _decayTimer = DispatcherQueue.CreateTimer();
+            _decayTimer.Interval = TimeSpan.FromMilliseconds(33);
+            _decayTimer.IsRepeating = true;
+            _decayTimer.Tick += OnDecayTick;
+        }
+        if (!_decayTimer.IsRunning) _decayTimer.Start();
     }
 
-    private DispatcherQueueTimer? CreateDecayTimer()
+    private void OnDecayTick(DispatcherQueueTimer sender, object args)
     {
-        var queue = DispatcherQueue;
-        if (queue is null)
-        {
-            return null;
-        }
-
-        var timer = queue.CreateTimer();
-        timer.Interval = TimeSpan.FromMilliseconds(33);
-        timer.IsRepeating = true;
-        timer.Tick += (_, _) => DecayTick();
-        return timer;
-    }
-
-    private void StopDecayTimer() => _decayTimer?.Stop();
-
-    private void DecayTick()
-    {
-        var target = IsMuted && !ShowLevelWhileMuted ? 0 : Math.Clamp(Level, 0, 100);
-        var changed = false;
-
-        if (_displayedLevel > target)
-        {
-            _displayedLevel = Math.Max(target, _displayedLevel * ReleaseFactorPerTick - ReleaseFloorKick);
-            changed = true;
-        }
-
-        if (_peakLevel > _displayedLevel && DateTimeOffset.UtcNow - _peakSetAt > PeakHold)
-        {
-            _peakLevel = Math.Max(_displayedLevel, _peakLevel - PeakFallPerTick);
-            changed = true;
-        }
-
-        if (changed)
-        {
-            if (IsLoaded)
-            {
-                RenderSegments();
-            }
-
-            return;
-        }
-
-        // Converged and peak expired: idle the timer (a page can host a dozen
-        // meters; they should cost nothing while silent).
-        StopDecayTimer();
+        if (!IsLoaded) { sender.Stop(); return; }
+        _ballistics.Advance(Environment.TickCount64);
+        RenderSegments();
+        UpdateTimer();
     }
 
     private void RenderSegments()
     {
-        var count = Math.Clamp(SegmentCount, 8, 48);
-        var level = Math.Clamp(_displayedLevel, 0, 100);
-        var activeSegments = (int)Math.Round(level / 100.0 * count, MidpointRounding.AwayFromZero);
-        var peakSegment = _peakLevel > 0
-            ? (int)Math.Round(Math.Clamp(_peakLevel, 0, 100) / 100.0 * count, MidpointRounding.AwayFromZero) - 1
+        var availableMain = IsVertical ? RootGrid.ActualHeight : RootGrid.ActualWidth;
+        var fit = IsVertical
+            ? Models.AudioMeterScale.FitVerticalSegments(availableMain, SegmentCount)
+            : Models.AudioMeterScale.FitHorizontalSegments(availableMain, SegmentCount);
+        var count = fit.SegmentCount;
+        var segMain = fit.SegmentSize;
+        var spacing = fit.Spacing;
+        var activeSegments = (int)Math.Round(_ballistics.Level / 100.0 * count, MidpointRounding.AwayFromZero);
+        var peakSegment = _ballistics.Peak > 0
+            ? (int)Math.Round(_ballistics.Peak / 100.0 * count, MidpointRounding.AwayFromZero) - 1
             : -1;
 
-        // SCALE TO THE SPACE WE HAVE. Fixed 7px segments + 2px spacing need a
-        // 324px column at 36 segments; any smaller window CLIPPED the stack —
-        // and because the low/green segments sit at the visual bottom, exactly
-        // the audible part of the meter vanished ("meters don't work when not
-        // in full screen", 2026-08-09). Shrink spacing first, then segment
-        // size, then segment COUNT — never overflow, never render nothing.
-        var availableMain = IsVertical ? RootGrid.ActualHeight : RootGrid.ActualWidth;
-        double spacing = 2;
-        double segMain = IsVertical ? 7 : 4;
-        if (availableMain > 0)
+        var scaleVisible = IsVertical && ShowDbfsScale && availableMain > 0;
+        var layoutKey = (IsVertical, scaleVisible, count, segMain, spacing, availableMain);
+        if (_layout != layoutKey)
         {
-            if (IsVertical)
+            _layout = layoutKey;
+            _segmentPanel.Orientation = IsVertical ? Orientation.Vertical : Orientation.Horizontal;
+            _segmentPanel.HorizontalAlignment = IsVertical ? HorizontalAlignment.Center : HorizontalAlignment.Stretch;
+            _segmentPanel.VerticalAlignment = IsVertical ? VerticalAlignment.Bottom : VerticalAlignment.Center;
+            _segmentPanel.Spacing = spacing;
+            _barColumn.Width = scaleVisible ? new GridLength(14) : new GridLength(1, GridUnitType.Star);
+            Grid.SetColumnSpan(_segmentPanel, scaleVisible ? 1 : 2);
+            _scale.Visibility = scaleVisible ? Visibility.Visible : Visibility.Collapsed;
+            for (var i = 0; i < _segments.Length; i++)
             {
-                // Keep the segment bar and the dB scale on the same responsive
-                // height instead of pinning a fixed-size bar to the bottom.
-                var layout = Models.AudioMeterScale.FitVerticalSegments(availableMain, count);
-                count = layout.SegmentCount;
-                segMain = layout.SegmentSize;
-                spacing = layout.Spacing;
-                activeSegments = (int)Math.Round(level / 100.0 * count, MidpointRounding.AwayFromZero);
-                peakSegment = _peakLevel > 0
-                    ? (int)Math.Round(Math.Clamp(_peakLevel, 0, 100) / 100.0 * count, MidpointRounding.AwayFromZero) - 1
-                    : -1;
+                _segments[i].Visibility = i < count ? Visibility.Visible : Visibility.Collapsed;
+                _segments[i].Width = IsVertical ? 14 : segMain;
+                _segments[i].Height = IsVertical ? segMain : 10;
             }
-            else
-            {
-                if ((segMain + spacing) * count > availableMain)
-                {
-                    spacing = 1;
-                }
-                var perSegment = (availableMain - spacing * (count - 1)) / count;
-                if (perSegment < segMain)
-                {
-                    segMain = Math.Max(2, Math.Floor(perSegment));
-                }
-                var fits = (int)Math.Floor((availableMain + spacing) / (segMain + spacing));
-                if (fits < count && fits >= 4)
-                {
-                    count = fits;
-                    activeSegments = (int)Math.Round(level / 100.0 * count, MidpointRounding.AwayFromZero);
-                    peakSegment = _peakLevel > 0
-                        ? (int)Math.Round(Math.Clamp(_peakLevel, 0, 100) / 100.0 * count, MidpointRounding.AwayFromZero) - 1
-                        : -1;
-                }
-            }
+            if (scaleVisible) UpdateScale(availableMain);
         }
-
-        var panel = new StackPanel
-        {
-            Orientation = IsVertical ? Orientation.Vertical : Orientation.Horizontal,
-            HorizontalAlignment = IsVertical ? HorizontalAlignment.Center : HorizontalAlignment.Stretch,
-            VerticalAlignment = IsVertical ? VerticalAlignment.Bottom : VerticalAlignment.Center,
-            Spacing = spacing
-        };
-
         for (var visualIndex = 0; visualIndex < count; visualIndex++)
         {
             var lowToHighIndex = IsVertical ? count - visualIndex - 1 : visualIndex;
-            var isActive = lowToHighIndex < activeSegments;
-            var isPeakHold = lowToHighIndex == peakSegment && !isActive;
-            var normalized = (lowToHighIndex + 1) / (double)count;
-
-            panel.Children.Add(new Border
-            {
-                Width = IsVertical ? 14 : segMain,
-                Height = IsVertical ? segMain : 10,
-                CornerRadius = new CornerRadius(1.5),
-                Background = isActive || isPeakHold
-                    ? (IsMuted && ShowLevelWhileMuted ? MutedInputBrush : BrushFor(normalized))
-                    : DimBrush
-            });
-        }
-
-        RootGrid.Children.Clear();
-        if (IsVertical && ShowDbfsScale && availableMain > 0)
-        {
-            var host = new Grid
-            {
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                VerticalAlignment = VerticalAlignment.Stretch
-            };
-            host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
-            host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            Grid.SetColumn(panel, 0);
-            host.Children.Add(panel);
-
-            var scale = BuildVerticalDbfsScale(availableMain);
-            Grid.SetColumn(scale, 1);
-            host.Children.Add(scale);
-            RootGrid.Children.Add(host);
-        }
-        else
-        {
-            RootGrid.Children.Add(panel);
+            var lit = lowToHighIndex < activeSegments || lowToHighIndex == peakSegment;
+            var brush = lit
+                ? (IsMuted && ShowLevelWhileMuted ? MutedInputBrush : BrushFor((lowToHighIndex + 1) / (double)count))
+                : DimBrush;
+            if (!ReferenceEquals(_segments[visualIndex].Background, brush))
+                _segments[visualIndex].Background = brush;
         }
     }
 
-    private static Canvas BuildVerticalDbfsScale(double height)
+    private void UpdateScale(double height)
     {
-        var canvas = new Canvas { Height = height };
-        // Short master rails cannot legibly carry the full broadcast scale.
-        // Keep the endpoints and midpoint there; progressively add the
-        // standard marks as physical height permits.
-        IReadOnlyList<double> ticks = height < 60
-            ? [0, -30, -60]
-            : height < 100
-                ? [0, -12, -24, -36, -48, -60]
-                : Models.AudioMeterScale.MajorTicksDbfs;
-        foreach (var dbfs in ticks)
+        _scale.Height = height;
+        for (var i = 0; i < _tickValues.Length; i++)
         {
-            var level = Models.AudioMeterScale.ToLevel(dbfs) / 100.0;
-            var y = Math.Clamp((1 - level) * height, 0, height);
-            var tick = new Border
-            {
-                Width = 4,
-                Height = 1,
-                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(180, 126, 145, 156))
-            };
-            Canvas.SetLeft(tick, 0);
-            Canvas.SetTop(tick, Math.Clamp(y, 0, Math.Max(0, height - 1)));
-            canvas.Children.Add(tick);
-
-            var label = new TextBlock
-            {
-                Text = dbfs.ToString("0"),
-                FontSize = 7,
-                Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(220, 160, 177, 187))
-            };
-            Canvas.SetLeft(label, 6);
-            Canvas.SetTop(label, Math.Clamp(y - 6, 0, Math.Max(0, height - 12)));
-            canvas.Children.Add(label);
+            var dbfs = _tickValues[i];
+            var visible = height < 60 ? dbfs is 0 or -30 or -60
+                : height < 100 ? dbfs != -6 && dbfs != -30 : dbfs != -30;
+            _ticks[i].Visibility = _labels[i].Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+            var y = (1 - Models.AudioMeterScale.ToLevel(dbfs) / 100.0) * height;
+            Canvas.SetTop(_ticks[i], Math.Clamp(y, 0, Math.Max(0, height - 1)));
+            Canvas.SetTop(_labels[i], Math.Clamp(y - 6, 0, Math.Max(0, height - 12)));
         }
-
-        return canvas;
     }
 
-    private static SolidColorBrush BrushFor(double normalized) =>
+    private SolidColorBrush BrushFor(double normalized) =>
         normalized >= 0.9 ? RedBrush : normalized >= 0.7 ? YellowBrush : GreenBrush;
 }
