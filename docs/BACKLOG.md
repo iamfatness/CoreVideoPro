@@ -44,6 +44,19 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 
 ---
 
+## Current implementation order — owner approved 2026-09-14
+
+The owner approved the ISO recorder work in merged PR #531 and selected this
+next sequence: #513 idle XAML crash investigation/hardening; #516 long command
+lock hold; #532 RTMP startup recovery; then #456 media In/Out points. This is the
+current implementation order ahead of the older ranking below. The In/Out UI
+still needs its concrete design reviewed before implementation.
+
+For #513, the first change removes audio-meter control recreation on level and
+decay updates and prevents unloaded meters from restarting timers. This reduces
+XAML lifetime churn; it does **not** establish the cause or closure of the idle
+fail-fast. See [evidence and validation](xaml-lifetime-hardening-2026-09-14.md).
+
 ## Tier 0 — owner actions (start the clocks)
 
 **New observations, awaiting owner ranking (2026-09-14):**

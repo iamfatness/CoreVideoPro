@@ -26,6 +26,17 @@ public static class ParticipantMapper
         IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants) =>
         participants.Select(ToParticipant).ToList();
 
+    public static bool HasMuteChanges(
+        IReadOnlyList<Participant> previous,
+        IReadOnlyList<Participant> current)
+    {
+        if (previous.Count != current.Count) return true;
+        var previousMute = previous.ToDictionary(participant => participant.Id, participant => participant.IsMuted,
+            StringComparer.Ordinal);
+        return current.Any(participant =>
+            !previousMute.TryGetValue(participant.Id, out var muted) || muted != participant.IsMuted);
+    }
+
     // All participants in the room (video on OR off). Used for the Sources/Inputs
     // picker so an operator can assign a participant to an Input slot even when
     // their camera is momentarily off — the video flows once they enable it.

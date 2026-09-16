@@ -70,6 +70,20 @@ public static class AudioMeterScale
 
         return new AudioMeterSegmentLayout(count, segmentSize, spacing);
     }
+
+    public static AudioMeterSegmentLayout FitHorizontalSegments(double availableWidth, int requestedCount)
+    {
+        var count = Math.Clamp(requestedCount, 8, 48);
+        if (!double.IsFinite(availableWidth) || availableWidth <= 0)
+            return new(count, 4, 2);
+        var spacing = 2d;
+        if (count * 4 + (count - 1) * spacing <= availableWidth)
+            return new(count, 4, spacing);
+        spacing = 1;
+        count = Math.Min(count, Math.Max(1, (int)Math.Floor((availableWidth + 1) / 3)));
+        if (count == 1) spacing = 0;
+        return new(count, Math.Min(4, Math.Max(0, (availableWidth - spacing * (count - 1)) / count)), spacing);
+    }
 }
 
 public readonly record struct AudioMeterSegmentLayout(int SegmentCount, double SegmentSize, double Spacing)
