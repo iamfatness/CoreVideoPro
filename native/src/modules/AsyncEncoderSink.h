@@ -64,15 +64,16 @@ class AsyncEncoderSink final : public IEncoderSink {
   struct Options {
     // Max pending PROGRAM video frames before drop-to-latest kicks in.
     size_t maxVideoQueue = 6;
-    // ISO video is enqueued one source per item and coalesced by sourceId. Eight
-    // slots retain at most the latest frame for each supported Zoom ISO.
-    size_t maxIsoVideoQueue = 8;
+    // One source picture per item. Allow 32 pictures for each of eight ISOs
+    // while a synchronous Program write stalls; eight total slots clipped
+    // every source almost immediately. Still bounded (~760 MiB at 1080p I420).
+    size_t maxIsoVideoQueue = 256;
     // Max pending PROGRAM audio packets before the oldest is dropped.
     size_t maxAudioQueue = 96;
-    // ISO audio is wall-clock anchored and silence-fills a dropped tick. A small
-    // queue is therefore both safe and essential: one item fans out to every
-    // armed ISO AAC writer.
-    size_t maxIsoAudioQueue = 4;
+    // Retain ISO audio through the synchronous Program open. Dispatch to the
+    // per-file workers is cheap; a four-packet cap clipped startup audio.
+    // Like Program audio, this budget is bounded to 96 packets.
+    size_t maxIsoAudioQueue = 96;
     // Bounded wait for teardown's writer join (the finalize grace at shutdown).
     std::chrono::milliseconds finalizeGrace{4000};
   };
@@ -228,6 +229,7 @@ class AsyncEncoderSink final : public IEncoderSink {
     // every ISO whenever Program audio/video arrived continuously (the live
     // eight-source failure wrote one ISO frame, then never serviced ISO again).
     size_t consecutiveProgramItems = 0;
+    uint64_t generationDroppedVideoBase = 0, generationDroppedAudioBase = 0;
 
     // True from the moment a Start is enqueued until the writer has APPLIED it
     // (the synchronous Media Foundation open). Video shed inside that window is
@@ -254,9 +256,9 @@ class AsyncEncoderSink final : public IEncoderSink {
     OutputSession snapshot;
 
     size_t maxVideoQueue = 6;
-    size_t maxIsoVideoQueue = 8;
+    size_t maxIsoVideoQueue = 256;
     size_t maxAudioQueue = 96;
-    size_t maxIsoAudioQueue = 4;
+    size_t maxIsoAudioQueue = 96;
   };
 
   // Enqueue `item`, assigning it a seq. Applies the drop policy for Video/Audio.

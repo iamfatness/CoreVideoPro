@@ -57,6 +57,12 @@ TDD + review loop). Estimate for tiers 1-4 ≈ 3-4 working days; tier 5 ≈ 5-8 
 - [#530](https://github.com/iamfatness/CoreVideoPro/issues/530): the control API advertises
   `programPreview`, but the implemented view name is `program-preview`; the advertised
   name silently selects Program. Live QA uses and verifies the implemented name.
+- [#532](https://github.com/iamfatness/CoreVideoPro/issues/532): RTMP failed near startup
+  and recovered once during ISO validation. Cause remains unverified; retained separately
+  from recorder throughput and awaiting owner ranking.
+- [#533](https://github.com/iamfatness/CoreVideoPro/issues/533): ISO fragmented MP4 video
+  timeline is shorter than its audio despite complete writer counters; investigating
+  as part of the owner-requested ISO recorder repair in draft PR #531.
 
 These entries record findings; they do not change the owner-approved order below.
 

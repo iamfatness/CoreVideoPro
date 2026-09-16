@@ -144,3 +144,39 @@ TEST(IsoFrameConform, AnUnchangedSizeIsCopiedNotResampled) {
     ASSERT_EQ(out[i + 1], 201) << "v " << i;
   }
 }
+
+#if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include "modules/D3DIsoFrameConformer.h"
+#include <array>
+
+TEST(D3DIsoFrameConform, MatchesBoxFilterPixelsAcrossResizeLetterboxAndBufferReuse) {
+  // WARP makes the shader correctness check available on headless Windows CI;
+  // the live app always requests a hardware device.
+  corevideo::modules::D3DIsoFrameConformer gpu(true);
+  const std::array<std::array<int,4>,7> cases = {{{2,2,2,2},{10,6,14,10},
+      {32,18,20,20},{18,32,20,20},{1920,1080,1280,720},{1280,720,640,360},{8,8,8,8}}};
+  uint32_t random = 7;
+  for (const auto& dims : cases) {
+    std::vector<uint8_t> input(size_t(dims[0])*dims[1]*3/2);
+    for (auto& value : input) { random=random*1664525u+1013904223u; value=uint8_t(random>>24); }
+    std::vector<uint8_t> expected, actual;
+    conformI420ToNv12(input.data(),dims[0],dims[1],dims[2],dims[3],expected);
+    std::string error;
+    ASSERT_TRUE(gpu.convert(input,dims[0],dims[1],dims[2],dims[3],actual,error)) << error;
+    ASSERT_EQ(actual.size(),expected.size());
+    EXPECT_TRUE(actual == expected) << dims[0] << "x" << dims[1] << " -> " << dims[2] << "x" << dims[3];
+  }
+}
+
+TEST(D3DIsoFrameConform, RejectsTruncatedAndOddInputBeforeGpuAccess) {
+  corevideo::modules::D3DIsoFrameConformer gpu(true);
+  std::vector<uint8_t> input(6), output;
+  std::string error;
+  EXPECT_FALSE(gpu.convert(input,4,4,2,2,output,error));
+  EXPECT_FALSE(gpu.convert(input,3,2,2,2,output,error));
+  EXPECT_FALSE(gpu.convert(input,2,2,8194,2,output,error));
+}
+#endif

@@ -193,6 +193,12 @@ class EncoderCapacityCache {
   // Suppress probing while a recording is live: the probe transiently occupies
   // hardware encoder sessions, which must never compete with a running show.
   void setRecordingActive(bool active);
+  // GPU output encoders also occupy sessions. A probe must not reinterpret
+  // the remaining slots as the machine's total capacity while streaming.
+  void beginLiveEncoding();
+  void endLiveEncoding();
+  bool probingAllowed();
+  bool probeInFlightForTesting();
 
   // Test seam: replace the platform probe. Mirrors StillMediaFrameCache's
   // injectable decoder so the cache and the decision logic are testable with no
@@ -218,6 +224,8 @@ class EncoderCapacityCache {
   std::uint64_t observedAdapterLuid_ = 0;
   bool haveObservedAdapter_ = false;
   bool recordingActive_ = false;
+  unsigned liveEncoders_ = 0;
+  uint64_t activityEpoch_ = 0, cacheEpoch_ = 0;
   bool forcedCapacityActive_ = false;
   ProbedEncoderCapacity forcedCapacity_;
   ProbeFn probeFn_;

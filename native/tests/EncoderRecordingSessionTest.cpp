@@ -1156,6 +1156,91 @@ corevideo::modules::IsoSourceAudio makeIsoTone(const std::string& sourceId, int 
 // #286 per-ISO-writer audio-stream reset holds across a double start (a reused
 // ISO writer must NOT lose its audio track), silence-fill advances a gapped stem,
 // and PROGRAM A+V is never regressed with ISO AUDIO enabled.
+TEST(EncoderRecordingSession, MediaFoundationIsoAudioTrimsCaptureBeforeProgramEpoch) {
+  const corevideo::testing::ForcedEncoderCapacity capacity;
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) return;
+  namespace fs = std::filesystem;
+  const auto dir = fs::temp_directory_path() / "corevideo-iso-audio-epoch";
+  std::error_code ec; fs::remove_all(dir, ec);
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso-audio-epoch"; request.targetFolder = dir.string();
+  request.filenamePrefix = "epoch"; request.width = 640; request.height = 360;
+  request.fps = 30; request.isoSources = {{"zoom:A", "Guest", true}};
+  encoder->configureRecording(request); encoder->start({"recording"}, {});
+  corevideo::modules::ProgramFrame frame;
+  frame.frameNumber = 1; frame.width = 640; frame.height = 360;
+  frame.preview.width = 640; frame.preview.height = 360;
+  frame.preview.bgra.assign(640 * 360 * 4, 0x40);
+  encoder->submit(frame);
+  encoder->submitIsoVideo({makeIsoI420("zoom:A", 640, 360, 1, 90)});
+  const auto epoch = encoder->session().recordingMuxEpoch100ns;
+  ASSERT_GT(epoch, 0);
+  auto audio = makeIsoTone("zoom:A", 960, 1, 220, 0);
+  audio.timelineTimestamp100ns = epoch - 200000; // Entire packet precedes capture.
+  encoder->submitIsoAudio({audio});
+  ASSERT_EQ(encoder->session().isoStreams.size(), 1u);
+  EXPECT_EQ(encoder->session().isoStreams[0].audioSampleCount, 0);
+  audio.timelineTimestamp100ns = epoch - 100000; // Retain only the last 10 ms.
+  encoder->submitIsoAudio({audio});
+  EXPECT_EQ(encoder->session().isoStreams[0].audioSampleCount, 480);
+  encoder->stopRecording(); encoder.reset(); fs::remove_all(dir, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationIsoVariableRateKeepsElapsedTimelineAcrossFragments) {
+#if defined(_WIN32)
+  for (const int hardwareLimit : {1, 8}) {
+  const corevideo::testing::ForcedEncoderCapacity capacity(hardwareLimit);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  ASSERT_NE(encoder, nullptr);
+  namespace fs = std::filesystem;
+  const auto dir = fs::temp_directory_path() / "corevideo-iso-vfr-timeline";
+  std::error_code ec; fs::remove_all(dir, ec);
+  corevideo::modules::RecordingSessionRequest request;
+  request.targetFolder = dir.string(); request.filenamePrefix = "vfr";
+  request.width = 320; request.height = 180; request.fps = 60;
+  request.isoSources = {{"zoom:vfr", "Variable", false}};
+  encoder->configureRecording(request); encoder->start({"recording"}, {});
+  corevideo::modules::ProgramFrame program;
+  program.frameNumber = 1; program.width = 320; program.height = 180;
+  program.preview.width = 320; program.preview.height = 180;
+  program.preview.bgra.assign(320 * 180 * 4, 0x40);
+  encoder->submit(program);
+  const auto epoch = encoder->session().recordingMuxEpoch100ns;
+  ASSERT_GT(epoch, 0);
+  for (int i = 0; i <= 300; ++i) {
+    auto frame = makeIsoI420("zoom:vfr", 320, 180, i + 1, 80 + i % 80);
+    frame.timelineTimestamp100ns = epoch + static_cast<int64_t>(i) * 10'000'000 / 30 +
+        (i % 3 == 1 ? 100'000 : 0);
+    encoder->submitIsoVideo({frame});
+  }
+  encoder->stopRecording();
+  const auto session = encoder->session();
+  ASSERT_EQ(session.isoStreams.size(), 1u);
+  const fs::path path = session.isoStreams[0].path;
+  EXPECT_GE(fileAsciiCount(path, "moof"), 2u);
+  Microsoft::WRL::ComPtr<IMFSourceReader> reader;
+  ASSERT_TRUE(SUCCEEDED(MFCreateSourceReaderFromURL(path.wstring().c_str(), nullptr, &reader)));
+  LONGLONG lastPts = -1;
+  int samples = 0;
+  for (;;) {
+    DWORD flags = 0; LONGLONG pts = 0;
+    Microsoft::WRL::ComPtr<IMFSample> sample;
+    const auto hr = reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &pts, &sample);
+    ASSERT_TRUE(SUCCEEDED(hr));
+    if (sample) { lastPts = pts; ++samples; }
+    if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+  }
+  EXPECT_EQ(samples, 301);
+  EXPECT_GE(lastPts, 99'990'000);
+  EXPECT_LE(lastPts, 100'010'000);
+  reader.Reset(); encoder.reset();
+  // Preserve the generated file on failure for independent ffprobe inspection.
+  if (lastPts >= 99'990'000 && lastPts <= 100'010'000) fs::remove_all(dir, ec);
+  }
+#endif
+}
+
 TEST(EncoderRecordingSession, MediaFoundationIsoWritersMuxOwnAudioStems) {
   // This test is about MP4 writers, not capacity: pin an ample machine so the
   // live probe (asynchronous, GPU-dependent) cannot decide the outcome.
@@ -1344,6 +1429,111 @@ TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCa
   EXPECT_EQ(softwareIsoCount, 1);
 
   encoder->stopRecording();
+  ASSERT_FALSE(session.recordingSessionDir.empty());
+  const fs::path dir(session.recordingSessionDir);
+  for (int source = 0; source < 8; ++source) {
+    char filename[64];
+    std::snprintf(filename, sizeof(filename), "ISO-%02d-Guest-%d.mp4", source + 1, source + 1);
+    const auto path = dir / filename;
+    EXPECT_TRUE(fs::exists(path)) << path.string();
+    if (fs::exists(path)) {
+      EXPECT_GT(fs::file_size(path, ec), 0u) << path.string();
+    }
+  }
+
+  encoder.reset();
+  fs::remove_all(targetDir, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationIndependentIsoWritersDrainAudioVideoBeforeFinalize) {
+  // Pin EXACTLY the capacity the product used to assume (8 sessions, Program owns
+  // one) so the 8th ISO still has to spill — that spill is what this test is for.
+  const corevideo::testing::ForcedEncoderCapacity eightSessionMachine(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  if (!encoder) {
+    return;  // Media Foundation unavailable.
+  }
+  encoder->enableIndependentIsoWriters();
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto targetDir = fs::temp_directory_path() / "corevideo-iso8-independent";
+  fs::remove_all(targetDir, ec);
+
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "iso8-capacity";
+  request.targetFolder = targetDir.string();
+  request.filenamePrefix = "show";
+  request.format = "mp4";
+  request.quality = "high";
+  request.width = 640;
+  request.height = 360;
+  request.fps = 30;
+  request.videoCodec = "h264";
+  request.audioCodec = "aac";
+  request.audioBitrateKbps = 128;
+  request.targetBitrateMbps = 8;
+  for (int source = 0; source < 8; ++source) {
+    request.isoSources.push_back(
+        {"zoom:" + std::to_string(source + 1), "Guest " + std::to_string(source + 1), true});
+  }
+  encoder->configureRecording(request);
+  encoder->start({"recording"}, {});
+
+  corevideo::modules::ProgramFrame frame;
+  frame.width = 640;
+  frame.height = 360;
+  frame.preview.width = 640;
+  frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  std::vector<float> programPcm(static_cast<size_t>(960) * 2, 0.2f);
+  std::array<int64_t, 8> sourceFrames{};
+
+  for (int tick = 0; tick < 60; ++tick) {
+    frame.frameNumber = tick + 1;
+    encoder->submit(frame);
+
+    std::vector<corevideo::modules::IsoSourceVideoFrame> isoVideo;
+    std::vector<corevideo::modules::IsoSourceAudio> isoAudio;
+    isoVideo.reserve(8);
+    isoAudio.reserve(8);
+    for (int source = 0; source < 8; ++source) {
+      const std::string sourceId = "zoom:" + std::to_string(source + 1);
+      isoVideo.push_back(makeIsoI420(sourceId, 640, 360, tick,
+                                    static_cast<uint8_t>(40 + source * 20)));
+      isoAudio.push_back(makeIsoTone(sourceId, 960, 1, 180.0 + source * 40.0,
+                                     sourceFrames[static_cast<size_t>(source)]));
+      sourceFrames[static_cast<size_t>(source)] += 960;
+    }
+    encoder->submitIsoVideo(isoVideo);
+    encoder->submitAudio(programPcm.data(), 960, 2, 48000);
+    encoder->submitIsoAudio(isoAudio);
+    std::this_thread::sleep_for(std::chrono::milliseconds(34));
+  }
+
+  encoder->stopRecording();
+  const auto session = encoder->session();
+  EXPECT_EQ(session.encoderQueueDroppedVideoFrames, 0);
+  EXPECT_EQ(session.encoderQueueDroppedAudioPackets, 0);
+  // The spill is REPORTED now, not silent: this used to assert an empty warning
+  // while one stem quietly went to the CPU encoder. Program keeps recording and
+  // all eight ISOs still arm — the change is that the operator is told.
+  EXPECT_NE(session.recordingWarning.find("1 ISO source will record on the CPU software encoder"),
+            std::string::npos)
+      << session.recordingWarning;
+  ASSERT_EQ(session.isoStreams.size(), 8u);
+  int hardwareIsoCount = 0;
+  int softwareIsoCount = 0;
+  for (const auto& iso : session.isoStreams) {
+    EXPECT_TRUE(iso.trackOpen) << iso.sourceId << ": " << iso.warning;
+    EXPECT_TRUE(iso.warning.empty()) << iso.sourceId << ": " << iso.warning;
+    EXPECT_EQ(iso.videoFrameCount, 60) << iso.sourceId;
+    EXPECT_GT(iso.audioSampleCount, 0) << iso.sourceId;
+    hardwareIsoCount += iso.encoderPath == "hardware" ? 1 : 0;
+    softwareIsoCount += iso.encoderPath == "software" ? 1 : 0;
+  }
+  EXPECT_EQ(hardwareIsoCount, 7);
+  EXPECT_EQ(softwareIsoCount, 1);
+
   ASSERT_FALSE(session.recordingSessionDir.empty());
   const fs::path dir(session.recordingSessionDir);
   for (int source = 0; source < 8; ++source) {
