@@ -321,6 +321,12 @@ jobs:
           ./scripts/provision-winui-test-runtime.ps1
       - name: MediaCore, Control, WinUI and bridge tests
         run: npm run test:native-shell
+      - name: WinUI meter lifetime and animation regression
+        timeout-minutes: 5
+        run: |
+          dotnet build native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/test-audio-meter-stability.ps1 -Seconds 60 -Report artifacts/test-results/meter-stability.json
       - name: Upload Windows test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -330,3 +336,4 @@ jobs:
           if-no-files-found: error
       - name: Publish WinUI shell (build gate)
         run: dotnet publish native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -r win-x64 --self-contained false
+
