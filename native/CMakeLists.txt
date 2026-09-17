@@ -677,6 +677,7 @@ if(BUILD_TESTING)
     tests/TilesWallSourceTest.cpp
     tests/TilesRenderPlanTest.cpp
     tests/UvcCaptureSupportTest.cpp
+    tests/PeriodicDeviceDiscoveryTest.cpp
     tests/VstHostAbiTest.cpp
     tests/VstLatencyCompensationTest.cpp
     tests/ZoomFrameReaderTest.cpp

@@ -1,5 +1,6 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
+#include "modules/PeriodicDeviceDiscovery.h"
 #include "modules/UvcCaptureSupport.h"
 
 #include <memory>
@@ -539,8 +540,28 @@ class UvcCaptureSession {
 };
 
 class UvcCaptureDeviceAdapter final : public ICaptureDevice {
+  struct DeviceEntry {
+    CaptureDeviceInfo info;
+    std::wstring symbolicLink;
+    // Case-variant stable ids so a shell-computed id still matches when the
+    // WinRT and MF symbolic-link casing differ.
+    std::vector<std::string> candidateIds;
+    // The shell's routing id to key emitted frames by (WinRT vs MF stable-id
+    // reconciliation). Empty -> key by info.id.
+    std::string outputSourceId;
+    std::unique_ptr<UvcCaptureSession> session;
+  };
+
  public:
-  UvcCaptureDeviceAdapter() = default;
+  // Initial discovery happens during module construction, before media workers
+  // start. Preserve immediate connect-by-id for restored shows. Only periodic
+  // refresh used to run under coreMutex; all later refresh is asynchronous.
+  UvcCaptureDeviceAdapter()
+      : devices_([] {
+          auto initial = discoverDevices();
+          return initial ? std::move(*initial) : std::vector<DeviceEntry>{};
+        }()),
+        discovery_([] { return discoverDevices(); }, kEnumerateRefreshInterval) {}
 
   ~UvcCaptureDeviceAdapter() override {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -552,7 +573,7 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
 
   std::vector<CaptureDeviceInfo> enumerate() const override {
     std::lock_guard<std::mutex> lock(mutex_);
-    refreshLocked(false);
+    refreshLocked();
     return snapshotLocked();
   }
 
@@ -585,7 +606,7 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
   std::vector<CaptureDeviceInfo> connect(const std::string& deviceId,
                                          const std::string& outputSourceId) override {
     std::lock_guard<std::mutex> lock(mutex_);
-    refreshLocked(true);
+    refreshLocked();
     for (auto& entry : devices_) {
       if (!matchesDeviceId(entry, deviceId)) {
         continue;
@@ -682,18 +703,6 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
   }
 
  private:
-  struct DeviceEntry {
-    CaptureDeviceInfo info;
-    std::wstring symbolicLink;
-    // Case-variant stable ids so a shell-computed id still matches when the
-    // WinRT and MF symbolic-link casing differ.
-    std::vector<std::string> candidateIds;
-    // The shell's routing id to key emitted frames by (WinRT vs MF stable-id
-    // reconciliation). Empty -> key by info.id.
-    std::string outputSourceId;
-    std::unique_ptr<UvcCaptureSession> session;
-  };
-
   static bool matchesDeviceId(const DeviceEntry& entry, const std::string& deviceId) {
     if (entry.info.id == deviceId || entry.info.nativeDeviceId == deviceId) {
       return true;
@@ -717,39 +726,33 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
     return result;
   }
 
-  // Re-enumerates VIDCAP devices at most every kEnumerateRefreshInterval
-  // (`force` bypasses the throttle). Enumeration lists devices only — it never
-  // opens a camera. Devices that vanish while streaming stay listed in an
-  // error state (hot-unplug surfaces as a warning, never a crash); idle
-  // vanished devices are dropped.
-  void refreshLocked(bool force) const {
-    const auto now = std::chrono::steady_clock::now();
-    if (!force && lastRefresh_.time_since_epoch().count() != 0 &&
-        now - lastRefresh_ < kEnumerateRefreshInterval) {
-      return;
-    }
-    lastRefresh_ = now;
-
-    const HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    const bool comInitialized = comHr == S_OK || comHr == S_FALSE;
-    if (!mfStarted_) {
-      mfStarted_ = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET));
-    }
-    if (!mfStarted_) {
-      if (comInitialized) {
-        CoUninitialize();
+  // Only the discovery worker calls Media Foundation. Failures retain the
+  // previous list; a successful empty result represents unplugged devices.
+  static std::optional<std::vector<DeviceEntry>> discoverDevices() {
+    struct Runtime {
+      bool com = false;
+      bool mf = false;
+      ~Runtime() {
+        if (mf) MFShutdown();
+        if (com) CoUninitialize();
       }
-      return;
-    }
+    } runtime;
+    const HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    runtime.com = comHr == S_OK || comHr == S_FALSE;
+    if (FAILED(comHr)) return std::nullopt;
+    runtime.mf = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET));
+    if (!runtime.mf) return std::nullopt;
 
     std::vector<DeviceEntry> discovered;
+    bool discoverySucceeded = false;
     ComPtrLite<IMFAttributes> attributes;
     if (SUCCEEDED(MFCreateAttributes(attributes.put(), 1)) &&
         SUCCEEDED(attributes->SetGUID(
             MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID))) {
       IMFActivate** activates = nullptr;
       UINT32 count = 0;
-      if (SUCCEEDED(MFEnumDeviceSources(attributes.get(), &activates, &count)) && activates) {
+      discoverySucceeded = SUCCEEDED(MFEnumDeviceSources(attributes.get(), &activates, &count));
+      if (discoverySucceeded && activates) {
         for (UINT32 index = 0; index < count; ++index) {
           IMFActivate* activate = activates[index];
           if (!activate) {
@@ -808,10 +811,14 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
         CoTaskMemFree(activates);
       }
     }
-    if (comInitialized) {
-      CoUninitialize();
-    }
+    if (!discoverySucceeded) return std::nullopt;
+    return discovered;
+  }
 
+  void refreshLocked() const {
+    auto pending = discovery_.takeLatest();
+    if (!pending) return;
+    auto& discovered = *pending;
     // Merge: keep runtime state (session, connection, telemetry) for devices
     // that are still present; add new ones; keep streaming-but-vanished devices
     // visible in an error state; drop idle vanished devices.
@@ -845,8 +852,7 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
 
   mutable std::mutex mutex_;
   mutable std::vector<DeviceEntry> devices_;
-  mutable std::chrono::steady_clock::time_point lastRefresh_{};
-  mutable bool mfStarted_ = false;
+  mutable PeriodicDeviceDiscovery<std::vector<DeviceEntry>> discovery_;
 };
 
 }  // namespace
