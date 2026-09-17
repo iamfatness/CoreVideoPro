@@ -5,6 +5,39 @@
 #include <cmath>
 
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <d3d11.h>
+#include <d3dcompiler.h>
+#include <dxgi.h>
+#include "modules/D3DProgramBuffer.h"
+
+namespace corevideo::modules {
+struct D3DProgramBufferTestAccess {
+  static void fail(D3DProgramBuffer& buffer) { buffer.fail("test-injected"); }
+};
+}
+
+TEST(D3DProgramBuffer, FailedProducerKeepsEmptyOutputReadsPaced) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+      device.put(), nullptr, context.put())));
+  D3DProgramBuffer buffer(device.get(), 64, 64, 3, 1, {});
+  ASSERT_TRUE(buffer.valid());
+  D3DProgramBufferTestAccess::fail(buffer);
+  EXPECT_EQ(buffer.diagnostics().status, "failed");
+  ProgramFrame frame;
+  const auto started = std::chrono::steady_clock::now();
+  for (int i = 0; i < 4; ++i) EXPECT_FALSE(buffer.take(frame, 20));
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  EXPECT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 60);
+  EXPECT_FALSE(buffer.take(frame, 0));
+}
+
 TEST(D3DProgramBuffer, StartupPreparationAllocatesWithoutStartingDeliveryClock) {
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_TRUE(compositor != nullptr);
