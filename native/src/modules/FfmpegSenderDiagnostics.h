@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstddef>
 #include <string>
@@ -25,6 +26,22 @@ namespace corevideo::modules {
 // naming the cause was thrown away - the identical gap #473/#494 closed for the
 // media decoder, and the rule CLAUDE.md already states twice for this sender:
 // read FFmpeg's own stderr before theorising.
+
+// Written by the encoder callback and pipe worker; retain the initiating fault
+// if a blocked pipe also breaks during recovery.
+enum class BitstreamFailure { None, QueueOverflow, PipeWrite };
+class BitstreamFailureState {
+ public:
+  void reset() { reason_.store(BitstreamFailure::None); }
+  void record(BitstreamFailure reason) {
+    auto expected = BitstreamFailure::None;
+    reason_.compare_exchange_strong(expected, reason);
+  }
+  [[nodiscard]] BitstreamFailure reason() const { return reason_.load(); }
+  [[nodiscard]] bool failed() const { return reason() != BitstreamFailure::None; }
+ private:
+  std::atomic<BitstreamFailure> reason_{BitstreamFailure::None};
+};
 
 namespace detail {
 
