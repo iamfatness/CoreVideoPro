@@ -75,12 +75,12 @@ typed commands.
 
 ## 7. Parking lot vs Now
 
-Owner 2026-09-17: **MXL / ZoomISO Cloud receive / K8s spokes are not Now.**
-They sit in BACKLOG Later (#539). Do not design a fifth private pipe for them
-until F1 (#535) exists.
+Owner 2026-09-17: **Now is show survival** (#529/#533, #518, #516, then #526, #513).
+**Next is F1 (#535) then SRT/NDI send (#538) then SRT ingest (#536).**
+**MXL / ZoomISO Cloud / K8s (#539) stay Later.** Do not design a fifth private
+pipe until F1 exists.
 
-Beta Now is show survival + first external install. Architecture that does not
-save tonight’s show is Later, even if it is correct.
+Architecture that does not save tonight's show does not jump Now.
 
 ## 8. When you find a new defect mid-task
 
