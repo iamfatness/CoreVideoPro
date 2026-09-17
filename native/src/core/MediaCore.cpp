@@ -1305,16 +1305,12 @@ void MediaCore::enqueuePreviewSharedTextureEvent() {
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elapsedMs) {
   const auto frameNumberBefore = lastProgramFrame_.frameNumber;
   const auto tCmd0 = std::chrono::steady_clock::now();
-  const bool verboseDiagnostics = ::corevideo::core::nativeVerboseLoggingEnabled();
   for (const auto& command : commands) {
-    const auto ci0 = verboseDiagnostics ? std::chrono::steady_clock::now()
-                                        : std::chrono::steady_clock::time_point{};
+    const auto ci0 = std::chrono::steady_clock::now();
     applyCommandMutation(command);
-    const auto cms = verboseDiagnostics
-        ? std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ci0).count()
-        : 0LL;
-    if (verboseDiagnostics && cms >= 10) {
-      ::corevideo::core::nativeVerboseLogf("[cmd] '%s' %lldms\n", command.getString("type").c_str(),
+    const auto cms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ci0).count();
+    if (cms >= 10) {
+      ::corevideo::core::nativeLogf("[cmd] '%s' %lldms\n", command.getString("type").c_str(),
                    static_cast<long long>(cms));
     }
   }
@@ -1340,7 +1336,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   const auto cmdMs = std::chrono::duration_cast<std::chrono::milliseconds>(tCmd1 - tCmd0).count();
   const auto renderMs = std::chrono::duration_cast<std::chrono::milliseconds>(tRender - tCmd1).count();
   const auto stateMs = std::chrono::duration_cast<std::chrono::milliseconds>(tState - tRender).count();
-  if (cmdMs + renderMs + stateMs >= 80) {
+  if (cmdMs + renderMs + stateMs >= 30) {
     ::corevideo::core::nativeLogf("[applyCommands] %zu cmds=%lldms render(%dticks)=%lldms snapshot=%lldms\n",
                  commands.size(), static_cast<long long>(cmdMs), additionalTicks,
                  static_cast<long long>(renderMs), static_cast<long long>(stateMs));

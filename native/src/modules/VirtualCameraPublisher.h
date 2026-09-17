@@ -19,7 +19,7 @@ namespace corevideo::modules {
 
 struct VirtualCameraStatus {
   bool enabled = false;
-  std::string state = "off";  // off | starting | live | failed
+  std::string state = "off";  // off | starting | live | stopping | failed
   std::string deviceName = "CoreVideo Pro Camera";
   int width = 1280;
   int height = 720;
@@ -32,6 +32,7 @@ class IVirtualCameraPublisher {
  public:
   virtual ~IVirtualCameraPublisher() = default;
   // Create the SHM slot and (V2) register the OS virtual camera. Idempotent.
+  // Async implementations return acceptance; status() reports completion/failure.
   virtual bool start(int width, int height, int fps) = 0;
   // Convert + publish one program frame (no-op when not started).
   virtual void publish(const ProgramFrame& frame) = 0;

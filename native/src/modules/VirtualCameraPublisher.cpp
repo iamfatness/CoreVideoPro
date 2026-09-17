@@ -1,5 +1,6 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/VirtualCameraPublisher.h"
+#include "modules/AsyncVirtualCameraPublisher.h"
 
 #include "modules/ImageResize.h"
 #include "modules/VirtualCameraFrame.h"
@@ -359,7 +360,7 @@ class NoopVirtualCameraPublisher final : public IVirtualCameraPublisher {
 
 std::unique_ptr<IVirtualCameraPublisher> createVirtualCameraPublisher() {
 #if defined(COREVIDEO_WITH_VIRTUALCAM) && COREVIDEO_WITH_VIRTUALCAM
-  return std::make_unique<WindowsVirtualCameraPublisher>();
+  return std::make_unique<AsyncVirtualCameraPublisher>(std::make_unique<WindowsVirtualCameraPublisher>());
 #else
   return std::make_unique<NoopVirtualCameraPublisher>();
 #endif

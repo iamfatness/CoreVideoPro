@@ -90,6 +90,7 @@ add_library(corevideo_native
   src/modules/UvcCaptureDeviceAdapter.cpp
   src/modules/WgcScreenCaptureAdapter.cpp
   src/modules/VirtualCameraPublisher.cpp
+  src/modules/AsyncVirtualCameraPublisher.cpp
   src/modules/UvcCaptureSupport.cpp
   src/modules/WasapiAudioCaptureSourceAdapter.cpp
   src/modules/CoreAudioCaptureSourceAdapter.cpp
@@ -614,6 +615,7 @@ if(BUILD_TESTING)
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp
+    tests/AsyncVirtualCameraPublisherTest.cpp
     tests/VirtualCameraSlateTest.cpp
     tests/VirtualCameraComposeTest.cpp
     tests/MasteringReferenceTest.cpp
