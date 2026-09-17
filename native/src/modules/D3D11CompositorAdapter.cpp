@@ -31,6 +31,7 @@
 #include "modules/ProgramFramePreview.h"
 #include "modules/VirtualCameraFrame.h"  // nv12FrameSize (vcam tap NV12 buffer layout)
 #include "modules/D3DProgramBuffer.h"
+#include "modules/D3DDecoupledExport.h"
 
 #include <algorithm>
 #include <array>
@@ -1771,7 +1772,10 @@ class D3D11Compositor final : public ICompositor {
             // export carries the same look the program applies to this source.
             uploaded = renderBgraToParticipantTexture(f, pt, width, height, grade);
           }
-          pt.mutex->ReleaseSync(1);
+          {
+            CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantRelease]);
+            pt.mutex->ReleaseSync(1);
+          }
           if (profileEnabled && !uploaded) ++stageProfileUploadFailures_;
           if (uploaded) {
             pt.lastFrameId = f.frameId;
@@ -1942,85 +1946,21 @@ class D3D11Compositor final : public ICompositor {
     return SUCCEEDED(device_->CreateRenderTargetView(multiviewRenderTarget_.get(), nullptr, multiviewRenderTargetView_.put()));
   }
 
-  // Multiview keyed-mutex shared texture: an exact copy of ensureSharedTexture
-  // for the second (multiview) texture, so the WinUI consumer presents it the
-  // same proven way it presents the program shared texture.
-  bool ensureMultiviewSharedTexture(int width, int height) {
-    if (width <= 0 || height <= 0) {
-      return false;
-    }
-    if (multiviewSharedTexture_ && multiviewSharedWidth_ == width && multiviewSharedHeight_ == height) {
-      return true;
-    }
-
-    multiviewSharedTexture_ = {};
-    multiviewKeyedMutex_ = {};
-    multiviewSharedHandle_ = nullptr;
-    multiviewSharedWidth_ = width;
-    multiviewSharedHeight_ = height;
-
-    D3D11_TEXTURE2D_DESC textureDesc{};
-    textureDesc.Width = static_cast<UINT>(width);
-    textureDesc.Height = static_cast<UINT>(height);
-    textureDesc.MipLevels = 1;
-    textureDesc.ArraySize = 1;
-    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    textureDesc.SampleDesc.Count = 1;
-    textureDesc.Usage = D3D11_USAGE_DEFAULT;
-    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, multiviewSharedTexture_.put()))) {
-      return false;
-    }
-
-    ComPtrLite<IDXGIResource> dxgiResource;
-    if (FAILED(multiviewSharedTexture_->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(dxgiResource.put())))) {
-      multiviewSharedTexture_ = {};
-      return false;
-    }
-
-    HANDLE handle = nullptr;
-    if (FAILED(dxgiResource->GetSharedHandle(&handle)) || !handle) {
-      multiviewSharedTexture_ = {};
-      return false;
-    }
-
-    if (FAILED(multiviewSharedTexture_->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(multiviewKeyedMutex_.put())))) {
-      multiviewSharedTexture_ = {};
-      return false;
-    }
-
-    multiviewSharedHandle_ = handle;
-    return true;
-  }
-
-  // Mirrors exportSharedTexture for the multiview texture: acquire key 0, copy
-  // the multiview render target, release key 1. Non-blocking — if the consumer
-  // still holds the texture, publish the unchanged handle metadata and skip the
-  // copy rather than stalling.
+  // Publish the multiview render target to its shell-facing shared texture through
+  // the decoupled exporter, so the render immediate context never re-acquires a
+  // keyed mutex a slow consumer still owns (see D3DDecoupledExport). The exporter
+  // owns the shell-facing handle; the render context only hands the frame to a
+  // fast internal slot.
   void exportMultiviewSharedTexture(ProgramFrameSharedTexture& out) {
     if (!multiviewRenderTarget_ || !context_ || multiviewWidth_ <= 0 || multiviewHeight_ <= 0) {
       return;
     }
-    if (!ensureMultiviewSharedTexture(multiviewWidth_, multiviewHeight_)) {
-      return;
+    if (!multiviewExport_ || !multiviewExport_->dimensions(multiviewWidth_, multiviewHeight_)) {
+      multiviewExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), multiviewWidth_, multiviewHeight_, "multiview");
+      if (!multiviewExport_->valid()) { multiviewExport_.reset(); return; }
     }
-
-    if (multiviewKeyedMutex_) {
-      if (multiviewKeyedMutex_->AcquireSync(0, 0) != S_OK) {
-        out.sharedHandleHex = handleToHex(multiviewSharedHandle_);
-        out.width = multiviewWidth_;
-        out.height = multiviewHeight_;
-        out.format = "B8G8R8A8_UNORM";
-        out.frameNumber = frameNumber_;
-        return;
-      }
-    }
-    context_->CopyResource(multiviewSharedTexture_.get(), multiviewRenderTarget_.get());
-    if (multiviewKeyedMutex_) {
-      multiviewKeyedMutex_->ReleaseSync(1);
-    }
-    out.sharedHandleHex = handleToHex(multiviewSharedHandle_);
+    multiviewExport_->submit(context_.get(), multiviewRenderTarget_.get());
+    out.sharedHandleHex = handleToHex(multiviewExport_->handle());
     out.width = multiviewWidth_;
     out.height = multiviewHeight_;
     out.format = "B8G8R8A8_UNORM";
@@ -2057,82 +1997,17 @@ class D3D11Compositor final : public ICompositor {
     return SUCCEEDED(device_->CreateRenderTargetView(previewRenderTarget_.get(), nullptr, previewRenderTargetView_.put()));
   }
 
-  // Preview keyed-mutex shared texture: an exact copy of ensureMultiviewSharedTexture
-  // so the WinUI consumer presents it the same proven way it presents program.
-  bool ensurePreviewSharedTexture(int width, int height) {
-    if (width <= 0 || height <= 0) {
-      return false;
-    }
-    if (previewSharedTexture_ && previewSharedWidth_ == width && previewSharedHeight_ == height) {
-      return true;
-    }
-
-    previewSharedTexture_ = {};
-    previewKeyedMutex_ = {};
-    previewSharedHandle_ = nullptr;
-    previewSharedWidth_ = width;
-    previewSharedHeight_ = height;
-
-    D3D11_TEXTURE2D_DESC textureDesc{};
-    textureDesc.Width = static_cast<UINT>(width);
-    textureDesc.Height = static_cast<UINT>(height);
-    textureDesc.MipLevels = 1;
-    textureDesc.ArraySize = 1;
-    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    textureDesc.SampleDesc.Count = 1;
-    textureDesc.Usage = D3D11_USAGE_DEFAULT;
-    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, previewSharedTexture_.put()))) {
-      return false;
-    }
-
-    ComPtrLite<IDXGIResource> dxgiResource;
-    if (FAILED(previewSharedTexture_->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(dxgiResource.put())))) {
-      previewSharedTexture_ = {};
-      return false;
-    }
-
-    HANDLE handle = nullptr;
-    if (FAILED(dxgiResource->GetSharedHandle(&handle)) || !handle) {
-      previewSharedTexture_ = {};
-      return false;
-    }
-
-    if (FAILED(previewSharedTexture_->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(previewKeyedMutex_.put())))) {
-      previewSharedTexture_ = {};
-      return false;
-    }
-
-    previewSharedHandle_ = handle;
-    return true;
-  }
-
-  // Mirrors exportMultiviewSharedTexture for the preview texture: acquire key 0,
-  // copy the preview render target, release key 1. Non-blocking.
+  // Preview publish through the decoupled exporter — same decoupling as multiview.
   void exportPreviewSharedTexture(ProgramFrameSharedTexture& out) {
     if (!previewRenderTarget_ || !context_ || previewWidth_ <= 0 || previewHeight_ <= 0) {
       return;
     }
-    if (!ensurePreviewSharedTexture(previewWidth_, previewHeight_)) {
-      return;
+    if (!previewExport_ || !previewExport_->dimensions(previewWidth_, previewHeight_)) {
+      previewExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), previewWidth_, previewHeight_, "preview");
+      if (!previewExport_->valid()) { previewExport_.reset(); return; }
     }
-
-    if (previewKeyedMutex_) {
-      if (previewKeyedMutex_->AcquireSync(0, 0) != S_OK) {
-        out.sharedHandleHex = handleToHex(previewSharedHandle_);
-        out.width = previewWidth_;
-        out.height = previewHeight_;
-        out.format = "B8G8R8A8_UNORM";
-        out.frameNumber = frameNumber_;
-        return;
-      }
-    }
-    context_->CopyResource(previewSharedTexture_.get(), previewRenderTarget_.get());
-    if (previewKeyedMutex_) {
-      previewKeyedMutex_->ReleaseSync(1);
-    }
-    out.sharedHandleHex = handleToHex(previewSharedHandle_);
+    previewExport_->submit(context_.get(), previewRenderTarget_.get());
+    out.sharedHandleHex = handleToHex(previewExport_->handle());
     out.width = previewWidth_;
     out.height = previewHeight_;
     out.format = "B8G8R8A8_UNORM";
@@ -2668,18 +2543,17 @@ class D3D11Compositor final : public ICompositor {
   // unused. The counters feed ICompositor::sourceTexStats().
   std::map<std::string, SourceTex> sourceTextures_;
   CompositorSourceTexStats sourceTexStats_;
-  // Multiview pass: a second render target + keyed-mutex shared texture mirroring
-  // the program members above (no CPU staging — multiview never reads back).
+  // Multiview pass: a second render target; its shell-facing shared texture is
+  // published through the decoupled exporter (no CPU staging — multiview never
+  // reads back). See D3DDecoupledExport for why the export is off the render context.
   ComPtrLite<ID3D11Texture2D> multiviewRenderTarget_;
   ComPtrLite<ID3D11RenderTargetView> multiviewRenderTargetView_;
-  ComPtrLite<ID3D11Texture2D> multiviewSharedTexture_;
-  ComPtrLite<IDXGIKeyedMutex> multiviewKeyedMutex_;
-  // Preview pass: a third render target + keyed-mutex shared texture mirroring the
-  // program/multiview members (no CPU staging — preview never reads back).
+  std::unique_ptr<D3DDecoupledExport> multiviewExport_;
+  // Preview pass: a third render target; its shell-facing shared texture is also
+  // published through a decoupled exporter.
   ComPtrLite<ID3D11Texture2D> previewRenderTarget_;
   ComPtrLite<ID3D11RenderTargetView> previewRenderTargetView_;
-  ComPtrLite<ID3D11Texture2D> previewSharedTexture_;
-  ComPtrLite<IDXGIKeyedMutex> previewKeyedMutex_;
+  std::unique_ptr<D3DDecoupledExport> previewExport_;
   ComPtrLite<ID3D11Texture2D> layerTexture_;
   ComPtrLite<ID3D11ShaderResourceView> layerTextureView_;
   // I420 plane textures (R8_UNORM) shared by the program-composite draw and the
@@ -2704,16 +2578,10 @@ class D3D11Compositor final : public ICompositor {
   int sharedHeight_ = 0;
   int encoderSharedWidth_ = 0;
   int encoderSharedHeight_ = 0;
-  HANDLE multiviewSharedHandle_ = nullptr;
   int multiviewWidth_ = 0;
   int multiviewHeight_ = 0;
-  int multiviewSharedWidth_ = 0;
-  int multiviewSharedHeight_ = 0;
-  HANDLE previewSharedHandle_ = nullptr;
   int previewWidth_ = 0;
   int previewHeight_ = 0;
-  int previewSharedWidth_ = 0;
-  int previewSharedHeight_ = 0;
   int targetWidth_ = 0;
   int targetHeight_ = 0;
   int64_t frameNumber_ = 0;
@@ -2728,11 +2596,11 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<IDXGIKeyedMutex> retainedProgramKey_;
   ComPtrLite<ID3D11ShaderResourceView> retainedProgramView_;
   bool retainedProgramCopied_ = false;
-  enum ProfileStage { ParticipantAcquire, ParticipantConvert, ParticipantCopy, ParticipantTotal,
+  enum ProfileStage { ParticipantAcquire, ParticipantConvert, ParticipantCopy, ParticipantRelease, ParticipantTotal,
                       MvUpload, MvDraw, MvShare, MvTotal, ProfileStageCount };
   // Read dynamically so Health can enable/disable the profiler without a core
   // restart. This defaults false in BoundedAsyncLog.
-  bool stageProfileEnabled() const { return ::corevideo::core::nativeVerboseLoggingEnabled(); }
+  bool stageProfileEnabled() const { return true; }
   bool profileMvActive_ = false;
   std::array<long long, ProfileStageCount> stageProfileNs_{};
   std::uint64_t stageProfileParticipantCalls_ = 0, stageProfileMvCalls_ = 0;
@@ -2747,15 +2615,16 @@ class D3D11Compositor final : public ICompositor {
     const auto avg = [&](ProfileStage stage, std::uint64_t calls) {
       return calls ? static_cast<double>(stageProfileNs_[stage]) / (1e6 * calls) : 0.0;
     };
-    ::corevideo::core::nativeVerboseLogf(
+    if (::corevideo::core::nativeVerboseLoggingEnabled() || stageProfileParticipantMaxNs_ >= 8'000'000 || stageProfileMvMaxNs_ >= 8'000'000)
+    ::corevideo::core::nativeLogf(
         "[d3d-stage-cpu] window_s=%.3f participant_calls=%llu participant_avg_ms=%.3f participant_max_ms=%.3f "
         "participant_acquire_avg_ms=%.3f participant_upload_convert_avg_ms=%.3f participant_bgra_copy_avg_ms=%.3f "
-        "participant_acquire_busy=%llu participant_upload_failures=%llu mv_calls=%llu mv_avg_ms=%.3f mv_max_ms=%.3f "
+        "participant_release_avg_ms=%.3f participant_acquire_busy=%llu participant_upload_failures=%llu mv_calls=%llu mv_avg_ms=%.3f mv_max_ms=%.3f "
         "mv_upload_avg_ms=%.3f mv_draw_excluding_upload_avg_ms=%.3f mv_share_avg_ms=%.3f gpu_completion_measured=0\n",
         seconds, static_cast<unsigned long long>(stageProfileParticipantCalls_),
         avg(ParticipantTotal, stageProfileParticipantCalls_), stageProfileParticipantMaxNs_ / 1e6,
         avg(ParticipantAcquire, stageProfileParticipantCalls_), avg(ParticipantConvert, stageProfileParticipantCalls_),
-        avg(ParticipantCopy, stageProfileParticipantCalls_), static_cast<unsigned long long>(stageProfileAcquireBusy_),
+        avg(ParticipantCopy, stageProfileParticipantCalls_), avg(ParticipantRelease, stageProfileParticipantCalls_), static_cast<unsigned long long>(stageProfileAcquireBusy_),
         static_cast<unsigned long long>(stageProfileUploadFailures_), static_cast<unsigned long long>(stageProfileMvCalls_),
         avg(MvTotal, stageProfileMvCalls_), stageProfileMvMaxNs_ / 1e6,
         avg(MvUpload, stageProfileMvCalls_), avg(MvDraw, stageProfileMvCalls_), avg(MvShare, stageProfileMvCalls_));

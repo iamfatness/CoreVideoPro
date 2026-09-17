@@ -654,6 +654,7 @@ if(BUILD_TESTING)
     tests/ProgramPlayoutTimelineTest.cpp
     tests/TilesDecorationTest.cpp
     tests/D3DProgramBufferTest.cpp
+    tests/D3DDecoupledExportTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/MediaCoreBatchSnapshotTest.cpp
     tests/ProgramBufferIntegrationTest.cpp
