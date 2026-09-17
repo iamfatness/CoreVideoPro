@@ -511,6 +511,10 @@ struct OutputSession {
   int64_t recordingProgramBytesWritten = 0;
   int64_t recordingDurationMs = 0;
   int64_t recordingVideoFrameCount = 0;
+  // Scheduled Program slots absent between accepted real samples. Overlaps
+  // encoder queue losses; do not sum the counters. Head/tail are unverified.
+  int64_t recordingProgramMissingFrames = 0;
+  bool recordingProgramContinuityObserved = false;
   int64_t recordingVideoPrerollFrameCount = 0;
   int64_t recordingVideoTailFrameCount = 0;
   int64_t recordingMuxVideoFrameCount = 0;
