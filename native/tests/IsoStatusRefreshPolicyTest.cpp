@@ -1,10 +1,6 @@
 #include "modules/IsoStatusRefreshPolicy.h"
 
-#ifdef COREVIDEO_USE_SYSTEM_GTEST
 #include <gtest/gtest.h>
-#else
-#include "gtest/gtest.h"
-#endif
 
 using corevideo::modules::IsoStatusRefreshGate;
 
