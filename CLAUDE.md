@@ -3086,6 +3086,118 @@ above first — this is the same lesson, applied where it had not been carried a
   was rejecting 15-22% of submissions now rejects nothing, because the repeats are
   suppressed where they are actually observed.
 
+## The ISO dispatch thread is not the encode thread — and the throttle belongs on the READ side (#529, 2026-09-18)
+
+`AsyncEncoderSink` runs ONE writer thread. `submitIsoVideo` splits a batch to one
+source per queue item, so eight ISOs plus Program at 60 fps is **~540 items/s
+through that single thread**. The encode is NOT there — every ISO file has its
+own `RecordingTrackWorker`, so they encode in parallel — which makes that thread a
+**dispatcher**, and anything it does per item is multiplied by 540.
+
+Two costs rode that path. `MediaFoundationEncoderSink::submitIsoVideo`/
+`submitIsoAudio` ended with an unconditional `refreshIsoStreams()`, which takes
+each writer's snapshot mutex AND its worker's evidence mutex (16 acquisitions at
+eight ISOs) and rebuilds `session_.isoStreams` — two string-bearing structs per
+writer. And the writer loop called `inner->session()` after EVERY item, which for
+that sink runs the same rebuild again and then copies the whole `OutputSession`
+by value. **And it fed back on itself:** once a writer has dropped anything its
+status warning is non-empty, so every later pass recomposes `"ISO recording lost
+N video frames…"` with `std::to_string` — the cost grew with the damage, which is
+why a live 1080p60 eight-ISO run reported 8,482 dropped video items over ~100 s
+and never recovered inside the session (it kept dropping with no Takes at all,
+which is what ruled Takes out as the trigger).
+
+**THE FIRST FIX WAS WRONG AND THE TESTS SAID SO — IN A CONFIG CI CANNOT BUILD.**
+It throttled `refreshIsoStreams()` inside the MF sink's SUBMIT path. That broke
+**seven `EncoderRecordingSession.*` tests**, which submit a handful of ISO frames
+and then read `encoder->session()` synchronously, asserting exact cumulative
+state (`videoFrameCount == 9`, `audioSampleCount > 0`, `isoStreams.size() == 2`).
+They were right to: **that sink's contract is that a caller which submits and
+then reads sees exact, current counts.** They are Windows-only — they do not
+compile on the stub build — so CI was green through the whole thing and only a
+real `COREVIDEO_WITH_MF_ENCODER=ON` build found it. **A green CI on this repo
+says nothing about the Media Foundation sink.** `ci.yml` DOES have a Windows
+runner (`native-shell-windows`), and an earlier note here claiming otherwise was
+wrong — but that job builds the .NET shell and runs the native STUB gate
+(`scripts/test-native.ps1`), never a `COREVIDEO_WITH_MF_ENCODER=ON` core. No CI
+job on any platform compiles `MediaFoundationEncoderAdapter.cpp`.
+
+The layer that is ALLOWED to lag is `AsyncEncoderSink::session()`, and its own
+header has said so all along: *"eventually consistent within a few frames — fine
+for the live app; unit tests that need exact synchronous counts use the wrapped
+sink directly"* — which is exactly what those seven tests do. So:
+
+- **The MF sink refreshes ON READ.** `refreshIsoStreams()`/`updateBytesWritten()`
+  moved out of the submit path and into `session()` (via a narrow `const_cast`:
+  the object is never actually const, and the async writer thread is its SOLE
+  owner, so submit and read are the same thread — no lock, no race). Submit-then-
+  read is exact again, and nobody pays for a status nobody read.
+- **The async wrapper reads LESS OFTEN, and asks a cheaper question per item.**
+  `IEncoderSink::progress()` (`EncoderProgress`, `Interfaces.h`) answers the only
+  per-item question — did the writer move, did it fail — with a **default
+  implementation deriving from `session()`**, so every existing sink stays correct
+  with no edit; the MF sink overrides it to read counters it already maintains.
+  The full `session()` is read on the policy in
+  `modules/EncoderSessionReadPolicy.h` (`EncoderSessionReadGate`).
+
+**The read rule is BURST-shaped, not a fixed rate, and that is the point.**
+`MediaCore::renderIsoVideoTick` DRAINS everything pending, so one 60 Hz tick
+enqueues ~9 items at once. Reading once per **drained burst** is ~9x fewer reads
+at eight ISOs — and the saving GROWS with the ISO count, i.e. with the load that
+caused the incident. It costs no observable freshness: the published snapshot is
+exact whenever the writer is idle, which is the only moment a settled reading
+exists (`drainForTest` waits for precisely that). Structural items
+(configure/start/stop) and any failure always read. `kStaleAfterMs` (100 ms) is a
+BACKSTOP so a queue that never drains cannot freeze the snapshot — a bound, not
+the mechanism. **Rule: status is diagnostic, media is not — and when you throttle
+a status, throttle the READER, never make the producer answer with stale numbers.**
+
+**A READ-PATH REBUILD MUST NOT OUTLIVE THE WRITERS IT READS.** Moving the
+rebuild into `session()` introduced a second Windows-only defect, caught on a
+real `COREVIDEO_STUB=OFF` core by `MediaFoundationIsoVariableRateKeepsElapsed
+TimelineAcrossFragments` and `MediaFoundationIndependentIsoWritersDrainAudio
+VideoBeforeFinalize` (both read `session()` AFTER `stopRecording()`).
+`closeWriters()` does its OWN final refresh and then clears `isoWriters_`, so an
+unconditional rebuild on a later read regenerated `isoStreams` from zero writers
+and wiped the finalized status it had just captured — empty `isoStreams`,
+`videoFrameCount` gone, on a recording that had completed correctly. `session()`
+now rebuilds only `if (!isoWriters_.empty())`; once stopped, the finalized
+snapshot IS the answer. **The guard is at the CALL SITE, never inside
+`refreshIsoStreams()`** — the rebuild at the top of a take must stay
+unconditional, because that clear is what stops a previous ISO recording's
+streams carrying into a new program-only one. Two rounds of this fix were caught
+by the same seven tests, in a configuration no CI job builds: treat them as the
+gate for anything touching this path, and expect a read-side change to have a
+stop-side consequence.
+
+**A drop is charged to the source that LOST the picture, not the one arriving.**
+Same PR, `AsyncEncoderSink.cpp`: when the ISO budget is full and the arriving
+source has no pending frame of its own to replace, the sink evicts the OLDEST
+queued ISO picture — another source's — and used to charge the arrival. A slow
+guest was billed for frames a fast guest lost, and that per-source spread
+(`encoderEvidence.isoVideoBySource`) is exactly what gets read to decide which
+writer is unhealthy. The victim is now identified BEFORE the counters move; with
+no victim the arriving item really is the one refused, so it keeps the charge.
+Pinned by `AnEvictedIsoPictureIsChargedToItsOwnSourceNotTheArrivingOne` (mutation
+-proved) and `ARefusedIsoPictureIsStillChargedToTheArrivingSource` (the guard
+against over-correcting).
+
+**Telling the two ISO loss sites apart, because one number sums both.**
+`session.encoderQueueDroppedVideoFrames` adds the sink's queue drops to the
+per-writer worker drops, so it cannot diagnose anything on its own. Read them
+separately: `encoderEvidence.isoVideoBySource.<id>.dropped` is the DISPATCHER
+behind; `recording.streams[].droppedFrames` is that WRITER's encode too slow, and
+`videoWorkUs ÷ completedVideo` (both cumulative) is its mean µs per frame — over
+16,667 means that track cannot hold 60 fps, and `encoderPath` will usually read
+`software`.
+
+Tests: `EncoderSessionReadPolicyTest.cpp` (the rules, incl. the burst-rate
+collapse), `AsyncEncoderSink.TheWrappedSinksFullStatusIsNotReadOncePerItem`
+(mutation-proved: disabling the gate fails it) and
+`TheSnapshotIsExactOnceTheBurstHasDrained`. The seven
+`EncoderRecordingSession.*` tests are the Windows gate and must be run on a real
+`COREVIDEO_STUB=OFF` build before believing any change to this path.
+
 ## ISO recording — ISO-2 (per-source AUDIO stems muxed into the ISO MP4s, 2026-07-20)
 
 ISO-2 completes the **Demo E** shape: each Zoom-participant ISO is now a

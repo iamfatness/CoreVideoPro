@@ -977,6 +977,28 @@ class IAudioMonitorOutput {
   [[nodiscard]] virtual std::string resolvedEndpointId() const { return {}; }
 };
 
+// The cheap per-item view of a recording writer (#529).
+//
+// `OutputSession` is the FULL status, and for the Media Foundation sink
+// producing it means rebuilding every per-ISO status record (two mutexes and
+// two string-bearing structs per ISO writer) and copying the whole struct by
+// value. `AsyncEncoderSink`'s writer thread asked for that after EVERY queue
+// item — ~540/s at eight ISOs plus Program at 60fps — when all it needed per
+// item was "did the writer move, and did it fail".
+//
+// Splitting the two questions is what lets the full status be read rarely
+// WITHOUT any sink ever answering a read with stale numbers: a submit-then-read
+// caller (EncoderRecordingSession's tests, and anything that asks session()
+// directly) still gets exact, current counts.
+struct EncoderProgress {
+  int64_t videoFramesWritten = 0;
+  int64_t audioPacketsWritten = 0;
+  int64_t droppedVideo = 0;
+  int64_t droppedAudio = 0;
+  std::string error;
+  std::string warning;
+};
+
 class IEncoderSink {
  public:
   // Called once by AsyncEncoderSink before media submission. Each ISO file
@@ -984,6 +1006,18 @@ class IEncoderSink {
   // their existing behavior.
   virtual void enableIndependentIsoWriters() {}
   virtual ~IEncoderSink() = default;
+  // Cheap progress, called once per queue item by the async writer thread.
+  // The DEFAULT derives it from session(), so every existing sink stays correct
+  // with no edit — it simply does not get the saving. A sink whose session() is
+  // expensive (the Media Foundation one) overrides this to read the counters it
+  // already maintains, without rebuilding anything.
+  [[nodiscard]] virtual EncoderProgress progress() const {
+    const auto snapshot = session();
+    return EncoderProgress{snapshot.recordingVideoFrameCount, snapshot.recordingAudioPacketCount,
+                           snapshot.encoderQueueDroppedVideoFrames,
+                           snapshot.encoderQueueDroppedAudioPackets, snapshot.recordingError,
+                           snapshot.recordingWarning};
+  }
   virtual void configureRecording(const RecordingSessionRequest& request) = 0;
   virtual OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) = 0;
   virtual void submit(const ProgramFrame& frame) = 0;

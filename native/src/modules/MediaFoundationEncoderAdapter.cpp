@@ -1626,7 +1626,14 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         });
       } else { writeIsoVideo(entry, source, *isoRequest_); publishIsoTrack(entry); }
     }
-    refreshIsoStreams(); updateBytesWritten();
+    // #529: the per-ISO status rebuild does NOT run here. submitIsoVideo carries
+    // one source, so at eight ISOs and 60fps this ran ~480x/s, rebuilding all
+    // eight status records (16 mutex acquisitions, >100 string copies) on the
+    // single dispatch thread that has to keep every writer fed — and once a
+    // writer had dropped anything its warning was recomposed on every pass, so
+    // the cost grew with the damage. It is a READ-side concern: session() does
+    // it, so the numbers are still exact for whoever asks, and nobody pays for
+    // a status nobody read. See session().
   }
 
   void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) override {
@@ -1644,7 +1651,6 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         });
       } else { writeIsoAudio(entry, source); publishIsoTrack(entry); }
     }
-    refreshIsoStreams(); updateBytesWritten();
   }
 
   void stopRecording() override {
@@ -1661,7 +1667,50 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     EncoderCapacityCache::instance().setRecordingActive(false);
   }
 
+  // #529: the per-item question, answered without the per-ISO rebuild that
+  // session() now owns. These four counters are maintained by submit /
+  // submitAudio as the writes happen, so they are already current here.
+  [[nodiscard]] EncoderProgress progress() const override {
+    return EncoderProgress{session_.recordingVideoFrameCount, session_.recordingAudioPacketCount,
+                           session_.encoderQueueDroppedVideoFrames,
+                           session_.encoderQueueDroppedAudioPackets, session_.recordingError,
+                           session_.recordingWarning};
+  }
+
   OutputSession session() const override {
+    // #529: the rebuild lives HERE, not on the submit path. This sink's contract
+    // is that a caller which submits and then reads sees exact, current counts —
+    // EncoderRecordingSession's tests submit a handful of ISO frames and assert
+    // videoFrameCount/audioSampleCount/isoStreams.size() synchronously, and they
+    // are right to. Throttling that was the regression; throttling how OFTEN the
+    // async wrapper READS is the same saving without the lie (AsyncEncoderSink,
+    // whose own session() is documented eventually-consistent).
+    //
+    // const_cast rather than making session_ mutable: this object is never
+    // actually const (it is owned by a unique_ptr and driven through the
+    // non-const IEncoderSink surface), and AsyncEncoderSink's writer thread is
+    // its SOLE owner, so submit and this read are the same thread — no lock and
+    // no race is introduced by refreshing on read.
+    //
+    // ONLY WHILE WRITERS ARE LIVE. `closeWriters()` does its own final refresh
+    // and THEN clears `isoWriters_`, so a read after stop would rebuild from
+    // zero writers and wipe the finalized per-ISO status it had just captured —
+    // empty `isoStreams`, `videoFrameCount` gone. Found on a real Windows core
+    // by `MediaFoundationIsoVariableRateKeepsElapsedTimelineAcrossFragments`
+    // and `MediaFoundationIndependentIsoWritersDrainAudioVideoBeforeFinalize`,
+    // which both read `session()` AFTER `stopRecording()`; neither compiles on
+    // the stub build, so no CI job could have said so. Once stopped, the
+    // finalized snapshot IS the answer and must be returned untouched.
+    //
+    // The guard belongs HERE and not inside `refreshIsoStreams()`: the rebuild
+    // at the top of a take (after `isoWriters_` is repopulated, line ~1902) must
+    // stay UNCONDITIONAL, because that clear is what stops a previous ISO
+    // recording's streams carrying into a new program-only one.
+    auto* self = const_cast<MediaFoundationEncoderSink*>(this);
+    if (!isoWriters_.empty()) {
+      self->refreshIsoStreams();
+      self->updateBytesWritten();
+    }
     auto result = session_;
     result.recordingProgramMissingFrames = programContinuity_.missingFrames();
     result.recordingProgramContinuityObserved = programContinuity_.observed();
@@ -2030,6 +2079,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
   }
+
 
   void closeWriters() {
     // The outer Stop barrier has already stopped input dispatch. Tracks keep
