@@ -1,6 +1,8 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/AsyncEncoderSink.h"
 
+#include "modules/EncoderSessionReadPolicy.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <exception>
@@ -497,6 +499,8 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
   bool madeProgress = false;
   for (;;) {
     Item item;
+    // Set under the queue lock below: does this item end a burst?
+    bool queueDrained = false;
     {
       std::unique_lock<std::mutex> lock(state->queueMutex);
       state->queueCv.wait(lock, [&] { return !state->queue.empty() || state->stop; });
@@ -547,6 +551,10 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       }
       item = std::move(*selected);
       state->queue.erase(selected);
+      // #529: sampled HERE because it is the one point the queue lock is already
+      // held. A drained queue means this item ends a burst, which is the only
+      // moment a settled snapshot is observable (drainForTest waits for it).
+      queueDrained = state->queue.empty();
       state->applying = true;
       auto& evidence = state->evidence;
       evidence.operation = operationNames[static_cast<size_t>(item.kind)];
@@ -572,6 +580,9 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
     std::string failure;
     bool invoked = false;
     bool observed = false;
+    bool readSession = false;
+    EncoderProgress progress;
+    bool observedProgress = false;
     try {
       if (!state->inner) throw std::runtime_error("Recording writer is unavailable");
       if (item.generation != failedGeneration || item.kind == Kind::StopRecording) {
@@ -601,10 +612,28 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
           break;
       }
       }
-      fresh = state->inner->session();
-      observed = true;
+      // #529: NOT after every item. For the Media Foundation sink this call
+      // rebuilds all eight per-ISO status records and copies the whole
+      // OutputSession by value; at eight ISOs and 60fps that ran ~540x/s on the
+      // one thread feeding nine files. Read on a drained burst (~9x fewer at
+      // eight ISOs, and the saving grows with the ISO count), on anything
+      // structural, and on a 100ms backstop so a sustained backlog cannot leave
+      // the snapshot stale. Never by making the wrapped sink lie: its session()
+      // stays exact for whoever asks it directly.
+      // Per item: only "did the writer move, and did it fail". Cheap by contract.
+      progress = state->inner->progress();
+      observedProgress = true;
+      const bool structuralItem = item.kind == Kind::Configure || item.kind == Kind::Start ||
+          item.kind == Kind::StopRecording;
+      readSession = state->sessionReadGate.shouldRead(structuralItem, queueDrained,
+                                                     !progress.error.empty(), evidenceNowMs());
+      if (readSession) {
+        fresh = state->inner->session();
+        state->sessionReadGate.markRead(evidenceNowMs());
+        observed = true;
+      }
       if (item.kind == Kind::Start) {
-        startVideoCount = fresh.recordingVideoFrameCount;
+        startVideoCount = progress.videoFramesWritten;
         madeProgress = false;
         // The writer has now actually applied the (synchronous) open. This is
         // what moves the take out of `requested` — an accepted command did not.
@@ -614,11 +643,11 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       }
       // encodedFrameCount includes attempted submissions in the MF adapter;
       // only successfully written recording frames establish output truth.
-      madeProgress = madeProgress || fresh.recordingVideoFrameCount > startVideoCount;
+      madeProgress = madeProgress || progress.videoFramesWritten > startVideoCount;
       // Configure may retain the previous take's terminal error until Start
       // resets the wrapped session. It cannot poison the next generation.
       if (item.kind != Kind::Configure)
-        failure = item.generation == failedGeneration ? generationFailure : fresh.recordingError;
+        failure = item.generation == failedGeneration ? generationFailure : progress.error;
     } catch (const std::exception& ex) {
       failure = ex.what();
     } catch (...) {
@@ -651,12 +680,12 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
         }
       }
       if (invoked) ++evidence.completedCalls[static_cast<size_t>(item.kind)];
-      if (observed && item.kind != Kind::Configure) {
+      if (observedProgress && item.kind != Kind::Configure) {
         const bool sameGeneration = evidence.writtenGeneration == item.generation;
         if (!sameGeneration) evidence.lastWriterProgressMs = 0;
         if (item.kind != Kind::Start &&
-            (fresh.recordingVideoFrameCount > (sameGeneration ? evidence.programVideoWritten : 0) ||
-             fresh.recordingAudioPacketCount > (sameGeneration ? evidence.programAudioPacketsWritten : 0))) {
+            (progress.videoFramesWritten > (sameGeneration ? evidence.programVideoWritten : 0) ||
+             progress.audioPacketsWritten > (sameGeneration ? evidence.programAudioPacketsWritten : 0))) {
           evidence.lastWriterProgressMs = now;
           // The ONLY thing that can keep a destination in `producing`.
           if (item.generation == state->generation) {
@@ -665,8 +694,8 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
           }
         }
         evidence.writtenGeneration = item.generation;
-        evidence.programVideoWritten = fresh.recordingVideoFrameCount;
-        evidence.programAudioPacketsWritten = fresh.recordingAudioPacketCount;
+        evidence.programVideoWritten = progress.videoFramesWritten;
+        evidence.programAudioPacketsWritten = progress.audioPacketsWritten;
       }
       if (!failure.empty() && evidence.firstFailure.empty()) {
         evidence.firstFailure = failure.substr(0, 512);
@@ -679,8 +708,13 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
         evidence.finalizeResult = failure.empty() ? "returned" : "failed";
       }
       std::lock_guard<std::mutex> lock(state->snapshotMutex);
-      if (item.generation == state->generation && state->snapshot.lifecycle &&
-          (item.kind != Kind::Configure || !failure.empty())) {
+      // #529: a SKIPPED read must never publish. `fresh` is default-constructed
+      // when the gate deferred, and assigning it would wipe the snapshot to
+      // zeroes — worse than the staleness the gate is trading for. A throw still
+      // publishes (readSession is false there too, but failure is set), which is
+      // the pre-existing failure path, unchanged.
+      if ((readSession || !failure.empty()) && item.generation == state->generation &&
+          state->snapshot.lifecycle && (item.kind != Kind::Configure || !failure.empty())) {
         auto lifecycle = *state->snapshot.lifecycle;
         const bool mediaLost = fresh.encoderQueueDroppedVideoFrames > 0 ||
             fresh.encoderQueueDroppedAudioPackets > 0 ||
@@ -724,7 +758,8 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
         fresh.lifecycle = std::move(lifecycle);
         fresh.active = fresh.lifecycle->state == "producing";
         state->snapshot = std::move(fresh);
-      } else if (item.generation == state->generation && !state->snapshot.lifecycle) {
+      } else if ((readSession || !failure.empty()) && item.generation == state->generation &&
+                 !state->snapshot.lifecycle) {
         // Non-recording encoder use retains its legacy observed sink state.
         state->snapshot = std::move(fresh);
       }

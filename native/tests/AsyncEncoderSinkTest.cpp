@@ -11,6 +11,7 @@
 namespace {
 
 using corevideo::modules::AsyncEncoderSink;
+using corevideo::modules::EncoderProgress;
 using corevideo::modules::IEncoderSink;
 using corevideo::modules::IsoSourceAudio;
 using corevideo::modules::IsoSourceVideoFrame;
@@ -145,11 +146,30 @@ class ControllableEncoder final : public IEncoderSink {
     session_.recordingStatus = "stopped";
   }
 
+  // #529: counted so a test can pin that the FULL status is not read once per
+  // queue item. Mutable because session() is const and this is a diagnostic.
+  mutable std::atomic<int> sessionCalls{0};
+  mutable std::atomic<int> progressCalls{0};
+
   OutputSession session() const override {
+    ++sessionCalls;
     std::lock_guard<std::mutex> lock(mutex_);
     auto result = session_;
     result.encoderQueueDroppedVideoFrames = innerDroppedVideo.load();
     return result;
+  }
+
+  // Overridden so the two counters are INDEPENDENT: the default implementation
+  // derives progress from session(), which would make every progress call also
+  // count as a full-status read and hide the very split under test. This mirrors
+  // what the real Media Foundation sink does — answer the cheap question from
+  // counters it already maintains, without the per-ISO rebuild.
+  [[nodiscard]] EncoderProgress progress() const override {
+    ++progressCalls;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return EncoderProgress{session_.recordingVideoFrameCount, session_.recordingAudioPacketCount,
+                           innerDroppedVideo.load(), session_.encoderQueueDroppedAudioPackets,
+                           session_.recordingError, session_.recordingWarning};
   }
 
  private:
@@ -1182,4 +1202,78 @@ TEST(AsyncEncoderSink, ARefusedIsoPictureIsStillChargedToTheArrivingSource) {
 
   raw->blockSubmit->store(false);
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+}
+
+// #529, round 2. The first fix throttled the per-ISO status rebuild inside the
+// Media Foundation sink's SUBMIT path, and seven Windows-only
+// EncoderRecordingSession tests failed: that sink's contract is that a caller
+// which submits and then reads sees exact counts. The saving belongs here
+// instead — AsyncEncoderSink's own header documents its session() as eventually
+// consistent — and it is taken by reading the wrapped sink's FULL status less
+// often, never by making that sink answer a read with stale numbers.
+TEST(AsyncEncoderSink, TheWrappedSinksFullStatusIsNotReadOncePerItem) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockSubmit->store(true);
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+
+  // Wedge the writer inside Program so a real burst accumulates behind it —
+  // the shape that matters. With no backlog the gate deliberately reads every
+  // time (a drained queue is a settled state, and there is slack to pay for
+  // it); the saving exists precisely when the writer is falling behind.
+  sink.submit(videoFrame(1));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->submitEntered.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  ASSERT_TRUE(raw->submitEntered.load());
+
+  const auto sessionsBefore = raw->sessionCalls.load();
+  const auto progressBefore = raw->progressCalls.load();
+
+  // One 60Hz tick's worth of ISO work, the shape MediaCore::renderIsoVideoTick
+  // produces: eight sources enqueued together.
+  for (int source = 0; source < 8; ++source) {
+    IsoSourceVideoFrame iso;
+    iso.sourceId = "zoom:guest" + std::to_string(source);
+    iso.frame.frameId = 1;
+    sink.submitIsoVideo({iso});
+  }
+  raw->blockSubmit->store(false);
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+
+  const auto sessionReads = raw->sessionCalls.load() - sessionsBefore;
+  const auto progressReads = raw->progressCalls.load() - progressBefore;
+
+  // Every item still answers "did the writer move, and did it fail".
+  EXPECT_GE(progressReads, 9) << "per-item progress must not be skipped";
+  // The expensive full status is not paid per item. Bounded rather than exact:
+  // how much of the burst is still queued when each item is applied depends on
+  // scheduling. The point is that it is well below the item count.
+  EXPECT_LT(sessionReads, progressReads)
+      << "the full status was read as often as the cheap one — the split is not working";
+}
+
+// The other half of the same contract: reading less often must not cost
+// accuracy once the writer is idle, which is the only moment a settled reading
+// exists at all.
+TEST(AsyncEncoderSink, TheSnapshotIsExactOnceTheBurstHasDrained) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  // Four, not a dozen: maxVideoQueue defaults to 6, and overflowing it is the
+  // drop-to-latest policy doing its job, not a freshness question.
+  for (int frameNumber = 1; frameNumber <= 4; ++frameNumber) {
+    sink.submit(videoFrame(frameNumber));
+  }
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+
+  EXPECT_EQ(raw->submitCount.load(), 4);
+  // Published state reflects every accepted frame, not a value from mid-burst.
+  EXPECT_EQ(sink.evidence().programVideoWritten, 4);
+  EXPECT_EQ(sink.session().recordingVideoFrameCount, 4);
+  ASSERT_TRUE(sink.session().lifecycle);
+  EXPECT_EQ(sink.session().lifecycle->state, "producing");
 }

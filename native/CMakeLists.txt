@@ -602,7 +602,7 @@ if(BUILD_TESTING)
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
     tests/AsyncEncoderSinkTest.cpp
-    tests/IsoStatusRefreshPolicyTest.cpp
+    tests/EncoderSessionReadPolicyTest.cpp
     tests/RecordingTrackWorkerTest.cpp
     tests/EncoderCapacityCacheTest.cpp
     tests/AsyncOutputSenderTest.cpp

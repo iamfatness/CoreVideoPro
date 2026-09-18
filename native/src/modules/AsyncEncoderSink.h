@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/OutputLifecyclePolicy.h"
+#include "modules/EncoderSessionReadPolicy.h"
 #include "modules/Interfaces.h"
 
 #include <atomic>
@@ -214,6 +215,9 @@ class AsyncEncoderSink final : public IEncoderSink {
     bool applying = false;
     bool stop = false;
     bool writerDone = false;
+    // #529: how often the writer re-reads `inner->session()`. Writer-thread
+    // only — never touched from a producer — so it needs no lock of its own.
+    EncoderSessionReadGate sessionReadGate;
 
     // Producer-side held-frame suppression. MediaCore intentionally re-submits
     // the latest Program/ISO frame from the audio tick; letting those identical
