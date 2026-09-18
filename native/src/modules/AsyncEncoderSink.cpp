@@ -200,6 +200,32 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
         // media accepted before an older take's Stop barrier: a new generation
         // may replace its own pending media, but must drop its incoming item
         // when older generations occupy the entire budget.
+        //
+        // FIND THE VICTIM FIRST (#529). The per-source ISO drop belongs to
+        // whichever picture actually leaves, and that is NOT always the one
+        // arriving: when this source has no pending frame of its own to
+        // replace (the branch above found none), the item erased here is the
+        // OLDEST queued ISO picture, which generally belongs to a DIFFERENT
+        // source. Charging the arriving source was a live misdiagnosis hazard,
+        // not a cosmetic one — a slow guest was billed for frames a fast guest
+        // lost, and the resulting per-source spread is what an operator reads
+        // to decide which writer is unhealthy.
+        auto victim = state_->queue.end();
+        for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
+          if (it->generation == item.generation && it->kind == kind) {
+            victim = it;
+            break;
+          }
+        }
+        const bool replaced = victim != state_->queue.end();
+        if (kind == Kind::IsoVideo) {
+          // No victim means the INCOMING item is the one refused, so it is the
+          // one that lost the picture.
+          const auto& lost = replaced ? *victim : item;
+          if (lost.isoSources.size() == 1) {
+            ++state_->isoVideoBySource[lost.isoSources.front().sourceId].dropped;
+          }
+        }
         if (kind == Kind::Audio || kind == Kind::IsoAudio) {
           state_->droppedAudio.fetch_add(1);
         } else if (state_->videoStartupPhase) {
@@ -210,18 +236,11 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
         } else {
           state_->droppedVideo.fetch_add(1);
         }
-        if (kind == Kind::IsoVideo && item.isoSources.size() == 1) {
-          ++state_->isoVideoBySource[item.isoSources.front().sourceId].dropped;
+        if (replaced) {
+          state_->queue.erase(victim);
+        } else {
+          return 0;
         }
-        bool replaced = false;
-        for (auto it = state_->queue.begin(); it != state_->queue.end(); ++it) {
-          if (it->generation == item.generation && it->kind == kind) {
-            state_->queue.erase(it);
-            replaced = true;
-            break;
-          }
-        }
-        if (!replaced) return 0;
       }
     }
 

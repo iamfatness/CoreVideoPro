@@ -3086,6 +3086,56 @@ above first — this is the same lesson, applied where it had not been carried a
   was rejecting 15-22% of submissions now rejects nothing, because the repeats are
   suppressed where they are actually observed.
 
+## The ISO dispatch thread is not the encode thread — keep bookkeeping OFF it (#529, 2026-09-18)
+
+`AsyncEncoderSink` runs ONE writer thread. `submitIsoVideo` splits a batch to one
+source per queue item, so eight ISOs plus Program at 60 fps is **~540 items/s
+through that single thread**. The encode is NOT there — every ISO file has its
+own `RecordingTrackWorker`, so they encode in parallel — which makes that thread a
+**dispatcher**, and anything it does per item is multiplied by 540.
+
+`MediaFoundationEncoderSink::submitIsoVideo`/`submitIsoAudio` used to end with an
+unconditional `refreshIsoStreams(); updateBytesWritten();`. That rebuild takes each
+writer's snapshot mutex AND its worker's evidence mutex (16 acquisitions at eight
+ISOs), copies two structs carrying strings per writer, and clears + rebuilds
+`session_.isoStreams` — >100 string copies per item, ~8,000 lock operations a
+second, for diagnostics. **And it fed back on itself:** once a writer has dropped
+anything its status warning is non-empty, so every later pass recomposes
+`"ISO recording lost N video frames…"` with `std::to_string` — the cost grew with
+the damage, which is why a live 1080p60 eight-ISO run reported 8,482 dropped video
+items over ~100 s and never recovered inside the session (it kept dropping with no
+Takes at all, which is what ruled Takes out as the trigger).
+
+Gated now by the pure `modules/IsoStatusRefreshPolicy.h` (`IsoStatusRefreshGate`,
+the `CaptureReaderStallPolicy`/`MonitorShedPolicy` shape): media-driven rebuilds
+run at most every 100 ms, **structural ones (open, finalize) always run** and mark
+the same clock. Safe because every number it gates is CUMULATIVE and MONOTONIC —
+throttling makes a value LAG by at most one interval, it can never lose a count or
+move one backwards — and the finalize refresh is structural, so the numbers an
+operator or a support bundle reads are never the throttled ones. **Rule: status is
+diagnostic, media is not; never put per-writer bookkeeping on the per-item path.**
+
+**A drop is charged to the source that LOST the picture, not the one arriving.**
+Same PR, `AsyncEncoderSink.cpp`: when the ISO budget is full and the arriving
+source has no pending frame of its own to replace, the sink evicts the OLDEST
+queued ISO picture — another source's — and used to charge the arrival. A slow
+guest was billed for frames a fast guest lost, and that per-source spread
+(`encoderEvidence.isoVideoBySource`) is exactly what gets read to decide which
+writer is unhealthy. The victim is now identified BEFORE the counters move; with
+no victim the arriving item really is the one refused, so it keeps the charge.
+Pinned by `AnEvictedIsoPictureIsChargedToItsOwnSourceNotTheArrivingOne` (mutation
+-proved) and `ARefusedIsoPictureIsStillChargedToTheArrivingSource` (the guard
+against over-correcting).
+
+**Telling the two ISO loss sites apart, because one number sums both.**
+`session.encoderQueueDroppedVideoFrames` adds the sink's queue drops to the
+per-writer worker drops, so it cannot diagnose anything on its own. Read them
+separately: `encoderEvidence.isoVideoBySource.<id>.dropped` is the DISPATCHER
+behind; `recording.streams[].droppedFrames` is that WRITER's encode too slow, and
+`videoWorkUs ÷ completedVideo` (both cumulative) is its mean µs per frame — over
+16,667 means that track cannot hold 60 fps, and `encoderPath` will usually read
+`software`.
+
 ## ISO recording — ISO-2 (per-source AUDIO stems muxed into the ISO MP4s, 2026-07-20)
 
 ISO-2 completes the **Demo E** shape: each Zoom-participant ISO is now a

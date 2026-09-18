@@ -9,6 +9,7 @@
 #include "modules/RecordingPtsClock.h"
 #include "modules/RecordingProgramContinuity.h"
 #include "modules/RecordingTrackWorker.h"
+#include "modules/IsoStatusRefreshPolicy.h"
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 
@@ -1626,7 +1627,16 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         });
       } else { writeIsoVideo(entry, source, *isoRequest_); publishIsoTrack(entry); }
     }
-    refreshIsoStreams(); updateBytesWritten();
+    // #529: NOT per item. submitIsoVideo carries one source, so at eight ISOs
+    // and 60fps this ran ~480x/s, rebuilding all eight status records (16 mutex
+    // acquisitions, >100 string copies) on the single dispatch thread that has
+    // to keep every writer fed — and once any writer had dropped a frame its
+    // warning string was recomposed on every pass, so the cost grew with the
+    // damage.
+    if (isoStatusGate_.allowMediaRefresh(nowSteadyMs())) {
+      refreshIsoStreams();
+      updateBytesWritten();
+    }
   }
 
   void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) override {
@@ -1644,7 +1654,10 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         });
       } else { writeIsoAudio(entry, source); publishIsoTrack(entry); }
     }
-    refreshIsoStreams(); updateBytesWritten();
+    if (isoStatusGate_.allowMediaRefresh(nowSteadyMs())) {
+      refreshIsoStreams();
+      updateBytesWritten();
+    }
   }
 
   void stopRecording() override {
@@ -1935,6 +1948,9 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
   void refreshIsoStreams() {
+    // Every rebuild resets the gate, including the structural ones, so an open
+    // or a close does not leave a media-driven rebuild owing immediately after.
+    isoStatusGate_.markRefreshed(nowSteadyMs());
     session_.isoStreams.clear();
     session_.encoderQueueDroppedVideoFrames = 0;
     session_.encoderQueueDroppedAudioPackets = 0;
@@ -2031,6 +2047,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         .count();
   }
 
+  // The same steady clock in milliseconds, for the status-refresh gate. Derived
+  // from now100ns() rather than sampled separately so the gate can never be
+  // compared against a different clock domain than the recording timeline.
+  [[nodiscard]] int64_t nowSteadyMs() const { return static_cast<int64_t>(now100ns() / 10'000); }
+
   void closeWriters() {
     // The outer Stop barrier has already stopped input dispatch. Tracks keep
     // draining independently while we spread hardware encoder/device teardown
@@ -2110,6 +2131,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   RecordingProgramContinuity programContinuity_;
   std::vector<std::unique_ptr<IsoWriterEntry>> isoWriters_;
   bool independentIsoWriters_ = false;
+  // #529: gates the per-ISO status rebuild so arriving media cannot drive it at
+  // the dispatch rate. Structural rebuilds (open, finalize) are unconditional
+  // and mark the same clock. See IsoStatusRefreshPolicy.h for why throttling a
+  // cumulative, monotonic counter is safe.
+  IsoStatusRefreshGate isoStatusGate_;
   std::shared_ptr<const RecordingSessionRequest> isoRequest_;
   std::map<std::string, size_t> isoIndexBySource_;
   std::filesystem::path sessionDir_;
