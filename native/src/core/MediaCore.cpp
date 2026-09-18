@@ -7281,19 +7281,35 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         static std::map<std::string, std::int64_t> s_lastWarn;
         auto& warned = s_lastWarn[sourceId];
         const auto warningCount = warned++;
-        // "routed" only when a send actually names it: perGuestIso's zoom-mix
-        // is deliberately unrouted, and calling it a dropped routed source
-        // trained readers to ignore this line. Only computed when logging.
+        // Severity is decided by the ROUTING truth, not a mode flag (#518): a
+        // source with sends that names it but no strip is the real leak the
+        // FADER LAW exists to catch — loud. A source with NO sends reaching no
+        // bus is the operator's routing choice, not a fault: perGuestIso's
+        // zoom-mix is deliberately unrouted while the per-guest sources carry
+        // the show. Logging that as a dropped "FADER LAW" fault trained readers
+        // to ignore the line; it is INFO. The master meter, not this line, is
+        // the silent-stream detector. Strings only computed when logging.
         if (warningCount == 0 || warningCount % 250 == 0) {
-          const char* sourceKind = hasSendFor(sourceId) ? "routed source" : "unrouted source (no sends)";
-          if (warningCount == 0) {
-            ::corevideo::core::nativeLogf("[audio] FADER LAW: %s '%s' has NO channel strip — "
-                         "dropped from the bus mix (add a fader to make it audible)\n",
-                         sourceKind, sourceId.c_str());
-          } else {  // ~every 5s at 50Hz when detailed diagnostics are enabled
-            ::corevideo::core::nativeVerboseLogf("[audio] FADER LAW persists: %s '%s' has NO channel strip — "
-                                                "dropped from the bus mix\n",
-                                                sourceKind, sourceId.c_str());
+          if (hasSendFor(sourceId)) {
+            if (warningCount == 0) {
+              ::corevideo::core::nativeLogf("[audio] FADER LAW: routed source '%s' has NO channel strip — "
+                           "dropped from the bus mix (add a fader to make it audible)\n",
+                           sourceId.c_str());
+            } else {  // ~every 5s at 50Hz when detailed diagnostics are enabled
+              ::corevideo::core::nativeVerboseLogf("[audio] FADER LAW persists: routed source '%s' has NO "
+                           "channel strip — dropped from the bus mix\n",
+                           sourceId.c_str());
+            }
+          } else {
+            if (warningCount == 0) {
+              ::corevideo::core::nativeLogf("[audio] source '%s' is unrouted (no sends) — not on any bus "
+                           "(expected unless it should be on air; route it to make it audible)\n",
+                           sourceId.c_str());
+            } else {
+              ::corevideo::core::nativeVerboseLogf("[audio] source '%s' remains unrouted (no sends) — "
+                           "not on any bus\n",
+                           sourceId.c_str());
+            }
           }
         }
         return;
