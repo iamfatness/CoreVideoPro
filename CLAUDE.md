@@ -3116,7 +3116,11 @@ They were right to: **that sink's contract is that a caller which submits and
 then reads sees exact, current counts.** They are Windows-only — they do not
 compile on the stub build — so CI was green through the whole thing and only a
 real `COREVIDEO_WITH_MF_ENCODER=ON` build found it. **A green CI on this repo
-says nothing about the Media Foundation sink; `ci.yml` has no Windows runner.**
+says nothing about the Media Foundation sink.** `ci.yml` DOES have a Windows
+runner (`native-shell-windows`), and an earlier note here claiming otherwise was
+wrong — but that job builds the .NET shell and runs the native STUB gate
+(`scripts/test-native.ps1`), never a `COREVIDEO_WITH_MF_ENCODER=ON` core. No CI
+job on any platform compiles `MediaFoundationEncoderAdapter.cpp`.
 
 The layer that is ALLOWED to lag is `AsyncEncoderSink::session()`, and its own
 header has said so all along: *"eventually consistent within a few frames — fine
