@@ -148,7 +148,9 @@ class D3D11Compositor final : public ICompositor {
   }
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
-    const bool diagnosticTiming = ::corevideo::core::nativeVerboseLoggingEnabled();
+    // Keep slow driver-stage evidence even when the operator has not enabled
+    // verbose logging. CPU timestamps only; no GPU queries or extra flushes.
+    const bool diagnosticTiming = true;
     const auto timingStart = diagnosticTiming ? std::chrono::steady_clock::now()
                                               : std::chrono::steady_clock::time_point{};
     auto stageStart = timingStart;
@@ -263,7 +265,7 @@ class D3D11Compositor final : public ICompositor {
       worstSlowProgramUs_ = (std::max)(worstSlowProgramUs_, static_cast<long long>(totalUs));
       if (lastSlowProgramLog_.time_since_epoch().count() == 0 ||
           timingEnd - lastSlowProgramLog_ >= std::chrono::seconds(1)) {
-        ::corevideo::core::nativeVerboseLogf("[d3d-program] frame=%lld total_us=%lld setup=%lld resolve=%lld upload=%lld draw=%lld readback=%lld vcam=%lld shared=%lld participants=%lld evict=%lld flush=%lld layers=%zu frames=%zu cpu_readback=%d full_readback=%d slow_count=%llu worst_us=%lld\n",
+        ::corevideo::core::nativeLogf("[d3d-program] frame=%lld total_us=%lld setup=%lld resolve=%lld upload=%lld draw=%lld readback=%lld vcam=%lld shared=%lld participants=%lld evict=%lld flush=%lld layers=%zu frames=%zu cpu_readback=%d full_readback=%d slow_count=%llu worst_us=%lld\n",
             static_cast<long long>(frameNumber_), static_cast<long long>(totalUs), setupUs, resolveUs,
             uploadUs, (std::max)(0LL, drawUs - uploadUs), readbackUs, vcamUs, sharedUs,
             participantUs, evictUs, flushUs, layers.size(), frames.size(), !renderPlan.skipCpuReadback,

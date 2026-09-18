@@ -23,6 +23,7 @@ namespace corevideo::modules {
 // (key 1), delivery (key 2), then render again. Preparation and delivery use
 // distinct devices/contexts; neither calls into the render immediate context.
 class D3DProgramBuffer {
+  friend struct D3DProgramBufferTestAccess;
  public:
   D3DProgramBuffer(ID3D11Device* producer, int width, int height, int depth, uint64_t generation,
       std::function<void(const ProgramFrame&)> delivered)
@@ -30,14 +31,14 @@ class D3DProgramBuffer {
     diagnostics_.requestedFrames = depth_;
     diagnostics_.generation = generation;
     diagnostics_.capacity = depth_ + 3;
-    if (!initialize(producer)) { diagnostics_.status = "failed"; return; }
+    if (!initialize(producer)) { fail("initialize"); return; }
     diagnostics_.activeFrames = depth_;
     diagnostics_.status = "priming";
     try {
-      prepareThread_ = std::thread([this] { try { prepareLoop(); } catch (...) { fail(); } });
-      deliveryThread_ = std::thread([this] { try { deliveryLoop(); } catch (...) { fail(); } });
+      prepareThread_ = std::thread([this] { try { prepareLoop(); } catch (...) { fail("prepare-worker"); } });
+      deliveryThread_ = std::thread([this] { try { deliveryLoop(); } catch (...) { fail("delivery-worker"); } });
     } catch (...) {
-      fail();
+      fail("start-workers");
       if (prepareThread_.joinable()) prepareThread_.join();
       initialized_ = false;
     }
@@ -99,7 +100,10 @@ class D3DProgramBuffer {
   }
   bool take(ProgramFrame& frame, int timeoutMs) {
     std::unique_lock<std::mutex> lock(mutex_);
-    changed_.wait_for(lock, std::chrono::milliseconds((std::max)(0, timeoutMs)), [&] { return stopped_ || !delivered_.empty(); });
+    // The output worker relies on this bounded wait for its cadence. A failed
+    // producer must not turn empty reads into a tight loop. Shutdown is still
+    // bounded by the caller's timeout; zero-time polling remains nonblocking.
+    changed_.wait_for(lock, std::chrono::milliseconds((std::max)(0, timeoutMs)), [&] { return !delivered_.empty(); });
     if (delivered_.empty()) return false;
     frame = std::move(delivered_.front()); delivered_.pop_front(); return true;
   }
@@ -115,8 +119,11 @@ class D3DProgramBuffer {
   }
 
  private:
-  void fail() {
+  void fail(const char* stage) {
     { std::lock_guard<std::mutex> lock(mutex_); diagnostics_.status = "failed"; diagnostics_.activeFrames = 0; stopped_ = true; }
+    ::corevideo::core::nativeLogf("[program-buffer-failure] stage=%s prepare_device_hr=0x%08lx delivery_device_hr=0x%08lx\n",
+        stage, static_cast<unsigned long>(prepareDevice_ ? prepareDevice_->GetDeviceRemovedReason() : E_FAIL),
+        static_cast<unsigned long>(deliveryDevice_ ? deliveryDevice_->GetDeviceRemovedReason() : E_FAIL));
     changed_.notify_all();
   }
   enum class State { Free, Writing, Submitted, Preparing, Ready, Delivering };
@@ -252,7 +259,13 @@ class D3DProgramBuffer {
         // strand shutdown in an uninterruptible staging readback.
         const auto result = context->Map(texture, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
         if (SUCCEEDED(result)) break;
-        if (result != DXGI_ERROR_WAS_STILL_DRAWING || std::chrono::steady_clock::now() >= limit) return false;
+        if (result != DXGI_ERROR_WAS_STILL_DRAWING || std::chrono::steady_clock::now() >= limit) {
+          ::corevideo::core::nativeLogf("[program-buffer-failure] stage=nv12-map rows=%d hr=0x%08lx device_hr=0x%08lx timeout=%d\n",
+              rows, static_cast<unsigned long>(result),
+              static_cast<unsigned long>(prepareDevice_->GetDeviceRemovedReason()),
+              result == DXGI_ERROR_WAS_STILL_DRAWING);
+          return false;
+        }
         std::unique_lock<std::mutex> wait(mutex_);
         if (changed_.wait_for(wait, std::chrono::microseconds(100), [&] { return stopped_; })) return false;
       }
