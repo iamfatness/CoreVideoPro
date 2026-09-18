@@ -3148,6 +3148,24 @@ BACKSTOP so a queue that never drains cannot freeze the snapshot — a bound, no
 the mechanism. **Rule: status is diagnostic, media is not — and when you throttle
 a status, throttle the READER, never make the producer answer with stale numbers.**
 
+**A READ-PATH REBUILD MUST NOT OUTLIVE THE WRITERS IT READS.** Moving the
+rebuild into `session()` introduced a second Windows-only defect, caught on a
+real `COREVIDEO_STUB=OFF` core by `MediaFoundationIsoVariableRateKeepsElapsed
+TimelineAcrossFragments` and `MediaFoundationIndependentIsoWritersDrainAudio
+VideoBeforeFinalize` (both read `session()` AFTER `stopRecording()`).
+`closeWriters()` does its OWN final refresh and then clears `isoWriters_`, so an
+unconditional rebuild on a later read regenerated `isoStreams` from zero writers
+and wiped the finalized status it had just captured — empty `isoStreams`,
+`videoFrameCount` gone, on a recording that had completed correctly. `session()`
+now rebuilds only `if (!isoWriters_.empty())`; once stopped, the finalized
+snapshot IS the answer. **The guard is at the CALL SITE, never inside
+`refreshIsoStreams()`** — the rebuild at the top of a take must stay
+unconditional, because that clear is what stops a previous ISO recording's
+streams carrying into a new program-only one. Two rounds of this fix were caught
+by the same seven tests, in a configuration no CI job builds: treat them as the
+gate for anything touching this path, and expect a read-side change to have a
+stop-side consequence.
+
 **A drop is charged to the source that LOST the picture, not the one arriving.**
 Same PR, `AsyncEncoderSink.cpp`: when the ISO budget is full and the arriving
 source has no pending frame of its own to replace, the sink evicts the OLDEST

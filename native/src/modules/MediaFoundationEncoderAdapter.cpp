@@ -1691,9 +1691,26 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // non-const IEncoderSink surface), and AsyncEncoderSink's writer thread is
     // its SOLE owner, so submit and this read are the same thread — no lock and
     // no race is introduced by refreshing on read.
+    //
+    // ONLY WHILE WRITERS ARE LIVE. `closeWriters()` does its own final refresh
+    // and THEN clears `isoWriters_`, so a read after stop would rebuild from
+    // zero writers and wipe the finalized per-ISO status it had just captured —
+    // empty `isoStreams`, `videoFrameCount` gone. Found on a real Windows core
+    // by `MediaFoundationIsoVariableRateKeepsElapsedTimelineAcrossFragments`
+    // and `MediaFoundationIndependentIsoWritersDrainAudioVideoBeforeFinalize`,
+    // which both read `session()` AFTER `stopRecording()`; neither compiles on
+    // the stub build, so no CI job could have said so. Once stopped, the
+    // finalized snapshot IS the answer and must be returned untouched.
+    //
+    // The guard belongs HERE and not inside `refreshIsoStreams()`: the rebuild
+    // at the top of a take (after `isoWriters_` is repopulated, line ~1902) must
+    // stay UNCONDITIONAL, because that clear is what stops a previous ISO
+    // recording's streams carrying into a new program-only one.
     auto* self = const_cast<MediaFoundationEncoderSink*>(this);
-    self->refreshIsoStreams();
-    self->updateBytesWritten();
+    if (!isoWriters_.empty()) {
+      self->refreshIsoStreams();
+      self->updateBytesWritten();
+    }
     auto result = session_;
     result.recordingProgramMissingFrames = programContinuity_.missingFrames();
     result.recordingProgramContinuityObserved = programContinuity_.observed();
