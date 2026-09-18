@@ -480,11 +480,14 @@ class D3D11Compositor final : public ICompositor {
   // Declared up here so member-function signatures (renderI420ToParticipantTexture)
   // can take it by reference.
   struct ParticipantTex {
-    ComPtrLite<ID3D11Texture2D> texture;
-    ComPtrLite<IDXGIKeyedMutex> mutex;
-    // Render-target view used by the I420->BGRA GPU convert path.
-    ComPtrLite<ID3D11RenderTargetView> rtv;
-    HANDLE handle = nullptr;
+    // Private (non-shared) convert target on the render device; the I420->BGRA /
+    // graded-BGRA passes and the ungraded UpdateSubresource write here, then the
+    // frame is submitted to the decoupled exporter (whose dedicated device owns the
+    // shell-facing shared texture). This keeps the per-participant export's
+    // consumer coupling off the render context (see D3DDecoupledExport).
+    ComPtrLite<ID3D11Texture2D> local;
+    ComPtrLite<ID3D11RenderTargetView> localRtv;
+    std::unique_ptr<D3DDecoupledExport> exporter;
     int width = 0;
     int height = 0;
     int64_t lastFrameId = -1;  // skip re-uploading an unchanged (held) frame
@@ -1560,88 +1563,20 @@ class D3D11Compositor final : public ICompositor {
     frame.sharedTexture.frameNumber = frame.frameNumber;
   }
 
-  bool ensureEncoderSharedTexture(int width, int height) {
-    if (width <= 0 || height <= 0) {
-      return false;
-    }
-    if (encoderSharedTexture_ && encoderSharedWidth_ == width && encoderSharedHeight_ == height) {
-      return true;
-    }
-
-    encoderSharedTexture_ = {};
-    encoderSharedKeyedMutex_ = {};
-    encoderSharedHandle_ = nullptr;
-    encoderSharedWidth_ = width;
-    encoderSharedHeight_ = height;
-
-    D3D11_TEXTURE2D_DESC textureDesc{};
-    textureDesc.Width = static_cast<UINT>(width);
-    textureDesc.Height = static_cast<UINT>(height);
-    textureDesc.MipLevels = 1;
-    textureDesc.ArraySize = 1;
-    textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    textureDesc.SampleDesc.Count = 1;
-    textureDesc.Usage = D3D11_USAGE_DEFAULT;
-    textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-    // Dedicated keyed-mutex shared texture for hardware encode. Keeps vMix parity with a
-    // separate producer/consumer lock path that never blocks the preview/readback rig.
-    textureDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-    if (FAILED(device_->CreateTexture2D(&textureDesc, nullptr, encoderSharedTexture_.put()))) {
-      return false;
-    }
-
-    ComPtrLite<IDXGIResource> dxgiResource;
-    if (FAILED(encoderSharedTexture_->QueryInterface(__uuidof(IDXGIResource),
-                                                    reinterpret_cast<void**>(dxgiResource.put())))) {
-      encoderSharedTexture_ = {};
-      return false;
-    }
-
-    HANDLE handle = nullptr;
-    if (FAILED(dxgiResource->GetSharedHandle(&handle)) || !handle) {
-      encoderSharedTexture_ = {};
-      return false;
-    }
-
-    if (FAILED(encoderSharedTexture_->QueryInterface(__uuidof(IDXGIKeyedMutex),
-                                                    reinterpret_cast<void**>(encoderSharedKeyedMutex_.put())))) {
-      encoderSharedTexture_ = {};
-      return false;
-    }
-
-    encoderSharedHandle_ = handle;
-    return true;
-  }
-
-  // Producer side: acquire keyed mutex 0, copy BGRA frame, release key 1.
-  // If the consumer is still using it, keep publishing the last known handle metadata.
+  // Publish the composed program to the hardware-encoder shared texture through
+  // the decoupled exporter. A slow hardware-encode consumer no longer inserts a
+  // GPU wait into the render context (see D3DDecoupledExport); the render context
+  // only hands the frame to a fast internal slot.
   void exportEncoderSharedTexture(ProgramFrame& frame) {
     if (!renderTarget_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
       return;
     }
-    if (!ensureEncoderSharedTexture(targetWidth_, targetHeight_)) {
-      return;
+    if (!encoderExport_ || !encoderExport_->dimensions(targetWidth_, targetHeight_)) {
+      encoderExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), targetWidth_, targetHeight_, "encoder");
+      if (!encoderExport_->valid()) { encoderExport_.reset(); return; }
     }
-
-    if (encoderSharedKeyedMutex_) {
-      if (encoderSharedKeyedMutex_->AcquireSync(0, 0) != S_OK) {
-        frame.encoderSharedTexture.sharedHandleHex = handleToHex(encoderSharedHandle_);
-        frame.encoderSharedTexture.width = targetWidth_;
-        frame.encoderSharedTexture.height = targetHeight_;
-        frame.encoderSharedTexture.format = "B8G8R8A8_UNORM";
-        frame.encoderSharedTexture.frameNumber = frame.frameNumber;
-        return;
-      }
-    }
-
-    context_->CopyResource(encoderSharedTexture_.get(), renderTarget_.get());
-    if (encoderSharedKeyedMutex_) {
-      // No explicit Flush needed for this producer->consumer path; keyed-mutex is the
-      // ordering gate and avoids render-thread stalls from per-frame map/poll.
-      encoderSharedKeyedMutex_->ReleaseSync(1);
-    }
-
-    frame.encoderSharedTexture.sharedHandleHex = handleToHex(encoderSharedHandle_);
+    encoderExport_->submit(context_.get(), renderTarget_.get());
+    frame.encoderSharedTexture.sharedHandleHex = handleToHex(encoderExport_->handle());
     frame.encoderSharedTexture.width = targetWidth_;
     frame.encoderSharedTexture.height = targetHeight_;
     frame.encoderSharedTexture.format = "B8G8R8A8_UNORM";
@@ -1690,7 +1625,7 @@ class D3D11Compositor final : public ICompositor {
       const int width = useI420 ? f.i420Width : f.pixelWidth;
       const int height = useI420 ? f.i420Height : f.pixelHeight;
       auto& pt = participantTextures_[f.participantId];
-      if (!pt.texture || pt.width != width || pt.height != height) {
+      if (!pt.local || pt.width != width || pt.height != height) {
         pt = ParticipantTex{};
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width = static_cast<UINT>(width);
@@ -1700,22 +1635,20 @@ class D3D11Compositor final : public ICompositor {
         desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         desc.SampleDesc.Count = 1;
         desc.Usage = D3D11_USAGE_DEFAULT;
-        // RENDER_TARGET so the I420->BGRA shader can render into it; SHADER_RESOURCE
-        // for the cross-process consumer. UpdateSubresource (BGRA path) still works
-        // on a DEFAULT-usage render-target texture.
+        // Private convert target (not shared): RENDER_TARGET so the I420->BGRA
+        // shader can render into it; SHADER_RESOURCE + UpdateSubresource for the
+        // BGRA path. The shell-facing shared texture is owned by the exporter.
         desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-        ComPtrLite<IDXGIResource> dxgiResource;
-        HANDLE handle = nullptr;
-        if (FAILED(device_->CreateTexture2D(&desc, nullptr, pt.texture.put())) ||
-            FAILED(pt.texture->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(dxgiResource.put()))) ||
-            FAILED(dxgiResource->GetSharedHandle(&handle)) || !handle ||
-            FAILED(pt.texture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(pt.mutex.put()))) ||
-            FAILED(device_->CreateRenderTargetView(pt.texture.get(), nullptr, pt.rtv.put()))) {
+        if (FAILED(device_->CreateTexture2D(&desc, nullptr, pt.local.put())) ||
+            FAILED(device_->CreateRenderTargetView(pt.local.get(), nullptr, pt.localRtv.put()))) {
           participantTextures_.erase(f.participantId);
           continue;
         }
-        pt.handle = handle;
+        pt.exporter = std::make_unique<D3DDecoupledExport>(device_.get(), width, height, "participant");
+        if (!pt.exporter->valid()) {
+          participantTextures_.erase(f.participantId);
+          continue;
+        }
         pt.width = width;
         pt.height = height;
       }
@@ -1727,65 +1660,45 @@ class D3D11Compositor final : public ICompositor {
       // keep emitting the handle. The grade check additionally re-bakes when the
       // operator drags the color-grade sliders on a held/static source, so preview
       // keeps matching the graded program look.
+      // Only re-convert when the frame OR grade changed (see the perf note above:
+      // re-uploading a held frame every tick collapsed the render rate). When
+      // unchanged, the exporter still holds the last frame, so we just re-publish
+      // its stable handle. The convert renders into the PRIVATE target and the
+      // frame is submitted to the exporter, whose dedicated device owns the
+      // shell-facing texture — the render context never acquires a keyed mutex a
+      // slow preview consumer might hold, so it can never stall here.
       const bool gradeChanged = !gradesEqual(grade, pt.lastGrade);
       const bool frameChanged = (f.frameId != pt.lastFrameId) || gradeChanged;
-      if (frameChanged && pt.mutex) {
-        // The per-participant export texture is a single-consumer keyed-mutex texture, but its
-        // consumer (the preview host, when it shows this source) is INTERMITTENT: the preview
-        // bus cycles its primary source (active-speaker), and capture / idle participants may
-        // have NO consumer at all. A plain producer AcquireSync(0) only succeeds after the
-        // consumer releases key 0; once the consumer moves away (leaving the mutex at key 1,
-        // which the producer released) the producer can NEVER re-acquire key 0, so the texture
-        // WEDGES on its last frame. That is exactly the "preview frozen when the same source is
-        // also in program" bug: the preview's per-participant handle stops advancing while the
-        // always-released program/multiview composites keep going.
-        //
-        // Fix: if AcquireSync(0) fails (no consumer returned the key), reclaim our own released
-        // slot via AcquireSync(1). The producer then ALWAYS makes progress and the texture stays
-        // fresh — like the always-released program/multiview composites — so a returning or
-        // newly-attached consumer immediately sees live frames. The keyed mutex still guarantees
-        // mutual exclusion (a consumer mid-copy holds the mutex, so the reclaim just fails that
-        // tick and we skip the upload), so there is no tearing. Non-blocking (0ms) throughout, so
-        // the render thread never stalls.
-        HRESULT acquire;
-        {
-          CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantAcquire]);
-          acquire = pt.mutex->AcquireSync(0, 0);
-          if (acquire != S_OK) acquire = pt.mutex->AcquireSync(1, 0);
+      if (frameChanged && pt.local) {
+        bool uploaded = false;
+        if (useI420) {
+          CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantConvert]);
+          uploaded = renderI420ToParticipantTexture(f, pt, width, height, grade);
+        } else if (gradeIsIdentity(grade)) {
+          CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantCopy]);
+          // Fast path for the common ungraded source: a straight BGRA copy, no
+          // shader pass (preserves the perf note above — no per-tick convert cost).
+          context_->UpdateSubresource(pt.local.get(), 0, nullptr, f.pixels->data(),
+                                      static_cast<UINT>(f.pixelStride), 0);
+          uploaded = true;
+        } else {
+          CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantConvert]);
+          // Graded BGRA source: render through the textured grade shader so the
+          // export carries the same look the program applies to this source.
+          uploaded = renderBgraToParticipantTexture(f, pt, width, height, grade);
         }
-        if (profileEnabled && acquire != S_OK) ++stageProfileAcquireBusy_;
-        if (acquire == S_OK) {
-          bool uploaded = false;
-          if (useI420) {
-            CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantConvert]);
-            uploaded = renderI420ToParticipantTexture(f, pt, width, height, grade);
-          } else if (gradeIsIdentity(grade)) {
-            CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantCopy]);
-            // Fast path for the common ungraded source: a straight BGRA copy, no
-            // shader pass (preserves the perf note above — no per-tick convert cost).
-            context_->UpdateSubresource(pt.texture.get(), 0, nullptr, f.pixels->data(),
-                                        static_cast<UINT>(f.pixelStride), 0);
-            uploaded = true;
-          } else {
-            CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantConvert]);
-            // Graded BGRA source: render through the textured grade shader so the
-            // export carries the same look the program applies to this source.
-            uploaded = renderBgraToParticipantTexture(f, pt, width, height, grade);
-          }
-          {
-            CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantRelease]);
-            pt.mutex->ReleaseSync(1);
-          }
-          if (profileEnabled && !uploaded) ++stageProfileUploadFailures_;
-          if (uploaded) {
-            pt.lastFrameId = f.frameId;
-            pt.lastGrade = grade;
-          }
+        if (uploaded) {
+          CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantRelease]);
+          pt.exporter->submit(context_.get(), pt.local.get());
+          pt.lastFrameId = f.frameId;
+          pt.lastGrade = grade;
+        } else if (profileEnabled) {
+          ++stageProfileUploadFailures_;
         }
       }
       ParticipantSharedTexture info;
       info.participantId = f.participantId;
-      info.sharedHandleHex = handleToHex(pt.handle);
+      info.sharedHandleHex = handleToHex(pt.exporter->handle());
       info.width = pt.width;
       info.height = pt.height;
       info.frameNumber = outFrame.frameNumber;
@@ -1819,7 +1732,7 @@ class D3D11Compositor final : public ICompositor {
   // after the program composite + share, so the next render() re-binds its state.
   bool renderI420ToParticipantTexture(const VideoFrame& frame, ParticipantTex& pt, int width, int height,
                                       const CompositorColorGrade& grade) {
-    if (!pt.rtv) {
+    if (!pt.localRtv) {
       return false;
     }
     // Sample the per-source cache (already uploaded by this tick's composite
@@ -1854,7 +1767,7 @@ class D3D11Compositor final : public ICompositor {
   // effective color pipeline the program's drawLayer BGRA path uses.
   bool renderBgraToParticipantTexture(const VideoFrame& frame, ParticipantTex& pt, int width, int height,
                                       const CompositorColorGrade& grade) {
-    if (!pt.rtv) {
+    if (!pt.localRtv) {
       return false;
     }
     SourceTex* sourceTex = acquireSourceTex(frame);
@@ -1884,7 +1797,7 @@ class D3D11Compositor final : public ICompositor {
   // target) if the constant upload fails.
   bool beginParticipantExportPass(ParticipantTex& pt, int width, int height, const CompositorColorGrade& grade,
                                   const VideoFrame* frame = nullptr) {
-    ID3D11RenderTargetView* renderTargets[] = {pt.rtv.get()};
+    ID3D11RenderTargetView* renderTargets[] = {pt.localRtv.get()};
     context_->OMSetRenderTargets(1, renderTargets, nullptr);
 
     D3D11_VIEWPORT viewport{};
@@ -2532,8 +2445,7 @@ class D3D11Compositor final : public ICompositor {
   uint64_t vcamLastTakenGen_ = 0;
   ComPtrLite<ID3D11Texture2D> sharedTexture_;
   ComPtrLite<IDXGIKeyedMutex> sharedKeyedMutex_;
-  ComPtrLite<ID3D11Texture2D> encoderSharedTexture_;
-  ComPtrLite<IDXGIKeyedMutex> encoderSharedKeyedMutex_;
+  std::unique_ptr<D3DDecoupledExport> encoderExport_;
   // Per-participant keyed-mutex shared textures for the GPU multiview tiles.
   // (ParticipantTex is declared near the top of the class.)
   std::map<std::string, ParticipantTex> participantTextures_;
@@ -2573,11 +2485,8 @@ class D3D11Compositor final : public ICompositor {
   int layerTextureWidth_ = 0;
   int layerTextureHeight_ = 0;
   HANDLE sharedHandle_ = nullptr;
-  HANDLE encoderSharedHandle_ = nullptr;
   int sharedWidth_ = 0;
   int sharedHeight_ = 0;
-  int encoderSharedWidth_ = 0;
-  int encoderSharedHeight_ = 0;
   int multiviewWidth_ = 0;
   int multiviewHeight_ = 0;
   int previewWidth_ = 0;
