@@ -78,4 +78,23 @@ TEST(FfmpegSenderDiagnostics, AnEmptyTailLeavesTheGenericSentenceAlone) {
   EXPECT_EQ(describeFfmpegSenderFailure(generic, ""), generic);
   EXPECT_EQ(describeFfmpegSenderFailure(generic, "   \n  "), generic);
 }
+TEST(FfmpegSenderDiagnostics, QueueOverflowSurvivesSubsequentPipeFailure) {
+  BitstreamFailureState failure;
+  EXPECT_FALSE(failure.failed());
+  failure.record(BitstreamFailure::QueueOverflow);
+  failure.record(BitstreamFailure::PipeWrite);
+  EXPECT_TRUE(failure.failed());
+  EXPECT_EQ(failure.reason(), BitstreamFailure::QueueOverflow);
+}
+
+TEST(FfmpegSenderDiagnostics, RecoveryResetsFailureAndPreservesFirstPipeFault) {
+  BitstreamFailureState failure;
+  failure.record(BitstreamFailure::QueueOverflow);
+  failure.reset();
+  EXPECT_FALSE(failure.failed());
+  failure.record(BitstreamFailure::PipeWrite);
+  failure.record(BitstreamFailure::QueueOverflow);
+  EXPECT_EQ(failure.reason(), BitstreamFailure::PipeWrite);
+}
+
 }  // namespace

@@ -838,16 +838,23 @@ class RtmpOutputSender final : public IOutputSender {
     if (!videoWriteOk) {
       sender_.status = "failed";
       ++sender_.retryCount;
-      const auto genericFailure =
-          sender_.lastResultCode == "ffmpeg-exited" && !sender_.lastError.empty()
+      bool queueOverflow = false;
+#if defined(_WIN32)
+      queueOverflow = useGpuDirect_ && bitstreamFailure_.reason() == BitstreamFailure::QueueOverflow;
+#endif
+      const auto genericFailure = queueOverflow
+          ? std::string("Compressed-video queue overflow; the stream transport could not drain encoded video fast enough.")
+          : sender_.lastResultCode == "ffmpeg-exited" && !sender_.lastError.empty()
               ? sender_.lastError
               : std::string("FFmpeg stdin write failed; the ") + protocol_.destination +
                     " process stopped or rejected frames.";
       sender_.destinationHealth = "failed";
-      if (sender_.lastResultCode != "ffmpeg-exited") {
+      if (queueOverflow) {
+        sender_.lastResultCode = "bitstream-queue-overflow";
+      } else if (sender_.lastResultCode != "ffmpeg-exited") {
         sender_.lastResultCode = "ffmpeg-write-failed";
       }
-      const auto proofStatus = sender_.lastResultCode == "ffmpeg-exited" ? "ffmpeg-exited" : "ffmpeg-write-failed";
+      const auto proofStatus = sender_.lastResultCode;
       scheduleFfmpegRetry();
       // STOP FIRST, THEN READ THE STDERR. A failed stdin write is observed the
       // instant the pipe breaks, which is BEFORE FFmpeg has flushed the line that
@@ -1582,7 +1589,7 @@ class RtmpOutputSender final : public IOutputSender {
     cfg.rateControl = configuredRateControl_;
     cfg.h264Profile = configuredH264Profile_.empty() ? "high" : configuredH264Profile_;
 #if defined(_WIN32)
-    bitstreamWriterFailed_.store(false);
+    bitstreamFailure_.reset();
     bitstreamWriterStop_.store(false);
 #endif
     const bool ok = gpuEncoder_->start(cfg, [this](const GpuEncodedChunk& chunk) {
@@ -1631,15 +1638,15 @@ class RtmpOutputSender final : public IOutputSender {
 
 #if defined(_WIN32)
   void enqueueBitstream(const GpuEncodedChunk& chunk) {
-    if (!chunk.data || !chunk.size || bitstreamWriterStop_.load() || bitstreamWriterFailed_.load()) return;
+    if (!chunk.data || !chunk.size || bitstreamWriterStop_.load() || bitstreamFailure_.failed()) return;
     {
       std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
       // Never block the MFT event loop on network I/O or grow latency without
       // bound. An overrun fails the sender so its supervisor can restart it.
       constexpr size_t maxBytes = 2u << 20;
       if (chunk.size > maxBytes || bitstreamQueuedBytes_ > maxBytes - chunk.size || bitstreamQueue_.size() >= 60) {
-        bitstreamWriterFailed_.store(true);
-        ::corevideo::core::nativeLogf("[gpu-encode] bitstream queue overflow; sender unhealthy -> supervisor\n");
+        bitstreamFailure_.record(BitstreamFailure::QueueOverflow);
+        ::corevideo::core::nativeLogf("[gpu-encode] bitstream queue overflow; queuedBytes=%zu queuedChunks=%zu incomingBytes=%zu; sender unhealthy -> supervisor\n", bitstreamQueuedBytes_, bitstreamQueue_.size(), chunk.size);
         return;
       }
       bitstreamQueue_.emplace_back(chunk.data, chunk.data + chunk.size);
@@ -1649,7 +1656,7 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   void bitstreamWriterLoop() {
-    while (!bitstreamWriterStop_.load() && !bitstreamWriterFailed_.load()) {
+    while (!bitstreamWriterStop_.load() && !bitstreamFailure_.failed()) {
       std::vector<uint8_t> bytes;
       {
         std::unique_lock<std::mutex> lock(bitstreamQueueMutex_);
@@ -1685,7 +1692,7 @@ class RtmpOutputSender final : public IOutputSender {
       const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
       if (!WriteFile(ffmpegStdin_, data, chunk, &written, nullptr) || written == 0) {
         if (bitstreamWriterStop_.load()) return;
-        bitstreamWriterFailed_.store(true);
+        bitstreamFailure_.record(BitstreamFailure::PipeWrite);
         ::corevideo::core::nativeLogf("[gpu-encode] bitstream WriteFile failed err=%lu (encoder->ffmpeg pipe broke)\n",
                                      static_cast<unsigned long>(GetLastError()));
         return;
@@ -1718,7 +1725,7 @@ class RtmpOutputSender final : public IOutputSender {
   // an unhealthy encoder returns false so the failure path restarts the sender.
   bool submitFrameToGpuEncoder(const ProgramFrame& frame) {
 #if defined(_WIN32)
-    if (bitstreamWriterFailed_.load()) return false;
+    if (bitstreamFailure_.failed()) return false;
 #endif
     if (!gpuEncoder_) return false;
     if (!gpuEncoder_->healthy()) return false;
@@ -2210,7 +2217,7 @@ class RtmpOutputSender final : public IOutputSender {
   size_t bitstreamQueuedBytes_ = 0;
   std::thread bitstreamWriterThread_;
   std::atomic<bool> bitstreamWriterStop_{true};
-  std::atomic<bool> bitstreamWriterFailed_{false};
+  BitstreamFailureState bitstreamFailure_;
   std::atomic<bool> bitstreamWriterExited_{true};
 #endif
 
