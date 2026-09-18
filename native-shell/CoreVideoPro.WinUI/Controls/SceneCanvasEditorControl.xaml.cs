@@ -141,6 +141,16 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
     private void BuildPresetButtons()
     {
+        // Unhook Click from the outgoing buttons before discarding them (#513):
+        // a cleared button still wired to OnPresetClick is retained through this
+        // control until GC finalizes it off-thread.
+        foreach (var child in PresetButtonPanel.Children)
+        {
+            if (child is Button existing)
+            {
+                existing.Click -= OnPresetClick;
+            }
+        }
         PresetButtonPanel.Children.Clear();
         Resources.TryGetValue("OperatorGhostButton", out var style);
         var buttonStyle = style as Style;
@@ -172,6 +182,12 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         {
             if (_layerFrames.Remove(staleIndex, out var staleFrame))
             {
+                // Unhook every handler this frame carries BEFORE dropping it to the
+                // GC. A discarded XAML element whose handlers still reference this
+                // control keeps the element (and its VideoSurfaceHost) alive on the
+                // finalizable queue, feeding the 0xc000027b finalizer-release crash
+                // family (#513). Teardown must happen on the UI thread, here.
+                DetachLayerFrameHandlers(staleFrame);
                 LayerCanvas.Children.Remove(staleFrame);
             }
         }
@@ -282,6 +298,17 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         frame.PointerReleased += OnLayerPointerReleased;
         frame.PointerCanceled += OnLayerPointerReleased;
         return frame;
+    }
+
+    // Mirror of the four handlers attached in CreateLayerFrame. Called at every
+    // site that discards a frame so a dropped element carries no live reference
+    // back to this control (see the #513 note in SyncLayers).
+    private void DetachLayerFrameHandlers(Border frame)
+    {
+        frame.PointerPressed -= OnLayerPointerPressed;
+        frame.PointerMoved -= OnLayerPointerMoved;
+        frame.PointerReleased -= OnLayerPointerReleased;
+        frame.PointerCanceled -= OnLayerPointerReleased;
     }
 
     private static Border CreateResizeGrip(string tag, HorizontalAlignment horizontal, VerticalAlignment vertical)
