@@ -1,5 +1,6 @@
 #include "core/MediaCore.h"
 #include "modules/Interfaces.h"
+#include "modules/RecordingProgramContinuity.h"
 
 #include "EncoderCapacityProbeTestSupport.h"
 
@@ -1187,6 +1188,74 @@ TEST(EncoderRecordingSession, MediaFoundationIsoAudioTrimsCaptureBeforeProgramEp
   encoder->stopRecording(); encoder.reset(); fs::remove_all(dir, ec);
 }
 
+TEST(EncoderRecordingSession, MediaFoundationProgramGapsKeepElapsedTimelineAcrossFragments) {
+#if defined(_WIN32)
+  {
+    const corevideo::testing::ForcedEncoderCapacity capacity;
+    auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+    ASSERT_NE(encoder, nullptr);
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / "corevideo-program-gaps-nv12";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    corevideo::modules::RecordingSessionRequest request;
+    request.targetFolder = dir.string(); request.filenamePrefix = "gaps";
+    request.width = 320; request.height = 180; request.fps = 60;
+    request.programNv12 = true;
+    encoder->configureRecording(request);
+    encoder->start({"recording"}, {});
+    corevideo::modules::ProgramFrame frame;
+    frame.frameNumber = 1; frame.width = 320; frame.height = 180;
+    frame.productionAnchorNs = 1; frame.productionSlot = 0;
+    frame.programNv12Width = 320; frame.programNv12Height = 180;
+    frame.programNv12.assign(320 * 180 * 3 / 2, 128);
+    encoder->submit(frame);
+    const auto epoch = encoder->session().recordingMuxEpoch100ns;
+    ASSERT_GT(epoch, 0);
+    std::vector<float> pcm(1600 * 2, 0.05f);
+    encoder->submitAudioAt(pcm.data(), 1600, 2, 48000, epoch);
+    // Simulate missed Program delivery slots in a 60 Hz show. Preserve the
+    // actual timestamps: no duplicate frames may conceal the missing pictures.
+    for (int i = 1; i <= 300; ++i) {
+      frame.frameNumber = 1 + i * 2;
+      frame.productionSlot = i * 2;
+      frame.timelineTimestamp100ns = epoch + static_cast<int64_t>(i) * 10'000'000 / 30 +
+          (i % 3 == 1 ? 100'000 : 0);
+      encoder->submit(frame);
+      encoder->submitAudioAt(pcm.data(), 1600, 2, 48000,
+          epoch + static_cast<int64_t>(i) * 10'000'000 / 30);
+    }
+    EXPECT_EQ(encoder->session().recordingProgramMissingFrames, 300);
+    EXPECT_TRUE(encoder->session().recordingProgramContinuityObserved);
+    EXPECT_EQ(encoder->session().recordingStatus, "warning");
+    EXPECT_NE(encoder->session().recordingWarning.find("missed 300"), std::string::npos);
+    encoder->stopRecording();
+    EXPECT_EQ(encoder->session().recordingProgramMissingFrames, 300);
+    const fs::path path = encoder->session().recordingArtifactPath;
+    EXPECT_GE(fileAsciiCount(path, "moof"), 2u);
+    Microsoft::WRL::ComPtr<IMFSourceReader> reader;
+    ASSERT_TRUE(SUCCEEDED(MFCreateSourceReaderFromURL(path.wstring().c_str(), nullptr, &reader)));
+    LONGLONG lastPts = -1;
+    int samples = 0;
+    for (;;) {
+      DWORD flags = 0; LONGLONG pts = 0;
+      Microsoft::WRL::ComPtr<IMFSample> sample;
+      ASSERT_TRUE(SUCCEEDED(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+          0, nullptr, &flags, &pts, &sample)));
+      if (sample) { lastPts = pts; ++samples; }
+      if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+    }
+    EXPECT_EQ(encoder->session().recordingVideoFrameCount, 301);
+    EXPECT_EQ(samples, 301 + encoder->session().recordingVideoTailFrameCount);
+    EXPECT_GE(lastPts, 99'990'000);
+    EXPECT_LE(lastPts, 100'350'000);
+    reader.Reset(); encoder.reset();
+    // Keep a failing artifact for independent packet-level inspection.
+    if (lastPts >= 99'990'000 && lastPts <= 100'350'000) fs::remove_all(dir, ec);
+  }
+#endif
+}
+
 TEST(EncoderRecordingSession, MediaFoundationIsoVariableRateKeepsElapsedTimelineAcrossFragments) {
 #if defined(_WIN32)
   for (const int hardwareLimit : {1, 8}) {
@@ -1817,6 +1886,30 @@ class StartCountingEncoderSink final : public corevideo::modules::IEncoderSink {
   corevideo::modules::OutputSession session_;
 };
 }  // namespace
+
+TEST(RecordingProgramContinuity, CountsScheduledGapsWithoutCountingDuplicateOrOlderFrames) {
+  corevideo::modules::RecordingProgramContinuity continuity;
+  continuity.observe(100, 10);
+  continuity.observe(100, 11);
+  continuity.observe(100, 15);
+  continuity.observe(100, 15);
+  continuity.observe(100, 12);
+  continuity.observe(100, 16);
+  EXPECT_TRUE(continuity.observed());
+  EXPECT_EQ(continuity.missingFrames(), 3);
+}
+
+TEST(RecordingProgramContinuity, NeverInfersLossAcrossUnknownTimingOrNewAnchors) {
+  corevideo::modules::RecordingProgramContinuity continuity;
+  continuity.observe(0, -1);
+  EXPECT_FALSE(continuity.observed());
+  continuity.observe(100, 10);
+  continuity.observe(100, 12);
+  continuity.observe(200, 500);
+  continuity.observe(0, -1);
+  continuity.observe(200, 900);
+  EXPECT_EQ(continuity.missingFrames(), 1);
+}
 
 TEST(EncoderRecordingSession, RepeatedProgramSyncDoesNotRestartActiveRecordingWriters) {
   auto modules = corevideo::modules::createStubModules();

@@ -7,6 +7,7 @@
 #include "modules/IsoEncoderAdmission.h"
 #include "modules/IsoEncoderPlacement.h"
 #include "modules/RecordingPtsClock.h"
+#include "modules/RecordingProgramContinuity.h"
 #include "modules/RecordingTrackWorker.h"
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
@@ -1360,6 +1361,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingBytesWritten = 0;
     session_.recordingDurationMs = 0;
     session_.recordingVideoFrameCount = 0;
+    programContinuity_ = {};
     session_.recordingVideoPrerollFrameCount = 0;
     session_.recordingVideoTailFrameCount = 0;
     session_.recordingMuxVideoFrameCount = 0;
@@ -1443,6 +1445,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         setRecordingFailure("Media Foundation could not write program video", nv12Error);
         return;
       }
+      programContinuity_.observe(frame.productionAnchorNs, frame.productionSlot);
       ++session_.recordingVideoFrameCount;
       session_.recordingStatus = "recording";
       flushStartupAudio();
@@ -1506,6 +1509,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // sourceId → per-source writer), not the composed program frame. Program is
     // priority-1 and never regressed by ISO — the two paths are independent.
 
+    programContinuity_.observe(frame.productionAnchorNs, frame.productionSlot);
     ++session_.recordingVideoFrameCount;
     session_.recordingStatus = "recording";
     flushStartupAudio();
@@ -1657,7 +1661,20 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     EncoderCapacityCache::instance().setRecordingActive(false);
   }
 
-  OutputSession session() const override { return session_; }
+  OutputSession session() const override {
+    auto result = session_;
+    result.recordingProgramMissingFrames = programContinuity_.missingFrames();
+    result.recordingProgramContinuityObserved = programContinuity_.observed();
+    if (result.recordingProgramMissingFrames > 0) {
+      const auto warning = "Program recording missed " +
+          std::to_string(result.recordingProgramMissingFrames) +
+          " scheduled frames. Timing gaps are preserved.";
+      result.recordingWarning = warning +
+          (result.recordingWarning.empty() ? "" : " " + result.recordingWarning);
+      if (result.recordingStatus == "recording") result.recordingStatus = "warning";
+    }
+    return result;
+  }
 
  private:
   void openRecordingWriters() {
@@ -1777,8 +1794,12 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // is muxing the 320x180 preview — and cheaper, since MF's H.264 encoder takes
     // NV12 natively and would otherwise convert from BGRA internally.
     programWritesNv12_ = request_.programNv12;
+    // Program can miss delivery slots under load. Preserve the elapsed gap
+    // across MP4 fragments just as the ISO writers do; nominal durations make
+    // later video drift ahead of continuous audio. This does not add frames.
     if (!program_.open(programPath, width, height, fps, bitrate, codec, error,
-                       programWritesNv12_ ? VideoInput::Nv12 : VideoInput::Bgra)) {
+                       programWritesNv12_ ? VideoInput::Nv12 : VideoInput::Bgra,
+                       true, true)) {
       setRecordingFailure("Media Foundation could not open program MP4 writer", error);
       return;
     }
@@ -2086,6 +2107,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   OutputSession session_;
   RecordingSessionRequest request_;
   Mp4Writer program_;
+  RecordingProgramContinuity programContinuity_;
   std::vector<std::unique_ptr<IsoWriterEntry>> isoWriters_;
   bool independentIsoWriters_ = false;
   std::shared_ptr<const RecordingSessionRequest> isoRequest_;
