@@ -69,7 +69,13 @@ public sealed partial class ShowMultiviewHost : UserControl
         DependencyProperty.Register(nameof(MeterLevelRight), typeof(int), typeof(ShowMultiviewHost),
             new PropertyMetadata(0, OnMeterLevelChanged));
 
-    private readonly List<MeterChannel> _meters = new();
+    // Pooled overlay elements, keyed by index into SelectOverlayTiles' deterministic
+    // order. Created once and reused across rebuilds: a structural change updates each
+    // element's tile in place and toggles Visibility instead of discarding and recreating
+    // it. Discarded XAML elements are the #513 finalizer-release population, and this
+    // control is the highest-traffic source during a live show.
+    private readonly List<Button> _overlayButtons = new();
+    private readonly List<DecorCell> _decorCells = new();
     private DispatcherTimer? _clockTimer;
     private IReadOnlyList<MultiviewTile> _tiles = [];
 
@@ -237,42 +243,59 @@ public sealed partial class ShowMultiviewHost : UserControl
 
     private void OnOverlaySizeChanged(object sender, SizeChangedEventArgs e) => PositionOverlay();
 
-    // Builds one transparent click button per tile (PGM + PVW + ≤10 sources). Called only when the tile-rect LAYOUT
-    // changes (structural), so there is no per-frame / per-active-speaker UI churn.
+    // One transparent click button per tile (PGM + PVW + ≤10 sources), POOLED: created
+    // once and reused. Called only on a structural tile-rect change, so there is no
+    // per-frame churn — and now no per-structural-change element discard either.
     private void RebuildOverlay()
     {
-        ClickOverlay.Children.Clear();
-
         var tiles = MultiviewOverlayFormatting.SelectOverlayTiles(_tiles);
         EmptyState.Visibility = tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
-        foreach (var tile in tiles)
+        for (var i = 0; i < tiles.Count; i++)
         {
-            var button = new Button
-            {
-                Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
-                BorderThickness = new Thickness(0),
-                Padding = new Thickness(0),
-                HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                VerticalContentAlignment = VerticalAlignment.Stretch,
-                CommandParameter = ToSurfaceTile(tile),
-                Tag = tile
-            };
-            button.SetBinding(Button.CommandProperty, new Microsoft.UI.Xaml.Data.Binding
-            {
-                Source = this,
-                Path = new PropertyPath(nameof(TileClickCommand))
-            });
-
-            ClickOverlay.Children.Add(button);
+            var button = EnsureOverlayButton(i);
+            button.Tag = tiles[i];
+            button.CommandParameter = ToSurfaceTile(tiles[i]);
+            button.Visibility = Visibility.Visible;
+        }
+        for (var i = tiles.Count; i < _overlayButtons.Count; i++)
+        {
+            _overlayButtons[i].Visibility = Visibility.Collapsed;
+            _overlayButtons[i].Tag = null;  // PositionOverlay skips children without a tile tag
         }
 
         PositionOverlay();
     }
 
-    // Builds per-tile broadcast decorations (tally border, name label bar, audio meter), each gated
-    // by its toggle. Rebuilt only on a structural tile-rect change or a toggle flip — never per
-    // frame. Meter values then update in place via ApplyMeterLevels (no rebuild).
+    private Button EnsureOverlayButton(int index)
+    {
+        if (index < _overlayButtons.Count)
+        {
+            return _overlayButtons[index];
+        }
+
+        var button = new Button
+        {
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0),
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Stretch
+        };
+        button.SetBinding(Button.CommandProperty, new Microsoft.UI.Xaml.Data.Binding
+        {
+            Source = this,
+            Path = new PropertyPath(nameof(TileClickCommand))
+        });
+        _overlayButtons.Add(button);
+        ClickOverlay.Children.Add(button);
+        return button;
+    }
+
+    // Per-tile broadcast decorations (tally border, name label bar, audio meter), POOLED:
+    // each cell always holds all three elements, and a structural change or toggle flip
+    // updates properties + Visibility in place instead of discarding and recreating them.
+    // Meter values then update in place via ApplyMeterLevels (no rebuild).
     private void RebuildDecorations()
     {
         if (DecorOverlay is null)
@@ -280,80 +303,79 @@ public sealed partial class ShowMultiviewHost : UserControl
             return;
         }
 
-        DecorOverlay.Children.Clear();
-        _meters.Clear();
-
         var tiles = MultiviewOverlayFormatting.SelectOverlayTiles(_tiles);
-        foreach (var tile in tiles)
+        for (var i = 0; i < tiles.Count; i++)
         {
-            var decor = new Grid { Tag = tile, IsHitTestVisible = false };
-
-            if (ShowTally)
-            {
-                decor.Children.Add(BuildTallyBorder(tile));
-            }
-
-            if (ShowLabels)
-            {
-                var labelBar = BuildLabelBar(tile);
-                if (labelBar is not null)
-                {
-                    decor.Children.Add(labelBar);
-                }
-            }
-
-            if (ShowMeters && MultiviewOverlayFormatting.ShouldShowMeter(tile))
-            {
-                decor.Children.Add(BuildMeter(tile));
-            }
-
-            DecorOverlay.Children.Add(decor);
+            UpdateDecorCell(EnsureDecorCell(i), tiles[i]);
+        }
+        for (var i = tiles.Count; i < _decorCells.Count; i++)
+        {
+            _decorCells[i].Root.Visibility = Visibility.Collapsed;
+            _decorCells[i].Root.Tag = null;
         }
 
         PositionOverlay();
         ApplyMeterLevels();
     }
 
-    private static Border BuildTallyBorder(MultiviewTile tile)
+    // Reproduces exactly what the former BuildTallyBorder / BuildLabelBar / BuildMeter
+    // produced, but on the cell's persistent elements: same colors, thicknesses,
+    // fonts and gating (ShowTally / ShowLabels+text / ShowMeters+ShouldShowMeter).
+    private void UpdateDecorCell(DecorCell cell, MultiviewTile tile)
     {
+        cell.Root.Tag = tile;
+        cell.Root.Visibility = Visibility.Visible;
+
         var tally = MultiviewOverlayFormatting.ResolveTally(tile);
-        var (color, thickness) = tally switch
+        var (tallyColor, tallyThickness) = tally switch
         {
             MultiviewOverlayFormatting.TallyProgram => (TallyProgramColor, 3.0),
             MultiviewOverlayFormatting.TallyPreview => (TallyPreviewColor, 3.0),
             _ => (TallyNeutralColor, 1.0)
         };
+        cell.Tally.BorderBrush = new SolidColorBrush(tallyColor);
+        cell.Tally.BorderThickness = new Thickness(tallyThickness);
+        cell.Tally.Visibility = ShowTally ? Visibility.Visible : Visibility.Collapsed;
 
-        return new Border
+        var text = MultiviewOverlayFormatting.ResolveLabel(tile);
+        var showLabel = ShowLabels && !string.IsNullOrWhiteSpace(text);
+        if (showLabel)
         {
-            BorderBrush = new SolidColorBrush(color),
-            BorderThickness = new Thickness(thickness),
+            cell.LabelText.Text = text;
+            var barColor = tally switch
+            {
+                MultiviewOverlayFormatting.TallyProgram => Color.FromArgb(210, 150, 30, 26),
+                MultiviewOverlayFormatting.TallyPreview => Color.FromArgb(210, 24, 120, 66),
+                _ => Color.FromArgb(160, 0, 0, 0)
+            };
+            cell.LabelBar.Background = new SolidColorBrush(barColor);
+        }
+        cell.LabelBar.Visibility = showLabel ? Visibility.Visible : Visibility.Collapsed;
+
+        cell.Meter.Visibility = (ShowMeters && MultiviewOverlayFormatting.ShouldShowMeter(tile))
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    private DecorCell EnsureDecorCell(int index)
+    {
+        if (index < _decorCells.Count)
+        {
+            return _decorCells[index];
+        }
+
+        // Tally border — former BuildTallyBorder shape (color/thickness set per update).
+        var tally = new Border
+        {
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             IsHitTestVisible = false,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
         };
-    }
 
-    private static Border? BuildLabelBar(MultiviewTile tile)
-    {
-        var text = MultiviewOverlayFormatting.ResolveLabel(tile);
-        if (string.IsNullOrWhiteSpace(text))
+        // Label bar — former BuildLabelBar shape (text/color set per update).
+        var labelText = new TextBlock
         {
-            return null;
-        }
-
-        var tally = MultiviewOverlayFormatting.ResolveTally(tile);
-        var barColor = tally switch
-        {
-            MultiviewOverlayFormatting.TallyProgram => Color.FromArgb(210, 150, 30, 26),
-            MultiviewOverlayFormatting.TallyPreview => Color.FromArgb(210, 24, 120, 66),
-            _ => Color.FromArgb(160, 0, 0, 0)
-        };
-
-        var label = new TextBlock
-        {
-            Text = text,
             FontSize = 11,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
@@ -363,22 +385,15 @@ public sealed partial class ShowMultiviewHost : UserControl
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Left
         };
-
-        return new Border
+        var labelBar = new Border
         {
-            Background = new SolidColorBrush(barColor),
             IsHitTestVisible = false,
             VerticalAlignment = VerticalAlignment.Bottom,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            Child = label
+            Child = labelText
         };
-    }
 
-    // A small two-channel (L/R) vertical meter anchored to the tile's bottom-right. The track
-    // heights are set during positioning (we know the tile's pixel size then); the fill heights are
-    // driven from the level DPs via ApplyMeterLevels.
-    private Border BuildMeter(MultiviewTile tile)
-    {
+        // Meter — former BuildMeter shape (fill heights set by ApplyMeterLevels).
         var leftFill = new Rectangle
         {
             Width = 5,
@@ -393,7 +408,6 @@ public sealed partial class ShowMultiviewHost : UserControl
             VerticalAlignment = VerticalAlignment.Bottom,
             Margin = new Thickness(1, 0, 0, 0)
         };
-
         var bars = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -401,8 +415,7 @@ public sealed partial class ShowMultiviewHost : UserControl
         };
         bars.Children.Add(leftFill);
         bars.Children.Add(rightFill);
-
-        var container = new Border
+        var meter = new Border
         {
             Background = new SolidColorBrush(Color.FromArgb(150, 6, 10, 8)),
             CornerRadius = new CornerRadius(2),
@@ -414,8 +427,17 @@ public sealed partial class ShowMultiviewHost : UserControl
             Child = bars
         };
 
-        _meters.Add(new MeterChannel(container, leftFill, rightFill));
-        return container;
+        // Same child order as the former decor Grid: tally (full), label (bottom), meter
+        // (bottom-right). Each is Visibility-gated per update.
+        var root = new Grid { IsHitTestVisible = false };
+        root.Children.Add(tally);
+        root.Children.Add(labelBar);
+        root.Children.Add(meter);
+
+        var cell = new DecorCell(root, tally, labelBar, labelText, meter, leftFill, rightFill);
+        _decorCells.Add(cell);
+        DecorOverlay.Children.Add(root);
+        return cell;
     }
 
     // Maps each normalized tile rect into overlay pixel space through the SAME uniform letterbox
@@ -450,12 +472,12 @@ public sealed partial class ShowMultiviewHost : UserControl
         PositionCanvasChildren(DecorOverlay, offsetX, offsetY, displayedWidth, displayedHeight);
 
         // Size the meter tracks relative to the tile height now that we know pixel sizes.
-        foreach (var meter in _meters)
+        foreach (var cell in _decorCells)
         {
-            if (meter.Container.Parent is FrameworkElement { Tag: MultiviewTile tile })
+            if (cell.Root.Visibility == Visibility.Visible && cell.Root.Tag is MultiviewTile tile)
             {
                 var tileHeight = Math.Max(0, tile.H * displayedHeight);
-                meter.TrackHeight = Math.Clamp(tileHeight * 0.4, 12, 90);
+                cell.TrackHeight = Math.Clamp(tileHeight * 0.4, 12, 90);
             }
         }
 
@@ -485,18 +507,23 @@ public sealed partial class ShowMultiviewHost : UserControl
 
     private void ApplyMeterLevels()
     {
-        if (_meters.Count == 0)
+        if (_decorCells.Count == 0)
         {
             return;
         }
 
         var left = Math.Clamp(MeterLevelLeft / 100.0, 0.0, 1.0);
         var right = Math.Clamp(MeterLevelRight / 100.0, 0.0, 1.0);
-        foreach (var meter in _meters)
+        foreach (var cell in _decorCells)
         {
-            var track = meter.TrackHeight;
-            meter.LeftFill.Height = track * left;
-            meter.RightFill.Height = track * right;
+            if (cell.Meter.Visibility != Visibility.Visible)
+            {
+                continue;
+            }
+
+            var track = cell.TrackHeight;
+            cell.LeftFill.Height = track * left;
+            cell.RightFill.Height = track * right;
         }
     }
 
@@ -770,16 +797,31 @@ public sealed partial class ShowMultiviewHost : UserControl
         DragOverlay.Children.Clear();
     }
 
-    private sealed class MeterChannel
+    // One persistent decoration cell per tile slot (pooled; see the fields note). Holds all
+    // three decorations so a rebuild toggles Visibility + updates properties rather than
+    // discarding elements to the finalizer (#513).
+    private sealed class DecorCell
     {
-        public MeterChannel(Border container, Rectangle leftFill, Rectangle rightFill)
+        public DecorCell(Grid root, Border tally, Border labelBar, TextBlock labelText, Border meter, Rectangle leftFill, Rectangle rightFill)
         {
-            Container = container;
+            Root = root;
+            Tally = tally;
+            LabelBar = labelBar;
+            LabelText = labelText;
+            Meter = meter;
             LeftFill = leftFill;
             RightFill = rightFill;
         }
 
-        public Border Container { get; }
+        public Grid Root { get; }
+
+        public Border Tally { get; }
+
+        public Border LabelBar { get; }
+
+        public TextBlock LabelText { get; }
+
+        public Border Meter { get; }
 
         public Rectangle LeftFill { get; }
 
