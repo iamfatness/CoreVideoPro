@@ -63,7 +63,7 @@ class SourceBus {
   void add(std::shared_ptr<ISource> source) {
     if (!source) return;
     const std::string id = source->descriptor().sourceId;
-    entries_[id] = Entry{std::move(source), {}, 0, false};
+    entries_[id] = Entry{std::move(source), {}, false};
   }
   void remove(const std::string& sourceId) { entries_.erase(sourceId); }
   bool empty() const { return entries_.empty(); }
@@ -109,7 +109,6 @@ class SourceBus {
   struct Entry {
     std::shared_ptr<ISource> source;
     SourceIngestCounters counters;
-    int64_t reserved = 0;
     bool everProduced = false;
   };
   std::map<std::string, Entry> entries_;  // stable id order for the snapshot

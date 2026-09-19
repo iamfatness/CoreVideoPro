@@ -77,3 +77,60 @@ TEST(SourceBus, RemoveDropsTheSource) {
   EXPECT_TRUE(bus.empty());
   EXPECT_TRUE(bus.ingest(10'000'000, 1'000).video.empty());
 }
+
+// --- Task 2 review follow-up: coverage gaps ---
+namespace {
+class FixedFrameIdSource final : public corevideo::core::ISource {
+ public:
+  explicit FixedFrameIdSource(std::string sourceId = "test:fixed")
+      : sourceId_(std::move(sourceId)) {
+    descriptor_.sourceId = sourceId_;
+    descriptor_.kind = "test";
+    descriptor_.hasVideo = true;
+  }
+
+  const corevideo::core::SourceDescriptor& descriptor() const override {
+    return descriptor_;
+  }
+
+  corevideo::core::SourceTick poll(int64_t /*programTime100ns*/) override {
+    corevideo::modules::VideoFrame frame;
+    frame.participantId = sourceId_;
+    frame.frameId = 7;  // fixed: never advances
+    corevideo::core::SourceTick tick;
+    tick.video.push_back(std::move(frame));
+    tick.health = corevideo::core::SourceHealth::Producing;
+    return tick;
+  }
+
+  corevideo::core::SourceIngestCounters counters() const override {
+    return counters_;
+  }
+
+ private:
+  std::string sourceId_;
+  corevideo::core::SourceDescriptor descriptor_;
+  corevideo::core::SourceIngestCounters counters_;
+};
+}  // namespace
+
+TEST(SourceBus, ARepeatedFrameIdDoesNotCountAsIngested) {
+  SourceBus bus;
+  bus.add(std::make_shared<FixedFrameIdSource>("test:fixed"));
+
+  bus.ingest(10'000'000, /*nowNs=*/1'000);
+  bus.ingest(20'000'000, /*nowNs=*/2'000);
+
+  const auto snap = bus.snapshot(/*nowNs=*/2'000);
+  ASSERT_EQ(snap.size(), 1u);
+  EXPECT_EQ(snap.front().counters.framesIngested, 1u);
+}
+
+TEST(SourceBus, AnAddedButNeverIngestedSourceIsWarming) {
+  SourceBus bus;
+  bus.add(std::make_shared<TestPatternSource>("test:pattern"));
+
+  const auto snap = bus.snapshot(/*nowNs=*/12345);
+  ASSERT_EQ(snap.size(), 1u);
+  EXPECT_EQ(snap.front().health, SourceHealth::Warming);
+}
