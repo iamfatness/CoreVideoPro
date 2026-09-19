@@ -346,6 +346,10 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 
 MediaCore::MediaCore(modules::ModuleSet modules)
     : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {
+  // #535 slice 0: the source bus. Empty in production — nothing registers a
+  // source outside the addSourceForTest seam — so the render-tick ingest guard
+  // (sourceBus_ && !sourceBus_->empty()) pays nothing for a real show.
+  sourceBus_ = std::make_unique<core::SourceBus>();
   // Put the virtual camera on the RENDER cadence. Publishing it from the ~50Hz
   // output worker capped a 60fps program at 50fps everywhere. The sink runs on
   // the compositor's tap thread; publishNv12 is internally locked and no-ops
@@ -2296,6 +2300,13 @@ void MediaCore::setStillImageDecoderForTest(std::unique_ptr<modules::IStillImage
   stillMediaCache_ =
       std::make_unique<modules::StillMediaFrameCache>(std::move(decoder), cacheBudgetBytes);
   syncStillMediaDesired();
+}
+
+void MediaCore::addSourceForTest(std::shared_ptr<core::ISource> source) {
+  // Same lock discipline as every other MediaCore command mutation: coreMutex
+  // is owned by the caller (JsonRpcServer / applyCommandMutation's caller),
+  // never held inside MediaCore itself — see applyCommands above.
+  if (sourceBus_) sourceBus_->add(std::move(source));
 }
 
 void MediaCore::setParticipantTransform(const rpc::Json&) {
@@ -6041,6 +6052,18 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
   markStage(s_subPollUs, 0);
   videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
+  // Source bus (#535 slice 0): registered ISource sources publish here. Empty in
+  // production (no source registered outside the test seam); the test-pattern
+  // source is added only via addSourceForTest.
+  if (sourceBus_ && !sourceBus_->empty()) {
+    const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    auto busResult = sourceBus_->ingest(mediaPresentationTime100ns, nowNs);
+    videoFrames.insert(videoFrames.end(),
+                       std::make_move_iterator(busResult.video.begin()),
+                       std::make_move_iterator(busResult.video.end()));
+    // busResult.audio is carried in a later slice (audio gather path); slice 0 is video.
+  }
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
     if (!engineFrames.empty()) {

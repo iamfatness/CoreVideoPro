@@ -134,3 +134,64 @@ TEST(SourceBus, AnAddedButNeverIngestedSourceIsWarming) {
   ASSERT_EQ(snap.size(), 1u);
   EXPECT_EQ(snap.front().health, SourceHealth::Warming);
 }
+
+// --- Task 3: MediaCore ingests the bus and composites it into program (F1 gate) ---
+#include "core/MediaCore.h"
+#include "modules/Interfaces.h"
+#include "modules/ProgramFramePreview.h"
+
+TEST(SourceBusMediaCore, ATestPatternBusSourceCompositesIntoProgram) {
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  core.addSourceForTest(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));
+
+  // Route the bus source full-frame to program.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"}, {"sceneId", "bus"},
+      {"routes", corevideo::rpc::Json::Array{
+          corevideo::rpc::Json::Object{{"routeId", "tp"}, {"mode", "fixed"}, {"participantId", "test:pattern"}}}}}});
+
+  // Drive a few render ticks to settle.
+  for (int i = 0; i < 3; ++i) {
+    core.renderDisplayTick();
+  }
+
+  // Metadata: the bus source shows up in the published program video sources.
+  // Keep the returned state alive in a local — sessionState() returns by
+  // value, and a pointer taken from a temporary dangles past this statement.
+  const auto state = core.sessionState();
+  const auto* videoSources = state.get("programFrame")->get("videoSources");
+  ASSERT_NE(videoSources, nullptr);
+  bool foundTestPattern = false;
+  for (const auto& src : videoSources->asArray()) {
+    const auto* sourceId = src.get("sourceId");
+    const auto* participantId = src.get("participantId");
+    if ((sourceId && sourceId->asString() == "test:pattern") ||
+        (participantId && participantId->asString() == "test:pattern")) {
+      foundTestPattern = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(foundTestPattern);
+
+  // Pixels: the F1 CPU-compositor gate — center samples the SMPTE green bar.
+  const auto previews = core.drainProgramFramePreviewEvents();
+  ASSERT_FALSE(previews.empty());
+  const auto* preview = previews.back().get("preview");
+  if (preview == nullptr) {
+    preview = previews.back().get("programFramePreview");
+  }
+  ASSERT_NE(preview, nullptr);
+  const int w = static_cast<int>(preview->get("width")->asNumber());
+  const int h = static_cast<int>(preview->get("height")->asNumber());
+  const auto px = corevideo::modules::base64Decode(preview->getString("bgraBase64"));
+  const size_t c = ((static_cast<size_t>(h / 2)) * static_cast<size_t>(w) + static_cast<size_t>(w / 2)) * 4;
+  ASSERT_LE(c + 3, px.size());
+  EXPECT_GT(px[c + 1], 200);  // G high  (green SMPTE center bar)
+  EXPECT_LT(px[c + 2], 80);   // R low
+  EXPECT_LT(px[c + 0], 80);   // B low
+  const uint32_t centerPixel = (static_cast<uint32_t>(px[c + 3]) << 24) |
+                                (static_cast<uint32_t>(px[c + 2]) << 16) |
+                                (static_cast<uint32_t>(px[c + 1]) << 8) |
+                                static_cast<uint32_t>(px[c + 0]);
+  EXPECT_NE(centerPixel, corevideo::compositor::colorFromParticipantId("test:pattern"));
+}

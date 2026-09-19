@@ -10,6 +10,7 @@
 #include "core/RouteSourcePolicy.h"
 #include "core/RenderedProgramSources.h"
 #include "core/RenderedSceneAttributionPolicy.h"
+#include "core/SourceBus.h"
 #include "core/SourceContinuityLedger.h"
 #include "core/SourceRegistry.h"
 #include "core/TakeRecordPolicy.h"
@@ -241,6 +242,12 @@ class MediaCore {
   void setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
                                    size_t cacheBudgetBytes = modules::StillMediaFrameCache::kDefaultCacheBudgetBytes);
   [[nodiscard]] modules::StillMediaFrameCache* stillMediaCacheForTest() { return stillMediaCache_.get(); }
+
+  // Test seam (#535 slice 0): register an ISource with the core's SourceBus.
+  // Nothing outside native/tests/ calls this — production has no registered
+  // sources, so the bus stays empty and the ingest in renderSyntheticTick is a
+  // guarded no-op.
+  void addSourceForTest(std::shared_ptr<core::ISource> source);
 
   // Test seam: the last program frame this core rendered (whatever the stub
   // compositor filled `preview` with). Same law as setStillImageDecoderForTest
@@ -552,6 +559,7 @@ class MediaCore {
   // "this core process," not an incarnation that could be replaced mid-run.
   static constexpr const char* kCoreProcessEpoch = "core-process";
   core::SourceRegistry sourceRegistry_{"core-registry"};
+  std::unique_ptr<core::SourceBus> sourceBus_;
   std::unordered_set<std::string> registeredWallIds_;
   // Wall ids SourceRegistry refuses on their SPELLING (over kMaxIdBytes), which
   // no retry can ever change. Skipped outright: a failed add is deliberately not
