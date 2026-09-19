@@ -6074,30 +6074,41 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   const bool engineLive = zoomEngineRuntime_ && zoomEngineRuntime_->configured();
   auto videoFrames =
       engineLive ? std::vector<modules::VideoFrame>{} : modules_.zoom->pollVideoFrames();
-  auto captureFrames = modules_.captureDevice->pollVideoFrames(frameTimestampMs);
+  auto polledCapture = modules_.captureDevice->pollVideoFrames(frameTimestampMs);
   // Browser-source frames ride the capture stream (keyed "capture:browser:<n>"),
   // so scenes/multiview/routing treat them exactly like any capture device. Same
   // per-frame copy cost as one WinUI capture-shm bridge device.
   if (!browserSources_->empty()) {
     auto browserFrames = browserSources_->pollVideoFrames(frameTimestampMs);
-    captureFrames.insert(captureFrames.end(),
+    polledCapture.insert(polledCapture.end(),
                          std::make_move_iterator(browserFrames.begin()),
                          std::make_move_iterator(browserFrames.end()));
   }
   markStage(s_subPollUs, 0);
-  videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
-  // Source bus (#535 slice 0): registered ISource sources publish here. Empty in
-  // production (no source registered outside the test seam); the test-pattern
-  // source is added only via addSourceForTest.
+  // #535 slice 2: capture rides the bus. The adapters hold their frames; the bus
+  // mirrors this tick's poll (CaptureBusRoster.h), so on-air output is identical.
+  if (sourceBus_) {
+    core::syncCaptureSources(*sourceBus_, polledCapture);
+  }
+  // Bus ingest, partitioned by kind so the merged vector keeps today's order:
+  // capture frames first (where the direct insert used to put them), then Zoom.
+  std::vector<modules::VideoFrame> captureFrames;   // KEEP this name: the merge below uses it
+  std::vector<modules::VideoFrame> zoomBusFrames;
   if (sourceBus_ && !sourceBus_->empty()) {
     const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     auto busResult = sourceBus_->ingest(mediaPresentationTime100ns, nowNs);
-    videoFrames.insert(videoFrames.end(),
-                       std::make_move_iterator(busResult.video.begin()),
-                       std::make_move_iterator(busResult.video.end()));
+    for (auto& frame : busResult.video) {
+      const auto* source = sourceBus_->sourceFor(frame.participantId);
+      const bool isCapture = source && source->descriptor().kind == "capture";
+      (isCapture ? captureFrames : zoomBusFrames).push_back(std::move(frame));
+    }
     // busResult.audio is carried in a later slice (audio gather path); slice 0 is video.
   }
+  videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
+  videoFrames.insert(videoFrames.end(),
+                     std::make_move_iterator(zoomBusFrames.begin()),
+                     std::make_move_iterator(zoomBusFrames.end()));
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     if (!engineFrames.empty()) {
       // When the engine reports subscribed video participants, they are the

@@ -11,6 +11,7 @@
 #include "core/RenderedProgramSources.h"
 #include "core/RenderedSceneAttributionPolicy.h"
 #include "core/SourceBus.h"
+#include "core/CaptureBusRoster.h"
 #include "core/ZoomBusRoster.h"
 #include "core/SourceContinuityLedger.h"
 #include "core/SourceRegistry.h"

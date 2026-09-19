@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 using corevideo::core::TestPatternSource;
 
 TEST(SourceContract, TestPatternSourceProducesSmpteBars) {
@@ -210,10 +212,17 @@ TEST(SourceBusSnapshot, SourcesNodeCarriesPerSourceCounters) {
   const auto* sources = state.get("sources");
   ASSERT_NE(sources, nullptr);
   const auto& arr = sources->asArray();
-  ASSERT_EQ(arr.size(), 1u);
-  EXPECT_EQ(arr.front().getString("sourceId"), "test:pattern");
-  EXPECT_GE(arr.front().get("framesIngested")->asNumber(), 1.0);
-  EXPECT_EQ(arr.front().get("droppedFrames")->asNumber(), 0.0);
+  // #535 slice 2: a connected stub capture device (decklink-1) is now also a
+  // bus source, so the array is no longer just the one we added here — find
+  // this test's own entry rather than assuming it's alone.
+  const auto testPatternEntry =
+      std::find_if(arr.begin(), arr.end(), [](const corevideo::rpc::Json& entry) {
+        return entry.getString("sourceId") == "test:pattern";
+      });
+  ASSERT_NE(testPatternEntry, arr.end());
+  EXPECT_EQ(testPatternEntry->getString("sourceId"), "test:pattern");
+  EXPECT_GE(testPatternEntry->get("framesIngested")->asNumber(), 1.0);
+  EXPECT_EQ(testPatternEntry->get("droppedFrames")->asNumber(), 0.0);
 }
 
 TEST(SourceBusSnapshot, AFreshMediaCoreWithNoSourceStillEmitsAnEmptySourcesArray) {

@@ -5791,3 +5791,28 @@ TEST(MediaCoreCommand, WithNoEngineTheZoomTapNeverPopulatesTheSourceBusAndProgra
   const auto* programFrame = state.get("programFrame");
   ASSERT_NE(programFrame, nullptr);
 }
+
+// #535 slice 2: the stub capture set has decklink-1 connected with signal, so
+// after one render tick the bus must list it as a capture source that produced.
+TEST(MediaCoreCommand, StubCaptureDeviceAppearsOnTheSourceBusAfterATick) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+
+  mediaCore.renderDisplayTick();
+  mediaCore.renderDisplayTick();
+
+  const auto state = mediaCore.sessionState();
+  const auto* sources = state.get("sources");
+  ASSERT_NE(sources, nullptr);
+  ASSERT_TRUE(sources->isArray());
+  bool found = false;
+  for (const auto& s : sources->asArray()) {
+    if (s.getString("sourceId") == "capture:decklink-1") {
+      found = true;
+      EXPECT_EQ(s.getString("kind"), "capture");
+      EXPECT_EQ(s.getString("health"), "producing");
+      EXPECT_GE(s.get("framesIngested")->asNumber(), 1.0);
+    }
+    EXPECT_NE(s.getString("sourceId"), "capture:aja-io-1") << "a detected-only device emits nothing and must not be on the bus";
+  }
+  EXPECT_TRUE(found);
+}
