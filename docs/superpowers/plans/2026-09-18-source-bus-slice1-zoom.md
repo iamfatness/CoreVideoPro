@@ -202,51 +202,156 @@ git commit -m "feat(#535): SourceBus membership queries (slice 1)"
 
 ---
 
-### Task 3: MediaCore — feed per-participant Zoom sources and produce Zoom video from the bus
+### Task 3: Pure `syncZoomParticipantSources` helper (roster → bus)
 
 **Files:**
-- Modify: `native/src/core/MediaCore.cpp` (`renderSyntheticTick`, the Zoom tap + suppression gate, `~6021-6119`)
-- Modify: `native/src/core/MediaCore.h` (include `ZoomParticipantSource.h` if needed)
-- Test: `native/tests/SourceBusTest.cpp` or `native/tests/MediaCoreCommandTest.cpp` (a MediaCore-level test using the `addSourceForTest` seam is NOT enough here — this needs the real tap; see step 1)
+- Create: `native/src/core/ZoomBusRoster.h` (header-only pure helper, the codebase's `ZoomSourceSetPolicy`/`RouteSourcePolicy` shape)
+- Test: `native/tests/SourceBusTest.cpp` (append)
+
+**Why a pure helper:** existing tests feed "Zoom" frames by swapping `modules_.zoom` (the no-engine path); there is NO in-process seam to drive the engine-live tap, so the roster→bus sync must be a pure function tested directly, not through a live engine. MediaCore (Task 4) calls it.
 
 **Interfaces:**
-- Consumes: `sourceBus_` (slice 0), `ZoomParticipantSource` (Task 1), `SourceBus::contains`/`sourceIds` (Task 2), the existing `zoomEngineRuntime_->latestDecodedVideoFrames(...)` tap and `engineLive` gate.
-- Produces: real Zoom video frames now flow into the merged `videoFrames` via the bus ingest, one `ZoomParticipantSource` per participant; departed participants' sources are removed each tick.
-
-**Design (what changes in `renderSyntheticTick`):**
-1. The tap loop (`~6031-6052`) currently calls `realZoom->ingestI420Frame/ingestFrame`. Change it so that, for each decoded frame, it ensures a `ZoomParticipantSource` exists in `sourceBus_` for that `participantId` (`if (!sourceBus_->contains(pid)) sourceBus_->add(std::make_shared<core::ZoomParticipantSource>(pid, w, h));`) and calls `setLatest(...)` on it (build the `VideoFrame` exactly as it's built for `RealZoomCaptureSource` today — zero-copy I420 or BGRA, same `participantId`, `frameId`, `timestampMs`). Keep a local set of the participant ids seen THIS tick.
-2. After the tap, remove any Zoom source (`sourceIds()` filtered to the `zoom:` prefix) whose id was NOT seen this tick — that participant left / stopped decoding (mirrors `ZoomEngineRuntime` retiring a slot).
-3. The suppression gate (`~6062`) changes to: `auto videoFrames = engineLive ? std::vector<modules::VideoFrame>{} : modules_.zoom->pollVideoFrames();`. With the engine live, real Zoom frames now come from the bus ingest below; the synthetic slate is only served when there is NO engine (unchanged). The old `participantCount()==0` special case is subsumed: with no fed sources, the bus produces no Zoom frames and `videoFrames` stays empty — identical on-air result.
-4. The bus ingest (already added in slice 0 at `~6077`) now yields the Zoom frames (plus any test source). Its result must be merged into `videoFrames` BEFORE the engine-roster merge (`~6089`), which is already the case. The roster merge then reconciles bus-produced Zoom frames against the engine roster exactly as before.
-
-**A `zoom:` prefix helper:** add a small local `constexpr` or inline check; do not touch ids of non-zoom bus sources (e.g. a future test source) when removing departed participants — only remove ids beginning `"zoom:"`.
+- Consumes: `SourceBus` (`contains`/`add`/`remove`/`sourceIds`, Tasks 1-2), `ZoomParticipantSource` (Task 1), `modules::VideoFrame`.
+- Produces:
+  - `void core::syncZoomParticipantSources(SourceBus& bus, const std::vector<modules::VideoFrame>& zoomFrames);` — for each frame (already built with `participantId == "zoom:<pid>"`, dims, I420/BGRA payload): ensure a `ZoomParticipantSource` for that id exists in `bus` (add if absent, sized from the frame), then `setLatest(frame)` on it; afterwards remove every bus source whose id begins `"zoom:"` and was NOT in `zoomFrames` this call (departed participants). Non-`zoom:` sources are never touched.
+  - `inline bool core::isZoomSourceId(const std::string& id)` — `id.rfind("zoom:", 0) == 0`.
 
 - [ ] **Step 1: Write the failing test**
 
-Add a MediaCore-level test that exercises the real tap. Model it on the existing fake-engine-in-process tests (search `MediaCoreCommandTest.cpp` for how a test configures `zoomEngineRuntime_` / feeds decoded frames; if there is no in-process seam to inject decoded Zoom frames, use the smallest existing harness that drives `renderSyntheticTick` with a configured engine, e.g. the pattern in `ProgramPixelContinuityTest.cpp` or `RenderedSceneAttributionTest.cpp`, which already stand up Zoom-ish frames). The test must assert:
-- after a tick, `sessionState().get("sources")` contains an entry with `sourceId` `"zoom:<pid>"` for each fed participant (proves per-participant sources registered), and
-- `sessionState().get("programFrame")->get("videoSources")` still lists those participants (proves the bus-produced frames reach the render gather and the roster merge), and
-- a participant fed on tick 1 but not tick 2 is GONE from `sources` on tick 2 (proves removal).
+```cpp
+// append to native/tests/SourceBusTest.cpp
+#include "core/ZoomBusRoster.h"
 
-If no existing in-process seam feeds decoded Zoom frames to `renderSyntheticTick`, STOP and report NEEDS_CONTEXT — do not invent a private engine; the controller will point at the right harness (this is the one genuinely uncertain step).
+static corevideo::modules::VideoFrame zoomFrame(const std::string& id, int64_t frameId) {
+  corevideo::modules::VideoFrame f;
+  f.participantId = id;
+  f.i420 = std::make_shared<const std::vector<uint8_t>>(1280 * 720 * 3 / 2, 0x10);
+  f.i420Width = 1280; f.i420Height = 720; f.frameId = frameId;
+  return f;
+}
 
-- [ ] **Step 2: Run to verify it fails** (the assertions fail because the Zoom frames still come from `RealZoomCaptureSource`, not per-participant bus sources / the `sources` node lacks `zoom:` entries).
+TEST(ZoomBusRoster, AddsFeedsAndRemovesPerParticipant) {
+  corevideo::core::SourceBus bus;
+  // Also register a non-zoom source that must never be touched.
+  bus.add(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));
 
-- [ ] **Step 3: Implement the tap + gate change** per the Design above.
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("zoom:1", 5), zoomFrame("zoom:2", 5)});
+  EXPECT_TRUE(bus.contains("zoom:1"));
+  EXPECT_TRUE(bus.contains("zoom:2"));
+  EXPECT_TRUE(bus.contains("test:pattern"));
 
-- [ ] **Step 4: Run to verify PASS**, then the churn/continuity gates:
-Run: `native/build-dev/corevideo-native-tests.exe --gtest_filter=ZoomEngineRuntime.*` then `--gtest_filter=SourceContinuityLedger.*` then the new test's filter. All PASS (continuity must NOT read the migrated sources as restarts — same `zoom:<pid>` keys).
+  // Ingest produces one frame per participant, keyed correctly.
+  auto r = bus.ingest(0, 1000);
+  int zoomFrames = 0;
+  for (const auto& v : r.video) if (v.participantId == "zoom:1" || v.participantId == "zoom:2") ++zoomFrames;
+  EXPECT_EQ(zoomFrames, 2);
+
+  // zoom:2 departs; zoom:1 stays. test:pattern untouched.
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("zoom:1", 6)});
+  EXPECT_TRUE(bus.contains("zoom:1"));
+  EXPECT_FALSE(bus.contains("zoom:2"));
+  EXPECT_TRUE(bus.contains("test:pattern"));
+}
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `cmake --build native/build-dev --config Release --target corevideo-native-tests`
+Expected: FAIL — `core/ZoomBusRoster.h` not found.
+
+- [ ] **Step 3: Implement `native/src/core/ZoomBusRoster.h`**
+
+```cpp
+#pragma once
+#include <string>
+#include <unordered_set>
+#include <vector>
+
+#include "core/SourceBus.h"
+#include "core/ZoomParticipantSource.h"
+
+namespace corevideo::core {
+
+inline bool isZoomSourceId(const std::string& id) { return id.rfind("zoom:", 0) == 0; }
+
+inline void syncZoomParticipantSources(SourceBus& bus,
+                                       const std::vector<modules::VideoFrame>& zoomFrames) {
+  std::unordered_set<std::string> present;
+  for (const auto& f : zoomFrames) {
+    present.insert(f.participantId);
+    if (!bus.contains(f.participantId)) {
+      const int w = f.i420Width > 0 ? f.i420Width : f.pixelWidth;
+      const int h = f.i420Height > 0 ? f.i420Height : f.pixelHeight;
+      bus.add(std::make_shared<ZoomParticipantSource>(f.participantId, w, h));
+    }
+    // setLatest lives on ZoomParticipantSource; reach it via the bus is not
+    // exposed, so add() above stores the source and we feed through a direct
+    // pointer kept by the caller is NOT available — instead feed here:
+  }
+  // Feed: the bus owns the sources, so expose feeding through the source objects
+  // the caller added. See note below — feeding is done in the same loop via a
+  // small SourceBus::sourceFor(id) accessor (add it in this task).
+  for (const std::string& id : bus.sourceIds()) {
+    if (isZoomSourceId(id) && present.find(id) == present.end()) bus.remove(id);
+  }
+}
+
+}  // namespace corevideo::core
+```
+
+**Note for the implementer:** feeding the frame requires reaching the `ZoomParticipantSource` the bus holds. Add a minimal `ZoomParticipantSource* SourceBus::zoomSourceFor(const std::string& id)` **or** (cleaner) a generic `ISource* SourceBus::sourceFor(const std::string& id)` accessor to `SourceBus` (returns the stored `ISource*` or nullptr), then in the loop do `static_cast<ZoomParticipantSource*>(bus.sourceFor(id))->setLatest(f);` right after ensuring it exists. Add that accessor + a test for it as part of this task (it is a natural companion to Task 2's `contains`/`sourceIds`). Keep the helper pure over `SourceBus` — do not give it a `ZoomEngineRuntime` dependency.
+
+- [ ] **Step 4: Run to verify PASS**
+
+Run: `native/build-dev/corevideo-native-tests.exe --gtest_filter=ZoomBusRoster.*` then `--gtest_filter=SourceBus.*`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add native/src/core/ZoomBusRoster.h native/src/core/SourceBus.h native/tests/SourceBusTest.cpp
+git commit -m "feat(#535): pure syncZoomParticipantSources roster->bus helper (slice 1)"
+```
+
+---
+
+### Task 4: MediaCore — call the helper in the tick and produce Zoom video from the bus
+
+**Files:**
+- Modify: `native/src/core/MediaCore.cpp` (`renderSyntheticTick`, the Zoom tap + suppression gate, `~6021-6119`)
+- Modify: `native/src/core/MediaCore.h` (include `core/ZoomBusRoster.h`)
+
+**Interfaces:**
+- Consumes: `sourceBus_` (slice 0), `syncZoomParticipantSources` (Task 3), the existing `zoomEngineRuntime_->latestDecodedVideoFrames(...)` tap and `engineLive` gate.
+- Produces: real Zoom video flows into the merged `videoFrames` via the bus ingest, one `ZoomParticipantSource` per participant.
+
+**Design (what changes in `renderSyntheticTick`):**
+1. The tap loop (`~6031-6052`) builds a `std::vector<modules::VideoFrame> zoomFrames` (one per decoded participant), constructed EXACTLY as it builds the frame for `RealZoomCaptureSource` today (zero-copy I420 shared_ptr or BGRA, same `participantId`, dims, `frameId`, `timestampMs`), instead of calling `realZoom->ingestI420Frame/ingestFrame`. Then call `core::syncZoomParticipantSources(*sourceBus_, zoomFrames)`.
+2. The suppression gate (`~6062`) changes to: `auto videoFrames = engineLive ? std::vector<modules::VideoFrame>{} : modules_.zoom->pollVideoFrames();`. Engine live → real Zoom frames come from the bus ingest below; no engine → the synthetic slate via `RealZoomCaptureSource` (unchanged). The `participantCount()==0` special case is subsumed: no fed sources → bus produces no Zoom frames → `videoFrames` empty — identical on-air result.
+3. The slice-0 bus ingest (`~6077`) now yields the Zoom frames; it already runs BEFORE the engine-roster merge (`~6089`), which reconciles them against the roster exactly as before.
+4. `RealZoomCaptureSource` stays for the no-engine slate (its `ingest*` is simply no longer called on the engine-live path). Do NOT delete `IZoomCaptureSource` this slice.
+
+- [ ] **Step 1: Write the failing test**
+
+Drive this through the pure helper + a MediaCore snapshot check using the `addSourceForTest` seam is insufficient (it can't exercise the tap). Instead, assert the WIRING is correct by a focused check: after Task 4, a MediaCore constructed with the stub modules (no engine) still renders the synthetic slate (regression — `engineLive` false path unchanged), verified by an existing MediaCore render test still passing. The engine-live per-participant path is proven by Task 3's pure test plus the fake-engine drill in Task 5. Add one regression assertion here: with no engine, `sessionState().get("sources")` contains NO `zoom:` entry (the tap didn't run) and program still composites the synthetic slate as before.
+
+- [ ] **Step 2: Run to verify it fails / passes appropriately.** Build; run the no-engine MediaCore render tests (`MediaCoreCommand.*` subset that renders program) — they must stay green.
+
+- [ ] **Step 3: Implement the tap → helper + gate change** per the Design.
+
+- [ ] **Step 4: Run the churn/continuity gates:**
+Run: `native/build-dev/corevideo-native-tests.exe --gtest_filter=ZoomEngineRuntime.*`, then `--gtest_filter=SourceContinuityLedger.*`, then `--gtest_filter=MediaCoreCommand.*`. All PASS (continuity must NOT read migrated sources as restarts — identical `zoom:<pid>` keys and `hasI420` content).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add native/src/core/MediaCore.cpp native/src/core/MediaCore.h native/tests/*.cpp
-git commit -m "feat(#535): MediaCore feeds per-participant Zoom sources through the bus (slice 1)"
+git commit -m "feat(#535): MediaCore feeds Zoom video through the bus via the roster helper (slice 1)"
 ```
 
 ---
 
-### Task 4: Regression validation + docs
+### Task 5: Regression validation + docs
 
 **Files:**
 - Modify: `CLAUDE.md` (extend the "The source bus (#535 slice 0…)" section with a slice-1 note)
@@ -270,14 +375,15 @@ git commit -m "docs(#535): source bus slice 1 (Zoom video per-participant) note"
 
 **Spec coverage** (§4 Zoom row, §5 slice 1):
 - "poll() returns the participant's latest I420 slot" → Task 1 `ZoomParticipantSource`.
-- "cushion stays inside the adapter" → Global Constraint + Task 3 (cushion untouched in `ZoomEngineRuntime`).
-- per-participant granularity (owner ruling) → Tasks 1-3.
-- "Zoom onto the bus" video → Task 3; **deliberately NOT** deleting `IZoomCaptureSource` (spec §5 slice 4 retires the three interfaces; slice 1 keeps `RealZoomCaptureSource` for the no-engine slate — stated in Global Constraints and Task 4 docs).
+- "cushion stays inside the adapter" → Global Constraint + Task 4 (cushion untouched in `ZoomEngineRuntime`).
+- per-participant granularity (owner ruling) → Tasks 1-4.
+- roster→bus sync testable without a live engine → Task 3 pure helper.
+- "Zoom onto the bus" video → Task 4; **deliberately NOT** deleting `IZoomCaptureSource` (spec §5 slice 4 retires the three interfaces; slice 1 keeps `RealZoomCaptureSource` for the no-engine slate — stated in Global Constraints and Task 5 docs).
 - Zoom audio deferred → Global Constraint (owner-chosen video-only scope).
-- Live soak / churn / continuity green → Task 4.
+- Live soak / churn / continuity green → Task 5.
 
-**Placeholder scan:** Task 3 Step 1 is the one genuinely uncertain step (the in-process seam to feed decoded Zoom frames to `renderSyntheticTick`). It is written as "use the smallest existing harness; if none exists, report NEEDS_CONTEXT" rather than inventing an engine — an honest instruction, not a placeholder. No TBD/TODO elsewhere.
+**Placeholder scan:** the earlier "no in-process engine seam → NEEDS_CONTEXT" hedge is resolved by extracting Task 3's pure `syncZoomParticipantSources` helper, which is unit-tested directly. The one implementer judgment left is adding a `SourceBus::sourceFor(id)` accessor to feed the source (Task 3 note) — a natural companion to `contains`/`sourceIds`, not a placeholder. No TBD/TODO.
 
-**Type consistency:** `ZoomParticipantSource(participantId, w, h)` / `setLatest(VideoFrame)` / `poll`/`counters`; `SourceBus::contains`/`sourceIds`; `sourceBus_` (slice 0). `source_id == "zoom:<pid>" == VideoFrame::participantId` throughout.
+**Type consistency:** `ZoomParticipantSource(participantId, w, h)` / `setLatest(VideoFrame)` / `poll`/`counters`; `SourceBus::contains`/`sourceIds`/`sourceFor`; `syncZoomParticipantSources(SourceBus&, vector<VideoFrame>)`; `isZoomSourceId`; `sourceBus_` (slice 0). `source_id == "zoom:<pid>" == VideoFrame::participantId` throughout.
 
-**Risk:** Task 3 is the delicate one — it rewires a hot, live-critical path. The safety net is that it changes only WHERE the decoded frame is published (per-participant `ISource` vs `RealZoomCaptureSource`), preserving the `zoom:<pid>` key, the suppression semantics, and the roster merge — so `SourceContinuityLedger` and the churn ledger see identical inputs. The fake-engine drill + continuity/churn tests are the gate that proves it.
+**Risk:** Task 4 is the delicate one — it rewires a hot, live-critical path. The safety net: it changes only WHERE the decoded frame is published (per-participant `ISource` via the pure helper vs `RealZoomCaptureSource`), preserving the `zoom:<pid>` key, the `hasI420` content contract, the suppression semantics, and the roster merge — so `SourceContinuityLedger` and the churn ledger see identical inputs. Task 3's pure test proves the sync logic; the fake-engine drill + continuity/churn tests (Task 5) prove the wiring on the real path.
