@@ -4953,9 +4953,13 @@ TEST(MediaCoreCommand, MediaRouteAppearsOnTheSourceBusAndLeavesWhenUnrouted) {
   state = mediaCore.sessionState();
   sources = state.get("sources");
   ASSERT_NE(sources, nullptr);
+  bool mediaStillPresent = false;
   for (const auto& s : sources->asArray()) {
-    EXPECT_NE(s.getString("sourceId"), "media:clip-intro");
+    if (s.getString("sourceId") == "media:clip-intro") {
+      mediaStillPresent = true;
+    }
   }
+  EXPECT_FALSE(mediaStillPresent);
 }
 
 // HEADLESS multiview validation: with the real GPU compositor wired in, a

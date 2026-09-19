@@ -1,10 +1,13 @@
 // native/src/core/MediaBusRoster.h
 #pragma once
+#include <atomic>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <unordered_set>
 #include <vector>
 
+#include "core/BoundedAsyncLog.h"
 #include "core/MediaAssetSource.h"
 #include "core/SourceBus.h"
 
@@ -37,6 +40,13 @@ inline void syncMediaSources(SourceBus& bus, const std::vector<modules::VideoFra
     ISource* existing = bus.sourceFor(f.participantId);
     if (existing && existing->descriptor().kind == kind) {
       static_cast<MediaAssetSource*>(existing)->setLatest(f);
+    } else if (existing) {
+      static std::atomic<uint32_t> skips{0};
+      if (skips++ % 300 == 0) {
+        nativeLogf("[source-bus] %.*s frame for '%s' skipped: bus entry is kind '%s'\n",
+                   static_cast<int>(kind.size()), kind.data(), f.participantId.c_str(),
+                   existing->descriptor().kind.c_str());
+      }
     }
   }
   for (const std::string& id : bus.sourceIds()) {

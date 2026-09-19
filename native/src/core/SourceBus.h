@@ -26,7 +26,7 @@ inline const char* sourceHealthName(SourceHealth health) {
 
 struct SourceDescriptor {
   std::string sourceId;   // canonical scheme:id == VideoFrame::participantId
-  std::string kind;       // "zoom" | "capture" | "media" | "composed" | "test"
+  std::string kind;       // "zoom" | "capture" | "media" | "still" | "composed" | "test"
   int width = 0;
   int height = 0;
   std::optional<int> fpsNumerator, fpsDenominator;

@@ -361,9 +361,13 @@ TEST(StillMediaFrameCache, StillRouteAppearsOnTheSourceBusAsKindStill) {
   state = mediaCore.sessionState();
   sources = state.get("sources");
   ASSERT_NE(sources, nullptr);
+  bool stillPresent = false;
   for (const auto& s : sources->asArray()) {
-    EXPECT_NE(s.getString("sourceId"), "media:logo-1");
+    if (s.getString("sourceId") == "media:logo-1") {
+      stillPresent = true;
+    }
   }
+  EXPECT_FALSE(stillPresent);
 }
 
 TEST(StillMediaFrameCache, KindImageRouteIsDecodedRegardlessOfExtension) {

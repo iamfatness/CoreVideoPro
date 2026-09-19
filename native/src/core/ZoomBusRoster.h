@@ -1,8 +1,11 @@
 #pragma once
+#include <atomic>
+#include <cstdint>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
+#include "core/BoundedAsyncLog.h"
 #include "core/SourceBus.h"
 #include "core/ZoomParticipantSource.h"
 
@@ -36,6 +39,12 @@ inline void syncZoomParticipantSources(SourceBus& bus,
     ISource* existing = bus.sourceFor(f.participantId);
     if (existing && existing->descriptor().kind == "zoom") {
       static_cast<ZoomParticipantSource*>(existing)->setLatest(f);
+    } else if (existing) {
+      static std::atomic<uint32_t> skips{0};
+      if (skips++ % 300 == 0) {
+        nativeLogf("[source-bus] zoom frame for '%s' skipped: bus entry is kind '%s'\n",
+                   f.participantId.c_str(), existing->descriptor().kind.c_str());
+      }
     }
   }
 

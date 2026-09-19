@@ -6172,6 +6172,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
                                      [](const core::SourceDescriptor& d) { return d.kind == "still"; });
     videoFrames.insert(videoFrames.end(), std::make_move_iterator(stills.video.begin()),
                        std::make_move_iterator(stills.video.end()));
+  } else {
+    // No still-media cache (cannot happen today) — clear any stale "still" bus
+    // sources rather than let them linger silently forever.
+    core::syncMediaSources(*sourceBus_, {}, "still");
   }
   // ISO-1: snapshot the latest per-source video frame (keyed by canonical source
   // id) so the audio worker's gather can hand each selected ISO writer its own

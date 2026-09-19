@@ -1983,7 +1983,14 @@ bus removing it matches what nothing draws for it today.
   --seconds 40 --load 8`) — PASSED: 60.0fps of 60 sustained, 0 dropped, 5.3ms
   render hold, 100% decoded-frame delivery, coreMutex over-budget 140/3207
   (4%), command round-trip p50 4.6ms/p99 13.9ms. Artifacts archived under
-  `artifacts/qa/slice3-gap-hold/` (gitignored).
+  `artifacts/qa/slice3-gap-hold/` (gitignored). **The gap-hold recording itself
+  ran with only zoom + capture sources on the bus** (the rig's `bus=` tuples show
+  no media/still entries) — for THIS slice it is a non-regression gate on the
+  zoom/capture path, not on-air proof of media on the bus. The media on-air
+  evidence is `CompositesMediaRoutePixelsIntoProgramPreview` and
+  `StillMediaRouteCompositesDecodedPixels` passing through the bus path, plus the
+  new tests' pixel probe (`MediaCoreCommand.MediaRouteAppearsOnTheSourceBusAndLeavesWhenUnrouted`,
+  `StillMediaFrameCache.StillRouteAppearsOnTheSourceBusAsKindStill`).
 - **Next: slice 3b** (own spec, blocked on the owner's Take-semantics ruling)
   drops the `layers` argument — media request state moves to source state set at
   command time, `poll(ts)` applies hold/roll from that state, and the cue

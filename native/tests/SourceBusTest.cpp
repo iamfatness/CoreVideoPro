@@ -1,10 +1,21 @@
 // native/tests/SourceBusTest.cpp
+#include "core/CaptureBusRoster.h"
+#include "core/CaptureDeviceSource.h"
+#include "core/MediaAssetSource.h"
+#include "core/MediaBusRoster.h"
+#include "core/MediaCore.h"
+#include "core/SourceBus.h"
 #include "core/TestPatternSource.h"
+#include "core/ZoomBusRoster.h"
+#include "core/ZoomParticipantSource.h"
 #include "compositor/CompositorLayout.h"
+#include "modules/Interfaces.h"
+#include "modules/ProgramFramePreview.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <functional>
 
 using corevideo::core::TestPatternSource;
 
@@ -39,8 +50,6 @@ TEST(SourceContract, TestPatternSourceProducesSmpteBars) {
 }
 
 // --- Task 2: SourceBus aggregator ---
-#include "core/SourceBus.h"
-
 using corevideo::core::SourceBus;
 using corevideo::core::SourceHealth;
 
@@ -138,10 +147,6 @@ TEST(SourceBus, AnAddedButNeverIngestedSourceIsWarming) {
 }
 
 // --- Task 3: MediaCore ingests the bus and composites it into program (F1 gate) ---
-#include "core/MediaCore.h"
-#include "modules/Interfaces.h"
-#include "modules/ProgramFramePreview.h"
-
 TEST(SourceBusMediaCore, ATestPatternBusSourceCompositesIntoProgram) {
   corevideo::core::MediaCore core(corevideo::modules::createStubModules());
   core.addSourceForTest(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));
@@ -236,7 +241,6 @@ TEST(SourceBusSnapshot, AFreshMediaCoreWithNoSourceStillEmitsAnEmptySourcesArray
 
 // --- Task 1: ZoomParticipantSource ---
 
-#include "core/ZoomParticipantSource.h"
 using corevideo::core::ZoomParticipantSource;
 
 TEST(ZoomParticipantSource, PollReturnsTheSetFrameKeyedByParticipant) {
@@ -292,8 +296,6 @@ TEST(SourceBus, SourceForReturnsTheStoredSourceOrNullptr) {
 }
 
 // --- Task 3: syncZoomParticipantSources (roster -> bus) ---
-#include "core/ZoomBusRoster.h"
-
 static corevideo::modules::VideoFrame zoomFrame(const std::string& id, int64_t frameId) {
   corevideo::modules::VideoFrame f;
   f.participantId = id;
@@ -373,8 +375,6 @@ TEST(ZoomBusRoster, EmptyEngineRosterRemovesNothing) {
 }
 
 // --- Task 1: CaptureDeviceSource ---
-#include "core/CaptureDeviceSource.h"
-
 static corevideo::modules::VideoFrame bgraFrame(const std::string& id, int w, int h, int64_t frameId) {
   corevideo::modules::VideoFrame f;
   f.participantId = id;
@@ -409,8 +409,6 @@ TEST(CaptureDeviceSource, PollServesTheAdaptersLatestBgraFrameKeyedByDevice) {
 }
 
 // --- Task 2: pure syncCaptureSources helper ---
-#include "core/CaptureBusRoster.h"
-
 // Capture adapters hold their own last frame and re-emit it every tick while the
 // device is connected (WinUiCaptureDeviceAdapter::pollVideoFrames); a device that
 // is absent from a tick has disconnected or never delivered, and today the
@@ -458,8 +456,6 @@ TEST(CaptureBusRoster, EmptyTickRemovesEveryCaptureSourceAndNothingElse) {
   EXPECT_TRUE(bus.contains("16778240"));
 }
 
-#include <functional>
-
 TEST(SourceBus, IngestWithASelectorPollsAndCountsOnlyTheSelectedKinds) {
   corevideo::core::SourceBus bus;
   bus.add(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));          // kind "test"
@@ -486,9 +482,6 @@ TEST(SourceBus, IngestWithASelectorPollsAndCountsOnlyTheSelectedKinds) {
   auto all = bus.ingest(0, 2000);
   EXPECT_EQ(all.video.size(), 2u);
 }
-
-#include "core/MediaAssetSource.h"
-#include "core/MediaBusRoster.h"
 
 TEST(MediaAssetSource, PollServesTheOwnersLatestFrameKeyedByAsset) {
   corevideo::core::MediaAssetSource src("media:logo-1", "still", 1920, 1080);
