@@ -214,6 +214,52 @@ TEST(ZoomEngineRuntime, SenderThreadDeliversSpineCommandsInOrderWithDedup) {
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
 
+// #535 slice 2 final-review: deliveredFps must discriminate a real decode rate
+// from a beacon-only stats entry. Before this fix, spineSnapshotLocked returned
+// a hard-coded 30 whenever ANY stats existed for the subscription — including a
+// participant whose only evidence is the engine's ~1/s "frame" IPC beacon
+// (framesReceived), which never ran through the real per-decoded-frame ingest
+// path (framesIngested, via recordFrameIngestSuccess). measuredDeliveredFps
+// requires framesIngested >= 2 with forward time progress; a beacon-only entry
+// has framesIngested == 0 and must report 0, not a fabricated constant.
+TEST(ZoomEngineRuntime, DeliveredFpsIsZeroForABeaconOnlyStatsEntryNeverIngested) {
+  using namespace corevideo::modules;
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  ZoomEngineRuntime runtime;
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  runtime.installEngineProcessForTest(fake);
+
+  // A "frame" IPC beacon: sets width/height and bumps framesReceived only —
+  // no call into the real decode-ingest path (recordFrameIngestSuccess), so
+  // framesIngested stays 0 for this participant's stats entry.
+  ZoomEngineEvent beacon;
+  beacon.kind = ZoomEngineEventKind::Frame;
+  beacon.sourceUuid = "beacon-only-source";
+  beacon.participantId = 5150;
+  beacon.width = 1920;
+  beacon.height = 1080;
+  runtime.applyEngineEventForTest(beacon);
+
+  const auto payload = spinePayload(corevideo::rpc::Json::Array{
+      subscriptionRequest("5150", "participant-video", "active-speaker"),
+  });
+  const auto snapshot = runtime.syncSpine(payload, 0.0);
+  ASSERT_FALSE(snapshot.isNull());
+  const auto* subscriptions = snapshot.get("subscriptions");
+  ASSERT_NE(subscriptions, nullptr);
+  ASSERT_TRUE(subscriptions->isArray());
+  const auto& arr = subscriptions->asArray();
+  const auto found = std::find_if(arr.begin(), arr.end(), [](const corevideo::rpc::Json& entry) {
+    return entry.getString("participantId") == "5150";
+  });
+  ASSERT_NE(found, arr.end()) << "beacon-only participant must still appear as a subscription entry";
+  EXPECT_EQ(found->getString("status"), "subscribed");
+  EXPECT_EQ(found->get("deliveredFps")->asNumber(), 0.0)
+      << "a beacon-only stats entry (framesIngested==0) must report 0, not the old hard-coded 30";
+
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
 TEST(ZoomEngineRuntime, PreviewToProgramKeepsStableVideoSubscriptionIdentity) {
   setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
   auto fake = std::make_shared<FakeZoomEngineProcessClient>();

@@ -1125,7 +1125,7 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
           {"lastResultCode", hasStats ? "ok" : "pending"},
           {"deliveredWidth", hasStats ? static_cast<int>(found->width) : 0},
           {"deliveredHeight", hasStats ? static_cast<int>(found->height) : 0},
-          {"deliveredFps", hasStats ? 30 : 0},
+          {"deliveredFps", hasStats ? measuredDeliveredFps(*found) : 0},
           {"framesReceived", hasStats ? static_cast<int>(found->framesReceived) : 0},
           {"audioPacketsReceived", hasStats ? static_cast<int>(found->audioPacketsReceived) : 0},
           {"firstFrameAtMs", hasStats ? found->firstFrameAtMs : -1.0},

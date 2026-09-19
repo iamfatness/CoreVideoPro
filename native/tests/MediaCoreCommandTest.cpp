@@ -9,6 +9,7 @@
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
 #include "modules/ZoomMeetingSdkAdapter.h"
+#include "core/TestPatternSource.h"
 #include "rpc/Json.h"
 
 #include <gtest/gtest.h>
@@ -5790,4 +5791,76 @@ TEST(MediaCoreCommand, WithNoEngineTheZoomTapNeverPopulatesTheSourceBusAndProgra
   EXPECT_GT(state.getNumber("programFrameCount"), 0.0);
   const auto* programFrame = state.get("programFrame");
   ASSERT_NE(programFrame, nullptr);
+}
+
+// #535 slice 2: the stub capture set has decklink-1 connected with signal, so
+// after one render tick the bus must list it as a capture source that produced.
+TEST(MediaCoreCommand, StubCaptureDeviceAppearsOnTheSourceBusAfterATick) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+
+  mediaCore.renderDisplayTick();
+  mediaCore.renderDisplayTick();
+
+  const auto state = mediaCore.sessionState();
+  const auto* sources = state.get("sources");
+  ASSERT_NE(sources, nullptr);
+  ASSERT_TRUE(sources->isArray());
+  bool found = false;
+  for (const auto& s : sources->asArray()) {
+    if (s.getString("sourceId") == "capture:decklink-1") {
+      found = true;
+      EXPECT_EQ(s.getString("kind"), "capture");
+      EXPECT_EQ(s.getString("health"), "producing");
+      EXPECT_GE(s.get("framesIngested")->asNumber(), 1.0);
+    }
+    EXPECT_NE(s.getString("sourceId"), "capture:aja-io-1") << "a detected-only device emits nothing and must not be on the bus";
+  }
+  EXPECT_TRUE(found);
+}
+
+// #535 slice 2: pins the "capture frames gather before other bus kinds" order
+// invariant through an observable — with no scene routes loaded, the grid
+// fallback lays out videoFrames in order and sessionState()["programFrame"]
+// ["videoSources"] publishes the layers in that same order.
+TEST(MediaCoreCommand, CaptureBusFramesGatherBeforeOtherBusKinds) {
+  // "aaa:pattern" is chosen deliberately: it sorts BEFORE "capture:decklink-1"
+  // in SourceBus's std::map (a < c), so this test only passes if MediaCore
+  // actually partitions bus output by kind (capture first) rather than
+  // forwarding the bus's own sourceId-sorted order. "capture:" already sorts
+  // before "test:pattern" alphabetically, which let the ORIGINAL version of
+  // this test (registering only "test:pattern") pass with no partition at
+  // all — it exercised nothing. Keep "test:pattern" too so both non-capture
+  // orderings (before and after "capture:" alphabetically) are covered.
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.addSourceForTest(std::make_shared<corevideo::core::TestPatternSource>("aaa:pattern"));
+  mediaCore.addSourceForTest(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));
+
+  mediaCore.renderDisplayTick();
+  mediaCore.renderDisplayTick();
+
+  const auto state = mediaCore.sessionState();
+  const auto* programFrame = state.get("programFrame");
+  ASSERT_NE(programFrame, nullptr);
+  const auto* videoSources = programFrame->get("videoSources");
+  ASSERT_NE(videoSources, nullptr);
+  ASSERT_TRUE(videoSources->isArray());
+
+  int captureIndex = -1;
+  int aaaIndex = -1;
+  int testPatternIndex = -1;
+  const auto& arr = videoSources->asArray();
+  for (size_t i = 0; i < arr.size(); ++i) {
+    const std::string participantId = arr[i].getString("participantId");
+    if (participantId == "capture:decklink-1") captureIndex = static_cast<int>(i);
+    if (participantId == "aaa:pattern") aaaIndex = static_cast<int>(i);
+    if (participantId == "test:pattern") testPatternIndex = static_cast<int>(i);
+  }
+  ASSERT_NE(captureIndex, -1) << "capture:decklink-1 missing from programFrame.videoSources";
+  ASSERT_NE(aaaIndex, -1) << "aaa:pattern missing from programFrame.videoSources";
+  ASSERT_NE(testPatternIndex, -1) << "test:pattern missing from programFrame.videoSources";
+  EXPECT_LT(captureIndex, aaaIndex)
+      << "capture frames must gather before other bus kinds even when the other "
+         "kind's sourceId sorts alphabetically before \"capture:\"";
+  EXPECT_LT(captureIndex, testPatternIndex)
+      << "capture frames must gather before other bus kinds (Zoom/test-pattern)";
 }

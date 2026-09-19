@@ -5,6 +5,7 @@
 #include "modules/ZoomEngineClient.h"
 #include "rpc/Json.h"
 
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -19,6 +20,11 @@ struct ZoomEngineSubscriptionStats {
   std::uint32_t width = 0;
   std::uint32_t height = 0;
   std::uint32_t framesReceived = 0;
+  // Decoded frames observed by the core, per NEW frameId — unlike
+  // framesReceived, which mirrors the engine's IPC "frame" event and in
+  // production fires only on the first frame, a dimension change, and every
+  // 30th frame thereafter (~1/s at 30fps), not per decoded frame.
+  std::uint32_t framesIngested = 0;
   std::uint32_t audioPacketsReceived = 0;
   std::uint32_t lastFrameId = 0;
   std::uint32_t staleFrameCount = 0;
@@ -29,6 +35,23 @@ struct ZoomEngineSubscriptionStats {
   double lastFrameAgeMs = -1.0;
   bool frameFresh = false;
 };
+
+// The measured average delivery fps for a subscription, since its first
+// frame: (framesIngested - 1) intervals over the elapsed wall time between
+// the first and most recent frame. Deliberately reads framesIngested, NOT
+// framesReceived — framesReceived mirrors the engine's IPC "frame" event,
+// which in production fires only on the first frame, a dimension change,
+// and every 30th frame thereafter (~1/s), not per decoded frame; that would
+// under-report a 60fps feed as ~1-2fps. Requires at least two frames and
+// forward progress in time; otherwise there is no interval to measure, so
+// this reports 0 rather than a constant placeholder (spine snapshot Task 4).
+inline int measuredDeliveredFps(const ZoomEngineSubscriptionStats& stats) {
+  if (stats.framesIngested >= 2 && stats.lastFrameAtMs > stats.firstFrameAtMs) {
+    return static_cast<int>(std::lround((stats.framesIngested - 1) * 1000.0 /
+                                         (stats.lastFrameAtMs - stats.firstFrameAtMs)));
+  }
+  return 0;
+}
 
 struct ZoomEngineRuntimeSnapshot {
   std::string meetingState = "idle";

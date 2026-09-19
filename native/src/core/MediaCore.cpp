@@ -346,9 +346,12 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 
 MediaCore::MediaCore(modules::ModuleSet modules)
     : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {
-  // #535 slice 0: the source bus. Empty in production — nothing registers a
-  // source outside the addSourceForTest seam — so the render-tick ingest guard
-  // (sourceBus_ && !sourceBus_->empty()) pays nothing for a real show.
+  // #535 slice 0: the source bus. Since slice 1 (Zoom video) and slice 2
+  // (capture), the bus carries every live Zoom participant and every
+  // connected capture device in production — it is no longer test-only. The
+  // render-tick ingest guard (sourceBus_ && !sourceBus_->empty()) is a cheap
+  // early-out for the no-source case (no meeting, no capture device), not a
+  // production-vs-test switch.
   sourceBus_ = std::make_unique<core::SourceBus>();
   // Put the virtual camera on the RENDER cadence. Publishing it from the ~50Hz
   // output worker capped a 60fps program at 50fps everywhere. The sink runs on
@@ -2326,8 +2329,16 @@ void MediaCore::setStillImageDecoderForTest(std::unique_ptr<modules::IStillImage
 
 void MediaCore::addSourceForTest(std::shared_ptr<core::ISource> source) {
   // TEST-ONLY seam, called single-threaded directly by native/tests/ (no
-  // JsonRpcServer, no coreMutex held) — production never calls this, so
-  // sourceBus_ stays empty on a real show and no lock is needed here.
+  // JsonRpcServer, no coreMutex held). This is NOT a claim that sourceBus_ is
+  // empty in production — since slices 1-2 it is not: live Zoom participants
+  // (ZoomParticipantSource) and connected capture devices (CaptureDeviceSource)
+  // both live on it during a real show. No lock is needed here because every
+  // production access to sourceBus_ (sessionState()'s snapshot read and
+  // renderSyntheticTick's ingest/sync) is already serialized by coreMutex,
+  // held by the caller (JsonRpcServer's command/render dispatch) — this test
+  // seam is safe only because it BYPASSES that serialization by construction
+  // (it is the sole caller, run before any tick), not because the bus is
+  // otherwise unused.
   if (sourceBus_) sourceBus_->add(std::move(source));
 }
 
@@ -6074,30 +6085,42 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   const bool engineLive = zoomEngineRuntime_ && zoomEngineRuntime_->configured();
   auto videoFrames =
       engineLive ? std::vector<modules::VideoFrame>{} : modules_.zoom->pollVideoFrames();
-  auto captureFrames = modules_.captureDevice->pollVideoFrames(frameTimestampMs);
+  auto polledCapture = modules_.captureDevice->pollVideoFrames(frameTimestampMs);
   // Browser-source frames ride the capture stream (keyed "capture:browser:<n>"),
   // so scenes/multiview/routing treat them exactly like any capture device. Same
   // per-frame copy cost as one WinUI capture-shm bridge device.
   if (!browserSources_->empty()) {
     auto browserFrames = browserSources_->pollVideoFrames(frameTimestampMs);
-    captureFrames.insert(captureFrames.end(),
+    polledCapture.insert(polledCapture.end(),
                          std::make_move_iterator(browserFrames.begin()),
                          std::make_move_iterator(browserFrames.end()));
   }
   markStage(s_subPollUs, 0);
-  videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
-  // Source bus (#535 slice 0): registered ISource sources publish here. Empty in
-  // production (no source registered outside the test seam); the test-pattern
-  // source is added only via addSourceForTest.
+  // #535 slice 2: capture rides the bus. The adapters hold their frames; the bus
+  // mirrors this tick's poll (CaptureBusRoster.h), so on-air output is identical.
+  // Unconditional: sourceBus_ is constructed in the ctor and never reset, so a
+  // guard here could only ever silently drop every capture pixel with no log
+  // if that ever stopped being true — an assertion, not a real runtime branch.
+  core::syncCaptureSources(*sourceBus_, polledCapture);
+  // Bus ingest, partitioned by kind so the merged vector keeps today's order:
+  // capture frames first (where the direct insert used to put them), then Zoom.
+  std::vector<modules::VideoFrame> captureFrames;   // KEEP this name: the merge below uses it
+  std::vector<modules::VideoFrame> zoomBusFrames;
   if (sourceBus_ && !sourceBus_->empty()) {
     const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     auto busResult = sourceBus_->ingest(mediaPresentationTime100ns, nowNs);
-    videoFrames.insert(videoFrames.end(),
-                       std::make_move_iterator(busResult.video.begin()),
-                       std::make_move_iterator(busResult.video.end()));
+    for (auto& frame : busResult.video) {
+      const auto* source = sourceBus_->sourceFor(frame.participantId);
+      const bool isCapture = source && source->descriptor().kind == "capture";
+      (isCapture ? captureFrames : zoomBusFrames).push_back(std::move(frame));
+    }
     // busResult.audio is carried in a later slice (audio gather path); slice 0 is video.
   }
+  videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
+  videoFrames.insert(videoFrames.end(),
+                     std::make_move_iterator(zoomBusFrames.begin()),
+                     std::make_move_iterator(zoomBusFrames.end()));
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     if (!engineFrames.empty()) {
       // When the engine reports subscribed video participants, they are the
