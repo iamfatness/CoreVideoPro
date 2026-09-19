@@ -48,6 +48,30 @@ public static class ZoomMediaSpineSnapshotMerger
         };
     }
 
+    /// <summary>
+    /// A media-core sync publishes a snapshot parsed from the core's sessionState, which
+    /// carries no per-subscription evidence; only the spine sync does. Replacing the last
+    /// snapshot wholesale wiped <see cref="NativeMediaCoreStateSnapshot.ZoomSubscriptions"/>
+    /// every 500 ms, so the Sources page read "not-requested" for guests the core was
+    /// streaming. Keep the spine's evidence when the incoming snapshot has none and the
+    /// meeting is still on; fresh evidence always wins; leaving the meeting clears it.
+    /// </summary>
+    public static NativeMediaCoreStateSnapshot CarrySubscriptions(
+        NativeMediaCoreStateSnapshot? existing,
+        NativeMediaCoreStateSnapshot incoming)
+    {
+        if (incoming.ZoomSubscriptions.Count > 0 || existing is null || existing.ZoomSubscriptions.Count == 0)
+        {
+            return incoming;
+        }
+        var meetingState = NormalizeMeetingState(incoming.MeetingState ?? existing.MeetingState);
+        if (!meetingState.Equals("in_meeting", StringComparison.Ordinal))
+        {
+            return incoming;
+        }
+        return incoming with { ZoomSubscriptions = existing.ZoomSubscriptions };
+    }
+
     public static RawCaptureSnapshot ToCaptureSnapshot(
         ZoomMediaSpineNativeSnapshot spine,
         string? meetingStateOverride = null)
