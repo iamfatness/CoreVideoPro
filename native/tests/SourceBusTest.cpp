@@ -298,20 +298,25 @@ TEST(ZoomBusRoster, AddsFeedsAndRemovesPerParticipant) {
   // Also register a non-zoom source that must never be touched.
   bus.add(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));
 
-  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("zoom:1", 5), zoomFrame("zoom:2", 5)});
-  EXPECT_TRUE(bus.contains("zoom:1"));
-  EXPECT_TRUE(bus.contains("zoom:2"));
+  // Production keys Zoom sources by the RAW participant id (no "zoom:"
+  // prefix) — matching the engine roster/continuity keying downstream in
+  // MediaCore. Use raw-shaped ids here so this test actually proves removal
+  // fires for the real keying, not a prefix that production never uses.
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("16791552", 5), zoomFrame("22334455", 5)});
+  EXPECT_TRUE(bus.contains("16791552"));
+  EXPECT_TRUE(bus.contains("22334455"));
   EXPECT_TRUE(bus.contains("test:pattern"));
 
   // Ingest produces one frame per participant, keyed correctly.
   auto r = bus.ingest(0, 1000);
   int zoomFrames = 0;
-  for (const auto& v : r.video) if (v.participantId == "zoom:1" || v.participantId == "zoom:2") ++zoomFrames;
+  for (const auto& v : r.video) if (v.participantId == "16791552" || v.participantId == "22334455") ++zoomFrames;
   EXPECT_EQ(zoomFrames, 2);
 
-  // zoom:2 departs; zoom:1 stays. test:pattern untouched.
-  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("zoom:1", 6)});
-  EXPECT_TRUE(bus.contains("zoom:1"));
-  EXPECT_FALSE(bus.contains("zoom:2"));
+  // 22334455 departs; 16791552 stays. test:pattern untouched (kind-based
+  // removal must never touch a non-zoom source).
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("16791552", 6)});
+  EXPECT_TRUE(bus.contains("16791552"));
+  EXPECT_FALSE(bus.contains("22334455"));
   EXPECT_TRUE(bus.contains("test:pattern"));
 }

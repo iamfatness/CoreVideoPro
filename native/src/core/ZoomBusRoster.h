@@ -8,8 +8,6 @@
 
 namespace corevideo::core {
 
-inline bool isZoomSourceId(const std::string& id) { return id.rfind("zoom:", 0) == 0; }
-
 inline void syncZoomParticipantSources(SourceBus& bus,
                                        const std::vector<modules::VideoFrame>& zoomFrames) {
   std::unordered_set<std::string> present;
@@ -23,8 +21,18 @@ inline void syncZoomParticipantSources(SourceBus& bus,
     static_cast<ZoomParticipantSource*>(bus.sourceFor(f.participantId))->setLatest(f);
   }
 
+  // Identify Zoom-owned sources by KIND, not id shape — the bus keys Zoom
+  // sources by the raw participant id (no "zoom:" prefix, to match the
+  // engine roster/continuity keying downstream in MediaCore), so a
+  // prefix-based check here would never match and would leak every departed
+  // participant's entry forever. Kind-based removal works regardless of id
+  // shape and still never touches a non-zoom source (e.g. "test:pattern",
+  // kind "test").
   for (const std::string& id : bus.sourceIds()) {
-    if (isZoomSourceId(id) && present.find(id) == present.end()) bus.remove(id);
+    const ISource* source = bus.sourceFor(id);
+    if (source && source->descriptor().kind == "zoom" && present.find(id) == present.end()) {
+      bus.remove(id);
+    }
   }
 }
 
