@@ -398,3 +398,53 @@ TEST(CaptureDeviceSource, PollServesTheAdaptersLatestBgraFrameKeyedByDevice) {
   EXPECT_EQ(src.counters().lastFrameId, 7);
   EXPECT_EQ(src.counters().framesIngested, 1u);
 }
+
+// --- Task 2: pure syncCaptureSources helper ---
+#include "core/CaptureBusRoster.h"
+
+// Capture adapters hold their own last frame and re-emit it every tick while the
+// device is connected (WinUiCaptureDeviceAdapter::pollVideoFrames); a device that
+// is absent from a tick has disconnected or never delivered, and today the
+// compositor draws no frame for it. So, UNLIKE the Zoom rule (ZoomBusRoster.h,
+// #554), the bus does NOT hold a capture frame: absent from the tick == removed.
+TEST(CaptureBusRoster, MirrorsTheAdaptersTickAddsFeedsAndRemovesOnAbsence) {
+  corevideo::core::SourceBus bus;
+  bus.add(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));
+  bus.add(std::make_shared<corevideo::core::ZoomParticipantSource>("16778240", 1280, 720));
+
+  corevideo::core::syncCaptureSources(bus, {bgraFrame("capture:decklink-1", 640, 360, 1),
+                                            bgraFrame("capture:browser:1", 1920, 1080, 1)});
+  EXPECT_TRUE(bus.contains("capture:decklink-1"));
+  EXPECT_TRUE(bus.contains("capture:browser:1"));
+  EXPECT_EQ(bus.sourceFor("capture:decklink-1")->descriptor().kind, "capture");
+  EXPECT_EQ(bus.sourceFor("capture:decklink-1")->descriptor().width, 640);
+
+  auto r = bus.ingest(0, 1000);
+  int captureFrames = 0;
+  for (const auto& v : r.video) {
+    if (v.participantId.rfind("capture:", 0) == 0) { ++captureFrames; EXPECT_TRUE(v.hasPixels()); }
+  }
+  EXPECT_EQ(captureFrames, 2);
+
+  // decklink-1 disconnected (adapter emits nothing for it): removed this tick.
+  // The Zoom and test sources are never touched by the capture sync.
+  corevideo::core::syncCaptureSources(bus, {bgraFrame("capture:browser:1", 1920, 1080, 2)});
+  EXPECT_FALSE(bus.contains("capture:decklink-1"));
+  EXPECT_TRUE(bus.contains("capture:browser:1"));
+  EXPECT_TRUE(bus.contains("16778240"));
+  EXPECT_TRUE(bus.contains("test:pattern"));
+
+  // A device that reconnects comes back as a fresh source.
+  corevideo::core::syncCaptureSources(bus, {bgraFrame("capture:decklink-1", 1920, 1080, 1)});
+  EXPECT_TRUE(bus.contains("capture:decklink-1"));
+  EXPECT_EQ(bus.sourceFor("capture:decklink-1")->descriptor().width, 1920);
+}
+
+TEST(CaptureBusRoster, EmptyTickRemovesEveryCaptureSourceAndNothingElse) {
+  corevideo::core::SourceBus bus;
+  bus.add(std::make_shared<corevideo::core::ZoomParticipantSource>("16778240", 1280, 720));
+  corevideo::core::syncCaptureSources(bus, {bgraFrame("capture:screen:3", 1024, 600, 1)});
+  corevideo::core::syncCaptureSources(bus, {});
+  EXPECT_FALSE(bus.contains("capture:screen:3"));
+  EXPECT_TRUE(bus.contains("16778240"));
+}
