@@ -270,43 +270,64 @@ TEST(ZoomEngineRuntimeState, AnUnmappedJoinFailureIsStillReported) {
   EXPECT_NE(snapshot.warnings.back().find("SDKERR_SOMETHING_NEW"), std::string::npos);
 }
 
-// Task 4 (source bus slice 2): the Sources page prints a per-feed fps from
-// this field, and until now it was a constant 30 regardless of what the
-// engine actually delivered. measuredDeliveredFps is the free function the
-// spine snapshot now calls; it reads (framesReceived, firstFrameAtMs,
-// lastFrameAtMs) off the subscription stats produced by the SAME two calls
-// every other test in this file uses to build them: apply() with a "frame"
-// event bumps framesReceived, recordFrameIngestSuccess stamps the timing.
+// Task 4 (source bus slice 2), fix round 1: the Sources page prints a
+// per-feed fps from this field, and until now it was a constant 30
+// regardless of what the engine actually delivered. measuredDeliveredFps
+// must be driven from framesIngested (per DECODED frame, via
+// recordFrameIngestSuccess alone), never from framesReceived — that field
+// mirrors the engine's IPC "frame" event, which in production fires only on
+// the first frame, a dimension change, and every 30th frame thereafter
+// (~1/s at 30fps), not per decoded frame; measuring off it would report a
+// 60fps feed as ~1-2fps.
 TEST(ZoomEngineRuntimeState, MeasuredDeliveredFpsIsFramesOverElapsedSinceFirstFrame) {
   {
     // 61 frames over 1000 ms == 60 fps (61 - 1 == 60 intervals).
     corevideo::modules::ZoomEngineRuntimeState state;
     for (int i = 0; i <= 60; ++i) {
-      state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"source-1","participant_id":42,"w":1280,"h":720})"));
       state.recordFrameIngestSuccess("source-1", 42, 1280, 720, i + 1, i * 1000.0 / 60.0);
     }
     const auto snapshot = state.snapshot();
     ASSERT_EQ(snapshot.subscriptions.size(), 1u);
     EXPECT_EQ(corevideo::modules::measuredDeliveredFps(snapshot.subscriptions[0]), 60);
+
+    // A beacon-style "frame" IPC event bumps framesReceived only; it must
+    // not move the measured fps, which reads framesIngested.
+    state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"source-1","participant_id":42,"w":1280,"h":720})"));
+    const auto afterBeacon = state.snapshot();
+    ASSERT_EQ(afterBeacon.subscriptions.size(), 1u);
+    EXPECT_EQ(afterBeacon.subscriptions[0].framesReceived, 1u);
+    EXPECT_EQ(corevideo::modules::measuredDeliveredFps(afterBeacon.subscriptions[0]), 60);
   }
   {
-    // A single frame has no interval to measure.
+    // A single ingested frame has no interval to measure.
     corevideo::modules::ZoomEngineRuntimeState state;
-    state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"source-1","participant_id":42,"w":1280,"h":720})"));
     state.recordFrameIngestSuccess("source-1", 42, 1280, 720, 1, 0.0);
     const auto snapshot = state.snapshot();
     ASSERT_EQ(snapshot.subscriptions.size(), 1u);
     EXPECT_EQ(corevideo::modules::measuredDeliveredFps(snapshot.subscriptions[0]), 0);
   }
   {
-    // Two frames 100 ms apart == 10 fps (1 interval / 0.1s).
+    // Two ingested frames 100 ms apart == 10 fps (1 interval / 0.1s).
     corevideo::modules::ZoomEngineRuntimeState state;
-    state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"source-1","participant_id":42,"w":1280,"h":720})"));
     state.recordFrameIngestSuccess("source-1", 42, 1280, 720, 1, 0.0);
-    state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"source-1","participant_id":42,"w":1280,"h":720})"));
     state.recordFrameIngestSuccess("source-1", 42, 1280, 720, 2, 100.0);
     const auto snapshot = state.snapshot();
     ASSERT_EQ(snapshot.subscriptions.size(), 1u);
+    EXPECT_EQ(corevideo::modules::measuredDeliveredFps(snapshot.subscriptions[0]), 10);
+  }
+  {
+    // A repeated stale frameId is not a new ingested frame and must not
+    // count: three calls, but the middle one repeats frameId 1, so only
+    // frameId 1 and frameId 2 are distinct ingests (10 fps over 100 ms),
+    // not three frames.
+    corevideo::modules::ZoomEngineRuntimeState state;
+    state.recordFrameIngestSuccess("source-1", 42, 1280, 720, 1, 0.0);
+    state.recordFrameIngestSuccess("source-1", 42, 1280, 720, 1, 50.0);
+    state.recordFrameIngestSuccess("source-1", 42, 1280, 720, 2, 100.0);
+    const auto snapshot = state.snapshot();
+    ASSERT_EQ(snapshot.subscriptions.size(), 1u);
+    EXPECT_EQ(snapshot.subscriptions[0].framesIngested, 2u);
+    EXPECT_EQ(snapshot.subscriptions[0].staleFrameCount, 1u);
     EXPECT_EQ(corevideo::modules::measuredDeliveredFps(snapshot.subscriptions[0]), 10);
   }
 }

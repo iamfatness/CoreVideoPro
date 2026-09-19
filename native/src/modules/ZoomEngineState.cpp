@@ -163,6 +163,8 @@ void ZoomEngineRuntimeState::recordFrameIngestSuccess(const std::string& sourceU
   if (stats.lastFrameId == frameId && stats.lastFrameAtMs >= 0.0) {
     ++stats.staleFrameCount;
     addWarning(frameWarningPrefix(stats) + " repeated stale frame " + std::to_string(frameId) + ".");
+  } else {
+    ++stats.framesIngested;
   }
   stats.lastFrameId = frameId;
   stats.lastFrameAtMs = observedAtMs;
