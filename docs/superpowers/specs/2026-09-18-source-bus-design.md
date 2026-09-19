@@ -176,8 +176,21 @@ never as an unwired island. So the contract does not land alone.
 - **Slice 2 — capture onto the bus** (UVC/screen/browser/SRT-ingest). The kind
   whose `pixels` are empty today for probe-only devices becomes a uniform
   `warming`/`stalled` health instead of a per-kind slate.
-- **Slice 3 — media onto the bus**, `layers` argument dropped. Rides the
-  persistent-sources media work already on `codex/persistent-sources`.
+- **Slice 3a (shipped on branch 2026-09-19) — media frames onto the bus,
+  parity, `layers` retained.** `SourceBus::ingest` gained a kind-selector
+  overload; `MediaAssetSource`/`syncMediaSources` mirror the producer (removal
+  on absence per kind, like slice 2's capture rule) at the two existing
+  injection points (post-roster-merge for stills, post-plan for decoded media).
+  The request set, pause/hold, the cue→Program hand-off (#449) and the
+  `preview:` poster key all stay inside `OwnedMediaFrameSource` — unchanged.
+- **Slice 3b — `layers` dropped.** Media request state (asset, playing, loop,
+  which bus) moves from per-tick plan layers to source state set at command
+  time (`load-scene-graph`/`set-preview-scene`/`set-media-playback`); `poll(ts)`
+  applies hold/roll from that state; the cue→Program hand-off (#449) and the
+  `preview:` poster key move inside the source; the still cache becomes the
+  still source's decoder. Needs the owner's Take-semantics ruling (#449 step 1
+  "hold outgoing picture on a plain cut") because go-live/roll-from-0 and
+  hand-off are one decision. Own spec.
 - **Slice 4 — retire the three old interfaces.** Once every kind is on `ISource`,
   `IZoomCaptureSource`/`ICaptureDevice`/`IMediaFrameSource` are deleted and the
   compositor's per-kind empty-frame fallbacks collapse to one bus-health path
