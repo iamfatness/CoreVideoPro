@@ -269,3 +269,49 @@ TEST(SourceBus, ContainsAndSourceIdsReflectMembership) {
   bus.remove("zoom:1");
   EXPECT_FALSE(bus.contains("zoom:1"));
 }
+
+// --- Task 3: SourceBus::sourceFor accessor ---
+
+TEST(SourceBus, SourceForReturnsTheStoredSourceOrNullptr) {
+  SourceBus bus;
+  EXPECT_EQ(bus.sourceFor("zoom:1"), nullptr);
+  auto src = std::make_shared<ZoomParticipantSource>("zoom:1", 1280, 720);
+  bus.add(src);
+  EXPECT_EQ(bus.sourceFor("zoom:1"), src.get());
+  bus.remove("zoom:1");
+  EXPECT_EQ(bus.sourceFor("zoom:1"), nullptr);
+}
+
+// --- Task 3: syncZoomParticipantSources (roster -> bus) ---
+#include "core/ZoomBusRoster.h"
+
+static corevideo::modules::VideoFrame zoomFrame(const std::string& id, int64_t frameId) {
+  corevideo::modules::VideoFrame f;
+  f.participantId = id;
+  f.i420 = std::make_shared<const std::vector<uint8_t>>(1280 * 720 * 3 / 2, 0x10);
+  f.i420Width = 1280; f.i420Height = 720; f.frameId = frameId;
+  return f;
+}
+
+TEST(ZoomBusRoster, AddsFeedsAndRemovesPerParticipant) {
+  corevideo::core::SourceBus bus;
+  // Also register a non-zoom source that must never be touched.
+  bus.add(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));
+
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("zoom:1", 5), zoomFrame("zoom:2", 5)});
+  EXPECT_TRUE(bus.contains("zoom:1"));
+  EXPECT_TRUE(bus.contains("zoom:2"));
+  EXPECT_TRUE(bus.contains("test:pattern"));
+
+  // Ingest produces one frame per participant, keyed correctly.
+  auto r = bus.ingest(0, 1000);
+  int zoomFrames = 0;
+  for (const auto& v : r.video) if (v.participantId == "zoom:1" || v.participantId == "zoom:2") ++zoomFrames;
+  EXPECT_EQ(zoomFrames, 2);
+
+  // zoom:2 departs; zoom:1 stays. test:pattern untouched.
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("zoom:1", 6)});
+  EXPECT_TRUE(bus.contains("zoom:1"));
+  EXPECT_FALSE(bus.contains("zoom:2"));
+  EXPECT_TRUE(bus.contains("test:pattern"));
+}
