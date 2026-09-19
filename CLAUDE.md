@@ -1707,6 +1707,52 @@ without `--background` it proves Zoom/wall continuity only; no pixel probe acros
 the take (the record is the only judge); and the synthesized scenes are not the
 shell's own scene payloads.
 
+## The source bus (#535 slice 0, 2026-09-18)
+
+`docs/superpowers/specs/2026-09-18-source-bus-design.md` is the spec. Slice 0 lands
+the CONTRACT and the BUS, alongside the three existing live pipes (Zoom, capture,
+media), untouched. Nothing on air changes yet.
+
+- **`ISource`** (`native/src/core/SourceBus.h`) is the one ingest contract every
+  source kind will eventually implement: a pull `poll(programTime100ns)` returning a
+  `SourceTick{video, audio, health, clockOffset100ns}` — no `layers` argument, no push
+  callback. `TestPattern.h` / `TestPatternSource.h` are the first (and, in production,
+  ONLY) implementation: a header-only SMPTE-bars generator.
+- **`SourceBus`** is core-owned and header-only. It ingests under `coreMutex`
+  (`SourceBus::ingest(programTime100ns, nowNs)`), zero-copy (shared_ptr/move), and
+  counts `framesIngested`/`droppedFrames` per source; health is decided at READ time
+  (`snapshot(nowNs)`), not latched at ingest — the same "peek is not an observation"
+  discipline as `RenderedSceneAttributionPolicy` elsewhere in this file.
+- **In PRODUCTION the bus is EMPTY.** `TestPatternSource` is registered ONLY through
+  the `MediaCore::addSourceForTest` test seam — never wired to any real join/capture
+  path, never on air. A production build's `sources[]` snapshot node is present and
+  empty, exactly like the multiviewer-node rule: absence of activity is not absence
+  of the node.
+- **`source_id == VideoFrame::participantId`.** The bus deliberately reuses the
+  existing frame-keying scheme (`zoom:<pid>` / `capture:<id>` / `media:<assetId>`
+  today) so a migrated source is a drop-in replacement for its old frame producer,
+  not a new addressing scheme downstream code has to learn.
+- **The snapshot carries a `sources[]` node** with `framesIngested`/`droppedFrames`/
+  health present even at zero (Task 4) — the test source never drops, so `slice 0`
+  reports `droppedFrames: 0` honestly rather than omitting the field; real back-
+  pressure numbers land only once a high-rate live kind migrates onto the bus.
+- **What's next, not done here:** slices 1-3 migrate Zoom, capture and media onto
+  `ISource` one at a time (each is its own real-consumer PR, per the #419
+  foundation-lands-with-a-consumer rule); slice 4 retires the three old poll
+  interfaces once nothing downstream still calls them. Deferred by design, NOT a
+  gap in this slice: done-when #2 (Zoom/UVC/media on the contract) and #3
+  (downstream consumes ONLY the bus).
+
+Tests: `native/tests/SourceBusTest.cpp` — `SourceContract.*` (the test-pattern
+generator), `SourceBus.*` (ingest/dedup/stale-decay/remove), `SourceBusMediaCore.*`
+(a bus source composites into Program end to end via `addSourceForTest`), and
+`SourceBusSnapshot.*` (the `sources[]` node, including the empty-bus case). Verified
+green on both gates 2026-09-18: the stub build (`scripts/test-native.ps1`, 1015
+tests) and the Windows dev suite (`native/build-dev/corevideo-native-tests.exe`,
+1046 tests, Release core confirmed at 2,258,432 bytes) — the latter including the
+UNCHANGED `CaptureIngest.*`, proving the `StubModules` generator swap stayed
+byte-identical.
+
 ## GPU-direct hardware encode for streaming (#521 slice 1, 2026-09-13)
 
 The live STREAM is now encoded directly from the compositor's GPU texture by the
