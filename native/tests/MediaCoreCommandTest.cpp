@@ -4875,6 +4875,89 @@ TEST(MediaCoreCommand, CompositesMediaRoutePixelsIntoProgramPreview) {
   EXPECT_FALSE(matchesSynthetic);
 }
 
+// #535 slice 3a: a decoded media route appears on the bus as kind "media" after a
+// tick (health "producing", framesIngested >= 1), Program still composites its
+// pixels (the CompositesMediaRoutePixelsIntoProgramPreview assertion repeated
+// here on the bus path), and a route that is removed disappears from the bus
+// on the next tick.
+TEST(MediaCoreCommand, MediaRouteAppearsOnTheSourceBusAndLeavesWhenUnrouted) {
+  auto modules = corevideo::modules::createStubModules();
+  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  const uint8_t expectedBlue = mediaFrames->blue;
+  const uint8_t expectedGreen = mediaFrames->green;
+  const uint8_t expectedRed = mediaFrames->red;
+  modules.mediaFrames = std::move(mediaFrames);
+
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "media-program"},
+          {"routes", corevideo::rpc::Json::Array{
+                         corevideo::rpc::Json::Object{
+                             {"routeId", "media-main"},
+                             {"mode", "fixed"},
+                             {"mediaAssetId", "clip-intro"},
+                             {"mediaAssetName", "Intro"},
+                             {"mediaAssetKind", "video"},
+                             {"mediaAssetPath", "C:\\media\\intro.mp4"},
+                             {"mediaPlaybackKey", "program-take:4:media:clip-intro"},
+                             {"mediaAssetPlaying", true},
+                             {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}},
+                         },
+                     }},
+      },
+  });
+
+  auto state = mediaCore.sessionState();
+  const auto* sources = state.get("sources");
+  ASSERT_NE(sources, nullptr);
+  bool found = false;
+  for (const auto& s : sources->asArray()) {
+    if (s.getString("sourceId") == "media:clip-intro") {
+      found = true;
+      EXPECT_EQ(s.getString("kind"), "media");
+      EXPECT_EQ(s.getString("health"), "producing");
+      EXPECT_GE(s.get("framesIngested")->asNumber(), 1.0);
+    }
+  }
+  EXPECT_TRUE(found);
+
+  const auto previews = mediaCore.drainProgramFramePreviewEvents();
+  ASSERT_FALSE(previews.empty());
+  const auto* preview = previews.back().get("preview");
+  ASSERT_NE(preview, nullptr);
+  const int previewWidth = static_cast<int>(preview->get("width")->asNumber());
+  const int previewHeight = static_cast<int>(preview->get("height")->asNumber());
+  const auto decoded = corevideo::modules::base64Decode(preview->getString("bgraBase64"));
+  EXPECT_EQ(decoded.size(), static_cast<size_t>(previewWidth) * static_cast<size_t>(previewHeight) * 4u);
+
+  const size_t offset =
+      (static_cast<size_t>(previewHeight / 2) * static_cast<size_t>(previewWidth) + static_cast<size_t>(previewWidth / 2)) * 4u;
+  ASSERT_TRUE(offset + 3 < decoded.size());
+  EXPECT_EQ(decoded[offset + 0], expectedBlue);
+  EXPECT_EQ(decoded[offset + 1], expectedGreen);
+  EXPECT_EQ(decoded[offset + 2], expectedRed);
+  EXPECT_EQ(decoded[offset + 3], 0xff);
+
+  // Unroute: load a scene graph with no media route; the source is gone from
+  // the bus on the next tick.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "no-media"},
+          {"routes", corevideo::rpc::Json::Array{}},
+      },
+  });
+
+  state = mediaCore.sessionState();
+  sources = state.get("sources");
+  ASSERT_NE(sources, nullptr);
+  for (const auto& s : sources->asArray()) {
+    EXPECT_NE(s.getString("sourceId"), "media:clip-intro");
+  }
+}
+
 // HEADLESS multiview validation: with the real GPU compositor wired in, a
 // set-multiview-layout + one render tick must produce a non-empty multiview
 // shared-texture handle and emit exactly one multiview-shared-texture event

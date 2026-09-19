@@ -6106,10 +6106,16 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // capture frames first (where the direct insert used to put them), then Zoom.
   std::vector<modules::VideoFrame> captureFrames;   // KEEP this name: the merge below uses it
   std::vector<modules::VideoFrame> zoomBusFrames;
+  // Shared across every bus ingest this tick (early ingest here, plus the
+  // still and decoded-media ingests further down) — one clock read per tick.
+  const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
   if (sourceBus_ && !sourceBus_->empty()) {
-    const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    auto busResult = sourceBus_->ingest(mediaPresentationTime100ns, nowNs);
+    // #535 slice 3a: media and still sources are ingested separately, at the
+    // points they already join the gather below — never here.
+    auto busResult = sourceBus_->ingest(
+        mediaPresentationTime100ns, nowNs,
+        [](const core::SourceDescriptor& d) { return d.kind != "media" && d.kind != "still"; });
     for (auto& frame : busResult.video) {
       const auto* source = sourceBus_->sourceFor(frame.participantId);
       const bool isCapture = source && source->descriptor().kind == "capture";
@@ -6161,8 +6167,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // layer keeps the existing placeholder.
   if (stillMediaCache_) {
     auto stillFrames = stillMediaCache_->collectFrames(frameTimestampMs);
-    videoFrames.insert(videoFrames.end(), std::make_move_iterator(stillFrames.begin()),
-                       std::make_move_iterator(stillFrames.end()));
+    core::syncMediaSources(*sourceBus_, stillFrames, "still");
+    auto stills = sourceBus_->ingest(mediaPresentationTime100ns, nowNs,
+                                     [](const core::SourceDescriptor& d) { return d.kind == "still"; });
+    videoFrames.insert(videoFrames.end(), std::make_move_iterator(stills.video.begin()),
+                       std::make_move_iterator(stills.video.end()));
   }
   // ISO-1: snapshot the latest per-source video frame (keyed by canonical source
   // id) so the audio worker's gather can hand each selected ISO writer its own
@@ -6623,13 +6632,21 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       const auto previewMediaPlan = buildPreviewCompositorRenderPlan(videoFrames);
       mediaLayers.insert(mediaLayers.end(), previewMediaPlan.layers.begin(), previewMediaPlan.layers.end());
     }
-    auto mediaFrames = modules_.mediaFrames->pollMediaFramesAt100ns(mediaLayers, mediaPresentationTime100ns);
-    videoFrames.insert(videoFrames.end(), mediaFrames.begin(), mediaFrames.end());
+    auto polledMedia = modules_.mediaFrames->pollMediaFramesAt100ns(mediaLayers, mediaPresentationTime100ns);
+    core::syncMediaSources(*sourceBus_, polledMedia, "media");
+    auto media = sourceBus_->ingest(mediaPresentationTime100ns, nowNs,
+                                    [](const core::SourceDescriptor& d) { return d.kind == "media"; });
+    videoFrames.insert(videoFrames.end(), std::make_move_iterator(media.video.begin()),
+                       std::make_move_iterator(media.video.end()));
     for (const auto& warning : modules_.mediaFrames->warnings()) {
       if (std::find(renderPlan.warnings.begin(), renderPlan.warnings.end(), warning) == renderPlan.warnings.end()) {
         renderPlan.warnings.push_back(warning);
       }
     }
+  } else {
+    // No media module (cannot happen today) — clear any stale "media" bus
+    // sources rather than let them linger silently forever.
+    core::syncMediaSources(*sourceBus_, {}, "media");
   }
   // Failure honesty: surface still-media decode failures (missing file, bad
   // image) in the render-plan warnings so they reach snapshot diagnostics —

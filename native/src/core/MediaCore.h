@@ -13,6 +13,7 @@
 #include "core/SourceBus.h"
 #include "core/CaptureBusRoster.h"
 #include "core/ZoomBusRoster.h"
+#include "core/MediaBusRoster.h"
 #include "core/SourceContinuityLedger.h"
 #include "core/SourceRegistry.h"
 #include "core/TakeRecordPolicy.h"

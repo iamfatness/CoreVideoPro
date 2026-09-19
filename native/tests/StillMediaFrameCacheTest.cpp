@@ -319,6 +319,53 @@ TEST(StillMediaFrameCache, StillMediaRouteCompositesDecodedPixels) {
   EXPECT_FALSE(leftIsPlaceholder);
 }
 
+// #535 slice 3a: a still route appears on the bus as kind "still" (health
+// "producing") after it has decoded and composited a tick, and disappears
+// from the bus once no scene routes it any longer.
+TEST(StillMediaFrameCache, StillRouteAppearsOnTheSourceBusAsKindStill) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  auto decoder = std::make_unique<FakeStillDecoder>();
+  mediaCore.setStillImageDecoderForTest(std::move(decoder));
+
+  const auto scene = stillRouteScene("bug-scene", "logo-1", "lower-third", "C:\\assets\\logo.png");
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{scene});
+  (void)mediaCore.drainProgramFramePreviewEvents();
+
+  ASSERT_NE(mediaCore.stillMediaCacheForTest(), nullptr);
+  ASSERT_TRUE(mediaCore.stillMediaCacheForTest()->waitForIdle(5000));
+  // A second tick so the decoded still has actually been ingested by the bus.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{scene});
+
+  auto state = mediaCore.sessionState();
+  const auto* sources = state.get("sources");
+  ASSERT_NE(sources, nullptr);
+  bool found = false;
+  for (const auto& s : sources->asArray()) {
+    if (s.getString("sourceId") == "media:logo-1") {
+      found = true;
+      EXPECT_EQ(s.getString("kind"), "still");
+      EXPECT_EQ(s.getString("health"), "producing");
+    }
+  }
+  EXPECT_TRUE(found);
+
+  // No scene routes the still any longer: it leaves the bus on the next tick.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "load-scene-graph"},
+          {"sceneId", "no-still"},
+          {"routes", corevideo::rpc::Json::Array{}},
+      },
+  });
+
+  state = mediaCore.sessionState();
+  sources = state.get("sources");
+  ASSERT_NE(sources, nullptr);
+  for (const auto& s : sources->asArray()) {
+    EXPECT_NE(s.getString("sourceId"), "media:logo-1");
+  }
+}
+
 TEST(StillMediaFrameCache, KindImageRouteIsDecodedRegardlessOfExtension) {
   corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   auto decoder = std::make_unique<FakeStillDecoder>();
