@@ -15,6 +15,10 @@
 - **Per-participant granularity (owner-ratified 2026-09-18):** each Zoom participant is its own `ISource` (`descriptor.sourceId == "zoom:<pid>"`), added when it first decodes a frame and removed when it leaves. NOT one multi-frame Zoom source — the slice-0 `SourceBus` counts per entry (one `lastFrameId` per source), so one source must emit at most one video frame per tick.
 - **Video only.** Zoom audio (`ZoomEngineRuntime::pollCompositorAudioFrames`, `requiresSteadyFeedPriming`, the pre-`coreMutex` merge in `pollZoomAudioUnlocked`) is UNTOUCHED this slice. Do not route Zoom audio through the bus.
 - **`source_id == VideoFrame::participantId == "zoom:<pid>"`.** Downstream (compositor, ISO, multiview, `SourceContinuityLedger`, churn) keys on `participantId`; the migrated frames MUST carry the identical key, `hasI420()`/`hasPixels()` content contract, and per-participant identity, or continuity reads every source as a cold restart.
+  **Clarification (as-shipped, 2026-09-19):** the LIVE `VideoFrame::participantId` for a
+  Zoom participant is the RAW engine participant id (matching `ZoomEngineRuntime`'s roster
+  and `SourceContinuityLedger`), not `"zoom:<pid>"` — `zoom:<pid>` is the ISO/registry id
+  scheme, a separate namespace. A future slice must not prefix the live key.
 - **Zero-copy on the hot path.** Feeding a participant source takes the existing zero-copy `shared_ptr<const vector<uint8_t>>` I420 buffer (the `ingestI420Frame` shared overload economics). No pixel copy under `coreMutex`.
 - **The cushion, churn ledger, and speaker director stay in `ZoomEngineRuntime`.** This slice moves only where the decoded frame is *published to the render gather* (into per-participant `ISource`s), not how it is decoded, cushioned, or accounted.
 - **Preserve the two existing behaviors exactly:** (1) the `engineLive && participantCount==0` suppression (no synthetic slate once the engine is live) and (2) the engine-roster merge that gives every subscribed participant a real-or-metadata frame (`MediaCore.cpp:6089-6119`).

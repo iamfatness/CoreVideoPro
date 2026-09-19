@@ -5775,12 +5775,15 @@ TEST(MediaCoreCommand, WithNoEngineTheZoomTapNeverPopulatesTheSourceBusAndProgra
 
   const auto state = mediaCore.sessionState();
 
-  // The decode tap never ran (no engine), so the bus carries no zoom: source.
+  // The decode tap never ran (no engine), so the bus carries no zoom-kind source.
+  // (Production Zoom sources are keyed by the raw participant id, e.g. "16791552",
+  // not a "zoom:"-prefixed id, so a "kind" == "zoom" check is what actually guards
+  // against a leaked Zoom source here.)
   const auto* sources = state.get("sources");
   ASSERT_NE(sources, nullptr);
   for (const auto& entry : sources->asArray()) {
-    EXPECT_NE(entry.getString("sourceId").rfind("zoom:", 0), 0u)
-        << "unexpected zoom: source on the bus with no engine configured";
+    EXPECT_NE(entry.getString("kind"), "zoom")
+        << "unexpected zoom-kind source on the bus with no engine configured";
   }
 
   // Program still composited the synthetic slate — unchanged regression.
