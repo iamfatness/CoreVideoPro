@@ -346,9 +346,12 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 
 MediaCore::MediaCore(modules::ModuleSet modules)
     : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {
-  // #535 slice 0: the source bus. Empty in production — nothing registers a
-  // source outside the addSourceForTest seam — so the render-tick ingest guard
-  // (sourceBus_ && !sourceBus_->empty()) pays nothing for a real show.
+  // #535 slice 0: the source bus. Since slice 1 (Zoom video) and slice 2
+  // (capture), the bus carries every live Zoom participant and every
+  // connected capture device in production — it is no longer test-only. The
+  // render-tick ingest guard (sourceBus_ && !sourceBus_->empty()) is a cheap
+  // early-out for the no-source case (no meeting, no capture device), not a
+  // production-vs-test switch.
   sourceBus_ = std::make_unique<core::SourceBus>();
   // Put the virtual camera on the RENDER cadence. Publishing it from the ~50Hz
   // output worker capped a 60fps program at 50fps everywhere. The sink runs on

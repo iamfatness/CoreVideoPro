@@ -1723,11 +1723,15 @@ media), untouched. Nothing on air changes yet.
   counts `framesIngested`/`droppedFrames` per source; health is decided at READ time
   (`snapshot(nowNs)`), not latched at ingest — the same "peek is not an observation"
   discipline as `RenderedSceneAttributionPolicy` elsewhere in this file.
-- **In PRODUCTION the bus is EMPTY.** `TestPatternSource` is registered ONLY through
-  the `MediaCore::addSourceForTest` test seam — never wired to any real join/capture
-  path, never on air. A production build's `sources[]` snapshot node is present and
-  empty, exactly like the multiviewer-node rule: absence of activity is not absence
-  of the node.
+- **In PRODUCTION the bus was EMPTY at slice 0** — true only as of this slice.
+  `TestPatternSource` is registered ONLY through the `MediaCore::addSourceForTest`
+  test seam — never wired to any real join/capture path, never on air — and a
+  slice-0 production build's `sources[]` snapshot node is present and empty,
+  exactly like the multiviewer-node rule: absence of activity is not absence of
+  the node. **This stopped being true at slice 1**, below: Zoom video, then
+  capture, are real production sources on the bus now. See "Slice 1" and
+  "Slice 2" for the current state — do not read this bullet as describing
+  today's bus.
 - **`source_id == VideoFrame::participantId`.** The bus deliberately reuses the
   existing frame-keying scheme (`zoom:<pid>` / `capture:<id>` / `media:<assetId>`
   today) so a migrated source is a drop-in replacement for its old frame producer,
@@ -1829,6 +1833,81 @@ stream, so it cannot model the real engine's renderer rebuild on the
 preview→program 1080P flip. Owner re-test on the #554 fix decides whether it
 was the same gap; if not, #555 names the next diagnostic (a compositor
 geometry log line on change).
+
+**Slice 2 (2026-09-19): capture onto the bus.** `CaptureDeviceSource : ISource`
+(`native/src/core/CaptureDeviceSource.h`) is one bus source per `capture:<id>`
+frame — one instance per capture device id, mirroring `ZoomParticipantSource`'s
+shape from slice 1. It is fed from the SAME unchanged adapter poll (the WinUi
+SHM bridge, the browser host, `SrtIngestCaptureAdapter`'s `channel->latest`,
+native UVC, and WGC screen capture — all five verified) through a new pure
+helper, `syncCaptureSources(SourceBus&, const vector<VideoFrame>&)`
+(`CaptureBusRoster.h`), mirroring `syncZoomParticipantSources`'s call shape from
+slice 1 but making the OPPOSITE removal decision on purpose:
+
+- **The bus MIRRORS the adapters' tick and REMOVES a capture source absent from
+  it — the deliberate opposite of the Zoom parity rule (#554) above.** #554
+  taught that a Zoom source must survive an empty tick because the engine holds
+  the participant's last frame across a subscription gap and the bus removing
+  it early caused the fallback-slate flash. Capture is the opposite case:
+  EVERY capture adapter already re-emits its last held frame on every tick
+  while the device stays connected (proven for all five adapters, above, incl.
+  `DisconnectedDeviceEmitsNoFrame`) — so a capture id's absence from the tick
+  means the device is actually gone, not merely paused mid-gap the way a Zoom
+  subscription eviction is. Removing on absence is therefore the correct
+  parity for THIS kind, not a regression of the #554 lesson: the lesson was
+  "match the producer's real hold behavior," and the two producers hold
+  differently.
+- **MediaCore now partitions the bus's output by kind** so capture frames keep
+  their pre-bus position AHEAD of Zoom/test frames in the merged set, and still
+  ride the existing roster merge unchanged — pinned by
+  `CaptureBusFramesGatherBeforeOtherBusKinds`. This exists because downstream
+  ordering-sensitive code (the no-routes grid fallback) predates the bus and
+  was never rewritten to be order-independent for capture specifically.
+- **Two accepted behavior notes, not gaps:**
+  1. Capture frames' relative order AMONG THEMSELVES changed from adapter
+     emission order to sourceId-sorted (`SourceBus` is a `std::map`). Every
+     consumer matches capture tiles by `participantId`, so this is invisible
+     everywhere except the no-routes grid fallback, which is the one place
+     order was ever load-bearing.
+  2. A capture device that has never delivered a frame is not on the bus at
+     all (its adapter emits nothing for it) — there is no per-kind
+     warming/stalled slate for a probe-only device yet. The spec's "warming
+     instead of a per-kind slate" for that case lands in slice 4 with the
+     compositor fallback collapse; `droppedFrames` for capture also waits for
+     slice 4 (today it lives on `CaptureDeviceInfo`, not on the frame, so the
+     bus has nowhere honest to read it from yet).
+- **`deliveredFps` is now measured from a per-decoded-frame `framesIngested`
+  counter**, not from the engine's `"frame"` IPC event — that event is a ~1/s
+  beacon, so `framesReceived` was never actually a frame count, and any prior
+  reading of the Zoom spine snapshot's `deliveredFps` as a real rate was wrong
+  before this fix landed alongside slice 2.
+- **Task 5 regression numbers (2026-09-19, this branch):** Windows dev suite
+  `native/build-dev/corevideo-native-tests.exe` — 1059 tests passed, 0 failed
+  (unchanged count from slice 1/#554). Stub gate
+  (`scripts/test-native.ps1`) — green, 100% tests passed, 0 failed.
+  `node scripts/validate-multiview.mjs` — PASS (capture/Zoom tiles still reach
+  multiview). `scripts/qa/zoom-gap-hold-ab.py --label slice2` — Program luma
+  held 187.5–204.8 across the whole recorded window including the forced
+  subscription gap (the animated test pattern's normal sawtooth range); no dip
+  toward the ~150 slate-fallback signature anywhere in 243 sampled frames. The
+  rig's `bus=` tuples showed a real capture source (`capture:decklink-1`)
+  alongside Zoom the whole run — this rig has a capture device connected under
+  the fake engine, so slice 2's capture-on-the-bus path was exercised live in
+  this same gate, not just in the stub `FakeCaptureDevice` unit path. Show
+  drill (`COREVIDEO_FAKE_ENGINE_FPS=60`, `mac-show-drill.py --seconds 40
+  --load 8`) — PASSED: 60.0fps of 60 sustained, 0 dropped, 5.3ms render hold,
+  100% decoded-frame delivery, coreMutex over-budget 110/3217 (3%), command
+  round-trip p50 4.7ms/p99 12.1ms — run alongside an unrelated idle soak
+  instance of the packaged app on this machine, so these numbers are advisory
+  under that contention rather than a clean-machine baseline, but they clear
+  every gate threshold with margin (no gross failure: delivery was 100%, not
+  <90%; fps was 60, not <50).
+- **Still NOT done, by design (slice 4 retires the old interfaces):**
+  `ICaptureDevice`/`IUvcCaptureSource`/`IZoomCaptureSource`/`IMediaFrameSource`
+  are not deleted; Zoom audio and media stay on their pre-bus paths untouched;
+  `sources[]` now lists capture sources alongside Zoom, but nothing downstream
+  reads the bus exclusively yet — the old per-kind poll paths are still the
+  producers MediaCore actually gathers from outside the bus-ordering test.
 
 ## GPU-direct hardware encode for streaming (#521 slice 1, 2026-09-13)
 
