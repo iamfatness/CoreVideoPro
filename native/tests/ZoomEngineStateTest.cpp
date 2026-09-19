@@ -269,3 +269,44 @@ TEST(ZoomEngineRuntimeState, AnUnmappedJoinFailureIsStillReported) {
   ASSERT_FALSE(snapshot.warnings.empty());
   EXPECT_NE(snapshot.warnings.back().find("SDKERR_SOMETHING_NEW"), std::string::npos);
 }
+
+// Task 4 (source bus slice 2): the Sources page prints a per-feed fps from
+// this field, and until now it was a constant 30 regardless of what the
+// engine actually delivered. measuredDeliveredFps is the free function the
+// spine snapshot now calls; it reads (framesReceived, firstFrameAtMs,
+// lastFrameAtMs) off the subscription stats produced by the SAME two calls
+// every other test in this file uses to build them: apply() with a "frame"
+// event bumps framesReceived, recordFrameIngestSuccess stamps the timing.
+TEST(ZoomEngineRuntimeState, MeasuredDeliveredFpsIsFramesOverElapsedSinceFirstFrame) {
+  {
+    // 61 frames over 1000 ms == 60 fps (61 - 1 == 60 intervals).
+    corevideo::modules::ZoomEngineRuntimeState state;
+    for (int i = 0; i <= 60; ++i) {
+      state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"source-1","participant_id":42,"w":1280,"h":720})"));
+      state.recordFrameIngestSuccess("source-1", 42, 1280, 720, i + 1, i * 1000.0 / 60.0);
+    }
+    const auto snapshot = state.snapshot();
+    ASSERT_EQ(snapshot.subscriptions.size(), 1u);
+    EXPECT_EQ(corevideo::modules::measuredDeliveredFps(snapshot.subscriptions[0]), 60);
+  }
+  {
+    // A single frame has no interval to measure.
+    corevideo::modules::ZoomEngineRuntimeState state;
+    state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"source-1","participant_id":42,"w":1280,"h":720})"));
+    state.recordFrameIngestSuccess("source-1", 42, 1280, 720, 1, 0.0);
+    const auto snapshot = state.snapshot();
+    ASSERT_EQ(snapshot.subscriptions.size(), 1u);
+    EXPECT_EQ(corevideo::modules::measuredDeliveredFps(snapshot.subscriptions[0]), 0);
+  }
+  {
+    // Two frames 100 ms apart == 10 fps (1 interval / 0.1s).
+    corevideo::modules::ZoomEngineRuntimeState state;
+    state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"source-1","participant_id":42,"w":1280,"h":720})"));
+    state.recordFrameIngestSuccess("source-1", 42, 1280, 720, 1, 0.0);
+    state.apply(eventFrom(R"({"cmd":"frame","source_uuid":"source-1","participant_id":42,"w":1280,"h":720})"));
+    state.recordFrameIngestSuccess("source-1", 42, 1280, 720, 2, 100.0);
+    const auto snapshot = state.snapshot();
+    ASSERT_EQ(snapshot.subscriptions.size(), 1u);
+    EXPECT_EQ(corevideo::modules::measuredDeliveredFps(snapshot.subscriptions[0]), 10);
+  }
+}

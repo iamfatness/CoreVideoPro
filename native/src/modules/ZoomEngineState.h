@@ -5,6 +5,7 @@
 #include "modules/ZoomEngineClient.h"
 #include "rpc/Json.h"
 
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -29,6 +30,19 @@ struct ZoomEngineSubscriptionStats {
   double lastFrameAgeMs = -1.0;
   bool frameFresh = false;
 };
+
+// The measured average delivery fps for a subscription, since its first
+// frame: (framesReceived - 1) intervals over the elapsed wall time between
+// the first and most recent frame. Requires at least two frames and forward
+// progress in time; otherwise there is no interval to measure, so this
+// reports 0 rather than a constant placeholder (spine snapshot Task 4).
+inline int measuredDeliveredFps(const ZoomEngineSubscriptionStats& stats) {
+  if (stats.framesReceived >= 2 && stats.lastFrameAtMs > stats.firstFrameAtMs) {
+    return static_cast<int>(std::lround((stats.framesReceived - 1) * 1000.0 /
+                                         (stats.lastFrameAtMs - stats.firstFrameAtMs)));
+  }
+  return 0;
+}
 
 struct ZoomEngineRuntimeSnapshot {
   std::string meetingState = "idle";
