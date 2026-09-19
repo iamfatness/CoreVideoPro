@@ -195,3 +195,32 @@ TEST(SourceBusMediaCore, ATestPatternBusSourceCompositesIntoProgram) {
                                 static_cast<uint32_t>(px[c + 0]);
   EXPECT_NE(centerPixel, corevideo::compositor::colorFromParticipantId("test:pattern"));
 }
+
+// --- Task 4: sessionState() sources[] node ---
+
+TEST(SourceBusSnapshot, SourcesNodeCarriesPerSourceCounters) {
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  core.addSourceForTest(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));
+
+  for (int i = 0; i < 3; ++i) {
+    core.renderDisplayTick();
+  }
+
+  const auto state = core.sessionState();
+  const auto* sources = state.get("sources");
+  ASSERT_NE(sources, nullptr);
+  const auto& arr = sources->asArray();
+  ASSERT_EQ(arr.size(), 1u);
+  EXPECT_EQ(arr.front().getString("sourceId"), "test:pattern");
+  EXPECT_GE(arr.front().get("framesIngested")->asNumber(), 1.0);
+  EXPECT_EQ(arr.front().get("droppedFrames")->asNumber(), 0.0);
+}
+
+TEST(SourceBusSnapshot, AFreshMediaCoreWithNoSourceStillEmitsAnEmptySourcesArray) {
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+
+  const auto state = core.sessionState();
+  const auto* sources = state.get("sources");
+  ASSERT_NE(sources, nullptr);
+  EXPECT_TRUE(sources->asArray().empty());
+}

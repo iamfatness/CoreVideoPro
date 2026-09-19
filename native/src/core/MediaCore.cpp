@@ -994,6 +994,28 @@ rpc::Json MediaCore::sessionState() const {
                                    {"showMeters", multiviewShowMeters_},
                                    {"showClock", multiviewShowClock_},
                                });
+  // Per-source bus health (#535 slice 0, Task 4): present even when empty —
+  // the multiviewer-node rule, so the empty (no-source) state stays
+  // observable rather than the node vanishing.
+  {
+    rpc::Json::Array sourcesArr;
+    if (sourceBus_) {
+      const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+      for (const auto& s : sourceBus_->snapshot(nowNs)) {
+        sourcesArr.push_back(rpc::Json::Object{
+            {"sourceId", s.descriptor.sourceId},
+            {"kind", s.descriptor.kind},
+            {"width", static_cast<int>(s.descriptor.width)},
+            {"height", static_cast<int>(s.descriptor.height)},
+            {"framesIngested", static_cast<double>(s.counters.framesIngested)},
+            {"droppedFrames", static_cast<double>(s.counters.droppedFrames)},
+            {"health", sourceHealthName(s.health)},
+        });
+      }
+    }
+    state.emplace("sources", rpc::Json{sourcesArr});
+  }
   const auto recording = recordingState(session);
   if (!recording.isNull()) {
     state.emplace("recording", recording);

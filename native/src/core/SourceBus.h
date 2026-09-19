@@ -12,6 +12,17 @@ namespace corevideo::core {
 
 enum class SourceHealth { Producing, Warming, Stalled, Failed, Idle };
 
+inline const char* sourceHealthName(SourceHealth health) {
+  switch (health) {
+    case SourceHealth::Producing: return "producing";
+    case SourceHealth::Warming: return "warming";
+    case SourceHealth::Stalled: return "stalled";
+    case SourceHealth::Failed: return "failed";
+    case SourceHealth::Idle: return "idle";
+  }
+  return "idle";
+}
+
 struct SourceDescriptor {
   std::string sourceId;   // canonical scheme:id == VideoFrame::participantId
   std::string kind;       // "zoom" | "capture" | "media" | "composed" | "test"
