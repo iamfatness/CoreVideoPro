@@ -1,10 +1,21 @@
 // native/tests/SourceBusTest.cpp
+#include "core/CaptureBusRoster.h"
+#include "core/CaptureDeviceSource.h"
+#include "core/MediaAssetSource.h"
+#include "core/MediaBusRoster.h"
+#include "core/MediaCore.h"
+#include "core/SourceBus.h"
 #include "core/TestPatternSource.h"
+#include "core/ZoomBusRoster.h"
+#include "core/ZoomParticipantSource.h"
 #include "compositor/CompositorLayout.h"
+#include "modules/Interfaces.h"
+#include "modules/ProgramFramePreview.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <functional>
 
 using corevideo::core::TestPatternSource;
 
@@ -39,8 +50,6 @@ TEST(SourceContract, TestPatternSourceProducesSmpteBars) {
 }
 
 // --- Task 2: SourceBus aggregator ---
-#include "core/SourceBus.h"
-
 using corevideo::core::SourceBus;
 using corevideo::core::SourceHealth;
 
@@ -138,10 +147,6 @@ TEST(SourceBus, AnAddedButNeverIngestedSourceIsWarming) {
 }
 
 // --- Task 3: MediaCore ingests the bus and composites it into program (F1 gate) ---
-#include "core/MediaCore.h"
-#include "modules/Interfaces.h"
-#include "modules/ProgramFramePreview.h"
-
 TEST(SourceBusMediaCore, ATestPatternBusSourceCompositesIntoProgram) {
   corevideo::core::MediaCore core(corevideo::modules::createStubModules());
   core.addSourceForTest(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));
@@ -236,7 +241,6 @@ TEST(SourceBusSnapshot, AFreshMediaCoreWithNoSourceStillEmitsAnEmptySourcesArray
 
 // --- Task 1: ZoomParticipantSource ---
 
-#include "core/ZoomParticipantSource.h"
 using corevideo::core::ZoomParticipantSource;
 
 TEST(ZoomParticipantSource, PollReturnsTheSetFrameKeyedByParticipant) {
@@ -292,8 +296,6 @@ TEST(SourceBus, SourceForReturnsTheStoredSourceOrNullptr) {
 }
 
 // --- Task 3: syncZoomParticipantSources (roster -> bus) ---
-#include "core/ZoomBusRoster.h"
-
 static corevideo::modules::VideoFrame zoomFrame(const std::string& id, int64_t frameId) {
   corevideo::modules::VideoFrame f;
   f.participantId = id;
@@ -373,8 +375,6 @@ TEST(ZoomBusRoster, EmptyEngineRosterRemovesNothing) {
 }
 
 // --- Task 1: CaptureDeviceSource ---
-#include "core/CaptureDeviceSource.h"
-
 static corevideo::modules::VideoFrame bgraFrame(const std::string& id, int w, int h, int64_t frameId) {
   corevideo::modules::VideoFrame f;
   f.participantId = id;
@@ -409,8 +409,6 @@ TEST(CaptureDeviceSource, PollServesTheAdaptersLatestBgraFrameKeyedByDevice) {
 }
 
 // --- Task 2: pure syncCaptureSources helper ---
-#include "core/CaptureBusRoster.h"
-
 // Capture adapters hold their own last frame and re-emit it every tick while the
 // device is connected (WinUiCaptureDeviceAdapter::pollVideoFrames); a device that
 // is absent from a tick has disconnected or never delivered, and today the
@@ -456,4 +454,79 @@ TEST(CaptureBusRoster, EmptyTickRemovesEveryCaptureSourceAndNothingElse) {
   corevideo::core::syncCaptureSources(bus, {});
   EXPECT_FALSE(bus.contains("capture:screen:3"));
   EXPECT_TRUE(bus.contains("16778240"));
+}
+
+TEST(SourceBus, IngestWithASelectorPollsAndCountsOnlyTheSelectedKinds) {
+  corevideo::core::SourceBus bus;
+  bus.add(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));          // kind "test"
+  auto cam = std::make_shared<corevideo::core::CaptureDeviceSource>("capture:cam", 640, 360);  // kind "capture"
+  cam->setLatest(bgraFrame("capture:cam", 640, 360, 1));
+  bus.add(cam);
+
+  const auto onlyCapture = [](const corevideo::core::SourceDescriptor& d) { return d.kind == "capture"; };
+  auto r = bus.ingest(0, 1000, onlyCapture);
+  ASSERT_EQ(r.video.size(), 1u);
+  EXPECT_EQ(r.video[0].participantId, "capture:cam");
+
+  // The unselected source was neither polled nor counted.
+  auto snap = bus.snapshot(1000);
+  for (const auto& s : snap) {
+    if (s.descriptor.sourceId == "test:pattern") {
+      EXPECT_EQ(s.counters.framesIngested, 0u);
+      EXPECT_EQ(s.health, corevideo::core::SourceHealth::Warming);
+    }
+    if (s.descriptor.sourceId == "capture:cam") EXPECT_EQ(s.counters.framesIngested, 1u);
+  }
+
+  // The 2-arg overload still ingests everything.
+  auto all = bus.ingest(0, 2000);
+  EXPECT_EQ(all.video.size(), 2u);
+}
+
+TEST(MediaAssetSource, PollServesTheOwnersLatestFrameKeyedByAsset) {
+  corevideo::core::MediaAssetSource src("media:logo-1", "still", 1920, 1080);
+  EXPECT_EQ(src.descriptor().sourceId, "media:logo-1");
+  EXPECT_EQ(src.descriptor().kind, "still");
+  EXPECT_TRUE(src.descriptor().hasVideo);
+  EXPECT_EQ(src.poll(0).health, corevideo::core::SourceHealth::Warming);
+  src.setLatest(bgraFrame("media:logo-1", 1920, 1080, 3));
+  auto t = src.poll(0);
+  ASSERT_EQ(t.video.size(), 1u);
+  EXPECT_EQ(t.video[0].frameId, 3);
+  EXPECT_EQ(t.health, corevideo::core::SourceHealth::Producing);
+}
+
+// The media owner emits a frame for every REQUESTED key each tick (a paused
+// clip keeps emitting its held frame); a key absent from the poll is no longer
+// requested or has not decoded, and nothing is drawn for it today. So, like
+// capture and unlike Zoom (#554), absent from the tick == removed. The two
+// media kinds are independent: syncing "media" never touches "still" sources.
+TEST(MediaBusRoster, MirrorsTheOwnersTickPerKindAndNeverTouchesOtherKinds) {
+  corevideo::core::SourceBus bus;
+  bus.add(std::make_shared<corevideo::core::ZoomParticipantSource>("16778240", 1280, 720));
+  corevideo::core::syncMediaSources(bus, {bgraFrame("media:logo-1", 800, 200, 1)}, "still");
+  corevideo::core::syncMediaSources(bus, {bgraFrame("media:clip-1", 1920, 1080, 1),
+                                          bgraFrame("preview:media:clip-2", 1920, 1080, 1)}, "media");
+  EXPECT_EQ(bus.sourceFor("media:logo-1")->descriptor().kind, "still");
+  EXPECT_EQ(bus.sourceFor("media:clip-1")->descriptor().kind, "media");
+  EXPECT_TRUE(bus.contains("preview:media:clip-2"));
+
+  // clip-2's poster is no longer requested; the still and the Zoom source survive
+  // a "media"-kind sync that omits them.
+  corevideo::core::syncMediaSources(bus, {bgraFrame("media:clip-1", 1920, 1080, 2)}, "media");
+  EXPECT_FALSE(bus.contains("preview:media:clip-2"));
+  EXPECT_TRUE(bus.contains("media:clip-1"));
+  EXPECT_TRUE(bus.contains("media:logo-1"));
+  EXPECT_TRUE(bus.contains("16778240"));
+
+  // An empty "still" tick removes stills only.
+  corevideo::core::syncMediaSources(bus, {}, "still");
+  EXPECT_FALSE(bus.contains("media:logo-1"));
+  EXPECT_TRUE(bus.contains("media:clip-1"));
+  EXPECT_TRUE(bus.contains("16778240"));
+
+  // Kind-selected ingest yields exactly that kind.
+  auto onlyMedia = bus.ingest(0, 1000, [](const corevideo::core::SourceDescriptor& d) { return d.kind == "media"; });
+  ASSERT_EQ(onlyMedia.video.size(), 1u);
+  EXPECT_EQ(onlyMedia.video[0].participantId, "media:clip-1");
 }

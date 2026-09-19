@@ -1915,6 +1915,88 @@ slice 1 but making the OPPOSITE removal decision on purpose:
   reads the bus exclusively yet — the old per-kind poll paths are still the
   producers MediaCore actually gathers from outside the bus-ordering test.
 
+**Slice 3a (2026-09-19): media onto the bus, parity.** `SourceBus::ingest` gained
+a THIRD, **selector**, overload — `ingest(programTime100ns, nowNs, select)` polls,
+counts and returns frames only for sources whose descriptor passes `select`;
+unselected sources are neither polled nor counted (the 2-arg overload is now the
+selector overload with an always-true predicate). `MediaAssetSource` (kind
+`"media"` or `"still"`) is the bus-side producer, and `syncMediaSources(bus,
+frames, kind)` adds/updates/removes per kind — mirroring the producer, exactly
+like slice 2's capture rule and the OPPOSITE of slice 1/#554's Zoom-parity rule:
+the media/still owner (`OwnedMediaFrameSource` / `StillMediaFrameCache`) re-emits
+a frame for EVERY requested key each tick, held/paused keys included, so a key
+absent from the poll really is gone (not requested, or not decoded yet) and the
+bus removing it matches what nothing draws for it today.
+
+- **What moved:** stills are synced from `StillMediaFrameCache::collectFrames`
+  and produced by a `"still"`-kind bus ingest at the SAME injection point they
+  always used (after the engine-roster merge, before the ISO snapshot); decoded
+  media is synced from `pollMediaFramesAt100ns(mediaLayers, …)` and produced by a
+  `"media"`-kind bus ingest at the same post-plan point (after the render plan,
+  before render/continuity-observe/take-record). `MediaCore`'s EARLY ingest (the
+  one before the roster merge) now excludes both media kinds — a stale media
+  frame injected before its request update would otherwise get duplicated once
+  the real one lands.
+- **What did NOT move, and why it cannot yet.** The request set (which decoders
+  exist, `requests(layers)`), pause/hold (`mediaAssetPlaying`, `clockFrozen`), the
+  cue→Program hand-off (#449), and the `preview:media:<id>` poster key all stay
+  inside `OwnedMediaFrameSource`. Media is the one kind whose producer is
+  request-driven FROM THE RENDER PLAN every tick — `selectVideo(layers, t)` reads
+  the Program+Preview plan layers to decide what to decode, applies play-state,
+  and adopts a cued decoder — so it can only be polled after the plan is built.
+  Moving that decision onto the bus means dropping the `layers` argument
+  entirely, and that is deferred to **slice 3b** (own spec — see below): it hangs
+  on the owner's Take-semantics ruling (#449 step 1, "hold outgoing picture on a
+  plain cut"), because go-live/roll-from-0 and the hand-off are one decision.
+- **Removal mirrors the producer, like capture (opposite of the Zoom/#554
+  rule).** A held/paused media key still composites every tick but is not
+  evidence of an active decoder stalling — it is the owner correctly repeating
+  itself — so `syncMediaSources` removing an absent key is the SAME parity
+  argument as slice 2's capture rule, not slice 1's: the media/still owner
+  already re-asserts every requested key each tick, so an absence is real.
+- **Three accepted behavior notes, not gaps:** (1) media/still frames' order
+  among themselves is now sourceId-sorted (the bus is a `std::map`) instead of
+  request order — only the no-routes grid fallback is order-sensitive, and it
+  does not touch media; (2) a held (paused) clip still composites every tick but
+  does not bump `framesIngested`, so it decays to `stalled` health after 200 ms
+  on the bus — honest for a paused clip, not a defect; (3) duplicate effective
+  ids (e.g. a route and a background resolving to the same source id) now
+  collapse to one bus entry (last write wins) instead of the old two-list model
+  emitting both.
+- **`sources[]` now covers every live kind**: zoom / capture / still / media.
+- **Task 4 regression numbers (2026-09-19, this branch):** Windows dev suite
+  `native/build-dev/corevideo-native-tests.exe` — 1065 tests passed, 0 failed.
+  Stub gate (`scripts/test-native.ps1`) — green, 100% tests passed, 0 failed.
+  `node scripts/validate-multiview.mjs` — PASS. `node
+  scripts/validate-show-engine.mjs` requires a running WinUI app (none was
+  running, and the app was deliberately not launched for this task) — headless
+  `node scripts/validate-tiles.mjs` ran instead and PASSED (fingerprint sanity,
+  per-tile identity, background colour, tile-boundary/rect match, structural
+  invariants, aspect, gutter/margin, fill-not-letterbox, reflow-after-departure —
+  10/10 checks green, 2 skipped for not-yet-built features). `scripts/qa/zoom-gap-hold-ab.py
+  --label slice3` — Program luma held 187.49–204.74 across the whole recorded
+  window including the forced subscription gap, no dip toward the ~150
+  slate-fallback signature anywhere in 246 sampled frames; the rig's `bus=`
+  tuples list every live source id with its dims and per-tick state
+  (`producing`/`stalled`/`holding`) — `capture:decklink-1` rode alongside Zoom
+  the whole run. Show drill (`COREVIDEO_FAKE_ENGINE_FPS=60`, `mac-show-drill.py
+  --seconds 40 --load 8`) — PASSED: 60.0fps of 60 sustained, 0 dropped, 5.3ms
+  render hold, 100% decoded-frame delivery, coreMutex over-budget 140/3207
+  (4%), command round-trip p50 4.6ms/p99 13.9ms. Artifacts archived under
+  `artifacts/qa/slice3-gap-hold/` (gitignored). **The gap-hold recording itself
+  ran with only zoom + capture sources on the bus** (the rig's `bus=` tuples show
+  no media/still entries) — for THIS slice it is a non-regression gate on the
+  zoom/capture path, not on-air proof of media on the bus. The media on-air
+  evidence is `CompositesMediaRoutePixelsIntoProgramPreview` and
+  `StillMediaRouteCompositesDecodedPixels` passing through the bus path, plus the
+  new tests' pixel probe (`MediaCoreCommand.MediaRouteAppearsOnTheSourceBusAndLeavesWhenUnrouted`,
+  `StillMediaFrameCache.StillRouteAppearsOnTheSourceBusAsKindStill`).
+- **Next: slice 3b** (own spec, blocked on the owner's Take-semantics ruling)
+  drops the `layers` argument — media request state moves to source state set at
+  command time, `poll(ts)` applies hold/roll from that state, and the cue
+  hand-off + `preview:` poster move inside the source. See
+  `docs/superpowers/specs/2026-09-18-source-bus-design.md` §5.
+
 ## GPU-direct hardware encode for streaming (#521 slice 1, 2026-09-13)
 
 The live STREAM is now encoded directly from the compositor's GPU texture by the

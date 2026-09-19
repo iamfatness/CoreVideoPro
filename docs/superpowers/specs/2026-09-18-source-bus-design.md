@@ -148,7 +148,7 @@ untouched in the slice that migrates it — only the interface it presents chang
 | **Test pattern** | synthetic tick, proven into program pixels (F1 gate) | trivial `ISource`; the migration proof (section 5, slice 0) |
 | **Zoom** | `IZoomCaptureSource`, latest-slot per pid, I420 | `poll()` returns the participant's latest I420 slot; cushion stays inside the adapter; `clockOffset` reports the cushion depth. Clarification (as-shipped, 2026-09-19): the live key is the RAW engine participant id, matching `ZoomEngineRuntime`'s roster/`SourceContinuityLedger` — `zoom:<pid>` is the separate ISO/registry id scheme, not the live compositor key. |
 | **Capture** (UVC/screen/browser/SRT-ingest) | `ICaptureDevice`, BGRA, per-device reader | one `ISource` per device; `poll()` serves the reader's latest BGRA; `droppedFrames` from the reader's own counter |
-| **Media** (clip/still/background) | `IMediaFrameSource::pollMediaFrames(layers, ts)` | `poll(ts)` returns the asset's one decoder frame; `layers` argument dropped (persistent-sources already made it one decoder per asset) |
+| **Media** (clip/still/background) | `IMediaFrameSource::pollMediaFrames(layers, ts)` | `poll(ts)` returns the asset's one decoder frame; `layers` argument dropped (persistent-sources already made it one decoder per asset) (3a as shipped 2026-09-19: frames only, two bus kinds `media` (decoded clips/loops/backgrounds) and `still` (route stills from the still cache); `layers` is retained and drops in 3b — see §5) |
 | **Composed** (Tiles wall; later lower-thirds) | rendered in the compositor, registered `Kind::Composed` | a composed `ISource` whose `poll()` returns its offscreen texture frame (persistent-sources slice 2/3 territory) — contract-ready, not migrated here |
 
 The DeckLink/AJA, SRT-decode and NDI-receive adapters that do not exist yet
@@ -176,8 +176,21 @@ never as an unwired island. So the contract does not land alone.
 - **Slice 2 — capture onto the bus** (UVC/screen/browser/SRT-ingest). The kind
   whose `pixels` are empty today for probe-only devices becomes a uniform
   `warming`/`stalled` health instead of a per-kind slate.
-- **Slice 3 — media onto the bus**, `layers` argument dropped. Rides the
-  persistent-sources media work already on `codex/persistent-sources`.
+- **Slice 3a (shipped on branch 2026-09-19) — media frames onto the bus,
+  parity, `layers` retained.** `SourceBus::ingest` gained a kind-selector
+  overload; `MediaAssetSource`/`syncMediaSources` mirror the producer (removal
+  on absence per kind, like slice 2's capture rule) at the two existing
+  injection points (post-roster-merge for stills, post-plan for decoded media).
+  The request set, pause/hold, the cue→Program hand-off (#449) and the
+  `preview:` poster key all stay inside `OwnedMediaFrameSource` — unchanged.
+- **Slice 3b — `layers` dropped.** Media request state (asset, playing, loop,
+  which bus) moves from per-tick plan layers to source state set at command
+  time (`load-scene-graph`/`set-preview-scene`/`set-media-playback`); `poll(ts)`
+  applies hold/roll from that state; the cue→Program hand-off (#449) and the
+  `preview:` poster key move inside the source; the still cache becomes the
+  still source's decoder. Needs the owner's Take-semantics ruling (#449 step 1
+  "hold outgoing picture on a plain cut") because go-live/roll-from-0 and
+  hand-off are one decision. Own spec.
 - **Slice 4 — retire the three old interfaces.** Once every kind is on `ISource`,
   `IZoomCaptureSource`/`ICaptureDevice`/`IMediaFrameSource` are deleted and the
   compositor's per-kind empty-frame fallbacks collapse to one bus-health path
