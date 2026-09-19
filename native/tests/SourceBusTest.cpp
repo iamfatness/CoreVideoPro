@@ -362,3 +362,39 @@ TEST(ZoomBusRoster, EmptyEngineRosterRemovesNothing) {
   corevideo::core::syncZoomParticipantSources(bus, {}, {});
   EXPECT_TRUE(bus.contains("101"));
 }
+
+// --- Task 1: CaptureDeviceSource ---
+#include "core/CaptureDeviceSource.h"
+
+static corevideo::modules::VideoFrame bgraFrame(const std::string& id, int w, int h, int64_t frameId) {
+  corevideo::modules::VideoFrame f;
+  f.participantId = id;
+  f.width = f.pixelWidth = f.naturalWidth = w;
+  f.height = f.pixelHeight = f.naturalHeight = h;
+  f.pixelStride = w * 4;
+  f.pixels = std::make_shared<const std::vector<uint8_t>>(static_cast<size_t>(w) * h * 4, 0x7f);
+  f.frameId = frameId;
+  return f;
+}
+
+TEST(CaptureDeviceSource, PollServesTheAdaptersLatestBgraFrameKeyedByDevice) {
+  corevideo::core::CaptureDeviceSource src("capture:decklink-1", 640, 360);
+  EXPECT_EQ(src.descriptor().sourceId, "capture:decklink-1");
+  EXPECT_EQ(src.descriptor().kind, "capture");
+  EXPECT_EQ(src.descriptor().pixelFormat, "bgra");
+  EXPECT_TRUE(src.descriptor().hasVideo);
+
+  auto warm = src.poll(0);
+  EXPECT_TRUE(warm.video.empty());
+  EXPECT_EQ(warm.health, corevideo::core::SourceHealth::Warming);
+
+  src.setLatest(bgraFrame("capture:decklink-1", 640, 360, 7));
+  auto tick = src.poll(0);
+  ASSERT_EQ(tick.video.size(), 1u);
+  EXPECT_EQ(tick.video[0].participantId, "capture:decklink-1");
+  EXPECT_TRUE(tick.video[0].hasPixels());
+  EXPECT_EQ(tick.video[0].frameId, 7);
+  EXPECT_EQ(tick.health, corevideo::core::SourceHealth::Producing);
+  EXPECT_EQ(src.counters().lastFrameId, 7);
+  EXPECT_EQ(src.counters().framesIngested, 1u);
+}
