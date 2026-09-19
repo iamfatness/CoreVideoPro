@@ -49,7 +49,7 @@ drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
 | Order | Issue | Item | Why |
 |---|---|---|---|
 | 1 | [#513](https://github.com/iamfatness/CoreVideoPro/issues/513) | Idle XAML 0xc000027b | Ship-blocker between shows. Editor-teardown (#548) + multiview pooling (#549) shipped — exposure reduction, NOT closure. Needs a long idle soak of the new beta + the CsWinRT/WinAppSDK framework angle. |
-| 2 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | F1 one source bus | Promoted from Next 2026-09-18: design starting. The bone every later adapter (SRT/NDI ingest+send, DeckLink) hangs off. |
+| 2 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | F1 one source bus | **Slice 0 shipped 2026-09-18** (`ISource` contract + `SourceBus` + test-pattern source; off by default, test-seam only; on `main`). Slices 1-3 (Zoom, capture, media onto the bus) next; slice 4 retires the 3 old poll interfaces. The bone every later adapter (SRT/NDI ingest+send, DeckLink) hangs off. |
 
 ## Next — competitive spine
 
