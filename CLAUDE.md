@@ -1796,6 +1796,40 @@ decode and the render gather, not a fluke of one run (both runs used the same
 reach multiview and the ISO writers keyed by the raw participant id exactly as
 before (ISO manifest still names `zoom:101`/`zoom:102`, clap-align 0.0ms).
 
+**Slice 1 shipped a live regression the drill could not see (#554, found by the
+owner 2026-09-19, ~90 min after merge).** The old `RealZoomCaptureSource` store
+NEVER erased a participant's frame: when the engine retired a video
+subscription (video-budget eviction, spine churn around a Take) the last frame
+kept painting until the engine roster dropped the participant. The bus removed
+the source on the first tick without a decoded frame, so a routed participant
+fell to the compositor's fallback slate for the whole gap — the owner saw it as
+"sources flashing". Parity rule now in `ZoomBusRoster.h`: a Zoom source is
+removed only when the participant is absent from BOTH the tick's decoded frames
+AND the engine's subscription roster (`pollCompositorVideoFrames`, polled ONCE
+per tick and reused by the merge); an empty roster removes nothing, mirroring
+the merge gate. Two lessons, both already in this file's spirit:
+- **"Frames are byte-identical" is a steady-state argument. Lifecycle is where
+  a migration regresses.** The first-pass analysis proved every field of every
+  frame matched and cleared slice 1; the owner's A/B ("it's new") was right.
+  Enumerate the erase/retire/clear paths of the OLD store before calling a
+  replacement equivalent.
+- **The perf drill never removes a subscription, and nothing on the wire carries
+  per-layer pixels or geometry** (`programPixelSignature` is 0 on the display
+  tick; `RenderedProgramSources` publishes ids only). The oracle that caught it
+  is `scripts/qa/zoom-gap-hold-ab.py`: record PROGRAM to MP4 around a forced
+  subscription gap and judge it with `ffmpeg signalstats` per-frame YAVG — the
+  slice-1 core dropped from ~188 to ~150 for the 500 ms gap, the
+  `beta-2026-09-18-c80ee51` core held ~188. Run it (both cores if in doubt)
+  before any further bus slice; a source migration is not done until the gap
+  test holds the picture.
+The owner also reported a NEW "first Take of a fresh source renders half
+off-screen until re-cued" on the same build (#555). Not reproduced headlessly:
+the fake engine honors a resolution upgrade in place and never restarts a
+stream, so it cannot model the real engine's renderer rebuild on the
+preview→program 1080P flip. Owner re-test on the #554 fix decides whether it
+was the same gap; if not, #555 names the next diagnostic (a compositor
+geometry log line on change).
+
 ## GPU-direct hardware encode for streaming (#521 slice 1, 2026-09-13)
 
 The live STREAM is now encoded directly from the compositor's GPU texture by the

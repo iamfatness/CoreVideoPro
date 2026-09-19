@@ -302,7 +302,8 @@ TEST(ZoomBusRoster, AddsFeedsAndRemovesPerParticipant) {
   // prefix) — matching the engine roster/continuity keying downstream in
   // MediaCore. Use raw-shaped ids here so this test actually proves removal
   // fires for the real keying, not a prefix that production never uses.
-  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("16791552", 5), zoomFrame("22334455", 5)});
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("16791552", 5), zoomFrame("22334455", 5)},
+                                             {"16791552", "22334455"});
   EXPECT_TRUE(bus.contains("16791552"));
   EXPECT_TRUE(bus.contains("22334455"));
   EXPECT_TRUE(bus.contains("test:pattern"));
@@ -313,10 +314,51 @@ TEST(ZoomBusRoster, AddsFeedsAndRemovesPerParticipant) {
   for (const auto& v : r.video) if (v.participantId == "16791552" || v.participantId == "22334455") ++zoomFrames;
   EXPECT_EQ(zoomFrames, 2);
 
-  // 22334455 departs; 16791552 stays. test:pattern untouched (kind-based
-  // removal must never touch a non-zoom source).
-  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("16791552", 6)});
+  // 22334455 departs (gone from the engine roster AND no frame); 16791552
+  // stays. test:pattern untouched (kind-based removal must never touch a
+  // non-zoom source).
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("16791552", 6)}, {"16791552"});
   EXPECT_TRUE(bus.contains("16791552"));
   EXPECT_FALSE(bus.contains("22334455"));
   EXPECT_TRUE(bus.contains("test:pattern"));
+}
+
+// A/B on 2026-09-19 (fake engine, program recorded to MP4): when the engine
+// retires a participant's video subscription while that participant is still
+// routed (budget eviction, spine churn around a Take), the pre-bus
+// RealZoomCaptureSource store kept painting the participant's LAST frame until
+// the engine roster dropped them; slice 1 removed the bus source on the first
+// tick without a decoded frame, so program cut to the fallback slate for the
+// whole gap (luma 188 -> 150 for ~500 ms). That is the "flashing sources" the
+// owner saw live. Parity rule: hold the last frame while the engine still
+// lists the participant; remove only when the roster has let them go.
+TEST(ZoomBusRoster, HoldsLastFrameAcrossASubscriptionGapWhileTheEngineStillListsTheParticipant) {
+  corevideo::core::SourceBus bus;
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("101", 5), zoomFrame("103", 7)}, {"101", "103"});
+  ASSERT_TRUE(bus.contains("103"));
+
+  // Gap: no decoded frame for 103 this tick, but the engine roster still lists it.
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("101", 6)}, {"101", "103"});
+  EXPECT_TRUE(bus.contains("103")) << "source must survive a subscription gap";
+  auto r = bus.ingest(0, 1000);
+  bool heldLastFrame = false;
+  for (const auto& v : r.video) {
+    if (v.participantId == "103" && v.frameId == 7 && v.hasI420()) heldLastFrame = true;
+  }
+  EXPECT_TRUE(heldLastFrame) << "the held source must keep serving its last real frame";
+
+  // The engine roster let 103 go (participant left / slot reassigned): now removed.
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("101", 8)}, {"101"});
+  EXPECT_FALSE(bus.contains("103"));
+  EXPECT_TRUE(bus.contains("101"));
+}
+
+// Mirrors the roster-merge gate in MediaCore (`if (!engineFrames.empty())`):
+// with an EMPTY engine roster the old path drew every stored frame and removed
+// nothing, so an empty roster must not evict anything either.
+TEST(ZoomBusRoster, EmptyEngineRosterRemovesNothing) {
+  corevideo::core::SourceBus bus;
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("101", 5)}, {"101"});
+  corevideo::core::syncZoomParticipantSources(bus, {}, {});
+  EXPECT_TRUE(bus.contains("101"));
 }

@@ -49,7 +49,8 @@ drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
 | Order | Issue | Item | Why |
 |---|---|---|---|
 | 1 | [#513](https://github.com/iamfatness/CoreVideoPro/issues/513) | Idle XAML 0xc000027b | Ship-blocker between shows. Editor-teardown (#548) + multiview pooling (#549) shipped — exposure reduction, NOT closure. Needs a long idle soak of the new beta + the CsWinRT/WinAppSDK framework angle. |
-| 2 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | F1 one source bus | **Slice 0 shipped 2026-09-18** (`ISource` contract + `SourceBus` + test-pattern source; off by default, test-seam only; on `main`). Slices 1-3 (Zoom, capture, media onto the bus) next; slice 4 retires the 3 old poll interfaces. The bone every later adapter (SRT/NDI ingest+send, DeckLink) hangs off. |
+| 2 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | F1 one source bus | **Slice 0 shipped 2026-09-18; slice 1 (Zoom video, per-participant `ISource`) merged 2026-09-19 (#553)** — and regressed live within 90 min: [#554](https://github.com/iamfatness/CoreVideoPro/issues/554) (bus source dropped across a subscription gap → program slate / "flashing"; root-caused by recorded A/B, fix on `codex/535-hold-last-frame`). Slices 2-3 (capture, media) next, each gated by `scripts/qa/zoom-gap-hold-ab.py`; slice 4 retires the 3 old poll interfaces. |
+| 3 | [#555](https://github.com/iamfatness/CoreVideoPro/issues/555) | First Take of a fresh Zoom source renders half off-screen | Owner-reported 2026-09-19 on the slice-1 build, "new". Not reproduced headlessly (no per-layer geometry on the wire; fake engine never restarts a stream). Owner re-test on the #554 fix first; then the compositor geometry log line named in the issue. Rank clause 3 (real-show papercut) — clause 1 if it survives the re-test. |
 
 ## Next — competitive spine
 
