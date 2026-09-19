@@ -146,7 +146,7 @@ untouched in the slice that migrates it — only the interface it presents chang
 | Kind | Today | As an `ISource` |
 |---|---|---|
 | **Test pattern** | synthetic tick, proven into program pixels (F1 gate) | trivial `ISource`; the migration proof (section 5, slice 0) |
-| **Zoom** | `IZoomCaptureSource`, latest-slot per pid, I420 | `poll()` returns the participant's latest I420 slot; cushion stays inside the adapter; `clockOffset` reports the cushion depth |
+| **Zoom** | `IZoomCaptureSource`, latest-slot per pid, I420 | `poll()` returns the participant's latest I420 slot; cushion stays inside the adapter; `clockOffset` reports the cushion depth. Clarification (as-shipped, 2026-09-19): the live key is the RAW engine participant id, matching `ZoomEngineRuntime`'s roster/`SourceContinuityLedger` — `zoom:<pid>` is the separate ISO/registry id scheme, not the live compositor key. |
 | **Capture** (UVC/screen/browser/SRT-ingest) | `ICaptureDevice`, BGRA, per-device reader | one `ISource` per device; `poll()` serves the reader's latest BGRA; `droppedFrames` from the reader's own counter |
 | **Media** (clip/still/background) | `IMediaFrameSource::pollMediaFrames(layers, ts)` | `poll(ts)` returns the asset's one decoder frame; `layers` argument dropped (persistent-sources already made it one decoder per asset) |
 | **Composed** (Tiles wall; later lower-thirds) | rendered in the compositor, registered `Kind::Composed` | a composed `ISource` whose `poll()` returns its offscreen texture frame (persistent-sources slice 2/3 territory) — contract-ready, not migrated here |

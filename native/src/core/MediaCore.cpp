@@ -6018,37 +6018,36 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     tickStages[stage] += elapsed;
     stageMark = now;
   };
-  // Tap the latest decoded Zoom frames (raw I420 planes) and ingest them into
-  // the RealZoomCaptureSource so pollVideoFrames() returns them. Reading them
-  // here does NOT drain the stdout/event queue that feeds the multiview tiles.
+  // Tap the latest decoded Zoom frames (raw I420 planes) and feed them into
+  // the per-participant source bus (#535 slice 1) instead of the
+  // RealZoomCaptureSource — syncZoomParticipantSources adds/updates/removes
+  // one ZoomParticipantSource per participant, keyed by the SAME
+  // participantId this loop always used. Reading them here does NOT drain
+  // the stdout/event queue that feeds the multiview tiles.
   auto* realZoom = dynamic_cast<modules::RealZoomCaptureSource*>(modules_.zoom.get());
   if (realZoom && zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
     markStage(s_subFetchUs, 0);
+    std::vector<modules::VideoFrame> zoomFrames;
+    zoomFrames.reserve(decoded.size());
     for (const auto& frame : decoded) {
-      if (frame.hasI420()) {
-        // GPU path: carry the raw I420 planes through to the compositor, which
-        // converts to RGB in-shader (no CPU per-pixel I420->BGRA convert).
-        realZoom->ingestI420Frame(
-            frame.participantId,
-            frame.i420,  // zero-copy: share the decoded buffer, don't memcpy it
-            frame.i420Width,
-            frame.i420Height,
-            frame.frameId,
-            frame.timestampMs);
-      } else if (frame.hasPixels()) {
-        realZoom->ingestFrame(
-            frame.participantId,
-            frame.pixels->data(),
-            frame.pixelWidth,
-            frame.pixelHeight,
-            frame.frameId,
-            frame.timestampMs);
+      // Only frames carrying real content are fed to the bus — a metadata-only
+      // entry (neither representation set) is never produced by
+      // latestDecodedVideoFrames today, but the check mirrors the exact
+      // hasI420()/hasPixels() gate the old ingestI420Frame/ingestFrame calls
+      // used. A plain struct copy carries every field (participantId, the
+      // zero-copy I420 shared_ptr or BGRA payload, dims, frameId,
+      // timestampMs) exactly as RealZoomCaptureSource used to store it.
+      if (frame.hasI420() || frame.hasPixels()) {
+        zoomFrames.push_back(frame);
       }
     }
-    // Split the per-frame store calls from the destruction of `decoded` (which
+    // Split the per-frame collection from the destruction of `decoded` (which
     // releases each shared I420 buffer) so a long tap says which one it is.
     markStage(s_subStoreUs, 0);
+    if (sourceBus_) {
+      core::syncZoomParticipantSources(*sourceBus_, zoomFrames);
+    }
   }
 
   // With a REAL Zoom engine configured, suppress only the SYNTHETIC FALLBACK
@@ -6057,11 +6056,13 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // ~16MB/frame under coreMutex (measured 26ms/tick on the Metal path). The
   // earlier all-or-nothing gate here also discarded the REAL decoded engine
   // frames ingested just above — live meetings rendered blank on macOS.
+  // Real Zoom frames now arrive via the source-bus ingest below (fed by the
+  // tap above); a bus with nothing fed for this tick yields no Zoom frames,
+  // so an empty videoFrames here is unchanged on-air (#535 slice 1).
   markStage(s_subTapUs, 0);
   const bool engineLive = zoomEngineRuntime_ && zoomEngineRuntime_->configured();
-  auto videoFrames = (engineLive && (!realZoom || realZoom->participantCount() == 0))
-                         ? std::vector<modules::VideoFrame>{}
-                         : modules_.zoom->pollVideoFrames();
+  auto videoFrames =
+      engineLive ? std::vector<modules::VideoFrame>{} : modules_.zoom->pollVideoFrames();
   auto captureFrames = modules_.captureDevice->pollVideoFrames(frameTimestampMs);
   // Browser-source frames ride the capture stream (keyed "capture:browser:<n>"),
   // so scenes/multiview/routing treat them exactly like any capture device. Same

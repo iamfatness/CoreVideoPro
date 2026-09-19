@@ -78,6 +78,17 @@ class SourceBus {
   }
   void remove(const std::string& sourceId) { entries_.erase(sourceId); }
   bool empty() const { return entries_.empty(); }
+  bool contains(const std::string& sourceId) const { return entries_.count(sourceId) != 0; }
+  ISource* sourceFor(const std::string& sourceId) const {
+    auto it = entries_.find(sourceId);
+    return it == entries_.end() ? nullptr : it->second.source.get();
+  }
+  std::vector<std::string> sourceIds() const {
+    std::vector<std::string> ids;
+    ids.reserve(entries_.size());
+    for (const auto& [id, e] : entries_) ids.push_back(id);
+    return ids;
+  }
 
   IngestResult ingest(int64_t programTime100ns, int64_t nowNs) {
     IngestResult out;

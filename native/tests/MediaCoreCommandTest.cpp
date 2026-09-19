@@ -5761,3 +5761,33 @@ TEST(MediaCoreCommand, ARouteLoopFlagReachesTheMediaSourceOnBothBuses) {
   }
   EXPECT_TRUE(previewLoops) << "a loop-only change to the preview scene was not applied";
 }
+
+// --- Task 4 (#535 slice 1): the Zoom decode tap must not run with no engine ---
+// Regression: with STUB modules (no ZoomEngineRuntime configured), MediaCore's
+// render tick must not populate the source bus with any zoom:-keyed source (the
+// decode tap never runs without a configured engine), and Program must still
+// composite the synthetic slate exactly as before this slice's wiring change.
+TEST(MediaCoreCommand, WithNoEngineTheZoomTapNeverPopulatesTheSourceBusAndProgramStillComposites) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+
+  mediaCore.renderDisplayTick();
+  mediaCore.renderDisplayTick();
+
+  const auto state = mediaCore.sessionState();
+
+  // The decode tap never ran (no engine), so the bus carries no zoom-kind source.
+  // (Production Zoom sources are keyed by the raw participant id, e.g. "16791552",
+  // not a "zoom:"-prefixed id, so a "kind" == "zoom" check is what actually guards
+  // against a leaked Zoom source here.)
+  const auto* sources = state.get("sources");
+  ASSERT_NE(sources, nullptr);
+  for (const auto& entry : sources->asArray()) {
+    EXPECT_NE(entry.getString("kind"), "zoom")
+        << "unexpected zoom-kind source on the bus with no engine configured";
+  }
+
+  // Program still composited the synthetic slate — unchanged regression.
+  EXPECT_GT(state.getNumber("programFrameCount"), 0.0);
+  const auto* programFrame = state.get("programFrame");
+  ASSERT_NE(programFrame, nullptr);
+}

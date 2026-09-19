@@ -224,3 +224,99 @@ TEST(SourceBusSnapshot, AFreshMediaCoreWithNoSourceStillEmitsAnEmptySourcesArray
   ASSERT_NE(sources, nullptr);
   EXPECT_TRUE(sources->asArray().empty());
 }
+
+// --- Task 1: ZoomParticipantSource ---
+
+#include "core/ZoomParticipantSource.h"
+using corevideo::core::ZoomParticipantSource;
+
+TEST(ZoomParticipantSource, PollReturnsTheSetFrameKeyedByParticipant) {
+  ZoomParticipantSource src("zoom:42", 1280, 720);
+  EXPECT_EQ(src.descriptor().sourceId, "zoom:42");
+  EXPECT_EQ(src.descriptor().kind, "zoom");
+  EXPECT_TRUE(src.descriptor().hasVideo);
+  // No frame yet -> Warming, no video.
+  auto warmup = src.poll(0);
+  EXPECT_TRUE(warmup.video.empty());
+  EXPECT_EQ(warmup.health, corevideo::core::SourceHealth::Warming);
+
+  corevideo::modules::VideoFrame f;
+  f.participantId = "zoom:42";
+  f.i420 = std::make_shared<const std::vector<uint8_t>>(1280 * 720 * 3 / 2, 0x10);
+  f.i420Width = 1280; f.i420Height = 720; f.frameId = 7;
+  src.setLatest(f);
+  auto tick = src.poll(0);
+  ASSERT_EQ(tick.video.size(), 1u);
+  EXPECT_EQ(tick.video.front().participantId, "zoom:42");
+  EXPECT_EQ(tick.video.front().frameId, 7);
+  EXPECT_TRUE(tick.video.front().hasI420());
+  EXPECT_EQ(tick.health, corevideo::core::SourceHealth::Producing);
+}
+
+// --- Task 2: SourceBus membership queries ---
+
+TEST(SourceBus, ContainsAndSourceIdsReflectMembership) {
+  SourceBus bus;
+  EXPECT_FALSE(bus.contains("zoom:1"));
+  bus.add(std::make_shared<ZoomParticipantSource>("zoom:1", 1280, 720));
+  bus.add(std::make_shared<ZoomParticipantSource>("zoom:2", 1280, 720));
+  EXPECT_TRUE(bus.contains("zoom:1"));
+  EXPECT_TRUE(bus.contains("zoom:2"));
+  auto ids = bus.sourceIds();
+  ASSERT_EQ(ids.size(), 2u);
+  EXPECT_EQ(ids[0], "zoom:1");   // std::map order
+  EXPECT_EQ(ids[1], "zoom:2");
+  bus.remove("zoom:1");
+  EXPECT_FALSE(bus.contains("zoom:1"));
+}
+
+// --- Task 3: SourceBus::sourceFor accessor ---
+
+TEST(SourceBus, SourceForReturnsTheStoredSourceOrNullptr) {
+  SourceBus bus;
+  EXPECT_EQ(bus.sourceFor("zoom:1"), nullptr);
+  auto src = std::make_shared<ZoomParticipantSource>("zoom:1", 1280, 720);
+  bus.add(src);
+  EXPECT_EQ(bus.sourceFor("zoom:1"), src.get());
+  bus.remove("zoom:1");
+  EXPECT_EQ(bus.sourceFor("zoom:1"), nullptr);
+}
+
+// --- Task 3: syncZoomParticipantSources (roster -> bus) ---
+#include "core/ZoomBusRoster.h"
+
+static corevideo::modules::VideoFrame zoomFrame(const std::string& id, int64_t frameId) {
+  corevideo::modules::VideoFrame f;
+  f.participantId = id;
+  f.i420 = std::make_shared<const std::vector<uint8_t>>(1280 * 720 * 3 / 2, 0x10);
+  f.i420Width = 1280; f.i420Height = 720; f.frameId = frameId;
+  return f;
+}
+
+TEST(ZoomBusRoster, AddsFeedsAndRemovesPerParticipant) {
+  corevideo::core::SourceBus bus;
+  // Also register a non-zoom source that must never be touched.
+  bus.add(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));
+
+  // Production keys Zoom sources by the RAW participant id (no "zoom:"
+  // prefix) — matching the engine roster/continuity keying downstream in
+  // MediaCore. Use raw-shaped ids here so this test actually proves removal
+  // fires for the real keying, not a prefix that production never uses.
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("16791552", 5), zoomFrame("22334455", 5)});
+  EXPECT_TRUE(bus.contains("16791552"));
+  EXPECT_TRUE(bus.contains("22334455"));
+  EXPECT_TRUE(bus.contains("test:pattern"));
+
+  // Ingest produces one frame per participant, keyed correctly.
+  auto r = bus.ingest(0, 1000);
+  int zoomFrames = 0;
+  for (const auto& v : r.video) if (v.participantId == "16791552" || v.participantId == "22334455") ++zoomFrames;
+  EXPECT_EQ(zoomFrames, 2);
+
+  // 22334455 departs; 16791552 stays. test:pattern untouched (kind-based
+  // removal must never touch a non-zoom source).
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("16791552", 6)});
+  EXPECT_TRUE(bus.contains("16791552"));
+  EXPECT_FALSE(bus.contains("22334455"));
+  EXPECT_TRUE(bus.contains("test:pattern"));
+}
