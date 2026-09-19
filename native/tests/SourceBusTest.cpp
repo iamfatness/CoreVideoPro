@@ -224,3 +224,31 @@ TEST(SourceBusSnapshot, AFreshMediaCoreWithNoSourceStillEmitsAnEmptySourcesArray
   ASSERT_NE(sources, nullptr);
   EXPECT_TRUE(sources->asArray().empty());
 }
+
+// --- Task 1: ZoomParticipantSource ---
+
+#include "core/ZoomParticipantSource.h"
+using corevideo::core::ZoomParticipantSource;
+
+TEST(ZoomParticipantSource, PollReturnsTheSetFrameKeyedByParticipant) {
+  ZoomParticipantSource src("zoom:42", 1280, 720);
+  EXPECT_EQ(src.descriptor().sourceId, "zoom:42");
+  EXPECT_EQ(src.descriptor().kind, "zoom");
+  EXPECT_TRUE(src.descriptor().hasVideo);
+  // No frame yet -> Warming, no video.
+  auto warmup = src.poll(0);
+  EXPECT_TRUE(warmup.video.empty());
+  EXPECT_EQ(warmup.health, corevideo::core::SourceHealth::Warming);
+
+  corevideo::modules::VideoFrame f;
+  f.participantId = "zoom:42";
+  f.i420 = std::make_shared<const std::vector<uint8_t>>(1280 * 720 * 3 / 2, 0x10);
+  f.i420Width = 1280; f.i420Height = 720; f.frameId = 7;
+  src.setLatest(f);
+  auto tick = src.poll(0);
+  ASSERT_EQ(tick.video.size(), 1u);
+  EXPECT_EQ(tick.video.front().participantId, "zoom:42");
+  EXPECT_EQ(tick.video.front().frameId, 7);
+  EXPECT_TRUE(tick.video.front().hasI420());
+  EXPECT_EQ(tick.health, corevideo::core::SourceHealth::Producing);
+}
