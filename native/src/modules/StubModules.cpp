@@ -1,6 +1,7 @@
 #include "modules/AsyncEncoderSink.h"
 #include "modules/AsyncOutputSender.h"
 #include "modules/AudioDsp.h"
+#include "core/TestPattern.h"
 #include "modules/Interfaces.h"
 #include "modules/IsolatedOutputSender.h"
 #include "modules/OutputDestinationSupervisor.h"
@@ -751,29 +752,10 @@ class CompositeOutputSender final : public IOutputSender {
 
 // Deterministic 7-bar SMPTE-style BGRA test pattern, shared (immutable) so each
 // poll hands out a cheap reference rather than reallocating the buffer.
+// Delegates to the shared corevideo::core generator (native/src/core/TestPattern.h)
+// so this stub and TestPatternSource emit byte-identical pixels — one source of truth.
 std::shared_ptr<const std::vector<uint8_t>> makeTestPatternBgra(int width, int height) {
-  auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
-  static const uint8_t bars[7][3] = {
-      // B, G, R
-      {255, 255, 255},  // white
-      {0, 255, 255},    // yellow
-      {255, 255, 0},    // cyan
-      {0, 255, 0},      // green  (center bar)
-      {255, 0, 255},    // magenta
-      {0, 0, 255},      // red
-      {255, 0, 0},      // blue
-  };
-  for (int y = 0; y < height; ++y) {
-    for (int x = 0; x < width; ++x) {
-      const int bar = std::min(6, x * 7 / std::max(1, width));
-      const size_t offset = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 4;
-      (*pixels)[offset + 0] = bars[bar][0];
-      (*pixels)[offset + 1] = bars[bar][1];
-      (*pixels)[offset + 2] = bars[bar][2];
-      (*pixels)[offset + 3] = 255;
-    }
-  }
-  return pixels;
+  return corevideo::core::makeSmpteBarsBgra(width, height);
 }
 
 class FakeCaptureDevice final : public ICaptureDevice {
