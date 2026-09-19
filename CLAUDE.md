@@ -1753,6 +1753,49 @@ tests) and the Windows dev suite (`native/build-dev/corevideo-native-tests.exe`,
 UNCHANGED `CaptureIngest.*`, proving the `StubModules` generator swap stayed
 byte-identical.
 
+**Slice 1 (2026-09-19): Zoom VIDEO migrated onto the bus, one `ISource` per
+participant.** `ZoomParticipantSource : ISource` (`native/src/core/ZoomParticipantSource.h`)
+holds one participant's latest decoded frame; `poll()` returns it keyed by the
+RAW participant id — deliberately **NOT** `zoom:<pid>`, so the engine-roster merge
+and `SourceContinuityLedger` (frameId regression / cold-start detection, "the
+Live-meeting QA day" section above) keep working unchanged. MediaCore's decode
+tap feeds them through the PURE `syncZoomParticipantSources(SourceBus&,
+vector<VideoFrame>)` helper (`ZoomBusRoster.*`/`SourceBus.*` tests) — arrivals
+add/update a source, departures remove by **`descriptor().kind == "zoom"`**, not
+by id prefix (a prefix check would misclassify any future `zoom:`-prefixed
+non-Zoom id). The synthetic slate still serves the no-engine case entirely
+through `RealZoomCaptureSource` — untouched, still the wrapper
+`RealZoomCaptureSourceTest.*` exercises. **Deliberately NOT done here:** Zoom
+AUDIO stays on its existing SHM-ring path, and `IZoomCaptureSource`/
+`IUvcCaptureSource`/`IMediaFrameSource` are not deleted (spec §5 slice 4 retires
+them once every kind is migrated) — the cushion/churn/speaker-director logic
+stays exactly where it was, in `ZoomEngineRuntime`.
+**The engine-live path had no unit test by design; this task's fake-engine drill
+is its proof, and it shows NO regression** (`python scripts/mac-show-drill.py
+--seconds 40 --load 8`, `COREVIDEO_FAKE_ENGINE_FPS=60` pinned, 8x1080p60
+synthetic Zoom feeds through the real per-participant bus ingest path). Baseline
+= `main` at 7ad7d589 (the slice-0 commit, same Release core size 2,258,432
+bytes) in a separate worktree, same rig, same pinned rate:
+
+| metric | main (pre-slice-1) | this branch (slice 1) |
+|---|---|---|
+| sustained render fps | 60.0 of 60, 0 dropped | 60.0 of 60, 0 dropped |
+| render hold | 3.9ms | 4.0ms |
+| worst frame | 17.1ms | 17.0ms |
+| coreMutex over-budget | 47/3174 (1%) | 40/3262 (1%) |
+| command round-trip p50/p99 | 3.2ms / 46.8ms | 3.2ms / 9.7ms |
+| source->render latency p50/p99 | 26.5ms / 37.1ms | 17.8ms / 27.1ms |
+| decoded-frame delivery | 100% | 101% |
+| Zoom ingest accepted rate | ~480 f/s (8 x 60fps) | ~480 f/s (8 x 60fps) |
+
+Every gated metric matches or improves on baseline — the lower per-participant
+bus-source latency is consistent with removing a layer of indirection between
+decode and the render gather, not a fluke of one run (both runs used the same
+40s/load 8/pinned-fps harness). `node scripts/validate-multiview.mjs` and
+`node scripts/validate-iso-record.mjs` both still PASS unchanged: Zoom frames
+reach multiview and the ISO writers keyed by the raw participant id exactly as
+before (ISO manifest still names `zoom:101`/`zoom:102`, clap-align 0.0ms).
+
 ## GPU-direct hardware encode for streaming (#521 slice 1, 2026-09-13)
 
 The live STREAM is now encoded directly from the compositor's GPU texture by the
