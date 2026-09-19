@@ -61,4 +61,56 @@ public sealed class ZoomMediaSpineSnapshotMergerTests
         Assert.Equal("in_meeting", ZoomMediaSpineSnapshotMerger.NormalizeMeetingState("in-meeting"));
         Assert.Equal("idle", ZoomMediaSpineSnapshotMerger.NormalizeMeetingState("leaving"));
     }
+
+    // Sources page rows read `LastSnapshot.ZoomSubscriptions`. The 2 Hz media-core sync
+    // publishes a snapshot parsed from the core's sessionState, which carries NO
+    // subscription evidence, and it REPLACED the last snapshot wholesale — so the
+    // list the spine sync had merged in was wiped until the next spine tick and every
+    // guest row read "Video not-requested · No frames" while the core was streaming
+    // all of them (owner screenshot 2026-09-19). A sync that carries no subscription
+    // evidence must keep the evidence the spine already delivered.
+    [Fact]
+    public void CarrySubscriptionsKeepsSpineEvidenceAcrossASyncThatCarriesNone()
+    {
+        var withEvidence = new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting",
+            ZoomSubscriptions =
+            [
+                new ZoomMediaSpineSubscription
+                {
+                    ParticipantId = "16778240", Kind = "participant-video", Status = "subscribed",
+                    DeliveredWidth = 1280, DeliveredHeight = 720, DeliveredFps = 30, FramesReceived = 77
+                }
+            ]
+        };
+        var syncWithoutEvidence = new NativeMediaCoreStateSnapshot { MeetingState = "in_meeting" };
+
+        var carried = ZoomMediaSpineSnapshotMerger.CarrySubscriptions(withEvidence, syncWithoutEvidence);
+
+        Assert.Single(carried.ZoomSubscriptions);
+        Assert.Equal(77, carried.ZoomSubscriptions[0].FramesReceived);
+        Assert.Same(syncWithoutEvidence.Participants, carried.Participants); // everything else is the new sync
+    }
+
+    [Fact]
+    public void CarrySubscriptionsPrefersFreshEvidenceAndClearsWhenTheMeetingEnds()
+    {
+        var older = new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting",
+            ZoomSubscriptions = [new ZoomMediaSpineSubscription { ParticipantId = "1", Kind = "participant-video", FramesReceived = 5 }]
+        };
+        var fresh = new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting",
+            ZoomSubscriptions = [new ZoomMediaSpineSubscription { ParticipantId = "1", Kind = "participant-video", FramesReceived = 9 }]
+        };
+        Assert.Equal(9, ZoomMediaSpineSnapshotMerger.CarrySubscriptions(older, fresh).ZoomSubscriptions[0].FramesReceived);
+
+        var left = new NativeMediaCoreStateSnapshot { MeetingState = "idle" };
+        Assert.Empty(ZoomMediaSpineSnapshotMerger.CarrySubscriptions(older, left).ZoomSubscriptions);
+
+        Assert.Empty(ZoomMediaSpineSnapshotMerger.CarrySubscriptions(null, left).ZoomSubscriptions);
+    }
 }
