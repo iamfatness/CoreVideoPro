@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -91,8 +92,17 @@ class SourceBus {
   }
 
   IngestResult ingest(int64_t programTime100ns, int64_t nowNs) {
+    return ingest(programTime100ns, nowNs, [](const SourceDescriptor&) { return true; });
+  }
+  // Kind-selected ingest: MediaCore runs the bus at more than one point in the
+  // tick (Zoom+capture before the roster merge; stills after it; decoded media
+  // after the plan, because the media owner's request set IS the plan). A source
+  // not selected is neither polled nor counted this call.
+  IngestResult ingest(int64_t programTime100ns, int64_t nowNs,
+                      const std::function<bool(const SourceDescriptor&)>& select) {
     IngestResult out;
     for (auto& [id, e] : entries_) {
+      if (!select(e.source->descriptor())) continue;
       SourceTick tick = e.source->poll(programTime100ns);
       for (auto& v : tick.video) {
         const bool isNew = !e.everProduced || v.frameId != e.counters.lastFrameId;

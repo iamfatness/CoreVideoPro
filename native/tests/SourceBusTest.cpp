@@ -457,3 +457,32 @@ TEST(CaptureBusRoster, EmptyTickRemovesEveryCaptureSourceAndNothingElse) {
   EXPECT_FALSE(bus.contains("capture:screen:3"));
   EXPECT_TRUE(bus.contains("16778240"));
 }
+
+#include <functional>
+
+TEST(SourceBus, IngestWithASelectorPollsAndCountsOnlyTheSelectedKinds) {
+  corevideo::core::SourceBus bus;
+  bus.add(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));          // kind "test"
+  auto cam = std::make_shared<corevideo::core::CaptureDeviceSource>("capture:cam", 640, 360);  // kind "capture"
+  cam->setLatest(bgraFrame("capture:cam", 640, 360, 1));
+  bus.add(cam);
+
+  const auto onlyCapture = [](const corevideo::core::SourceDescriptor& d) { return d.kind == "capture"; };
+  auto r = bus.ingest(0, 1000, onlyCapture);
+  ASSERT_EQ(r.video.size(), 1u);
+  EXPECT_EQ(r.video[0].participantId, "capture:cam");
+
+  // The unselected source was neither polled nor counted.
+  auto snap = bus.snapshot(1000);
+  for (const auto& s : snap) {
+    if (s.descriptor.sourceId == "test:pattern") {
+      EXPECT_EQ(s.counters.framesIngested, 0u);
+      EXPECT_EQ(s.health, corevideo::core::SourceHealth::Warming);
+    }
+    if (s.descriptor.sourceId == "capture:cam") EXPECT_EQ(s.counters.framesIngested, 1u);
+  }
+
+  // The 2-arg overload still ingests everything.
+  auto all = bus.ingest(0, 2000);
+  EXPECT_EQ(all.video.size(), 2u);
+}
