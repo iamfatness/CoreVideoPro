@@ -252,3 +252,20 @@ TEST(ZoomParticipantSource, PollReturnsTheSetFrameKeyedByParticipant) {
   EXPECT_TRUE(tick.video.front().hasI420());
   EXPECT_EQ(tick.health, corevideo::core::SourceHealth::Producing);
 }
+
+// --- Task 2: SourceBus membership queries ---
+
+TEST(SourceBus, ContainsAndSourceIdsReflectMembership) {
+  SourceBus bus;
+  EXPECT_FALSE(bus.contains("zoom:1"));
+  bus.add(std::make_shared<ZoomParticipantSource>("zoom:1", 1280, 720));
+  bus.add(std::make_shared<ZoomParticipantSource>("zoom:2", 1280, 720));
+  EXPECT_TRUE(bus.contains("zoom:1"));
+  EXPECT_TRUE(bus.contains("zoom:2"));
+  auto ids = bus.sourceIds();
+  ASSERT_EQ(ids.size(), 2u);
+  EXPECT_EQ(ids[0], "zoom:1");   // std::map order
+  EXPECT_EQ(ids[1], "zoom:2");
+  bus.remove("zoom:1");
+  EXPECT_FALSE(bus.contains("zoom:1"));
+}
