@@ -6025,6 +6025,14 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // participantId this loop always used. Reading them here does NOT drain
   // the stdout/event queue that feeds the multiview tiles.
   auto* realZoom = dynamic_cast<modules::RealZoomCaptureSource*>(modules_.zoom.get());
+  // The engine's subscription roster, polled ONCE per tick: it gates the bus
+  // removals in the tap (a participant the engine still lists keeps their last
+  // frame across a subscription gap, see ZoomBusRoster.h) and is the same
+  // roster the merge below starts from.
+  std::vector<modules::VideoFrame> engineFrames;
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+    engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
+  }
   if (realZoom && zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
     markStage(s_subFetchUs, 0);
@@ -6046,7 +6054,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // releases each shared I420 buffer) so a long tap says which one it is.
     markStage(s_subStoreUs, 0);
     if (sourceBus_) {
-      core::syncZoomParticipantSources(*sourceBus_, zoomFrames);
+      std::unordered_set<std::string> engineRoster;
+      engineRoster.reserve(engineFrames.size());
+      for (const auto& f : engineFrames) engineRoster.insert(f.participantId);
+      core::syncZoomParticipantSources(*sourceBus_, zoomFrames, engineRoster);
     }
   }
 
@@ -6088,7 +6099,6 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // busResult.audio is carried in a later slice (audio gather path); slice 0 is video.
   }
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    const auto engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
     if (!engineFrames.empty()) {
       // When the engine reports subscribed video participants, they are the
       // authoritative roster (mirrors the prior synthetic-tick behavior). Start

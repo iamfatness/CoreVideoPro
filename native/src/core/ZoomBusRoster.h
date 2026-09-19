@@ -8,8 +8,20 @@
 
 namespace corevideo::core {
 
+// `engineRoster` is the set of participant ids the engine still reports on
+// its subscription roster (the ids MediaCore's roster merge keeps). A Zoom
+// source is removed ONLY when the participant is absent from BOTH this tick's
+// decoded frames AND that roster. A participant whose subscription the engine
+// retired (video budget eviction, spine churn around a Take) has no decoded
+// frame for a while but is still on the roster: the pre-bus
+// RealZoomCaptureSource store kept painting their LAST frame across that gap,
+// and removing the source here instead cut program to the fallback slate for
+// ~500 ms (A/B 2026-09-19, recorded). An EMPTY roster removes nothing:
+// MediaCore's merge only filters when the roster is non-empty, so the old
+// path drew every stored frame in that state.
 inline void syncZoomParticipantSources(SourceBus& bus,
-                                       const std::vector<modules::VideoFrame>& zoomFrames) {
+                                       const std::vector<modules::VideoFrame>& zoomFrames,
+                                       const std::unordered_set<std::string>& engineRoster) {
   std::unordered_set<std::string> present;
   for (const auto& f : zoomFrames) {
     present.insert(f.participantId);
@@ -28,9 +40,13 @@ inline void syncZoomParticipantSources(SourceBus& bus,
   // participant's entry forever. Kind-based removal works regardless of id
   // shape and still never touches a non-zoom source (e.g. "test:pattern",
   // kind "test").
+  if (engineRoster.empty()) {
+    return;
+  }
   for (const std::string& id : bus.sourceIds()) {
     const ISource* source = bus.sourceFor(id);
-    if (source && source->descriptor().kind == "zoom" && present.find(id) == present.end()) {
+    if (source && source->descriptor().kind == "zoom" && present.find(id) == present.end() &&
+        engineRoster.find(id) == engineRoster.end()) {
       bus.remove(id);
     }
   }
