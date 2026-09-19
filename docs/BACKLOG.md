@@ -41,28 +41,30 @@ WIP still 3. Work Now[1–3]; refill from Now[4–5] then Next.
 
 ## Now — show survival (start here)
 
+Show-survival cleared 2026-09-18: #529/#533 (ISO drops+timeline), #516 (render stall /
+GPU-fence coupling), #526 (Program-buffer misses) and #518 (FADER LAW audio log) all
+closed — fixed, merged and soak/load-validated (24-min 6-ISO recording: 0 dispatch
+drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
+
 | Order | Issue | Item | Why |
 |---|---|---|---|
-| 1 | [#529](https://github.com/iamfatness/CoreVideoPro/issues/529) + [#533](https://github.com/iamfatness/CoreVideoPro/issues/533) | ISO drops / desyncs while streaming 1080p60 | Demo E. Agencies buy stems. Treat as one workstream. |
-| 2 | [#518](https://github.com/iamfatness/CoreVideoPro/issues/518) | Zoom mix dropped as unrouted on air | Audio is the product. |
-| 3 | [#516](https://github.com/iamfatness/CoreVideoPro/issues/516) | `coreMutex` held 143 ms | Dropped-frame factory. 60 fps is per-frame. |
-| 4 | [#526](https://github.com/iamfatness/CoreVideoPro/issues/526) | Program-buffer delivery misses | Steals GPU-direct encode (#521/#523). Fold [#532](https://github.com/iamfatness/CoreVideoPro/issues/532) RTMP startup recover into this if it reproduces on the same path. |
-| 5 | [#513](https://github.com/iamfatness/CoreVideoPro/issues/513) | Idle XAML 0xc000027b | Ship-blocker between shows. Meter-churn patch is not closure. |
+| 1 | [#513](https://github.com/iamfatness/CoreVideoPro/issues/513) | Idle XAML 0xc000027b | Ship-blocker between shows. Editor-teardown (#548) + multiview pooling (#549) shipped — exposure reduction, NOT closure. Needs a long idle soak of the new beta + the CsWinRT/WinAppSDK framework angle. |
+| 2 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | F1 one source bus | Promoted from Next 2026-09-18: design starting. The bone every later adapter (SRT/NDI ingest+send, DeckLink) hangs off. |
 
 ## Next — competitive spine
 
 | Order | Issue | Item | Why |
 |---|---|---|---|
-| 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | F1 one source bus | Bone for every later adapter. |
-| 2 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send harden first | vMix/Vectar table stakes. Demo B. |
-| 3 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decode onto the bus | After #535. |
-| 4 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) + T2 leftovers | Signing + first external install | Turnkey dies at SmartScreen. Calendar, not code. |
-| 5 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) step 1 | Hold outgoing picture on a plain cut | Needs owner ruling on Take semantics. |
+| 1 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send harden first | vMix/Vectar table stakes. Demo B. |
+| 2 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decode onto the bus | After #535. |
+| 3 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) + T2 leftovers | Signing + first external install | Turnkey dies at SmartScreen. Calendar, not code. |
+| 4 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) step 1 | Hold outgoing picture on a plain cut | Needs owner ruling on Take semantics. |
 
 ## Papercuts (not competitive)
 
 | Issue | Item |
 |---|---|
+| [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | ISO writer `framesWritten`/`bytesWritten` read 0 mid-recording for async writers (status-only; files record fine) |
 | [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points — needs UI design; was previous Now #4 |
 | [#530](https://github.com/iamfatness/CoreVideoPro/issues/530) | Control API `programPreview` vs `program-preview` |
 | [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct leftover slices #524 #525 |
