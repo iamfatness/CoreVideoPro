@@ -486,3 +486,54 @@ TEST(SourceBus, IngestWithASelectorPollsAndCountsOnlyTheSelectedKinds) {
   auto all = bus.ingest(0, 2000);
   EXPECT_EQ(all.video.size(), 2u);
 }
+
+#include "core/MediaAssetSource.h"
+#include "core/MediaBusRoster.h"
+
+TEST(MediaAssetSource, PollServesTheOwnersLatestFrameKeyedByAsset) {
+  corevideo::core::MediaAssetSource src("media:logo-1", "still", 1920, 1080);
+  EXPECT_EQ(src.descriptor().sourceId, "media:logo-1");
+  EXPECT_EQ(src.descriptor().kind, "still");
+  EXPECT_TRUE(src.descriptor().hasVideo);
+  EXPECT_EQ(src.poll(0).health, corevideo::core::SourceHealth::Warming);
+  src.setLatest(bgraFrame("media:logo-1", 1920, 1080, 3));
+  auto t = src.poll(0);
+  ASSERT_EQ(t.video.size(), 1u);
+  EXPECT_EQ(t.video[0].frameId, 3);
+  EXPECT_EQ(t.health, corevideo::core::SourceHealth::Producing);
+}
+
+// The media owner emits a frame for every REQUESTED key each tick (a paused
+// clip keeps emitting its held frame); a key absent from the poll is no longer
+// requested or has not decoded, and nothing is drawn for it today. So, like
+// capture and unlike Zoom (#554), absent from the tick == removed. The two
+// media kinds are independent: syncing "media" never touches "still" sources.
+TEST(MediaBusRoster, MirrorsTheOwnersTickPerKindAndNeverTouchesOtherKinds) {
+  corevideo::core::SourceBus bus;
+  bus.add(std::make_shared<corevideo::core::ZoomParticipantSource>("16778240", 1280, 720));
+  corevideo::core::syncMediaSources(bus, {bgraFrame("media:logo-1", 800, 200, 1)}, "still");
+  corevideo::core::syncMediaSources(bus, {bgraFrame("media:clip-1", 1920, 1080, 1),
+                                          bgraFrame("preview:media:clip-2", 1920, 1080, 1)}, "media");
+  EXPECT_EQ(bus.sourceFor("media:logo-1")->descriptor().kind, "still");
+  EXPECT_EQ(bus.sourceFor("media:clip-1")->descriptor().kind, "media");
+  EXPECT_TRUE(bus.contains("preview:media:clip-2"));
+
+  // clip-2's poster is no longer requested; the still and the Zoom source survive
+  // a "media"-kind sync that omits them.
+  corevideo::core::syncMediaSources(bus, {bgraFrame("media:clip-1", 1920, 1080, 2)}, "media");
+  EXPECT_FALSE(bus.contains("preview:media:clip-2"));
+  EXPECT_TRUE(bus.contains("media:clip-1"));
+  EXPECT_TRUE(bus.contains("media:logo-1"));
+  EXPECT_TRUE(bus.contains("16778240"));
+
+  // An empty "still" tick removes stills only.
+  corevideo::core::syncMediaSources(bus, {}, "still");
+  EXPECT_FALSE(bus.contains("media:logo-1"));
+  EXPECT_TRUE(bus.contains("media:clip-1"));
+  EXPECT_TRUE(bus.contains("16778240"));
+
+  // Kind-selected ingest yields exactly that kind.
+  auto onlyMedia = bus.ingest(0, 1000, [](const corevideo::core::SourceDescriptor& d) { return d.kind == "media"; });
+  ASSERT_EQ(onlyMedia.video.size(), 1u);
+  EXPECT_EQ(onlyMedia.video[0].participantId, "media:clip-1");
+}
