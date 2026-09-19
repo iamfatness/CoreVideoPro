@@ -35,3 +35,45 @@ TEST(SourceContract, TestPatternSourceProducesSmpteBars) {
   EXPECT_GT(tick2.video.front().frameId, frame.frameId);
   EXPECT_EQ(src.counters().framesIngested, 2u);
 }
+
+// --- Task 2: SourceBus aggregator ---
+#include "core/SourceBus.h"
+
+using corevideo::core::SourceBus;
+using corevideo::core::SourceHealth;
+
+TEST(SourceBus, IngestMergesFramesAndCountsNewFrameIds) {
+  SourceBus bus;
+  bus.add(std::make_shared<TestPatternSource>("test:pattern"));
+  ASSERT_FALSE(bus.empty());
+
+  const auto r1 = bus.ingest(/*programTime100ns=*/10'000'000, /*nowNs=*/1'000);
+  ASSERT_EQ(r1.video.size(), 1u);
+  EXPECT_EQ(r1.video.front().participantId, "test:pattern");
+
+  const auto r2 = bus.ingest(20'000'000, /*nowNs=*/2'000);
+  ASSERT_EQ(r2.video.size(), 1u);
+
+  const auto snap = bus.snapshot(/*nowNs=*/2'000);
+  ASSERT_EQ(snap.size(), 1u);
+  EXPECT_EQ(snap.front().counters.framesIngested, 2u);  // two NEW frameIds
+  EXPECT_EQ(snap.front().health, SourceHealth::Producing);
+}
+
+TEST(SourceBus, AStaleSourceDecaysToStalled) {
+  SourceBus bus;
+  bus.add(std::make_shared<TestPatternSource>("test:pattern"));
+  bus.ingest(10'000'000, /*nowNs=*/1'000);
+  // No further ingest; read far in the future (> 200ms).
+  const auto snap = bus.snapshot(/*nowNs=*/1'000 + 300'000'000);
+  ASSERT_EQ(snap.size(), 1u);
+  EXPECT_EQ(snap.front().health, SourceHealth::Stalled);
+}
+
+TEST(SourceBus, RemoveDropsTheSource) {
+  SourceBus bus;
+  bus.add(std::make_shared<TestPatternSource>("test:pattern"));
+  bus.remove("test:pattern");
+  EXPECT_TRUE(bus.empty());
+  EXPECT_TRUE(bus.ingest(10'000'000, 1'000).video.empty());
+}
