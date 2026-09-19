@@ -684,6 +684,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     {
         lock (_gate)
         {
+            // The sync snapshot carries no per-subscription evidence; keep what the spine
+            // sync merged in, or the Sources page reads "not-requested" between spine ticks.
+            snapshot = ZoomMediaSpineSnapshotMerger.CarrySubscriptions(_lastSnapshot, snapshot);
             _lastSnapshot = snapshot;
         }
 
