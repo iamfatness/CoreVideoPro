@@ -24,6 +24,11 @@ class CaptureDeviceSource final : public ISource {
   void setLatest(modules::VideoFrame frame) {
     latest_ = std::move(frame);  // shared_ptr payload: no pixel copy
     hasFrame_ = true;
+    // diagnostic only: counts setLatest calls, NOT the deduped per-frame
+    // count the snapshot publishes (SourceBus::Entry::counters) — the
+    // adapter re-emits the same held frame every tick while connected, so
+    // this increments once per tick regardless of whether the frameId
+    // actually advanced.
     counters_.framesIngested += 1;
     counters_.lastFrameId = latest_.frameId;
   }

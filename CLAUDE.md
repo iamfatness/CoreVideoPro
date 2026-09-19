@@ -1880,7 +1880,13 @@ slice 1 but making the OPPOSITE removal decision on purpose:
   counter**, not from the engine's `"frame"` IPC event — that event is a ~1/s
   beacon, so `framesReceived` was never actually a frame count, and any prior
   reading of the Zoom spine snapshot's `deliveredFps` as a real rate was wrong
-  before this fix landed alongside slice 2.
+  before this fix landed alongside slice 2. **It is the AVERAGE since the
+  feed's first decoded frame, not a sliding window** — `(framesIngested - 1)`
+  over the elapsed time between the first and most recent frame. A live
+  mid-show drop (a stall, a resolution re-subscribe) therefore moves the
+  number slowly, diluted by every good frame already averaged in before it —
+  it is not a real-time rate. A true recent-window rate is a follow-up, not
+  what this field reports today.
 - **Task 5 regression numbers (2026-09-19, this branch):** Windows dev suite
   `native/build-dev/corevideo-native-tests.exe` — 1059 tests passed, 0 failed
   (unchanged count from slice 1/#554). Stub gate

@@ -18,6 +18,9 @@ class ZoomParticipantSource final : public ISource {
   void setLatest(modules::VideoFrame frame) {
     latest_ = std::move(frame);
     hasFrame_ = true;
+    // diagnostic only: counts setLatest calls, NOT the deduped per-frame
+    // count the snapshot publishes (SourceBus::Entry::counters) — a tick
+    // that re-delivers the same held frame still increments this.
     counters_.framesIngested += 1;
     counters_.lastFrameId = latest_.frameId;
   }

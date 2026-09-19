@@ -30,7 +30,13 @@ inline void syncZoomParticipantSources(SourceBus& bus,
       const int h = f.i420Height > 0 ? f.i420Height : f.pixelHeight;
       bus.add(std::make_shared<ZoomParticipantSource>(f.participantId, w, h));
     }
-    static_cast<ZoomParticipantSource*>(bus.sourceFor(f.participantId))->setLatest(f);
+    // A foreign kind squatting on this id would otherwise be silent UB under
+    // this cast — skip the frame rather than reinterpret a different ISource
+    // type.
+    ISource* existing = bus.sourceFor(f.participantId);
+    if (existing && existing->descriptor().kind == "zoom") {
+      static_cast<ZoomParticipantSource*>(existing)->setLatest(f);
+    }
   }
 
   // Identify Zoom-owned sources by KIND, not id shape — the bus keys Zoom

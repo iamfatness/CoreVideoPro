@@ -5823,7 +5823,16 @@ TEST(MediaCoreCommand, StubCaptureDeviceAppearsOnTheSourceBusAfterATick) {
 // fallback lays out videoFrames in order and sessionState()["programFrame"]
 // ["videoSources"] publishes the layers in that same order.
 TEST(MediaCoreCommand, CaptureBusFramesGatherBeforeOtherBusKinds) {
+  // "aaa:pattern" is chosen deliberately: it sorts BEFORE "capture:decklink-1"
+  // in SourceBus's std::map (a < c), so this test only passes if MediaCore
+  // actually partitions bus output by kind (capture first) rather than
+  // forwarding the bus's own sourceId-sorted order. "capture:" already sorts
+  // before "test:pattern" alphabetically, which let the ORIGINAL version of
+  // this test (registering only "test:pattern") pass with no partition at
+  // all — it exercised nothing. Keep "test:pattern" too so both non-capture
+  // orderings (before and after "capture:" alphabetically) are covered.
   corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  mediaCore.addSourceForTest(std::make_shared<corevideo::core::TestPatternSource>("aaa:pattern"));
   mediaCore.addSourceForTest(std::make_shared<corevideo::core::TestPatternSource>("test:pattern"));
 
   mediaCore.renderDisplayTick();
@@ -5837,15 +5846,21 @@ TEST(MediaCoreCommand, CaptureBusFramesGatherBeforeOtherBusKinds) {
   ASSERT_TRUE(videoSources->isArray());
 
   int captureIndex = -1;
+  int aaaIndex = -1;
   int testPatternIndex = -1;
   const auto& arr = videoSources->asArray();
   for (size_t i = 0; i < arr.size(); ++i) {
     const std::string participantId = arr[i].getString("participantId");
     if (participantId == "capture:decklink-1") captureIndex = static_cast<int>(i);
+    if (participantId == "aaa:pattern") aaaIndex = static_cast<int>(i);
     if (participantId == "test:pattern") testPatternIndex = static_cast<int>(i);
   }
   ASSERT_NE(captureIndex, -1) << "capture:decklink-1 missing from programFrame.videoSources";
+  ASSERT_NE(aaaIndex, -1) << "aaa:pattern missing from programFrame.videoSources";
   ASSERT_NE(testPatternIndex, -1) << "test:pattern missing from programFrame.videoSources";
+  EXPECT_LT(captureIndex, aaaIndex)
+      << "capture frames must gather before other bus kinds even when the other "
+         "kind's sourceId sorts alphabetically before \"capture:\"";
   EXPECT_LT(captureIndex, testPatternIndex)
       << "capture frames must gather before other bus kinds (Zoom/test-pattern)";
 }

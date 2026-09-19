@@ -2329,8 +2329,16 @@ void MediaCore::setStillImageDecoderForTest(std::unique_ptr<modules::IStillImage
 
 void MediaCore::addSourceForTest(std::shared_ptr<core::ISource> source) {
   // TEST-ONLY seam, called single-threaded directly by native/tests/ (no
-  // JsonRpcServer, no coreMutex held) — production never calls this, so
-  // sourceBus_ stays empty on a real show and no lock is needed here.
+  // JsonRpcServer, no coreMutex held). This is NOT a claim that sourceBus_ is
+  // empty in production — since slices 1-2 it is not: live Zoom participants
+  // (ZoomParticipantSource) and connected capture devices (CaptureDeviceSource)
+  // both live on it during a real show. No lock is needed here because every
+  // production access to sourceBus_ (sessionState()'s snapshot read and
+  // renderSyntheticTick's ingest/sync) is already serialized by coreMutex,
+  // held by the caller (JsonRpcServer's command/render dispatch) — this test
+  // seam is safe only because it BYPASSES that serialization by construction
+  // (it is the sole caller, run before any tick), not because the bus is
+  // otherwise unused.
   if (sourceBus_) sourceBus_->add(std::move(source));
 }
 
@@ -6090,9 +6098,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   markStage(s_subPollUs, 0);
   // #535 slice 2: capture rides the bus. The adapters hold their frames; the bus
   // mirrors this tick's poll (CaptureBusRoster.h), so on-air output is identical.
-  if (sourceBus_) {
-    core::syncCaptureSources(*sourceBus_, polledCapture);
-  }
+  // Unconditional: sourceBus_ is constructed in the ctor and never reset, so a
+  // guard here could only ever silently drop every capture pixel with no log
+  // if that ever stopped being true — an assertion, not a real runtime branch.
+  core::syncCaptureSources(*sourceBus_, polledCapture);
   // Bus ingest, partitioned by kind so the merged vector keeps today's order:
   // capture frames first (where the direct insert used to put them), then Zoom.
   std::vector<modules::VideoFrame> captureFrames;   // KEEP this name: the merge below uses it

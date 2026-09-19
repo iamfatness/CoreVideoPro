@@ -27,7 +27,13 @@ inline void syncCaptureSources(SourceBus& bus,
       const int h = f.pixelHeight > 0 ? f.pixelHeight : f.i420Height;
       bus.add(std::make_shared<CaptureDeviceSource>(f.participantId, w, h));
     }
-    static_cast<CaptureDeviceSource*>(bus.sourceFor(f.participantId))->setLatest(f);
+    // A foreign kind squatting on this id (e.g. a stale Zoom entry that has
+    // not yet been released) would otherwise be silent UB under this cast —
+    // skip the frame rather than reinterpret a different ISource type.
+    ISource* existing = bus.sourceFor(f.participantId);
+    if (existing && existing->descriptor().kind == "capture") {
+      static_cast<CaptureDeviceSource*>(existing)->setLatest(f);
+    }
   }
   for (const std::string& id : bus.sourceIds()) {
     const ISource* source = bus.sourceFor(id);
