@@ -2325,9 +2325,9 @@ void MediaCore::setStillImageDecoderForTest(std::unique_ptr<modules::IStillImage
 }
 
 void MediaCore::addSourceForTest(std::shared_ptr<core::ISource> source) {
-  // Same lock discipline as every other MediaCore command mutation: coreMutex
-  // is owned by the caller (JsonRpcServer / applyCommandMutation's caller),
-  // never held inside MediaCore itself — see applyCommands above.
+  // TEST-ONLY seam, called single-threaded directly by native/tests/ (no
+  // JsonRpcServer, no coreMutex held) — production never calls this, so
+  // sourceBus_ stays empty on a real show and no lock is needed here.
   if (sourceBus_) sourceBus_->add(std::move(source));
 }
 
