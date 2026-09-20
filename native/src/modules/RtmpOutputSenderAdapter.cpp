@@ -1559,10 +1559,11 @@ class RtmpOutputSender final : public IOutputSender {
     in.hardwareEncoderAvailable = in.platformSupported && probeAllows;
     in.sessionAvailable = probeAllows;
     const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
-    const bool codecIsH264 = compatibility.videoCodec == "h264";
+    const bool codecIsH264 = compatibility.videoCodec == "h264";  // Task 7 widens this to the probe
     const bool frameHasEncoderTexture = !frame.encoderSharedTexture.sharedHandleHex.empty();
     const char* reason = "cpu-fallback";
-    const auto path = chooseStreamEncodePath(in, codecIsH264, frameHasEncoderTexture, &reason);
+    const auto path = chooseStreamEncodePath(in, compatibility.videoCodec == "h265" ? "hevc" : compatibility.videoCodec,
+                                             /*codecHasGpuEncoder=*/codecIsH264, frameHasEncoderTexture, &reason);
     gpuEncodePathReason_ = reason;
     return path;
   }

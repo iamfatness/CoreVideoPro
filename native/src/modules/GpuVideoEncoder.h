@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 
 // GPU-DIRECT HARDWARE ENCODE SEAM (#521 slice 1).
 //
@@ -12,8 +13,9 @@
 // path historically ignored it: it read the frame back to the CPU and piped
 // ~186 MB/s of raw NV12 to an external ffmpeg, which capped 1080p60 at ~0.76x of
 // realtime with the hardware encoder sitting IDLE. This seam feeds the hardware
-// encoder from the GPU texture directly (vMix/Vectar parity), emitting a ~6 Mbps
-// H.264 elementary-stream bitstream; ffmpeg is demoted to a pure muxer/transport.
+// encoder from the GPU texture directly (vMix/Vectar parity), emitting an H.264,
+// HEVC or AV1 elementary-stream bitstream (codec on the config); ffmpeg is
+// demoted to a pure muxer/transport.
 //
 // The interface deliberately carries NO D3D11 / Media Foundation / Metal types,
 // so the Windows implementation (MediaFoundationGpuVideoEncoder) and the macOS
@@ -31,6 +33,11 @@ struct GpuVideoEncoderConfig {
   double keyframeIntervalSeconds = 2.0;
   std::string rateControl = "cbr";   // "cbr" | "vbr"
   std::string h264Profile = "high";  // "high" | "main" | "baseline" | "auto"
+  // 2026-09-20: the codec the hardware MFT is bound for. Normalized: "h264",
+  // "hevc" or "av1" ("h265" is the operator-settings spelling; the sender maps
+  // it). The Windows implementation enumerates the MFT for this subtype and, for
+  // HEVC, disables B-frames — the FLV muxer refuses reordered raw HEVC.
+  std::string codec = "h264";
 };
 
 // The GPU frame to encode — an OPAQUE platform handle, never a D3D11/Metal type.
@@ -118,21 +125,26 @@ struct GpuEncodePathPolicy {
 // The stream sender's start-time decision. It folds two sender-specific gates
 // into the base policy, applied ONLY when the base policy already allows
 // GPU-direct so the most specific base blocker (no hardware, no session, env
-// off) keeps precedence in the reason: the GPU-direct MFT is H.264-only (an
-// enhanced-RTMP HEVC/AV1 stream must not be fed an H.264 bitstream), and the
-// compositor must actually be exporting the dedicated encoder texture on the
-// frame that starts the process (otherwise the encoder has nothing to open and
-// the bitstream-mode muxer would stall). `reason` is set to a stable code.
+// off) keeps precedence in the reason. `codec` is the codec ACTUALLY SENT
+// (resolved through RtmpCompatibility) and `codecHasGpuEncoder` is what the
+// capacity probe says about that codec on this machine — since 2026-09-20 every
+// shipped codec (h264/hevc/av1) can take this path, so a codec with no hardware
+// encoder reports the same "no-hardware-encoder" as no hardware at all (the old
+// "codec-not-h264" is retired). The compositor must also be exporting the
+// dedicated encoder texture on the frame that starts the process (otherwise the
+// encoder has nothing to open and the bitstream-mode muxer would stall).
 [[nodiscard]] inline GpuEncodePath chooseStreamEncodePath(const GpuEncodePathInputs& base,
-                                                          bool codecIsH264,
+                                                          std::string_view codec,
+                                                          bool codecHasGpuEncoder,
                                                           bool frameHasEncoderTexture,
                                                           const char** reason) {
+  (void)codec;  // carried for logging/diagnostics by callers; the decision is the two bools
   if (GpuEncodePathPolicy::choose(base) == GpuEncodePath::CpuFallback) {
     if (reason) *reason = GpuEncodePathPolicy::reason(base);
     return GpuEncodePath::CpuFallback;
   }
-  if (!codecIsH264) {
-    if (reason) *reason = "codec-not-h264";
+  if (!codecHasGpuEncoder) {
+    if (reason) *reason = "no-hardware-encoder";
     return GpuEncodePath::CpuFallback;
   }
   if (!frameHasEncoderTexture) {
