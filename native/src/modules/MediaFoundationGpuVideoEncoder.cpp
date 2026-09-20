@@ -134,9 +134,15 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
 
   [[nodiscard]] bool healthy() const override { return healthy_.load(); }
 
+  // The last fail() detail, so the sender can quote it in the refusal sentence.
+  // Written only on the caller's thread inside start() (every fail() site is on
+  // the create path) and read by that same caller right after start() returns.
+  [[nodiscard]] std::string lastFailure() const override { return lastFailure_; }
+
  private:
   bool fail(const char* why) {
     ::corevideo::core::nativeLogf("[gpu-encode] init failed: %s\n", why);
+    lastFailure_ = why ? why : "";
     healthy_.store(false);
     stop();
     return false;
@@ -512,6 +518,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   std::atomic<bool> running_{false};
   std::atomic<bool> healthy_{false};
   bool mfStarted_ = false;
+  std::string lastFailure_;
   bool capacityLeaseActive_ = false;
   bool firstEmitLogged_ = false;
 

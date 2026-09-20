@@ -82,6 +82,12 @@ class GpuVideoEncoder {
   // False once the encoder has hit an unrecoverable fault (device loss, sustained
   // encode failure). The sender's OutputDestinationSupervisor watches this.
   [[nodiscard]] virtual bool healthy() const = 0;
+
+  // The implementation's own last failure detail (e.g. "set-bframes-off",
+  // "no-codec-api"), for the operator sentence when start() refuses a stream.
+  // Default-implemented so no other implementation has to change; empty means
+  // "no detail recorded".
+  [[nodiscard]] virtual std::string lastFailure() const { return {}; }
 };
 
 // ---------------------------------------------------------------------------
