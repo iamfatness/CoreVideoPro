@@ -1020,6 +1020,29 @@ comment at the code site; this is the index.
   mode: a route with no source id renders BLANK (transparent fill), including an
   emptied OHG box.
   **(3) RESOLUTION IS A STABLE TIER, CAPPED, NO RATCHET.**
+  **AMENDED 2026-09-20 — EVERY IN-SHOW CAMERA IS 1080P, NO PURPOSE IS 720P (owner
+  ruling: "All sources should be pulling at the highest available for zoom. We
+  shouldn't only pull a 720 until they are in preview; that doesn't work once we do
+  a cut").** The report was "a color shift in the preview window when selecting a
+  source", brief, then settling. Measured live on the engine SHM
+  (`video-series-probe.py`, mean Y/U/V per frame, all four guests, the owner cueing
+  on cue): every cue flipped that guest's ONE subscription between the 720P
+  multiview tier and the 1080P Preview tier (churn 16-20 per guest that morning,
+  reason `resolution-change`), and Zoom's 720P and 1080P encodes of the same
+  camera differ in tone by the same amount every time, both directions (~+2.5 mean
+  Y, ~-1.5 mean U at 1080P; both tiers span 0-255 with the same range-expansion
+  comb, so NOT the limited-range defect, NOT a render-target format, NOT our
+  shader — each ruled out by measurement). `wantsFullResolution` is now
+  `kind == "participant-video"` for every purpose (multiview, iso and the
+  follow-speaker's speaker included), so a cue or a Take changes NOTHING for an
+  in-show source and the churn ledger reads zero on a cue
+  (`SubscriptionChurnNamesResolutionChangesAndTeardowns` now pins that; the old
+  "follow-speaker shot is 720P" limitation is gone with it). The 8-camera cap is
+  unchanged and is now the ONLY thing that can still flip a guest: past 8 camera-on
+  sources a cue re-ranks the budget and the 9th camera trades places with the cued
+  one — two re-subscribes per cue, published as `fullResolutionDemoted`. That is
+  said, not hidden; raising the cap still needs a bigger-meeting soak. The
+  paragraph below describes the tiering as it stood before this amendment.
   `native/src/modules/ZoomSubscriptionResolutionPolicy.h`: FIXED bus routes (purpose
   program/preview), screen share, AND the Tiles wall (program-tiles / preview-tiles)
   at 1080P; multiview, ISO and a follow route's speaker at 720P. At most
