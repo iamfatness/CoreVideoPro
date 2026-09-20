@@ -62,8 +62,10 @@ class MediaTransports final {
     int64_t audioNextTime = 0;
     bool audioEverProduced = false;
     std::vector<std::string> warnings;
-    // Published by the worker for snapshot(); -1 when the decoder cannot say.
-    int64_t durationMs = 0, positionMs = 0;
+    // Published by the worker for snapshot(); -1 when the decoder cannot say
+    // — which is what they START as, because a transport that has not yet run
+    // a worker iteration has measured nothing and must not report 0.
+    int64_t durationMs = -1, positionMs = -1;
     std::atomic<bool> stop{false}, finished{false}, wantsVideo{false}, wantsAudio{false};
     std::thread thread;
   };
@@ -126,9 +128,24 @@ class MediaTransports final {
         const auto decision = decideMediaTransport(previous, curr, state);
         switch (decision.action) {
           case MediaTransportAction::None:
-            if (found != entries_.end() && curr) {
+            if (!curr) break;
+            if (found != entries_.end()) {
               std::lock_guard<std::mutex> entryLock(found->second->mutex);
               found->second->desired = *curr;  // bus flags may have changed
+              break;
+            }
+            // Still desired, unchanged, and yet NOT RUNNING: the cap refused it
+            // or its worker failed to start. The transition table cannot see
+            // that (it only compares desired rows), so a plain `None` would
+            // strand the source forever AND lose its refusal warning on the
+            // next apply, since warnings_ is rebuilt every pass. Treat it as a
+            // fresh open: it re-pushes the refusal while the cap still bites,
+            // and opens the moment a decoder frees. This is what the ported
+            // manage() loop did implicitly by re-deriving the desired set every
+            // 2 ms.
+            {
+              const auto reopen = decideMediaTransport(std::nullopt, curr, MediaTransportState::Cued);
+              openLocked(id, *curr, reopen.next, starting, changes);
             }
             break;
           case MediaTransportAction::OpenLive:
@@ -220,11 +237,27 @@ class MediaTransports final {
   // Operator pause/play on `media:<assetId>`; false + reason when refused.
   bool operatorAction(const std::string& assetId, MediaOperatorAction action, std::string& reason) {
     std::lock_guard<std::mutex> lock(mutex_);
+    // ONE ASSET CAN BE TWO SOURCES: a clip routed as `media:<id>` and the same
+    // file behind a scene as `background:<id>`. The operator transport names
+    // the ROUTE, so resolve it explicitly — `background:` sorts first in the
+    // map, and taking the first match refused every pause as "it is a loop"
+    // while the pausable copy was never consulted. Order: the exact
+    // `media:<assetId>` source, else the first non-loop source for the asset,
+    // else the first match at all (so the refusal still carries a real reason).
+    std::shared_ptr<Entry> target;
+    bool targetIsLoop = true;
     for (const auto& [id, entry] : entries_) {
+      MediaTransportDesired desired;
+      { std::lock_guard<std::mutex> entryLock(entry->mutex); desired = entry->desired; }
+      if (desired.assetId != assetId) continue;
+      if (desired.sourceId == "media:" + assetId) { target = entry; break; }
+      if (!target || (targetIsLoop && !desired.loop)) { target = entry; targetIsLoop = desired.loop; }
+    }
+    if (target) {
+      const auto& entry = target;
       MediaTransportDesired desired;
       MediaTransportState state;
       { std::lock_guard<std::mutex> entryLock(entry->mutex); desired = entry->desired; state = entry->state; }
-      if (desired.assetId != assetId) continue;
       const auto decision = decideMediaOperator(desired, state, action, reason);
       if (!decision) return false;
       {
@@ -272,11 +305,13 @@ class MediaTransports final {
     std::vector<modules::AudioFrame> result;
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto it = audioNextTime_.begin(); it != audioNextTime_.end();) {
-      const auto found = entries_.find(it->first);
-      if (found == entries_.end() || !found->second->wantsAudio.load()) it = audioNextTime_.erase(it); else ++it;
+      if (!entries_.count(it->first)) it = audioNextTime_.erase(it); else ++it;
     }
+    // Every entry keeps a demand clock, wanted or not. Dropping a paused
+    // entry's clock and re-anchoring it on resume left `entry.audioNextTime`
+    // stale, so the worker stamped its first resumed window at an old target
+    // and this loop then discarded it as expired.
     for (const auto& [id, entryPtr] : entries_) {
-      if (!entryPtr->wantsAudio.load()) continue;
       auto [clock, inserted] = audioNextTime_.try_emplace(id, nowMs);
       const auto skippedBefore = clock->second.skipped();
       const auto due = clock->second.takeDue(nowMs);
@@ -290,8 +325,9 @@ class MediaTransports final {
             static_cast<unsigned long long>(clock->second.skipped()), entry.desired.assetId.c_str());
       entry.wake = true;
       entry.changed.notify_all();
-      // No PCM, not even silence, while this clip is not rolling.
-      if (entry.state != MediaTransportState::Live || entry.clockFrozen) {
+      // No PCM, not even silence, while this clip is not rolling (or while
+      // nothing wants its audio) — but the clock still advances, above.
+      if (!entryPtr->wantsAudio.load() || entry.state != MediaTransportState::Live || entry.clockFrozen) {
         entry.audioNextTime = clock->second.nextTimeMs();
         continue;
       }
@@ -458,6 +494,11 @@ class MediaTransports final {
             entry->video.shift((nowMs - entry->frozenAtMs) * 10000);
             entry->clockFrozen = false;
           }
+          // THE ENDED WINDOW IS RE-ARMED ON EVERY PLAY/PAUSE TRANSITION. It
+          // measures "the decoder has stopped producing", and a clip that was
+          // deliberately not being read produced nothing for a reason that is
+          // not the end of its media.
+          lastNewFrameMs = nowMs;
           haveSyncedPlaying = true; syncedPlaying = playing;
         }
         if (playing) playedOnce = true;
@@ -472,6 +513,12 @@ class MediaTransports final {
         bool holding;
         { std::lock_guard<std::mutex> lock(entry->mutex); holding = !playing && playedOnce && entry->video.hasFrame(); }
         if (holding) {
+          // Held, so nothing is being read: keep the ended window anchored at
+          // now. Without this a pause longer than kEndedAfterNoNewFrameMs made
+          // the FIRST resumed iteration — before any frame could arrive — look
+          // like the end of the clip, which froze and silenced it ON AIR and
+          // made the next operator Play restart from 0.
+          lastNewFrameMs = nowMs;
           std::unique_lock<std::mutex> lock(entry->mutex);
           entry->changed.wait_for(lock, std::chrono::milliseconds(20), [&] { return entry->stop.load() || entry->wake; });
           entry->wake = false;
