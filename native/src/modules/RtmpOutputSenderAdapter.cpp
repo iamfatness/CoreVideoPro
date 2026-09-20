@@ -743,7 +743,7 @@ class RtmpOutputSender final : public IOutputSender {
     // Surface the codec/container compatibility note: for an admitted E-RTMP
     // stream it is the advisory that the ingest must support it, and for a
     // refused one it is the sentence the start-time admission repeats.
-    const auto codecCompatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+    const auto codecCompatibility = resolveCompatibility();
     if (!codecCompatibility.warning.empty()) {
       runtimeDetail_ += (runtimeDetail_.empty() ? "" : " ") + codecCompatibility.warning;
     }
@@ -1208,11 +1208,13 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   std::string buildFfmpegArguments(int width, int height, const std::string& audioInput, const std::string& videoInputPixelFormat) const {
-    // Resolve the requested codec against the FLV transport. H.265/AV1 ride
-    // enhanced-RTMP when the operator enabled it; without it the start is
-    // REFUSED (startFfmpegProcess), never downgraded, so these arguments always
-    // describe the codec actually sent.
-    const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+    // Resolve the requested codec against THIS protocol's transport. On RTMP,
+    // H.265/AV1 ride enhanced-RTMP when the operator enabled it; without it the
+    // start is REFUSED (startFfmpegProcess), never downgraded. On SRT the
+    // MPEG-TS container carries H.265 natively and no opt-in applies (see
+    // resolveCompatibility). Either way these arguments describe the codec
+    // actually sent.
+    const auto compatibility = resolveCompatibility();
     RtmpFfmpegArgsConfig config;
     config.width = width;
     config.height = height;
@@ -1261,6 +1263,33 @@ class RtmpOutputSender final : public IOutputSender {
   // it, so the two cannot drift: a terminal code stands until the operator changes
   // settings, which re-syncs and re-decides. gpu-encoder-start-failed is NOT
   // terminal - a start fault can be transient - so it keeps the ladder.
+  // ONE codec/transport resolution for every call site in this adapter.
+  //
+  // THE ENHANCED-RTMP CLAUSE IS AN RTMP/FLV CONCEPT AND MUST NOT REACH SRT
+  // (2026-09-20). This class serves BOTH egress protocols through one
+  // OutputDestinationSettings struct, so the unguarded matrix refused an SRT
+  // operator who picked H.265 without ticking "Enhanced RTMP" — and told them to
+  // enable an RTMP setting for a stream that never touches FLV. SRT carries
+  // MPEG-TS, which takes H.265 natively: no opt-in exists, none is needed, and
+  // the advisory warning that rides runtimeDetail_ would be a false claim too.
+  // So for SRT the matrix is bypassed entirely and the requested codec stands.
+  //
+  // AV1 IS STILL REFUSED ON SRT: that defect is in our own hardware encoder
+  // (near-empty access units, issue #565 -> `codec-not-deliverable`) and is
+  // protocol-independent, so it is decided in startFfmpegProcess, not here.
+  // The no-hardware-encoder / gpu-encoder-start-failed clauses are likewise
+  // untouched for every protocol.
+  RtmpCompatibilityResult resolveCompatibility() const {
+    if (protocol_.isSrt) {
+      RtmpCompatibilityResult result;
+      result.requestedVideoCodec = normalizeRtmpVideoCodec(configuredVideoCodec_);
+      result.videoCodec = result.requestedVideoCodec;
+      result.container = protocol_.container;  // mpegts, not flv
+      return result;
+    }
+    return resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+  }
+
   bool refuseStreamStart(const StreamStartAdmission& verdict, const std::string& requestedCodec) {
     sender_.status = "warning";
     sender_.warning = verdict.message;
@@ -1285,7 +1314,7 @@ class RtmpOutputSender final : public IOutputSender {
       sender_.lastError = sender_.warning;
       return false;
     }
-    const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+    const auto compatibility = resolveCompatibility();
     selectedFfmpegVideoEncoder_ = selectFfmpegVideoEncoder(
         ffmpegExecutable_, compatibility.videoCodec, configuredEncoderMode_);
     // REFUSE, NEVER DOWNGRADE (2026-09-20). The operator's codec either goes out
@@ -1651,7 +1680,7 @@ class RtmpOutputSender final : public IOutputSender {
     GpuEncodePathInputs in;
     in.platformSupported = static_cast<bool>(gpuEncoderFactory_);
     in.forcedOffByEnv = gpuForcedOffByEnv();
-    const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+    const auto compatibility = resolveCompatibility();
     const std::string sentCodec = canonicalProbeCodec(compatibility.videoCodec);  // "h264"|"hevc"|"av1"
     const bool probeAllows = gpuEncoderProbeAllows(compatibility.videoCodec, width, height);
     in.hardwareEncoderAvailable = in.platformSupported && probeAllows;
@@ -2181,7 +2210,7 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"runtimeCandidates\":" + runtimeCandidatesJson(runtimeProbe_.candidates) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_).videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_) +
+               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveCompatibility().videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_) +
               ",\"packagingSignal\":\"sync-ffmpeg-runtime-to-app.ps1 stages ffmpeg.exe and corevideo-ffmpeg-runtime.json when FFmpeg is available or unavailable\"}");
   }
 
@@ -2198,7 +2227,7 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"renderPlanId\":" + jsonString(frame->renderPlanId) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_).videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_);
+              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveCompatibility().videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_);
     }
     line += "}";
     writeLine(line);

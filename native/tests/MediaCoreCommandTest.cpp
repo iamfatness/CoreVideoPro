@@ -4402,6 +4402,158 @@ TEST(OutputSenderAdapter, RtmpRejectsInvalidDestinationSettingsBeforeLaunchingFf
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// STREAM-START ADMISSION AT THE SENDER (2026-09-20).
+//
+// StreamStartAdmissionTest pins the POLICY; these pin the SENDER's call site,
+// which is where the branch actually lives. Deleting
+// `admission.codecKnownNotDeliverable = (... == "av1")` from
+// RtmpOutputSenderAdapter::startFfmpegProcess left every other C++ and shell
+// test green (CLAUDE.md #481: test the whole decision, not the leaf), and the
+// only thing that caught it was the real-GPU gate — which no CI job runs.
+//
+// None of these launches FFmpeg: every case is refused BEFORE the process is
+// created, and the frames carry full-resolution program BGRA with NO encoder
+// shared texture, which pins chooseStreamEncodePath to the CPU fallback on
+// every build so the verdict does not depend on this machine's hardware MFT.
+#if COREVIDEO_WITH_RTMP_OUTPUT
+namespace {
+
+corevideo::modules::ProgramFrame startableProgramFrame(const char* planId) {
+  corevideo::modules::ProgramFrame frame{320, 180, 2, 7, planId, "d3d11"};
+  frame.programFullBgra.width = 320;
+  frame.programFullBgra.height = 180;
+  frame.programFullBgra.bgra.assign(320u * 180u * 4u, 0x10);
+  return frame;
+}
+
+// The runtime probe gates the sender before it ever reaches the admission, so a
+// machine with no FFmpeg answers "runtime-missing" and would pass these tests
+// vacuously. Skip LOUDLY instead (the local gtest shim has no GTEST_SKIP).
+bool senderAdmissionFfmpegPresent(const char* testName) {
+  std::error_code missing;
+  if (std::filesystem::exists(std::filesystem::path("C:\\ffmpeg\\bin") / "ffmpeg.exe", missing)) {
+    return true;
+  }
+  std::fprintf(stderr, "[  SKIPPED ] OutputSenderAdapter.%s (ffmpeg absent at C:\\ffmpeg\\bin)"
+                       " - this test did NOT run\n", testName);
+  return false;
+}
+
+corevideo::modules::OutputDestinationSettings rtmpAdmissionSettings(const std::string& codec,
+                                                                    bool allowEnhancedRtmp) {
+  corevideo::modules::OutputDestinationSettings settings;
+  settings.id = "rtmp";
+  settings.label = "RTMP";
+  settings.protocol = "rtmps";
+  settings.url = "rtmps://live.example.com/app";
+  settings.streamKey = "stream-key";
+  settings.ffmpegBinDirectory = "C:\\ffmpeg\\bin";
+  settings.videoCodec = codec;
+  settings.allowEnhancedRtmp = allowEnhancedRtmp;
+  return settings;
+}
+
+corevideo::modules::OutputDestinationSettings srtAdmissionSettings(const std::string& codec) {
+  corevideo::modules::OutputDestinationSettings settings;
+  settings.id = "srt";
+  settings.label = "SRT";
+  settings.protocol = "srt";
+  settings.host = "127.0.0.1";
+  settings.port = 9101;
+  settings.mode = "caller";
+  settings.ffmpegBinDirectory = "C:\\ffmpeg\\bin";
+  settings.videoCodec = codec;
+  // The operator did NOT tick "Enhanced RTMP (H.265 / AV1)" - that checkbox is
+  // an RTMP concept and must not reach an SRT destination at all.
+  settings.allowEnhancedRtmp = false;
+  return settings;
+}
+
+}  // namespace
+#endif
+
+// THE DEFECT: one adapter serves RTMP/RTMPS and SRT, and the enhanced-RTMP
+// refusal was applied with no protocol guard - so an SRT operator who picked
+// H.265 got NO stream plus a sentence telling them to enable an RTMP setting.
+// SRT carries MPEG-TS, which takes H.265 natively.
+TEST(OutputSenderAdapter, SrtNeverRefusesH265ForTheEnhancedRtmpCheckbox) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent("SrtNeverRefusesH265ForTheEnhancedRtmpCheckbox")) return;
+  auto sender = corevideo::modules::createFfmpegSrtOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  auto frame = startableProgramFrame("srt-h265-admission");
+  const auto session = sender->sync({"srt"}, &frame, 33, {srtAdmissionSettings("h265")});
+  ASSERT_FALSE(session.senders.empty());
+  const auto& s = session.senders[0];
+  EXPECT_NE(s.lastResultCode, "enhanced-rtmp-required");
+  EXPECT_EQ(s.warning.find("Enhanced RTMP"), std::string::npos);
+  EXPECT_EQ(s.lastError.find("Enhanced RTMP"), std::string::npos);
+  // The compatibility ADVISORY must not claim an RTMP constraint either.
+  EXPECT_EQ(s.runtimeDetail.find("enhanced-RTMP"), std::string::npos);
+  EXPECT_EQ(s.runtimeDetail.find("Enhanced RTMP"), std::string::npos);
+  // With no encoder shared texture the path is the CPU fallback on every build,
+  // so H.265 lands on the hardware-encoder clause - which is protocol-neutral
+  // and deliberately untouched by this fix.
+  EXPECT_EQ(s.lastResultCode, "no-hardware-encoder");
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
+TEST(OutputSenderAdapter, RtmpStillRefusesH265WithoutEnhancedRtmp) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent("RtmpStillRefusesH265WithoutEnhancedRtmp")) return;
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  auto frame = startableProgramFrame("rtmp-h265-admission");
+  const auto session = sender->sync({"rtmp"}, &frame, 33, {rtmpAdmissionSettings("h265", false)});
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].lastResultCode, "enhanced-rtmp-required");
+  EXPECT_NE(session.senders[0].warning.find("Enhanced RTMP"), std::string::npos);
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
+// AV1's refusal is OUR ENCODER's defect (#565: near-empty access units), not a
+// transport constraint, so it is protocol-independent: SRT refuses it too.
+TEST(OutputSenderAdapter, SrtStillRefusesAv1AsNotDeliverable) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent("SrtStillRefusesAv1AsNotDeliverable")) return;
+  auto sender = corevideo::modules::createFfmpegSrtOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  auto frame = startableProgramFrame("srt-av1-admission");
+  const auto session = sender->sync({"srt"}, &frame, 33, {srtAdmissionSettings("av1")});
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].lastResultCode, "codec-not-deliverable");
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
+// The one that pins `admission.codecKnownNotDeliverable = (... == "av1")` in
+// isolation: the checkbox is ON, so the compatibility clause cannot fire and
+// the ONLY thing that can refuse this stream is the AV1 predicate.
+TEST(OutputSenderAdapter, RtmpRefusesAv1AsNotDeliverableEvenWithEnhancedRtmpOn) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent("RtmpRefusesAv1AsNotDeliverableEvenWithEnhancedRtmpOn")) return;
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  auto frame = startableProgramFrame("rtmp-av1-admission");
+  const auto session = sender->sync({"rtmp"}, &frame, 33, {rtmpAdmissionSettings("av1", true)});
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].lastResultCode, "codec-not-deliverable");
+  EXPECT_NE(session.senders[0].warning.find("does not produce a usable stream"), std::string::npos);
+#else
+  EXPECT_TRUE(true);
+#endif
+}
+
 TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
 #if COREVIDEO_WITH_RTMP_OUTPUT
   auto sender = corevideo::modules::createRtmpOutputSender();

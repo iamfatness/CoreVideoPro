@@ -2181,6 +2181,32 @@ realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
   Windows-only and must run on a `COREVIDEO_WITH_MF_ENCODER=ON` build before merge.
   Spec: `docs/superpowers/specs/2026-09-20-gpu-direct-hevc-av1-stream-design.md`.
 
+- **`enhanced-rtmp-required` IS RTMP-ONLY (2026-09-20 fix wave).**
+  `RtmpOutputSenderAdapter` serves RTMP/RTMPS **and SRT egress** through one class
+  and one `OutputDestinationSettings`, and the compatibility refusal shipped with
+  no protocol guard — so an SRT operator who picked H.265 without ticking
+  "Enhanced RTMP (H.265 / AV1)" got NO stream plus a sentence telling them to
+  enable an RTMP setting for a transport that never touches FLV. Enhanced RTMP is
+  an RTMP/FLV concept; SRT carries MPEG-TS, which takes H.265 natively. The guard
+  is `RtmpOutputSenderAdapter::resolveCompatibility()` — the ONE resolution every
+  call site in that class goes through — which bypasses the matrix entirely when
+  `protocol_.isSrt`, so neither the refusal NOR its E-RTMP advisory (which rides
+  `runtimeDetail_`) can claim an RTMP constraint on an SRT destination. **Nothing
+  else moved:** AV1 on SRT still refuses `codec-not-deliverable` (that defect is
+  in our encoder and is protocol-independent), and the `no-hardware-encoder` /
+  `gpu-encoder-start-failed` clauses are untouched for every protocol. Pinned at
+  the SENDER, not the policy: `OutputSenderAdapter.SrtNeverRefusesH265ForThe
+  EnhancedRtmpCheckbox` / `RtmpStillRefusesH265WithoutEnhancedRtmp` /
+  `SrtStillRefusesAv1AsNotDeliverable` /
+  `RtmpRefusesAv1AsNotDeliverableEvenWithEnhancedRtmpOn` in
+  `MediaCoreCommandTest.cpp`. Those last two exist because
+  `StreamStartAdmissionTest` proves the POLICY honors `codecKnownNotDeliverable`
+  and NOTHING proved the sender ever SET it — deleting
+  `admission.codecKnownNotDeliverable = (... == "av1")` left every C++ and shell
+  test green (the #481 rule again). They start no FFmpeg: the frames carry full
+  program BGRA with no encoder shared texture, which pins
+  `chooseStreamEncodePath` to the CPU fallback on every build.
+
 - **The seam is platform-free.** `modules/GpuVideoEncoder.h` — `GpuVideoEncoder`
   (start/submit/stop/healthy), `GpuVideoEncoderConfig/Frame`, `GpuEncodedChunk(Sink)`,
   and the pure `GpuEncodePathPolicy` + `chooseStreamEncodePath` (unit-tested, no GPU).
