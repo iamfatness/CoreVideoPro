@@ -143,4 +143,44 @@ public class ProductionRoleTests
         Assert.Equal("black", ProductionStateHelper.ResolveSourceDropoutPolicy("capture:cam-1", dropoutPolicies));
         Assert.Equal("hold", ProductionStateHelper.ResolveSourceDropoutPolicy("capture:cam-2", dropoutPolicies));
     }
+
+    [Fact]
+    public void PopulateCaptureDeviceDropoutPolicyIsTheOneHelperBothConstructionPathsMustCall()
+    {
+        // #535 slice 4a fix round 2: StudioViewModel.ApplyDiscoveredCaptureDevices
+        // (ordinary device discovery) and StudioViewModel.RefreshVirtualSrtIngestDevice
+        // (an SRT ingest row rebuilt from scratch on every SRT source property
+        // change) both stamp a freshly built CaptureDevice's DropoutPolicy through
+        // this ONE helper, so a live SRT stream set to "black" cannot revert to
+        // "hold" on screen the next time its row is rebuilt.
+        var dropoutPolicies = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["capture:srt-black"] = "black"
+        };
+
+        var blackDevice = new CaptureDevice
+        {
+            Id = "srt-black",
+            NativeDeviceId = "srt://127.0.0.1:10001",
+            Vendor = "srt",
+            Name = "SRT 1",
+            Inputs = [],
+            SelectedInputId = "srt-black"
+        };
+        var defaultDevice = new CaptureDevice
+        {
+            Id = "srt-default",
+            NativeDeviceId = "srt://127.0.0.1:10002",
+            Vendor = "srt",
+            Name = "SRT 2",
+            Inputs = [],
+            SelectedInputId = "srt-default"
+        };
+
+        ProductionStateHelper.PopulateCaptureDeviceDropoutPolicy(blackDevice, dropoutPolicies);
+        ProductionStateHelper.PopulateCaptureDeviceDropoutPolicy(defaultDevice, dropoutPolicies);
+
+        Assert.Equal("black", blackDevice.DropoutPolicy);
+        Assert.Equal("hold", defaultDevice.DropoutPolicy);
+    }
 }

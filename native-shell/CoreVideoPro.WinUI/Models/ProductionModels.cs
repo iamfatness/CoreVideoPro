@@ -1044,6 +1044,21 @@ public static class ProductionStateHelper
             ? policy
             : "hold";
 
+    // #535 slice 4a fix round 2: the one place a freshly built or refreshed
+    // CaptureDevice row is stamped with its stored "on dropout" policy, via
+    // ResolveSourceDropoutPolicy above. TWO callers must both go through this,
+    // or a row rebuilt outside StudioViewModel.ApplyDiscoveredCaptureDevices
+    // silently reverts to "hold" on screen while the persisted/sent policy
+    // stays correct:
+    //   1. StudioViewModel.ApplyDiscoveredCaptureDevices (ordinary device
+    //      discovery: join/leave, device-watcher events, Inputs-tab visits).
+    //   2. StudioViewModel.RefreshVirtualSrtIngestDevice (an SRT ingest row is
+    //      rebuilt from scratch via CreateVirtualSrtIngestDevice on every SRT
+    //      source property change, e.g. OnSrtIngestSourcePropertyChanged).
+    public static void PopulateCaptureDeviceDropoutPolicy(
+        CaptureDevice device, IReadOnlyDictionary<string, string>? dropoutPolicies) =>
+        device.DropoutPolicy = ResolveSourceDropoutPolicy("capture:" + device.Id, dropoutPolicies);
+
     public static string MediaBinSummary(int assetCount) =>
         assetCount == 0 ? "Media bin is empty" : $"{assetCount} assets in bin";
 

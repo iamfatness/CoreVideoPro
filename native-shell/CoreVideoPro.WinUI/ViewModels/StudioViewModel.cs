@@ -7393,8 +7393,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
             device.IsBrowserOverlayOnAir = _onAirBrowserOverlayIds.Contains(device.Id);
             device.IsBrowserOverlayInPreview = _previewBrowserOverlayIds.Contains(device.Id);
-            device.DropoutPolicy = ProductionStateHelper.ResolveSourceDropoutPolicy(
-                "capture:" + device.Id, _sourceDropoutPolicies);
+            ProductionStateHelper.PopulateCaptureDeviceDropoutPolicy(device, _sourceDropoutPolicies);
 
             CaptureDevices.Add(device);
         }
@@ -7436,7 +7435,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var prior = CaptureDevices.FirstOrDefault(device => device.Id == source.DeviceId);
         if (prior is null)
         {
-            CaptureDevices.Add(CreateVirtualSrtIngestDevice(source));
+            var device = CreateVirtualSrtIngestDevice(source);
+            // #535 slice 4a fix round 2: CreateVirtualSrtIngestDevice defaults
+            // DropoutPolicy to "hold" and has no access to _sourceDropoutPolicies
+            // (it is static, shared with CreateVirtualSrtIngestDevices) — stamp
+            // it here so a fresh SRT row reads back its stored policy too.
+            ProductionStateHelper.PopulateCaptureDeviceDropoutPolicy(device, _sourceDropoutPolicies);
+            CaptureDevices.Add(device);
         }
         else
         {
@@ -7451,6 +7456,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             next.ObservedFrameWidth = prior.ObservedFrameWidth;
             next.ObservedFrameHeight = prior.ObservedFrameHeight;
             next.ObservedFrameRate = prior.ObservedFrameRate;
+            // Defensive carry-forward, then the authoritative resolver below
+            // overwrites it from _sourceDropoutPolicies — this is the exact bug
+            // fix round 2 found: this replace path used to carry forward every
+            // OTHER field but never DropoutPolicy, so a live SRT stream set to
+            // "black" reverted to "hold" on screen within seconds of any SRT
+            // source property change (OnSrtIngestSourcePropertyChanged).
+            next.DropoutPolicy = prior.DropoutPolicy;
+            ProductionStateHelper.PopulateCaptureDeviceDropoutPolicy(next, _sourceDropoutPolicies);
             CaptureDevices[index] = next;
         }
 
