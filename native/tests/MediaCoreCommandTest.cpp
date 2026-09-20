@@ -6618,3 +6618,513 @@ TEST(MediaCoreCommand, LegacyPlaybackFieldsOnTheWireAreIgnoredNotRefused) {
   EXPECT_EQ(after.get("mediaPlayback")->getString("status"), "live");
   EXPECT_TRUE(after.get("mediaPlayback")->get("warnings")->asArray().empty());
 }
+
+// ---------------------------------------------------------------------------
+// #535 slice 3b Task 5: a behaviour test per operator rule in
+// docs/superpowers/specs/2026-09-20-source-bus-slice3b-media-source-state-design.md
+// section 2, plus the idempotent re-send.
+//
+// Every one of these drives the REAL core::MediaTransports through MediaCore's
+// command surface - no policy-level stand-in - and every wait is a bounded
+// predicate loop with a deadline and a failing assertion on timeout. The one
+// deliberate exception is a fixed pump used to observe a NON-event ("the
+// paused clip does not advance"), where a predicate wait is impossible and
+// asserting on tick zero would pass vacuously.
+//
+// WHAT "THE FRAME ID ON PROGRAM" IS READ FROM, and why there are two answers:
+//   * `sources[]`.framesIngested - the bus's DEDUPED per-frame count. It only
+//     moves when the frameId selectVideo returned actually changed, so it is
+//     the honest on-the-wire answer to "is the picture advancing on air?". It
+//     cannot say WHICH id, and it cannot see a decoder that restarted and
+//     kept producing.
+//   * testing::CountingDecoder's own static book - the ids themselves, plus a
+//     regression counter that names a NEW decoder instance. `lastFrameId` is
+//     not on the wire and this task deliberately does not widen it.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using corevideo::testing::CountingDecoder;
+
+// A scene whose BACKGROUND is the asset "bg". A background always loops (see
+// MediaCore::syncMediaTransportsDesired), so it is live on either bus and the
+// `playing` flag on the wire is dead.
+corevideo::rpc::Json slice3bBackgroundScene(const char* sceneId, const char* type) {
+  return corevideo::rpc::Json::Object{
+      {"type", type},
+      {"sceneId", sceneId},
+      {"background", corevideo::rpc::Json::Object{
+                         {"mediaAssetId", "bg"},
+                         {"mediaAssetName", "bg"},
+                         {"mediaAssetKind", "video"},
+                         {"mediaAssetPath", "C:\\media\\bg.mp4"},
+                         {"playing", true}}},
+      {"routes", corevideo::rpc::Json::Array{}}};
+}
+
+// Pumps display ticks (the production render cadence for media) until `done`,
+// with a deadline. Bounded, and every caller ASSERTs on the return.
+bool slice3bPumpUntil(corevideo::core::MediaCore& core, const std::function<bool()>& done,
+                      int timeoutMs = 3000) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (std::chrono::steady_clock::now() < deadline) {
+    core.renderDisplayTick();
+    if (done()) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  core.renderDisplayTick();
+  return done();
+}
+
+// Pumps display ticks for a fixed span. ONLY for observing a non-event.
+void slice3bPumpFor(corevideo::core::MediaCore& core, int ms) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+  while (std::chrono::steady_clock::now() < deadline) {
+    core.renderDisplayTick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+}
+
+std::int64_t slice3bSteadyNowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Drains the transports' audio directly (the seam the audio worker uses), with
+// the core's own audio worker latched ON so no full tick competes for the
+// windows. True once a NON-SILENT window for `sourceId` arrives.
+bool slice3bWaitForAudio(corevideo::core::MediaCore& core, const std::string& sourceId,
+                         int timeoutMs = 2000) {
+  auto* transports = core.mediaTransportsForTest();
+  if (transports == nullptr) return false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (std::chrono::steady_clock::now() < deadline) {
+    core.renderDisplayTick();
+    for (const auto& frame : transports->popAudio(slice3bSteadyNowMs())) {
+      if (frame.participantId != sourceId) continue;
+      for (const auto sample : frame.pcm) {
+        if (sample != 0.f) return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return false;
+}
+
+// Every audio window `sourceId` produced over a fixed span. For the NON-event
+// "a paused clip emits nothing, not even silence".
+std::size_t slice3bAudioWindowsOver(corevideo::core::MediaCore& core, const std::string& sourceId,
+                                    int ms) {
+  auto* transports = core.mediaTransportsForTest();
+  if (transports == nullptr) return 0;
+  std::size_t windows = 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+  while (std::chrono::steady_clock::now() < deadline) {
+    core.renderDisplayTick();
+    for (const auto& frame : transports->popAudio(slice3bSteadyNowMs())) {
+      if (frame.participantId == sourceId) ++windows;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return windows;
+}
+
+// Mean luma of the program thumbnail the stub compositor fills every tick.
+// CountingDecoder paints 0x40 on every colour channel, so a full-canvas clip
+// reads ~64 - far from either bus-health slate (~28-31), which is what a lost
+// picture would draw instead.
+double slice3bProgramLuma(corevideo::core::MediaCore& core) {
+  const auto& px = core.lastProgramFrameForTest().preview.bgra;
+  if (px.empty()) return -1.0;
+  double sum = 0;
+  std::size_t n = 0;
+  for (std::size_t i = 0; i + 3 < px.size(); i += 4) {
+    sum += 0.114 * px[i] + 0.587 * px[i + 1] + 0.299 * px[i + 2];
+    ++n;
+  }
+  return n ? sum / n : -1.0;
+}
+
+std::string slice3bTransportState(corevideo::core::MediaCore& core, const std::string& sourceId) {
+  const auto state = core.sessionState();
+  const auto* row = slice3bMediaSource(state, sourceId);
+  return row == nullptr ? std::string() : row->getString("state");
+}
+
+}  // namespace
+
+// RULE 1: a clip CUED in Preview and then TAKEN rolls from zero, on the
+// decoder that was already warm - one decoder, audio on at the take.
+TEST(MediaCoreCommand, ACuedClipTakenToProgramRollsFromZeroWithOneDecoder) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>();
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();  // nothing but this test drains popAudio
+
+  // Cue: Program is empty, Preview carries the clip.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bEmptyScene("a", "load-scene-graph"), slice3bClipScene("b", "set-preview-scene")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return corevideo::testing::busSourceProducing(core, "media:clip");
+  })) << "the cued clip never reached a poster";
+  EXPECT_EQ(slice3bTransportState(core, "media:clip"), "cued");
+  EXPECT_EQ(CountingDecoder::created.load(), 1);
+
+  const auto beforeTake = corevideo::testing::busFramesIngested(core, "media:clip");
+  ASSERT_GT(beforeTake, 0);
+
+  // The Take.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bClipScene("b", "load-scene-graph"), slice3bEmptyScene("a", "set-preview-scene")});
+  EXPECT_EQ(slice3bTransportState(core, "media:clip"), "live");
+
+  // The picture ADVANCES on Program (a poster that stayed frozen would not
+  // move the bus's deduped count), from the SAME decoder and with no id
+  // regression - i.e. it resumed rather than cold-starting on air.
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return corevideo::testing::busFramesIngested(core, "media:clip") > beforeTake + 2;
+  })) << "the taken clip never rolled";
+  EXPECT_EQ(CountingDecoder::created.load(), 1)
+      << "the take opened a second decoder instead of resuming the warm one";
+  EXPECT_EQ(CountingDecoder::restartsFor("media:clip"), 0)
+      << "the frame ids regressed, so the clip cold-started on air";
+  EXPECT_TRUE(slice3bWaitForAudio(core, "media:clip")) << "the taken clip never turned its audio on";
+}
+
+// RULE 2: the same clip on BOTH buses is ONE rolling picture. Program and
+// Preview address the identical source id - there is no `preview:` namespace
+// any more - so the preview composite is handed the very frame Program drew.
+TEST(MediaCoreCommand, TheSameClipOnBothBusesShowsOneRollingPictureOnPreview) {
+  class PlanRecordingCompositor final : public corevideo::modules::ICompositor {
+   public:
+    explicit PlanRecordingCompositor(std::unique_ptr<corevideo::modules::ICompositor> inner)
+        : inner_(std::move(inner)) {}
+    std::string rendererName() const override { return inner_->rendererName(); }
+    corevideo::modules::ProgramFrame render(
+        const corevideo::modules::CompositorRenderPlan& plan,
+        const std::vector<corevideo::modules::VideoFrame>& frames) override {
+      lastProgramPlan = plan;
+      lastProgramFrames = frames;
+      return inner_->render(plan, frames);
+    }
+    corevideo::modules::ProgramFrameSharedTexture renderPreview(
+        const corevideo::modules::CompositorRenderPlan& plan,
+        const std::vector<corevideo::modules::VideoFrame>& frames) override {
+      lastPreviewPlan = plan;
+      lastPreviewFrames = frames;
+      ++previewRenders;
+      return inner_->renderPreview(plan, frames);
+    }
+    corevideo::modules::CompositorRenderPlan lastProgramPlan, lastPreviewPlan;
+    std::vector<corevideo::modules::VideoFrame> lastProgramFrames, lastPreviewFrames;
+    int previewRenders = 0;
+   private:
+    std::unique_ptr<corevideo::modules::ICompositor> inner_;
+  };
+
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>();
+  auto ownedCompositor = std::make_unique<PlanRecordingCompositor>(std::move(modules.compositor));
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  corevideo::core::MediaCore core(std::move(modules));
+
+  // The clip on Program AND on Preview, under two different scene ids.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bClipScene("pgm", "load-scene-graph"), slice3bClipScene("pvw", "set-preview-scene")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return compositor->previewRenders > 0 && corevideo::testing::busSourceProducing(core, "media:clip");
+  })) << "the preview composite never ran with the clip producing";
+  for (int tick = 0; tick < 10; ++tick) {
+    core.renderDisplayTick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+
+  // ONE decoder for both buses.
+  EXPECT_EQ(CountingDecoder::created.load(), 1);
+
+  // No `preview:` id anywhere in the preview plan - that rename is what used
+  // to make Preview a second playback identity.
+  for (const auto& layer : compositor->lastPreviewPlan.layers) {
+    EXPECT_NE(layer.sourceId.rfind("preview:", 0), 0u)
+        << "preview plan layer '" << layer.sourceId << "' is still namespaced";
+  }
+  const auto mediaLayer = std::find_if(
+      compositor->lastPreviewPlan.layers.begin(), compositor->lastPreviewPlan.layers.end(),
+      [](const auto& l) { return l.sourceId == "media:clip"; });
+  ASSERT_NE(mediaLayer, compositor->lastPreviewPlan.layers.end())
+      << "the preview plan carries no media:clip layer";
+
+  // ...and the frame set it resolves against holds exactly ONE media:clip
+  // picture, the same one Program drew: one source, one frame id.
+  const auto mediaFrameIdsIn = [](const std::vector<corevideo::modules::VideoFrame>& frames) {
+    std::vector<std::int64_t> ids;
+    for (const auto& frame : frames) {
+      if (frame.participantId == "media:clip") ids.push_back(frame.frameId);
+    }
+    return ids;
+  };
+  const auto previewIds = mediaFrameIdsIn(compositor->lastPreviewFrames);
+  const auto programIds = mediaFrameIdsIn(compositor->lastProgramFrames);
+  ASSERT_EQ(previewIds.size(), 1u) << "preview saw " << previewIds.size() << " media:clip frames";
+  ASSERT_EQ(programIds.size(), 1u) << "program saw " << programIds.size() << " media:clip frames";
+  EXPECT_EQ(previewIds.front(), programIds.front())
+      << "preview resolved a DIFFERENT picture from program";
+  EXPECT_EQ(CountingDecoder::restartsFor("media:clip"), 0);
+}
+
+// RULE 3: a clip that LEAVES Program while still cued goes back to a poster at
+// zero, and the return rolls it from zero again - never from where it was.
+TEST(MediaCoreCommand, AClipThatLeavesProgramAndReturnsRollsFromZeroAgain) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>();
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  // Live on Program, with the clip ALSO cued in Preview so leaving Program
+  // leaves it cued rather than releasing it outright.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bClipScene("pgm", "load-scene-graph"), slice3bClipScene("pvw", "set-preview-scene")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("media:clip") > 4;
+  })) << "the live clip never rolled past its fourth picture";
+  const auto rolledTo = CountingDecoder::lastFrameIdFor("media:clip");
+  ASSERT_GT(rolledTo, 4);
+  ASSERT_EQ(CountingDecoder::created.load(), 1);
+
+  // Take it AWAY from Program (Program empty, still cued in Preview):
+  // RestartCued - a NEW decoder at zero behind the frame still on the monitor.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bEmptyScene("a", "load-scene-graph"), slice3bClipScene("pvw", "set-preview-scene")});
+  EXPECT_EQ(slice3bTransportState(core, "media:clip"), "cued");
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] { return CountingDecoder::created.load() == 2; }))
+      << "leaving Program did not restart the cue on a fresh decoder";
+
+  // Take it BACK. The return is an in-place Resume on that restarted decoder,
+  // so it opens NO third decoder and the picture it rolls from is at the head
+  // of the clip, not where it left off.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bClipScene("pgm", "load-scene-graph"), slice3bClipScene("pvw", "set-preview-scene")});
+  EXPECT_EQ(slice3bTransportState(core, "media:clip"), "live");
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("media:clip") > 2;
+  })) << "the returned clip never rolled";
+  EXPECT_EQ(CountingDecoder::created.load(), 2) << "the return cold-started a third decoder";
+  ASSERT_EQ(CountingDecoder::restartsFor("media:clip"), 1)
+      << "the ids never went back to the head of the clip";
+  EXPECT_LE(CountingDecoder::firstFrameIdAfterRestartFor("media:clip"), 3)
+      << "the restart did not begin at the head of the clip";
+  EXPECT_LT(CountingDecoder::firstFrameIdAfterRestartFor("media:clip"), rolledTo);
+}
+
+// RULE 4: a Take between two scenes that BOTH hold the clip changes nothing -
+// one decoder, ids strictly increasing straight through the cut.
+TEST(MediaCoreCommand, ATakeBetweenTwoScenesBothHoldingTheClipDoesNotRestartIt) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>();
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  // Scene A on Program, scene B cued - both routing the SAME clip.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bClipScene("scene-a", "load-scene-graph"),
+      slice3bClipScene("scene-b", "set-preview-scene")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("media:clip") > 3;
+  })) << "the clip never rolled before the take";
+  const auto beforeId = CountingDecoder::lastFrameIdFor("media:clip");
+  const auto beforeIngested = corevideo::testing::busFramesIngested(core, "media:clip");
+
+  // The Take: A -> B.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bClipScene("scene-b", "load-scene-graph"),
+      slice3bClipScene("scene-a", "set-preview-scene")});
+  EXPECT_EQ(slice3bTransportState(core, "media:clip"), "live");
+
+  for (int tick = 0; tick < 20; ++tick) {
+    core.renderDisplayTick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("media:clip") > beforeId;
+  })) << "the clip stopped rolling across the take";
+  EXPECT_EQ(CountingDecoder::created.load(), 1) << "the take opened a second decoder";
+  EXPECT_EQ(CountingDecoder::restartsFor("media:clip"), 0)
+      << "the frame ids regressed across the take, so the clip restarted";
+  EXPECT_GT(corevideo::testing::busFramesIngested(core, "media:clip"), beforeIngested)
+      << "the picture on Program stopped advancing across the take";
+}
+
+// RULE 5: operator Pause holds the on-air frame and emits NO audio (not even
+// silence); Play resumes the same decoder from where it froze.
+TEST(MediaCoreCommand, PauseHoldsTheFrameAndSilencesAudioPlayResumes) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>();
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{slice3bClipScene("pgm", "load-scene-graph")});
+  ASSERT_TRUE(slice3bWaitForAudio(core, "media:clip"))
+      << "the live clip never produced audio, so silencing it would prove nothing";
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("media:clip") > 2;
+  })) << "the live clip never rolled";
+
+  (void)core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-transport"}, {"mediaAssetId", "clip"}, {"action", "pause"}});
+  EXPECT_EQ(slice3bTransportState(core, "media:clip"), "paused");
+
+  // Let the worker observe the pause and settle onto its held frame, THEN
+  // measure the non-event over a fixed span - the only case a fixed pump is
+  // allowed, because "it does not advance" has no predicate to wait on.
+  slice3bPumpFor(core, 120);
+  const auto heldIngested = corevideo::testing::busFramesIngested(core, "media:clip");
+  ASSERT_GT(heldIngested, 0);
+  const auto heldSourceFrameId = CountingDecoder::lastFrameIdFor("media:clip");
+  const auto pausedWindows = slice3bAudioWindowsOver(core, "media:clip", 150);
+  EXPECT_EQ(corevideo::testing::busFramesIngested(core, "media:clip"), heldIngested)
+      << "the paused clip kept advancing on Program";
+  EXPECT_EQ(CountingDecoder::lastFrameIdFor("media:clip"), heldSourceFrameId)
+      << "the paused clip kept decoding";
+  EXPECT_EQ(pausedWindows, 0u) << "the paused clip emitted audio";
+
+  (void)core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-transport"}, {"mediaAssetId", "clip"}, {"action", "play"}});
+  EXPECT_EQ(slice3bTransportState(core, "media:clip"), "live");
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return corevideo::testing::busFramesIngested(core, "media:clip") > heldIngested;
+  })) << "the resumed clip never advanced again";
+  EXPECT_EQ(CountingDecoder::created.load(), 1)
+      << "pause/play is a clock state, not a new decoder";
+  EXPECT_EQ(CountingDecoder::restartsFor("media:clip"), 0)
+      << "the resumed clip restarted from the top instead of continuing";
+  EXPECT_TRUE(slice3bWaitForAudio(core, "media:clip")) << "the resumed clip stayed silent";
+}
+
+// RULE 6: a LOOPING background is live on either bus, refuses pause out loud,
+// and a Take does not disturb it.
+TEST(MediaCoreCommand, ALoopBackgroundIgnoresPauseAndSurvivesATake) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>();
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  // The same background behind BOTH scenes.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bBackgroundScene("scene-a", "load-scene-graph"),
+      slice3bBackgroundScene("scene-b", "set-preview-scene")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("background:bg") > 3;
+  })) << "the loop background never rolled";
+  EXPECT_EQ(slice3bTransportState(core, "background:bg"), "live");
+
+  // Pause is REFUSED, loudly, and changes nothing.
+  (void)core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-transport"}, {"mediaAssetId", "bg"}, {"action", "pause"}});
+  EXPECT_EQ(slice3bTransportState(core, "background:bg"), "live");
+  {
+    const auto& warnings = core.sceneValidationWarningsForTest();
+    EXPECT_TRUE(std::any_of(warnings.begin(), warnings.end(), [](const std::string& warning) {
+      return warning.find("loop") != std::string::npos;
+    })) << "a refused loop pause must say why";
+  }
+
+  const auto beforeId = CountingDecoder::lastFrameIdFor("background:bg");
+  const auto beforeIngested = corevideo::testing::busFramesIngested(core, "background:bg");
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bBackgroundScene("scene-b", "load-scene-graph"),
+      slice3bBackgroundScene("scene-a", "set-preview-scene")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("background:bg") > beforeId &&
+           corevideo::testing::busFramesIngested(core, "background:bg") > beforeIngested;
+  })) << "the loop background stopped across the take";
+  EXPECT_EQ(slice3bTransportState(core, "background:bg"), "live");
+  EXPECT_EQ(CountingDecoder::created.load(), 1) << "the take restarted the loop background";
+  EXPECT_EQ(CountingDecoder::restartsFor("background:bg"), 0);
+}
+
+// IDEMPOTENCE: the repeating sync channel re-asserts the same scene graph over
+// and over. Re-sending it must be a no-op - no new decoder, no state change,
+// and the picture keeps advancing right through the re-sends.
+TEST(MediaCoreCommand, AnIdenticalSceneGraphResentChangesNothing) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>();
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{slice3bClipScene("pgm", "load-scene-graph")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("media:clip") > 2;
+  })) << "the clip never rolled";
+
+  std::int64_t previousIngested = corevideo::testing::busFramesIngested(core, "media:clip");
+  ASSERT_GT(previousIngested, 0);
+  for (int resend = 0; resend < 5; ++resend) {
+    (void)core.applyCommands(corevideo::rpc::Json::Array{slice3bClipScene("pgm", "load-scene-graph")});
+    EXPECT_EQ(slice3bTransportState(core, "media:clip"), "live") << "re-send " << resend;
+    ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+      return corevideo::testing::busFramesIngested(core, "media:clip") > previousIngested;
+    })) << "the picture stopped advancing after re-send " << resend;
+    previousIngested = corevideo::testing::busFramesIngested(core, "media:clip");
+  }
+
+  EXPECT_EQ(CountingDecoder::created.load(), 1) << "a re-send opened another decoder";
+  EXPECT_EQ(CountingDecoder::restartsFor("media:clip"), 0) << "a re-send restarted the clip";
+  const auto state = core.sessionState();
+  EXPECT_EQ(state.get("mediaSources")->asArray().size(), 1u)
+      << "a re-send added a second media source";
+}
+
+// ENDED: a clip whose media runs out holds its last picture, reads "ended",
+// and an operator Play restarts it from the top on a fresh decoder.
+TEST(MediaCoreCommand, AFinishedClipHoldsItsLastFrameAndReadsEnded) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  // Ten pictures and then nothing - the end of the media, with the decoder
+  // still alive and still holding its last one.
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>(std::int64_t{10});
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{slice3bClipScene("pgm", "load-scene-graph")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return slice3bTransportState(core, "media:clip") == "ended";
+  }, 3000)) << "the finished clip never read ended";
+  EXPECT_EQ(CountingDecoder::lastFrameIdFor("media:clip"), 10);
+
+  // It still HOLDS its last picture: the bus removes a media source only when
+  // selectVideo has nothing at all, so the source staying on the bus at a
+  // FROZEN deduped count is the held frame. (The count is below 10 by design -
+  // MediaVideoPresentation::select drains every frame already due and keeps
+  // only the last, so ticks slower than the decoder collapse pictures. What
+  // matters is that it stopped moving, not what it stopped at.)
+  const auto heldIngested = corevideo::testing::busFramesIngested(core, "media:clip");
+  ASSERT_GT(heldIngested, 0);
+  const auto expectedClipLuma = 0.114 * 0x40 + 0.587 * 0x40 + 0.299 * 0x40;
+  slice3bPumpFor(core, 120);
+  EXPECT_EQ(corevideo::testing::busFramesIngested(core, "media:clip"), heldIngested)
+      << "the ended clip advanced past the end of its media";
+  EXPECT_NE(corevideo::testing::busSourceRow(core.sessionState(), "media:clip"), nullptr)
+      << "the ended clip fell off the source bus instead of holding its last frame";
+  EXPECT_NEAR(slice3bProgramLuma(core), expectedClipLuma, 2.0)
+      << "Program lost the ended clip's last picture (a slate reads ~28-31)";
+  EXPECT_EQ(CountingDecoder::created.load(), 1);
+
+  // Play on an ENDED clip is a restart from the top.
+  (void)core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-transport"}, {"mediaAssetId", "clip"}, {"action", "play"}});
+  EXPECT_EQ(slice3bTransportState(core, "media:clip"), "live");
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] { return CountingDecoder::created.load() == 2; }))
+      << "Play on an ended clip did not open a fresh decoder";
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::restartsFor("media:clip") == 1;
+  })) << "the restarted clip did not begin at the head of its media";
+  EXPECT_LE(CountingDecoder::firstFrameIdAfterRestartFor("media:clip"), 3);
+}

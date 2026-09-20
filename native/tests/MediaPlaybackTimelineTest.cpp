@@ -1,3 +1,4 @@
+#include "MediaTestSupport.h"
 #include "modules/Interfaces.h"
 #include "modules/MediaPlaybackTimeline.h"
 #include "modules/MediaVideoPresentation.h"
@@ -134,28 +135,9 @@ class TestDecoder final : public IMediaFrameSource {
 
 
 namespace {
-// A decoder that knows nothing about pause: every video poll yields a new,
-// increasing frameId and every audio poll a non-silent window. Anything that
-// holds or silences a paused clip has to be the owned source's doing.
-class CountingDecoder final : public IMediaFrameSource {
- public:
-  std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
-    VideoFrame frame;
-    frame.participantId = layers.front().sourceId;
-    frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
-    frame.pixelStride = 4; frame.frameId = ++frameId_;
-    frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
-    return {frame};
-  }
-  std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
-    AudioFrame frame; frame.participantId = layers.front().sourceId;
-    frame.sampleRate = 48000; frame.channels = 2; frame.sampleCount = 960; frame.pcm.resize(1920, 0.5f);
-    return {frame};
-  }
-  std::vector<std::string> warnings() const override { return {}; }
- private:
-  int64_t frameId_ = 0;
-};
+// The one copy lives in MediaTestSupport.h (#535 slice 3b Task 5) so this
+// file and the MediaCore behaviour tests cannot drift apart.
+using corevideo::testing::CountingDecoder;
 int64_t steadyNowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }

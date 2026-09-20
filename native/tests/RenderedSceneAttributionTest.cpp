@@ -428,6 +428,24 @@ corevideo::rpc::Json backgroundScene(const char* sceneId, const char* assetId,
       {"routes", corevideo::rpc::Json::Array{}}};
 }
 
+// A scene whose only layer is a clip ROUTE. Since #535 slice 3b the wire
+// carries no playback key and no play flag: which BUS the route is on is the
+// whole transport decision (Cued on Preview, Live on Program).
+corevideo::rpc::Json clipRouteScene(const char* sceneId, const char* assetId,
+                                    const char* type = "load-scene-graph") {
+  return corevideo::rpc::Json::Object{
+      {"type", type},
+      {"sceneId", sceneId},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"routeId", "clip-route"},
+          {"mode", "fixed"},
+          {"mediaAssetId", assetId},
+          {"mediaAssetName", "clip"},
+          {"mediaAssetKind", "video"},
+          {"mediaAssetPath", "C:\\media\\clip.mp4"},
+          {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}};
+}
+
 corevideo::rpc::Json emptyScene(const char* sceneId, const char* type = "load-scene-graph") {
   return corevideo::rpc::Json::Object{
       {"type", type},
@@ -852,4 +870,43 @@ TEST(ZoomSubscriptionChurnPolicyRules, ResolutionCapEvictionAndDepartureAreDisti
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::CapEviction)), "cap-eviction");
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::Departure)), "departure");
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::Resolution)), "resolution-change");
+}
+
+// #535 slice 3b Task 5, the other half of the cold-start rule above: a clip
+// CUED in Preview and then taken carries NO missing source, because there is
+// no cold start left to be honest about. The cue and the live clip are one
+// transport entry, so the Take is an in-place Resume on a decoder that is
+// already holding a poster - and the judge is UNTOUCHED, which is the point:
+// the same `ColdStartMediaFrameSource` that makes the background test read
+// "rebuilt" (no cue, first poll empty) reads "no missing sources" here purely
+// because the decoder was warmed by the cue.
+TEST(TakeRecord, ACuedClipTakenToProgramReadsNoMissingSources) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartMediaFrameSource>();
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  // Program: empty. Preview: the clip route, CUED.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      emptyScene("scene-a"), clipRouteScene("scene-b", "clip-1", "set-preview-scene")});
+  // Bounded: pump the cue until its poster is actually on the bus. A fixed
+  // sleep here would make the test's whole premise (a WARM decoder) a guess.
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [](MediaCore& c) {
+    return corevideo::testing::busSourceProducing(c, "media:clip-1");
+  })) << "the cued clip never reached a poster";
+
+  // The Take.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      clipRouteScene("scene-b", "clip-1"), emptyScene("scene-a", "set-preview-scene")});
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_GE(records.size(), 2u);
+  const auto& take = records[records.size() - 1];
+  ASSERT_NE(take.get("missingSources"), nullptr);
+  EXPECT_TRUE(take.get("missingSources")->asArray().empty())
+      << "the taken clip was judged missing on its first program tick";
+  EXPECT_FALSE(take.get("sourceMissing")->asBool(true));
 }
