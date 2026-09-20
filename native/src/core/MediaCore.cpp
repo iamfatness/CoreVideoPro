@@ -1035,6 +1035,28 @@ rpc::Json MediaCore::sessionState() const {
     }
     state.emplace("sources", rpc::Json{sourcesArr});
   }
+  // Per-source media TRANSPORT state (#535 slice 3b). Published
+  // unconditionally - the multiviewer-node rule again: an empty array is the
+  // honest answer to "no media is routed", and a node that vanishes in the
+  // case worth detecting is the mistake this codebase keeps paying for.
+  {
+    rpc::Json::Array mediaSourcesArr;
+    if (mediaTransports_) {
+      for (const auto& row : mediaTransports_->snapshot()) {
+        mediaSourcesArr.push_back(rpc::Json::Object{
+            {"sourceId", row.sourceId},
+            {"mediaAssetId", row.assetId},
+            {"state", std::string(core::mediaTransportStateName(row.state))},
+            {"loop", row.loop},
+            {"onProgram", row.onProgram},
+            {"onPreview", row.onPreview},
+            {"positionMs", static_cast<double>(row.positionMs)},
+            {"durationMs", static_cast<double>(row.durationMs)},
+        });
+      }
+    }
+    state.emplace("mediaSources", rpc::Json{mediaSourcesArr});
+  }
   const auto recording = recordingState(session);
   if (!recording.isNull()) {
     state.emplace("recording", recording);
@@ -1460,6 +1482,8 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setBrandKit(command);
   } else if (type == "set-media-playback") {
     setMediaPlayback(command);
+  } else if (type == "set-media-transport") {
+    setMediaTransport(command);
   } else if (type == "set-multiview-layout") {
     setMultiviewLayout(command);
     ::corevideo::core::nativeVerboseLogf("[multiview] set-multiview-layout received: %zu sources\n",
@@ -2306,7 +2330,6 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
     sceneBackground_.mediaAssetName = background->getString("mediaAssetName");
     sceneBackground_.mediaAssetKind = background->getString("mediaAssetKind");
     sceneBackground_.mediaAssetPath = background->getString("mediaAssetPath");
-    sceneBackground_.playing = !background->get("playing") || background->get("playing")->asBool();
     sceneBackground_.enabled = !sceneBackground_.mediaAssetId.empty() && !sceneBackground_.mediaAssetPath.empty();
     if (!sceneBackground_.enabled && !sceneBackground_.mediaAssetId.empty()) {
       sceneValidationWarnings_.push_back("Scene background " + sceneBackground_.mediaAssetId + " is missing an asset path.");
@@ -2326,8 +2349,10 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.mediaAssetName = route.getString("mediaAssetName");
       state.mediaAssetKind = route.getString("mediaAssetKind");
       state.mediaAssetPath = route.getString("mediaAssetPath");
-      state.mediaPlaybackKey = route.getString("mediaPlaybackKey");
-      state.mediaAssetPlaying = route.get("mediaAssetPlaying") ? route.get("mediaAssetPlaying")->asBool() : false;
+      // `mediaPlaybackKey` / `mediaAssetPlaying` are DELIBERATELY NOT READ
+      // (#535 slice 3b). Older shells still send them; a core that acted on
+      // them would fight the command-time transport decision, and refusing
+      // them would break the rollout. Ignored, silently.
       // Operator "loop" for a routed asset (shell: MediaRoutePlaybackService.IsLoopingAsset).
       state.mediaAssetLoop = route.get("mediaAssetLoop") && route.get("mediaAssetLoop")->asBool();
       state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
@@ -3436,6 +3461,11 @@ void MediaCore::setBrandKit(const rpc::Json& command) {
   }
 }
 
+// #535 slice 3b: SELECTION ONLY. `playing` and `mediaPlaybackKey` still ride
+// this command from older shells and are IGNORED - the real play state of an
+// asset is its transport state (mediaPlaybackState() reads it there), and a
+// key is no longer part of any decoder identity. Silently ignored, never
+// refused: an old shell and a new core overlap during a rollout.
 void MediaCore::setMediaPlayback(const rpc::Json& command) {
   mediaPlaybackWarnings_.clear();
   const std::string mediaAssetId = command.getString("mediaAssetId");
@@ -3444,15 +3474,12 @@ void MediaCore::setMediaPlayback(const rpc::Json& command) {
     mediaPlaybackAssetName_.clear();
     mediaPlaybackAssetKind_.clear();
     mediaPlaybackAssetPath_.clear();
-    mediaPlaybackKey_.clear();
-    mediaPlaybackPlaying_ = false;
     mediaPlaybackWarnings_.push_back("Media playback command had no media asset id.");
     return;
   }
 
   const std::string mediaAssetName = command.getString("mediaAssetName");
   const std::string mediaAssetPath = command.getString("mediaAssetPath");
-  const std::string mediaPlaybackKey = command.getString("mediaPlaybackKey");
   if (mediaAssetName.empty()) {
     mediaPlaybackWarnings_.push_back(mediaAssetId + " media asset has no name and may not be present in the media bin.");
   }
@@ -3464,10 +3491,37 @@ void MediaCore::setMediaPlayback(const rpc::Json& command) {
   mediaPlaybackAssetName_ = mediaAssetName.empty() ? mediaAssetId : mediaAssetName;
   mediaPlaybackAssetKind_ = command.getString("mediaAssetKind");
   mediaPlaybackAssetPath_ = mediaAssetPath;
-  mediaPlaybackKey_ = mediaPlaybackKey;
-  mediaPlaybackPlaying_ = command.get("playing") && command.get("playing")->asBool();
-  if (mediaPlaybackPlaying_ && mediaPlaybackKey_.empty()) {
-    mediaPlaybackWarnings_.push_back(mediaAssetId + " is playing without a playback key; replay behavior may be unstable.");
+}
+
+// #535 slice 3b: the operator transport. One shot, one asset, no membership
+// change - syncMediaTransportsDesired() is deliberately NOT called, because
+// pause/play moves the STATE of a transport, never which sources are on the
+// bus. A refusal leaves the transport exactly as it was and says why in
+// sceneValidationWarnings_, deduped the way applyPreviewScene dedupes its own
+// pushes: this command can ride a repeating channel and an unconditional push
+// would grow that vector without bound.
+void MediaCore::setMediaTransport(const rpc::Json& command) {
+  const std::string mediaAssetId = command.getString("mediaAssetId");
+  if (mediaAssetId.empty()) {
+    pushSceneWarningOnce(sceneValidationWarnings_, "set-media-transport: command had no mediaAssetId.");
+    return;
+  }
+  const std::string action = command.getString("action");
+  if (action != "pause" && action != "play") {
+    pushSceneWarningOnce(sceneValidationWarnings_,
+        "set-media-transport: unknown action '" + action + "' for " + mediaAssetId + " (expected pause|play).");
+    return;
+  }
+  if (!mediaTransports_) {
+    pushSceneWarningOnce(sceneValidationWarnings_,
+        "set-media-transport: no media transports are running (" + mediaAssetId + ").");
+    return;
+  }
+  std::string reason;
+  if (!mediaTransports_->operatorAction(
+          mediaAssetId, action == "pause" ? core::MediaOperatorAction::Pause : core::MediaOperatorAction::Play,
+          reason)) {
+    pushSceneWarningOnce(sceneValidationWarnings_, reason);
   }
 }
 
@@ -3586,7 +3640,6 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
     background.mediaAssetName = bg->getString("mediaAssetName");
     background.mediaAssetKind = bg->getString("mediaAssetKind");
     background.mediaAssetPath = bg->getString("mediaAssetPath");
-    background.playing = !bg->get("playing") || bg->get("playing")->asBool();
     background.enabled = !background.mediaAssetId.empty() && !background.mediaAssetPath.empty();
   }
   signature += "bg:" + background.mediaAssetId + ":" + background.mediaAssetPath + ";";
@@ -3612,8 +3665,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       state.mediaAssetName = route.getString("mediaAssetName");
       state.mediaAssetKind = route.getString("mediaAssetKind");
       state.mediaAssetPath = route.getString("mediaAssetPath");
-      state.mediaPlaybackKey = route.getString("mediaPlaybackKey");
-      state.mediaAssetPlaying = route.get("mediaAssetPlaying") ? route.get("mediaAssetPlaying")->asBool() : false;
+      // Ignored here too, for the same reason as the load-scene-graph site.
       // Operator "loop" for a routed asset (shell: MediaRoutePlaybackService.IsLoopingAsset).
       state.mediaAssetLoop = route.get("mediaAssetLoop") && route.get("mediaAssetLoop")->asBool();
       state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
@@ -3644,7 +3696,6 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       }
       signature += "r:" + std::to_string(state.zIndex) + ":" + state.mode + ":" + state.participantId + ":" +
                    state.captureDeviceId + ":" + state.mediaAssetId + ":" + state.mediaAssetPath + ":" +
-                   state.mediaPlaybackKey + ":" + (state.mediaAssetPlaying ? "p" : "s") +
                    (state.mediaAssetLoop ? "l" : "o") + ":" + state.fitMode + ":" +
                    std::to_string(state.rectX) + "," + std::to_string(state.rectY) + "," +
                    std::to_string(state.rectWidth) + "," + std::to_string(state.rectHeight) + "," +
@@ -4992,18 +5043,32 @@ rpc::Json MediaCore::mediaPlaybackState() const {
     };
   }
 
+  // #535 slice 3b: the state of the selection is its transport state, never a
+  // flag the shell asserted. A selected asset on neither bus has no transport
+  // and therefore no play state - "unavailable" says exactly that, instead of
+  // the "paused" a stale flag used to report.
+  std::string status = "unavailable";
+  if (mediaTransports_) {
+    const std::string sourceId = "media:" + mediaPlaybackAssetId_;
+    for (const auto& row : mediaTransports_->snapshot()) {
+      if (row.sourceId != sourceId) continue;
+      status = core::mediaTransportStateName(row.state);
+      break;
+    }
+  }
+  const bool playing = status == "live";
   const std::string& name = mediaPlaybackAssetName_;
   return rpc::Json::Object{
-      {"status", mediaPlaybackPlaying_ ? "playing" : "paused"},
+      {"status", status},
       {"mediaAssetId", mediaPlaybackAssetId_},
       {"mediaAssetName", name},
       {"mediaAssetKind", mediaPlaybackAssetKind_},
       {"mediaAssetPath", mediaPlaybackAssetPath_},
-      {"mediaPlaybackKey", mediaPlaybackKey_},
-      {"playing", mediaPlaybackPlaying_},
-      {"summary", mediaPlaybackPlaying_
-                      ? "Playing " + name + (mediaPlaybackKey_.empty() ? "." : " with key " + mediaPlaybackKey_ + ".")
-                      : name + " paused."},
+      // Retired (#535 slice 3b); kept as an empty string only so an older
+      // shell reading the field finds a value rather than a missing key.
+      {"mediaPlaybackKey", std::string{}},
+      {"playing", playing},
+      {"summary", name + " " + status + "."},
       {"warnings", warnings},
   };
 }
@@ -5735,7 +5800,6 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     layer.mediaAssetName = sceneBackground.mediaAssetName;
     layer.mediaAssetKind = sceneBackground.mediaAssetKind;
     layer.mediaAssetPath = sceneBackground.mediaAssetPath;
-    layer.mediaAssetPlaying = sceneBackground.playing;
     layer.mediaAssetLoop = true;
     layer.order = -100;
     layer.rect = {0.f, 0.f, 1.f, 1.f};
@@ -5783,8 +5847,6 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         layer.mediaAssetName = route.mediaAssetName;
         layer.mediaAssetKind = route.mediaAssetKind;
         layer.mediaAssetPath = route.mediaAssetPath;
-        layer.mediaPlaybackKey = route.mediaPlaybackKey;
-        layer.mediaAssetPlaying = route.mediaAssetPlaying;
         layer.mediaAssetLoop = route.mediaAssetLoop;
       }
       if (route.hasRect) {

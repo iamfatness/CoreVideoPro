@@ -409,6 +409,11 @@ class MediaCore {
   void setCaptionEnabled(const rpc::Json& command);
   void setBrandKit(const rpc::Json& command);
   void setMediaPlayback(const rpc::Json& command);
+  // #535 slice 3b: the operator's one-shot pause/play on a Program clip.
+  // Selection (set-media-playback) and transport are separate gestures now —
+  // this one names the ASSET and is refused (loudly, state unchanged) when the
+  // asset has no transport, is a loop, or is not on Program.
+  void setMediaTransport(const rpc::Json& command);
   void setMultiviewLayout(const rpc::Json& command);
   // Handles the configure-multiviewer command: stores the user-selected layout
   // mode, tile count, and the label/tally/meters/clock toggles, which the next
@@ -483,8 +488,10 @@ class MediaCore {
     std::string mediaAssetName;
     std::string mediaAssetKind;
     std::string mediaAssetPath;
-    std::string mediaPlaybackKey;
-    bool mediaAssetPlaying = false;
+    // NO mediaPlaybackKey / mediaAssetPlaying (#535 slice 3b): play state is a
+    // MediaTransports decision made at command time from bus membership, not
+    // something a route asserts. Both are still SENT by older shells and are
+    // read by nobody — silently ignored, never refused.
     bool mediaAssetLoop = false;
     float rectX = 0.f;
     float rectY = 0.f;
@@ -517,7 +524,8 @@ class MediaCore {
     std::string mediaAssetName;
     std::string mediaAssetKind;
     std::string mediaAssetPath;
-    bool playing = true;
+    // NO `playing` (#535 slice 3b): a scene background always loops, so its
+    // transport is live on either bus. The wire field is ignored.
   };
 
   [[nodiscard]] modules::CompositorRenderPlan buildCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
@@ -1273,8 +1281,6 @@ class MediaCore {
   std::string mediaPlaybackAssetName_;
   std::string mediaPlaybackAssetKind_;
   std::string mediaPlaybackAssetPath_;
-  std::string mediaPlaybackKey_;
-  bool mediaPlaybackPlaying_ = false;
   std::vector<std::string> mediaPlaybackWarnings_;
   // Ordered multiview layout (the Show Input roster the WinUI sends via
   // set-multiview-layout). Each entry is one tile; kind selects which feed the

@@ -27,7 +27,6 @@ TEST(MediaFrameSourceCompatibility, DecodesConfiguredProductionMov) {
   layer.mediaAssetName = "Production MOV";
   layer.mediaAssetKind = "stinger";
   layer.mediaAssetPath = configuredPath;
-  layer.mediaPlaybackKey = "compatibility-test:1";
   layer.mediaAssetPlaying = true;
   layer.mediaAssetLoop = true;
 
@@ -152,7 +151,7 @@ TEST(MediaFrameSourceCompatibility, ConfiguredFlashFixtureKeepsAllVideoPulseEdge
   ASSERT_TRUE(source != nullptr);
   corevideo::modules::CompositorRenderPlanLayer layer;
   layer.kind = "media-video"; layer.sourceId = "media:flash-probe"; layer.mediaAssetId = "flash-probe";
-  layer.mediaAssetPath = fixture; layer.mediaAssetPlaying = true; layer.mediaPlaybackKey = "source-edge-proof";
+  layer.mediaAssetPath = fixture; layer.mediaAssetPlaying = true;
   const auto anchor = std::chrono::steady_clock::now();
   std::vector<double> starts, widths;
   bool white = false;

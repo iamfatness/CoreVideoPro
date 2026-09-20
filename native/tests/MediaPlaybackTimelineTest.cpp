@@ -108,7 +108,7 @@ class TestDecoder final : public IMediaFrameSource {
   explicit TestDecoder(std::shared_ptr<DecodeGate> gate) : gate_(std::move(gate)) {}
   ~TestDecoder() override { ++gate_->destroyed; }
   std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
-    if (layers.front().mediaPlaybackKey == "blocked") {
+    if (layers.front().mediaAssetId == "blocked") {
       ++gate_->blocked;
       std::unique_lock<std::mutex> lock(gate_->mutex);
       gate_->changed.wait(lock, [&] { return gate_->released; });
@@ -116,7 +116,7 @@ class TestDecoder final : public IMediaFrameSource {
     VideoFrame frame;
     frame.participantId = layers.front().sourceId;
     frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
-    frame.pixelStride = 4; frame.frameId = layers.front().mediaPlaybackKey == "blocked" ? 1 : 2;
+    frame.pixelStride = 4; frame.frameId = layers.front().mediaAssetId == "blocked" ? 1 : 2;
     frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
     return {frame};
   }

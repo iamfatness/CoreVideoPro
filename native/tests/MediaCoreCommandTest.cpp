@@ -1639,6 +1639,11 @@ TEST(MediaCoreCommand, SessionAndHealthExposeZoomReadinessEvidenceWithoutSdk) {
   EXPECT_TRUE(health.get("zoom")->get("evidence")->get("joined")->asBool());
 }
 
+// #535 slice 3b: set-media-playback is a SELECTION echo now. The status is the
+// selected asset transport state ("idle" with nothing selected, "unavailable"
+// when the selection is on neither bus, else cued|live|paused|ended), and the
+// wire `playing`/`mediaPlaybackKey` fields are ignored. The empty-id warning
+// is unchanged.
 TEST(MediaCoreCommand, AppliesMediaPlaybackCommandAndWarnsOnEmptyAsset) {
   corevideo::core::MediaCore mediaCore;
 
@@ -1647,7 +1652,7 @@ TEST(MediaCoreCommand, AppliesMediaPlaybackCommandAndWarnsOnEmptyAsset) {
   EXPECT_EQ(idle.get("mediaPlayback")->getString("status"), "idle");
   EXPECT_FALSE(idle.get("mediaPlayback")->get("playing")->asBool());
 
-  const auto playing = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+  const auto selected = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "set-media-playback"},
       {"mediaAssetId", "clip-intro"},
       {"mediaAssetName", "Intro Sting"},
@@ -1656,26 +1661,29 @@ TEST(MediaCoreCommand, AppliesMediaPlaybackCommandAndWarnsOnEmptyAsset) {
       {"mediaPlaybackKey", "program-take:3:media:clip-intro"},
       {"playing", true},
   });
-  const auto* playback = playing.get("mediaPlayback");
+  const auto* playback = selected.get("mediaPlayback");
   ASSERT_NE(playback, nullptr);
-  EXPECT_EQ(playback->getString("status"), "playing");
+  // No scene routes this asset, so it has no transport: the node says so
+  // rather than echoing the wire flag back as truth.
+  EXPECT_EQ(playback->getString("status"), "unavailable");
   EXPECT_EQ(playback->getString("mediaAssetId"), "clip-intro");
   EXPECT_EQ(playback->getString("mediaAssetName"), "Intro Sting");
   EXPECT_EQ(playback->getString("mediaAssetKind"), "stinger");
   EXPECT_EQ(playback->getString("mediaAssetPath"), "C:/media/intro.mp4");
-  EXPECT_EQ(playback->getString("mediaPlaybackKey"), "program-take:3:media:clip-intro");
-  EXPECT_TRUE(playback->get("playing")->asBool());
-  EXPECT_EQ(playback->getString("summary"), "Playing Intro Sting with key program-take:3:media:clip-intro.");
+  EXPECT_EQ(playback->getString("mediaPlaybackKey"), "");
+  EXPECT_FALSE(playback->get("playing")->asBool());
+  EXPECT_EQ(playback->getString("summary"), "Intro Sting unavailable.");
 
-  const auto paused = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+  const auto moved = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "set-media-playback"},
       {"mediaAssetId", "clip-outro"},
       {"mediaAssetName", "Outro Loop"},
       {"playing", false},
   });
-  ASSERT_NE(paused.get("mediaPlayback"), nullptr);
-  EXPECT_EQ(paused.get("mediaPlayback")->getString("status"), "paused");
-  EXPECT_FALSE(paused.get("mediaPlayback")->get("playing")->asBool());
+  ASSERT_NE(moved.get("mediaPlayback"), nullptr);
+  EXPECT_EQ(moved.get("mediaPlayback")->getString("mediaAssetId"), "clip-outro");
+  EXPECT_EQ(moved.get("mediaPlayback")->getString("status"), "unavailable");
+  EXPECT_FALSE(moved.get("mediaPlayback")->get("playing")->asBool());
 
   const auto empty = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "set-media-playback"},
@@ -3279,7 +3287,6 @@ TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
   layer.mediaAssetId = "diagnostic";
   layer.mediaAssetKind = "stinger";
   layer.mediaAssetPath = videoPath.string();
-  layer.mediaPlaybackKey = "preview:diagnostic";
   layer.mediaAssetPlaying = false;
   std::vector<corevideo::modules::VideoFrame> frames;
   const auto readyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
@@ -3315,7 +3322,6 @@ TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   layer.mediaAssetId = "clip-audio";
   layer.mediaAssetKind = "video";
   layer.mediaAssetPath = wavPath.string();
-  layer.mediaPlaybackKey = "program-take:1:media:clip-audio";
   layer.mediaAssetPlaying = true;
 
   std::vector<corevideo::modules::AudioFrame> frames;
@@ -3396,7 +3402,6 @@ TEST(MediaFoundationMediaFrameSource, PausingMidPlaybackHoldsTheOnAirFrameAndRes
   layer.mediaAssetId = "pause-clip";
   layer.mediaAssetKind = "video";
   layer.mediaAssetPath = videoPath.string();
-  layer.mediaPlaybackKey = "media:pause-clip:live:1";
   layer.mediaAssetPlaying = true;
 
   int64_t held = -1;
@@ -3448,7 +3453,6 @@ TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePaused
   layer.mediaAssetId = "pause-audio";
   layer.mediaAssetKind = "video";
   layer.mediaAssetPath = wavPath.string();
-  layer.mediaPlaybackKey = "media:pause-audio:live:1";
   layer.mediaAssetPlaying = true;
   const auto nowMs = [] {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -3530,7 +3534,6 @@ TEST(MediaFoundationMediaFrameSource, AnFfmpegDecodedClipResumesFromThePausedPos
   layer.mediaAssetId = "prores";
   layer.mediaAssetKind = "video";
   layer.mediaAssetPath = clip.string();
-  layer.mediaPlaybackKey = "media:prores:live:1";
   layer.mediaAssetPlaying = true;
   // Seconds of media time, read back from the frame's centre luma.
   const auto mediaSeconds = [](const corevideo::modules::VideoFrame& frame) {
@@ -3617,7 +3620,6 @@ TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositi
   layer.mediaAssetId = "prores-retry";
   layer.mediaAssetKind = "video";
   layer.mediaAssetPath = clip.string();
-  layer.mediaPlaybackKey = "media:prores-retry:live:1";
   layer.mediaAssetPlaying = true;
   const auto mediaSeconds = [](const corevideo::modules::VideoFrame& frame) {
     const auto centre = static_cast<size_t>(frame.pixelHeight / 2) * frame.pixelStride + static_cast<size_t>(frame.pixelWidth / 2) * 4;
@@ -6434,4 +6436,185 @@ TEST(MediaCoreCommand, BlackPolicyAppliesToProgramOnlyNeverMultiview) {
   ASSERT_NE(mvLayer, mvPlan.layers.end());
   EXPECT_EQ(mvLayer->sourceHealth, "stalled");
   EXPECT_EQ(mvLayer->dropoutPolicy, "hold");  // monitoring surface: never black
+}
+
+// ---------------------------------------------------------------------------
+// #535 slice 3b Task 4: the wire, the snapshot and the plan fields.
+//
+// The per-route `mediaPlaybackKey`/`mediaAssetPlaying` and the background
+// `playing` flag are DEAD on the wire - MediaTransports decides play state at
+// command time now. These four tests pin the replacement: a `mediaSources[]`
+// snapshot node fed from the transports, a one-shot `set-media-transport`
+// operator command, a `mediaPlayback` node whose status comes from the
+// selected asset's transport, and the rule that an older shell still SENDING
+// the retired fields is silently ignored, never refused.
+// ---------------------------------------------------------------------------
+
+// ONE fixed route on asset "clip" - no playback key, no playing flag.
+static corevideo::rpc::Json slice3bClipScene(const char* sceneId, const char* type) {
+  return corevideo::rpc::Json::Object{
+      {"type", type},
+      {"sceneId", sceneId},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+                     {"routeId", "clip-route"},
+                     {"mode", "fixed"},
+                     {"mediaAssetId", "clip"},
+                     {"mediaAssetName", "Clip"},
+                     {"mediaAssetKind", "video"},
+                     {"mediaAssetPath", "C:\\media\\clip.mp4"},
+                     {"rect", corevideo::rpc::Json::Object{
+                                  {"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}};
+}
+
+static corevideo::rpc::Json slice3bEmptyScene(const char* sceneId, const char* type) {
+  return corevideo::rpc::Json::Object{
+      {"type", type}, {"sceneId", sceneId}, {"routes", corevideo::rpc::Json::Array{}}};
+}
+
+// The row for `sourceId` in the snapshot's mediaSources[] node, or nullptr.
+static const corevideo::rpc::Json* slice3bMediaSource(const corevideo::rpc::Json& state,
+                                                      const std::string& sourceId) {
+  const auto* rows = state.get("mediaSources");
+  if (rows == nullptr) return nullptr;
+  for (const auto& row : rows->asArray()) {
+    if (row.getString("sourceId") == sourceId) return &row;
+  }
+  return nullptr;
+}
+
+TEST(MediaCoreCommand, MediaSourcesNodeIsPublishedEmptyAndThenPerSource) {
+  auto modules = corevideo::modules::createStubModules();
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
+  corevideo::core::MediaCore core(std::move(modules));
+
+  // The multiviewer-node rule: present and EMPTY before anything is routed.
+  auto state = core.sessionState();
+  ASSERT_NE(state.get("mediaSources"), nullptr);
+  EXPECT_TRUE(state.get("mediaSources")->asArray().empty());
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bEmptyScene("a", "load-scene-graph"), slice3bClipScene("b", "set-preview-scene")});
+  state = core.sessionState();
+  ASSERT_EQ(state.get("mediaSources")->asArray().size(), 1u);
+  const auto* cued = slice3bMediaSource(state, "media:clip");
+  ASSERT_NE(cued, nullptr);
+  EXPECT_EQ(cued->getString("mediaAssetId"), "clip");
+  EXPECT_EQ(cued->getString("state"), "cued");
+  EXPECT_FALSE(cued->get("onProgram")->asBool());
+  EXPECT_TRUE(cued->get("onPreview")->asBool());
+
+  // The same asset taken to Program: the SAME source id, now live.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bClipScene("b", "load-scene-graph"), slice3bEmptyScene("a", "set-preview-scene")});
+  state = core.sessionState();
+  const auto* live = slice3bMediaSource(state, "media:clip");
+  ASSERT_NE(live, nullptr);
+  EXPECT_EQ(live->getString("state"), "live");
+  EXPECT_TRUE(live->get("onProgram")->asBool());
+}
+
+TEST(MediaCoreCommand, SetMediaTransportPausesAndPlaysTheProgramClipOnly) {
+  auto modules = corevideo::modules::createStubModules();
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
+  corevideo::core::MediaCore core(std::move(modules));
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{slice3bClipScene("b", "load-scene-graph")});
+
+  auto state = core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-transport"}, {"mediaAssetId", "clip"}, {"action", "pause"}});
+  const auto* paused = slice3bMediaSource(state, "media:clip");
+  ASSERT_NE(paused, nullptr);
+  EXPECT_EQ(paused->getString("state"), "paused");
+
+  state = core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-transport"}, {"mediaAssetId", "clip"}, {"action", "play"}});
+  const auto* playing = slice3bMediaSource(state, "media:clip");
+  ASSERT_NE(playing, nullptr);
+  EXPECT_EQ(playing->getString("state"), "live");
+
+  // Refused: the clip is only CUED in Preview, and pause/play is a Program
+  // gesture. The refusal is loud and leaves the transport exactly as it was.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bEmptyScene("a", "load-scene-graph"), slice3bClipScene("b", "set-preview-scene")});
+  state = core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-transport"}, {"mediaAssetId", "clip"}, {"action", "pause"}});
+  const auto* refused = slice3bMediaSource(state, "media:clip");
+  ASSERT_NE(refused, nullptr);
+  EXPECT_EQ(refused->getString("state"), "cued");
+  const auto& warnings = core.sceneValidationWarningsForTest();
+  EXPECT_TRUE(std::any_of(warnings.begin(), warnings.end(), [](const std::string& w) {
+    return w.find("Program") != std::string::npos;
+  })) << "a refused transport must say why";
+}
+
+TEST(MediaCoreCommand, TheSelectedAssetsPlaybackNodeReportsTheTransportState) {
+  // set-media-playback is SELECTION ONLY now; playing/status come from the
+  // transport, and the `playing` field on the wire is ignored outright.
+  auto modules = corevideo::modules::createStubModules();
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
+  corevideo::core::MediaCore core(std::move(modules));
+
+  auto state = core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-playback"},
+      {"mediaAssetId", "clip"},
+      {"mediaAssetName", "Clip"},
+      {"mediaAssetPath", "C:\\media\\clip.mp4"},
+      {"playing", true}});  // `playing` ignored
+  ASSERT_NE(state.get("mediaPlayback"), nullptr);
+  // Selected, but no scene names it: it is on no bus, so there is no transport
+  // state to report and the node says so rather than guessing "paused".
+  EXPECT_EQ(state.get("mediaPlayback")->getString("status"), "unavailable");
+  EXPECT_FALSE(state.get("mediaPlayback")->get("playing")->asBool());
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{slice3bClipScene("b", "load-scene-graph")});
+  state = core.sessionState();
+  EXPECT_EQ(state.get("mediaPlayback")->getString("status"), "live");
+  EXPECT_TRUE(state.get("mediaPlayback")->get("playing")->asBool());
+  EXPECT_EQ(state.get("mediaPlayback")->getString("mediaPlaybackKey"), "");
+  EXPECT_EQ(state.get("mediaPlayback")->getString("summary"), "Clip live.");
+}
+
+TEST(MediaCoreCommand, LegacyPlaybackFieldsOnTheWireAreIgnoredNotRefused) {
+  // Old shells and old cores overlap during rollout: a route still carrying
+  // mediaPlaybackKey/mediaAssetPlaying must be read exactly as one that does
+  // not - silently, with no warning and no effect on the transport.
+  auto modules = corevideo::modules::createStubModules();
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
+  corevideo::core::MediaCore core(std::move(modules));
+
+  const auto state = core.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"},
+      {"sceneId", "b"},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+                     {"routeId", "clip-route"},
+                     {"mode", "fixed"},
+                     {"mediaAssetId", "clip"},
+                     {"mediaAssetName", "Clip"},
+                     {"mediaAssetKind", "video"},
+                     {"mediaAssetPath", "C:\\media\\clip.mp4"},
+                     {"mediaPlaybackKey", "media:clip:live:7"},
+                     {"mediaAssetPlaying", false},
+                     {"rect", corevideo::rpc::Json::Object{
+                                  {"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}}});
+
+  const auto* row = slice3bMediaSource(state, "media:clip");
+  ASSERT_NE(row, nullptr);
+  EXPECT_EQ(row->getString("state"), "live") << "mediaAssetPlaying:false must not cue a Program clip";
+  EXPECT_TRUE(core.sceneValidationWarningsForTest().empty());
+
+  // Same rule on the one-shot command: the retired fields are ignored, and the
+  // selection still lands.
+  const auto after = core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-playback"},
+      {"mediaAssetId", "clip"},
+      {"mediaAssetName", "Clip"},
+      {"mediaAssetPath", "C:\\media\\clip.mp4"},
+      {"mediaPlaybackKey", "media:clip:live:7"},
+      {"playing", false}});
+  EXPECT_EQ(after.get("mediaPlayback")->getString("status"), "live");
+  EXPECT_TRUE(after.get("mediaPlayback")->get("warnings")->asArray().empty());
 }

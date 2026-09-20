@@ -407,7 +407,9 @@ struct CompositorRenderPlanLayer {
   std::string mediaAssetName;
   std::string mediaAssetKind;
   std::string mediaAssetPath;
-  std::string mediaPlaybackKey;
+  // Written only by MediaTransports::decoderLayerOf for the decoder; never by
+  // a plan (#535 slice 3b). The retired per-route `mediaPlaybackKey` went with
+  // the wire field it mirrored: play state is decided at command time now.
   bool mediaAssetPlaying = false;
   // Backgrounds are continuous show elements; stingers/clips remain one-shot.
   // Kept on the shared render layer so SuperSource and Tiles use the same
