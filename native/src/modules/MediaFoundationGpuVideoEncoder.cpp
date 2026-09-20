@@ -200,21 +200,35 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       return fail("set-d3d-manager");
     }
 
-    // HEVC: B-frames OFF. The requirement is that NO REORDERED raw HEVC ever
-    // reaches the FLV muxer - it refuses one outright ("Packet is missing PTS",
-    // measured 2026-09-20) and the GPU-direct path hands FFmpeg a raw Annex-B
-    // stream on a pipe, so a stream the muxer rejects twenty frames in is far
-    // worse than a start() that fails. The B-picture-count property was only the
-    // ASSUMED mechanism: measured 2026-09-20 on this rig (RTX 4090, driver
-    // 616.92) the NVIDIA HEVC Encoder MFT rejects
-    // CODECAPI_AVEncMPVDefaultBPictureCount with E_INVALIDARG (0x80070057),
-    // before AND after SetOutputType. NVENC's low-latency mode also produces no
-    // B-frames, so it is the fallback, and it is what this rig's HEVC round-trip
-    // test (which copy-muxes the raw stream into FLV) actually proves. Only when
-    // BOTH are refused does start() fail. H.264 keeps its shipped behaviour; AV1
-    // muxed cleanly with the MFT default in the 2026-09-20 probe and is proven
-    // per rig by its own round-trip test.
-    if (config_.codec == "hevc" || config_.codec == "h265") {
+    // EVERY CODEC BUT H.264: NO DEEP PIPELINE / NO REORDERED FRAMES.
+    //
+    // This path is a LIVE stream: FFmpeg is demoted to a muxer reading a raw
+    // elementary stream off a pipe and stamping each arriving access unit with
+    // the wallclock. Two things break that. (a) Reordered frames - the FLV muxer
+    // refuses raw HEVC with B-frames outright ("Packet is missing PTS", measured
+    // 2026-09-20). (b) A deep encoder pipeline - measured 2026-09-20, NVENC AV1
+    // at its defaults (lookahead / alt-ref reordering) starved the muxer: the MFT
+    // bound, emitted a normal first chunk, then the muxed stream flatlined at
+    // ~18.4 kbit/s over 29 s against a configured 6 Mbps, three times, with the
+    // GPU encoder otherwise idle. A 12-frame round-trip fits inside that pipeline
+    // and cannot see it; only the sustained gate can.
+    //
+    // So both are asked for, in one ladder, for every non-H.264 codec:
+    // CODECAPI_AVEncMPVDefaultBPictureCount = 0 first, and on rejection
+    // CODECAPI_AVLowLatencyMode + MF_LOW_LATENCY, which on NVENC means no
+    // B-frames AND no deep pipeline. Measured on this rig (RTX 4090, driver
+    // 616.92) the NVIDIA HEVC and AV1 Encoder MFTs both reject the B-picture
+    // count with E_INVALIDARG (0x80070057) - for HEVC, before AND after
+    // SetOutputType - so low-latency mode is what actually takes here; the
+    // per-rig proof is each codec's round-trip test (raw stream copy-muxed into
+    // FLV) plus scripts/validate-gpu-encode.mjs for the sustained rate. start()
+    // fails only when BOTH are refused: a stream the muxer starves on or rejects
+    // twenty frames in is far worse than a start() that refuses loudly.
+    //
+    // H.264 IS DELIBERATELY EXCLUDED and its configuration stays byte-identical:
+    // it is the shipped, gate-proven path, it holds 60.0 fps with sink speed
+    // ~1.37x at the MFT defaults, and it has nothing to gain from this ladder.
+    if (config_.codec != "h264") {
       ComPtr<ICodecAPI> codecApi;
       if (FAILED(encoder_.As(&codecApi)) || !codecApi) return fail("no-codec-api");
 
@@ -224,13 +238,13 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       bframes.ulVal = 0;
       const HRESULT bhr = codecApi->SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &bframes);
       if (SUCCEEDED(bhr)) {
-        ::corevideo::core::nativeLogf("[gpu-encode] hevc b-frames off via bpicture-count\n");
+        ::corevideo::core::nativeLogf("[gpu-encode] %s b-frames off via bpicture-count\n", config_.codec.c_str());
       } else {
         // Name the rejecting HRESULT: the bare detail string Task 8 reports to
         // the operator cannot tell a controller WHICH mechanism was refused.
         ::corevideo::core::nativeLogf(
-            "[gpu-encode] HEVC MFT refused CODECAPI_AVEncMPVDefaultBPictureCount hr=0x%08lX\n",
-            static_cast<unsigned long>(bhr));
+            "[gpu-encode] %s MFT refused CODECAPI_AVEncMPVDefaultBPictureCount hr=0x%08lX\n",
+            config_.codec.c_str(), static_cast<unsigned long>(bhr));
         VARIANT lowLatency;
         VariantInit(&lowLatency);
         lowLatency.vt = VT_BOOL;
@@ -244,11 +258,11 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
         if (attrs) attrs->SetUINT32(MF_LOW_LATENCY, TRUE);
         if (FAILED(lhr)) {
           ::corevideo::core::nativeLogf(
-              "[gpu-encode] HEVC MFT refused CODECAPI_AVLowLatencyMode hr=0x%08lX\n",
-              static_cast<unsigned long>(lhr));
+              "[gpu-encode] %s MFT refused CODECAPI_AVLowLatencyMode hr=0x%08lX\n",
+              config_.codec.c_str(), static_cast<unsigned long>(lhr));
           return fail("set-bframes-off");
         }
-        ::corevideo::core::nativeLogf("[gpu-encode] hevc b-frames off via low-latency-mode\n");
+        ::corevideo::core::nativeLogf("[gpu-encode] %s b-frames off via low-latency-mode\n", config_.codec.c_str());
       }
     }
 
