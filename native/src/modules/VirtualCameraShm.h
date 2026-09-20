@@ -55,7 +55,20 @@ inline std::string virtualCameraShmName() {
 // on a machine-wide, world-readable path (%ProgramData%, identical in every
 // session): both processes map the same file, which the OS keeps coherent across
 // sessions, gated only by the file's ACL (set permissively at create time).
+//
+// COREVIDEO_VCAM_SHM_DIR overrides the directory. It exists for TEST ISOLATION:
+// the unit tests unlink the slot file between cases, and until 2026-09-20 they
+// did so at THIS production path — running the suite while CoreVideo Pro was
+// live unlinked the file the core was publishing into (FILE_SHARE_DELETE lets
+// the delete succeed under an open writer), the core kept writing the orphaned
+// file object, and the Frame Server's reader got ERROR_FILE_NOT_FOUND and served
+// the standby slate until the operator toggled the camera. Production never
+// sets it; the DLL runs in the Frame Server's environment, which never has it.
 inline std::string virtualCameraShmDir() {
+  const char* override = std::getenv("COREVIDEO_VCAM_SHM_DIR");
+  if (override != nullptr && *override != '\0') {
+    return std::string(override);
+  }
   const char* pd = std::getenv("ProgramData");
   std::string root = (pd != nullptr && *pd != '\0') ? std::string(pd) : std::string("C:\\ProgramData");
   return root + "\\CoreVideoPro";
