@@ -277,6 +277,16 @@ public static class TransportStatusFormatter
             lowered.Contains("broken pipe", StringComparison.Ordinal) ||
             lowered.Contains("process exited", StringComparison.Ordinal) ||
             lowered.Contains("process is not running", StringComparison.Ordinal);
+        // A CODEC refusal (2026-09-20, StreamStartAdmission in the core): `prefix`
+        // below is DERIVED from `detail` for this case (the core's own sentence,
+        // stripped of the sender's "RTMP output failed." wrapper) rather than a
+        // hand-written sentence distinct from it. Appending the raw `detail` after
+        // it, as every other arm does, would print the same sentence twice. This
+        // flag lets the final `return` below skip that append for this arm only.
+        var isCodecRefusal =
+            lowered.Contains("needs enhanced rtmp", StringComparison.Ordinal) ||
+            lowered.Contains("needs a hardware encoder", StringComparison.Ordinal) ||
+            lowered.Contains("hardware encoder failed to start", StringComparison.Ordinal);
         var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
                      lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
             ? "Media core is busy applying changes. Wait a moment and try Stream again."
@@ -285,9 +295,7 @@ public static class TransportStatusFormatter
             // through untouched and never fall into the generic key/URL advice.
             // Checked BEFORE the destination-refused arm below so a codec refusal
             // is never mistaken for a connection problem.
-            : lowered.Contains("needs enhanced rtmp", StringComparison.Ordinal) ||
-              lowered.Contains("needs a hardware encoder", StringComparison.Ordinal) ||
-              lowered.Contains("hardware encoder failed to start", StringComparison.Ordinal)
+            : isCodecRefusal
             ? StripRtmpOutputFailedPrefix(detail)
             // The DESTINATION refused us. Checked BEFORE the Program-pixels and
             // generic-RTMP branches because FFmpeg's own words ("Error opening
@@ -349,7 +357,13 @@ public static class TransportStatusFormatter
                         : "Media core rejected the stream request.";
 
         var normalizedAction = string.IsNullOrWhiteSpace(action) ? "request" : action.Trim();
-        return $"Streaming {normalizedAction} failed: {prefix} {detail}";
+        // The codec-refusal arm's `prefix` IS the (stripped) `detail` - appending
+        // `detail` again would print the core's sentence twice. Every other arm's
+        // `prefix` is a hand-written sentence distinct from the raw `detail`, so
+        // appending it there is a genuine second, complementary piece of evidence.
+        return isCodecRefusal
+            ? $"Streaming {normalizedAction} failed: {prefix}"
+            : $"Streaming {normalizedAction} failed: {prefix} {detail}";
     }
 
     public static string FormatOutputStatusBrief(string? status)
