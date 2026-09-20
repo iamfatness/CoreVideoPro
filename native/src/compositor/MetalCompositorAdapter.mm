@@ -800,13 +800,15 @@ class MetalCompositor final : public ICompositor {
         if (compositorLayerIsOverlay(layer.plan)) {
           layer.color = 0xff2a3548;
         } else if (!layer.plan.participantId.empty()) {
-          layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
+          // bus health on air (#535 slice 4a): the ONE resolution rule, not a
+          // per-kind placeholder. See CompositorLayout.h slateColorFor/blackOnStalled.
+          layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           layer.frame = frameForParticipant(frames, layer.plan.participantId);
           if (layer.frame == nullptr) {
             warnUnmatchedCaptureLayer(layer.plan.participantId, frames);
           }
         } else if (!layer.plan.mediaAssetId.empty()) {
-          layer.color = compositor::colorFromParticipantId("media:" + layer.plan.mediaAssetId);
+          layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           const std::string frameSourceId =
               layer.plan.sourceId.empty() ? "media:" + layer.plan.mediaAssetId : layer.plan.sourceId;
           layer.frame = frameForParticipant(frames, frameSourceId);
@@ -844,6 +846,17 @@ class MetalCompositor final : public ICompositor {
           if (frameHasContent(fallbackFrame)) {
             layer.frame = &fallbackFrame;
           }
+        }
+
+        // Content frame present but the source is stalled and the operator's
+        // per-source policy is "black": draw solid black, frame ignored. Must
+        // run after the frame resolution above and before drawLayer, which
+        // branches solid-vs-textured on layer.frame — mirrors the D3D11/CPU
+        // preview rule exactly.
+        if (!compositorLayerIsOverlay(layer.plan) && layer.frame != nullptr && frameHasContent(*layer.frame) &&
+            compositor::blackOnStalled(layer.plan.sourceHealth, layer.plan.dropoutPolicy)) {
+          layer.frame = nullptr;
+          layer.color = compositor::kDropoutBlackRgba;
         }
         layers.push_back(std::move(layer));
       }

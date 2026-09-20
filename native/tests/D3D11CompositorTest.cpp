@@ -145,7 +145,11 @@ TEST(StubCompositor, SceneGraphRenderingStaysGreenInCorevideoStub) {
   EXPECT_EQ(frame.preview.width, 320);
   EXPECT_EQ(frame.preview.height, 180);
   EXPECT_EQ(frame.preview.bgra.size(), static_cast<size_t>(frame.preview.width * frame.preview.height * 4));
-  EXPECT_EQ(previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height / 2), corevideo::compositor::colorFromParticipantId("front"));
+  // bus health on air (#535 slice 4a): "front" is a placeholder layer (a
+  // metadata-only frame, no pixels) with no sourceHealth set by this
+  // hand-built plan, so it reads "" -> the warming slate, never a per-id
+  // colour.
+  EXPECT_EQ(previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height / 2), corevideo::compositor::kWarmingSlateRgba);
   EXPECT_EQ(frame.sharedTexture.sharedHandleHex, "0xFEEDFACE");
   EXPECT_EQ(corevideo::modules::createD3D11Compositor(), nullptr);
 }
@@ -269,7 +273,10 @@ TEST(StubCompositor, AppliesSemanticOverlayDepthAndOpacity) {
   const auto frame = modules.compositor->render(renderPlan, {makeMetadataFrame("speaker")});
   const int sampleX = frame.preview.width / 2;
   const int sampleY = static_cast<int>(frame.preview.height * 0.84f);
-  const uint32_t participantColor = corevideo::compositor::colorFromParticipantId("speaker");
+  // bus health on air (#535 slice 4a): "speaker" is a metadata-only frame
+  // (no pixels) with no sourceHealth, so the placeholder underneath the
+  // overlay is the warming slate, not a per-id colour.
+  const uint32_t participantColor = corevideo::compositor::kWarmingSlateRgba;
   const uint32_t overlayColor = 0xff2a3548u;
 
   EXPECT_EQ(previewPixelRgba(frame.preview, sampleX, sampleY), blendRgbaOver(overlayColor, participantColor, 0.5f));
@@ -626,7 +633,10 @@ TEST(StubCompositor, TransparentChromaKeyLayerRevealsLowerLayer) {
   });
 
   const auto frame = modules.compositor->render(renderPlan, {makeMetadataFrame("back"), makeMetadataFrame("front")});
-  EXPECT_EQ(previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height / 2), corevideo::compositor::colorFromParticipantId("back"));
+  // bus health on air (#535 slice 4a): "back" is a metadata-only frame (no
+  // pixels) with no sourceHealth, so the placeholder revealed through the
+  // transparent chroma-key layer is the warming slate, not a per-id colour.
+  EXPECT_EQ(previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height / 2), corevideo::compositor::kWarmingSlateRgba);
 }
 #endif
 

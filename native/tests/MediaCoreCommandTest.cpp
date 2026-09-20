@@ -4751,9 +4751,11 @@ TEST(MediaCoreCommand, CompositesRealZoomPixelsIntoProgramPreview) {
   EXPECT_EQ(decoded[offset + 2], kRed);
   EXPECT_EQ(decoded[offset + 3], 0xff);
 
-  // The synthetic slate color for this participant must NOT be what we see,
-  // proving real pixels (not the colorFromParticipantId fill) were composited.
-  const uint32_t syntheticColor = corevideo::compositor::colorFromParticipantId("1234");
+  // The synthetic slate colour for this layer must NOT be what we see, proving
+  // real pixels (not the bus-health slate — #535 slice 4a; this frame is
+  // present, so a matched pixel would mean the placeholder painted over it)
+  // were composited.
+  const uint32_t syntheticColor = corevideo::compositor::kWarmingSlateRgba;
   const uint8_t syntheticBlue = static_cast<uint8_t>(syntheticColor & 0xff);
   const uint8_t syntheticGreen = static_cast<uint8_t>((syntheticColor >> 8) & 0xff);
   const uint8_t syntheticRed = static_cast<uint8_t>((syntheticColor >> 16) & 0xff);
@@ -4867,7 +4869,9 @@ TEST(MediaCoreCommand, CompositesMediaRoutePixelsIntoProgramPreview) {
   EXPECT_EQ(decoded[offset + 2], expectedRed);
   EXPECT_EQ(decoded[offset + 3], 0xff);
 
-  const uint32_t syntheticColor = corevideo::compositor::colorFromParticipantId("media:clip-intro");
+  // bus health on air (#535 slice 4a): the placeholder this real frame must
+  // NOT match is the warming slate, not a per-id colour.
+  const uint32_t syntheticColor = corevideo::compositor::kWarmingSlateRgba;
   const bool matchesSynthetic =
       decoded[offset + 0] == static_cast<uint8_t>(syntheticColor & 0xff) &&
       decoded[offset + 1] == static_cast<uint8_t>((syntheticColor >> 8) & 0xff) &&

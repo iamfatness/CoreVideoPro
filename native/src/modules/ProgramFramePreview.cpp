@@ -383,10 +383,12 @@ void fillSyntheticProgramFramePreview(
       const bool isOverlay = compositorLayerIsOverlay(layer);
       if (!isOverlay) {
         if (!layer.participantId.empty()) {
-          color = compositor::colorFromParticipantId(layer.participantId);
+          // bus health on air (#535 slice 4a): the ONE resolution rule, not a
+          // per-kind placeholder. See CompositorLayout.h slateColorFor/blackOnStalled.
+          color = compositor::slateColorFor(layer.sourceHealth);
           frameForLayer = findFrameForParticipant(frames, layer.participantId);
         } else if (!layer.mediaAssetId.empty()) {
-          color = compositor::colorFromParticipantId("media:" + layer.mediaAssetId);
+          color = compositor::slateColorFor(layer.sourceHealth);
           const std::string frameSourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
           frameForLayer = findFrameForParticipant(frames, frameSourceId);
         } else if (layer.hasFillColor) {
@@ -398,6 +400,17 @@ void fillSyntheticProgramFramePreview(
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
           frameForLayer = &frames[static_cast<size_t>(videoIndex - 1)];
           color = compositor::colorFromParticipantId(frameForLayer->participantId);
+        }
+
+        // Content frame present but the source is stalled and the operator's
+        // per-source policy is "black": draw solid black, frame ignored. This
+        // has to happen after frameForLayer resolution above (participant or
+        // media) and before the draw decision below, which branches on
+        // frameForLayer/hasPixels().
+        if (frameForLayer != nullptr && frameForLayer->hasPixels() &&
+            compositor::blackOnStalled(layer.sourceHealth, layer.dropoutPolicy)) {
+          frameForLayer = nullptr;
+          color = compositor::kDropoutBlackRgba;
         }
       }
 
@@ -510,8 +523,11 @@ void fillSyntheticProgramFramePreview(
     if (blitVideoFrameIntoPreviewRect(preview, videoFrame, rect, 1.f)) {
       continue;
     }
-    const auto color = compositor::colorFromParticipantId(videoFrame.participantId);
-    fillRectBgra(preview.bgra, previewWidth, previewHeight, rect.x, rect.y, rect.width, rect.height, unpackColor(color), 1.f);
+    // This path has no render-plan layer (an empty-plan improvised grid cell —
+    // see "AN EMPTY RENDER PLAN IS NOT DRAW NOTHING" in CLAUDE.md), so there is
+    // no sourceHealth to resolve. Use the warming slate rather than the
+    // per-id placeholder colour.
+    fillRectBgra(preview.bgra, previewWidth, previewHeight, rect.x, rect.y, rect.width, rect.height, unpackColor(compositor::kWarmingSlateRgba), 1.f);
   }
 }
 

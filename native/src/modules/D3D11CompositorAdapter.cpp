@@ -704,13 +704,15 @@ class D3D11Compositor final : public ICompositor {
         if (compositorLayerIsOverlay(layer.plan)) {
           layer.color = 0xff2a3548;
         } else if (!layer.plan.participantId.empty()) {
-          layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
+          // bus health on air (#535 slice 4a): the ONE resolution rule, not a
+          // per-kind placeholder. See CompositorLayout.h slateColorFor/blackOnStalled.
+          layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           layer.frame = frameForParticipant(frames, layer.plan.participantId);
           if (layer.frame == nullptr) {
             warnUnmatchedCaptureLayer(layer.plan.participantId, frames);
           }
         } else if (!layer.plan.mediaAssetId.empty()) {
-          layer.color = compositor::colorFromParticipantId("media:" + layer.plan.mediaAssetId);
+          layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           const std::string frameSourceId = layer.plan.sourceId.empty() ? "media:" + layer.plan.mediaAssetId : layer.plan.sourceId;
           layer.frame = frameForParticipant(frames, frameSourceId);
           if (layer.frame == nullptr) {
@@ -727,6 +729,16 @@ class D3D11Compositor final : public ICompositor {
           if (frameHasContent(fallbackFrame)) {
             layer.frame = &fallbackFrame;
           }
+        }
+
+        // Content frame present but the source is stalled and the operator's
+        // per-source policy is "black": draw solid black, frame ignored. Must
+        // run after the frame resolution above and before drawLayer, which
+        // branches solid-vs-textured on layer.frame.
+        if (!compositorLayerIsOverlay(layer.plan) && layer.frame != nullptr && frameHasContent(*layer.frame) &&
+            compositor::blackOnStalled(layer.plan.sourceHealth, layer.plan.dropoutPolicy)) {
+          layer.frame = nullptr;
+          layer.color = compositor::kDropoutBlackRgba;
         }
         layers.push_back(std::move(layer));
       }
@@ -1112,10 +1124,53 @@ class D3D11Compositor final : public ICompositor {
       context_->PSSetShader(pixelShader_.get(), nullptr, 0);
     }
 
+    // bus health on air (#535 slice 4a): a failed source's slate carries its
+    // display name so an operator can tell WHICH source died at a glance.
+    if (layer.frame == nullptr && layer.plan.sourceHealth == "failed") {
+      drawFailedSlateName(layer, renderPlan, rect, layerAlpha);
+    }
+
     // --- Item 8: border pass around the full layer rect. ---
     const auto border = compositor::computeBorderFraming(
         layer.plan.borderStyle, layer.plan.borderColor, layer.plan.borderThickness);
     drawBorderPass(layer, renderPlan, rect, border, layerAlpha);
+  }
+
+  // bus health on air (#535 slice 4a): renders the failed slate's source name,
+  // mirroring drawOverlayLayer's textured branch (premultiplied blend + the
+  // overlay pixel shader) but with no key-transform animation — this is not
+  // an overlay layer. Skips silently if the raster is unavailable (D2D/
+  // DirectWrite missing) — the colour-only slate still shows on air.
+  void drawFailedSlateName(
+      const ResolvedLayer& layer,
+      const CompositorRenderPlan& renderPlan,
+      const compositor::LayerRect& rect,
+      float layerAlpha) {
+    if (layer.plan.sourceDisplayName.empty()) {
+      return;
+    }
+    CompositorOverlayContent content;
+    content.title = layer.plan.sourceDisplayName;
+    ID3D11ShaderResourceView* overlayView =
+        overlayRaster_.rasterOverlayTexture(device_.get(), context_.get(), content, rect, targetWidth_, targetHeight_);
+    if (overlayView == nullptr) {
+      return;
+    }
+    setViewportFromRect(rect);
+    if (!writeLayerConstants(layer, renderPlan, 0xffffffffu, layerAlpha, 1.f, 1.f, 0.f, 0.f)) {
+      return;
+    }
+    context_->OMSetBlendState(premultipliedBlendState_.get(), nullptr, 0xffffffffu);
+    context_->PSSetShader(overlayPixelShader_.get(), nullptr, 0);
+    ID3D11ShaderResourceView* views[] = {overlayView};
+    ID3D11SamplerState* samplers[] = {samplerState_.get()};
+    context_->PSSetShaderResources(0, 1, views);
+    context_->PSSetSamplers(0, 1, samplers);
+    context_->Draw(3, 0);
+    ID3D11ShaderResourceView* nullViews[] = {nullptr};
+    context_->PSSetShaderResources(0, 1, nullViews);
+    context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+    context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
   }
 
   // --- Item 9: overlay/lower-third/caption raster stage. ---

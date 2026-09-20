@@ -69,12 +69,14 @@ class NoCaptureDevice final : public corevideo::modules::ICaptureDevice {
 // source id is polled it has no frame yet (still opening); every later poll
 // delivers a flat DARK (0x10 BGRA) 64x36 frame on that source's own
 // advancing frameId clock. Dark, not mid-grey: the cold-start placeholder
-// this test guards against (compositor::colorFromParticipantId) always draws
-// each channel independently in [72,199] — a "medium" debug palette centred
-// around ~135 — so a fill anywhere near that band risks landing inside the
-// placeholder's range by pure hash coincidence for some asset id. 0x10 (16)
-// sits far below the placeholder's entire possible range, so the two can
-// never be confused regardless of which id or hash produces the placeholder.
+// this test guards against is now the bus-health slate (#535 slice 4a's
+// kWarmingSlateRgba/kFailedSlateRgba, luma ~28-31 — the pink
+// compositor::colorFromParticipantId tile before that always drew each
+// channel independently in [72,199], a "medium" debug palette centred around
+// ~135) — so a fill anywhere near that band risks landing inside a
+// placeholder's range. 0x10 (16) sits far below either placeholder's range,
+// so the two can never be confused regardless of which id/health produces
+// the placeholder.
 class ColdStartGreyMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
  public:
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
@@ -220,9 +222,11 @@ TEST(ProgramPixelContinuity, ASharedBackgroundDoesNotFlickerAcrossATake) {
   // point is that the take must not restart the decoder.
   constexpr double kExpectedGreyLuma = 0.114 * 0x10 + 0.587 * 0x10 + 0.299 * 0x10;
   // The fill is deliberately dark (see ColdStartGreyMediaFrameSource above) so
-  // its luma (~16) sits far outside colorFromParticipantId's entire possible
-  // range (each channel in [72,199], luma centred ~135) — a designed margin,
-  // not a property of one hash output. 2.0 is comfortable here.
+  // its luma (~16) sits far outside either placeholder's range: the bus-health
+  // slates (#535 slice 4a, luma ~28-31) and the older colorFromParticipantId
+  // pink tile (each channel in [72,199], luma centred ~135) — a designed
+  // margin, not a property of one hash output or health value. 2.0 is
+  // comfortable here.
   constexpr double kLumaTolerance = 2.0;
 
   for (int tick = 0; tick < 10; ++tick) {

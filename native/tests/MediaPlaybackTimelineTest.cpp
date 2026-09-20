@@ -523,8 +523,10 @@ TEST(MediaAudioWindows, ABackwardSeekWithinRecentHistoryReplaysDecodedSamples) {
 // Two things change on go-live — the `preview:` source-id namespace collapses
 // and MediaGoLiveLedger advances the generation baked into the playback key —
 // so the arriving request used to match no entry, a cold decoder opened, and
-// Program painted colorFromParticipantId for the ticks before its first frame
-// (the "placeholder flash", #449). The cue poster sits paused at frame 0, so
+// Program painted the bus-health slate (#535 slice 4a's warming slate; the
+// pink `colorFromParticipantId` tile before that) for the ticks before its
+// first frame (the "placeholder flash", #449). The cue poster sits paused at
+// frame 0, so
 // resuming IT is exactly the "roll from 0" the go-live contract asks for.
 TEST(OwnedMediaFrameSource, ACuedClipHandsItsWarmDecoderToProgram) {
   std::atomic<int> created{0};

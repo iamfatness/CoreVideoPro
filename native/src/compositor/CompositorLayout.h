@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cmath>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace corevideo::compositor {
@@ -503,5 +504,16 @@ inline uint32_t colorFromParticipantId(const std::string& participantId) {
 inline constexpr uint32_t kWarmingSlateRgba = 0xff1b1f27u;  // neutral dark
 inline constexpr uint32_t kFailedSlateRgba = 0xff23181cu;   // dark, faintly warm
 inline constexpr uint32_t kDropoutBlackRgba = 0xff000000u;
+
+// The ONE resolution rule (Task 2), shared verbatim by the CPU preview, D3D11
+// and Metal compositors so it cannot drift between them. See the Global
+// Constraints in docs/superpowers/plans/2026-09-19-source-bus-slice4a-health-on-air.md.
+inline uint32_t slateColorFor(std::string_view sourceHealth) {
+  return sourceHealth == "failed" ? kFailedSlateRgba : kWarmingSlateRgba;
+}
+
+inline bool blackOnStalled(std::string_view health, std::string_view policy) {
+  return health == "stalled" && policy == "black";
+}
 
 }  // namespace corevideo::compositor

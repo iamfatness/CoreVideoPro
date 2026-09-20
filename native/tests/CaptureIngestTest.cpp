@@ -96,10 +96,13 @@ TEST(CaptureIngest, CaptureFrameCompositesRealPixelsIntoProgramPreview) {
   EXPECT_TRUE(preview.bgra.size() == static_cast<size_t>(preview.width) * static_cast<size_t>(preview.height) * 4);
 
   // The center samples the green test-pattern bar — real capture pixels, not the
-  // synthetic participant slate.
+  // synthetic bus-health slate.
   const uint32_t centerPixel = previewPixelRgba(preview, preview.width / 2, preview.height / 2);
   EXPECT_TRUE(((centerPixel >> 8) & 0xff) > 200);   // green channel high
   EXPECT_TRUE(((centerPixel >> 16) & 0xff) < 80);   // red channel low
   EXPECT_TRUE((centerPixel & 0xff) < 80);           // blue channel low
-  EXPECT_NE(centerPixel, corevideo::compositor::colorFromParticipantId("capture:decklink-1"));
+  // bus health on air (#535 slice 4a): this layer has no sourceHealth set by
+  // this hand-built plan, so the placeholder it must not be is the warming
+  // slate, not a per-id colour.
+  EXPECT_NE(centerPixel, corevideo::compositor::kWarmingSlateRgba);
 }

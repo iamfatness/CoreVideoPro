@@ -200,7 +200,9 @@ TEST(SourceBusMediaCore, ATestPatternBusSourceCompositesIntoProgram) {
                                 (static_cast<uint32_t>(px[c + 2]) << 16) |
                                 (static_cast<uint32_t>(px[c + 1]) << 8) |
                                 static_cast<uint32_t>(px[c + 0]);
-  EXPECT_NE(centerPixel, corevideo::compositor::colorFromParticipantId("test:pattern"));
+  // bus health on air (#535 slice 4a): the placeholder this real SMPTE frame
+  // must not be is the warming slate, not a per-id colour.
+  EXPECT_NE(centerPixel, corevideo::compositor::kWarmingSlateRgba);
 }
 
 // --- Task 4: sessionState() sources[] node ---

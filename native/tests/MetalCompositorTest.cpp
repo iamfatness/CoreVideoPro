@@ -412,8 +412,10 @@ TEST(MetalCompositor, PreviewPassIsIndependentOfProgramAndMultiview) {
   bool ok = false;
   const auto pixel = iosurfacePixel(texture.iosurfaceId, 0.5f, 0.5f, ok);
   ASSERT_TRUE(ok);
-  // The deterministic participant color, not the clear color.
-  const uint32_t expected = ::corevideo::compositor::colorFromParticipantId("preview-only");
+  // bus health on air (#535 slice 4a): "preview-only" has no frame and no
+  // sourceHealth set by this hand-built plan, so it reads "" -> the warming
+  // slate, not the clear color and not a per-id colour.
+  const uint32_t expected = ::corevideo::compositor::kWarmingSlateRgba;
   EXPECT_NEAR(pixel[2], static_cast<int>((expected >> 16) & 0xff), 2);
   EXPECT_NEAR(pixel[1], static_cast<int>((expected >> 8) & 0xff), 2);
   EXPECT_NEAR(pixel[0], static_cast<int>(expected & 0xff), 2);
