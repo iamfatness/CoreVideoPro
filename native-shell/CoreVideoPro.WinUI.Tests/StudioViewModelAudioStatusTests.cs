@@ -467,6 +467,40 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Contains("I/O error", status, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void FormatStreamingFailureStatus_AnEnhancedRtmpRefusalPointsAtTheCheckboxNotTheKey()
+    {
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("RTMP output failed. H.265 over RTMP needs Enhanced RTMP; enable it in Stream settings or choose H.264."));
+        Assert.Contains("Enhanced RTMP", status, StringComparison.Ordinal);
+        Assert.Contains("H.265", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("stream key", status, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("server URL", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_ANoHardwareEncoderRefusalNamesTheCodec()
+    {
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("RTMP output failed. AV1 needs a hardware encoder on the GPU-direct path and this machine cannot provide one (no-hardware-encoder). Choose H.264 or stream from a machine with an NVIDIA RTX 40-series or newer."));
+        Assert.Contains("AV1", status, StringComparison.Ordinal);
+        Assert.Contains("hardware encoder", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("stream key", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_AGpuEncoderStartFailureQuotesTheDetail()
+    {
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("RTMP output failed. The H.265 hardware encoder failed to start (set-bframes-off). The stream was not started."));
+        Assert.Contains("hardware encoder failed to start", status, StringComparison.Ordinal);
+        Assert.Contains("set-bframes-off", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("stream key", status, StringComparison.OrdinalIgnoreCase);
+    }
+
     // A stream start races Program's first composed pixels. The owner hit this
     // twice on 2026-09-12 (frame-pixels-missing at 13:55:54 and 13:56:41) and read
     // it as "the encoder will not start". A destination that has not produced
