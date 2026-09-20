@@ -20,8 +20,9 @@ namespace corevideo::core {
 //     same spine tick;
 //   * Zoom reuses per-meeting user ids, so an id remembered from the LAST meeting
 //     can name a different person in this one.
-// Binding an id with no frame paints the compositor's colorFromParticipantId
-// slab ON PROGRAM. So the binding is frame-validated: the directed speaker if
+// Binding an id with no frame paints the compositor's bus-health slate
+// (warming/failed, #535 slice 4a) ON PROGRAM. So the binding is
+// frame-validated: the directed speaker if
 // they have a content frame THIS tick, else the most recent previously directed
 // speaker who does, else NOBODY — the caller renders the layer empty (never a
 // slab, never the positional fallback). The history is scoped to one meeting:

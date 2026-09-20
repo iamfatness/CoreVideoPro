@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.WinUI.Services;
 
 namespace CoreVideoPro.WinUI.Models;
 
@@ -225,6 +226,8 @@ public sealed class FeedHealthRow
     public required string Role { get; init; }
     // R1: assigned production role id ("" = none) — drives the roster dropdown.
     public string ProductionRoleId { get; init; } = string.Empty;
+    // #535 slice 4a: operator's per-source "on dropout" choice ("hold" | "black").
+    public string DropoutPolicy { get; init; } = "hold";
     public required string StatusLabel { get; init; }
     public required string BadgeColor { get; init; }
     public string? Detail { get; init; }
@@ -337,6 +340,18 @@ public partial class CaptureDevice : ObservableObject
     public string BrowserOverlayPreviewActionLabel => IsBrowserOverlayInPreview ? "Clear PVW" : "Preview";
 
     public string BrowserOverlayPreviewStatusLabel => IsBrowserOverlayInPreview ? "Staged on Preview" : "Not staged";
+
+    // #535 slice 4a: what this capture source shows on Program when it stops
+    // delivering ("hold" | "black"). Populated from StudioViewModel's
+    // _sourceDropoutPolicies (keyed "capture:<Id>") in ApplyDiscoveredCaptureDevices
+    // and updated directly on the operator's own combo selection, so the row never
+    // shows a stale value on the FIRST look either.
+    private string _dropoutPolicy = "hold";
+    public string DropoutPolicy
+    {
+        get => _dropoutPolicy;
+        set => SetProperty(ref _dropoutPolicy, value);
+    }
 
     private string? _assignedAudioDeviceId;
     public string? AssignedAudioDeviceId
@@ -951,7 +966,8 @@ public static class ProductionStateHelper
     public static IReadOnlyList<FeedHealthRow> BuildFeedHealthRows(
         IReadOnlyList<Participant> participants,
         IReadOnlyDictionary<string, string>? productionRoles = null,
-        IReadOnlyList<ZoomMediaSpineSubscription>? subscriptions = null) =>
+        IReadOnlyList<ZoomMediaSpineSubscription>? subscriptions = null,
+        IReadOnlyDictionary<string, string>? dropoutPolicies = null) =>
         participants.Select(p =>
         {
             var (label, color, detail, attention) = p.Health switch
@@ -1000,6 +1016,7 @@ public static class ProductionStateHelper
                 Name = p.Name,
                 Role = productionRoleId is null ? p.RoleLabel : Services.ProductionRoleService.RoleLabel(productionRoleId),
                 ProductionRoleId = productionRoleId ?? string.Empty,
+                DropoutPolicy = ResolveSourceDropoutPolicy("zoom:" + p.Id, dropoutPolicies),
                 StatusLabel = label,
                 BadgeColor = color,
                 Detail = detail,
@@ -1017,6 +1034,101 @@ public static class ProductionStateHelper
                 RecommendedAction = action ?? string.Empty
             };
         }).ToList();
+
+    // #535 slice 4a: the one place a canonical source id (zoom:<pid> /
+    // capture:<id>) resolves to its persisted "on dropout" choice. Shared by
+    // BuildFeedHealthRows (zoom rows) and StudioViewModel's capture-device
+    // rows so the two never disagree on the default or the lookup shape.
+    public static string ResolveSourceDropoutPolicy(
+        string canonicalSourceId, IReadOnlyDictionary<string, string>? dropoutPolicies) =>
+        dropoutPolicies is not null && dropoutPolicies.TryGetValue(canonicalSourceId, out var policy)
+            ? policy
+            : "hold";
+
+    // #535 slice 4a fix round 2: the one place a freshly built or refreshed
+    // CaptureDevice row is stamped with its stored "on dropout" policy, via
+    // ResolveSourceDropoutPolicy above. TWO callers must both go through this,
+    // or a row rebuilt outside StudioViewModel.ApplyDiscoveredCaptureDevices
+    // silently reverts to "hold" on screen while the persisted/sent policy
+    // stays correct:
+    //   1. StudioViewModel.ApplyDiscoveredCaptureDevices (ordinary device
+    //      discovery: join/leave, device-watcher events, Inputs-tab visits).
+    //   2. StudioViewModel.RefreshVirtualSrtIngestDevice (an SRT ingest row is
+    //      rebuilt from scratch via CreateVirtualSrtIngestDevice on every SRT
+    //      source property change, e.g. OnSrtIngestSourcePropertyChanged).
+    public static void PopulateCaptureDeviceDropoutPolicy(
+        CaptureDevice device, IReadOnlyDictionary<string, string>? dropoutPolicies) =>
+        device.DropoutPolicy = ResolveSourceDropoutPolicy("capture:" + device.Id, dropoutPolicies);
+
+    // R5 (final review, #535 slice 4a): extracted from StudioViewModel.BuildSourcePolicyWires
+    // so it is unit-testable without constructing the (non-constructible-in-tests)
+    // StudioViewModel. The failed slate needs a RESOLVED name — the operator
+    // override if present, else the same derived roster/device name the Sources
+    // page shows — for every zoom:<pid> participant currently in the room and
+    // every capture:<id> device, not only ids that already have an override or
+    // an explicit policy (the pre-fix behaviour: a never-renamed guest's failed
+    // slate carried no name at all).
+    public static IReadOnlyDictionary<string, MediaCoreSourcePolicyWire> BuildSourcePolicyWires(
+        IReadOnlyList<Participant> roomParticipants,
+        IReadOnlyList<CaptureDevice> captureDevices,
+        IReadOnlyDictionary<string, string> dropoutPolicies,
+        IReadOnlyDictionary<string, string>? displayNameOverrides)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var id in dropoutPolicies.Keys)
+        {
+            ids.Add(id);
+        }
+
+        foreach (var participant in roomParticipants)
+        {
+            ids.Add("zoom:" + participant.Id);
+        }
+
+        foreach (var device in captureDevices)
+        {
+            ids.Add("capture:" + device.Id);
+        }
+
+        var wires = new Dictionary<string, MediaCoreSourcePolicyWire>(StringComparer.Ordinal);
+        foreach (var id in ids)
+        {
+            var isZoom = id.StartsWith("zoom:", StringComparison.Ordinal);
+
+            string? derivedName = null;
+            if (isZoom)
+            {
+                var pid = id["zoom:".Length..];
+                derivedName = roomParticipants.FirstOrDefault(item =>
+                    string.Equals(item.Id, pid, StringComparison.Ordinal))?.Name;
+            }
+            else if (id.StartsWith("capture:", StringComparison.Ordinal))
+            {
+                var captureId = id["capture:".Length..];
+                derivedName = captureDevices.FirstOrDefault(item =>
+                    string.Equals(item.Id, captureId, StringComparison.Ordinal))?.Name;
+            }
+
+            // R2/round 2 (final review): a policy is Zoom-only this slice — a
+            // capture/media entry gets NO DropoutPolicy at all (null, not
+            // "hold"), so MediaCoreCommandBuilder omits the wire key entirely
+            // rather than sending a policy the core will refuse EVERY sync
+            // (that refusal re-fires because load-scene-graph clears warnings
+            // before the policy commands run, so it never stays cleared —
+            // programFrame.health would be permanently "degraded").
+            string? policy = null;
+            if (isZoom)
+            {
+                dropoutPolicies.TryGetValue(id, out var storedPolicy);
+                policy = storedPolicy ?? "hold";
+            }
+
+            var name = ShowInputRosterService.ResolveDisplayName(displayNameOverrides, id, derivedName ?? string.Empty);
+            wires[id] = new MediaCoreSourcePolicyWire(id, policy, string.IsNullOrEmpty(name) ? null : name);
+        }
+
+        return wires;
+    }
 
     public static string MediaBinSummary(int assetCount) =>
         assetCount == 0 ? "Media bin is empty" : $"{assetCount} assets in bin";

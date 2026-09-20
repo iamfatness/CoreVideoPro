@@ -34,7 +34,10 @@ public static class MediaCoreCommandBuilder
                 context.MultiviewCanvasHeight,
                 context.MultiviewColumns,
                 context.MultiviewRows),
-            BuildColorGradeCommand(context.ColorGrade),
+            BuildColorGradeCommand(context.ColorGrade)
+        ]);
+        commands.AddRange(BuildSourcePolicyCommands(context.SourcePolicies));
+        commands.AddRange([
             BuildOutputProfileCommand(context.CanvasOutputProfile),
             BuildSrtIngestSourcesCommand(context.SrtIngestSources),
             BuildBrandKitCommand(context.BrandKit),
@@ -370,6 +373,35 @@ public static class MediaCoreCommandBuilder
             ["saturation"] = colorGrade.Saturation,
             ["temperature"] = colorGrade.Temperature
         });
+
+    // #535 slice 4a: one set-source-policy command per entry, ordered by
+    // sourceId (ordinal) for determinism. displayName AND dropoutPolicy are
+    // both omitted from the payload when null (never sent as an explicit
+    // null) — round 2, final review: a policy is Zoom-only this slice, so a
+    // capture/media NAME-ONLY entry (DropoutPolicy null) must not send the
+    // key at all, or the core's correct refusal for a non-zoom id fires on
+    // EVERY sync and permanently degrades programFrame.health.
+    private static IEnumerable<NativeMediaCoreCommand> BuildSourcePolicyCommands(
+        IReadOnlyDictionary<string, MediaCoreSourcePolicyWire> sourcePolicies) =>
+        sourcePolicies.Values
+            .OrderBy(policy => policy.SourceId, StringComparer.Ordinal)
+            .Select(policy =>
+            {
+                var payload = new Dictionary<string, object?>
+                {
+                    ["sourceId"] = policy.SourceId
+                };
+                if (policy.DropoutPolicy is not null)
+                {
+                    payload["dropoutPolicy"] = policy.DropoutPolicy;
+                }
+                if (policy.DisplayName is not null)
+                {
+                    payload["displayName"] = policy.DisplayName;
+                }
+
+                return Command("set-source-policy", payload);
+            });
 
     private static NativeMediaCoreCommand BuildOutputProfileCommand(MediaCoreOutputProfileWire profile) =>
         Command("set-output-profile", new Dictionary<string, object?>

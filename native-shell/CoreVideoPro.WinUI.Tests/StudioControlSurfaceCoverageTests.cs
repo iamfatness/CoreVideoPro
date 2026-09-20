@@ -21,6 +21,26 @@ public sealed class StudioControlSurfaceCoverageTests
         var extra = supported.Except(registered).OrderBy(x => x).ToList();
         Assert.True(extra.Count == 0, $"StudioControlSurface handles unknown action ids: {string.Join(", ", extra)}");
     }
+    // R6 (final review, #535 slice 4a): source.dropout.set is Zoom-only this slice.
+    [Theory]
+    [InlineData("capture:decklink-1")]
+    [InlineData("media:asset-1")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void SourceDropoutSetRefusesNonZoomIds(string? sourceId)
+    {
+        var result = StudioControlSurface.ValidateZoomOnlyDropoutSourceId(sourceId);
+        Assert.NotNull(result);
+        Assert.False(result!.Ok);
+        Assert.Contains("only zoom:<pid>", result.Error);
+    }
+
+    [Fact]
+    public void SourceDropoutSetAcceptsZoomIds()
+    {
+        Assert.Null(StudioControlSurface.ValidateZoomOnlyDropoutSourceId("zoom:16778240"));
+    }
+
     [Fact]
     public void LowerThirdSetReportsRejectedSourceInsteadOfFalseSuccess()
     {

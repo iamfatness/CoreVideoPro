@@ -200,7 +200,9 @@ TEST(SourceBusMediaCore, ATestPatternBusSourceCompositesIntoProgram) {
                                 (static_cast<uint32_t>(px[c + 2]) << 16) |
                                 (static_cast<uint32_t>(px[c + 1]) << 8) |
                                 static_cast<uint32_t>(px[c + 0]);
-  EXPECT_NE(centerPixel, corevideo::compositor::colorFromParticipantId("test:pattern"));
+  // bus health on air (#535 slice 4a): the placeholder this real SMPTE frame
+  // must not be is the warming slate, not a per-id colour.
+  EXPECT_NE(centerPixel, corevideo::compositor::kWarmingSlateRgba);
 }
 
 // --- Task 4: sessionState() sources[] node ---
@@ -406,6 +408,19 @@ TEST(CaptureDeviceSource, PollServesTheAdaptersLatestBgraFrameKeyedByDevice) {
   EXPECT_EQ(tick.health, corevideo::core::SourceHealth::Producing);
   EXPECT_EQ(src.counters().lastFrameId, 7);
   EXPECT_EQ(src.counters().framesIngested, 1u);
+}
+
+// --- Task 1 (#535 slice 4a): SourceBus::healthFor ---
+TEST(SourceBus, HealthForReportsWarmingProducingStalledAndAbsent) {
+  corevideo::core::SourceBus bus;
+  EXPECT_FALSE(bus.healthFor("capture:cam", 0).has_value());
+  auto cam = std::make_shared<corevideo::core::CaptureDeviceSource>("capture:cam", 640, 360);
+  bus.add(cam);
+  EXPECT_EQ(bus.healthFor("capture:cam", 1000), corevideo::core::SourceHealth::Warming);
+  cam->setLatest(bgraFrame("capture:cam", 640, 360, 1));
+  (void)bus.ingest(0, 1000);
+  EXPECT_EQ(bus.healthFor("capture:cam", 1000), corevideo::core::SourceHealth::Producing);
+  EXPECT_EQ(bus.healthFor("capture:cam", 1000 + 300'000'000), corevideo::core::SourceHealth::Stalled);
 }
 
 // --- Task 2: pure syncCaptureSources helper ---

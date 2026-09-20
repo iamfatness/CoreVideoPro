@@ -1,21 +1,48 @@
 #!/usr/bin/env python3
 """zoom-gap-hold-ab: does PROGRAM hold a routed Zoom participant's last picture
-across a subscription gap, or fall to the slate?
+across a subscription gap, or fall to the slate/black per its dropout policy?
 
 Drives the headless core with the fake engine: 101 on program / 102 on preview,
 cue a brand-new participant (103), Take, then keep 103 routed on program while
-the subscription list omits it for ~450 ms (a video-budget eviction or spine
-churn around a Take) and restores it. The program is RECORDED to MP4 around the
-gap, because nothing on the wire carries per-layer pixels or geometry: judge it
-with ffmpeg signalstats (YAVG per frame) — a held frame keeps the pre-gap luma,
-the fallback slate does not. Found the #535 slice-1 regression on 2026-09-19
-(slate for the whole gap; the pre-bus store held the frame).
+the subscription list omits it for `--gap-seconds` (default 0.45s; a video-
+budget eviction or spine churn around a Take) and restores it. The program is
+RECORDED to MP4 around the gap, because nothing on the wire carries per-layer
+pixels or geometry: judge it with ffmpeg signalstats (YAVG per frame). Found
+the #535 slice-1 regression on 2026-09-19 (slate for the whole gap; the
+pre-bus store held the frame).
+
+Slice 4a (2026-09-19) retired the old pink-tile dropout signature. The two
+possible dropout renders now are the bus-health slate — solid
+`kWarmingSlateRgba` (0xff1b1f27, BT.709 luma of R=0x1b/G=0x1f/B=0x27 ≈ 30) — or,
+with `--policy black`, solid black (`kDropoutBlackRgba`, luma ≈ 16). Neither is
+the old pink placeholder. `--policy hold` (the default) leaves 103's dropout
+policy at its default `hold`, so the compositor keeps compositing the bus's
+held last frame through the gap (luma stays near the pre-gap level, ~188 in
+this fixture) — the stalled+black rule never engages because the policy is not
+`black`. `--policy black` sends `set-source-policy` for `zoom:103` with
+`dropoutPolicy:"black"` before the DROPOUT phase.
+
+Final review (2026-09-19), R1: on-air "stalled" for a Zoom source is now a
+1.5s HYSTERESIS (`core::kOnAirStallNs`), not the bus's 200ms diagnostic health
+— black is a genuine on-air CUT and must never fire on ordinary cadence
+noise. The harness's original ~450ms DROPOUT window is now SHORTER than that
+1.5s window, so a `--policy black` run with the default gap never reaches
+"stalled" at all and 103's picture just holds — that is CORRECT per R1, not a
+regression, but it means the black-cut behavior needs a wider gap to observe.
+`--gap-seconds` (default 0.45, matching the original window) widens the
+DROPOUT phase; pass `--gap-seconds 2.5` with `--policy black` to clear the
+1.5s window with margin and actually observe: luma holds for the first ~1.5s
+of the gap (bus health still "producing"/pre-stall), THEN drops to ~16 (black)
+once bus health crosses to "stalled", and recovers to the held/live frame
+luma immediately after RESTORE.
 
 Usage:
-  python scripts/qa/zoom-gap-hold-ab.py --core native/build-dev/corevideo-native.exe       --fake native/build-dev/corevideo-zoom-engine-fake.exe --label fixed
+  python scripts/qa/zoom-gap-hold-ab.py --core native/build-dev/corevideo-native.exe       --fake native/build-dev/corevideo-zoom-engine-fake.exe --label fixed [--policy hold|black] [--gap-seconds N]
   ffmpeg -i rec-fixed/*/Program.mp4 -vf signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=fixed.yavg.txt -f null -
 Writes <label>.jsonl (one snapshot slice per poll), <label>.stderr.log and
-rec-<label>/<session>/Program.mp4, and prints a phase summary.
+rec-<label>/<session>/Program.mp4, and prints a phase summary (including each
+polled tick's `bus=` source health tuples, so a stuck "producing" read during
+the gap is visible without re-running).
 """
 import argparse, json, os, subprocess, sys, threading, time
 
@@ -77,6 +104,18 @@ def main():
     ap.add_argument("--core", required=True); ap.add_argument("--label", required=True)
     ap.add_argument("--fake", required=True); ap.add_argument("--autosub", default="0")
     ap.add_argument("--poll-ms", type=int, default=50); ap.add_argument("--after-s", type=float, default=3.0)
+    ap.add_argument("--policy", choices=("hold", "black"), default="hold",
+                     help="dropout policy to set on zoom:103 before the DROPOUT phase (default hold)")
+    # #535 slice 4a final review: R1 made on-air "stalled" a 1.5s Zoom
+    # hysteresis, well past this harness's original ~450ms DROPOUT window — a
+    # --policy black run no longer sees black at all with the default gap,
+    # since the bus never crosses kOnAirStallNs before RESTORE. --gap-seconds
+    # lets a --policy black run widen the window past 1.5s to actually reach
+    # the black cut; the default (0.45s) matches the original --policy hold
+    # behavior (luma held the whole way, well under the 1.5s window).
+    ap.add_argument("--gap-seconds", type=float, default=0.45,
+                     help="DROPOUT window duration in seconds (default 0.45; use ~2.5 with --policy black "
+                          "to clear the 1.5s on-air stall hysteresis and actually reach the black cut)")
     a = ap.parse_args()
     env = {"COREVIDEO_ZOOM_ENGINE_PATH": a.fake, "COREVIDEO_FAKE_ENGINE_PARTICIPANTS": "3",
            "COREVIDEO_FAKE_ENGINE_RES": "2", "COREVIDEO_FAKE_ENGINE_FPS": "60",
@@ -131,10 +170,14 @@ def main():
     # DROPOUT: 103 stays routed on program, but the subscription list omits it
     # for ~400ms (what a video-budget eviction or a transient spine does), then
     # restores it. Old path held the last frame; the bus removes the source.
+    if a.policy == "black":
+        rec("set-policy", core.sync([{"type": "set-source-policy", "sourceId": "zoom:103",
+                                       "dropoutPolicy": "black", "displayName": "Guest 103"}], el()))
     core.spine([("101", "preview")], el())
     rec("dropout", core.sync([], el()))
-    for i in range(8):
-        core.spine([("101", "preview")], el()); rec("dropped", core.sync([], el())); time.sleep(0.05)
+    gap_iterations = max(1, int(a.gap_seconds * 1000 / a.poll_ms))
+    for i in range(gap_iterations):
+        core.spine([("101", "preview")], el()); rec("dropped", core.sync([], el())); time.sleep(a.poll_ms / 1000)
     core.spine([("103", "program"), ("101", "preview")], el())
     rec("restore", core.sync([], el()))
     for i in range(40):

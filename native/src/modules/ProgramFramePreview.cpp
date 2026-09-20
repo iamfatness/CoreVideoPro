@@ -383,10 +383,12 @@ void fillSyntheticProgramFramePreview(
       const bool isOverlay = compositorLayerIsOverlay(layer);
       if (!isOverlay) {
         if (!layer.participantId.empty()) {
-          color = compositor::colorFromParticipantId(layer.participantId);
+          // bus health on air (#535 slice 4a): the ONE resolution rule, not a
+          // per-kind placeholder. See CompositorLayout.h slateColorFor/blackOnStalled.
+          color = compositor::slateColorFor(layer.sourceHealth);
           frameForLayer = findFrameForParticipant(frames, layer.participantId);
         } else if (!layer.mediaAssetId.empty()) {
-          color = compositor::colorFromParticipantId("media:" + layer.mediaAssetId);
+          color = compositor::slateColorFor(layer.sourceHealth);
           const std::string frameSourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
           frameForLayer = findFrameForParticipant(frames, frameSourceId);
         } else if (layer.hasFillColor) {
@@ -396,8 +398,30 @@ void fillSyntheticProgramFramePreview(
           // null, so the synthetic-fill branch below paints `color`.
           color = compositor::parseHexColorRgba(layer.fillColor, 0xff808080u);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
+          // Legacy positional fallback (a layer with no participantId/mediaAssetId
+          // at all, matched by index) — I-4: pink is retired for every kind, so
+          // this resolves by the same one rule as every other layer.
           frameForLayer = &frames[static_cast<size_t>(videoIndex - 1)];
-          color = compositor::colorFromParticipantId(frameForLayer->participantId);
+          color = compositor::slateColorFor(layer.sourceHealth);
+        }
+
+        // Content frame present but the source is stalled and the operator's
+        // per-source policy is "black": draw solid black, frame ignored. This
+        // has to happen after frameForLayer resolution above (participant or
+        // media) and before the draw decision below, which branches on
+        // frameForLayer/hasPixels(). I-3 (fix round 1): a stalled ZOOM guest
+        // carries I420, not BGRA pixels, so this predicate must accept EITHER
+        // representation or a stalled I420 source would show the WARMING
+        // slate here while D3D11/Metal (frameHasContent = hasPixels() ||
+        // hasI420()) correctly show black — the same content frame, two
+        // different pictures across preview vs program. The blit itself
+        // stays BGRA-only, unchanged: an I420 frame that reaches the
+        // draw-a-real-frame branch below still falls through to the
+        // synthetic fill (see blitVideoFrameLayerClipped's hasPixels() gate).
+        if (frameForLayer != nullptr && (frameForLayer->hasPixels() || frameForLayer->hasI420()) &&
+            compositor::blackOnStalled(layer.sourceHealth, layer.dropoutPolicy)) {
+          frameForLayer = nullptr;
+          color = compositor::kDropoutBlackRgba;
         }
       }
 
@@ -510,8 +534,11 @@ void fillSyntheticProgramFramePreview(
     if (blitVideoFrameIntoPreviewRect(preview, videoFrame, rect, 1.f)) {
       continue;
     }
-    const auto color = compositor::colorFromParticipantId(videoFrame.participantId);
-    fillRectBgra(preview.bgra, previewWidth, previewHeight, rect.x, rect.y, rect.width, rect.height, unpackColor(color), 1.f);
+    // This path has no render-plan layer (an empty-plan improvised grid cell —
+    // see "AN EMPTY RENDER PLAN IS NOT DRAW NOTHING" in CLAUDE.md), so there is
+    // no sourceHealth to resolve. Use the warming slate rather than the
+    // per-id placeholder colour.
+    fillRectBgra(preview.bgra, previewWidth, previewHeight, rect.x, rect.y, rect.width, rect.height, unpackColor(compositor::kWarmingSlateRgba), 1.f);
   }
 }
 

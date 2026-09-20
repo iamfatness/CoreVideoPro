@@ -148,7 +148,7 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.NotNull(migratedCustom);
         Assert.True(defaultWasMigrated);
         Assert.True(customWasMigrated);
-        Assert.Equal(12, migratedDefault.Version);
+        Assert.Equal(13, migratedDefault.Version);
         Assert.Equal(10, migratedDefault.MultiviewTileCount);
         Assert.Equal(6, migratedCustom.MultiviewTileCount);
     }
@@ -213,9 +213,54 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(12, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(13, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Empty(migrated.VstInsertStates);
+        Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
+    }
+
+    [Fact]
+    public void Serializer_RoundTripsSourceDropoutPolicies()
+    {
+        // #535 slice 4a (v13): the operator's per-source "on dropout" choices
+        // persist, keyed by canonical source id.
+        var preferences = new ProductionOutputPreferences
+        {
+            SourceDropoutPolicies = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["zoom:16778240"] = "black",
+                ["capture:cam0"] = "hold"
+            }
+        };
+
+        var roundTripped = ProductionOutputPreferencesSerializer.Deserialize(
+            ProductionOutputPreferencesSerializer.Serialize(preferences));
+
+        Assert.NotNull(roundTripped);
+        Assert.Equal(13, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal("black", roundTripped.SourceDropoutPolicies["zoom:16778240"]);
+        Assert.Equal("hold", roundTripped.SourceDropoutPolicies["capture:cam0"]);
+    }
+
+    [Fact]
+    public void Serializer_MigratesV12FileToV13WithEmptySourceDropoutPolicies()
+    {
+        // A v12 file (no SourceDropoutPolicies field) migrates with an empty
+        // map — every source defaults to "hold", never a crash.
+        const string json = """
+            {
+              "Version": 12,
+              "VirtualCameraEnabled": true
+            }
+            """;
+
+        var migrated = ProductionOutputPreferencesSerializer.Deserialize(json, out var wasMigrated);
+
+        Assert.NotNull(migrated);
+        Assert.True(wasMigrated);
+        Assert.Equal(13, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
+        Assert.Empty(migrated.SourceDropoutPolicies);
         Assert.True(migrated.VirtualCameraEnabled);  // untouched fields survive
     }
 
@@ -253,7 +298,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(12, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(13, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.False(migrated.IsoRecordingEnabled);
         Assert.Empty(migrated.IsoRecordingSourceIds);
@@ -294,7 +339,7 @@ public sealed class ProductionOutputPreferencesStoreTests
 
         Assert.NotNull(migrated);
         Assert.True(wasMigrated);
-        Assert.Equal(12, ProductionOutputPreferences.CurrentVersion);
+        Assert.Equal(13, ProductionOutputPreferences.CurrentVersion);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, migrated.Version);
         Assert.Equal(ZoomAudioModePreference.PerGuestIsoValue, migrated.ZoomAudioMode);
         Assert.Equal(ZoomAudioMode.PerGuestIso, ZoomAudioModePreference.Parse(migrated.ZoomAudioMode));

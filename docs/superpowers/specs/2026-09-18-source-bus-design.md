@@ -191,10 +191,26 @@ never as an unwired island. So the contract does not land alone.
   still source's decoder. Needs the owner's Take-semantics ruling (#449 step 1
   "hold outgoing picture on a plain cut") because go-live/roll-from-0 and
   hand-off are one decision. Own spec.
-- **Slice 4 — retire the three old interfaces.** Once every kind is on `ISource`,
-  `IZoomCaptureSource`/`ICaptureDevice`/`IMediaFrameSource` are deleted and the
-  compositor's per-kind empty-frame fallbacks collapse to one bus-health path
-  (issue done-when #3).
+- **Slice 4a (health on air, shipped on branch 2026-09-19) — the compositor's
+  per-kind empty-frame fallbacks collapse to one bus-health path, done-when #3
+  proper.** Render-plan layers gain `sourceHealth`/`dropoutPolicy`/
+  `sourceDisplayName` (filled at plan build from `SourceBus::healthFor` + the
+  frame set); the CPU preview, D3D11 and Metal (colour-only) compositors share
+  ONE resolution rule (`compositor::slateColorFor`/`blackOnStalled` in
+  `CompositorLayout.h`) instead of each inventing `colorFromParticipantId`. Per
+  the owner's 2026-09-19 rulings: *warming* = a neutral dark slate; *failed/
+  missing* = a dark slate with the source name; *stalled* (had frames, none for
+  200 ms+) is the operator's per-source choice — hold last frame (default) or
+  black — set on the Sources page, persisted, and shipped to the core as
+  `set-source-policy`. See `docs/superpowers/specs/2026-09-19-source-bus-slice4-scoping.md`
+  item 4 and `docs/superpowers/plans/2026-09-19-source-bus-slice4a-health-on-air.md`.
+  **Not done in 4a:** the three old poll interfaces still exist behind the bus.
+- **Slice 4b — retire the three old interfaces.** Once every kind's PRODUCER
+  (not just its render-gather delivery) is on `ISource`,
+  `IZoomCaptureSource`/`ICaptureDevice`/`IMediaFrameSource` are deleted. Needs
+  Zoom audio onto the bus, an adapter lifecycle contract for capture, and
+  media's slice 3b — each its own design doc, per
+  `docs/superpowers/specs/2026-09-19-source-bus-slice4-scoping.md`.
 
 Each slice is independently shippable, stub-green, and validated on the live test
 meeting per the recording-PR-needs-Windows-build rule (the MF encoder path never

@@ -800,13 +800,15 @@ class MetalCompositor final : public ICompositor {
         if (compositorLayerIsOverlay(layer.plan)) {
           layer.color = 0xff2a3548;
         } else if (!layer.plan.participantId.empty()) {
-          layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
+          // bus health on air (#535 slice 4a): the ONE resolution rule, not a
+          // per-kind placeholder. See CompositorLayout.h slateColorFor/blackOnStalled.
+          layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           layer.frame = frameForParticipant(frames, layer.plan.participantId);
           if (layer.frame == nullptr) {
             warnUnmatchedCaptureLayer(layer.plan.participantId, frames);
           }
         } else if (!layer.plan.mediaAssetId.empty()) {
-          layer.color = compositor::colorFromParticipantId("media:" + layer.plan.mediaAssetId);
+          layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           const std::string frameSourceId =
               layer.plan.sourceId.empty() ? "media:" + layer.plan.mediaAssetId : layer.plan.sourceId;
           layer.frame = frameForParticipant(frames, frameSourceId);
@@ -839,11 +841,25 @@ class MetalCompositor final : public ICompositor {
         // branch on purpose (T1 is Windows-first); this comment exists so the
         // gap is greppable in this file rather than silent.
         else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
+          // Legacy positional fallback (a layer with no participantId/mediaAssetId
+          // at all, matched by index) — I-4: pink is retired for every kind, so
+          // this resolves by the same one rule as every other layer.
           const auto& fallbackFrame = frames[static_cast<size_t>(videoIndex - 1)];
-          layer.color = compositor::colorFromParticipantId(fallbackFrame.participantId);
+          layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           if (frameHasContent(fallbackFrame)) {
             layer.frame = &fallbackFrame;
           }
+        }
+
+        // Content frame present but the source is stalled and the operator's
+        // per-source policy is "black": draw solid black, frame ignored. Must
+        // run after the frame resolution above and before drawLayer, which
+        // branches solid-vs-textured on layer.frame — mirrors the D3D11/CPU
+        // preview rule exactly.
+        if (!compositorLayerIsOverlay(layer.plan) && layer.frame != nullptr && frameHasContent(*layer.frame) &&
+            compositor::blackOnStalled(layer.plan.sourceHealth, layer.plan.dropoutPolicy)) {
+          layer.frame = nullptr;
+          layer.color = compositor::kDropoutBlackRgba;
         }
         layers.push_back(std::move(layer));
       }
@@ -861,7 +877,11 @@ class MetalCompositor final : public ICompositor {
       layer.plan.order = index;
       const auto layout = compositor::gridCell((std::max)(1, count), index);
       layer.plan.rect = {layout.x, layout.y, layout.width, layout.height};
-      layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
+      // bus health on air (#535 slice 4a), I-4: this is the empty-render-plan
+      // improvised grid fallback (no CompositorRenderPlanLayer at all, so no
+      // sourceHealth to read) — pink is retired for every kind, so this
+      // resolves to the warming slate like every other frameless layer.
+      layer.color = compositor::kWarmingSlateRgba;
       if (frameHasContent(frames[static_cast<size_t>(index)])) {
         layer.frame = &frames[static_cast<size_t>(index)];
       }
@@ -1188,6 +1208,15 @@ class MetalCompositor final : public ICompositor {
     setScissorFromRect(encoder, clip);
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     resetScissor(encoder);
+
+    // TODO(4a-metal-text): bus health on air (#535 slice 4a) — the failed
+    // slate is colour-only here. The D3D11 twin composites the source's
+    // display name as a small bottom-left label (drawFailedSlateName in
+    // D3D11CompositorAdapter.cpp) via its cached DirectWrite/D2D overlay
+    // raster; this file has no MTLTexture-upload/caching counterpart for
+    // `rasterOverlayTileCoreText`'s raw premultiplied-BGRA buffer on a
+    // non-overlay layer, so the name label is pending that CoreText
+    // plumbing rather than done here.
 
     const auto border = compositor::computeBorderFraming(layer.plan.borderStyle, layer.plan.borderColor,
                                                          layer.plan.borderThickness);

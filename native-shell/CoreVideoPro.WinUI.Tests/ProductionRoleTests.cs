@@ -1,3 +1,4 @@
+using System.Linq;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.MediaCore.Models;
@@ -103,5 +104,157 @@ public class ProductionRoleTests
         Assert.Equal(1500, row.AudioPacketsReceived);
         Assert.Contains("Video subscribed", row.DiagnosticSummary);
         Assert.False(row.HasRecommendedAction);
+    }
+
+    [Fact]
+    public void FeedHealthCarriesThePerSourceDropoutPolicy()
+    {
+        // #535 slice 4a: the operator's persisted "on dropout" choice reads
+        // through onto the matching row; every other row defaults to "hold".
+        var rows = ProductionStateHelper.BuildFeedHealthRows(
+            [
+                new Participant { Id = "1", Name = "Black guest", Health = FeedHealth.Live },
+                new Participant { Id = "2", Name = "Default guest", Health = FeedHealth.Live }
+            ],
+            dropoutPolicies: new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["zoom:1"] = "black"
+            });
+
+        var blackRow = rows.Single(row => row.ParticipantId == "1");
+        var defaultRow = rows.Single(row => row.ParticipantId == "2");
+
+        Assert.Equal("black", blackRow.DropoutPolicy);
+        Assert.Equal("hold", defaultRow.DropoutPolicy);
+    }
+
+    [Fact]
+    public void ResolveSourceDropoutPolicyReadsBackACaptureDevicesStoredPolicy()
+    {
+        // #535 slice 4a fix round 1: capture-device rows share the exact same
+        // resolution helper as Zoom guest rows (ProductionStateHelper.
+        // ResolveSourceDropoutPolicy), so a capture row never shows a stale
+        // "Hold last frame" default after a relaunch when "black" was stored.
+        var dropoutPolicies = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["capture:cam-1"] = "black"
+        };
+
+        Assert.Equal("black", ProductionStateHelper.ResolveSourceDropoutPolicy("capture:cam-1", dropoutPolicies));
+        Assert.Equal("hold", ProductionStateHelper.ResolveSourceDropoutPolicy("capture:cam-2", dropoutPolicies));
+    }
+
+    [Fact]
+    public void PopulateCaptureDeviceDropoutPolicyIsTheOneHelperBothConstructionPathsMustCall()
+    {
+        // #535 slice 4a fix round 2: StudioViewModel.ApplyDiscoveredCaptureDevices
+        // (ordinary device discovery) and StudioViewModel.RefreshVirtualSrtIngestDevice
+        // (an SRT ingest row rebuilt from scratch on every SRT source property
+        // change) both stamp a freshly built CaptureDevice's DropoutPolicy through
+        // this ONE helper, so a live SRT stream set to "black" cannot revert to
+        // "hold" on screen the next time its row is rebuilt.
+        var dropoutPolicies = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["capture:srt-black"] = "black"
+        };
+
+        var blackDevice = new CaptureDevice
+        {
+            Id = "srt-black",
+            NativeDeviceId = "srt://127.0.0.1:10001",
+            Vendor = "srt",
+            Name = "SRT 1",
+            Inputs = [],
+            SelectedInputId = "srt-black"
+        };
+        var defaultDevice = new CaptureDevice
+        {
+            Id = "srt-default",
+            NativeDeviceId = "srt://127.0.0.1:10002",
+            Vendor = "srt",
+            Name = "SRT 2",
+            Inputs = [],
+            SelectedInputId = "srt-default"
+        };
+
+        ProductionStateHelper.PopulateCaptureDeviceDropoutPolicy(blackDevice, dropoutPolicies);
+        ProductionStateHelper.PopulateCaptureDeviceDropoutPolicy(defaultDevice, dropoutPolicies);
+
+        Assert.Equal("black", blackDevice.DropoutPolicy);
+        Assert.Equal("hold", defaultDevice.DropoutPolicy);
+    }
+
+    // R5 (final review, #535 slice 4a): a participant with no operator
+    // display-name override still yields a set-source-policy entry carrying
+    // its ROSTER name — not null/empty — so the core's failed slate can name
+    // them. Previously an id with neither a persisted policy nor an override
+    // was dropped from the wire set entirely.
+    [Fact]
+    public void BuildSourcePolicyWiresNamesAParticipantWithNoOverrideFromTheRoster()
+    {
+        var participants = new List<Participant>
+        {
+            new() { Id = "16778240", Name = "Jamal" }
+        };
+
+        var wires = ProductionStateHelper.BuildSourcePolicyWires(
+            roomParticipants: participants,
+            captureDevices: [],
+            dropoutPolicies: new Dictionary<string, string>(StringComparer.Ordinal),
+            displayNameOverrides: null);
+
+        var wire = Assert.Single(wires.Values);
+        Assert.Equal("zoom:16778240", wire.SourceId);
+        Assert.Equal("hold", wire.DropoutPolicy);
+        Assert.Equal("Jamal", wire.DisplayName);
+    }
+
+    // An operator override still wins over the roster-derived name.
+    [Fact]
+    public void BuildSourcePolicyWiresPrefersTheOperatorOverrideOverTheRosterName()
+    {
+        var participants = new List<Participant>
+        {
+            new() { Id = "16778240", Name = "Jamal" }
+        };
+        var overrides = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["zoom:16778240"] = "Co-host"
+        };
+
+        var wires = ProductionStateHelper.BuildSourcePolicyWires(
+            roomParticipants: participants,
+            captureDevices: [],
+            dropoutPolicies: new Dictionary<string, string>(StringComparer.Ordinal),
+            displayNameOverrides: overrides);
+
+        var wire = Assert.Single(wires.Values);
+        Assert.Equal("Co-host", wire.DisplayName);
+    }
+
+    // A capture device with no override or policy still gets its device name.
+    [Fact]
+    public void BuildSourcePolicyWiresNamesACaptureDeviceWithNoOverrideFromItsDeviceName()
+    {
+        var devices = new List<CaptureDevice>
+        {
+            new() { Id = "cam-1", NativeDeviceId = "cam-1", Vendor = "uvc", Name = "Camera 1", Inputs = [], SelectedInputId = "cam-1" }
+        };
+
+        var wires = ProductionStateHelper.BuildSourcePolicyWires(
+            roomParticipants: [],
+            captureDevices: devices,
+            dropoutPolicies: new Dictionary<string, string>(StringComparer.Ordinal),
+            displayNameOverrides: null);
+
+        var wire = Assert.Single(wires.Values);
+        Assert.Equal("capture:cam-1", wire.SourceId);
+        Assert.Equal("Camera 1", wire.DisplayName);
+        // Round 2 (final review): a policy is Zoom-only this slice — a
+        // capture entry's DropoutPolicy must be null (a NAME-ONLY wire), so
+        // the command builder omits the key rather than sending a policy the
+        // core refuses on every sync (which would permanently degrade
+        // programFrame.health).
+        Assert.Null(wire.DropoutPolicy);
     }
 }

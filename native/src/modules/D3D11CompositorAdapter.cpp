@@ -704,13 +704,15 @@ class D3D11Compositor final : public ICompositor {
         if (compositorLayerIsOverlay(layer.plan)) {
           layer.color = 0xff2a3548;
         } else if (!layer.plan.participantId.empty()) {
-          layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
+          // bus health on air (#535 slice 4a): the ONE resolution rule, not a
+          // per-kind placeholder. See CompositorLayout.h slateColorFor/blackOnStalled.
+          layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           layer.frame = frameForParticipant(frames, layer.plan.participantId);
           if (layer.frame == nullptr) {
             warnUnmatchedCaptureLayer(layer.plan.participantId, frames);
           }
         } else if (!layer.plan.mediaAssetId.empty()) {
-          layer.color = compositor::colorFromParticipantId("media:" + layer.plan.mediaAssetId);
+          layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           const std::string frameSourceId = layer.plan.sourceId.empty() ? "media:" + layer.plan.mediaAssetId : layer.plan.sourceId;
           layer.frame = frameForParticipant(frames, frameSourceId);
           if (layer.frame == nullptr) {
@@ -722,11 +724,24 @@ class D3D11Compositor final : public ICompositor {
           // instead of the default mid-grey ResolvedLayer::color.
           layer.color = compositor::parseHexColorRgba(layer.plan.fillColor, 0xff808080u);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
+          // Legacy positional fallback (a layer with no participantId/mediaAssetId
+          // at all, matched by index) — I-4: pink is retired for every kind, so
+          // this resolves by the same one rule as every other layer.
           const auto& fallbackFrame = frames[static_cast<size_t>(videoIndex - 1)];
-          layer.color = compositor::colorFromParticipantId(fallbackFrame.participantId);
+          layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           if (frameHasContent(fallbackFrame)) {
             layer.frame = &fallbackFrame;
           }
+        }
+
+        // Content frame present but the source is stalled and the operator's
+        // per-source policy is "black": draw solid black, frame ignored. Must
+        // run after the frame resolution above and before drawLayer, which
+        // branches solid-vs-textured on layer.frame.
+        if (!compositorLayerIsOverlay(layer.plan) && layer.frame != nullptr && frameHasContent(*layer.frame) &&
+            compositor::blackOnStalled(layer.plan.sourceHealth, layer.plan.dropoutPolicy)) {
+          layer.frame = nullptr;
+          layer.color = compositor::kDropoutBlackRgba;
         }
         layers.push_back(std::move(layer));
       }
@@ -744,7 +759,11 @@ class D3D11Compositor final : public ICompositor {
       layer.plan.order = index;
       const auto layout = compositor::gridCell((std::max)(1, count), index);
       layer.plan.rect = {layout.x, layout.y, layout.width, layout.height};
-      layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
+      // bus health on air (#535 slice 4a), I-4: this is the empty-render-plan
+      // improvised grid fallback (no CompositorRenderPlanLayer at all, so no
+      // sourceHealth to read) — pink is retired for every kind, so this
+      // resolves to the warming slate like every other frameless layer.
+      layer.color = compositor::kWarmingSlateRgba;
       if (frameHasContent(frames[static_cast<size_t>(index)])) {
         layer.frame = &frames[static_cast<size_t>(index)];
       }
@@ -753,15 +772,15 @@ class D3D11Compositor final : public ICompositor {
     return layers;
   }
 
-  // Guardrail: a capture/media layer that resolves to NO frame renders as a solid
-  // colorFromParticipantId() placeholder (the "pink tile"). That is almost always a
-  // key mismatch (the layer's key matches no frame's) or a dead feed / undecoded
-  // asset, and it used to fail SILENTLY — the native-UVC key mismatch cost a
-  // multi-session hunt, and media layers had NO warning at all. Make it loud: log,
-  // rate-limited per key, dumping the available same-prefix frame keys so any
-  // mismatch is obvious at a glance. capture:/media: sources only (Zoom
-  // participants legitimately come and go, so a missing frame there is not
-  // necessarily a bug).
+  // Guardrail: a capture/media layer that resolves to NO frame renders the
+  // bus-health slate (warming/failed, #535 slice 4a) instead of a real frame.
+  // That is almost always a key mismatch (the layer's key matches no frame's)
+  // or a dead feed / undecoded asset, and it used to fail SILENTLY — the
+  // native-UVC key mismatch cost a multi-session hunt, and media layers had NO
+  // warning at all. Make it loud: log, rate-limited per key, dumping the
+  // available same-prefix frame keys so any mismatch is obvious at a glance.
+  // capture:/media: sources only (Zoom participants legitimately come and go,
+  // so a missing frame there is not necessarily a bug).
   static void warnUnmatchedCaptureLayer(const std::string& sourceKey,
                                         const std::vector<VideoFrame>& frames) {
     const bool isCapture = sourceKey.rfind("capture:", 0) == 0;
@@ -1112,10 +1131,106 @@ class D3D11Compositor final : public ICompositor {
       context_->PSSetShader(pixelShader_.get(), nullptr, 0);
     }
 
+    // bus health on air (#535 slice 4a, R4): a failed OR stalled-with-no-frame
+    // source's slate carries its display name so an operator can tell WHICH
+    // source died at a glance. slateColorFor() already paints both the same
+    // dark failed colour; this draws the matching name label for both.
+    if (layer.frame == nullptr &&
+        (layer.plan.sourceHealth == "failed" || layer.plan.sourceHealth == "stalled")) {
+      drawFailedSlateName(layer, renderPlan, rect, layerAlpha);
+    }
+
     // --- Item 8: border pass around the full layer rect. ---
     const auto border = compositor::computeBorderFraming(
         layer.plan.borderStyle, layer.plan.borderColor, layer.plan.borderThickness);
     drawBorderPass(layer, renderPlan, rect, border, layerAlpha);
+  }
+
+  // bus health on air (#535 slice 4a), I-1 (fix round 1): renders the failed
+  // slate's source name as a SMALL LABEL anchored bottom-left of the layer —
+  // NOT the full-canvas lower-third band a bare CompositorOverlayContent
+  // would raster (default brand accent bar + ~34%-height headline). Width is
+  // capped at 40% of the layer rect (or a rough text-width estimate, if
+  // smaller); height is 8% of the layer rect. brandColor is set to the slate
+  // colour so the lower-third's accent bar (normally brand-teal) is
+  // invisible against it. Mirrors drawOverlayLayer's textured branch
+  // (premultiplied blend + the overlay pixel shader, scissored to the layer/
+  // clip rect like drawOverlayLayer does) but with no key-transform
+  // animation — this is not an overlay layer. Skips silently if the raster
+  // is unavailable (D2D/DirectWrite missing) — the colour-only slate still
+  // shows on air.
+  void drawFailedSlateName(
+      const ResolvedLayer& layer,
+      const CompositorRenderPlan& renderPlan,
+      const compositor::LayerRect& rect,
+      float layerAlpha) {
+    const std::string& name = layer.plan.sourceDisplayName;
+    if (name.empty()) {
+      return;
+    }
+
+    const float labelHeight = rect.height * 0.08f;
+    if (labelHeight <= 0.f || rect.width <= 0.f) {
+      return;
+    }
+    // Rough text-width estimate: average glyph advance ~55% of the line
+    // height for a typical UI font, plus a little breathing room either
+    // side. This is an ESTIMATE, not a DirectWrite measurement — it only
+    // needs to keep short names from reserving the full 40% cap.
+    const float labelHeightPx = labelHeight * static_cast<float>(targetHeight_);
+    const float estTextWidthPx = labelHeightPx * 0.55f * static_cast<float>(name.size()) + labelHeightPx;
+    const float estTextWidthFrac = targetWidth_ > 0 ? estTextWidthPx / static_cast<float>(targetWidth_) : rect.width;
+    const float maxLabelWidth = rect.width * 0.4f;
+    const float labelWidth = (std::min)(maxLabelWidth, estTextWidthFrac);
+    if (labelWidth <= 0.f) {
+      return;
+    }
+    const compositor::LayerRect labelRect{
+        rect.x,
+        rect.y + rect.height - labelHeight,
+        labelWidth,
+        labelHeight,
+    };
+
+    char hexBuf[8];
+    std::snprintf(hexBuf, sizeof(hexBuf), "#%06x", compositor::kFailedSlateRgba & 0xffffffu);
+    CompositorOverlayContent content;
+    content.title = name;
+    content.brandColor = hexBuf;  // hides the lower-third accent bar against the slate
+    // NOTE: brandBackgroundColor is NOT set here — the raster never paints a band
+    // background from it (CompositorOverlayRaster clears to transparent and draws
+    // only the accent bar + text; see the "band background is NOT painted here"
+    // comment at its BeginDraw site), so there is no plate to blend.
+
+    ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
+        device_.get(), context_.get(), content, labelRect, targetWidth_, targetHeight_);
+    if (overlayView == nullptr) {
+      return;
+    }
+
+    const compositor::LayerRect clip = layer.plan.hasClipRect
+        ? compositor::LayerRect{layer.plan.clipRect.x, layer.plan.clipRect.y,
+                                layer.plan.clipRect.width, layer.plan.clipRect.height}
+        : rect;
+    context_->RSSetState(scissorRasterizerState_.get());
+    setScissorFromRect(clip);
+    setViewportFromRect(labelRect);
+    if (!writeLayerConstants(layer, renderPlan, 0xffffffffu, layerAlpha, 1.f, 1.f, 0.f, 0.f)) {
+      context_->RSSetState(rasterizerState_.get());
+      return;
+    }
+    context_->OMSetBlendState(premultipliedBlendState_.get(), nullptr, 0xffffffffu);
+    context_->PSSetShader(overlayPixelShader_.get(), nullptr, 0);
+    ID3D11ShaderResourceView* views[] = {overlayView};
+    ID3D11SamplerState* samplers[] = {samplerState_.get()};
+    context_->PSSetShaderResources(0, 1, views);
+    context_->PSSetSamplers(0, 1, samplers);
+    context_->Draw(3, 0);
+    ID3D11ShaderResourceView* nullViews[] = {nullptr};
+    context_->PSSetShaderResources(0, 1, nullViews);
+    context_->PSSetShader(pixelShader_.get(), nullptr, 0);
+    context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
+    context_->RSSetState(rasterizerState_.get());
   }
 
   // --- Item 9: overlay/lower-third/caption raster stage. ---

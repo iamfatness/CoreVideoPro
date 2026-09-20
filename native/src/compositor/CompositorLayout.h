@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cmath>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace corevideo::compositor {
@@ -492,6 +493,33 @@ inline uint32_t colorFromParticipantId(const std::string& participantId) {
   const uint8_t g = static_cast<uint8_t>(72 + ((hash >> 8) & 0x7fu));
   const uint8_t b = static_cast<uint8_t>(72 + ((hash >> 16) & 0x7fu));
   return 0xff000000u | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
+}
+
+// bus health on air (#535 slice 4a): the canonical slate/dropout colours a
+// layer with no content frame (or a stalled+black-policy one) resolves to.
+// RGBA packing matches colorFromParticipantId's existing 0xAARRGGBB. These
+// constants are the ONLY colours a layer-resolution path may use for a
+// health/dropout state; colorFromParticipantId stays for tests and Tiles
+// membership, but no resolution path may call it any more (Task 2).
+inline constexpr uint32_t kWarmingSlateRgba = 0xff1b1f27u;  // neutral dark
+inline constexpr uint32_t kFailedSlateRgba = 0xff23181cu;   // dark, faintly warm
+inline constexpr uint32_t kDropoutBlackRgba = 0xff000000u;
+
+// The ONE resolution rule (Task 2), shared verbatim by the CPU preview, D3D11
+// and Metal compositors so it cannot drift between them. See the Global
+// Constraints in docs/superpowers/plans/2026-09-19-source-bus-slice4a-health-on-air.md.
+// R4 (final review): "stalled" reads as failed here too when there is NO
+// content frame to fall back on (the empty-render-plan / no-matching-frame
+// paths) — a source the operator has never seen a picture from is exactly as
+// unidentified whether the bus calls it "failed" or "stalled" with nothing to
+// show, so it gets the same named dark slate. This is independent of R3's
+// on-air black-policy, which only ever applies when a REAL held frame exists.
+inline uint32_t slateColorFor(std::string_view sourceHealth) {
+  return (sourceHealth == "failed" || sourceHealth == "stalled") ? kFailedSlateRgba : kWarmingSlateRgba;
+}
+
+inline bool blackOnStalled(std::string_view health, std::string_view policy) {
+  return health == "stalled" && policy == "black";
 }
 
 }  // namespace corevideo::compositor

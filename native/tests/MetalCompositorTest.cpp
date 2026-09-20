@@ -67,13 +67,15 @@ std::array<int, 4> previewAt(const ProgramFramePreviewPixels& preview, float fx,
           preview.bgra[offset + 3]};
 }
 
-CompositorRenderPlanLayer solidLayer(const std::string& id, float x, float y, float w, float h) {
+CompositorRenderPlanLayer solidLayer(const std::string& id, float x, float y, float w, float h,
+                                     const char* sourceHealth = "") {
   CompositorRenderPlanLayer layer;
   layer.layerId = "layer:" + id;
   layer.kind = "participant-video";
   layer.participantId = id;
   layer.sourceId = "zoom:" + id;
   layer.rect = {x, y, w, h};
+  layer.sourceHealth = sourceHealth;
   return layer;
 }
 
@@ -141,8 +143,14 @@ TEST(MetalCompositor, RendersDeterministicallyAndReportsMetalRenderer) {
   MAKE_COMPOSITOR_OR_SKIP(compositor);
   CompositorRenderPlan plan;
   plan.renderPlanId = "plan-deterministic";
+  // bus health on air (#535 slice 4a): both layers are frameless, so without
+  // a health distinction they would both resolve to the SAME warming slate
+  // and EXPECT_NE below would pass whether or not the two cells actually
+  // render distinctly. "beta" is marked sourceHealth="failed" (->
+  // kFailedSlateRgba) so the two placeholders stay visually distinct by
+  // health, not by a per-id colour.
   plan.layers.push_back(solidLayer("alpha", 0.0f, 0.0f, 0.5f, 1.0f));
-  plan.layers.push_back(solidLayer("beta", 0.5f, 0.0f, 0.5f, 1.0f));
+  plan.layers.push_back(solidLayer("beta", 0.5f, 0.0f, 0.5f, 1.0f, "failed"));
 
   const auto first = compositor->render(plan, {});
   const auto second = compositor->render(plan, {});
@@ -154,6 +162,15 @@ TEST(MetalCompositor, RendersDeterministicallyAndReportsMetalRenderer) {
   const auto left = previewAt(first.preview, 0.25f, 0.5f);
   const auto right = previewAt(first.preview, 0.75f, 0.5f);
   EXPECT_NE(left, right);
+  // Name what they now are: the warming slate and the failed slate.
+  const uint32_t warming = ::corevideo::compositor::kWarmingSlateRgba;
+  const uint32_t failed = ::corevideo::compositor::kFailedSlateRgba;
+  EXPECT_NEAR(left[2], static_cast<int>((warming >> 16) & 0xff), 2);
+  EXPECT_NEAR(left[1], static_cast<int>((warming >> 8) & 0xff), 2);
+  EXPECT_NEAR(left[0], static_cast<int>(warming & 0xff), 2);
+  EXPECT_NEAR(right[2], static_cast<int>((failed >> 16) & 0xff), 2);
+  EXPECT_NEAR(right[1], static_cast<int>((failed >> 8) & 0xff), 2);
+  EXPECT_NEAR(right[0], static_cast<int>(failed & 0xff), 2);
 }
 
 TEST(MetalCompositor, SolidFallbackMatchesCpuPreviewColors) {
@@ -351,10 +368,16 @@ TEST(MetalCompositor, MultiviewPassRendersIntoItsOwnSurface) {
   programPlan.layers.push_back(solidLayer("solo", 0.0f, 0.0f, 1.0f, 1.0f));
   (void)compositor->render(programPlan, {});
 
+  // bus health on air (#535 slice 4a): both cells are frameless, so without
+  // a health distinction they would both resolve to the SAME warming slate
+  // and EXPECT_NE below would pass whether or not the two cells actually
+  // render distinctly. "cell-b" is marked sourceHealth="failed" (->
+  // kFailedSlateRgba) so the two placeholders stay visually distinct by
+  // health, not by a per-id colour.
   CompositorRenderPlan multiviewPlan;
   multiviewPlan.renderPlanId = "plan-multiview";
   multiviewPlan.layers.push_back(solidLayer("cell-a", 0.0f, 0.0f, 0.5f, 0.5f));
-  multiviewPlan.layers.push_back(solidLayer("cell-b", 0.5f, 0.0f, 0.5f, 0.5f));
+  multiviewPlan.layers.push_back(solidLayer("cell-b", 0.5f, 0.0f, 0.5f, 0.5f, "failed"));
 
   const auto texture = compositor->renderMultiview(multiviewPlan, {});
   ASSERT_NE(texture.iosurfaceId, 0u);
@@ -368,6 +391,15 @@ TEST(MetalCompositor, MultiviewPassRendersIntoItsOwnSurface) {
   ASSERT_TRUE(okA);
   ASSERT_TRUE(okB);
   EXPECT_NE(cellA, cellB);
+  // Name what they now are: the warming slate and the failed slate.
+  const uint32_t warming = ::corevideo::compositor::kWarmingSlateRgba;
+  const uint32_t failed = ::corevideo::compositor::kFailedSlateRgba;
+  EXPECT_NEAR(cellA[2], static_cast<int>((warming >> 16) & 0xff), 2);
+  EXPECT_NEAR(cellA[1], static_cast<int>((warming >> 8) & 0xff), 2);
+  EXPECT_NEAR(cellA[0], static_cast<int>(warming & 0xff), 2);
+  EXPECT_NEAR(cellB[2], static_cast<int>((failed >> 16) & 0xff), 2);
+  EXPECT_NEAR(cellB[1], static_cast<int>((failed >> 8) & 0xff), 2);
+  EXPECT_NEAR(cellB[0], static_cast<int>(failed & 0xff), 2);
 
   // The program pass afterwards is unaffected by the secondary pass (dims
   // restored, its own surface untouched).
@@ -412,8 +444,10 @@ TEST(MetalCompositor, PreviewPassIsIndependentOfProgramAndMultiview) {
   bool ok = false;
   const auto pixel = iosurfacePixel(texture.iosurfaceId, 0.5f, 0.5f, ok);
   ASSERT_TRUE(ok);
-  // The deterministic participant color, not the clear color.
-  const uint32_t expected = ::corevideo::compositor::colorFromParticipantId("preview-only");
+  // bus health on air (#535 slice 4a): "preview-only" has no frame and no
+  // sourceHealth set by this hand-built plan, so it reads "" -> the warming
+  // slate, not the clear color and not a per-id colour.
+  const uint32_t expected = ::corevideo::compositor::kWarmingSlateRgba;
   EXPECT_NEAR(pixel[2], static_cast<int>((expected >> 16) & 0xff), 2);
   EXPECT_NEAR(pixel[1], static_cast<int>((expected >> 8) & 0xff), 2);
   EXPECT_NEAR(pixel[0], static_cast<int>(expected & 0xff), 2);

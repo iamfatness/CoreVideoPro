@@ -1,6 +1,8 @@
 // Still-image media routes (logos/bugs): scene routes referencing an image
-// asset must composite REAL decoded pixels — not the colorFromParticipantId
-// placeholder. The decode seam (IStillImageDecoder) is injectable so these
+// asset must composite REAL decoded pixels — not the bus-health slate
+// placeholder (#535 slice 4a's kWarmingSlateRgba/kFailedSlateRgba; the pink
+// colorFromParticipantId tile before that). The decode seam (IStillImageDecoder)
+// is injectable so these
 // tests run on every platform with a fake decoder; the WIC implementation is
 // covered by the Windows-gated test at the bottom decoding a tiny generated
 // PNG. Harness note: no EXPECT_NEAR in this suite — use EXPECT_LT(std::abs()).
@@ -311,7 +313,9 @@ TEST(StillMediaFrameCache, StillMediaRouteCompositesDecodedPixels) {
   EXPECT_EQ(decoded[rightOffset + 1], 0x11);
   EXPECT_EQ(decoded[rightOffset + 2], 0x0c);
 
-  const uint32_t placeholder = corevideo::compositor::colorFromParticipantId("media:logo-1");
+  // bus health on air (#535 slice 4a): the placeholder this real still
+  // frame must not match is the warming slate, not a per-id colour.
+  const uint32_t placeholder = corevideo::compositor::kWarmingSlateRgba;
   const bool leftIsPlaceholder =
       decoded[leftOffset + 0] == static_cast<uint8_t>(placeholder & 0xff) &&
       decoded[leftOffset + 1] == static_cast<uint8_t>((placeholder >> 8) & 0xff) &&

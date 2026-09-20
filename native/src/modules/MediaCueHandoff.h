@@ -7,7 +7,8 @@
 // collapses, and MediaGoLiveLedger advances the generation baked into the
 // playback key. The arriving request therefore matched no entry in
 // OwnedMediaFrameSource, a cold decoder opened, and for the ticks before its
-// first frame the compositor painted colorFromParticipantId over Program.
+// first frame the compositor painted the bus-health slate (warming/failed,
+// #535 slice 4a) over Program.
 //
 // The cue poster sits PAUSED AT FRAME 0 (MediaVideoPresentation::hold shows the
 // first prepared frame and does not advance), so resuming that decoder is

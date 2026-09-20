@@ -791,6 +791,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // (zoom:<pid> / capture:<id> / media:<id>). Feeds the auto lower-thirds and
     // multiview labels; absent keys fall back to the derived Zoom/UVC/asset name.
     private readonly Dictionary<string, string> _sourceDisplayNames = new(StringComparer.Ordinal);
+    // #535 slice 4a: operator's per-source "on dropout" choice ("hold" |
+    // "black"), keyed by the SAME canonical source id as _sourceDisplayNames.
+    // Absent key = default "hold" — never stored, so the map stays empty for
+    // the common case.
+    private readonly Dictionary<string, string> _sourceDropoutPolicies = new(StringComparer.Ordinal);
     // Per-source color grades keyed by participant id or capture:<deviceId>.
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
     private bool _previewRoutingRefreshScheduled;
@@ -4775,6 +4780,80 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
+    // ---- Per-source dropout policy (#535 slice 4a) ---------------------------
+    // "hold" (default) or "black" — what a source shows on Program when it
+    // stops delivering. Persisted, shipped to the core on every sync as
+    // set-source-policy alongside the source's display name.
+    public IReadOnlyList<RouteSelectOption> DropoutPolicyOptions { get; } =
+    [
+        new() { Value = "hold", Label = "Hold last frame" },
+        new() { Value = "black", Label = "Black" }
+    ];
+
+    // R2 (final review, #535 slice 4a): a dropout policy is Zoom-only this
+    // slice (capture liveness via signalPresent isn't wired to a stall
+    // decision yet — see docs/BACKLOG.md #535). A non-"zoom:" id is a no-op
+    // that reports why, rather than silently doing nothing.
+    public void SetSourceDropoutPolicy(string sourceId, string? policy)
+    {
+        if (string.IsNullOrWhiteSpace(sourceId))
+        {
+            return;
+        }
+
+        if (!sourceId.StartsWith("zoom:", StringComparison.Ordinal))
+        {
+            CommandStatus = $"Dropout policy: only Zoom sources take a policy this slice ({sourceId})";
+            return;
+        }
+
+        var normalized = string.IsNullOrWhiteSpace(policy) ? null : policy.Trim().ToLowerInvariant();
+        if (normalized is not (null or "hold" or "black"))
+        {
+            // Unknown value: ignore, same posture as the core's own rejection.
+            return;
+        }
+
+        _sourceDropoutPolicies.TryGetValue(sourceId, out var current);
+        var effectiveNormalized = normalized ?? "hold";
+        if (string.Equals(current ?? "hold", effectiveNormalized, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (effectiveNormalized == "hold")
+        {
+            // "hold" is the default — never store it explicitly.
+            _sourceDropoutPolicies.Remove(sourceId);
+        }
+        else
+        {
+            _sourceDropoutPolicies[sourceId] = effectiveNormalized;
+        }
+
+        SaveProductionOutputPreferences();
+        RefreshProductionReadouts();
+
+        // FeedHealthRows (Zoom guests) is rebuilt wholesale by
+        // RefreshProductionReadouts above and already carries the new value.
+
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    // R5 (final review, #535 slice 4a): "failed slates are named in practice"
+    // needs a RESOLVED name — the operator override if present, else the same
+    // derived roster/device name the Sources page shows — for every zoom:
+    // participant CURRENTLY IN THE ROOM and every capture: device, not just
+    // the ids that happen to have an override in _sourceDisplayNames or an
+    // explicit policy. An id with neither a policy nor an override used to be
+    // dropped entirely, so a never-renamed guest's failed slate carried no
+    // name at all. The actual union/resolve logic is the pure
+    // ProductionStateHelper.BuildSourcePolicyWires so it is unit-testable
+    // without constructing this (non-constructible-in-tests) view model.
+    private IReadOnlyDictionary<string, MediaCoreSourcePolicyWire> BuildSourcePolicyWires() =>
+        ProductionStateHelper.BuildSourcePolicyWires(
+            RoomParticipantsForInputs, CaptureDevices, _sourceDropoutPolicies, _sourceDisplayNames);
+
     public void ToggleMixerSolo(string participantId)
     {
         var mix = _audioMixChannels.FirstOrDefault(item =>
@@ -7291,6 +7370,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
             device.IsBrowserOverlayOnAir = _onAirBrowserOverlayIds.Contains(device.Id);
             device.IsBrowserOverlayInPreview = _previewBrowserOverlayIds.Contains(device.Id);
+            ProductionStateHelper.PopulateCaptureDeviceDropoutPolicy(device, _sourceDropoutPolicies);
 
             CaptureDevices.Add(device);
         }
@@ -7332,7 +7412,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var prior = CaptureDevices.FirstOrDefault(device => device.Id == source.DeviceId);
         if (prior is null)
         {
-            CaptureDevices.Add(CreateVirtualSrtIngestDevice(source));
+            var device = CreateVirtualSrtIngestDevice(source);
+            // #535 slice 4a fix round 2: CreateVirtualSrtIngestDevice defaults
+            // DropoutPolicy to "hold" and has no access to _sourceDropoutPolicies
+            // (it is static, shared with CreateVirtualSrtIngestDevices) — stamp
+            // it here so a fresh SRT row reads back its stored policy too.
+            ProductionStateHelper.PopulateCaptureDeviceDropoutPolicy(device, _sourceDropoutPolicies);
+            CaptureDevices.Add(device);
         }
         else
         {
@@ -7347,6 +7433,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             next.ObservedFrameWidth = prior.ObservedFrameWidth;
             next.ObservedFrameHeight = prior.ObservedFrameHeight;
             next.ObservedFrameRate = prior.ObservedFrameRate;
+            // Defensive carry-forward, then the authoritative resolver below
+            // overwrites it from _sourceDropoutPolicies — this is the exact bug
+            // fix round 2 found: this replace path used to carry forward every
+            // OTHER field but never DropoutPolicy, so a live SRT stream set to
+            // "black" reverted to "hold" on screen within seconds of any SRT
+            // source property change (OnSrtIngestSourcePropertyChanged).
+            next.DropoutPolicy = prior.DropoutPolicy;
+            ProductionStateHelper.PopulateCaptureDeviceDropoutPolicy(next, _sourceDropoutPolicies);
             CaptureDevices[index] = next;
         }
 
@@ -7439,7 +7533,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         FeedHealthRows = ProductionStateHelper.BuildFeedHealthRows(
             RoomParticipantsForInputs,
             _participantProductionRoles,
-            _bridge.LastSnapshot?.ZoomSubscriptions);
+            _bridge.LastSnapshot?.ZoomSubscriptions,
+            _sourceDropoutPolicies);
         FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomParticipantsForInputs);
         MagicSceneStatus = ProductionStateHelper.BuildMagicSceneStatus(RoomVideoParticipants);
         MediaBinSummary = ProductionStateHelper.MediaBinSummary(MediaBinGroups.Sum(group => group.Assets.Count));
@@ -9136,6 +9231,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ColorGrade.Contrast,
                 ColorGrade.Saturation,
                 ColorGrade.Temperature),
+            SourcePolicies = BuildSourcePolicyWires(),
             BrandKit = new MediaCoreBrandKitWire(
                 BrandKit.Name,
                 BrandKit.LogoText,
@@ -11843,6 +11939,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 pair => pair.Key,
                 pair => pair.Value,
                 StringComparer.Ordinal),
+            SourceDropoutPolicies = _sourceDropoutPolicies.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value,
+                StringComparer.Ordinal),
             VstInsertStates = _vstInsertStates.ToDictionary(
                 pair => pair.Key,
                 pair => pair.Value,
@@ -12051,6 +12151,23 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
             {
                 _sourceDisplayNames[pair.Key] = pair.Value.Trim();
+            }
+        }
+
+        // #535 slice 4a: per-source dropout policy. Only "hold"/"black" are
+        // ever stored (SetSourceDropoutPolicy never writes "hold"), but an
+        // externally-edited file is still validated on load. R2 (final
+        // review): a policy is Zoom-only this slice, so a persisted
+        // "capture:"/"media:"/anything-else key (from before this slice, or
+        // hand-edited) is pruned rather than round-tripped back to the core.
+        _sourceDropoutPolicies.Clear();
+        foreach (var pair in preferences.SourceDropoutPolicies)
+        {
+            if (!string.IsNullOrWhiteSpace(pair.Key) &&
+                pair.Key.StartsWith("zoom:", StringComparison.Ordinal) &&
+                pair.Value is "hold" or "black")
+            {
+                _sourceDropoutPolicies[pair.Key] = pair.Value;
             }
         }
 

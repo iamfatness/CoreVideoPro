@@ -1006,6 +1006,13 @@ rpc::Json MediaCore::sessionState() const {
       const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
       for (const auto& s : sourceBus_->snapshot(nowNs)) {
+        // #535 slice 4a: echo the persisted per-source policy (default "hold",
+        // no name) so the shell can confirm what it last sent stuck.
+        const auto policyIt = sourcePolicies_.find(s.descriptor.sourceId);
+        const std::string dropoutPolicy =
+            policyIt != sourcePolicies_.end() ? policyIt->second.dropoutPolicy : "hold";
+        const std::string displayName =
+            policyIt != sourcePolicies_.end() ? policyIt->second.displayName : std::string{};
         sourcesArr.push_back(rpc::Json::Object{
             {"sourceId", s.descriptor.sourceId},
             {"kind", s.descriptor.kind},
@@ -1014,6 +1021,8 @@ rpc::Json MediaCore::sessionState() const {
             {"framesIngested", static_cast<double>(s.counters.framesIngested)},
             {"droppedFrames", static_cast<double>(s.counters.droppedFrames)},
             {"health", sourceHealthName(s.health)},
+            {"dropoutPolicy", dropoutPolicy},
+            {"displayName", displayName},
         });
       }
     }
@@ -1392,6 +1401,8 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setOverlayAsset(command);
   } else if (type == "set-color-grade") {
     setColorGrade(command);
+  } else if (type == "set-source-policy") {
+    setSourcePolicy(command);
   } else if (type == "set-output-profile") {
     setOutputProfile(command);
   } else if (type == "start-program-output") {
@@ -1923,6 +1934,96 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
 }
 
 }  // namespace
+
+// #535 slice 4a: policy is keyed by the SAME frame key annotateLayerSource
+// resolves at plan build (a zoom:<pid> source stores under the raw <pid>;
+// capture:<id> and media:<id> are stored verbatim, matching the Wire's
+// canonical-id → frame-key mapping).
+//
+// R2 (final review, #535 slice 4a): a dropout POLICY is Zoom-only this
+// slice — capture liveness (signalPresent) hasn't been wired to a stall
+// decision yet, so a capture/media "black" policy would be acting on a
+// health signal that doesn't mean what it means for Zoom. displayName is
+// NOT gated the same way: the failed slate needs a name for capture sources
+// too (R5), so a name is stored for ANY id, only the policy is refused for
+// a non-"zoom:" id.
+void MediaCore::setSourcePolicy(const rpc::Json& command) {
+  const std::string sourceId = command.getString("sourceId");
+  if (sourceId.empty()) {
+    return;
+  }
+  const bool isZoom = sourceId.rfind("zoom:", 0) == 0;
+  const std::string key = isZoom ? sourceId.substr(5) : sourceId;
+  // PRESENT-OR-KEEP, exactly like displayName below: a re-sent set-source-policy
+  // that carries only displayName (or omits dropoutPolicy for any other reason)
+  // must never reset a previously-set policy back to "hold" — the shell
+  // re-sends every persisted policy on each production sync, and fields it
+  // does not know about yet (or intentionally leaves alone) must not clobber
+  // state another sync already established.
+  if (const rpc::Json* dropoutPolicy = command.get("dropoutPolicy"); dropoutPolicy && dropoutPolicy->isString()) {
+    if (!isZoom) {
+      // loadSceneGraph clears sceneValidationWarnings_ (see its own clear()
+      // call) — a set-source-policy that runs BEFORE the scene command in a
+      // batch has this warning wiped by that clear. applyCommands runs
+      // commands in the order given, so callers must put set-source-policy
+      // AFTER load-scene-graph in the batch (as this file's own tests do).
+      pushSceneWarningOnce(sceneValidationWarnings_,
+          "set-source-policy: only zoom:<pid> sources take a dropout policy this slice (" + sourceId + ")");
+    } else {
+      const std::string policy = dropoutPolicy->asString();
+      if (policy != "hold" && policy != "black") {
+        pushSceneWarningOnce(sceneValidationWarnings_,
+            "set-source-policy: unknown dropoutPolicy '" + policy + "' for " + sourceId);
+      } else {
+        sourcePolicies_[key].dropoutPolicy = policy;
+      }
+    }
+  }
+  if (const rpc::Json* displayName = command.get("displayName"); displayName && displayName->isString()) {
+    sourcePolicies_[key].displayName = displayName->asString();
+  }
+}
+
+// #535 slice 4a: the layer's frame key is the same key the compositors
+// already look up (Global Constraints, "Frame key per layer"). Present on
+// the bus wins outright; absent falls back to "warming"/"failed" based on
+// whether this tick's videoFrames subscribed the key, unless videoFrames is
+// itself empty (a frameless plan build), which leaves sourceHealth "" rather
+// than guessing "failed" with nothing to judge by.
+void MediaCore::annotateLayerSource(modules::CompositorRenderPlanLayer& layer,
+                                     const std::vector<modules::VideoFrame>& videoFrames,
+                                     int64_t nowNs) const {
+  const std::string key = !layer.participantId.empty()
+      ? layer.participantId
+      : (layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId);
+  // sourceBus_ is constructed in the ctor and never reset (see its member
+  // comment), so this is a single query, not two branches duplicating the
+  // same frames-scan fallback.
+  // #535 slice 4a (R1): on-air "stalled" is Zoom-only and hysteretic (1.5s),
+  // deliberately different from the bus's 200ms diagnostic health. Capture,
+  // media and still sources can legitimately re-serve the same frameId for
+  // long stretches while healthy (a paused clip, a static screen share, a
+  // still image) — reading the 200ms diagnostic as an on-air cut would black
+  // those out while they are perfectly fine. Only a Zoom source with no new
+  // frame for >= kOnAirStallNs reads "stalled" here; everything else that the
+  // bus reports as present reads "producing" regardless of frame cadence.
+  const auto busStatus = sourceBus_ ? sourceBus_->onAirStatusFor(key, nowNs) : std::nullopt;
+  if (busStatus) {
+    const bool zoomStalled = busStatus->kind == "zoom" && busStatus->sinceLastNewFrameNs >= core::kOnAirStallNs;
+    layer.sourceHealth = zoomStalled ? core::sourceHealthName(core::SourceHealth::Stalled)
+                                      : core::sourceHealthName(core::SourceHealth::Producing);
+  } else if (!videoFrames.empty()) {
+    const bool subscribed = std::any_of(videoFrames.begin(), videoFrames.end(),
+        [&](const modules::VideoFrame& frame) { return frame.participantId == key; });
+    layer.sourceHealth = subscribed ? "warming" : "failed";
+  } else {
+    layer.sourceHealth.clear();
+  }
+  if (const auto it = sourcePolicies_.find(key); it != sourcePolicies_.end()) {
+    layer.dropoutPolicy = it->second.dropoutPolicy;
+    layer.sourceDisplayName = it->second.displayName;
+  }
+}
 
 namespace {
 
@@ -3632,6 +3733,21 @@ ResolvedMultiviewFeed resolveMultiviewFeed(
   return feed;
 }
 
+// #535 slice 4a final review, R3: the "black" dropout policy is a PROGRAM-only
+// cut. Preview and multiview must keep showing the held (last) frame for a
+// stalled source regardless of its stored policy, so the operator can watch
+// for recovery instead of losing the picture on the monitoring surfaces too —
+// only the actual on-air Program pass (buildCompositorRenderPlan) ever reads
+// the real per-source policy. Applied AFTER annotateLayerSource has already
+// set the real policy from sourcePolicies_, so this is strictly an override,
+// never a skip of the annotation itself (sourceHealth/displayName still need
+// to be correct on these monitoring planes for the failed-slate name, R5).
+void holdDropoutForMonitoring(modules::CompositorRenderPlan& plan) {
+  for (auto& layer : plan.layers) {
+    layer.dropoutPolicy = "hold";
+  }
+}
+
 }  // namespace
 
 modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
@@ -3641,6 +3757,13 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
   renderPlan.height = multiviewCanvasHeight_ > 0 ? multiviewCanvasHeight_ : outputHeight_;
   renderPlan.fps = outputFps_;
   renderPlan.colorGrade = colorGrade_;
+
+  // #535 slice 4a: multiview tiles draw through the SAME compositor path
+  // (renderMultiview) as Program/Preview, and "failed = dark slate WITH the
+  // source name" exists precisely so a dead source is identifiable on the
+  // multiview at a glance — so these tiles need the same annotation.
+  const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
 
   const float mvCanvasW = static_cast<float>(renderPlan.width > 0 ? renderPlan.width : 1920);
   const float mvCanvasH = static_cast<float>(renderPlan.height > 0 ? renderPlan.height : 1080);
@@ -3791,9 +3914,34 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
       layer.borderThickness = 2.f;
     }
     layer.order = order++;
+    // #535 slice 4a fix round 2: the old guard (participantId/mediaAssetId
+    // non-empty) skipped resolveMultiviewFeed's sourceId-only feeds (the
+    // `else` branch above, reached when a multiview entry names neither a
+    // capture device, media asset, nor participant) — those still deserve a
+    // slate. No MV tile ever sets hasFillColor (it is a deliberately
+    // sourceless flag for wall backgrounds/blank routes only), so every real
+    // tile is annotated; the key rule in annotateLayerSource already handles
+    // a sourceId-only tile by falling back to layer.sourceId.
+    if (!layer.hasFillColor) {
+      annotateLayerSource(layer, videoFrames, nowNs);
+    }
     renderPlan.layers.push_back(std::move(layer));
   }
 
+  // R3: multiview is a monitoring surface — every layer here keeps the held
+  // frame regardless of the stored per-source policy. Round 2 correction:
+  // this covers the PVW mirror cell (a no-op re-application — its layers
+  // already went through this in buildPreviewCompositorRenderPlan) and the
+  // source tiles just built above. It does NOT cover the PGM mirror cell in
+  // the LIVE path (`programBufferFrames() > 0`): that cell is a single
+  // texture-sampling marker layer with no per-source annotation at all — it
+  // literally samples the already-delivered Program texture, so it correctly
+  // MIRRORS Program (including a real black cut) by construction, not via
+  // this override. Only the cold-start fallback branch just above (no
+  // program buffer yet: the `else` that calls `buildCompositorRenderPlan`
+  // and recomposes real layers) is a genuine per-layer PGM recompose this
+  // call actually holds.
+  holdDropoutForMonitoring(renderPlan);
   return renderPlan;
 }
 
@@ -5439,6 +5587,9 @@ modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const 
     const auto sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
     layer.sourceId = "preview:" + sourceId;
   }
+  // R3: preview keeps the held frame — never a black cut — regardless of the
+  // stored per-source policy; only the real Program pass reads it.
+  holdDropoutForMonitoring(plan);
   return plan;
 }
 
@@ -5496,6 +5647,10 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   renderPlan.height = outputHeight_;
   renderPlan.fps = outputFps_;
   renderPlan.colorGrade = colorGrade;
+  // #535 slice 4a: one clock read per plan build, shared by every
+  // annotateLayerSource call below (never per-frame/per-layer).
+  const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
 
   // A CONFIGURED WALL OWNS THIS SCENE'S VIDEO LAYERS — with or without members.
   //
@@ -5540,6 +5695,12 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     layer.sourceOffsetY = 0.f;
     layer.borderStyle = "none";
     layer.borderThickness = 0.f;
+    // #535 slice 4a: layer.sourceId ("background:<assetId>") IS the bus key —
+    // since slice 3a, syncMediaSources keys media bus sources by the frame's
+    // participantId, which OwnedMediaFrameSource::selectVideo stamps from
+    // this same layer.sourceId for backgrounds. annotateLayerSource's key
+    // rule already falls back to sourceId when participantId is empty.
+    annotateLayerSource(layer, videoFrames, nowNs);
     renderPlan.layers.push_back(std::move(layer));
   }
   if (!sceneRoutes.empty()) {
@@ -5605,6 +5766,8 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         layer.hasFillColor = true;
         layer.fillColor = "#00000000";
         layer.opacity = 0.f;
+      } else {
+        annotateLayerSource(layer, videoFrames, nowNs);
       }
       renderPlan.layers.push_back(std::move(layer));
       ++videoLayerIndex;
@@ -5630,6 +5793,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       layer.order = static_cast<int>(index);
       const auto layout = compositor::gridCell(static_cast<int>(videoFrames.size()), static_cast<int>(index));
       layer.rect = {layout.x, layout.y, layout.width, layout.height};
+      annotateLayerSource(layer, videoFrames, nowNs);
       renderPlan.layers.push_back(std::move(layer));
     }
   }
@@ -5745,6 +5909,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       background.rect = wall.rect;
       background.order = tilesBaseOrder;
       background.fitMode = "fill";
+      annotateLayerSource(background, videoFrames, nowNs);
       renderPlan.layers.push_back(std::move(background));
     }
     const auto admitted = compositor::admitTilesMembers(wall.members, tilesMemberFrameAges_);
@@ -5853,6 +6018,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         } else {
           layer.participantId = slots[index];
         }
+        annotateLayerSource(layer, videoFrames, nowNs);
         renderPlan.layers.push_back(std::move(layer));
       }
     }

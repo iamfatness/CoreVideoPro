@@ -437,9 +437,10 @@ void expectEmptyFollowLayer(const corevideo::modules::CompositorRenderPlan& plan
 }  // namespace
 
 // #478 N2: the directed speaker has NO frame this tick (they left, or were dropped
-// from the sources mid-talk and their video retired). Binding them painted the
-// colorFromParticipantId slab on Program; the positional fallback would show a
-// random source. The layer renders EMPTY instead.
+// from the sources mid-talk and their video retired). Binding them painted a
+// slab on Program (the bus-health slate today, #535 slice 4a; the pink
+// colorFromParticipantId tile before that); the positional fallback would show
+// a random source. The layer renders EMPTY instead.
 TEST(TilesRenderPlan, AFollowSpeakerRouteWhoseSpeakerHasNoFrameRendersEmptyNotASlab) {
   auto modules = corevideo::modules::createStubModules();
   auto ownedCompositor = std::make_unique<RecordingCompositor>();
@@ -1420,9 +1421,10 @@ TEST(TilesRenderPlan, AWallsLiveBackgroundSurvivesATakeAcrossAStaleBeat) {
 // The converse, and the "never invent a source" rule: holding the background is
 // evidence-based, not memory-based. A background source with NO frame in the
 // gather — never arrived, or genuinely departed after having been drawn — is
-// refused exactly as it is today. Emitting it anyway would paint a solid
-// colorFromParticipantId() slab over the wall background (resolveLayers), which
-// is worse than the pop this fix removes.
+// refused exactly as it is today. Emitting it anyway would paint a solid slab
+// over the wall background (resolveLayers) — the bus-health slate today (#535
+// slice 4a), the pink colorFromParticipantId() tile before that — which is
+// worse than the pop this fix removes.
 TEST(TilesRenderPlan, AStaleBackgroundIsHeldButAnAbsentOneIsNeverFabricated) {
   MediaCore core;
   const auto command = corevideo::rpc::Json::parse(R"({"type":"load-scene-graph","sceneId":"pinned","routes":[],

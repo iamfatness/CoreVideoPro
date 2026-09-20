@@ -77,10 +77,10 @@ inline std::vector<std::string> admitTilesMembers(
 // contaminate each other through it the way retained animation state could.
 //
 // It matters that we never emit a background layer without a frame: a
-// participant-video layer whose sourceId resolves to no frame renders a solid
-// colorFromParticipantId() placeholder (D3D11CompositorAdapter::resolveLayers),
-// i.e. an arbitrary colour slab painted OVER the wall background — worse than
-// the pop this fixes. The layer also always carries a non-empty participantId,
+// participant-video layer whose sourceId resolves to no frame renders the
+// bus-health slate (warming/failed, #535 slice 4a — see
+// compositor::slateColorFor in D3D11CompositorAdapter::resolveLayers),
+// i.e. a slab painted OVER the wall background — worse than the pop this fixes. The layer also always carries a non-empty participantId,
 // so a sourceless route cannot be invented here (#480: empty routes render
 // BLANK, never videoFrames[index]).
 inline bool tilesBackgroundSourceIsDrawable(const std::string& sourceId,

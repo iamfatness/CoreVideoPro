@@ -73,6 +73,18 @@
                                                   Loaded="OnProductionRoleComboLoaded"
                                                   SelectionChanged="OnProductionRoleChanged"
                                                   FontSize="10" MinWidth="110" Padding="6,2,6,2" />
+                                        <!-- #535 slice 4a: what this source shows on Program when it stops
+                                             delivering. Same Loaded/ElementPrepared/SelectionChanged sync
+                                             pattern as ProductionRoleCombo above, for the same reason. -->
+                                        <ComboBox x:Name="DropoutPolicyCombo"
+                                                  Header="On dropout"
+                                                  ItemsSource="{Binding ViewModel.DropoutPolicyOptions, ElementName=SourcesInputsRoot}"
+                                                  SelectedValuePath="Value"
+                                                  DisplayMemberPath="Label"
+                                                  Tag="{x:Bind}"
+                                                  Loaded="OnDropoutPolicyComboLoaded"
+                                                  SelectionChanged="OnDropoutPolicyChanged"
+                                                  FontSize="10" MinWidth="110" Padding="6,2,6,2" />
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" HorizontalAlignment="Right" Spacing="2">
                                         <TextBlock Text="{x:Bind StatusLabel}" FontSize="11"
@@ -174,6 +186,12 @@
                                         </StackPanel>
                                         <TextBlock Grid.Column="1" Text="{x:Bind ConnectionLabel, Mode=OneWay}" FontSize="11"
                                                    Foreground="{StaticResource StudioAccentBrush}" VerticalAlignment="Center" />
+                                        <!-- #535 slice 4a R2 (final review): the capture-row "On dropout"
+                                             combo is removed — a dropout POLICY is Zoom-only this slice
+                                             (capture liveness via signalPresent isn't wired to a stall
+                                             decision yet; see StudioViewModel.SetSourceDropoutPolicy).
+                                             Round 2: the now-empty column for that combo is removed too
+                                             (it left a stray 10px gap), and the remaining columns renumbered. -->
                                         <Button Grid.Column="2"
                                                 Content="-20 ms"
                                                 Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
