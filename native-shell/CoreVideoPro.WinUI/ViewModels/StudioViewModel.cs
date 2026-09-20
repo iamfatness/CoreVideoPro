@@ -4823,6 +4823,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         SaveProductionOutputPreferences();
         RefreshProductionReadouts();
+
+        // FeedHealthRows (Zoom guests) is rebuilt wholesale by
+        // RefreshProductionReadouts above and already carries the new value.
+        // CaptureDevices is NOT rebuilt on this path, so a capture row's
+        // DropoutPolicy is updated directly here - otherwise the row would show
+        // a stale value the next time its ComboBox container is recycled
+        // (scrolled off/on) even though the persisted policy is correct.
+        if (sourceId.StartsWith("capture:", StringComparison.Ordinal))
+        {
+            var captureId = sourceId["capture:".Length..];
+            var device = CaptureDevices.FirstOrDefault(item =>
+                string.Equals(item.Id, captureId, StringComparison.Ordinal));
+            if (device is not null)
+            {
+                device.DropoutPolicy = effectiveNormalized;
+            }
+        }
+
         _ = TrySyncMediaCoreAsync();
     }
 
@@ -7375,6 +7393,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
             device.IsBrowserOverlayOnAir = _onAirBrowserOverlayIds.Contains(device.Id);
             device.IsBrowserOverlayInPreview = _previewBrowserOverlayIds.Contains(device.Id);
+            device.DropoutPolicy = ProductionStateHelper.ResolveSourceDropoutPolicy(
+                "capture:" + device.Id, _sourceDropoutPolicies);
 
             CaptureDevices.Add(device);
         }

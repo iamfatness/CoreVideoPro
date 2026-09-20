@@ -127,4 +127,20 @@ public class ProductionRoleTests
         Assert.Equal("black", blackRow.DropoutPolicy);
         Assert.Equal("hold", defaultRow.DropoutPolicy);
     }
+
+    [Fact]
+    public void ResolveSourceDropoutPolicyReadsBackACaptureDevicesStoredPolicy()
+    {
+        // #535 slice 4a fix round 1: capture-device rows share the exact same
+        // resolution helper as Zoom guest rows (ProductionStateHelper.
+        // ResolveSourceDropoutPolicy), so a capture row never shows a stale
+        // "Hold last frame" default after a relaunch when "black" was stored.
+        var dropoutPolicies = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["capture:cam-1"] = "black"
+        };
+
+        Assert.Equal("black", ProductionStateHelper.ResolveSourceDropoutPolicy("capture:cam-1", dropoutPolicies));
+        Assert.Equal("hold", ProductionStateHelper.ResolveSourceDropoutPolicy("capture:cam-2", dropoutPolicies));
+    }
 }

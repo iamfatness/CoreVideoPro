@@ -166,12 +166,9 @@ public sealed partial class SourcesInputsPage : UserControl
             SyncDropoutPolicyCombo(policyCombo, policyRow.DropoutPolicy);
         }
 
-        if (FindDescendant<ComboBox>(root, "CaptureDropoutPolicyCombo") is { Tag: CaptureDevice } captureCombo)
+        if (FindDescendant<ComboBox>(root, "CaptureDropoutPolicyCombo") is { Tag: CaptureDevice captureDevice } captureCombo)
         {
-            // Capture devices carry no persisted-policy readout (ProductionModels.cs
-            // has no DropoutPolicy field on CaptureDevice) - default to "hold" until
-            // the operator changes it. See task-3-report.md.
-            SyncDropoutPolicyCombo(captureCombo, "hold");
+            SyncDropoutPolicyCombo(captureCombo, captureDevice.DropoutPolicy);
         }
     }
 
@@ -190,8 +187,8 @@ public sealed partial class SourcesInputsPage : UserControl
             case FeedHealthRow row:
                 SyncDropoutPolicyCombo(combo, row.DropoutPolicy);
                 break;
-            case CaptureDevice:
-                SyncDropoutPolicyCombo(combo, "hold");
+            case CaptureDevice device:
+                SyncDropoutPolicyCombo(combo, device.DropoutPolicy);
                 break;
         }
     }

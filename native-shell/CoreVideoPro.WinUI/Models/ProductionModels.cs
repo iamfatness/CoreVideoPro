@@ -340,6 +340,18 @@ public partial class CaptureDevice : ObservableObject
 
     public string BrowserOverlayPreviewStatusLabel => IsBrowserOverlayInPreview ? "Staged on Preview" : "Not staged";
 
+    // #535 slice 4a: what this capture source shows on Program when it stops
+    // delivering ("hold" | "black"). Populated from StudioViewModel's
+    // _sourceDropoutPolicies (keyed "capture:<Id>") in ApplyDiscoveredCaptureDevices
+    // and updated directly on the operator's own combo selection, so the row never
+    // shows a stale value on the FIRST look either.
+    private string _dropoutPolicy = "hold";
+    public string DropoutPolicy
+    {
+        get => _dropoutPolicy;
+        set => SetProperty(ref _dropoutPolicy, value);
+    }
+
     private string? _assignedAudioDeviceId;
     public string? AssignedAudioDeviceId
     {
@@ -1003,10 +1015,7 @@ public static class ProductionStateHelper
                 Name = p.Name,
                 Role = productionRoleId is null ? p.RoleLabel : Services.ProductionRoleService.RoleLabel(productionRoleId),
                 ProductionRoleId = productionRoleId ?? string.Empty,
-                DropoutPolicy = dropoutPolicies is not null &&
-                                dropoutPolicies.TryGetValue("zoom:" + p.Id, out var policy)
-                    ? policy
-                    : "hold",
+                DropoutPolicy = ResolveSourceDropoutPolicy("zoom:" + p.Id, dropoutPolicies),
                 StatusLabel = label,
                 BadgeColor = color,
                 Detail = detail,
@@ -1024,6 +1033,16 @@ public static class ProductionStateHelper
                 RecommendedAction = action ?? string.Empty
             };
         }).ToList();
+
+    // #535 slice 4a: the one place a canonical source id (zoom:<pid> /
+    // capture:<id>) resolves to its persisted "on dropout" choice. Shared by
+    // BuildFeedHealthRows (zoom rows) and StudioViewModel's capture-device
+    // rows so the two never disagree on the default or the lookup shape.
+    public static string ResolveSourceDropoutPolicy(
+        string canonicalSourceId, IReadOnlyDictionary<string, string>? dropoutPolicies) =>
+        dropoutPolicies is not null && dropoutPolicies.TryGetValue(canonicalSourceId, out var policy)
+            ? policy
+            : "hold";
 
     public static string MediaBinSummary(int assetCount) =>
         assetCount == 0 ? "Media bin is empty" : $"{assetCount} assets in bin";
