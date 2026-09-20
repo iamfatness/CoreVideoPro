@@ -6013,16 +6013,23 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
               // non-empty) skipped it entirely; the new guard (!hasFillColor)
               // must still annotate it via the key rule's sourceId fallback.
               corevideo::rpc::Json::Object{{"sourceId", "orphan:test-1"}}}}},
+      // R2 (final review): a dropout POLICY is Zoom-only this slice — a
+      // capture:<id> id's policy is REFUSED (loudly), but its displayName is
+      // still adopted (the failed slate needs names for capture too).
       corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "capture:decklink-1"},
                                    {"dropoutPolicy", "black"}, {"displayName", "Camera 1"}}});
   mediaCore.renderDisplayTick();
+  const auto& warningsAfterCaptureReject = mediaCore.sceneValidationWarningsForTest();
+  EXPECT_NE(std::find(warningsAfterCaptureReject.begin(), warningsAfterCaptureReject.end(),
+                       "set-source-policy: only zoom:<pid> sources take a dropout policy this slice (capture:decklink-1)"),
+            warningsAfterCaptureReject.end());
   const auto& plan = compositor->lastPlan;
   const auto layer = std::find_if(plan.layers.begin(), plan.layers.end(),
       [](const auto& l) { return l.participantId == "capture:decklink-1"; });
   ASSERT_NE(layer, plan.layers.end());
   EXPECT_EQ(layer->sourceHealth, "producing");
-  EXPECT_EQ(layer->dropoutPolicy, "black");
-  EXPECT_EQ(layer->sourceDisplayName, "Camera 1");
+  EXPECT_EQ(layer->dropoutPolicy, "hold");  // policy refused for a non-zoom id: stays default
+  EXPECT_EQ(layer->sourceDisplayName, "Camera 1");  // name IS adopted for a non-zoom id
   // #535 slice 4a fix round 1: multiview tiles draw through the SAME
   // compositor path (renderMultiview), so a dead source must be identifiable
   // there too — the same annotation must reach the MV tile layer.
@@ -6043,13 +6050,15 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
   const auto state = mediaCore.sessionState();
   bool echoed = false;
   for (const auto& s : state.get("sources")->asArray()) {
-    if (s.getString("sourceId") == "capture:decklink-1") { echoed = true; EXPECT_EQ(s.getString("dropoutPolicy"), "black"); EXPECT_EQ(s.getString("displayName"), "Camera 1"); }
+    if (s.getString("sourceId") == "capture:decklink-1") { echoed = true; EXPECT_EQ(s.getString("dropoutPolicy"), "hold"); EXPECT_EQ(s.getString("displayName"), "Camera 1"); }
   }
   EXPECT_TRUE(echoed);
 
   // #535 slice 4a fix round 2 (finding 1): PRESENT-OR-KEEP. A re-sent
   // set-source-policy carrying only displayName (no dropoutPolicy field at
-  // all) must never reset the policy back to the "hold" default.
+  // all) must never reset the policy back to the "hold" default. Still true
+  // for a non-zoom id, whose policy is refused rather than accepted, but
+  // whose name keeps updating normally.
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
       {"type", "set-source-policy"}, {"sourceId", "capture:decklink-1"}, {"displayName", "Cam 1"}}});
   mediaCore.renderDisplayTick();
@@ -6057,7 +6066,7 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
   const auto keepLayer = std::find_if(keepPlan.layers.begin(), keepPlan.layers.end(),
       [](const auto& l) { return l.participantId == "capture:decklink-1"; });
   ASSERT_NE(keepLayer, keepPlan.layers.end());
-  EXPECT_EQ(keepLayer->dropoutPolicy, "black");  // unchanged: dropoutPolicy was absent from the command
+  EXPECT_EQ(keepLayer->dropoutPolicy, "hold");  // still refused/default for a non-zoom id
   EXPECT_EQ(keepLayer->sourceDisplayName, "Cam 1");  // updated: displayName was present
 
   // #535 slice 4a fix round 2 (finding 2): the rejection path is observable
@@ -6104,4 +6113,197 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
   ASSERT_FALSE(plan2.layers.empty());
   EXPECT_EQ(plan2.layers.front().sourceHealth, "failed");
   EXPECT_EQ(plan2.layers.front().dropoutPolicy, "hold");  // default when unset
+}
+
+namespace {
+// #535 slice 4a final review, R1: a bus source with a settable `kind` and a
+// frame that NEVER advances its frameId after the first poll — used to drive
+// MediaCore::annotateLayerSource's on-air stall decision (kind + real elapsed
+// wall time), which is deliberately distinct from SourceBus's own 200ms
+// diagnostic health.
+class FixedFrameKindSource final : public corevideo::core::ISource {
+ public:
+  FixedFrameKindSource(std::string sourceId, std::string kind) {
+    descriptor_.sourceId = sourceId_ = std::move(sourceId);
+    descriptor_.kind = std::move(kind);
+    descriptor_.width = descriptor_.height = 64;
+    descriptor_.hasVideo = true;
+  }
+  const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
+  corevideo::core::SourceTick poll(int64_t /*programTime100ns*/) override {
+    corevideo::modules::VideoFrame frame;
+    frame.participantId = sourceId_;
+    frame.width = frame.pixelWidth = frame.naturalWidth = 64;
+    frame.height = frame.pixelHeight = frame.naturalHeight = 64;
+    frame.pixelStride = 64 * 4;
+    frame.pixels = std::make_shared<const std::vector<uint8_t>>(64 * 64 * 4, 0x80);
+    frame.frameId = 1;  // fixed: never advances, so only the FIRST poll counts as new.
+    corevideo::core::SourceTick tick;
+    tick.video.push_back(std::move(frame));
+    tick.health = corevideo::core::SourceHealth::Producing;
+    return tick;
+  }
+  corevideo::core::SourceIngestCounters counters() const override { return counters_; }
+
+ private:
+  std::string sourceId_;
+  corevideo::core::SourceDescriptor descriptor_;
+  corevideo::core::SourceIngestCounters counters_;
+};
+}  // namespace
+
+namespace {
+// Reused by the three R1 tests below: mirrors SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers's
+// local RecordingCompositor (a real render-plan capture seam, since
+// annotateLayerSource's output never reaches RenderedProgramSources's wire —
+// that node carries only layerId/sourceId/participantId/kind, no health).
+class OnAirRecordingCompositor final : public corevideo::modules::ICompositor {
+ public:
+  explicit OnAirRecordingCompositor(std::unique_ptr<corevideo::modules::ICompositor> inner)
+      : inner_(std::move(inner)) {}
+  std::string rendererName() const override { return inner_->rendererName(); }
+  corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    lastPlan = plan;
+    return inner_->render(plan, frames);
+  }
+  corevideo::modules::ProgramFrameSharedTexture renderMultiview(const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    lastMultiviewPlan = plan;
+    return inner_->renderMultiview(plan, frames);
+  }
+  corevideo::modules::CompositorRenderPlan lastPlan;
+  corevideo::modules::CompositorRenderPlan lastMultiviewPlan;
+ private:
+  std::unique_ptr<corevideo::modules::ICompositor> inner_;
+};
+
+std::string onAirHealthFor(corevideo::core::MediaCore& mediaCore, OnAirRecordingCompositor* compositor,
+                           const std::string& participantId) {
+  mediaCore.renderDisplayTick();
+  const auto& plan = compositor->lastPlan;
+  const auto layer = std::find_if(plan.layers.begin(), plan.layers.end(),
+      [&](const auto& l) { return l.participantId == participantId; });
+  return layer == plan.layers.end() ? std::string() : layer->sourceHealth;
+}
+}  // namespace
+
+// #535 slice 4a final review, R1: a "zoom"-kind bus source with no new frame
+// for >= 1.5s reads "stalled" on the render-plan layer (the on-air rule),
+// even though SourceBus's own 200ms diagnostic health would already call it
+// stalled well before that.
+TEST(MediaCoreCommand, AZoomKindSourceStalledOver1500msReadsStalledOnAir) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<OnAirRecordingCompositor>(std::move(modules.compositor));
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.addSourceForTest(std::make_shared<FixedFrameKindSource>("zoomstall1", "zoom"));
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"}, {"sceneId", "zoomstall"},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"routeId", "zoomstall-0"}, {"mode", "fixed"}, {"participantId", "zoomstall1"}}}}}});
+  onAirHealthFor(mediaCore, compositor, "zoomstall1");  // first frame ingested; lastNewFrameNs set here.
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+
+  EXPECT_EQ(onAirHealthFor(mediaCore, compositor, "zoomstall1"), "stalled");
+}
+
+// Same shape, but well under the 1.5s on-air window: reads "producing".
+TEST(MediaCoreCommand, AZoomKindSourceAt500msStillReadsProducingOnAir) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<OnAirRecordingCompositor>(std::move(modules.compositor));
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.addSourceForTest(std::make_shared<FixedFrameKindSource>("zoomfresh1", "zoom"));
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"}, {"sceneId", "zoomfresh"},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"routeId", "zoomfresh-0"}, {"mode", "fixed"}, {"participantId", "zoomfresh1"}}}}}});
+  onAirHealthFor(mediaCore, compositor, "zoomfresh1");
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+  EXPECT_EQ(onAirHealthFor(mediaCore, compositor, "zoomfresh1"), "producing");
+}
+
+// A non-Zoom bus source NEVER reads "stalled" from frame cadence alone, no
+// matter how long it goes without a new frameId — browser sources, WGC
+// screen capture, stills and paused clips legitimately re-serve the same
+// frameId forever while healthy. Uses kind "test" rather than the spec's
+// illustrative "capture": a bus source ADDED DIRECTLY via addSourceForTest
+// with kind "capture" is purged every tick by CaptureBusRoster::syncCaptureSources
+// (it mirrors the REAL capture adapters' poll and removes any "capture"-kind
+// entry absent from it — by design, #554/slice-2's capture parity rule,
+// unrelated to this test), so it can never stay on the bus long enough to
+// prove anything here. Kind "test" is untouched by any such roster sync and
+// exercises the exact same "kind != zoom" gate in annotateLayerSource. This
+// also waits past the SAME 1.6s window the Zoom test above uses (proving the
+// KIND gate, not a duration difference) rather than a literal 10s, since the
+// property under test does not depend on how far past kOnAirStallNs the wait
+// goes, and a real 10s sleep would needlessly slow the suite for the same
+// coverage.
+TEST(MediaCoreCommand, ANonZoomKindSourceNeverReadsStalledOnAirFromCadenceAlone) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<OnAirRecordingCompositor>(std::move(modules.compositor));
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.addSourceForTest(std::make_shared<FixedFrameKindSource>("capturestall1", "test"));
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"}, {"sceneId", "capturestall"},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"routeId", "capturestall-0"}, {"mode", "fixed"}, {"participantId", "capturestall1"}}}}}});
+  onAirHealthFor(mediaCore, compositor, "capturestall1");
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+
+  EXPECT_EQ(onAirHealthFor(mediaCore, compositor, "capturestall1"), "producing");
+}
+
+// #535 slice 4a final review, R3: black is a PROGRAM-only cut. With a
+// Zoom-kind source stalled >= 1.5s and policy "black", the PROGRAM plan
+// layer reads policy "black" while the MULTIVIEW plan layer for the SAME
+// source reads "hold" — the operator can still watch the multiview tile for
+// recovery even though Program has cut to black.
+TEST(MediaCoreCommand, BlackPolicyAppliesToProgramOnlyNeverMultiview) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<OnAirRecordingCompositor>(std::move(modules.compositor));
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.addSourceForTest(std::make_shared<FixedFrameKindSource>("zoomblack1", "zoom"));
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "zoomblack"},
+          {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+              {"routeId", "zoomblack-0"}, {"mode", "fixed"}, {"participantId", "zoomblack1"}}}}},
+      corevideo::rpc::Json::Object{{"type", "set-multiview-layout"},
+          {"sources", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+              {"sourceId", "zoom:zoomblack1"}, {"kind", "zoom"}, {"participantId", "zoomblack1"}}}}},
+      corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "zoom:zoomblack1"},
+                                   {"dropoutPolicy", "black"}}});
+  mediaCore.renderDisplayTick();  // first frame ingested.
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+  mediaCore.renderDisplayTick();
+
+  const auto& programPlan = compositor->lastPlan;
+  const auto programLayer = std::find_if(programPlan.layers.begin(), programPlan.layers.end(),
+      [](const auto& l) { return l.participantId == "zoomblack1"; });
+  ASSERT_NE(programLayer, programPlan.layers.end());
+  EXPECT_EQ(programLayer->sourceHealth, "stalled");
+  EXPECT_EQ(programLayer->dropoutPolicy, "black");
+
+  const auto& mvPlan = compositor->lastMultiviewPlan;
+  const auto mvLayer = std::find_if(mvPlan.layers.begin(), mvPlan.layers.end(),
+      [](const auto& l) { return l.participantId == "zoomblack1"; });
+  ASSERT_NE(mvLayer, mvPlan.layers.end());
+  EXPECT_EQ(mvLayer->sourceHealth, "stalled");
+  EXPECT_EQ(mvLayer->dropoutPolicy, "hold");  // monitoring surface: never black
 }

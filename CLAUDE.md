@@ -2007,39 +2007,100 @@ the bus; retiring them is **slice 4b**
 
 - **The owner's rulings (2026-09-19, on #449/#535):** *warming* (no content
   frame, health not failed) = a neutral dark slate; *failed/missing* (no
-  content frame, health `failed`) = a dark slate WITH the source's name;
-  *stalled* (had frames, none for 200 ms+) is the OPERATOR's per-source choice
-  — hold last frame (default) or black — never a fixed rule.
+  content frame, health `failed` or `stalled`) = a dark slate WITH the
+  source's RESOLVED name (operator override, else the roster/device-derived
+  name — see R5 below, never a raw id); *stalled* (had frames, none recently)
+  is the OPERATOR's per-source choice — hold last frame (default) or black —
+  never a fixed rule, and (final-review correction, same day) **applies to the
+  PROGRAM pass only** (see R1/R3 below) and **only for Zoom sources this
+  slice** (see R2 below).
+- **Final-review fix wave (2026-09-19, same branch) — the first cut above was
+  too broad in three ways, all corrected same day:**
+  - **R1 — on-air "stalled" is Zoom-only and hysteretic (1.5s), not the bus's
+    200ms diagnostic.** `SourceBus::kStaleAfterNs` (200ms) still drives the
+    `sources[]` diagnostic snapshot unchanged; `core::kOnAirStallNs`
+    (1'500'000'000 ns, `SourceBus.h`) is a SEPARATE, longer threshold used
+    only by `MediaCore::annotateLayerSource` to decide a layer's on-air
+    `sourceHealth`. A layer's health is `"stalled"` only when the bus source's
+    `descriptor().kind == "zoom"` AND at least 1.5s have passed with no new
+    frameId; every other kind (capture/media/still — browser sources, WGC
+    screen capture, stills, paused clips) reads `"producing"` regardless of
+    frame cadence, because those kinds legitimately re-serve the same frameId
+    for long stretches while healthy. `SourceBus::onAirStatusFor` exposes the
+    `{health, sinceLastNewFrameNs, kind}` triple this decision needs, as a
+    sibling to `healthFor` (which still serves the 200ms diagnostic
+    unchanged).
+  - **R2 — a dropout POLICY is Zoom-only this slice.** `MediaCore::setSourcePolicy`
+    refuses (loud scene-validation warning, no state change) a `dropoutPolicy`
+    for any id not starting `zoom:` — capture liveness via `signalPresent`
+    isn't wired to a stall decision yet, so a capture "black" policy would act
+    on cadence noise, not a real dropout; that wiring is a **follow-up**. A
+    source's `displayName` is NOT gated the same way — it is accepted and
+    stored for ANY id (capture included), because the failed slate needs names
+    for capture too (R5). The shell's capture-row "On dropout" ComboBox is
+    REMOVED from the Sources page (the Zoom guest row's combo stays);
+    `CaptureDevice.DropoutPolicy` plumbing is kept as harmless dead weight
+    (`ProductionStateHelper.PopulateCaptureDeviceDropoutPolicy` always resolves
+    it to `"hold"` now, since a capture key can no longer reach the persisted
+    dictionary). `StudioViewModel.SetSourceDropoutPolicy` and the
+    `source.dropout.set` control action both refuse a non-`zoom:` id
+    (`ControlInvokeResult.Fail`); `ApplyProductionOutputPreferences` PRUNES any
+    persisted non-`zoom:` `SourceDropoutPolicies` key on load (a pre-fix-wave
+    file, or a hand edit, cannot resurrect a capture policy).
+  - **R3 — black is a PROGRAM-only cut.** Preview and multiview keep the HELD
+    frame regardless of the stored policy, so the operator can watch a stalled
+    source for recovery on the monitoring surfaces even while Program has cut
+    to black. `MediaCore`'s `holdDropoutForMonitoring(plan)` forces
+    `dropoutPolicy = "hold"` on every layer of `buildPreviewCompositorRenderPlan`'s
+    plan and of `buildMultiviewRenderPlan`'s plan (both the PGM/PVW mirror
+    cells and the source tiles), applied AFTER `annotateLayerSource` so
+    `sourceHealth`/`sourceDisplayName` are still correct on those planes —
+    only `buildCompositorRenderPlan` (the real Program render) reads the true
+    per-source policy.
 - **One resolution rule, identical in all three compositors, lives in
   `native/src/compositor/CompositorLayout.h`:** the constants
   `kWarmingSlateRgba = 0xff1b1f27` (neutral dark), `kFailedSlateRgba =
   0xff23181c` (dark, faintly warm so failed reads distinguishably from
   warming), `kDropoutBlackRgba = 0xff000000`, and the two pure functions
-  `slateColorFor(sourceHealth)` (`"failed"` → `kFailedSlateRgba`, else
-  `kWarmingSlateRgba`) and `blackOnStalled(health, policy)` (`stalled` +
+  `slateColorFor(sourceHealth)` (`"failed"` OR `"stalled"` → `kFailedSlateRgba`
+  — R4, final review: a source with nothing to hold reads the SAME failed
+  slate whether the bus calls it failed or stalled; `"warming"`/anything else
+  → `kWarmingSlateRgba`) and `blackOnStalled(health, policy)` (`stalled` +
   `black` → true). `colorFromParticipantId` STAYS (Tiles membership + some
   tests still use it for distinct-source identity over REAL frames) but no
   layer-resolution path may call it any more — every compositor
   (`ProgramFramePreview`, `D3D11CompositorAdapter::resolveLayers`,
   `MetalCompositorAdapter`) and every layer kind (participant-video,
   media-video, the legacy positional fallback, the empty-render-plan grid
-  fallback) now resolves through `slateColorFor`/`blackOnStalled` alone.
+  fallback) now resolves through `slateColorFor`/`blackOnStalled` alone. The
+  D3D11 failed-slate name label (`drawFailedSlateName`) also draws for BOTH
+  `"failed"` and `"stalled"` with no frame, matching the colour rule.
 - **The wire: `set-source-policy`** `{sourceId, dropoutPolicy: "hold"|"black",
   displayName?}`. The core keys by the RAW frame key it looks up at plan
-  time — `zoom:<pid>` has its `zoom:` prefix stripped to the raw pid, `capture:<id>`/
-  `media:<id>` unchanged — and rejects (loudly, scene-validation warning) any
-  policy string that isn't `hold`/`black`, leaving the existing value
-  unchanged. `sources[]` echoes `dropoutPolicy` + `displayName` per source. The
-  shell RE-SENDS every persisted policy (or a source with only a known display
+  time — `zoom:<pid>` has its `zoom:` prefix stripped to the raw pid — and
+  rejects (loudly, scene-validation warning) any `sourceId` that isn't
+  `zoom:<pid>` when a `dropoutPolicy` is present (R2), or any policy string
+  that isn't `hold`/`black` for a valid zoom id, in both cases leaving the
+  existing value unchanged; `displayName` is accepted for any id regardless.
+  `sources[]` echoes `dropoutPolicy` + `displayName` per source. The shell
+  RE-SENDS every persisted policy (or a source with only a known display
   name, so the core learns names for the failed slate) on every production
   sync — present-or-keep, the same one-shot-command-must-be-re-applied rule as
   `configure-multiviewer` above, since the core can respawn and lose anything
   sent only once.
 - **Shell:** a per-source "On dropout" ComboBox (Hold last frame | Black) on
-  the Sources page — one per Zoom guest row, one per capture-device row —
-  persisted in `ProductionOutputPreferences.SourceDropoutPolicies` (prefs
-  **v13**; v12→v13 migrates to an empty map), and a control action
-  `source.dropout.set {sourceId, policy}`.
+  the Sources page for Zoom guest rows ONLY (R2: the capture-row combo is
+  removed) — persisted in `ProductionOutputPreferences.SourceDropoutPolicies`
+  (prefs **v13**; v12→v13 migrates to an empty map, and load now prunes any
+  non-`zoom:` key), and a control action `source.dropout.set {sourceId,
+  policy}` that refuses a non-`zoom:` id. `StudioViewModel.BuildSourcePolicyWires`
+  (R5) is a thin forwarder to the pure `ProductionStateHelper.BuildSourcePolicyWires`
+  (participants + capture devices + policies + display-name overrides →
+  wires), which is what makes it unit-testable without constructing the
+  (non-constructible-in-tests) view model — it names EVERY current Zoom
+  participant and capture device with its RESOLVED name (override, else
+  roster/device-derived), not only ids that already had an override or an
+  explicit policy.
 - **Metal is colour-only, deliberately.** The D3D11 failed slate carries a
   small name label via the existing overlay text raster (bottom-left band, not
   a full band — the raster never paints a background plate behind it, see the
@@ -2048,28 +2109,46 @@ the bus; retiring them is **slice 4b**
   `rasterOverlayTileCoreText` did not compose cleanly into the failed-slate
   path in ≤ 30 lines; CI-only (`native-metal-macos`), so this has not been
   rig-verified on a real Mac.
-- **Task 4 gate numbers (this branch, 2026-09-19):** Windows dev suite
-  `native/build-dev/corevideo-native-tests.exe` — 1075 tests passed, 0 failed.
-  Stub gate (`scripts/test-native.ps1`) — green, 100% tests passed, 0 failed.
-  `validate-multiview.mjs` / `validate-tiles.mjs` — both PASS. Two
-  `scripts/qa/zoom-gap-hold-ab.py` runs (harness extended with `--policy
-  hold|black`, default hold; docstring updated for the new slate signature —
-  the dropout luma is now `kWarmingSlateRgba` (≈30) or black (≈16), never the
-  old pink): `--label s4a-hold` held luma 187.5–204.7 across the WHOLE
-  recording including the dropout window (no dip — 103's held frame keeps
-  compositing under the default `hold` policy); `--label s4a-black --policy
-  black` held ~188–205 before the gap, dropped to EXACTLY 16.0 for the 18
-  frames (~300 ms) of the dropout window, and recovered to ~189+ immediately
-  after restore. Show drill (`COREVIDEO_FAKE_ENGINE_FPS=60`,
-  `mac-show-drill.py --seconds 40 --load 8`) — PASSED: 60.0fps of 60 sustained,
-  0 dropped, 4.0ms render hold, 100% decoded-frame delivery, coreMutex
-  over-budget 21/2847 (1%).
+- **Task 4 gate numbers (2026-09-19, first cut):** Windows dev suite 1075/0,
+  stub gate green, `validate-multiview.mjs`/`validate-tiles.mjs` PASS, show
+  drill PASSED (60fps/100%/0 dropped). Superseded by the final-review numbers
+  immediately below — the first cut's `zoom-gap-hold-ab.py` runs used the
+  harness's original ~450ms DROPOUT window, which is now SHORTER than R1's
+  1.5s on-air hysteresis, so that "black held ~300ms" result no longer applies
+  once R1 landed (a `--policy black` run at the default gap never reaches
+  "stalled" at all now, correctly — see below).
+- **Final-review fix wave gate numbers (2026-09-19, R1–R6):** Windows dev
+  suite `native/build-dev/corevideo-native-tests.exe` — 1080 tests passed, 0
+  failed. `dotnet test`: MediaCore.Tests 2228/0, Control.Tests 74/0, WinUI.Tests
+  1510/0. `dotnet build native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj
+  -c Release -p:Platform=x64` — 0 errors. `scripts/qa/zoom-gap-hold-ab.py`
+  gained a `--gap-seconds` flag (default 0.45, matching the original window)
+  because R1's 1.5s on-air window made the old fixed ~450ms DROPOUT phase too
+  short to ever observe a black cut. Two runs, archived under
+  `artifacts/qa/slice4a/`: `--label s4a-hold-v2 --policy hold` (default
+  `--gap-seconds 0.45`) — luma held 187.5–204.7 across the WHOLE recording
+  including the dropout window (no dip — correctly under the 1.5s window, so
+  the stalled+black rule never engages); `--label s4a-black-v2 --policy black
+  --gap-seconds 2.5` — luma held ~199–205 for the first ~1.3s of the gap (bus
+  health still short of the 1.5s window), THEN dropped to EXACTLY luma 16.08
+  for ~1.35s once bus health crossed to on-air "stalled", and recovered to
+  ~199+ immediately after RESTORE — exactly the R1/R3 behaviour: black is a
+  genuine on-air cut that respects the 1.5s hysteresis, never the ~200-450ms
+  window the diagnostic health alone would suggest.
 - **Known follow-ups, not gaps in scope:** the multiview tile now shows the
   core's own bus-health name label UNDER the shell's existing XAML tile label
   when a tile is failed — this stacks two labels and has not been eyeballed
   live yet (headless pixel oracles cannot judge text overlap); a long
   `sourceDisplayName` clips at the D3D11 label's 40%-of-rect width cap rather
-  than truncating with an ellipsis; Metal text (`TODO(4a-metal-text)` above).
+  than truncating with an ellipsis; Metal text (`TODO(4a-metal-text)` above);
+  media/still sources have no "warming" desired-set wiring yet (R1 only covers
+  Zoom vs everything-else, not a richer per-kind warming signal); capture
+  dropout liveness/policy is gated on wiring `signalPresent` into a real stall
+  decision (R2 follow-up); the sourceHealth/dropoutPolicy strings are
+  allocated per layer per tick rather than interned; a non-`hold`/`black`
+  `dropoutPolicy` string still only warns rather than refusing the whole
+  command; a long `sourceDisplayName` on the multiview tile has not been
+  live-eyeballed for the double-label stacking noted above.
 
 ## GPU-direct hardware encode for streaming (#521 slice 1, 2026-09-13)
 

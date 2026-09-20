@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.WinUI.Services;
 
 namespace CoreVideoPro.WinUI.Models;
 
@@ -1058,6 +1059,62 @@ public static class ProductionStateHelper
     public static void PopulateCaptureDeviceDropoutPolicy(
         CaptureDevice device, IReadOnlyDictionary<string, string>? dropoutPolicies) =>
         device.DropoutPolicy = ResolveSourceDropoutPolicy("capture:" + device.Id, dropoutPolicies);
+
+    // R5 (final review, #535 slice 4a): extracted from StudioViewModel.BuildSourcePolicyWires
+    // so it is unit-testable without constructing the (non-constructible-in-tests)
+    // StudioViewModel. The failed slate needs a RESOLVED name — the operator
+    // override if present, else the same derived roster/device name the Sources
+    // page shows — for every zoom:<pid> participant currently in the room and
+    // every capture:<id> device, not only ids that already have an override or
+    // an explicit policy (the pre-fix behaviour: a never-renamed guest's failed
+    // slate carried no name at all).
+    public static IReadOnlyDictionary<string, MediaCoreSourcePolicyWire> BuildSourcePolicyWires(
+        IReadOnlyList<Participant> roomParticipants,
+        IReadOnlyList<CaptureDevice> captureDevices,
+        IReadOnlyDictionary<string, string> dropoutPolicies,
+        IReadOnlyDictionary<string, string>? displayNameOverrides)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var id in dropoutPolicies.Keys)
+        {
+            ids.Add(id);
+        }
+
+        foreach (var participant in roomParticipants)
+        {
+            ids.Add("zoom:" + participant.Id);
+        }
+
+        foreach (var device in captureDevices)
+        {
+            ids.Add("capture:" + device.Id);
+        }
+
+        var wires = new Dictionary<string, MediaCoreSourcePolicyWire>(StringComparer.Ordinal);
+        foreach (var id in ids)
+        {
+            dropoutPolicies.TryGetValue(id, out var policy);
+
+            string? derivedName = null;
+            if (id.StartsWith("zoom:", StringComparison.Ordinal))
+            {
+                var pid = id["zoom:".Length..];
+                derivedName = roomParticipants.FirstOrDefault(item =>
+                    string.Equals(item.Id, pid, StringComparison.Ordinal))?.Name;
+            }
+            else if (id.StartsWith("capture:", StringComparison.Ordinal))
+            {
+                var captureId = id["capture:".Length..];
+                derivedName = captureDevices.FirstOrDefault(item =>
+                    string.Equals(item.Id, captureId, StringComparison.Ordinal))?.Name;
+            }
+
+            var name = ShowInputRosterService.ResolveDisplayName(displayNameOverrides, id, derivedName ?? string.Empty);
+            wires[id] = new MediaCoreSourcePolicyWire(id, policy ?? "hold", string.IsNullOrEmpty(name) ? null : name);
+        }
+
+        return wires;
+    }
 
     public static string MediaBinSummary(int assetCount) =>
         assetCount == 0 ? "Media bin is empty" : $"{assetCount} assets in bin";

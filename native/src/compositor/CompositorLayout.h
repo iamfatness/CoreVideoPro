@@ -508,8 +508,14 @@ inline constexpr uint32_t kDropoutBlackRgba = 0xff000000u;
 // The ONE resolution rule (Task 2), shared verbatim by the CPU preview, D3D11
 // and Metal compositors so it cannot drift between them. See the Global
 // Constraints in docs/superpowers/plans/2026-09-19-source-bus-slice4a-health-on-air.md.
+// R4 (final review): "stalled" reads as failed here too when there is NO
+// content frame to fall back on (the empty-render-plan / no-matching-frame
+// paths) — a source the operator has never seen a picture from is exactly as
+// unidentified whether the bus calls it "failed" or "stalled" with nothing to
+// show, so it gets the same named dark slate. This is independent of R3's
+// on-air black-policy, which only ever applies when a REAL held frame exists.
 inline uint32_t slateColorFor(std::string_view sourceHealth) {
-  return sourceHealth == "failed" ? kFailedSlateRgba : kWarmingSlateRgba;
+  return (sourceHealth == "failed" || sourceHealth == "stalled") ? kFailedSlateRgba : kWarmingSlateRgba;
 }
 
 inline bool blackOnStalled(std::string_view health, std::string_view policy) {

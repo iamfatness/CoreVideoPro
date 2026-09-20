@@ -166,10 +166,8 @@ public sealed partial class SourcesInputsPage : UserControl
             SyncDropoutPolicyCombo(policyCombo, policyRow.DropoutPolicy);
         }
 
-        if (FindDescendant<ComboBox>(root, "CaptureDropoutPolicyCombo") is { Tag: CaptureDevice captureDevice } captureCombo)
-        {
-            SyncDropoutPolicyCombo(captureCombo, captureDevice.DropoutPolicy);
-        }
+        // #535 slice 4a R2 (final review): the capture-row combo is removed —
+        // a dropout policy is Zoom-only this slice.
     }
 
     // #535 slice 4a: same sync pattern as SyncProductionRoleCombo above, for the
@@ -186,9 +184,6 @@ public sealed partial class SourcesInputsPage : UserControl
         {
             case FeedHealthRow row:
                 SyncDropoutPolicyCombo(combo, row.DropoutPolicy);
-                break;
-            case CaptureDevice device:
-                SyncDropoutPolicyCombo(combo, device.DropoutPolicy);
                 break;
         }
     }
@@ -228,7 +223,6 @@ public sealed partial class SourcesInputsPage : UserControl
         var sourceId = combo.Tag switch
         {
             FeedHealthRow row => "zoom:" + row.ParticipantId,
-            CaptureDevice device => "capture:" + device.Id,
             _ => null
         };
         if (sourceId is null)

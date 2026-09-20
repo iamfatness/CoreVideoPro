@@ -107,10 +107,10 @@ public static class ControlActionRegistry
                     new ControlParam("slot", i, true, "1-10"),
                     new ControlParam("name", s, false)
                 }),
-            new("source.dropout.set", "Source on dropout", "Set what a source shows when it stops delivering (hold last frame or black).",
+            new("source.dropout.set", "Source on dropout", "Set what a source shows when it stops delivering (hold last frame or black). Zoom-only this slice.",
                 new[]
                 {
-                    new ControlParam("sourceId", s, true, "zoom:<pid> | capture:<id>"),
+                    new ControlParam("sourceId", s, true, "zoom:<pid>"),
                     new ControlParam("policy", s, true, "hold | black")
                 }),
             new("input.inShow.set", "Input in-show", "Add/remove a Show Input slot from the show.",

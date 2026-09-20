@@ -1939,12 +1939,21 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
 // resolves at plan build (a zoom:<pid> source stores under the raw <pid>;
 // capture:<id> and media:<id> are stored verbatim, matching the Wire's
 // canonical-id → frame-key mapping).
+//
+// R2 (final review, #535 slice 4a): a dropout POLICY is Zoom-only this
+// slice — capture liveness (signalPresent) hasn't been wired to a stall
+// decision yet, so a capture/media "black" policy would be acting on a
+// health signal that doesn't mean what it means for Zoom. displayName is
+// NOT gated the same way: the failed slate needs a name for capture sources
+// too (R5), so a name is stored for ANY id, only the policy is refused for
+// a non-"zoom:" id.
 void MediaCore::setSourcePolicy(const rpc::Json& command) {
   const std::string sourceId = command.getString("sourceId");
   if (sourceId.empty()) {
     return;
   }
-  const std::string key = sourceId.rfind("zoom:", 0) == 0 ? sourceId.substr(5) : sourceId;
+  const bool isZoom = sourceId.rfind("zoom:", 0) == 0;
+  const std::string key = isZoom ? sourceId.substr(5) : sourceId;
   // PRESENT-OR-KEEP, exactly like displayName below: a re-sent set-source-policy
   // that carries only displayName (or omits dropoutPolicy for any other reason)
   // must never reset a previously-set policy back to "hold" — the shell
@@ -1952,18 +1961,23 @@ void MediaCore::setSourcePolicy(const rpc::Json& command) {
   // does not know about yet (or intentionally leaves alone) must not clobber
   // state another sync already established.
   if (const rpc::Json* dropoutPolicy = command.get("dropoutPolicy"); dropoutPolicy && dropoutPolicy->isString()) {
-    const std::string policy = dropoutPolicy->asString();
-    if (policy != "hold" && policy != "black") {
+    if (!isZoom) {
       // loadSceneGraph clears sceneValidationWarnings_ (see its own clear()
       // call) — a set-source-policy that runs BEFORE the scene command in a
       // batch has this warning wiped by that clear. applyCommands runs
       // commands in the order given, so callers must put set-source-policy
       // AFTER load-scene-graph in the batch (as this file's own tests do).
       pushSceneWarningOnce(sceneValidationWarnings_,
-          "set-source-policy: unknown dropoutPolicy '" + policy + "' for " + sourceId);
-      return;
+          "set-source-policy: only zoom:<pid> sources take a dropout policy this slice (" + sourceId + ")");
+    } else {
+      const std::string policy = dropoutPolicy->asString();
+      if (policy != "hold" && policy != "black") {
+        pushSceneWarningOnce(sceneValidationWarnings_,
+            "set-source-policy: unknown dropoutPolicy '" + policy + "' for " + sourceId);
+      } else {
+        sourcePolicies_[key].dropoutPolicy = policy;
+      }
     }
-    sourcePolicies_[key].dropoutPolicy = policy;
   }
   if (const rpc::Json* displayName = command.get("displayName"); displayName && displayName->isString()) {
     sourcePolicies_[key].displayName = displayName->asString();
@@ -1985,9 +1999,19 @@ void MediaCore::annotateLayerSource(modules::CompositorRenderPlanLayer& layer,
   // sourceBus_ is constructed in the ctor and never reset (see its member
   // comment), so this is a single query, not two branches duplicating the
   // same frames-scan fallback.
-  const auto busHealth = sourceBus_ ? sourceBus_->healthFor(key, nowNs) : std::nullopt;
-  if (busHealth) {
-    layer.sourceHealth = core::sourceHealthName(*busHealth);
+  // #535 slice 4a (R1): on-air "stalled" is Zoom-only and hysteretic (1.5s),
+  // deliberately different from the bus's 200ms diagnostic health. Capture,
+  // media and still sources can legitimately re-serve the same frameId for
+  // long stretches while healthy (a paused clip, a static screen share, a
+  // still image) — reading the 200ms diagnostic as an on-air cut would black
+  // those out while they are perfectly fine. Only a Zoom source with no new
+  // frame for >= kOnAirStallNs reads "stalled" here; everything else that the
+  // bus reports as present reads "producing" regardless of frame cadence.
+  const auto busStatus = sourceBus_ ? sourceBus_->onAirStatusFor(key, nowNs) : std::nullopt;
+  if (busStatus) {
+    const bool zoomStalled = busStatus->kind == "zoom" && busStatus->sinceLastNewFrameNs >= core::kOnAirStallNs;
+    layer.sourceHealth = zoomStalled ? core::sourceHealthName(core::SourceHealth::Stalled)
+                                      : core::sourceHealthName(core::SourceHealth::Producing);
   } else if (!videoFrames.empty()) {
     const bool subscribed = std::any_of(videoFrames.begin(), videoFrames.end(),
         [&](const modules::VideoFrame& frame) { return frame.participantId == key; });
@@ -3709,6 +3733,21 @@ ResolvedMultiviewFeed resolveMultiviewFeed(
   return feed;
 }
 
+// #535 slice 4a final review, R3: the "black" dropout policy is a PROGRAM-only
+// cut. Preview and multiview must keep showing the held (last) frame for a
+// stalled source regardless of its stored policy, so the operator can watch
+// for recovery instead of losing the picture on the monitoring surfaces too —
+// only the actual on-air Program pass (buildCompositorRenderPlan) ever reads
+// the real per-source policy. Applied AFTER annotateLayerSource has already
+// set the real policy from sourcePolicies_, so this is strictly an override,
+// never a skip of the annotation itself (sourceHealth/displayName still need
+// to be correct on these monitoring planes for the failed-slate name, R5).
+void holdDropoutForMonitoring(modules::CompositorRenderPlan& plan) {
+  for (auto& layer : plan.layers) {
+    layer.dropoutPolicy = "hold";
+  }
+}
+
 }  // namespace
 
 modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
@@ -3889,6 +3928,13 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
     renderPlan.layers.push_back(std::move(layer));
   }
 
+  // R3: multiview is a monitoring surface — every layer here (the PGM/PVW
+  // mirror cells above, and the source tiles just built) keeps the held
+  // frame regardless of the stored per-source policy. The PVW cell's own
+  // layers already went through this in buildPreviewCompositorRenderPlan;
+  // re-applying here is a no-op for those and is what covers the PGM mirror
+  // cell + the source tiles.
+  holdDropoutForMonitoring(renderPlan);
   return renderPlan;
 }
 
@@ -5534,6 +5580,9 @@ modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const 
     const auto sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
     layer.sourceId = "preview:" + sourceId;
   }
+  // R3: preview keeps the held frame — never a black cut — regardless of the
+  // stored per-source policy; only the real Program pass reads it.
+  holdDropoutForMonitoring(plan);
   return plan;
 }
 

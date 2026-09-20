@@ -124,6 +124,15 @@ TEST(ProgramFramePreviewHealth, NoFrameFailedDrawsTheFailedSlate) {
   EXPECT_EQ(renderCentrePixel(plan, {}), corevideo::compositor::kFailedSlateRgba);
 }
 
+// R4 (final review, #535 slice 4a): a source with NO content frame at all
+// that reads "stalled" (rather than "failed") draws the SAME failed slate —
+// an operator has never seen a picture from it either way, so "stalled with
+// nothing to hold" is exactly as unidentified as "failed".
+TEST(ProgramFramePreviewHealth, NoFrameStalledDrawsTheFailedSlate) {
+  const auto plan = makePlan(makeSourceLayer("stalled"));
+  EXPECT_EQ(renderCentrePixel(plan, {}), corevideo::compositor::kFailedSlateRgba);
+}
+
 TEST(ProgramFramePreviewHealth, NoFrameUnknownHealthDrawsTheWarmingSlateNotAnIdColour) {
   const auto plan = makePlan(makeSourceLayer(""));
   const uint32_t pixel = renderCentrePixel(plan, {});

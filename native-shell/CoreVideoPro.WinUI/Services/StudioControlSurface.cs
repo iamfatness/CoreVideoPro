@@ -274,8 +274,20 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             case "input.inShow.set":
                 return SetInputInShow(Int(args, 0), Bool(args, 1));
             case "source.dropout.set":
-                _vm.SetSourceDropoutPolicy(Str(args, 0), Str(args, 1));
+            {
+                // R6 (final review, #535 slice 4a): a dropout policy is
+                // Zoom-only this slice — refuse a non-"zoom:" id here rather
+                // than letting it fall through to the ViewModel's silent
+                // CommandStatus-only no-op, so a control-surface caller (OSC,
+                // Companion, a script) gets an explicit failure it can check.
+                var sourceId = Str(args, 0);
+                if (ValidateZoomOnlyDropoutSourceId(sourceId) is { } refusal)
+                {
+                    return refusal;
+                }
+                _vm.SetSourceDropoutPolicy(sourceId, Str(args, 1));
                 return ControlInvokeResult.Success;
+            }
 
             // ---- Graphics -----------------------------------------------------------
             case "graphics.lowerThird.toggle":
@@ -812,6 +824,17 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         await command.ExecuteAsync(null).ConfigureAwait(true);
         return ControlInvokeResult.Success;
     }
+
+    // R6 (final review, #535 slice 4a): the pure refusal decision for
+    // "source.dropout.set", extracted so it is unit-testable without
+    // constructing a StudioViewModel (which the WinUI test project cannot
+    // do). Returns the Fail result to return verbatim, or null when the id
+    // is a "zoom:<pid>" id and the caller should proceed.
+    internal static ControlInvokeResult? ValidateZoomOnlyDropoutSourceId(string? sourceId) =>
+        string.IsNullOrWhiteSpace(sourceId) || !sourceId.StartsWith("zoom:", StringComparison.Ordinal)
+            ? ControlInvokeResult.Fail(
+                $"source.dropout.set: only zoom:<pid> sources take a dropout policy this slice ({sourceId})")
+            : null;
 
     // Success confirms accepted intent, not completed animation/native pixels.
     // The VM can reject a toggle (e.g. no eligible program source); propagate

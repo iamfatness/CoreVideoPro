@@ -183,4 +183,72 @@ public class ProductionRoleTests
         Assert.Equal("black", blackDevice.DropoutPolicy);
         Assert.Equal("hold", defaultDevice.DropoutPolicy);
     }
+
+    // R5 (final review, #535 slice 4a): a participant with no operator
+    // display-name override still yields a set-source-policy entry carrying
+    // its ROSTER name — not null/empty — so the core's failed slate can name
+    // them. Previously an id with neither a persisted policy nor an override
+    // was dropped from the wire set entirely.
+    [Fact]
+    public void BuildSourcePolicyWiresNamesAParticipantWithNoOverrideFromTheRoster()
+    {
+        var participants = new List<Participant>
+        {
+            new() { Id = "16778240", Name = "Jamal" }
+        };
+
+        var wires = ProductionStateHelper.BuildSourcePolicyWires(
+            roomParticipants: participants,
+            captureDevices: [],
+            dropoutPolicies: new Dictionary<string, string>(StringComparer.Ordinal),
+            displayNameOverrides: null);
+
+        var wire = Assert.Single(wires.Values);
+        Assert.Equal("zoom:16778240", wire.SourceId);
+        Assert.Equal("hold", wire.DropoutPolicy);
+        Assert.Equal("Jamal", wire.DisplayName);
+    }
+
+    // An operator override still wins over the roster-derived name.
+    [Fact]
+    public void BuildSourcePolicyWiresPrefersTheOperatorOverrideOverTheRosterName()
+    {
+        var participants = new List<Participant>
+        {
+            new() { Id = "16778240", Name = "Jamal" }
+        };
+        var overrides = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["zoom:16778240"] = "Co-host"
+        };
+
+        var wires = ProductionStateHelper.BuildSourcePolicyWires(
+            roomParticipants: participants,
+            captureDevices: [],
+            dropoutPolicies: new Dictionary<string, string>(StringComparer.Ordinal),
+            displayNameOverrides: overrides);
+
+        var wire = Assert.Single(wires.Values);
+        Assert.Equal("Co-host", wire.DisplayName);
+    }
+
+    // A capture device with no override or policy still gets its device name.
+    [Fact]
+    public void BuildSourcePolicyWiresNamesACaptureDeviceWithNoOverrideFromItsDeviceName()
+    {
+        var devices = new List<CaptureDevice>
+        {
+            new() { Id = "cam-1", NativeDeviceId = "cam-1", Vendor = "uvc", Name = "Camera 1", Inputs = [], SelectedInputId = "cam-1" }
+        };
+
+        var wires = ProductionStateHelper.BuildSourcePolicyWires(
+            roomParticipants: [],
+            captureDevices: devices,
+            dropoutPolicies: new Dictionary<string, string>(StringComparer.Ordinal),
+            displayNameOverrides: null);
+
+        var wire = Assert.Single(wires.Values);
+        Assert.Equal("capture:cam-1", wire.SourceId);
+        Assert.Equal("Camera 1", wire.DisplayName);
+    }
 }

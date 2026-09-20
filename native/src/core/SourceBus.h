@@ -136,6 +136,28 @@ class SourceBus {
     return healthOf(it->second, nowNs);
   }
 
+  // #535 slice 4a (R1): the on-air stall decision needs more than the 200ms
+  // diagnostic health snapshot() reports — it needs to know the SOURCE KIND
+  // (stall-on-cadence is Zoom-only) and how long since a real new frame (the
+  // 1.5s on-air hysteresis is a different threshold entirely). This sits
+  // alongside healthFor/snapshot rather than replacing them: snapshot()'s
+  // sources[] diagnostic stays on the 200ms rule unchanged.
+  struct OnAirStatus {
+    SourceHealth health = SourceHealth::Idle;   // the 200ms diagnostic health
+    int64_t sinceLastNewFrameNs = 0;            // 0 if never produced
+    std::string_view kind;                      // descriptor().kind, e.g. "zoom"
+  };
+  std::optional<OnAirStatus> onAirStatusFor(const std::string& sourceId, int64_t nowNs) const {
+    auto it = entries_.find(sourceId);
+    if (it == entries_.end()) return std::nullopt;
+    const Entry& e = it->second;
+    OnAirStatus status;
+    status.health = healthOf(e, nowNs);
+    status.sinceLastNewFrameNs = e.everProduced ? (nowNs - e.counters.lastNewFrameNs) : 0;
+    status.kind = e.source->descriptor().kind;
+    return status;
+  }
+
  private:
   static constexpr int64_t kStaleAfterNs = 200'000'000;  // 200ms
   struct Entry {
@@ -151,5 +173,18 @@ class SourceBus {
     return SourceHealth::Stalled;
   }
 };
+
+// #535 slice 4a (R1): the ON-AIR stall threshold, deliberately different from
+// SourceBus::kStaleAfterNs (200ms). 200ms is a fast DIAGNOSTIC signal (used
+// for sources[] / operator troubleshooting); an on-air CUT to black must
+// never fire on ordinary cadence noise — browser sources, WGC screen
+// capture, stills and paused clips legitimately re-serve the same frameId
+// for long stretches while perfectly healthy, and even a live Zoom guest on
+// a slow link or sharing a static screen can go well past 200ms between
+// real frames. 1.5s is long enough that only a genuinely dead Zoom feed
+// trips it, and it recovers on the very next new frame (lastNewFrameNs
+// advances the instant one arrives — no separate "recovered" state to get
+// wrong).
+inline constexpr int64_t kOnAirStallNs = 1'500'000'000;
 
 }  // namespace corevideo::core

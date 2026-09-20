@@ -1131,9 +1131,12 @@ class D3D11Compositor final : public ICompositor {
       context_->PSSetShader(pixelShader_.get(), nullptr, 0);
     }
 
-    // bus health on air (#535 slice 4a): a failed source's slate carries its
-    // display name so an operator can tell WHICH source died at a glance.
-    if (layer.frame == nullptr && layer.plan.sourceHealth == "failed") {
+    // bus health on air (#535 slice 4a, R4): a failed OR stalled-with-no-frame
+    // source's slate carries its display name so an operator can tell WHICH
+    // source died at a glance. slateColorFor() already paints both the same
+    // dark failed colour; this draws the matching name label for both.
+    if (layer.frame == nullptr &&
+        (layer.plan.sourceHealth == "failed" || layer.plan.sourceHealth == "stalled")) {
       drawFailedSlateName(layer, renderPlan, rect, layerAlpha);
     }
 

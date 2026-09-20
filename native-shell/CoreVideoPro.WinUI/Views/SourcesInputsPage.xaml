@@ -187,18 +187,10 @@
                                         </StackPanel>
                                         <TextBlock Grid.Column="1" Text="{x:Bind ConnectionLabel, Mode=OneWay}" FontSize="11"
                                                    Foreground="{StaticResource StudioAccentBrush}" VerticalAlignment="Center" />
-                                        <!-- #535 slice 4a: same Loaded/ElementPrepared/SelectionChanged sync
-                                             pattern as the Zoom guest row's DropoutPolicyCombo. -->
-                                        <ComboBox Grid.Column="2" x:Name="CaptureDropoutPolicyCombo"
-                                                  Header="On dropout"
-                                                  ItemsSource="{Binding ViewModel.DropoutPolicyOptions, ElementName=SourcesInputsRoot}"
-                                                  SelectedValuePath="Value"
-                                                  DisplayMemberPath="Label"
-                                                  Tag="{x:Bind}"
-                                                  Loaded="OnDropoutPolicyComboLoaded"
-                                                  SelectionChanged="OnDropoutPolicyChanged"
-                                                  FontSize="10" MinWidth="110" Padding="6,2,6,2"
-                                                  VerticalAlignment="Center" />
+                                        <!-- #535 slice 4a R2 (final review): the capture-row "On dropout"
+                                             combo is removed — a dropout POLICY is Zoom-only this slice
+                                             (capture liveness via signalPresent isn't wired to a stall
+                                             decision yet; see StudioViewModel.SetSourceDropoutPolicy). -->
                                         <Button Grid.Column="3"
                                                 Content="-20 ms"
                                                 Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
