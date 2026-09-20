@@ -21,6 +21,11 @@ class IMediaVideoPrefetch {
   // so a paused clip's clock freezes (and resumes) at a known instant even
   // though nothing is prefetched while it is paused.
   virtual void syncMediaClock(const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) {}
+  // Optional transport telemetry (#535 slice 3b). -1 = the decoder cannot say,
+  // which is NOT the same as 0 — a source bus snapshot must never report a
+  // position or duration it did not measure.
+  virtual int64_t playbackPositionMs() const { return -1; }
+  virtual int64_t mediaDurationMs() const { return -1; }
 };
 class MediaVideoPresentation {
  public:

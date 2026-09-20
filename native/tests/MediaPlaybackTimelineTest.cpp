@@ -669,3 +669,326 @@ TEST(OwnedMediaFrameSource, AnAdoptedCueTurnsItsAudioOn) {
   }
   EXPECT_TRUE(heard) << "the adopted clip went to Program silent";
 }
+
+// ---------------------------------------------------------------------------
+// core::MediaTransports (#535 slice 3b). The media decoder owner, driven by a
+// command-time DESIRED SET instead of the render plan's layers. Task 3 swaps
+// MediaCore onto it and deletes the OwnedMediaFrameSource tests above.
+// ---------------------------------------------------------------------------
+#include "core/MediaTransports.h"
+
+using corevideo::core::MediaOperatorAction;
+using corevideo::core::MediaTransportDesired;
+using corevideo::core::MediaTransports;
+using corevideo::core::MediaTransportState;
+
+namespace {
+MediaTransportDesired testDesired(bool onProgram, bool onPreview, bool loop = false) {
+  MediaTransportDesired d;
+  d.sourceId = loop ? "background:test" : "media:test";
+  d.assetId = "test";
+  d.path = "test.wav";
+  d.kind = loop ? "background" : "video";
+  d.loop = loop;
+  d.onProgram = onProgram;
+  d.onPreview = onPreview;
+  return d;
+}
+// Same bounded-wait shape as pollUntilFrame(OwnedMediaFrameSource&, ...) above,
+// driving the static per-entry selector the bus source will call each tick.
+int64_t pollUntilFrame(MediaTransports::Entry& entry, int64_t greaterThan = 0) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline) {
+    const auto frame = MediaTransports::selectVideo(entry, steadyNowMs() * 10000);
+    if (frame && frame->frameId > greaterThan) return frame->frameId;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return -1;
+}
+// The playback identity no longer carries a playback key, so a retired
+// generation is separated by its PATH (a Reopen) - which is exactly the
+// transition this test now covers.
+class PathGatedDecoder final : public IMediaFrameSource {
+ public:
+  explicit PathGatedDecoder(std::shared_ptr<DecodeGate> gate) : gate_(std::move(gate)) {}
+  ~PathGatedDecoder() override { ++gate_->destroyed; }
+  std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
+    const bool blocked = layers.front().mediaAssetPath == "blocked.wav";
+    if (blocked) {
+      ++gate_->blocked;
+      std::unique_lock<std::mutex> lock(gate_->mutex);
+      gate_->changed.wait(lock, [&] { return gate_->released; });
+    }
+    VideoFrame frame;
+    frame.participantId = layers.front().sourceId;
+    frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
+    frame.pixelStride = 4; frame.frameId = blocked ? 1 : 2;
+    frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
+    return {frame};
+  }
+  std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
+    ++gate_->audioReads;
+    AudioFrame frame; frame.participantId = layers.front().sourceId;
+    frame.sampleRate = 48000; frame.channels = 2; frame.sampleCount = 960; frame.pcm.resize(1920, 0.5f);
+    return {frame};
+  }
+  std::vector<std::string> warnings() const override { return {}; }
+ private:
+  std::shared_ptr<DecodeGate> gate_;
+};
+}  // namespace
+
+TEST(MediaTransports, ACuedClipEnteringProgramRollsTheSameDecoderWithAudio) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto ch = t.apply({testDesired(false, true)}, 0);
+  ASSERT_EQ(ch.size(), 1u);
+  if (ch.empty()) return;
+  auto e = ch.front().entry;
+  const auto poster = pollUntilFrame(*e);
+  ASSERT_GT(poster, 0);
+  // Cued: holds the poster (frameId does not advance) and emits no audio.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const auto held = MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+  ASSERT_TRUE(held.has_value());
+  if (held) EXPECT_EQ(held->frameId, poster);
+  EXPECT_TRUE(t.popAudio(steadyNowMs()).empty());
+  EXPECT_TRUE(t.apply({testDesired(true, true)}, 0).empty());  // membership unchanged: no Change rows
+  ASSERT_GT(pollUntilFrame(*e, poster), 0);                    // rolls
+  EXPECT_EQ(created.load(), 1);                                // the SAME decoder
+  bool audio = false;
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!audio && std::chrono::steady_clock::now() < until) {
+    audio = hasNonSilentPcm(t.popAudio(steadyNowMs()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(audio);
+}
+
+TEST(MediaTransports, LeavingProgramWhileCuedRestartsBehindTheHeldFrame) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(true, true)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  auto id = pollUntilFrame(*e);
+  id = pollUntilFrame(*e, id + 3);
+  ASSERT_GT(id, 0);
+  EXPECT_TRUE(t.apply({testDesired(false, true)}, 0).empty());
+  // The very next select still returns a frame (the held one), never nothing.
+  ASSERT_TRUE(MediaTransports::selectVideo(*e, steadyNowMs() * 10000).has_value());
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  bool restarted = false;
+  while (!restarted && std::chrono::steady_clock::now() < until) {
+    restarted = created.load() == 2;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(restarted);
+  const auto status = t.snapshot();
+  ASSERT_EQ(status.size(), 1u);
+  if (!status.empty()) EXPECT_TRUE(status.front().state == MediaTransportState::Cued);
+}
+
+TEST(MediaTransports, ALoopNeverPausesAndNeverRestartsAcrossATake) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(false, true, true)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  auto id = pollUntilFrame(*e);
+  ASSERT_GT(id, 0);
+  std::string reason;
+  EXPECT_FALSE(t.operatorAction("test", MediaOperatorAction::Pause, reason));
+  EXPECT_TRUE(!reason.empty());
+  EXPECT_TRUE(t.apply({testDesired(true, false, true)}, 0).empty());
+  ASSERT_GT(pollUntilFrame(*e, id), 0);
+  EXPECT_EQ(created.load(), 1);
+}
+
+TEST(MediaTransports, AnIdenticalApplyIsANoOp) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  auto id = pollUntilFrame(*e);
+  ASSERT_GT(id, 0);
+  for (int i = 0; i < 5; ++i) EXPECT_TRUE(t.apply({testDesired(true, false)}, 0).empty());
+  ASSERT_GT(pollUntilFrame(*e, id), 0);
+  EXPECT_EQ(created.load(), 1);
+}
+
+// Ported from OwnedMediaFrameSource.SlowRetiredGenerationCannotBlockOrOverwrite
+// NewPlayback. The replacement is now a Reopen (the path changed), which is a
+// remove Change followed by an add Change: two SEPARATE entries, so the blocked
+// generation cannot reach the new presentation even in principle.
+TEST(MediaTransports, ASlowRetiredGenerationCannotBlockOrOverwriteNewPlayback) {
+  auto gate = std::make_shared<DecodeGate>();
+  MediaTransports transports([gate] { return std::make_unique<PathGatedDecoder>(gate); });
+  struct ReleaseGate {
+    std::shared_ptr<DecodeGate> gate;
+    ~ReleaseGate() { { std::lock_guard<std::mutex> lock(gate->mutex); gate->released = true; } gate->changed.notify_all(); }
+  } release{gate};
+  auto blocked = testDesired(true, false);
+  blocked.path = "blocked.wav";
+  ASSERT_EQ(transports.apply({blocked}, 0).size(), 1u);
+  const auto blockedDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!gate->blocked.load() && std::chrono::steady_clock::now() < blockedDeadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_TRUE(gate->blocked.load() > 0);
+  const auto changes = transports.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(changes.size(), 2u);
+  if (changes.size() != 2) return;
+  EXPECT_FALSE(changes.front().added);
+  EXPECT_TRUE(changes.back().added);
+  auto fresh = changes.back().entry;
+  ASSERT_TRUE(static_cast<bool>(fresh));
+  if (!fresh) return;
+  EXPECT_EQ(pollUntilFrame(*fresh), 2);
+  { std::lock_guard<std::mutex> lock(gate->mutex); gate->released = true; }
+  gate->changed.notify_all();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const auto after = MediaTransports::selectVideo(*fresh, steadyNowMs() * 10000);
+  ASSERT_TRUE(after.has_value());
+  if (after) EXPECT_EQ(after->frameId, 2);
+}
+
+TEST(MediaTransports, AudioPrefetchIsBoundedAndDecoderStopsOnDestruction) {
+  auto gate = std::make_shared<DecodeGate>();
+  {
+    MediaTransports transports([gate] { return std::make_unique<TestDecoder>(gate); });
+    const auto changes = transports.apply({testDesired(true, false)}, 0);
+    ASSERT_EQ(changes.size(), 1u);
+    if (changes.empty()) return;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (gate->audioReads.load() < 2 && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(gate->audioReads.load(), 2);
+    std::vector<AudioFrame> frames;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (frames.empty() && std::chrono::steady_clock::now() < until) {
+      frames = transports.popAudio(steadyNowMs());
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(!frames.empty());
+    if (!frames.empty()) EXPECT_EQ(frames.front().sampleCount, 960);
+  }
+  EXPECT_EQ(gate->destroyed.load(), 1);
+}
+
+TEST(MediaTransports, TheCapWarningNamesTheAssetItRefused) {
+  auto gate = std::make_shared<DecodeGate>();
+  MediaTransports transports([gate] { return std::make_unique<TestDecoder>(gate); });
+  std::vector<MediaTransportDesired> desired;
+  // Zero-padded ids so the desired map's lexicographic order matches admission
+  // order 0..16 - an unpadded "asset-16" would sort ahead of "asset-9".
+  for (int i = 0; i < 17; ++i) {
+    auto row = testDesired(true, false);
+    char id[16]; std::snprintf(id, sizeof(id), "asset-%02d", i);
+    row.assetId = id;
+    row.sourceId = "media:" + row.assetId;
+    desired.push_back(row);
+  }
+  (void)transports.apply(desired, 0);
+  const auto warnings = transports.warnings();
+  const bool named = std::any_of(warnings.begin(), warnings.end(), [](const std::string& w) {
+    return w.find("Media decoder capacity reached") != std::string::npos &&
+           w.find("media:asset-16") != std::string::npos;
+  });
+  EXPECT_TRUE(named);
+}
+
+TEST(MediaTransports, PauseAndResumeKeepOneDecoder) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  ASSERT_GT(pollUntilFrame(*e), 0);
+  EXPECT_EQ(created.load(), 1);
+  std::string reason;
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Pause, reason));
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    (void)t.popAudio(steadyNowMs());
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ(created.load(), 1);
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Play, reason));
+  ASSERT_GT(pollUntilFrame(*e), 0);
+  const auto settle = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+  while (std::chrono::steady_clock::now() < settle) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ(created.load(), 1);
+}
+
+TEST(MediaTransports, PauseHoldsTheOnAirFrame) {
+  MediaTransports t([] { return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  int64_t held = pollUntilFrame(*e);
+  ASSERT_GT(held, 0);
+  held = pollUntilFrame(*e, held + 2);  // Let it roll a few frames.
+  ASSERT_GT(held, 0);
+  std::string reason;
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Pause, reason));
+  int polls = 0;
+  const auto start = std::chrono::steady_clock::now();
+  const auto minEnd = start + std::chrono::milliseconds(250);
+  const auto ceiling = start + std::chrono::seconds(3);
+  while ((std::chrono::steady_clock::now() < minEnd || polls < 20) && std::chrono::steady_clock::now() < ceiling) {
+    const auto frame = MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    ASSERT_TRUE(frame.has_value());
+    if (frame) EXPECT_EQ(frame->frameId, held);
+    ++polls;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_TRUE(polls >= 20);
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Play, reason));
+  EXPECT_TRUE(pollUntilFrame(*e, held) > held);
+}
+
+TEST(MediaTransports, NoAudioWhilePausedAndAudioResumes) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  bool sawAudio = false;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!sawAudio && std::chrono::steady_clock::now() < deadline) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    sawAudio = hasNonSilentPcm(t.popAudio(steadyNowMs()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(sawAudio);
+  std::string reason;
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Pause, reason));
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    EXPECT_TRUE(t.popAudio(steadyNowMs()).empty());  // Not even silence.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Play, reason));
+  sawAudio = false;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!sawAudio && std::chrono::steady_clock::now() < deadline) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    sawAudio = hasNonSilentPcm(t.popAudio(steadyNowMs()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_TRUE(sawAudio);
+  EXPECT_EQ(created.load(), 1);
+}

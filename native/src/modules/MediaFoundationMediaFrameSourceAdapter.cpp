@@ -574,6 +574,23 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
 
   void setMediaWakeCallback(std::function<void()> callback) override { mediaWake_ = std::move(callback); }
 
+  // #535 slice 3b transport telemetry. One MediaTransports entry owns ONE of
+  // these and hands it exactly one layer, so `states_` holds exactly one asset
+  // in the owned configuration and "the active state" is unambiguous. Any
+  // other size (a direct caller driving several layers through one decoder)
+  // has no single answer, and -1 says so rather than naming an arbitrary one.
+  int64_t playbackPositionMs() const override {
+    if (states_.size() != 1) return -1;
+    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return states_.begin()->second.clock.elapsed100ns(nowMs * 10000) / 10000;
+  }
+  int64_t mediaDurationMs() const override {
+    if (states_.size() != 1) return -1;
+    const auto duration = states_.begin()->second.mediaDuration100ns;
+    return duration > 0 ? duration / 10000 : -1;
+  }
+
   void syncMediaClock(const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
