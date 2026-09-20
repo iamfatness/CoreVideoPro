@@ -5954,8 +5954,11 @@ TEST(MediaCoreCommand, ARouteLoopFlagReachesTheMediaSourceOnBothBuses) {
       corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
                                    {"routes", corevideo::rpc::Json::Array{loopRoute("pv-loop", true)}}},
   });
-  const bool previewLoops = corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore&) {
-    return SolidMediaFrameSource::loopFor("media:pv-loop");
+  const bool previewLoops = corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+    // Read through the CORE: the reopened preview transport must be back on the
+    // bus and producing before its loop flag is evidence of anything.
+    return corevideo::testing::busSourceProducing(core, "media:pv-loop") &&
+           SolidMediaFrameSource::loopFor("media:pv-loop");
   });
   EXPECT_TRUE(previewLoops) << "a loop-only change to the preview scene was not applied";
 }

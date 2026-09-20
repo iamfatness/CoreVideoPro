@@ -380,6 +380,16 @@ class CountingMediaFrameSource final : public corevideo::modules::IMediaFrameSou
     std::lock_guard<std::mutex> lock(mutex());
     frameIds.clear();
   }
+  // The decoder's OWN book, read without rendering. A take-record test has to
+  // know the worker has produced the frame it is about to judge BEFORE it
+  // issues the Take - and it cannot find that out from the bus, because the
+  // only thing that advances the bus's counters is an ingest, i.e. the very
+  // render tick whose observation the record is supposed to capture.
+  static std::int64_t frameIdFor(const std::string& sourceId) {
+    std::lock_guard<std::mutex> lock(mutex());
+    const auto found = frameIds.find(sourceId);
+    return found == frameIds.end() ? 0 : found->second;
+  }
   static std::mutex& mutex() {
     static std::mutex m;
     return m;
@@ -467,6 +477,20 @@ class CountingZoomSource final : public corevideo::modules::IZoomCaptureSource {
   std::map<std::string, std::int64_t> frameIds;
 };
 
+// Bounded wait on real decoder work: poll `CountingMediaFrameSource`'s own
+// frame-id book until `done` accepts it. Deliberately NOT a fixed sleep, and
+// deliberately NOT a render tick - see frameIdFor's comment.
+bool waitForDecoderFrameId(const std::string& sourceId,
+                           const std::function<bool(std::int64_t)>& done,
+                           int timeoutMs = 2000) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (done(CountingMediaFrameSource::frameIdFor(sourceId))) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return done(CountingMediaFrameSource::frameIdFor(sourceId));
+}
+
 bool arrayContains(const corevideo::rpc::Json* node, const std::string& value) {
   if (node == nullptr) return false;
   for (const auto& item : node->asArray()) {
@@ -493,9 +517,13 @@ TEST(TakeRecord, ASharedBackgroundThatKeptItsGenerationIsACut) {
     core.renderDisplayTick();
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-  // Let the worker queue frames past the ones already presented, so the take's
-  // "after" half is a genuinely later picture rather than a same-instant read.
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  // The take's "after" half must be a genuinely LATER picture than the ledger's
+  // last observation, so wait (bounded) until the worker has actually decoded
+  // past the frame id the ticks above consumed.
+  const std::int64_t presented = CountingMediaFrameSource::frameIdFor("background:bg-1");
+  ASSERT_TRUE(waitForDecoderFrameId("background:bg-1",
+                                    [&](std::int64_t id) { return id > presented + 1; }))
+      << "the media worker never decoded past the frame the pre-take ticks presented";
   (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-b", "bg-1")});
   core.renderDisplayTick();
 
@@ -529,13 +557,15 @@ TEST(TakeRecord, ASharedBackgroundThatRestartedAcrossTheTakeIsRebuilt) {
     core.renderDisplayTick();
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-  // The decoder reopened. It is restarted BEFORE the take command and given the
-  // worker time to refill its presentation queue from frameId 1: with the audio
-  // worker enabled applyCommands renders NO tick, so nothing observes the
-  // regression until the display tick below - which is exactly the first
-  // program tick after the take, where the record's "after" half is taken.
+  // The decoder reopens. It is restarted BEFORE the take command, then waited
+  // on (bounded) until the worker has actually decoded a post-restart frame:
+  // with the audio worker enabled applyCommands renders NO tick, so nothing
+  // observes the regression until the display tick below - which is exactly the
+  // first program tick after the take, where the record's "after" half is taken.
   CountingMediaFrameSource::restart("background:bg-1");
-  std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  ASSERT_TRUE(waitForDecoderFrameId("background:bg-1",
+                                    [](std::int64_t id) { return id >= 1; }))
+      << "the media worker never decoded a frame after the reopen";
   (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-b", "bg-1")});
   core.renderDisplayTick();
 

@@ -6354,8 +6354,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   videoFrames.insert(videoFrames.end(),
                      std::make_move_iterator(zoomBusFrames.begin()),
                      std::make_move_iterator(zoomBusFrames.end()));
-  // Media last, where the post-plan poll used to put it (only the no-routes
-  // grid fallback is order-sensitive, and it never draws media).
+  // Media last, where the post-plan poll used to put it. The one order-sensitive
+  // consumer is the empty-render-plan grid fallback, which improvises one cell
+  // per DECODED FRAME — media frames included — so what this position preserves
+  // is that fallback's CELL ORDER, not media's absence from it.
   videoFrames.insert(videoFrames.end(), mediaBusFrames.begin(), mediaBusFrames.end());
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     if (!engineFrames.empty()) {
