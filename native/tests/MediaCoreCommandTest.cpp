@@ -5064,16 +5064,14 @@ TEST(MediaCoreCommand, MediaRouteAppearsOnTheSourceBusAndLeavesWhenUnrouted) {
       },
   });
 
-  state = mediaCore.sessionState();
-  sources = state.get("sources");
-  ASSERT_NE(sources, nullptr);
-  bool mediaStillPresent = false;
-  for (const auto& s : sources->asArray()) {
-    if (s.getString("sourceId") == "media:clip-intro") {
-      mediaStillPresent = true;
-    }
-  }
-  EXPECT_FALSE(mediaStillPresent);
+  // Release carries a short GRACE now (MediaTransports::kReleaseGraceMs) so one
+  // interleaved preview-only spine tick cannot destroy a cued clip's warm
+  // decoder, so the source leaves the bus a beat later rather than on the very
+  // command - retired either by a later apply() or by the render tick's
+  // collectExpiredReleases() sweep. It must still leave.
+  ASSERT_TRUE(corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+    return corevideo::testing::busSourceRow(core.sessionState(), "media:clip-intro") == nullptr;
+  }, 4000)) << "an unrouted media source never left the source bus";
 }
 
 // HEADLESS multiview validation: with the real GPU compositor wired in, a
@@ -7087,9 +7085,14 @@ TEST(MediaCoreCommand, AnIdenticalSceneGraphResentChangesNothing) {
 TEST(MediaCoreCommand, AFinishedClipHoldsItsLastFrameAndReadsEnded) {
   auto modules = corevideo::modules::createStubModules();
   CountingDecoder::resetAll();
-  // Ten pictures and then nothing - the end of the media, with the decoder
-  // still alive and still holding its last one.
-  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>(std::int64_t{10});
+  // Ten pictures and then a GENUINE end of stream - the decoder says so
+  // (IMediaVideoPrefetch::mediaEnded), which is what "ended" is decided from
+  // now; the frame-arrival backstop is reserved for a decoder that cannot say.
+  // It is still alive and still holding its last picture.
+  corevideo::testing::ScriptedDecoder::resetScript();
+  corevideo::testing::ScriptedDecoder::stallAfterFrame.store(10);
+  corevideo::testing::ScriptedDecoder::stallMs.store(-1);
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<corevideo::testing::ScriptedDecoder>();
   corevideo::core::MediaCore core(std::move(modules));
   core.enableAudioOutputWorker();
 
@@ -7127,4 +7130,191 @@ TEST(MediaCoreCommand, AFinishedClipHoldsItsLastFrameAndReadsEnded) {
     return CountingDecoder::restartsFor("media:clip") == 1;
   })) << "the restarted clip did not begin at the head of its media";
   EXPECT_LE(CountingDecoder::firstFrameIdAfterRestartFor("media:clip"), 3);
+  corevideo::testing::ScriptedDecoder::resetScript();
+}
+
+// ---------------------------------------------------------------------------
+// #535 slice 3b final review, CRITICAL 1: `Ended` used to be a 500 ms
+// frame-arrival timeout AND terminal. These tests are the bound on what may
+// reach it and on what may get out of it. They drive the REAL
+// core::MediaTransports through MediaCore's command surface.
+// ---------------------------------------------------------------------------
+
+using corevideo::testing::ScriptedDecoder;
+
+// A clip cut COLD to Program opens its decoder on the worker's first
+// iteration, and a Media Foundation open is 95-250 ms while the FFmpeg
+// fallback spawns a whole process. The old guard flipped it to Ended after
+// 500 ms of no new frameId with an empty queue - i.e. before the clip had
+// ever produced a picture - and Ended was terminal: frozen and silent on air,
+// with the only recovery gesture restarting it from 0.
+TEST(MediaCoreCommand, AClipWhoseFirstFrameIsLateStillRollsAndNeverReadsEnded) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  ScriptedDecoder::resetScript();
+  // Longer than the OLD 500 ms window, and longer than a real cold open, so
+  // the test is about the rule and not about this machine's speed.
+  ScriptedDecoder::firstFrameDelayMs.store(900);
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ScriptedDecoder>();
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{slice3bClipScene("pgm", "load-scene-graph")});
+  bool everReadEnded = false;
+  const bool rolled = slice3bPumpUntil(core, [&] {
+    if (slice3bTransportState(core, "media:clip") == "ended") everReadEnded = true;
+    return CountingDecoder::lastFrameIdFor("media:clip") > 2;
+  }, 6000);
+  ScriptedDecoder::resetScript();
+  ASSERT_TRUE(rolled) << "the late-opening clip never rolled at all";
+  EXPECT_FALSE(everReadEnded)
+      << "a clip that had not yet produced a single picture was called finished";
+  EXPECT_EQ(slice3bTransportState(core, "media:clip"), "live");
+  EXPECT_EQ(CountingDecoder::created.load(), 1) << "the late open cold-started a second decoder";
+  EXPECT_EQ(CountingDecoder::restartsFor("media:clip"), 0);
+}
+
+// A mid-roll stall past the ended window is NOT the end of the media: an
+// FFmpeg resume attempt off its ladder, a NAS hiccup, a loaded box. When the
+// decoder hands back a picture the transport must return to Live on its own -
+// no operator gesture, which is OpenLive and restarts from 0 - and keep its
+// position.
+TEST(MediaCoreCommand, AClipThatStallsMidRollAndResumesReturnsToLiveWithoutRestarting) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  ScriptedDecoder::resetScript();
+  ScriptedDecoder::stallAfterFrame.store(3);
+  ScriptedDecoder::stallMs.store(800);  // past the old 500 ms window, then back
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ScriptedDecoder>();
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{slice3bClipScene("pgm", "load-scene-graph")});
+  const bool reachedEnded = slice3bPumpUntil(core, [&] {
+    return slice3bTransportState(core, "media:clip") == "ended";
+  }, 4000);
+  const auto stalledAt = CountingDecoder::lastFrameIdFor("media:clip");
+  const bool recovered = reachedEnded && slice3bPumpUntil(core, [&] {
+    return slice3bTransportState(core, "media:clip") == "live";
+  }, 5000);
+  const bool rolledAgain = recovered && slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("media:clip") > stalledAt;
+  }, 4000);
+  ScriptedDecoder::resetScript();
+
+  ASSERT_TRUE(reachedEnded) << "the stalled clip never reported its decoder's end of stream";
+  ASSERT_GE(stalledAt, 3);
+  ASSERT_TRUE(recovered) << "the resumed clip never came back from ended - Ended is still terminal";
+  ASSERT_TRUE(rolledAgain) << "the recovered clip never rolled again";
+  EXPECT_EQ(CountingDecoder::created.load(), 1) << "the recovery opened a fresh decoder";
+  EXPECT_EQ(CountingDecoder::restartsFor("media:clip"), 0)
+      << "the recovered clip restarted from the top instead of keeping its position";
+}
+
+// ---------------------------------------------------------------------------
+// #535 slice 3b final review, IMPORTANT 3: `applyPreviewScene` is reached from
+// the shell's Take batch AND from the repeating spine sync. One interleaved
+// spine tick carrying the post-swap Preview while Program still holds the
+// outgoing scene leaves a cued clip absent from BOTH desired sets - and an
+// immediate Release destroys the warm decoder the Take is about to claim.
+// ---------------------------------------------------------------------------
+TEST(MediaCoreCommand, ACuedClipSurvivesAPreviewOnlySpineTickBetweenTheCueAndTheTake) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>();
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  // Cue: Program holds an empty scene, Preview holds the clip.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bEmptyScene("a", "load-scene-graph"), slice3bClipScene("pvw", "set-preview-scene")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("media:clip") > 0;
+  })) << "the cue never produced its poster";
+  EXPECT_EQ(slice3bTransportState(core, "media:clip"), "cued");
+  ASSERT_EQ(CountingDecoder::created.load(), 1);
+
+  // THE INTERLEAVED SPINE TICK: set-preview-scene ALONE, carrying the
+  // post-swap Preview. For this one tick the clip is on neither bus.
+  (void)core.applyCommand(slice3bEmptyScene("a", "set-preview-scene"));
+  EXPECT_NE(slice3bMediaSource(core.sessionState(), "media:clip"), nullptr)
+      << "one preview-only tick retired the cued clip's transport";
+
+  // The Take lands right behind it.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bClipScene("pgm", "load-scene-graph"), slice3bEmptyScene("a", "set-preview-scene")});
+  EXPECT_EQ(slice3bTransportState(core, "media:clip"), "live");
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return corevideo::testing::busFramesIngested(core, "media:clip") > 0 &&
+           CountingDecoder::lastFrameIdFor("media:clip") > 1;
+  })) << "the taken clip never rolled on Program";
+  EXPECT_EQ(CountingDecoder::created.load(), 1)
+      << "the Take cold-started a second decoder: the interleaved preview tick "
+         "destroyed the warm one";
+}
+
+// A source REALLY gone is still released - just one beat later. The grace is a
+// delay, not an exemption.
+TEST(MediaCoreCommand, AGenuinelyUnroutedClipIsStillReleasedAfterTheGrace) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>();
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{slice3bClipScene("pgm", "load-scene-graph")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return CountingDecoder::lastFrameIdFor("media:clip") > 1;
+  })) << "the clip never rolled";
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{slice3bEmptyScene("a", "load-scene-graph")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return slice3bMediaSource(core.sessionState(), "media:clip") == nullptr &&
+           corevideo::testing::busSourceRow(core.sessionState(), "media:clip") == nullptr;
+  }, 4000)) << "an unrouted clip was never released: the grace became an exemption";
+}
+
+// ---------------------------------------------------------------------------
+// #535 slice 3b final review, IMPORTANT 4: MediaTransports::operatorAction has
+// a three-tier lookup (the exact `media:<assetId>` row, then the first
+// non-loop source for the asset, then the first match at all). The shell
+// mirror was tested; the CORE tiers were not. A background-only asset has no
+// `media:` row, so the refusal comes from the LAST tier - and it must carry a
+// real reason naming the loop, never silently do nothing.
+// ---------------------------------------------------------------------------
+TEST(MediaCoreCommand, ATransportOnABackgroundOnlyAssetIsRefusedAndNamesTheLoop) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingDecoder::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingDecoder>();
+  corevideo::core::MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      slice3bBackgroundScene("scene-a", "load-scene-graph")});
+  ASSERT_TRUE(slice3bPumpUntil(core, [&] {
+    return slice3bTransportState(core, "background:bg") == "live";
+  })) << "the loop background never went live";
+  ASSERT_EQ(slice3bMediaSource(core.sessionState(), "media:bg"), nullptr)
+      << "this asset must exist ONLY as background:bg for the test to exercise the last tier";
+
+  for (const char* action : {"pause", "play"}) {
+    (void)core.applyCommand(corevideo::rpc::Json::Object{
+        {"type", "set-media-transport"}, {"mediaAssetId", "bg"}, {"action", action}});
+    EXPECT_EQ(slice3bTransportState(core, "background:bg"), "live")
+        << "a refused " << action << " changed the transport";
+    const auto& warnings = core.sceneValidationWarningsForTest();
+    EXPECT_TRUE(std::any_of(warnings.begin(), warnings.end(), [](const std::string& warning) {
+      return warning.find("background:bg") != std::string::npos &&
+             warning.find("loop") != std::string::npos;
+    })) << "the refusal for " << action << " must name the source and say it is a loop";
+  }
+
+  // And an asset with no transport at all is refused by NAME, not silently.
+  (void)core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-transport"}, {"mediaAssetId", "no-such-asset"}, {"action", "pause"}});
+  const auto& warnings = core.sceneValidationWarningsForTest();
+  EXPECT_TRUE(std::any_of(warnings.begin(), warnings.end(), [](const std::string& warning) {
+    return warning.find("no-such-asset") != std::string::npos;
+  })) << "a transport command for an unknown asset must say so";
+  EXPECT_EQ(CountingDecoder::created.load(), 1);
 }

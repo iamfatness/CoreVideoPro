@@ -1,6 +1,7 @@
 #pragma once
 #include "core/MediaCore.h"
 #include "modules/Interfaces.h"
+#include "modules/MediaVideoPresentation.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -69,7 +70,7 @@ inline void applyTicks(core::MediaCore& core, int ticks) {
 // also the only place a test can read "the frame id on Program" — `sources[]`
 // publishes framesIngested (a deduped per-frame COUNT) but not lastFrameId,
 // and this task deliberately does not widen the wire to see it.
-class CountingDecoder final : public modules::IMediaFrameSource {
+class CountingDecoder : public modules::IMediaFrameSource {
  public:
   // maxFrames == 0 means unlimited; a positive value stops producing NEW
   // pictures after that many — the end of the media, with the decoder still
@@ -142,7 +143,7 @@ class CountingDecoder final : public modules::IMediaFrameSource {
   static inline std::atomic<int> created{0};
   static inline std::atomic<std::int64_t> audioPolls{0};
 
- private:
+ protected:
   static std::string sourceIdOf(const modules::CompositorRenderPlanLayer& layer) {
     return layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
   }
@@ -165,6 +166,75 @@ class CountingDecoder final : public modules::IMediaFrameSource {
   }
   std::int64_t maxFrames_ = 0;
   std::int64_t frameId_ = 0;
+};
+
+// A decoder whose TIMING and END OF STREAM are scripted, so a test can put a
+// real clip's awkward moments on the wire: a first frame that arrives long
+// after the open (a cold Media Foundation open is 95-250 ms and the FFmpeg
+// fallback spawns a process), and a mid-roll stall during which the decoder
+// reports EOS and then takes it back (exactly what the FFmpeg resume ladder
+// looks like from the owner's side).
+//
+// It implements IMediaVideoPrefetch because that is where `mediaEnded()` lives
+// — a plain IMediaFrameSource has no way to say "the media ran out", and the
+// owner falls back to its (deliberately long) no-new-frame backstop for one.
+// Frames, ids and the restart book are CountingDecoder's, so every existing
+// assertion helper reads this decoder too.
+class ScriptedDecoder final : public CountingDecoder, public modules::IMediaVideoPrefetch {
+ public:
+  ScriptedDecoder() : CountingDecoder(0) {
+    openedAtMs_ = nowMs();
+  }
+
+  // No frames at all until this many ms after the decoder was constructed.
+  static inline std::atomic<std::int64_t> firstFrameDelayMs{0};
+  // After this many frames (0 = never) the decoder stalls: no new pictures and
+  // mediaEnded() reads true...
+  static inline std::atomic<std::int64_t> stallAfterFrame{0};
+  // ...for this long. -1 = forever (a clip that genuinely ended).
+  static inline std::atomic<std::int64_t> stallMs{-1};
+
+  static void resetScript() {
+    firstFrameDelayMs.store(0);
+    stallAfterFrame.store(0);
+    stallMs.store(-1);
+  }
+
+  std::vector<modules::VideoFrame> pollMediaFrames(
+      const std::vector<modules::CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
+    if (!producing()) return {};
+    return CountingDecoder::pollMediaFrames(layers, timestampMs);
+  }
+
+  std::vector<modules::ScheduledMediaVideo> prefetchMediaVideo(
+      const std::vector<modules::CompositorRenderPlanLayer>& layers, int64_t nowMsArg) override {
+    std::vector<modules::ScheduledMediaVideo> result;
+    // Due immediately, exactly like the owner's non-prefetch fallback path.
+    for (auto& frame : pollMediaFrames(layers, nowMsArg)) result.push_back({std::move(frame), nowMsArg * 10000});
+    return result;
+  }
+
+  bool mediaEnded() const override { return stalled(); }
+
+ private:
+  static std::int64_t nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+  bool stalled() const {
+    const auto after = stallAfterFrame.load();
+    if (after <= 0 || frameId_ < after) return false;
+    const auto window = stallMs.load();
+    if (window < 0) return true;           // genuinely ended
+    if (stallBeganMs_ == 0) stallBeganMs_ = nowMs();
+    return nowMs() - stallBeganMs_ < window;
+  }
+  bool producing() const {
+    if (nowMs() - openedAtMs_ < firstFrameDelayMs.load()) return false;
+    return !stalled();
+  }
+  std::int64_t openedAtMs_ = 0;
+  mutable std::int64_t stallBeganMs_ = 0;
 };
 
 // The row for `sourceId` in the snapshot's `sources[]` bus node, or nullptr.

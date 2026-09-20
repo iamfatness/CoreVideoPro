@@ -2456,6 +2456,17 @@ void MediaCore::syncStillMediaDesired() {
 
 void MediaCore::syncMediaTransportsDesired() {
   if (!mediaTransports_ || !sourceBus_) return;
+  // HAZARD, named rather than guessed at: the desired set is keyed by SOURCE
+  // ID (`media:<assetId>` / `background:<assetId>`), so two routes carrying the
+  // SAME mediaAssetId with DIFFERENT paths — the same bin row repointed on one
+  // bus but not the other, or two rows that share an id by accident — collapse
+  // to one entry and the LAST one written wins the path. MediaTransports then
+  // sees a path change on an existing id and takes `Reopen`: a live Program
+  // clip is retired and restarted from 0 on the OTHER bus's file. `loop` is
+  // OR-ed (below) precisely because it has no single right answer either, but
+  // a path cannot be OR-ed. Only the flags are safe to merge; if duplicate ids
+  // with divergent paths ever become real, this needs a loud refusal, not a
+  // silent last-write-wins.
   std::map<std::string, core::MediaTransportDesired> desired;
   const auto addRoutes = [&](const std::vector<SceneRouteState>& routes, bool program) {
     for (const auto& r : routes) {
@@ -6396,6 +6407,16 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // still and decoded-media ingests further down) — one clock read per tick.
   const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (mediaTransports_ && sourceBus_) {
+    // A media transport absent from both desired sets is retired after a short
+    // grace (MediaTransports::kReleaseGraceMs) so ONE interleaved spine tick
+    // cannot destroy a cued clip's warm decoder. apply() only runs at command
+    // time, so this render-tick sweep is what actually retires it when no
+    // further command arrives. Usually a no-op over an empty map.
+    for (const auto& change : mediaTransports_->collectExpiredReleases(nowNs)) {
+      if (!change.added) sourceBus_->remove(change.sourceId);
+    }
+  }
   if (sourceBus_ && !sourceBus_->empty()) {
     // #535 slice 3b: media rides THIS ingest, alongside Zoom and capture - its
     // frames come from its own transport entry, not from a poll that must wait

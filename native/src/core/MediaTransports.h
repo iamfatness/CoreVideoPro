@@ -92,12 +92,10 @@ class MediaTransports final {
   // returns the bus membership changes for the caller to add to / remove from
   // the source bus.
   std::vector<Change> apply(const std::vector<MediaTransportDesired>& desired, int64_t nowNs) {
-    // Reserved: the caller's command instant. Every clock in here is the
-    // worker's own steady_clock, so nothing reads it yet — it stays in the
-    // signature because Task 3's MediaCore has it and a later command-time
-    // decision (a go-live instant, say) belongs here rather than in a second
-    // parameter added under pressure.
-    (void)nowNs;
+    // The caller's command instant (steady_clock nanoseconds). It is what the
+    // release grace below is measured against, and it is deliberately the
+    // CALLER's clock rather than one read in here, so the grace is measured on
+    // the same timeline as collectExpiredReleases()'s render-tick sweep.
     std::vector<Change> changes;
     std::vector<std::pair<std::string, std::shared_ptr<Entry>>> starting;
     {
@@ -124,6 +122,12 @@ class MediaTransports final {
         if (found != entries_.end()) {
           std::lock_guard<std::mutex> entryLock(found->second->mutex);
           state = found->second->state;
+        }
+        // Still (or again) desired: it is not going anywhere, so cancel any
+        // release grace it was sitting in and give it its audio back if it was
+        // rolling. Everything else about it was left untouched while it waited.
+        if (curr && releasePendingNs_.erase(id) > 0 && found != entries_.end()) {
+          found->second->wantsAudio.store(state == MediaTransportState::Live);
         }
         const auto decision = decideMediaTransport(previous, curr, state);
         switch (decision.action) {
@@ -205,7 +209,45 @@ class MediaTransports final {
             }
             break;
           case MediaTransportAction::Release:
+            // RELEASE HAS A SHORT GRACE, and it is load-bearing for the
+            // headline promise. `applyPreviewScene` is reached from the
+            // shell's Take batch (load-scene-graph + set-preview-scene in ONE
+            // sync) but ALSO from `syncZoomMediaSpine`, a separate REPEATING
+            // channel — CLAUDE.md documents that exact interleave for the take
+            // record. One spine tick carrying the post-swap Preview while
+            // Program still holds the outgoing scene leaves a CUED clip absent
+            // from both desired sets for that single tick; retiring on the
+            // spot destroys the warm decoder the Take is about to claim and
+            // cold-starts the clip into the warming slate. Slice 3b removed
+            // the cue hand-off that used to be the second chance, so this IS
+            // the second chance. A source really gone is still released — just
+            // one beat later, by a subsequent apply() or by the render tick's
+            // collectExpiredReleases() sweep.
+            //
+            // It goes SILENT immediately. A clip genuinely cut off Program
+            // must not keep feeding the mix for the length of the grace; the
+            // re-claim turns its audio back on (above, and via Resume/Play).
             if (found != entries_.end()) {
+              // PRESENCE, never a zero sentinel: `nowNs` is the caller's clock
+              // and a caller that passes 0 is legitimate (every unit test does).
+              auto since = releasePendingNs_.find(id);
+              if (since == releasePendingNs_.end()) {
+                since = releasePendingNs_.emplace(id, nowNs).first;
+                found->second->wantsAudio.store(false);
+                std::lock_guard<std::mutex> entryLock(found->second->mutex);
+                found->second->audio.clear();
+                found->second->wake = true;
+              }
+              if (nowNs - since->second < kReleaseGraceMs * 1000000) {
+                // Carry the row forward so `previousDesired_` still holds it:
+                // the re-claim is then an ordinary transition against the row
+                // it actually had, not a cold `!previous` open onto an entry
+                // that already exists.
+                current.emplace(id, previousIt->second);
+                found->second->changed.notify_all();
+                break;
+              }
+              releasePendingNs_.erase(since);
               auto retiring = found->second;
               entries_.erase(found);
               retireLocked(retiring);
@@ -231,6 +273,34 @@ class MediaTransports final {
       }
     }
     changed_.notify_all();
+    return changes;
+  }
+
+  // Render-tick sweep (cheap: a usually-empty map under the owner lock).
+  // apply() only runs at COMMAND time, so without this a source that left both
+  // buses and is never mentioned again would hold its decoder — and its bus
+  // entry — until some unrelated command happened to arrive. Returns the bus
+  // removals for the caller, exactly like apply().
+  std::vector<Change> collectExpiredReleases(int64_t nowNs) {
+    std::vector<Change> changes;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = releasePendingNs_.begin(); it != releasePendingNs_.end();) {
+      if (nowNs - it->second < kReleaseGraceMs * 1000000) { ++it; continue; }
+      const auto id = it->first;
+      it = releasePendingNs_.erase(it);
+      const auto found = entries_.find(id);
+      if (found == entries_.end()) continue;
+      auto retiring = found->second;
+      entries_.erase(found);
+      retireLocked(retiring);
+      audioNextTime_.erase(id);
+      // The row was carried forward through the grace so a re-claim would be
+      // an ordinary transition; now that it really is gone, forget it, or the
+      // next apply() would re-open a grace for an entry that no longer exists.
+      previousDesired_.erase(id);
+      changes.push_back({id, false, retiring});
+    }
+    if (!changes.empty()) changed_.notify_all();
     return changes;
   }
 
@@ -381,15 +451,36 @@ class MediaTransports final {
     l.mediaAssetPath = e.desired.path;
     l.mediaAssetKind = e.desired.kind;
     l.mediaAssetLoop = e.desired.loop;
-    l.mediaAssetPlaying = e.state == MediaTransportState::Live;
+    // ENDED IS STILL "PLAYING" TO THE DECODER, deliberately. Ended means the
+    // MEDIA ran out, not that an operator stopped it: the decoder must stay in
+    // its playing mode (holding its last picture at EOS) rather than fall into
+    // the paused/poster branch, and the worker must keep polling it so that a
+    // decoder which was merely stalled — an FFmpeg resume, a NAS hiccup — can
+    // hand back a new frame and bring the transport back to Live on its own.
+    // The picture is held and the audio silenced by `state`, in selectVideo()
+    // and popAudio(), not here.
+    l.mediaAssetPlaying =
+        e.state == MediaTransportState::Live || e.state == MediaTransportState::Ended;
     return l;
   }
 
  private:
   static constexpr std::size_t kMaxDecoders = 16;
-  // A non-loop clip that stops producing new pictures for this long while Live
-  // with nothing queued has reached the end of its media.
-  static constexpr int64_t kEndedAfterNoNewFrameMs = 500;
+  // ENDED IS TAKEN FROM THE DECODER (IMediaVideoPrefetch::mediaEnded). This
+  // window is only a BACKSTOP for a decoder that cannot say, and it is
+  // deliberately far longer than anything a healthy clip can hit. It used to
+  // be 500 ms, which is shorter than a cold Media Foundation open (95-250 ms)
+  // plus an FFmpeg process spawn, shorter than one rung of the FFmpeg
+  // resume ladder (250 ms / 500 ms / 1 s / 2 s over 5 attempts, ~3.75 s in
+  // total), and shorter than an ordinary hiccup on a loaded box — and the
+  // presentation queue is only 3 deep (~50 ms at 60 fps), so `queued() == 0`
+  // is the ordinary state of a HEALTHY clip and the guard reduced to "no new
+  // frame for 500 ms". On air that froze and silenced a Program clip whose
+  // only recovery gesture restarts it from 0.
+  static constexpr int64_t kEndedBackstopNoNewFrameMs = 6000;
+  // How long a source absent from BOTH desired sets is kept before its decoder
+  // is retired. See the Release case in apply() for why this is not zero.
+  static constexpr int64_t kReleaseGraceMs = 750;
 
   // Caller holds mutex_.
   void openLocked(const std::string& id, const MediaTransportDesired& desired, MediaTransportState next,
@@ -446,6 +537,11 @@ class MediaTransports final {
       };
       attachWake();
       bool haveSyncedPlaying = false, syncedPlaying = false, playedOnce = false;
+      // A clip CANNOT reach Ended before it has ever produced a picture: until
+      // then "no new frame" is an open that has not finished, never the end of
+      // the media. `playedOnce` only says the transport was rolling, which is
+      // true the instant it opens.
+      bool everProducedFrame = false;
       int64_t lastFrameId = 0, lastNewFrameMs = 0;
       while (!entry->stop.load()) {
         const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -466,7 +562,7 @@ class MediaTransports final {
           if (!decoder) throw std::runtime_error("Media decoder unavailable.");
           prefetchDecoder = dynamic_cast<modules::IMediaVideoPrefetch*>(decoder.get());
           attachWake();
-          haveSyncedPlaying = false; playedOnce = false;
+          haveSyncedPlaying = false; playedOnce = false; everProducedFrame = false;
           lastFrameId = 0; lastNewFrameMs = nowMs;
           std::lock_guard<std::mutex> lock(entry->mutex);
           entry->video.dropQueued(); entry->clockFrozen = false; entry->audio.clear();
@@ -534,9 +630,11 @@ class MediaTransports final {
             for (auto& frame : decoder->pollMediaFrames({layer}, nowMs)) video.push_back({std::move(frame), nowMs * 10000});
           }
         }
+        bool sawNewFrame = false;
         for (const auto& sample : video) {
           if (sample.frame.frameId == lastFrameId) continue;
           lastFrameId = sample.frame.frameId; lastNewFrameMs = nowMs;
+          sawNewFrame = true; everProducedFrame = true;
         }
         bool audioRoom; int64_t audioTarget;
         { std::lock_guard<std::mutex> lock(entry->mutex);
@@ -544,6 +642,9 @@ class MediaTransports final {
         }
         auto audio = playing && entry->wantsAudio.load() && audioRoom ? decoder->pollMediaAudioFrames({layer}, audioTarget) : std::vector<modules::AudioFrame>{};
         auto warnings = decoder->warnings();
+        // Read AFTER the poll that could have moved it: the decoder reaches
+        // EOS inside prefetchMediaVideo/pollMediaFrames.
+        const bool decoderEnded = prefetchDecoder && prefetchDecoder->mediaEnded();
         {
           std::lock_guard<std::mutex> lock(entry->mutex);
           if (!entry->stop.load()) {
@@ -553,14 +654,33 @@ class MediaTransports final {
               audio.front().timestampMs = audioTarget; entry->audio.push_back(std::move(audio.front()));
             }
             entry->warnings = std::move(warnings);
-            // ENDED is bookkeeping, not a teardown: the decoder already holds
-            // its last picture at EOS and the worker keeps holding it. The
-            // state flip is what snapshot() reports and what makes an operator
-            // Play restart from 0 (decideMediaOperator: Ended + Play ->
-            // OpenLive) instead of doing nothing.
-            if (playing && !layer.mediaAssetLoop && entry->state == MediaTransportState::Live &&
-                entry->video.queued() == 0 && nowMs - lastNewFrameMs >= kEndedAfterNoNewFrameMs) {
+            // ENDED IS RECOVERABLE, and that is checked FIRST. A decoder that
+            // was merely stalled (an FFmpeg resume off the ladder, a NAS
+            // hiccup, a loaded box) hands back a new picture when it comes
+            // round; the transport goes straight back to Live, keeping its
+            // position, with no operator gesture and no restart from 0. Before
+            // this, Ended was terminal: `decideMediaTransport` returns None
+            // for an unchanged desired row, so a re-sent scene graph recovered
+            // nothing and the only exit was an operator Play, which is
+            // OpenLive — a frozen, silent clip on air whose recovery gesture
+            // restarts it from the top.
+            if (entry->state == MediaTransportState::Ended && sawNewFrame) {
+              entry->state = MediaTransportState::Live;
+              entry->wantsAudio.store(true);
+            } else if (playing && !layer.mediaAssetLoop && everProducedFrame &&
+                       entry->state == MediaTransportState::Live &&
+                       (decoderEnded ||
+                        (entry->video.queued() == 0 &&
+                         nowMs - lastNewFrameMs >= kEndedBackstopNoNewFrameMs))) {
+              // ENDED is bookkeeping, not a teardown: the decoder already holds
+              // its last picture at EOS and the worker keeps holding it. The
+              // state flip is what snapshot() reports and what makes an
+              // operator Play restart from 0 (decideMediaOperator: Ended +
+              // Play -> OpenLive) instead of doing nothing. Audio stops here;
+              // the picture is held by selectVideo, which never advances a
+              // non-Live entry.
               entry->state = MediaTransportState::Ended;
+              entry->wantsAudio.store(false);
             }
           }
         }
@@ -623,6 +743,8 @@ class MediaTransports final {
   std::map<std::string, MediaTransportDesired> previousDesired_;
   std::map<std::string, modules::MediaAudioDemandClock> audioNextTime_;
   std::map<std::string, std::shared_ptr<Entry>> entries_;
+  // sourceId -> the command instant it went absent from both desired sets.
+  std::map<std::string, int64_t> releasePendingNs_;
   std::vector<std::shared_ptr<Entry>> retired_;
   std::vector<std::string> warnings_;
   std::set<std::string> capWarningsLogged_;

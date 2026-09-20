@@ -200,8 +200,13 @@ public static class MediaCoreCommandBuilder
                 ["mediaAssetId"] = background.MediaAssetId,
                 ["mediaAssetName"] = background.MediaAssetName,
                 ["mediaAssetKind"] = background.MediaAssetKind,
-                ["mediaAssetPath"] = background.MediaAssetPath,
-                ["playing"] = background.Playing
+                ["mediaAssetPath"] = background.MediaAssetPath
+                // `playing` is NOT sent. A scene background always LOOPS, and a
+                // loop is live on either bus by construction (#535 slice 3b,
+                // MediaCore::syncMediaTransportsDesired); the core stopped
+                // reading the field and the shell hard-coded it to true, so it
+                // was pure noise on the wire. `MediaCoreSceneBackgroundWire.Playing`
+                // survives only so callers do not have to change.
             };
 
     private static Dictionary<string, object?> SerializeSceneRoute(MediaCoreSceneRouteWire route)

@@ -583,12 +583,32 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     if (states_.size() != 1) return -1;
     const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-    return states_.begin()->second.clock.elapsed100ns(nowMs * 10000) / 10000;
+    const auto& state = states_.begin()->second;
+    auto elapsed = state.clock.elapsed100ns(nowMs * 10000);
+    if (elapsed < 0) elapsed = 0;
+    // THE CLOCK IS WALL TIME, THE POSITION IS A PLACE IN THE MEDIA. The raw
+    // elapsed time runs past the end of a finished clip (measured 3398 ms on a
+    // 3000 ms asset) and grows without bound for a loop, and this number is
+    // published in `mediaSources[]` and bound on the shell. Wrap it for a loop
+    // and clamp it for a clip so it always means what its name says. With no
+    // known duration there is nothing to clamp against and the raw elapsed
+    // time is the honest answer.
+    const auto duration = state.mediaDuration100ns;
+    if (duration > 0) elapsed = state.loop ? elapsed % duration : (std::min)(elapsed, duration);
+    return elapsed / 10000;
   }
   int64_t mediaDurationMs() const override {
     if (states_.size() != 1) return -1;
     const auto duration = states_.begin()->second.mediaDuration100ns;
     return duration > 0 ? duration / 10000 : -1;
+  }
+  // Real EOS (see IMediaVideoPrefetch::mediaEnded). A loop never ends: the
+  // adapter reopens it at EOS behind the last good frame, so `state.ended` is
+  // a transient there and reporting it would freeze a background on air.
+  bool mediaEnded() const override {
+    if (states_.size() != 1) return false;
+    const auto& state = states_.begin()->second;
+    return state.ended && !state.loop;
   }
 
   void syncMediaClock(const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {

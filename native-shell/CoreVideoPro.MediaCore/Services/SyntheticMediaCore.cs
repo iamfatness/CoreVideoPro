@@ -472,6 +472,13 @@ public static class SyntheticMediaCore
                 rows[sourceId] = existing with
                 {
                     State = existing.OnProgram || onProgram ? "live" : "cued",
+                    // The ROUTE's loop flag, not whichever bus was seen first:
+                    // the core ORs it across the two desired sets
+                    // (MediaCore::syncMediaTransportsDesired), so a route marked
+                    // looping on Preview and not on Program is a loop. Keeping
+                    // the first row's value made the synthetic snapshot disagree
+                    // with the core about whether the transport can be paused.
+                    Loop = existing.Loop || loop,
                     OnProgram = existing.OnProgram || onProgram,
                     OnPreview = existing.OnPreview || !onProgram
                 };
@@ -509,6 +516,20 @@ public static class SyntheticMediaCore
                         continue;
                     }
 
+                    // STILLS ARE NOT TRANSPORTS. The core's own desired set
+                    // skips them (MediaCore::syncMediaTransportsDesired ->
+                    // isStillImageMediaAsset; they are served by
+                    // StillMediaFrameCache and have no clock), so a still that
+                    // appeared here made the synthetic/old-core path publish
+                    // state "live" for a logo and the shell read "Playing X on
+                    // Program".
+                    if (IsStillImageMediaAsset(
+                            TryGetString(route, "mediaAssetKind"),
+                            TryGetString(route, "mediaAssetPath")))
+                    {
+                        continue;
+                    }
+
                     var loop = route.TryGetProperty("mediaAssetLoop", out var loopValue) &&
                         loopValue.ValueKind == JsonValueKind.True;
                     Add("media:" + assetId, assetId, loop, onProgram);
@@ -530,6 +551,28 @@ public static class SyntheticMediaCore
         AddScene(sceneGraph, onProgram: true);
         AddScene(previewScene, onProgram: false);
         return rows.Values.ToList();
+    }
+
+    // Mirrors the core's modules::isStillImageMediaAsset: kind "image", OR a
+    // still-image extension whatever the kind says (the media bin files PNG
+    // logos under lower-third kinds, so kind alone is not trustworthy).
+    private static readonly string[] StillImageExtensions =
+        [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff"];
+
+    private static bool IsStillImageMediaAsset(string? mediaAssetKind, string? mediaAssetPath)
+    {
+        if (string.Equals(mediaAssetKind, "image", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(mediaAssetPath))
+        {
+            return false;
+        }
+
+        return StillImageExtensions.Any(extension =>
+            mediaAssetPath.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
     }
 
     private static int TryGetRouteCount(NativeMediaCoreCommand? sceneGraph)

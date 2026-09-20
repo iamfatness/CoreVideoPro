@@ -577,6 +577,9 @@ namespace {
 // way MediaFoundationMediaFrameSource does.
 struct ProbeState {
   std::atomic<bool> producing{true};
+  // Real end of stream, as opposed to merely not producing (an open that has
+  // not finished, a stall, a resume attempt).
+  std::atomic<bool> ended{false};
   std::atomic<int> stallTicks{0};
   std::atomic<int64_t> positionMs{4200}, durationMs{9000};
   std::atomic<int64_t> frameId{0};
@@ -609,6 +612,7 @@ class ProbePrefetchDecoder final : public IMediaFrameSource, public IMediaVideoP
   std::vector<std::string> warnings() const override { return {}; }
   int64_t playbackPositionMs() const override { return state_->positionMs.load(); }
   int64_t mediaDurationMs() const override { return state_->durationMs.load(); }
+  bool mediaEnded() const override { return state_->ended.load(); }
  private:
   std::shared_ptr<ProbeState> state_;
 };
@@ -677,11 +681,16 @@ TEST(MediaTransports, ARefusedSourceStaysNamedAndOpensOnceADecoderFrees) {
   EXPECT_TRUE(names17th(transports.warnings()));
   // Release one. The freed slot is not available until its worker has been
   // reaped, so re-assert the set until the refused source is admitted.
+  // Release carries a short grace now, measured against the CALLER's nowNs, so
+  // the re-assertions advance that clock past it (nothing here sleeps for real
+  // time: the grace is decided from the number apply() is handed).
   std::vector<MediaTransportDesired> without(full.begin() + 1, full.end());
   bool opened = false;
+  std::int64_t nowNs = 0;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (!opened && std::chrono::steady_clock::now() < deadline) {
-    for (const auto& change : transports.apply(without, 0))
+    nowNs += 1'000'000'000;
+    for (const auto& change : transports.apply(without, nowNs))
       if (change.added && change.sourceId == "media:asset-16") opened = true;
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
@@ -719,7 +728,10 @@ TEST(MediaTransports, ANonLoopClipThatStopsProducingEndsAndKeepsItsLastFrame) {
   if (opened.empty()) return;
   auto e = opened.front().entry;
   ASSERT_GT(pollUntilFrame(*e), 0);
+  // THE DECODER SAYS IT ENDED. That is the evidence now; merely not producing
+  // is a stall, and is judged by the (much longer) backstop below.
   probe->producing.store(false);
+  probe->ended.store(true);
   bool ended = false;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
   while (!ended && std::chrono::steady_clock::now() < deadline) {
@@ -762,4 +774,124 @@ TEST(MediaTransports, ADecoderThatCannotReportItsPositionPublishesMinusOne) {
     EXPECT_EQ(status->positionMs, -1);
     EXPECT_EQ(status->durationMs, -1);
   }
+}
+
+// Final review, CRITICAL 1. The frame-arrival window is now only a BACKSTOP
+// for a decoder that cannot report EOS, and it is deliberately far longer than
+// the FFmpeg resume ladder. A decoder that merely stops producing must NOT be
+// called finished at the old 500 ms. This test is slow on purpose: the whole
+// point of the constant is that it is long.
+TEST(MediaTransports, ADecoderThatCannotSayItEndedIsOnlyJudgedByTheLongBackstop) {
+  auto probe = std::make_shared<ProbeState>();
+  MediaTransports t([probe] { return std::make_unique<ProbePrefetchDecoder>(probe); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  ASSERT_GT(pollUntilFrame(*e), 0);
+  probe->producing.store(false);  // stopped, but the decoder never says "ended"
+
+  const auto stateNow = [&] {
+    const auto status = statusOf(t, "media:test");
+    return status ? status->state : MediaTransportState::Cued;
+  };
+  // Well past the OLD 500 ms window and past the FFmpeg ladder's first rungs:
+  // still rolling, because nothing has said the media ran out.
+  const auto notYet = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+  while (std::chrono::steady_clock::now() < notYet) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    ASSERT_TRUE(stateNow() == MediaTransportState::Live)
+        << "a stalled clip was called finished inside the resume ladder's window";
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  // The backstop still exists, so it eventually does end.
+  bool ended = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!ended && std::chrono::steady_clock::now() < deadline) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    ended = stateNow() == MediaTransportState::Ended;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(ended) << "the backstop is gone: a dead decoder never reads ended at all";
+}
+
+// Final review, CRITICAL 1(b). Ended is RECOVERABLE. A decoder that reported
+// EOS and then hands back a picture (an FFmpeg resume off its ladder) brings
+// the transport back to Live on its own, with no operator gesture - the only
+// one available is Play, which is OpenLive and restarts the clip from 0.
+TEST(MediaTransports, AnEndedClipComesBackToLiveWhenItsDecoderProducesAgain) {
+  auto probe = std::make_shared<ProbeState>();
+  MediaTransports t([probe] { return std::make_unique<ProbePrefetchDecoder>(probe); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  const auto rolledTo = pollUntilFrame(*e);
+  ASSERT_GT(rolledTo, 0);
+  probe->producing.store(false);
+  probe->ended.store(true);
+
+  const auto waitForState = [&](MediaTransportState want, int timeoutMs) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+      (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+      const auto status = statusOf(t, "media:test");
+      if (status && status->state == want) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return false;
+  };
+  ASSERT_TRUE(waitForState(MediaTransportState::Ended, 4000));
+  probe->ended.store(false);
+  probe->producing.store(true);
+  EXPECT_TRUE(waitForState(MediaTransportState::Live, 4000))
+      << "Ended is still terminal: nothing but an operator Play gets out of it";
+  // The SAME decoder, carrying on from where it was - never a restart from 0.
+  const auto after = MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+  ASSERT_TRUE(after.has_value());
+  if (after) EXPECT_GT(after->frameId, rolledTo);
+}
+
+// Final review, IMPORTANT 3. A source absent from both desired sets is kept
+// for a short grace so ONE interleaved preview-only spine tick cannot destroy
+// a warm decoder - and is released for real once the grace is up.
+TEST(MediaTransports, AReleasedSourceSurvivesOneTickAndIsRetiredAfterTheGrace) {
+  MediaTransports t([] { return std::make_unique<CountingDecoder>(); });
+  const auto opened = t.apply({testDesired(false, true)}, 0);  // cued in Preview only
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+
+  // The interleaved tick: on neither bus. No membership change, no retirement.
+  EXPECT_TRUE(t.apply({}, 1'000'000).empty()) << "one absent tick retired the source";
+  EXPECT_TRUE(statusOf(t, "media:test").has_value());
+
+  // The Take lands behind it: the SAME entry resumes, no second decoder.
+  const auto taken = t.apply({testDesired(true, false)}, 2'000'000);
+  EXPECT_TRUE(taken.empty()) << "the re-claim churned bus membership";
+  const auto live = statusOf(t, "media:test");
+  ASSERT_TRUE(live.has_value());
+  if (live) EXPECT_TRUE(live->state == MediaTransportState::Live);
+
+  // Genuinely gone: absent past the grace, and it is retired.
+  EXPECT_TRUE(t.apply({}, 2'100'000).empty());
+  const auto retired = t.apply({}, 5'000'000'000);
+  ASSERT_EQ(retired.size(), 1u);
+  if (retired.size() == 1) EXPECT_FALSE(retired.front().added);
+  EXPECT_FALSE(statusOf(t, "media:test").has_value());
+}
+
+// ...and the render tick's sweep retires it even when no further command ever
+// arrives, which is the only path that runs with Engine off.
+TEST(MediaTransports, TheRenderSweepRetiresASourceNoCommandEverMentionsAgain) {
+  MediaTransports t([] { return std::make_unique<CountingDecoder>(); });
+  ASSERT_EQ(t.apply({testDesired(true, false)}, 0).size(), 1u);
+  EXPECT_TRUE(t.apply({}, 0).empty());  // grace opens
+  EXPECT_TRUE(t.collectExpiredReleases(1'000'000).empty()) << "the sweep retired it inside the grace";
+  const auto swept = t.collectExpiredReleases(5'000'000'000);
+  ASSERT_EQ(swept.size(), 1u);
+  if (swept.size() == 1) {
+    EXPECT_FALSE(swept.front().added);
+    EXPECT_EQ(swept.front().sourceId, "media:test");
+  }
+  EXPECT_FALSE(statusOf(t, "media:test").has_value());
 }

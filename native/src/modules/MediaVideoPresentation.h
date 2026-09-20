@@ -26,6 +26,15 @@ class IMediaVideoPrefetch {
   // position or duration it did not measure.
   virtual int64_t playbackPositionMs() const { return -1; }
   virtual int64_t mediaDurationMs() const { return -1; }
+  // END OF STREAM, from the decoder — evidence, not a guess. The owner used to
+  // infer "ended" from "no new frameId for 500 ms with an empty queue", which
+  // is indistinguishable from a cold open (a Media Foundation open is 95-250 ms
+  // and the FFmpeg fallback spawns a process), from an FFmpeg resume-ladder
+  // attempt, or from a loaded box. A decoder that genuinely reached the end of
+  // its media says so here; one that cannot say returns false and is judged by
+  // the owner's much longer backstop instead. NEVER true for a loop — a loop
+  // reopens at EOS and has no end.
+  virtual bool mediaEnded() const { return false; }
 };
 class MediaVideoPresentation {
  public:
