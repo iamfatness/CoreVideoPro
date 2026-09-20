@@ -2144,7 +2144,8 @@ the bus; retiring them is **slice 4b**
   media/still sources have no "warming" desired-set wiring yet (R1 only covers
   Zoom vs everything-else, not a richer per-kind warming signal); capture
   dropout liveness/policy is gated on wiring `signalPresent` into a real stall
-  decision (R2 follow-up); the sourceHealth/dropoutPolicy strings are
+  decision (R2 follow-up, tracked as [#562](https://github.com/iamfatness/CoreVideoPro/issues/562));
+  the sourceHealth/dropoutPolicy strings are
   allocated per layer per tick rather than interned; a non-`hold`/`black`
   `dropoutPolicy` string still only warns rather than refusing the whole
   command; a long `sourceDisplayName` on the multiview tile has not been

@@ -267,6 +267,12 @@ public sealed class MediaCoreCommandBuilderTests
     [Fact]
     public void EmitsSetSourcePolicyPerEntryInIdOrder()
     {
+        // Round 2 (final review, #535 slice 4a): a policy is Zoom-only this
+        // slice, so a capture entry's DropoutPolicy is null (a NAME-ONLY
+        // entry) and the "dropoutPolicy" key must be OMITTED entirely, never
+        // sent as "hold" — the core refuses a policy for any non-"zoom:" id,
+        // and sending one on every sync would permanently degrade
+        // programFrame.health.
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
         {
             ActiveSceneId = "policy-scene",
@@ -274,7 +280,7 @@ public sealed class MediaCoreCommandBuilderTests
             SourcePolicies = new Dictionary<string, MediaCoreSourcePolicyWire>(StringComparer.Ordinal)
             {
                 ["zoom:16778240"] = new("zoom:16778240", "black", "Jamal"),
-                ["capture:cam"] = new("capture:cam", "hold", null)
+                ["capture:cam"] = new("capture:cam", null, "Camera")
             }
         });
 
@@ -283,8 +289,8 @@ public sealed class MediaCoreCommandBuilderTests
 
         var first = policyCommands[0];
         Assert.Equal("capture:cam", first.ExtensionData!["sourceId"].GetString());
-        Assert.Equal("hold", first.ExtensionData!["dropoutPolicy"].GetString());
-        Assert.False(first.ExtensionData!.ContainsKey("displayName"));
+        Assert.False(first.ExtensionData!.ContainsKey("dropoutPolicy"));
+        Assert.Equal("Camera", first.ExtensionData!["displayName"].GetString());
 
         var second = policyCommands[1];
         Assert.Equal("zoom:16778240", second.ExtensionData!["sourceId"].GetString());

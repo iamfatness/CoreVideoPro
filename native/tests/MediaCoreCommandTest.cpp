@@ -6115,6 +6115,25 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
   EXPECT_EQ(plan2.layers.front().dropoutPolicy, "hold");  // default when unset
 }
 
+// Round 2 (final review, #535 slice 4a): a set-source-policy for a capture id
+// carrying ONLY displayName (no dropoutPolicy field at all) must produce NO
+// scene warning at all — the shell's wire builder now omits the dropoutPolicy
+// key entirely for a name-only entry, so this must never hit the "only
+// zoom:<pid>..." refusal path. Warnings must stay empty across a FOLLOWING
+// load-scene-graph + tick too (load-scene-graph clears warnings, so this also
+// proves nothing re-pushes one on a later tick).
+TEST(MediaCoreCommand, CaptureDisplayNameOnlyPolicyProducesNoSceneWarning) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "set-source-policy"}, {"sourceId", "capture:x"}, {"displayName", "Camera X"}}});
+  EXPECT_TRUE(mediaCore.sceneValidationWarningsForTest().empty());
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"}, {"sceneId", "after-name-only"}, {"routes", corevideo::rpc::Json::Array{}}}});
+  mediaCore.renderDisplayTick();
+  EXPECT_TRUE(mediaCore.sceneValidationWarningsForTest().empty());
+}
+
 namespace {
 // #535 slice 4a final review, R1: a bus source with a settable `kind` and a
 // frame that NEVER advances its frameId after the first poll — used to drive

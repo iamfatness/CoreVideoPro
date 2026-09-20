@@ -65,6 +65,7 @@ drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
 
 | Issue | Item |
 |---|---|
+| [#562](https://github.com/iamfatness/CoreVideoPro/issues/562) | Capture-device dropout policy needs adapter liveness via `signalPresent` — #535 R2 refuses a policy for any non-`zoom:` id this slice; wiring capture liveness into a real stall decision is the follow-up that lifts the restriction |
 | [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | ISO writer `framesWritten`/`bytesWritten` read 0 mid-recording for async writers (status-only; files record fine) |
 | [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points — needs UI design; was previous Now #4 |
 | [#530](https://github.com/iamfatness/CoreVideoPro/issues/530) | Control API `programPreview` vs `program-preview` |

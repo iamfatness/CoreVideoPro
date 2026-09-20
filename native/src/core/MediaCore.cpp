@@ -3928,12 +3928,19 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
     renderPlan.layers.push_back(std::move(layer));
   }
 
-  // R3: multiview is a monitoring surface — every layer here (the PGM/PVW
-  // mirror cells above, and the source tiles just built) keeps the held
-  // frame regardless of the stored per-source policy. The PVW cell's own
-  // layers already went through this in buildPreviewCompositorRenderPlan;
-  // re-applying here is a no-op for those and is what covers the PGM mirror
-  // cell + the source tiles.
+  // R3: multiview is a monitoring surface — every layer here keeps the held
+  // frame regardless of the stored per-source policy. Round 2 correction:
+  // this covers the PVW mirror cell (a no-op re-application — its layers
+  // already went through this in buildPreviewCompositorRenderPlan) and the
+  // source tiles just built above. It does NOT cover the PGM mirror cell in
+  // the LIVE path (`programBufferFrames() > 0`): that cell is a single
+  // texture-sampling marker layer with no per-source annotation at all — it
+  // literally samples the already-delivered Program texture, so it correctly
+  // MIRRORS Program (including a real black cut) by construction, not via
+  // this override. Only the cold-start fallback branch just above (no
+  // program buffer yet: the `else` that calls `buildCompositorRenderPlan`
+  // and recomposes real layers) is a genuine per-layer PGM recompose this
+  // call actually holds.
   holdDropoutForMonitoring(renderPlan);
   return renderPlan;
 }

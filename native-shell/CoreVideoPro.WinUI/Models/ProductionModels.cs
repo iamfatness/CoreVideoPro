@@ -1093,10 +1093,10 @@ public static class ProductionStateHelper
         var wires = new Dictionary<string, MediaCoreSourcePolicyWire>(StringComparer.Ordinal);
         foreach (var id in ids)
         {
-            dropoutPolicies.TryGetValue(id, out var policy);
+            var isZoom = id.StartsWith("zoom:", StringComparison.Ordinal);
 
             string? derivedName = null;
-            if (id.StartsWith("zoom:", StringComparison.Ordinal))
+            if (isZoom)
             {
                 var pid = id["zoom:".Length..];
                 derivedName = roomParticipants.FirstOrDefault(item =>
@@ -1109,8 +1109,22 @@ public static class ProductionStateHelper
                     string.Equals(item.Id, captureId, StringComparison.Ordinal))?.Name;
             }
 
+            // R2/round 2 (final review): a policy is Zoom-only this slice — a
+            // capture/media entry gets NO DropoutPolicy at all (null, not
+            // "hold"), so MediaCoreCommandBuilder omits the wire key entirely
+            // rather than sending a policy the core will refuse EVERY sync
+            // (that refusal re-fires because load-scene-graph clears warnings
+            // before the policy commands run, so it never stays cleared —
+            // programFrame.health would be permanently "degraded").
+            string? policy = null;
+            if (isZoom)
+            {
+                dropoutPolicies.TryGetValue(id, out var storedPolicy);
+                policy = storedPolicy ?? "hold";
+            }
+
             var name = ShowInputRosterService.ResolveDisplayName(displayNameOverrides, id, derivedName ?? string.Empty);
-            wires[id] = new MediaCoreSourcePolicyWire(id, policy ?? "hold", string.IsNullOrEmpty(name) ? null : name);
+            wires[id] = new MediaCoreSourcePolicyWire(id, policy, string.IsNullOrEmpty(name) ? null : name);
         }
 
         return wires;

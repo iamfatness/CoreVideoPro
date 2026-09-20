@@ -375,8 +375,12 @@ public static class MediaCoreCommandBuilder
         });
 
     // #535 slice 4a: one set-source-policy command per entry, ordered by
-    // sourceId (ordinal) for determinism. displayName is omitted from the
-    // payload when null (never sent as an explicit null).
+    // sourceId (ordinal) for determinism. displayName AND dropoutPolicy are
+    // both omitted from the payload when null (never sent as an explicit
+    // null) — round 2, final review: a policy is Zoom-only this slice, so a
+    // capture/media NAME-ONLY entry (DropoutPolicy null) must not send the
+    // key at all, or the core's correct refusal for a non-zoom id fires on
+    // EVERY sync and permanently degrades programFrame.health.
     private static IEnumerable<NativeMediaCoreCommand> BuildSourcePolicyCommands(
         IReadOnlyDictionary<string, MediaCoreSourcePolicyWire> sourcePolicies) =>
         sourcePolicies.Values
@@ -385,9 +389,12 @@ public static class MediaCoreCommandBuilder
             {
                 var payload = new Dictionary<string, object?>
                 {
-                    ["sourceId"] = policy.SourceId,
-                    ["dropoutPolicy"] = policy.DropoutPolicy
+                    ["sourceId"] = policy.SourceId
                 };
+                if (policy.DropoutPolicy is not null)
+                {
+                    payload["dropoutPolicy"] = policy.DropoutPolicy;
+                }
                 if (policy.DisplayName is not null)
                 {
                     payload["displayName"] = policy.DisplayName;

@@ -175,8 +175,12 @@ public sealed record MediaCoreColorGradeWire(
     int Temperature);
 
 // #535 slice 4a: set-source-policy wire fields, verbatim. DropoutPolicy is
-// "hold" | "black"; DisplayName is omitted from the command when null.
-public sealed record MediaCoreSourcePolicyWire(string SourceId, string DropoutPolicy, string? DisplayName);
+// "hold" | "black", or null for a NAME-ONLY entry (round 2, final review: a
+// policy is Zoom-only this slice — a capture:/media: id must never carry one,
+// or the core's correct "only zoom:<pid> sources take a dropout policy"
+// refusal fires on every sync and permanently degrades programFrame.health).
+// DropoutPolicy and DisplayName are BOTH omitted from the command when null.
+public sealed record MediaCoreSourcePolicyWire(string SourceId, string? DropoutPolicy, string? DisplayName);
 
 public sealed record MediaCoreBrandKitWire(
     string Name,

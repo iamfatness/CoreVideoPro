@@ -173,7 +173,6 @@
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="Auto" />
-                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Spacing="1" VerticalAlignment="Center">
                                             <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="12" />
@@ -190,22 +189,24 @@
                                         <!-- #535 slice 4a R2 (final review): the capture-row "On dropout"
                                              combo is removed — a dropout POLICY is Zoom-only this slice
                                              (capture liveness via signalPresent isn't wired to a stall
-                                             decision yet; see StudioViewModel.SetSourceDropoutPolicy). -->
-                                        <Button Grid.Column="3"
+                                             decision yet; see StudioViewModel.SetSourceDropoutPolicy).
+                                             Round 2: the now-empty column for that combo is removed too
+                                             (it left a stray 10px gap), and the remaining columns renumbered. -->
+                                        <Button Grid.Column="2"
                                                 Content="-20 ms"
                                                 Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
                                                 ToolTipService.ToolTip="Nudge this device's audio 20 ms earlier"
                                                 Command="{Binding ViewModel.NudgeCaptureAudioEarlierCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind Id}"
                                                 VerticalAlignment="Center" />
-                                        <Button Grid.Column="4"
+                                        <Button Grid.Column="3"
                                                 Content="+20 ms"
                                                 Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
                                                 ToolTipService.ToolTip="Nudge this device's audio 20 ms later"
                                                 Command="{Binding ViewModel.NudgeCaptureAudioLaterCommand, ElementName=SourcesInputsRoot}"
                                                 CommandParameter="{x:Bind Id}"
                                                 VerticalAlignment="Center" />
-                                        <Button Grid.Column="5"
+                                        <Button Grid.Column="4"
                                                 Content="Connect"
                                                 Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
                                                 Command="{Binding ViewModel.ConnectCaptureDeviceCommand, ElementName=SourcesInputsRoot}"
@@ -213,7 +214,7 @@
                                                 Visibility="{x:Bind ShowConnectButton, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                 VerticalAlignment="Center" />
                                         <!-- Lifecycle L2: stop the session + unassign its slots -->
-                                        <Button Grid.Column="6"
+                                        <Button Grid.Column="5"
                                                 Content="Take offline"
                                                 Style="{StaticResource OperatorGhostButton}" FontSize="10" Padding="8,3"
                                                 Command="{Binding ViewModel.TakeCaptureDeviceOfflineCommand, ElementName=SourcesInputsRoot}"
