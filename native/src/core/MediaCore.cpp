@@ -1006,6 +1006,13 @@ rpc::Json MediaCore::sessionState() const {
       const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count();
       for (const auto& s : sourceBus_->snapshot(nowNs)) {
+        // #535 slice 4a: echo the persisted per-source policy (default "hold",
+        // no name) so the shell can confirm what it last sent stuck.
+        const auto policyIt = sourcePolicies_.find(s.descriptor.sourceId);
+        const std::string dropoutPolicy =
+            policyIt != sourcePolicies_.end() ? policyIt->second.dropoutPolicy : "hold";
+        const std::string displayName =
+            policyIt != sourcePolicies_.end() ? policyIt->second.displayName : std::string{};
         sourcesArr.push_back(rpc::Json::Object{
             {"sourceId", s.descriptor.sourceId},
             {"kind", s.descriptor.kind},
@@ -1014,6 +1021,8 @@ rpc::Json MediaCore::sessionState() const {
             {"framesIngested", static_cast<double>(s.counters.framesIngested)},
             {"droppedFrames", static_cast<double>(s.counters.droppedFrames)},
             {"health", sourceHealthName(s.health)},
+            {"dropoutPolicy", dropoutPolicy},
+            {"displayName", displayName},
         });
       }
     }
@@ -1392,6 +1401,8 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setOverlayAsset(command);
   } else if (type == "set-color-grade") {
     setColorGrade(command);
+  } else if (type == "set-source-policy") {
+    setSourcePolicy(command);
   } else if (type == "set-output-profile") {
     setOutputProfile(command);
   } else if (type == "start-program-output") {
@@ -1923,6 +1934,64 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
 }
 
 }  // namespace
+
+// #535 slice 4a: policy is keyed by the SAME frame key annotateLayerSource
+// resolves at plan build (a zoom:<pid> source stores under the raw <pid>;
+// capture:<id> and media:<id> are stored verbatim, matching the Wire's
+// canonical-id → frame-key mapping).
+void MediaCore::setSourcePolicy(const rpc::Json& command) {
+  const std::string sourceId = command.getString("sourceId");
+  if (sourceId.empty()) {
+    return;
+  }
+  const std::string key = sourceId.rfind("zoom:", 0) == 0 ? sourceId.substr(5) : sourceId;
+  const std::string policy = command.getString("dropoutPolicy", "hold");
+  if (policy != "hold" && policy != "black") {
+    pushSceneWarningOnce(sceneValidationWarnings_,
+        "set-source-policy: unknown dropoutPolicy '" + policy + "' for " + sourceId);
+    return;
+  }
+  SourcePolicy& entry = sourcePolicies_[key];
+  entry.dropoutPolicy = policy;
+  if (const rpc::Json* displayName = command.get("displayName"); displayName && displayName->isString()) {
+    entry.displayName = displayName->asString();
+  }
+}
+
+// #535 slice 4a: the layer's frame key is the same key the compositors
+// already look up (Global Constraints, "Frame key per layer"). Present on
+// the bus wins outright; absent falls back to "warming"/"failed" based on
+// whether this tick's videoFrames subscribed the key, unless videoFrames is
+// itself empty (a frameless plan build), which leaves sourceHealth "" rather
+// than guessing "failed" with nothing to judge by.
+void MediaCore::annotateLayerSource(modules::CompositorRenderPlanLayer& layer,
+                                     const std::vector<modules::VideoFrame>& videoFrames,
+                                     int64_t nowNs) const {
+  const std::string key = !layer.participantId.empty()
+      ? layer.participantId
+      : (layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId);
+  if (sourceBus_) {
+    if (const auto health = sourceBus_->healthFor(key, nowNs)) {
+      layer.sourceHealth = core::sourceHealthName(*health);
+    } else if (!videoFrames.empty()) {
+      const bool subscribed = std::any_of(videoFrames.begin(), videoFrames.end(),
+          [&](const modules::VideoFrame& frame) { return frame.participantId == key; });
+      layer.sourceHealth = subscribed ? "warming" : "failed";
+    } else {
+      layer.sourceHealth.clear();
+    }
+  } else if (!videoFrames.empty()) {
+    const bool subscribed = std::any_of(videoFrames.begin(), videoFrames.end(),
+        [&](const modules::VideoFrame& frame) { return frame.participantId == key; });
+    layer.sourceHealth = subscribed ? "warming" : "failed";
+  } else {
+    layer.sourceHealth.clear();
+  }
+  if (const auto it = sourcePolicies_.find(key); it != sourcePolicies_.end()) {
+    layer.dropoutPolicy = it->second.dropoutPolicy;
+    layer.sourceDisplayName = it->second.displayName;
+  }
+}
 
 namespace {
 
@@ -5496,6 +5565,10 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   renderPlan.height = outputHeight_;
   renderPlan.fps = outputFps_;
   renderPlan.colorGrade = colorGrade;
+  // #535 slice 4a: one clock read per plan build, shared by every
+  // annotateLayerSource call below (never per-frame/per-layer).
+  const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
 
   // A CONFIGURED WALL OWNS THIS SCENE'S VIDEO LAYERS — with or without members.
   //
@@ -5605,6 +5678,8 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         layer.hasFillColor = true;
         layer.fillColor = "#00000000";
         layer.opacity = 0.f;
+      } else {
+        annotateLayerSource(layer, videoFrames, nowNs);
       }
       renderPlan.layers.push_back(std::move(layer));
       ++videoLayerIndex;
@@ -5630,6 +5705,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       layer.order = static_cast<int>(index);
       const auto layout = compositor::gridCell(static_cast<int>(videoFrames.size()), static_cast<int>(index));
       layer.rect = {layout.x, layout.y, layout.width, layout.height};
+      annotateLayerSource(layer, videoFrames, nowNs);
       renderPlan.layers.push_back(std::move(layer));
     }
   }
@@ -5745,6 +5821,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       background.rect = wall.rect;
       background.order = tilesBaseOrder;
       background.fitMode = "fill";
+      annotateLayerSource(background, videoFrames, nowNs);
       renderPlan.layers.push_back(std::move(background));
     }
     const auto admitted = compositor::admitTilesMembers(wall.members, tilesMemberFrameAges_);
@@ -5853,6 +5930,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         } else {
           layer.participantId = slots[index];
         }
+        annotateLayerSource(layer, videoFrames, nowNs);
         renderPlan.layers.push_back(std::move(layer));
       }
     }

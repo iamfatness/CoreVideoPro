@@ -437,6 +437,11 @@ struct CompositorRenderPlanLayer {
   // deliberately sourceless.
   bool hasFillColor = false;
   std::string fillColor = "#808080";
+  // bus health on air (#535 slice 4a): filled by MediaCore at plan build;
+  // compositors resolve slate/black/frame from these, never from the id.
+  std::string sourceHealth;
+  std::string dropoutPolicy = "hold";
+  std::string sourceDisplayName;
 };
 
 struct CompositorRenderPlan {

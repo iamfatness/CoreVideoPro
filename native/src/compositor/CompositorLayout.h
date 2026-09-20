@@ -494,4 +494,14 @@ inline uint32_t colorFromParticipantId(const std::string& participantId) {
   return 0xff000000u | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
 }
 
+// bus health on air (#535 slice 4a): the canonical slate/dropout colours a
+// layer with no content frame (or a stalled+black-policy one) resolves to.
+// RGBA packing matches colorFromParticipantId's existing 0xAARRGGBB. These
+// constants are the ONLY colours a layer-resolution path may use for a
+// health/dropout state; colorFromParticipantId stays for tests and Tiles
+// membership, but no resolution path may call it any more (Task 2).
+inline constexpr uint32_t kWarmingSlateRgba = 0xff1b1f27u;  // neutral dark
+inline constexpr uint32_t kFailedSlateRgba = 0xff23181cu;   // dark, faintly warm
+inline constexpr uint32_t kDropoutBlackRgba = 0xff000000u;
+
 }  // namespace corevideo::compositor

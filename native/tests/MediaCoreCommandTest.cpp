@@ -5951,3 +5951,69 @@ TEST(MediaCoreCommand, CaptureBusFramesGatherBeforeOtherBusKinds) {
   EXPECT_LT(captureIndex, testPatternIndex)
       << "capture frames must gather before other bus kinds (Zoom/test-pattern)";
 }
+
+// #535 slice 4a: set-source-policy round-trips, is echoed on sources[], and
+// annotates render-plan layers with the bus's own health + the stored policy.
+//
+// `lastRenderPlanForTest()` is deliberately cached ONLY while a PROGRAM wall
+// is configured (see TilesRenderPlanTest.cpp's RecordingCompositor comment);
+// this scene has plain routes and no tiles wall, so it cannot answer "what
+// does this plan look like" via that seam. Mirroring TilesRenderPlanTest's
+// own workaround, a thin recording ICompositor wrapper around the stub
+// captures the SAME plan the real render tick built and handed the
+// compositor, without adding a test-only seam to MediaCore.
+TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
+  class RecordingCompositor final : public corevideo::modules::ICompositor {
+   public:
+    explicit RecordingCompositor(std::unique_ptr<corevideo::modules::ICompositor> inner) : inner_(std::move(inner)) {}
+    std::string rendererName() const override { return inner_->rendererName(); }
+    corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+        const std::vector<corevideo::modules::VideoFrame>& frames) override {
+      lastPlan = plan;
+      return inner_->render(plan, frames);
+    }
+    corevideo::modules::CompositorRenderPlan lastPlan;
+   private:
+    std::unique_ptr<corevideo::modules::ICompositor> inner_;
+  };
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>(std::move(modules.compositor));
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  // capture:decklink-1 is connected with signal in the stub set (CaptureIngest tests).
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "capture:decklink-1"},
+                                   {"dropoutPolicy", "black"}, {"displayName", "Camera 1"}},
+      corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "zoom:16778240"},
+                                   {"dropoutPolicy", "bogus"}},   // rejected, warns, stays default
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "cam"},
+          {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+              {"routeId", "cam-0"}, {"mode", "capture-input"}, {"captureDeviceId", "decklink-1"},
+              {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}}});
+  mediaCore.renderDisplayTick();
+  const auto& plan = compositor->lastPlan;
+  const auto layer = std::find_if(plan.layers.begin(), plan.layers.end(),
+      [](const auto& l) { return l.participantId == "capture:decklink-1"; });
+  ASSERT_NE(layer, plan.layers.end());
+  EXPECT_EQ(layer->sourceHealth, "producing");
+  EXPECT_EQ(layer->dropoutPolicy, "black");
+  EXPECT_EQ(layer->sourceDisplayName, "Camera 1");
+  const auto state = mediaCore.sessionState();
+  bool echoed = false;
+  for (const auto& s : state.get("sources")->asArray()) {
+    if (s.getString("sourceId") == "capture:decklink-1") { echoed = true; EXPECT_EQ(s.getString("dropoutPolicy"), "black"); EXPECT_EQ(s.getString("displayName"), "Camera 1"); }
+  }
+  EXPECT_TRUE(echoed);
+  // A layer whose key is on nobody's bus and in no frame reads "failed".
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"}, {"sceneId", "gone"},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"routeId", "gone-0"}, {"mode", "capture-input"}, {"captureDeviceId", "no-such-device"},
+          {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}}});
+  mediaCore.renderDisplayTick();
+  const auto& plan2 = compositor->lastPlan;
+  ASSERT_FALSE(plan2.layers.empty());
+  EXPECT_EQ(plan2.layers.front().sourceHealth, "failed");
+  EXPECT_EQ(plan2.layers.front().dropoutPolicy, "hold");  // default when unset
+}

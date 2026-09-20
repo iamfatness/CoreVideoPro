@@ -408,6 +408,19 @@ TEST(CaptureDeviceSource, PollServesTheAdaptersLatestBgraFrameKeyedByDevice) {
   EXPECT_EQ(src.counters().framesIngested, 1u);
 }
 
+// --- Task 1 (#535 slice 4a): SourceBus::healthFor ---
+TEST(SourceBus, HealthForReportsWarmingProducingStalledAndAbsent) {
+  corevideo::core::SourceBus bus;
+  EXPECT_FALSE(bus.healthFor("capture:cam", 0).has_value());
+  auto cam = std::make_shared<corevideo::core::CaptureDeviceSource>("capture:cam", 640, 360);
+  bus.add(cam);
+  EXPECT_EQ(bus.healthFor("capture:cam", 1000), corevideo::core::SourceHealth::Warming);
+  cam->setLatest(bgraFrame("capture:cam", 640, 360, 1));
+  (void)bus.ingest(0, 1000);
+  EXPECT_EQ(bus.healthFor("capture:cam", 1000), corevideo::core::SourceHealth::Producing);
+  EXPECT_EQ(bus.healthFor("capture:cam", 1000 + 300'000'000), corevideo::core::SourceHealth::Stalled);
+}
+
 // --- Task 2: pure syncCaptureSources helper ---
 // Capture adapters hold their own last frame and re-emit it every tick while the
 // device is connected (WinUiCaptureDeviceAdapter::pollVideoFrames); a device that

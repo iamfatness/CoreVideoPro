@@ -346,6 +346,7 @@ class MediaCore {
   void setParticipantTransform(const rpc::Json& command);
   void setOverlayAsset(const rpc::Json& command);
   void setColorGrade(const rpc::Json& command);
+  void setSourcePolicy(const rpc::Json& command);
   void setOutputProfile(const rpc::Json& command);
   void startProgramOutput(const rpc::Json& command);
   void prepareEncoderSession(const rpc::Json& command);
@@ -713,6 +714,25 @@ class MediaCore {
   std::vector<modules::OutputDestinationSettings> outputDestinationSettings_;
   modules::CompositorColorGrade colorGrade_;
   std::vector<std::string> sceneValidationWarnings_;
+  // bus health on air (#535 slice 4a): per-source dropout policy + display
+  // name, set via set-source-policy and echoed on sources[]. Keyed by the
+  // SAME frame key annotateLayerSource looks up (a zoom: id has its "zoom:"
+  // prefix stripped before it is stored, matching resolveRouteSource's
+  // participantId convention).
+  struct SourcePolicy {
+    std::string dropoutPolicy = "hold";
+    std::string displayName;
+  };
+  std::unordered_map<std::string, SourcePolicy> sourcePolicies_;
+  // Resolves the layer's frame key (participantId, else sourceId, else
+  // "media:" + mediaAssetId) and fills sourceHealth/dropoutPolicy/
+  // sourceDisplayName from sourceBus_ / sourcePolicies_. Called once per
+  // non-overlay, non-fill layer at plan build (see Global Constraints,
+  // #535 slice 4a). videoFrames empty (a frameless plan build) leaves
+  // sourceHealth "" when the key is not on the bus.
+  void annotateLayerSource(modules::CompositorRenderPlanLayer& layer,
+                            const std::vector<modules::VideoFrame>& videoFrames,
+                            int64_t nowNs) const;
   // ---- PREVIEW scene (the preview composite bus) ----
   // Parallel to the active/program scene members above. Synced via set-preview-scene
   // (and the spine `previewScene` object), composited into previewSharedTexture on

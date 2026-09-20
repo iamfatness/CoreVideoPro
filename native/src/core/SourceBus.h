@@ -123,17 +123,17 @@ class SourceBus {
     std::vector<SourceStatus> out;
     out.reserve(entries_.size());
     for (const auto& [id, e] : entries_) {
-      SourceHealth h;
-      if (!e.everProduced) {
-        h = SourceHealth::Warming;
-      } else if (nowNs - e.counters.lastNewFrameNs <= kStaleAfterNs) {
-        h = SourceHealth::Producing;
-      } else {
-        h = SourceHealth::Stalled;
-      }
-      out.push_back({e.source->descriptor(), e.counters, h});
+      out.push_back({e.source->descriptor(), e.counters, healthOf(e, nowNs)});
     }
     return out;
+  }
+
+  // nullopt when the source is not on the bus at all; otherwise the same
+  // derivation snapshot() uses for that source's entry.
+  std::optional<SourceHealth> healthFor(const std::string& sourceId, int64_t nowNs) const {
+    auto it = entries_.find(sourceId);
+    if (it == entries_.end()) return std::nullopt;
+    return healthOf(it->second, nowNs);
   }
 
  private:
@@ -144,6 +144,12 @@ class SourceBus {
     bool everProduced = false;
   };
   std::map<std::string, Entry> entries_;  // stable id order for the snapshot
+
+  static SourceHealth healthOf(const Entry& e, int64_t nowNs) {
+    if (!e.everProduced) return SourceHealth::Warming;
+    if (nowNs - e.counters.lastNewFrameNs <= kStaleAfterNs) return SourceHealth::Producing;
+    return SourceHealth::Stalled;
+  }
 };
 
 }  // namespace corevideo::core
