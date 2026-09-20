@@ -239,11 +239,7 @@ public static class MediaRoutePlaybackService
             // Among non-route rows a live one still beats a cued one.
             if (fallback is null || string.Equals(row.State, "live", StringComparison.Ordinal))
             {
-                fallback ??= row;
-                if (string.Equals(row.State, "live", StringComparison.Ordinal))
-                {
-                    fallback = row;
-                }
+                fallback = row;
             }
         }
 

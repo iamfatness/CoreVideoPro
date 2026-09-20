@@ -815,6 +815,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     // The core transport state the SELECTED asset's status line was last written from, so a
     // paused -> ended move rewrites it even though the playing boolean did not change.
+    // ONE scalar for the whole bin, deliberately: it is not keyed by asset id, so selecting away
+    // from a clip and back can carry a stale state across and cost one extra status rewrite. That
+    // rewrite is idempotent and writes the same string the row already implies, so keying it per
+    // asset would only buy a per-selection dictionary.
     private string? _lastSelectedMediaTransportState;
     // ShowInputs roster store + loaded-flag + editor-signature + ISO selection moved to
     // ShowInputsCoordinator (PR3 strangler). The coordinator is constructed in the ctor (it needs
@@ -6382,75 +6386,66 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // A single send that collides with the 250 ms poll is SKIPPED, not delivered, and CLAUDE.md's
     // rule is that a skipped single send must re-arm itself: the retry is the gesture again.
     //
-    // LATEST WINS, per asset. Each tap mints a token and claims the asset's slot; a retry that
-    // finds a newer token abandons itself. Without that, two taps inside the retry window (pause
-    // then resume — each skipped once against the 250 ms poll is routine) can deliver the OLDER
-    // action last and leave the clip paused on air. Because the production sync deliberately no
-    // longer re-asserts play state, nothing downstream would correct it.
-    private readonly Dictionary<string, long> _mediaTransportGestures = new(StringComparer.Ordinal);
-    private long _mediaTransportGestureSequence;
+    // LATEST WINS, per asset — the decision is MediaTransportGestureLedger (constructible and
+    // tested; StudioViewModel is not). Each tap CLAIMS its asset's slot with a fresh token, and
+    // `ShouldSend` is consulted immediately before EVERY send, attempt 0 included. Gating only
+    // the retry SCHEDULING is not enough and was the first cut's bug: tap 1 (pause) is skipped
+    // and schedules a 120 ms retry, tap 2 (resume) lands and frees the slot, and tap 1's already
+    // scheduled retry then delivers the stale PAUSE on air with nothing downstream to correct it
+    // (the production sync deliberately no longer re-asserts play state).
+    private readonly MediaTransportGestureLedger _mediaTransportGestures =
+        new(MediaTransportGestureRetryAttempts);
 
     private const int MediaTransportGestureRetryAttempts = 5;
     private const int MediaTransportGestureRetryDelayMs = 120;
 
-    private void SendMediaTransportGesture(string mediaAssetId, string action)
-    {
-        var token = ++_mediaTransportGestureSequence;
-        _mediaTransportGestures[mediaAssetId] = token;
-        _ = SendMediaTransportGestureAsync(mediaAssetId, action, token, attempt: 0);
-    }
+    private void SendMediaTransportGesture(string mediaAssetId, string action) =>
+        _ = SendMediaTransportGestureAsync(
+            mediaAssetId, action, _mediaTransportGestures.Claim(mediaAssetId), attempt: 0);
 
-    // UI thread only (every caller is a RunOnUiThread body or the tap itself).
-    private bool IsCurrentMediaTransportGesture(string mediaAssetId, long token) =>
-        _mediaTransportGestures.TryGetValue(mediaAssetId, out var current) && current == token;
-
+    // Entered ONLY from the UI thread: the tap itself, or the retry's RunOnUiThread body. The
+    // ledger is not thread-safe, and the send gate below has to be asked where it is valid.
     private async Task SendMediaTransportGestureAsync(
         string mediaAssetId,
         string action,
         long token,
         int attempt)
     {
+        // The SEND is gated, not just the scheduling: a superseded attempt never reaches the core.
+        if (!_mediaTransportGestures.ShouldSend(mediaAssetId, token))
+        {
+            return;
+        }
+
         var command = MediaCoreCommandBuilder.BuildMediaTransportCommand(mediaAssetId, action);
         var outcome = await SingleSendBackpressure.RunAsync(
             () => _bridge.SyncAsync([command]),
             onSkipped: () => RunOnUiThread(() =>
             {
-                if (!IsCurrentMediaTransportGesture(mediaAssetId, token))
+                switch (_mediaTransportGestures.OnSkipped(mediaAssetId, token, attempt))
                 {
-                    return;  // a newer tap for this asset superseded us
+                    case MediaTransportGestureStep.Retry:
+                        _ = RetryMediaTransportGestureAsync(mediaAssetId, action, token, attempt + 1);
+                        break;
+                    case MediaTransportGestureStep.GiveUp:
+                        ReportMediaTransportGestureGaveUp(mediaAssetId, action, attempt + 1);
+                        break;
+                    // Superseded: a newer tap for this asset owns the slot. Stop, silently.
                 }
-
-                if (attempt >= MediaTransportGestureRetryAttempts)
-                {
-                    _mediaTransportGestures.Remove(mediaAssetId);
-                    ReportMediaTransportGestureGaveUp(mediaAssetId, action, attempt + 1);
-                    return;
-                }
-
-                _ = RetryMediaTransportGestureAsync(mediaAssetId, action, token, attempt + 1);
             }),
             onFailed: ex => RunOnUiThread(() =>
             {
                 LaunchLog.WriteException($"media {action} for {mediaAssetId} failed", ex);
-                if (!IsCurrentMediaTransportGesture(mediaAssetId, token))
+                if (_mediaTransportGestures.Release(mediaAssetId, token))
                 {
-                    return;
+                    CommandStatus =
+                        $"Could not {action} {ResolveMediaAssetLabel(mediaAssetId)}; the media core rejected it. {ex.Message}";
                 }
-
-                _mediaTransportGestures.Remove(mediaAssetId);
-                CommandStatus =
-                    $"Could not {action} {ResolveMediaAssetLabel(mediaAssetId)}; the media core rejected it. {ex.Message}";
             })).ConfigureAwait(false);
 
         if (outcome == SingleSendOutcome.Sent)
         {
-            RunOnUiThread(() =>
-            {
-                if (IsCurrentMediaTransportGesture(mediaAssetId, token))
-                {
-                    _mediaTransportGestures.Remove(mediaAssetId);
-                }
-            });
+            RunOnUiThread(() => _mediaTransportGestures.Release(mediaAssetId, token));
         }
     }
 
@@ -6467,6 +6462,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private string ResolveMediaAssetLabel(string mediaAssetId) =>
         FindMediaAsset(mediaAssetId)?.Name is { Length: > 0 } name ? name : mediaAssetId;
 
+    // The post-delay continuation lands on the thread pool, and the ledger is UI-thread-only —
+    // so the retry marshals back BEFORE it asks whether it may still send. That marshal is also
+    // what keeps `SendMediaTransportGestureAsync` a UI-thread-entry method.
     private async Task RetryMediaTransportGestureAsync(
         string mediaAssetId,
         string action,
@@ -6474,7 +6472,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         int attempt)
     {
         await Task.Delay(MediaTransportGestureRetryDelayMs).ConfigureAwait(false);
-        await SendMediaTransportGestureAsync(mediaAssetId, action, token, attempt).ConfigureAwait(false);
+        RunOnUiThread(() => _ = SendMediaTransportGestureAsync(mediaAssetId, action, token, attempt));
     }
 
     [RelayCommand]
