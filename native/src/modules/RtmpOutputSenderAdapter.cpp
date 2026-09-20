@@ -659,6 +659,7 @@ class RtmpOutputSender final : public IOutputSender {
       stopFfmpegProcess();
       videoFramePacer_.reset();
       clearFfmpegRetryBackoff();
+      startRefusedInadmissible_ = false;  // Stream off/on re-evaluates the refusal
       if (sender_.status != "idle" && sender_.status != "stopped") {
         sender_.status = "stopped";
         sender_.stoppedAtMs = elapsedMs;
@@ -701,8 +702,21 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     const bool ffmpegBinDirectoryChanged = configuredFfmpegBinDirectory_ != settings->ffmpegBinDirectory;
-    configuredEndpoint_ = protocol_.isSrt ? buildSrtUrl(srtEndpointConfigFrom(*settings)).url
-                                          : buildRtmpEndpoint(*settings);
+    const std::string requestedEndpoint = protocol_.isSrt
+                                              ? buildSrtUrl(srtEndpointConfigFrom(*settings)).url
+                                              : buildRtmpEndpoint(*settings);
+    // THE ONE RE-EVALUATION TRIGGER for a latched configuration refusal. This
+    // block re-applies desired state on EVERY tick (the repeating sync channel),
+    // so the latch is cleared only when an input the verdict actually depends on
+    // has CHANGED - clearing it on every apply would re-attempt and re-log the
+    // refusal at frame rate, which is exactly what the latch exists to stop.
+    if (configuredEndpoint_ != requestedEndpoint ||
+        configuredVideoCodec_ != normalizeVideoCodec(settings->videoCodec) ||
+        configuredEncoderMode_ != normalizeEncoderMode(settings->encoderMode) ||
+        configuredAllowEnhancedRtmp_ != settings->allowEnhancedRtmp) {
+      startRefusedInadmissible_ = false;
+    }
+    configuredEndpoint_ = requestedEndpoint;
     configuredStreamKey_ = settings->streamKey;
     // Held ONLY so the stderr tail can be scrubbed of it before it reaches
     // lastError (and from there /snapshot and the support bundle). The SRT
@@ -789,7 +803,11 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     if (!ensureFfmpegProcess(*frame, elapsedMs)) {
-      appendSendProof(frame, "ffmpeg-start-failed");
+      // A latched refusal already wrote its one proof line with the named code;
+      // appending per frame would flood the proof file for the rest of the show.
+      if (!startRefusedInadmissible_) {
+        appendSendProof(frame, "ffmpeg-start-failed");
+      }
       return snapshot();
     }
 
@@ -1045,6 +1063,18 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   bool ensureFfmpegProcess(const ProgramFrame& frame, double elapsedMs) {
+    // A LATCHED CONFIGURATION REFUSAL DOES NOT RE-ATTEMPT (2026-09-20). This runs
+    // on every program frame, and an inadmissible configuration cannot change by
+    // itself, so re-running the admission here would re-decide identically at ~60
+    // Hz, churn stopFfmpegProcess()/stopGpuEncoder(), and flood the 128-entry
+    // BoundedAsyncLog with one refusal line per frame. The already-published
+    // status / warning / lastResultCode / lastError stand unchanged, so the
+    // operator keeps seeing the named reason; the latch is cleared only by a
+    // settings apply that changes an input the verdict depends on, or by Stream
+    // being switched off (see sync()).
+    if (startRefusedInadmissible_) {
+      return false;
+    }
     const int width = videoWidth(frame);
     const int height = videoHeight(frame);
     const auto pixelFormat = videoPixelFormat(frame);
