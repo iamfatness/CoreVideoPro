@@ -56,7 +56,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
         "transport.virtualcam.name.set",
         "scene.select", "scene.dynamicGallery.create", "view.setMode",
-        "input.assign", "input.name", "input.inShow.set",
+        "input.assign", "input.name", "input.inShow.set", "source.dropout.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
@@ -273,6 +273,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 return NameInput(Int(args, 0), args.Count > 1 ? args[1] as string : null);
             case "input.inShow.set":
                 return SetInputInShow(Int(args, 0), Bool(args, 1));
+            case "source.dropout.set":
+                _vm.SetSourceDropoutPolicy(Str(args, 0), Str(args, 1));
+                return ControlInvokeResult.Success;
 
             // ---- Graphics -----------------------------------------------------------
             case "graphics.lowerThird.toggle":

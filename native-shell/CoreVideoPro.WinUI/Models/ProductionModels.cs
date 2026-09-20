@@ -225,6 +225,8 @@ public sealed class FeedHealthRow
     public required string Role { get; init; }
     // R1: assigned production role id ("" = none) — drives the roster dropdown.
     public string ProductionRoleId { get; init; } = string.Empty;
+    // #535 slice 4a: operator's per-source "on dropout" choice ("hold" | "black").
+    public string DropoutPolicy { get; init; } = "hold";
     public required string StatusLabel { get; init; }
     public required string BadgeColor { get; init; }
     public string? Detail { get; init; }
@@ -951,7 +953,8 @@ public static class ProductionStateHelper
     public static IReadOnlyList<FeedHealthRow> BuildFeedHealthRows(
         IReadOnlyList<Participant> participants,
         IReadOnlyDictionary<string, string>? productionRoles = null,
-        IReadOnlyList<ZoomMediaSpineSubscription>? subscriptions = null) =>
+        IReadOnlyList<ZoomMediaSpineSubscription>? subscriptions = null,
+        IReadOnlyDictionary<string, string>? dropoutPolicies = null) =>
         participants.Select(p =>
         {
             var (label, color, detail, attention) = p.Health switch
@@ -1000,6 +1003,10 @@ public static class ProductionStateHelper
                 Name = p.Name,
                 Role = productionRoleId is null ? p.RoleLabel : Services.ProductionRoleService.RoleLabel(productionRoleId),
                 ProductionRoleId = productionRoleId ?? string.Empty,
+                DropoutPolicy = dropoutPolicies is not null &&
+                                dropoutPolicies.TryGetValue("zoom:" + p.Id, out var policy)
+                    ? policy
+                    : "hold",
                 StatusLabel = label,
                 BadgeColor = color,
                 Detail = detail,

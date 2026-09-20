@@ -52,7 +52,12 @@ public sealed class ProductionOutputPreferences
     // v11: startup-only Program buffer depth, default three frames.
     // v12: Multiview defaults to all ten Show Inputs. Older profiles carried the
     // obsolete eight-source wall default and are migrated once.
-    public const int CurrentVersion = 12;
+    // v13 (#535 slice 4a): per-source "on dropout" policy persists —
+    // SourceDropoutPolicies, keyed by canonical source id (zoom:<pid> /
+    // capture:<id>), value "hold" | "black". Absent key = default "hold", so
+    // older files migrate with an empty map (byte-identical behavior). Not
+    // secret-bearing.
+    public const int CurrentVersion = 13;
 
     private int _programBufferFrames = ProgramBufferPreference.DefaultFrames;
     public int ProgramBufferFrames
@@ -137,6 +142,11 @@ public sealed class ProductionOutputPreferences
     // keys are per-meeting (the SDK participant id changes), so those entries are
     // effectively session-scoped.
     public Dictionary<string, string> SourceDisplayNames { get; set; } = new(StringComparer.Ordinal);
+
+    // #535 slice 4a: operator's per-source "on dropout" choice ("hold" |
+    // "black"), keyed by the same canonical source id as SourceDisplayNames.
+    // Absent key = default "hold". Not secret-bearing.
+    public Dictionary<string, string> SourceDropoutPolicies { get; set; } = new(StringComparer.Ordinal);
 
     // VST round-2 A2: persisted VST3 component states. Key = insert selection
     // name (e.g. "vst:Curves AQ Stereo"), value = base64 IComponent state.

@@ -1,3 +1,4 @@
+using System.Linq;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.MediaCore.Models;
@@ -103,5 +104,27 @@ public class ProductionRoleTests
         Assert.Equal(1500, row.AudioPacketsReceived);
         Assert.Contains("Video subscribed", row.DiagnosticSummary);
         Assert.False(row.HasRecommendedAction);
+    }
+
+    [Fact]
+    public void FeedHealthCarriesThePerSourceDropoutPolicy()
+    {
+        // #535 slice 4a: the operator's persisted "on dropout" choice reads
+        // through onto the matching row; every other row defaults to "hold".
+        var rows = ProductionStateHelper.BuildFeedHealthRows(
+            [
+                new Participant { Id = "1", Name = "Black guest", Health = FeedHealth.Live },
+                new Participant { Id = "2", Name = "Default guest", Health = FeedHealth.Live }
+            ],
+            dropoutPolicies: new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["zoom:1"] = "black"
+            });
+
+        var blackRow = rows.Single(row => row.ParticipantId == "1");
+        var defaultRow = rows.Single(row => row.ParticipantId == "2");
+
+        Assert.Equal("black", blackRow.DropoutPolicy);
+        Assert.Equal("hold", defaultRow.DropoutPolicy);
     }
 }

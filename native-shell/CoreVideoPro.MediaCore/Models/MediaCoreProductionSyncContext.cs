@@ -174,6 +174,10 @@ public sealed record MediaCoreColorGradeWire(
     int Saturation,
     int Temperature);
 
+// #535 slice 4a: set-source-policy wire fields, verbatim. DropoutPolicy is
+// "hold" | "black"; DisplayName is omitted from the command when null.
+public sealed record MediaCoreSourcePolicyWire(string SourceId, string DropoutPolicy, string? DisplayName);
+
 public sealed record MediaCoreBrandKitWire(
     string Name,
     string LogoText,
@@ -307,6 +311,13 @@ public sealed record MediaCoreProductionSyncContext
     public IReadOnlyList<MediaCoreGraphicWire> Graphics { get; init; } = [];
     public MediaCoreLowerThirdKeyWire? LowerThirdKey { get; init; }
     public MediaCoreColorGradeWire ColorGrade { get; init; } = NeutralColorGrade;
+    // #535 slice 4a: per-source "on dropout" policy + display name, keyed by
+    // canonical source id (zoom:<pid> / capture:<id>). Sent as set-source-policy
+    // on every sync, idempotent like colour grade, for every source that has
+    // EITHER a persisted policy OR a display name (so the core learns names for
+    // the failed slate).
+    public IReadOnlyDictionary<string, MediaCoreSourcePolicyWire> SourcePolicies { get; init; } =
+        new Dictionary<string, MediaCoreSourcePolicyWire>(StringComparer.Ordinal);
     public MediaCoreBrandKitWire BrandKit { get; init; } = DefaultBrandKit;
     public bool AudioLimiterEnabled { get; init; } = true;
     // Mastering chain (docs/mastering-chain-spec.md M1) - master-bus processor

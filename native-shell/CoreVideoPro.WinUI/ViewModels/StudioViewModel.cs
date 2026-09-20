@@ -791,6 +791,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // (zoom:<pid> / capture:<id> / media:<id>). Feeds the auto lower-thirds and
     // multiview labels; absent keys fall back to the derived Zoom/UVC/asset name.
     private readonly Dictionary<string, string> _sourceDisplayNames = new(StringComparer.Ordinal);
+    // #535 slice 4a: operator's per-source "on dropout" choice ("hold" |
+    // "black"), keyed by the SAME canonical source id as _sourceDisplayNames.
+    // Absent key = default "hold" — never stored, so the map stays empty for
+    // the common case.
+    private readonly Dictionary<string, string> _sourceDropoutPolicies = new(StringComparer.Ordinal);
     // Per-source color grades keyed by participant id or capture:<deviceId>.
     private readonly Dictionary<string, ColorGrade> _sourceColorGrades = new(StringComparer.Ordinal);
     private bool _previewRoutingRefreshScheduled;
@@ -4775,6 +4780,85 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = TrySyncMediaCoreAsync();
     }
 
+    // ---- Per-source dropout policy (#535 slice 4a) ---------------------------
+    // "hold" (default) or "black" — what a source shows on Program when it
+    // stops delivering. Persisted, shipped to the core on every sync as
+    // set-source-policy alongside the source's display name.
+    public IReadOnlyList<RouteSelectOption> DropoutPolicyOptions { get; } =
+    [
+        new() { Value = "hold", Label = "Hold last frame" },
+        new() { Value = "black", Label = "Black" }
+    ];
+
+    public void SetSourceDropoutPolicy(string sourceId, string? policy)
+    {
+        if (string.IsNullOrWhiteSpace(sourceId))
+        {
+            return;
+        }
+
+        var normalized = string.IsNullOrWhiteSpace(policy) ? null : policy.Trim().ToLowerInvariant();
+        if (normalized is not (null or "hold" or "black"))
+        {
+            // Unknown value: ignore, same posture as the core's own rejection.
+            return;
+        }
+
+        _sourceDropoutPolicies.TryGetValue(sourceId, out var current);
+        var effectiveNormalized = normalized ?? "hold";
+        if (string.Equals(current ?? "hold", effectiveNormalized, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (effectiveNormalized == "hold")
+        {
+            // "hold" is the default — never store it explicitly.
+            _sourceDropoutPolicies.Remove(sourceId);
+        }
+        else
+        {
+            _sourceDropoutPolicies[sourceId] = effectiveNormalized;
+        }
+
+        SaveProductionOutputPreferences();
+        RefreshProductionReadouts();
+        _ = TrySyncMediaCoreAsync();
+    }
+
+    // Union of every id that has EITHER a persisted policy OR a display name
+    // (restricted to canonical zoom:/capture: ids), so the core learns names
+    // for the failed slate even when the operator only renamed a source and
+    // never touched its dropout policy. Sending "hold" explicitly for a
+    // name-only entry is fine: the operator default is hold.
+    private IReadOnlyDictionary<string, MediaCoreSourcePolicyWire> BuildSourcePolicyWires()
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var id in _sourceDropoutPolicies.Keys)
+        {
+            ids.Add(id);
+        }
+
+        foreach (var id in _sourceDisplayNames.Keys)
+        {
+            if (id.StartsWith("zoom:", StringComparison.Ordinal) ||
+                id.StartsWith("capture:", StringComparison.Ordinal))
+            {
+                ids.Add(id);
+            }
+        }
+
+        var wires = new Dictionary<string, MediaCoreSourcePolicyWire>(StringComparer.Ordinal);
+        foreach (var id in ids)
+        {
+            _sourceDropoutPolicies.TryGetValue(id, out var policy);
+            _sourceDisplayNames.TryGetValue(id, out var name);
+            wires[id] = new MediaCoreSourcePolicyWire(id, policy ?? "hold", name);
+        }
+
+        return wires;
+    }
+
     public void ToggleMixerSolo(string participantId)
     {
         var mix = _audioMixChannels.FirstOrDefault(item =>
@@ -7439,7 +7523,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         FeedHealthRows = ProductionStateHelper.BuildFeedHealthRows(
             RoomParticipantsForInputs,
             _participantProductionRoles,
-            _bridge.LastSnapshot?.ZoomSubscriptions);
+            _bridge.LastSnapshot?.ZoomSubscriptions,
+            _sourceDropoutPolicies);
         FeedHealthSummary = ProductionStateHelper.FeedHealthSummary(RoomParticipantsForInputs);
         MagicSceneStatus = ProductionStateHelper.BuildMagicSceneStatus(RoomVideoParticipants);
         MediaBinSummary = ProductionStateHelper.MediaBinSummary(MediaBinGroups.Sum(group => group.Assets.Count));
@@ -9136,6 +9221,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 ColorGrade.Contrast,
                 ColorGrade.Saturation,
                 ColorGrade.Temperature),
+            SourcePolicies = BuildSourcePolicyWires(),
             BrandKit = new MediaCoreBrandKitWire(
                 BrandKit.Name,
                 BrandKit.LogoText,
@@ -11843,6 +11929,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 pair => pair.Key,
                 pair => pair.Value,
                 StringComparer.Ordinal),
+            SourceDropoutPolicies = _sourceDropoutPolicies.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value,
+                StringComparer.Ordinal),
             VstInsertStates = _vstInsertStates.ToDictionary(
                 pair => pair.Key,
                 pair => pair.Value,
@@ -12051,6 +12141,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
             {
                 _sourceDisplayNames[pair.Key] = pair.Value.Trim();
+            }
+        }
+
+        // #535 slice 4a: per-source dropout policy. Only "hold"/"black" are
+        // ever stored (SetSourceDropoutPolicy never writes "hold"), but an
+        // externally-edited file is still validated on load.
+        _sourceDropoutPolicies.Clear();
+        foreach (var pair in preferences.SourceDropoutPolicies)
+        {
+            if (!string.IsNullOrWhiteSpace(pair.Key) &&
+                pair.Value is "hold" or "black")
+            {
+                _sourceDropoutPolicies[pair.Key] = pair.Value;
             }
         }
 

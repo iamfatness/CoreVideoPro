@@ -265,6 +265,34 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void EmitsSetSourcePolicyPerEntryInIdOrder()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "policy-scene",
+            Participants = Participants,
+            SourcePolicies = new Dictionary<string, MediaCoreSourcePolicyWire>(StringComparer.Ordinal)
+            {
+                ["zoom:16778240"] = new("zoom:16778240", "black", "Jamal"),
+                ["capture:cam"] = new("capture:cam", "hold", null)
+            }
+        });
+
+        var policyCommands = commands.Where(command => command.Type == "set-source-policy").ToList();
+        Assert.Equal(2, policyCommands.Count);
+
+        var first = policyCommands[0];
+        Assert.Equal("capture:cam", first.ExtensionData!["sourceId"].GetString());
+        Assert.Equal("hold", first.ExtensionData!["dropoutPolicy"].GetString());
+        Assert.False(first.ExtensionData!.ContainsKey("displayName"));
+
+        var second = policyCommands[1];
+        Assert.Equal("zoom:16778240", second.ExtensionData!["sourceId"].GetString());
+        Assert.Equal("black", second.ExtensionData!["dropoutPolicy"].GetString());
+        Assert.Equal("Jamal", second.ExtensionData!["displayName"].GetString());
+    }
+
+    [Fact]
     public void BuildsSpeakerSlidesRoutesFromPreviewSlotEditors()
     {
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext

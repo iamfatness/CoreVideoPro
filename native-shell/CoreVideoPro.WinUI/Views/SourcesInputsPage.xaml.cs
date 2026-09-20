@@ -151,14 +151,95 @@ public sealed partial class SourcesInputsPage : UserControl
 
     private void OnFeedHealthElementPrepared(ItemsRepeater sender, ItemsRepeaterElementPreparedEventArgs args)
     {
-        if (args.Element is not FrameworkElement root ||
-            FindDescendant<ComboBox>(root, "ProductionRoleCombo") is not { } combo ||
-            combo.Tag is not FeedHealthRow row)
+        if (args.Element is not FrameworkElement root)
         {
             return;
         }
 
-        SyncProductionRoleCombo(combo, row);
+        if (FindDescendant<ComboBox>(root, "ProductionRoleCombo") is { Tag: FeedHealthRow role } roleCombo)
+        {
+            SyncProductionRoleCombo(roleCombo, role);
+        }
+
+        if (FindDescendant<ComboBox>(root, "DropoutPolicyCombo") is { Tag: FeedHealthRow policyRow } policyCombo)
+        {
+            SyncDropoutPolicyCombo(policyCombo, policyRow.DropoutPolicy);
+        }
+
+        if (FindDescendant<ComboBox>(root, "CaptureDropoutPolicyCombo") is { Tag: CaptureDevice } captureCombo)
+        {
+            // Capture devices carry no persisted-policy readout (ProductionModels.cs
+            // has no DropoutPolicy field on CaptureDevice) - default to "hold" until
+            // the operator changes it. See task-3-report.md.
+            SyncDropoutPolicyCombo(captureCombo, "hold");
+        }
+    }
+
+    // #535 slice 4a: same sync pattern as SyncProductionRoleCombo above, for the
+    // same crash class (a recycled ItemsRepeater container can be re-bound while
+    // its ItemsSource binding is still resolving).
+    private void OnDropoutPolicyComboLoaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ComboBox combo)
+        {
+            return;
+        }
+
+        switch (combo.Tag)
+        {
+            case FeedHealthRow row:
+                SyncDropoutPolicyCombo(combo, row.DropoutPolicy);
+                break;
+            case CaptureDevice:
+                SyncDropoutPolicyCombo(combo, "hold");
+                break;
+        }
+    }
+
+    private void SyncDropoutPolicyCombo(ComboBox combo, string currentPolicy)
+    {
+        try
+        {
+            var options = ViewModel?.DropoutPolicyOptions;
+            if (options is null) return;
+
+            combo.SelectionChanged -= OnDropoutPolicyChanged;
+            combo.ItemsSource = options;
+            var policy = currentPolicy ?? "hold";
+            if (!options.Any(option => option.Value == policy))
+            {
+                policy = "hold";
+            }
+            combo.SelectedValue = policy;
+            combo.SelectionChanged += OnDropoutPolicyChanged;
+        }
+        catch (Exception ex)
+        {
+            combo.SelectionChanged -= OnDropoutPolicyChanged;
+            combo.SelectionChanged += OnDropoutPolicyChanged;
+            LaunchLog.Write($"sources: dropout-policy selection skipped ({ex.GetType().Name}: {ex.Message})");
+        }
+    }
+
+    private void OnDropoutPolicyChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox combo || combo.SelectedValue is not string policy)
+        {
+            return;
+        }
+
+        var sourceId = combo.Tag switch
+        {
+            FeedHealthRow row => "zoom:" + row.ParticipantId,
+            CaptureDevice device => "capture:" + device.Id,
+            _ => null
+        };
+        if (sourceId is null)
+        {
+            return;
+        }
+
+        ViewModel?.SetSourceDropoutPolicy(sourceId, policy);
     }
 
     private void SyncProductionRoleCombo(ComboBox combo, FeedHealthRow row)

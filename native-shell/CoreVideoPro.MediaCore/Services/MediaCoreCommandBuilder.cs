@@ -34,7 +34,10 @@ public static class MediaCoreCommandBuilder
                 context.MultiviewCanvasHeight,
                 context.MultiviewColumns,
                 context.MultiviewRows),
-            BuildColorGradeCommand(context.ColorGrade),
+            BuildColorGradeCommand(context.ColorGrade)
+        ]);
+        commands.AddRange(BuildSourcePolicyCommands(context.SourcePolicies));
+        commands.AddRange([
             BuildOutputProfileCommand(context.CanvasOutputProfile),
             BuildSrtIngestSourcesCommand(context.SrtIngestSources),
             BuildBrandKitCommand(context.BrandKit),
@@ -370,6 +373,28 @@ public static class MediaCoreCommandBuilder
             ["saturation"] = colorGrade.Saturation,
             ["temperature"] = colorGrade.Temperature
         });
+
+    // #535 slice 4a: one set-source-policy command per entry, ordered by
+    // sourceId (ordinal) for determinism. displayName is omitted from the
+    // payload when null (never sent as an explicit null).
+    private static IEnumerable<NativeMediaCoreCommand> BuildSourcePolicyCommands(
+        IReadOnlyDictionary<string, MediaCoreSourcePolicyWire> sourcePolicies) =>
+        sourcePolicies.Values
+            .OrderBy(policy => policy.SourceId, StringComparer.Ordinal)
+            .Select(policy =>
+            {
+                var payload = new Dictionary<string, object?>
+                {
+                    ["sourceId"] = policy.SourceId,
+                    ["dropoutPolicy"] = policy.DropoutPolicy
+                };
+                if (policy.DisplayName is not null)
+                {
+                    payload["displayName"] = policy.DisplayName;
+                }
+
+                return Command("set-source-policy", payload);
+            });
 
     private static NativeMediaCoreCommand BuildOutputProfileCommand(MediaCoreOutputProfileWire profile) =>
         Command("set-output-profile", new Dictionary<string, object?>
