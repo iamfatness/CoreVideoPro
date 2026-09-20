@@ -26,6 +26,7 @@
  *
  * Usage: node ./scripts/validate-gpu-encode.mjs [--seconds 30] [--port 1935]
  *                                               [--fps 60] [--bitrate 6]
+ *                                               [--codec h264|hevc|av1]
  *                                               [--force-raw] [--keep]
  */
 import { spawn, spawnSync } from "node:child_process";
@@ -50,6 +51,17 @@ const port = Number(argValue("port", 9021));
 const TARGET_FPS = Number(argValue("fps", 60));
 const bitrate = Number(argValue("bitrate", 6));
 const forceRaw = args.includes("--force-raw");
+const codecArgIndex = args.indexOf("--codec");
+const codec = codecArgIndex >= 0 ? String(args[codecArgIndex + 1] || "h264").toLowerCase() : "h264";
+if (!["h264", "hevc", "h265", "av1"].includes(codec)) {
+  console.error(`--codec must be h264, hevc or av1 (got ${codec})`);
+  process.exit(2);
+}
+const wireCodec = codec === "hevc" ? "h265" : codec;  // settings spelling
+if (forceRaw && wireCodec !== "h264") {
+  console.error("--force-raw is H.264-only: HEVC/AV1 are GPU-direct or refused (spec 2026-09-20 §5)");
+  process.exit(2);
+}
 const keep = args.includes("--keep");
 
 const ffBin = (name) => {
@@ -152,6 +164,18 @@ function gpuEncodePathLine() {
   return null;
 }
 
+// The encoder start line names the actual MFT ("hardware-<codec>") the core bound.
+function gpuEncodeStartedLine() {
+  const haystacks = [coreStderr];
+  const logPath = join(buildDir, "media-core.log");
+  if (existsSync(logPath)) { try { haystacks.push(readFileSync(logPath, "utf8")); } catch {} }
+  for (const text of haystacks) {
+    const m = text.match(/\[gpu-encode\] started[^\n]*/g);
+    if (m && m.length) return m[m.length - 1];
+  }
+  return null;
+}
+
 const failures = [];
 const senderFps = [];
 let lastFrameSample = null;
@@ -196,13 +220,15 @@ try {
           fps: TARGET_FPS,
           targetBitrateMbps: bitrate,
           encoderMode: "auto",
+          videoCodec: wireCodec,
+          allowEnhancedRtmp: true,
           ffmpegBinDirectory: "C:\\ffmpeg\\bin",
         }],
         isoParticipantIds: [],
       },
     ],
   });
-  console.log(`streaming     : srt://127.0.0.1:${port} for ${seconds}s (${forceRaw ? "COREVIDEO_GPU_ENCODE=0" : "GPU-direct"})...`);
+  console.log(`streaming     : srt://127.0.0.1:${port} codec=${codec} for ${seconds}s (${forceRaw ? "COREVIDEO_GPU_ENCODE=0" : "GPU-direct"})...`);
 
   const deadline = Date.now() + seconds * 1000;
   while (Date.now() < deadline) {
@@ -246,11 +272,14 @@ if (keep) {
 // Which path did the core take?
 const pathLine = gpuEncodePathLine();
 console.log(`encode path   : ${pathLine || "UNKNOWN (no [gpu-encode] path= line found)"}`);
-const tookGpuDirect = !!pathLine && pathLine.includes("path=gpu-direct");
+const startedLine = gpuEncodeStartedLine();
+console.log(`encoder start : ${startedLine || "UNKNOWN (no [gpu-encode] started line found)"}`);
+const expectedPathCodec = codec === "h265" ? "hevc" : codec;
+const tookGpuDirect = !!pathLine && pathLine.includes("path=gpu-direct") && pathLine.includes(`codec=${expectedPathCodec}`);
 if (forceRaw) {
   if (tookGpuDirect) failures.push("COREVIDEO_GPU_ENCODE=0 but the core still took the GPU-direct path");
 } else if (!tookGpuDirect) {
-  failures.push(`expected GPU-direct but the core reported: ${pathLine || "no path line"}`);
+  failures.push(`expected GPU-direct codec=${expectedPathCodec} but the core reported: ${pathLine || "no path line"}`);
 }
 
 // The received stream cannot lie.

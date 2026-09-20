@@ -2160,6 +2160,24 @@ GPU→CPU-readback→~186 MB/s raw pipe→external ffmpeg path that capped 1080p
 realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
 (VideoToolbox) are later slices.
 
+- **HEVC AND AV1 RIDE THE SAME PATH (2026-09-20, owner rulings after the YouTube
+  "not enough data" incident).** `GpuVideoEncoderConfig::codec` selects the hardware
+  MFT (NVIDIA H.264/HEVC/AV1 Encoder MFTs); HEVC is bound with
+  `CODECAPI_AVEncMPVDefaultBPictureCount = 0` because the FLV muxer refuses
+  reordered raw HEVC ("Packet is missing PTS", measured); bitstream mode names the
+  raw demuxer per codec (`-f h264|hevc|obu`) and copies into FLV, where this FFmpeg
+  writes the enhanced-RTMP fourcc itself. **A codec the machine or destination
+  cannot honor REFUSES the start** (`StreamStartAdmission.h`: `enhanced-rtmp-required`,
+  `no-hardware-encoder`, `gpu-encoder-start-failed`) — the 2026-09-20 failure was a
+  silent H.265→H.264 downgrade onto the raw path at 0.87x real time. H.264 keeps
+  every path it had; HEVC/AV1 are GPU-direct or nothing until the raw fallback is
+  made real-time (sub-project 2). The 2026-08-06 HEVC exclusion in
+  `EncoderPolicy.h` was reversed by the owner on 2026-09-20 (patent exposure
+  accepted). Gate: `node scripts/validate-gpu-encode.mjs --codec h264|hevc|av1`;
+  the per-codec real-GPU round-trips in `MediaFoundationGpuVideoEncoderTest` are
+  Windows-only and must run on a `COREVIDEO_WITH_MF_ENCODER=ON` build before merge.
+  Spec: `docs/superpowers/specs/2026-09-20-gpu-direct-hevc-av1-stream-design.md`.
+
 - **The seam is platform-free.** `modules/GpuVideoEncoder.h` — `GpuVideoEncoder`
   (start/submit/stop/healthy), `GpuVideoEncoderConfig/Frame`, `GpuEncodedChunk(Sink)`,
   and the pure `GpuEncodePathPolicy` + `chooseStreamEncodePath` (unit-tested, no GPU).
@@ -2193,9 +2211,11 @@ realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
 - **Path is chosen ONCE at stream start**, logged `[gpu-encode] path=<gpu-direct|cpu-fallback>
   reason=<...>`. GPU-direct requires: an MF encoder impl on the platform, a hardware
   session the `EncoderCapacityProbe` allows (never REFUSED on a pending probe — the
-  TESTER rule; `encoder->start()` is the real gate), the resolved codec is H.264 (an
-  enhanced-RTMP HEVC/AV1 stream stays raw), the compositor is exporting the encoder
-  texture on the starting frame, and `COREVIDEO_GPU_ENCODE` is not `0`. Otherwise the
+  TESTER rule; `encoder->start()` is the real gate), a hardware MFT exists for the
+  resolved codec (H.264/HEVC/AV1 as of 2026-09-20 — see the bullet above; a codec the
+  machine or destination cannot honor REFUSES the start instead of downgrading), the
+  compositor is exporting the encoder texture on the starting frame, and
+  `COREVIDEO_GPU_ENCODE` is not `0`. Otherwise the
   raw NV12/BGRA pipe path (unchanged) carries the stream. The encoder starts BEFORE
   ffmpeg so a failed `start()` downgrades to raw before ffmpeg is launched in bitstream
   mode. On device loss the encoder retires (`GetDeviceRemovedReason`), `healthy()` goes
@@ -2228,6 +2248,22 @@ realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
   decoded coded-Y-plane luma within 16 of the encoded gray; self-skips without a hardware
   MFT or ffmpeg; plus the submit-fails-when-not-running supervisor contract),
   `RtmpFfmpegArgsTest.cpp` (bitstream mode).
+- **KNOWN OPEN DEFECT (2026-09-20, `--codec av1` gate, this rig, RTX 4090): the
+  1920x1080@60 GPU-direct AV1 path does not sustain real time.** The unit round-trip
+  (`DirectSharedTextureAv1RoundTrip`, 320x180, 12 frames) passes and the encoder
+  emits its first output chunk normally (`[gpu-encode] first output chunk
+  size=5892..5893 keyframe=1`), but at full resolution/rate the SRT sink then
+  receives only ~18.4 kbit/s for the rest of a 30s run (66 KiB total, vs 6 Mbps
+  configured) — three consecutive runs, reproduced with no other process holding
+  the GPU encoder. H.264 and HEVC pass the identical 1080p60 gate on the same
+  build. Neither `chooseStreamEncodePath`/`GpuEncodePathPolicy` nor the async
+  NeedInput/HaveOutput loop in `MediaFoundationGpuVideoEncoder.cpp` branches on
+  codec, so the likely cause is the AV1 MFT's default rate-control/lookahead
+  configuration buffering far more than 30s of frames at this resolution — the
+  same class of problem HEVC solves with a B-frame/low-latency property, which is
+  never set for AV1. **Not fixed here** (out of this task's scope — script/docs
+  only); the per-codec gate this task added is what caught it. Needs a follow-up
+  before AV1 GPU-direct can be called done at 1080p60.
 
 ## Secrets at rest + OAuth return URI (beta S4, 2026-07-18)
 

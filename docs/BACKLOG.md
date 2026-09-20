@@ -69,7 +69,7 @@ drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
 | [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | ISO writer `framesWritten`/`bytesWritten` read 0 mid-recording for async writers (status-only; files record fine) |
 | [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points — needs UI design; was previous Now #4 |
 | [#530](https://github.com/iamfatness/CoreVideoPro/issues/530) | Control API `programPreview` vs `program-preview` |
-| [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct leftover slices #524 #525 |
+| [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct leftover slices #524 #525. **2026-09-20:** HEVC/AV1 on GPU-direct + refuse-never-downgrade shipped (sub-project 1 of the 2026-09-20 spec); sub-project 2 (raw fallback at real time) and sub-project 3 (recording/ISO on the seam, absorbs #525) are next and need their own specs. |
 | [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) | Program render budget at 16 guests + 1080p wall |
 | [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | Fake RTMP `bytesSent` / `latencyMs` |
 | [#509](https://github.com/iamfatness/CoreVideoPro/issues/509) | Operator stutter / 197 ms rebuild |
