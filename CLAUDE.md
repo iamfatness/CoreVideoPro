@@ -1997,6 +1997,80 @@ bus removing it matches what nothing draws for it today.
   hand-off + `preview:` poster move inside the source. See
   `docs/superpowers/specs/2026-09-18-source-bus-design.md` §5.
 
+**Slice 4a (2026-09-19): bus health on air.** Retires the per-kind "pink tile"
+(`colorFromParticipantId` placeholder) everywhere a layer's source is not
+producing, and lands #535 done-when #3 ("no per-kind special case for empty
+frames") for the RENDER path — the three old poll interfaces
+(`IZoomCaptureSource`/`ICaptureDevice`/`IMediaFrameSource`) still exist behind
+the bus; retiring them is **slice 4b**
+(`docs/superpowers/specs/2026-09-19-source-bus-slice4-scoping.md`).
+
+- **The owner's rulings (2026-09-19, on #449/#535):** *warming* (no content
+  frame, health not failed) = a neutral dark slate; *failed/missing* (no
+  content frame, health `failed`) = a dark slate WITH the source's name;
+  *stalled* (had frames, none for 200 ms+) is the OPERATOR's per-source choice
+  — hold last frame (default) or black — never a fixed rule.
+- **One resolution rule, identical in all three compositors, lives in
+  `native/src/compositor/CompositorLayout.h`:** the constants
+  `kWarmingSlateRgba = 0xff1b1f27` (neutral dark), `kFailedSlateRgba =
+  0xff23181c` (dark, faintly warm so failed reads distinguishably from
+  warming), `kDropoutBlackRgba = 0xff000000`, and the two pure functions
+  `slateColorFor(sourceHealth)` (`"failed"` → `kFailedSlateRgba`, else
+  `kWarmingSlateRgba`) and `blackOnStalled(health, policy)` (`stalled` +
+  `black` → true). `colorFromParticipantId` STAYS (Tiles membership + some
+  tests still use it for distinct-source identity over REAL frames) but no
+  layer-resolution path may call it any more — every compositor
+  (`ProgramFramePreview`, `D3D11CompositorAdapter::resolveLayers`,
+  `MetalCompositorAdapter`) and every layer kind (participant-video,
+  media-video, the legacy positional fallback, the empty-render-plan grid
+  fallback) now resolves through `slateColorFor`/`blackOnStalled` alone.
+- **The wire: `set-source-policy`** `{sourceId, dropoutPolicy: "hold"|"black",
+  displayName?}`. The core keys by the RAW frame key it looks up at plan
+  time — `zoom:<pid>` has its `zoom:` prefix stripped to the raw pid, `capture:<id>`/
+  `media:<id>` unchanged — and rejects (loudly, scene-validation warning) any
+  policy string that isn't `hold`/`black`, leaving the existing value
+  unchanged. `sources[]` echoes `dropoutPolicy` + `displayName` per source. The
+  shell RE-SENDS every persisted policy (or a source with only a known display
+  name, so the core learns names for the failed slate) on every production
+  sync — present-or-keep, the same one-shot-command-must-be-re-applied rule as
+  `configure-multiviewer` above, since the core can respawn and lose anything
+  sent only once.
+- **Shell:** a per-source "On dropout" ComboBox (Hold last frame | Black) on
+  the Sources page — one per Zoom guest row, one per capture-device row —
+  persisted in `ProductionOutputPreferences.SourceDropoutPolicies` (prefs
+  **v13**; v12→v13 migrates to an empty map), and a control action
+  `source.dropout.set {sourceId, policy}`.
+- **Metal is colour-only, deliberately.** The D3D11 failed slate carries a
+  small name label via the existing overlay text raster (bottom-left band, not
+  a full band — the raster never paints a background plate behind it, see the
+  `drawFailedSlateName` comment fix below). Metal renders the correct slate
+  COLOUR but not the name text yet — `TODO(4a-metal-text)` at the site — because
+  `rasterOverlayTileCoreText` did not compose cleanly into the failed-slate
+  path in ≤ 30 lines; CI-only (`native-metal-macos`), so this has not been
+  rig-verified on a real Mac.
+- **Task 4 gate numbers (this branch, 2026-09-19):** Windows dev suite
+  `native/build-dev/corevideo-native-tests.exe` — 1075 tests passed, 0 failed.
+  Stub gate (`scripts/test-native.ps1`) — green, 100% tests passed, 0 failed.
+  `validate-multiview.mjs` / `validate-tiles.mjs` — both PASS. Two
+  `scripts/qa/zoom-gap-hold-ab.py` runs (harness extended with `--policy
+  hold|black`, default hold; docstring updated for the new slate signature —
+  the dropout luma is now `kWarmingSlateRgba` (≈30) or black (≈16), never the
+  old pink): `--label s4a-hold` held luma 187.5–204.7 across the WHOLE
+  recording including the dropout window (no dip — 103's held frame keeps
+  compositing under the default `hold` policy); `--label s4a-black --policy
+  black` held ~188–205 before the gap, dropped to EXACTLY 16.0 for the 18
+  frames (~300 ms) of the dropout window, and recovered to ~189+ immediately
+  after restore. Show drill (`COREVIDEO_FAKE_ENGINE_FPS=60`,
+  `mac-show-drill.py --seconds 40 --load 8`) — PASSED: 60.0fps of 60 sustained,
+  0 dropped, 4.0ms render hold, 100% decoded-frame delivery, coreMutex
+  over-budget 21/2847 (1%).
+- **Known follow-ups, not gaps in scope:** the multiview tile now shows the
+  core's own bus-health name label UNDER the shell's existing XAML tile label
+  when a tile is failed — this stacks two labels and has not been eyeballed
+  live yet (headless pixel oracles cannot judge text overlap); a long
+  `sourceDisplayName` clips at the D3D11 label's 40%-of-rect width cap rather
+  than truncating with an ellipsis; Metal text (`TODO(4a-metal-text)` above).
+
 ## GPU-direct hardware encode for streaming (#521 slice 1, 2026-09-13)
 
 The live STREAM is now encoded directly from the compositor's GPU texture by the
@@ -3178,14 +3252,21 @@ TIME_CRITICAL is forbidden — MMCSS class it; GPU→CPU readbacks are uncached/
 bytes and convert on the GPU first (the OBS lesson: learn from OBS architecture, never copy
 its GPL code).
 
-**Loud-failure guardrail (no more silent pink).** The compositor
-(`D3D11CompositorAdapter::warnUnmatchedCaptureLayer`) now logs — rate-limited 5s/key —
-whenever a `capture:` render-plan layer resolves to NO matching frame (the pink condition),
-dumping the layer key AND the available capture-frame keys. A key mismatch on either path is
-now a 10-second diagnosis instead of a multi-session hunt. Fires only during the startup gap
-before first frames, then silent. Companion audit: `WgcSession` was the ONLY free-threaded OS
-callback in the capture layer — `UvcCaptureSession` owns its pull thread and signal+joins in
-its destructor — so the WGC teardown-drain fix closed that crash class everywhere.
+**Loud-failure guardrail (no more silent pink — updated for #535 slice 4a,
+2026-09-19).** The compositor (`D3D11CompositorAdapter::warnUnmatchedCaptureLayer`)
+still logs — rate-limited 5s/key — whenever a `capture:`/`media:` render-plan
+layer resolves to NO matching frame, dumping the layer key AND the available
+same-prefix frame keys. What changed is what the layer RENDERS while that is
+true: a solid `colorFromParticipantId` slab (the "pink tile") is retired from
+every layer-resolution path — the layer now renders the bus-health slate
+(`compositor::slateColorFor`: `kWarmingSlateRgba` neutral dark, or
+`kFailedSlateRgba` + the source's name if health is `failed`; see "Slice 4a" in
+the source-bus section above). The log itself is unchanged: a key mismatch on
+either path is still a 10-second diagnosis instead of a multi-session hunt,
+firing only during the startup gap before first frames, then silent. Companion
+audit: `WgcSession` was the ONLY free-threaded OS callback in the capture
+layer — `UvcCaptureSession` owns its pull thread and signal+joins in its
+destructor — so the WGC teardown-drain fix closed that crash class everywhere.
 
 ## Encoder capacity is PROBED, and the software spill is LOUD (beta slice, 2026-09-09)
 

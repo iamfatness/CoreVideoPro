@@ -294,7 +294,8 @@ class OwnedMediaFrameSource final : public IMediaFrameSource {
   }
   // T1.11 / #449. Re-keys a Preview cue's WARM decoder onto the live request
   // that has just replaced it, instead of letting it retire while a cold one
-  // opens and the compositor paints colorFromParticipantId over Program. Entry
+  // opens and the compositor paints the bus-health slate (warming/failed,
+  // #535 slice 4a) over Program. Entry
   // is a shared_ptr and its worker holds its own reference, so this is a map
   // re-key: the decoder and its held poster never notice.
   //

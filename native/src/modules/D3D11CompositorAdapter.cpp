@@ -772,15 +772,15 @@ class D3D11Compositor final : public ICompositor {
     return layers;
   }
 
-  // Guardrail: a capture/media layer that resolves to NO frame renders as a solid
-  // colorFromParticipantId() placeholder (the "pink tile"). That is almost always a
-  // key mismatch (the layer's key matches no frame's) or a dead feed / undecoded
-  // asset, and it used to fail SILENTLY — the native-UVC key mismatch cost a
-  // multi-session hunt, and media layers had NO warning at all. Make it loud: log,
-  // rate-limited per key, dumping the available same-prefix frame keys so any
-  // mismatch is obvious at a glance. capture:/media: sources only (Zoom
-  // participants legitimately come and go, so a missing frame there is not
-  // necessarily a bug).
+  // Guardrail: a capture/media layer that resolves to NO frame renders the
+  // bus-health slate (warming/failed, #535 slice 4a) instead of a real frame.
+  // That is almost always a key mismatch (the layer's key matches no frame's)
+  // or a dead feed / undecoded asset, and it used to fail SILENTLY — the
+  // native-UVC key mismatch cost a multi-session hunt, and media layers had NO
+  // warning at all. Make it loud: log, rate-limited per key, dumping the
+  // available same-prefix frame keys so any mismatch is obvious at a glance.
+  // capture:/media: sources only (Zoom participants legitimately come and go,
+  // so a missing frame there is not necessarily a bug).
   static void warnUnmatchedCaptureLayer(const std::string& sourceKey,
                                         const std::vector<VideoFrame>& frames) {
     const bool isCapture = sourceKey.rfind("capture:", 0) == 0;
@@ -1193,8 +1193,11 @@ class D3D11Compositor final : public ICompositor {
     std::snprintf(hexBuf, sizeof(hexBuf), "#%06x", compositor::kFailedSlateRgba & 0xffffffu);
     CompositorOverlayContent content;
     content.title = name;
-    content.brandColor = hexBuf;            // hides the lower-third accent bar against the slate
-    content.brandBackgroundColor = hexBuf;  // the label plate blends into the surrounding slate
+    content.brandColor = hexBuf;  // hides the lower-third accent bar against the slate
+    // NOTE: brandBackgroundColor is NOT set here — the raster never paints a band
+    // background from it (CompositorOverlayRaster clears to transparent and draws
+    // only the accent bar + text; see the "band background is NOT painted here"
+    // comment at its BeginDraw site), so there is no plate to blend.
 
     ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
         device_.get(), context_.get(), content, labelRect, targetWidth_, targetHeight_);

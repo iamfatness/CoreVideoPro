@@ -1,21 +1,35 @@
 #!/usr/bin/env python3
 """zoom-gap-hold-ab: does PROGRAM hold a routed Zoom participant's last picture
-across a subscription gap, or fall to the slate?
+across a subscription gap, or fall to the slate/black per its dropout policy?
 
 Drives the headless core with the fake engine: 101 on program / 102 on preview,
 cue a brand-new participant (103), Take, then keep 103 routed on program while
 the subscription list omits it for ~450 ms (a video-budget eviction or spine
 churn around a Take) and restores it. The program is RECORDED to MP4 around the
 gap, because nothing on the wire carries per-layer pixels or geometry: judge it
-with ffmpeg signalstats (YAVG per frame) — a held frame keeps the pre-gap luma,
-the fallback slate does not. Found the #535 slice-1 regression on 2026-09-19
-(slate for the whole gap; the pre-bus store held the frame).
+with ffmpeg signalstats (YAVG per frame). Found the #535 slice-1 regression on
+2026-09-19 (slate for the whole gap; the pre-bus store held the frame).
+
+Slice 4a (2026-09-19) retired the old pink-tile dropout signature. The two
+possible dropout renders now are the bus-health slate — solid
+`kWarmingSlateRgba` (0xff1b1f27, BT.709 luma of R=0x1b/G=0x1f/B=0x27 ≈ 30) — or,
+with `--policy black`, solid black (`kDropoutBlackRgba`, luma ≈ 16). Neither is
+the old pink placeholder. `--policy hold` (the default) leaves 103's dropout
+policy at its default `hold`, so the compositor keeps compositing the bus's
+held last frame through the gap (luma stays near the pre-gap level, ~188 in
+this fixture) — the stalled+black rule never engages because the policy is not
+`black`. `--policy black` sends `set-source-policy` for `zoom:103` with
+`dropoutPolicy:"black"` before the DROPOUT phase, so once bus health for 103
+reads "stalled" (200 ms with no new frameId) the compositor paints solid black
+for the gap and recovers to the held/live frame after RESTORE.
 
 Usage:
-  python scripts/qa/zoom-gap-hold-ab.py --core native/build-dev/corevideo-native.exe       --fake native/build-dev/corevideo-zoom-engine-fake.exe --label fixed
+  python scripts/qa/zoom-gap-hold-ab.py --core native/build-dev/corevideo-native.exe       --fake native/build-dev/corevideo-zoom-engine-fake.exe --label fixed [--policy hold|black]
   ffmpeg -i rec-fixed/*/Program.mp4 -vf signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=fixed.yavg.txt -f null -
 Writes <label>.jsonl (one snapshot slice per poll), <label>.stderr.log and
-rec-<label>/<session>/Program.mp4, and prints a phase summary.
+rec-<label>/<session>/Program.mp4, and prints a phase summary (including each
+polled tick's `bus=` source health tuples, so a stuck "producing" read during
+the gap is visible without re-running).
 """
 import argparse, json, os, subprocess, sys, threading, time
 
@@ -77,6 +91,8 @@ def main():
     ap.add_argument("--core", required=True); ap.add_argument("--label", required=True)
     ap.add_argument("--fake", required=True); ap.add_argument("--autosub", default="0")
     ap.add_argument("--poll-ms", type=int, default=50); ap.add_argument("--after-s", type=float, default=3.0)
+    ap.add_argument("--policy", choices=("hold", "black"), default="hold",
+                     help="dropout policy to set on zoom:103 before the DROPOUT phase (default hold)")
     a = ap.parse_args()
     env = {"COREVIDEO_ZOOM_ENGINE_PATH": a.fake, "COREVIDEO_FAKE_ENGINE_PARTICIPANTS": "3",
            "COREVIDEO_FAKE_ENGINE_RES": "2", "COREVIDEO_FAKE_ENGINE_FPS": "60",
@@ -131,6 +147,9 @@ def main():
     # DROPOUT: 103 stays routed on program, but the subscription list omits it
     # for ~400ms (what a video-budget eviction or a transient spine does), then
     # restores it. Old path held the last frame; the bus removes the source.
+    if a.policy == "black":
+        rec("set-policy", core.sync([{"type": "set-source-policy", "sourceId": "zoom:103",
+                                       "dropoutPolicy": "black", "displayName": "Guest 103"}], el()))
     core.spine([("101", "preview")], el())
     rec("dropout", core.sync([], el()))
     for i in range(8):

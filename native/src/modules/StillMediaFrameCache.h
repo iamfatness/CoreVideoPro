@@ -1,8 +1,9 @@
 #pragma once
 
 // Still-image media routes (logos/bugs — the POS-2 overlay case): scene routes
-// that reference an image asset used to composite the colorFromParticipantId
-// placeholder forever, because no consumer ever published a VideoFrame keyed
+// that reference an image asset used to composite the bus-health slate
+// (now warming/failed, #535 slice 4a) forever, because no consumer ever
+// published a VideoFrame keyed
 // "media:<assetId>". This cache closes that gap for STILL images:
 //
 //   scene sync (program OR preview) --> setDesired({"media:<assetId>", path})

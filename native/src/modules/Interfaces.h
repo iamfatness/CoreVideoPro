@@ -432,8 +432,8 @@ struct CompositorRenderPlanLayer {
   // the CPU preview path (buildProgramFramePreview) honor this when set,
   // parsing it with the same compositor::parseHexColorRgba() used for
   // brand/border colors elsewhere. A layer with a real participant/media
-  // source ignores this and uses its frame (or the colorFromParticipantId()
-  // debug placeholder) instead — this is ONLY for layers that are
+  // source ignores this and uses its frame (or the bus-health slate —
+  // warming/failed, #535 slice 4a) instead — this is ONLY for layers that are
   // deliberately sourceless.
   bool hasFillColor = false;
   std::string fillColor = "#808080";
