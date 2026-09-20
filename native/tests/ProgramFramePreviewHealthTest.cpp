@@ -57,6 +57,29 @@ corevideo::modules::VideoFrame makeSolidFrame(const std::string& participantId, 
   return frame;
 }
 
+// I-3 (fix round 1): a full-canvas I420 (Zoom-shaped) frame with NO BGRA
+// pixels at all — the shape a real stalled Zoom guest carries. Y plane filled
+// with a mid value; U/V neutral (128), so the frame decodes to a real,
+// non-black picture if drawn.
+corevideo::modules::VideoFrame makeI420Frame(const std::string& participantId, int width = 64, int height = 36) {
+  corevideo::modules::VideoFrame frame;
+  frame.participantId = participantId;
+  frame.width = width;
+  frame.height = height;
+  frame.naturalWidth = width;
+  frame.naturalHeight = height;
+  frame.timestampMs = 16;
+  const size_t yLen = static_cast<size_t>(width) * static_cast<size_t>(height);
+  const size_t uvLen = (yLen / 4) * 2;
+  auto i420 = std::make_shared<std::vector<uint8_t>>(yLen + uvLen, 0);
+  std::fill(i420->begin(), i420->begin() + static_cast<std::ptrdiff_t>(yLen), static_cast<uint8_t>(180));
+  std::fill(i420->begin() + static_cast<std::ptrdiff_t>(yLen), i420->end(), static_cast<uint8_t>(128));
+  frame.i420 = std::move(i420);
+  frame.i420Width = width;
+  frame.i420Height = height;
+  return frame;
+}
+
 // One full-canvas layer at rect (0,0,1,1) referencing "capture:a".
 corevideo::modules::CompositorRenderPlanLayer makeSourceLayer(const std::string& sourceHealth, const std::string& dropoutPolicy = "hold") {
   corevideo::modules::CompositorRenderPlanLayer layer;
@@ -120,6 +143,16 @@ TEST(ProgramFramePreviewHealth, StalledWithHoldPolicyDrawsTheHeldFrame) {
   const auto plan = makePlan(makeSourceLayer("stalled", "hold"));
   const auto frames = std::vector<corevideo::modules::VideoFrame>{makeSolidFrame("capture:a", kGreen)};
   EXPECT_EQ(renderCentrePixel(plan, frames), kGreen);
+}
+
+// I-3 (fix round 1): a stalled I420 (Zoom-shaped) held frame with a black
+// dropout policy must draw BLACK, matching D3D11/Metal's frameHasContent()
+// (hasPixels() || hasI420()) predicate — not fall through to the warming
+// slate because the CPU preview's predicate only checked hasPixels().
+TEST(ProgramFramePreviewHealth, StalledI420HeldFrameWithBlackPolicyDrawsBlack) {
+  const auto plan = makePlan(makeSourceLayer("stalled", "black"));
+  const auto frames = std::vector<corevideo::modules::VideoFrame>{makeI420Frame("capture:a")};
+  EXPECT_EQ(renderCentrePixel(plan, frames), corevideo::compositor::kDropoutBlackRgba);
 }
 
 TEST(ProgramFramePreviewHealth, MediaLayerUsesTheSameRule) {

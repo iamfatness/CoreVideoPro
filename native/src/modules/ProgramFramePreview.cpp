@@ -398,16 +398,27 @@ void fillSyntheticProgramFramePreview(
           // null, so the synthetic-fill branch below paints `color`.
           color = compositor::parseHexColorRgba(layer.fillColor, 0xff808080u);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
+          // Legacy positional fallback (a layer with no participantId/mediaAssetId
+          // at all, matched by index) — I-4: pink is retired for every kind, so
+          // this resolves by the same one rule as every other layer.
           frameForLayer = &frames[static_cast<size_t>(videoIndex - 1)];
-          color = compositor::colorFromParticipantId(frameForLayer->participantId);
+          color = compositor::slateColorFor(layer.sourceHealth);
         }
 
         // Content frame present but the source is stalled and the operator's
         // per-source policy is "black": draw solid black, frame ignored. This
         // has to happen after frameForLayer resolution above (participant or
         // media) and before the draw decision below, which branches on
-        // frameForLayer/hasPixels().
-        if (frameForLayer != nullptr && frameForLayer->hasPixels() &&
+        // frameForLayer/hasPixels(). I-3 (fix round 1): a stalled ZOOM guest
+        // carries I420, not BGRA pixels, so this predicate must accept EITHER
+        // representation or a stalled I420 source would show the WARMING
+        // slate here while D3D11/Metal (frameHasContent = hasPixels() ||
+        // hasI420()) correctly show black — the same content frame, two
+        // different pictures across preview vs program. The blit itself
+        // stays BGRA-only, unchanged: an I420 frame that reaches the
+        // draw-a-real-frame branch below still falls through to the
+        // synthetic fill (see blitVideoFrameLayerClipped's hasPixels() gate).
+        if (frameForLayer != nullptr && (frameForLayer->hasPixels() || frameForLayer->hasI420()) &&
             compositor::blackOnStalled(layer.sourceHealth, layer.dropoutPolicy)) {
           frameForLayer = nullptr;
           color = compositor::kDropoutBlackRgba;

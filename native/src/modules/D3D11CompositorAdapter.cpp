@@ -724,8 +724,11 @@ class D3D11Compositor final : public ICompositor {
           // instead of the default mid-grey ResolvedLayer::color.
           layer.color = compositor::parseHexColorRgba(layer.plan.fillColor, 0xff808080u);
         } else if (videoIndex > 0 && videoIndex - 1 < static_cast<int>(frames.size())) {
+          // Legacy positional fallback (a layer with no participantId/mediaAssetId
+          // at all, matched by index) — I-4: pink is retired for every kind, so
+          // this resolves by the same one rule as every other layer.
           const auto& fallbackFrame = frames[static_cast<size_t>(videoIndex - 1)];
-          layer.color = compositor::colorFromParticipantId(fallbackFrame.participantId);
+          layer.color = compositor::slateColorFor(layer.plan.sourceHealth);
           if (frameHasContent(fallbackFrame)) {
             layer.frame = &fallbackFrame;
           }
@@ -756,7 +759,11 @@ class D3D11Compositor final : public ICompositor {
       layer.plan.order = index;
       const auto layout = compositor::gridCell((std::max)(1, count), index);
       layer.plan.rect = {layout.x, layout.y, layout.width, layout.height};
-      layer.color = compositor::colorFromParticipantId(layer.plan.participantId);
+      // bus health on air (#535 slice 4a), I-4: this is the empty-render-plan
+      // improvised grid fallback (no CompositorRenderPlanLayer at all, so no
+      // sourceHealth to read) — pink is retired for every kind, so this
+      // resolves to the warming slate like every other frameless layer.
+      layer.color = compositor::kWarmingSlateRgba;
       if (frameHasContent(frames[static_cast<size_t>(index)])) {
         layer.frame = &frames[static_cast<size_t>(index)];
       }
@@ -1136,28 +1143,74 @@ class D3D11Compositor final : public ICompositor {
     drawBorderPass(layer, renderPlan, rect, border, layerAlpha);
   }
 
-  // bus health on air (#535 slice 4a): renders the failed slate's source name,
-  // mirroring drawOverlayLayer's textured branch (premultiplied blend + the
-  // overlay pixel shader) but with no key-transform animation — this is not
-  // an overlay layer. Skips silently if the raster is unavailable (D2D/
-  // DirectWrite missing) — the colour-only slate still shows on air.
+  // bus health on air (#535 slice 4a), I-1 (fix round 1): renders the failed
+  // slate's source name as a SMALL LABEL anchored bottom-left of the layer —
+  // NOT the full-canvas lower-third band a bare CompositorOverlayContent
+  // would raster (default brand accent bar + ~34%-height headline). Width is
+  // capped at 40% of the layer rect (or a rough text-width estimate, if
+  // smaller); height is 8% of the layer rect. brandColor is set to the slate
+  // colour so the lower-third's accent bar (normally brand-teal) is
+  // invisible against it. Mirrors drawOverlayLayer's textured branch
+  // (premultiplied blend + the overlay pixel shader, scissored to the layer/
+  // clip rect like drawOverlayLayer does) but with no key-transform
+  // animation — this is not an overlay layer. Skips silently if the raster
+  // is unavailable (D2D/DirectWrite missing) — the colour-only slate still
+  // shows on air.
   void drawFailedSlateName(
       const ResolvedLayer& layer,
       const CompositorRenderPlan& renderPlan,
       const compositor::LayerRect& rect,
       float layerAlpha) {
-    if (layer.plan.sourceDisplayName.empty()) {
+    const std::string& name = layer.plan.sourceDisplayName;
+    if (name.empty()) {
       return;
     }
+
+    const float labelHeight = rect.height * 0.08f;
+    if (labelHeight <= 0.f || rect.width <= 0.f) {
+      return;
+    }
+    // Rough text-width estimate: average glyph advance ~55% of the line
+    // height for a typical UI font, plus a little breathing room either
+    // side. This is an ESTIMATE, not a DirectWrite measurement — it only
+    // needs to keep short names from reserving the full 40% cap.
+    const float labelHeightPx = labelHeight * static_cast<float>(targetHeight_);
+    const float estTextWidthPx = labelHeightPx * 0.55f * static_cast<float>(name.size()) + labelHeightPx;
+    const float estTextWidthFrac = targetWidth_ > 0 ? estTextWidthPx / static_cast<float>(targetWidth_) : rect.width;
+    const float maxLabelWidth = rect.width * 0.4f;
+    const float labelWidth = (std::min)(maxLabelWidth, estTextWidthFrac);
+    if (labelWidth <= 0.f) {
+      return;
+    }
+    const compositor::LayerRect labelRect{
+        rect.x,
+        rect.y + rect.height - labelHeight,
+        labelWidth,
+        labelHeight,
+    };
+
+    char hexBuf[8];
+    std::snprintf(hexBuf, sizeof(hexBuf), "#%06x", compositor::kFailedSlateRgba & 0xffffffu);
     CompositorOverlayContent content;
-    content.title = layer.plan.sourceDisplayName;
-    ID3D11ShaderResourceView* overlayView =
-        overlayRaster_.rasterOverlayTexture(device_.get(), context_.get(), content, rect, targetWidth_, targetHeight_);
+    content.title = name;
+    content.brandColor = hexBuf;            // hides the lower-third accent bar against the slate
+    content.brandBackgroundColor = hexBuf;  // the label plate blends into the surrounding slate
+
+    ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
+        device_.get(), context_.get(), content, labelRect, targetWidth_, targetHeight_);
     if (overlayView == nullptr) {
       return;
     }
-    setViewportFromRect(rect);
+
+    const compositor::LayerRect clip = layer.plan.hasClipRect
+        ? compositor::LayerRect{layer.plan.clipRect.x, layer.plan.clipRect.y,
+                                layer.plan.clipRect.width, layer.plan.clipRect.height}
+        : rect;
+    context_->RSSetState(scissorRasterizerState_.get());
+    setScissorFromRect(clip);
+    setViewportFromRect(labelRect);
     if (!writeLayerConstants(layer, renderPlan, 0xffffffffu, layerAlpha, 1.f, 1.f, 0.f, 0.f)) {
+      context_->RSSetState(rasterizerState_.get());
       return;
     }
     context_->OMSetBlendState(premultipliedBlendState_.get(), nullptr, 0xffffffffu);
@@ -1171,6 +1224,7 @@ class D3D11Compositor final : public ICompositor {
     context_->PSSetShaderResources(0, 1, nullViews);
     context_->PSSetShader(pixelShader_.get(), nullptr, 0);
     context_->OMSetBlendState(blendState_.get(), nullptr, 0xffffffffu);
+    context_->RSSetState(rasterizerState_.get());
   }
 
   // --- Item 9: overlay/lower-third/caption raster stage. ---

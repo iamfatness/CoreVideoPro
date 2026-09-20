@@ -89,15 +89,23 @@ corevideo::modules::CompositorRenderPlan overlappingSceneGraphPlan() {
   renderPlan.sceneId = "scene-graph-rendering";
   renderPlan.width = 640;
   renderPlan.height = 360;
-  renderPlan.layers.push_back({
-      "front",
-      "participant-video",
-      "zoom:front",
-      "front",
-      20,
-      {0.f, 0.f, 1.f, 1.f},
-      1.f,
-  });
+  // C-1 (fix round 1): both "front" and "back" are metadata-only frames (no
+  // pixels), so without a health distinction they'd both resolve to the SAME
+  // warming slate and these tests could no longer prove z-order / opacity-0
+  // transparency. "front" is marked "failed" (-> kFailedSlateRgba) and "back"
+  // stays "" (-> kWarmingSlateRgba) so the two placeholders stay visually
+  // distinct, restoring the original falsifying power by health rather than
+  // by id colour.
+  corevideo::modules::CompositorRenderPlanLayer front;
+  front.layerId = "front";
+  front.kind = "participant-video";
+  front.sourceId = "zoom:front";
+  front.participantId = "front";
+  front.order = 20;
+  front.rect = {0.f, 0.f, 1.f, 1.f};
+  front.opacity = 1.f;
+  front.sourceHealth = "failed";
+  renderPlan.layers.push_back(front);
   renderPlan.layers.push_back({
       "back",
       "participant-video",
@@ -145,11 +153,13 @@ TEST(StubCompositor, SceneGraphRenderingStaysGreenInCorevideoStub) {
   EXPECT_EQ(frame.preview.width, 320);
   EXPECT_EQ(frame.preview.height, 180);
   EXPECT_EQ(frame.preview.bgra.size(), static_cast<size_t>(frame.preview.width * frame.preview.height * 4));
-  // bus health on air (#535 slice 4a): "front" is a placeholder layer (a
-  // metadata-only frame, no pixels) with no sourceHealth set by this
-  // hand-built plan, so it reads "" -> the warming slate, never a per-id
-  // colour.
-  EXPECT_EQ(previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height / 2), corevideo::compositor::kWarmingSlateRgba);
+  // bus health on air (#535 slice 4a): "front" (order 20, on top of "back")
+  // is a placeholder layer (a metadata-only frame, no pixels) marked
+  // sourceHealth="failed" by overlappingSceneGraphPlan() specifically so this
+  // test can still prove Z-ORDER (front painted last, over back) by health
+  // rather than by per-id colour: the centre pixel must be front's FAILED
+  // slate, not back's warming slate.
+  EXPECT_EQ(previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height / 2), corevideo::compositor::kFailedSlateRgba);
   EXPECT_EQ(frame.sharedTexture.sharedHandleHex, "0xFEEDFACE");
   EXPECT_EQ(corevideo::modules::createD3D11Compositor(), nullptr);
 }
@@ -622,20 +632,29 @@ TEST(StubCompositor, TransparentChromaKeyLayerRevealsLowerLayer) {
       {0.f, 0.f, 1.f, 1.f},
       1.f,
   });
-  renderPlan.layers.push_back({
-      "front:chroma-key",
-      "chroma-key",
-      "zoom:front",
-      "front",
-      0,
-      {0.f, 0.f, 1.f, 1.f},
-      0.f,
-  });
+  // C-1 (fix round 1): "front" is marked sourceHealth="failed" (-> the
+  // FAILED slate) while "back" stays "" (-> the WARMING slate). Both are
+  // metadata-only frames with no sourceHealth otherwise, so without this
+  // distinction a regression that let the opacity-0 chroma layer paint
+  // anyway would be INVISIBLE — front and back would resolve to the SAME
+  // warming slate and the assertion below would pass either way. With
+  // distinct slates, the centre pixel proves specifically that BACK's
+  // placeholder survived, not merely "some placeholder" survived.
+  corevideo::modules::CompositorRenderPlanLayer chromaFront;
+  chromaFront.layerId = "front:chroma-key";
+  chromaFront.kind = "chroma-key";
+  chromaFront.sourceId = "zoom:front";
+  chromaFront.participantId = "front";
+  chromaFront.order = 0;
+  chromaFront.rect = {0.f, 0.f, 1.f, 1.f};
+  chromaFront.opacity = 0.f;
+  chromaFront.sourceHealth = "failed";
+  renderPlan.layers.push_back(chromaFront);
 
   const auto frame = modules.compositor->render(renderPlan, {makeMetadataFrame("back"), makeMetadataFrame("front")});
-  // bus health on air (#535 slice 4a): "back" is a metadata-only frame (no
-  // pixels) with no sourceHealth, so the placeholder revealed through the
-  // transparent chroma-key layer is the warming slate, not a per-id colour.
+  // The transparent (opacity 0) chroma-key "front" must NOT paint over
+  // "back" — the centre pixel must be back's WARMING slate, never front's
+  // FAILED slate.
   EXPECT_EQ(previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height / 2), corevideo::compositor::kWarmingSlateRgba);
 }
 #endif
@@ -680,6 +699,65 @@ TEST(D3D11Compositor, ComposesMultiLayerSceneGraphOnGpu) {
   EXPECT_TRUE(frame.gpuComposed);
   EXPECT_NE(frame.programPixelSignature, 0u);
   EXPECT_EQ(frame.health, "live");
+}
+
+// I-1 (fix round 1): a failed-slate layer's source name renders as a SMALL
+// LABEL anchored bottom-left of the layer, not the full-canvas lower-third
+// band a bare CompositorOverlayContent would produce. This file is compiled
+// only under COREVIDEO_WITH_D3D11 (this test suite's own GPU-availability
+// gate — there is no additional runtime skip here, matching every other
+// D3D11Compositor.* test in this section).
+TEST(D3D11Compositor, FailedSlateNameRendersAsASmallBottomLeftLabelNotAFullBand) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+
+  corevideo::modules::CompositorRenderPlan renderPlan;
+  renderPlan.renderPlanId = "b535-failed-slate-name";
+  renderPlan.sceneId = "failed-slate-name";
+  renderPlan.width = 640;
+  renderPlan.height = 360;
+  corevideo::modules::CompositorRenderPlanLayer layer;
+  layer.layerId = "layer-failed";
+  layer.kind = "participant-video";
+  layer.sourceId = "capture:gone";
+  layer.participantId = "capture:gone";
+  layer.order = 0;
+  layer.rect = {0.f, 0.f, 1.f, 1.f};
+  layer.opacity = 1.f;
+  layer.sourceHealth = "failed";
+  layer.sourceDisplayName = "Camera 1";
+  renderPlan.layers.push_back(layer);
+
+  const auto frame = compositor->render(renderPlan, {});
+  ASSERT_EQ(frame.preview.width, 320);
+  ASSERT_EQ(frame.preview.height, 180);
+
+  // Centre of the layer: the failed slate, unobstructed by the label.
+  EXPECT_EQ(previewPixelRgba(frame.preview, frame.preview.width / 2, frame.preview.height / 2),
+            corevideo::compositor::kFailedSlateRgba);
+  // Far left, mid-height: no full-height lower-third accent bar survives —
+  // this point is well outside the small bottom-left label box.
+  EXPECT_EQ(previewPixelRgba(frame.preview, static_cast<int>(frame.preview.width * 0.02f),
+                              frame.preview.height / 2),
+            corevideo::compositor::kFailedSlateRgba);
+  // Some pixel inside the bottom-left label box (bottom 8% of the layer,
+  // left up to 40% of its width) must differ from the slate — the name text
+  // is actually there. Scan a small grid rather than one fixed point so the
+  // assertion doesn't depend on landing exactly on a glyph stroke.
+  bool foundLabelPixel = false;
+  const int labelTop = static_cast<int>(frame.preview.height * 0.94f);
+  const int labelBottom = frame.preview.height - 1;
+  const int labelLeft = 1;
+  const int labelRight = static_cast<int>(frame.preview.width * 0.35f);
+  for (int y = labelTop; y <= labelBottom && !foundLabelPixel; ++y) {
+    for (int x = labelLeft; x <= labelRight; ++x) {
+      if (previewPixelRgba(frame.preview, x, y) != corevideo::compositor::kFailedSlateRgba) {
+        foundLabelPixel = true;
+        break;
+      }
+    }
+  }
+  EXPECT_TRUE(foundLabelPixel) << "expected at least one non-slate pixel (the name text) inside the label box";
 }
 
 namespace {
