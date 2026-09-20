@@ -19,7 +19,12 @@ namespace corevideo::modules {
 
 struct RtmpCompatibilityResult {
   std::string requestedVideoCodec;  // normalized request (h264/h265/av1)
-  std::string videoCodec;           // codec actually sent (may be downgraded)
+  // The codec this result resolves to. Nothing downgrades any more (2026-09-20):
+  // on an admitted stream this IS the requested codec, and on a refusal it still
+  // holds the REQUESTED codec — the stream does not start, so nothing else is
+  // ever sent. Kept distinct from requestedVideoCodec only because callers read
+  // it as "what the arguments/proof should name".
+  std::string videoCodec;
   std::string audioCodec = "aac";   // RTMP audio is AAC
   std::string container = "flv";    // RTMP container is FLV
   bool enhancedRtmp = false;        // true when h265/av1 is carried via E-RTMP

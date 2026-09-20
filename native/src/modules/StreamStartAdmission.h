@@ -29,7 +29,12 @@ struct StreamStartAdmissionInputs {
   std::string requestedCodec;          // RtmpCompatibility spelling: "h264" | "h265" | "av1"
   bool compatibilityRefused = false;   // RtmpCompatibilityResult::refused
   std::string compatibilityReason;     // RtmpCompatibilityResult::reason
-  bool codecHasHardwareEncoder = true; // codecHasSupportedHardwareEncoder AND the probe (when not pending)
+  // PLATFORM FACT ONLY: does a hardware encoder MFT exist for this codec on this
+  // build/OS (the sender passes codecHasSupportedHardwareEncoder, nothing else).
+  // The capacity PROBE does not enter here — it reaches this decision through
+  // gpuPathChosen, which the sender computes from chooseStreamEncodePath (which
+  // folds in the probe, the env toggle and the encoder texture).
+  bool codecHasHardwareEncoder = true;
   // 2026-09-20: the machine HAS a hardware encoder for this codec and it starts
   // and runs — but the stream it produces is not deliverable on this path. AV1
   // is the first case: the NVIDIA AV1 MFT emits access units at the correct
