@@ -19,6 +19,7 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <codecapi.h>
+#include <icodecapi.h>  // ICodecAPI (codecapi.h supplies only the property GUIDs).
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
@@ -46,7 +47,14 @@ HANDLE handleFromHex(const std::string& hex) {
 
 GUID subtypeForCodec(const std::string& codec) {
   if (codec == "hevc" || codec == "h265") return MFVideoFormat_HEVC;
+  if (codec == "av1") return MFVideoFormat_AV1;
   return MFVideoFormat_H264;
+}
+
+UINT32 profileForCodec(const std::string& codec) {
+  if (codec == "hevc" || codec == "h265") return eAVEncH265VProfile_Main_420_8;
+  if (codec == "av1") return eAVEncAV1VProfile_Main_420_8;
+  return eAVEncH264VProfile_High;
 }
 
 // Owns a dedicated D3D11 device + the MF hardware encoder MFT + a D3D11 video
@@ -74,8 +82,9 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     healthy_.store(true);
     running_.store(true);
     thread_ = std::thread([this] { encodeLoop(); });
-    ::corevideo::core::nativeLogf("[gpu-encode] started %dx%d@%d %dkbps mft=hardware-h264\n",
-                                 config_.width, config_.height, config_.fps, config_.bitrateKbps);
+    ::corevideo::core::nativeLogf("[gpu-encode] started %dx%d@%d %dkbps mft=hardware-%s\n",
+                                 config_.width, config_.height, config_.fps, config_.bitrateKbps,
+                                 config_.codec.c_str());
     return true;
   }
 
@@ -157,7 +166,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   }
 
   bool createEncoder() {
-    MFT_REGISTER_TYPE_INFO outInfo{MFMediaType_Video, subtypeForCodec("h264")};
+    MFT_REGISTER_TYPE_INFO outInfo{MFMediaType_Video, subtypeForCodec(config_.codec)};
     IMFActivate** activates = nullptr;
     UINT32 count = 0;
     HRESULT hr = MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER,
@@ -165,7 +174,8 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
                            nullptr, &outInfo, &activates, &count);
     if (FAILED(hr) || count == 0) {
       if (activates) CoTaskMemFree(activates);
-      return fail("no-hardware-h264-mft");
+      const std::string why = "no-hardware-mft-" + config_.codec;
+      return fail(why.c_str());
     }
     hr = activates[0]->ActivateObject(IID_PPV_ARGS(&encoder_));
     for (UINT32 i = 0; i < count; ++i) activates[i]->Release();
@@ -184,14 +194,40 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       return fail("set-d3d-manager");
     }
 
+    // HEVC: B-frames OFF. The FLV muxer cannot take a raw HEVC stream with
+    // reordered frames ("Packet is missing PTS", measured 2026-09-20), and the
+    // GPU-direct path hands FFmpeg a raw Annex-B stream on a pipe. A MFT that
+    // refuses the property fails start() - never a stream the muxer rejects
+    // twenty frames in. H.264 keeps its shipped behaviour; AV1 muxed cleanly
+    // with the MFT default in the 2026-09-20 probe and is proven per rig by the
+    // round-trip test.
+    if (config_.codec == "hevc" || config_.codec == "h265") {
+      ComPtr<ICodecAPI> codecApi;
+      if (FAILED(encoder_.As(&codecApi)) || !codecApi) return fail("no-codec-api");
+      VARIANT bframes;
+      VariantInit(&bframes);
+      bframes.vt = VT_UI4;
+      bframes.ulVal = 0;
+      const HRESULT bhr = codecApi->SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &bframes);
+      if (FAILED(bhr)) {
+        // Name the HRESULT: "the MFT refuses B-frames-off" is a spec-level fact
+        // about this driver, and the controller cannot decide anything from the
+        // bare detail string Task 8 reports to the operator.
+        ::corevideo::core::nativeLogf(
+            "[gpu-encode] HEVC MFT refused CODECAPI_AVEncMPVDefaultBPictureCount hr=0x%08lX\n",
+            static_cast<unsigned long>(bhr));
+        return fail("set-bframes-off");
+      }
+    }
+
     // Output type FIRST (encoders require it), then input.
     ComPtr<IMFMediaType> outType;
     MFCreateMediaType(&outType);
     outType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    outType->SetGUID(MF_MT_SUBTYPE, subtypeForCodec("h264"));
+    outType->SetGUID(MF_MT_SUBTYPE, subtypeForCodec(config_.codec));
     outType->SetUINT32(MF_MT_AVG_BITRATE, static_cast<UINT32>(config_.bitrateKbps) * 1000u);
     outType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    outType->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High);
+    outType->SetUINT32(MF_MT_MPEG2_PROFILE, profileForCodec(config_.codec));
     MFSetAttributeSize(outType.Get(), MF_MT_FRAME_SIZE, static_cast<UINT32>(config_.width),
                        static_cast<UINT32>(config_.height));
     MFSetAttributeRatio(outType.Get(), MF_MT_FRAME_RATE, static_cast<UINT32>(config_.fps), 1);
