@@ -195,3 +195,41 @@ bitstream write decoupling (#524, independent, recommended before this ships).
 - **Enhanced RTMP at the destination** is the operator's responsibility (the
   checkbox). Twitch/others differ from YouTube; the refusal sentence points at
   the checkbox, not at the destination's policy, which we cannot know.
+
+## Outcome (2026-09-20)
+
+**§2's AV1 half did not survive contact with the hardware. HEVC did.**
+
+- **HEVC: shipped.** GPU-direct at 1080p60, `node scripts/validate-gpu-encode.mjs
+  --codec hevc` green (60.0 fps received, sink speed ≥ 1.0x), B-frames off via the
+  low-latency ladder as §2 designed.
+- **AV1: REFUSED, not shipped.** The NVIDIA AV1 Encoder MFT binds, starts and
+  emits samples at the correct cadence, but the access units are **near-empty** —
+  ~54 bytes per sample at 1920x1080@60 (≈49 after a normal 5,892-byte keyframe)
+  against H.264's ~12,483 on the same build and rig. The muxed stream is
+  **~18 kbit/s against a configured 6 Mbps**. A codec that streams at 0.3% of its
+  bitrate is exactly the defect §5 exists to remove, so AV1 now refuses at start
+  with its own named code, `codec-not-deliverable` — never silently downgraded,
+  never shipped broken. `--codec av1` PASSES BY OBSERVING THAT REFUSAL.
+
+### Three hypotheses, ELIMINATED (do not repeat them)
+
+| Hypothesis | Verdict | Evidence |
+|---|---|---|
+| Deep encoder pipeline (lookahead / alt-ref) | ELIMINATED | low-latency mode accepted (`av1 b-frames off via low-latency-mode`), rate unchanged |
+| FFmpeg's `obu` demuxer on a live pipe | ELIMINATED | a 10 s 1080p60 `av1_nvenc` OBU stream piped through the sender's exact flags: 600/600 frames, 1.15 MB in / 1.18 MB out |
+| Our async MFT loop reading one output per event | ELIMINATED | instrumented: `av1 output drain: events=1260 samples=1260 mean=1.00 max-per-event=1`, identical to H.264 |
+
+What is left is the encoder producing empty access units at this resolution and
+rate — a vendor/driver-level investigation, tracked as
+[#565](https://github.com/iamfatness/CoreVideoPro/issues/565), and deliberately
+NOT part of this sub-project.
+
+Rig: RTX 4090, driver 616.92, Windows SDK 10.0.26100.
+
+### What flips AV1 back on
+
+`admission.codecKnownNotDeliverable` in `RtmpOutputSenderAdapter::startFfmpegProcess`
+is one named predicate with an obvious home for a rig-specific override. The gate
+(`node scripts/validate-gpu-encode.mjs --codec av1`) is the thing that decides: it
+must stop passing by refusal and start passing by streaming.

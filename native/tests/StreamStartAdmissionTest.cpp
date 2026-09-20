@@ -85,3 +85,52 @@ TEST(StreamStartAdmission, AGpuEncoderStartFailureRefusesForEveryCodecAndQuotesT
     EXPECT_NE(a.message.find("0xC00D36B4"), std::string::npos) << codec;
   }
 }
+
+// 2026-09-20: AV1 binds the NVIDIA AV1 MFT and runs at the correct cadence, but
+// emits near-empty access units (~54 bytes vs H.264's ~12,483 at 1080p60), so
+// the muxed stream is ~18 kbit/s against a configured 6 Mbps. A codec that
+// streams at 0.3% of its bitrate ships REFUSED, never silently broken.
+TEST(StreamStartAdmission, ANotDeliverableCodecRefusesAndNamesTheCodecAndTheDetail) {
+  auto in = healthy("av1");
+  in.codecKnownNotDeliverable = true;
+  in.notDeliverableDetail = "near-empty access units, ~18 kbit/s against the configured bitrate";
+  const auto a = admitStreamStart(in);
+  EXPECT_TRUE(a.refused);
+  EXPECT_EQ(a.resultCode, "codec-not-deliverable");
+  EXPECT_NE(a.message.find("AV1"), std::string::npos);
+  EXPECT_NE(a.message.find("near-empty access units"), std::string::npos);
+  EXPECT_NE(a.message.find("H.264 or H.265"), std::string::npos);
+}
+
+// A destination that cannot carry the codec at all is the more actionable
+// message, so the compatibility refusal still wins.
+TEST(StreamStartAdmission, ACompatibilityRefusalStillWinsOverNotDeliverable) {
+  auto in = healthy("av1");
+  in.compatibilityRefused = true;
+  in.compatibilityReason = "enhanced-rtmp-required";
+  in.codecKnownNotDeliverable = true;
+  in.notDeliverableDetail = "near-empty access units";
+  const auto a = admitStreamStart(in);
+  EXPECT_TRUE(a.refused);
+  EXPECT_EQ(a.resultCode, "enhanced-rtmp-required");
+}
+
+// The flag is per-codec policy, not a global kill switch: H.264 is untouched.
+TEST(StreamStartAdmission, H264WithTheNotDeliverableFlagClearIsStillAdmitted) {
+  auto in = healthy("h264");
+  in.codecKnownNotDeliverable = false;
+  const auto a = admitStreamStart(in);
+  EXPECT_FALSE(a.refused);
+  EXPECT_TRUE(a.resultCode.empty());
+}
+
+// An empty detail must never render empty parentheses at the operator.
+TEST(StreamStartAdmission, ANotDeliverableRefusalWithNoDetailStillReadsAsASentence) {
+  auto in = healthy("av1");
+  in.codecKnownNotDeliverable = true;
+  const auto a = admitStreamStart(in);
+  EXPECT_TRUE(a.refused);
+  EXPECT_EQ(a.resultCode, "codec-not-deliverable");
+  EXPECT_NE(a.message.find("known defect"), std::string::npos);
+  EXPECT_EQ(a.message.find("()"), std::string::npos);
+}

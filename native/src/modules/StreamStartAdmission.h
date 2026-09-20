@@ -12,10 +12,12 @@
 //
 // Order of checks (the most operator-actionable first):
 //   1. compatibility refusal   -> "enhanced-rtmp-required" (turn the checkbox on)
-//   2. no hardware encoder     -> "no-hardware-encoder"    (this machine cannot)
+//   2. codec not deliverable   -> "codec-not-deliverable"  (it encodes, but the
+//      stream it produces is unusable on this path - see the field below)
+//   3. no hardware encoder     -> "no-hardware-encoder"    (this machine cannot)
 //      (HEVC/AV1 on ANY CPU-fallback reason land here too: the raw path cannot
 //       hold 1080p60 until sub-project 2, and it has no HEVC/AV1 encoder we ship)
-//   3. GPU encoder start failed-> "gpu-encoder-start-failed" (HRESULT quoted)
+//   4. GPU encoder start failed-> "gpu-encoder-start-failed" (HRESULT quoted)
 // H.264 on the CPU fallback is ADMITTED: every machine that streams today keeps
 // streaming exactly as it does.
 
@@ -28,6 +30,15 @@ struct StreamStartAdmissionInputs {
   bool compatibilityRefused = false;   // RtmpCompatibilityResult::refused
   std::string compatibilityReason;     // RtmpCompatibilityResult::reason
   bool codecHasHardwareEncoder = true; // codecHasSupportedHardwareEncoder AND the probe (when not pending)
+  // 2026-09-20: the machine HAS a hardware encoder for this codec and it starts
+  // and runs — but the stream it produces is not deliverable on this path. AV1
+  // is the first case: the NVIDIA AV1 MFT emits access units at the correct
+  // cadence with near-empty payloads (~54 bytes vs H.264's ~12,483 at 1080p60),
+  // so the muxed stream is ~18 kbit/s against a configured 6 Mbps. Distinct from
+  // codecHasHardwareEncoder because "this machine cannot provide one" would be a
+  // lie: it can, and it does start.
+  bool codecKnownNotDeliverable = false;
+  std::string notDeliverableDetail;
   bool gpuPathChosen = true;           // chooseStreamEncodePath(...) == GpuDirect
   const char* gpuPathReason = "gpu-direct";
   bool gpuEncoderStartFailed = false;  // GpuVideoEncoder::start() returned false
@@ -54,6 +65,14 @@ inline const char* operatorCodecLabel(const std::string& codec) {
     out.refused = true;
     out.resultCode = in.compatibilityReason.empty() ? "enhanced-rtmp-required" : in.compatibilityReason;
     out.message = label + " over RTMP needs Enhanced RTMP; enable it in Stream settings or choose H.264.";
+    return out;
+  }
+  if (in.codecKnownNotDeliverable) {
+    out.refused = true;
+    out.resultCode = "codec-not-deliverable";
+    out.message = label + " does not produce a usable stream on this machine's hardware encoder (" +
+                  (in.notDeliverableDetail.empty() ? std::string("known defect") : in.notDeliverableDetail) +
+                  "). Choose H.264 or H.265.";
     return out;
   }
   if (!in.codecHasHardwareEncoder || (!isH264 && !in.gpuPathChosen)) {

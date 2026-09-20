@@ -495,6 +495,26 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.DoesNotContain("stream key", status, StringComparison.OrdinalIgnoreCase);
     }
 
+    // 2026-09-20: AV1's hardware MFT binds and runs at the correct cadence but
+    // emits near-empty access units, so the stream is ~18 kbit/s against 6 Mbps.
+    // It ships REFUSED with its own named reason, and that reason must reach the
+    // operator verbatim - never the generic key/URL advice.
+    [Fact]
+    public void FormatStreamingFailureStatus_ANotDeliverableCodecRefusalNamesTheReason()
+    {
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("RTMP output failed. AV1 does not produce a usable stream on this machine's hardware encoder (near-empty access units, ~18 kbit/s against the configured bitrate). Choose H.264 or H.265."));
+        // Exact string, not fragments: a substring assertion here passes with and
+        // without the fix, which is the failure mode this branch already hit once.
+        Assert.Equal(
+            "Streaming start failed: AV1 does not produce a usable stream on this machine's hardware encoder (near-empty access units, ~18 kbit/s against the configured bitrate). Choose H.264 or H.265.",
+            status);
+        Assert.DoesNotContain("stream key", status, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("server URL", status, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Codec refused", TransportStatusFormatter.FormatOutputStatusBrief(status));
+    }
+
     [Fact]
     public void FormatStreamingFailureStatus_AGpuEncoderStartFailureQuotesTheDetail()
     {

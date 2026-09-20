@@ -1300,7 +1300,18 @@ class RtmpOutputSender final : public IOutputSender {
       admission.requestedCodec = compatibility.requestedVideoCodec;
       admission.compatibilityRefused = compatibility.refused;
       admission.compatibilityReason = compatibility.reason;
-      const auto verdict = admitStreamStart(admission);  // only clause 1 can fire here
+      // GPU-direct AV1 is not deliverable on this path (2026-09-20). See
+      // StreamStartAdmission.h and docs/superpowers/specs/2026-09-20-gpu-direct-hevc-av1-stream-design.md.
+      // Revisit when the AV1 near-empty-payload defect is understood; the gate
+      // (scripts/validate-gpu-encode.mjs --codec av1) is what flips this back.
+      admission.codecKnownNotDeliverable = (compatibility.requestedVideoCodec == "av1");
+      admission.notDeliverableDetail = "near-empty access units, ~18 kbit/s against the configured bitrate";
+      // Only clauses 1 and 2 can fire here: the hardware / start-failure half of
+      // the admission needs the start attempt and sits below
+      // startGpuEncoderIfChosen. Refusing a not-deliverable codec HERE is
+      // deliberate — it never binds the MFT for a codec we already know cannot
+      // deliver, so no `path=gpu-direct` is ever logged for it.
+      const auto verdict = admitStreamStart(admission);
       if (verdict.refused) {
         return refuseStreamStart(verdict, compatibility.requestedVideoCodec);
       }

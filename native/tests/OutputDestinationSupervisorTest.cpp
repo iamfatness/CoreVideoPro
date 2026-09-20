@@ -349,6 +349,11 @@ TEST(OutputDestinationSupervisorPolicy, AnUnknownFailureCodeIsRetryableNotTermin
   EXPECT_TRUE(isTerminalResultCode("enhanced-rtmp-required"));
   EXPECT_TRUE(isTerminalResultCode("no-hardware-encoder"));
   EXPECT_FALSE(isTerminalResultCode("gpu-encoder-start-failed"));
+  // 2026-09-20: a codec whose hardware encoder starts and runs but produces a
+  // stream that is not deliverable (AV1's near-empty access units) is an
+  // inadmissible CONFIGURATION, not a transient fault - retrying re-decides it
+  // identically forever, so it must bypass the ladder like its two siblings.
+  EXPECT_TRUE(isTerminalResultCode("codec-not-deliverable"));
 }
 
 // ===========================================================================

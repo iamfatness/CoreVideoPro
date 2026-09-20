@@ -24,6 +24,19 @@
  * `--force-raw` sets COREVIDEO_GPU_ENCODE=0 and asserts the raw fallback still
  * streams (documents the A/B), without the realtime gate.
  *
+ * `--codec av1` PASSES BY REFUSAL, NOT BY STREAMING (2026-09-20). GPU-direct AV1
+ * binds the NVIDIA AV1 MFT and runs at the correct cadence but emits near-empty
+ * access units (~54 bytes/frame vs H.264's ~12,483 at 1080p60), so the muxed
+ * stream is ~18 kbit/s against 6 Mbps. Three hypotheses were eliminated (deep
+ * encoder pipeline, FFmpeg's obu demuxer on a live pipe, our per-event output
+ * drain) and the remaining cause is vendor/driver level. AV1 therefore ships
+ * REFUSED with a named reason rather than broken: this gate asserts the core
+ * logged `stream start REFUSED code=codec-not-deliverable` and that NO
+ * `path=gpu-direct codec=av1` stream was established. If AV1 ever starts
+ * streaming here, that is the signal to revisit the refusal — not a gate failure
+ * to paper over. See CLAUDE.md (GPU-direct section) and
+ * docs/superpowers/specs/2026-09-20-gpu-direct-hevc-av1-stream-design.md.
+ *
  * Usage: node ./scripts/validate-gpu-encode.mjs [--seconds 30] [--port 1935]
  *                                               [--fps 60] [--bitrate 6]
  *                                               [--codec h264|hevc|av1]
@@ -63,6 +76,9 @@ if (forceRaw && wireCodec !== "h264") {
   process.exit(2);
 }
 const keep = args.includes("--keep");
+// AV1 ships REFUSED (see the header). The gate observes the refusal instead of a
+// stream; h264/hevc are untouched.
+const expectRefusal = wireCodec === "av1";
 
 const ffBin = (name) => {
   for (const bin of [name, `C:\\ffmpeg\\bin\\${name}.exe`]) {
@@ -176,6 +192,17 @@ function gpuEncodeStartedLine() {
   return null;
 }
 
+// The sender's own refusal line: `[gpu-encode] stream start REFUSED code=... `.
+// THIS RUN'S stderr ONLY — deliberately not media-core.log, unlike the two path
+// readers above. That log accumulates across runs in the build dir, and a stale
+// refusal line from an EARLIER av1 run would let the gate pass while the current
+// core silently streamed 18 kbit/s — the exact failure this gate exists to catch.
+// A missing stderr line fails the gate, which is the safe direction.
+function streamStartRefusedLine() {
+  const m = coreStderr.match(/\[gpu-encode\] stream start REFUSED[^\n]*/g);
+  return m && m.length ? m[m.length - 1] : null;
+}
+
 const failures = [];
 const senderFps = [];
 let lastFrameSample = null;
@@ -276,6 +303,39 @@ const startedLine = gpuEncodeStartedLine();
 console.log(`encoder start : ${startedLine || "UNKNOWN (no [gpu-encode] started line found)"}`);
 const expectedPathCodec = codec === "h265" ? "hevc" : codec;
 const tookGpuDirect = !!pathLine && pathLine.includes("path=gpu-direct") && pathLine.includes(`codec=${expectedPathCodec}`);
+
+// ---------------------------------------------------------------------------
+// AV1: PASS BY REFUSAL. Nothing about this leg reads a stream — there is no
+// stream, by design. Judged on the core's own refusal line and on the ABSENCE of
+// a GPU-direct AV1 path line.
+// ---------------------------------------------------------------------------
+if (expectRefusal) {
+  const refusalLine = streamStartRefusedLine();
+  console.log(`refusal       : ${refusalLine || "NONE (no [gpu-encode] stream start REFUSED line found)"}`);
+  if (!refusalLine || !refusalLine.includes("code=codec-not-deliverable")) {
+    failures.push("expected the core to log `stream start REFUSED code=codec-not-deliverable` for AV1 — " +
+                  (refusalLine ? `got: ${refusalLine}` : "no refusal line at all"));
+  }
+  if (tookGpuDirect) {
+    failures.push(`AV1 was admitted onto the GPU-direct path — it must be refused at start: ${pathLine}`);
+  }
+  if (senderSnapshot) {
+    console.log(`sender        : lastResultCode=${senderSnapshot.lastResultCode ?? "?"} ` +
+                `warning=${senderSnapshot.warning || "none"}`);
+  }
+  if (!keep) { try { rmSync(received); } catch {} }
+  if (failures.length) {
+    console.error("\nGPU-DIRECT ENCODE GATE FAIL (--codec av1, refusal expected)");
+    for (const f of failures) console.error(`  - ${f}`);
+    process.exit(1);
+  }
+  console.log("\nav1: REFUSED as designed (codec-not-deliverable) — see docs");
+  console.log("      AV1 does NOT stream on this path. This PASS means the refusal is working,");
+  console.log("      not that GPU-direct AV1 works. See CLAUDE.md (GPU-direct section).");
+  console.log("\nGPU-DIRECT ENCODE GATE PASS (av1 refused as designed)");
+  process.exit(0);
+}
+
 if (forceRaw) {
   if (tookGpuDirect) failures.push("COREVIDEO_GPU_ENCODE=0 but the core still took the GPU-direct path");
 } else if (!tookGpuDirect) {

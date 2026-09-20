@@ -286,7 +286,11 @@ public static class TransportStatusFormatter
         var isCodecRefusal =
             lowered.Contains("needs enhanced rtmp", StringComparison.Ordinal) ||
             lowered.Contains("needs a hardware encoder", StringComparison.Ordinal) ||
-            lowered.Contains("hardware encoder failed to start", StringComparison.Ordinal);
+            lowered.Contains("hardware encoder failed to start", StringComparison.Ordinal) ||
+            // 2026-09-20: the encoder starts and runs, but the stream it makes is
+            // not deliverable (AV1's near-empty access units). Same arm as its
+            // siblings so the core's named reason reaches the operator verbatim.
+            lowered.Contains("does not produce a usable stream", StringComparison.Ordinal);
         var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
                      lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
             ? "Media core is busy applying changes. Wait a moment and try Stream again."
@@ -513,7 +517,8 @@ public static class TransportStatusFormatter
         // with the detailed status about what kind of failure this is.
         if (normalized.Contains("needs enhanced rtmp", StringComparison.OrdinalIgnoreCase) ||
             normalized.Contains("needs a hardware encoder", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("hardware encoder failed to start", StringComparison.OrdinalIgnoreCase))
+            normalized.Contains("hardware encoder failed to start", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("does not produce a usable stream", StringComparison.OrdinalIgnoreCase))
         {
             return "Codec refused";
         }

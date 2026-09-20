@@ -122,6 +122,10 @@ enum class DestinationFailureClass {
          // be transient (a session another app held, a driver hiccup).
          code == "enhanced-rtmp-required" ||      // E-RTMP is off in Stream settings
          code == "no-hardware-encoder" ||         // this machine cannot encode that codec
+         // 2026-09-20: the encoder starts and runs but the stream it produces is
+         // not deliverable (AV1's near-empty access units). A configuration
+         // refusal, not a fault - retrying re-decides it identically forever.
+         code == "codec-not-deliverable" ||       // it encodes; the stream is unusable
          (code.size() > 19 /*strlen("-output-unavailable")*/ &&
           code.compare(code.size() - 19, 19, "-output-unavailable") == 0);
 }
