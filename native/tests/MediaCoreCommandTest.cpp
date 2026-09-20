@@ -5972,7 +5972,13 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
       lastPlan = plan;
       return inner_->render(plan, frames);
     }
+    corevideo::modules::ProgramFrameSharedTexture renderMultiview(const corevideo::modules::CompositorRenderPlan& plan,
+        const std::vector<corevideo::modules::VideoFrame>& frames) override {
+      lastMultiviewPlan = plan;
+      return inner_->renderMultiview(plan, frames);
+    }
     corevideo::modules::CompositorRenderPlan lastPlan;
+    corevideo::modules::CompositorRenderPlan lastMultiviewPlan;
    private:
     std::unique_ptr<corevideo::modules::ICompositor> inner_;
   };
@@ -5990,7 +5996,10 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
       corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "cam"},
           {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
               {"routeId", "cam-0"}, {"mode", "capture-input"}, {"captureDeviceId", "decklink-1"},
-              {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}}});
+              {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}},
+      corevideo::rpc::Json::Object{{"type", "set-multiview-layout"},
+          {"sources", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+              {"sourceId", "capture:decklink-1"}, {"kind", "capture"}, {"captureDeviceId", "decklink-1"}}}}}});
   mediaCore.renderDisplayTick();
   const auto& plan = compositor->lastPlan;
   const auto layer = std::find_if(plan.layers.begin(), plan.layers.end(),
@@ -5999,6 +6008,15 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
   EXPECT_EQ(layer->sourceHealth, "producing");
   EXPECT_EQ(layer->dropoutPolicy, "black");
   EXPECT_EQ(layer->sourceDisplayName, "Camera 1");
+  // #535 slice 4a fix round 1: multiview tiles draw through the SAME
+  // compositor path (renderMultiview), so a dead source must be identifiable
+  // there too — the same annotation must reach the MV tile layer.
+  const auto& mvPlan = compositor->lastMultiviewPlan;
+  const auto mvLayer = std::find_if(mvPlan.layers.begin(), mvPlan.layers.end(),
+      [](const auto& l) { return l.participantId == "capture:decklink-1"; });
+  ASSERT_NE(mvLayer, mvPlan.layers.end());
+  EXPECT_EQ(mvLayer->sourceHealth, "producing");
+  EXPECT_EQ(mvLayer->sourceDisplayName, "Camera 1");
   const auto state = mediaCore.sessionState();
   bool echoed = false;
   for (const auto& s : state.get("sources")->asArray()) {

@@ -3711,6 +3711,13 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
   renderPlan.fps = outputFps_;
   renderPlan.colorGrade = colorGrade_;
 
+  // #535 slice 4a: multiview tiles draw through the SAME compositor path
+  // (renderMultiview) as Program/Preview, and "failed = dark slate WITH the
+  // source name" exists precisely so a dead source is identifiable on the
+  // multiview at a glance — so these tiles need the same annotation.
+  const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+
   const float mvCanvasW = static_cast<float>(renderPlan.width > 0 ? renderPlan.width : 1920);
   const float mvCanvasH = static_cast<float>(renderPlan.height > 0 ? renderPlan.height : 1080);
 
@@ -3860,6 +3867,9 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
       layer.borderThickness = 2.f;
     }
     layer.order = order++;
+    if (!layer.participantId.empty() || !layer.mediaAssetId.empty()) {
+      annotateLayerSource(layer, videoFrames, nowNs);
+    }
     renderPlan.layers.push_back(std::move(layer));
   }
 
@@ -5613,6 +5623,12 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     layer.sourceOffsetY = 0.f;
     layer.borderStyle = "none";
     layer.borderThickness = 0.f;
+    // #535 slice 4a: layer.sourceId ("background:<assetId>") IS the bus key —
+    // since slice 3a, syncMediaSources keys media bus sources by the frame's
+    // participantId, which OwnedMediaFrameSource::selectVideo stamps from
+    // this same layer.sourceId for backgrounds. annotateLayerSource's key
+    // rule already falls back to sourceId when participantId is empty.
+    annotateLayerSource(layer, videoFrames, nowNs);
     renderPlan.layers.push_back(std::move(layer));
   }
   if (!sceneRoutes.empty()) {
