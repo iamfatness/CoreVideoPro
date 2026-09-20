@@ -1151,7 +1151,11 @@ class ICaptureDevice {
 struct ModuleSet {
   std::unique_ptr<IZoomCaptureSource> zoom;
   std::unique_ptr<ICompositor> compositor;
-  std::unique_ptr<IMediaFrameSource> mediaFrames;
+  // #535 slice 3b: the module set carries a DECODER FACTORY, not one
+  // owner object. core::MediaTransports owns one decoder per media source
+  // and calls this to open each. Empty on a platform with no media
+  // decoder (and in the stub build), which is what MediaCore tests for.
+  std::function<std::unique_ptr<IMediaFrameSource>()> mediaDecoderFactory;
   std::unique_ptr<IAudioMixer> mixer;
   std::unique_ptr<IAudioMonitorOutput> monitorOutput;
   std::unique_ptr<IAudioCaptureSource> audioCapture;
@@ -1172,7 +1176,8 @@ std::unique_ptr<ICompositor> createD3D11Compositor();
 // The macOS Metal twin; returns nullptr unless COREVIDEO_WITH_METAL (mirrors
 // the D3D11 null factory — each is non-null on at most one platform).
 std::unique_ptr<ICompositor> createMetalCompositor();
-std::unique_ptr<IMediaFrameSource> createMediaFoundationMediaFrameSource();
+// One MF decoder per call; empty on a build with no Media Foundation.
+std::function<std::unique_ptr<IMediaFrameSource>()> createMediaFoundationMediaDecoderFactory();
 std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();
 // macOS CoreAudio twins; nullptr unless COREVIDEO_WITH_COREAUDIO.
 std::unique_ptr<IAudioMonitorOutput> createCoreAudioMonitorOutput();

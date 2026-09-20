@@ -14,6 +14,7 @@
 #include "core/CaptureBusRoster.h"
 #include "core/ZoomBusRoster.h"
 #include "core/MediaBusRoster.h"
+#include "core/MediaTransports.h"
 #include "core/SourceContinuityLedger.h"
 #include "core/SourceRegistry.h"
 #include "core/TakeRecordPolicy.h"
@@ -252,6 +253,11 @@ class MediaCore {
   // guarded no-op.
   void addSourceForTest(std::shared_ptr<core::ISource> source);
 
+  // Test seam (#535 slice 3b): the media transport owner, or nullptr when the
+  // module set carries no decoder factory (the stub build). Same law as
+  // setStillImageDecoderForTest — nothing outside native/tests/ calls it.
+  [[nodiscard]] core::MediaTransports* mediaTransportsForTest() { return mediaTransports_.get(); }
+
   // Test seam: the last program frame this core rendered (whatever the stub
   // compositor filled `preview` with). Same law as setStillImageDecoderForTest
   // — nothing outside native/tests/ calls it.
@@ -426,6 +432,13 @@ class MediaCore {
   // own background thread — never under coreMutex). Called from both scene
   // parse sites; cheap (string scan + leaf-mutex publish, no file I/O).
   void syncStillMediaDesired();
+  // #535 slice 3b. Recomputes the DESIRED SET of media transports (non-still
+  // routes + scene backgrounds, Program and Preview) from the scene graphs and
+  // hands it to mediaTransports_->apply(), which owns one decoder per source id
+  // and returns the bus membership changes. COMMAND THREAD ONLY — called from
+  // the same two scene parse sites as syncStillMediaDesired(), never from a
+  // render or audio tick.
+  void syncMediaTransportsDesired();
   void configureSrtIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
   void renderSyntheticTick(bool videoOnly = false, int64_t mediaPresentationTime100ns = -1);
@@ -564,6 +577,12 @@ class MediaCore {
   static constexpr const char* kCoreProcessEpoch = "core-process";
   core::SourceRegistry sourceRegistry_{"core-registry"};
   std::unique_ptr<core::SourceBus> sourceBus_;
+  // DECLARED AFTER sourceBus_ ON PURPOSE, so it is DESTROYED FIRST. Every
+  // kind-"media" bus source holds a shared_ptr to one of its entries, and the
+  // transports' destructor joins the decoder workers — tearing the bus down
+  // first would leave workers running against a half-destroyed owner.
+  // Null when the module set carries no decoder factory (the stub build).
+  std::unique_ptr<core::MediaTransports> mediaTransports_;
   std::unordered_set<std::string> registeredWallIds_;
   // Wall ids SourceRegistry refuses on their SPELLING (over kMaxIdBytes), which
   // no retry can ever change. Skipped outright: a failed add is deliberately not

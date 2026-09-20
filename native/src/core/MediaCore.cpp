@@ -353,6 +353,13 @@ MediaCore::MediaCore(modules::ModuleSet modules)
   // early-out for the no-source case (no meeting, no capture device), not a
   // production-vs-test switch.
   sourceBus_ = std::make_unique<core::SourceBus>();
+  // #535 slice 3b: the media transport owner. One decoder per media source id,
+  // created and retired by apply() from the command-time desired set. Null when
+  // the build has no media decoder (the stub), which is what every media path
+  // below tests for.
+  if (modules_.mediaDecoderFactory) {
+    mediaTransports_ = std::make_unique<core::MediaTransports>(modules_.mediaDecoderFactory);
+  }
   // Put the virtual camera on the RENDER cadence. Publishing it from the ~50Hz
   // output worker capped a 60fps program at 50fps everywhere. The sink runs on
   // the compositor's tap thread; publishNv12 is internally locked and no-ops
@@ -2393,6 +2400,7 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
   }
   warnIfRoutesAndWallCollide(tilesLayer_.present, sceneRoutes_.size(), "program", sceneValidationWarnings_);
   syncStillMediaDesired();
+  syncMediaTransportsDesired();
 }
 
 void MediaCore::syncStillMediaDesired() {
@@ -2419,6 +2427,54 @@ void MediaCore::syncStillMediaDesired() {
   addRoutes(sceneRoutes_, "media:");
   addRoutes(previewSceneRoutes_, "media:");
   stillMediaCache_->setDesired(std::move(desired));
+}
+
+void MediaCore::syncMediaTransportsDesired() {
+  if (!mediaTransports_ || !sourceBus_) return;
+  std::map<std::string, core::MediaTransportDesired> desired;
+  const auto addRoutes = [&](const std::vector<SceneRouteState>& routes, bool program) {
+    for (const auto& r : routes) {
+      if (r.mediaAssetId.empty() || r.mediaAssetPath.empty()) continue;
+      if (modules::isStillImageMediaAsset(r.mediaAssetKind, r.mediaAssetPath)) continue;  // stills: the cache
+      auto& d = desired["media:" + r.mediaAssetId];
+      d.sourceId = "media:" + r.mediaAssetId;
+      d.assetId = r.mediaAssetId;
+      d.kind = r.mediaAssetKind;
+      d.path = modules::normalizeMediaAssetPath(r.mediaAssetPath);
+      d.loop = d.loop || r.mediaAssetLoop;
+      (program ? d.onProgram : d.onPreview) = true;
+    }
+  };
+  // A scene background always LOOPS, so it is always live on either bus; its
+  // `playing` flag is deliberately not read (Task 4 deletes the field).
+  const auto addBackground = [&](const SceneBackgroundState& bg, bool program) {
+    if (!bg.enabled) return;
+    auto& d = desired["background:" + bg.mediaAssetId];
+    d.sourceId = "background:" + bg.mediaAssetId;
+    d.assetId = bg.mediaAssetId;
+    d.kind = bg.mediaAssetKind;
+    d.path = modules::normalizeMediaAssetPath(bg.mediaAssetPath);
+    d.loop = true;
+    (program ? d.onProgram : d.onPreview) = true;
+  };
+  addRoutes(sceneRoutes_, true);
+  addBackground(sceneBackground_, true);
+  if (previewSceneActive_) {
+    addRoutes(previewSceneRoutes_, false);
+    addBackground(previewSceneBackground_, false);
+  }
+  std::vector<core::MediaTransportDesired> rows;
+  rows.reserve(desired.size());
+  for (auto& entry : desired) rows.push_back(std::move(entry.second));
+  const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  for (const auto& change : mediaTransports_->apply(rows, nowNs)) {
+    if (change.added) {
+      sourceBus_->add(std::make_shared<core::MediaAssetSource>(change.sourceId, change.entry));
+    } else {
+      sourceBus_->remove(change.sourceId);
+    }
+  }
 }
 
 void MediaCore::setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
@@ -3692,6 +3748,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   // A preview-scene change is structural; force the next render's event re-emit.
   previewStructureEmitted_ = false;
   syncStillMediaDesired();
+  syncMediaTransportsDesired();
   return true;
 }
 
@@ -5574,19 +5631,12 @@ modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const 
                                       previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
                                       videoFrames, previewTilesLayer_);
   // PERSISTENT SOURCES (spec 2026-09-10 §2): Preview and Program address the
-  // SAME media source. A looping background or a still that is on both buses is
-  // one decoder with one clock, so a Take cannot restart it. The single case
-  // that keeps a Preview-only namespace is a PAUSED CLIP CUE: its poster frame
-  // is a different playback position from Program's rolling copy, and the two
-  // must not replace each other in the frame set.
-  for (auto& layer : plan.layers) {
-    if (layer.mediaAssetId.empty()) continue;
-    const bool pausedClipCue = layer.kind == "media-video" && !layer.mediaAssetPlaying &&
-                               !modules::isStillImageMediaAsset(layer.mediaAssetKind, layer.mediaAssetPath);
-    if (!pausedClipCue) continue;
-    const auto sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
-    layer.sourceId = "preview:" + sourceId;
-  }
+  // SAME media source, with NO exception since #535 slice 3b. The paused clip
+  // cue used to keep a "preview:" namespace of its own, because the poster and
+  // Program's rolling copy were two decoders at two playback positions. They
+  // are ONE transport entry now (one id, one decoder, one clock) whose Cued /
+  // Live state is decided at command time, so a second namespace would split
+  // the very source the slice exists to keep whole.
   // R3: preview keeps the held frame — never a black cut — regardless of the
   // stored per-source policy; only the real Program pass reads it.
   holdDropoutForMonitoring(plan);
@@ -5696,10 +5746,11 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     layer.borderStyle = "none";
     layer.borderThickness = 0.f;
     // #535 slice 4a: layer.sourceId ("background:<assetId>") IS the bus key —
-    // since slice 3a, syncMediaSources keys media bus sources by the frame's
-    // participantId, which OwnedMediaFrameSource::selectVideo stamps from
-    // this same layer.sourceId for backgrounds. annotateLayerSource's key
-    // rule already falls back to sourceId when participantId is empty.
+    // since slice 3b the media bus source IS the transport entry, and
+    // MediaTransports::selectVideo stamps the frame's participantId from the
+    // transport's own sourceId, which is this same string for backgrounds.
+    // annotateLayerSource's key rule already falls back to sourceId when
+    // participantId is empty.
     annotateLayerSource(layer, videoFrames, nowNs);
     renderPlan.layers.push_back(std::move(layer));
   }
@@ -6272,20 +6323,30 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // capture frames first (where the direct insert used to put them), then Zoom.
   std::vector<modules::VideoFrame> captureFrames;   // KEEP this name: the merge below uses it
   std::vector<modules::VideoFrame> zoomBusFrames;
+  // #535 slice 3b. Media rides the early ingest now, but it must SURVIVE the
+  // engine-roster merge below, which rebuilds videoFrames from the engine's
+  // roster and re-appends only capture. A media source matches no engine
+  // participant id, so leaving its frames in the general pile would drop every
+  // clip, loop and background the moment a meeting is live. Kept apart and
+  // re-appended in the merge for exactly the same reason capture is.
+  std::vector<modules::VideoFrame> mediaBusFrames;
   // Shared across every bus ingest this tick (early ingest here, plus the
   // still and decoded-media ingests further down) — one clock read per tick.
   const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
   if (sourceBus_ && !sourceBus_->empty()) {
-    // #535 slice 3a: media and still sources are ingested separately, at the
-    // points they already join the gather below — never here.
+    // #535 slice 3b: media rides THIS ingest, alongside Zoom and capture - its
+    // frames come from its own transport entry, not from a poll that must wait
+    // for the render plan. Only stills are ingested separately, at the point
+    // they already join the gather below.
     auto busResult = sourceBus_->ingest(
         mediaPresentationTime100ns, nowNs,
-        [](const core::SourceDescriptor& d) { return d.kind != "media" && d.kind != "still"; });
+        [](const core::SourceDescriptor& d) { return d.kind != "still"; });
     for (auto& frame : busResult.video) {
       const auto* source = sourceBus_->sourceFor(frame.participantId);
-      const bool isCapture = source && source->descriptor().kind == "capture";
-      (isCapture ? captureFrames : zoomBusFrames).push_back(std::move(frame));
+      const auto kind = source ? source->descriptor().kind : std::string{};
+      auto& bucket = kind == "capture" ? captureFrames : (kind == "media" ? mediaBusFrames : zoomBusFrames);
+      bucket.push_back(std::move(frame));
     }
     // busResult.audio is carried in a later slice (audio gather path); slice 0 is video.
   }
@@ -6293,6 +6354,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   videoFrames.insert(videoFrames.end(),
                      std::make_move_iterator(zoomBusFrames.begin()),
                      std::make_move_iterator(zoomBusFrames.end()));
+  // Media last, where the post-plan poll used to put it (only the no-routes
+  // grid fallback is order-sensitive, and it never draws media).
+  videoFrames.insert(videoFrames.end(), mediaBusFrames.begin(), mediaBusFrames.end());
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     if (!engineFrames.empty()) {
       // When the engine reports subscribed video participants, they are the
@@ -6320,6 +6384,9 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       }
       for (auto& captureFrame : captureFrames) {
         merged.push_back(std::move(captureFrame));
+      }
+      for (auto& mediaFrame : mediaBusFrames) {
+        merged.push_back(std::move(mediaFrame));
       }
       videoFrames = std::move(merged);
     }
@@ -6793,30 +6860,17 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
        modules_.compositor->wantsFullProgramReadbackForRecording());
 
-  if (modules_.mediaFrames) {
-    // ORDER IS LOAD-BEARING: Program's layers first, Preview's appended. Play state is not part of a
-    // media source's key, and OwnedMediaFrameSource::requests() lets the FIRST request for a key win,
-    // so this order is what keeps Program authoritative when a shared key arrives paused on Preview.
-    auto mediaLayers = renderPlan.layers;
-    if (hasPreviewScene()) {
-      const auto previewMediaPlan = buildPreviewCompositorRenderPlan(videoFrames);
-      mediaLayers.insert(mediaLayers.end(), previewMediaPlan.layers.begin(), previewMediaPlan.layers.end());
-    }
-    auto polledMedia = modules_.mediaFrames->pollMediaFramesAt100ns(mediaLayers, mediaPresentationTime100ns);
-    core::syncMediaSources(*sourceBus_, polledMedia, "media");
-    auto media = sourceBus_->ingest(mediaPresentationTime100ns, nowNs,
-                                    [](const core::SourceDescriptor& d) { return d.kind == "media"; });
-    videoFrames.insert(videoFrames.end(), std::make_move_iterator(media.video.begin()),
-                       std::make_move_iterator(media.video.end()));
-    for (const auto& warning : modules_.mediaFrames->warnings()) {
+  // #535 slice 3b: media frames already arrived with the EARLY bus ingest above
+  // (their transport entries are fed from the command-time desired set, not
+  // from this plan), so nothing is polled here. What remains is failure
+  // honesty: fold the transports' warnings into the render plan so they reach
+  // snapshot diagnostics.
+  if (mediaTransports_) {
+    for (const auto& warning : mediaTransports_->warnings()) {
       if (std::find(renderPlan.warnings.begin(), renderPlan.warnings.end(), warning) == renderPlan.warnings.end()) {
         renderPlan.warnings.push_back(warning);
       }
     }
-  } else {
-    // No media module (cannot happen today) — clear any stale "media" bus
-    // sources rather than let them linger silently forever.
-    core::syncMediaSources(*sourceBus_, {}, "media");
   }
   // Failure honesty: surface still-media decode failures (missing file, bad
   // image) in the render-plan warnings so they reach snapshot diagnostics —
@@ -7276,12 +7330,13 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
     auto transportAudio = modules_.captureDevice->pollAudioFrames(frameTimestampMs);
     audioFrames.insert(audioFrames.end(), transportAudio.begin(), transportAudio.end());
   }
-  if (modules_.mediaFrames) {
-    // Media-layer audio needs the active scene layers; rebuild the plan here (it is
-    // derived from scene-route / media-playback state, not from the polled frames).
-    const auto plan = buildCompositorRenderPlan({});
-    auto mediaAudioFrames = modules_.mediaFrames->pollMediaAudioFrames(plan.layers, frameTimestampMs);
-    audioFrames.insert(audioFrames.end(), mediaAudioFrames.begin(), mediaAudioFrames.end());
+  if (mediaTransports_) {
+    // #535 slice 3b: no render plan is built here any more. Each transport
+    // entry knows whether it is Live, so the audio window it is due is a
+    // property of the transport, not of this tick's scene layers.
+    auto mediaAudioFrames = mediaTransports_->popAudio(frameTimestampMs);
+    audioFrames.insert(audioFrames.end(), std::make_move_iterator(mediaAudioFrames.begin()),
+                       std::make_move_iterator(mediaAudioFrames.end()));
   }
 
   // One contiguous PCM frame per source per tick: multiple 10ms packets drained

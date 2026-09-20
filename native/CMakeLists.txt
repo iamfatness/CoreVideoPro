@@ -609,7 +609,6 @@ if(BUILD_TESTING)
     tests/IsolatedOutputSenderTest.cpp
     tests/OutputDestinationSupervisorTest.cpp
     tests/AudioDspTest.cpp
-    tests/MediaCueHandoffTest.cpp
     tests/GpuVideoEncoderPolicyTest.cpp
     tests/BrowserHostExitMessageTest.cpp
     tests/IsoFrameConformTest.cpp

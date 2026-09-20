@@ -2,17 +2,21 @@
 #include "core/RenderedSceneAttributionPolicy.h"
 #include "core/SourceContinuityLedger.h"
 #include "core/TakeRecordPolicy.h"
+#include "MediaTestSupport.h"
 #include "modules/Interfaces.h"
 #include "modules/ZoomSubscriptionChurnPolicy.h"
 #include "rpc/Json.h"
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -356,12 +360,31 @@ class CountingMediaFrameSource final : public corevideo::modules::IMediaFrameSou
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
       const auto sourceId = mediaSourceId(layer);
-      frames.push_back(solidMediaFrame(sourceId, ++frameIds[sourceId], timestampMs, 16, 16));
+      std::int64_t next = 0;
+      {
+        std::lock_guard<std::mutex> lock(mutex());
+        next = ++frameIds[sourceId];
+      }
+      frames.push_back(solidMediaFrame(sourceId, next, timestampMs, 16, 16));
     }
     return frames;
   }
-  void restart(const std::string& sourceId) { frameIds[sourceId] = 0; }
-  std::map<std::string, std::int64_t> frameIds;
+  // #535 slice 3b: the module set carries a FACTORY, so each media source gets
+  // its own instance on its own worker. The frame-id book is shared and static
+  // so a test can still reopen one source's decoder mid-run.
+  static void restart(const std::string& sourceId) {
+    std::lock_guard<std::mutex> lock(mutex());
+    frameIds[sourceId] = 0;
+  }
+  static void resetAll() {
+    std::lock_guard<std::mutex> lock(mutex());
+    frameIds.clear();
+  }
+  static std::mutex& mutex() {
+    static std::mutex m;
+    return m;
+  }
+  static inline std::map<std::string, std::int64_t> frameIds;
 };
 
 // A decoder that cold-starts: the first time a source is asked for, it has
@@ -457,13 +480,22 @@ bool arrayContains(const corevideo::rpc::Json* node, const std::string& value) {
 TEST(TakeRecord, ASharedBackgroundThatKeptItsGenerationIsACut) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  auto media = std::make_unique<CountingMediaFrameSource>();
-  modules.mediaFrames = std::move(media);
+  CountingMediaFrameSource::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingMediaFrameSource>();
   MediaCore core(std::move(modules));
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-a", "bg-1")});
-  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [](MediaCore& c) {
+    return corevideo::testing::busSourceProducing(c, "background:bg-1");
+  }));
+  for (int i = 0; i < 5; ++i) {
+    core.renderDisplayTick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  // Let the worker queue frames past the ones already presented, so the take's
+  // "after" half is a genuinely later picture rather than a same-instant read.
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
   (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-b", "bg-1")});
   core.renderDisplayTick();
 
@@ -484,16 +516,27 @@ TEST(TakeRecord, ASharedBackgroundThatKeptItsGenerationIsACut) {
 TEST(TakeRecord, ASharedBackgroundThatRestartedAcrossTheTakeIsRebuilt) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  auto media = std::make_unique<CountingMediaFrameSource>();
-  auto* mediaPtr = media.get();
-  modules.mediaFrames = std::move(media);
+  CountingMediaFrameSource::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingMediaFrameSource>();
   MediaCore core(std::move(modules));
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-a", "bg-1")});
-  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [](MediaCore& c) {
+    return corevideo::testing::busSourceProducing(c, "background:bg-1");
+  }));
+  for (int i = 0; i < 5; ++i) {
+    core.renderDisplayTick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  // The decoder reopened. It is restarted BEFORE the take command and given the
+  // worker time to refill its presentation queue from frameId 1: with the audio
+  // worker enabled applyCommands renders NO tick, so nothing observes the
+  // regression until the display tick below - which is exactly the first
+  // program tick after the take, where the record's "after" half is taken.
+  CountingMediaFrameSource::restart("background:bg-1");
+  std::this_thread::sleep_for(std::chrono::milliseconds(25));
   (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-b", "bg-1")});
-  mediaPtr->restart("background:bg-1");  // the decoder reopened on the take
   core.renderDisplayTick();
 
   const auto snapshot = core.sessionState();
@@ -509,7 +552,7 @@ TEST(TakeRecord, ASharedBackgroundThatRestartedAcrossTheTakeIsRebuilt) {
 TEST(TakeRecord, AMediaBackgroundThatHasNoFrameOnTheFirstProgramTickIsRebuilt) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  modules.mediaFrames = std::make_unique<ColdStartMediaFrameSource>();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartMediaFrameSource>();
   MediaCore core(std::move(modules));
   core.enableAudioOutputWorker();
 
@@ -622,13 +665,21 @@ TEST(TakeRecord, ASourceSeenOnPreviewBeforeTheTakeIsJudgedAsShared) {
 TEST(TakeRecord, ABackgroundTakenFromPreviewIsAlreadyRunningOnProgram) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  modules.mediaFrames = std::make_unique<ColdStartMediaFrameSource>();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartMediaFrameSource>();
   MediaCore core(std::move(modules));
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{
       emptyScene("scene-a"), backgroundScene("scene-b", "bg-1", "set-preview-scene")});
-  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  // This one asserts the cue is ALREADY RUNNING when Program takes it, so it
+  // pumps (unlike the cold-start tests above, which deliberately do not).
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [](MediaCore& c) {
+    return corevideo::testing::busSourceProducing(c, "background:bg-1");
+  }));
+  for (int i = 0; i < 5; ++i) {
+    core.renderDisplayTick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
   (void)core.applyCommands(corevideo::rpc::Json::Array{
       backgroundScene("scene-b", "bg-1"), emptyScene("scene-a", "set-preview-scene")});
   core.renderDisplayTick();

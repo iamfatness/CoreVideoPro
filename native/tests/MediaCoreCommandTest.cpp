@@ -4,6 +4,7 @@
 #include "core/MediaCore.h"
 
 #include "EncoderCapacityProbeTestSupport.h"
+#include "MediaTestSupport.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
@@ -27,6 +28,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <mutex>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -159,23 +161,62 @@ class SinePcmTestZoomSource final : public corevideo::modules::IZoomCaptureSourc
   int64_t tick_ = 0;
 };
 
+// #535 slice 3b: the module set carries a decoder FACTORY, so MediaTransports
+// builds ONE of these per media source, on that source's own worker thread. A
+// test can no longer hold the single instance it injected, so everything a test
+// reads is STATIC and mutex-guarded, and reset() is called by every test that
+// reads it. `seenSourceIds` is first-seen order with no duplicates and
+// `seenLoops` carries the LATEST loop flag per id, because a worker polls its
+// own layer over and over rather than the whole plan once per tick.
 class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
  public:
+  SolidMediaFrameSource() { ++created; }
+
+  static std::mutex& seenMutex() {
+    static std::mutex mutex;
+    return mutex;
+  }
+  static void reset() {
+    std::lock_guard<std::mutex> lock(seenMutex());
+    seenSourceIds.clear();
+    seenLoops.clear();
+    pollCount = 0;
+    audioPollCount = 0;
+    created = 0;
+  }
+  static std::vector<std::string> sourceIds() {
+    std::lock_guard<std::mutex> lock(seenMutex());
+    return seenSourceIds;
+  }
+  static std::vector<std::string> sortedSourceIds() {
+    auto ids = sourceIds();
+    std::sort(ids.begin(), ids.end());
+    return ids;
+  }
+  // The loop flag last seen for `sourceId`; false when it was never requested.
+  static bool loopFor(const std::string& sourceId) {
+    std::lock_guard<std::mutex> lock(seenMutex());
+    const auto found = seenLoops.find(sourceId);
+    return found != seenLoops.end() && found->second;
+  }
+
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
       const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
       int64_t timestampMs) override {
-    ++pollCount;
-    seenPlaybackKeys.clear();
-    seenSourceIds.clear();
-    seenLoops.clear();
+    const int64_t poll = ++pollCount;
     std::vector<corevideo::modules::VideoFrame> frames;
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) {
         continue;
       }
-      seenPlaybackKeys.push_back(layer.mediaPlaybackKey);
-      seenSourceIds.push_back(layer.sourceId);
-      seenLoops.push_back(layer.mediaAssetLoop);
+      {
+        std::lock_guard<std::mutex> lock(seenMutex());
+        const auto id = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+        if (std::find(seenSourceIds.begin(), seenSourceIds.end(), id) == seenSourceIds.end()) {
+          seenSourceIds.push_back(id);
+        }
+        seenLoops[id] = layer.mediaAssetLoop;
+      }
       corevideo::modules::VideoFrame frame;
       frame.participantId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
       frame.width = kWidth;
@@ -186,7 +227,7 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
       frame.pixelWidth = kWidth;
       frame.pixelHeight = kHeight;
       frame.pixelStride = kWidth * 4;
-      frame.frameId = pollCount;
+      frame.frameId = poll;
       auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * 4u);
       for (size_t index = 0; index < pixels->size(); index += 4) {
         (*pixels)[index + 0] = blue;
@@ -239,14 +280,15 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
 
   static constexpr int kWidth = 16;
   static constexpr int kHeight = 16;
-  uint8_t blue = 0x22;
-  uint8_t green = 0xb4;
-  uint8_t red = 0xf1;
-  int64_t pollCount = 0;
-  int64_t audioPollCount = 0;
-  std::vector<std::string> seenPlaybackKeys;
-  std::vector<std::string> seenSourceIds;
-  std::vector<bool> seenLoops;
+  static constexpr uint8_t blue = 0x22;
+  static constexpr uint8_t green = 0xb4;
+  static constexpr uint8_t red = 0xf1;
+  static inline std::atomic<int64_t> pollCount{0};
+  static inline std::atomic<int64_t> audioPollCount{0};
+  // Decoder instances the factory built: ONE per media source id.
+  static inline std::atomic<int> created{0};
+  static inline std::vector<std::string> seenSourceIds;          // guarded by seenMutex()
+  static inline std::map<std::string, bool> seenLoops;           // guarded by seenMutex()
 };
 
 class CapturingOutputSender final : public corevideo::modules::IOutputSender {
@@ -2818,14 +2860,13 @@ TEST(MediaCoreCommand, StreamOutputPrefersRoutedStreamBusAudio) {
 
 TEST(MediaCoreCommand, SceneMediaAudioRoutesToStreamOutput) {
   auto modules = corevideo::modules::createStubModules();
-  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
-  auto* mediaFramesPtr = mediaFrames.get();
-  modules.mediaFrames = std::move(mediaFrames);
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
   auto* outputSender = new CapturingOutputSender();
   modules.outputSender.reset(outputSender);
   corevideo::core::MediaCore mediaCore(std::move(modules));
 
-  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "load-scene-graph"},
           {"sceneId", "media-program-audio"},
@@ -2867,7 +2908,14 @@ TEST(MediaCoreCommand, SceneMediaAudioRoutesToStreamOutput) {
     return peak;
   };
 
-  EXPECT_TRUE(mediaFramesPtr->audioPollCount > 0);
+  // #535 slice 3b: the decoder runs on its own worker, so its PCM cannot be on
+  // the tick that loaded the scene. Pump full ticks until it is, and read the
+  // snapshot of THAT tick - media audio is a window, not a level.
+  corevideo::rpc::Json state;
+  ASSERT_TRUE(corevideo::testing::applyUntil(mediaCore, [&](corevideo::core::MediaCore& core) {
+    return peakOf(core.audioBusTapPcm("stream")) > 0.05f && peakOf(core.programAudioTapPcm()) > 0.f;
+  }, 3000, &state)) << "media PCM never reached the stream bus";
+  EXPECT_TRUE(SolidMediaFrameSource::audioPollCount > 0);
   const auto& stream = mediaCore.audioBusTapPcm("stream");
   const auto& master = mediaCore.programAudioTapPcm();
   ASSERT_FALSE(stream.empty());
@@ -2998,12 +3046,11 @@ TEST(AudioControlSourcePolicy, MediaClipsAreGovernedByTheShellMediaControls) {
 // no strip, the FADER LAW dropped it, and master/stream/recording were silent.
 TEST(MediaCoreCommand, SceneMediaAudioReachesMasterThroughTheShellMediaStrip) {
   auto modules = corevideo::modules::createStubModules();
-  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
-  auto* mediaFramesPtr = mediaFrames.get();
-  modules.mediaFrames = std::move(mediaFrames);
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
 
-  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "load-scene-graph"},
           {"sceneId", "media-shell-console"},
@@ -3013,7 +3060,12 @@ TEST(MediaCoreCommand, SceneMediaAudioReachesMasterThroughTheShellMediaStrip) {
       shellMediaRouting(),
   });
 
-  ASSERT_TRUE(mediaFramesPtr->audioPollCount > 0);
+  corevideo::rpc::Json state;
+  ASSERT_TRUE(corevideo::testing::applyUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+    return peakOfSamples(core.programAudioTapPcm()) > 0.05f &&
+           peakOfSamples(core.audioBusTapPcm("stream")) > 0.05f;
+  }, 3000, &state)) << "media PCM never reached the master bus";
+  ASSERT_TRUE(SolidMediaFrameSource::audioPollCount > 0);
   const auto& master = mediaCore.programAudioTapPcm();
   ASSERT_FALSE(master.empty()) << "media PCM never reached the master bus";
   EXPECT_TRUE(peakOfSamples(master) > 0.05f);
@@ -3042,7 +3094,8 @@ TEST(MediaCoreCommand, SceneMediaAudioReachesMasterThroughTheShellMediaStrip) {
 // (each keeps its own source slot — neither overwrites the other).
 TEST(MediaCoreCommand, TwoMediaClipsBothSumThroughTheOneMediaStrip) {
   auto modules = corevideo::modules::createStubModules();
-  modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
 
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -3058,14 +3111,17 @@ TEST(MediaCoreCommand, TwoMediaClipsBothSumThroughTheOneMediaStrip) {
 
   // The fake emits the same 0.2-peak in-phase sine per clip: one clip alone
   // peaks at ~0.2, both summed at ~0.4.
-  EXPECT_TRUE(peakOfSamples(mediaCore.programAudioTapPcm()) > 0.3f);
+  EXPECT_TRUE(corevideo::testing::applyUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+    return peakOfSamples(core.programAudioTapPcm()) > 0.3f;
+  }));
 }
 
 // An explicit per-clip strip or send (exact `media:<assetId>`) wins over the alias.
 TEST(MediaCoreCommand, AnExplicitPerClipStripAndSendWinOverTheMediaAlias) {
   {
     auto modules = corevideo::modules::createStubModules();
-    modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+    SolidMediaFrameSource::reset();
+    modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
     corevideo::core::MediaCore mediaCore(std::move(modules));
     // Generic Media strip muted, the clip's own strip open: the clip is audible.
     (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -3078,11 +3134,14 @@ TEST(MediaCoreCommand, AnExplicitPerClipStripAndSendWinOverTheMediaAlias) {
                                                   shellAudioStrip("media:clip-intro")}),
         shellMediaRouting(),
     });
-    EXPECT_TRUE(peakOfSamples(mediaCore.programAudioTapPcm()) > 0.05f);
+    EXPECT_TRUE(corevideo::testing::applyUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+      return peakOfSamples(core.programAudioTapPcm()) > 0.05f;
+    }));
   }
   {
     auto modules = corevideo::modules::createStubModules();
-    modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+    SolidMediaFrameSource::reset();
+    modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
     corevideo::core::MediaCore mediaCore(std::move(modules));
     // The clip's own send (aux-1 only) replaces the generic media sends for it.
     (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -3096,7 +3155,9 @@ TEST(MediaCoreCommand, AnExplicitPerClipStripAndSendWinOverTheMediaAlias) {
             {"sourceId", "media:clip-intro"}, {"busId", "aux-1"}, {"gainDb", 0},
             {"busPluginInserts", corevideo::rpc::Json::Array{}}}}),
     });
-    EXPECT_TRUE(peakOfSamples(mediaCore.audioBusTapPcm("aux-1")) > 0.05f);
+    EXPECT_TRUE(corevideo::testing::applyUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+      return peakOfSamples(core.audioBusTapPcm("aux-1")) > 0.05f;
+    }));
     EXPECT_TRUE(peakOfSamples(mediaCore.programAudioTapPcm()) < 0.001f);
   }
 }
@@ -3106,7 +3167,8 @@ TEST(MediaCoreCommand, AnExplicitPerClipStripAndSendWinOverTheMediaAlias) {
 // through the alias strip), including the clip's own explicit send.
 TEST(MediaCoreCommand, AClipWithItsOwnSendIsStillSilencedByTheMutedMediaStrip) {
   auto modules = corevideo::modules::createStubModules();
-  modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
@@ -3121,6 +3183,11 @@ TEST(MediaCoreCommand, AClipWithItsOwnSendIsStillSilencedByTheMutedMediaStrip) {
           corevideo::rpc::Json::Object{{"sourceId", "media:clip-intro"}, {"busId", "master"}, {"gainDb", 0},
                                        {"busPluginInserts", corevideo::rpc::Json::Array{}}}}),
   });
+  // The decoder is asynchronous now, so run real ticks before asserting an
+  // ABSENCE - a tick-zero assertion would pass whether or not the fader law
+  // holds. The decoder has certainly produced by the time it has been polled.
+  corevideo::testing::applyTicks(mediaCore, 40);
+  EXPECT_TRUE(SolidMediaFrameSource::pollCount > 0) << "the clip never decoded, so silence proves nothing";
   for (const char* busId : {"master", "pgm-l", "pgm-r", "stream", "mon", "aux-1"}) {
     EXPECT_TRUE(peakOfSamples(mediaCore.audioBusTapPcm(busId)) < 0.001f) << busId;
   }
@@ -3149,7 +3216,8 @@ TEST(MediaCoreCommand, TheMediaStripCompressesTheSumOfItsClipsInOneChain) {
   };
   const auto runWithClips = [&](corevideo::rpc::Json::Array routes, std::vector<std::string>* dspIds) {
     auto modules = corevideo::modules::createStubModules();
-    modules.mediaFrames = std::make_unique<SolidMediaFrameSource>();
+    SolidMediaFrameSource::reset();
+    modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
     corevideo::core::MediaCore mediaCore(std::move(modules));
     (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
         corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "compressed-media"},
@@ -3157,10 +3225,23 @@ TEST(MediaCoreCommand, TheMediaStripCompressesTheSumOfItsClipsInOneChain) {
         shellAudioMix(corevideo::rpc::Json::Array{compressedMediaStrip(), shellAudioStrip("zoom-mix")}),
         shellMediaRouting(),
     });
-    const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
-    if (dspIds != nullptr) *dspIds = mediaCore.channelDspStateIdsForTest();
-    const auto* strip = audioMixParticipant(state, "media");
-    return strip == nullptr ? -1.0 : strip->get("gainReductionDb")->asNumber();
+    // #535 slice 3b: each clip decodes on its OWN worker, so the two only land
+    // in the same 20 ms audio window once both are rolling - a single tick can
+    // legitimately carry one clip and read 0 dB. Take the PEAK gain reduction
+    // over a bounded window: one clip can never compress (its 0.2 peak is below
+    // the -12 dBFS threshold), so a max is exact for both legs of this test.
+    double peakGr = -1.0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+      if (dspIds != nullptr) *dspIds = mediaCore.channelDspStateIdsForTest();
+      if (const auto* strip = audioMixParticipant(state, "media")) {
+        peakGr = std::max(peakGr, strip->get("gainReductionDb")->asNumber());
+      }
+      if (peakGr > 0.5) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return peakGr < 0.0 ? -1.0 : peakGr;
   };
 
   const double oneClipGr = runWithClips(corevideo::rpc::Json::Array{playingMediaRoute("clip-a", "clip-a")}, nullptr);
@@ -3190,7 +3271,7 @@ TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
   std::filesystem::remove(videoPath);
   writeMfVideoFixture(videoPath);
 
-  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
   corevideo::modules::CompositorRenderPlanLayer layer;
   layer.kind = "media-video";
@@ -3225,7 +3306,7 @@ TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   std::filesystem::remove(wavPath);
   writeSineWaveFile(wavPath, 44100, 1);
 
-  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
 
   corevideo::modules::CompositorRenderPlanLayer layer;
@@ -3307,7 +3388,7 @@ TEST(MediaFoundationMediaFrameSource, PausingMidPlaybackHoldsTheOnAirFrameAndRes
       ("corevideo-mf-pause-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".mp4");
   writeMfVideoFixture(videoPath);
   struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{videoPath};
-  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
   corevideo::modules::CompositorRenderPlanLayer layer;
   layer.kind = "media-video";
@@ -3359,7 +3440,7 @@ TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePaused
       ("corevideo-mf-pause-audio-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".wav");
   writeTimecodedFloatWav(wavPath, 3);
   struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{wavPath};
-  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
   corevideo::modules::CompositorRenderPlanLayer layer;
   layer.kind = "media-video";
@@ -3441,7 +3522,7 @@ TEST(MediaFoundationMediaFrameSource, AnFfmpegDecodedClipResumesFromThePausedPos
   _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", ffmpegDir.string().c_str());
   struct RestoreEnv { std::string value; ~RestoreEnv() { _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", value.c_str()); } } restoreEnv{restore};
 
-  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
   corevideo::modules::CompositorRenderPlanLayer layer;
   layer.kind = "media-video";
@@ -3528,7 +3609,7 @@ TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositi
   } savedDir{"COREVIDEO_FFMPEG_BIN_DIR"}, savedAltDir{"FFMPEG_BIN_DIR"}, savedPath{"PATH"};
   _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", ffmpegDir.string().c_str());
 
-  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
   corevideo::modules::CompositorRenderPlanLayer layer;
   layer.kind = "media-video";
@@ -4766,9 +4847,8 @@ TEST(MediaCoreCommand, CompositesRealZoomPixelsIntoProgramPreview) {
 
 TEST(MediaCoreCommand, KeepsSceneBackgroundAndProgramMediaRouteFrameSourcesDistinct) {
   auto modules = corevideo::modules::createStubModules();
-  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
-  auto* mediaFramesPtr = mediaFrames.get();
-  modules.mediaFrames = std::move(mediaFrames);
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
 
   corevideo::core::MediaCore mediaCore(std::move(modules));
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -4800,16 +4880,17 @@ TEST(MediaCoreCommand, KeepsSceneBackgroundAndProgramMediaRouteFrameSourcesDisti
   });
 
   // A loop source and a clip source over the same file are two sources by kind
-  // (persistent-sources spec §2), so they stay distinct.
-  ASSERT_TRUE(mediaFramesPtr->seenSourceIds.size() == 2u);
-  EXPECT_EQ(mediaFramesPtr->seenSourceIds[0], "background:clip-intro");
-  EXPECT_EQ(mediaFramesPtr->seenSourceIds[1], "media:clip-intro");
-  ASSERT_TRUE(mediaFramesPtr->seenPlaybackKeys.size() == 2u);
-  EXPECT_TRUE(mediaFramesPtr->seenPlaybackKeys[0].empty());
-  EXPECT_EQ(mediaFramesPtr->seenPlaybackKeys[1], "media:clip-intro");
-  ASSERT_TRUE(mediaFramesPtr->seenLoops.size() == 2u);
-  EXPECT_TRUE(mediaFramesPtr->seenLoops[0]);
-  EXPECT_FALSE(mediaFramesPtr->seenLoops[1]);
+  // (persistent-sources spec §2), so they stay distinct - two desired rows,
+  // two transports, two decoder instances.
+  ASSERT_TRUE(corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+    return corevideo::testing::busSourceProducing(core, "media:clip-intro") &&
+           corevideo::testing::busSourceProducing(core, "background:clip-intro");
+  }));
+  const std::vector<std::string> expectedIds{"background:clip-intro", "media:clip-intro"};
+  EXPECT_EQ(SolidMediaFrameSource::sortedSourceIds(), expectedIds);
+  EXPECT_EQ(SolidMediaFrameSource::created.load(), 2);
+  EXPECT_TRUE(SolidMediaFrameSource::loopFor("background:clip-intro"));
+  EXPECT_FALSE(SolidMediaFrameSource::loopFor("media:clip-intro"));
 
   const auto previews = mediaCore.drainProgramFramePreviewEvents();
   ASSERT_FALSE(previews.empty());
@@ -4821,12 +4902,11 @@ TEST(MediaCoreCommand, KeepsSceneBackgroundAndProgramMediaRouteFrameSourcesDisti
 
 TEST(MediaCoreCommand, CompositesMediaRoutePixelsIntoProgramPreview) {
   auto modules = corevideo::modules::createStubModules();
-  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
-  const uint8_t expectedBlue = mediaFrames->blue;
-  const uint8_t expectedGreen = mediaFrames->green;
-  const uint8_t expectedRed = mediaFrames->red;
-  auto* mediaFramesPtr = mediaFrames.get();
-  modules.mediaFrames = std::move(mediaFrames);
+  SolidMediaFrameSource::reset();
+  const uint8_t expectedBlue = SolidMediaFrameSource::blue;
+  const uint8_t expectedGreen = SolidMediaFrameSource::green;
+  const uint8_t expectedRed = SolidMediaFrameSource::red;
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
 
   corevideo::core::MediaCore mediaCore(std::move(modules));
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -4849,11 +4929,28 @@ TEST(MediaCoreCommand, CompositesMediaRoutePixelsIntoProgramPreview) {
       },
   });
 
-  EXPECT_GE(mediaFramesPtr->pollCount, 1);
-  ASSERT_FALSE(mediaFramesPtr->seenPlaybackKeys.empty());
-  EXPECT_EQ(mediaFramesPtr->seenPlaybackKeys.front(), "program-take:4:media:clip-intro");
-  const auto previews = mediaCore.drainProgramFramePreviewEvents();
-  ASSERT_FALSE(previews.empty());
+  // The playback KEY is gone (#535 slice 3b): a go-live is an in-place Resume
+  // on the SAME transport entry, so what the decoder is handed is the source id
+  // and its loop flag, served by exactly ONE decoder instance.
+  ASSERT_TRUE(corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+    return corevideo::testing::busSourceProducing(core, "media:clip-intro");
+  }));
+  EXPECT_GE(SolidMediaFrameSource::pollCount.load(), 1);
+  EXPECT_EQ(SolidMediaFrameSource::created.load(), 1);
+  EXPECT_EQ(SolidMediaFrameSource::sourceIds(), std::vector<std::string>{"media:clip-intro"});
+  EXPECT_FALSE(SolidMediaFrameSource::loopFor("media:clip-intro"));
+  // A display tick sets skipCpuReadback (no outputs, no program buffer) AND the
+  // base64 preview rides a ~30fps throttle, so the only event pending after the
+  // pump is the COLD-START one. Discard it and pump FULL ticks until a fresh
+  // preview - the one carrying the now-decoded clip - is emitted.
+  (void)mediaCore.drainProgramFramePreviewEvents();
+  std::vector<corevideo::rpc::Json> previews;
+  ASSERT_TRUE(corevideo::testing::applyUntil(mediaCore, [&](corevideo::core::MediaCore& core) {
+    for (auto& event : core.drainProgramFramePreviewEvents()) {
+      if (event.get("preview") != nullptr) previews.push_back(std::move(event));
+    }
+    return !previews.empty();
+  }));
   const auto* preview = previews.back().get("preview");
   ASSERT_NE(preview, nullptr);
   const int previewWidth = static_cast<int>(preview->get("width")->asNumber());
@@ -4886,11 +4983,11 @@ TEST(MediaCoreCommand, CompositesMediaRoutePixelsIntoProgramPreview) {
 // on the next tick.
 TEST(MediaCoreCommand, MediaRouteAppearsOnTheSourceBusAndLeavesWhenUnrouted) {
   auto modules = corevideo::modules::createStubModules();
-  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
-  const uint8_t expectedBlue = mediaFrames->blue;
-  const uint8_t expectedGreen = mediaFrames->green;
-  const uint8_t expectedRed = mediaFrames->red;
-  modules.mediaFrames = std::move(mediaFrames);
+  SolidMediaFrameSource::reset();
+  const uint8_t expectedBlue = SolidMediaFrameSource::blue;
+  const uint8_t expectedGreen = SolidMediaFrameSource::green;
+  const uint8_t expectedRed = SolidMediaFrameSource::red;
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
 
   corevideo::core::MediaCore mediaCore(std::move(modules));
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -4913,6 +5010,9 @@ TEST(MediaCoreCommand, MediaRouteAppearsOnTheSourceBusAndLeavesWhenUnrouted) {
       },
   });
 
+  ASSERT_TRUE(corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+    return corevideo::testing::busSourceProducing(core, "media:clip-intro");
+  }));
   auto state = mediaCore.sessionState();
   const auto* sources = state.get("sources");
   ASSERT_NE(sources, nullptr);
@@ -4927,8 +5027,16 @@ TEST(MediaCoreCommand, MediaRouteAppearsOnTheSourceBusAndLeavesWhenUnrouted) {
   }
   EXPECT_TRUE(found);
 
-  const auto previews = mediaCore.drainProgramFramePreviewEvents();
-  ASSERT_FALSE(previews.empty());
+  // As above: discard the cold-start preview and pump full ticks until a fresh
+  // one (past the ~30fps base64 throttle) carries the decoded clip.
+  (void)mediaCore.drainProgramFramePreviewEvents();
+  std::vector<corevideo::rpc::Json> previews;
+  ASSERT_TRUE(corevideo::testing::applyUntil(mediaCore, [&](corevideo::core::MediaCore& core) {
+    for (auto& event : core.drainProgramFramePreviewEvents()) {
+      if (event.get("preview") != nullptr) previews.push_back(std::move(event));
+    }
+    return !previews.empty();
+  }));
   const auto* preview = previews.back().get("preview");
   ASSERT_NE(preview, nullptr);
   const int previewWidth = static_cast<int>(preview->get("width")->asNumber());
@@ -5753,9 +5861,8 @@ TEST(MediaCoreCommand, PartialSyncMissingASourceHoldsItsRoutesAndChannel) {
 // media source, so a Take cannot cold-start the background it cuts to.
 TEST(MediaCoreCommand, ALoopingBackgroundHasOneFrameSourceIdOnBothBuses) {
   auto modules = corevideo::modules::createStubModules();
-  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
-  auto* mediaFramesPtr = mediaFrames.get();
-  modules.mediaFrames = std::move(mediaFrames);
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
 
   const auto background = corevideo::rpc::Json::Object{
@@ -5767,20 +5874,23 @@ TEST(MediaCoreCommand, ALoopingBackgroundHasOneFrameSourceIdOnBothBuses) {
       corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
                                    {"background", background}, {"routes", corevideo::rpc::Json::Array{}}},
   });
-  mediaCore.renderDisplayTick();
+  ASSERT_TRUE(corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+    return corevideo::testing::busSourceProducing(core, "background:bg-loop");
+  }));
 
   // Program and Preview both asked for the SAME source id: one decoder, one clock.
-  std::vector<std::string> ids = mediaFramesPtr->seenSourceIds;
-  ASSERT_EQ(ids.size(), 2u);
-  EXPECT_EQ(ids[0], "background:bg-loop");
-  EXPECT_EQ(ids[1], "background:bg-loop");
+  EXPECT_EQ(SolidMediaFrameSource::sourceIds(), std::vector<std::string>{"background:bg-loop"});
+  EXPECT_EQ(SolidMediaFrameSource::created.load(), 1);
 }
 
-TEST(MediaCoreCommand, APausedClipCueInPreviewKeepsItsOwnPosterSource) {
+// #535 slice 3b: the paused clip cue no longer keeps a "preview:" namespace of
+// its own. A cue and its live clip are the SAME transport entry (one id, one
+// decoder, one clock) whose Cued/Live state is decided at command time, so the
+// Preview poster and the Program roll can never be two decoders again.
+TEST(MediaCoreCommand, APausedClipCueInPreviewSharesTheProgramSource) {
   auto modules = corevideo::modules::createStubModules();
-  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
-  auto* mediaFramesPtr = mediaFrames.get();
-  modules.mediaFrames = std::move(mediaFrames);
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
 
   const auto clipRoute = [](bool playing) {
@@ -5796,12 +5906,12 @@ TEST(MediaCoreCommand, APausedClipCueInPreviewKeepsItsOwnPosterSource) {
       corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
                                    {"routes", corevideo::rpc::Json::Array{clipRoute(false)}}},
   });
-  mediaCore.renderDisplayTick();
+  ASSERT_TRUE(corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+    return corevideo::testing::busSourceProducing(core, "media:clip-1");
+  }));
 
-  std::vector<std::string> ids = mediaFramesPtr->seenSourceIds;
-  ASSERT_EQ(ids.size(), 2u);
-  EXPECT_EQ(ids[0], "media:clip-1");
-  EXPECT_EQ(ids[1], "preview:media:clip-1");  // the ONE case a second position is legitimate
+  EXPECT_EQ(SolidMediaFrameSource::sourceIds(), std::vector<std::string>{"media:clip-1"});
+  EXPECT_EQ(SolidMediaFrameSource::created.load(), 1);
 }
 
 // The shell's route "loop" flag (MediaRoutePlaybackService.IsLoopingAsset)
@@ -5810,9 +5920,8 @@ TEST(MediaCoreCommand, APausedClipCueInPreviewKeepsItsOwnPosterSource) {
 // the loop flag must be applied, not deduped away by the preview signature.
 TEST(MediaCoreCommand, ARouteLoopFlagReachesTheMediaSourceOnBothBuses) {
   auto modules = corevideo::modules::createStubModules();
-  auto mediaFrames = std::make_unique<SolidMediaFrameSource>();
-  auto* mediaFramesPtr = mediaFrames.get();
-  modules.mediaFrames = std::move(mediaFrames);
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
 
   const auto loopRoute = [](const char* assetId, bool loop) {
@@ -5830,27 +5939,24 @@ TEST(MediaCoreCommand, ARouteLoopFlagReachesTheMediaSourceOnBothBuses) {
       corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
                                    {"routes", corevideo::rpc::Json::Array{loopRoute("pv-loop", false)}}},
   });
-  mediaCore.renderDisplayTick();
+  ASSERT_TRUE(corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore& core) {
+    return corevideo::testing::busSourceProducing(core, "media:bg-loop") &&
+           corevideo::testing::busSourceProducing(core, "media:pv-loop");
+  }));
   {
-    const auto& ids = mediaFramesPtr->seenSourceIds;
-    const auto& loops = mediaFramesPtr->seenLoops;
-    ASSERT_EQ(ids.size(), 2u);
-    ASSERT_EQ(loops.size(), 2u);
-    for (size_t i = 0; i < ids.size(); ++i) {
-      if (ids[i] == "media:bg-loop") EXPECT_TRUE(loops[i]) << "Program route lost its loop flag";
-      if (ids[i] == "media:pv-loop") EXPECT_FALSE(loops[i]);
-    }
+    const std::vector<std::string> expectedIds{"media:bg-loop", "media:pv-loop"};
+    EXPECT_EQ(SolidMediaFrameSource::sortedSourceIds(), expectedIds);
+    EXPECT_TRUE(SolidMediaFrameSource::loopFor("media:bg-loop")) << "Program route lost its loop flag";
+    EXPECT_FALSE(SolidMediaFrameSource::loopFor("media:pv-loop"));
   }
 
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{{"type", "set-preview-scene"}, {"sceneId", "pvw"},
                                    {"routes", corevideo::rpc::Json::Array{loopRoute("pv-loop", true)}}},
   });
-  mediaCore.renderDisplayTick();
-  bool previewLoops = false;
-  for (size_t i = 0; i < mediaFramesPtr->seenSourceIds.size(); ++i) {
-    if (mediaFramesPtr->seenSourceIds[i] == "media:pv-loop") previewLoops = mediaFramesPtr->seenLoops[i];
-  }
+  const bool previewLoops = corevideo::testing::renderUntil(mediaCore, [](corevideo::core::MediaCore&) {
+    return SolidMediaFrameSource::loopFor("media:pv-loop");
+  });
   EXPECT_TRUE(previewLoops) << "a loop-only change to the preview scene was not applied";
 }
 

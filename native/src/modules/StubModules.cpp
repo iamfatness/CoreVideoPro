@@ -962,7 +962,8 @@ ModuleSet createStubModules() {
   // participant video yet.
   modules.zoom = std::make_unique<RealZoomCaptureSource>(std::make_unique<SyntheticZoomCaptureSource>());
   modules.compositor = std::make_unique<CpuNoopCompositor>();
-  modules.mediaFrames = nullptr;
+  // No media decoder in the stub build: MediaCore leaves mediaTransports_ null.
+  modules.mediaDecoderFactory = {};
   modules.mixer = std::make_unique<DevSafeAudioMixer>();
   modules.monitorOutput = createStubAudioMonitorOutput();
   modules.audioCapture = createStubAudioCaptureSource();
@@ -1005,8 +1006,8 @@ ModuleSet createDefaultModules() {
   } else if (auto metalCompositor = createMetalCompositor()) {
     modules.compositor = std::move(metalCompositor);
   }
-  if (auto mediaFrames = createMediaFoundationMediaFrameSource()) {
-    modules.mediaFrames = std::move(mediaFrames);
+  if (auto mediaDecoderFactory = createMediaFoundationMediaDecoderFactory()) {
+    modules.mediaDecoderFactory = std::move(mediaDecoderFactory);
   }
   if (auto monitorOutput = createWasapiMonitorOutput()) {
     modules.monitorOutput = std::move(monitorOutput);
