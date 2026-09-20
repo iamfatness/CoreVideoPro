@@ -1945,16 +1945,28 @@ void MediaCore::setSourcePolicy(const rpc::Json& command) {
     return;
   }
   const std::string key = sourceId.rfind("zoom:", 0) == 0 ? sourceId.substr(5) : sourceId;
-  const std::string policy = command.getString("dropoutPolicy", "hold");
-  if (policy != "hold" && policy != "black") {
-    pushSceneWarningOnce(sceneValidationWarnings_,
-        "set-source-policy: unknown dropoutPolicy '" + policy + "' for " + sourceId);
-    return;
+  // PRESENT-OR-KEEP, exactly like displayName below: a re-sent set-source-policy
+  // that carries only displayName (or omits dropoutPolicy for any other reason)
+  // must never reset a previously-set policy back to "hold" — the shell
+  // re-sends every persisted policy on each production sync, and fields it
+  // does not know about yet (or intentionally leaves alone) must not clobber
+  // state another sync already established.
+  if (const rpc::Json* dropoutPolicy = command.get("dropoutPolicy"); dropoutPolicy && dropoutPolicy->isString()) {
+    const std::string policy = dropoutPolicy->asString();
+    if (policy != "hold" && policy != "black") {
+      // loadSceneGraph clears sceneValidationWarnings_ (see its own clear()
+      // call) — a set-source-policy that runs BEFORE the scene command in a
+      // batch has this warning wiped by that clear. applyCommands runs
+      // commands in the order given, so callers must put set-source-policy
+      // AFTER load-scene-graph in the batch (as this file's own tests do).
+      pushSceneWarningOnce(sceneValidationWarnings_,
+          "set-source-policy: unknown dropoutPolicy '" + policy + "' for " + sourceId);
+      return;
+    }
+    sourcePolicies_[key].dropoutPolicy = policy;
   }
-  SourcePolicy& entry = sourcePolicies_[key];
-  entry.dropoutPolicy = policy;
   if (const rpc::Json* displayName = command.get("displayName"); displayName && displayName->isString()) {
-    entry.displayName = displayName->asString();
+    sourcePolicies_[key].displayName = displayName->asString();
   }
 }
 
@@ -1970,16 +1982,12 @@ void MediaCore::annotateLayerSource(modules::CompositorRenderPlanLayer& layer,
   const std::string key = !layer.participantId.empty()
       ? layer.participantId
       : (layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId);
-  if (sourceBus_) {
-    if (const auto health = sourceBus_->healthFor(key, nowNs)) {
-      layer.sourceHealth = core::sourceHealthName(*health);
-    } else if (!videoFrames.empty()) {
-      const bool subscribed = std::any_of(videoFrames.begin(), videoFrames.end(),
-          [&](const modules::VideoFrame& frame) { return frame.participantId == key; });
-      layer.sourceHealth = subscribed ? "warming" : "failed";
-    } else {
-      layer.sourceHealth.clear();
-    }
+  // sourceBus_ is constructed in the ctor and never reset (see its member
+  // comment), so this is a single query, not two branches duplicating the
+  // same frames-scan fallback.
+  const auto busHealth = sourceBus_ ? sourceBus_->healthFor(key, nowNs) : std::nullopt;
+  if (busHealth) {
+    layer.sourceHealth = core::sourceHealthName(*busHealth);
   } else if (!videoFrames.empty()) {
     const bool subscribed = std::any_of(videoFrames.begin(), videoFrames.end(),
         [&](const modules::VideoFrame& frame) { return frame.participantId == key; });
@@ -3867,7 +3875,15 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
       layer.borderThickness = 2.f;
     }
     layer.order = order++;
-    if (!layer.participantId.empty() || !layer.mediaAssetId.empty()) {
+    // #535 slice 4a fix round 2: the old guard (participantId/mediaAssetId
+    // non-empty) skipped resolveMultiviewFeed's sourceId-only feeds (the
+    // `else` branch above, reached when a multiview entry names neither a
+    // capture device, media asset, nor participant) — those still deserve a
+    // slate. No MV tile ever sets hasFillColor (it is a deliberately
+    // sourceless flag for wall backgrounds/blank routes only), so every real
+    // tile is annotated; the key rule in annotateLayerSource already handles
+    // a sourceId-only tile by falling back to layer.sourceId.
+    if (!layer.hasFillColor) {
       annotateLayerSource(layer, videoFrames, nowNs);
     }
     renderPlan.layers.push_back(std::move(layer));

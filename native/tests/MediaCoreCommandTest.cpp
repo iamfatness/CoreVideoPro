@@ -5988,18 +5988,29 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
   modules.compositor = std::move(ownedCompositor);
   corevideo::core::MediaCore mediaCore(std::move(modules));
   // capture:decklink-1 is connected with signal in the stub set (CaptureIngest tests).
+  // set-source-policy runs AFTER load-scene-graph in this batch, and every
+  // batch below keeps that order: loadSceneGraph clears sceneValidationWarnings_,
+  // so a rejection warning pushed before the scene command would be wiped
+  // before this test could ever see it (see the comment at the push site in
+  // MediaCore::setSourcePolicy).
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
-      corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "capture:decklink-1"},
-                                   {"dropoutPolicy", "black"}, {"displayName", "Camera 1"}},
-      corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "zoom:16778240"},
-                                   {"dropoutPolicy", "bogus"}},   // rejected, warns, stays default
       corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "cam"},
           {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
               {"routeId", "cam-0"}, {"mode", "capture-input"}, {"captureDeviceId", "decklink-1"},
               {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}},
       corevideo::rpc::Json::Object{{"type", "set-multiview-layout"},
-          {"sources", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
-              {"sourceId", "capture:decklink-1"}, {"kind", "capture"}, {"captureDeviceId", "decklink-1"}}}}}});
+          {"sources", corevideo::rpc::Json::Array{
+              corevideo::rpc::Json::Object{
+                  {"sourceId", "capture:decklink-1"}, {"kind", "capture"}, {"captureDeviceId", "decklink-1"}},
+              // #535 slice 4a fix round 2 (finding 3): a multiview entry with
+              // no participantId/captureDeviceId/mediaAssetId resolves to a
+              // sourceId-only feed (resolveMultiviewFeed's final else
+              // branch) — the OLD guard (participantId/mediaAssetId
+              // non-empty) skipped it entirely; the new guard (!hasFillColor)
+              // must still annotate it via the key rule's sourceId fallback.
+              corevideo::rpc::Json::Object{{"sourceId", "orphan:test-1"}}}}},
+      corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "capture:decklink-1"},
+                                   {"dropoutPolicy", "black"}, {"displayName", "Camera 1"}}});
   mediaCore.renderDisplayTick();
   const auto& plan = compositor->lastPlan;
   const auto layer = std::find_if(plan.layers.begin(), plan.layers.end(),
@@ -6017,12 +6028,67 @@ TEST(MediaCoreCommand, SourcePolicyCommandIsEchoedAndAnnotatesRouteLayers) {
   ASSERT_NE(mvLayer, mvPlan.layers.end());
   EXPECT_EQ(mvLayer->sourceHealth, "producing");
   EXPECT_EQ(mvLayer->sourceDisplayName, "Camera 1");
+  // The sourceId-only tile (no participantId/mediaAssetId) is annotated too —
+  // "failed" since "orphan:test-1" is on nobody's bus and in no frame. With
+  // the old participantId/mediaAssetId guard this layer's sourceHealth would
+  // have stayed "" (skipped entirely).
+  const auto orphanMvLayer = std::find_if(mvPlan.layers.begin(), mvPlan.layers.end(),
+      [](const auto& l) { return l.sourceId == "orphan:test-1"; });
+  ASSERT_NE(orphanMvLayer, mvPlan.layers.end());
+  EXPECT_EQ(orphanMvLayer->sourceHealth, "failed");
   const auto state = mediaCore.sessionState();
   bool echoed = false;
   for (const auto& s : state.get("sources")->asArray()) {
     if (s.getString("sourceId") == "capture:decklink-1") { echoed = true; EXPECT_EQ(s.getString("dropoutPolicy"), "black"); EXPECT_EQ(s.getString("displayName"), "Camera 1"); }
   }
   EXPECT_TRUE(echoed);
+
+  // #535 slice 4a fix round 2 (finding 1): PRESENT-OR-KEEP. A re-sent
+  // set-source-policy carrying only displayName (no dropoutPolicy field at
+  // all) must never reset the policy back to the "hold" default.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "set-source-policy"}, {"sourceId", "capture:decklink-1"}, {"displayName", "Cam 1"}}});
+  mediaCore.renderDisplayTick();
+  const auto& keepPlan = compositor->lastPlan;
+  const auto keepLayer = std::find_if(keepPlan.layers.begin(), keepPlan.layers.end(),
+      [](const auto& l) { return l.participantId == "capture:decklink-1"; });
+  ASSERT_NE(keepLayer, keepPlan.layers.end());
+  EXPECT_EQ(keepLayer->dropoutPolicy, "black");  // unchanged: dropoutPolicy was absent from the command
+  EXPECT_EQ(keepLayer->sourceDisplayName, "Cam 1");  // updated: displayName was present
+
+  // #535 slice 4a fix round 2 (finding 2): the rejection path is observable
+  // (the exact warning), the rejected policy leaves the layer at the "hold"
+  // default, and a VALID zoom:<pid> policy strips the "zoom:" prefix onto the
+  // raw pid — the same key annotateLayerSource resolves from a Zoom layer's
+  // (unprefixed) participantId.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "load-scene-graph"}, {"sceneId", "zoomcam"},
+          {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+              {"routeId", "zoomcam-0"}, {"mode", "fixed"}, {"participantId", "16778240"}}}}},
+      corevideo::rpc::Json::Object{{"type", "set-source-policy"}, {"sourceId", "zoom:16778240"},
+                                   {"dropoutPolicy", "bogus"}}});  // rejected, warns, stays default
+  mediaCore.renderDisplayTick();
+  const auto& warnings = mediaCore.sceneValidationWarningsForTest();
+  EXPECT_NE(std::find(warnings.begin(), warnings.end(),
+                       "set-source-policy: unknown dropoutPolicy 'bogus' for zoom:16778240"),
+            warnings.end());
+  const auto& rejectedPlan = compositor->lastPlan;
+  const auto rejectedLayer = std::find_if(rejectedPlan.layers.begin(), rejectedPlan.layers.end(),
+      [](const auto& l) { return l.participantId == "16778240"; });
+  ASSERT_NE(rejectedLayer, rejectedPlan.layers.end());
+  EXPECT_EQ(rejectedLayer->dropoutPolicy, "hold");  // default when the policy is rejected
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "set-source-policy"}, {"sourceId", "zoom:16778240"},
+      {"dropoutPolicy", "black"}, {"displayName", "Jamal"}}});
+  mediaCore.renderDisplayTick();
+  const auto& zoomPlan = compositor->lastPlan;
+  const auto zoomLayer = std::find_if(zoomPlan.layers.begin(), zoomPlan.layers.end(),
+      [](const auto& l) { return l.participantId == "16778240"; });
+  ASSERT_NE(zoomLayer, zoomPlan.layers.end());
+  EXPECT_EQ(zoomLayer->dropoutPolicy, "black");
+  EXPECT_EQ(zoomLayer->sourceDisplayName, "Jamal");
+
   // A layer whose key is on nobody's bus and in no frame reads "failed".
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
       {"type", "load-scene-graph"}, {"sceneId", "gone"},
