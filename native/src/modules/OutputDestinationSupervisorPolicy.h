@@ -115,6 +115,13 @@ enum class DestinationFailureClass {
          code == "runtime-missing" ||             // FFmpeg / libNDI is not installed
          code == "ffmpeg-missing" ||              // the executable is not there
          code == "unsupported-kind" ||            // this build does not carry it
+         // 2026-09-20, the stream-start admission: a codec the transport cannot
+         // carry, or that this machine has no hardware encoder for, is settings
+         // the operator must change - retrying re-decides the same way forever.
+         // gpu-encoder-start-failed is deliberately NOT here: a start fault can
+         // be transient (a session another app held, a driver hiccup).
+         code == "enhanced-rtmp-required" ||      // E-RTMP is off in Stream settings
+         code == "no-hardware-encoder" ||         // this machine cannot encode that codec
          (code.size() > 19 /*strlen("-output-unavailable")*/ &&
           code.compare(code.size() - 19, 19, "-output-unavailable") == 0);
 }

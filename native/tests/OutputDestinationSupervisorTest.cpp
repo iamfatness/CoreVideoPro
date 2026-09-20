@@ -344,6 +344,11 @@ TEST(OutputDestinationSupervisorPolicy, AnUnknownFailureCodeIsRetryableNotTermin
   EXPECT_TRUE(isTerminalResultCode("source-name-invalid"));
   EXPECT_TRUE(isTerminalResultCode("runtime-missing"));
   EXPECT_TRUE(isTerminalResultCode("ndi-output-unavailable"));
+  // The stream-start admission codes: the two that are settings the operator
+  // must change are terminal; a GPU encoder start fault can be transient.
+  EXPECT_TRUE(isTerminalResultCode("enhanced-rtmp-required"));
+  EXPECT_TRUE(isTerminalResultCode("no-hardware-encoder"));
+  EXPECT_FALSE(isTerminalResultCode("gpu-encoder-start-failed"));
 }
 
 // ===========================================================================

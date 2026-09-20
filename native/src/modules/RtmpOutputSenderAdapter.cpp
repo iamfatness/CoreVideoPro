@@ -7,6 +7,7 @@
 #include "modules/EncoderCapacityProbe.h"
 #include "modules/EncoderPolicy.h"
 #include "modules/StreamStartAdmission.h"
+#include "modules/OutputDestinationSupervisorPolicy.h"
 #include "modules/FfmpegSenderDiagnostics.h"
 #include "modules/SrtFfmpegArgs.h"
 
@@ -1119,7 +1120,13 @@ class RtmpOutputSender final : public IOutputSender {
       return true;
     }
     activeUseGpuDirect_ = false;
-    scheduleFfmpegRetry();
+    if (startRefusedInadmissible_) {
+      // A configuration refusal is not a transient failure: leave the named code
+      // and sentence standing instead of burying them under ffmpeg-retry-backoff.
+      clearFfmpegRetryBackoff();
+    } else {
+      scheduleFfmpegRetry();
+    }
     return false;
   }
 
@@ -1213,7 +1220,33 @@ class RtmpOutputSender final : public IOutputSender {
     return activeAudioPresent_ && !(value && std::string(value) == "1");
   }
 
+  // One place a refused stream start becomes operator-visible state.
+  //
+  // An INADMISSIBLE CONFIGURATION DOES NOT RIDE THE RETRY LADDER (2026-09-20).
+  // enhanced-rtmp-required and no-hardware-encoder are decided from settings and
+  // this machine, so retrying re-decides them identically forever - and the retry
+  // branch in ensureFfmpegProcess would overwrite lastResultCode with
+  // ffmpeg-retry-backoff within one tick, making the named code unobservable.
+  // The SAME predicate the output supervisor uses (isTerminalResultCode) decides
+  // it, so the two cannot drift: a terminal code stands until the operator changes
+  // settings, which re-syncs and re-decides. gpu-encoder-start-failed is NOT
+  // terminal - a start fault can be transient - so it keeps the ladder.
+  bool refuseStreamStart(const StreamStartAdmission& verdict, const std::string& requestedCodec) {
+    sender_.status = "warning";
+    sender_.warning = verdict.message;
+    sender_.destinationHealth = "warning";
+    sender_.lastResultCode = verdict.resultCode;
+    sender_.lastError = verdict.message;
+    appendSendProof(nullptr, verdict.resultCode);
+    startRefusedInadmissible_ = isTerminalResultCode(verdict.resultCode);
+    ::corevideo::core::nativeLogf("[gpu-encode] stream start REFUSED code=%s codec=%s reason=%s :: %s\n",
+                                 verdict.resultCode.c_str(), requestedCodec.c_str(),
+                                 gpuEncodePathReason_.c_str(), verdict.message.c_str());
+    return false;
+  }
+
   bool startFfmpegProcess(int width, int height, const std::string& videoInputPixelFormat) {
+    startRefusedInadmissible_ = false;
     if (ffmpegExecutable_.empty()) {
       sender_.status = "warning";
       sender_.warning = "FFmpeg executable was not found.";
@@ -1225,6 +1258,23 @@ class RtmpOutputSender final : public IOutputSender {
     const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
     selectedFfmpegVideoEncoder_ = selectFfmpegVideoEncoder(
         ffmpegExecutable_, compatibility.videoCodec, configuredEncoderMode_);
+    // REFUSE, NEVER DOWNGRADE (2026-09-20). The operator's codec either goes out
+    // on a path that can carry it or the stream does not start, with a stable
+    // code the shell renders. H.264 on the CPU fallback is admitted exactly as
+    // before, so every machine that streams today keeps streaming.
+    //
+    // The hardware / start-failure half of the admission needs the start attempt
+    // and therefore sits BELOW startGpuEncoderIfChosen.
+    {
+      StreamStartAdmissionInputs admission;
+      admission.requestedCodec = compatibility.requestedVideoCodec;
+      admission.compatibilityRefused = compatibility.refused;
+      admission.compatibilityReason = compatibility.reason;
+      const auto verdict = admitStreamStart(admission);  // only clause 1 can fire here
+      if (verdict.refused) {
+        return refuseStreamStart(verdict, compatibility.requestedVideoCodec);
+      }
+    }
     // Start the GPU encoder BEFORE FFmpeg so start() is the real capability gate:
     // on failure it clears useGpuDirect_, and the admission below either lets the
     // raw path carry H.264 or refuses the start outright.
@@ -1238,35 +1288,26 @@ class RtmpOutputSender final : public IOutputSender {
       ::corevideo::core::nativeLogf("[gpu-encode] path=cpu-fallback reason=%s\n",
                                    gpuEncodePathReason_.c_str());
     }
-    // REFUSE, NEVER DOWNGRADE (2026-09-20). The operator's codec either goes out
-    // on a path that can carry it or the stream does not start, with a stable
-    // code the shell renders. H.264 on the CPU fallback is admitted exactly as
-    // before, so every machine that streams today keeps streaming.
     {
-      const auto compat = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
       StreamStartAdmissionInputs admission;
-      admission.requestedCodec = compat.requestedVideoCodec;
-      admission.compatibilityRefused = compat.refused;
-      admission.compatibilityReason = compat.reason;
-      admission.codecHasHardwareEncoder = codecHasSupportedHardwareEncoder(compat.requestedVideoCodec);
-      admission.gpuPathChosen = useGpuDirect_;
+      admission.requestedCodec = compatibility.requestedVideoCodec;
+      admission.codecHasHardwareEncoder = codecHasSupportedHardwareEncoder(compatibility.requestedVideoCodec);
+      // The GPU path WAS chosen when the encoder was started and start() failed:
+      // startGpuEncoderIfChosen already cleared useGpuDirect_. Without this the
+      // "HEVC/AV1 off the GPU path" clause fires first and an encoder fault is
+      // misreported as "this machine has no hardware encoder", discarding the
+      // detail the encoder recorded.
+      admission.gpuPathChosen = useGpuDirect_ || gpuEncoderStartFailed_;
       admission.gpuPathReason = gpuEncodePathReason_.c_str();
       admission.gpuEncoderStartFailed = gpuEncoderStartFailed_;
-      admission.gpuEncoderFailureDetail = gpuEncoderFailureDetail_;
+      // Never render empty parentheses at the operator.
+      admission.gpuEncoderFailureDetail =
+          gpuEncoderFailureDetail_.empty() ? std::string("unknown failure") : gpuEncoderFailureDetail_;
       const auto verdict = admitStreamStart(admission);
       if (verdict.refused) {
         stopGpuEncoder();
         useGpuDirect_ = false;
-        sender_.status = "warning";
-        sender_.warning = verdict.message;
-        sender_.destinationHealth = "warning";
-        sender_.lastResultCode = verdict.resultCode;
-        sender_.lastError = verdict.message;
-        appendSendProof(nullptr, verdict.resultCode);
-        ::corevideo::core::nativeLogf("[gpu-encode] stream start REFUSED code=%s codec=%s reason=%s :: %s\n",
-                                     verdict.resultCode.c_str(), compat.requestedVideoCodec.c_str(),
-                                     gpuEncodePathReason_.c_str(), verdict.message.c_str());
-        return false;
+        return refuseStreamStart(verdict, compatibility.requestedVideoCodec);
       }
     }
 #if defined(_WIN32)
@@ -2236,6 +2277,9 @@ class RtmpOutputSender final : public IOutputSender {
   // encoded, what is muxed and what is reported cannot disagree.
   std::string gpuEncodeSentCodec_ = "h264";
   bool gpuEncoderStartFailed_ = false;
+  // Set when the last start was refused with a TERMINAL (configuration) code,
+  // so ensureFfmpegProcess does not put it on the FFmpeg retry ladder.
+  bool startRefusedInadmissible_ = false;
   std::string gpuEncoderFailureDetail_;
   bool firstBitstreamLogged_ = false;
 #if defined(_WIN32)
