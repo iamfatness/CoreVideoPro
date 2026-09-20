@@ -24,10 +24,13 @@ public sealed record MediaCoreSceneRouteWire(
     string? MediaAssetName = null,
     string? MediaAssetKind = null,
     string? MediaAssetPath = null,
-    string? MediaPlaybackKey = null,
-    bool MediaAssetPlaying = false,
     // Operator "loop" for a routed asset (shell: MediaRoutePlaybackService.IsLoopingAsset).
     // Without it a looping route asset plays once and freezes on its last frame.
+    //
+    // #535 slice 3b: MediaPlaybackKey / MediaAssetPlaying are GONE. The core owns a media
+    // source's play state (cued/live/paused/ended) and decides it at command time from which
+    // bus the route is on; a shell-asserted key or playing flag could only fight that
+    // decision. The route carries the ASSET and its loop flag, nothing about transport.
     bool MediaAssetLoop = false);
 
 /// <summary>
@@ -373,8 +376,6 @@ public sealed record MediaCoreProductionSyncContext
     public string? SelectedMediaAssetName { get; init; }
     public string? SelectedMediaAssetKind { get; init; }
     public string? SelectedMediaAssetPath { get; init; }
-    public string? SelectedMediaPlaybackKey { get; init; }
-    public bool SelectedMediaAssetPlaying { get; init; }
 
     public static MediaCoreOutputProfileWire DefaultCanvasOutputProfile { get; } = new(
         ProfileId: "1080p60",

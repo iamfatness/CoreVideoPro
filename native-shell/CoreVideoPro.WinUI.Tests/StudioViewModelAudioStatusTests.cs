@@ -2886,21 +2886,52 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
-    public void FormatNativeMediaPlaybackStatus_ShowsProgramPlaybackKey()
+    public void FormatNativeMediaPlaybackStatus_ReportsTheCoresTransportStateWithNoPlaybackKey()
     {
+        // #535 slice 3b: the core's status IS the selected asset's transport state
+        // ("cued"|"live"|"paused"|"ended"|"unavailable"). The playback key is retired.
         var status = StudioViewModel.FormatNativeMediaPlaybackStatus(new NativeMediaCoreMediaPlaybackState
         {
-            Status = "playing",
+            Status = "live",
             MediaAssetId = "clip-intro",
             MediaAssetName = "Intro Sting",
             MediaAssetKind = "stinger",
             MediaAssetPath = @"C:\media\intro.mp4",
-            MediaPlaybackKey = "media:clip-intro:live:3",
+            MediaPlaybackKey = string.Empty,
             Playing = true,
-            Summary = "Playing Intro Sting with key media:clip-intro:live:3."
+            Summary = "Intro Sting live."
         });
 
-        Assert.Equal("Native: Intro Sting playing; key media:clip-intro:live:3.", status);
+        Assert.Equal("Native: Intro Sting live.", status);
+    }
+
+    [Fact]
+    public void FormatNativeMediaPlaybackStatus_ReportsASelectionWithNoTransportAsUnavailable()
+    {
+        var status = StudioViewModel.FormatNativeMediaPlaybackStatus(new NativeMediaCoreMediaPlaybackState
+        {
+            Status = "unavailable",
+            MediaAssetId = "clip-intro",
+            MediaAssetName = "Intro Sting",
+            MediaPlaybackKey = string.Empty,
+            Playing = false,
+            Summary = "Intro Sting unavailable."
+        });
+
+        Assert.Equal("Native: Intro Sting unavailable.", status);
+    }
+
+    [Fact]
+    public void FormatNativeMediaPlaybackStatus_IdleSaysNothingIsRouted()
+    {
+        var status = StudioViewModel.FormatNativeMediaPlaybackStatus(new NativeMediaCoreMediaPlaybackState
+        {
+            Status = "idle",
+            Playing = false,
+            Summary = "No media asset selected."
+        });
+
+        Assert.Equal("Native: no media asset routed to Program.", status);
     }
 
     [Fact]

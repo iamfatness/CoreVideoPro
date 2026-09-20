@@ -60,6 +60,7 @@ public static class SyntheticMediaCore
         int frameNumber)
     {
         var sceneGraph = commands.FirstOrDefault(command => command.Type == "load-scene-graph");
+        var previewScene = commands.FirstOrDefault(command => command.Type == "set-preview-scene");
         var outputCommand = commands.FirstOrDefault(command => command.Type == "start-program-output");
         var recordingCommand = commands.FirstOrDefault(command => command.Type == "start-recording-session");
         var sceneId = TryGetString(sceneGraph, "sceneId") ?? "idle";
@@ -294,6 +295,7 @@ public static class SyntheticMediaCore
 
         return new NativeMediaCoreStateSnapshot
         {
+            MediaSources = SynthesizeMediaSources(sceneGraph, previewScene),
             SceneId = sceneId,
             RouteCount = routeCount,
             FrameCount = sourceCount,
@@ -440,6 +442,94 @@ public static class SyntheticMediaCore
         return parts.Count > 0
             ? string.Join(" ", parts)
             : $"{destination.ToUpperInvariant()} sender {sender.Status}.";
+    }
+
+    /// <summary>
+    /// The synthetic core's echo of the real core's <c>mediaSources</c> node (#535 slice 3b).
+    /// It models the one rule the shell actually reads back: a media asset routed on PROGRAM is
+    /// "live", one only cued in PREVIEW is "cued". Program wins when an asset is on both buses
+    /// (the core's Program-first ordering). A scene BACKGROUND is keyed background:&lt;assetId&gt;
+    /// and loops; a route asset is keyed media:&lt;assetId&gt;.
+    ///
+    /// Position/duration are not modelled — a synthetic core decodes nothing, and inventing a
+    /// playhead would be exactly the fabricated evidence this codebase keeps refusing.
+    /// </summary>
+    private static IReadOnlyList<NativeMediaCoreMediaSource> SynthesizeMediaSources(
+        NativeMediaCoreCommand? sceneGraph,
+        NativeMediaCoreCommand? previewScene)
+    {
+        var rows = new Dictionary<string, NativeMediaCoreMediaSource>(StringComparer.Ordinal);
+
+        void Add(string sourceId, string assetId, bool loop, bool onProgram)
+        {
+            if (string.IsNullOrWhiteSpace(assetId))
+            {
+                return;
+            }
+
+            if (rows.TryGetValue(sourceId, out var existing))
+            {
+                rows[sourceId] = existing with
+                {
+                    State = existing.OnProgram || onProgram ? "live" : "cued",
+                    OnProgram = existing.OnProgram || onProgram,
+                    OnPreview = existing.OnPreview || !onProgram
+                };
+                return;
+            }
+
+            rows[sourceId] = new NativeMediaCoreMediaSource
+            {
+                SourceId = sourceId,
+                MediaAssetId = assetId,
+                State = onProgram ? "live" : "cued",
+                Loop = loop,
+                OnProgram = onProgram,
+                OnPreview = !onProgram,
+                PositionMs = 0,
+                DurationMs = -1
+            };
+        }
+
+        void AddScene(NativeMediaCoreCommand? scene, bool onProgram)
+        {
+            if (scene?.ExtensionData is null)
+            {
+                return;
+            }
+
+            if (scene.ExtensionData.TryGetValue("routes", out var routes) &&
+                routes.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var route in routes.EnumerateArray())
+                {
+                    var assetId = TryGetString(route, "mediaAssetId");
+                    if (string.IsNullOrWhiteSpace(assetId))
+                    {
+                        continue;
+                    }
+
+                    var loop = route.TryGetProperty("mediaAssetLoop", out var loopValue) &&
+                        loopValue.ValueKind == JsonValueKind.True;
+                    Add("media:" + assetId, assetId, loop, onProgram);
+                }
+            }
+
+            if (scene.ExtensionData.TryGetValue("background", out var background) &&
+                background.ValueKind == JsonValueKind.Object)
+            {
+                var assetId = TryGetString(background, "mediaAssetId");
+                if (!string.IsNullOrWhiteSpace(assetId))
+                {
+                    Add("background:" + assetId, assetId, loop: true, onProgram);
+                }
+            }
+        }
+
+        // Program first: an asset on both buses is LIVE, never cued.
+        AddScene(sceneGraph, onProgram: true);
+        AddScene(previewScene, onProgram: false);
+        return rows.Values.ToList();
     }
 
     private static int TryGetRouteCount(NativeMediaCoreCommand? sceneGraph)

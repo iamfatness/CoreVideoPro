@@ -231,8 +231,9 @@ public static class MediaCoreCommandBuilder
             ["mediaAssetName"] = route.MediaAssetName,
             ["mediaAssetKind"] = route.MediaAssetKind,
             ["mediaAssetPath"] = route.MediaAssetPath,
-            ["mediaPlaybackKey"] = route.MediaPlaybackKey,
-            ["mediaAssetPlaying"] = route.MediaAssetPlaying,
+            // #535 slice 3b: no mediaPlaybackKey, no mediaAssetPlaying. The core decides a
+            // media source's transport state from the buses it is on; the route only names
+            // the asset and whether the operator marked it a loop.
             ["mediaAssetLoop"] = route.MediaAssetLoop,
             ["colorGrade"] = route.ColorGrade is null
                 ? null
@@ -622,11 +623,23 @@ public static class MediaCoreCommandBuilder
             ["mediaAssetId"] = context.SelectedMediaAssetId.Trim(),
             ["mediaAssetName"] = context.SelectedMediaAssetName?.Trim() ?? string.Empty,
             ["mediaAssetKind"] = context.SelectedMediaAssetKind?.Trim() ?? string.Empty,
-            ["mediaAssetPath"] = context.SelectedMediaAssetPath?.Trim() ?? string.Empty,
-            ["mediaPlaybackKey"] = context.SelectedMediaPlaybackKey?.Trim() ?? string.Empty,
-            ["playing"] = context.SelectedMediaAssetPlaying
+            ["mediaAssetPath"] = context.SelectedMediaAssetPath?.Trim() ?? string.Empty
         });
     }
+
+    /// <summary>
+    /// The operator's ONE-SHOT media transport gesture (#535 slice 3b): pause or play one
+    /// asset's source on the core, right now. It is deliberately NOT part of the repeating
+    /// production sync — that channel carries persisted DESIRED state and re-asserts it every
+    /// tick, which would re-pause a clip the core had since resumed. Send it once, through the
+    /// bridge's single-command path, and re-arm it if backpressure skips it.
+    /// </summary>
+    public static NativeMediaCoreCommand BuildMediaTransportCommand(string mediaAssetId, string action) =>
+        Command("set-media-transport", new Dictionary<string, object?>
+        {
+            ["mediaAssetId"] = mediaAssetId?.Trim() ?? string.Empty,
+            ["action"] = action
+        });
 
     private static NativeMediaCoreCommand? BuildOutputCommand(MediaCoreProductionSyncContext context)
     {
