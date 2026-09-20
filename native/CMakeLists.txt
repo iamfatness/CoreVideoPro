@@ -612,6 +612,7 @@ if(BUILD_TESTING)
     tests/MediaCueHandoffTest.cpp
     tests/GpuVideoEncoderPolicyTest.cpp
     tests/EncoderCapacityProbePolicyTest.cpp
+    tests/StreamStartAdmissionTest.cpp
     tests/BrowserHostExitMessageTest.cpp
     tests/IsoFrameConformTest.cpp
     tests/BrowserSourceTest.cpp
