@@ -399,7 +399,24 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     return SUCCEEDED(encoder_->ProcessInput(0, sample.Get(), 0));
   }
 
-  void drainOutput() {
+  // DRAIN every ready output on each METransformHaveOutput, rather than taking
+  // exactly one. A strict generalization: an MFT with only one output ready
+  // exits on the first MF_E_TRANSFORM_NEED_MORE_INPUT and behaves exactly as
+  // before, so this is correct for any MFT rather than for the ones we happen to
+  // have measured. NeedInput credit retention is untouched - that fix is
+  // separate and load-bearing.
+  //
+  // It was written to test the hypothesis that the NVIDIA AV1 Encoder MFT queues
+  // several outputs per event and was therefore being starved by a one-per-event
+  // reader. THAT HYPOTHESIS IS FALSE, measured 2026-09-20 on this rig (RTX 4090,
+  // driver 616.92) by the counter below: over a 30 s 1080p60 AV1 stream the MFT
+  // reported events=1260 samples=1260 mean=1.00 max-per-event=1. Exactly one
+  // output per event, so the drain changes nothing for AV1 and the ~18.4 kbit/s
+  // AV1 stall has some other cause. The drain stays because it is correct; do
+  // not read it as a fix for that stall.
+  // Returns how many samples this event actually yielded.
+  int drainOutput() {
+    int produced_count = 0;
     for (;;) {
       MFT_OUTPUT_STREAM_INFO info{};
       encoder_->GetOutputStreamInfo(0, &info);
@@ -408,7 +425,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       const bool mftAllocates =
           (info.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES)) != 0;
       if (!mftAllocates) {
-        if (FAILED(MFCreateSample(&sample))) return;
+        if (FAILED(MFCreateSample(&sample))) return produced_count;
         ComPtr<IMFMediaBuffer> buf;
         MFCreateMemoryBuffer((std::max<DWORD>)(info.cbSize, 1u << 20), &buf);
         sample->AddBuffer(buf.Get());
@@ -416,17 +433,33 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       }
       DWORD status = 0;
       HRESULT hr = encoder_->ProcessOutput(0, 1, &out, &status);
-      if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) return;
-      if (FAILED(hr)) return;
+      if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) return produced_count;
+      if (FAILED(hr)) return produced_count;
       ComPtr<IMFSample> produced;
       if (mftAllocates) produced.Attach(out.pSample);
       else produced = sample;
       if (out.pEvents) out.pEvents->Release();
-      if (!produced) return;
+      if (!produced) return produced_count;
       emit(produced.Get());
-      // Async MFTs issue one HaveOutput event per output sample. Do not drain
-      // ahead of those events as with a synchronous transform.
-      return;
+      ++produced_count;
+    }
+  }
+
+  // One bounded, quotable line saying how many samples each HaveOutput event
+  // actually yields, so "one output per event" is never assumed again for a new
+  // MFT. Encode-thread only; no lock needed.
+  void noteDrain(int samples) {
+    ++drainEvents_;
+    drainSamples_ += static_cast<uint64_t>(samples);
+    if (samples > drainMaxPerEvent_) drainMaxPerEvent_ = samples;
+    if (drainSamples_ >= drainLogNextAt_) {
+      drainLogNextAt_ = drainSamples_ + 600;
+      ::corevideo::core::nativeLogf(
+          "[gpu-encode] %s output drain: events=%llu samples=%llu mean=%.2f max-per-event=%d\n",
+          config_.codec.c_str(), static_cast<unsigned long long>(drainEvents_),
+          static_cast<unsigned long long>(drainSamples_),
+          drainEvents_ ? static_cast<double>(drainSamples_) / static_cast<double>(drainEvents_) : 0.0,
+          drainMaxPerEvent_);
     }
   }
 
@@ -522,7 +555,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
           }
         }
       } else if (type == METransformHaveOutput) {
-        drainOutput();
+        noteDrain(drainOutput());
       }
     }
   }
@@ -535,6 +568,11 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   std::string lastFailure_;
   bool capacityLeaseActive_ = false;
   bool firstEmitLogged_ = false;
+  // Output-drain accounting (encode thread only).
+  uint64_t drainEvents_ = 0;
+  uint64_t drainSamples_ = 0;
+  uint64_t drainLogNextAt_ = 60;
+  int drainMaxPerEvent_ = 0;
 
   ComPtr<ID3D11Device> device_;
   ComPtr<ID3D11DeviceContext> context_;
