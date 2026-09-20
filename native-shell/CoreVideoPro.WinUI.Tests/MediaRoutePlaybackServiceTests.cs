@@ -346,14 +346,43 @@ public sealed class MediaRoutePlaybackServiceTests
     }
 
     [Fact]
-    public void ResolveTransportState_TheLiveRowWinsWhenAnAssetIsBothARouteAndABackground()
+    public void ResolveTransportState_TheRouteRowWinsWhenAnAssetIsBothARouteAndABackground()
     {
-        Assert.Equal("live", MediaRoutePlaybackService.ResolveTransportState(
-            "bg",
+        // A background is a loop, so background:<id> is permanently "live". Letting it answer
+        // for the ROUTE made the bin show a cued/paused clip as playing, made ResolveTap return
+        // Pause, and sent the core a pause it correctly refuses for a loop — the UI flipped to
+        // "paused" and nothing on air moved. The media:<id> row always wins.
+        Assert.Equal("paused", MediaRoutePlaybackService.ResolveTransportState(
+            "clip",
             [
-                MediaSource("background:bg", "bg", "cued"),
-                MediaSource("media:bg", "bg", "live")
+                MediaSource("background:clip", "clip", "live"),
+                MediaSource("media:clip", "clip", "paused")
             ]));
+    }
+
+    [Fact]
+    public void ResolveTransportState_ABackgroundRowStillAnswersWhenTheAssetHasNoRoute()
+    {
+        // With no route row the background IS the asset's only source, so it is the honest answer.
+        Assert.Equal("live", MediaRoutePlaybackService.ResolveTransportState(
+            "bg", [MediaSource("background:bg", "bg", "live")]));
+    }
+
+    [Fact]
+    public void ResolveTap_ALiveBackgroundRowCannotMakeAPausedClipLookPausable()
+    {
+        // The IsLoopingAsset guard does NOT cover this: it keys on MediaAsset.Kind, which is
+        // "video"/"clip" for a clip that merely happens to be somebody's background.
+        var state = MediaRoutePlaybackService.ResolveTransportState(
+            "clip",
+            [
+                MediaSource("background:clip", "clip", "live"),
+                MediaSource("media:clip", "clip", "paused")
+            ]);
+
+        Assert.Equal(
+            MediaRoutePlaybackService.MediaTapAction.Resume,
+            MediaRoutePlaybackService.ResolveTap(isOnProgram: true, isLooping: false, state));
     }
 
     // ---- the media bin row is an in-place scalar, not a rebuilt collection -----------------

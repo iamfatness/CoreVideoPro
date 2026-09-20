@@ -812,6 +812,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // The set of LIVE media ids the bin was last projected against. A snapshot that does not
     // change it costs nothing: the bin's IsPlaying scalars are only written when this moves.
     private string _lastLiveMediaSignature = string.Empty;
+
+    // The core transport state the SELECTED asset's status line was last written from, so a
+    // paused -> ended move rewrites it even though the playing boolean did not change.
+    private string? _lastSelectedMediaTransportState;
     // ShowInputs roster store + loaded-flag + editor-signature + ISO selection moved to
     // ShowInputsCoordinator (PR3 strangler). The coordinator is constructed in the ctor (it needs
     // `this` as its IShowInputsHost) before the first LoadShowInputRoster/InitializeShowInputEditors.
@@ -6178,99 +6182,61 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return MediaRoutePlaybackService.IsPlayingOnAir(assetId, LatestMediaSources);
     }
 
-    // The bin's IsPlaying scalars, written IN PLACE from the core's rows on snapshot apply.
-    // Deliberately NOT a MediaBinGroups rebuild: replacing a bound collection at snapshot rate
-    // is the 0xc000027b churn pattern (CLAUDE.md). It is also gated on the LIVE-id signature,
-    // so a steady show pays one string build per snapshot and nothing else.
+    // The bin's IsPlaying scalars and the selected asset's flag/status, written IN PLACE from
+    // the core's rows on snapshot apply. Deliberately NOT a MediaBinGroups rebuild: replacing a
+    // bound collection at snapshot rate is the 0xc000027b churn pattern (CLAUDE.md).
+    //
+    // The DECISION is MediaBinPlaybackProjection.Resolve — pure, and tested as a whole, because
+    // StudioViewModel is not constructible in tests and the rule that matters (the core owns the
+    // flag only while the asset is on PROGRAM) is invisible to a per-predicate test.
     private void RefreshMediaBinPlaybackScalars(NativeMediaCoreStateSnapshot snapshot)
     {
         var mediaSources = snapshot.MediaSources;
-        var signature = BuildLiveMediaSignature(mediaSources);
-        if (!string.Equals(_lastLiveMediaSignature, signature, StringComparison.Ordinal))
+        var projection = MediaBinPlaybackProjection.Resolve(
+            mediaSources,
+            _lastLiveMediaSignature,
+            _lastSelectedMediaTransportState,
+            SelectedMediaAssetId,
+            SelectedMediaAssetName,
+            SelectedMediaAssetPlaying);
+
+        _lastLiveMediaSignature = projection.LiveSignature;
+        _lastSelectedMediaTransportState = projection.SelectedTransportState;
+
+        if (projection.RewriteBinScalars)
         {
-            _lastLiveMediaSignature = signature;
             foreach (var group in MediaBinGroups)
             {
                 foreach (var asset in group.Assets)
                 {
-                    asset.IsPlaying = asset.SupportsPlayback &&
-                        MediaRoutePlaybackService.IsPlayingOnAir(asset.Id, mediaSources);
+                    // Same OR as ApplyMediaSelection, so the selected row's indicator cannot
+                    // flip just because the live signature moved.
+                    asset.IsPlaying = MediaBinPlaybackProjection.ResolveBinRowIsPlaying(
+                        asset.Id,
+                        asset.SupportsPlayback,
+                        mediaSources,
+                        SelectedMediaAssetId,
+                        projection.SelectedPlaying);
                 }
             }
         }
 
-        // The SELECTED asset's transport drives the toggle and the summary. Only a real row
-        // speaks for it: with NO row the core has no transport for that asset, which is the
-        // off-Program audition case — purely shell-local state that a snapshot must not clobber
-        // (adopting "no row means not playing" would switch the audition indicator off every
-        // 250 ms poll).
-        var selectedRow = FindSelectedMediaSourceRow(mediaSources);
-        if (selectedRow is null)
+        if (!projection.RewriteSelection)
         {
             return;
         }
 
-        var selectedPlaying = string.Equals(selectedRow.State, "live", StringComparison.Ordinal);
-        if (SelectedMediaAssetPlaying == selectedPlaying)
+        SelectedMediaAssetPlaying = projection.SelectedPlaying;
+        if (projection.SelectedStatus is { Length: > 0 } status)
         {
-            return;
-        }
-
-        SelectedMediaAssetPlaying = selectedPlaying;
-        if (SelectedMediaAssetName is { Length: > 0 } name)
-        {
-            MediaPlaybackStatus = selectedRow.OnProgram
-                ? selectedPlaying ? $"Playing {name} on Program" : $"{name} paused on Program"
-                : selectedPlaying ? $"Auditioning {name}" : $"{name} {selectedRow.State}";
+            MediaPlaybackStatus = status;
         }
 
         OnPropertyChanged(nameof(SelectedMediaAssetSummary));
         OnPropertyChanged(nameof(MediaPlaybackButtonLabel));
         OnPropertyChanged(nameof(MediaPlaybackStatus));
-        OnPropertyChanged(nameof(IsMediaAssetPlaying));
     }
 
-    // The core's row for the current selection: the LIVE one wins when an asset is both a route
-    // and a scene background, matching MediaRoutePlaybackService.ResolveTransportState.
-    private NativeMediaCoreMediaSource? FindSelectedMediaSourceRow(
-        IReadOnlyList<NativeMediaCoreMediaSource> mediaSources)
-    {
-        if (SelectedMediaAssetId is not { Length: > 0 } assetId)
-        {
-            return null;
-        }
-
-        NativeMediaCoreMediaSource? match = null;
-        foreach (var row in mediaSources)
-        {
-            if (!string.Equals(row.MediaAssetId, assetId, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (string.Equals(row.State, "live", StringComparison.Ordinal))
-            {
-                return row;
-            }
-
-            match ??= row;
-        }
-
-        return match;
-    }
-
-    private static string BuildLiveMediaSignature(IReadOnlyList<NativeMediaCoreMediaSource> mediaSources)
-    {
-        if (mediaSources.Count == 0)
-        {
-            return string.Empty;
-        }
-
-        return string.Join("|", mediaSources
-            .Where(row => string.Equals(row.State, "live", StringComparison.Ordinal))
-            .Select(row => row.MediaAssetId ?? row.SourceId)
-            .OrderBy(id => id, StringComparer.Ordinal));
-    }
 
     // Re-projects the media bin's real on-air playing indicator, and clears the SELECTED
     // asset's local playing state if it is specifically the one that left Program (the ORed
@@ -6415,36 +6381,100 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // re-asserts it every tick (that would re-pause a clip the core had since resumed).
     // A single send that collides with the 250 ms poll is SKIPPED, not delivered, and CLAUDE.md's
     // rule is that a skipped single send must re-arm itself: the retry is the gesture again.
-    private void SendMediaTransportGesture(string mediaAssetId, string action) =>
-        _ = SendMediaTransportGestureAsync(mediaAssetId, action, attempt: 0);
-
-    private async Task SendMediaTransportGestureAsync(string mediaAssetId, string action, int attempt)
-    {
-        var command = MediaCoreCommandBuilder.BuildMediaTransportCommand(mediaAssetId, action);
-        await SingleSendBackpressure.RunAsync(
-            () => _bridge.SyncAsync([command]),
-            onSkipped: () =>
-            {
-                if (attempt >= MediaTransportGestureRetryAttempts)
-                {
-                    LaunchLog.Write(
-                        $"media: {action} for {mediaAssetId} was skipped for backpressure {attempt + 1} times; giving up");
-                    return;
-                }
-
-                RunOnUiThread(() => _ = RetryMediaTransportGestureAsync(mediaAssetId, action, attempt + 1));
-            },
-            onFailed: ex => LaunchLog.WriteException($"media {action} for {mediaAssetId} failed", ex))
-            .ConfigureAwait(false);
-    }
+    //
+    // LATEST WINS, per asset. Each tap mints a token and claims the asset's slot; a retry that
+    // finds a newer token abandons itself. Without that, two taps inside the retry window (pause
+    // then resume — each skipped once against the 250 ms poll is routine) can deliver the OLDER
+    // action last and leave the clip paused on air. Because the production sync deliberately no
+    // longer re-asserts play state, nothing downstream would correct it.
+    private readonly Dictionary<string, long> _mediaTransportGestures = new(StringComparer.Ordinal);
+    private long _mediaTransportGestureSequence;
 
     private const int MediaTransportGestureRetryAttempts = 5;
     private const int MediaTransportGestureRetryDelayMs = 120;
 
-    private async Task RetryMediaTransportGestureAsync(string mediaAssetId, string action, int attempt)
+    private void SendMediaTransportGesture(string mediaAssetId, string action)
+    {
+        var token = ++_mediaTransportGestureSequence;
+        _mediaTransportGestures[mediaAssetId] = token;
+        _ = SendMediaTransportGestureAsync(mediaAssetId, action, token, attempt: 0);
+    }
+
+    // UI thread only (every caller is a RunOnUiThread body or the tap itself).
+    private bool IsCurrentMediaTransportGesture(string mediaAssetId, long token) =>
+        _mediaTransportGestures.TryGetValue(mediaAssetId, out var current) && current == token;
+
+    private async Task SendMediaTransportGestureAsync(
+        string mediaAssetId,
+        string action,
+        long token,
+        int attempt)
+    {
+        var command = MediaCoreCommandBuilder.BuildMediaTransportCommand(mediaAssetId, action);
+        var outcome = await SingleSendBackpressure.RunAsync(
+            () => _bridge.SyncAsync([command]),
+            onSkipped: () => RunOnUiThread(() =>
+            {
+                if (!IsCurrentMediaTransportGesture(mediaAssetId, token))
+                {
+                    return;  // a newer tap for this asset superseded us
+                }
+
+                if (attempt >= MediaTransportGestureRetryAttempts)
+                {
+                    _mediaTransportGestures.Remove(mediaAssetId);
+                    ReportMediaTransportGestureGaveUp(mediaAssetId, action, attempt + 1);
+                    return;
+                }
+
+                _ = RetryMediaTransportGestureAsync(mediaAssetId, action, token, attempt + 1);
+            }),
+            onFailed: ex => RunOnUiThread(() =>
+            {
+                LaunchLog.WriteException($"media {action} for {mediaAssetId} failed", ex);
+                if (!IsCurrentMediaTransportGesture(mediaAssetId, token))
+                {
+                    return;
+                }
+
+                _mediaTransportGestures.Remove(mediaAssetId);
+                CommandStatus =
+                    $"Could not {action} {ResolveMediaAssetLabel(mediaAssetId)}; the media core rejected it. {ex.Message}";
+            })).ConfigureAwait(false);
+
+        if (outcome == SingleSendOutcome.Sent)
+        {
+            RunOnUiThread(() =>
+            {
+                if (IsCurrentMediaTransportGesture(mediaAssetId, token))
+                {
+                    _mediaTransportGestures.Remove(mediaAssetId);
+                }
+            });
+        }
+    }
+
+    // A dropped gesture is an on-air state the operator believes they changed and did not, so it
+    // reaches the operator surface, not only launch.log.
+    private void ReportMediaTransportGestureGaveUp(string mediaAssetId, string action, int attempts)
+    {
+        var label = ResolveMediaAssetLabel(mediaAssetId);
+        LaunchLog.Write(
+            $"media: {action} for {mediaAssetId} was skipped for backpressure {attempts} times; giving up");
+        CommandStatus = $"Could not {action} {label} - the media core stayed busy. Press it again.";
+    }
+
+    private string ResolveMediaAssetLabel(string mediaAssetId) =>
+        FindMediaAsset(mediaAssetId)?.Name is { Length: > 0 } name ? name : mediaAssetId;
+
+    private async Task RetryMediaTransportGestureAsync(
+        string mediaAssetId,
+        string action,
+        long token,
+        int attempt)
     {
         await Task.Delay(MediaTransportGestureRetryDelayMs).ConfigureAwait(false);
-        await SendMediaTransportGestureAsync(mediaAssetId, action, attempt).ConfigureAwait(false);
+        await SendMediaTransportGestureAsync(mediaAssetId, action, token, attempt).ConfigureAwait(false);
     }
 
     [RelayCommand]
@@ -12688,9 +12718,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 // Real on-air state, read from the CORE's rows (#535 slice 3b): a rolling Program
                 // clip that is not the current selection still shows as playing, and tapping its
                 // row pauses it. Off-Program audition playback is shell-local, so it still reads
-                // from the selection flag.
-                IsPlaying = IsMediaAssetPlaying(asset.Id) ||
-                    (SelectedMediaAssetPlaying && string.Equals(asset.Id, SelectedMediaAssetId, StringComparison.Ordinal))
+                // from the selection flag. The SAME expression the snapshot-rate scalar refresh
+                // uses, so an operator rebuild and a poll can never disagree about a row.
+                IsPlaying = MediaBinPlaybackProjection.ResolveBinRowIsPlaying(
+                    asset.Id,
+                    asset.SupportsPlayback,
+                    LatestMediaSources,
+                    SelectedMediaAssetId,
+                    SelectedMediaAssetPlaying)
             }).ToList()
         }).ToList();
 

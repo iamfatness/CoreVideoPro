@@ -247,6 +247,12 @@ public sealed class TransportCoordinator
         // Reconciliation first: the restored scenes must reach the core even if the
         // selection restore below throws.
         _host.RequestTakeReconciliation();
+        // The restored clip's playing flag comes from the LATEST snapshot's media rows, which
+        // may still describe the ATTEMPTED Program until the next 250 ms poll lands: the Take's
+        // sync failed, but a sync that got far enough to change the core would already have been
+        // echoed. A stale row can therefore make a just-restored clip read playing (or not) for
+        // up to one poll; the next snapshot apply corrects it. Accepted over blocking the
+        // rollback on a round trip to a core that just failed to answer.
         _host.RestoreMediaSelectionAfterRollback(TakeMediaSelectionRollback.Resolve(
             selectionBeforeTake,
             selectionAfterTake,

@@ -191,13 +191,29 @@ public static class MediaRoutePlaybackService
         string.Equals(ResolveTransportState(mediaAssetId, mediaSources), "live", StringComparison.Ordinal);
 
     /// <summary>
-    /// The core's transport state for an asset, or null when it publishes no row for it. A
-    /// routed asset is keyed <c>media:&lt;assetId&gt;</c> and a scene background
-    /// <c>background:&lt;assetId&gt;</c>; both are matched by <c>mediaAssetId</c> so a caller
-    /// never has to know which namespace the core used. When both exist (an asset used as a
-    /// route AND as a background) the LIVE one wins — on-air beats cued.
+    /// The core's transport state for an asset, or null when it publishes no row for it.
     /// </summary>
     public static string? ResolveTransportState(
+        string? mediaAssetId,
+        IReadOnlyList<NativeMediaCoreMediaSource> mediaSources) =>
+        ResolveTransportRow(mediaAssetId, mediaSources)?.State;
+
+    /// <summary>
+    /// The core's row that SPEAKS FOR an asset, or null when it publishes none.
+    ///
+    /// A routed asset is keyed <c>media:&lt;assetId&gt;</c>; the same file used as a scene
+    /// background is keyed <c>background:&lt;assetId&gt;</c>. The ROUTE row always wins when both
+    /// exist, and that ordering is load-bearing rather than cosmetic: a background is a loop, so
+    /// its row is permanently "live". Letting it answer made the bin show a cued or paused clip as
+    /// playing, made <see cref="ResolveTap"/> return Pause, and sent a pause the core correctly
+    /// refuses for a loop — the UI flipped to "paused" and nothing on air moved.
+    /// <see cref="IsLoopingAsset"/> cannot catch this: it keys on <c>MediaAsset.Kind</c>, which is
+    /// "video"/"clip" for a clip that merely happens to be used as somebody's background.
+    ///
+    /// With no route row, the background row is the honest answer — it is then the only source
+    /// the asset has.
+    /// </summary>
+    public static NativeMediaCoreMediaSource? ResolveTransportRow(
         string? mediaAssetId,
         IReadOnlyList<NativeMediaCoreMediaSource> mediaSources)
     {
@@ -206,7 +222,8 @@ public static class MediaRoutePlaybackService
             return null;
         }
 
-        string? state = null;
+        var routeSourceId = "media:" + mediaAssetId;
+        NativeMediaCoreMediaSource? fallback = null;
         foreach (var row in mediaSources)
         {
             if (!string.Equals(row.MediaAssetId, mediaAssetId, StringComparison.Ordinal))
@@ -214,14 +231,22 @@ public static class MediaRoutePlaybackService
                 continue;
             }
 
-            if (string.Equals(row.State, "live", StringComparison.Ordinal))
+            if (string.Equals(row.SourceId, routeSourceId, StringComparison.Ordinal))
             {
-                return row.State;
+                return row;
             }
 
-            state ??= row.State;
+            // Among non-route rows a live one still beats a cued one.
+            if (fallback is null || string.Equals(row.State, "live", StringComparison.Ordinal))
+            {
+                fallback ??= row;
+                if (string.Equals(row.State, "live", StringComparison.Ordinal))
+                {
+                    fallback = row;
+                }
+            }
         }
 
-        return state;
+        return fallback;
     }
 }
