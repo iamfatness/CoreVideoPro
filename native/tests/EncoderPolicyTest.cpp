@@ -52,14 +52,21 @@ TEST(EncoderPolicy, NeverOffersUnsupportedGpuVendors) {
   }
 }
 
-// HEVC encode is not shipped on any platform.
-TEST(EncoderPolicy, HevcEncodeIsNotShippedAnywhere) {
+// OWNER REVERSAL 2026-09-20: HEVC encode SHIPS on Windows (NVENC). The
+// 2026-08-06 exclusion (patent exposure) was reversed by the owner with that
+// exposure accepted; macOS still has no HEVC path in this product.
+TEST(EncoderPolicy, HevcShipsOnWindowsNvencOnly) {
+#if defined(__APPLE__)
   EXPECT_FALSE(codecHasSupportedHardwareEncoder("h265"));
-  for (const auto& mode : {"auto", "nvenc", "videotoolbox"}) {
-    for (const auto& candidate : encoderCandidatesFor("h265", mode)) {
-      EXPECT_EQ(candidate.find("hevc"), std::string::npos) << candidate;
-    }
-  }
+#else
+  EXPECT_TRUE(codecHasSupportedHardwareEncoder("h265"));
+  EXPECT_TRUE(isSupportedEncoder("hevc_nvenc"));
+  EXPECT_EQ(preferredEncoderFor("h265", "nvenc"), "hevc_nvenc");
+  EXPECT_EQ(preferredEncoderFor("h265", "auto"), "hevc_nvenc");
+  const auto candidates = encoderCandidatesFor("h265", "auto");
+  ASSERT_EQ(candidates.size(), 1u);  // NVENC or nothing: no software HEVC, no h264 substitute
+  EXPECT_EQ(candidates[0], "hevc_nvenc");
+#endif
 }
 
 // H.264 must ALWAYS have a path — it is the delivery default and the fallback
