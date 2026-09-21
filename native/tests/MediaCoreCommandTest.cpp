@@ -223,7 +223,10 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
       frame.pcm.resize(static_cast<size_t>(frame.sampleCount) * static_cast<size_t>(frame.channels));
       const int64_t baseSample = audioPollCount * frame.sampleCount;
       for (int sampleIndex = 0; sampleIndex < frame.sampleCount; ++sampleIndex) {
-        const double phase = 2.0 * corevideo::modules::kAudioPi * 330.0 *
+        // Whole periods per 480-sample block keep independently scheduled fake
+        // decoders in phase. 330 Hz shifted each block by 108 degrees, so the
+        // two-clip summing test could cancel under sanitizer scheduling.
+        const double phase = 2.0 * corevideo::modules::kAudioPi * 300.0 *
                              static_cast<double>(baseSample + sampleIndex) / static_cast<double>(frame.sampleRate);
         const auto sample = static_cast<float>(0.2 * std::sin(phase));
         frame.pcm[static_cast<size_t>(sampleIndex) * 2u] = sample;

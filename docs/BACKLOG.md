@@ -70,6 +70,7 @@ drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
 | [#570](https://github.com/iamfatness/CoreVideoPro/issues/570) | Native-core access violation during HEVC recovery; asynchronous MFT shutdown missing. |
 | [#571](https://github.com/iamfatness/CoreVideoPro/issues/571) | Native shutdown releases WIC overlay factory after its COM worker exits. |
 | [#572](https://github.com/iamfatness/CoreVideoPro/issues/572) | Healthy stream startup can roll back before the supervisor observes its first progress. |
+| [#573](https://github.com/iamfatness/CoreVideoPro/issues/573) | Two-clip audio summing fixture can cancel its test tones under sanitizer scheduling. |
 
 ## Papercuts (not competitive)
 
