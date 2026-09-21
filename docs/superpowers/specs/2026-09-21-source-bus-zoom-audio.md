@@ -34,3 +34,27 @@ This slice does not retire the underlying legacy producer interfaces, migrate
 media/capture PCM, or establish the entire #535 completion criteria. Those
 require their own lifecycle/producer migrations; naming a wrapper differently
 would not retire the old paths.
+
+## Recorded sync dependency (#579)
+
+The recorded clap gate exposed an existing mismatch between Zoom input clocks:
+its PCM feed primes three 20 ms blocks, while the video queue previously drained
+one frame on every render fetch. At a 30 fps camera / 60 fps renderer, the video
+reserve emptied despite continuous input. The source-bus move did not add this
+queue or change PCM timing.
+
+Zoom video now becomes eligible 60 ms after core ingest observation. This is the
+nominal age of the first sample in the primed audio block: the two retained
+20 ms blocks plus the current capture block. Eligibility uses monotonic time,
+not frame IDs or render calls, so resolution/FPS changes cannot drain the
+reserve early. The queue is capped at twelve frames; a late renderer selects
+the newest eligible frame and counts older eligible frames as overwritten.
+Unsubscribe/rejoin still retires the entire source queue.
+
+This intentionally adds source-video latency compared with the old drained
+queue. It does not reduce the audio reserve, add audio delay, change recording
+PTS, modify image quality, or change the selected 2/3-frame Program buffer.
+The existing FRAME_SYNC=0 diagnostic bypass remains a control, not an acceptance
+configuration. Source callback jitter means this is a nominal alignment policy,
+not a claim of sample-exact camera capture timestamps. Both recorded paired-event
+validation and real-source acceptance are required before closing #579.

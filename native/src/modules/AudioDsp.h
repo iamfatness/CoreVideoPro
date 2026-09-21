@@ -1,4 +1,5 @@
 #pragma once
+#include "modules/ZoomPlayoutTiming.h"
 
 #include "core/BoundedAsyncLog.h"
 
@@ -668,8 +669,8 @@ inline void applyResumeFadeIn(AudioFeedState& state, float* interleaved, size_t 
 }
 
 // Block reshaper. Ordinary sources retain zero-added-latency pass-through.
-// Zoom sources opt into a permanent one-tick reserve: wait until two ticks are
-// buffered, emit one exact tick, and leave one in reserve. This converts the
+// Zoom sources opt into a permanent two-tick reserve: wait until three ticks are
+// buffered, emit one exact tick, and leave two in reserve. This converts the
 // observed 480/1440/480 arrival jitter into full 960-frame blocks without a
 // 10 ms hole reaching the bus. A real starvation disarms the source so its next
 // talk spurt re-primes instead of leaking another partial block.
@@ -705,7 +706,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     if (!state.primingRequired) {
       emit = std::min(state.fifo.size(), tickSamples);
     } else {
-      if (!state.primed && state.fifo.size() >= tickSamples * 3) {
+      if (!state.primed && state.fifo.size() >= tickSamples * kZoomAudioPrimeTicks) {
         state.primed = true;
         ++state.primeEvents;
         if (state.primeEvents == 1 || state.primeEvents % 100 == 0) {
@@ -817,7 +818,7 @@ inline void steadyAudioFrameFeed(std::vector<AudioFrame>& frames,
     if (!state.primingRequired) {
       emit = std::min(state.fifo.size(), tickSamples);
     } else {
-      if (!state.primed && state.fifo.size() >= tickSamples * 3) {
+      if (!state.primed && state.fifo.size() >= tickSamples * kZoomAudioPrimeTicks) {
         state.primed = true;
         ++state.primeEvents;
       }
