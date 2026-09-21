@@ -3,6 +3,7 @@
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
 #include "modules/GpuVideoEncoder.h"
+#include "modules/HevcTransportStream.h"
 #include "modules/MediaFoundationGpuVideoEncoder.h"
 #include "modules/EncoderCapacityProbe.h"
 #include "modules/EncoderPolicy.h"
@@ -834,17 +835,23 @@ class RtmpOutputSender final : public IOutputSender {
       sender_.status = "failed";
       ++sender_.retryCount;
       bool queueOverflow = false;
+      bool invalidTiming = false;
 #if defined(_WIN32)
       queueOverflow = useGpuDirect_ && bitstreamFailure_.reason() == BitstreamFailure::QueueOverflow;
+      invalidTiming = useGpuDirect_ && bitstreamFailure_.reason() == BitstreamFailure::InvalidTiming;
 #endif
-      const auto genericFailure = queueOverflow
+      const auto genericFailure = invalidTiming
+          ? std::string("Hardware encoder returned missing or non-monotonic packet timestamps.")
+          : queueOverflow
           ? std::string("Compressed-video queue overflow; the stream transport could not drain encoded video fast enough.")
           : sender_.lastResultCode == "ffmpeg-exited" && !sender_.lastError.empty()
               ? sender_.lastError
               : std::string("FFmpeg stdin write failed; the ") + protocol_.destination +
                     " process stopped or rejected frames.";
       sender_.destinationHealth = "failed";
-      if (queueOverflow) {
+      if (invalidTiming) {
+        sender_.lastResultCode = "encoder-timestamp-invalid";
+      } else if (queueOverflow) {
         sender_.lastResultCode = "bitstream-queue-overflow";
       } else if (sender_.lastResultCode != "ffmpeg-exited") {
         sender_.lastResultCode = "ffmpeg-write-failed";
@@ -1239,11 +1246,11 @@ class RtmpOutputSender final : public IOutputSender {
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     config.container = protocol_.container;
-    // GPU-direct: video arrives on pipe:0 already encoded in the sent codec, so
-    // FFmpeg is a pure -c:v copy muxer and the raw demuxer follows that codec
-    // (h264 / hevc / obu). The raw path leaves this false and re-encodes.
+    // GPU-direct HEVC carries encoder timestamps in an internal TS envelope;
+    // other codecs retain their elementary input. FFmpeg copies the video.
     config.videoBitstreamInput = useGpuDirect_;
     config.videoBitstreamCodec = gpuEncodeSentCodec_;
+    config.timestampedHevcInput = useGpuDirect_ && gpuEncodeSentCodec_ == "hevc";
     return buildRtmpFfmpegArguments(config);
   }
 
@@ -1782,24 +1789,38 @@ class RtmpOutputSender final : public IOutputSender {
         ::corevideo::core::nativeLogf("[gpu-encode] bitstream queue overflow; queuedBytes=%zu queuedChunks=%zu incomingBytes=%zu; sender unhealthy -> supervisor\n", bitstreamQueuedBytes_, bitstreamQueue_.size(), chunk.size);
         return;
       }
-      bitstreamQueue_.emplace_back(chunk.data, chunk.data + chunk.size);
+      bitstreamQueue_.push_back({std::vector<uint8_t>(chunk.data, chunk.data + chunk.size), chunk});
       bitstreamQueuedBytes_ += chunk.size;
     }
     bitstreamQueueCv_.notify_one();
   }
 
   void bitstreamWriterLoop() {
+    HevcTransportStream transport;
+    std::vector<uint8_t> wire;
     while (!bitstreamWriterStop_.load() && !bitstreamFailure_.failed()) {
-      std::vector<uint8_t> bytes;
+      QueuedBitstream packet;
       {
         std::unique_lock<std::mutex> lock(bitstreamQueueMutex_);
         bitstreamQueueCv_.wait(lock, [this] { return bitstreamWriterStop_.load() || !bitstreamQueue_.empty(); });
         if (bitstreamWriterStop_.load()) break;
-        bytes = std::move(bitstreamQueue_.front());
+        packet = std::move(bitstreamQueue_.front());
         bitstreamQueue_.pop_front();
-        bitstreamQueuedBytes_ -= bytes.size();
+        bitstreamQueuedBytes_ -= packet.bytes.size();
       }
-      writeBitstreamToFfmpeg(bytes.data(), bytes.size());
+      packet.metadata.data = packet.bytes.data();
+      if (gpuEncodeSentCodec_ == "hevc") {
+        if (!transport.packetize(packet.metadata, wire)) {
+          bitstreamFailure_.record(BitstreamFailure::InvalidTiming);
+          ::corevideo::core::nativeLogf("[gpu-encode] invalid encoder packet timing pts=%lld dts=%lld valid=%d\n",
+              static_cast<long long>(packet.metadata.pts100ns), static_cast<long long>(packet.metadata.dts100ns),
+              packet.metadata.timingValid ? 1 : 0);
+          break;
+        }
+        writeBitstreamToFfmpeg(wire.data(), wire.size());
+      } else {
+        writeBitstreamToFfmpeg(packet.bytes.data(), packet.bytes.size());
+      }
     }
     bitstreamWriterExited_.store(true);
   }
@@ -1864,6 +1885,7 @@ class RtmpOutputSender final : public IOutputSender {
     if (!gpuEncoder_->healthy()) return false;
     if (frame.encoderSharedTexture.sharedHandleHex.empty()) return true;
     GpuVideoEncoderFrame f;
+    f.publishedFrameNumber = frame.encoderSharedTexture.publishedFrameNumber;
     f.sharedHandleHex = frame.encoderSharedTexture.sharedHandleHex;
     f.width = frame.encoderSharedTexture.width;
     f.height = frame.encoderSharedTexture.height;
@@ -2355,7 +2377,11 @@ class RtmpOutputSender final : public IOutputSender {
 #if defined(_WIN32)
   std::mutex bitstreamQueueMutex_;
   std::condition_variable bitstreamQueueCv_;
-  std::deque<std::vector<uint8_t>> bitstreamQueue_;
+  struct QueuedBitstream {
+    std::vector<uint8_t> bytes;
+    GpuEncodedChunk metadata;
+  };
+  std::deque<QueuedBitstream> bitstreamQueue_;
   size_t bitstreamQueuedBytes_ = 0;
   std::thread bitstreamWriterThread_;
   std::atomic<bool> bitstreamWriterStop_{true};

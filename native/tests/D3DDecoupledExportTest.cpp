@@ -48,12 +48,14 @@ bool makeUniformSource(ID3D11Device* device, ID3D11DeviceContext* context,
 // Consumer side: open the exporter's output by handle on a *separate* device,
 // acquire key 1, read back the first pixel. Returns false when no new frame.
 bool readOutputPixel(ID3D11Device* device, ID3D11DeviceContext* context, HANDLE handle,
-                     std::uint32_t& pixel) {
+                     std::uint32_t& pixel, const std::shared_ptr<std::atomic<int64_t>>& stamp = {},
+                     int64_t* frameNumber = nullptr) {
   ComPtrLite<ID3D11Texture2D> opened;
   if (FAILED(device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(opened.put())))) return false;
   ComPtrLite<IDXGIKeyedMutex> mutex;
   if (FAILED(opened->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(mutex.put())))) return false;
   if (mutex->AcquireSync(1, 4) != S_OK) return false;  // producer holds it / no new frame
+  if (stamp && frameNumber) *frameNumber = stamp->load(std::memory_order_acquire);
   D3D11_TEXTURE2D_DESC desc{};
   opened->GetDesc(&desc);
   desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0;
@@ -102,6 +104,32 @@ TEST(D3DDecoupledExport, PublishesFrameToSharedOutputAcrossDevices) {
   }
   EXPECT_TRUE(matched) << "output pixel 0x" << std::hex << got << " never matched 0x" << kColor;
   EXPECT_GT(D3DDecoupledExportTestAccess::published(exporter), 0u);
+}
+
+TEST(D3DDecoupledExport, FrameIdentityMatchesPixelsUnderAsynchronousExport) {
+  ComPtrLite<ID3D11Device> device, consumer;
+  ComPtrLite<ID3D11DeviceContext> context, consumerContext;
+  ASSERT_TRUE(makeDevice(device, context));
+  ASSERT_TRUE(makeDevice(consumer, consumerContext));
+  D3DDecoupledExport exporter(device.get(), kW, kH, "timestamp-test");
+  ASSERT_TRUE(exporter.valid());
+  int received = 0;
+  for (int64_t frame = 1; frame <= 30; ++frame) {
+    ComPtrLite<ID3D11Texture2D> src;
+    const auto color = 0xff000000u | static_cast<uint32_t>(frame * 7);
+    ASSERT_TRUE(makeUniformSource(device.get(), context.get(), color, src));
+    exporter.submit(context.get(), src.get(), frame * 7);
+    context->Flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    uint32_t pixel = 0;
+    int64_t stamp = -1;
+    if (readOutputPixel(consumer.get(), consumerContext.get(), exporter.handle(), pixel,
+                        exporter.publishedFrameNumber(), &stamp)) {
+      EXPECT_EQ(pixel & 0x00ffffffu, static_cast<uint32_t>(stamp));
+      ++received;
+    }
+  }
+  EXPECT_GE(received, 2);
 }
 
 TEST(D3DDecoupledExport, ParticipantBgraExportCopiesCachedPixelsAcrossDevices) {
