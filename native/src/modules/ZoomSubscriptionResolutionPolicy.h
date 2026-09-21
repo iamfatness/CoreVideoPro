@@ -25,21 +25,27 @@ namespace corevideo::modules {
 // An in-place change cannot be proven without a live meeting, and a silent no-op
 // would leave a Program guest at the wrong resolution with nothing to say so.
 //
-// THE TIER (R4, amended 2026-09-13): the shell stamps a purpose that does not
-// depend on who is talking (ZoomSourceSetPolicy.cs), and
+// THE TIER (R4, amended 2026-09-13, then 2026-09-20): the shell stamps a purpose
+// that does not depend on who is talking (ZoomSourceSetPolicy.cs), and
 //   * screen share                                        -> 1080P
-//   * camera video, purpose program / preview (a FIXED route on a bus) -> 1080P, capped
-//   * camera video, purpose program-tiles / preview-tiles -> 1080P, capped
-//     (the Tiles wall; raised from 720P so a wall member does not flip resolution
-//      when soloed in preview — see wantsFullResolution below)
-//   * multiview, iso                                       -> 720P
-// so the resolution moves only on a Take or a cue — NEVER on who is talking. A
-// follow-speaker route grants no purpose (fix round 2, N1): its speaker keeps their
-// own tier, so a follow-speaker shot is 720P until an in-place resolution change is
-// proven on a live renderer. There is NO ratchet: a guest who leaves
-// Program/Preview goes back to 720P, and the engine now honours that downgrade
-// (it used to keep a live renderer at its old, higher resolution forever, which
-// over a show put every rotated guest at 1080P — the N x 1080P overload below).
+//   * camera video, ANY purpose (program / preview / program-tiles /
+//     preview-tiles / multiview / iso / active-speaker)   -> 1080P, capped
+// so the resolution NEVER moves for an in-show source — not on who is talking,
+// and since 2026-09-20 not on a Take or a cue either. OWNER RULING 2026-09-20:
+// "All sources should be pulling at the highest available for zoom. We shouldn't
+// only pull a 720 until they are in preview; that doesn't work once we do a cut."
+// The live evidence behind it: with multiview at 720P and a Preview route at
+// 1080P, every cue rebuilt that guest's ONE subscription at the other tier (churn
+// 16-20 per guest in one morning, reason resolution-change), and Zoom's 720P and
+// 1080P encodes of the same camera are NOT tone-identical (measured on the
+// engine SHM: ~+2.5 mean Y and ~-1.5 mean U at 1080P, both tiers full range) —
+// the operator saw it as "a color shift in preview when selecting a source".
+// One tier for every in-show camera removes the flip, so the shift cannot recur.
+// A follow-speaker route still grants no purpose (fix round 2, N1); its speaker
+// is at the top tier like everyone else, so the old "follow-speaker shot is
+// 720P" limitation is gone with it. There is still NO ratchet: a request that
+// DOES drop (the cap's demotion, below) is honoured by the engine as a downgrade
+// (it used to keep a live renderer at its old, higher resolution forever).
 // The core keeps the last decoded frame of a source across its re-subscribe
 // (`latestDecodedFrames_` is only erased when a source is RETIRED), so the
 // compositor holds the picture instead of dropping it; see the #478 CLAUDE.md
@@ -47,8 +53,13 @@ namespace corevideo::modules {
 //
 // THE 1080P CAP. `kMaxConcurrentFullResolutionCameras` camera subscriptions may be
 // at 1080P at once, granted in the shell's budget order (Program routes first,
-// then Preview routes); beyond it a bus route gets 720P, and the runtime publishes
-// how many were demoted (`zoomSubscriptionChurn.fullResolutionDemoted`). Evidence
+// then Preview routes); beyond it a camera gets 720P, and the runtime publishes
+// how many were demoted (`zoomSubscriptionChurn.fullResolutionDemoted`). With
+// every purpose at the top tier the cap is the ONLY thing that can still flip a
+// guest: past 8 camera-on sources, a cue re-ranks the budget (Program routes,
+// then Preview routes, then the rest) and the 9th camera trades places with the
+// cued one — two re-subscribes per cue, published as fullResolutionDemoted. Say
+// so rather than hide it; raising the cap needs a bigger-meeting soak. Evidence
 // for the number: SIX concurrent 1080P raw subscriptions crashed the Zoom SDK
 // subprocess (ntdll 0xc000000d) and overloaded the then-CPU I420 path — commit
 // bd3caf29 (2026-06-28), which introduced per-purpose resolution for exactly that
@@ -78,17 +89,16 @@ struct ZoomSubscriptionResolutionPolicy {
   // flipping a member. Screen share is 1080P and bypasses this camera counter.
   static constexpr int kMaxConcurrentFullResolutionCameras = 8;
 
-  // Tiles request the highest tier too, so a wall member does NOT flip resolution
-  // when soloed in preview (the dropping bug: resolution is part of the engine's
-  // subscription key, so a 720P->1080P change tore down and rebuilt the live
-  // renderer while the tile was on air). With program-tiles and preview both at
-  // 1080P, a soloed wall member has no lower tier to fall back to — same feed,
-  // no re-subscribe, no drop. program-tiles is the on-air wall; preview-tiles is
-  // the same wall cued on the other bus.
+  // EVERY camera purpose wants the top tier (2026-09-20). Resolution is part of
+  // the engine's subscription key, so any purpose left at a lower tier flips a
+  // live renderer the moment that guest is cued or taken — which is exactly the
+  // tone shift and the tile drop the operator reported. Only the KIND gates it:
+  // the macOS shell's kind "video" is deliberately not promoted (see above). The
+  // purpose parameter stays so the cap's payload-order semantics and any future
+  // per-purpose exception keep their seam; it is intentionally unused here.
   [[nodiscard]] static bool wantsFullResolution(std::string_view kind, std::string_view purpose) {
-    return kind == "participant-video" &&
-           (purpose == "program" || purpose == "preview" ||
-            purpose == "program-tiles" || purpose == "preview-tiles");
+    (void)purpose;
+    return kind == "participant-video";
   }
 
   // The resolution a request asks for BEFORE the concurrency cap.

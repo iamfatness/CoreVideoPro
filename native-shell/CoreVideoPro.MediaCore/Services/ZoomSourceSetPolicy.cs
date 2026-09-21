@@ -47,17 +47,21 @@ namespace CoreVideoPro.MediaCore.Services;
 /// The core's speaker director follows the talker only AMONG these sources (the payload names
 /// them in <c>sourceParticipantIds</c>), so the directed speaker is always already a source. A
 /// follow-speaker (<c>active-speaker</c> mode) route adds nobody, moves nobody's budget position
-/// AND grants no purpose: the speaker is shown at whatever tier they already hold (wall, Tiles,
-/// ISO: 720P). Round 1 gave them the bus purpose (1080P), which rebuilt two renderers — often
-/// on-air Tiles tiles — on every change of speaker, i.e. the original #478 flashing, driven by
-/// talk again. <b>Known limitation:</b> a follow-speaker shot is 720P until an in-place
-/// resolution change is proven on a live renderer.</para>
+/// AND grants no purpose: the speaker is shown at whatever tier they already hold. Round 1 gave
+/// them the bus purpose, which rebuilt two renderers — often on-air Tiles tiles — on every
+/// change of speaker, i.e. the original #478 flashing, driven by talk again. Since 2026-09-20
+/// every camera purpose is the top tier in the core, so the speaker is 1080P like everyone
+/// else and the old "follow-speaker shot is 720P" limitation is gone.</para>
 ///
-/// <para><b>Purpose is a STABLE tier, not a position.</b> A participant holding a FIXED Program
-/// route gets <c>program</c>, else a fixed Preview route <c>preview</c> (both 1080p in the core,
-/// <c>native/src/modules/ZoomSubscriptionResolutionPolicy.h</c>); anything else takes the
-/// purpose of the first tier that lists it (all 720p). So purpose, and with it resolution,
-/// moves only on a Take or a cue — never on who is talking.</para>
+/// <para><b>Purpose is a STABLE tier, not a position — and since 2026-09-20 it no longer moves
+/// resolution at all.</b> A participant holding a FIXED Program route gets <c>program</c>, else a
+/// fixed Preview route <c>preview</c>; anything else takes the purpose of the first tier that
+/// lists it. The core (<c>native/src/modules/ZoomSubscriptionResolutionPolicy.h</c>) asks 1080P
+/// for EVERY camera purpose (owner ruling: all sources at the highest available, never 720P
+/// until cued — Zoom's 720P and 1080P encodes differ in tone, so a cue-time tier flip showed as
+/// a color shift in Preview). Purpose still decides the ORDER the 8-camera 1080P budget is
+/// granted in (Program routes first), which is the only thing that can still re-subscribe a
+/// guest past the cap.</para>
 /// </summary>
 public static class ZoomSourceSetPolicy
 {
