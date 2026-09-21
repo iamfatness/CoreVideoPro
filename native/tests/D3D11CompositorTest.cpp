@@ -1,5 +1,6 @@
 #include "compositor/CompositorLayout.h"
 #include "core/ComApartmentLifetime.h"
+#include "core/ZoomBusRoster.h"
 #include "modules/Interfaces.h"
 
 #include <gtest/gtest.h>
@@ -1079,6 +1080,43 @@ TEST(D3D11Compositor, SourceTextureCacheHandlesMixedResolutionsWithoutRecreates)
   const auto stats = compositor->sourceTexStats();
   EXPECT_EQ(stats.textureCreates, 2u) << "one texture set per source, created once";
   EXPECT_EQ(stats.cachedUploads, 2u) << "one upload per source, held frames are free";
+}
+
+// #555: content-level coverage of the suspected first-Take resolution ramp.
+// This exercises real D3D pixels, not just rect math; it is not a replacement
+// for the operator's actual multiview-click -> Take reproduction.
+TEST(D3D11Compositor, FreshZoomSourceRemainsFullyFramedAcrossResolutionAndFrameIdRestarts) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  corevideo::core::SourceBus bus;
+  const auto plan = fullRectParticipantPlan("fresh-take", "fresh", 640, 360);
+  int iteration = 0;
+  for (const auto& size : std::vector<std::pair<int, int>>{{320,180}, {640,360}, {1920,1080}, {256,144}, {1280,720}}) {
+    auto frame = makeI420SolidFrame("fresh", size.first, size.second, 60, 1);
+    auto planes = std::make_shared<std::vector<uint8_t>>(*frame.i420);
+    for (int y = 0; y < size.second; ++y) {
+      std::fill(planes->begin() + y * size.first + size.first / 2,
+                planes->begin() + (y + 1) * size.first, static_cast<uint8_t>(200));
+    }
+    frame.i420 = planes;
+    corevideo::core::syncZoomParticipantSources(bus, {frame}, {"fresh"});
+    const auto sources = bus.ingest(0, ++iteration).video;
+    compositor->renderPreview(plan, sources);
+    const auto program = compositor->render(plan, sources);
+    ASSERT_GT(program.preview.width, 0);
+    ASSERT_GT(program.preview.height, 0);
+    // Check both sides near each corner as well as the midline: a half-width
+    // offset, slate, stale texture or clipped first frame fails these samples.
+    for (int yPercent : {10, 50, 90}) {
+      for (int xPercent : {10, 40, 60, 90}) {
+        const auto pixel = previewPixelRgba(program.preview,
+            program.preview.width * xPercent / 100, program.preview.height * yPercent / 100);
+        expectChannelNear(static_cast<int>(pixel & 0xff), xPercent < 50 ? 60 : 200, 16, "ramp pixel B");
+      }
+    }
+    EXPECT_EQ(bus.sourceFor("fresh")->descriptor().width, size.first);
+    EXPECT_EQ(bus.sourceFor("fresh")->descriptor().height, size.second);
+  }
 }
 
 // A cached source that stops being drawn must be evicted (and re-created on

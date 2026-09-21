@@ -62,8 +62,41 @@ inline void syncZoomParticipantSources(SourceBus& bus,
     const ISource* source = bus.sourceFor(id);
     if (source && source->descriptor().kind == "zoom" && present.find(id) == present.end() &&
         engineRoster.find(id) == engineRoster.end()) {
-      bus.remove(id);
+      if (source->descriptor().hasAudio) {
+        static_cast<ZoomParticipantSource*>(bus.sourceFor(id))->clearVideo();
+      } else {
+        bus.remove(id);
+      }
     }
+  }
+}
+
+// One pre-polled audio batch, moved under coreMutex and drained by ingestAudio
+// in the same gather. No engine locks, extra queue latency, or PCM copying here.
+// Audio-only guests share the same identity as their later camera frames.
+inline void stageZoomAudioSources(SourceBus& bus, std::vector<modules::AudioFrame> frames) {
+  for (const auto& id : bus.sourceIds()) {
+    auto* source = dynamic_cast<ZoomParticipantSource*>(bus.sourceFor(id));
+    if (source) source->clearAudio();
+  }
+  for (auto& frame : frames) {
+    if (!bus.contains(frame.participantId)) {
+      bus.add(std::make_shared<ZoomParticipantSource>(frame.participantId, 0, 0));
+    }
+    auto* source = dynamic_cast<ZoomParticipantSource*>(bus.sourceFor(frame.participantId));
+    if (source) {
+      source->stageAudio(std::move(frame));
+    } else {
+      static std::atomic<uint32_t> skips{0};
+      if (skips++ % 300 == 0) {
+        nativeLogf("[source-bus] zoom audio for '%s' skipped: source identity belongs to another adapter\n",
+                   frame.participantId.c_str());
+      }
+    }
+  }
+  for (const auto& id : bus.sourceIds()) {
+    const auto* source = dynamic_cast<ZoomParticipantSource*>(bus.sourceFor(id));
+    if (source && !source->descriptor().hasAudio && !source->descriptor().hasVideo) bus.remove(id);
   }
 }
 

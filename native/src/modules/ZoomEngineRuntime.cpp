@@ -638,29 +638,9 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
   std::vector<VideoFrame> frames;
   frames.reserve(latestDecodedFrames_.size());
   for (auto& [participantId, decoded] : latestDecodedFrames_) {
-    // FRAME SYNC: draw this tick's frame from the queue, keeping kFrameSyncCushion
-    // in reserve. Priming waits for cushion+1 so the reserve exists BEFORE the
-    // first frame goes to air — that reserve is the entire point, and building it
-    // lazily would just reproduce the catch-up buffer that measured no benefit.
     if (frameSyncEnabled_) {
       auto& sync = frameSync_[participantId];
-      if (!sync.primed && sync.frames.size() > kFrameSyncCushion) {
-        sync.primed = true;
-      }
-      // HOLD the cushion at its target, never merely inherit it. Frames pile up
-      // before the render thread starts pulling a newly joined source, and
-      // draining one-per-tick from a deep queue would lock that startup backlog
-      // in as PERMANENT latency (measured: p50 27ms on one run, 37ms on the next,
-      // purely on join timing). A frame sync resyncs instead of falling behind,
-      // so discard the excess and keep exactly the cushion.
-      while (sync.frames.size() > kFrameSyncCushion + 1) {
-        sync.frames.pop_front();
-        ++slotOverwritten_;  // stale backlog, and it never reached the compositor
-      }
-      if (sync.primed && !sync.frames.empty()) {
-        decoded = std::move(sync.frames.front());
-        sync.frames.pop_front();
-      }
+      slotOverwritten_ += takeDueZoomVideo(sync.frames, nowTp, decoded);
     }
     if (!decoded.i420 || decoded.width <= 0 || decoded.height <= 0) {
       continue;
@@ -1403,13 +1383,7 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
       // parked frame surfaces later and OUT OF ORDER (measured once as an 800ms
       // p99 while the delivery number happily read 97%).
       auto& sync = frameSync_[frame.participantId];
-      sync.frames.push_back(std::move(incoming));
-      if (sync.frames.size() > kFrameSyncMaxDepth) {
-        // Sustained overflow: the source is genuinely outrunning the render.
-        // Drop the OLDEST so the wall stays current instead of drifting behind.
-        sync.frames.pop_front();
-        ++slotOverwritten_;
-      }
+      slotOverwritten_ += pushZoomVideo(sync.frames, std::move(incoming));
     } else {
       if (decoded.i420 && !decoded.fetched) {
         // Latest-wins fallback (COREVIDEO_FRAME_SYNC=0): a decoded frame is

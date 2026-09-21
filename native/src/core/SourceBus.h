@@ -41,6 +41,9 @@ struct SourceIngestCounters {
   uint64_t droppedFrames = 0;    // pool refusal or source-reported drop
   int64_t lastFrameId = 0;
   int64_t lastNewFrameNs = 0;    // caller monotonic clock; never UTC
+  uint64_t audioPacketsIngested = 0;
+  uint64_t audioSamplesIngested = 0; // interleaved PCM frames, not metadata placeholders
+  int64_t lastAudioNs = 0;
 };
 
 struct SourceTick {
@@ -55,6 +58,9 @@ class ISource {
   virtual ~ISource() = default;
   virtual const SourceDescriptor& descriptor() const = 0;
   virtual SourceTick poll(int64_t programTime100ns) = 0;
+  // Separate cadence: a render poll must never drain PCM intended for the
+  // 20ms audio worker. Called in the same serialized bus ownership domain.
+  virtual std::vector<modules::AudioFrame> pollAudio(int64_t) { return {}; }
   virtual SourceIngestCounters counters() const = 0;
 };
 
@@ -128,6 +134,22 @@ class SourceBus {
     return out;
   }
 
+  std::vector<modules::AudioFrame> ingestAudio(int64_t programTime100ns, int64_t nowNs) {
+    std::vector<modules::AudioFrame> out;
+    for (auto& [id, e] : entries_) {
+      if (!e.source->descriptor().hasAudio) continue;
+      for (auto& frame : e.source->pollAudio(programTime100ns)) {
+        if (!frame.pcm.empty() && frame.channels > 0) {
+          ++e.counters.audioPacketsIngested;
+          e.counters.audioSamplesIngested += frame.pcm.size() / frame.channels;
+          e.counters.lastAudioNs = nowNs;
+        }
+        out.push_back(std::move(frame));
+      }
+    }
+    return out;
+  }
+
   // nullopt when the source is not on the bus at all; otherwise the same
   // derivation snapshot() uses for that source's entry.
   std::optional<SourceHealth> healthFor(const std::string& sourceId, int64_t nowNs) const {
@@ -168,6 +190,11 @@ class SourceBus {
   std::map<std::string, Entry> entries_;  // stable id order for the snapshot
 
   static SourceHealth healthOf(const Entry& e, int64_t nowNs) {
+    if (!e.source->descriptor().hasVideo && e.source->descriptor().hasAudio) {
+      if (e.counters.audioPacketsIngested == 0) return SourceHealth::Warming;
+      return nowNs - e.counters.lastAudioNs <= kStaleAfterNs
+          ? SourceHealth::Producing : SourceHealth::Stalled;
+    }
     if (!e.everProduced) return SourceHealth::Warming;
     if (nowNs - e.counters.lastNewFrameNs <= kStaleAfterNs) return SourceHealth::Producing;
     return SourceHealth::Stalled;

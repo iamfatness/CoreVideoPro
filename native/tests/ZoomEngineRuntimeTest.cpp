@@ -794,7 +794,6 @@ struct ZoomEngineRuntimeTestAccess {
     decoded.i420 = std::make_shared<const std::vector<std::uint8_t>>(24, 128);
     auto& sync = runtime.frameSync_[std::to_string(participantId)];
     sync.frames.push_back(decoded);
-    sync.primed = true;
   }
   static bool hasVideoCaches(ZoomEngineRuntime& runtime,
                              const std::string& sourceUuid,
@@ -1478,4 +1477,95 @@ TEST(ZoomEngineRuntime, TheSpeakerEpochMovesOnLeaveAndEngineOff) {
     EXPECT_NE(runtime.speakerEpoch(), afterEngineOff);
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+namespace {
+struct PlayoutTestFrame {
+  int frameId = -1;
+  std::chrono::steady_clock::time_point observedAt{};
+};
+auto playoutTime(int milliseconds) {
+  return std::chrono::steady_clock::time_point{} + std::chrono::milliseconds(milliseconds);
+}
+}
+
+TEST(ZoomFramePlayout, FastRendererCannotDrainTheAudioMatchedReserve) {
+  using corevideo::modules::takeDueZoomVideo;
+  std::deque<PlayoutTestFrame> queue{{1, playoutTime(0)}, {2, playoutTime(33)}};
+  PlayoutTestFrame current;
+  EXPECT_EQ(takeDueZoomVideo(queue, playoutTime(59), current), 0u);
+  EXPECT_EQ(current.frameId, -1);
+  EXPECT_EQ(queue.size(), 2u);
+  EXPECT_EQ(takeDueZoomVideo(queue, playoutTime(60), current), 0u);
+  EXPECT_EQ(current.frameId, 1);
+  takeDueZoomVideo(queue, playoutTime(76), current);
+  takeDueZoomVideo(queue, playoutTime(90), current);
+  EXPECT_EQ(current.frameId, 1);
+  EXPECT_EQ(queue.size(), 1u);
+  takeDueZoomVideo(queue, playoutTime(93), current);
+  EXPECT_EQ(current.frameId, 2);
+}
+
+TEST(ZoomFramePlayout, MaintainsTimeReserveAcrossCameraRateAndFrameIdChanges) {
+  std::deque<PlayoutTestFrame> queue;
+  PlayoutTestFrame current;
+  int nextArrival = 0;
+  int lastShownAt = -1;
+  int fresh = 0;
+  for (int now = 0; now <= 1800; ++now) {
+    if (now == nextArrival) {
+      // A source changing resolution may restart its frame ID. Arrival time,
+      // not that ID or the consumer's fetch count, controls playout.
+      queue.push_back({now < 900 ? now : now - 900, playoutTime(now)});
+      nextArrival += now < 900 ? 33 : 17;
+    }
+    if (now % 16 != 0) continue;
+    EXPECT_EQ(corevideo::modules::takeDueZoomVideo(queue, playoutTime(now), current), 0u);
+    if (current.frameId < 0) continue;
+    const int arrival = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(current.observedAt.time_since_epoch()).count());
+    EXPECT_GE(now - arrival, 60);
+    EXPECT_LE(now - arrival, 93);
+    if (arrival != lastShownAt) { ++fresh; lastShownAt = arrival; }
+  }
+  EXPECT_GE(fresh, 75);
+}
+
+TEST(ZoomFramePlayout, RendererStallSkipsExpiredFramesWithoutAccumulatingLatency) {
+  std::deque<PlayoutTestFrame> queue;
+  for (int id = 0; id < 8; ++id) queue.push_back({id, playoutTime(id * 10)});
+  PlayoutTestFrame current;
+  EXPECT_EQ(corevideo::modules::takeDueZoomVideo(queue, playoutTime(120), current), 6u);
+  EXPECT_EQ(current.frameId, 6);
+  EXPECT_EQ(queue.size(), 1u);
+  EXPECT_EQ(corevideo::modules::takeDueZoomVideo(queue, playoutTime(130), current), 0u);
+  EXPECT_EQ(current.frameId, 7);
+  EXPECT_TRUE(queue.empty());
+  corevideo::modules::takeDueZoomVideo(queue, playoutTime(500), current);
+  EXPECT_EQ(current.frameId, 7);
+}
+
+TEST(ZoomFramePlayout, HighRateProducerCannotEvictEveryFrameBeforeItBecomesDue) {
+  std::deque<PlayoutTestFrame> queue;
+  PlayoutTestFrame current;
+  int shown = 0;
+  int lastId = -1;
+  size_t lost = 0;
+  // 120 Hz diagnostic input and 60 Hz renderer: capacity must exceed the
+  // 60 ms reserve plus the producer/consumer phase difference.
+  for (int tick = 0; tick < 240; ++tick) {
+    const auto now = std::chrono::steady_clock::time_point{} +
+        std::chrono::microseconds(static_cast<long long>(tick) * 1000000 / 120);
+    lost += corevideo::modules::pushZoomVideo(queue, PlayoutTestFrame{tick, now});
+    EXPECT_LE(queue.size(), corevideo::modules::kZoomVideoQueueCapacity);
+    if (tick % 2 != 0) continue;
+    lost += corevideo::modules::takeDueZoomVideo(queue, now, current);
+    if (current.frameId >= 0 && current.frameId != lastId) {
+      ++shown;
+      lastId = current.frameId;
+      const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - current.observedAt).count();
+      EXPECT_GE(age, 60);
+      EXPECT_LE(age, 69);
+    }
+  }
+  EXPECT_GE(shown, 115);
+  EXPECT_EQ(static_cast<size_t>(shown) + lost + queue.size(), 240u);
 }

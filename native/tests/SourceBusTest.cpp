@@ -19,6 +19,124 @@
 
 using corevideo::core::TestPatternSource;
 
+namespace {
+corevideo::modules::AudioFrame zoomPcm(std::string id, int64_t timestamp, float sample) {
+  corevideo::modules::AudioFrame frame;
+  frame.participantId = std::move(id);
+  frame.timestampMs = timestamp;
+  frame.channels = 2;
+  frame.sampleCount = 480;
+  frame.requiresSteadyFeedPriming = true;
+  frame.pcm.assign(960, sample);
+  return frame;
+}
+}
+
+TEST(SourceBusAudio, RenderDoesNotDrainPcmAndAudioConsumesEachPacketOnce) {
+  corevideo::core::SourceBus bus;
+  corevideo::core::stageZoomAudioSources(bus, {zoomPcm("42", 1010, .25f), zoomPcm("42", 1020, -.5f)});
+  EXPECT_TRUE(bus.ingest(0, 1).audio.empty());
+  auto audio = bus.ingestAudio(500000, 100);
+  ASSERT_EQ(audio.size(), 2u);
+  EXPECT_EQ(audio[0].timestampMs, 1010);
+  EXPECT_EQ(audio[1].timestampMs, 1020);
+  EXPECT_EQ(audio[0].pcm, std::vector<float>(960, .25f));
+  EXPECT_EQ(audio[1].pcm, std::vector<float>(960, -.5f));
+  EXPECT_EQ(audio[0].sampleRate, 48000);
+  EXPECT_EQ(audio[0].channels, 2);
+  EXPECT_EQ(audio[0].sampleCount, 480);
+  EXPECT_TRUE(audio[0].requiresSteadyFeedPriming);
+  EXPECT_TRUE(bus.ingestAudio(900000, 200).empty());
+  const auto status = bus.snapshot(200).front();
+  EXPECT_EQ(status.counters.audioPacketsIngested, 2u);
+  EXPECT_EQ(status.counters.audioSamplesIngested, 960u);
+  EXPECT_EQ(status.counters.framesIngested, 0u);
+  EXPECT_EQ(status.health, corevideo::core::SourceHealth::Producing);
+}
+
+TEST(SourceBusAudio, MetadataDoesNotPretendPcmArrived) {
+  corevideo::core::SourceBus bus;
+  auto frame = zoomPcm("42", 1, .5f);
+  frame.pcm.clear();
+  corevideo::core::stageZoomAudioSources(bus, {frame});
+  ASSERT_EQ(bus.ingestAudio(0, 1).size(), 1u); // preserve mixer roster placeholder
+  auto status = bus.snapshot(1).front();
+  EXPECT_EQ(status.counters.audioPacketsIngested, 0u);
+  EXPECT_EQ(status.counters.audioSamplesIngested, 0u);
+  EXPECT_EQ(status.health, corevideo::core::SourceHealth::Warming);
+  corevideo::core::stageZoomAudioSources(bus, {});
+  EXPECT_TRUE(bus.empty());
+}
+
+TEST(SourceBusAudio, AudioOnlySourceGainsCameraWithoutLosingAudioIdentity) {
+  corevideo::core::SourceBus bus;
+  corevideo::core::stageZoomAudioSources(bus, {zoomPcm("42", 1, .5f)});
+  auto* original = bus.sourceFor("42");
+  corevideo::modules::VideoFrame video;
+  video.participantId = "42";
+  video.frameId = 7;
+  video.i420Width = 640;
+  video.i420Height = 360;
+  corevideo::core::syncZoomParticipantSources(bus, {video}, {"42"});
+  EXPECT_EQ(bus.sourceFor("42"), original);
+  EXPECT_TRUE(original->descriptor().hasVideo);
+  EXPECT_TRUE(original->descriptor().hasAudio);
+  ASSERT_EQ(bus.ingest(0, 100).video.size(), 1u);
+  ASSERT_EQ(bus.ingestAudio(0, 100).size(), 1u);
+  // Fresh PCM does not mask a stalled camera.
+  corevideo::core::stageZoomAudioSources(bus, {zoomPcm("42", 2, .5f)});
+  bus.ingestAudio(0, 300000100);
+  EXPECT_EQ(bus.healthFor("42", 300000100), corevideo::core::SourceHealth::Stalled);
+  // Retiring this camera must not lose the guest's audio.
+  corevideo::core::syncZoomParticipantSources(bus, {}, {"other"});
+  ASSERT_EQ(bus.sourceFor("42"), original);
+  EXPECT_FALSE(original->descriptor().hasVideo);
+  EXPECT_TRUE(original->descriptor().hasAudio);
+  EXPECT_EQ(bus.healthFor("42", 300000100), corevideo::core::SourceHealth::Producing);
+  corevideo::core::stageZoomAudioSources(bus, {});
+  EXPECT_FALSE(bus.contains("42"));
+}
+
+TEST(SourceBusAudio, RemovingAudioKeepsVideoAndDoesNotReemitOldPcm) {
+  corevideo::core::SourceBus bus;
+  corevideo::modules::VideoFrame video;
+  video.participantId = "42";
+  video.frameId = 1;
+  corevideo::core::syncZoomParticipantSources(bus, {video}, {"42"});
+  corevideo::core::stageZoomAudioSources(bus, {zoomPcm("42", 1, .5f)});
+  ASSERT_EQ(bus.ingestAudio(0, 1).size(), 1u);
+  corevideo::core::stageZoomAudioSources(bus, {});
+  ASSERT_NE(bus.sourceFor("42"), nullptr);
+  EXPECT_FALSE(bus.sourceFor("42")->descriptor().hasAudio);
+  EXPECT_EQ(bus.ingest(0, 2).video.size(), 1u);
+  EXPECT_TRUE(bus.ingestAudio(0, 2).empty());
+}
+
+TEST(SourceBusAudio, MediaCorePublishesMeasuredPcmIngestForAnAudioOnlyGuest) {
+  class AudioGuest final : public corevideo::modules::IZoomCaptureSource {
+   public:
+    std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override { return {}; }
+    std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override {
+      return {zoomPcm("audio-only", 1234, .25f)};
+    }
+  };
+  auto modules = corevideo::modules::createStubModules();
+  modules.zoom = std::make_unique<AudioGuest>();
+  corevideo::core::MediaCore core(std::move(modules));
+  std::mutex coreMutex;
+  core.renderAudioOutputTick(coreMutex);
+  const auto state = core.sessionState();
+  const auto& sources = state.get("sources")->asArray();
+  const auto found = std::find_if(sources.begin(), sources.end(), [](const auto& source) {
+    return source.getString("sourceId") == "audio-only";
+  });
+  ASSERT_NE(found, sources.end());
+  EXPECT_EQ(found->get("audioPacketsIngested")->asNumber(), 1);
+  EXPECT_EQ(found->get("audioSamplesIngested")->asNumber(), 480);
+  EXPECT_TRUE(found->get("hasAudio")->asBool());
+  EXPECT_FALSE(found->get("hasVideo")->asBool());
+}
+
 TEST(SourceContract, TestPatternSourceProducesSmpteBars) {
   TestPatternSource src("test:pattern", 640, 360);
   EXPECT_EQ(src.descriptor().sourceId, "test:pattern");
