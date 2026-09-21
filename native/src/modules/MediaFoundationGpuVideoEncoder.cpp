@@ -274,6 +274,9 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     outType->SetUINT32(MF_MT_AVG_BITRATE, static_cast<UINT32>(config_.bitrateKbps) * 1000u);
     outType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
     outType->SetUINT32(MF_MT_MPEG2_PROFILE, profileForCodec(config_.codec));
+    if (config_.codec == "hevc" || config_.codec == "h265") {
+      setHevcColorType(outType.Get());
+    }
     MFSetAttributeSize(outType.Get(), MF_MT_FRAME_SIZE, static_cast<UINT32>(config_.width),
                        static_cast<UINT32>(config_.height));
     MFSetAttributeRatio(outType.Get(), MF_MT_FRAME_RATE, static_cast<UINT32>(config_.fps), 1);
@@ -285,6 +288,9 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     inType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     inType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
     inType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+    if (config_.codec == "hevc" || config_.codec == "h265") {
+      setHevcColorType(inType.Get());
+    }
     MFSetAttributeSize(inType.Get(), MF_MT_FRAME_SIZE, static_cast<UINT32>(config_.width),
                        static_cast<UINT32>(config_.height));
     MFSetAttributeRatio(inType.Get(), MF_MT_FRAME_RATE, static_cast<UINT32>(config_.fps), 1);
@@ -295,6 +301,15 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
     return true;
+  }
+
+  static void setHevcColorType(IMFMediaType* type) {
+    // Match the explicit BGRA -> limited-range BT.709 NV12 conversion below.
+    // Missing VUI leaves downstream ingest guessing the matrix and transfer.
+    type->SetUINT32(MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709);
+    type->SetUINT32(MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
+    type->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709);
+    type->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
   }
 
   bool createVideoProcessor() {
@@ -312,6 +327,15 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     }
     if (FAILED(videoDevice_->CreateVideoProcessor(videoProcessorEnum_.Get(), 0, &videoProcessor_))) {
       return fail("video-processor");
+    }
+    if (config_.codec == "hevc" || config_.codec == "h265") {
+      D3D11_VIDEO_PROCESSOR_COLOR_SPACE inputColor{};
+      inputColor.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+      videoContext_->VideoProcessorSetStreamColorSpace(videoProcessor_.Get(), 0, &inputColor);
+      D3D11_VIDEO_PROCESSOR_COLOR_SPACE outputColor{};
+      outputColor.YCbCr_Matrix = 1;  // BT.709; the D3D11 default is BT.601.
+      outputColor.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+      videoContext_->VideoProcessorSetOutputColorSpace(videoProcessor_.Get(), &outputColor);
     }
     // NV12 encode target, bindable as a video processor output.
     D3D11_TEXTURE2D_DESC nv{};

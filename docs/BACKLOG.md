@@ -61,6 +61,13 @@ drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
 | 3 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) + T2 leftovers | Signing + first external install | Turnkey dies at SmartScreen. Calendar, not code. |
 | 4 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) step 1 | Hold outgoing picture on a plain cut | Needs owner ruling on Take semantics. |
 
+## Unranked — test-install findings (2026-09-21)
+
+| Issue | Item |
+|---|---|
+| [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Switching AV1 to HEVC retains stale terminal failure on retry. |
+| [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | HEVC YouTube ingest reports excellent health but remains Preparing stream with offline viewer; blocks #566 receiver acceptance. |
+
 ## Papercuts (not competitive)
 
 | Issue | Item |
