@@ -144,7 +144,8 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     // HEVC is encoded without B-frames. Its decode clock is therefore also
     // its presentation clock. Arrival timestamps compress buffered startup
     // bursts into one instant (240 frames measured as 2.97s instead of 4s).
-    // Declare the raw demuxer's frame rate and supply PTS from its decode clock.
+    // Declare the raw demuxer's frame rate and stamp each encoded packet. Raw
+    // HEVC DTS can remain unset with a live PCM input, so do not inherit it.
     // This copies every encoded packet; it neither duplicates nor drops frames.
     if (hevc) args << " -fflags +genpts -framerate " << fps;
     else args << " -use_wallclock_as_timestamps 1 -r " << fps;
@@ -160,7 +161,7 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
       args << " -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";
     }
     args << " -map 0:v:0 -map 1:a:0 -c:v copy";
-    if (hevc) args << " -bsf:v setts=pts=DTS";
+    if (hevc) args << " -bsf:v setts=ts=N/(" << fps << "*TB)";
     args << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
          << " -af aresample=async=1:first_pts=0";
     if (config.endpoint.rfind("rtmp://", 0) == 0 || config.endpoint.rfind("rtmps://", 0) == 0) {

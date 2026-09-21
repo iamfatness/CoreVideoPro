@@ -205,7 +205,7 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeNamesTheRawDemuxerPerCodec) {
     EXPECT_EQ(args.find("-f h264 "), std::string::npos) << codec;
     if (std::string(codec) == "hevc") {
       EXPECT_EQ(args.find("use_wallclock_as_timestamps"), std::string::npos);
-      EXPECT_NE(args.find("-bsf:v setts=pts=DTS"), std::string::npos);
+      EXPECT_NE(args.find("-bsf:v setts=ts=N/(60*TB)"), std::string::npos);
     }
   }
 }
