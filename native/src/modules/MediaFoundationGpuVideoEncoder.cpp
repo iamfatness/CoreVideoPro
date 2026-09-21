@@ -114,9 +114,33 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   }
 
   void stop() override {
-    running_.store(false);
+    const bool wasRunning = running_.exchange(false);
     queueCv_.notify_all();
     if (thread_.joinable()) thread_.join();
+    // Joining our event reader does not retire the driver's queued work. Let
+    // the asynchronous transform finish its accepted samples before destroying
+    // its callback state (METransformDrainComplete is the completion fence).
+    if (wasRunning && encoder_ && eventGen_) {
+      encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+      const HRESULT drain = encoder_->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
+      bool completed = false;
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+      while (SUCCEEDED(drain) && std::chrono::steady_clock::now() < deadline) {
+        ComPtr<IMFMediaEvent> event;
+        if (SUCCEEDED(eventGen_->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event)) && event) {
+          MediaEventType type = MEUnknown;
+          event->GetType(&type);
+          if (type == METransformDrainComplete) { completed = true; break; }
+          if (type == METransformHaveOutput) noteDrain(drainOutput());
+        } else {
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+      }
+      if (!completed) encoder_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
+      encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
+      ::corevideo::core::nativeLogf("[gpu-encode] shutdown drain_complete=%d hr=0x%08lX\n",
+          completed ? 1 : 0, static_cast<unsigned long>(drain));
+    }
     // Async hardware MFTs retain queued driver callbacks. Release alone is not
     // shutdown: retire those callbacks while the D3D resources are still alive.
     // The activation owns a cached reference and must also be shut down.
