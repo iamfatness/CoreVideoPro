@@ -183,14 +183,31 @@ never as an unwired island. So the contract does not land alone.
   injection points (post-roster-merge for stills, post-plan for decoded media).
   The request set, pause/hold, the cue→Program hand-off (#449) and the
   `preview:` poster key all stay inside `OwnedMediaFrameSource` — unchanged.
-- **Slice 3b — `layers` dropped.** Media request state (asset, playing, loop,
-  which bus) moves from per-tick plan layers to source state set at command
-  time (`load-scene-graph`/`set-preview-scene`/`set-media-playback`); `poll(ts)`
-  applies hold/roll from that state; the cue→Program hand-off (#449) and the
-  `preview:` poster key move inside the source; the still cache becomes the
-  still source's decoder. Needs the owner's Take-semantics ruling (#449 step 1
-  "hold outgoing picture on a plain cut") because go-live/roll-from-0 and
-  hand-off are one decision. Own spec.
+- **Slice 3b (SHIPPED — merged 2026-09-21 in
+  [#567](https://github.com/iamfatness/CoreVideoPro/pull/567)) — `layers`
+  dropped, media transport lives in the core.** Own spec:
+  `docs/superpowers/specs/2026-09-20-source-bus-slice3b-media-source-state-design.md`.
+  The owner's rulings (2026-09-19/20) unblocked it: the core source owns
+  play/pause state and Take drives it. Media request state moved from per-tick
+  plan layers to a DESIRED SET computed at COMMAND time from both scene graphs
+  (`MediaCore::syncMediaTransportsDesired`, the `syncStillMediaDesired` shape) and
+  applied by `core::MediaTransports` (the evolved `OwnedMediaFrameSource`) through
+  the pure `MediaTransportPolicy.h`; `MediaAssetSource` wraps an entry on the bus,
+  so media video rides the ordinary EARLY ingest. Media audio was popped straight
+  off `MediaTransports::popAudio` on the audio worker in 3b; **#583 (merged
+  2026-09-21) moved it onto the bus** — `core::ingestSourceAudio` drains `popAudio`
+  and stages each frame onto its `MediaAssetSource`, and `SourceBus::ingestAudio`
+  emits it. Enters Program → roll from 0 with audio; cued in Preview →
+  poster at 0; a cued clip entering Program RESUMES the same decoder, which is why
+  the cue→Program hand-off (#449) and the `preview:` poster key were **deleted
+  rather than moved** — one source id, one entry, nothing to re-key; a clip that
+  stays on Program across a Take is untouched; loops never pause or restart.
+  `Ended` is decoder evidence (`IMediaVideoPrefetch::mediaEnded`) with a 6 s
+  backstop and in-place recovery; `Release` carries a 750 ms grace against the
+  repeating spine sync. **Deferred from 3b:** the still cache is NOT folded into a
+  still source (stills keep `StillMediaFrameCache` and their own later ingest),
+  and there is no live-meeting gate yet. #449 **step 1** (hold the outgoing
+  picture on a cold cut, a clip never cued) remains open.
 - **Slice 4a (health on air, shipped on branch 2026-09-19) — the compositor's
   per-kind empty-frame fallbacks collapse to one bus-health path, done-when #3
   proper.** Render-plan layers gain `sourceHealth`/`dropoutPolicy`/
