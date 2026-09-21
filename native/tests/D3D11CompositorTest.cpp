@@ -1,4 +1,5 @@
 #include "compositor/CompositorLayout.h"
+#include "core/ComApartmentLifetime.h"
 #include "modules/Interfaces.h"
 
 #include <gtest/gtest.h>
@@ -11,6 +12,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <thread>
 
 namespace {
 
@@ -660,6 +662,31 @@ TEST(StubCompositor, TransparentChromaKeyLayerRevealsLowerLayer) {
 #endif
 
 #if COREVIDEO_WITH_D3D11
+TEST(D3D11Compositor, OverlayFactoriesSurviveRenderWorkerExit) {
+  corevideo::core::ComApartmentLifetime com;
+  ASSERT_TRUE(com.initialized());
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.width = 320;
+  plan.height = 180;
+  corevideo::modules::CompositorRenderPlanLayer overlay;
+  overlay.layerId = "shutdown-overlay";
+  overlay.kind = "overlay";
+  overlay.rect = {0.05f, 0.7f, 0.9f, 0.25f};
+  overlay.hasOverlayContent = true;
+  overlay.overlay.title = "SHUTDOWN TEST";
+  overlay.overlay.keyPhase = "on-air";
+  overlay.overlay.keyProgress = 1.f;
+  plan.layers.push_back(overlay);
+  corevideo::modules::ProgramFrame frame;
+  std::thread worker([&] { frame = compositor->render(plan, {}); });
+  worker.join();
+  EXPECT_FALSE(frame.preview.bgra.empty());
+  // Same ownership order as JsonRpcServer: worker exits before core modules.
+  compositor.reset();
+}
+
 TEST(D3D11Compositor, ComposesMultiLayerSceneGraphOnGpu) {
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_NE(compositor, nullptr);

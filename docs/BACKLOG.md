@@ -68,6 +68,7 @@ drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
 | [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Switching AV1 to HEVC retains stale terminal failure on retry. |
 | [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | HEVC YouTube ingest reports excellent health but remains Preparing stream with offline viewer; blocks #566 receiver acceptance. |
 | [#570](https://github.com/iamfatness/CoreVideoPro/issues/570) | Native-core access violation during HEVC recovery; asynchronous MFT shutdown missing. |
+| [#571](https://github.com/iamfatness/CoreVideoPro/issues/571) | Native shutdown releases WIC overlay factory after its COM worker exits. |
 
 ## Papercuts (not competitive)
 

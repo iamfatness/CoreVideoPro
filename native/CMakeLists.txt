@@ -65,6 +65,7 @@ add_library(corevideo_native
   src/core/BoundedAsyncLog.cpp
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
+  src/core/ComApartmentLifetime.cpp
   src/core/SourceRegistry.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
