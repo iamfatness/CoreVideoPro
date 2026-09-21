@@ -221,7 +221,14 @@ class SenderLifecyclePolicy {
   // Producing but the supervisor has not seen accepted units advance: the
   // destination is up in name only. Not "failed" - the supervisor is still
   // inside its restart budget and may recover without the operator acting.
-  if (lifecycleState == "producing" && !supervisor->healthy) return "warning";
+  if (lifecycleState == "producing" && !supervisor->healthy) {
+    // The adapter snapshot can advance before the supervisor's first poll.
+    // No observation yet is startup, not evidence of a stalled destination.
+    // Keep it unproven until supervision catches up; actual faults still warn.
+    if (supervisor->acceptedUnits == 0 && supervisor->lastProgressAgeMs < 0 &&
+        supervisor->consecutiveFailures == 0 && supervisor->failureClass == "none") return "starting";
+    return "warning";
+  }
   // A destination that never connected at all never reaches `producing` or
   // `interrupted`: evaluateActive holds it at "preparing" while
   // `everProgressed` is false. Found live 2026-09-12 pointing RTMP at a
@@ -242,7 +249,11 @@ class SenderLifecyclePolicy {
   if (supervisor->gaveUp) return "failed";
   if (lifecycleState == "failed") return "failed";
   if (lifecycleState == "interrupted") return "warning";
-  if (lifecycleState == "producing" && !supervisor->healthy) return "warning";
+  if (lifecycleState == "producing" && !supervisor->healthy) {
+    if (supervisor->acceptedUnits == 0 && supervisor->lastProgressAgeMs < 0 &&
+        supervisor->consecutiveFailures == 0 && supervisor->failureClass == "none") return "starting";
+    return "warning";
+  }
   // Same rule as publishedSenderStatus: a destination the supervisor has
   // already had to restart is not "ok", whatever the adapter's launch said.
   if (!supervisor->healthy && supervisor->consecutiveFailures > 0) return "warning";
