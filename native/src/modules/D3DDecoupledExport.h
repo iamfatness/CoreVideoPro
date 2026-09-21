@@ -51,6 +51,26 @@ class D3DDecoupledExport {
   }
 
   bool valid() const { return initialized_; }
+  // Resolution changes must not recreate the D3D device on the render thread.
+  // Retire the worker before replacing resources; reuse its device/context.
+  bool resize(ID3D11Device* producer, int width, int height) {
+    if (dimensions(width, height)) return valid();
+    { std::lock_guard<std::mutex> lock(mutex_); stopped_ = true; }
+    changed_.notify_all();
+    if (worker_.joinable()) worker_.join();
+    queue_.clear();
+    slots_.clear();
+    prepared_ = {}; output_ = {}; outputMutex_ = {};
+    outputHandle_ = nullptr;
+    publishedFrameNumber_ = std::make_shared<std::atomic<int64_t>>(-1);
+    width_ = width; height_ = height;
+    stopped_ = false; initialized_ = false;
+    if (!initialize(producer)) return false;
+    try {
+      worker_ = std::thread([this] { try { exportLoop(); } catch (...) {} });
+    } catch (...) { initialized_ = false; }
+    return initialized_;
+  }
   bool dimensions(int width, int height) const { return width == width_ && height == height_; }
   HANDLE handle() const { return outputHandle_; }
   int width() const { return width_; }
@@ -112,11 +132,11 @@ class D3DDecoupledExport {
   bool initialize(ID3D11Device* producer) {
     ComPtrLite<IDXGIDevice> dxgi;
     ComPtrLite<IDXGIAdapter> adapter;
-    if (FAILED(producer->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(dxgi.put()))) ||
+    if (!exportDevice_ && (FAILED(producer->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(dxgi.put()))) ||
         FAILED(dxgi->GetAdapter(adapter.put())) ||
         FAILED(D3D11CreateDevice(adapter.get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
             D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
-            exportDevice_.put(), nullptr, exportContext_.put()))) {
+            exportDevice_.put(), nullptr, exportContext_.put())))) {
       return false;
     }
 

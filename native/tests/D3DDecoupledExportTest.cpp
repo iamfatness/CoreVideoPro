@@ -15,6 +15,7 @@
 
 namespace corevideo::modules {
 struct D3DDecoupledExportTestAccess {
+  static ID3D11Device* device(const D3DDecoupledExport& e) { return e.exportDevice_.get(); }
   static std::uint64_t published(const D3DDecoupledExport& e) { return e.published_; }
   static std::uint64_t dropped(const D3DDecoupledExport& e) { return e.dropped_; }
 };
@@ -33,14 +34,14 @@ bool makeDevice(ComPtrLite<ID3D11Device>& device, ComPtrLite<ID3D11DeviceContext
 
 // A DEFAULT BGRA source texture uploaded with one uniform 32-bit value.
 bool makeUniformSource(ID3D11Device* device, ID3D11DeviceContext* context,
-                       std::uint32_t bgra, ComPtrLite<ID3D11Texture2D>& out) {
+                       std::uint32_t bgra, ComPtrLite<ID3D11Texture2D>& out, int width = kW, int height = kH) {
   D3D11_TEXTURE2D_DESC desc{};
-  desc.Width = kW; desc.Height = kH; desc.MipLevels = desc.ArraySize = 1;
+  desc.Width = width; desc.Height = height; desc.MipLevels = desc.ArraySize = 1;
   desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
   desc.Usage = D3D11_USAGE_DEFAULT; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
   if (FAILED(device->CreateTexture2D(&desc, nullptr, out.put()))) return false;
-  std::vector<std::uint32_t> pixels(static_cast<size_t>(kW) * kH, bgra);
-  context->UpdateSubresource(out.get(), 0, nullptr, pixels.data(), kW * 4, 0);
+  std::vector<std::uint32_t> pixels(static_cast<size_t>(width) * height, bgra);
+  context->UpdateSubresource(out.get(), 0, nullptr, pixels.data(), width * 4, 0);
   context->Flush();
   return true;
 }
@@ -104,6 +105,36 @@ TEST(D3DDecoupledExport, PublishesFrameToSharedOutputAcrossDevices) {
   }
   EXPECT_TRUE(matched) << "output pixel 0x" << std::hex << got << " never matched 0x" << kColor;
   EXPECT_GT(D3DDecoupledExportTestAccess::published(exporter), 0u);
+}
+
+TEST(D3DDecoupledExport, ResolutionChangesReuseDeviceAndDeliverNewPixels) {
+  ComPtrLite<ID3D11Device> producer, consumer;
+  ComPtrLite<ID3D11DeviceContext> context, consumerContext;
+  ASSERT_TRUE(makeDevice(producer, context));
+  ASSERT_TRUE(makeDevice(consumer, consumerContext));
+  D3DDecoupledExport exporter(producer.get(), kW, kH, "resize-test");
+  ASSERT_TRUE(exporter.valid());
+  const auto* originalDevice = D3DDecoupledExportTestAccess::device(exporter);
+  for (int cycle = 0; cycle < 12; ++cycle) {
+    const int width = cycle % 2 ? 640 : 320, height = width * 9 / 16;
+    ASSERT_TRUE(exporter.resize(producer.get(), width, height));
+    EXPECT_EQ(D3DDecoupledExportTestAccess::device(exporter), originalDevice);
+    ComPtrLite<ID3D11Texture2D> source;
+    const uint32_t color = 0xff112200u | static_cast<uint32_t>(cycle);
+    ASSERT_TRUE(makeUniformSource(producer.get(), context.get(), color, source, width, height));
+    bool matched = false;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < until) {
+      exporter.submit(context.get(), source.get());
+      context->Flush();
+      uint32_t pixel = 0;
+      if (readOutputPixel(consumer.get(), consumerContext.get(), exporter.handle(), pixel) && pixel == color) {
+        matched = true; break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_TRUE(matched) << "resize cycle=" << cycle;
+  }
 }
 
 TEST(D3DDecoupledExport, FrameIdentityMatchesPixelsUnderAsynchronousExport) {

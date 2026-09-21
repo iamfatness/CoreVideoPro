@@ -1375,10 +1375,12 @@ class D3D11Compositor final : public ICompositor {
   // Maps a dynamic BGRA texture and copies the frame's pixel rows (honoring both
   // the source stride and the mapped RowPitch).
   bool uploadBgraPixels(ID3D11Texture2D* texture, const VideoFrame& frame) {
+    const auto uploadStart = std::chrono::steady_clock::now();
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
       return false;
     }
+    const auto mapEnd = std::chrono::steady_clock::now();
     const auto* source = frame.pixels->data();
     const auto sourceStride = static_cast<size_t>(frame.pixelStride);
     auto* destination = static_cast<uint8_t*>(mapped.pData);
@@ -1387,6 +1389,15 @@ class D3D11Compositor final : public ICompositor {
       std::memcpy(destination + static_cast<size_t>(y) * mapped.RowPitch, source + static_cast<size_t>(y) * sourceStride, rowBytes);
     }
     context_->Unmap(texture, 0);
+    const auto uploadEnd = std::chrono::steady_clock::now();
+    if (uploadEnd - uploadStart >= std::chrono::milliseconds(4) &&
+        uploadEnd - lastSlowUploadLog_ >= std::chrono::seconds(1)) {
+      ::corevideo::core::nativeLogf("[d3d-bgra-upload] source=%s size=%dx%d map_us=%lld copy_unmap_us=%lld\n",
+          frame.participantId.c_str(), frame.pixelWidth, frame.pixelHeight,
+          static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(mapEnd - uploadStart).count()),
+          static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(uploadEnd - mapEnd).count()));
+      lastSlowUploadLog_ = uploadEnd;
+    }
     return true;
   }
 
@@ -1742,7 +1753,11 @@ class D3D11Compositor final : public ICompositor {
       const int height = useI420 ? f.i420Height : f.pixelHeight;
       auto& pt = participantTextures_[f.participantId];
       if (!pt.local || pt.width != width || pt.height != height) {
+        const auto createStart = std::chrono::steady_clock::now();
+        const int oldWidth = pt.width, oldHeight = pt.height;
+        auto exporter = std::move(pt.exporter);
         pt = ParticipantTex{};
+        pt.exporter = std::move(exporter);
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width = static_cast<UINT>(width);
         desc.Height = static_cast<UINT>(height);
@@ -1760,13 +1775,17 @@ class D3D11Compositor final : public ICompositor {
           participantTextures_.erase(f.participantId);
           continue;
         }
-        pt.exporter = std::make_unique<D3DDecoupledExport>(device_.get(), width, height, "participant");
-        if (!pt.exporter->valid()) {
+        if (!pt.exporter) pt.exporter = std::make_unique<D3DDecoupledExport>(device_.get(), width, height, "participant");
+        if (!pt.exporter->resize(device_.get(), width, height)) {
           participantTextures_.erase(f.participantId);
           continue;
         }
         pt.width = width;
         pt.height = height;
+        ::corevideo::core::nativeLogf("[d3d-participant-create] source=%s old=%dx%d new=%dx%d cost_us=%lld\n",
+            f.participantId.c_str(), oldWidth, oldHeight, width, height,
+            static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - createStart).count()));
       }
       // Only re-upload when the frame OR the effective grade changed. Capture frames
       // are now HELD and re-emitted every render tick (so the program composite never
@@ -1787,6 +1806,7 @@ class D3D11Compositor final : public ICompositor {
       const bool frameChanged = (f.frameId != pt.lastFrameId) || gradeChanged;
       if (frameChanged && pt.local) {
         bool uploaded = false;
+        ID3D11Texture2D* exportTexture = pt.local.get();
         if (useI420) {
           CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantConvert]);
           uploaded = renderI420ToParticipantTexture(f, pt, width, height, grade);
@@ -1796,7 +1816,10 @@ class D3D11Compositor final : public ICompositor {
           // cache. Reuse that GPU texture instead of uploading full BGRA pixels
           // a second time for the participant monitor (#517).
           if (auto* source = acquireSourceTex(f); source && source->bgra) {
-            context_->CopyResource(pt.local.get(), source->bgra.get());
+            // The exporter already copies into its own slot. An intermediate
+            // participant copy doubles GPU traffic for every full-size BGRA
+            // capture/media frame without changing any pixels.
+            exportTexture = source->bgra.get();
             uploaded = true;
           }
         } else {
@@ -1807,9 +1830,10 @@ class D3D11Compositor final : public ICompositor {
         }
         if (uploaded) {
           CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantRelease]);
-          pt.exporter->submit(context_.get(), pt.local.get());
-          pt.lastFrameId = f.frameId;
-          pt.lastGrade = grade;
+          if (pt.exporter->submit(context_.get(), exportTexture)) {
+            pt.lastFrameId = f.frameId;
+            pt.lastGrade = grade;
+          }
         } else if (profileEnabled) {
           ++stageProfileUploadFailures_;
         }
@@ -1831,6 +1855,7 @@ class D3D11Compositor final : public ICompositor {
           break;
         }
       }
+      if (!present) ::corevideo::core::nativeLogf("[d3d-participant-evict] source=%s\n", it->first.c_str());
       it = present ? std::next(it) : participantTextures_.erase(it);
     }
     if (profileEnabled) {
@@ -2662,6 +2687,7 @@ class D3D11Compositor final : public ICompositor {
     stageProfileLastLog_ = now;
   }
   std::chrono::steady_clock::time_point lastSlowProgramLog_{};
+  std::chrono::steady_clock::time_point lastSlowUploadLog_{};
   uint64_t slowProgramFrames_ = 0;
   long long worstSlowProgramUs_ = 0;
   bool pipelineReady_ = false;
