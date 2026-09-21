@@ -134,14 +134,20 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     // the endpoint read as 0x/stalled. -use_wallclock_as_timestamps stamps each
     // arriving access unit at its realtime arrival, which for a 60fps live feed
     // is monotonic and ~wall time; -r declares the nominal frame rate alongside it.
+    // Formats/rate are explicit. Bound stream analysis so FFmpeg does not
+    // buffer seconds of live input before draining both pipes. The default
+    // analysis exhausted the bounded encoder queue and restarted HEVC every
+    // few seconds on the YouTube receiver test (#569). A nonzero duration is
+    // intentional: zero selects FFmpeg's automatic/default analysis duration.
     args << " -hide_banner -loglevel warning -stats -stats_period 1"
          << " -use_wallclock_as_timestamps 1 -r " << fps
          << " -f " << rawDemuxerForBitstreamCodec(config.videoBitstreamCodec)
+         << " -probesize 65536 -analyzeduration 1"
          << " -thread_queue_size 512 -i pipe:0";
     if (config.hasAudio) {
       const int channels = (std::max)(1, config.audioChannels);
       const int sampleRate = (std::max)(8000, config.audioSampleRate);
-      args << " -re -thread_queue_size 512 -f " << config.audioSampleFormat << " -ar " << sampleRate
+      args << " -re -thread_queue_size 512 -probesize 32 -analyzeduration 1 -f " << config.audioSampleFormat << " -ar " << sampleRate
            << " -ac " << channels << " -i " << config.audioInput;
     } else {
       args << " -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";

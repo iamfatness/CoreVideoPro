@@ -159,11 +159,11 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeCopiesVideoAndSkipsRawEncode) {
   config.hasAudio = true;
   config.audioInput = "pipe:3";
   const auto args = corevideo::modules::buildRtmpFfmpegArguments(config);
-  EXPECT_NE(args.find("-f h264 -thread_queue_size 512 -i pipe:0"), std::string::npos);
+  EXPECT_NE(args.find("-f h264 -probesize 65536 -analyzeduration 1 -thread_queue_size 512 -i pipe:0"), std::string::npos);
   // A live raw H.264 Annex-B stream on a pipe has no container timestamps, so the
   // input needs wallclock timestamps (realtime-spaced, monotonic) plus a declared
   // frame rate, or -c:v copy muxes an unusable stream the endpoint reads as 0x.
-  EXPECT_NE(args.find("-use_wallclock_as_timestamps 1 -r 60 -f h264 -thread_queue_size 512 -i pipe:0"),
+  EXPECT_NE(args.find("-use_wallclock_as_timestamps 1 -r 60 -f h264 -probesize 65536 -analyzeduration 1 -thread_queue_size 512 -i pipe:0"),
             std::string::npos);
   EXPECT_NE(args.find("-c:v copy"), std::string::npos);
   // -stats makes the realtime speed readable from ffmpeg's own stderr (diagnosability).
@@ -172,6 +172,9 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeCopiesVideoAndSkipsRawEncode) {
   EXPECT_EQ(args.find("-b:v "), std::string::npos);          // no re-encode bitrate
   EXPECT_NE(args.find("-c:a aac"), std::string::npos);       // audio still encoded
   EXPECT_NE(args.find("-map 0:v:0 -map 1:a:0"), std::string::npos);
+  // Apply the PCM probe limit to the second input, not to the video demuxer.
+  EXPECT_NE(args.find("-probesize 32 -analyzeduration 1 -f f32le -ar 48000 -ac 2 -i pipe:3"),
+            std::string::npos);
 }
 
 // 2026-09-20: GPU-direct HEVC/AV1. The raw elementary stream on pipe:0 needs the
@@ -193,7 +196,7 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeNamesTheRawDemuxerPerCodec) {
     config.audioInput = "pipe:3";
     const auto args = corevideo::modules::buildRtmpFfmpegArguments(config);
     EXPECT_NE(args.find(std::string("-use_wallclock_as_timestamps 1 -r 60 -f ") + demuxer +
-                        " -thread_queue_size 512 -i pipe:0"),
+                        " -probesize 65536 -analyzeduration 1 -thread_queue_size 512 -i pipe:0"),
               std::string::npos) << codec << " :: " << args;
     EXPECT_NE(args.find("-c:v copy"), std::string::npos) << codec;
     EXPECT_EQ(args.find("-tag:v"), std::string::npos) << codec;
