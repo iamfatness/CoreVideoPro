@@ -20,6 +20,7 @@
  *
  * Usage: node ./scripts/validate-av-clap.mjs [--seconds 24] [--budget-ms 50]
  *                                            [--no-frame-sync] [--keep-artifact]
+ *                                            [--build-dir path/to/binaries]
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, rmSync, statSync } from "node:fs";
@@ -28,16 +29,16 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
-const buildDir = join(repoRoot, "native", "build-dev");
 const exeSuffix = process.platform === "win32" ? ".exe" : "";
-const nativeCore = join(buildDir, `corevideo-native${exeSuffix}`);
-const fakeEngine = join(buildDir, `corevideo-zoom-engine-fake${exeSuffix}`);
 
 const args = process.argv.slice(2);
 const argValue = (name, fallback) => {
   const index = args.indexOf(`--${name}`);
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 };
+const buildDir = resolve(argValue("build-dir", join(repoRoot, "native", "build-dev")));
+const nativeCore = join(buildDir, `corevideo-native${exeSuffix}`);
+const fakeEngine = join(buildDir, `corevideo-zoom-engine-fake${exeSuffix}`);
 const recordSeconds = Number(argValue("seconds", 24));
 // ITU-R BT.1359 / ATSC IS-191 put the audible thresholds near +45ms (audio ahead)
 // and -125ms (audio behind); the repo's own G2 gate is 50ms, so use that.
@@ -206,6 +207,23 @@ try {
 
   await send("zoom-join", { payload: { meetingNumber: "1234567890", displayName: "av-clap" } });
   await sleep(3000);
+
+  // The fake only auto-subscribes VIDEO. Audio now follows the same explicit
+  // spine contract as the real engine; without this the old harness recorded
+  // flashes against silence on both the released build and the candidate.
+  await send("zoom-media-spine-sync", {
+    elapsedMs: Date.now() - startedAt,
+    spinePayload: {
+      readiness: { status: "ready", platform: "windows", sdkVersion: "fake-engine", checks: [], blockers: [], warnings: [] },
+      participants: [{ sdkUserId: "101", displayName: "clap", role: "guest", videoOn: true, muted: false, talking: true, audioLevel: 60 }],
+      subscriptions: [
+        { participantId: "101", kind: "meeting-audio", purpose: "program", priority: 0 },
+        { participantId: "101", kind: "participant-video", purpose: "program", priority: 10 },
+      ],
+      startCapture: true, blocked: false, warnings: [], summary: "A/V clap subscription",
+    },
+  });
+  await sleep(2000);
 
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,

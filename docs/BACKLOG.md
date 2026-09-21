@@ -45,6 +45,8 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 | Issue | Remaining work |
 |---|---|
 | [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Stale retry fencing is merged in #566 and regression-tested. Still needs the installed operator sequence: AV1 refusal → explicit HEVC retry without app restart, with genuine new failures visible and sibling outputs uninterrupted. |
+| [#578](https://github.com/iamfatness/CoreVideoPro/issues/578) | A/V clap validator omits the explicit audio subscription and records silence on baseline and candidate. Repairing this validation dependency within #535; paired-event and 50 ms gates stay unchanged. |
+| [#579](https://github.com/iamfatness/CoreVideoPro/issues/579) | Corrected recorded A/V clap gate exceeds 50 ms on released main and the #535 candidate. Audio bus acceptance remains pending; distinguish input buffering, recording timing and encoder delay before changing production clocks. |
 | [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | Preparing/offline symptom repaired in #566; YouTube LIVE/Excellent and moving public playback verified, including restart and a 30m16s run. Retain for the remaining receiver acceptance and UI distinction between sending and verified playback. Player counted 104 dropped / 108,323 frames; cause not attributed to CVP. Do not describe this as still stuck Preparing, or as lossless end-to-end. |
 | [#575](https://github.com/iamfatness/CoreVideoPro/issues/575) | Scheduled staging smoke cannot execute because required Actions secrets are missing. Existing configuration gap; application CI passed. Supply secrets through the appropriate secure configuration path, then rerun staging checks. |
 
