@@ -3,6 +3,7 @@
 #include "contracts/Lifecycle.h"
 
 #include <cstdint>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -185,6 +186,8 @@ struct ProgramFrameSharedTexture {
   int height = 0;
   std::string format = "B8G8R8A8_UNORM";
   int64_t frameNumber = 0;
+  // Optional in-process encoder metadata; not serialized to the shell.
+  std::shared_ptr<std::atomic<int64_t>> publishedFrameNumber;
 };
 
 // Per-participant GPU shared texture for the multiview tiles — same keyed-mutex

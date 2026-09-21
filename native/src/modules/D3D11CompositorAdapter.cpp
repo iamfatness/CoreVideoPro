@@ -1690,7 +1690,8 @@ class D3D11Compositor final : public ICompositor {
       encoderExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), targetWidth_, targetHeight_, "encoder");
       if (!encoderExport_->valid()) { encoderExport_.reset(); return; }
     }
-    encoderExport_->submit(context_.get(), renderTarget_.get());
+    encoderExport_->submit(context_.get(), renderTarget_.get(), frame.frameNumber);
+    frame.encoderSharedTexture.publishedFrameNumber = encoderExport_->publishedFrameNumber();
     frame.encoderSharedTexture.sharedHandleHex = handleToHex(encoderExport_->handle());
     frame.encoderSharedTexture.width = targetWidth_;
     frame.encoderSharedTexture.height = targetHeight_;

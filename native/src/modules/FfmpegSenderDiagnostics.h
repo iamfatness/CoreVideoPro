@@ -29,7 +29,7 @@ namespace corevideo::modules {
 
 // Written by the encoder callback and pipe worker; retain the initiating fault
 // if a blocked pipe also breaks during recovery.
-enum class BitstreamFailure { None, QueueOverflow, PipeWrite };
+enum class BitstreamFailure { None, QueueOverflow, PipeWrite, InvalidTiming };
 class BitstreamFailureState {
  public:
   void reset() { reason_.store(BitstreamFailure::None); }

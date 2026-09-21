@@ -4,6 +4,7 @@
 #include "modules/Interfaces.h"
 #include "modules/MediaFoundationGpuVideoEncoder.h"
 #include "modules/RtmpFfmpegArgs.h"
+#include "modules/HevcTransportStream.h"
 
 #include <d3d11.h>
 
@@ -102,6 +103,11 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
   (void)compositor->render(plan, {makeEncoderSourceFrame(1, kGray)});
 
   std::vector<uint8_t> encodedBytes;
+  std::vector<uint8_t> transportBytes;
+  std::vector<double> expectedTimes;
+  corevideo::modules::HevcTransportStream transport;
+  int64_t firstDts = -1;
+  int invalidTimestamps = 0;
   int chunksReceived = 0;
   int keyframes = 0;
   std::mutex encodedMutex;
@@ -109,6 +115,17 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
   auto sink = [&](const corevideo::modules::GpuEncodedChunk& chunk) {
     std::lock_guard<std::mutex> lock(encodedMutex);
     encodedBytes.insert(encodedBytes.end(), chunk.data, chunk.data + chunk.size);
+    if (std::string(codec) == "hevc") {
+      std::vector<uint8_t> wire;
+      if (!transport.packetize(chunk, wire)) {
+        ++invalidTimestamps;
+        std::fprintf(stderr, "invalid packet pts=%lld dts=%lld valid=%d\n",
+            static_cast<long long>(chunk.pts100ns), static_cast<long long>(chunk.dts100ns), chunk.timingValid);
+      }
+      if (firstDts < 0) firstDts = chunk.dts100ns;
+      expectedTimes.push_back(static_cast<double>(chunk.pts100ns - firstDts) / 10000000.0);
+      transportBytes.insert(transportBytes.end(), wire.begin(), wire.end());
+    }
     ++chunksReceived;
     if (chunk.keyframe) ++keyframes;
     encodedCv.notify_all();
@@ -133,6 +150,7 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
     EXPECT_FALSE(frame.encoderSharedTexture.sharedHandleHex.empty())
         << "frameNumber=" << frame.frameNumber << " lacks encoder shared texture";
     corevideo::modules::GpuVideoEncoderFrame encodeFrame;
+    encodeFrame.publishedFrameNumber = frame.encoderSharedTexture.publishedFrameNumber;
     encodeFrame.sharedHandleHex = frame.encoderSharedTexture.sharedHandleHex;
     encodeFrame.width = frame.encoderSharedTexture.width;
     encodeFrame.height = frame.encoderSharedTexture.height;
@@ -148,6 +166,7 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
     EXPECT_GE(encodedBytes.size(), static_cast<size_t>(64));
   }
   encoder->stop();
+  ASSERT_EQ(invalidTimestamps, 0);
   EXPECT_TRUE(encoder->healthy());
 
   const std::filesystem::path ffmpegDir = "C:\\ffmpeg\\bin";
@@ -216,9 +235,16 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
     muxConfig.videoBitstreamInput = true;
     muxConfig.videoBitstreamCodec = codec;
     muxConfig.fps = plan.fps;
+    muxConfig.timestampedHevcInput = std::string(codec) == "hevc";
     muxConfig.endpoint = flvPath.string();
     auto muxArgs = corevideo::modules::buildRtmpFfmpegArguments(muxConfig);
-    muxArgs.replace(muxArgs.find("pipe:0"), 6, "\"" + rawPath.string() + "\"");
+    auto muxInput = rawPath;
+    if (muxConfig.timestampedHevcInput) {
+      muxInput = work / "timed-hevc.ts";
+      std::ofstream ts(muxInput, std::ios::binary);
+      ts.write(reinterpret_cast<const char*>(transportBytes.data()), transportBytes.size());
+    }
+    muxArgs.replace(muxArgs.find("pipe:0"), 6, "\"" + muxInput.string() + "\"");
     muxArgs.insert(muxArgs.find(" -f flv"), " -shortest");
     const std::string muxInner = "\"" + ffmpegExe.string() + "\" -y" + muxArgs;
     const int muxStatus = normalizedSystemExitCode(std::system(("\"" + muxInner + "\"").c_str()));
@@ -245,11 +271,13 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
       double previous = -1, current = 0;
       int packetCount = 0;
       while (timings >> current) {
-        if (previous >= 0) EXPECT_TRUE(std::fabs(current - previous - 1.0 / plan.fps) < 0.002);
+        if (previous >= 0 && packetCount < static_cast<int>(expectedTimes.size()))
+          EXPECT_TRUE(std::fabs(current - previous - (expectedTimes[packetCount] - expectedTimes[packetCount - 1])) < 0.002);
         previous = current;
         ++packetCount;
       }
       EXPECT_GE(packetCount, 2); // a burst read from disk must retain video cadence
+      EXPECT_EQ(packetCount, static_cast<int>(expectedTimes.size()));
     }
     std::error_code fec;
     std::filesystem::remove(flvPath, fec);

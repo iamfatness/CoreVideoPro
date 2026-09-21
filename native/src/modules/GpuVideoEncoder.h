@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <atomic>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -48,6 +50,9 @@ struct GpuVideoEncoderFrame {
   int width = 0;
   int height = 0;
   int64_t frameNumber = 0;
+  // In-process metadata published under the texture's keyed mutex. Read only
+  // after acquiring that texture, so asynchronous export cannot mislabel pixels.
+  std::shared_ptr<std::atomic<int64_t>> publishedFrameNumber;
 };
 
 // One encoded output unit handed to the sink. `data` is owned by the encoder and
@@ -57,6 +62,12 @@ struct GpuEncodedChunk {
   size_t size = 0;
   bool keyframe = false;
   int64_t frameNumber = 0;
+  // Encoder sample clock, in 100 ns units. Never substitute callback arrival
+  // time: asynchronous encoders may emit several samples in one burst.
+  int64_t pts100ns = 0;
+  int64_t dts100ns = 0;
+  int64_t duration100ns = 0;
+  bool timingValid = false;
 };
 
 using GpuEncodedChunkSink = std::function<void(const GpuEncodedChunk&)>;

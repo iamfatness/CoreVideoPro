@@ -55,6 +55,7 @@ class RtmpVideoFramePacer {
 };
 
 struct RtmpFfmpegArgsConfig {
+  bool timestampedHevcInput = false;
   int width = 0;
   int height = 0;
   int fps = 30;
@@ -126,30 +127,19 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
   std::ostringstream args;
   if (config.videoBitstreamInput) {
     const bool hevc = config.videoBitstreamCodec == "hevc" || config.videoBitstreamCodec == "h265";
-    // GPU-direct path: video arrives already encoded (H.264/HEVC Annex-B or AV1
-    // OBU) on pipe:0; ffmpeg is a pure muxer/transport (-c:v copy). Only ~6 Mbps
-    // crosses the pipe, so the raw -re pacing and pixel-format handling of the
-    // raw path are not needed here. A live elementary stream on a pipe carries
-    // NO container timestamps. -r alone made ffmpeg's demuxer leave stream 0
-    // unset once a second input was present, and -c:v copy then muxed a stream
-    // the endpoint read as 0x/stalled. -use_wallclock_as_timestamps stamps each
-    // arriving access unit at its realtime arrival, which for a 60fps live feed
-    // is monotonic and ~wall time; -r declares the nominal frame rate alongside it.
+    // GPU-direct video is already encoded; FFmpeg only muxes/transports it.
+    // HEVC's timestamped envelope preserves the encoder clock across pipe
+    // bursts and missing frames. Legacy elementary inputs lack that clock.
     // Formats/rate are explicit. Bound stream analysis so FFmpeg does not
     // buffer seconds of live input before draining both pipes. The default
     // analysis exhausted the bounded encoder queue and restarted HEVC every
     // few seconds on the YouTube receiver test (#569). A nonzero duration is
     // intentional: zero selects FFmpeg's automatic/default analysis duration.
     args << " -hide_banner -loglevel warning -stats -stats_period 1";
-    // HEVC is encoded without B-frames. Its decode clock is therefore also
-    // its presentation clock. Arrival timestamps compress buffered startup
-    // bursts into one instant (240 frames measured as 2.97s instead of 4s).
-    // Stamp each encoded packet at the output. Keep input arrival timestamps
-    // for FFmpeg's two-input scheduler: without them a live raw HEVC input can
-    // starve the PCM demuxer even though a file-plus-lavfi test passes.
-    // This copies every encoded packet; it neither duplicates nor drops frames.
-    args << " -use_wallclock_as_timestamps 1 -r " << fps;
-    args << " -f " << rawDemuxerForBitstreamCodec(config.videoBitstreamCodec)
+    // Only legacy raw inputs need arrival timing for the two-input scheduler.
+    // Never override the timestamps carried by the HEVC transport envelope.
+    if (!config.timestampedHevcInput) args << " -use_wallclock_as_timestamps 1 -r " << fps;
+    args << " -f " << (config.timestampedHevcInput ? "mpegts" : rawDemuxerForBitstreamCodec(config.videoBitstreamCodec))
          << " -probesize 65536 -analyzeduration 1"
          << " -thread_queue_size 512 -i pipe:0";
     if (config.hasAudio) {
@@ -161,7 +151,7 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
       args << " -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";
     }
     args << " -map 0:v:0 -map 1:a:0 -c:v copy";
-    if (hevc) args << " -bsf:v setts=ts=N/(" << fps << "*TB)";
+    if (hevc && !config.timestampedHevcInput) args << " -bsf:v setts=ts=N/(" << fps << "*TB)";
     args << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
          << " -af aresample=async=1:first_pts=0";
     if (config.endpoint.rfind("rtmp://", 0) == 0 || config.endpoint.rfind("rtmps://", 0) == 0) {

@@ -71,6 +71,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       haveHandle_ = false;
       latestHandle_.clear();
       latestFrameNumber_ = 0;
+      latestPublishedFrameNumber_.reset();
     }
     config_ = config;
     sink_ = std::move(sink);
@@ -105,6 +106,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       // once the compositor has released a new frame.
       latestHandle_ = frame.sharedHandleHex;
       latestFrameNumber_ = frame.frameNumber;
+      latestPublishedFrameNumber_ = frame.publishedFrameNumber;
       haveHandle_ = true;
     }
     queueCv_.notify_one();
@@ -387,13 +389,14 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   // BGRA (shared) -> NV12 (encode target) on the GPU via the driver's video
   // processor. Acquires the keyed mutex (key 1) held by the producer, then releases
   // key 0 for it to continue rendering.
-  bool convertToNv12(const std::string& hex) {
+  bool convertToNv12(const std::string& hex, const std::shared_ptr<std::atomic<int64_t>>& published, int64_t& frameNumber) {
     if (!ensureOpened(hex) || !openedMutex_) return false;
     // Wait up to ~2 frame periods for the producer (the 60Hz render thread) to
     // release key 1. A 4ms wait missed the 16ms production cadence on almost
     // every frame, so most converts timed out, wasted the MFT's input slot and
     // starved the encoder to ~2fps. Bounded so stop() is never blocked for long.
     if (openedMutex_->AcquireSync(1, 34) != S_OK) return false;
+    if (published) frameNumber = published->load(std::memory_order_acquire);
     bool ok = false;
     do {
       D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd{};
@@ -514,12 +517,21 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     UINT32 clean = 0;
     sample->GetUINT32(MFSampleExtension_CleanPoint, &clean);
     LONGLONG hns = 0;
-    sample->GetSampleTime(&hns);
+    const bool hasTime = SUCCEEDED(sample->GetSampleTime(&hns));
+    LONGLONG duration = 0, dts = hns;
+    sample->GetSampleDuration(&duration);
+    UINT64 decodeTime = 0;
+    if (SUCCEEDED(sample->GetUINT64(MFSampleExtension_DecodeTimestamp, &decodeTime)))
+      dts = static_cast<LONGLONG>(decodeTime);
     GpuEncodedChunk chunk{};
     chunk.data = data;
     chunk.size = len;
     chunk.keyframe = clean != 0;
     chunk.frameNumber = hns * (std::max)(1, config_.fps) / 10000000LL;
+    chunk.pts100ns = hns;
+    chunk.dts100ns = dts;
+    chunk.duration100ns = duration;
+    chunk.timingValid = hasTime;
     if (!firstEmitLogged_) {
       firstEmitLogged_ = true;
       ::corevideo::core::nativeLogf("[gpu-encode] first output chunk size=%zu keyframe=%d\n", chunk.size,
@@ -550,6 +562,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
         while (running_.load()) {
           std::string handle;
           int64_t frameNumber = 0;
+          std::shared_ptr<std::atomic<int64_t>> published;
           bool have = false;
           {
             std::unique_lock<std::mutex> lock(queueMutex_);
@@ -564,12 +577,13 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
             if (haveHandle_) {
               handle = latestHandle_;
               frameNumber = latestFrameNumber_;
+              published = latestPublishedFrameNumber_;
               have = true;
             }
           }
           if (!running_.load()) break;
           if (have) {
-            if (convertToNv12(handle)) {
+            if (convertToNv12(handle, published, frameNumber)) {
               if (!processInput(frameNumber)) {
                 const HRESULT removed = deviceRemovedReason();
                 if (removed != S_OK) {
@@ -608,6 +622,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
 
   GpuVideoEncoderConfig config_{};
   GpuEncodedChunkSink sink_;
+  std::shared_ptr<std::atomic<int64_t>> latestPublishedFrameNumber_;
   std::atomic<bool> running_{false};
   std::atomic<bool> healthy_{false};
   bool mfStarted_ = false;
