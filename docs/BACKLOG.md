@@ -1,89 +1,79 @@
 # CoreVideo Pro — ranked backlog
 
-**This is the only ordered list of work.** Status lives on the linked GitHub
-issue (`backlog` label). How agents must treat this file:
-[`AGENTS.md`](../AGENTS.md).
+**This is the only ordered list of work.** Status and detailed evidence live on
+linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 
-Owner-approved as the single list on 2026-09-10. Re-ranked 2026-09-17 for
-turnkey Zoom production that can compete with vMix / Vectar / mimoLive / Ecamm:
-show survival first, then one source bus + NDI/SRT, MXL parked (#539).
-
-`docs/FOCUS_PLAN.md`, `docs/beta-plan.md`, and
-`docs/native-production-completion-plan.md` are rationale or build specs.
-Do not trust their checkboxes.
+Owner-approved order: 2026-09-17, with #535 promoted 2026-09-18.
+Reconciled against main `793c452` and issue evidence on 2026-09-21. This cleanup
+preserves the existing ranks; it does not promote unranked findings.
 
 ## How to use this file
 
-1. Work the **Now** sequence. Do not pick from Later because it is interesting.
-2. New finding → GitHub issue the same day → row here → owner ranks.
-3. Max 3 Now items in flight. A PR names one issue.
-4. Move a row to **Done** only when the issue is closed by a PR or an owner
-   “won’t do.”
+1. Work the first unblocked **Now** item. Maximum 3 in flight.
+2. New findings get a GitHub issue and an unranked row; the owner ranks them.
+3. Close only after a merged fix meets acceptance, or an explicit owner disposition.
+4. A fix awaiting live acceptance is not Done. A non-reproducing report is not a confirmed current defect.
+5. Build/run guidance lives in `CLAUDE.md`; design documents are not work queues.
 
-Rank clauses (beta = 5–20 external operators on machines we cannot see):
+Priority remains show survival, diagnosability, real-show usability, then external
+installation. Build one source bus before adding more ingest paths. MXL stays parked.
 
-1. Stops a show breaking on an unseen machine
-2. Lets us diagnose a failure nobody watched
-3. Removes a papercut during a real show
-4. Required for the first external install
+## Now — existing priority order
 
-Sizes: XS < 1 h, S ≈ 1–3 h, M ≈ half to one day, L > one day (agent time).
+| Order | Issue | Remaining work / next evidence |
+|---|---|---|
+| 1 | [#513](https://github.com/iamfatness/CoreVideoPro/issues/513) | **Idle XAML crash — validation/investigation.** Editor teardown (#548) and multiview pooling (#549) shipped. One 151-minute idle soak passed on September 19; the original crash fired after 58 minutes. Run two additional independent churn-then-idle sessions on the current beta with matched symbols, crash dumps and memory evidence. Investigate the CsWinRT/WinAppSDK release path if it recurs. Passing finite soaks alone does not prove root-cause closure. |
+| 2 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video slices 0–4a and media transport slice 3b (#567) are merged and shipped. Owner rulings are resolved. Remaining: Zoom audio/PCM on the bus, adapter lifecycle, and retirement of the old interfaces; capture dropout liveness is tracked by #562. Start with the scoped audio/PCM integration and sync acceptance, not another media-transport rewrite. |
+| 3 | [#555](https://github.com/iamfatness/CoreVideoPro/issues/555) | **First Take half off-screen — retest/watch.** Five fresh-source Takes on the #554 fix were correctly framed with no slate frames. No confirmed persistent reproduction since that fix. Recheck on the current beta through resolution ramps; add geometry diagnostics only if it recurs. Not proven fixed merely because it did not reproduce. |
 
----
+## Next — existing priority order
 
-## Strategy (2026-09-17)
+| Order | Issue | Remaining work |
+|---|---|---|
+| 1 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send hardening and real endpoint acceptance. Existing transport code does not establish the full edge-I/O matrix. |
+| 2 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decoding to real pixels/PCM on the source bus, followed by the 30+ minute contribution soak. Depends on #535. |
+| 3 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) | Signing + first external install. The current beta is still unsigned; certificate/service onboarding remains. |
+| 4 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) | **Cold Take acceptance, reopened.** Warm cue transport shipped (#492/#567); restart-from-zero semantics are decided. Holding the outgoing picture until a never-cued clip's first frame (bounded by timeout) is not established by the cued-path oracle or late-frame playback test. Verify/fix this remaining step; no new owner ruling is required for the restart semantics. |
 
-Ship a Zoom room that looks finished and hands clean program + ISOs + NDI/SRT
-to a real plant. The source bus (#535) is how that plant grows. MXL is how it
-grows after the bus exists.
+## Unranked — fixes awaiting acceptance / new findings
 
-WIP still 3. Work Now[1–3]; refill from Now[4–5] then Next.
+| Issue | Remaining work |
+|---|---|
+| [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Stale retry fencing is merged in #566 and regression-tested. Still needs the installed operator sequence: AV1 refusal → explicit HEVC retry without app restart, with genuine new failures visible and sibling outputs uninterrupted. |
+| [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | Preparing/offline symptom repaired in #566; YouTube LIVE/Excellent and moving public playback verified, including restart and a 30m16s run. Retain for the remaining receiver acceptance and UI distinction between sending and verified playback. Player counted 104 dropped / 108,323 frames; cause not attributed to CVP. Do not describe this as still stuck Preparing, or as lossless end-to-end. |
+| [#575](https://github.com/iamfatness/CoreVideoPro/issues/575) | Scheduled staging smoke cannot execute because required Actions secrets are missing. Existing configuration gap; application CI passed. Supply secrets through the appropriate secure configuration path, then rerun staging checks. |
 
-## Now — show survival (start here)
+## Papercuts and deferred workload gates — existing order
 
-Show-survival cleared 2026-09-18: #529/#533 (ISO drops+timeline), #516 (render stall /
-GPU-fence coupling), #526 (Program-buffer misses) and #518 (FADER LAW audio log) all
-closed — fixed, merged and soak/load-validated (24-min 6-ISO recording: 0 dispatch
-drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
+| Issue | Remaining work |
+|---|---|
+| [#562](https://github.com/iamfatness/CoreVideoPro/issues/562) | Capture dropout policy needs adapter liveness via `signalPresent`; frame cadence alone is not a valid signal for static content. |
+| [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | Async ISO writer status still omits live `framesWritten` / `bytesWritten` updates; files record correctly. Confirmed in `refreshIsoStreams` on main. |
+| [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points; UI design still needed. |
+| [#530](https://github.com/iamfatness/CoreVideoPro/issues/530) | Control manifest still advertises `programPreview`; implementation spelling is `program-preview`. Fix alias/validation and reject invalid modes. |
+| [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct HEVC is shipped in #566. AV1 remains explicitly refused pending [#565](https://github.com/iamfatness/CoreVideoPro/issues/565). Raw fallback at real time and recording/ISO on the encoder seam remain; neither is covered by HEVC stream acceptance. |
+| [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) | Participant export-device reuse and the Program readiness fix shipped (#566/#574). Full 16-guest / 1080p-input render-budget acceptance remains. The clean eight-feed soak used adaptive 320x180 inputs, not eight 1080p feeds. |
+| [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | RTMP `bytesSent` still uses `estimatedFrameBytes`; `latencyMs` remains hard-coded to 2100 on main. Replace with measured/explicitly unavailable values. |
+| [#509](https://github.com/iamfatness/CoreVideoPro/issues/509) | Roster-change UI work exceeded 16.7 ms in measured sessions; several projections contribute. Earlier throttling reduced cost, but acceptance for the remaining rebuild work is not documented. |
+| [#508](https://github.com/iamfatness/CoreVideoPro/issues/508) | **Watch item per owner report:** multiview label/click mismatch after unassign has not recurred. Capture synchronized overlay/texture geometry if a persistent mismatch returns; no speculative geometry fix. |
+| [#507](https://github.com/iamfatness/CoreVideoPro/issues/507) | Debug text on operator surfaces and transport layout movement: no closing fix/acceptance identified in this audit. |
 
-| Order | Issue | Item | Why |
-|---|---|---|---|
-| 1 | [#513](https://github.com/iamfatness/CoreVideoPro/issues/513) | Idle XAML 0xc000027b | Ship-blocker between shows. Editor-teardown (#548) + multiview pooling (#549) shipped — exposure reduction, NOT closure. Needs a long idle soak of the new beta + the CsWinRT/WinAppSDK framework angle. |
-| 2 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | F1 one source bus | **Slice 0 shipped 2026-09-18; slice 1 (Zoom video, per-participant `ISource`) merged 2026-09-19 (#553)**, regressed live within 90 min ([#554](https://github.com/iamfatness/CoreVideoPro/issues/554), bus source dropped across a subscription gap → program slate / "flashing"), fixed same day (`ZoomBusRoster.h` parity rule: only remove a Zoom source absent from BOTH the decoded frames and the engine's subscription roster). **Slice 2 (capture devices, `CaptureDeviceSource`/`syncCaptureSources`) merged 2026-09-19 (#558)** — the opposite removal rule from Zoom (capture adapters re-emit their held frame every tick, so absence means gone), gated clean by `scripts/qa/zoom-gap-hold-ab.py`, the full Windows dev suite, the stub gate, `validate-multiview.mjs`, and the show drill. **Slice 3a (media frames onto the bus, parity, `layers` retained) ready on branch `codex/535-slice3-media`, unmerged, 2026-09-19** — `MediaAssetSource`/`syncMediaSources` mirror the producer at media's two existing injection points (post-roster-merge for stills, post-plan for decoded media); the request set, pause/hold, cue→Program hand-off (#449) and `preview:` poster key are deliberately untouched. Gated clean by the full Windows dev suite (1065/0), the stub gate, `validate-multiview.mjs`, the headless `validate-tiles.mjs` pixel oracle (substituting for `validate-show-engine.mjs`, which needs a running WinUI app), `zoom-gap-hold-ab.py` (luma held, no slate dip), and the show drill (60fps/100% delivery). **Slice 4a (bus health on air) ready on branch `codex/535-slice4a-health-on-air`, unmerged, 2026-09-19** — done-when #3 ("no per-kind special case for empty frames") delivered: render-plan layers carry `sourceHealth`/`dropoutPolicy`/`sourceDisplayName`, and the CPU preview/D3D11/Metal compositors share ONE resolution rule (`compositor::slateColorFor`/`blackOnStalled`) instead of each inventing `colorFromParticipantId` ("pink tile" retired everywhere). Per the owner's 2026-09-19 rulings: warming = neutral dark slate, failed/missing = dark slate + source name, stalled = the operator's per-source "On dropout" choice (hold last frame, default, or black). **Final-review fix wave, same branch, 2026-09-19 — the first cut above was too broad and is corrected here:** (R1) on-air "stalled" is **Zoom-only**, and is a **1.5s hysteresis** (`core::kOnAirStallNs`), deliberately distinct from the bus's 200ms diagnostic health in `sources[]` — capture/media/still sources NEVER read "stalled" from frame-cadence alone (a browser source, WGC screen capture, a still or a paused clip legitimately re-serves the same frameId for long stretches while healthy), and a Zoom source recovers the instant a new frame arrives. (R2) a dropout **policy is Zoom-only this slice** — `set-source-policy`/`source.dropout.set` refuse a non-`zoom:<pid>` id with a loud warning/`ControlInvokeResult.Fail` (capture liveness via `signalPresent` isn't wired to a stall decision yet, so a capture "black" policy would act on a signal that doesn't mean the same thing for that kind — that wiring is a **follow-up**, gated on `signalPresent`); the capture-row "On dropout" combo is removed from the Sources page, and preferences load prunes any persisted non-`zoom:` policy key. A source's **displayName is still accepted and stored for any id** (capture included) — only the policy is Zoom-gated, because the failed slate needs names for capture too. (R3) **black applies to the PROGRAM pass only** — preview and multiview force every layer's `dropoutPolicy` to "hold" after annotation (`holdDropoutForMonitoring`), so the operator can watch a stalled source for recovery on the monitoring surfaces even while Program has cut to black. (R4) `slateColorFor` now also treats "stalled" as the failed slate (dark + name) when there is no content frame to fall back on. (R5) the failed-slate name is now the **resolved** roster/device name (operator override, else derived), for every current Zoom participant and capture device — not just ids that already had an override or an explicit policy. Gated clean: full Windows dev suite (1080/0), `dotnet test` MediaCore.Tests (2228/0)/Control.Tests (74/0)/WinUI.Tests (1510/0), Release x64 WinUI build (0 errors), and TWO `zoom-gap-hold-ab.py` runs — `--policy hold` (default `--gap-seconds 0.45`) held luma 187.5–204.7 through the whole recording (no dip, correctly under the 1.5s window); `--policy black --gap-seconds 2.5` held luma ~199–205 for the first ~1.3s of the gap, dropped to exactly luma 16.08 for ~1.35s once the 1.5s on-air window elapsed, and recovered to ~199+ immediately after restore. **Not done in 4a:** the three old poll interfaces (`IZoomCaptureSource`/`ICaptureDevice`/`IMediaFrameSource`) still exist; that interface retirement is now **slice 4b**, per `docs/superpowers/specs/2026-09-19-source-bus-slice4-scoping.md`. **Next:** an owner ruling on Take-semantics (#449 step 1) unblocks slice 3b (drops the `layers` argument, moves media request state/hand-off/poster into the source, own spec); slice 4b then does the real interface retirement (Zoom audio onto the bus, an adapter lifecycle contract, media's slice 3b, and capture dropout policy gated on `signalPresent`). |
-| 3 | [#555](https://github.com/iamfatness/CoreVideoPro/issues/555) | First Take of a fresh Zoom source renders half off-screen | Owner-reported 2026-09-19 on the slice-1 build, "new". Not reproduced headlessly (no per-layer geometry on the wire; fake engine never restarts a stream). Owner re-test on the #554 fix first; then the compositor geometry log line named in the issue. Rank clause 3 (real-show papercut) — clause 1 if it survives the re-test. |
-
-## Next — competitive spine
-
-| Order | Issue | Item | Why |
-|---|---|---|---|
-| 1 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send harden first | vMix/Vectar table stakes. Demo B. |
-| 2 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decode onto the bus | After #535. |
-| 3 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) + T2 leftovers | Signing + first external install | Turnkey dies at SmartScreen. Calendar, not code. |
-| 4 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) step 1 | Hold outgoing picture on a plain cut | Needs owner ruling on Take semantics. |
-
-## Unranked — test-install findings (2026-09-21)
+## Later — parked
 
 | Issue | Item |
 |---|---|
-| [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Switching AV1 to HEVC retains stale terminal failure on retry. |
-| [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | HEVC YouTube ingest reports excellent health but remains Preparing stream with offline viewer; blocks #566 receiver acceptance. |
-| [#570](https://github.com/iamfatness/CoreVideoPro/issues/570) | Native-core access violation during HEVC recovery; asynchronous MFT shutdown missing. |
-| [#571](https://github.com/iamfatness/CoreVideoPro/issues/571) | Native shutdown releases WIC overlay factory after its COM worker exits. |
-| [#572](https://github.com/iamfatness/CoreVideoPro/issues/572) | Healthy stream startup can roll back before the supervisor observes its first progress. |
-| [#573](https://github.com/iamfatness/CoreVideoPro/issues/573) | Two-clip audio summing fixture can cancel its test tones under sanitizer scheduling. |
-| [#574](https://github.com/iamfatness/CoreVideoPro/issues/574) | Redundant GPU copy in Program delivery misses deadlines during sustained HEVC streaming. |
+| [#539](https://github.com/iamfatness/CoreVideoPro/issues/539) | MXL / ZoomISO Cloud / Kubernetes; remains parked until the source bus and plant I/O exist. |
 
-## Papercuts (not competitive)
+## Done — reconciled merged fixes
 
-| Issue | Item |
+These rows record specific fixes, not blanket production or fleet reliability.
+
+| Issue | Merged fix / acceptance |
 |---|---|
-| [#562](https://github.com/iamfatness/CoreVideoPro/issues/562) | Capture-device dropout policy needs adapter liveness via `signalPresent` — #535 R2 refuses a policy for any non-`zoom:` id this slice; wiring capture liveness into a real stall decision is the follow-up that lifts the restriction |
-| [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | ISO writer `framesWritten`/`bytesWritten` read 0 mid-recording for async writers (status-only; files record fine) |
-| [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points — needs UI design; was previous Now #4 |
-| [#530](https://github.com/iamfatness/CoreVideoPro/issues/530) | Control API `programPreview` vs `program-preview` |
-| [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct leftover slices #524 #525. **2026-09-20:** HEVC on GPU-direct SHIPPED (1080p60 gate green); **AV1 is REFUSED, not shipped** - it binds the AV1 MFT and runs at the correct cadence but emits near-empty access units (~54 bytes/frame vs H.264's ~12,483 at 1080p60, ~18 kbit/s against 6 Mbps), so it refuses at start with `codec-not-deliverable` pending the payload defect ([#565](https://github.com/iamfatness/CoreVideoPro/issues/565); `node scripts/validate-gpu-encode.mjs --codec av1` is what flips it back). Refuse-never-downgrade shipped (sub-project 1 of the 2026-09-20 spec); sub-project 2 (raw fallback at real time) and sub-project 3 (recording/ISO on the seam, absorbs #525) are next and need their own specs. |
-| [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) | Program render budget at 16 guests + 1080p wall |
-| [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | Fake RTMP `bytesSent` / `latencyMs` |
-| [#509](https://github.com/iamfatness/CoreVideoPro/issues/509) | Operator stutter / 197 ms rebuild |
-| [#508](https://github.com/iamfatness/CoreVideoPro/issues/508) | Multiview labels after unassign |
-| [#507](https://github.com/iamfatness/CoreVideoPro/issues/507) | Debug text in operator UI |
+| [#570](https://github.com/iamfatness/CoreVideoPro/issues/570) | Async MFT drain/shutdown in #566. Hardware cycles, installed restarts, sustained run and normal drain/stop passed. |
+| [#571](https://github.com/iamfatness/CoreVideoPro/issues/571) | COM lifetime through WIC/module teardown in #566. Reproducing regression and installed orderly shutdown checks passed. |
+| [#572](https://github.com/iamfatness/CoreVideoPro/issues/572) | Unobserved startup remains `starting` in #566. Lifecycle regressions and repeated installed starts passed. |
+| [#573](https://github.com/iamfatness/CoreVideoPro/issues/573) | Phase-stable two-clip summing fixture in #566; assertion retained. Repeated local runs and merged-main TSan passed. |
+| [#574](https://github.com/iamfatness/CoreVideoPro/issues/574) | GPU readiness moved before publication in #566. Hardware pixel tests and 30m16s installed candidate soak passed with zero new CVP delivery failures. Workload limits remain under #517/#569. |
+| [#529](https://github.com/iamfatness/CoreVideoPro/issues/529), [#533](https://github.com/iamfatness/CoreVideoPro/issues/533) | ISO drops/timeline fixes merged and validated in the earlier 24-minute six-ISO recording; shipped September 18. |
+| [#516](https://github.com/iamfatness/CoreVideoPro/issues/516), [#526](https://github.com/iamfatness/CoreVideoPro/issues/526), [#518](https://github.com/iamfatness/CoreVideoPro/issues/518) | Earlier render-stall, Program-buffer startup/busy-loop, and audio-log fixes merged and validated; shipped September 18. Later distinct defects retain their own issues. |
