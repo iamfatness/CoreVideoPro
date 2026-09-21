@@ -125,6 +125,7 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
       static_cast<double>(fps) * (std::max)(0.5, (std::min)(10.0, config.keyframeIntervalSeconds)))));
   std::ostringstream args;
   if (config.videoBitstreamInput) {
+    const bool hevc = config.videoBitstreamCodec == "hevc" || config.videoBitstreamCodec == "h265";
     // GPU-direct path: video arrives already encoded (H.264/HEVC Annex-B or AV1
     // OBU) on pipe:0; ffmpeg is a pure muxer/transport (-c:v copy). Only ~6 Mbps
     // crosses the pipe, so the raw -re pacing and pixel-format handling of the
@@ -139,9 +140,15 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     // analysis exhausted the bounded encoder queue and restarted HEVC every
     // few seconds on the YouTube receiver test (#569). A nonzero duration is
     // intentional: zero selects FFmpeg's automatic/default analysis duration.
-    args << " -hide_banner -loglevel warning -stats -stats_period 1"
-         << " -use_wallclock_as_timestamps 1 -r " << fps
-         << " -f " << rawDemuxerForBitstreamCodec(config.videoBitstreamCodec)
+    args << " -hide_banner -loglevel warning -stats -stats_period 1";
+    // HEVC is encoded without B-frames. Its decode clock is therefore also
+    // its presentation clock. Arrival timestamps compress buffered startup
+    // bursts into one instant (240 frames measured as 2.97s instead of 4s).
+    // Declare the raw demuxer's frame rate and supply PTS from its decode clock.
+    // This copies every encoded packet; it neither duplicates nor drops frames.
+    if (hevc) args << " -fflags +genpts -framerate " << fps;
+    else args << " -use_wallclock_as_timestamps 1 -r " << fps;
+    args << " -f " << rawDemuxerForBitstreamCodec(config.videoBitstreamCodec)
          << " -probesize 65536 -analyzeduration 1"
          << " -thread_queue_size 512 -i pipe:0";
     if (config.hasAudio) {
@@ -152,8 +159,9 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     } else {
       args << " -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";
     }
-    args << " -map 0:v:0 -map 1:a:0 -c:v copy"
-         << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
+    args << " -map 0:v:0 -map 1:a:0 -c:v copy";
+    if (hevc) args << " -bsf:v setts=pts=DTS";
+    args << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
          << " -af aresample=async=1:first_pts=0";
     if (config.endpoint.rfind("rtmp://", 0) == 0 || config.endpoint.rfind("rtmps://", 0) == 0) {
       // RTMP emits small protocol writes. Nagle/delayed-ACK backpressure can

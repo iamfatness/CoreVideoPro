@@ -3,6 +3,7 @@
 #include "modules/GpuVideoEncoder.h"
 #include "modules/Interfaces.h"
 #include "modules/MediaFoundationGpuVideoEncoder.h"
+#include "modules/RtmpFfmpegArgs.h"
 
 #include <d3d11.h>
 
@@ -211,9 +212,15 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
     // The FLV muxer refuses reordered raw HEVC ("Packet is missing PTS"). This
     // copy-mux is the on-rig proof that the MFT honoured B-frames OFF.
     const auto flvPath = rawPath.parent_path() / (std::string("gpu-encode-") + codec + ".flv");
-    const std::string muxInner = "\"" + ffmpegExe.string() + "\" -v error -y -use_wallclock_as_timestamps 1 -r " +
-                                 std::to_string(plan.fps) + " -f " + rawDemuxer + " -i \"" + rawPath.string() +
-                                 "\" -c:v copy -f flv \"" + flvPath.string() + "\"";
+    corevideo::modules::RtmpFfmpegArgsConfig muxConfig;
+    muxConfig.videoBitstreamInput = true;
+    muxConfig.videoBitstreamCodec = codec;
+    muxConfig.fps = plan.fps;
+    muxConfig.endpoint = flvPath.string();
+    auto muxArgs = corevideo::modules::buildRtmpFfmpegArguments(muxConfig);
+    muxArgs.replace(muxArgs.find("pipe:0"), 6, "\"" + rawPath.string() + "\"");
+    muxArgs.insert(muxArgs.find(" -f flv"), " -shortest");
+    const std::string muxInner = "\"" + ffmpegExe.string() + "\" -y" + muxArgs;
     const int muxStatus = normalizedSystemExitCode(std::system(("\"" + muxInner + "\"").c_str()));
     EXPECT_EQ(muxStatus, 0) << codec << " raw bitstream did not copy-mux into FLV: " << rawPath.string();
     if (std::string(codec) == "hevc") {
@@ -229,6 +236,20 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
       EXPECT_TRUE(color.find("color_space=bt709") != std::string::npos) << color;
       EXPECT_TRUE(color.find("color_transfer=bt709") != std::string::npos) << color;
       EXPECT_TRUE(color.find("color_primaries=bt709") != std::string::npos) << color;
+      const auto timingPath = work / "timing.txt";
+      const auto timingCmd = "\"" + ffprobeExe.string() +
+          "\" -v error -select_streams v:0 -show_entries packet=pts_time -of csv=p=0 \"" +
+          flvPath.string() + "\" > \"" + timingPath.string() + "\"";
+      ASSERT_EQ(normalizedSystemExitCode(std::system(("\"" + timingCmd + "\"").c_str())), 0);
+      std::ifstream timings(timingPath);
+      double previous = -1, current = 0;
+      int packetCount = 0;
+      while (timings >> current) {
+        if (previous >= 0) EXPECT_TRUE(std::fabs(current - previous - 1.0 / plan.fps) < 0.002);
+        previous = current;
+        ++packetCount;
+      }
+      EXPECT_GE(packetCount, 2); // a burst read from disk must retain video cadence
     }
     std::error_code fec;
     std::filesystem::remove(flvPath, fec);

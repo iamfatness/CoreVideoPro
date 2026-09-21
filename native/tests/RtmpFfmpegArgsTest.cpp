@@ -195,12 +195,18 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeNamesTheRawDemuxerPerCodec) {
     config.hasAudio = true;
     config.audioInput = "pipe:3";
     const auto args = corevideo::modules::buildRtmpFfmpegArguments(config);
-    EXPECT_NE(args.find(std::string("-use_wallclock_as_timestamps 1 -r 60 -f ") + demuxer +
+    const std::string clock = std::string(codec) == "hevc"
+        ? "-fflags +genpts -framerate 60 -f " : "-use_wallclock_as_timestamps 1 -r 60 -f ";
+    EXPECT_NE(args.find(clock + demuxer +
                         " -probesize 65536 -analyzeduration 1 -thread_queue_size 512 -i pipe:0"),
               std::string::npos) << codec << " :: " << args;
     EXPECT_NE(args.find("-c:v copy"), std::string::npos) << codec;
     EXPECT_EQ(args.find("-tag:v"), std::string::npos) << codec;
     EXPECT_EQ(args.find("-f h264 "), std::string::npos) << codec;
+    if (std::string(codec) == "hevc") {
+      EXPECT_EQ(args.find("use_wallclock_as_timestamps"), std::string::npos);
+      EXPECT_NE(args.find("-bsf:v setts=pts=DTS"), std::string::npos);
+    }
   }
 }
 
