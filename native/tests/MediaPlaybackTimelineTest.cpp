@@ -895,3 +895,47 @@ TEST(MediaTransports, TheRenderSweepRetiresASourceNoCommandEverMentionsAgain) {
   }
   EXPECT_FALSE(statusOf(t, "media:test").has_value());
 }
+
+// Fix-wave re-review (Important). The release grace deliberately KEEPS
+// `Entry::desired` untouched - the re-claim transition is computed against
+// exactly that row - but `snapshot()` publishes those same flags, so a clip
+// that left Program kept reading `onProgram: true, state: "live"` for the whole
+// 750 ms. The shell's MediaBinPlaybackProjection gates its selection rewrite on
+// `OnProgram: true` and runs on every 250 ms poll, so one to three polls landed
+// inside the grace and re-set SelectedMediaAssetPlaying after the Take had
+// cleared it - stickily, because once the row goes the projection stops
+// rewriting at all. Read-side only: the transition table must not change.
+TEST(MediaTransports, ASourceInsideItsReleaseGraceIsPublishedOnNeitherBus) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  const auto added = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(added.size(), 1u);
+  ASSERT_GT(pollUntilFrame(*added.front().entry), 0);
+  ASSERT_EQ(created.load(), 1);
+  {
+    const auto live = statusOf(t, "media:test");
+    ASSERT_TRUE(live.has_value());
+    if (live) EXPECT_TRUE(live->onProgram);
+  }
+
+  // The desired set drops it: the grace opens, nothing is retired.
+  EXPECT_TRUE(t.apply({}, 1'000'000).empty());
+  const auto graced = statusOf(t, "media:test");
+  ASSERT_TRUE(graced.has_value()) << "the grace retired it instead of keeping it warm";
+  if (graced) {
+    EXPECT_FALSE(graced->onProgram) << "an off-air clip still published onProgram inside its grace";
+    EXPECT_FALSE(graced->onPreview);
+  }
+
+  // ...and the entry itself is untouched, so the re-claim is still an ordinary
+  // transition and the decoder is still the warm one.
+  const auto reclaimed = t.apply({testDesired(true, false)}, 1'100'000);
+  EXPECT_TRUE(reclaimed.empty()) << "the re-claim churned bus membership";
+  const auto back = statusOf(t, "media:test");
+  ASSERT_TRUE(back.has_value());
+  if (back) {
+    EXPECT_TRUE(back->onProgram);
+    EXPECT_TRUE(back->state == MediaTransportState::Live);
+  }
+  EXPECT_EQ(created.load(), 1) << "reclaim must reuse the warm decoder";
+}

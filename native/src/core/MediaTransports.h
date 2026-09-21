@@ -235,6 +235,15 @@ class MediaTransports final {
                 since = releasePendingNs_.emplace(id, nowNs).first;
                 found->second->wantsAudio.store(false);
                 std::lock_guard<std::mutex> entryLock(found->second->mutex);
+                // LATENT, and named so it is not rediscovered as a defect: a
+                // re-claim INSIDE the grace resumes against an audio queue
+                // this clear emptied, so the first window or two after the
+                // re-claim come from the decoder rather than from what was
+                // already prepared. Unreachable today — the interleave this
+                // grace exists for moves a CUED clip, which has no audio, and
+                // Program and Preview routes are separate stored vectors — and
+                // it only becomes real if a clip can leave and re-enter Program
+                // inside 750 ms.
                 found->second->audio.clear();
                 found->second->wake = true;
               }
@@ -433,9 +442,34 @@ class MediaTransports final {
     std::lock_guard<std::mutex> lock(mutex_);
     result.reserve(entries_.size());
     for (const auto& [id, entry] : entries_) {
+      // A SOURCE INSIDE ITS RELEASE GRACE IS ON NEITHER BUS, AND MUST SAY SO.
+      // `Entry::desired` deliberately keeps its pre-release flags — the
+      // re-claim transition is computed against exactly that row — but those
+      // flags are ALSO what `mediaSources[]` publishes, so without this a clip
+      // that left Program kept reporting `onProgram: true` for the whole
+      // grace. The shell reads more than `state`:
+      // MediaBinPlaybackProjection gates its whole selection rewrite on
+      // `OnProgram: true`, so one to three 250 ms polls landing inside the
+      // grace re-set `SelectedMediaAssetPlaying` after the Take had cleared
+      // it — and STICKILY, because once the row finally goes the projection
+      // stops rewriting at all. The operator's toggle then read "Pause
+      // Program" for an off-air clip and the gesture was refused by the core.
+      // Same family as the T1.3 rollback defect in CLAUDE.md.
+      //
+      // The row is ZEROED rather than omitted: the transport genuinely still
+      // exists (a warm, re-claimable decoder), and a node that vanishes and
+      // reappears on a re-claim is the multiviewer mistake again. Both bus
+      // flags false alongside `state: "live"` is self-consistent — not on air,
+      // still rolling — and the shell already treats a non-Program row as
+      // "leave the selection alone".
+      //
+      // This is a READ-SIDE projection only. It cannot reach
+      // `decideMediaTransport`, which reads `Entry::desired`.
+      const bool inGrace = releasePendingNs_.count(id) > 0;
       std::lock_guard<std::mutex> entryLock(entry->mutex);
       result.push_back(Status{id, entry->desired.assetId, entry->state, entry->desired.loop,
-                              entry->desired.onProgram, entry->desired.onPreview,
+                              inGrace ? false : entry->desired.onProgram,
+                              inGrace ? false : entry->desired.onPreview,
                               entry->positionMs, entry->durationMs});
     }
     return result;
@@ -459,6 +493,14 @@ class MediaTransports final {
     // hand back a new frame and bring the transport back to Live on its own.
     // The picture is held and the audio silenced by `state`, in selectVideo()
     // and popAudio(), not here.
+    //
+    // THE PRICE, stated: an Ended clip's worker no longer idles in the holding
+    // branch — it runs its 20 ms loop and polls the decoder for as long as the
+    // transport exists. For a decoder at EOS that poll re-serves the held
+    // frame (a shared_ptr copy, deduped away by MediaVideoPresentation::push),
+    // so it is cheap; it is bought deliberately, because a worker that stops
+    // reading can never see the new frame that proves the stall is over, and
+    // in-place recovery is the whole point.
     l.mediaAssetPlaying =
         e.state == MediaTransportState::Live || e.state == MediaTransportState::Ended;
     return l;
