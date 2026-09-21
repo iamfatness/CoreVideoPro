@@ -467,6 +467,66 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Contains("I/O error", status, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void FormatStreamingFailureStatus_AnEnhancedRtmpRefusalPointsAtTheCheckboxNotTheKey()
+    {
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("RTMP output failed. H.265 over RTMP needs Enhanced RTMP; enable it in Stream settings or choose H.264."));
+        // Exact string, not fragments: the core's sentence must appear exactly
+        // once, with no leftover "RTMP output failed." wrapper and no generic
+        // key/URL advice appended after it.
+        Assert.Equal(
+            "Streaming start failed: H.265 over RTMP needs Enhanced RTMP; enable it in Stream settings or choose H.264.",
+            status);
+        Assert.DoesNotContain("stream key", status, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("server URL", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_ANoHardwareEncoderRefusalNamesTheCodec()
+    {
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("RTMP output failed. AV1 needs a hardware encoder on the GPU-direct path and this machine cannot provide one (no-hardware-encoder). Choose H.264 or stream from a machine with an NVIDIA RTX 40-series or newer."));
+        Assert.Equal(
+            "Streaming start failed: AV1 needs a hardware encoder on the GPU-direct path and this machine cannot provide one (no-hardware-encoder). Choose H.264 or stream from a machine with an NVIDIA RTX 40-series or newer.",
+            status);
+        Assert.DoesNotContain("stream key", status, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // 2026-09-20: AV1's hardware MFT binds and runs at the correct cadence but
+    // emits near-empty access units, so the stream is ~18 kbit/s against 6 Mbps.
+    // It ships REFUSED with its own named reason, and that reason must reach the
+    // operator verbatim - never the generic key/URL advice.
+    [Fact]
+    public void FormatStreamingFailureStatus_ANotDeliverableCodecRefusalNamesTheReason()
+    {
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("RTMP output failed. AV1 does not produce a usable stream on this machine's hardware encoder (near-empty access units, ~18 kbit/s against the configured bitrate). Choose H.264 or H.265."));
+        // Exact string, not fragments: a substring assertion here passes with and
+        // without the fix, which is the failure mode this branch already hit once.
+        Assert.Equal(
+            "Streaming start failed: AV1 does not produce a usable stream on this machine's hardware encoder (near-empty access units, ~18 kbit/s against the configured bitrate). Choose H.264 or H.265.",
+            status);
+        Assert.DoesNotContain("stream key", status, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("server URL", status, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Codec refused", TransportStatusFormatter.FormatOutputStatusBrief(status));
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_AGpuEncoderStartFailureQuotesTheDetail()
+    {
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
+            "start",
+            new InvalidOperationException("RTMP output failed. The H.265 hardware encoder failed to start (set-bframes-off). The stream was not started."));
+        Assert.Equal(
+            "Streaming start failed: The H.265 hardware encoder failed to start (set-bframes-off). The stream was not started.",
+            status);
+        Assert.DoesNotContain("stream key", status, StringComparison.OrdinalIgnoreCase);
+    }
+
     // A stream start races Program's first composed pixels. The owner hit this
     // twice on 2026-09-12 (frame-pixels-missing at 13:55:54 and 13:56:41) and read
     // it as "the encoder will not start". A destination that has not produced

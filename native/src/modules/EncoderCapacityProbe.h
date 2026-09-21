@@ -65,11 +65,13 @@
 
 #include "modules/IsoEncoderPlacement.h"
 
+#include <cctype>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <string>
+#include <string_view>
 
 namespace corevideo::modules {
 
@@ -77,7 +79,7 @@ namespace corevideo::modules {
 // of the machine alone — a GPU that sustains eight 1080p30 sessions may manage
 // one at 4K60 — so the cache is keyed by the whole tuple.
 struct EncoderProbeKey {
-  std::string codec = "h264";  // canonical name ("h264" / "hevc")
+  std::string codec = "h264";  // canonical name ("h264" / "hevc" / "av1"), see canonicalProbeCodec
   int width = 1920;
   int height = 1080;
   int fps = 30;
@@ -91,6 +93,16 @@ struct EncoderProbeKey {
 
   std::string describe() const;
 };
+
+// One canonical spelling per codec for the cache key. "h264" / "hevc" / "av1";
+// anything unknown is "h264", the workload every build has always probed.
+inline std::string canonicalProbeCodec(std::string_view codec) {
+  std::string lowered(codec);
+  for (auto& ch : lowered) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  if (lowered == "h265" || lowered == "hevc" || lowered == "hvc1") return "hevc";
+  if (lowered == "av1" || lowered == "av01") return "av1";
+  return "h264";
+}
 
 enum class EncoderProbeStatus {
   // Never asked for, or the background probe has not finished yet. Callers fall

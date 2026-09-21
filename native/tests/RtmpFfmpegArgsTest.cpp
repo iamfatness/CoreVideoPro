@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <utility>
+
 namespace {
 using namespace corevideo::modules;
 
@@ -170,6 +172,33 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeCopiesVideoAndSkipsRawEncode) {
   EXPECT_EQ(args.find("-b:v "), std::string::npos);          // no re-encode bitrate
   EXPECT_NE(args.find("-c:a aac"), std::string::npos);       // audio still encoded
   EXPECT_NE(args.find("-map 0:v:0 -map 1:a:0"), std::string::npos);
+}
+
+// 2026-09-20: GPU-direct HEVC/AV1. The raw elementary stream on pipe:0 needs the
+// matching raw demuxer; -c:v copy into FLV is unchanged and this FFmpeg writes
+// the enhanced-RTMP fourcc itself (no -tag:v).
+TEST(RtmpFfmpegArgs, BitstreamInputModeNamesTheRawDemuxerPerCodec) {
+  using corevideo::modules::rawDemuxerForBitstreamCodec;
+  EXPECT_EQ(rawDemuxerForBitstreamCodec("h264"), "h264");
+  EXPECT_EQ(rawDemuxerForBitstreamCodec("hevc"), "hevc");
+  EXPECT_EQ(rawDemuxerForBitstreamCodec("av1"), "obu");
+  EXPECT_EQ(rawDemuxerForBitstreamCodec("bogus"), "h264");
+
+  for (const auto& [codec, demuxer] : {std::pair{"hevc", "hevc"}, std::pair{"av1", "obu"}}) {
+    corevideo::modules::RtmpFfmpegArgsConfig config;
+    config.videoBitstreamInput = true;
+    config.videoBitstreamCodec = codec;
+    config.fps = 60;
+    config.hasAudio = true;
+    config.audioInput = "pipe:3";
+    const auto args = corevideo::modules::buildRtmpFfmpegArguments(config);
+    EXPECT_NE(args.find(std::string("-use_wallclock_as_timestamps 1 -r 60 -f ") + demuxer +
+                        " -thread_queue_size 512 -i pipe:0"),
+              std::string::npos) << codec << " :: " << args;
+    EXPECT_NE(args.find("-c:v copy"), std::string::npos) << codec;
+    EXPECT_EQ(args.find("-tag:v"), std::string::npos) << codec;
+    EXPECT_EQ(args.find("-f h264 "), std::string::npos) << codec;
+  }
 }
 
 TEST(RtmpFfmpegArgs, BitstreamRtmpDisablesTcpDelayWithoutChangingSrt) {

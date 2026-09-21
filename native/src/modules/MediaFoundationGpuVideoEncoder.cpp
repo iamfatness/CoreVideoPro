@@ -19,6 +19,7 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <codecapi.h>
+#include <icodecapi.h>  // ICodecAPI (codecapi.h supplies only the property GUIDs).
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
@@ -46,7 +47,14 @@ HANDLE handleFromHex(const std::string& hex) {
 
 GUID subtypeForCodec(const std::string& codec) {
   if (codec == "hevc" || codec == "h265") return MFVideoFormat_HEVC;
+  if (codec == "av1") return MFVideoFormat_AV1;
   return MFVideoFormat_H264;
+}
+
+UINT32 profileForCodec(const std::string& codec) {
+  if (codec == "hevc" || codec == "h265") return eAVEncH265VProfile_Main_420_8;
+  if (codec == "av1") return eAVEncAV1VProfile_Main_420_8;
+  return eAVEncH264VProfile_High;
 }
 
 // Owns a dedicated D3D11 device + the MF hardware encoder MFT + a D3D11 video
@@ -74,8 +82,9 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     healthy_.store(true);
     running_.store(true);
     thread_ = std::thread([this] { encodeLoop(); });
-    ::corevideo::core::nativeLogf("[gpu-encode] started %dx%d@%d %dkbps mft=hardware-h264\n",
-                                 config_.width, config_.height, config_.fps, config_.bitrateKbps);
+    ::corevideo::core::nativeLogf("[gpu-encode] started %dx%d@%d %dkbps mft=hardware-%s\n",
+                                 config_.width, config_.height, config_.fps, config_.bitrateKbps,
+                                 config_.codec.c_str());
     return true;
   }
 
@@ -125,9 +134,15 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
 
   [[nodiscard]] bool healthy() const override { return healthy_.load(); }
 
+  // The last fail() detail, so the sender can quote it in the refusal sentence.
+  // Written only on the caller's thread inside start() (every fail() site is on
+  // the create path) and read by that same caller right after start() returns.
+  [[nodiscard]] std::string lastFailure() const override { return lastFailure_; }
+
  private:
   bool fail(const char* why) {
     ::corevideo::core::nativeLogf("[gpu-encode] init failed: %s\n", why);
+    lastFailure_ = why ? why : "";
     healthy_.store(false);
     stop();
     return false;
@@ -157,7 +172,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   }
 
   bool createEncoder() {
-    MFT_REGISTER_TYPE_INFO outInfo{MFMediaType_Video, subtypeForCodec("h264")};
+    MFT_REGISTER_TYPE_INFO outInfo{MFMediaType_Video, subtypeForCodec(config_.codec)};
     IMFActivate** activates = nullptr;
     UINT32 count = 0;
     HRESULT hr = MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER,
@@ -165,7 +180,8 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
                            nullptr, &outInfo, &activates, &count);
     if (FAILED(hr) || count == 0) {
       if (activates) CoTaskMemFree(activates);
-      return fail("no-hardware-h264-mft");
+      const std::string why = "no-hardware-mft-" + config_.codec;
+      return fail(why.c_str());
     }
     hr = activates[0]->ActivateObject(IID_PPV_ARGS(&encoder_));
     for (UINT32 i = 0; i < count; ++i) activates[i]->Release();
@@ -184,14 +200,80 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       return fail("set-d3d-manager");
     }
 
+    // EVERY CODEC BUT H.264: NO DEEP PIPELINE / NO REORDERED FRAMES.
+    //
+    // This path is a LIVE stream: FFmpeg is demoted to a muxer reading a raw
+    // elementary stream off a pipe and stamping each arriving access unit with
+    // the wallclock. Two things break that. (a) Reordered frames - the FLV muxer
+    // refuses raw HEVC with B-frames outright ("Packet is missing PTS", measured
+    // 2026-09-20). (b) A deep encoder pipeline - measured 2026-09-20, NVENC AV1
+    // at its defaults (lookahead / alt-ref reordering) starved the muxer: the MFT
+    // bound, emitted a normal first chunk, then the muxed stream flatlined at
+    // ~18.4 kbit/s over 29 s against a configured 6 Mbps, three times, with the
+    // GPU encoder otherwise idle. A 12-frame round-trip fits inside that pipeline
+    // and cannot see it; only the sustained gate can.
+    //
+    // So both are asked for, in one ladder, for every non-H.264 codec:
+    // CODECAPI_AVEncMPVDefaultBPictureCount = 0 first, and on rejection
+    // CODECAPI_AVLowLatencyMode + MF_LOW_LATENCY, which on NVENC means no
+    // B-frames AND no deep pipeline. Measured on this rig (RTX 4090, driver
+    // 616.92) the NVIDIA HEVC and AV1 Encoder MFTs both reject the B-picture
+    // count with E_INVALIDARG (0x80070057) - for HEVC, before AND after
+    // SetOutputType - so low-latency mode is what actually takes here; the
+    // per-rig proof is each codec's round-trip test (raw stream copy-muxed into
+    // FLV) plus scripts/validate-gpu-encode.mjs for the sustained rate. start()
+    // fails only when BOTH are refused: a stream the muxer starves on or rejects
+    // twenty frames in is far worse than a start() that refuses loudly.
+    //
+    // H.264 IS DELIBERATELY EXCLUDED and its configuration stays byte-identical:
+    // it is the shipped, gate-proven path, it holds 60.0 fps with sink speed
+    // ~1.37x at the MFT defaults, and it has nothing to gain from this ladder.
+    if (config_.codec != "h264") {
+      ComPtr<ICodecAPI> codecApi;
+      if (FAILED(encoder_.As(&codecApi)) || !codecApi) return fail("no-codec-api");
+
+      VARIANT bframes;
+      VariantInit(&bframes);
+      bframes.vt = VT_UI4;
+      bframes.ulVal = 0;
+      const HRESULT bhr = codecApi->SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &bframes);
+      if (SUCCEEDED(bhr)) {
+        ::corevideo::core::nativeLogf("[gpu-encode] %s b-frames off via bpicture-count\n", config_.codec.c_str());
+      } else {
+        // Name the rejecting HRESULT: the bare detail string Task 8 reports to
+        // the operator cannot tell a controller WHICH mechanism was refused.
+        ::corevideo::core::nativeLogf(
+            "[gpu-encode] %s MFT refused CODECAPI_AVEncMPVDefaultBPictureCount hr=0x%08lX\n",
+            config_.codec.c_str(), static_cast<unsigned long>(bhr));
+        VARIANT lowLatency;
+        VariantInit(&lowLatency);
+        lowLatency.vt = VT_BOOL;
+        lowLatency.boolVal = VARIANT_TRUE;
+        const HRESULT lhr = codecApi->SetValue(&CODECAPI_AVLowLatencyMode, &lowLatency);
+        // The transform attribute is the other half of the same request: the
+        // codec-API property configures the encoder, MF_LOW_LATENCY tells the
+        // MFT pipeline not to buffer. `attrs` may be null on an MFT with no
+        // attribute store, which is not itself a failure - the codec-API result
+        // is what decides.
+        if (attrs) attrs->SetUINT32(MF_LOW_LATENCY, TRUE);
+        if (FAILED(lhr)) {
+          ::corevideo::core::nativeLogf(
+              "[gpu-encode] %s MFT refused CODECAPI_AVLowLatencyMode hr=0x%08lX\n",
+              config_.codec.c_str(), static_cast<unsigned long>(lhr));
+          return fail("set-bframes-off");
+        }
+        ::corevideo::core::nativeLogf("[gpu-encode] %s b-frames off via low-latency-mode\n", config_.codec.c_str());
+      }
+    }
+
     // Output type FIRST (encoders require it), then input.
     ComPtr<IMFMediaType> outType;
     MFCreateMediaType(&outType);
     outType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    outType->SetGUID(MF_MT_SUBTYPE, subtypeForCodec("h264"));
+    outType->SetGUID(MF_MT_SUBTYPE, subtypeForCodec(config_.codec));
     outType->SetUINT32(MF_MT_AVG_BITRATE, static_cast<UINT32>(config_.bitrateKbps) * 1000u);
     outType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-    outType->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High);
+    outType->SetUINT32(MF_MT_MPEG2_PROFILE, profileForCodec(config_.codec));
     MFSetAttributeSize(outType.Get(), MF_MT_FRAME_SIZE, static_cast<UINT32>(config_.width),
                        static_cast<UINT32>(config_.height));
     MFSetAttributeRatio(outType.Get(), MF_MT_FRAME_RATE, static_cast<UINT32>(config_.fps), 1);
@@ -317,7 +399,24 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     return SUCCEEDED(encoder_->ProcessInput(0, sample.Get(), 0));
   }
 
-  void drainOutput() {
+  // DRAIN every ready output on each METransformHaveOutput, rather than taking
+  // exactly one. A strict generalization: an MFT with only one output ready
+  // exits on the first MF_E_TRANSFORM_NEED_MORE_INPUT and behaves exactly as
+  // before, so this is correct for any MFT rather than for the ones we happen to
+  // have measured. NeedInput credit retention is untouched - that fix is
+  // separate and load-bearing.
+  //
+  // It was written to test the hypothesis that the NVIDIA AV1 Encoder MFT queues
+  // several outputs per event and was therefore being starved by a one-per-event
+  // reader. THAT HYPOTHESIS IS FALSE, measured 2026-09-20 on this rig (RTX 4090,
+  // driver 616.92) by the counter below: over a 30 s 1080p60 AV1 stream the MFT
+  // reported events=1260 samples=1260 mean=1.00 max-per-event=1. Exactly one
+  // output per event, so the drain changes nothing for AV1 and the ~18.4 kbit/s
+  // AV1 stall has some other cause. The drain stays because it is correct; do
+  // not read it as a fix for that stall.
+  // Returns how many samples this event actually yielded.
+  int drainOutput() {
+    int produced_count = 0;
     for (;;) {
       MFT_OUTPUT_STREAM_INFO info{};
       encoder_->GetOutputStreamInfo(0, &info);
@@ -326,7 +425,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       const bool mftAllocates =
           (info.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES)) != 0;
       if (!mftAllocates) {
-        if (FAILED(MFCreateSample(&sample))) return;
+        if (FAILED(MFCreateSample(&sample))) return produced_count;
         ComPtr<IMFMediaBuffer> buf;
         MFCreateMemoryBuffer((std::max<DWORD>)(info.cbSize, 1u << 20), &buf);
         sample->AddBuffer(buf.Get());
@@ -334,17 +433,33 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       }
       DWORD status = 0;
       HRESULT hr = encoder_->ProcessOutput(0, 1, &out, &status);
-      if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) return;
-      if (FAILED(hr)) return;
+      if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) return produced_count;
+      if (FAILED(hr)) return produced_count;
       ComPtr<IMFSample> produced;
       if (mftAllocates) produced.Attach(out.pSample);
       else produced = sample;
       if (out.pEvents) out.pEvents->Release();
-      if (!produced) return;
+      if (!produced) return produced_count;
       emit(produced.Get());
-      // Async MFTs issue one HaveOutput event per output sample. Do not drain
-      // ahead of those events as with a synchronous transform.
-      return;
+      ++produced_count;
+    }
+  }
+
+  // One bounded, quotable line saying how many samples each HaveOutput event
+  // actually yields, so "one output per event" is never assumed again for a new
+  // MFT. Encode-thread only; no lock needed.
+  void noteDrain(int samples) {
+    ++drainEvents_;
+    drainSamples_ += static_cast<uint64_t>(samples);
+    if (samples > drainMaxPerEvent_) drainMaxPerEvent_ = samples;
+    if (drainSamples_ >= drainLogNextAt_) {
+      drainLogNextAt_ = drainSamples_ + 600;
+      ::corevideo::core::nativeLogf(
+          "[gpu-encode] %s output drain: events=%llu samples=%llu mean=%.2f max-per-event=%d\n",
+          config_.codec.c_str(), static_cast<unsigned long long>(drainEvents_),
+          static_cast<unsigned long long>(drainSamples_),
+          drainEvents_ ? static_cast<double>(drainSamples_) / static_cast<double>(drainEvents_) : 0.0,
+          drainMaxPerEvent_);
     }
   }
 
@@ -440,7 +555,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
           }
         }
       } else if (type == METransformHaveOutput) {
-        drainOutput();
+        noteDrain(drainOutput());
       }
     }
   }
@@ -450,8 +565,14 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   std::atomic<bool> running_{false};
   std::atomic<bool> healthy_{false};
   bool mfStarted_ = false;
+  std::string lastFailure_;
   bool capacityLeaseActive_ = false;
   bool firstEmitLogged_ = false;
+  // Output-drain accounting (encode thread only).
+  uint64_t drainEvents_ = 0;
+  uint64_t drainSamples_ = 0;
+  uint64_t drainLogNextAt_ = 60;
+  int drainMaxPerEvent_ = 0;
 
   ComPtr<ID3D11Device> device_;
   ComPtr<ID3D11DeviceContext> context_;
