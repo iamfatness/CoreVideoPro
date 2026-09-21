@@ -14,8 +14,9 @@
 // (`video_subscribe_noop_existing`): the renderer kept its higher resolution
 // forever, so over a show every guest ever cued to a bus stayed at 1080P — the
 // N x 1080P load that crashed the SDK subprocess (0xc000000d, commit bd3caf29).
-// The core now asks for 720P when a guest leaves Program/Preview, and the engine
-// honours it — but only when this source is the renderer's ONLY target: another
+// The core asks for 720P only when its 8-camera 1080P cap demotes a guest (since
+// 2026-09-20 every in-show camera purpose is 1080P, so leaving a bus alone no
+// longer lowers a request), and the engine honours the downgrade — but only when this source is the renderer's ONLY target: another
 // target of the same participant renderer still wants the higher resolution.
 //
 // Pure, so it is testable without the SDK (native/tests/ZoomEngineRuntimeTest.cpp).

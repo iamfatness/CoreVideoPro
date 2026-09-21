@@ -1003,7 +1003,9 @@ TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
     corevideo::modules::ZoomEngineRuntime runtime;
     runtime.installEngineProcessForTest(fake);
 
-    // 301 is on the wall (720P); 302 is the fixed Program route (1080P).
+    // 301 is on the wall and 302 is the fixed Program route: BOTH 1080P (owner
+    // ruling 2026-09-20: "All sources should be pulling at the highest available
+    // for zoom. We shouldn't only pull a 720 until they are in preview").
     (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
                                 subscriptionRequest("301", "participant-video", "multiview"),
                                 subscriptionRequest("302", "participant-video", "program"),
@@ -1018,15 +1020,17 @@ TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
       EXPECT_EQ(wall->getNumber("generation"), 1);
       EXPECT_EQ(wall->getNumber("churn"), 0);
       EXPECT_EQ(wall->getString("lastReason"), "initial");
-      EXPECT_EQ(wall->getNumber("resolution"), 1);  // 720P
+      EXPECT_EQ(wall->getNumber("resolution"), 2);  // 1080P from the start
       EXPECT_TRUE(wall->get("subscribed")->asBool(false));
       const auto* program = findChurnSource(churn, "participant-video-302-camera");
       ASSERT_NE(program, nullptr);
       EXPECT_EQ(program->getNumber("resolution"), 2);  // 1080P
     }
 
-    // 301 is cued to Preview: the one resolution change a guest can see, on a cue,
-    // raising its renderer to the 1080P bus tier. Named as the teardown it is.
+    // 301 is cued to Preview: NOTHING moves. Every in-show source is already at
+    // the top tier, so a cue is not a re-subscribe and the live 2026-09-20 "color
+    // shift in preview when selecting a source" (Zoom's 720P and 1080P encodes of
+    // one camera differ in tone; the cue swapped one for the other) cannot recur.
     (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
                                 subscriptionRequest("301", "participant-video", "preview"),
                                 subscriptionRequest("302", "participant-video", "program"),
@@ -1034,19 +1038,19 @@ TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
                             20.0);
     {
       const auto churn = runtime.subscriptionChurnState();
-      EXPECT_EQ(churn.getNumber("totalChurn"), 1);
-      EXPECT_EQ(churn.getNumber("lastResolutionChanges"), 1);
+      EXPECT_EQ(churn.getNumber("totalChurn"), 0);
+      EXPECT_EQ(churn.getNumber("lastResolutionChanges"), 0);
       const auto* cued = findChurnSource(churn, "participant-video-301-camera");
       ASSERT_NE(cued, nullptr);
-      EXPECT_EQ(cued->getNumber("generation"), 2);
-      EXPECT_EQ(cued->getNumber("churn"), 1);
-      EXPECT_EQ(cued->getString("lastReason"), "resolution-change");
+      EXPECT_EQ(cued->getNumber("generation"), 1);
+      EXPECT_EQ(cued->getNumber("churn"), 0);
+      EXPECT_EQ(cued->getString("lastReason"), "initial");
       EXPECT_EQ(cued->getNumber("resolution"), 2);
-      EXPECT_EQ(cued->getNumber("lastChangeMs"), 20.0);
     }
 
-    // Uncued back to the wall: NO RATCHET (#478 R4). It goes back to 720P, the
-    // engine now honours the downgrade, and the ledger names it.
+    // Uncued back to the wall: still 1080P, still the same renderer. (The
+    // no-ratchet downgrade of #478 R4 is still honoured by the engine for a
+    // request that DOES drop — the cap's demotion — it just never happens here.)
     (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
                                 subscriptionRequest("301", "participant-video", "multiview"),
                                 subscriptionRequest("302", "participant-video", "program"),
@@ -1054,12 +1058,12 @@ TEST(ZoomEngineRuntime, SubscriptionChurnNamesResolutionChangesAndTeardowns) {
                             25.0);
     {
       const auto churn = runtime.subscriptionChurnState();
-      EXPECT_EQ(churn.getNumber("totalChurn"), 2);
+      EXPECT_EQ(churn.getNumber("totalChurn"), 0);
       const auto* uncued = findChurnSource(churn, "participant-video-301-camera");
       ASSERT_NE(uncued, nullptr);
-      EXPECT_EQ(uncued->getNumber("generation"), 3);
-      EXPECT_EQ(uncued->getNumber("resolution"), 1);
-      EXPECT_EQ(uncued->getString("lastReason"), "resolution-change");
+      EXPECT_EQ(uncued->getNumber("generation"), 1);
+      EXPECT_EQ(uncued->getNumber("resolution"), 2);
+      EXPECT_EQ(uncued->getString("lastReason"), "initial");
     }
 
     // 302 falls out of the requested set entirely — the cap-reordering shape.
@@ -1120,20 +1124,23 @@ TEST(ZoomSubscriptionResolutionPolicyRules, ResolutionIsAStableTierNotWhoIsTalki
   // the same 1080P tier as the buses. Live-soak-proven at 8 concurrent.
   EXPECT_EQ(Policy::requestedResolution("participant-video", "program-tiles"), Policy::k1080P);
   EXPECT_EQ(Policy::requestedResolution("participant-video", "preview-tiles"), Policy::k1080P);
-  // Everything else, INCLUDING active-speaker (a follow-speaker route): 720P, so
-  // a change of speaker can never move a key.
-  EXPECT_EQ(Policy::requestedResolution("participant-video", "active-speaker"), Policy::k720P);
-  EXPECT_EQ(Policy::requestedResolution("participant-video", "multiview"), Policy::k720P);
-  EXPECT_EQ(Policy::requestedResolution("participant-video", "iso"), Policy::k720P);
+  // EVERY camera purpose is the top tier (owner ruling 2026-09-20, "all sources
+  // should be pulling at the highest available"): multiview, iso and a
+  // follow-speaker route's speaker too. A change of speaker still moves no key,
+  // and a cue no longer does either — there is no lower tier to flip from.
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "active-speaker"), Policy::k1080P);
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "multiview"), Policy::k1080P);
+  EXPECT_EQ(Policy::requestedResolution("participant-video", "iso"), Policy::k1080P);
   // The macOS shell's kind "video"/purpose "program" for every assigned guest is
   // NOT promoted to N x 1080P.
   EXPECT_EQ(Policy::requestedResolution("video", "program"), Policy::k720P);
 
-  // Tiles members are 1080P (2026-09-13): the wall holds the highest tier so a
-  // soloed member does not flip resolution. multiview/iso stay 720P.
+  // Every camera purpose wants the top tier; only the kind gates it.
   EXPECT_TRUE(Policy::wantsFullResolution("participant-video", "program-tiles"));
   EXPECT_TRUE(Policy::wantsFullResolution("participant-video", "preview-tiles"));
-  EXPECT_FALSE(Policy::wantsFullResolution("participant-video", "multiview"));
+  EXPECT_TRUE(Policy::wantsFullResolution("participant-video", "multiview"));
+  EXPECT_TRUE(Policy::wantsFullResolution("participant-video", "iso"));
+  EXPECT_FALSE(Policy::wantsFullResolution("video", "program"));
 }
 
 TEST(ZoomSubscriptionResolutionPolicyRules, FullResolutionIsCappedInPayloadOrder) {
@@ -1144,12 +1151,14 @@ TEST(ZoomSubscriptionResolutionPolicyRules, FullResolutionIsCappedInPayloadOrder
   for (int i = 0; i < Policy::kMaxConcurrentFullResolutionCameras; ++i) {
     EXPECT_EQ(budget.resolve("participant-video", i % 2 == 0 ? "program" : "preview"), Policy::k1080P);
   }
+  // Past the cap EVERY camera purpose is demoted, multiview included (it wants
+  // 1080P too now), and each demotion is counted.
   EXPECT_EQ(budget.resolve("participant-video", "preview"), Policy::k720P);
   EXPECT_EQ(budget.resolve("participant-video", "multiview"), Policy::k720P);
   // A screen share is never demoted and never spends the camera budget.
   EXPECT_EQ(budget.resolve("screen-share", "program"), Policy::k1080P);
   EXPECT_EQ(budget.granted(), Policy::kMaxConcurrentFullResolutionCameras);
-  EXPECT_EQ(budget.demoted(), 1);
+  EXPECT_EQ(budget.demoted(), 2);
 }
 
 TEST(EngineResolutionPolicy, ALowerRequestRebuildsOnlyWhenNoOtherTargetNeedsTheHigherOne) {
@@ -1202,7 +1211,7 @@ TEST(ZoomEngineRuntime, AnActiveSpeakerFlipCausesNoTeardown) {
       const auto* source = findChurnSource(churn, uuid);
       ASSERT_NE(source, nullptr) << uuid;
       EXPECT_EQ(source->getNumber("generation"), 1) << uuid;
-      EXPECT_EQ(source->getNumber("resolution"), 1) << uuid;
+      EXPECT_EQ(source->getNumber("resolution"), 2) << uuid;
       EXPECT_EQ(source->getString("lastReason"), "initial") << uuid;
     }
   }
@@ -1318,18 +1327,19 @@ TEST(ZoomEngineRuntime, AWallMemberCuedToPreviewDoesNotReSubscribe) {
                               elapsed);
       elapsed += 10.0;
     }
-    // initial 1080P (program-tiles); preview and program are the SAME tier so send
-    // nothing — the cue that used to drop the tile now costs no re-subscribe; only
-    // the drop to multiview (720P) sends.
-    ASSERT_TRUE(fake->waitForSentLines(2, std::chrono::milliseconds(5000)));
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // initial 1080P (program-tiles); preview, program AND multiview are all the
+    // SAME tier since 2026-09-20 (owner: every source at the highest available), so
+    // nothing after the first subscribe sends — not the cue, not the Take, and not
+    // leaving the wall for the multiview either. Before 2026-09-20 that last step
+    // was the one remaining flip (720P) and this test asserted it.
+    ASSERT_TRUE(fake->waitForSentLines(1, std::chrono::milliseconds(5000)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
     const auto lines = fake->sentLines();
-    ASSERT_EQ(lines.size(), 2u);  // initial 1080P, then the drop to 720P — no cue churn
-    EXPECT_EQ(sentResolution(lines[0]), 2);  // program-tiles is 1080P now
-    EXPECT_EQ(sentResolution(lines[1]), 1);  // only leaving the wall drops to 720P
+    ASSERT_EQ(lines.size(), 1u);  // the initial 1080P subscribe and nothing else
+    EXPECT_EQ(sentResolution(lines[0]), 2);
     const auto churn = runtime.subscriptionChurnState();
-    EXPECT_EQ(churn.getNumber("lastResolutionChanges"), 1);
-    EXPECT_EQ(churn.getNumber("totalChurn"), 1);  // was 2: the preview cue no longer churns
+    EXPECT_EQ(churn.getNumber("lastResolutionChanges"), 0);
+    EXPECT_EQ(churn.getNumber("totalChurn"), 0);  // nothing moves for an in-show camera
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
