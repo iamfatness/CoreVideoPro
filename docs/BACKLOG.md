@@ -69,6 +69,7 @@ drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
 | [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | HEVC YouTube ingest reports excellent health but remains Preparing stream with offline viewer; blocks #566 receiver acceptance. |
 | [#570](https://github.com/iamfatness/CoreVideoPro/issues/570) | Native-core access violation during HEVC recovery; asynchronous MFT shutdown missing. |
 | [#571](https://github.com/iamfatness/CoreVideoPro/issues/571) | Native shutdown releases WIC overlay factory after its COM worker exits. |
+| [#572](https://github.com/iamfatness/CoreVideoPro/issues/572) | Healthy stream startup can roll back before the supervisor observes its first progress. |
 
 ## Papercuts (not competitive)
 
