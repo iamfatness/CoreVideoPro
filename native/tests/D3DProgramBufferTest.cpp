@@ -11,7 +11,18 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <dxgi.h>
+#include <mmsystem.h>
 #include "modules/D3DProgramBuffer.h"
+
+namespace {
+// JsonRpcServer negotiates this resolution before running the real render
+// cadence. Filtered hardware tests must establish the same environment instead
+// of depending on a previously run server test to leave the timer configured.
+struct ProgramBufferTimerResolution {
+  MMRESULT result = timeBeginPeriod(1);
+  ~ProgramBufferTimerResolution() { if (result == TIMERR_NOERROR) timeEndPeriod(1); }
+};
+}
 
 namespace corevideo::modules {
 struct D3DProgramBufferTestAccess {
@@ -39,6 +50,7 @@ TEST(D3DProgramBuffer, FailedProducerKeepsEmptyOutputReadsPaced) {
 }
 
 TEST(D3DProgramBuffer, StartupPreparationAllocatesWithoutStartingDeliveryClock) {
+  ProgramBufferTimerResolution timer;
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_TRUE(compositor != nullptr);
   compositor->configureProgramBuffer(3);
@@ -64,6 +76,7 @@ TEST(D3DProgramBuffer, StartupPreparationAllocatesWithoutStartingDeliveryClock) 
 }
 
 TEST(D3DProgramBuffer, RetainsTaggedNv12AndDeliversWithoutFurtherRendering) {
+  ProgramBufferTimerResolution timer;
   for (const int depth : {2, 3}) {
     auto compositor = corevideo::modules::createD3D11Compositor();
     ASSERT_TRUE(compositor != nullptr);
@@ -165,6 +178,7 @@ TEST(D3DProgramBuffer, RetainsTaggedNv12AndDeliversWithoutFurtherRendering) {
 #include <d3d11.h>
 #include "compositor/ComPtrLite.h"
 TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
+  ProgramBufferTimerResolution timer;
   using namespace corevideo::modules;
   ComPtrLite<ID3D11Device> device;
   ComPtrLite<ID3D11DeviceContext> context;
@@ -217,5 +231,74 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
     }
     EXPECT_TRUE(changes >= 4) << "phase_ms=" << phaseMs << " pixel_changes=" << changes;
   }
+}
+TEST(D3DProgramBuffer, RetainedGpuOnlyFramesKeepTheirPixelsAfterProducerOverwrite) {
+  ProgramBufferTimerResolution timer;
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> producer, consumer;
+  ComPtrLite<ID3D11DeviceContext> producerContext, consumerContext;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, producer.put(), nullptr, producerContext.put())));
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, consumer.put(), nullptr, consumerContext.put())));
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT; desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ComPtrLite<ID3D11Texture2D> source;
+  ComPtrLite<ID3D11RenderTargetView> target;
+  ASSERT_TRUE(SUCCEEDED(producer->CreateTexture2D(&desc, nullptr, source.put())));
+  ASSERT_TRUE(SUCCEEDED(producer->CreateRenderTargetView(source.get(), nullptr, target.put())));
+  std::vector<int> pixels;
+  int failures = 0;
+  {
+    D3DProgramBuffer buffer(producer.get(), 64, 64, 3, 1, [&](const ProgramFrame& frame) {
+      // No test assertions on a worker: collect actual receiver pixels and
+      // report failures only after the buffer has joined both workers.
+      ComPtrLite<ID3D11Texture2D> exported, staging;
+      ComPtrLite<IDXGIKeyedMutex> key;
+      if (frame.sharedTexture.sharedHandleHex.empty()) { ++failures; return; }
+      const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
+          std::stoull(frame.sharedTexture.sharedHandleHex, nullptr, 0)));
+      if (FAILED(consumer->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(exported.put()))) ||
+          FAILED(exported->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(key.put()))) ||
+          key->AcquireSync(1, 20) != S_OK) { ++failures; return; }
+      auto stagingDesc = desc;
+      stagingDesc.Usage = D3D11_USAGE_STAGING; stagingDesc.BindFlags = 0;
+      stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      if (FAILED(consumer->CreateTexture2D(&stagingDesc, nullptr, staging.put()))) {
+        key->ReleaseSync(0); ++failures; return;
+      }
+      consumerContext->CopyResource(staging.get(), exported.get());
+      consumerContext->Flush(); key->ReleaseSync(0);
+      D3D11_MAPPED_SUBRESOURCE mapped{};
+      if (FAILED(consumerContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) { ++failures; return; }
+      pixels.push_back(static_cast<const uint8_t*>(mapped.pData)[32 * mapped.RowPitch + 32 * 4]);
+      consumerContext->Unmap(staging.get(), 0);
+    });
+    ASSERT_TRUE(buffer.valid());
+    const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+    const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+    for (int i = 0; i < 3; ++i) {
+      const float value = (40.0f + i * 60.0f) / 255.0f;
+      const float color[] = {value, value, value, 1};
+      producerContext->ClearRenderTargetView(target.get(), color);
+      ProgramFrame frame; frame.frameNumber = i + 1; frame.productionSlot = i;
+      frame.productionAnchorNs = anchorNs; frame.width = frame.height = 64;
+      buffer.submit(producerContext.get(), source.get(), std::move(frame), false);
+      producerContext->Flush();
+    }
+    const float overwrite[] = {1, 1, 1, 1};
+    producerContext->ClearRenderTargetView(target.get(), overwrite); producerContext->Flush();
+    for (int i = 0; i < 3; ++i) {
+      ProgramFrame frame;
+      ASSERT_TRUE(buffer.take(frame, 1500));
+      EXPECT_EQ(frame.frameNumber, i + 1);
+      EXPECT_TRUE(frame.programNv12Shared == nullptr);
+    }
+  }
+  EXPECT_EQ(failures, 0);
+  ASSERT_EQ(pixels.size(), 3u);
+  for (int i = 0; i < 3; ++i) EXPECT_TRUE(std::abs(pixels[i] - (40 + i * 60)) <= 1);
 }
 #endif
