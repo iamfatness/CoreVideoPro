@@ -7,7 +7,9 @@
 #if defined(_WIN32)
 #include <windows.h>
 
+#include <cstdlib>  // std::getenv, _putenv_s
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "SharedFrameReader.h"  // native/virtualcam-dll (on the test include path)
@@ -23,6 +25,49 @@ using corevideo::modules::virtualCameraShmSize;
 using corevideo::virtualcam::SharedFrameReader;
 
 namespace {
+
+// THIS SUITE NEVER TOUCHES THE PRODUCTION SLOT. Every test below unlinks the
+// slot file for isolation, and until 2026-09-20 that was the PRODUCTION path:
+// running the suite while CoreVideo Pro was live unlinked the very file the
+// core's publisher was writing into (FILE_SHARE_DELETE lets a delete succeed
+// under an open writer). The core kept publishing into the orphaned file object
+// and reported healthy, while the Frame Server reader got ERROR_FILE_NOT_FOUND
+// on the path and served the standby slate - the operator's virtual camera
+// showed a grey bar in Zoom until they toggled it off and on. So the whole
+// process is redirected ONCE, at static-initialization time (before main, so
+// before any test in this binary can run — the in-house gtest shim has no test
+// environments), to a private temp directory via COREVIDEO_VCAM_SHM_DIR, which
+// virtualCameraShmDir() honors. The DLL's SharedFrameReader and the real
+// publisher both resolve the path through that one helper, so the redirect
+// covers every writer and reader in this binary.
+struct VcamShmTestIsolation {
+  std::string dir;
+  bool armed = false;
+
+  VcamShmTestIsolation() {
+    char tmp[MAX_PATH] = {};
+    const DWORD n = ::GetTempPathA(MAX_PATH, tmp);
+    std::string root = (n > 0 && n < MAX_PATH) ? std::string(tmp, n) : std::string("C:\\Temp\\");
+    if (!root.empty() && root.back() != '\\') root.push_back('\\');
+    dir = root + "cvp-vcam-shm-test-" + std::to_string(::GetCurrentProcessId());
+    ::CreateDirectoryA(dir.c_str(), nullptr);
+    armed = _putenv_s("COREVIDEO_VCAM_SHM_DIR", dir.c_str()) == 0;
+  }
+  ~VcamShmTestIsolation() {
+    ::DeleteFileA((dir + "\\vcam-frame.shm").c_str());
+    ::DeleteFileA((dir + "\\vcam-serve.log").c_str());
+    ::RemoveDirectoryA(dir.c_str());
+    _putenv_s("COREVIDEO_VCAM_SHM_DIR", "");
+  }
+};
+
+const VcamShmTestIsolation kVcamShmTestIsolation;
+
+std::string productionVirtualCameraShmFilePath() {
+  const char* pd = std::getenv("ProgramData");
+  std::string root = (pd != nullptr && *pd != '\0') ? std::string(pd) : std::string("C:\\ProgramData");
+  return root + "\\CoreVideoPro\\vcam-frame.shm";
+}
 
 // Minimal writer mirroring WindowsVirtualCameraPublisher's slot format
 // (file-backed on %ProgramData%, exactly as the real publisher does it).
@@ -80,6 +125,21 @@ struct ShmWriter {
 };
 
 }  // namespace
+
+// REGRESSION (2026-09-20 incident, see VcamShmTestIsolation above): with the
+// isolation environment armed, the slot path every test in this binary resolves
+// - and therefore every DeleteFileA below - must live under the private test
+// directory, never at the production %ProgramData% path the live app publishes
+// to. Fails when virtualCameraShmDir() ignores COREVIDEO_VCAM_SHM_DIR.
+TEST(VirtualCameraShmRoundtrip, TheSuiteNeverResolvesTheProductionSlotPath) {
+  ASSERT_TRUE(kVcamShmTestIsolation.armed);
+  const std::string resolved = virtualCameraShmFilePath();
+  EXPECT_NE(resolved, productionVirtualCameraShmFilePath())
+      << "the test suite resolved the PRODUCTION vcam slot; running it would "
+         "unlink the file a live CoreVideo Pro is publishing into";
+  EXPECT_EQ(resolved, kVcamShmTestIsolation.dir + "\\vcam-frame.shm")
+      << "COREVIDEO_VCAM_SHM_DIR is not honored by virtualCameraShmDir()";
+}
 
 TEST(VirtualCameraShmRoundtrip, ReadsBackTheFrameTheWriterPublished) {
   ShmWriter writer;
