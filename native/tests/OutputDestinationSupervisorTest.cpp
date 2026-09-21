@@ -214,6 +214,43 @@ struct SupervisorFixture {
   }
 };
 
+TEST(OutputDestinationSupervisor, ExplicitRearmRetiresTerminalAsyncObservation) {
+  auto owned = std::make_unique<FakeDestinationChild>("rtmp");
+  auto* child = owned.get();
+  child->rejectConfiguration("codec-not-deliverable", "AV1 refused");
+  auto async = std::make_unique<AsyncOutputSender>(std::move(owned));
+  auto* writer = async.get();
+  SupervisedOutputSender::Options options;
+  options.startThread = false;
+  std::int64_t now = 0;
+  options.clock = [&] { return now; };
+  SupervisedOutputSender sender(std::move(async), options);
+  sender.sync({"rtmp"}, nullptr, 0);
+  ASSERT_TRUE(writer->drainForTest(std::chrono::seconds(2)));
+  sender.pumpForTest();
+  ASSERT_TRUE(sender.report().front().gaveUp);
+  sender.sync({}, nullptr, 20);
+  ASSERT_TRUE(writer->drainForTest(std::chrono::seconds(2)));
+  sender.sync({"rtmp"}, nullptr, 40);
+  sender.pumpForTest();
+  EXPECT_FALSE(sender.report().front().gaveUp);
+  ASSERT_TRUE(writer->drainForTest(std::chrono::seconds(2)));
+  sender.pumpForTest();
+  EXPECT_FALSE(sender.report().front().gaveUp);
+  EXPECT_EQ(child->recovers(), 1);
+  child->produce(10);
+  sender.sync({"rtmp"}, nullptr, 60);
+  ASSERT_TRUE(writer->drainForTest(std::chrono::seconds(2)));
+  sender.pumpForTest();
+  EXPECT_TRUE(sender.report().front().healthy);
+  EXPECT_EQ(child->recovers(), 1);  // repeated desired state is not a reset
+  child->rejectConfiguration("codec-not-deliverable", "new refusal");
+  sender.sync({"rtmp"}, nullptr, 80);
+  ASSERT_TRUE(writer->drainForTest(std::chrono::seconds(2)));
+  sender.pumpForTest();
+  EXPECT_TRUE(sender.report().front().gaveUp);
+}
+
 }  // namespace
 
 // ===========================================================================
