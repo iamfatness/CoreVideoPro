@@ -144,11 +144,11 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     // HEVC is encoded without B-frames. Its decode clock is therefore also
     // its presentation clock. Arrival timestamps compress buffered startup
     // bursts into one instant (240 frames measured as 2.97s instead of 4s).
-    // Declare the raw demuxer's frame rate and stamp each encoded packet. Raw
-    // HEVC DTS can remain unset with a live PCM input, so do not inherit it.
+    // Stamp each encoded packet at the output. Keep input arrival timestamps
+    // for FFmpeg's two-input scheduler: without them a live raw HEVC input can
+    // starve the PCM demuxer even though a file-plus-lavfi test passes.
     // This copies every encoded packet; it neither duplicates nor drops frames.
-    if (hevc) args << " -fflags +genpts -framerate " << fps;
-    else args << " -use_wallclock_as_timestamps 1 -r " << fps;
+    args << " -use_wallclock_as_timestamps 1 -r " << fps;
     args << " -f " << rawDemuxerForBitstreamCodec(config.videoBitstreamCodec)
          << " -probesize 65536 -analyzeduration 1"
          << " -thread_queue_size 512 -i pipe:0";
