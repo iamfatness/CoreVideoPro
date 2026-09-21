@@ -13,6 +13,78 @@
 namespace {
 using namespace corevideo::modules;
 
+class DelayedRecoverySender final : public IOutputSender {
+ public:
+  OutputSenderSession session() const override {
+    OutputSenderSession result;
+    OutputSender failed, sibling;
+    failed.destination = "rtmp"; failed.status = "failed";
+    failed.lastResultCode = "codec-not-deliverable"; failed.lastError = "old refusal";
+    sibling.destination = "srt"; sibling.status = "live"; sibling.framesSent = 20;
+    result.senders = {failed, sibling};
+    return result;
+  }
+  OutputSenderSession sync(const std::vector<std::string>&, const ProgramFrame*, double,
+      const std::vector<OutputDestinationSettings>&, const std::vector<float>*, int, int) override {
+    auto old = session();
+    gate(1, releaseOld);
+    return old;
+  }
+  OutputSenderSession recover(const std::string&, double, const std::string&) override {
+    gate(2, releaseRecovery);
+    auto result = session();
+    result.senders[0].status = "starting";
+    result.senders[0].lastResultCode = "recovered";
+    result.senders[0].lastError.clear();
+    return result;
+  }
+  OutputSenderSession fail(const std::string&, const std::string&, double) override { return session(); }
+  bool waitFor(int value) {
+    std::unique_lock<std::mutex> lock(mutex);
+    return changed.wait_for(lock, std::chrono::seconds(2), [&] { return stage >= value; });
+  }
+  void release(bool recovery) {
+    std::lock_guard<std::mutex> lock(mutex);
+    (recovery ? releaseRecovery : releaseOld) = true;
+    changed.notify_all();
+  }
+ private:
+  void gate(int value, bool& released) {
+    std::unique_lock<std::mutex> lock(mutex);
+    stage = value; changed.notify_all();
+    changed.wait_for(lock, std::chrono::seconds(2), [&] { return released; });
+  }
+  std::mutex mutex;
+  std::condition_variable changed;
+  int stage = 0;
+  bool releaseOld = false, releaseRecovery = false;
+};
+
+TEST(AsyncOutputSender, RecoveryRejectsLateOldFailureAndPreservesSibling) {
+  auto inner = std::make_unique<DelayedRecoverySender>();
+  auto* raw = inner.get();
+  AsyncOutputSender sender(std::move(inner));
+  sender.sync({"rtmp", "srt"}, nullptr, 0);
+  EXPECT_TRUE(raw->waitFor(1));
+  const auto pending = sender.recover("rtmp", 1, "retry");
+  EXPECT_EQ(pending.senders[0].status, "starting");
+  raw->release(false);
+  EXPECT_TRUE(raw->waitFor(2));
+  const auto afterOldCompletion = sender.session();
+  for (const auto& record : afterOldCompletion.senders) {
+    if (record.destination == "rtmp") {
+      EXPECT_EQ(record.status, "starting");
+      EXPECT_EQ(record.lastResultCode, "recovery-pending");
+      EXPECT_TRUE(record.lastError.empty());
+    } else if (record.destination == "srt") {
+      EXPECT_EQ(record.status, "live");
+      EXPECT_EQ(record.framesSent, 20);
+    }
+  }
+  raw->release(true);
+  EXPECT_TRUE(sender.drainForTest(std::chrono::seconds(2)));
+}
+
 class BlockingOutputSender final : public IOutputSender {
  public:
   std::atomic<int> activeSyncs{0};

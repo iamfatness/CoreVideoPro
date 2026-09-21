@@ -924,6 +924,9 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.runtimeDetail = runtimeDetail_;
     sender_.destinationHealth = runtimeAvailable_ ? "starting" : "warning";
     sender_.lastResultCode = "recovered";
+    sender_.lastError.clear();
+    sender_.framesSent = sender_.audioFramesSent = 0;
+    sender_.bytesSent = sender_.audioBytesSent = 0;
     return snapshot();
   }
 

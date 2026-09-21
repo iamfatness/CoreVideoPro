@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 
 namespace corevideo::modules {
 
@@ -72,10 +73,12 @@ class AsyncOutputSender final : public IOutputSender {
     std::atomic<uint64_t> dropped{0};
     std::mutex snapshotMutex;
     OutputSenderSession snapshot;
+    std::unordered_map<std::string, uint64_t> recoveryBarriers;
   };
 
   uint64_t enqueue(Item&& item);
   static void writerLoop(std::shared_ptr<State> state);
+  static void refreshSessionSummary(OutputSenderSession& session);
 
   Options options_;
   std::shared_ptr<State> state_;

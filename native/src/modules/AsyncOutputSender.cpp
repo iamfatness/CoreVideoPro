@@ -56,6 +56,23 @@ uint64_t AsyncOutputSender::enqueue(Item&& item) {
     std::lock_guard<std::mutex> lock(state_->queueMutex);
     seq = state_->nextSeq++;
     item.seq = seq;
+    if (item.kind == Kind::Recover) {
+      // Fence both cached and in-flight observations before the writer wakes.
+      // A new run cannot inherit a terminal failure from the previous run.
+      std::lock_guard<std::mutex> snapshotLock(state_->snapshotMutex);
+      state_->recoveryBarriers[item.destination] = seq;
+      for (auto& sender : state_->snapshot.senders) {
+        if (sender.destination != item.destination) continue;
+        sender.status = sender.destinationHealth = "starting";
+        sender.lastResultCode = "recovery-pending";
+        sender.lastError.clear();
+        sender.warning.clear();
+        sender.supervisor.reset();
+        sender.framesSent = sender.audioFramesSent = 0;
+        sender.bytesSent = sender.audioBytesSent = 0;
+      }
+      refreshSessionSummary(state_->snapshot);
+    }
     if (item.kind == Kind::Sync) {
       for (auto it = state_->queue.begin(); it != state_->queue.end();) {
         if (it->kind == Kind::Sync) {
@@ -196,6 +213,20 @@ OutputSenderSession AsyncOutputSender::session() const {
   return state_->snapshot;
 }
 
+void AsyncOutputSender::refreshSessionSummary(OutputSenderSession& session) {
+  session.activeSenderCount = 0;
+  session.warnings.clear();
+  bool failed = false;
+  for (const auto& sender : session.senders) {
+    if (sender.status == "live" || sender.status == "starting" || sender.status == "warning")
+      ++session.activeSenderCount;
+    failed = failed || sender.status == "failed";
+    if (!sender.warning.empty()) session.warnings.push_back(sender.warning);
+  }
+  session.status = failed ? "failed" : !session.warnings.empty() ? "warning" :
+      session.activeSenderCount > 0 ? "live" : "idle";
+}
+
 void AsyncOutputSender::interrupt(const std::string& destination) {
   if (state_->inner) {
     state_->inner->interrupt(destination);
@@ -253,6 +284,18 @@ void AsyncOutputSender::writerLoop(std::shared_ptr<State> state) {
     }
     if (updatesSnapshot) {
       std::lock_guard<std::mutex> lock(state->snapshotMutex);
+      bool filtered = false;
+      for (auto it = state->recoveryBarriers.begin(); it != state->recoveryBarriers.end();) {
+        if (item.seq >= it->second) { it = state->recoveryBarriers.erase(it); continue; }
+        const auto previous = std::find_if(state->snapshot.senders.begin(), state->snapshot.senders.end(),
+            [&](const auto& sender) { return sender.destination == it->first; });
+        fresh.senders.erase(std::remove_if(fresh.senders.begin(), fresh.senders.end(),
+            [&](const auto& sender) { return sender.destination == it->first; }), fresh.senders.end());
+        if (previous != state->snapshot.senders.end()) fresh.senders.push_back(*previous);
+        filtered = true;
+        ++it;
+      }
+      if (filtered) refreshSessionSummary(fresh);
       state->snapshot = std::move(fresh);
     }
     {
