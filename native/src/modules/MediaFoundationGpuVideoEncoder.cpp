@@ -66,6 +66,12 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
 
   bool start(const GpuVideoEncoderConfig& config, GpuEncodedChunkSink sink) override {
     if (running_.load()) return true;
+    {
+      std::lock_guard<std::mutex> lock(queueMutex_);
+      haveHandle_ = false;
+      latestHandle_.clear();
+      latestFrameNumber_ = 0;
+    }
     config_ = config;
     sink_ = std::move(sink);
     if (config_.width <= 0 || config_.height <= 0 || config_.fps <= 0 || !sink_) {
@@ -109,13 +115,24 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     running_.store(false);
     queueCv_.notify_all();
     if (thread_.joinable()) thread_.join();
+    // Async hardware MFTs retain queued driver callbacks. Release alone is not
+    // shutdown: retire those callbacks while the D3D resources are still alive.
+    // The activation owns a cached reference and must also be shut down.
+    if (activation_) {
+      const HRESULT hr = activation_->ShutdownObject();
+      if (FAILED(hr)) {
+        ::corevideo::core::nativeLogf("[gpu-encode] ShutdownObject failed hr=0x%08lX\n",
+                                    static_cast<unsigned long>(hr));
+      }
+    }
+    eventGen_.Reset();
+    encoder_.Reset();
+    activation_.Reset();
     videoProcessor_.Reset();
     videoProcessorEnum_.Reset();
     videoContext_.Reset();
     videoDevice_.Reset();
     nv12_.Reset();
-    encoder_.Reset();
-    eventGen_.Reset();
     openedTexture_.Reset();
     openedMutex_.Reset();
     openedHandleHex_.clear();
@@ -183,7 +200,8 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       const std::string why = "no-hardware-mft-" + config_.codec;
       return fail(why.c_str());
     }
-    hr = activates[0]->ActivateObject(IID_PPV_ARGS(&encoder_));
+    activation_ = activates[0];
+    hr = activation_->ActivateObject(IID_PPV_ARGS(&encoder_));
     for (UINT32 i = 0; i < count; ++i) activates[i]->Release();
     CoTaskMemFree(activates);
     if (FAILED(hr) || !encoder_) return fail("activate-mft");
@@ -514,9 +532,13 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   void encodeLoop() {
     while (running_.load()) {
       ComPtr<IMFMediaEvent> event;
-      HRESULT hr = eventGen_->GetEvent(0, &event);  // blocks until the MFT signals
+      // Do not block in the MFT event queue during stop. Join this client
+      // worker before ShutdownObject, so it never calls an already shut MFT.
+      HRESULT hr = eventGen_->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event);
       if (FAILED(hr) || !event) {
         if (!running_.load()) break;
+        std::unique_lock<std::mutex> lock(queueMutex_);
+        queueCv_.wait_for(lock, std::chrono::milliseconds(1), [&] { return !running_.load(); });
         continue;
       }
       MediaEventType type = MEUnknown;
@@ -602,6 +624,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   ComPtr<ID3D11DeviceContext> context_;
   ComPtr<IMFDXGIDeviceManager> deviceManager_;
   ComPtr<IMFTransform> encoder_;
+  ComPtr<IMFActivate> activation_;
   ComPtr<IMFMediaEventGenerator> eventGen_;
   ComPtr<ID3D11VideoDevice> videoDevice_;
   ComPtr<ID3D11VideoContext> videoContext_;

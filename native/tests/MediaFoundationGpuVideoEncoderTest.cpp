@@ -239,6 +239,30 @@ TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) { runRoun
 TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureHevcRoundTripMuxesWithoutBFrames) { runRoundTrip("hevc", "hevc", true); }
 TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureAv1RoundTrip) { runRoundTrip("av1", "obu", true); }
 
+TEST(MediaFoundationGpuVideoEncoder, HevcRepeatedStartStopWithoutProducerIsBounded) {
+  MAKE_MEDIA_FOUNDATION_GPU_ENCODER_OR_SKIP();
+  corevideo::modules::GpuVideoEncoderConfig config{320, 180, 60, 6000, 2.0, "cbr", "high"};
+  config.codec = "hevc";
+  for (int cycle = 0; cycle < 20; ++cycle) {
+    if (!encoder->start(config, [](const corevideo::modules::GpuEncodedChunk&) {})) {
+      if (cycle == 0) return;  // hardware unavailable
+      ASSERT_TRUE(false) << "HEVC restart failed at cycle " << cycle;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    const auto before = std::chrono::steady_clock::now();
+    encoder->stop();
+    EXPECT_TRUE(std::chrono::steady_clock::now() - before < std::chrono::seconds(2))
+        << "HEVC stop blocked at cycle " << cycle;
+    encoder->stop();  // idempotent, including the activation shutdown
+  }
+}
+
+TEST(MediaFoundationGpuVideoEncoder, HevcRepeatedActiveEncodeShutdown) {
+  // Exercise driver callbacks and outstanding encoded samples, not only an
+  // idle event queue. Each cycle verifies a decodable HEVC payload before stop.
+  for (int cycle = 0; cycle < 10; ++cycle) runRoundTrip("hevc", "hevc", true);
+}
+
 // #521 slice 1, Task 5: an unhealthy or not-running encoder fails submit(). This
 // is the contract the OutputDestinationSupervisor rides — a device loss sets
 // healthy_=false in the encode loop (deviceRemovedReason()), after which submit()
