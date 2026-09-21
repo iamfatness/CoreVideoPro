@@ -3,9 +3,9 @@
 **This is the only ordered list of work.** Status and detailed evidence live on
 linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 
-Owner-approved order: 2026-09-17, with #535 promoted 2026-09-18.
+Owner-approved order updated 2026-09-21: work #535 and #555; defer #513 validation.
 Reconciled against main `793c452` and issue evidence on 2026-09-21. This cleanup
-preserves the existing ranks; it does not promote unranked findings.
+records that owner ruling; unranked findings remain unranked.
 
 ## How to use this file
 
@@ -22,9 +22,14 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Order | Issue | Remaining work / next evidence |
 |---|---|---|
-| 1 | [#513](https://github.com/iamfatness/CoreVideoPro/issues/513) | **Idle XAML crash — validation/investigation.** Editor teardown (#548) and multiview pooling (#549) shipped. One 151-minute idle soak passed on September 19; the original crash fired after 58 minutes. Run two additional independent churn-then-idle sessions on the current beta with matched symbols, crash dumps and memory evidence. Investigate the CsWinRT/WinAppSDK release path if it recurs. Passing finite soaks alone does not prove root-cause closure. |
-| 2 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video slices 0–4a and media transport slice 3b (#567) are merged and shipped. Owner rulings are resolved. Remaining: Zoom audio/PCM on the bus, adapter lifecycle, and retirement of the old interfaces; capture dropout liveness is tracked by #562. Start with the scoped audio/PCM integration and sync acceptance, not another media-transport rewrite. |
-| 3 | [#555](https://github.com/iamfatness/CoreVideoPro/issues/555) | **First Take half off-screen — retest/watch.** Five fresh-source Takes on the #554 fix were correctly framed with no slate frames. No confirmed persistent reproduction since that fix. Recheck on the current beta through resolution ramps; add geometry diagnostics only if it recurs. Not proven fixed merely because it did not reproduce. |
+| 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video slices 0–4a and media transport slice 3b (#567) are merged and shipped. Owner rulings are resolved. Remaining: Zoom audio/PCM on the bus, adapter lifecycle, and retirement of the old interfaces; capture dropout liveness is tracked by #562. Start with the scoped audio/PCM integration and sync acceptance, not another media-transport rewrite. |
+| 2 | [#555](https://github.com/iamfatness/CoreVideoPro/issues/555) | **First Take half off-screen — retest/watch.** Five fresh-source Takes on the #554 fix were correctly framed with no slate frames. No confirmed persistent reproduction since that fix. Recheck on the current beta through resolution ramps; add geometry diagnostics only if it recurs. Not proven fixed merely because it did not reproduce. |
+
+## Deferred by owner
+
+| Issue | Status |
+|---|---|
+| [#513](https://github.com/iamfatness/CoreVideoPro/issues/513) | Owner reports an overnight run with no recurrence and will validate later. Pooling/teardown fixes and the earlier 151-minute soak remain evidence of reduced exposure, not root-cause closure. Not a blocker for #535/#555. |
 
 ## Next — existing priority order
 
@@ -40,6 +45,8 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 | Issue | Remaining work |
 |---|---|
 | [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Stale retry fencing is merged in #566 and regression-tested. Still needs the installed operator sequence: AV1 refusal → explicit HEVC retry without app restart, with genuine new failures visible and sibling outputs uninterrupted. |
+| [#578](https://github.com/iamfatness/CoreVideoPro/issues/578) | A/V clap validator omits the explicit audio subscription and records silence on baseline and candidate. Repairing this validation dependency within #535; paired-event and 50 ms gates stay unchanged. |
+| [#579](https://github.com/iamfatness/CoreVideoPro/issues/579) | Corrected recorded A/V clap gate exceeds 50 ms on released main and the #535 candidate. Audio bus acceptance remains pending; distinguish input buffering, recording timing and encoder delay before changing production clocks. |
 | [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | Preparing/offline symptom repaired in #566; YouTube LIVE/Excellent and moving public playback verified, including restart and a 30m16s run. Retain for the remaining receiver acceptance and UI distinction between sending and verified playback. Player counted 104 dropped / 108,323 frames; cause not attributed to CVP. Do not describe this as still stuck Preparing, or as lossless end-to-end. |
 | [#575](https://github.com/iamfatness/CoreVideoPro/issues/575) | Scheduled staging smoke cannot execute because required Actions secrets are missing. Existing configuration gap; application CI passed. Supply secrets through the appropriate secure configuration path, then rerun staging checks. |
 
