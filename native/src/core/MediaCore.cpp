@@ -1027,6 +1027,10 @@ rpc::Json MediaCore::sessionState() const {
             {"height", static_cast<int>(s.descriptor.height)},
             {"framesIngested", static_cast<double>(s.counters.framesIngested)},
             {"droppedFrames", static_cast<double>(s.counters.droppedFrames)},
+            {"hasVideo", s.descriptor.hasVideo},
+            {"hasAudio", s.descriptor.hasAudio},
+            {"audioPacketsIngested", static_cast<double>(s.counters.audioPacketsIngested)},
+            {"audioSamplesIngested", static_cast<double>(s.counters.audioSamplesIngested)},
             {"health", sourceHealthName(s.health)},
             {"dropoutPolicy", dropoutPolicy},
             {"displayName", displayName},
@@ -7401,7 +7405,9 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   const auto frameTimestampMs = static_cast<int64_t>(lastProducedFrameNumber_ + 1) * work.frameIntervalMs;
 
   // Polled BEFORE coreMutex was taken (see pollZoomAudioUnlocked).
-  std::vector<modules::AudioFrame> audioFrames = std::move(prePolledZoomAudio);
+  core::stageZoomAudioSources(*sourceBus_, std::move(prePolledZoomAudio));
+  std::vector<modules::AudioFrame> audioFrames = sourceBus_->ingestAudio(
+      work.outputTimestamp100ns, work.outputTimestamp100ns * 100);
   if (modules_.audioCapture) {
     auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
     audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
