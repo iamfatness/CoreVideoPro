@@ -13,10 +13,13 @@
 
 namespace corevideo::core {
 
-// Media owner -> bus, one MediaAssetSource per requested-key frame the owner
-// emitted THIS tick, for exactly one kind ("media" — decoded clips/loops/
-// backgrounds from IMediaFrameSource — or "still" — route stills from
-// StillMediaFrameCache). The owner is the frame holder: it emits a frame for
+// Still owner -> bus, one MediaAssetSource per requested-key frame the owner
+// emitted THIS tick, for exactly one kind. Since #535 slice 3b the only kind
+// that still goes through here is "still" (route stills from
+// StillMediaFrameCache): "media" is no longer synced from frames at all — a
+// media source's bus membership is decided at COMMAND time by
+// core::MediaTransports::apply(), and each MediaAssetSource pulls from its own
+// transport entry. The owner is the frame holder: it emits a frame for
 // every REQUESTED key each tick (a paused clip keeps emitting its held frame);
 // a key absent from the poll is no longer requested or has not decoded, and
 // nothing is drawn for it today. So, like capture (#535 slice 2) and unlike

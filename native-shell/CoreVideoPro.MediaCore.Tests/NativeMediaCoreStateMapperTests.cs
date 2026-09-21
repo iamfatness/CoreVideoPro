@@ -435,6 +435,8 @@ public sealed class NativeMediaCoreStateMapperTests
                 ],
                 Warnings = []
             },
+            // A LEGACY core's mediaPlayback shape (pre-#535-slice-3b vocabulary, with a
+            // playback key): the mapper must pass it through verbatim rather than reinterpret it.
             MediaPlayback = new NativeMediaCoreMediaPlaybackState
             {
                 Status = "playing",
@@ -688,5 +690,51 @@ public sealed class NativeMediaCoreStateMapperTests
 
         Assert.Equal(1499, snapshot.Compositor.DroppedFrameCount);
         Assert.Equal(1499, snapshot.Diagnostics.Compositor.DroppedFrameCount);
+    }
+
+    // #535 slice 3b: mediaSources is the core's per-source media TRANSPORT truth. It must
+    // survive the real wire parser and the mapper, and default to EMPTY (never null) so a
+    // reader can ask "is this clip live" without a null check.
+    [Fact]
+    public void MediaSourcesRoundTripFromTheWire()
+    {
+        using var response = JsonDocument.Parse("""
+            {"ok":true,"snapshot":{"health":null,"profile":null,"sceneId":"media-program",
+            "mediaSources":[
+              {"sourceId":"media:clip-intro","mediaAssetId":"clip-intro","state":"live","loop":false,
+               "onProgram":true,"onPreview":false,"positionMs":1250,"durationMs":9000},
+              {"sourceId":"background:bg-loop","mediaAssetId":"bg-loop","state":"cued","loop":true,
+               "onProgram":false,"onPreview":true,"positionMs":0,"durationMs":-1}]}}
+            """);
+        var wire = CoreProtocolParser.TryParseWireState(response);
+        Assert.NotNull(wire);
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot([], 0, 0, wire);
+
+        Assert.Equal(2, snapshot.MediaSources.Count);
+        var clip = snapshot.MediaSources[0];
+        Assert.Equal("media:clip-intro", clip.SourceId);
+        Assert.Equal("clip-intro", clip.MediaAssetId);
+        Assert.Equal("live", clip.State);
+        Assert.False(clip.Loop);
+        Assert.True(clip.OnProgram);
+        Assert.False(clip.OnPreview);
+        Assert.Equal(1250, clip.PositionMs);
+        Assert.Equal(9000, clip.DurationMs);
+
+        var loop = snapshot.MediaSources[1];
+        Assert.Equal("background:bg-loop", loop.SourceId);
+        Assert.Equal("cued", loop.State);
+        Assert.True(loop.Loop);
+        Assert.True(loop.OnPreview);
+        Assert.Equal(-1, loop.DurationMs);
+    }
+
+    [Fact]
+    public void MediaSourcesDefaultToAnEmptyListWhenTheCoreSendsNone()
+    {
+        using var response = JsonDocument.Parse("""{"ok":true,"snapshot":{"health":null,"profile":null,"sceneId":"s"}}""");
+        var wire = CoreProtocolParser.TryParseWireState(response)!;
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot([], 0, 0, wire);
+        Assert.Empty(snapshot.MediaSources);
     }
 }

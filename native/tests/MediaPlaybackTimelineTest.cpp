@@ -1,4 +1,7 @@
+#include "MediaTestSupport.h"
+#include "modules/Interfaces.h"
 #include "modules/MediaPlaybackTimeline.h"
+#include "modules/MediaVideoPresentation.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <atomic>
@@ -92,7 +95,6 @@ TEST(MediaAudioWindows, PreservesPtsGapAndClearsOldAudioOnRestart) {
   EXPECT_EQ(audio.take(960).back(), 0.f);
 }
 
-#include "modules/OwnedMediaFrameSource.h"
 #include <condition_variable>
 
 namespace {
@@ -107,7 +109,7 @@ class TestDecoder final : public IMediaFrameSource {
   explicit TestDecoder(std::shared_ptr<DecodeGate> gate) : gate_(std::move(gate)) {}
   ~TestDecoder() override { ++gate_->destroyed; }
   std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
-    if (layers.front().mediaPlaybackKey == "blocked") {
+    if (layers.front().mediaAssetId == "blocked") {
       ++gate_->blocked;
       std::unique_lock<std::mutex> lock(gate_->mutex);
       gate_->changed.wait(lock, [&] { return gate_->released; });
@@ -115,7 +117,7 @@ class TestDecoder final : public IMediaFrameSource {
     VideoFrame frame;
     frame.participantId = layers.front().sourceId;
     frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
-    frame.pixelStride = 4; frame.frameId = layers.front().mediaPlaybackKey == "blocked" ? 1 : 2;
+    frame.pixelStride = 4; frame.frameId = layers.front().mediaAssetId == "blocked" ? 1 : 2;
     frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
     return {frame};
   }
@@ -129,185 +131,15 @@ class TestDecoder final : public IMediaFrameSource {
  private:
   std::shared_ptr<DecodeGate> gate_;
 };
-CompositorRenderPlanLayer workerLayer() {
-  CompositorRenderPlanLayer layer;
-  layer.kind = "media-video"; layer.mediaAssetId = "test"; layer.sourceId = "media:test";
-  layer.mediaAssetPath = "test.wav"; layer.mediaAssetPlaying = true;
-  return layer;
-}
-}
-TEST(OwnedMediaFrameSource, SlowRetiredGenerationCannotBlockOrOverwriteNewPlayback) {
-  auto gate = std::make_shared<DecodeGate>();
-  OwnedMediaFrameSource source([gate] { return std::make_unique<TestDecoder>(gate); });
-  struct ReleaseGate {
-    std::shared_ptr<DecodeGate> gate;
-    ~ReleaseGate() { { std::lock_guard<std::mutex> lock(gate->mutex); gate->released = true; } gate->changed.notify_all(); }
-  } release{gate};
-  auto layer = workerLayer(); layer.mediaPlaybackKey = "blocked";
-  EXPECT_TRUE(source.pollMediaFrames({layer}, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()).empty());
-  const auto blockedDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (!gate->blocked.load() && std::chrono::steady_clock::now() < blockedDeadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  EXPECT_TRUE(gate->blocked.load() > 0);
-  layer.mediaPlaybackKey = "replacement";
-  std::vector<VideoFrame> frames;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (frames.empty() && std::chrono::steady_clock::now() < deadline) {
-    frames = source.pollMediaFrames({layer}, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  ASSERT_TRUE(!frames.empty());
-  if (!frames.empty()) EXPECT_EQ(frames.front().frameId, 2);
-  { std::lock_guard<std::mutex> lock(gate->mutex); gate->released = true; } gate->changed.notify_all();
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  frames = source.pollMediaFrames({layer}, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-  ASSERT_TRUE(!frames.empty());
-  if (!frames.empty()) EXPECT_EQ(frames.front().frameId, 2);
-}
-TEST(OwnedMediaFrameSource, AudioPrefetchIsBoundedAndDecoderStopsOnDestruction) {
-  auto gate = std::make_shared<DecodeGate>();
-  {
-    OwnedMediaFrameSource source([gate] { return std::make_unique<TestDecoder>(gate); });
-    auto layer = workerLayer();
-    EXPECT_TRUE(source.pollMediaAudioFrames({layer}, 0).empty());
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (gate->audioReads.load() < 2 && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    EXPECT_EQ(gate->audioReads.load(), 2);
-    const auto frames = source.pollMediaAudioFrames({layer}, 20);
-    ASSERT_TRUE(!frames.empty());
-    if (!frames.empty()) EXPECT_EQ(frames.front().sampleCount, 960);
-  }
-  EXPECT_EQ(gate->destroyed.load(), 1);
 }
 
-TEST(OwnedMediaFrameSource, TheSameRequestFromTwoBusesStartsOneDecoder) {
-  auto gate = std::make_shared<DecodeGate>();
-  std::atomic<int> created{0};
-  OwnedMediaFrameSource source([gate, &created] { ++created; return std::make_unique<TestDecoder>(gate); });
-  auto program = workerLayer();      // sourceId media:test, playing, same path/key
-  auto preview = workerLayer();
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-  (void)source.pollMediaFrames({program, preview}, now);
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (created.load() == 0 && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  EXPECT_EQ(created.load(), 1);
-  const auto warnings = source.warnings();
-  EXPECT_TRUE(std::none_of(warnings.begin(), warnings.end(), [](const std::string& w) {
-    return w.find("two different playback identities") != std::string::npos;
-  }));
-}
-
-// A still routed on both buses arrives playing on Program and paused on
-// Preview (the shell only rolls Program). Stills are served by
-// StillMediaFrameCache, not by a decoder — the owned source must not start
-// two dead decoder threads for them nor call the pair a collision.
-TEST(OwnedMediaFrameSource, AStillRouteOnBothBusesStartsNoDecoderAndIsNotACollision) {
-  auto gate = std::make_shared<DecodeGate>();
-  std::atomic<int> created{0};
-  OwnedMediaFrameSource source([gate, &created] { ++created; return std::make_unique<TestDecoder>(gate); });
-  auto program = workerLayer();
-  program.mediaAssetId = "logo"; program.sourceId = "media:logo";
-  program.mediaAssetKind = "lower-third"; program.mediaAssetPath = "C:\\assets\\logo.PNG";
-  program.mediaAssetPlaying = true;
-  auto preview = program;
-  preview.mediaAssetPlaying = false;
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-  (void)source.pollMediaFrames({program, preview}, now);
-  (void)source.pollMediaAudioFrames({program, preview}, now);
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  EXPECT_EQ(created.load(), 0);
-  const auto warnings = source.warnings();
-  EXPECT_TRUE(std::none_of(warnings.begin(), warnings.end(), [](const std::string& w) {
-    return w.find("two different playback identities") != std::string::npos;
-  }));
-}
-
-TEST(OwnedMediaFrameSource, TheCapWarningNamesTheAssetItRefused) {
-  auto gate = std::make_shared<DecodeGate>();
-  OwnedMediaFrameSource source([gate] { return std::make_unique<TestDecoder>(gate); });
-  std::vector<CompositorRenderPlanLayer> layers;
-  // Zero-padded ids so the request map's lexicographic key order (it is a
-  // std::map<std::string, ...>) matches admission order 0..16 — an
-  // unpadded "asset-16" would sort ahead of "asset-9" and never be the one
-  // refused, which is not the property this test is pinning.
-  for (int i = 0; i < 17; ++i) {
-    auto layer = workerLayer();
-    char id[16]; std::snprintf(id, sizeof(id), "asset-%02d", i);
-    layer.mediaAssetId = id;
-    layer.sourceId = "media:" + layer.mediaAssetId;
-    layers.push_back(layer);
-  }
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-  (void)source.pollMediaFrames(layers, now);
-  // The manager admits asynchronously; poll to a generous deadline instead
-  // of a fixed sleep so a busy box cannot flake this.
-  const auto isNamed = [](const std::vector<std::string>& warnings) {
-    return std::any_of(warnings.begin(), warnings.end(), [](const std::string& w) {
-      return w.find("Media decoder capacity reached") != std::string::npos && w.find("media:asset-16") != std::string::npos;
-    });
-  };
-  bool named = false;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-  while (!(named = isNamed(source.warnings())) && std::chrono::steady_clock::now() < deadline)
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  EXPECT_TRUE(named);
-}
-
-// Playing vs paused is no longer an identity (T1.2: pause is a clock state),
-// so this uses a genuinely different identity for one source id: two
-// different go-live playback keys.
-TEST(OwnedMediaFrameSource, TwoPlaybackIdentitiesForOneSourceIdAreLoud) {
-  auto gate = std::make_shared<DecodeGate>();
-  OwnedMediaFrameSource source([gate] { return std::make_unique<TestDecoder>(gate); });
-  auto first = workerLayer();
-  first.mediaPlaybackKey = "media:test:live:1";
-  auto second = workerLayer();
-  second.mediaPlaybackKey = "media:test:live:2";
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-  (void)source.pollMediaFrames({first, second}, now);
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  const auto warnings = source.warnings();
-  const bool found = std::any_of(warnings.begin(), warnings.end(), [](const std::string& w) {
-    return w.find("two different playback identities") != std::string::npos && w.find("media:test") != std::string::npos;
-  });
-  EXPECT_TRUE(found);
-}
 
 namespace {
-// A decoder that knows nothing about pause: every video poll yields a new,
-// increasing frameId and every audio poll a non-silent window. Anything that
-// holds or silences a paused clip has to be the owned source's doing.
-class CountingDecoder final : public IMediaFrameSource {
- public:
-  std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
-    VideoFrame frame;
-    frame.participantId = layers.front().sourceId;
-    frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
-    frame.pixelStride = 4; frame.frameId = ++frameId_;
-    frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
-    return {frame};
-  }
-  std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
-    AudioFrame frame; frame.participantId = layers.front().sourceId;
-    frame.sampleRate = 48000; frame.channels = 2; frame.sampleCount = 960; frame.pcm.resize(1920, 0.5f);
-    return {frame};
-  }
-  std::vector<std::string> warnings() const override { return {}; }
- private:
-  int64_t frameId_ = 0;
-};
+// The one copy lives in MediaTestSupport.h (#535 slice 3b Task 5) so this
+// file and the MediaCore behaviour tests cannot drift apart.
+using corevideo::testing::CountingDecoder;
 int64_t steadyNowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-// Polls the video path until a frame for the layer arrives; returns its id or -1.
-int64_t pollUntilFrame(OwnedMediaFrameSource& source, const CompositorRenderPlanLayer& layer, int64_t greaterThan = 0) {
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (std::chrono::steady_clock::now() < deadline) {
-    const auto frames = source.pollMediaFrames({layer}, steadyNowMs());
-    if (!frames.empty() && frames.front().frameId > greaterThan) return frames.front().frameId;
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  return -1;
 }
 bool hasNonSilentPcm(const std::vector<AudioFrame>& frames) {
   for (const auto& frame : frames)
@@ -316,110 +148,6 @@ bool hasNonSilentPcm(const std::vector<AudioFrame>& frames) {
 }
 }
 
-TEST(OwnedMediaFrameSource, PauseAndResumeKeepOneDecoder) {
-  std::atomic<int> created{0};
-  OwnedMediaFrameSource source([&created] { ++created; return std::make_unique<CountingDecoder>(); });
-  auto layer = workerLayer();
-  layer.mediaPlaybackKey = "media:test:live:1";
-  ASSERT_TRUE(pollUntilFrame(source, layer) > 0);
-  EXPECT_EQ(created.load(), 1);
-  layer.mediaAssetPlaying = false;
-  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
-  while (std::chrono::steady_clock::now() < pauseEnd) {
-    (void)source.pollMediaFrames({layer}, steadyNowMs());
-    (void)source.pollMediaAudioFrames({layer}, steadyNowMs());
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  EXPECT_EQ(created.load(), 1);
-  layer.mediaAssetPlaying = true;
-  ASSERT_TRUE(pollUntilFrame(source, layer) > 0);
-  // Give a would-be replacement worker the chance to start before counting.
-  const auto settle = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
-  while (std::chrono::steady_clock::now() < settle) {
-    (void)source.pollMediaFrames({layer}, steadyNowMs());
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  EXPECT_EQ(created.load(), 1);
-}
-
-TEST(OwnedMediaFrameSource, PauseHoldsTheOnAirFrame) {
-  OwnedMediaFrameSource source([] { return std::make_unique<CountingDecoder>(); });
-  auto layer = workerLayer();
-  layer.mediaPlaybackKey = "media:test:live:1";
-  int64_t held = pollUntilFrame(source, layer);
-  ASSERT_TRUE(held > 0);
-  held = pollUntilFrame(source, layer, held + 2); // Let it roll a few frames.
-  ASSERT_TRUE(held > 0);
-  layer.mediaAssetPlaying = false;
-  // At least 250 ms AND at least 20 polls (Windows' 15.6 ms default timer can
-  // stretch each 2 ms sleep), within a generous 3 s ceiling.
-  int polls = 0;
-  const auto start = std::chrono::steady_clock::now();
-  const auto minEnd = start + std::chrono::milliseconds(250);
-  const auto ceiling = start + std::chrono::seconds(3);
-  while ((std::chrono::steady_clock::now() < minEnd || polls < 20) && std::chrono::steady_clock::now() < ceiling) {
-    const auto frames = source.pollMediaFrames({layer}, steadyNowMs());
-    ASSERT_EQ(frames.size(), 1u);
-    EXPECT_EQ(frames.front().frameId, held);
-    ++polls;
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  EXPECT_TRUE(polls >= 20);
-  layer.mediaAssetPlaying = true;
-  EXPECT_TRUE(pollUntilFrame(source, layer, held) > held);
-}
-
-TEST(OwnedMediaFrameSource, NoAudioWhilePausedAndAudioResumes) {
-  std::atomic<int> created{0};
-  OwnedMediaFrameSource source([&created] { ++created; return std::make_unique<CountingDecoder>(); });
-  auto layer = workerLayer();
-  layer.mediaPlaybackKey = "media:test:live:1";
-  bool sawAudio = false;
-  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (!sawAudio && std::chrono::steady_clock::now() < deadline) {
-    (void)source.pollMediaFrames({layer}, steadyNowMs());
-    sawAudio = hasNonSilentPcm(source.pollMediaAudioFrames({layer}, steadyNowMs()));
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  ASSERT_TRUE(sawAudio);
-  layer.mediaAssetPlaying = false;
-  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
-  while (std::chrono::steady_clock::now() < pauseEnd) {
-    (void)source.pollMediaFrames({layer}, steadyNowMs());
-    EXPECT_TRUE(source.pollMediaAudioFrames({layer}, steadyNowMs()).empty()); // Not even silence.
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  layer.mediaAssetPlaying = true;
-  sawAudio = false;
-  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (!sawAudio && std::chrono::steady_clock::now() < deadline) {
-    (void)source.pollMediaFrames({layer}, steadyNowMs());
-    sawAudio = hasNonSilentPcm(source.pollMediaAudioFrames({layer}, steadyNowMs()));
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  EXPECT_TRUE(sawAudio);
-  EXPECT_EQ(created.load(), 1);
-}
-
-// Now that playing/paused share one request key, a paused copy of the same
-// source (same key) in the same poll must not pause Program's roll. Program's
-// layers come first in the media poll, and the first request for a key wins.
-TEST(OwnedMediaFrameSource, APausedCopyOfTheSameSourceCannotPauseTheProgramRoll) {
-  OwnedMediaFrameSource source([] { return std::make_unique<CountingDecoder>(); });
-  auto program = workerLayer();
-  program.mediaPlaybackKey = "media:test:live:1";
-  auto copy = program;
-  copy.mediaAssetPlaying = false;
-  int64_t first = -1, latest = -1;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (std::chrono::steady_clock::now() < deadline && (first < 0 || latest <= first + 3)) {
-    const auto frames = source.pollMediaFrames({program, copy}, steadyNowMs());
-    if (!frames.empty()) { if (first < 0) first = frames.front().frameId; latest = frames.front().frameId; }
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  ASSERT_TRUE(first > 0);
-  EXPECT_TRUE(latest > first + 3);
-}
 
 TEST(MediaAudioDemandClock, JitterKeepsAnchorAndInterruptedPollSkipsExpiredWindows) {
   MediaAudioDemandClock clock(100);
@@ -519,153 +247,695 @@ TEST(MediaAudioWindows, ABackwardSeekWithinRecentHistoryReplaysDecodedSamples) {
   EXPECT_EQ(longClip.take(960).front(), 0.f);
 }
 
-// T1.11 step 2: a clip cued in Preview hands its WARM decoder to Program.
-// Two things change on go-live — the `preview:` source-id namespace collapses
-// and MediaGoLiveLedger advances the generation baked into the playback key —
-// so the arriving request used to match no entry, a cold decoder opened, and
-// Program painted the bus-health slate (#535 slice 4a's warming slate; the
-// pink `colorFromParticipantId` tile before that) for the ticks before its
-// first frame (the "placeholder flash", #449). The cue poster sits paused at
-// frame 0, so
-// resuming IT is exactly the "roll from 0" the go-live contract asks for.
-TEST(OwnedMediaFrameSource, ACuedClipHandsItsWarmDecoderToProgram) {
-  std::atomic<int> created{0};
-  OwnedMediaFrameSource source([&created] { ++created; return std::make_unique<CountingDecoder>(); });
-  auto cue = workerLayer();
-  cue.sourceId = "preview:media:test";
-  cue.mediaPlaybackKey = "media:test:live:1";
-  cue.mediaAssetPlaying = false;
-  ASSERT_TRUE(pollUntilFrame(source, cue) > 0) << "the cue poster never warmed";
-  EXPECT_EQ(created.load(), 1);
 
-  // The Take: same asset, same file, live namespace, generation +1, playing.
-  auto live = workerLayer();
-  live.sourceId = "media:test";
-  live.mediaPlaybackKey = "media:test:live:2";
-  live.mediaAssetPlaying = true;
-  ASSERT_TRUE(pollUntilFrame(source, live) > 0);
-  // Give a would-be replacement worker the chance to start before counting.
-  const auto settle = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
-  while (std::chrono::steady_clock::now() < settle) {
-    (void)source.pollMediaFrames({live}, steadyNowMs());
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  EXPECT_EQ(created.load(), 1) << "the take opened a second decoder instead of adopting the warm cue";
-}
+// ---------------------------------------------------------------------------
+// core::MediaTransports (#535 slice 3b). The media decoder owner, driven by a
+// command-time DESIRED SET instead of the render plan's layers. Task 3 swapped
+// MediaCore onto it and deleted OwnedMediaFrameSource outright.
+// ---------------------------------------------------------------------------
+#include "core/MediaTransports.h"
 
-// The refusal that keeps the go-live contract honest. A cue that has already
-// ROLLED is at an arbitrary position; adopting it would put the clip on air
-// mid-roll while the take record still read `cut`. It must cold-start.
-TEST(OwnedMediaFrameSource, ACueThatAlreadyRolledIsNeverHandedOver) {
-  std::atomic<int> created{0};
-  OwnedMediaFrameSource source([&created] { ++created; return std::make_unique<CountingDecoder>(); });
-  auto cue = workerLayer();
-  cue.sourceId = "preview:media:test";
-  cue.mediaPlaybackKey = "media:test:live:1";
-  cue.mediaAssetPlaying = true;  // auditioning in Preview: it has rolled
-  ASSERT_TRUE(pollUntilFrame(source, cue) > 0);
-  EXPECT_EQ(created.load(), 1);
-
-  auto live = workerLayer();
-  live.sourceId = "media:test";
-  live.mediaPlaybackKey = "media:test:live:2";
-  live.mediaAssetPlaying = true;
-  ASSERT_TRUE(pollUntilFrame(source, live) > 0);
-  const auto settle = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
-  while (std::chrono::steady_clock::now() < settle) {
-    (void)source.pollMediaFrames({live}, steadyNowMs());
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  EXPECT_EQ(created.load(), 2) << "a rolled cue was adopted; the clip would go on air mid-roll";
-}
+using corevideo::core::MediaOperatorAction;
+using corevideo::core::MediaTransportDesired;
+using corevideo::core::MediaTransports;
+using corevideo::core::MediaTransportState;
 
 namespace {
-// A prefetching decoder, like the real MF adapter — which is what makes the
-// SCHEDULE visible. While the clip is paused it prepares frames due at a far
-// future instant (the cue's paused epoch); once playing it prepares frames due
-// now, on a clock that RESETS whenever the playback key changes. So if a
-// hand-over keeps the cue's queued frames, `MediaVideoPresentation::select`
-// finds nothing due and Program sits on the poster forever.
-class CueSchedulingDecoder final : public IMediaFrameSource, public IMediaVideoPrefetch {
+MediaTransportDesired testDesired(bool onProgram, bool onPreview, bool loop = false) {
+  MediaTransportDesired d;
+  d.sourceId = loop ? "background:test" : "media:test";
+  d.assetId = "test";
+  d.path = "test.wav";
+  d.kind = loop ? "background" : "video";
+  d.loop = loop;
+  d.onProgram = onProgram;
+  d.onPreview = onPreview;
+  return d;
+}
+// A bounded wait driving the static per-entry selector the bus source will call each tick.
+int64_t pollUntilFrame(MediaTransports::Entry& entry, int64_t greaterThan = 0) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline) {
+    const auto frame = MediaTransports::selectVideo(entry, steadyNowMs() * 10000);
+    if (frame && frame->frameId > greaterThan) return frame->frameId;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return -1;
+}
+// The playback identity no longer carries a playback key, so a retired
+// generation is separated by its PATH (a Reopen) - which is exactly the
+// transition this test now covers.
+class PathGatedDecoder final : public IMediaFrameSource {
  public:
-  std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>&, int64_t) override { return {}; }
+  explicit PathGatedDecoder(std::shared_ptr<DecodeGate> gate) : gate_(std::move(gate)) {}
+  ~PathGatedDecoder() override { ++gate_->destroyed; }
+  std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
+    const bool blocked = layers.front().mediaAssetPath == "blocked.wav";
+    if (blocked) {
+      ++gate_->blocked;
+      std::unique_lock<std::mutex> lock(gate_->mutex);
+      gate_->changed.wait(lock, [&] { return gate_->released; });
+    }
+    VideoFrame frame;
+    frame.participantId = layers.front().sourceId;
+    frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
+    frame.pixelStride = 4; frame.frameId = blocked ? 1 : 2;
+    frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
+    return {frame};
+  }
   std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
+    ++gate_->audioReads;
     AudioFrame frame; frame.participantId = layers.front().sourceId;
     frame.sampleRate = 48000; frame.channels = 2; frame.sampleCount = 960; frame.pcm.resize(1920, 0.5f);
     return {frame};
   }
   std::vector<std::string> warnings() const override { return {}; }
-  std::vector<ScheduledMediaVideo> prefetchMediaVideo(
-      const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {
-    const auto& layer = layers.front();
-    VideoFrame frame;
-    frame.participantId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
-    frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
-    frame.pixelStride = 4; frame.frameId = ++frameId_;
-    frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
-    // Paused: due an hour out, exactly like a frame scheduled against an epoch
-    // that is not running. Playing: due now.
-    const int64_t due = layer.mediaAssetPlaying ? nowMs * 10000 : (nowMs + 3600'000) * 10000;
-    return {ScheduledMediaVideo{frame, due}};
-  }
-  void syncMediaClock(const std::vector<CompositorRenderPlanLayer>&, int64_t) override {}
  private:
-  int64_t frameId_ = 0;
+  std::shared_ptr<DecodeGate> gate_;
 };
 }  // namespace
 
-// The hand-over must leave the clip ROLLING, not frozen on its poster. The
-// adopted decoder's queued frames were scheduled against the cue's paused
-// epoch; the go-live clock is a new epoch, so they can never come due. They are
-// dropped on adoption and the decoder refills from the running clock — the
-// poster stays on air meanwhile, which is what removes the placeholder.
-TEST(OwnedMediaFrameSource, AnAdoptedCueRollsInsteadOfFreezingOnItsPoster) {
-  OwnedMediaFrameSource source([] { return std::make_unique<CueSchedulingDecoder>(); });
-  auto cue = workerLayer();
-  cue.sourceId = "preview:media:test";
-  cue.mediaPlaybackKey = "media:test:live:1";
-  cue.mediaAssetPlaying = false;
-  const int64_t poster = pollUntilFrame(source, cue);
-  ASSERT_TRUE(poster > 0) << "the cue poster never warmed";
-  // Let the cue queue up more far-future frames behind the poster.
-  const auto warm = std::chrono::steady_clock::now() + std::chrono::milliseconds(60);
-  while (std::chrono::steady_clock::now() < warm) {
-    (void)source.pollMediaFrames({cue}, steadyNowMs());
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+TEST(MediaTransports, ACuedClipEnteringProgramRollsTheSameDecoderWithAudio) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto ch = t.apply({testDesired(false, true)}, 0);
+  ASSERT_EQ(ch.size(), 1u);
+  if (ch.empty()) return;
+  auto e = ch.front().entry;
+  const auto poster = pollUntilFrame(*e);
+  ASSERT_GT(poster, 0);
+  // Cued: holds the poster (frameId does not advance) and emits no audio.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const auto held = MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+  ASSERT_TRUE(held.has_value());
+  if (held) EXPECT_EQ(held->frameId, poster);
+  EXPECT_TRUE(t.popAudio(steadyNowMs()).empty());
+  EXPECT_TRUE(t.apply({testDesired(true, true)}, 0).empty());  // membership unchanged: no Change rows
+  ASSERT_GT(pollUntilFrame(*e, poster), 0);                    // rolls
+  EXPECT_EQ(created.load(), 1);                                // the SAME decoder
+  bool audio = false;
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!audio && std::chrono::steady_clock::now() < until) {
+    audio = hasNonSilentPcm(t.popAudio(steadyNowMs()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-
-  auto live = workerLayer();
-  live.sourceId = "media:test";
-  live.mediaPlaybackKey = "media:test:live:2";
-  live.mediaAssetPlaying = true;
-  EXPECT_TRUE(pollUntilFrame(source, live, poster) > poster)
-      << "the adopted decoder never advanced past its poster";
+  EXPECT_TRUE(audio);
 }
 
-// Go-live is "roll from 0, AUDIO ON". The cue was paused, so its entry carried
-// wantsAudio=false and an audio clock anchored to a run that never happened;
-// the hand-over has to arm the audio side as a fresh start, or the adoption
-// buys picture continuity by silencing the clip.
-TEST(OwnedMediaFrameSource, AnAdoptedCueTurnsItsAudioOn) {
-  OwnedMediaFrameSource source([] { return std::make_unique<CountingDecoder>(); });
-  auto cue = workerLayer();
-  cue.sourceId = "preview:media:test";
-  cue.mediaPlaybackKey = "media:test:live:1";
-  cue.mediaAssetPlaying = false;
-  ASSERT_TRUE(pollUntilFrame(source, cue) > 0);
-  EXPECT_FALSE(hasNonSilentPcm(source.pollMediaAudioFrames({cue}, steadyNowMs())))
-      << "a paused cue emitted audio";
+TEST(MediaTransports, LeavingProgramWhileCuedRestartsBehindTheHeldFrame) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(true, true)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  auto id = pollUntilFrame(*e);
+  id = pollUntilFrame(*e, id + 3);
+  ASSERT_GT(id, 0);
+  EXPECT_TRUE(t.apply({testDesired(false, true)}, 0).empty());
+  // The very next select still returns a frame (the held one), never nothing.
+  ASSERT_TRUE(MediaTransports::selectVideo(*e, steadyNowMs() * 10000).has_value());
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  bool restarted = false;
+  while (!restarted && std::chrono::steady_clock::now() < until) {
+    restarted = created.load() == 2;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(restarted);
+  const auto status = t.snapshot();
+  ASSERT_EQ(status.size(), 1u);
+  if (!status.empty()) EXPECT_TRUE(status.front().state == MediaTransportState::Cued);
+}
 
-  auto live = workerLayer();
-  live.sourceId = "media:test";
-  live.mediaPlaybackKey = "media:test:live:2";
-  live.mediaAssetPlaying = true;
-  bool heard = false;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (!heard && std::chrono::steady_clock::now() < deadline) {
-    (void)source.pollMediaFrames({live}, steadyNowMs());
-    heard = hasNonSilentPcm(source.pollMediaAudioFrames({live}, steadyNowMs()));
+TEST(MediaTransports, ALoopNeverPausesAndNeverRestartsAcrossATake) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(false, true, true)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  auto id = pollUntilFrame(*e);
+  ASSERT_GT(id, 0);
+  std::string reason;
+  EXPECT_FALSE(t.operatorAction("test", MediaOperatorAction::Pause, reason));
+  EXPECT_TRUE(!reason.empty());
+  EXPECT_TRUE(t.apply({testDesired(true, false, true)}, 0).empty());
+  ASSERT_GT(pollUntilFrame(*e, id), 0);
+  EXPECT_EQ(created.load(), 1);
+}
+
+TEST(MediaTransports, AnIdenticalApplyIsANoOp) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  auto id = pollUntilFrame(*e);
+  ASSERT_GT(id, 0);
+  for (int i = 0; i < 5; ++i) EXPECT_TRUE(t.apply({testDesired(true, false)}, 0).empty());
+  ASSERT_GT(pollUntilFrame(*e, id), 0);
+  EXPECT_EQ(created.load(), 1);
+}
+
+// Ported from the retired OwnedMediaFrameSource.SlowRetiredGenerationCannotBlockOrOverwrite
+// NewPlayback. The replacement is now a Reopen (the path changed), which is a
+// remove Change followed by an add Change: two SEPARATE entries, so the blocked
+// generation cannot reach the new presentation even in principle.
+TEST(MediaTransports, ASlowRetiredGenerationCannotBlockOrOverwriteNewPlayback) {
+  auto gate = std::make_shared<DecodeGate>();
+  MediaTransports transports([gate] { return std::make_unique<PathGatedDecoder>(gate); });
+  struct ReleaseGate {
+    std::shared_ptr<DecodeGate> gate;
+    ~ReleaseGate() { { std::lock_guard<std::mutex> lock(gate->mutex); gate->released = true; } gate->changed.notify_all(); }
+  } release{gate};
+  auto blocked = testDesired(true, false);
+  blocked.path = "blocked.wav";
+  ASSERT_EQ(transports.apply({blocked}, 0).size(), 1u);
+  const auto blockedDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!gate->blocked.load() && std::chrono::steady_clock::now() < blockedDeadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_TRUE(gate->blocked.load() > 0);
+  const auto changes = transports.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(changes.size(), 2u);
+  if (changes.size() != 2) return;
+  EXPECT_FALSE(changes.front().added);
+  EXPECT_TRUE(changes.back().added);
+  auto fresh = changes.back().entry;
+  ASSERT_TRUE(static_cast<bool>(fresh));
+  if (!fresh) return;
+  EXPECT_EQ(pollUntilFrame(*fresh), 2);
+  { std::lock_guard<std::mutex> lock(gate->mutex); gate->released = true; }
+  gate->changed.notify_all();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  const auto after = MediaTransports::selectVideo(*fresh, steadyNowMs() * 10000);
+  ASSERT_TRUE(after.has_value());
+  if (after) EXPECT_EQ(after->frameId, 2);
+}
+
+TEST(MediaTransports, AudioPrefetchIsBoundedAndDecoderStopsOnDestruction) {
+  auto gate = std::make_shared<DecodeGate>();
+  {
+    MediaTransports transports([gate] { return std::make_unique<TestDecoder>(gate); });
+    const auto changes = transports.apply({testDesired(true, false)}, 0);
+    ASSERT_EQ(changes.size(), 1u);
+    if (changes.empty()) return;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (gate->audioReads.load() < 2 && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(gate->audioReads.load(), 2);
+    std::vector<AudioFrame> frames;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (frames.empty() && std::chrono::steady_clock::now() < until) {
+      frames = transports.popAudio(steadyNowMs());
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(!frames.empty());
+    if (!frames.empty()) EXPECT_EQ(frames.front().sampleCount, 960);
+  }
+  EXPECT_EQ(gate->destroyed.load(), 1);
+}
+
+TEST(MediaTransports, TheCapWarningNamesTheAssetItRefused) {
+  auto gate = std::make_shared<DecodeGate>();
+  MediaTransports transports([gate] { return std::make_unique<TestDecoder>(gate); });
+  std::vector<MediaTransportDesired> desired;
+  // Zero-padded ids so the desired map's lexicographic order matches admission
+  // order 0..16 - an unpadded "asset-16" would sort ahead of "asset-9".
+  for (int i = 0; i < 17; ++i) {
+    auto row = testDesired(true, false);
+    char id[16]; std::snprintf(id, sizeof(id), "asset-%02d", i);
+    row.assetId = id;
+    row.sourceId = "media:" + row.assetId;
+    desired.push_back(row);
+  }
+  (void)transports.apply(desired, 0);
+  const auto warnings = transports.warnings();
+  const bool named = std::any_of(warnings.begin(), warnings.end(), [](const std::string& w) {
+    return w.find("Media decoder capacity reached") != std::string::npos &&
+           w.find("media:asset-16") != std::string::npos;
+  });
+  EXPECT_TRUE(named);
+}
+
+TEST(MediaTransports, PauseAndResumeKeepOneDecoder) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  ASSERT_GT(pollUntilFrame(*e), 0);
+  EXPECT_EQ(created.load(), 1);
+  std::string reason;
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Pause, reason));
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    (void)t.popAudio(steadyNowMs());
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-  EXPECT_TRUE(heard) << "the adopted clip went to Program silent";
+  EXPECT_EQ(created.load(), 1);
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Play, reason));
+  ASSERT_GT(pollUntilFrame(*e), 0);
+  const auto settle = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+  while (std::chrono::steady_clock::now() < settle) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ(created.load(), 1);
+}
+
+TEST(MediaTransports, PauseHoldsTheOnAirFrame) {
+  MediaTransports t([] { return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  int64_t held = pollUntilFrame(*e);
+  ASSERT_GT(held, 0);
+  held = pollUntilFrame(*e, held + 2);  // Let it roll a few frames.
+  ASSERT_GT(held, 0);
+  std::string reason;
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Pause, reason));
+  int polls = 0;
+  const auto start = std::chrono::steady_clock::now();
+  const auto minEnd = start + std::chrono::milliseconds(250);
+  const auto ceiling = start + std::chrono::seconds(3);
+  while ((std::chrono::steady_clock::now() < minEnd || polls < 20) && std::chrono::steady_clock::now() < ceiling) {
+    const auto frame = MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    ASSERT_TRUE(frame.has_value());
+    if (frame) EXPECT_EQ(frame->frameId, held);
+    ++polls;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_TRUE(polls >= 20);
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Play, reason));
+  EXPECT_TRUE(pollUntilFrame(*e, held) > held);
+}
+
+TEST(MediaTransports, NoAudioWhilePausedAndAudioResumes) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  bool sawAudio = false;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!sawAudio && std::chrono::steady_clock::now() < deadline) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    sawAudio = hasNonSilentPcm(t.popAudio(steadyNowMs()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(sawAudio);
+  std::string reason;
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Pause, reason));
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    EXPECT_TRUE(t.popAudio(steadyNowMs()).empty());  // Not even silence.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Play, reason));
+  sawAudio = false;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!sawAudio && std::chrono::steady_clock::now() < deadline) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    sawAudio = hasNonSilentPcm(t.popAudio(steadyNowMs()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_TRUE(sawAudio);
+  EXPECT_EQ(created.load(), 1);
+}
+
+// --- Review round 1 coverage -----------------------------------------------
+namespace {
+// A prefetch decoder that can be told to stop producing (end of media) or to
+// stall for a few worker iterations, and that reports a position/duration the
+// way MediaFoundationMediaFrameSource does.
+struct ProbeState {
+  std::atomic<bool> producing{true};
+  // Real end of stream, as opposed to merely not producing (an open that has
+  // not finished, a stall, a resume attempt).
+  std::atomic<bool> ended{false};
+  std::atomic<int> stallTicks{0};
+  std::atomic<int64_t> positionMs{4200}, durationMs{9000};
+  std::atomic<int64_t> frameId{0};
+};
+class ProbePrefetchDecoder final : public IMediaFrameSource, public IMediaVideoPrefetch {
+ public:
+  explicit ProbePrefetchDecoder(std::shared_ptr<ProbeState> state) : state_(std::move(state)) {}
+  std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
+    if (!state_->producing.load()) return {};
+    if (state_->stallTicks.load() > 0) { state_->stallTicks.fetch_sub(1); return {}; }
+    VideoFrame frame;
+    frame.participantId = layers.front().sourceId;
+    frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
+    frame.pixelStride = 4; frame.frameId = state_->frameId.fetch_add(1) + 1;
+    frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
+    return {frame};
+  }
+  std::vector<ScheduledMediaVideo> prefetchMediaVideo(
+      const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {
+    std::vector<ScheduledMediaVideo> result;
+    for (auto& frame : pollMediaFrames(layers, nowMs)) result.push_back({std::move(frame), nowMs * 10000});
+    return result;
+  }
+  std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
+    if (!state_->producing.load()) return {};
+    AudioFrame frame; frame.participantId = layers.front().sourceId;
+    frame.sampleRate = 48000; frame.channels = 2; frame.sampleCount = 960; frame.pcm.resize(1920, 0.5f);
+    return {frame};
+  }
+  std::vector<std::string> warnings() const override { return {}; }
+  int64_t playbackPositionMs() const override { return state_->positionMs.load(); }
+  int64_t mediaDurationMs() const override { return state_->durationMs.load(); }
+  bool mediaEnded() const override { return state_->ended.load(); }
+ private:
+  std::shared_ptr<ProbeState> state_;
+};
+std::optional<MediaTransports::Status> statusOf(const MediaTransports& transports, const std::string& sourceId) {
+  for (const auto& row : transports.snapshot()) if (row.sourceId == sourceId) return row;
+  return std::nullopt;
+}
+}  // namespace
+
+// Finding 1. The ended window measures "the decoder has stopped producing".
+// A clip deliberately not being read produced nothing for a different reason,
+// so a pause longer than kEndedAfterNoNewFrameMs must not end it: the first
+// resumed iteration (before any frame can arrive) used to trip the rule, which
+// froze and silenced the clip ON AIR and made the next Play restart from 0.
+TEST(MediaTransports, APauseLongerThanTheEndedWindowResumesRollingAndIsNeverEnded) {
+  auto probe = std::make_shared<ProbeState>();
+  MediaTransports t([probe] { return std::make_unique<ProbePrefetchDecoder>(probe); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  const auto rolled = pollUntilFrame(*e);
+  ASSERT_GT(rolled, 0);
+  std::string reason;
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Pause, reason));
+  // Held for comfortably longer than the 500 ms ended window.
+  const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
+  while (std::chrono::steady_clock::now() < pauseEnd) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  // The first resumed iterations yield nothing, which is exactly the window in
+  // which a stale anchor declared the clip over.
+  probe->stallTicks.store(3);
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Play, reason));
+  EXPECT_TRUE(pollUntilFrame(*e, rolled) > rolled);
+  const auto status = statusOf(t, "media:test");
+  ASSERT_TRUE(status.has_value());
+  if (status) EXPECT_TRUE(status->state == MediaTransportState::Live);
+}
+
+// Finding 2. A cap refusal is not a verdict for the life of the process: the
+// source must stay NAMED while the cap still bites (warnings_ is rebuilt every
+// apply) and must open the moment a decoder frees.
+TEST(MediaTransports, ARefusedSourceStaysNamedAndOpensOnceADecoderFrees) {
+  auto gate = std::make_shared<DecodeGate>();
+  MediaTransports transports([gate] { return std::make_unique<TestDecoder>(gate); });
+  std::vector<MediaTransportDesired> full;
+  for (int i = 0; i < 17; ++i) {
+    auto row = testDesired(true, false);
+    char id[16]; std::snprintf(id, sizeof(id), "asset-%02d", i);
+    row.assetId = id;
+    row.sourceId = "media:" + row.assetId;
+    full.push_back(row);
+  }
+  const auto names17th = [](const std::vector<std::string>& warnings) {
+    return std::any_of(warnings.begin(), warnings.end(), [](const std::string& w) {
+      return w.find("Media decoder capacity reached") != std::string::npos &&
+             w.find("media:asset-16") != std::string::npos;
+    });
+  };
+  (void)transports.apply(full, 0);
+  EXPECT_TRUE(names17th(transports.warnings()));
+  // The SAME desired set again: the refusal is still true, so it is still said.
+  (void)transports.apply(full, 0);
+  EXPECT_TRUE(names17th(transports.warnings()));
+  // Release one. The freed slot is not available until its worker has been
+  // reaped, so re-assert the set until the refused source is admitted.
+  // Release carries a short grace now, measured against the CALLER's nowNs, so
+  // the re-assertions advance that clock past it (nothing here sleeps for real
+  // time: the grace is decided from the number apply() is handed).
+  std::vector<MediaTransportDesired> without(full.begin() + 1, full.end());
+  bool opened = false;
+  std::int64_t nowNs = 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!opened && std::chrono::steady_clock::now() < deadline) {
+    nowNs += 1'000'000'000;
+    for (const auto& change : transports.apply(without, nowNs))
+      if (change.added && change.sourceId == "media:asset-16") opened = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(opened);
+  EXPECT_FALSE(names17th(transports.warnings()));
+}
+
+// Finding 3. One asset can be two sources. The operator transport names the
+// ROUTE; `background:` sorts first in the map and must not answer for it.
+TEST(MediaTransports, AnOperatorPauseResolvesTheRouteNotTheBackgroundLoop) {
+  MediaTransports t([] { return std::make_unique<CountingDecoder>(); });
+  auto route = testDesired(true, false);             // media:test, not a loop
+  auto background = testDesired(true, false, true);  // background:test, same asset, a loop
+  const auto opened = t.apply({route, background}, 0);
+  ASSERT_EQ(opened.size(), 2u);
+  if (opened.size() != 2) return;
+  std::string reason;
+  EXPECT_TRUE(t.operatorAction("test", MediaOperatorAction::Pause, reason));
+  const auto clip = statusOf(t, "media:test");
+  const auto loop = statusOf(t, "background:test");
+  ASSERT_TRUE(clip.has_value());
+  ASSERT_TRUE(loop.has_value());
+  if (clip) EXPECT_TRUE(clip->state == MediaTransportState::Paused);
+  if (loop) EXPECT_TRUE(loop->state == MediaTransportState::Live);  // a loop never pauses
+}
+
+// Finding 4a. Ended is BOOKKEEPING: the worker keeps holding the last picture
+// and emits no audio; only the published state and the operator Play rule
+// change.
+TEST(MediaTransports, ANonLoopClipThatStopsProducingEndsAndKeepsItsLastFrame) {
+  auto probe = std::make_shared<ProbeState>();
+  MediaTransports t([probe] { return std::make_unique<ProbePrefetchDecoder>(probe); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  ASSERT_GT(pollUntilFrame(*e), 0);
+  // THE DECODER SAYS IT ENDED. That is the evidence now; merely not producing
+  // is a stall, and is judged by the (much longer) backstop below.
+  probe->producing.store(false);
+  probe->ended.store(true);
+  bool ended = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+  while (!ended && std::chrono::steady_clock::now() < deadline) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    const auto status = statusOf(t, "media:test");
+    ended = status && status->state == MediaTransportState::Ended;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(ended);
+  const auto held = MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+  EXPECT_TRUE(held.has_value());  // still serving its last picture, never nothing
+  EXPECT_TRUE(t.popAudio(steadyNowMs()).empty());
+}
+
+// Finding 4b/4c. snapshot() republishes what the decoder measured, and -1 (not
+// 0) when it cannot say.
+TEST(MediaTransports, SnapshotPublishesTheDecodersPositionAndDuration) {
+  auto probe = std::make_shared<ProbeState>();
+  MediaTransports t([probe] { return std::make_unique<ProbePrefetchDecoder>(probe); });
+  ASSERT_EQ(t.apply({testDesired(true, false)}, 0).size(), 1u);
+  bool published = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!published && std::chrono::steady_clock::now() < deadline) {
+    const auto status = statusOf(t, "media:test");
+    published = status && status->durationMs == 9000 && status->positionMs == 4200;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_TRUE(published);
+}
+
+TEST(MediaTransports, ADecoderThatCannotReportItsPositionPublishesMinusOne) {
+  MediaTransports t([] { return std::make_unique<CountingDecoder>(); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  ASSERT_GT(pollUntilFrame(*opened.front().entry), 0);  // the worker has run
+  const auto status = statusOf(t, "media:test");
+  ASSERT_TRUE(status.has_value());
+  if (status) {
+    EXPECT_EQ(status->positionMs, -1);
+    EXPECT_EQ(status->durationMs, -1);
+  }
+}
+
+// Final review, CRITICAL 1. The frame-arrival window is now only a BACKSTOP
+// for a decoder that cannot report EOS, and it is deliberately far longer than
+// the FFmpeg resume ladder. A decoder that merely stops producing must NOT be
+// called finished at the old 500 ms. This test is slow on purpose: the whole
+// point of the constant is that it is long.
+TEST(MediaTransports, ADecoderThatCannotSayItEndedIsOnlyJudgedByTheLongBackstop) {
+  auto probe = std::make_shared<ProbeState>();
+  MediaTransports t([probe] { return std::make_unique<ProbePrefetchDecoder>(probe); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  ASSERT_GT(pollUntilFrame(*e), 0);
+  probe->producing.store(false);  // stopped, but the decoder never says "ended"
+
+  const auto stateNow = [&] {
+    const auto status = statusOf(t, "media:test");
+    return status ? status->state : MediaTransportState::Cued;
+  };
+  // Well past the OLD 500 ms window and past the FFmpeg ladder's first rungs:
+  // still rolling, because nothing has said the media ran out.
+  const auto notYet = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+  while (std::chrono::steady_clock::now() < notYet) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    ASSERT_TRUE(stateNow() == MediaTransportState::Live)
+        << "a stalled clip was called finished inside the resume ladder's window";
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  // The backstop still exists, so it eventually does end.
+  bool ended = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!ended && std::chrono::steady_clock::now() < deadline) {
+    (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+    ended = stateNow() == MediaTransportState::Ended;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(ended) << "the backstop is gone: a dead decoder never reads ended at all";
+}
+
+// Final review, CRITICAL 1(b). Ended is RECOVERABLE. A decoder that reported
+// EOS and then hands back a picture (an FFmpeg resume off its ladder) brings
+// the transport back to Live on its own, with no operator gesture - the only
+// one available is Play, which is OpenLive and restarts the clip from 0.
+TEST(MediaTransports, AnEndedClipComesBackToLiveWhenItsDecoderProducesAgain) {
+  auto probe = std::make_shared<ProbeState>();
+  MediaTransports t([probe] { return std::make_unique<ProbePrefetchDecoder>(probe); });
+  auto opened = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+  auto e = opened.front().entry;
+  const auto rolledTo = pollUntilFrame(*e);
+  ASSERT_GT(rolledTo, 0);
+  probe->producing.store(false);
+  probe->ended.store(true);
+
+  const auto waitForState = [&](MediaTransportState want, int timeoutMs) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+      (void)MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+      const auto status = statusOf(t, "media:test");
+      if (status && status->state == want) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return false;
+  };
+  ASSERT_TRUE(waitForState(MediaTransportState::Ended, 4000));
+  probe->ended.store(false);
+  probe->producing.store(true);
+  EXPECT_TRUE(waitForState(MediaTransportState::Live, 4000))
+      << "Ended is still terminal: nothing but an operator Play gets out of it";
+  // The SAME decoder, carrying on from where it was - never a restart from 0.
+  const auto after = MediaTransports::selectVideo(*e, steadyNowMs() * 10000);
+  ASSERT_TRUE(after.has_value());
+  if (after) EXPECT_GT(after->frameId, rolledTo);
+}
+
+// Final review, IMPORTANT 3. A source absent from both desired sets is kept
+// for a short grace so ONE interleaved preview-only spine tick cannot destroy
+// a warm decoder - and is released for real once the grace is up.
+TEST(MediaTransports, AReleasedSourceSurvivesOneTickAndIsRetiredAfterTheGrace) {
+  MediaTransports t([] { return std::make_unique<CountingDecoder>(); });
+  const auto opened = t.apply({testDesired(false, true)}, 0);  // cued in Preview only
+  ASSERT_EQ(opened.size(), 1u);
+  if (opened.empty()) return;
+
+  // The interleaved tick: on neither bus. No membership change, no retirement.
+  EXPECT_TRUE(t.apply({}, 1'000'000).empty()) << "one absent tick retired the source";
+  EXPECT_TRUE(statusOf(t, "media:test").has_value());
+
+  // The Take lands behind it: the SAME entry resumes, no second decoder.
+  const auto taken = t.apply({testDesired(true, false)}, 2'000'000);
+  EXPECT_TRUE(taken.empty()) << "the re-claim churned bus membership";
+  const auto live = statusOf(t, "media:test");
+  ASSERT_TRUE(live.has_value());
+  if (live) EXPECT_TRUE(live->state == MediaTransportState::Live);
+
+  // Genuinely gone: absent past the grace, and it is retired.
+  EXPECT_TRUE(t.apply({}, 2'100'000).empty());
+  const auto retired = t.apply({}, 5'000'000'000);
+  ASSERT_EQ(retired.size(), 1u);
+  if (retired.size() == 1) EXPECT_FALSE(retired.front().added);
+  EXPECT_FALSE(statusOf(t, "media:test").has_value());
+}
+
+// ...and the render tick's sweep retires it even when no further command ever
+// arrives, which is the only path that runs with Engine off.
+TEST(MediaTransports, TheRenderSweepRetiresASourceNoCommandEverMentionsAgain) {
+  MediaTransports t([] { return std::make_unique<CountingDecoder>(); });
+  ASSERT_EQ(t.apply({testDesired(true, false)}, 0).size(), 1u);
+  EXPECT_TRUE(t.apply({}, 0).empty());  // grace opens
+  EXPECT_TRUE(t.collectExpiredReleases(1'000'000).empty()) << "the sweep retired it inside the grace";
+  const auto swept = t.collectExpiredReleases(5'000'000'000);
+  ASSERT_EQ(swept.size(), 1u);
+  if (swept.size() == 1) {
+    EXPECT_FALSE(swept.front().added);
+    EXPECT_EQ(swept.front().sourceId, "media:test");
+  }
+  EXPECT_FALSE(statusOf(t, "media:test").has_value());
+}
+
+// Fix-wave re-review (Important). The release grace deliberately KEEPS
+// `Entry::desired` untouched - the re-claim transition is computed against
+// exactly that row - but `snapshot()` publishes those same flags, so a clip
+// that left Program kept reading `onProgram: true, state: "live"` for the whole
+// 750 ms. The shell's MediaBinPlaybackProjection gates its selection rewrite on
+// `OnProgram: true` and runs on every 250 ms poll, so one to three polls landed
+// inside the grace and re-set SelectedMediaAssetPlaying after the Take had
+// cleared it - stickily, because once the row goes the projection stops
+// rewriting at all. Read-side only: the transition table must not change.
+TEST(MediaTransports, ASourceInsideItsReleaseGraceIsPublishedOnNeitherBus) {
+  std::atomic<int> created{0};
+  MediaTransports t([&created] { ++created; return std::make_unique<CountingDecoder>(); });
+  const auto added = t.apply({testDesired(true, false)}, 0);
+  ASSERT_EQ(added.size(), 1u);
+  ASSERT_GT(pollUntilFrame(*added.front().entry), 0);
+  ASSERT_EQ(created.load(), 1);
+  {
+    const auto live = statusOf(t, "media:test");
+    ASSERT_TRUE(live.has_value());
+    if (live) EXPECT_TRUE(live->onProgram);
+  }
+
+  // The desired set drops it: the grace opens, nothing is retired.
+  EXPECT_TRUE(t.apply({}, 1'000'000).empty());
+  const auto graced = statusOf(t, "media:test");
+  ASSERT_TRUE(graced.has_value()) << "the grace retired it instead of keeping it warm";
+  if (graced) {
+    EXPECT_FALSE(graced->onProgram) << "an off-air clip still published onProgram inside its grace";
+    EXPECT_FALSE(graced->onPreview);
+  }
+
+  // ...and the entry itself is untouched, so the re-claim is still an ordinary
+  // transition and the decoder is still the warm one.
+  const auto reclaimed = t.apply({testDesired(true, false)}, 1'100'000);
+  EXPECT_TRUE(reclaimed.empty()) << "the re-claim churned bus membership";
+  const auto back = statusOf(t, "media:test");
+  ASSERT_TRUE(back.has_value());
+  if (back) {
+    EXPECT_TRUE(back->onProgram);
+    EXPECT_TRUE(back->state == MediaTransportState::Live);
+  }
+  EXPECT_EQ(created.load(), 1) << "reclaim must reuse the warm decoder";
 }

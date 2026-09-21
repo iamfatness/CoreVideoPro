@@ -1,3 +1,4 @@
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 
@@ -38,16 +39,16 @@ public sealed record MediaSelectionState(
 /// <item>If the operator moved the selection while the Take's sync was pending, their selection is
 /// kept. This matches the scene rollback, which never erases newer edits.</item>
 /// <item>A clip on the restored Program then takes its playing flag and status from its real on-air
-/// state (routed, and looping or not operator-paused). A saved flag is never trusted for it.
-/// Audition playback off Program is local state, so it keeps the saved value.</item>
+/// state — the CORE's media transport row for that asset (#535 slice 3b), never a saved flag and
+/// never a shell-side paused set. Audition playback off Program is local state, so it keeps the
+/// saved value.</item>
 /// <item>One exception: the operator picked a clip on the attempted Program while the sync was
 /// pending, and the rollback takes it off Program. That clip LEFT Program, so it gets the same
 /// treatment as <c>RefreshMediaBinPlaybackIndicators</c>: not playing, "&lt;name&gt; left
 /// Program". Its "... on Program" status and on-air playing flag are no longer true.</item>
 /// </list>
-/// The go-live ledger and the paused set are deliberately NOT rewound (see
-/// <c>StudioViewModel.Transport.cs</c>): a clip that rolled on an unconfirmed Take may really have
-/// aired.
+/// The core's own transport state is deliberately NOT rewound: a clip that rolled on an
+/// unconfirmed Take may really have aired, and the core is the authority on where its playhead is.
 /// </summary>
 public static class TakeMediaSelectionRollback
 {
@@ -57,7 +58,7 @@ public static class TakeMediaSelectionRollback
         MediaSelectionState current,
         IReadOnlyList<SourceRoute> attemptedProgramRoutes,
         IReadOnlyList<SourceRoute> restoredProgramRoutes,
-        IReadOnlyCollection<string> operatorPausedAssetIds)
+        IReadOnlyList<NativeMediaCoreMediaSource> mediaSources)
     {
         var operatorMovedIt = current != afterTake;
         var target = operatorMovedIt ? current : beforeTake;
@@ -78,11 +79,7 @@ public static class TakeMediaSelectionRollback
                 : target;
         }
 
-        var playing = MediaRoutePlaybackService.IsPlayingOnAir(
-            target.AssetId,
-            isOnProgram: true,
-            MediaRoutePlaybackService.IsLoopingKind(target.Kind),
-            operatorPausedAssetIds);
+        var playing = MediaRoutePlaybackService.IsPlayingOnAir(target.AssetId, mediaSources);
         return target with
         {
             Playing = playing,

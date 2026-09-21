@@ -58,26 +58,42 @@ class BufferSender final : public modules::IOutputSender {
   std::vector<std::string> last;
   int calls = 0;
 };
-class PresentationTimeSource final : public modules::IMediaFrameSource {
+// #535 slice 3b: scheduled content time no longer reaches a media MODULE (the
+// decoder runs on its own worker, on its own clock). It reaches the SOURCE BUS
+// poll, which is where the frame due at that instant is selected — so that is
+// what this records.
+class PresentationTimeSource final : public corevideo::core::ISource {
  public:
-  std::vector<modules::VideoFrame> pollMediaFrames(
-      const std::vector<modules::CompositorRenderPlanLayer>&, int64_t) override { return {}; }
-  std::vector<modules::VideoFrame> pollMediaFramesAt100ns(
-      const std::vector<modules::CompositorRenderPlanLayer>&, int64_t timestamp100ns) override {
-    selectedTimes.push_back(timestamp100ns);
-    return {};
+  PresentationTimeSource() {
+    descriptor_.sourceId = "media:presentation-probe";
+    descriptor_.kind = "media";
+    descriptor_.width = 16;
+    descriptor_.height = 9;
+    descriptor_.pixelFormat = "bgra";
+    descriptor_.hasVideo = true;
   }
+  const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
+  corevideo::core::SourceTick poll(int64_t timestamp100ns) override {
+    selectedTimes.push_back(timestamp100ns);
+    corevideo::core::SourceTick tick;
+    tick.health = corevideo::core::SourceHealth::Warming;
+    return tick;
+  }
+  corevideo::core::SourceIngestCounters counters() const override { return {}; }
   std::vector<int64_t> selectedTimes;
+
+ private:
+  corevideo::core::SourceDescriptor descriptor_;
 };
 }
 
 TEST(ProgramBufferIntegration, MediaSelectionUsesScheduledContentTime) {
   auto modules = corevideo::modules::createStubModules();
-  auto source = std::make_unique<PresentationTimeSource>();
-  auto* observed = source.get();
-  modules.mediaFrames = std::move(source);
   corevideo::core::MediaCore core(std::move(modules));
   core.enableAudioOutputWorker();
+  auto source = std::make_shared<PresentationTimeSource>();
+  auto* observed = source.get();
+  core.addSourceForTest(source);
   observed->selectedTimes.clear();
   core.renderDisplayTick(0, 10'000'000'000);
   core.renderDisplayTick(1, 10'000'000'000);

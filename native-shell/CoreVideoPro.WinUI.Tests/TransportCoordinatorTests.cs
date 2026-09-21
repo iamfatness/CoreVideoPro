@@ -606,6 +606,24 @@ public sealed class TransportCoordinatorTests
         Assert.Equal(0, host.RefreshMediaBinPlaybackIndicatorsCallCount);
     }
 
+    [Fact]
+    public async Task Take_PromotesOnlyAssetsEnteringProgram()
+    {
+        // The go-live ledger is gone: what a Take promotes is the pure set diff of Program
+        // media ids. A clip already on Program is not "entering", so it is never promoted
+        // (and is never restarted).
+        var (coordinator, _, host) = Build();
+        host.ActiveSceneId = "intro";
+        host.PreviewSceneId = "interview";
+        host.ProgramRoutesByScene["intro"] = [ClipRoute("bed")];
+        host.ProgramRoutesByScene["interview"] = [ClipRoute("bed"), ClipRoute("sting")];
+
+        await coordinator.TakeAsync();
+
+        Assert.Equal(new[] { "sting" }, host.LastWentLive);
+        Assert.Equal(new[] { "sting" }, host.LastPromoted);
+    }
+
     private static SourceRoute ClipRoute(string assetId) =>
         new() { Id = $"route-{assetId}", Mode = SourceRouteMode.Fixed, ParticipantId = ShowInputRosterService.ToMediaSourceId(assetId) };
 
@@ -657,7 +675,7 @@ public sealed class TransportCoordinatorTests
         Assert.False(host.Selection.Playing);
         Assert.Equal("X paused on Program", host.Selection.Status);
         Assert.Equal("Resume Program", host.ToggleLabel);
-        Assert.Contains("x", host.OperatorPausedMediaAssetIds);  // the paused set is untouched
+        Assert.Equal("paused", host.ClipState("x"));             // the core's row is untouched
     }
 
     [Fact]
@@ -671,6 +689,7 @@ public sealed class TransportCoordinatorTests
         host.PreviewSceneId = "interview";
         host.ProgramRoutesByScene["intro"] = [ClipRoute("x")];
         host.ProgramRoutesByScene["interview"] = [];
+        host.PlayClipOnProgram("x");                                        // the core says X is live
         host.Selection = FakeTransportHost.Clip("x", playing: true, "Playing X on Program");
         host.SyncThrows = new InvalidOperationException("native rejected scene");
 
@@ -900,8 +919,9 @@ public sealed class TransportCoordinatorTests
         // Preview-draft routes per scene id; CopyPreviewRoutesToScene commits them when present.
         public Dictionary<string, IReadOnlyList<SourceRoute>> DraftRoutesByScene { get; } = new(StringComparer.Ordinal);
 
-        // A REAL ledger, so the went-live list the coordinator acts on is the production rule.
-        private readonly MediaGoLiveLedger _goLive = new();
+        // The core's media TRANSPORT rows (#535 slice 3b): the shell reads play state from
+        // here, it never keeps its own paused set.
+        private readonly List<NativeMediaCoreMediaSource> _mediaSources = [];
 
         public IReadOnlyList<string>? LastWentLive { get; private set; }
 
@@ -949,7 +969,25 @@ public sealed class TransportCoordinatorTests
 
         public Action? DuringSync { get; set; }
 
-        public void PauseClipOnProgram(string assetId) => _goLive.RecordPause(assetId);
+        public void PauseClipOnProgram(string assetId) => SetClipState(assetId, "paused");
+
+        public void PlayClipOnProgram(string assetId) => SetClipState(assetId, "live");
+
+        public string? ClipState(string assetId) =>
+            _mediaSources.FirstOrDefault(row =>
+                string.Equals(row.MediaAssetId, assetId, StringComparison.Ordinal))?.State;
+
+        private void SetClipState(string assetId, string state)
+        {
+            _mediaSources.RemoveAll(row => string.Equals(row.MediaAssetId, assetId, StringComparison.Ordinal));
+            _mediaSources.Add(new NativeMediaCoreMediaSource
+            {
+                SourceId = $"media:{assetId}",
+                MediaAssetId = assetId,
+                State = state,
+                OnProgram = true
+            });
+        }
 
         public static MediaSelectionState Clip(string assetId, bool playing, string status) =>
             new(assetId, assetId.ToUpperInvariant(), $@"C:\media\{assetId}.mp4", "clip", SupportsPlayback: true, playing, status);
@@ -963,7 +1001,7 @@ public sealed class TransportCoordinatorTests
 
         public MediaSelectionState CaptureMediaSelection() => Selection;
 
-        public IReadOnlyCollection<string> OperatorPausedMediaAssetIds => _goLive.OperatorPausedAssetIds;
+        public IReadOnlyList<NativeMediaCoreMediaSource> MediaSources => _mediaSources;
 
         public void RestoreMediaSelectionAfterRollback(MediaSelectionState selection)
         {
@@ -1022,11 +1060,12 @@ public sealed class TransportCoordinatorTests
         public IReadOnlyList<SourceRoute> GetResolvedProgramRoutes() =>
             ProgramRoutesByScene.TryGetValue(ActiveSceneId ?? string.Empty, out var routes) ? routes : [];
 
-        public IReadOnlyList<string> RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes)
+        public IReadOnlyList<string> AssetsEnteringProgram(IReadOnlyList<SourceRoute> previousProgramRoutes)
         {
             GoLiveRecords++;
             LastPreviousProgramRoutes = previousProgramRoutes;
-            LastWentLive = _goLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
+            LastWentLive = MediaRoutePlaybackService.AssetsEnteringProgram(
+                previousProgramRoutes, GetResolvedProgramRoutes());
             return LastWentLive;
         }
 
@@ -1124,7 +1163,7 @@ public sealed class TransportCoordinatorTests
 
         public string ProfileSummary => "GPU 1080p60";
 
-        public NativeMediaCoreStateSnapshot? LastSnapshot => null;
+        public NativeMediaCoreStateSnapshot? LastSnapshot { get; set; }
 
         public NativeMediaCoreStateSnapshot PollResult { get; set; } = new();
 

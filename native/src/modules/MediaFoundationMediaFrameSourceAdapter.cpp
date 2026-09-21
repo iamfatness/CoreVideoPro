@@ -1,7 +1,8 @@
+#include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 #include "modules/StillMediaFrameCache.h"
 #include "modules/MediaPlaybackTimeline.h"
-#include "modules/OwnedMediaFrameSource.h"
+#include "modules/MediaVideoPresentation.h"
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 
@@ -176,14 +177,13 @@ std::string mediaFrameSourceId(const CompositorRenderPlanLayer& layer) {
   return layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
 }
 
-// Playing/paused is deliberately NOT part of the playback identity (T1.2): a
-// pause is a state of the clip's clock, so it must never open a new reader.
-std::string mediaLayerPlaybackKey(const CompositorRenderPlanLayer& layer) {
-  return layer.mediaPlaybackKey.empty() ? layer.mediaAssetId : layer.mediaPlaybackKey;
-}
-
+// #535 slice 3b: the playback KEY is gone. core::MediaTransports owns one
+// decoder per source id and expresses a go-live as an in-place Resume on that
+// same decoder, so there is no longer a generation baked into the layer for the
+// identity to carry. Playing/paused was already excluded (T1.2): a pause is a
+// state of the clip's clock and must never open a new reader.
 std::string mediaLayerStateKey(const CompositorRenderPlanLayer& layer) {
-  return mediaFrameSourceId(layer) + "|" + normalizeMediaPath(layer.mediaAssetPath) + "|" + mediaLayerPlaybackKey(layer);
+  return mediaFrameSourceId(layer) + "|" + normalizeMediaPath(layer.mediaAssetPath);
 }
 
 std::wstring quoteWindowsArgument(const std::wstring& value) {
@@ -574,6 +574,43 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
 
   void setMediaWakeCallback(std::function<void()> callback) override { mediaWake_ = std::move(callback); }
 
+  // #535 slice 3b transport telemetry. One MediaTransports entry owns ONE of
+  // these and hands it exactly one layer, so `states_` holds exactly one asset
+  // in the owned configuration and "the active state" is unambiguous. Any
+  // other size (a direct caller driving several layers through one decoder)
+  // has no single answer, and -1 says so rather than naming an arbitrary one.
+  int64_t playbackPositionMs() const override {
+    if (states_.size() != 1) return -1;
+    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto& state = states_.begin()->second;
+    auto elapsed = state.clock.elapsed100ns(nowMs * 10000);
+    if (elapsed < 0) elapsed = 0;
+    // THE CLOCK IS WALL TIME, THE POSITION IS A PLACE IN THE MEDIA. The raw
+    // elapsed time runs past the end of a finished clip (measured 3398 ms on a
+    // 3000 ms asset) and grows without bound for a loop, and this number is
+    // published in `mediaSources[]` and bound on the shell. Wrap it for a loop
+    // and clamp it for a clip so it always means what its name says. With no
+    // known duration there is nothing to clamp against and the raw elapsed
+    // time is the honest answer.
+    const auto duration = state.mediaDuration100ns;
+    if (duration > 0) elapsed = state.loop ? elapsed % duration : (std::min)(elapsed, duration);
+    return elapsed / 10000;
+  }
+  int64_t mediaDurationMs() const override {
+    if (states_.size() != 1) return -1;
+    const auto duration = states_.begin()->second.mediaDuration100ns;
+    return duration > 0 ? duration / 10000 : -1;
+  }
+  // Real EOS (see IMediaVideoPrefetch::mediaEnded). A loop never ends: the
+  // adapter reopens it at EOS behind the last good frame, so `state.ended` is
+  // a transient there and reporting it would freeze a background on air.
+  bool mediaEnded() const override {
+    if (states_.size() != 1) return false;
+    const auto& state = states_.begin()->second;
+    return state.ended && !state.loop;
+  }
+
   void syncMediaClock(const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
@@ -654,7 +691,6 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
  private:
   struct AssetState {
     std::string path;
-    std::string playbackKey;
     bool imageLoaded = false;
     bool ended = false;
     bool wasPlaying = false;
@@ -682,7 +718,6 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     ComPtrLite<MediaReadCallback> audioCallback;
     ComPtrLite<IMFSourceReader> audioReader;
     bool audioEnded = false;
-    std::string audioPlaybackKey;
     MediaPlaybackTimeline clock;
     MediaAudioWindows audioWindows;
     std::string generationIdentity;
@@ -701,13 +736,12 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     if (state.audioReader) state.audioReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
   }
 
-  // The identity is path + playback key + loop mode, never play state: a new
-  // identity (a go-live generation) is a new reader from 0; a pause or resume
-  // is carried by the SAME clock (MediaPlaybackTimeline) on every call.
+  // The identity is path + loop mode, never play state and (since #535 slice 3b)
+  // never a playback key: a new identity is a new reader from 0; a pause or
+  // resume is carried by the SAME clock (MediaPlaybackTimeline) on every call.
   AssetState& stateFor(const CompositorRenderPlanLayer& layer, int64_t timestampMs) {
     const auto key = mediaFrameSourceId(layer);
-    const auto identity = normalizeMediaPath(layer.mediaAssetPath) + "|" + mediaLayerPlaybackKey(layer) +
-        (layer.mediaAssetLoop ? "|loop" : "|once");
+    const auto identity = normalizeMediaPath(layer.mediaAssetPath) + (layer.mediaAssetLoop ? "|loop" : "|once");
     auto& state = states_[key];
     if (state.generationIdentity != identity) {
       cancelReaders(state);
@@ -745,7 +779,6 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       state.path = path;
       state.loop = layer.mediaAssetLoop;
     }
-    const std::string playbackKey = mediaLayerPlaybackKey(layer);
     if (isStillImagePath(path)) {
       if (!state.imageLoaded) {
         state.lastFrame.participantId = frameSourceId;
@@ -760,19 +793,6 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       frame.timestampMs = timestampMs;
       return true;
     }
-    if (state.playbackKey != playbackKey) {
-      // Belt and braces: stateFor already reset the state for a new identity.
-      state.reader = {};
-      state.ffmpegVideo = {};
-      state.ffmpegPublishedFrameId = 0;
-      state.ffmpegResumePending = false;
-      state.ended = false;
-      state.frameId = 0;
-      state.lastFrame = {};
-      state.presentedFrame = {};
-      state.wasPlaying = false;
-    }
-    state.playbackKey = playbackKey;
     if (!layer.mediaAssetPlaying) {
       // PAUSED AFTER IT ROLLED: hold the frame on air and read nothing. The
       // reader stays where it is, so Play continues with the next frame.
@@ -937,13 +957,11 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       state = {};
       state.path = path;
     }
-    const std::string playbackKey = mediaLayerPlaybackKey(layer);
-    if (!state.audioWasPlaying || state.audioPlaybackKey != playbackKey) {
+    if (!state.audioWasPlaying) {
       state.audioReader = {};
       state.audioEnded = false;
     }
     state.audioWasPlaying = true;
-    state.audioPlaybackKey = playbackKey;
     if (state.audioEnded && state.audioReader && layer.mediaAssetLoop) {
       state.audioLoopOffset = state.audioEndPts;
       if (state.audioCallback) state.audioCallback->cancel();
@@ -1279,8 +1297,8 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
 
 }  // namespace
 
-std::unique_ptr<IMediaFrameSource> createMediaFoundationMediaFrameSource() {
-  return std::make_unique<OwnedMediaFrameSource>([] { return std::make_unique<MediaFoundationMediaFrameSource>(); });
+std::function<std::unique_ptr<IMediaFrameSource>()> createMediaFoundationMediaDecoderFactory() {
+  return [] { return std::unique_ptr<IMediaFrameSource>(new MediaFoundationMediaFrameSource()); };
 }
 
 }  // namespace corevideo::modules
@@ -1289,8 +1307,8 @@ std::unique_ptr<IMediaFrameSource> createMediaFoundationMediaFrameSource() {
 
 namespace corevideo::modules {
 
-std::unique_ptr<IMediaFrameSource> createMediaFoundationMediaFrameSource() {
-  return nullptr;
+std::function<std::unique_ptr<IMediaFrameSource>()> createMediaFoundationMediaDecoderFactory() {
+  return {};
 }
 
 }  // namespace corevideo::modules

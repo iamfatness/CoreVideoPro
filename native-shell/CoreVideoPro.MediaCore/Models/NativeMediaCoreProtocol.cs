@@ -649,6 +649,30 @@ public sealed class NativeMediaCoreOverlayState
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
+/// <summary>
+/// One media source's TRANSPORT state, as the core publishes it in the snapshot's
+/// <c>mediaSources</c> node (#535 slice 3b). This is the shell's ONLY source of truth for
+/// whether a clip is rolling: there is no playback key, no go-live generation and no
+/// shell-side paused set any more.
+///
+/// <see cref="SourceId"/> is <c>media:&lt;assetId&gt;</c> for a routed asset or
+/// <c>background:&lt;assetId&gt;</c> for a scene background. <see cref="State"/> is
+/// "cued" | "live" | "paused" | "ended". <see cref="DurationMs"/> is -1 when unknown.
+/// The node is published UNCONDITIONALLY (empty array when nothing is routed), so an absent
+/// row means "not routed", never "the core did not say".
+/// </summary>
+public sealed record NativeMediaCoreMediaSource
+{
+    public required string SourceId { get; init; }
+    public string? MediaAssetId { get; init; }
+    public required string State { get; init; }
+    public bool Loop { get; init; }
+    public bool OnProgram { get; init; }
+    public bool OnPreview { get; init; }
+    public double PositionMs { get; init; }
+    public double DurationMs { get; init; } = -1;
+}
+
 public sealed class NativeMediaCoreMediaPlaybackState
 {
     public required string Status { get; init; }
@@ -846,6 +870,8 @@ public sealed record NativeMediaCoreStateSnapshot
         Status = "idle",
         Summary = "No media asset selected."
     };
+    /// <summary>Per-source media transport rows (#535 slice 3b). Empty, never null.</summary>
+    public IReadOnlyList<NativeMediaCoreMediaSource> MediaSources { get; init; } = [];
     public IReadOnlyList<NativeMediaCoreOperatorAction> OperatorActions { get; init; } = [];
     public IReadOnlyList<NativeMediaCoreEvent> EventLog { get; init; } = [];
     public NativeMediaCoreDiagnosticsSnapshot Diagnostics { get; init; } = new();
