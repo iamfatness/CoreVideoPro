@@ -2380,6 +2380,21 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
   and a fresh instance interleave). The writer opens IN PLACE and re-asserts the DACL
   (`SetKernelObjectSecurity`); the reader self-heals by re-opening by path after ~1s of
   frozen seq (`SharedFrameReader::kReopenAfterUnchangedReads`).
+  **AND NEVER RUN A TEST AGAINST THE PRODUCTION SLOT (2026-09-20 incident).** The
+  round-trip suite unlinks the slot between cases, and it did so at the real
+  `%ProgramData%` path: every `corevideo-native-tests.exe` run on this box while the
+  installed beta was live unlinked the file the core was publishing into (the
+  delete succeeds under the open writer), the core kept writing the orphaned file
+  object and reported healthy, the Frame Server's reader got ERROR_FILE_NOT_FOUND on
+  the path and served the standby slate — the owner saw a grey bar in Zoom until they
+  toggled the camera, twice in one morning, each time 6 s after another agent's test
+  exe was rebuilt. `virtualCameraShmDir()` now honors `COREVIDEO_VCAM_SHM_DIR`, and
+  `VirtualCameraShmRoundtripTest.cpp` sets it at static-init time to a per-process
+  `%TEMP%\cvp-vcam-shm-test-<pid>` directory for the WHOLE test binary (the DLL reader,
+  the real publisher and the test writer all resolve through that one helper);
+  `TheSuiteNeverResolvesTheProductionSlotPath` pins it. Production never sets the
+  variable. Any new test that touches the slot inherits the redirect for free — never
+  hard-code the ProgramData path in a test.
 - **Serve diagnostics:** the DLL logs to `%ProgramData%\CoreVideoPro\vcam-serve.log`
   (pre-created by the publisher with a permissive DACL — locked-down Frame Server
   workers cannot write `C:\Windows\Temp`, which left the serving side unobservable).
