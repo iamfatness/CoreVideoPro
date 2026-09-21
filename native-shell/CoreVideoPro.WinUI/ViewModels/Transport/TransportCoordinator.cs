@@ -162,7 +162,7 @@ public sealed class TransportCoordinator
                     _host.ActiveSceneId = takenSceneId;
                     _host.PreviewSceneId = previousProgramSceneId;
                 }
-                var wentLive = _host.RecordProgramMediaGoLive(previousProgramRoutes);
+                var wentLive = _host.AssetsEnteringProgram(previousProgramRoutes);
                 // Go-live is the only event a source reacts to: promote only what entered Program.
                 var promoted = wentLive.Count > 0 && _host.PromoteProgramMediaRouteToPlayback(wentLive);
                 // T1.2 task 3 (controller ruling, folded in): a clip that LEFT Program on this
@@ -232,7 +232,7 @@ public sealed class TransportCoordinator
     // The #286 rollback, whole: scenes first (refused when newer edits landed during the pending
     // sync), then the media selection the Take moved (T1.3, #430), then reconciliation. The
     // selection restore also rebuilds the media bin once, so every row reads its restored on-air
-    // state. The go-live ledger and paused set are deliberately left alone.
+    // state. The core's own media transport state is deliberately left alone.
     private bool RollBackTake(
         Func<bool> rollbackScenes,
         MediaSelectionState selectionBeforeTake,
@@ -247,13 +247,19 @@ public sealed class TransportCoordinator
         // Reconciliation first: the restored scenes must reach the core even if the
         // selection restore below throws.
         _host.RequestTakeReconciliation();
+        // The restored clip's playing flag comes from the LATEST snapshot's media rows, which
+        // may still describe the ATTEMPTED Program until the next 250 ms poll lands: the Take's
+        // sync failed, but a sync that got far enough to change the core would already have been
+        // echoed. A stale row can therefore make a just-restored clip read playing (or not) for
+        // up to one poll; the next snapshot apply corrects it. Accepted over blocking the
+        // rollback on a round trip to a core that just failed to answer.
         _host.RestoreMediaSelectionAfterRollback(TakeMediaSelectionRollback.Resolve(
             selectionBeforeTake,
             selectionAfterTake,
             _host.CaptureMediaSelection(),
             attemptedProgramRoutes,
             _host.GetResolvedProgramRoutes(),
-            _host.OperatorPausedMediaAssetIds));
+            _host.MediaSources));
         return true;
     }
 

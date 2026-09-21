@@ -88,13 +88,14 @@ public interface ITransportHost
     // the go-live policy can tell which clips ENTER Program (and roll) from those that stay.
     IReadOnlyList<SourceRoute> GetResolvedProgramRoutes();
 
-    // Replaces the per-Take playback-key bump: a clip's key advances only when it goes live.
-    // Returns the media asset ids that went live (entered Program) on this Take.
-    IReadOnlyList<string> RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes);
+    // The media asset ids this Take brought ONTO Program (#535 slice 3b). A pure set diff over
+    // the resolved routes — the shell keeps no go-live generation and no playback key, because
+    // the core decides what an arriving media source does. Used only to move the bin selection.
+    IReadOnlyList<string> AssetsEnteringProgram(IReadOnlyList<SourceRoute> previousProgramRoutes);
 
     // Re-projects the media bin's real on-air playing indicator, and clears the SELECTED
     // asset's local playing flag/status if IT is the one that left Program (T1.2 task 3,
-    // controller ruling). Called after RecordProgramMediaGoLive only when the caller has
+    // controller ruling). Called after AssetsEnteringProgram only when the caller has
     // decided a refresh is actually needed (the Program media SET changed AND
     // PromoteProgramMediaRouteToPlayback did not already refresh) — never unconditionally, so
     // an automated Magic Scene Take between two non-media scenes does not rebuild the bin on
@@ -108,8 +109,9 @@ public interface ITransportHost
     // the local Take mutations so a rollback can put back what the Take changed.
     MediaSelectionState CaptureMediaSelection();
 
-    // The go-live ledger's operator-paused set: the real on-air truth for a Program clip.
-    IReadOnlyCollection<string> OperatorPausedMediaAssetIds { get; }
+    // The core's per-source media transport rows from the latest snapshot (#535 slice 3b).
+    // This is the ONLY on-air truth for a Program clip; the shell keeps no paused set.
+    IReadOnlyList<NativeMediaCoreMediaSource> MediaSources { get; }
 
     // Applies the selection TakeMediaSelectionRollback resolved after a successful rollback,
     // and rebuilds the media bin ONCE so every row shows its restored on-air state. An operator

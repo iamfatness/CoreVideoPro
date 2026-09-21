@@ -2,17 +2,22 @@
 #include "core/RenderedSceneAttributionPolicy.h"
 #include "core/SourceContinuityLedger.h"
 #include "core/TakeRecordPolicy.h"
+#include "MediaTestSupport.h"
 #include "modules/Interfaces.h"
 #include "modules/ZoomSubscriptionChurnPolicy.h"
 #include "rpc/Json.h"
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -39,7 +44,8 @@ class DeliveringCompositor final : public corevideo::modules::ICompositor {
   int programBufferFrames() const override { return depth; }
   corevideo::modules::ProgramFrame render(
       const corevideo::modules::CompositorRenderPlan& plan,
-      const std::vector<corevideo::modules::VideoFrame>&) override {
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    for (const auto& source : frames) presentedFrameIds[source.participantId] = source.frameId;
     corevideo::modules::ProgramFrame frame;
     frame.frameNumber = ++produced;
     frame.renderPlanId = plan.renderPlanId;
@@ -62,6 +68,7 @@ class DeliveringCompositor final : public corevideo::modules::ICompositor {
   long long deliverySequence = 0;
   bool deliver = true, hasLatest = false;
   corevideo::modules::ProgramFrame latest;
+  std::map<std::string, std::int64_t> presentedFrameIds;
 };
 
 void loadTilesScene(MediaCore& core, const char* sceneId, const std::vector<std::string>& members) {
@@ -356,21 +363,54 @@ class CountingMediaFrameSource final : public corevideo::modules::IMediaFrameSou
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
       const auto sourceId = mediaSourceId(layer);
-      frames.push_back(solidMediaFrame(sourceId, ++frameIds[sourceId], timestampMs, 16, 16));
+      std::int64_t next = 0;
+      {
+        std::lock_guard<std::mutex> lock(mutex());
+        next = ++frameIds[sourceId];
+      }
+      frames.push_back(solidMediaFrame(sourceId, next, timestampMs, 16, 16));
     }
     return frames;
   }
-  void restart(const std::string& sourceId) { frameIds[sourceId] = 0; }
-  std::map<std::string, std::int64_t> frameIds;
+  // #535 slice 3b: the module set carries a FACTORY, so each media source gets
+  // its own instance on its own worker. The frame-id book is shared and static
+  // so a test can still reopen one source's decoder mid-run.
+  static void restart(const std::string& sourceId) {
+    std::lock_guard<std::mutex> lock(mutex());
+    frameIds[sourceId] = 0;
+  }
+  static void resetAll() {
+    std::lock_guard<std::mutex> lock(mutex());
+    frameIds.clear();
+  }
+  // The decoder's OWN book, read without rendering. A take-record test has to
+  // know the worker has produced the frame it is about to judge BEFORE it
+  // issues the Take - and it cannot find that out from the bus, because the
+  // only thing that advances the bus's counters is an ingest, i.e. the very
+  // render tick whose observation the record is supposed to capture.
+  static std::int64_t frameIdFor(const std::string& sourceId) {
+    std::lock_guard<std::mutex> lock(mutex());
+    const auto found = frameIds.find(sourceId);
+    return found == frameIds.end() ? 0 : found->second;
+  }
+  static std::mutex& mutex() {
+    static std::mutex m;
+    return m;
+  }
+  static inline std::map<std::string, std::int64_t> frameIds;
 };
 
 // A decoder that cold-starts: the first time a source is asked for, it has
 // nothing yet; every later poll delivers a frame on that source's own clock.
+// An optional gate holds the decoder cold until the test explicitly releases it.
 class ColdStartMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
  public:
+  explicit ColdStartMediaFrameSource(std::shared_ptr<std::atomic<bool>> ready = {})
+      : ready_(std::move(ready)) {}
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
       const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
       int64_t timestampMs) override {
+    if (ready_ && !ready_->load()) return {};
     std::vector<corevideo::modules::VideoFrame> frames;
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
@@ -382,6 +422,8 @@ class ColdStartMediaFrameSource final : public corevideo::modules::IMediaFrameSo
   }
   std::set<std::string> polled;
   std::map<std::string, std::int64_t> frameIds;
+ private:
+  std::shared_ptr<std::atomic<bool>> ready_;
 };
 
 corevideo::rpc::Json backgroundScene(const char* sceneId, const char* assetId,
@@ -393,6 +435,24 @@ corevideo::rpc::Json backgroundScene(const char* sceneId, const char* assetId,
           {"mediaAssetId", assetId}, {"mediaAssetName", "bg"}, {"mediaAssetKind", "video"},
           {"mediaAssetPath", "C:\\media\\bg.mp4"}, {"playing", true}}},
       {"routes", corevideo::rpc::Json::Array{}}};
+}
+
+// A scene whose only layer is a clip ROUTE. Since #535 slice 3b the wire
+// carries no playback key and no play flag: which BUS the route is on is the
+// whole transport decision (Cued on Preview, Live on Program).
+corevideo::rpc::Json clipRouteScene(const char* sceneId, const char* assetId,
+                                    const char* type = "load-scene-graph") {
+  return corevideo::rpc::Json::Object{
+      {"type", type},
+      {"sceneId", sceneId},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"routeId", "clip-route"},
+          {"mode", "fixed"},
+          {"mediaAssetId", assetId},
+          {"mediaAssetName", "clip"},
+          {"mediaAssetKind", "video"},
+          {"mediaAssetPath", "C:\\media\\clip.mp4"},
+          {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}};
 }
 
 corevideo::rpc::Json emptyScene(const char* sceneId, const char* type = "load-scene-graph") {
@@ -444,6 +504,20 @@ class CountingZoomSource final : public corevideo::modules::IZoomCaptureSource {
   std::map<std::string, std::int64_t> frameIds;
 };
 
+// Bounded wait on real decoder work: poll `CountingMediaFrameSource`'s own
+// frame-id book until `done` accepts it. Deliberately NOT a fixed sleep, and
+// deliberately NOT a render tick - see frameIdFor's comment.
+bool waitForDecoderFrameId(const std::string& sourceId,
+                           const std::function<bool(std::int64_t)>& done,
+                           int timeoutMs = 2000) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (done(CountingMediaFrameSource::frameIdFor(sourceId))) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return done(CountingMediaFrameSource::frameIdFor(sourceId));
+}
+
 bool arrayContains(const corevideo::rpc::Json* node, const std::string& value) {
   if (node == nullptr) return false;
   for (const auto& item : node->asArray()) {
@@ -456,14 +530,36 @@ bool arrayContains(const corevideo::rpc::Json* node, const std::string& value) {
 
 TEST(TakeRecord, ASharedBackgroundThatKeptItsGenerationIsACut) {
   auto modules = corevideo::modules::createStubModules();
-  modules.compositor = std::make_unique<DeliveringCompositor>();
-  auto media = std::make_unique<CountingMediaFrameSource>();
-  modules.mediaFrames = std::move(media);
+  auto compositor = std::make_unique<DeliveringCompositor>();
+  auto* presentedFrames = compositor.get();
+  modules.compositor = std::move(compositor);
+  CountingMediaFrameSource::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingMediaFrameSource>();
   MediaCore core(std::move(modules));
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-a", "bg-1")});
-  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [](MediaCore& c) {
+    return corevideo::testing::busSourceProducing(c, "background:bg-1");
+  }));
+  for (int i = 0; i < 5; ++i) {
+    core.renderDisplayTick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  // The take's "after" half must be a genuinely LATER picture than the ledger's
+  // last observation, so wait (bounded) until the worker has actually decoded
+  // past the frame id the ticks above consumed.
+  // Observe the consumer, not the decoder's head: the latter can already be
+  // three frames ahead with its bounded queue full. Waiting for more decoding
+  // without consuming that queue deadlocks the test on a fast worker.
+  const std::int64_t presented = presentedFrames->presentedFrameIds.at("background:bg-1");
+  // Exercise the full three-frame queue deliberately, rather than depending
+  // on whether this machine happens to schedule the producer ahead of us.
+  ASSERT_TRUE(waitForDecoderFrameId("background:bg-1",
+                                    [&](std::int64_t id) { return id >= presented + 3; }));
+  ASSERT_TRUE(waitForDecoderFrameId("background:bg-1",
+                                    [&](std::int64_t id) { return id > presented + 1; }))
+      << "the media worker never decoded past the frame the pre-take ticks presented";
   (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-b", "bg-1")});
   core.renderDisplayTick();
 
@@ -484,16 +580,29 @@ TEST(TakeRecord, ASharedBackgroundThatKeptItsGenerationIsACut) {
 TEST(TakeRecord, ASharedBackgroundThatRestartedAcrossTheTakeIsRebuilt) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  auto media = std::make_unique<CountingMediaFrameSource>();
-  auto* mediaPtr = media.get();
-  modules.mediaFrames = std::move(media);
+  CountingMediaFrameSource::resetAll();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingMediaFrameSource>();
   MediaCore core(std::move(modules));
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-a", "bg-1")});
-  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [](MediaCore& c) {
+    return corevideo::testing::busSourceProducing(c, "background:bg-1");
+  }));
+  for (int i = 0; i < 5; ++i) {
+    core.renderDisplayTick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  // The decoder reopens. It is restarted BEFORE the take command, then waited
+  // on (bounded) until the worker has actually decoded a post-restart frame:
+  // with the audio worker enabled applyCommands renders NO tick, so nothing
+  // observes the regression until the display tick below - which is exactly the
+  // first program tick after the take, where the record's "after" half is taken.
+  CountingMediaFrameSource::restart("background:bg-1");
+  ASSERT_TRUE(waitForDecoderFrameId("background:bg-1",
+                                    [](std::int64_t id) { return id >= 1; }))
+      << "the media worker never decoded a frame after the reopen";
   (void)core.applyCommands(corevideo::rpc::Json::Array{backgroundScene("scene-b", "bg-1")});
-  mediaPtr->restart("background:bg-1");  // the decoder reopened on the take
   core.renderDisplayTick();
 
   const auto snapshot = core.sessionState();
@@ -509,7 +618,10 @@ TEST(TakeRecord, ASharedBackgroundThatRestartedAcrossTheTakeIsRebuilt) {
 TEST(TakeRecord, AMediaBackgroundThatHasNoFrameOnTheFirstProgramTickIsRebuilt) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  modules.mediaFrames = std::make_unique<ColdStartMediaFrameSource>();
+  // A worker can poll twice before the first display tick, especially under
+  // TSan. One empty poll does not establish a missing first Program frame.
+  auto decoderReady = std::make_shared<std::atomic<bool>>(false);
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartMediaFrameSource>(decoderReady);
   MediaCore core(std::move(modules));
   core.enableAudioOutputWorker();
 
@@ -530,6 +642,10 @@ TEST(TakeRecord, AMediaBackgroundThatHasNoFrameOnTheFirstProgramTickIsRebuilt) {
     if (id.asString() == "background:bg-1") named = true;
   }
   EXPECT_TRUE(named) << "missingSources did not name background:bg-1";
+  decoderReady->store(true);
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [](MediaCore& c) {
+    return corevideo::testing::busSourceProducing(c, "background:bg-1");
+  })) << "the cold decoder did not recover after its first-frame gate opened";
 }
 
 // Zoom frames are keyed by the BARE participant id while the plan layer carries
@@ -622,13 +738,21 @@ TEST(TakeRecord, ASourceSeenOnPreviewBeforeTheTakeIsJudgedAsShared) {
 TEST(TakeRecord, ABackgroundTakenFromPreviewIsAlreadyRunningOnProgram) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  modules.mediaFrames = std::make_unique<ColdStartMediaFrameSource>();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartMediaFrameSource>();
   MediaCore core(std::move(modules));
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{
       emptyScene("scene-a"), backgroundScene("scene-b", "bg-1", "set-preview-scene")});
-  for (int i = 0; i < 5; ++i) core.renderDisplayTick();
+  // This one asserts the cue is ALREADY RUNNING when Program takes it, so it
+  // pumps (unlike the cold-start tests above, which deliberately do not).
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [](MediaCore& c) {
+    return corevideo::testing::busSourceProducing(c, "background:bg-1");
+  }));
+  for (int i = 0; i < 5; ++i) {
+    core.renderDisplayTick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
   (void)core.applyCommands(corevideo::rpc::Json::Array{
       backgroundScene("scene-b", "bg-1"), emptyScene("scene-a", "set-preview-scene")});
   core.renderDisplayTick();
@@ -771,4 +895,43 @@ TEST(ZoomSubscriptionChurnPolicyRules, ResolutionCapEvictionAndDepartureAreDisti
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::CapEviction)), "cap-eviction");
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::Departure)), "departure");
   EXPECT_EQ(std::string(ZoomSubscriptionChurnPolicy::reason(Change::Resolution)), "resolution-change");
+}
+
+// #535 slice 3b Task 5, the other half of the cold-start rule above: a clip
+// CUED in Preview and then taken carries NO missing source, because there is
+// no cold start left to be honest about. The cue and the live clip are one
+// transport entry, so the Take is an in-place Resume on a decoder that is
+// already holding a poster - and the judge is UNTOUCHED, which is the point:
+// the cold-start decoder reads "no missing sources" here because the decoder
+// was warmed by the cue. The missing-background test holds that same decoder's
+// readiness gate closed to establish an absent frame independently of scheduling.
+TEST(TakeRecord, ACuedClipTakenToProgramReadsNoMissingSources) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.compositor = std::make_unique<DeliveringCompositor>();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartMediaFrameSource>();
+  MediaCore core(std::move(modules));
+  core.enableAudioOutputWorker();
+
+  // Program: empty. Preview: the clip route, CUED.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      emptyScene("scene-a"), clipRouteScene("scene-b", "clip-1", "set-preview-scene")});
+  // Bounded: pump the cue until its poster is actually on the bus. A fixed
+  // sleep here would make the test's whole premise (a WARM decoder) a guess.
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [](MediaCore& c) {
+    return corevideo::testing::busSourceProducing(c, "media:clip-1");
+  })) << "the cued clip never reached a poster";
+
+  // The Take.
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      clipRouteScene("scene-b", "clip-1"), emptyScene("scene-a", "set-preview-scene")});
+  core.renderDisplayTick();
+
+  const auto snapshot = core.sessionState();
+  const auto& records = snapshot.get("takeRecords")->get("records")->asArray();
+  ASSERT_GE(records.size(), 2u);
+  const auto& take = records[records.size() - 1];
+  ASSERT_NE(take.get("missingSources"), nullptr);
+  EXPECT_TRUE(take.get("missingSources")->asArray().empty())
+      << "the taken clip was judged missing on its first program tick";
+  EXPECT_FALSE(take.get("sourceMissing")->asBool(true));
 }

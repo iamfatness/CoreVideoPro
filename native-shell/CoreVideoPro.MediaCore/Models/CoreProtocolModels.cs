@@ -333,6 +333,10 @@ public sealed class NativeMediaCoreWireState
     public NativeMediaCoreBrandKit? BrandKit { get; init; }
     public NativeMediaCoreOverlayState? OverlayState { get; init; }
     public NativeMediaCoreMediaPlaybackState? MediaPlayback { get; init; }
+    /// <summary>The core's per-source media transport rows (#535 slice 3b, snapshot node
+    /// "mediaSources"). Published unconditionally by the core, so null here means an OLD core,
+    /// not "no media" — the mapper keeps the base snapshot's value in that case.</summary>
+    public IReadOnlyList<NativeMediaCoreMediaSource>? MediaSources { get; init; }
     public NativeMediaCoreProgramFramePreview? ProgramFramePreview { get; init; }
     public NativeMediaCoreCompositorState? Compositor { get; init; }
     public NativeMediaCoreProgramSharedTexture? ProgramSharedTexture { get; init; }

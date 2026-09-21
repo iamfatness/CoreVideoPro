@@ -81,4 +81,45 @@ public sealed class SyntheticMediaCoreTests
         Assert.Equal("av1", snapshot.Recording!.Encoder.Codec);
         Assert.Equal("av1", snapshot.Diagnostics.Recording!.Encoder.Codec);
     }
+
+    // #535 slice 3b final review (minor): the synthetic/old-core path used to
+    // publish a mediaSources[] row for a STILL, so the shell read "Playing
+    // <logo> on Program". The core's own desired set never had one.
+    [Fact]
+    public void SynthesizeMediaSourcesSkipsStillRoutesAndOrsTheRouteLoopFlag()
+    {
+        var programRoutes = JsonSerializer.SerializeToElement(new object[]
+        {
+            new { routeId = "logo", mediaAssetId = "logo", mediaAssetKind = "lower-third", mediaAssetPath = @"C:\media\logo.PNG" },
+            new { routeId = "clip", mediaAssetId = "clip", mediaAssetKind = "video", mediaAssetPath = @"C:\media\clip.mp4", mediaAssetLoop = false }
+        });
+        var previewRoutes = JsonSerializer.SerializeToElement(new object[]
+        {
+            new { routeId = "clip", mediaAssetId = "clip", mediaAssetKind = "video", mediaAssetPath = @"C:\media\clip.mp4", mediaAssetLoop = true }
+        });
+
+        var snapshot = SyntheticMediaCore.SynthesizeSnapshot(
+            [
+                new NativeMediaCoreCommand
+                {
+                    Type = "load-scene-graph",
+                    ExtensionData = new Dictionary<string, JsonElement> { ["routes"] = programRoutes }
+                },
+                new NativeMediaCoreCommand
+                {
+                    Type = "set-preview-scene",
+                    ExtensionData = new Dictionary<string, JsonElement> { ["routes"] = previewRoutes }
+                }
+            ],
+            elapsedMs: 1000,
+            frameNumber: 1);
+
+        Assert.DoesNotContain(snapshot.MediaSources, row => row.MediaAssetId == "logo");
+        var clip = Assert.Single(snapshot.MediaSources, row => row.MediaAssetId == "clip");
+        Assert.Equal("media:clip", clip.SourceId);
+        Assert.Equal("live", clip.State);
+        Assert.True(clip.OnProgram);
+        Assert.True(clip.OnPreview);
+        Assert.True(clip.Loop);
+    }
 }

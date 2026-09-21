@@ -210,6 +210,13 @@ export type NativeMediaCoreCommand =
       playing: boolean;
     }
   | {
+      // #535 slice 3b: the operator pause/play on the Program clip. Separate
+      // from the selection echo above, which no longer carries play state.
+      type: "set-media-transport";
+      mediaAssetId: string;
+      action: "pause" | "play";
+    }
+  | {
       type: "recommend-auto-production";
     }
   | {

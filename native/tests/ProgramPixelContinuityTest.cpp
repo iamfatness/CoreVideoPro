@@ -10,15 +10,16 @@
 // Controller ruling (amends the task-6 brief): the brief's synchronous fake +
 // program-only scenario would pass even with the old bug (it never exercises
 // Preview). This test instead models the real async decoder
-// (`OwnedMediaFrameSource`): no frame on a source id's FIRST poll, a flat
+// (`core::MediaTransports`): no frame on a source id's FIRST poll, a flat
 // dark frame on every later poll (dark, not mid-grey — see
 // ColdStartGreyMediaFrameSource below for why). The background is cued on
 // PREVIEW first (warming that decoder), then Taken onto Program — the exact
 // shape of the live-show defect fixed by the `preview:` rename removal in
-// `MediaCore::buildPreviewCompositorRenderPlan`.
+// `MediaCore::buildPreviewCompositorRenderPlan` (which #535 slice 3b removed
+// for the clip cue too - see the second test).
 
 #include "core/MediaCore.h"
-#include "modules/OwnedMediaFrameSource.h"
+#include "MediaTestSupport.h"
 #include "modules/Interfaces.h"
 #include "rpc/Json.h"
 
@@ -144,9 +145,9 @@ corevideo::rpc::Json sceneWithNoBackground(const char* sceneId, const char* type
 }
 
 
-// T1.11 / #449. A cold-starting DECODER, handed to a real OwnedMediaFrameSource
-// by its factory — so this test exercises the owner's decoder bookkeeping, not a
-// stand-in for it. Every fresh decoder yields nothing on its first poll (still
+// T1.11 / #449. A cold-starting DECODER, built by the module set's decoder
+// FACTORY and driven by the real core::MediaTransports — so this test exercises
+// the owner's transport bookkeeping, not a stand-in for it. Every fresh decoder yields nothing on its first poll (still
 // opening) and a flat dark 0x10 frame afterwards, the same 0x10 sentinel and the
 // same reasoning as ColdStartGreyMediaFrameSource above.
 class ColdStartClipDecoder final : public corevideo::modules::IMediaFrameSource {
@@ -175,11 +176,11 @@ class ColdStartClipDecoder final : public corevideo::modules::IMediaFrameSource 
   std::int64_t frameId_ = 0;
 };
 
-// A scene whose only layer is a clip ROUTE. `playing` and the go-live
-// generation are exactly what the shell sends: a Preview cue is paused at
-// generation n, and the Take that puts it on Program plays it at n+1
-// (MediaGoLiveLedger.RecordTake).
-corevideo::rpc::Json sceneWithClipRoute(const char* sceneId, const char* type, bool playing, int generation) {
+// A scene whose only layer is a clip ROUTE. Since #535 slice 3b the wire
+// carries NO playback key and NO play flag for the transport decision: which
+// BUS the route is on is the whole of it (Cued on Preview, Live on Program),
+// so a cue and its take are the same route on two different scenes.
+corevideo::rpc::Json sceneWithClipRoute(const char* sceneId, const char* type) {
   return corevideo::rpc::Json::Object{
       {"type", type},
       {"sceneId", sceneId},
@@ -190,8 +191,6 @@ corevideo::rpc::Json sceneWithClipRoute(const char* sceneId, const char* type, b
           {"mediaAssetName", "clip"},
           {"mediaAssetKind", "video"},
           {"mediaAssetPath", "C:\\media\\clip.mp4"},
-          {"mediaPlaybackKey", std::string("media:clip:live:") + std::to_string(generation)},
-          {"mediaAssetPlaying", playing},
           {"rect", corevideo::rpc::Json::Object{{"x", 0}, {"y", 0}, {"width", 1}, {"height", 1}}}}}}};
 }
 
@@ -199,7 +198,7 @@ corevideo::rpc::Json sceneWithClipRoute(const char* sceneId, const char* type, b
 
 TEST(ProgramPixelContinuity, ASharedBackgroundDoesNotFlickerAcrossATake) {
   auto modules = corevideo::modules::createStubModules();
-  modules.mediaFrames = std::make_unique<ColdStartGreyMediaFrameSource>();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartGreyMediaFrameSource>();
   modules.zoom = std::make_unique<NoZoomCaptureSource>();
   modules.captureDevice = std::make_unique<NoCaptureDevice>();
   MediaCore core(std::move(modules));
@@ -210,7 +209,15 @@ TEST(ProgramPixelContinuity, ASharedBackgroundDoesNotFlickerAcrossATake) {
   (void)core.applyCommands(corevideo::rpc::Json::Array{
       sceneWithNoBackground("scene-a", "load-scene-graph"),
       sceneWithBackground("scene-b", "set-preview-scene")});
-  for (int i = 0; i < 10; ++i) core.renderDisplayTick();
+  // The decoder runs on its own worker thread (#535 slice 3b), so pump until
+  // the cued background is actually producing before taking it.
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [](MediaCore& c) {
+    return corevideo::testing::busSourceProducing(c, "background:bg");
+  }));
+  for (int i = 0; i < 10; ++i) {
+    core.renderDisplayTick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
 
   // Take: Program becomes scene-b (same background); Preview becomes scene-a.
   (void)core.applyCommands(corevideo::rpc::Json::Array{
@@ -239,15 +246,15 @@ TEST(ProgramPixelContinuity, ASharedBackgroundDoesNotFlickerAcrossATake) {
 
 
 // T1.11 / #449: a clip cued in Preview and then TAKEN must never show the
-// cold-start placeholder on Program. Unlike the background case above, a clip
-// legitimately changes identity on go-live (the `preview:` namespace collapses
-// AND the go-live generation advances), so the fix is not a shared id — it is
-// the warm cue decoder being handed over (MediaCueHandoff). Same 0x10 sentinel
-// and the same designed luma margin as the background test.
+// cold-start placeholder on Program. It used to change identity twice on
+// go-live (the `preview:` namespace collapsed AND the go-live generation
+// advanced), which is why it needed a decoder HAND-OVER. #535 slice 3b removed
+// both: the cue and the live clip are ONE transport entry, and the Take is an
+// in-place Resume on the decoder that was already warm. Same 0x10 sentinel and
+// the same designed luma margin as the background test.
 TEST(ProgramPixelContinuity, ACuedClipTakenToProgramNeverShowsThePlaceholder) {
   auto modules = corevideo::modules::createStubModules();
-  modules.mediaFrames = std::make_unique<corevideo::modules::OwnedMediaFrameSource>(
-      [] { return std::unique_ptr<corevideo::modules::IMediaFrameSource>(new ColdStartClipDecoder()); });
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartClipDecoder>();
   modules.zoom = std::make_unique<NoZoomCaptureSource>();
   modules.captureDevice = std::make_unique<NoCaptureDevice>();
   MediaCore core(std::move(modules));
@@ -256,7 +263,7 @@ TEST(ProgramPixelContinuity, ACuedClipTakenToProgramNeverShowsThePlaceholder) {
   // Program: scene-a, nothing. Preview: scene-b, the clip CUED (paused, gen 1).
   (void)core.applyCommands(corevideo::rpc::Json::Array{
       sceneWithNoBackground("scene-a", "load-scene-graph"),
-      sceneWithClipRoute("scene-b", "set-preview-scene", /*playing=*/false, /*generation=*/1)});
+      sceneWithClipRoute("scene-b", "set-preview-scene")});
   // Let the cue decoder open and settle on its poster. The owner's workers are
   // asynchronous, so this is a bounded wait on real work, not a fixed sleep.
   const auto warmed = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -265,9 +272,9 @@ TEST(ProgramPixelContinuity, ACuedClipTakenToProgramNeverShowsThePlaceholder) {
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
 
-  // The Take: Program becomes scene-b, the clip PLAYING at generation 2.
+  // The Take: Program becomes scene-b, carrying the same clip route.
   (void)core.applyCommands(corevideo::rpc::Json::Array{
-      sceneWithClipRoute("scene-b", "load-scene-graph", /*playing=*/true, /*generation=*/2),
+      sceneWithClipRoute("scene-b", "load-scene-graph"),
       sceneWithNoBackground("scene-a", "set-preview-scene")});
 
   constexpr double kExpectedGreyLuma = 0.114 * 0x10 + 0.587 * 0x10 + 0.299 * 0x10;

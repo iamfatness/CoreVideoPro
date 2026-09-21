@@ -1,3 +1,4 @@
+using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
@@ -234,10 +235,11 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     // Explicit forwarder: satisfies the host seam without widening the god file's public surface.
     IReadOnlyList<SourceRoute> ITransportHost.GetResolvedProgramRoutes() => GetResolvedProgramRoutes();
 
-    // A rollback deliberately does NOT rewind the ledger: a clip that rolled on an unconfirmed
-    // Take may really have gone to air, and reusing its old key could resume a stale decoder.
-    IReadOnlyList<string> ITransportHost.RecordProgramMediaGoLive(IReadOnlyList<SourceRoute> previousProgramRoutes) =>
-        _mediaGoLive.RecordTake(previousProgramRoutes, GetResolvedProgramRoutes());
+    // A pure set diff (#535 slice 3b) — the shell no longer keeps a go-live generation, and a
+    // rollback deliberately does not rewind the CORE's transport state: a clip that rolled on an
+    // unconfirmed Take may really have gone to air.
+    IReadOnlyList<string> ITransportHost.AssetsEnteringProgram(IReadOnlyList<SourceRoute> previousProgramRoutes) =>
+        MediaRoutePlaybackService.AssetsEnteringProgram(previousProgramRoutes, GetResolvedProgramRoutes());
 
     void ITransportHost.RefreshMediaBinPlaybackIndicators(IReadOnlyList<SourceRoute> previousProgramRoutes) =>
         RefreshMediaBinPlaybackIndicators(previousProgramRoutes);
@@ -254,7 +256,7 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
             SelectedMediaAssetPlaying,
             MediaPlaybackStatus);
 
-    IReadOnlyCollection<string> ITransportHost.OperatorPausedMediaAssetIds => _mediaGoLive.OperatorPausedAssetIds;
+    IReadOnlyList<NativeMediaCoreMediaSource> ITransportHost.MediaSources => LatestMediaSources;
 
     void ITransportHost.RestoreMediaSelectionAfterRollback(MediaSelectionState selection)
     {

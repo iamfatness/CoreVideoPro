@@ -41,7 +41,7 @@ inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
     "rtmp-output",
 };
 
-inline constexpr std::array<std::string_view, 24> kNativeMediaCoreCommandTypes = {
+inline constexpr std::array<std::string_view, 25> kNativeMediaCoreCommandTypes = {
     "begin-take-transition",
     "load-scene-graph",
     "set-participant-transform",
@@ -64,6 +64,7 @@ inline constexpr std::array<std::string_view, 24> kNativeMediaCoreCommandTypes =
     "set-caption-enabled",
     "set-brand-kit",
     "set-media-playback",
+    "set-media-transport",
     "recommend-auto-production",
     "set-verbose-diagnostics",
 };

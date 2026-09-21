@@ -609,7 +609,6 @@ if(BUILD_TESTING)
     tests/IsolatedOutputSenderTest.cpp
     tests/OutputDestinationSupervisorTest.cpp
     tests/AudioDspTest.cpp
-    tests/MediaCueHandoffTest.cpp
     tests/GpuVideoEncoderPolicyTest.cpp
     tests/EncoderCapacityProbePolicyTest.cpp
     tests/StreamStartAdmissionTest.cpp
@@ -629,6 +628,7 @@ if(BUILD_TESTING)
     tests/CaptureIngestTest.cpp
     tests/ProgramFramePreviewHealthTest.cpp
     tests/SourceBusTest.cpp
+    tests/MediaTransportPolicyTest.cpp
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
     tests/RouteSourcePolicyTest.cpp

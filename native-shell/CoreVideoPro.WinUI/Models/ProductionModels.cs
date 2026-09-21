@@ -831,7 +831,14 @@ public sealed class ColorGrade
     private static string FormatAxis(int value) => value > 0 ? $"+{value}" : value.ToString();
 }
 
-public sealed class MediaAsset
+/// <summary>
+/// One media-bin row. Every field is immutable EXCEPT <see cref="IsPlaying"/>, which the core's
+/// snapshot updates in place (#535 slice 3b): the bin must reflect a clip's real transport state
+/// at snapshot rate, and replacing the bound <c>MediaBinGroups</c> collection that often is the
+/// 0xc000027b churn this codebase keeps paying for. So the row is observable and the scalar is
+/// written through, never rebuilt.
+/// </summary>
+public sealed class MediaAsset : ObservableObject
 {
     public required string Id { get; init; }
     public required string Name { get; init; }
@@ -843,7 +850,25 @@ public sealed class MediaAsset
     public string FilePath { get; init; } = string.Empty;
     public string FileType { get; init; } = string.Empty;
     public bool IsSelected { get; init; }
-    public bool IsPlaying { get; init; }
+
+    private bool _isPlaying;
+
+    /// <summary>Set in place from the core's <c>mediaSources</c> row on snapshot apply.</summary>
+    public bool IsPlaying
+    {
+        get => _isPlaying;
+        set
+        {
+            if (_isPlaying == value)
+            {
+                return;
+            }
+
+            _isPlaying = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(PlaybackLabel));
+        }
+    }
 
     public string DurationLabel =>
         DurationMs is { } ms ? $"{Math.Round(ms / 100.0) / 10.0:0.#}s" : string.Empty;

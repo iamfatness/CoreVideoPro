@@ -113,6 +113,8 @@ public static class NativeMediaCoreStateMapper
         var brandKit = wire.BrandKit ?? baseSnapshot.BrandKit;
         var overlayState = wire.OverlayState ?? baseSnapshot.OverlayState;
         var mediaPlayback = wire.MediaPlayback ?? baseSnapshot.MediaPlayback;
+        // #535 slice 3b: the core's media transport rows are the shell's play-state truth.
+        var mediaSources = wire.MediaSources ?? baseSnapshot.MediaSources;
         var mergedWarnings = warnings
             .Concat(audioMixSession.Warnings.Where(warning => !warnings.Contains(warning)))
             .Concat(captionTrack.Warnings.Where(warning => !warnings.Contains(warning)))
@@ -191,6 +193,7 @@ public static class NativeMediaCoreStateMapper
             BrandKit = brandKit,
             OverlayState = overlayState,
             MediaPlayback = mediaPlayback,
+            MediaSources = mediaSources,
             Diagnostics = diagnostics,
             Warnings = mergedWarnings,
             MeetingState = wire.MeetingState ?? baseSnapshot.MeetingState,

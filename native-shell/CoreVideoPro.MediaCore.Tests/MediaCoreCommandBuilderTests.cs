@@ -180,9 +180,7 @@ public sealed class MediaCoreCommandBuilderTests
                     MediaAssetId: "clip-intro",
                     MediaAssetName: "Intro Sting",
                     MediaAssetKind: "stinger",
-                    MediaAssetPath: @"C:\media\intro.mp4",
-                    MediaPlaybackKey: "media:clip-intro:live:2",
-                    MediaAssetPlaying: true)
+                    MediaAssetPath: @"C:\media\intro.mp4")
             ],
             Participants = Participants
         });
@@ -197,8 +195,10 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("Intro Sting", route.GetProperty("mediaAssetName").GetString());
         Assert.Equal("stinger", route.GetProperty("mediaAssetKind").GetString());
         Assert.Equal(@"C:\media\intro.mp4", route.GetProperty("mediaAssetPath").GetString());
-        Assert.Equal("media:clip-intro:live:2", route.GetProperty("mediaPlaybackKey").GetString());
-        Assert.True(route.GetProperty("mediaAssetPlaying").GetBoolean());
+        // #535 slice 3b: the core owns play state. A route carries the ASSET and its loop
+        // flag; the playback key and the playing flag are retired from the wire entirely.
+        Assert.False(route.TryGetProperty("mediaPlaybackKey", out _));
+        Assert.False(route.TryGetProperty("mediaAssetPlaying", out _));
         Assert.False(route.GetProperty("mediaAssetLoop").GetBoolean());
     }
 
@@ -219,8 +219,6 @@ public sealed class MediaCoreCommandBuilderTests
                     MediaAssetName: "Backdrop",
                     MediaAssetKind: "background",
                     MediaAssetPath: @"C:\media\bg.mp4",
-                    MediaPlaybackKey: "media:bg-loop",
-                    MediaAssetPlaying: true,
                     MediaAssetLoop: true)
             ],
             Participants = Participants
@@ -231,7 +229,7 @@ public sealed class MediaCoreCommandBuilderTests
             .EnumerateArray()
             .Single();
 
-        Assert.True(route.GetProperty("mediaAssetPlaying").GetBoolean());
+        Assert.False(route.TryGetProperty("mediaAssetPlaying", out _));
         Assert.True(route.GetProperty("mediaAssetLoop").GetBoolean());
     }
 
@@ -830,9 +828,7 @@ public sealed class MediaCoreCommandBuilderTests
             SelectedMediaAssetId = "clip-intro",
             SelectedMediaAssetName = "Intro Sting",
             SelectedMediaAssetKind = "stinger",
-            SelectedMediaAssetPath = @"C:\media\intro.mp4",
-            SelectedMediaPlaybackKey = "media:clip-intro:live:3",
-            SelectedMediaAssetPlaying = true
+            SelectedMediaAssetPath = @"C:\media\intro.mp4"
         });
 
         var playback = withSelection.Single(command => command.Type == "set-media-playback");
@@ -840,9 +836,24 @@ public sealed class MediaCoreCommandBuilderTests
         Assert.Equal("Intro Sting", GetString(playback, "mediaAssetName"));
         Assert.Equal("stinger", GetString(playback, "mediaAssetKind"));
         Assert.Equal(@"C:\media\intro.mp4", GetString(playback, "mediaAssetPath"));
-        Assert.Equal("media:clip-intro:live:3", GetString(playback, "mediaPlaybackKey"));
+        // set-media-playback is SELECTION ONLY (#535 slice 3b): no key, no playing flag.
         Assert.NotNull(playback.ExtensionData);
-        Assert.True(playback.ExtensionData!["playing"].GetBoolean());
+        Assert.False(playback.ExtensionData!.ContainsKey("mediaPlaybackKey"));
+        Assert.False(playback.ExtensionData!.ContainsKey("playing"));
+    }
+
+    [Fact]
+    public void BuildMediaTransportCommand_EmitsPauseAndPlayForOneAsset()
+    {
+        var pause = MediaCoreCommandBuilder.BuildMediaTransportCommand("clip-intro", "pause");
+        Assert.Equal("set-media-transport", pause.Type);
+        Assert.Equal("clip-intro", GetString(pause, "mediaAssetId"));
+        Assert.Equal("pause", GetString(pause, "action"));
+
+        var play = MediaCoreCommandBuilder.BuildMediaTransportCommand("  clip-intro  ", "play");
+        Assert.Equal("set-media-transport", play.Type);
+        Assert.Equal("clip-intro", GetString(play, "mediaAssetId"));
+        Assert.Equal("play", GetString(play, "action"));
     }
 
     [Fact]

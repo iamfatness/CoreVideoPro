@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstring>
 #include <exception>
 #include <functional>
 #include <iostream>
@@ -149,3 +150,9 @@ inline int RUN_ALL_TESTS() {
 // numeric tests read the same in both builds).
 #define EXPECT_NEAR(left, right, tol) \
   ::testing::AssertionStream(((((left) - (right)) < 0 ? ((right) - (left)) : ((left) - (right))) <= (tol)), __FILE__, __LINE__)
+// C-string equality (real gtest provides this; the stub adds it so C-string
+// comparisons read the same in both builds).
+#define EXPECT_STREQ(left, right) \
+  ::testing::AssertionStream((std::strcmp((left), (right)) == 0), __FILE__, __LINE__)
+#define ASSERT_STREQ(left, right) \
+  ::testing::AssertionStream((std::strcmp((left), (right)) == 0), __FILE__, __LINE__)

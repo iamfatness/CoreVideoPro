@@ -9,6 +9,7 @@
 
 #include "modules/StillMediaFrameCache.h"
 
+#include "MediaTestSupport.h"
 #include "compositor/CompositorLayout.h"
 #include "core/MediaCore.h"
 #include "modules/Interfaces.h"
@@ -17,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -103,6 +105,19 @@ class FakeStillDecoder final : public IStillImageDecoder {
   int height = 36;
   bool failDecode = false;
   bool missingByDefault = false;
+};
+
+// #535 slice 3b: proves a still route never reaches the media DECODER factory.
+// It produces nothing — if a still ever opened one of these, the count alone is
+// the failure.
+class CountingMediaDecoder final : public corevideo::modules::IMediaFrameSource {
+ public:
+  CountingMediaDecoder() { ++created; }
+  std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
+      const std::vector<corevideo::modules::CompositorRenderPlanLayer>&, int64_t) override {
+    return {};
+  }
+  static inline std::atomic<int> created{0};
 };
 
 corevideo::rpc::Json::Object stillRouteScene(const std::string& sceneId,
@@ -372,6 +387,51 @@ TEST(StillMediaFrameCache, StillRouteAppearsOnTheSourceBusAsKindStill) {
     }
   }
   EXPECT_FALSE(stillPresent);
+}
+
+// #535 slice 3b: A STILL ROUTE NEVER OPENS A DECODER. `syncMediaTransportsDesired`
+// skips `isStillImageMediaAsset` routes, so the still cache stays their only
+// owner. Without that skip a still route would mint a kind-"media" transport at
+// `media:<assetId>` — the SAME bus id the cache's kind-"still" source uses — and
+// `MediaAssetSource::poll` prefers its transport entry over `setLatest`, so the
+// decoded still would be silently ignored ON AIR. The still is routed on BOTH
+// buses, which is where the old owner's two-request path used to be tempted.
+TEST(StillMediaFrameCache, AStillRouteOnBothBusesOpensNoMediaDecoder) {
+  auto modules = corevideo::modules::createStubModules();
+  CountingMediaDecoder::created = 0;
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingMediaDecoder>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.setStillImageDecoderForTest(std::make_unique<FakeStillDecoder>());
+  ASSERT_NE(mediaCore.mediaTransportsForTest(), nullptr)
+      << "the module set carries a decoder factory, so the transports must exist";
+
+  const auto program = stillRouteScene("still-pgm", "logo-1", "lower-third", "C:\\assets\\logo.png");
+  auto preview = stillRouteScene("still-pvw", "logo-1", "lower-third", "C:\\assets\\logo.png");
+  preview["type"] = corevideo::rpc::Json{std::string("set-preview-scene")};
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{program, preview});
+
+  ASSERT_NE(mediaCore.stillMediaCacheForTest(), nullptr);
+  ASSERT_TRUE(mediaCore.stillMediaCacheForTest()->waitForIdle(5000));
+  // A second tick so the decoded still has actually been ingested by the bus.
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{});
+
+  EXPECT_EQ(CountingMediaDecoder::created.load(), 0)
+      << "a still route opened a media decoder";
+  EXPECT_TRUE(mediaCore.mediaTransportsForTest()->snapshot().empty())
+      << "a still route became a media transport";
+
+  const auto state = mediaCore.sessionState();
+  const auto* sources = state.get("sources");
+  ASSERT_NE(sources, nullptr);
+  bool found = false;
+  for (const auto& s : sources->asArray()) {
+    if (s.getString("sourceId") == "media:logo-1") {
+      found = true;
+      EXPECT_EQ(s.getString("kind"), "still")
+          << "the still's bus id was taken over by a media transport";
+    }
+  }
+  EXPECT_TRUE(found) << "the still never reached the bus";
 }
 
 TEST(StillMediaFrameCache, KindImageRouteIsDecodedRegardlessOfExtension) {

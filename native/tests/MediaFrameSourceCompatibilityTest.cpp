@@ -17,7 +17,7 @@ TEST(MediaFrameSourceCompatibility, DecodesConfiguredProductionMov) {
     return;  // Opt-in integration evidence; unit/CI machines need no media fixture.
   }
 
-  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_TRUE(source != nullptr);
   corevideo::modules::CompositorRenderPlanLayer layer;
   layer.layerId = "production-mov";
@@ -27,7 +27,6 @@ TEST(MediaFrameSourceCompatibility, DecodesConfiguredProductionMov) {
   layer.mediaAssetName = "Production MOV";
   layer.mediaAssetKind = "stinger";
   layer.mediaAssetPath = configuredPath;
-  layer.mediaPlaybackKey = "compatibility-test:1";
   layer.mediaAssetPlaying = true;
   layer.mediaAssetLoop = true;
 
@@ -111,7 +110,7 @@ TEST(MediaFrameSourceCompatibility, DecodedAudioUsesCanonicalLayerRoutingIdentit
     for (uint32_t n = 0; n < samples; ++n) word(n % 48 < 24 ? 8192 : static_cast<uint16_t>(-8192), 2);
     ASSERT_TRUE(file.good());
   }
-  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_TRUE(source != nullptr);
   corevideo::modules::CompositorRenderPlanLayer explicitLayer;
   explicitLayer.kind = "media-video"; explicitLayer.mediaAssetId = "asset-one";
@@ -148,11 +147,11 @@ TEST(MediaFrameSourceCompatibility, ConfiguredFlashFixtureKeepsAllVideoPulseEdge
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
   const auto* fixture = std::getenv("COREVIDEO_TEST_FLASH_BEEP");
   if (!fixture || !*fixture) return; // Explicit real1080p60 H264 fixture from the recorded A/V harness.
-  auto source = corevideo::modules::createMediaFoundationMediaFrameSource();
+  auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_TRUE(source != nullptr);
   corevideo::modules::CompositorRenderPlanLayer layer;
   layer.kind = "media-video"; layer.sourceId = "media:flash-probe"; layer.mediaAssetId = "flash-probe";
-  layer.mediaAssetPath = fixture; layer.mediaAssetPlaying = true; layer.mediaPlaybackKey = "source-edge-proof";
+  layer.mediaAssetPath = fixture; layer.mediaAssetPlaying = true;
   const auto anchor = std::chrono::steady_clock::now();
   std::vector<double> starts, widths;
   bool white = false;
