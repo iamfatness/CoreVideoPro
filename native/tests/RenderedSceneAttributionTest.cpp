@@ -43,7 +43,8 @@ class DeliveringCompositor final : public corevideo::modules::ICompositor {
   int programBufferFrames() const override { return depth; }
   corevideo::modules::ProgramFrame render(
       const corevideo::modules::CompositorRenderPlan& plan,
-      const std::vector<corevideo::modules::VideoFrame>&) override {
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    for (const auto& source : frames) presentedFrameIds[source.participantId] = source.frameId;
     corevideo::modules::ProgramFrame frame;
     frame.frameNumber = ++produced;
     frame.renderPlanId = plan.renderPlanId;
@@ -66,6 +67,7 @@ class DeliveringCompositor final : public corevideo::modules::ICompositor {
   long long deliverySequence = 0;
   bool deliver = true, hasLatest = false;
   corevideo::modules::ProgramFrame latest;
+  std::map<std::string, std::int64_t> presentedFrameIds;
 };
 
 void loadTilesScene(MediaCore& core, const char* sceneId, const std::vector<std::string>& members) {
@@ -521,7 +523,9 @@ bool arrayContains(const corevideo::rpc::Json* node, const std::string& value) {
 
 TEST(TakeRecord, ASharedBackgroundThatKeptItsGenerationIsACut) {
   auto modules = corevideo::modules::createStubModules();
-  modules.compositor = std::make_unique<DeliveringCompositor>();
+  auto compositor = std::make_unique<DeliveringCompositor>();
+  auto* presentedFrames = compositor.get();
+  modules.compositor = std::move(compositor);
   CountingMediaFrameSource::resetAll();
   modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingMediaFrameSource>();
   MediaCore core(std::move(modules));
@@ -538,7 +542,14 @@ TEST(TakeRecord, ASharedBackgroundThatKeptItsGenerationIsACut) {
   // The take's "after" half must be a genuinely LATER picture than the ledger's
   // last observation, so wait (bounded) until the worker has actually decoded
   // past the frame id the ticks above consumed.
-  const std::int64_t presented = CountingMediaFrameSource::frameIdFor("background:bg-1");
+  // Observe the consumer, not the decoder's head: the latter can already be
+  // three frames ahead with its bounded queue full. Waiting for more decoding
+  // without consuming that queue deadlocks the test on a fast worker.
+  const std::int64_t presented = presentedFrames->presentedFrameIds.at("background:bg-1");
+  // Exercise the full three-frame queue deliberately, rather than depending
+  // on whether this machine happens to schedule the producer ahead of us.
+  ASSERT_TRUE(waitForDecoderFrameId("background:bg-1",
+                                    [&](std::int64_t id) { return id >= presented + 3; }));
   ASSERT_TRUE(waitForDecoderFrameId("background:bg-1",
                                     [&](std::int64_t id) { return id > presented + 1; }))
       << "the media worker never decoded past the frame the pre-take ticks presented";
