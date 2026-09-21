@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -401,11 +402,15 @@ class CountingMediaFrameSource final : public corevideo::modules::IMediaFrameSou
 
 // A decoder that cold-starts: the first time a source is asked for, it has
 // nothing yet; every later poll delivers a frame on that source's own clock.
+// An optional gate holds the decoder cold until the test explicitly releases it.
 class ColdStartMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
  public:
+  explicit ColdStartMediaFrameSource(std::shared_ptr<std::atomic<bool>> ready = {})
+      : ready_(std::move(ready)) {}
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
       const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
       int64_t timestampMs) override {
+    if (ready_ && !ready_->load()) return {};
     std::vector<corevideo::modules::VideoFrame> frames;
     for (const auto& layer : layers) {
       if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
@@ -417,6 +422,8 @@ class ColdStartMediaFrameSource final : public corevideo::modules::IMediaFrameSo
   }
   std::set<std::string> polled;
   std::map<std::string, std::int64_t> frameIds;
+ private:
+  std::shared_ptr<std::atomic<bool>> ready_;
 };
 
 corevideo::rpc::Json backgroundScene(const char* sceneId, const char* assetId,
@@ -611,7 +618,10 @@ TEST(TakeRecord, ASharedBackgroundThatRestartedAcrossTheTakeIsRebuilt) {
 TEST(TakeRecord, AMediaBackgroundThatHasNoFrameOnTheFirstProgramTickIsRebuilt) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartMediaFrameSource>();
+  // A worker can poll twice before the first display tick, especially under
+  // TSan. One empty poll does not establish a missing first Program frame.
+  auto decoderReady = std::make_shared<std::atomic<bool>>(false);
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartMediaFrameSource>(decoderReady);
   MediaCore core(std::move(modules));
   core.enableAudioOutputWorker();
 
@@ -632,6 +642,10 @@ TEST(TakeRecord, AMediaBackgroundThatHasNoFrameOnTheFirstProgramTickIsRebuilt) {
     if (id.asString() == "background:bg-1") named = true;
   }
   EXPECT_TRUE(named) << "missingSources did not name background:bg-1";
+  decoderReady->store(true);
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [](MediaCore& c) {
+    return corevideo::testing::busSourceProducing(c, "background:bg-1");
+  })) << "the cold decoder did not recover after its first-frame gate opened";
 }
 
 // Zoom frames are keyed by the BARE participant id while the plan layer carries
@@ -888,9 +902,9 @@ TEST(ZoomSubscriptionChurnPolicyRules, ResolutionCapEvictionAndDepartureAreDisti
 // no cold start left to be honest about. The cue and the live clip are one
 // transport entry, so the Take is an in-place Resume on a decoder that is
 // already holding a poster - and the judge is UNTOUCHED, which is the point:
-// the same `ColdStartMediaFrameSource` that makes the background test read
-// "rebuilt" (no cue, first poll empty) reads "no missing sources" here purely
-// because the decoder was warmed by the cue.
+// the cold-start decoder reads "no missing sources" here because the decoder
+// was warmed by the cue. The missing-background test holds that same decoder's
+// readiness gate closed to establish an absent frame independently of scheduling.
 TEST(TakeRecord, ACuedClipTakenToProgramReadsNoMissingSources) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
