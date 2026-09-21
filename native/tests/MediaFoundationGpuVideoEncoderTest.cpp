@@ -3,6 +3,8 @@
 #include "modules/GpuVideoEncoder.h"
 #include "modules/Interfaces.h"
 #include "modules/MediaFoundationGpuVideoEncoder.h"
+#include "modules/RtmpFfmpegArgs.h"
+#include "modules/HevcTransportStream.h"
 
 #include <d3d11.h>
 
@@ -62,13 +64,18 @@ int normalizedSystemExitCode(int status) {
     return;                                                                        \
   }
 
-// End-to-end proof of the GPU-direct encode path (#521 slice 1, Task 3): the
-// compositor renders a solid mid-gray program into its DEDICATED keyed-mutex
-// encoder texture; the MF hardware H.264 MFT opens that shared handle, converts
-// BGRA->NV12 on the GPU and encodes it; the emitted Annex-B bitstream decodes
-// back to the same mid-gray picture. Self-skips where the hardware encoder or
-// ffmpeg is absent, so CI stays green on machines without either.
-TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) {
+// End-to-end proof of the GPU-direct encode path (#521 slice 1, Task 3;
+// parametrized per codec 2026-09-20, Task 7): the compositor renders a solid
+// mid-gray program into its DEDICATED keyed-mutex encoder texture; the MF
+// hardware MFT bound for `codec` opens that shared handle, converts BGRA->NV12
+// on the GPU and encodes it; the emitted elementary stream (`rawDemuxer` names
+// the ffmpeg demuxer for it) decodes back to the same mid-gray picture. With
+// `alsoMuxToFlv` the raw stream is additionally copy-muxed into FLV, which is
+// the on-rig proof that the muxer the GPU-direct sender feeds accepts this
+// bitstream as-is - for HEVC that means the MFT honoured B-frames OFF.
+// Self-skips where the hardware encoder or ffmpeg is absent, so CI stays green
+// on machines without either.
+static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMuxToFlv) {
   MAKE_MEDIA_FOUNDATION_GPU_ENCODER_OR_SKIP();
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_TRUE(compositor != nullptr);
@@ -96,6 +103,11 @@ TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) {
   (void)compositor->render(plan, {makeEncoderSourceFrame(1, kGray)});
 
   std::vector<uint8_t> encodedBytes;
+  std::vector<uint8_t> transportBytes;
+  std::vector<double> expectedTimes;
+  corevideo::modules::HevcTransportStream transport;
+  int64_t firstDts = -1;
+  int invalidTimestamps = 0;
   int chunksReceived = 0;
   int keyframes = 0;
   std::mutex encodedMutex;
@@ -103,13 +115,25 @@ TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) {
   auto sink = [&](const corevideo::modules::GpuEncodedChunk& chunk) {
     std::lock_guard<std::mutex> lock(encodedMutex);
     encodedBytes.insert(encodedBytes.end(), chunk.data, chunk.data + chunk.size);
+    if (std::string(codec) == "hevc") {
+      std::vector<uint8_t> wire;
+      if (!transport.packetize(chunk, wire)) {
+        ++invalidTimestamps;
+        std::fprintf(stderr, "invalid packet pts=%lld dts=%lld valid=%d\n",
+            static_cast<long long>(chunk.pts100ns), static_cast<long long>(chunk.dts100ns), chunk.timingValid);
+      }
+      if (firstDts < 0) firstDts = chunk.dts100ns;
+      expectedTimes.push_back(static_cast<double>(chunk.pts100ns - firstDts) / 10000000.0);
+      transportBytes.insert(transportBytes.end(), wire.begin(), wire.end());
+    }
     ++chunksReceived;
     if (chunk.keyframe) ++keyframes;
     encodedCv.notify_all();
   };
 
-  const corevideo::modules::GpuVideoEncoderConfig encoderConfig{
+  corevideo::modules::GpuVideoEncoderConfig encoderConfig{
       plan.width, plan.height, plan.fps, 6000, 2.0, "cbr", "high"};
+  encoderConfig.codec = codec;
   if (!encoder->start(encoderConfig, sink)) {
     std::fprintf(stderr, "[mf-gpu-encode-test] skipping: encoder start unavailable on this machine\n");
     return;
@@ -126,6 +150,7 @@ TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) {
     EXPECT_FALSE(frame.encoderSharedTexture.sharedHandleHex.empty())
         << "frameNumber=" << frame.frameNumber << " lacks encoder shared texture";
     corevideo::modules::GpuVideoEncoderFrame encodeFrame;
+    encodeFrame.publishedFrameNumber = frame.encoderSharedTexture.publishedFrameNumber;
     encodeFrame.sharedHandleHex = frame.encoderSharedTexture.sharedHandleHex;
     encodeFrame.width = frame.encoderSharedTexture.width;
     encodeFrame.height = frame.encoderSharedTexture.height;
@@ -141,6 +166,7 @@ TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) {
     EXPECT_GE(encodedBytes.size(), static_cast<size_t>(64));
   }
   encoder->stop();
+  ASSERT_EQ(invalidTimestamps, 0);
   EXPECT_TRUE(encoder->healthy());
 
   const std::filesystem::path ffmpegDir = "C:\\ffmpeg\\bin";
@@ -148,15 +174,16 @@ TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) {
   std::error_code ec;
   if (!std::filesystem::exists(ffmpegExe, ec) || ec) {
     std::fprintf(stderr,
-                 "[  SKIPPED ] MediaFoundationGpuVideoEncoder.DirectSharedTextureH264RoundTrip "
-                 "(ffmpeg absent at C:\\ffmpeg\\bin) - bitstream produced, pixels unverified\n");
+                 "[  SKIPPED ] MediaFoundationGpuVideoEncoder round-trip codec=%s "
+                 "(ffmpeg absent at C:\\ffmpeg\\bin) - bitstream produced, pixels unverified\n",
+                 codec);
     return;
   }
 
   const auto work = std::filesystem::temp_directory_path() /
                     ("corevideo-mf-encode-smoke-" + std::to_string(start.time_since_epoch().count()));
   std::filesystem::create_directories(work, ec);
-  const auto rawPath = work / "program.h264";
+  const auto rawPath = work / (std::string("program.") + rawDemuxer);
   const auto yuvPath = work / "decoded.yuv";
   {
     std::ofstream raw(rawPath, std::ios::binary);
@@ -169,7 +196,7 @@ TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) {
   // the range-independent way to prove the encoded picture is what we rendered.
   // Wrap the whole command in an extra quote pair: cmd.exe strips the outermost
   // quotes, which would otherwise mangle both quoted paths (std::system gotcha).
-  const std::string inner = "\"" + ffmpegExe.string() + "\" -v error -f h264 -i \"" +
+  const std::string inner = "\"" + ffmpegExe.string() + "\" -v error -f " + rawDemuxer + " -i \"" +
                             rawPath.string() + "\" -f rawvideo -pix_fmt yuv420p \"" +
                             yuvPath.string() + "\"";
   const std::string cmd = "\"" + inner + "\"";
@@ -199,6 +226,90 @@ TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) {
   // A real mid-gray picture. Black would read ~16, white ~235, garbage random.
   EXPECT_TRUE(std::fabs(meanLuma - static_cast<double>(kGray)) <= 16.0)
       << "decoded mean coded luma " << meanLuma << " is not within 16 of the encoded gray " << kGray;
+
+  if (alsoMuxToFlv) {
+    // The FLV muxer refuses reordered raw HEVC ("Packet is missing PTS"). This
+    // copy-mux is the on-rig proof that the MFT honoured B-frames OFF.
+    const auto flvPath = rawPath.parent_path() / (std::string("gpu-encode-") + codec + ".flv");
+    corevideo::modules::RtmpFfmpegArgsConfig muxConfig;
+    muxConfig.videoBitstreamInput = true;
+    muxConfig.videoBitstreamCodec = codec;
+    muxConfig.fps = plan.fps;
+    muxConfig.timestampedHevcInput = std::string(codec) == "hevc";
+    muxConfig.endpoint = flvPath.string();
+    auto muxArgs = corevideo::modules::buildRtmpFfmpegArguments(muxConfig);
+    auto muxInput = rawPath;
+    if (muxConfig.timestampedHevcInput) {
+      muxInput = work / "timed-hevc.ts";
+      std::ofstream ts(muxInput, std::ios::binary);
+      ts.write(reinterpret_cast<const char*>(transportBytes.data()), transportBytes.size());
+    }
+    muxArgs.replace(muxArgs.find("pipe:0"), 6, "\"" + muxInput.string() + "\"");
+    muxArgs.insert(muxArgs.find(" -f flv"), " -shortest");
+    const std::string muxInner = "\"" + ffmpegExe.string() + "\" -y" + muxArgs;
+    const int muxStatus = normalizedSystemExitCode(std::system(("\"" + muxInner + "\"").c_str()));
+    EXPECT_EQ(muxStatus, 0) << codec << " raw bitstream did not copy-mux into FLV: " << rawPath.string();
+    if (std::string(codec) == "hevc") {
+      const auto probePath = work / "color.txt";
+      const auto ffprobeExe = ffmpegDir / "ffprobe.exe";
+      const std::string probeInner = "\"" + ffprobeExe.string() +
+          "\" -v error -select_streams v:0 -show_entries stream=color_range,color_space,color_transfer,color_primaries"
+          " -of default=noprint_wrappers=1 \"" + flvPath.string() + "\" > \"" + probePath.string() + "\"";
+      ASSERT_EQ(normalizedSystemExitCode(std::system(("\"" + probeInner + "\"").c_str())), 0);
+      std::ifstream probe(probePath);
+      const std::string color((std::istreambuf_iterator<char>(probe)), std::istreambuf_iterator<char>());
+      EXPECT_TRUE(color.find("color_range=tv") != std::string::npos) << color;
+      EXPECT_TRUE(color.find("color_space=bt709") != std::string::npos) << color;
+      EXPECT_TRUE(color.find("color_transfer=bt709") != std::string::npos) << color;
+      EXPECT_TRUE(color.find("color_primaries=bt709") != std::string::npos) << color;
+      const auto timingPath = work / "timing.txt";
+      const auto timingCmd = "\"" + ffprobeExe.string() +
+          "\" -v error -select_streams v:0 -show_entries packet=pts_time -of csv=p=0 \"" +
+          flvPath.string() + "\" > \"" + timingPath.string() + "\"";
+      ASSERT_EQ(normalizedSystemExitCode(std::system(("\"" + timingCmd + "\"").c_str())), 0);
+      std::ifstream timings(timingPath);
+      double previous = -1, current = 0;
+      int packetCount = 0;
+      while (timings >> current) {
+        if (previous >= 0 && packetCount < static_cast<int>(expectedTimes.size()))
+          EXPECT_TRUE(std::fabs(current - previous - (expectedTimes[packetCount] - expectedTimes[packetCount - 1])) < 0.002);
+        previous = current;
+        ++packetCount;
+      }
+      EXPECT_GE(packetCount, 2); // a burst read from disk must retain video cadence
+      EXPECT_EQ(packetCount, static_cast<int>(expectedTimes.size()));
+    }
+    std::error_code fec;
+    std::filesystem::remove(flvPath, fec);
+  }
+}
+
+TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) { runRoundTrip("h264", "h264", false); }
+TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureHevcRoundTripMuxesWithoutBFrames) { runRoundTrip("hevc", "hevc", true); }
+TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureAv1RoundTrip) { runRoundTrip("av1", "obu", true); }
+
+TEST(MediaFoundationGpuVideoEncoder, HevcRepeatedStartStopWithoutProducerIsBounded) {
+  MAKE_MEDIA_FOUNDATION_GPU_ENCODER_OR_SKIP();
+  corevideo::modules::GpuVideoEncoderConfig config{320, 180, 60, 6000, 2.0, "cbr", "high"};
+  config.codec = "hevc";
+  for (int cycle = 0; cycle < 20; ++cycle) {
+    if (!encoder->start(config, [](const corevideo::modules::GpuEncodedChunk&) {})) {
+      if (cycle == 0) return;  // hardware unavailable
+      ASSERT_TRUE(false) << "HEVC restart failed at cycle " << cycle;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    const auto before = std::chrono::steady_clock::now();
+    encoder->stop();
+    EXPECT_TRUE(std::chrono::steady_clock::now() - before < std::chrono::seconds(2))
+        << "HEVC stop blocked at cycle " << cycle;
+    encoder->stop();  // idempotent, including the activation shutdown
+  }
+}
+
+TEST(MediaFoundationGpuVideoEncoder, HevcRepeatedActiveEncodeShutdown) {
+  // Exercise driver callbacks and outstanding encoded samples, not only an
+  // idle event queue. Each cycle verifies a decodable HEVC payload before stop.
+  for (int cycle = 0; cycle < 10; ++cycle) runRoundTrip("hevc", "hevc", true);
 }
 
 // #521 slice 1, Task 5: an unhealthy or not-running encoder fails submit(). This

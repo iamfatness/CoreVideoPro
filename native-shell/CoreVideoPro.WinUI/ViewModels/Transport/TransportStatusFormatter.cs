@@ -277,9 +277,30 @@ public static class TransportStatusFormatter
             lowered.Contains("broken pipe", StringComparison.Ordinal) ||
             lowered.Contains("process exited", StringComparison.Ordinal) ||
             lowered.Contains("process is not running", StringComparison.Ordinal);
+        // A CODEC refusal (2026-09-20, StreamStartAdmission in the core): `prefix`
+        // below is DERIVED from `detail` for this case (the core's own sentence,
+        // stripped of the sender's "RTMP output failed." wrapper) rather than a
+        // hand-written sentence distinct from it. Appending the raw `detail` after
+        // it, as every other arm does, would print the same sentence twice. This
+        // flag lets the final `return` below skip that append for this arm only.
+        var isCodecRefusal =
+            lowered.Contains("needs enhanced rtmp", StringComparison.Ordinal) ||
+            lowered.Contains("needs a hardware encoder", StringComparison.Ordinal) ||
+            lowered.Contains("hardware encoder failed to start", StringComparison.Ordinal) ||
+            // 2026-09-20: the encoder starts and runs, but the stream it makes is
+            // not deliverable (AV1's near-empty access units). Same arm as its
+            // siblings so the core's named reason reaches the operator verbatim.
+            lowered.Contains("does not produce a usable stream", StringComparison.Ordinal);
         var prefix = lowered.Contains("still applying another output change", StringComparison.Ordinal) ||
                      lowered.Contains("try again", StringComparison.Ordinal) && lowered.Contains("media core", StringComparison.Ordinal)
             ? "Media core is busy applying changes. Wait a moment and try Stream again."
+            // A CODEC refusal (2026-09-20, StreamStartAdmission in the core): the
+            // core's own sentence already names the codec and the fix; pass it
+            // through untouched and never fall into the generic key/URL advice.
+            // Checked BEFORE the destination-refused arm below so a codec refusal
+            // is never mistaken for a connection problem.
+            : isCodecRefusal
+            ? StripRtmpOutputFailedPrefix(detail)
             // The DESTINATION refused us. Checked BEFORE the Program-pixels and
             // generic-RTMP branches because FFmpeg's own words ("Error opening
             // output ... I/O error") are the only evidence that separates "the
@@ -340,7 +361,13 @@ public static class TransportStatusFormatter
                         : "Media core rejected the stream request.";
 
         var normalizedAction = string.IsNullOrWhiteSpace(action) ? "request" : action.Trim();
-        return $"Streaming {normalizedAction} failed: {prefix} {detail}";
+        // The codec-refusal arm's `prefix` IS the (stripped) `detail` - appending
+        // `detail` again would print the core's sentence twice. Every other arm's
+        // `prefix` is a hand-written sentence distinct from the raw `detail`, so
+        // appending it there is a genuine second, complementary piece of evidence.
+        return isCodecRefusal
+            ? $"Streaming {normalizedAction} failed: {prefix}"
+            : $"Streaming {normalizedAction} failed: {prefix} {detail}";
     }
 
     public static string FormatOutputStatusBrief(string? status)
@@ -485,6 +512,17 @@ public static class TransportStatusFormatter
             return "Destination refused";
         }
 
+        // A codec refusal (2026-09-20, StreamStartAdmission) - same substrings as
+        // the full-sentence ladder arm above, so the compact chip never disagrees
+        // with the detailed status about what kind of failure this is.
+        if (normalized.Contains("needs enhanced rtmp", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("needs a hardware encoder", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("hardware encoder failed to start", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("does not produce a usable stream", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Codec refused";
+        }
+
         if (normalized.Contains("RTMP output failed", StringComparison.OrdinalIgnoreCase))
         {
             return "RTMP output failed";
@@ -566,6 +604,20 @@ public static class TransportStatusFormatter
             normalized.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
             normalized.Contains("error", StringComparison.OrdinalIgnoreCase) ||
             normalized.Contains("rejected", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // The core's codec-refusal sentences arrive prefixed "RTMP output failed. "
+    // by the sender (NormalizeStreamingFailureDetail's noisy-prefix list does not
+    // strip it - that list targets internal wire wrappers, not this sender's own
+    // prefix), so this strips just that one prefix without touching anything
+    // NormalizeStreamingFailureDetail already handled.
+    private static string StripRtmpOutputFailedPrefix(string detail)
+    {
+        const string prefix = "RTMP output failed.";
+        var trimmed = detail.Trim();
+        return trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? trimmed[prefix.Length..].Trim()
+            : trimmed;
     }
 
     internal static string NormalizeStreamingFailureDetail(string? message)

@@ -185,6 +185,7 @@ std::string hr(HRESULT result) {
 
 GUID subtypeForCodec(const std::string& codec) {
   if (codec == "hevc" || codec == "h265" || codec == "hvc1") return MFVideoFormat_HEVC;
+  if (codec == "av1" || codec == "av01") return MFVideoFormat_AV1;
   return MFVideoFormat_H264;
 }
 

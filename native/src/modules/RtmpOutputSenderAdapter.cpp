@@ -3,9 +3,12 @@
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
 #include "modules/GpuVideoEncoder.h"
+#include "modules/HevcTransportStream.h"
 #include "modules/MediaFoundationGpuVideoEncoder.h"
 #include "modules/EncoderCapacityProbe.h"
 #include "modules/EncoderPolicy.h"
+#include "modules/StreamStartAdmission.h"
+#include "modules/OutputDestinationSupervisorPolicy.h"
 #include "modules/FfmpegSenderDiagnostics.h"
 #include "modules/SrtFfmpegArgs.h"
 
@@ -657,6 +660,7 @@ class RtmpOutputSender final : public IOutputSender {
       stopFfmpegProcess();
       videoFramePacer_.reset();
       clearFfmpegRetryBackoff();
+      startRefusedInadmissible_ = false;  // Stream off/on re-evaluates the refusal
       if (sender_.status != "idle" && sender_.status != "stopped") {
         sender_.status = "stopped";
         sender_.stoppedAtMs = elapsedMs;
@@ -699,8 +703,21 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     const bool ffmpegBinDirectoryChanged = configuredFfmpegBinDirectory_ != settings->ffmpegBinDirectory;
-    configuredEndpoint_ = protocol_.isSrt ? buildSrtUrl(srtEndpointConfigFrom(*settings)).url
-                                          : buildRtmpEndpoint(*settings);
+    const std::string requestedEndpoint = protocol_.isSrt
+                                              ? buildSrtUrl(srtEndpointConfigFrom(*settings)).url
+                                              : buildRtmpEndpoint(*settings);
+    // THE ONE RE-EVALUATION TRIGGER for a latched configuration refusal. This
+    // block re-applies desired state on EVERY tick (the repeating sync channel),
+    // so the latch is cleared only when an input the verdict actually depends on
+    // has CHANGED - clearing it on every apply would re-attempt and re-log the
+    // refusal at frame rate, which is exactly what the latch exists to stop.
+    if (configuredEndpoint_ != requestedEndpoint ||
+        configuredVideoCodec_ != normalizeVideoCodec(settings->videoCodec) ||
+        configuredEncoderMode_ != normalizeEncoderMode(settings->encoderMode) ||
+        configuredAllowEnhancedRtmp_ != settings->allowEnhancedRtmp) {
+      startRefusedInadmissible_ = false;
+    }
+    configuredEndpoint_ = requestedEndpoint;
     configuredStreamKey_ = settings->streamKey;
     // Held ONLY so the stderr tail can be scrubbed of it before it reaches
     // lastError (and from there /snapshot and the support bundle). The SRT
@@ -724,34 +741,12 @@ class RtmpOutputSender final : public IOutputSender {
       runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     }
     runtimeDetail_ = runtimeProbe_.detail;
-    // Surface a codec/container compatibility note (e.g. H.265 -> H.264 fallback)
-    // so the operator sees why the on-air codec may differ from the request.
-    const auto codecCompatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+    // Surface the codec/container compatibility note: for an admitted E-RTMP
+    // stream it is the advisory that the ingest must support it, and for a
+    // refused one it is the sentence the start-time admission repeats.
+    const auto codecCompatibility = resolveCompatibility();
     if (!codecCompatibility.warning.empty()) {
       runtimeDetail_ += (runtimeDetail_.empty() ? "" : " ") + codecCompatibility.warning;
-    }
-    // LOUD when the requested codec has no supported hardware encoder here.
-    // "AV1 selected, silently got H.264" is the same silent-wrong-output class as
-    // shipping a thumbnail as the program: the stream looks fine and is not what
-    // was asked for. Say which hardware is required instead.
-    unsupportedCodecWarning_.clear();
-    if (!codecHasSupportedHardwareEncoder(configuredVideoCodec_)) {
-      if (configuredVideoCodec_ == "h265") {
-        unsupportedCodecWarning_ =
-            "HEVC/H.265 encoding is not supported in this build; encoding H.264 instead.";
-      } else if (configuredVideoCodec_ == "av1") {
-        unsupportedCodecWarning_ =
-#if defined(__APPLE__)
-            "AV1 encoding needs an NVIDIA Ada (RTX 40-series) GPU; Apple Silicon has no AV1 "
-            "encoder. Encoding H.264 instead.";
-#else
-            "AV1 encoding needs an NVIDIA Ada (RTX 40-series) GPU or newer. Encoding H.264 "
-            "instead.";
-#endif
-      }
-      if (!unsupportedCodecWarning_.empty()) {
-        runtimeDetail_ += (runtimeDetail_.empty() ? "" : " ") + unsupportedCodecWarning_;
-      }
     }
     runtimeAvailable_ = runtimeProbe_.available;
     if (!runtimeProbe_.ffmpegExecutable.empty()) {
@@ -809,7 +804,11 @@ class RtmpOutputSender final : public IOutputSender {
     }
 
     if (!ensureFfmpegProcess(*frame, elapsedMs)) {
-      appendSendProof(frame, "ffmpeg-start-failed");
+      // A latched refusal already wrote its one proof line with the named code;
+      // appending per frame would flood the proof file for the rest of the show.
+      if (!startRefusedInadmissible_) {
+        appendSendProof(frame, "ffmpeg-start-failed");
+      }
       return snapshot();
     }
 
@@ -819,10 +818,7 @@ class RtmpOutputSender final : public IOutputSender {
     writeAudioToFfmpeg();
     if (!videoFramePacer_.shouldWrite(elapsedMs, configuredFps_)) {
       sender_.status = hasWrittenVideo_ ? "live" : "starting";
-      // A live stream still carries the unsupported-codec notice: the operator
-      // asked for AV1/HEVC and is getting H.264, which must not go quiet just
-      // because the stream is otherwise healthy.
-      sender_.warning = unsupportedCodecWarning_;
+      sender_.warning.clear();
       sender_.runtimeDetail = runtimeDetail_;
       sender_.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 0;
       sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
@@ -839,17 +835,23 @@ class RtmpOutputSender final : public IOutputSender {
       sender_.status = "failed";
       ++sender_.retryCount;
       bool queueOverflow = false;
+      bool invalidTiming = false;
 #if defined(_WIN32)
       queueOverflow = useGpuDirect_ && bitstreamFailure_.reason() == BitstreamFailure::QueueOverflow;
+      invalidTiming = useGpuDirect_ && bitstreamFailure_.reason() == BitstreamFailure::InvalidTiming;
 #endif
-      const auto genericFailure = queueOverflow
+      const auto genericFailure = invalidTiming
+          ? std::string("Hardware encoder returned missing or non-monotonic packet timestamps.")
+          : queueOverflow
           ? std::string("Compressed-video queue overflow; the stream transport could not drain encoded video fast enough.")
           : sender_.lastResultCode == "ffmpeg-exited" && !sender_.lastError.empty()
               ? sender_.lastError
               : std::string("FFmpeg stdin write failed; the ") + protocol_.destination +
                     " process stopped or rejected frames.";
       sender_.destinationHealth = "failed";
-      if (queueOverflow) {
+      if (invalidTiming) {
+        sender_.lastResultCode = "encoder-timestamp-invalid";
+      } else if (queueOverflow) {
         sender_.lastResultCode = "bitstream-queue-overflow";
       } else if (sender_.lastResultCode != "ffmpeg-exited") {
         sender_.lastResultCode = "ffmpeg-write-failed";
@@ -875,10 +877,7 @@ class RtmpOutputSender final : public IOutputSender {
 
     hasWrittenVideo_ = true;
     sender_.status = "live";
-    // A live stream still carries the unsupported-codec notice: the operator
-    // asked for AV1/HEVC and is getting H.264, which must not go quiet just
-    // because the stream is otherwise healthy.
-    sender_.warning = unsupportedCodecWarning_;
+    sender_.warning.clear();
     sender_.runtimeDetail = runtimeDetail_;
     sender_.lastFrameNumber = frame->frameNumber;
     // These counters prove local FFmpeg input acceptance, not destination receipt.
@@ -925,6 +924,9 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.runtimeDetail = runtimeDetail_;
     sender_.destinationHealth = runtimeAvailable_ ? "starting" : "warning";
     sender_.lastResultCode = "recovered";
+    sender_.lastError.clear();
+    sender_.framesSent = sender_.audioFramesSent = 0;
+    sender_.bytesSent = sender_.audioBytesSent = 0;
     return snapshot();
   }
 
@@ -1071,6 +1073,18 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   bool ensureFfmpegProcess(const ProgramFrame& frame, double elapsedMs) {
+    // A LATCHED CONFIGURATION REFUSAL DOES NOT RE-ATTEMPT (2026-09-20). This runs
+    // on every program frame, and an inadmissible configuration cannot change by
+    // itself, so re-running the admission here would re-decide identically at ~60
+    // Hz, churn stopFfmpegProcess()/stopGpuEncoder(), and flood the 128-entry
+    // BoundedAsyncLog with one refusal line per frame. The already-published
+    // status / warning / lastResultCode / lastError stand unchanged, so the
+    // operator keeps seeing the named reason; the latch is cleared only by a
+    // settings apply that changes an input the verdict depends on, or by Stream
+    // being switched off (see sync()).
+    if (startRefusedInadmissible_) {
+      return false;
+    }
     const int width = videoWidth(frame);
     const int height = videoHeight(frame);
     const auto pixelFormat = videoPixelFormat(frame);
@@ -1146,7 +1160,13 @@ class RtmpOutputSender final : public IOutputSender {
       return true;
     }
     activeUseGpuDirect_ = false;
-    scheduleFfmpegRetry();
+    if (startRefusedInadmissible_) {
+      // A configuration refusal is not a transient failure: leave the named code
+      // and sentence standing instead of burying them under ffmpeg-retry-backoff.
+      clearFfmpegRetryBackoff();
+    } else {
+      scheduleFfmpegRetry();
+    }
     return false;
   }
 
@@ -1198,10 +1218,13 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   std::string buildFfmpegArguments(int width, int height, const std::string& audioInput, const std::string& videoInputPixelFormat) const {
-    // Resolve the requested codec to an RTMP-compatible one (H.265/AV1 fall back
-    // to H.264 unless enhanced-RTMP is enabled) so the encoded stream always
-    // matches what the FLV transport can carry.
-    const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+    // Resolve the requested codec against THIS protocol's transport. On RTMP,
+    // H.265/AV1 ride enhanced-RTMP when the operator enabled it; without it the
+    // start is REFUSED (startFfmpegProcess), never downgraded. On SRT the
+    // MPEG-TS container carries H.265 natively and no opt-in applies (see
+    // resolveCompatibility). Either way these arguments describe the codec
+    // actually sent.
+    const auto compatibility = resolveCompatibility();
     RtmpFfmpegArgsConfig config;
     config.width = width;
     config.height = height;
@@ -1226,9 +1249,11 @@ class RtmpOutputSender final : public IOutputSender {
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     config.container = protocol_.container;
-    // GPU-direct: video arrives already H.264-encoded on pipe:0; FFmpeg is a pure
-    // -c:v copy muxer. Raw path leaves this false and re-encodes.
+    // GPU-direct HEVC carries encoder timestamps in an internal TS envelope;
+    // other codecs retain their elementary input. FFmpeg copies the video.
     config.videoBitstreamInput = useGpuDirect_;
+    config.videoBitstreamCodec = gpuEncodeSentCodec_;
+    config.timestampedHevcInput = useGpuDirect_ && gpuEncodeSentCodec_ == "hevc";
     return buildRtmpFfmpegArguments(config);
   }
 
@@ -1237,7 +1262,60 @@ class RtmpOutputSender final : public IOutputSender {
     return activeAudioPresent_ && !(value && std::string(value) == "1");
   }
 
+  // One place a refused stream start becomes operator-visible state.
+  //
+  // An INADMISSIBLE CONFIGURATION DOES NOT RIDE THE RETRY LADDER (2026-09-20).
+  // enhanced-rtmp-required and no-hardware-encoder are decided from settings and
+  // this machine, so retrying re-decides them identically forever - and the retry
+  // branch in ensureFfmpegProcess would overwrite lastResultCode with
+  // ffmpeg-retry-backoff within one tick, making the named code unobservable.
+  // The SAME predicate the output supervisor uses (isTerminalResultCode) decides
+  // it, so the two cannot drift: a terminal code stands until the operator changes
+  // settings, which re-syncs and re-decides. gpu-encoder-start-failed is NOT
+  // terminal - a start fault can be transient - so it keeps the ladder.
+  // ONE codec/transport resolution for every call site in this adapter.
+  //
+  // THE ENHANCED-RTMP CLAUSE IS AN RTMP/FLV CONCEPT AND MUST NOT REACH SRT
+  // (2026-09-20). This class serves BOTH egress protocols through one
+  // OutputDestinationSettings struct, so the unguarded matrix refused an SRT
+  // operator who picked H.265 without ticking "Enhanced RTMP" — and told them to
+  // enable an RTMP setting for a stream that never touches FLV. SRT carries
+  // MPEG-TS, which takes H.265 natively: no opt-in exists, none is needed, and
+  // the advisory warning that rides runtimeDetail_ would be a false claim too.
+  // So for SRT the matrix is bypassed entirely and the requested codec stands.
+  //
+  // AV1 IS STILL REFUSED ON SRT: that defect is in our own hardware encoder
+  // (near-empty access units, issue #565 -> `codec-not-deliverable`) and is
+  // protocol-independent, so it is decided in startFfmpegProcess, not here.
+  // The no-hardware-encoder / gpu-encoder-start-failed clauses are likewise
+  // untouched for every protocol.
+  RtmpCompatibilityResult resolveCompatibility() const {
+    if (protocol_.isSrt) {
+      RtmpCompatibilityResult result;
+      result.requestedVideoCodec = normalizeRtmpVideoCodec(configuredVideoCodec_);
+      result.videoCodec = result.requestedVideoCodec;
+      result.container = protocol_.container;  // mpegts, not flv
+      return result;
+    }
+    return resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+  }
+
+  bool refuseStreamStart(const StreamStartAdmission& verdict, const std::string& requestedCodec) {
+    sender_.status = "warning";
+    sender_.warning = verdict.message;
+    sender_.destinationHealth = "warning";
+    sender_.lastResultCode = verdict.resultCode;
+    sender_.lastError = verdict.message;
+    appendSendProof(nullptr, verdict.resultCode);
+    startRefusedInadmissible_ = isTerminalResultCode(verdict.resultCode);
+    ::corevideo::core::nativeLogf("[gpu-encode] stream start REFUSED code=%s codec=%s reason=%s :: %s\n",
+                                 verdict.resultCode.c_str(), requestedCodec.c_str(),
+                                 gpuEncodePathReason_.c_str(), verdict.message.c_str());
+    return false;
+  }
+
   bool startFfmpegProcess(int width, int height, const std::string& videoInputPixelFormat) {
+    startRefusedInadmissible_ = false;
     if (ffmpegExecutable_.empty()) {
       sender_.status = "warning";
       sender_.warning = "FFmpeg executable was not found.";
@@ -1246,15 +1324,71 @@ class RtmpOutputSender final : public IOutputSender {
       sender_.lastError = sender_.warning;
       return false;
     }
-    const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
+    const auto compatibility = resolveCompatibility();
     selectedFfmpegVideoEncoder_ = selectFfmpegVideoEncoder(
         ffmpegExecutable_, compatibility.videoCodec, configuredEncoderMode_);
+    // REFUSE, NEVER DOWNGRADE (2026-09-20). The operator's codec either goes out
+    // on a path that can carry it or the stream does not start, with a stable
+    // code the shell renders. H.264 on the CPU fallback is admitted exactly as
+    // before, so every machine that streams today keeps streaming.
+    //
+    // The hardware / start-failure half of the admission needs the start attempt
+    // and therefore sits BELOW startGpuEncoderIfChosen.
+    {
+      StreamStartAdmissionInputs admission;
+      admission.requestedCodec = compatibility.requestedVideoCodec;
+      admission.compatibilityRefused = compatibility.refused;
+      admission.compatibilityReason = compatibility.reason;
+      // GPU-direct AV1 is not deliverable on this path (2026-09-20). See
+      // StreamStartAdmission.h and docs/superpowers/specs/2026-09-20-gpu-direct-hevc-av1-stream-design.md.
+      // Revisit when the AV1 near-empty-payload defect is understood; the gate
+      // (scripts/validate-gpu-encode.mjs --codec av1) is what flips this back.
+      admission.codecKnownNotDeliverable = (compatibility.requestedVideoCodec == "av1");
+      admission.notDeliverableDetail = "near-empty access units, ~18 kbit/s against the configured bitrate";
+      // Only clauses 1 and 2 can fire here: the hardware / start-failure half of
+      // the admission needs the start attempt and sits below
+      // startGpuEncoderIfChosen. Refusing a not-deliverable codec HERE is
+      // deliberate — it never binds the MFT for a codec we already know cannot
+      // deliver, so no `path=gpu-direct` is ever logged for it.
+      const auto verdict = admitStreamStart(admission);
+      if (verdict.refused) {
+        return refuseStreamStart(verdict, compatibility.requestedVideoCodec);
+      }
+    }
     // Start the GPU encoder BEFORE FFmpeg so start() is the real capability gate:
-    // on failure it clears useGpuDirect_ and FFmpeg is launched in raw mode below.
-    startGpuEncoderIfChosen(width, height);
+    // on failure it clears useGpuDirect_, and the admission below either lets the
+    // raw path carry H.264 or refuses the start outright.
+    if (startGpuEncoderIfChosen(width, height)) {
+      // The proof must name what is actually encoded: on this path FFmpeg is a
+      // pure -c:v copy muxer, so a reader can no longer see h264_nvenc on an
+      // HEVC stream.
+      selectedFfmpegVideoEncoder_ = "gpu-direct-" + gpuEncodeSentCodec_;
+    }
     if (!useGpuDirect_) {
       ::corevideo::core::nativeLogf("[gpu-encode] path=cpu-fallback reason=%s\n",
                                    gpuEncodePathReason_.c_str());
+    }
+    {
+      StreamStartAdmissionInputs admission;
+      admission.requestedCodec = compatibility.requestedVideoCodec;
+      admission.codecHasHardwareEncoder = codecHasSupportedHardwareEncoder(compatibility.requestedVideoCodec);
+      // The GPU path WAS chosen when the encoder was started and start() failed:
+      // startGpuEncoderIfChosen already cleared useGpuDirect_. Without this the
+      // "HEVC/AV1 off the GPU path" clause fires first and an encoder fault is
+      // misreported as "this machine has no hardware encoder", discarding the
+      // detail the encoder recorded.
+      admission.gpuPathChosen = useGpuDirect_ || gpuEncoderStartFailed_;
+      admission.gpuPathReason = gpuEncodePathReason_.c_str();
+      admission.gpuEncoderStartFailed = gpuEncoderStartFailed_;
+      // Never render empty parentheses at the operator.
+      admission.gpuEncoderFailureDetail =
+          gpuEncoderFailureDetail_.empty() ? std::string("unknown failure") : gpuEncoderFailureDetail_;
+      const auto verdict = admitStreamStart(admission);
+      if (verdict.refused) {
+        stopGpuEncoder();
+        useGpuDirect_ = false;
+        return refuseStreamStart(verdict, compatibility.requestedVideoCodec);
+      }
     }
 #if defined(_WIN32)
     SECURITY_ATTRIBUTES securityAttributes{};
@@ -1541,11 +1675,12 @@ class RtmpOutputSender final : public IOutputSender {
     return v && std::string(v) == "0";
   }
 
-  // A hardware H.264 encoder session is (probably) available. Never REFUSE on a
-  // pending/unknown probe (the TESTER RULE) — encoder->start() is the real gate.
-  bool gpuEncoderProbeAllows(int width, int height) const {
+  // A hardware encoder session for THIS codec is (probably) available. Never
+  // REFUSE on a pending/unknown probe (the TESTER RULE) — encoder->start() is the
+  // real gate. `codec` is the RtmpCompatibility spelling; the probe key is canonical.
+  bool gpuEncoderProbeAllows(const std::string& codec, int width, int height) const {
     const auto cap = EncoderCapacityCache::instance().lookup(
-        EncoderProbeKey{"h264", width, height, (std::max)(1, configuredFps_)});
+        EncoderProbeKey{canonicalProbeCodec(codec), width, height, (std::max)(1, configuredFps_)});
     if (!cap.probed) return true;
     return cap.hardwareAvailable && cap.hardwareSessionCeiling > 0;
   }
@@ -1555,15 +1690,18 @@ class RtmpOutputSender final : public IOutputSender {
     GpuEncodePathInputs in;
     in.platformSupported = static_cast<bool>(gpuEncoderFactory_);
     in.forcedOffByEnv = gpuForcedOffByEnv();
-    const bool probeAllows = gpuEncoderProbeAllows(width, height);
+    const auto compatibility = resolveCompatibility();
+    const std::string sentCodec = canonicalProbeCodec(compatibility.videoCodec);  // "h264"|"hevc"|"av1"
+    const bool probeAllows = gpuEncoderProbeAllows(compatibility.videoCodec, width, height);
     in.hardwareEncoderAvailable = in.platformSupported && probeAllows;
     in.sessionAvailable = probeAllows;
-    const auto compatibility = resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_);
-    const bool codecIsH264 = compatibility.videoCodec == "h264";
+    const bool codecHasGpuEncoder =
+        codecHasSupportedHardwareEncoder(normalizeVideoCodec(compatibility.videoCodec)) && probeAllows;
     const bool frameHasEncoderTexture = !frame.encoderSharedTexture.sharedHandleHex.empty();
     const char* reason = "cpu-fallback";
-    const auto path = chooseStreamEncodePath(in, codecIsH264, frameHasEncoderTexture, &reason);
+    const auto path = chooseStreamEncodePath(in, sentCodec, codecHasGpuEncoder, frameHasEncoderTexture, &reason);
     gpuEncodePathReason_ = reason;
+    gpuEncodeSentCodec_ = sentCodec;
     return path;
   }
 
@@ -1573,6 +1711,8 @@ class RtmpOutputSender final : public IOutputSender {
   // mode with no encoder feeding it. The sink writes the compressed bitstream to
   // FFmpeg's stdin (populated right after this returns).
   bool startGpuEncoderIfChosen(int width, int height) {
+    gpuEncoderStartFailed_ = false;
+    gpuEncoderFailureDetail_.clear();
     if (!useGpuDirect_) return false;
     gpuEncoder_ = gpuEncoderFactory_ ? gpuEncoderFactory_() : nullptr;
     if (!gpuEncoder_) {
@@ -1588,6 +1728,7 @@ class RtmpOutputSender final : public IOutputSender {
     cfg.keyframeIntervalSeconds = configuredKeyframeIntervalSeconds_;
     cfg.rateControl = configuredRateControl_;
     cfg.h264Profile = configuredH264Profile_.empty() ? "high" : configuredH264Profile_;
+    cfg.codec = gpuEncodeSentCodec_;
 #if defined(_WIN32)
     bitstreamFailure_.reset();
     bitstreamWriterStop_.store(false);
@@ -1600,17 +1741,19 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
     });
     if (!ok) {
+      gpuEncoderFailureDetail_ = gpuEncoder_->lastFailure();
       gpuEncoder_.reset();
       useGpuDirect_ = false;
       gpuEncodePathReason_ = "encoder-start-failed";
-      return false;  // startFfmpegProcess logs the unified cpu-fallback line
+      gpuEncoderStartFailed_ = true;
+      return false;  // startFfmpegProcess refuses, or logs the cpu-fallback line
     }
 #if defined(_WIN32)
     bitstreamWriterExited_.store(false);
     bitstreamWriterThread_ = std::thread([this] { bitstreamWriterLoop(); });
 #endif
-    ::corevideo::core::nativeLogf("[gpu-encode] path=gpu-direct %dx%d@%d bitrate=%.1fMbps\n", width,
-                                 height, cfg.fps, sender_.bitrateMbps);
+    ::corevideo::core::nativeLogf("[gpu-encode] path=gpu-direct codec=%s %dx%d@%d bitrate=%.1fMbps\n",
+                                 cfg.codec.c_str(), width, height, cfg.fps, sender_.bitrateMbps);
     return true;
   }
 
@@ -1649,24 +1792,38 @@ class RtmpOutputSender final : public IOutputSender {
         ::corevideo::core::nativeLogf("[gpu-encode] bitstream queue overflow; queuedBytes=%zu queuedChunks=%zu incomingBytes=%zu; sender unhealthy -> supervisor\n", bitstreamQueuedBytes_, bitstreamQueue_.size(), chunk.size);
         return;
       }
-      bitstreamQueue_.emplace_back(chunk.data, chunk.data + chunk.size);
+      bitstreamQueue_.push_back({std::vector<uint8_t>(chunk.data, chunk.data + chunk.size), chunk});
       bitstreamQueuedBytes_ += chunk.size;
     }
     bitstreamQueueCv_.notify_one();
   }
 
   void bitstreamWriterLoop() {
+    HevcTransportStream transport;
+    std::vector<uint8_t> wire;
     while (!bitstreamWriterStop_.load() && !bitstreamFailure_.failed()) {
-      std::vector<uint8_t> bytes;
+      QueuedBitstream packet;
       {
         std::unique_lock<std::mutex> lock(bitstreamQueueMutex_);
         bitstreamQueueCv_.wait(lock, [this] { return bitstreamWriterStop_.load() || !bitstreamQueue_.empty(); });
         if (bitstreamWriterStop_.load()) break;
-        bytes = std::move(bitstreamQueue_.front());
+        packet = std::move(bitstreamQueue_.front());
         bitstreamQueue_.pop_front();
-        bitstreamQueuedBytes_ -= bytes.size();
+        bitstreamQueuedBytes_ -= packet.bytes.size();
       }
-      writeBitstreamToFfmpeg(bytes.data(), bytes.size());
+      packet.metadata.data = packet.bytes.data();
+      if (gpuEncodeSentCodec_ == "hevc") {
+        if (!transport.packetize(packet.metadata, wire)) {
+          bitstreamFailure_.record(BitstreamFailure::InvalidTiming);
+          ::corevideo::core::nativeLogf("[gpu-encode] invalid encoder packet timing pts=%lld dts=%lld valid=%d\n",
+              static_cast<long long>(packet.metadata.pts100ns), static_cast<long long>(packet.metadata.dts100ns),
+              packet.metadata.timingValid ? 1 : 0);
+          break;
+        }
+        writeBitstreamToFfmpeg(wire.data(), wire.size());
+      } else {
+        writeBitstreamToFfmpeg(packet.bytes.data(), packet.bytes.size());
+      }
     }
     bitstreamWriterExited_.store(true);
   }
@@ -1731,6 +1888,7 @@ class RtmpOutputSender final : public IOutputSender {
     if (!gpuEncoder_->healthy()) return false;
     if (frame.encoderSharedTexture.sharedHandleHex.empty()) return true;
     GpuVideoEncoderFrame f;
+    f.publishedFrameNumber = frame.encoderSharedTexture.publishedFrameNumber;
     f.sharedHandleHex = frame.encoderSharedTexture.sharedHandleHex;
     f.width = frame.encoderSharedTexture.width;
     f.height = frame.encoderSharedTexture.height;
@@ -2077,7 +2235,7 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"runtimeCandidates\":" + runtimeCandidatesJson(runtimeProbe_.candidates) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_).videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_) +
+               ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveCompatibility().videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_) +
               ",\"packagingSignal\":\"sync-ffmpeg-runtime-to-app.ps1 stages ffmpeg.exe and corevideo-ffmpeg-runtime.json when FFmpeg is available or unavailable\"}");
   }
 
@@ -2094,7 +2252,7 @@ class RtmpOutputSender final : public IOutputSender {
               ",\"renderPlanId\":" + jsonString(frame->renderPlanId) +
               ",\"videoCodec\":" + jsonString(configuredVideoCodec_) +
               ",\"encoderMode\":" + jsonString(configuredEncoderMode_) +
-              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveRtmpCompatibility(configuredVideoCodec_, configuredAllowEnhancedRtmp_).videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_);
+              ",\"ffmpegVideoEncoder\":" + jsonString(selectedFfmpegVideoEncoder_.empty() ? ffmpegVideoEncoderFor(resolveCompatibility().videoCodec, configuredEncoderMode_) : selectedFfmpegVideoEncoder_);
     }
     line += "}";
     writeLine(line);
@@ -2124,7 +2282,6 @@ class RtmpOutputSender final : public IOutputSender {
   FfmpegSenderProtocol protocol_;
   // Set when the requested codec has no supported hardware encoder here, so the
   // operator is told rather than silently receiving a different codec.
-  std::string unsupportedCodecWarning_;
   RuntimeProbe runtimeProbe_;
   std::string runtimeDetail_;
   bool runtimeAvailable_ = false;
@@ -2200,7 +2357,8 @@ class RtmpOutputSender final : public IOutputSender {
   pid_t ffmpegPid_ = 0;
 #endif
   // GPU-direct encode (#521 slice 1). When chosen at process start, the compositor's
-  // dedicated keyed-mutex encoder texture is fed to the MF hardware H.264 MFT and the
+  // dedicated keyed-mutex encoder texture is fed to the MF hardware MFT for the sent
+  // codec (h264 / hevc / av1) and the
   // ~6 Mbps bitstream is written to FFmpeg (demoted to a -c:v copy muxer). The raw
   // path is the fallback for every non-capable machine and COREVIDEO_GPU_ENCODE=0.
   // The factory is injectable for tests; default is the real MF encoder.
@@ -2209,11 +2367,24 @@ class RtmpOutputSender final : public IOutputSender {
   bool useGpuDirect_ = false;        // desired path for the next/running process
   bool activeUseGpuDirect_ = false;  // path baked into the RUNNING FFmpeg args
   std::string gpuEncodePathReason_ = "cpu-fallback";
+  // The codec actually sent, canonical ("h264"|"hevc"|"av1"): it rides the
+  // encoder config, the muxer demuxer choice and the send proof, so what is
+  // encoded, what is muxed and what is reported cannot disagree.
+  std::string gpuEncodeSentCodec_ = "h264";
+  bool gpuEncoderStartFailed_ = false;
+  // Set when the last start was refused with a TERMINAL (configuration) code,
+  // so ensureFfmpegProcess does not put it on the FFmpeg retry ladder.
+  bool startRefusedInadmissible_ = false;
+  std::string gpuEncoderFailureDetail_;
   bool firstBitstreamLogged_ = false;
 #if defined(_WIN32)
   std::mutex bitstreamQueueMutex_;
   std::condition_variable bitstreamQueueCv_;
-  std::deque<std::vector<uint8_t>> bitstreamQueue_;
+  struct QueuedBitstream {
+    std::vector<uint8_t> bytes;
+    GpuEncodedChunk metadata;
+  };
+  std::deque<QueuedBitstream> bitstreamQueue_;
   size_t bitstreamQueuedBytes_ = 0;
   std::thread bitstreamWriterThread_;
   std::atomic<bool> bitstreamWriterStop_{true};

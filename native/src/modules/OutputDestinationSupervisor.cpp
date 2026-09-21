@@ -59,16 +59,22 @@ SupervisedOutputSender::Destination& SupervisedOutputSender::destinationLocked(c
 }
 
 void SupervisedOutputSender::noteDesired(const std::vector<std::string>& destinations, double elapsedMs) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  for (auto& [name, destination] : destinations_) {
-    destination.desiredActive = false;
+  std::vector<std::string> rearmed;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [name, destination] : destinations_) {
+      const bool active = std::find(destinations.begin(), destinations.end(), name) != destinations.end();
+      if (active && !destination.desiredActive) rearmed.push_back(name);
+      destination.desiredActive = active;
+    }
+    for (const auto& name : destinations) {
+      if (name.empty()) continue;
+      auto& destination = destinationLocked(name);
+      destination.desiredActive = true;
+      destination.lastElapsedMs = elapsedMs;
+    }
   }
-  for (const auto& name : destinations) {
-    if (name.empty()) continue;
-    auto& destination = destinationLocked(name);
-    destination.desiredActive = true;
-    destination.lastElapsedMs = elapsedMs;
-  }
+  for (const auto& name : rearmed) recover(name, elapsedMs, "Operator re-armed destination.");
 }
 
 // A record we will not reason about. A malformed reply must never be able to
@@ -109,6 +115,9 @@ OutputSenderSession SupervisedOutputSender::fail(const std::string& destination,
 }
 
 OutputSenderSession SupervisedOutputSender::recover(const std::string& destination, double elapsedMs, const std::string& reason) {
+  // Invalidate the child's old cached observation BEFORE admitting a new
+  // generation. AsyncOutputSender fences older queued/in-flight results too.
+  auto session = child_ ? child_->recover(destination, elapsedMs, reason) : OutputSenderSession{};
   // This is the OPERATOR reset every house supervisor is required to have: it
   // clears give-up, drops the failure streak and retires the current generation
   // so nothing in flight from the old run can be read as the new run's health.
@@ -125,10 +134,12 @@ OutputSenderSession SupervisedOutputSender::recover(const std::string& destinati
       record.failureClass = "none";
       record.healthy = false;
       record.lastProgressAgeMs = -1;
+      record.status = record.destinationHealth = "starting";
+      record.lastResultCode = "recovery-pending";
+      record.lastError.clear();
       record.lastElapsedMs = elapsedMs;
     }
   }
-  auto session = child_ ? child_->recover(destination, elapsedMs, reason) : OutputSenderSession{};
   applyReportsTo(session);
   return session;
 }

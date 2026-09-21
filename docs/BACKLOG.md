@@ -61,6 +61,18 @@ drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
 | 3 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) + T2 leftovers | Signing + first external install | Turnkey dies at SmartScreen. Calendar, not code. |
 | 4 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) step 1 | Hold outgoing picture on a plain cut | Needs owner ruling on Take semantics. |
 
+## Unranked — test-install findings (2026-09-21)
+
+| Issue | Item |
+|---|---|
+| [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Switching AV1 to HEVC retains stale terminal failure on retry. |
+| [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | HEVC YouTube ingest reports excellent health but remains Preparing stream with offline viewer; blocks #566 receiver acceptance. |
+| [#570](https://github.com/iamfatness/CoreVideoPro/issues/570) | Native-core access violation during HEVC recovery; asynchronous MFT shutdown missing. |
+| [#571](https://github.com/iamfatness/CoreVideoPro/issues/571) | Native shutdown releases WIC overlay factory after its COM worker exits. |
+| [#572](https://github.com/iamfatness/CoreVideoPro/issues/572) | Healthy stream startup can roll back before the supervisor observes its first progress. |
+| [#573](https://github.com/iamfatness/CoreVideoPro/issues/573) | Two-clip audio summing fixture can cancel its test tones under sanitizer scheduling. |
+| [#574](https://github.com/iamfatness/CoreVideoPro/issues/574) | Redundant GPU copy in Program delivery misses deadlines during sustained HEVC streaming. |
+
 ## Papercuts (not competitive)
 
 | Issue | Item |
@@ -69,7 +81,7 @@ drops; 12-min multiview soak: 0 stalls). Shipped in `beta-2026-09-18-c80ee51`.
 | [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | ISO writer `framesWritten`/`bytesWritten` read 0 mid-recording for async writers (status-only; files record fine) |
 | [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points — needs UI design; was previous Now #4 |
 | [#530](https://github.com/iamfatness/CoreVideoPro/issues/530) | Control API `programPreview` vs `program-preview` |
-| [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct leftover slices #524 #525 |
+| [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct leftover slices #524 #525. **2026-09-20:** HEVC on GPU-direct SHIPPED (1080p60 gate green); **AV1 is REFUSED, not shipped** - it binds the AV1 MFT and runs at the correct cadence but emits near-empty access units (~54 bytes/frame vs H.264's ~12,483 at 1080p60, ~18 kbit/s against 6 Mbps), so it refuses at start with `codec-not-deliverable` pending the payload defect ([#565](https://github.com/iamfatness/CoreVideoPro/issues/565); `node scripts/validate-gpu-encode.mjs --codec av1` is what flips it back). Refuse-never-downgrade shipped (sub-project 1 of the 2026-09-20 spec); sub-project 2 (raw fallback at real time) and sub-project 3 (recording/ISO on the seam, absorbs #525) are next and need their own specs. |
 | [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) | Program render budget at 16 guests + 1080p wall |
 | [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | Fake RTMP `bytesSent` / `latencyMs` |
 | [#509](https://github.com/iamfatness/CoreVideoPro/issues/509) | Operator stutter / 197 ms rebuild |

@@ -305,3 +305,27 @@ TEST(OutputLifecyclePolicy, AFirstStartIsNotReportedAsAProblem) {
   EXPECT_EQ(corevideo::core::publishedSenderStatus("starting", "preparing", supervisor), "starting");
   EXPECT_EQ(corevideo::core::publishedSenderDestinationHealth("starting", "preparing", supervisor), "starting");
 }
+
+TEST(OutputLifecyclePolicy, AdapterProgressBeforeFirstSupervisorPollRemainsStarting) {
+  corevideo::modules::OutputSupervisorState supervisor;
+  EXPECT_EQ(corevideo::core::publishedSenderStatus("live", "producing", supervisor), "starting");
+  EXPECT_EQ(corevideo::core::publishedSenderDestinationHealth("ok", "producing", supervisor), "starting");
+  supervisor.healthy = true;
+  supervisor.acceptedUnits = 1;
+  supervisor.lastProgressAgeMs = 0;
+  EXPECT_EQ(corevideo::core::publishedSenderStatus("live", "producing", supervisor), "live");
+  EXPECT_EQ(corevideo::core::publishedSenderDestinationHealth("ok", "producing", supervisor), "ok");
+}
+
+TEST(OutputLifecyclePolicy, MissingSupervisorProgressAfterObservationStillWarns) {
+  corevideo::modules::OutputSupervisorState supervisor;
+  supervisor.acceptedUnits = 1;
+  supervisor.lastProgressAgeMs = 1100;
+  EXPECT_EQ(corevideo::core::publishedSenderStatus("live", "producing", supervisor), "warning");
+  EXPECT_EQ(corevideo::core::publishedSenderDestinationHealth("ok", "producing", supervisor), "warning");
+  supervisor.acceptedUnits = 0;
+  supervisor.lastProgressAgeMs = -1;
+  supervisor.consecutiveFailures = 1;
+  EXPECT_EQ(corevideo::core::publishedSenderStatus("live", "producing", supervisor), "warning");
+  EXPECT_EQ(corevideo::core::publishedSenderDestinationHealth("ok", "producing", supervisor), "warning");
+}

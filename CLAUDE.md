@@ -2183,6 +2183,53 @@ GPU→CPU-readback→~186 MB/s raw pipe→external ffmpeg path that capped 1080p
 realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
 (VideoToolbox) are later slices.
 
+- **HEVC AND AV1 RIDE THE SAME PATH (2026-09-20, owner rulings after the YouTube
+  "not enough data" incident).** `GpuVideoEncoderConfig::codec` selects the hardware
+  MFT (NVIDIA H.264/HEVC/AV1 Encoder MFTs); HEVC is bound with
+  `CODECAPI_AVEncMPVDefaultBPictureCount = 0` because the FLV muxer refuses
+  reordered raw HEVC ("Packet is missing PTS", measured); bitstream mode names the
+  raw demuxer per codec (`-f h264|hevc|obu`) and copies into FLV, where this FFmpeg
+  writes the enhanced-RTMP fourcc itself. **A codec the machine or destination
+  cannot honor REFUSES the start** (`StreamStartAdmission.h`: `enhanced-rtmp-required`,
+  `codec-not-deliverable`, `no-hardware-encoder`, `gpu-encoder-start-failed`) — the 2026-09-20 failure was a
+  silent H.265→H.264 downgrade onto the raw path at 0.87x real time. H.264 keeps
+  every path it had; HEVC/AV1 are GPU-direct or nothing until the raw fallback is
+  made real-time (sub-project 2). The 2026-08-06 HEVC exclusion in
+  `EncoderPolicy.h` was reversed by the owner on 2026-09-20 (patent exposure
+  accepted). **AV1 does NOT ship: it is REFUSED with `codec-not-deliverable` — read
+  the AV1 bullet at the end of this section before touching it.**
+  Gate: `node scripts/validate-gpu-encode.mjs --codec h264|hevc|av1` (the av1 leg
+  passes by observing the refusal, never by streaming);
+  the per-codec real-GPU round-trips in `MediaFoundationGpuVideoEncoderTest` are
+  Windows-only and must run on a `COREVIDEO_WITH_MF_ENCODER=ON` build before merge.
+  Spec: `docs/superpowers/specs/2026-09-20-gpu-direct-hevc-av1-stream-design.md`.
+
+- **`enhanced-rtmp-required` IS RTMP-ONLY (2026-09-20 fix wave).**
+  `RtmpOutputSenderAdapter` serves RTMP/RTMPS **and SRT egress** through one class
+  and one `OutputDestinationSettings`, and the compatibility refusal shipped with
+  no protocol guard — so an SRT operator who picked H.265 without ticking
+  "Enhanced RTMP (H.265 / AV1)" got NO stream plus a sentence telling them to
+  enable an RTMP setting for a transport that never touches FLV. Enhanced RTMP is
+  an RTMP/FLV concept; SRT carries MPEG-TS, which takes H.265 natively. The guard
+  is `RtmpOutputSenderAdapter::resolveCompatibility()` — the ONE resolution every
+  call site in that class goes through — which bypasses the matrix entirely when
+  `protocol_.isSrt`, so neither the refusal NOR its E-RTMP advisory (which rides
+  `runtimeDetail_`) can claim an RTMP constraint on an SRT destination. **Nothing
+  else moved:** AV1 on SRT still refuses `codec-not-deliverable` (that defect is
+  in our encoder and is protocol-independent), and the `no-hardware-encoder` /
+  `gpu-encoder-start-failed` clauses are untouched for every protocol. Pinned at
+  the SENDER, not the policy: `OutputSenderAdapter.SrtNeverRefusesH265ForThe
+  EnhancedRtmpCheckbox` / `RtmpStillRefusesH265WithoutEnhancedRtmp` /
+  `SrtStillRefusesAv1AsNotDeliverable` /
+  `RtmpRefusesAv1AsNotDeliverableEvenWithEnhancedRtmpOn` in
+  `MediaCoreCommandTest.cpp`. Those last two exist because
+  `StreamStartAdmissionTest` proves the POLICY honors `codecKnownNotDeliverable`
+  and NOTHING proved the sender ever SET it — deleting
+  `admission.codecKnownNotDeliverable = (... == "av1")` left every C++ and shell
+  test green (the #481 rule again). They start no FFmpeg: the frames carry full
+  program BGRA with no encoder shared texture, which pins
+  `chooseStreamEncodePath` to the CPU fallback on every build.
+
 - **The seam is platform-free.** `modules/GpuVideoEncoder.h` — `GpuVideoEncoder`
   (start/submit/stop/healthy), `GpuVideoEncoderConfig/Frame`, `GpuEncodedChunk(Sink)`,
   and the pure `GpuEncodePathPolicy` + `chooseStreamEncodePath` (unit-tested, no GPU).
@@ -2216,9 +2263,11 @@ realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
 - **Path is chosen ONCE at stream start**, logged `[gpu-encode] path=<gpu-direct|cpu-fallback>
   reason=<...>`. GPU-direct requires: an MF encoder impl on the platform, a hardware
   session the `EncoderCapacityProbe` allows (never REFUSED on a pending probe — the
-  TESTER rule; `encoder->start()` is the real gate), the resolved codec is H.264 (an
-  enhanced-RTMP HEVC/AV1 stream stays raw), the compositor is exporting the encoder
-  texture on the starting frame, and `COREVIDEO_GPU_ENCODE` is not `0`. Otherwise the
+  TESTER rule; `encoder->start()` is the real gate), a hardware MFT exists for the
+  resolved codec (H.264/HEVC/AV1 as of 2026-09-20 — see the bullet above; a codec the
+  machine or destination cannot honor REFUSES the start instead of downgrading), the
+  compositor is exporting the encoder texture on the starting frame, and
+  `COREVIDEO_GPU_ENCODE` is not `0`. Otherwise the
   raw NV12/BGRA pipe path (unchanged) carries the stream. The encoder starts BEFORE
   ffmpeg so a failed `start()` downgrades to raw before ffmpeg is launched in bitstream
   mode. On device loss the encoder retires (`GetDeviceRemovedReason`), `healthy()` goes
@@ -2251,6 +2300,47 @@ realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
   decoded coded-Y-plane luma within 16 of the encoded gray; self-skips without a hardware
   MFT or ffmpeg; plus the submit-fails-when-not-running supervisor contract),
   `RtmpFfmpegArgsTest.cpp` (bitstream mode).
+- **AV1 SHIPS REFUSED, NOT BROKEN (2026-09-20, this rig, RTX 4090 / driver
+  616.92 / Windows SDK 10.0.26100; issue
+  [#565](https://github.com/iamfatness/CoreVideoPro/issues/565)).** GPU-direct AV1
+  **binds the hardware AV1 MFT, starts, and runs at the correct cadence** — and
+  emits **near-empty access units**: ~54 bytes per sample at 1920x1080@60 (~49
+  after a normal 5,892-byte keyframe) against H.264's ~12,483 on the same build,
+  i.e. a muxed stream of **~18 kbit/s against a configured 6 Mbps**, three
+  consecutive 30 s runs. The 320x180 / 12-frame unit round-trip
+  (`DirectSharedTextureAv1RoundTrip`) passes; only the full-resolution, full-rate
+  stream is empty. H.264 and HEVC pass the identical 1080p60 gate on the same
+  build. A codec that streams at 0.3% of its configured bitrate is exactly the
+  defect the refuse-never-downgrade rule exists to remove, so **AV1 is REFUSED at
+  start** with its own code, `codec-not-deliverable`
+  (`StreamStartAdmission.h`: `codecKnownNotDeliverable` + `notDeliverableDetail`;
+  TERMINAL in `isTerminalResultCode`, so it bypasses the supervisor ladder — no
+  retry can change settings-shaped truth). The operator reads *"AV1 does not
+  produce a usable stream on this machine's hardware encoder (near-empty access
+  units, ~18 kbit/s against the configured bitrate). Choose H.264 or H.265."* and
+  the compact chip reads `Codec refused`. It is refused BEFORE
+  `startGpuEncoderIfChosen`, so no `path=gpu-direct codec=av1` is ever logged.
+  **THREE HYPOTHESES ARE ELIMINATED — they are the expensive part of this work
+  and must not be repeated:** (1) *deep encoder pipeline (lookahead / alt-ref)* —
+  low-latency mode is accepted (`av1 b-frames off via low-latency-mode`, the same
+  ladder HEVC uses) and the rate was unchanged; (2) *FFmpeg's `obu` demuxer on a
+  live pipe* — a 10 s 1080p60 `av1_nvenc` OBU stream through the sender's exact
+  flags gave 600/600 frames, 1.15 MB in / 1.18 MB out; (3) *our async MFT loop
+  reading one output per HaveOutput event* — instrumented, `av1 output drain:
+  events=1260 samples=1260 mean=1.00 max-per-event=1`, identical to H.264 (commit
+  `6cedb9b7` is defensive correctness and a no-op here). What is left is the
+  encoder itself producing empty access units — vendor/driver level, and
+  deliberately not this sub-project's work.
+  **What flips it back:** one named predicate,
+  `admission.codecKnownNotDeliverable = (compatibility.requestedVideoCodec == "av1")`
+  in `RtmpOutputSenderAdapter::startFfmpegProcess` (an obvious home for a future
+  rig-specific override) — and the thing that DECIDES is the gate,
+  `node scripts/validate-gpu-encode.mjs --codec av1`, which today **passes by
+  observing the refusal** (asserts `stream start REFUSED
+  code=codec-not-deliverable` and that NO `path=gpu-direct codec=av1` stream was
+  established) and prints `av1: REFUSED as designed (codec-not-deliverable)` so
+  nobody mistakes the pass for AV1 working. It must stop passing by refusal and
+  start passing by streaming before AV1 can be called done.
 
 ## Secrets at rest + OAuth return URI (beta S4, 2026-07-18)
 

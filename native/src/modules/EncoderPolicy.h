@@ -9,7 +9,11 @@ namespace corevideo::modules {
 //
 // Supported hardware tiers: NVIDIA NVENC on Windows, Apple VideoToolbox on
 // macOS. Intel Quick Sync and AMD AMF are not supported tiers — not optimised,
-// not tested. HEVC/H.265 ENCODE is not shipped at all.
+// not tested. HEVC/H.265 ENCODE was not shipped at all from 2026-08-06 to
+// 2026-09-20; the OWNER REVERSED that on 2026-09-20 with the patent exposure
+// below accepted, so HEVC ships on Windows via NVENC (hevc_nvenc / the NVIDIA
+// HEVC Encoder MFT on the GPU-direct path). Not on macOS. The bullet below is
+// kept as the record of why it was excluded, not as current policy.
 //
 // The reasoning is licensing as much as engineering, and it is worth keeping
 // written down because each exclusion looks like an oversight otherwise:
@@ -37,8 +41,8 @@ namespace corevideo::modules {
 // purpose (see above) — do not add to this list without revisiting the licence
 // and patent position.
 inline bool isSupportedEncoder(const std::string& encoder) {
-  return encoder == "h264_nvenc" || encoder == "av1_nvenc" || encoder == "h264_videotoolbox" ||
-         encoder == "h264_mf";
+  return encoder == "h264_nvenc" || encoder == "hevc_nvenc" || encoder == "av1_nvenc" ||
+         encoder == "h264_videotoolbox" || encoder == "h264_mf";
 }
 
 // Is there hardware for this codec on this platform?
@@ -47,13 +51,11 @@ inline bool isSupportedEncoder(const std::string& encoder) {
 //   it. Answering honestly is what lets the sender say "you asked for AV1 and are
 //   getting H.264" instead of silently shipping the wrong codec.
 inline bool codecHasSupportedHardwareEncoder(const std::string& normalizedCodec) {
-  if (normalizedCodec == "h265") {
-    return false;  // HEVC encode is not shipped on any platform
-  }
 #if defined(__APPLE__)
   return normalizedCodec == "h264";
 #else
-  return normalizedCodec == "h264" || normalizedCodec == "av1";
+  // HEVC ships on Windows since 2026-09-20 (owner reversal, see the header comment).
+  return normalizedCodec == "h264" || normalizedCodec == "h265" || normalizedCodec == "av1";
 #endif
 }
 
@@ -61,7 +63,9 @@ inline bool codecHasSupportedHardwareEncoder(const std::string& normalizedCodec)
 inline std::string preferredEncoderFor(const std::string& normalizedCodec,
                                        const std::string& normalizedMode) {
   if (normalizedMode == "nvenc") {
-    return normalizedCodec == "av1" ? "av1_nvenc" : "h264_nvenc";
+    if (normalizedCodec == "av1") return "av1_nvenc";
+    if (normalizedCodec == "h265") return "hevc_nvenc";
+    return "h264_nvenc";
   }
   if (normalizedMode == "videotoolbox") {
     return "h264_videotoolbox";  // no AV1 encoder exists on Apple Silicon
@@ -69,7 +73,9 @@ inline std::string preferredEncoderFor(const std::string& normalizedCodec,
 #if defined(__APPLE__)
   return "h264_videotoolbox";
 #else
-  return normalizedCodec == "av1" ? "av1_nvenc" : "h264_nvenc";
+  if (normalizedCodec == "av1") return "av1_nvenc";
+  if (normalizedCodec == "h265") return "hevc_nvenc";
+  return "h264_nvenc";
 #endif
 }
 
@@ -92,6 +98,9 @@ inline std::vector<std::string> encoderCandidatesFor(const std::string& normaliz
 #else
   if (normalizedCodec == "av1") {
     return {"av1_nvenc"};
+  }
+  if (normalizedCodec == "h265") {
+    return {"hevc_nvenc"};  // NVENC or nothing: no software HEVC, never an H.264 substitute
   }
   return {"h264_nvenc", "h264_mf"};
 #endif

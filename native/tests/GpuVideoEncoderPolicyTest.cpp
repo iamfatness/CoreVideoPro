@@ -42,39 +42,46 @@ TEST(GpuEncodePathPolicy, ReasonNamesTheFirstBlocker) {
 }
 
 // chooseStreamEncodePath: the sender's start-time decision. base = {hardware,
-// session, forcedOffByEnv, platformSupported}.
+// session, forcedOffByEnv, platformSupported}. The codec is the one ACTUALLY
+// SENT (resolved through RtmpCompatibility), and codecHasGpuEncoder is what the
+// capacity probe says about THAT codec on this machine.
 using corevideo::modules::chooseStreamEncodePath;
 
-TEST(ChooseStreamEncodePath, GpuDirectWhenEverythingAligns) {
-  const char* reason = nullptr;
-  EXPECT_EQ(chooseStreamEncodePath({true, true, false, true}, /*codecIsH264=*/true,
-                                   /*frameHasEncoderTexture=*/true, &reason),
-            GpuEncodePath::GpuDirect);
-  EXPECT_EQ(std::string(reason), "gpu-direct");
+TEST(ChooseStreamEncodePath, GpuDirectForEveryShippedCodecWhenEverythingAligns) {
+  for (const char* codec : {"h264", "hevc", "av1"}) {
+    const char* reason = nullptr;
+    EXPECT_EQ(chooseStreamEncodePath({true, true, false, true}, codec,
+                                     /*codecHasGpuEncoder=*/true,
+                                     /*frameHasEncoderTexture=*/true, &reason),
+              GpuEncodePath::GpuDirect) << codec;
+    EXPECT_EQ(std::string(reason), "gpu-direct") << codec;
+  }
 }
 
 TEST(ChooseStreamEncodePath, BaseBlockerKeepsPrecedenceOverSenderGates) {
-  // Even with a non-H.264 codec AND no encoder texture, a base blocker (here no
-  // hardware encoder) is the reason reported, because it is the more fundamental
-  // cause and is checked first.
   const char* reason = nullptr;
-  EXPECT_EQ(chooseStreamEncodePath({/*hw=*/false, true, false, true}, /*codecIsH264=*/false,
+  EXPECT_EQ(chooseStreamEncodePath({/*hw=*/false, true, false, true}, "av1",
+                                   /*codecHasGpuEncoder=*/false,
                                    /*frameHasEncoderTexture=*/false, &reason),
             GpuEncodePath::CpuFallback);
   EXPECT_EQ(std::string(reason), "no-hardware-encoder");
 }
 
-TEST(ChooseStreamEncodePath, NonH264CodecFallsBackEvenWhenCapable) {
+// 2026-09-20: "codec-not-h264" is retired. A codec this machine has no hardware
+// encoder for reports the SAME reason as no hardware at all, so support bundles
+// keep one vocabulary.
+TEST(ChooseStreamEncodePath, ACodecWithoutAGpuEncoderReportsNoHardwareEncoder) {
   const char* reason = nullptr;
-  EXPECT_EQ(chooseStreamEncodePath({true, true, false, true}, /*codecIsH264=*/false,
+  EXPECT_EQ(chooseStreamEncodePath({true, true, false, true}, "hevc",
+                                   /*codecHasGpuEncoder=*/false,
                                    /*frameHasEncoderTexture=*/true, &reason),
             GpuEncodePath::CpuFallback);
-  EXPECT_EQ(std::string(reason), "codec-not-h264");
+  EXPECT_EQ(std::string(reason), "no-hardware-encoder");
 }
 
 TEST(ChooseStreamEncodePath, MissingEncoderTextureFallsBack) {
   const char* reason = nullptr;
-  EXPECT_EQ(chooseStreamEncodePath({true, true, false, true}, /*codecIsH264=*/true,
+  EXPECT_EQ(chooseStreamEncodePath({true, true, false, true}, "h264", true,
                                    /*frameHasEncoderTexture=*/false, &reason),
             GpuEncodePath::CpuFallback);
   EXPECT_EQ(std::string(reason), "no-encoder-texture");
@@ -82,8 +89,14 @@ TEST(ChooseStreamEncodePath, MissingEncoderTextureFallsBack) {
 
 TEST(ChooseStreamEncodePath, EnvToggleFallsBackWithEnvReason) {
   const char* reason = nullptr;
-  EXPECT_EQ(chooseStreamEncodePath({true, true, /*forcedOffByEnv=*/true, true}, true, true, &reason),
+  EXPECT_EQ(chooseStreamEncodePath({true, true, /*forcedOffByEnv=*/true, true}, "h264", true, true,
+                                   &reason),
             GpuEncodePath::CpuFallback);
   EXPECT_EQ(std::string(reason), "forced-off-by-env");
+}
+
+TEST(GpuVideoEncoderConfig, CodecDefaultsToH264) {
+  corevideo::modules::GpuVideoEncoderConfig cfg;
+  EXPECT_EQ(cfg.codec, "h264");
 }
 }  // namespace

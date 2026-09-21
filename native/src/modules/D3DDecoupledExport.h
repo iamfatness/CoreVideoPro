@@ -8,6 +8,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <atomic>
 
 namespace corevideo::modules {
 
@@ -50,17 +51,38 @@ class D3DDecoupledExport {
   }
 
   bool valid() const { return initialized_; }
+  // Resolution changes must not recreate the D3D device on the render thread.
+  // Retire the worker before replacing resources; reuse its device/context.
+  bool resize(ID3D11Device* producer, int width, int height) {
+    if (dimensions(width, height)) return valid();
+    { std::lock_guard<std::mutex> lock(mutex_); stopped_ = true; }
+    changed_.notify_all();
+    if (worker_.joinable()) worker_.join();
+    queue_.clear();
+    slots_.clear();
+    prepared_ = {}; output_ = {}; outputMutex_ = {};
+    outputHandle_ = nullptr;
+    publishedFrameNumber_ = std::make_shared<std::atomic<int64_t>>(-1);
+    width_ = width; height_ = height;
+    stopped_ = false; initialized_ = false;
+    if (!initialize(producer)) return false;
+    try {
+      worker_ = std::thread([this] { try { exportLoop(); } catch (...) {} });
+    } catch (...) { initialized_ = false; }
+    return initialized_;
+  }
   bool dimensions(int width, int height) const { return width == width_ && height == height_; }
   HANDLE handle() const { return outputHandle_; }
   int width() const { return width_; }
   int height() const { return height_; }
+  std::shared_ptr<std::atomic<int64_t>> publishedFrameNumber() const { return publishedFrameNumber_; }
 
   // Called on the render thread. Copies `src` (owned by the render device) into a
   // free internal slot with a single keyed-mutex acquire/release that only couples
   // to this fast export device. Does not flush: the render context's end-of-pass
   // Flush submits the copy, exactly as D3DProgramBuffer::submit relies on. Drops
   // the frame (bounded, non-blocking) when every slot is still in flight.
-  bool submit(ID3D11DeviceContext* producer, ID3D11Texture2D* src) {
+  bool submit(ID3D11DeviceContext* producer, ID3D11Texture2D* src, int64_t frameNumber = 0) {
     if (!initialized_ || !src) return false;
     Slot* slot = nullptr;
     {
@@ -82,6 +104,7 @@ class D3DDecoupledExport {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       slot->state = State::Submitted;
+      slot->frameNumber = frameNumber;
       queue_.push_back(slot);
     }
     changed_.notify_one();
@@ -91,6 +114,7 @@ class D3DDecoupledExport {
  private:
   enum class State { Free, Writing, Submitted, Consuming };
   struct Slot {
+    int64_t frameNumber = 0;
     State state = State::Free;
     ComPtrLite<ID3D11Texture2D> texture;        // on producer device
     ComPtrLite<ID3D11Texture2D> opened;         // same resource opened on export device
@@ -108,11 +132,11 @@ class D3DDecoupledExport {
   bool initialize(ID3D11Device* producer) {
     ComPtrLite<IDXGIDevice> dxgi;
     ComPtrLite<IDXGIAdapter> adapter;
-    if (FAILED(producer->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(dxgi.put()))) ||
+    if (!exportDevice_ && (FAILED(producer->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(dxgi.put()))) ||
         FAILED(dxgi->GetAdapter(adapter.put())) ||
         FAILED(D3D11CreateDevice(adapter.get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
             D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
-            exportDevice_.put(), nullptr, exportContext_.put()))) {
+            exportDevice_.put(), nullptr, exportContext_.put())))) {
       return false;
     }
 
@@ -175,6 +199,7 @@ class D3DDecoupledExport {
       // as soon as the producer's ReleaseSync(1) handed over the key; the fence
       // wait for the producer copy is on THIS export context, never the render one.
       const bool pulled = slot->mutex->AcquireSync(1, 0) == S_OK;
+      const int64_t frameNumber = slot->frameNumber;
       if (pulled) {
         exportContext_->CopyResource(prepared_.get(), slot->opened.get());
         slot->mutex->ReleaseSync(0);  // slot free for the producer immediately
@@ -199,6 +224,7 @@ class D3DDecoupledExport {
       if (!owned) owned = outputMutex_->AcquireSync(1, 0) == S_OK;
       if (owned) {
         exportContext_->CopyResource(output_.get(), prepared_.get());
+        publishedFrameNumber_->store(frameNumber, std::memory_order_release);
         outputMutex_->ReleaseSync(1);
         ++published_;
       } else {
@@ -221,6 +247,7 @@ class D3DDecoupledExport {
   ComPtrLite<ID3D11Texture2D> output_;
   ComPtrLite<IDXGIKeyedMutex> outputMutex_;
   HANDLE outputHandle_ = nullptr;
+  std::shared_ptr<std::atomic<int64_t>> publishedFrameNumber_ = std::make_shared<std::atomic<int64_t>>(-1);
   std::thread worker_;
   std::uint64_t published_ = 0, dropped_ = 0, producerBusy_ = 0, consumerBusy_ = 0;
 };

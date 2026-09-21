@@ -65,6 +65,7 @@ add_library(corevideo_native
   src/core/BoundedAsyncLog.cpp
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
+  src/core/ComApartmentLifetime.cpp
   src/core/SourceRegistry.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
@@ -610,6 +611,8 @@ if(BUILD_TESTING)
     tests/OutputDestinationSupervisorTest.cpp
     tests/AudioDspTest.cpp
     tests/GpuVideoEncoderPolicyTest.cpp
+    tests/EncoderCapacityProbePolicyTest.cpp
+    tests/StreamStartAdmissionTest.cpp
     tests/BrowserHostExitMessageTest.cpp
     tests/IsoFrameConformTest.cpp
     tests/BrowserSourceTest.cpp
