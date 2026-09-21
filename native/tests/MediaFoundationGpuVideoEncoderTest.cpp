@@ -216,6 +216,20 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
                                  "\" -c:v copy -f flv \"" + flvPath.string() + "\"";
     const int muxStatus = normalizedSystemExitCode(std::system(("\"" + muxInner + "\"").c_str()));
     EXPECT_EQ(muxStatus, 0) << codec << " raw bitstream did not copy-mux into FLV: " << rawPath.string();
+    if (std::string(codec) == "hevc") {
+      const auto probePath = work / "color.txt";
+      const auto ffprobeExe = ffmpegDir / "ffprobe.exe";
+      const std::string probeInner = "\"" + ffprobeExe.string() +
+          "\" -v error -select_streams v:0 -show_entries stream=color_range,color_space,color_transfer,color_primaries"
+          " -of default=noprint_wrappers=1 \"" + flvPath.string() + "\" > \"" + probePath.string() + "\"";
+      ASSERT_EQ(normalizedSystemExitCode(std::system(("\"" + probeInner + "\"").c_str())), 0);
+      std::ifstream probe(probePath);
+      const std::string color((std::istreambuf_iterator<char>(probe)), std::istreambuf_iterator<char>());
+      EXPECT_TRUE(color.find("color_range=tv") != std::string::npos) << color;
+      EXPECT_TRUE(color.find("color_space=bt709") != std::string::npos) << color;
+      EXPECT_TRUE(color.find("color_transfer=bt709") != std::string::npos) << color;
+      EXPECT_TRUE(color.find("color_primaries=bt709") != std::string::npos) << color;
+    }
     std::error_code fec;
     std::filesystem::remove(flvPath, fec);
   }
