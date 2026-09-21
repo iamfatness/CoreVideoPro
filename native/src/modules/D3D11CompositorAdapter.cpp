@@ -1791,11 +1791,13 @@ class D3D11Compositor final : public ICompositor {
           uploaded = renderI420ToParticipantTexture(f, pt, width, height, grade);
         } else if (gradeIsIdentity(grade)) {
           CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantCopy]);
-          // Fast path for the common ungraded source: a straight BGRA copy, no
-          // shader pass (preserves the perf note above — no per-tick convert cost).
-          context_->UpdateSubresource(pt.local.get(), 0, nullptr, f.pixels->data(),
-                                      static_cast<UINT>(f.pixelStride), 0);
-          uploaded = true;
+          // Program/preview already upload this immutable frame into the source
+          // cache. Reuse that GPU texture instead of uploading full BGRA pixels
+          // a second time for the participant monitor (#517).
+          if (auto* source = acquireSourceTex(f); source && source->bgra) {
+            context_->CopyResource(pt.local.get(), source->bgra.get());
+            uploaded = true;
+          }
         } else {
           CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantConvert]);
           // Graded BGRA source: render through the textured grade shader so the
