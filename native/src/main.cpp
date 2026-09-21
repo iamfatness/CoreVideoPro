@@ -1,4 +1,5 @@
 #include "core/MediaCore.h"
+#include "core/ComApartmentLifetime.h"
 #include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 #include "rpc/JsonRpcServer.h"
@@ -6,6 +7,12 @@
 #include <iostream>
 
 int main() {
+  // Declare before MediaCore: COM must outlive both its workers and resources.
+  corevideo::core::ComApartmentLifetime com;
+  if (!com.initialized()) {
+    std::cerr << "Failed to initialize the native media COM apartment.\n";
+    return 1;
+  }
   // Allocate/start diagnostic delivery before creating any media workers.
   (void)corevideo::core::nativeLogStats();
   // The live server runs the audio/output worker, so it needs the encoder wrapped
