@@ -1151,6 +1151,9 @@ class ICaptureDevice {
   // device to pair with it. Defaults to empty, so only transports that actually
   // carry audio implement it.
   virtual std::vector<AudioFrame> pollAudioFrames(int64_t) { return {}; }
+  // Configured transport identities, including temporary PCM gaps. Must be a
+  // cheap state snapshot, not device enumeration or network I/O.
+  virtual std::vector<std::string> audioSourceIds() const { return {}; }
 };
 
 struct ModuleSet {

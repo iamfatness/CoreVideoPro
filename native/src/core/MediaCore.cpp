@@ -6,6 +6,7 @@
 #include "compositor/TilesPinnedLayout.h"
 #include "compositor/TilesMembership.h"
 #include "core/AudioControlSourcePolicy.h"
+#include "core/SourceAudioIngress.h"
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
 #include "core/RouteSourcePolicy.h"
@@ -6435,7 +6436,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       auto& bucket = kind == "capture" ? captureFrames : (kind == "media" ? mediaBusFrames : zoomBusFrames);
       bucket.push_back(std::move(frame));
     }
-    // busResult.audio is carried in a later slice (audio gather path); slice 0 is video.
+    // PCM is consumed separately by the audio-worker source-bus gather.
   }
   videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
   videoFrames.insert(videoFrames.end(),
@@ -7404,31 +7405,11 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   work.frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
   const auto frameTimestampMs = static_cast<int64_t>(lastProducedFrameNumber_ + 1) * work.frameIntervalMs;
 
-  // Polled BEFORE coreMutex was taken (see pollZoomAudioUnlocked).
-  core::stageZoomAudioSources(*sourceBus_, std::move(prePolledZoomAudio));
-  std::vector<modules::AudioFrame> audioFrames = sourceBus_->ingestAudio(
+  // Adapter PCM crosses the same source bus before any mixer/output consumer.
+  auto audioFrames = core::ingestSourceAudio(*sourceBus_, std::move(prePolledZoomAudio),
+      modules_.audioCapture.get(), modules_.captureDevice.get(), mediaTransports_.get(),
+      lastCaptureAudioSourceConfigs_, frameTimestampMs,
       work.outputTimestamp100ns, work.outputTimestamp100ns * 100);
-  if (modules_.audioCapture) {
-    auto captureAudioFrames = modules_.audioCapture->pollAudioFrames(frameTimestampMs);
-    audioFrames.insert(audioFrames.end(), captureAudioFrames.begin(), captureAudioFrames.end());
-  }
-  if (modules_.captureDevice) {
-    // Audio embedded in a capture TRANSPORT. An SRT contribution feed carries its
-    // guest's audio inside the same stream, with no OS audio device to pair it
-    // with, so it arrives here rather than through the WASAPI capture-audio path.
-    // Keyed "capture:<deviceId>", so it lands in the existing routing, metering
-    // and ISO paths exactly like a paired capture input.
-    auto transportAudio = modules_.captureDevice->pollAudioFrames(frameTimestampMs);
-    audioFrames.insert(audioFrames.end(), transportAudio.begin(), transportAudio.end());
-  }
-  if (mediaTransports_) {
-    // #535 slice 3b: no render plan is built here any more. Each transport
-    // entry knows whether it is Live, so the audio window it is due is a
-    // property of the transport, not of this tick's scene layers.
-    auto mediaAudioFrames = mediaTransports_->popAudio(frameTimestampMs);
-    audioFrames.insert(audioFrames.end(), std::make_move_iterator(mediaAudioFrames.begin()),
-                       std::make_move_iterator(mediaAudioFrames.end()));
-  }
 
   // One contiguous PCM frame per source per tick: multiple 10ms packets drained
   // in one tick must CONCATENATE, not overlap-sum in the bus mixers (spec R3).

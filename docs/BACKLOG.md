@@ -23,7 +23,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Order | Issue | Remaining work / next evidence |
 |---|---|---|
-| 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video and media transport slices are shipped; Zoom PCM integration shipped in #577 and live sync is owner-accepted. Remaining: media/capture PCM, adapter lifecycle, and retirement of the old interfaces. Capture dropout liveness is tracked by #562. |
+| 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video and media transport slices are shipped; Zoom PCM integration shipped in #577 and live sync is owner-accepted. Media/capture PCM migration is implemented on `codex/535-media-capture-pcm` (1,167 native tests and real media recording checked), pending review/merge. Remaining afterward: adapter lifecycle and retirement of the old interfaces. Capture dropout liveness is tracked by #562. |
 
 ## Deferred by owner
 
