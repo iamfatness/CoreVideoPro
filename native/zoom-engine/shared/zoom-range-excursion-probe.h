@@ -18,12 +18,14 @@ public:
         std::uint32_t rawAbove235 = 0;
         std::uint32_t sampled = 0;
         bool sdkLimited = false;
+        bool effectiveLimited = false;
     };
     struct Excursion { Sample before, flash, after; };
 
     std::optional<Excursion> observe(const std::uint8_t *rawY,
                                      const std::uint8_t *publishedY,
-                                     std::size_t yLen, bool sdkLimited) {
+                                     std::size_t yLen, bool sdkLimited,
+                                     bool effectiveLimited) {
         if (!rawY || !publishedY || !yLen) return std::nullopt;
         Sample current;
         std::uint64_t rawSum = 0, publishedSum = 0;
@@ -38,6 +40,7 @@ public:
         current.rawMean = static_cast<double>(rawSum) / current.sampled;
         current.publishedMean = static_cast<double>(publishedSum) / current.sampled;
         current.sdkLimited = sdkLimited;
+        current.effectiveLimited = effectiveLimited;
         std::optional<Excursion> result;
         if (seen_ >= 2 && std::abs(before_.publishedMean - current.publishedMean) < 2.0 &&
             std::abs(flash_.publishedMean -

@@ -1,5 +1,6 @@
 #pragma once
 #include "i420-range-expand.h"
+#include "i420-content-range-tracker.h"
 #include "zoom-range-excursion-probe.h"
 #include <atomic>
 #include <cstdint>
@@ -67,8 +68,10 @@ private:
     std::atomic<bool> m_stopping{false};
     mutable std::mutex m_targets_mtx;
     I420RangeNormalizer m_rangeNormalizer; // guarded by m_targets_mtx
+    I420ContentRangeTracker m_contentRangeTracker; // guarded by m_targets_mtx
     ZoomRangeExcursionProbe m_rangeExcursionProbe; // guarded by m_targets_mtx
     bool m_rangeProbeEnabled = false; // diagnostic opt-in; no sampling in shows by default
+    bool m_contentRangeCorrectionEnabled = false; // live-test opt-in until verified
     uint64_t m_limitedFrames = 0;
     std::unordered_map<std::string, std::unique_ptr<SourceTarget>> m_targets;
 };

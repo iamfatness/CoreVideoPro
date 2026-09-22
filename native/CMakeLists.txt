@@ -631,6 +631,7 @@ if(BUILD_TESTING)
     tests/SourceBusTest.cpp
     tests/SourceAudioIngressTest.cpp
     tests/ZoomRangeExcursionProbeTest.cpp
+    tests/I420ContentRangeTrackerTest.cpp
     tests/MediaTransportPolicyTest.cpp
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
