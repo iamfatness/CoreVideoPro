@@ -7,6 +7,7 @@
 #include <zoom_rawdata_api.h>
 #endif
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <atomic>
 #include <algorithm>
@@ -48,6 +49,8 @@ ParticipantSubscription::ParticipantSubscription(uint32_t participant_id,
                                                  uint32_t resolution)
     : m_participant_id(participant_id)
 {
+    const char *rangeProbe = std::getenv("COREVIDEO_ZOOM_RANGE_DIAGNOSTICS");
+    m_rangeProbeEnabled = rangeProbe && rangeProbe[0] == '1' && rangeProbe[1] == '\0';
     if (resolution > 2) resolution = 1;
 
     std::vector<uint32_t> attempts;
@@ -222,6 +225,24 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
     if (!planes.y) {
         EngineIpc::write(R"({"cmd":"debug","stage":"video_frame_exceeds_shm_capacity"})");
         return;
+    }
+    if (m_rangeProbeEnabled) {
+        if (auto excursion = m_rangeExcursionProbe.observe(
+                reinterpret_cast<const uint8_t *>(data->GetYBuffer()), planes.y,
+                y_len, limited)) {
+            const auto sample = [](const ZoomRangeExcursionProbe::Sample &s) {
+                return "{\"rawMean\":" + std::to_string(s.rawMean) +
+                       ",\"publishedMean\":" + std::to_string(s.publishedMean) +
+                       ",\"rawBelow16\":" + std::to_string(s.rawBelow16) +
+                       ",\"rawAbove235\":" + std::to_string(s.rawAbove235) +
+                       ",\"sampled\":" + std::to_string(s.sampled) +
+                       ",\"sdkLimited\":" + (s.sdkLimited ? "true" : "false") + '}';
+            };
+            EngineIpc::write(R"({"cmd":"debug","stage":"video_range_excursion","participant_id":)" +
+                             std::to_string(m_participant_id) + ",\"before\":" + sample(excursion->before) +
+                             ",\"flash\":" + sample(excursion->flash) +
+                             ",\"after\":" + sample(excursion->after) + '}');
+        }
     }
     if (limited && (++m_limitedFrames == 1 || m_limitedFrames % 100 == 0))
         EngineIpc::write(R"({"cmd":"debug","stage":"video_limited_range_expanded","count":)" +

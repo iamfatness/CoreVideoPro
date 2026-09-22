@@ -630,6 +630,7 @@ if(BUILD_TESTING)
     tests/ProgramFramePreviewHealthTest.cpp
     tests/SourceBusTest.cpp
     tests/SourceAudioIngressTest.cpp
+    tests/ZoomRangeExcursionProbeTest.cpp
     tests/MediaTransportPolicyTest.cpp
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
