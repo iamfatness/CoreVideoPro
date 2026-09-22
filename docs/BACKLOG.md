@@ -6,7 +6,7 @@ linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 Owner-approved order updated 2026-09-22: finish #535's remaining media/capture
 audio and adapter lifecycle work, then SRT/NDI hardening (#538). Owner accepted
 live lip sync (#579) and first Takes (#555) on beta `db9e703`. #513 validation
-remains deferred; #582 is paused pending Zoom feedback.
+remains deferred; #582 now has a Zoom-recommended post-processing setting to validate.
 
 ## How to use this file
 
@@ -23,7 +23,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Order | Issue | Remaining work / next evidence |
 |---|---|---|
-| 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video and media transport slices are shipped; Zoom PCM integration shipped in #577 and live sync is owner-accepted. Media/capture PCM migration is implemented on `codex/535-media-capture-pcm` (1,167 native tests and real media recording checked), pending review/merge. Remaining afterward: adapter lifecycle and retirement of the old interfaces. Capture dropout liveness is tracked by #562. |
+| 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video and media transport slices are shipped; Zoom PCM integration shipped in #577 and live sync is owner-accepted. Media/capture PCM migration shipped in #583 / beta `6782b09` (1,167 native tests and real media recording checked). Remaining afterward: adapter lifecycle and retirement of the old interfaces. Capture dropout liveness is tracked by #562. |
 
 ## Deferred by owner
 
@@ -44,7 +44,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Issue | Remaining work |
 |---|---|
-| [#582](https://github.com/iamfatness/CoreVideoPro/issues/582) | **Paused by owner pending Zoom feedback.** Report is brightness increase; shared evidence corrected to lead with a brightening sample. Darkening artifacts are separate findings, not confirmation of the reported symptom. Root cause unproven; no fix shipped. |
+| [#582](https://github.com/iamfatness/CoreVideoPro/issues/582) | **Zoom feedback received:** disable SDK render post-processing at initialization. Candidate implementation on `codex/582-disable-zoom-postprocessing`; awaiting live brightness-increase validation. SDK previously defaulted to Auto. Darkening artifacts remain separate findings; root cause and efficacy are unproven. |
 | [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Stale retry fencing is merged in #566 and regression-tested. Still needs the installed operator sequence: AV1 refusal → explicit HEVC retry without app restart, with genuine new failures visible and sibling outputs uninterrupted. |
 | [#581](https://github.com/iamfatness/CoreVideoPro/issues/581) | Zoom window appears slower than Program. Producer/Windows serving cadence was approximately 60 fps; Zoom self-view versus receive statistics and real presentation timing await owner validation. No confirmed fix; source-bus work continues. |
 | [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | Preparing/offline symptom repaired in #566; YouTube LIVE/Excellent and moving public playback verified, including restart and a 30m16s run. Retain for the remaining receiver acceptance and UI distinction between sending and verified playback. Player counted 104 dropped / 108,323 frames; cause not attributed to CVP. Do not describe this as still stuck Preparing, or as lossless end-to-end. |

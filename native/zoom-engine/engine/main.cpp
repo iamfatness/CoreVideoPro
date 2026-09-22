@@ -1344,6 +1344,10 @@ int main(int argc, char **argv)
             ZOOMSDK::InitParam init_param;
 #if defined(WIN32)
             init_param.strWebDomain = L"https://zoom.us";
+            // #582: Zoom SDK team recommendation for the intermittent brightness
+            // excursion. Set before InitSDK; the SDK otherwise defaults to Auto.
+            init_param.renderOpts.renderPostProcessing = ZOOMSDK::ZoomSDKRenderPostProcessing_Disable;
+            EngineIpc::write(R"({"cmd":"debug","stage":"sdk_render_options","renderPostProcessing":"disabled"})");
 #else
             init_param.strWebDomain = "https://zoom.us";
 #endif
