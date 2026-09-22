@@ -7,6 +7,7 @@
 #include <zoom_rawdata_api.h>
 #endif
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <atomic>
 #include <algorithm>
@@ -48,6 +49,11 @@ ParticipantSubscription::ParticipantSubscription(uint32_t participant_id,
                                                  uint32_t resolution)
     : m_participant_id(participant_id)
 {
+    const char *rangeProbe = std::getenv("COREVIDEO_ZOOM_RANGE_DIAGNOSTICS");
+    m_rangeProbeEnabled = rangeProbe && rangeProbe[0] == '1' && rangeProbe[1] == '\0';
+    const char *contentRangeCorrection = std::getenv("COREVIDEO_ZOOM_RANGE_CORRECTION");
+    m_contentRangeCorrectionEnabled = !contentRangeCorrection ||
+        contentRangeCorrection[0] != '0' || contentRangeCorrection[1] != '\0';
     if (resolution > 2) resolution = 1;
 
     std::vector<uint32_t> attempts;
@@ -212,16 +218,50 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
     // Re-check under the lock: the destructor may have set the flag between the
     // early check and this acquisition; past this point it drains behind us.
     if (m_stopping.load(std::memory_order_acquire)) return;
-    // IsLimitedI420 is authoritative per frame even when BT709_F was requested.
-    // Normalize once before fan-out, using scratch protected by the target lock.
-    const bool limited = data->IsLimitedI420();
+    // The SDK flag can remain limited while raw content alternates between
+    // full and studio swing. Use content evidence to choose whether expansion
+    // is needed before fan-out; the env override provides a rollback switch.
+    const bool sdkLimited = data->IsLimitedI420();
+    const auto *rawY = reinterpret_cast<const uint8_t *>(data->GetYBuffer());
+    bool limited = sdkLimited;
+    if (m_contentRangeCorrectionEnabled) {
+        const auto decision = m_contentRangeTracker.classify(rawY, y_len, sdkLimited);
+        limited = decision.limited;
+        if (decision.transition) {
+            EngineIpc::write(R"({"cmd":"debug","stage":"video_range_classified","participant_id":)" +
+                             std::to_string(m_participant_id) + ",\"sdkLimited\":" +
+                             (sdkLimited ? "true" : "false") + ",\"contentLimited\":" +
+                             (limited ? "true" : "false") + ",\"matchedCompression\":" +
+                             (decision.matchedCompression ? "true" : "false") +
+                             ",\"outside\":" + std::to_string(decision.outside) +
+                             ",\"sampled\":" + std::to_string(decision.sampled) + '}');
+        }
+    }
     const auto planes = m_rangeNormalizer.normalize(
-        reinterpret_cast<const uint8_t *>(data->GetYBuffer()),
+        rawY,
         reinterpret_cast<const uint8_t *>(data->GetUBuffer()),
         reinterpret_cast<const uint8_t *>(data->GetVBuffer()), y_len, limited, kMaxVideoShmYLen);
     if (!planes.y) {
         EngineIpc::write(R"({"cmd":"debug","stage":"video_frame_exceeds_shm_capacity"})");
         return;
+    }
+    if (m_rangeProbeEnabled) {
+        if (auto excursion = m_rangeExcursionProbe.observe(
+                rawY, planes.y, y_len, sdkLimited, limited)) {
+            const auto sample = [](const ZoomRangeExcursionProbe::Sample &s) {
+                return "{\"rawMean\":" + std::to_string(s.rawMean) +
+                       ",\"publishedMean\":" + std::to_string(s.publishedMean) +
+                       ",\"rawBelow16\":" + std::to_string(s.rawBelow16) +
+                       ",\"rawAbove235\":" + std::to_string(s.rawAbove235) +
+                       ",\"sampled\":" + std::to_string(s.sampled) +
+                       ",\"sdkLimited\":" + (s.sdkLimited ? "true" : "false") +
+                       ",\"effectiveLimited\":" + (s.effectiveLimited ? "true" : "false") + '}';
+            };
+            EngineIpc::write(R"({"cmd":"debug","stage":"video_range_excursion","participant_id":)" +
+                             std::to_string(m_participant_id) + ",\"before\":" + sample(excursion->before) +
+                             ",\"flash\":" + sample(excursion->flash) +
+                             ",\"after\":" + sample(excursion->after) + '}');
+        }
     }
     if (limited && (++m_limitedFrames == 1 || m_limitedFrames % 100 == 0))
         EngineIpc::write(R"({"cmd":"debug","stage":"video_limited_range_expanded","count":)" +
