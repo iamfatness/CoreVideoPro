@@ -52,8 +52,8 @@ ParticipantSubscription::ParticipantSubscription(uint32_t participant_id,
     const char *rangeProbe = std::getenv("COREVIDEO_ZOOM_RANGE_DIAGNOSTICS");
     m_rangeProbeEnabled = rangeProbe && rangeProbe[0] == '1' && rangeProbe[1] == '\0';
     const char *contentRangeCorrection = std::getenv("COREVIDEO_ZOOM_RANGE_CORRECTION");
-    m_contentRangeCorrectionEnabled = contentRangeCorrection &&
-        contentRangeCorrection[0] == '1' && contentRangeCorrection[1] == '\0';
+    m_contentRangeCorrectionEnabled = !contentRangeCorrection ||
+        contentRangeCorrection[0] != '0' || contentRangeCorrection[1] != '\0';
     if (resolution > 2) resolution = 1;
 
     std::vector<uint32_t> attempts;
@@ -219,8 +219,8 @@ void ParticipantSubscription::onRawDataFrameReceived(YUVRawDataI420 *data)
     // early check and this acquisition; past this point it drains behind us.
     if (m_stopping.load(std::memory_order_acquire)) return;
     // The SDK flag can remain limited while raw content alternates between
-    // full and studio swing. In the opt-in live test, use content evidence to
-    // choose whether expansion is needed before fan-out.
+    // full and studio swing. Use content evidence to choose whether expansion
+    // is needed before fan-out; the env override provides a rollback switch.
     const bool sdkLimited = data->IsLimitedI420();
     const auto *rawY = reinterpret_cast<const uint8_t *>(data->GetYBuffer());
     bool limited = sdkLimited;

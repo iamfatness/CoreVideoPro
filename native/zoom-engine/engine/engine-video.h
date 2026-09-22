@@ -71,7 +71,7 @@ private:
     I420ContentRangeTracker m_contentRangeTracker; // guarded by m_targets_mtx
     ZoomRangeExcursionProbe m_rangeExcursionProbe; // guarded by m_targets_mtx
     bool m_rangeProbeEnabled = false; // diagnostic opt-in; no sampling in shows by default
-    bool m_contentRangeCorrectionEnabled = false; // live-test opt-in until verified
+    bool m_contentRangeCorrectionEnabled = true; // COREVIDEO_ZOOM_RANGE_CORRECTION=0 rolls back
     uint64_t m_limitedFrames = 0;
     std::unordered_map<std::string, std::unique_ptr<SourceTarget>> m_targets;
 };

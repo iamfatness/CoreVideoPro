@@ -6,7 +6,7 @@ linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 Owner-approved order updated 2026-09-22: finish #535's remaining media/capture
 audio and adapter lifecycle work, then SRT/NDI hardening (#538). Owner accepted
 live lip sync (#579) and first Takes (#555) on beta `db9e703`. #513 validation
-remains deferred; #582 now has a Zoom-recommended post-processing setting to validate.
+remains deferred; #582's content-aware range correction is in live validation.
 
 ## How to use this file
 
@@ -44,7 +44,8 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Issue | Remaining work |
 |---|---|
-| [#582](https://github.com/iamfatness/CoreVideoPro/issues/582) | **Confirmed by owner in Preview and multiview** on beta `4dfe476`, including a non-active participant. Live callback evidence found the SDK's limited-range flag stayed true across range-like frame changes while raw out-of-range pixels collapsed and returned. Opt-in content-aware correction in #586 yielded 0 isolated luma jumps in 29,217 frames across 8 feeds; owner visual validation and shipping decision remain. |
+| [#582](https://github.com/iamfatness/CoreVideoPro/issues/582) | **Confirmed by owner in Preview and multiview** on beta `4dfe476`, including a non-active participant. Live callback evidence found the SDK's limited-range flag stayed true across range-like frame changes while raw out-of-range pixels collapsed and returned. Content-aware correction in #586 yielded 0 isolated luma jumps in 29,217 frames across 8 feeds, and the owner reports the corrected picture stable so far. Default-on validation and shipping decision remain. |
+| [#587](https://github.com/iamfatness/CoreVideoPro/issues/587) | First Join after changing the Zoom meeting URL used the stale placeholder meeting number; a second click used the visible URL. Fix the URL binding/command boundary and verify first-click Join uses the visible meeting. |
 | [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Stale retry fencing is merged in #566 and regression-tested. Still needs the installed operator sequence: AV1 refusal → explicit HEVC retry without app restart, with genuine new failures visible and sibling outputs uninterrupted. |
 | [#581](https://github.com/iamfatness/CoreVideoPro/issues/581) | Zoom window appears slower than Program. Producer/Windows serving cadence was approximately 60 fps; Zoom self-view versus receive statistics and real presentation timing await owner validation. No confirmed fix; source-bus work continues. |
 | [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | Preparing/offline symptom repaired in #566; YouTube LIVE/Excellent and moving public playback verified, including restart and a 30m16s run. Retain for the remaining receiver acceptance and UI distinction between sending and verified playback. Player counted 104 dropped / 108,323 frames; cause not attributed to CVP. Do not describe this as still stuck Preparing, or as lossless end-to-end. |
