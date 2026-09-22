@@ -44,6 +44,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Issue | Remaining work |
 |---|---|
+| [#582](https://github.com/iamfatness/CoreVideoPro/issues/582) | Preview/multiview flashes reproduced in SDK callback pixels. Range, hardware-setting, and SDK 7.1.5 candidates failed repeat testing; no fix shipped. SDK-boundary reproduction and operator acceptance remain open. |
 | [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Stale retry fencing is merged in #566 and regression-tested. Still needs the installed operator sequence: AV1 refusal → explicit HEVC retry without app restart, with genuine new failures visible and sibling outputs uninterrupted. |
 | [#578](https://github.com/iamfatness/CoreVideoPro/issues/578) | A/V clap validator omits the explicit audio subscription and records silence on baseline and candidate. Repairing this validation dependency within #535; paired-event and 50 ms gates stay unchanged. |
 | [#579](https://github.com/iamfatness/CoreVideoPro/issues/579) | Corrected recorded A/V clap gate exceeds 50 ms on released main and the #535 candidate. Source-video timing correction is under validation; audio bus acceptance and real-source sync remain pending. The audio reserve and selected Program buffer are preserved. |
