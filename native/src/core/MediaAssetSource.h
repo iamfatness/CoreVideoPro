@@ -85,12 +85,29 @@ class MediaAssetSource final : public ISource {
   }
   SourceIngestCounters counters() const override { return counters_; }
 
+  // The transport still owns demand-clock selection. This same-tick handoff
+  // makes video and PCM share identity without changing pause/restart timing.
+  void clearAudio() {
+    pendingAudio_.clear();
+    descriptor_.hasAudio = false;
+  }
+  void stageAudio(modules::AudioFrame frame) {
+    descriptor_.hasAudio = true;
+    pendingAudio_.push_back(std::move(frame));
+  }
+  std::vector<modules::AudioFrame> pollAudio(int64_t) override {
+    std::vector<modules::AudioFrame> result;
+    result.swap(pendingAudio_);
+    return result;
+  }
+
  private:
   SourceDescriptor descriptor_;
   std::shared_ptr<MediaTransports::Entry> entry_;
   modules::VideoFrame latest_;
   bool hasFrame_ = false;
   SourceIngestCounters counters_;
+  std::vector<modules::AudioFrame> pendingAudio_;
 };
 
 }  // namespace corevideo::core

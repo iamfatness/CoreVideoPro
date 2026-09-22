@@ -36,6 +36,8 @@ Use the local control API and headless test processes to manipulate CoreVideo
 while the user is using the PC. Do not take over the desktop with Computer Use
 unless the user explicitly requests it again. Existing authorization for tests,
 spikes, and soaks in the designated test meeting remains in effect.
+The owner explicitly authorized closing/restarting CoreVideo and repeating tests
+in test meetings without renewed approval (2026-09-22).
 
 ## What to work on: `docs/BACKLOG.md` (owner-approved 2026-09-10)
 

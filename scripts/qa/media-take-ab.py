@@ -109,6 +109,8 @@ def slice_(snap, t, phase):
             "sceneId": pf.get("sceneId"), "attr": pf.get("sceneIdAttribution"),
             "busSources": [(s.get("sourceId"), s.get("width"), s.get("height"), s.get("health"))
                            for s in (snap.get("sources") or [])],
+            "busAudio": [(s.get("sourceId"), s.get("audioPacketsIngested"), s.get("audioSamplesIngested"))
+                         for s in (snap.get("sources") or []) if s.get("kind") in ("media", "capture")],
             "mediaSources": [(m.get("sourceId"), m.get("state"), m.get("onProgram"), m.get("onPreview"),
                               m.get("loop"), m.get("positionMs"), m.get("durationMs"))
                              for m in (snap.get("mediaSources") or [])],

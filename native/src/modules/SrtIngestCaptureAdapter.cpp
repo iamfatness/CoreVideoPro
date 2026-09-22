@@ -352,6 +352,14 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
  public:
   ~SrtIngestCaptureDevice() override { stopAll(); }
 
+  std::vector<std::string> audioSourceIds() const override {
+    std::lock_guard lock(mutex_);
+    std::vector<std::string> ids;
+    ids.reserve(channels_.size());
+    for (const auto& [_, channel] : channels_) ids.push_back("capture:" + channel->config.deviceId);
+    return ids;
+  }
+
   std::vector<CaptureDeviceInfo> enumerate() const override {
     std::lock_guard lock(mutex_);
     return enumerateUnlocked();

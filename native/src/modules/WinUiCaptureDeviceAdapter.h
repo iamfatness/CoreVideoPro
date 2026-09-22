@@ -68,6 +68,7 @@ class WinUiCaptureDeviceAdapter final : public ICaptureDevice {
   std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) override {
     return inner_->pollAudioFrames(timestampMs);
   }
+  std::vector<std::string> audioSourceIds() const override { return inner_->audioSourceIds(); }
 
   // Map (or re-map on size change) a WinUI capture buffer for a device.
   void registerCaptureBuffer(const std::string& deviceId, const std::string& shmName, int width, int height);

@@ -16,10 +16,10 @@ namespace corevideo::core {
 // adapters emitted THIS tick. The adapter is the frame holder: it re-emits its
 // last frame every tick while the device is connected and emits nothing once it
 // is disconnected or before it ever delivered — which is exactly what the
-// compositor drew before the bus. So a capture source absent from the tick is
-// removed. This is the OPPOSITE of syncZoomParticipantSources on purpose: the
-// Zoom engine erases its decoded frame on unsubscribe and the pre-bus store
-// masked that (#554); no capture adapter erases on a subscription gap.
+// compositor drew before the bus. An absent video is cleared immediately;
+// configured audio can keep the source identity alive. Zoom instead retains
+// video through subscription gaps (#554); capture adapters already re-emit
+// their held picture, so a missing capture frame removes video membership.
 inline void syncCaptureSources(SourceBus& bus,
                                const std::vector<modules::VideoFrame>& captureFrames) {
   std::unordered_set<std::string> present;
@@ -34,8 +34,8 @@ inline void syncCaptureSources(SourceBus& bus,
     // not yet been released) would otherwise be silent UB under this cast —
     // skip the frame rather than reinterpret a different ISource type.
     ISource* existing = bus.sourceFor(f.participantId);
-    if (existing && existing->descriptor().kind == "capture") {
-      static_cast<CaptureDeviceSource*>(existing)->setLatest(f);
+    if (auto* capture = dynamic_cast<CaptureDeviceSource*>(existing)) {
+      capture->setLatest(f);
     } else if (existing) {
       static std::atomic<uint32_t> skips{0};
       if (skips++ % 300 == 0) {
@@ -45,9 +45,10 @@ inline void syncCaptureSources(SourceBus& bus,
     }
   }
   for (const std::string& id : bus.sourceIds()) {
-    const ISource* source = bus.sourceFor(id);
-    if (source && source->descriptor().kind == "capture" && present.find(id) == present.end()) {
-      bus.remove(id);
+    auto* source = dynamic_cast<CaptureDeviceSource*>(bus.sourceFor(id));
+    if (source && present.find(id) == present.end()) {
+      source->clearVideo();
+      if (!source->descriptor().hasAudio) bus.remove(id);
     }
   }
 }

@@ -17,13 +17,16 @@ class CaptureDeviceSource final : public ISource {
     descriptor_.width = width;
     descriptor_.height = height;
     descriptor_.pixelFormat = "bgra";
-    descriptor_.hasVideo = true;
+    descriptor_.hasVideo = width > 0 && height > 0;
   }
   const SourceDescriptor& descriptor() const override { return descriptor_; }
 
   void setLatest(modules::VideoFrame frame) {
     latest_ = std::move(frame);  // shared_ptr payload: no pixel copy
     hasFrame_ = true;
+    descriptor_.hasVideo = true;
+    descriptor_.width = latest_.pixelWidth > 0 ? latest_.pixelWidth : latest_.i420Width;
+    descriptor_.height = latest_.pixelHeight > 0 ? latest_.pixelHeight : latest_.i420Height;
     // diagnostic only: counts setLatest calls, NOT the deduped per-frame
     // count the snapshot publishes (SourceBus::Entry::counters) — the
     // adapter re-emits the same held frame every tick while connected, so
@@ -45,11 +48,32 @@ class CaptureDeviceSource final : public ISource {
   }
   SourceIngestCounters counters() const override { return counters_; }
 
+  void clearVideo() {
+    latest_ = {};
+    hasFrame_ = false;
+    descriptor_.hasVideo = false;
+    descriptor_.width = descriptor_.height = 0;
+  }
+  void prepareAudio(bool configured) {
+    pendingAudio_.clear();
+    descriptor_.hasAudio = configured;
+  }
+  void stageAudio(modules::AudioFrame frame) {
+    descriptor_.hasAudio = true;
+    pendingAudio_.push_back(std::move(frame));
+  }
+  std::vector<modules::AudioFrame> pollAudio(int64_t) override {
+    std::vector<modules::AudioFrame> result;
+    result.swap(pendingAudio_);
+    return result;
+  }
+
  private:
   SourceDescriptor descriptor_;
   modules::VideoFrame latest_;
   bool hasFrame_ = false;
   SourceIngestCounters counters_;
+  std::vector<modules::AudioFrame> pendingAudio_;
 };
 
 }  // namespace corevideo::core
