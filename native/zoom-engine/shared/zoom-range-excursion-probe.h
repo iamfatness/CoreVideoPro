@@ -7,7 +7,7 @@
 
 // Cheap, per-subscription evidence at the SDK callback boundary. Samples the
 // same Y positions before and after the existing range normalizer. An isolated
-// one-frame excursion is reported only after the following frame restores the
+// one-frame excursion in either direction is reported only after the next frame restores the
 // baseline; this never changes a pixel or delays publication to the source bus.
 class ZoomRangeExcursionProbe {
 public:
@@ -40,7 +40,8 @@ public:
         current.sdkLimited = sdkLimited;
         std::optional<Excursion> result;
         if (seen_ >= 2 && std::abs(before_.publishedMean - current.publishedMean) < 2.0 &&
-            flash_.publishedMean - (before_.publishedMean + current.publishedMean) / 2.0 > 4.0) {
+            std::abs(flash_.publishedMean -
+                     (before_.publishedMean + current.publishedMean) / 2.0) > 4.0) {
             result = Excursion{before_, flash_, current};
         }
         before_ = flash_;

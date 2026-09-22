@@ -24,6 +24,18 @@ TEST(ZoomRangeExcursionProbe, DistinguishesSdkLimitedInputFromPublishedPixels) {
     EXPECT_FALSE(probe.observe(full.data(), full.data(), full.size(), false));
 }
 
+TEST(ZoomRangeExcursionProbe, DetectsRangeLikeDarkeningOnABrightSource) {
+    ZoomRangeExcursionProbe probe;
+    std::vector<std::uint8_t> full(6400, 158), compressed(6400, 153);
+    EXPECT_FALSE(probe.observe(full.data(), full.data(), full.size(), false));
+    EXPECT_FALSE(probe.observe(compressed.data(), compressed.data(), compressed.size(), false));
+    const auto event = probe.observe(full.data(), full.data(), full.size(), false);
+    ASSERT_TRUE(event);
+    EXPECT_EQ(event->before.publishedMean, 158);
+    EXPECT_EQ(event->flash.publishedMean, 153);
+    EXPECT_EQ(event->after.publishedMean, 158);
+}
+
 TEST(ZoomRangeExcursionProbe, IgnoresOrdinarySceneChange) {
     ZoomRangeExcursionProbe probe;
     std::vector<std::uint8_t> dark(6400, 32), bright(6400, 80);
