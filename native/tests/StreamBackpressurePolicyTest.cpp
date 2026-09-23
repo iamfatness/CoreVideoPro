@@ -215,3 +215,14 @@ TEST(StreamBackpressurePolicy, DiscardableGopTailLength_StopsAtTheFirstKeyframeN
   const std::vector<bool> twoKeyframes{false, true, false, true, false};
   EXPECT_EQ(discardableGopTailLength(twoKeyframes, identity()), 1u);
 }
+
+// The maximum-drop boundary. Every other case returns 0, 1 or 2, so nothing
+// pinned the case where the keyframe is LAST and the whole rest of the queue is
+// discardable - the shape that recovers the most latency and is therefore the
+// one most worth getting wrong by one.
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_DropsEveryChunkAheadOfATrailingKeyframe) {
+  const std::vector<bool> chunks{false, false, false, true};
+  EXPECT_EQ(corevideo::core::discardableGopTailLength(
+                chunks, [](bool keyframe) { return keyframe; }),
+            3u);
+}

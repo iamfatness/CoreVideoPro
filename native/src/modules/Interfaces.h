@@ -2,6 +2,7 @@
 
 #include "contracts/Lifecycle.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <atomic>
 #include <functional>
@@ -1160,6 +1161,18 @@ class IOutputSender {
   // release a sender stuck in pipe/network I/O. Implementations should only
   // interrupt the transport here; normal state cleanup remains in sync().
   virtual void interrupt(const std::string&) {}
+  // THE WRAPPER LAW APPLIES TO EVERY TEST-ONLY VIRTUAL BELOW, and none of them
+  // is forwarded by AsyncOutputSender / SupervisedOutputSender /
+  // CompositeOutputSender / the NDI sender. A test must therefore hold the
+  // CONCRETE sender, never a wrapped one. That is survivable only because each
+  // read seam's default is a ZERO/false value that makes a test's precondition
+  // ASSERT fail loudly (e.g. ASSERT_EQ(before.depth, 4u)) rather than pass with
+  // nothing under test - the silent-swallow shape that cost this codebase the
+  // 1-arg connect() pink tiles and SRT's dropped pollAudioFrames. If a THIRD
+  // seam is ever wanted here, do not add it: move these behind a narrow
+  // IBitstreamQueueTestAccess in its own header, reached by a
+  // createRtmpOutputSenderForTest() that returns the concrete type.
+  //
   // TEST-ONLY seam, structural guard only - the same guarantee
   // MediaCore::setStillImageDecoderForTest relies on: no env var, no command,
   // no config key and no wire field reaches it, and nothing outside
