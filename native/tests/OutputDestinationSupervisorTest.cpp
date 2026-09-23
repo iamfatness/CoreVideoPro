@@ -12,6 +12,7 @@
 // nothing here sleeps.
 
 #include "modules/AsyncOutputSender.h"
+#include "modules/IsolatedOutputSender.h"
 #include "modules/OutputDestinationSupervisor.h"
 #include "modules/OutputDestinationSupervisorPolicy.h"
 
@@ -53,7 +54,27 @@ class FakeDestinationChild final : public IOutputSender {
   }
   void submitAudio(const std::vector<float>&, int, int) override {}
   OutputSenderSession fail(const std::string&, const std::string&, double) override { return session(); }
-  OutputSenderSession recover(const std::string&, double, const std::string&) override {
+  // #597 round 2, item 2: the two are counted SEPARATELY. Round 1 shipped
+  // restartForSupervisor() with this fake inheriting the default forward to
+  // recover(), so `recovers()` counted both and no test in the tree could tell
+  // them apart - reverting the supervisor to recover() left the suite green.
+  OutputSenderSession restartForSupervisor(const std::string& destination, double elapsedMs,
+                                           const std::string& reason) override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      ++supervisedRestarts_;
+    }
+    return reopen(destination, elapsedMs, reason);
+  }
+  OutputSenderSession recover(const std::string& destination, double elapsedMs,
+                              const std::string& reason) override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      ++operatorRecovers_;
+    }
+    return reopen(destination, elapsedMs, reason);
+  }
+  OutputSenderSession reopen(const std::string&, double, const std::string&) {
     std::lock_guard<std::mutex> lock(mutex_);
     ++recovers_;
     actionThread_ = std::this_thread::get_id();
@@ -116,9 +137,18 @@ class FakeDestinationChild final : public IOutputSender {
     record_.audioFramesSent = -1;
   }
 
+  // Every re-open, however it was asked for.
   int recovers() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return recovers_;
+  }
+  int supervisedRestarts() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return supervisedRestarts_;
+  }
+  int operatorRecovers() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return operatorRecovers_;
   }
   int interrupts() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -142,6 +172,8 @@ class FakeDestinationChild final : public IOutputSender {
   OutputSender record_;
   int syncs_ = 0;
   int recovers_ = 0;
+  int supervisedRestarts_ = 0;
+  int operatorRecovers_ = 0;
   int interrupts_ = 0;
   std::thread::id actionThread_{};
 };
@@ -901,6 +933,17 @@ TEST(OutputDestinationSupervisor, RestartsAreNeverCloserThanTheCurrentLadderRung
   }
 
   ASSERT_GE(restarts.size(), 3u) << "the supervisor never restarted the destination";
+  // #597 round 2, item 2. An AUTOMATIC restart must reach the child as
+  // restartForSupervisor(), never as recover() - recover() is the OPERATOR's
+  // re-arm and a child holding a restart floor drops it for that call. Round 1
+  // made the split and nothing failed when it was undone; this is the line that
+  // fails. It is asserted on the SUPERVISOR's own restarts, not on a direct
+  // call, so it pins the decision site (OutputDestinationSupervisor.cpp's
+  // Restart action) rather than the method's existence.
+  EXPECT_EQ(child->supervisedRestarts(), static_cast<int>(restarts.size()));
+  EXPECT_EQ(child->operatorRecovers(), 0)
+      << "the supervisor used the OPERATOR path for its own automatic restart,"
+         " which hands the child a key to the restart floor that bounds it";
   for (std::size_t i = 0; i < restarts.size(); ++i) {
     std::fprintf(stderr, "[supervisor-floor] restart %zu at +%lldms\n", i,
                  static_cast<long long>(restarts[i] - faultAtMs));
@@ -957,4 +1000,196 @@ TEST(OutputDestinationSupervisorPolicyLadder, AHealthyInstantNeverReleasesAPendi
   }
   const auto restart = policy.observe(activeObservation(now, units, "failed", "bitstream-queue-overflow"));
   EXPECT_EQ(restart.action, SupervisorAction::Restart) << "and it must still restart once the rung is served";
+}
+
+
+// ---------------------------------------------------------------------------
+// THE WRAPPER LAW, PINNED (#597 round 2, items 2 and 3)
+// ---------------------------------------------------------------------------
+// restartForSupervisor() is a non-pure virtual whose DEFAULT forwards to
+// recover(). That is what makes it safe to add - and exactly what makes an
+// un-forwarded wrapper silent: the call still works, it just arrives as the
+// wrong event one layer up. This repo has paid for that shape three times (the
+// 1-arg connect() pink tiles, SRT's swallowed pollAudioFrames, and five
+// unforwarded test-only virtuals earlier in this same plan), so the forwarding
+// is pinned rather than reasoned about.
+namespace {
+
+// Records WHICH of the two calls arrived, and nothing else.
+class RecoverCauseRecorder final : public IOutputSender {
+ public:
+  explicit RecoverCauseRecorder(std::string destination) {
+    record_.destination = std::move(destination);
+    record_.senderId = record_.destination + ":program";
+    record_.status = "starting";
+    record_.destinationHealth = "starting";
+    record_.lastResultCode = "waiting-for-frame";
+  }
+  OutputSenderSession sync(const std::vector<std::string>&, const ProgramFrame*, double,
+                           const std::vector<OutputDestinationSettings>&, const std::vector<float>*, int,
+                           int) override {
+    return session();
+  }
+  void submitAudio(const std::vector<float>&, int, int) override {}
+  OutputSenderSession fail(const std::string&, const std::string&, double) override { return session(); }
+  OutputSenderSession recover(const std::string&, double, const std::string&) override {
+    operatorRecovers_.fetch_add(1);
+    return session();
+  }
+  OutputSenderSession restartForSupervisor(const std::string&, double, const std::string&) override {
+    supervisedRestarts_.fetch_add(1);
+    return session();
+  }
+  OutputSenderSession session() const override {
+    OutputSenderSession session;
+    session.senders.push_back(record_);
+    session.activeSenderCount = 1;
+    session.status = record_.status;
+    return session;
+  }
+  int operatorRecovers() const { return operatorRecovers_.load(); }
+  int supervisedRestarts() const { return supervisedRestarts_.load(); }
+
+ private:
+  OutputSender record_;
+  std::atomic<int> operatorRecovers_{0};
+  std::atomic<int> supervisedRestarts_{0};
+};
+
+}  // namespace
+
+// Item 3, directly: AsyncOutputSender carries the cause across its QUEUE, which
+// is the one hop where it could be lost without any signature changing -
+// deleting the `else if (item.supervisedRestart)` arm in the writer loop demotes
+// every supervisor restart to an operator reset and nothing else moves.
+TEST(AsyncOutputSender, TheRecoverCauseSurvivesTheQueue) {
+  auto owned = std::make_unique<RecoverCauseRecorder>("rtmp");
+  auto* inner = owned.get();
+  AsyncOutputSender sender(std::move(owned));
+
+  sender.restartForSupervisor("rtmp", 0, "supervisor restart");
+  ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(inner->supervisedRestarts(), 1);
+  EXPECT_EQ(inner->operatorRecovers(), 0) << "the queue demoted a supervisor restart to an operator reset";
+
+  sender.recover("rtmp", 0, "operator re-arm");
+  ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(inner->operatorRecovers(), 1);
+  EXPECT_EQ(inner->supervisedRestarts(), 1) << "an operator re-arm was promoted to a supervisor restart";
+}
+
+// Items 2 and 3 together, through the PRODUCTION composition:
+// CompositeOutputSender -> SupervisedOutputSender -> AsyncOutputSender -> adapter,
+// which is exactly what createIsolatedOutputSender builds for the live core. Any
+// ONE of those three inheriting the default collapses the distinction, and this
+// is the only test that would notice.
+TEST(IsolatedOutputSender, TheRecoverCauseSurvivesEveryWrapper) {
+  auto owned = std::make_unique<RecoverCauseRecorder>("rtmp");
+  auto* inner = owned.get();
+  std::vector<std::unique_ptr<IOutputSender>> children;
+  children.push_back(std::move(owned));
+  auto sender = createIsolatedOutputSender(std::move(children), {"rtmp"});
+  ASSERT_NE(sender, nullptr);
+
+  sender->restartForSupervisor("rtmp", 0, "supervisor restart");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (inner->supervisedRestarts() + inner->operatorRecovers() == 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_EQ(inner->supervisedRestarts(), 1)
+      << "one of Composite / Supervised / Async inherited the default and turned"
+         " the supervisor's automatic restart into an operator reset";
+  EXPECT_EQ(inner->operatorRecovers(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// THE ARMED FLOOR, AT THE ADAPTER (#597 round 2, items 1 and 2)
+// ---------------------------------------------------------------------------
+// Three properties of the gate this round changed, all on ONE armed floor so the
+// ~6 s it costs to arm is paid once:
+//
+//   * a NON-settings change is refused while the floor is armed (round 1's
+//     finding-2 rule, which until now nothing pinned),
+//   * a SUPERVISOR restart does NOT clear the floor (finding 1's second half -
+//     reverting restartForSupervisor() to recover() at the adapter fails HERE,
+//     and the supervisor test above fails at the decision site),
+//   * an OPERATOR recover() DOES clear it, because the house rule is that an
+//     operator action always clears give-up.
+TEST(RtmpOutputSender, AnArmedFloorYieldsToAnOperatorAndToNobodyElse) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  std::error_code missing;
+  if (!std::filesystem::exists(std::filesystem::path("C:\\ffmpeg\\bin") / "ffmpeg.exe", missing)) {
+    std::fprintf(stderr,
+                 "[  SKIPPED ] RtmpOutputSender.AnArmedFloorYieldsToAnOperatorAndToNobodyElse"
+                 " (ffmpeg absent at C:\\ffmpeg\\bin) - this test did NOT run\n");
+    return;
+  }
+  auto sender = createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  ProgramFrame frame{64, 36, 2, 7, "armed-floor", "d3d11"};
+  frame.programFullBgra.width = 64;
+  frame.programFullBgra.height = 36;
+  frame.programFullBgra.bgra.assign(64u * 36u * 4u, 0x10);
+
+  OutputDestinationSettings settings;
+  settings.id = "rtmp";
+  settings.label = "RTMP";
+  settings.protocol = "rtmp";
+  settings.url = "rtmp://127.0.0.1:1/live";
+  settings.streamKey = "armed-floor";
+  settings.ffmpegBinDirectory = "C:\\ffmpeg\\bin";
+  settings.videoCodec = "h264";
+
+  const auto wallStart = std::chrono::steady_clock::now();
+  auto nowMs = [&wallStart] {
+    return static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - wallStart)
+                                   .count());
+  };
+  auto tick = [&](const ProgramFrame& f) {
+    const auto session = sender->sync({"rtmp"}, &f, nowMs(), {settings});
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    return session.senders.empty() ? OutputSender{} : session.senders.front();
+  };
+
+  // Arm the floor: open, then let the refused connect break the pipe.
+  OutputSender record;
+  const auto armDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  do {
+    record = tick(frame);
+    if (record.lastResultCode == "ffmpeg-missing" || record.lastResultCode == "runtime-missing") {
+      std::fprintf(stderr,
+                   "[  SKIPPED ] RtmpOutputSender.AnArmedFloorYieldsToAnOperatorAndToNobodyElse"
+                   " (%s) - this test did NOT run\n", record.lastResultCode.c_str());
+      return;
+    }
+  } while (record.lastResultCode != "ffmpeg-retry-backoff" &&
+           std::chrono::steady_clock::now() < armDeadline);
+  ASSERT_EQ(record.lastResultCode, "ffmpeg-retry-backoff") << "the floor never armed";
+
+  // A NON-settings change - a different program size - is not operator intent
+  // and must not buy a rebuild. Round 0's gate would have let this through the
+  // moment the transport happened to be up.
+  ProgramFrame resized{96, 54, 3, 7, "armed-floor", "d3d11"};
+  resized.programFullBgra.width = 96;
+  resized.programFullBgra.height = 54;
+  resized.programFullBgra.bgra.assign(96u * 54u * 4u, 0x10);
+  EXPECT_EQ(tick(resized).lastResultCode, "ffmpeg-retry-backoff")
+      << "a program-size change rebuilt the transport inside its rung";
+
+  // The SUPERVISOR's own automatic restart keeps the floor.
+  sender->restartForSupervisor("rtmp", nowMs(), "Output supervisor restarted this destination.");
+  EXPECT_EQ(tick(frame).lastResultCode, "ffmpeg-retry-backoff")
+      << "a supervisor restart cleared the floor that exists to bound it";
+
+  // The OPERATOR's re-arm clears it, and the very next tick may open.
+  sender->recover("rtmp", nowMs(), "Operator re-armed the destination.");
+  const auto afterOperator = tick(frame);
+  EXPECT_NE(afterOperator.lastResultCode, "ffmpeg-retry-backoff")
+      << "an operator re-arm was made to wait out a ladder it had just overridden";
+#else
+  EXPECT_TRUE(true) << "Needs the RTMP sender.";
+#endif
 }

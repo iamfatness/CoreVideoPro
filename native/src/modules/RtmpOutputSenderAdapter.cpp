@@ -660,7 +660,18 @@ class RtmpOutputSender final : public IOutputSender {
     if (!wantsRtmp) {
       stopFfmpegProcess();
       videoFramePacer_.reset();
+      // THE ONE UNFLOORED ROUTE, AND THE INVARIANT IT RESTS ON (round 2, item 4).
+      // Stream off drops the streak AND the floor, which is right: switching a
+      // destination off and on again is the operator re-arming it. It is safe
+      // ONLY because `outputDestinations_` is COMMAND state (MediaCore's
+      // start/stop-program-output), so this branch is entered on an operator
+      // action and not once per tick. A producer that made the destination list
+      // tick-derived - or that alternated it - would reset both ladders every
+      // tick and re-open the #597 storm through this door. If destinations ever
+      // become derived state, this clear() has to become an edge-triggered
+      // operator signal, not a per-sync observation.
       restartFloor_.clear();
+      backoffProofWritten_ = false;
       startRefusedInadmissible_ = false;  // Stream off/on re-evaluates the refusal
       // #597 Lever A: A STOPPED DESTINATION HAS NO QUEUE. observeStreamBackpressure()
       // lives far below this return, so without these two lines the stopped record
@@ -851,9 +862,19 @@ class RtmpOutputSender final : public IOutputSender {
     if (!ensureFfmpegProcess(*frame, elapsedMs)) {
       // A latched refusal already wrote its one proof line with the named code;
       // appending per frame would flood the proof file for the rest of the show.
-      if (!startRefusedInadmissible_) {
-        appendSendProof(frame, "ffmpeg-start-failed");
+      //
+      // A SERVED BACKOFF IS LATCHED THE SAME WAY (round 2, item 6). This runs on
+      // every program frame, so a rung is 60 Hz x its length of flushed lines -
+      // and round 1 raised the rungs from 1-30 s to 5-60 s, which would have
+      // made a rung-5 backoff ~3,600 lines saying the identical thing. One line
+      // per backoff WINDOW: the latch is cleared wherever the floor state can
+      // next change (a real open, a fresh failure, or a clear), so every
+      // distinct window still gets its line.
+      const bool servingBackoff = sender_.lastResultCode == "ffmpeg-retry-backoff";
+      if (!startRefusedInadmissible_ && !(servingBackoff && backoffProofWritten_)) {
+        appendSendProof(frame, servingBackoff ? "ffmpeg-retry-backoff" : "ffmpeg-start-failed");
       }
+      backoffProofWritten_ = servingBackoff;
       return snapshot();
     }
 
@@ -906,6 +927,7 @@ class RtmpOutputSender final : public IOutputSender {
       // queue overflow, a 1 s wait, a rebuild, one accepted frame, and round
       // again at 2.5–3.5 s. The streak now survives that one frame.
       restartFloor_.noteFailure(static_cast<std::int64_t>(elapsedMs));
+      backoffProofWritten_ = false;
       // STOP FIRST, THEN READ THE STDERR. A failed stdin write is observed the
       // instant the pipe breaks, which is BEFORE FFmpeg has flushed the line that
       // says why - measured live 2026-09-12 against a refusing endpoint, where the
@@ -1261,12 +1283,43 @@ class RtmpOutputSender final : public IOutputSender {
                                  keyframeChanged || rateControlChanged || h264ProfileChanged ||
                                  bFramesChanged || enhancedChanged;
     if (!settingsApplied && !restartFloor_.mayOpenAt(static_cast<std::int64_t>(elapsedMs))) {
+      // A REFUSED REBUILD LEAVES NO LINGERING CHILD (round 2, item 1). Round 0's
+      // gate could only be reached with the transport already down, so falling
+      // straight to `return false` was safe. Round 1's gate can be reached with
+      // FFmpeg STILL RUNNING - the floor is armed from an earlier failure, a
+      // settings apply opened a new transport through the exemption inside that
+      // window, and a NON-settings change (gpuPathChanged, sizeChanged,
+      // pixelFormatChanged, audioChanged) then arrives. Without this stop the
+      // destination spends up to a full rung with a live child being fed
+      // nothing while it publishes `failed`.
+      //
+      // On RTMP that is untidy. On SRT it is a show-killer and this repo has
+      // already been bitten by it: an SRT listener accepts exactly ONE caller,
+      // so a child that outlives its own teardown holds the slot and the
+      // reconnect at the end of the rung is REFUSED - the stream never comes
+      // back. stopFfmpegProcess() closes stdin, waits for exit and releases the
+      // slot, so the rung is served with the transport genuinely down and
+      // `failed` is then a true statement rather than a description of a child
+      // that is still connected.
+      if (ffmpegRunning_) {
+        stopFfmpegProcess();
+        // And SAY it stopped. `stoppedAtMs` is how the rest of the system reads
+        // "this transport is down"; leaving it unset would publish `failed` for
+        // a destination whose child had just been killed without recording when.
+        sender_.stoppedAtMs = elapsedMs;
+      }
       const auto retryMs = restartFloor_.remainingMs(static_cast<std::int64_t>(elapsedMs));
       sender_.status = "failed";
       sender_.destinationHealth = "failed";
       sender_.lastResultCode = "ffmpeg-retry-backoff";
+      // Say what is actually true: not delivering, a retry IS scheduled, and
+      // this is rung N of a bounded ladder - not a destination we have given up
+      // on. Give-up is the supervisor's word and reads `supervisor-gave-up`.
       sender_.warning = sender_.lastError + " Retry paused for " +
-                        std::to_string((std::max)(int64_t{1}, retryMs / 1000 + 1)) + "s.";
+                        std::to_string((std::max)(int64_t{1}, retryMs / 1000 + 1)) +
+                        "s (attempt " + std::to_string(restartFloor_.consecutiveFailures() + 1) +
+                        " of " +
+                        std::to_string(OutputDestinationSupervisorPolicy::kMaxConsecutiveFailures) + ").";
       return false;
     }
 
@@ -1294,6 +1347,7 @@ class RtmpOutputSender final : public IOutputSender {
       activeUseGpuDirect_ = useGpuDirect_;
       // The healthy-RUN window opens here, not at the first accepted frame.
       restartFloor_.noteOpened(static_cast<std::int64_t>(elapsedMs));
+      backoffProofWritten_ = false;
       sender_.startedAtMs = elapsedMs;
       sender_.destinationHealth = "starting";
       sender_.lastResultCode = "ffmpeg-started";
@@ -1307,6 +1361,7 @@ class RtmpOutputSender final : public IOutputSender {
     } else {
       restartFloor_.noteFailure(static_cast<std::int64_t>(elapsedMs));
     }
+    backoffProofWritten_ = false;
     return false;
   }
 
@@ -2594,6 +2649,8 @@ class RtmpOutputSender final : public IOutputSender {
   // #597 the restart floor: the house 5/10/20/40/60 s ladder, keyed on the same
   // monotonic `elapsedMs` clock the video pacer already uses.
   TransportRestartFloor restartFloor_;
+  // One send-proof line per served backoff WINDOW, not one per program frame.
+  bool backoffProofWritten_ = false;
   // Latest real program-audio mix for this tick (interleaved float PCM), and the
   // audio layout currently baked into the running FFmpeg process. `pending*` is
   // refreshed by sync(); `active*` reflects the live process configuration.
