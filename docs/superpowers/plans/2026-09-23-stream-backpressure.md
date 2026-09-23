@@ -869,6 +869,29 @@ Over `--seconds 240` with `--slow-sink`, assert all of:
 
 The incident's fingerprint was a 21 s gap in `perf.log` whose SAMPLE COUNTER advanced normally. Assert the core's snapshot emission cadence stays within its normal band for the whole run, measured against the counter rather than wall time alone, so a producer slowdown is distinguishable from a UI freeze. This is the assertion that would have caught #597.
 
+- [ ] **Step 3b: Settle the parameter-set question — BLOCKING for Lever B**
+
+Task 5's review raised a stream-corruption risk it could not settle statically,
+and this is the only place that can. Lever B discards every chunk ahead of the
+first `CleanPoint` chunk, which is safe ONLY if each `CleanPoint` sample is a
+self-contained IDR carrying its own VPS/SPS/PPS in band. Nothing in the tree
+configures sequence-header repetition or writes a header prologue. If the MFT
+ever emits the parameter sets as a SEPARATE non-`CleanPoint` sample just before
+the IDR, the discard eats them and the stream is corrupt until the next
+keyframe — and it would only ever happen under congestion, which is the worst
+possible repro profile.
+
+Log the first ~30 chunks of a real GPU-direct stream (size, `keyframe` flag, and
+the first few bytes' NAL types) for h264 and for hevc. Put the evidence in the
+report either way.
+
+If the parameter sets are NOT in band with the IDR, the fix is NOT to complicate
+the discard: make the IDR self-contained by construction in
+`MediaFoundationGpuVideoEncoder` (`CODECAPI_AVEncVideoPrependSPSPPSToIDR`, or
+the sequence-header attribute on the output type), then re-run this check. A
+discard that has to reason about which preceding chunks are headers is a discard
+that will get it wrong under load.
+
 - [ ] **Step 4: Run it, and re-run the healthy gates**
 
 ```bash
