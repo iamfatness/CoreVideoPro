@@ -1776,10 +1776,37 @@ class RtmpOutputSender final : public IOutputSender {
     std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
     bitstreamQueue_.clear();
     bitstreamQueuedBytes_ = 0;
+    republishQueueTelemetryLocked();
 #endif
   }
 
 #if defined(_WIN32)
+  // Caller must hold bitstreamQueueMutex_.
+  void republishQueueTelemetryLocked() {
+    bitstreamQueuedChunks_.store(static_cast<std::int64_t>(bitstreamQueue_.size()),
+                                 std::memory_order_relaxed);
+    bitstreamHeadEnqueuedNs_.store(
+        bitstreamQueue_.empty()
+            ? 0
+            : bitstreamQueue_.front().enqueuedAt.time_since_epoch().count(),
+        std::memory_order_relaxed);
+    bool keyframe = false;
+    for (const auto& q : bitstreamQueue_) {
+      if (q.metadata.keyframe) { keyframe = true; break; }
+    }
+    bitstreamQueueHasKeyframe_.store(keyframe, std::memory_order_relaxed);
+  }
+
+  // 0 when the queue is empty. Lock-free: reads the head's enqueue time and ages
+  // it against now, so the number keeps rising while the writer is blocked.
+  [[nodiscard]] std::int64_t bitstreamBufferedMs() const {
+    const auto head = bitstreamHeadEnqueuedNs_.load(std::memory_order_relaxed);
+    if (head == 0) return 0;
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto ageNs = now - head;
+    return ageNs <= 0 ? 0 : static_cast<std::int64_t>(ageNs / 1'000'000);
+  }
+
   void enqueueBitstream(const GpuEncodedChunk& chunk) {
     if (!chunk.data || !chunk.size || bitstreamWriterStop_.load() || bitstreamFailure_.failed()) return;
     {
@@ -1792,8 +1819,10 @@ class RtmpOutputSender final : public IOutputSender {
         ::corevideo::core::nativeLogf("[gpu-encode] bitstream queue overflow; queuedBytes=%zu queuedChunks=%zu incomingBytes=%zu; sender unhealthy -> supervisor\n", bitstreamQueuedBytes_, bitstreamQueue_.size(), chunk.size);
         return;
       }
-      bitstreamQueue_.push_back({std::vector<uint8_t>(chunk.data, chunk.data + chunk.size), chunk});
+      bitstreamQueue_.push_back({std::vector<uint8_t>(chunk.data, chunk.data + chunk.size), chunk,
+                                 std::chrono::steady_clock::now()});
       bitstreamQueuedBytes_ += chunk.size;
+      republishQueueTelemetryLocked();
     }
     bitstreamQueueCv_.notify_one();
   }
@@ -1810,6 +1839,7 @@ class RtmpOutputSender final : public IOutputSender {
         packet = std::move(bitstreamQueue_.front());
         bitstreamQueue_.pop_front();
         bitstreamQueuedBytes_ -= packet.bytes.size();
+        republishQueueTelemetryLocked();
       }
       packet.metadata.data = packet.bytes.data();
       if (gpuEncodeSentCodec_ == "hevc") {
@@ -2383,6 +2413,10 @@ class RtmpOutputSender final : public IOutputSender {
   struct QueuedBitstream {
     std::vector<uint8_t> bytes;
     GpuEncodedChunk metadata;
+    // Wall-clock moment this chunk entered the queue. The backpressure signal is
+    // the AGE of the head of the queue, which is the only measure that stays
+    // honest while the frame rate is being changed underneath it.
+    std::chrono::steady_clock::time_point enqueuedAt{};
   };
   std::deque<QueuedBitstream> bitstreamQueue_;
   size_t bitstreamQueuedBytes_ = 0;
@@ -2390,6 +2424,11 @@ class RtmpOutputSender final : public IOutputSender {
   std::atomic<bool> bitstreamWriterStop_{true};
   BitstreamFailureState bitstreamFailure_;
   std::atomic<bool> bitstreamWriterExited_{true};
+  // Read by the submit path with NO lock (see bitstreamBufferedMs). Written only
+  // under bitstreamQueueMutex_, where the queue is already being mutated.
+  std::atomic<std::int64_t> bitstreamHeadEnqueuedNs_{0};  // 0 = empty
+  std::atomic<std::int64_t> bitstreamQueuedChunks_{0};
+  std::atomic<bool> bitstreamQueueHasKeyframe_{false};
 #endif
 
   OutputSender sender_;
