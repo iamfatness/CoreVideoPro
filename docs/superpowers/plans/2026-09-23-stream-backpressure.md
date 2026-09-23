@@ -699,7 +699,7 @@ git commit -m "Lever B: recover latency by discarding the GOP tail ahead of a qu
 - Modify: `native/src/core/MediaCore.cpp` — emit it beside the `supervisor` node (line ~5281)
 
 **Interfaces:**
-- Produces: `sessionState().outputSenders.senders[].backpressure` = `{divisor, level, bufferedMs, queuedChunks, enteredCount, discardedChunks, discardEvents, lastReason, lastTransitionBufferedMs}` — the per-destination facts.
+- Produces: `sessionState().outputSenderSession.senders[].backpressure` = `{divisor, level, bufferedMs, queuedChunks, enteredCount, discardedChunks, discardEvents, lastReason, lastTransitionBufferedMs}` — the per-destination facts.
 - Produces: `sessionState().realtimeEvidence.encoderExport` = `{divisor, shedFrames}` — the ONE effective divisor MediaCore pushed to the compositor (the MAX across GPU-direct senders) and the frames the compositor actually held back. Published unconditionally, like the multiviewer node: a divisor of 1 and 0 shed frames is the healthy reading, not an absent node.
 
 - [ ] **Step 1: Add the struct**

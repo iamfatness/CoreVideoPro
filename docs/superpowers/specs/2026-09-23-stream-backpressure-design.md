@@ -197,7 +197,7 @@ destination closer together than the ladder's current rung.**
 
 ### 7. Observability
 
-`sessionState().outputSenders.senders[].backpressure`, published unconditionally
+`sessionState().outputSenderSession.senders[].backpressure`, published unconditionally
 (the multiviewer-node rule — a node that vanishes in the case worth detecting is
 useless): `{divisor, level, bufferedMs, queuedChunks, enteredCount, shedFrames,
 discardedChunks, discardEvents, lastReason, lastTransitionBufferedMs}`. One
