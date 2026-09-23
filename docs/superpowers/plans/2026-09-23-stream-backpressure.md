@@ -438,33 +438,59 @@ git commit -m "Publish the bitstream queue's buffered latency, lock-free for the
 
 ---
 
-### Task 4: Lever A — the input divisor
+### Task 4: Lever A — the input divisor, applied at the encoder-texture export
+
+> **AMENDED after Task 1's measurement (controller ruling).** The plan originally
+> gated `submitFrameToGpuEncoder`. Task 1 PROVED that does nothing: skipping only
+> `submit()` produced a byte-identical stream (ratio 0.998). The encoder's thread
+> advances on the KEYED MUTEX, when the compositor releases a new frame — so the
+> throttle must stop the compositor exporting to the encoder texture. The divisor
+> now travels sender -> MediaCore -> compositor.
 
 **Files:**
-- Modify: `native/src/modules/RtmpOutputSenderAdapter.cpp` — `submitFrameToGpuEncoder` (~line 1875 after Task 3's edits), members
-- Modify: `native/tests/MediaCoreCommandTest.cpp` — a sender-level test
+- Modify: `native/src/modules/Interfaces.h` — minimal `OutputBackpressureState{divisor}` on `OutputSender`; `ICompositor::setEncoderExportDivisor(int)`
+- Modify: `native/src/modules/RtmpOutputSenderAdapter.cpp` — observe the policy, publish the divisor
+- Modify: `native/src/modules/D3D11CompositorAdapter.cpp` — gate the export at line ~228
+- Modify: `native/src/core/MediaCore.cpp` — read the senders' divisor, drive the compositor
+- Modify: `native/tests/MediaCoreCommandTest.cpp` — pin the decision where it is applied
 
 **Interfaces:**
 - Consumes: Task 2's policy, Task 3's `bitstreamBufferedMs()` / `bitstreamQueueHasKeyframe_`.
-- Produces: private `corevideo::core::StreamBackpressurePolicy backpressure_;` and `std::int64_t backpressureFrameCounter_ = 0;`, consumed by Tasks 5 and 6.
+- Produces: private `corevideo::core::StreamBackpressurePolicy backpressure_;` on the sender and `OutputSender::backpressure` (`OutputBackpressureState{divisor}`), consumed by Tasks 5 and 6; `ICompositor::setEncoderExportDivisor(int)`.
 
-- [ ] **Step 1: Write the failing sender-level test**
+- [ ] **Step 1: Write the failing tests**
 
-In `native/tests/MediaCoreCommandTest.cpp`, beside the existing tests that drive `createRtmpOutputSender()->sync()` (the harness used for the codec-refusal tests):
+Pin the decision where it is APPLIED, not only in the leaf policy (the #481
+rule). Two assertions, both GPU-free:
+1. the compositor honours the divisor - at divisor 2 it exports on every second
+   frame number and not the others;
+2. a backed-up sender publishes a divisor above 1, and MediaCore passes the max
+   across senders to the compositor.
+
+Deleting either the export gate or the MediaCore plumbing must fail a test. In
+`native/tests/MediaCoreCommandTest.cpp`, beside the existing tests that drive
+`createRtmpOutputSender()->sync()`:
 
 ```cpp
-// #597: the divisor must actually gate the submit. Deleting the gate in
-// submitFrameToGpuEncoder must fail this test — the #481 rule, test the whole
-// decision and not just the leaf policy.
-TEST(RtmpOutputSenderBackpressure, TheDivisorGatesFramesReachingTheEncoder) {
+// #597: the divisor must gate the EXPORT. Task 1 proved gating submit() does
+// nothing (ratio 0.998) - the keyed mutex paces the encoder. Deleting the export
+// gate must fail this test.
+TEST(RtmpOutputSenderBackpressure, TheDivisorGatesTheEncoderTextureExport) {
+  // Call setEncoderExportDivisor(2) on the compositor, drive 200 render ticks
+  // with fullProgramReadback true, and count the exports. Expect every even
+  // frameNumber exported and no odd one - an exact count, not a ratio, because
+  // this leg has no timing in it at all.
+}
+
+// #597: a backed-up sender must PUBLISH a divisor, and MediaCore must carry the
+// max across senders to the compositor. Deleting either half fails this.
+TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
   // Drive the sender with a program frame carrying an encoder texture, holding
-  // the bitstream queue artificially backed up past kThrottleAboveBufferedMs for
-  // more than kEnterAfterOverWaterTicks frames, then assert the encoder saw
-  // roughly half the submitted frames. Use the existing fake/stub GPU encoder
-  // seam (gpuEncoderFactory_) to count submit() calls.
-  //   submitted:   kEnterAfterOverWaterTicks + 200 frames
-  //   encoder saw: the first kEnterAfterOverWaterTicks, then ~1 in 2
-  // Assert the ratio over the post-throttle window is 0.45..0.55.
+  // the bitstream queue backed up past kThrottleAboveBufferedMs for more than
+  // kEnterAfterOverWaterTicks frames, then assert sender.session().backpressure
+  // reports divisor > 1. With a second, healthy GPU-direct sender present,
+  // assert the compositor stub recorded the MAX of the two, set once on the
+  // transition rather than every tick.
 }
 ```
 
@@ -475,11 +501,32 @@ Build the harness from the existing sender tests: install a counting `GpuVideoEn
 ```powershell
 native\build-dev\corevideo-native-tests.exe --gtest_filter='RtmpOutputSenderBackpressure.*'
 ```
-Expected: FAIL — every frame reaches the encoder because no gate exists.
+Expected: FAIL — every frame is exported to the encoder because no gate exists.
 
-- [ ] **Step 3: Implement the gate**
+- [ ] **Step 3: Implement the gate (three edits, in this order)**
 
-Add `#include "core/StreamBackpressurePolicy.h"`. At the top of `submitFrameToGpuEncoder`, after the existing health guards and before the handle check:
+**(a) The compositor stops exporting on shed frames.** `ICompositor` gains
+`virtual void setEncoderExportDivisor(int) {}` (a default no-op, so Metal and the
+stub are unaffected). In `D3D11CompositorAdapter`, store it and gate the existing
+call at line ~228:
+
+```cpp
+    // #597 Lever A. The encoder's thread advances on the KEYED MUTEX - when this
+    // export releases a new frame - NOT on the sender's submit(). Task 1 measured
+    // it directly: skipping only submit() left the stream byte-identical (ratio
+    // 0.998), while halving the export rate halved egress (0.500). So the throttle
+    // lives here. Skipping the export leaves the encoder waiting, which is exactly
+    // the intended "fewer frames, same quality each".
+    if (renderPlan.fullProgramReadback &&
+        (encoderExportDivisor_ <= 1 || (frame.frameNumber % encoderExportDivisor_) == 0)) {
+      exportEncoderSharedTexture(frame);
+    }
+```
+
+**(b) The sender observes the policy and publishes its divisor.** Add
+`#include "core/StreamBackpressurePolicy.h"` and a member
+`corevideo::core::StreamBackpressurePolicy backpressure_;`. Observe once per
+`sync()` on the GPU-direct path, where the sender already holds the frame:
 
 ```cpp
     // #597 Lever A: skip program frames BEFORE the encoder. Compressed frames
@@ -497,14 +544,29 @@ Add `#include "core/StreamBackpressurePolicy.h"`. At the top of `submitFrameToGp
           backpressure_.divisor(), static_cast<long long>(observation.bufferedMs));
     }
     // Task 5 handles decision.discardBacklog here.
-    ++backpressureFrameCounter_;
-    if (backpressure_.divisor() > 1 && (backpressureFrameCounter_ % backpressure_.divisor()) != 0) {
-      backpressure_.noteShedFrame();
-      return true;  // a shed frame is not a failure
-    }
 ```
 
-**Document the counter semantics at the site:** a shed frame still counts toward `sender_.framesSent` in the caller, because the sender did accept responsibility for it and the pipeline is healthy by design at that moment. The difference is visible as `shedFrames` in the snapshot node (Task 6). Do not make a shed frame return false: that would fail the sender.
+Publish the divisor so MediaCore can read it. In `Interfaces.h`, beside
+`OutputSupervisorState`:
+
+```cpp
+struct OutputBackpressureState {
+  int divisor = 1;  // Task 6 adds the remaining published fields
+};
+```
+and `std::optional<OutputBackpressureState> backpressure;` on `OutputSender`,
+set by the sender whenever `useGpuDirect_` is true.
+
+**(c) MediaCore drives the compositor.** Where it already walks the sender
+snapshots each output tick, take the MAX divisor across active GPU-direct
+senders and call `compositor->setEncoderExportDivisor(n)` only when it CHANGES
+— a control-plane call on a transition, never per frame.
+
+MAX, not min, and say so in the report: one encoder texture feeds every
+destination, so the spec's per-destination rule cannot fully hold while a
+single encoder serves them all. A healthy sibling is throttled by a struggling
+one. That is a real limitation of this slice, not an oversight — name it rather
+than let a reviewer discover it.
 
 - [ ] **Step 4: Build and run GREEN**
 
@@ -517,8 +579,8 @@ Expected: the new test passes; full suite 0 failed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add native/src/modules/RtmpOutputSenderAdapter.cpp native/tests/MediaCoreCommandTest.cpp
-git commit -m "Lever A: throttle the encoder's input when the destination falls behind"
+git add native/src/modules/Interfaces.h native/src/modules/RtmpOutputSenderAdapter.cpp \n  native/src/modules/D3D11CompositorAdapter.cpp native/src/core/MediaCore.cpp \n  native/tests/MediaCoreCommandTest.cpp
+git commit -m "Lever A: throttle by holding the encoder texture export, not the submit"
 ```
 
 ---
@@ -606,7 +668,7 @@ native\build-dev\corevideo-native-tests.exe
 - [ ] **Step 5: Commit**
 
 ```bash
-git add native/src/modules/RtmpOutputSenderAdapter.cpp native/tests/MediaCoreCommandTest.cpp
+git add native/src/modules/Interfaces.h native/src/modules/RtmpOutputSenderAdapter.cpp \n  native/src/modules/D3D11CompositorAdapter.cpp native/src/core/MediaCore.cpp \n  native/tests/MediaCoreCommandTest.cpp
 git commit -m "Lever B: recover latency by discarding the GOP tail ahead of a queued keyframe"
 ```
 
