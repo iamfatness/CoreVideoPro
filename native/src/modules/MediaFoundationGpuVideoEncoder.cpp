@@ -8,6 +8,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <chrono>
 #include <condition_variable>
@@ -55,6 +58,84 @@ UINT32 profileForCodec(const std::string& codec) {
   if (codec == "hevc" || codec == "h265") return eAVEncH265VProfile_Main_420_8;
   if (codec == "av1") return eAVEncAV1VProfile_Main_420_8;
   return eAVEncH264VProfile_High;
+}
+
+// COREVIDEO_GPU_ENCODE_CHUNK_TRACE=<n>: trace the first n output chunks (0/unset
+// = off). Bounded by construction so a stray env var cannot flood a show's log.
+int chunkTraceBudgetFromEnv() {
+  size_t len = 0;
+  char buf[16]{};
+  if (getenv_s(&len, buf, sizeof(buf), "COREVIDEO_GPU_ENCODE_CHUNK_TRACE") != 0 || len == 0) return 0;
+  const int n = std::atoi(buf);
+  return n <= 0 ? 0 : (n > 200 ? 200 : n);
+}
+
+// #597 Task 8 Step 3b support. Walk an Annex-B elementary-stream chunk and name
+// the NAL unit types it carries, so the acceptance gate's report can state
+// whether a keyframe sample is a self-contained IDR (parameter sets IN BAND)
+// or a bare slice whose headers arrived in some earlier sample. Named types
+// only for the ones the question turns on; everything else prints its number.
+//
+// H.264 (Annex B): one header byte, type = byte & 0x1F.
+// HEVC  (Annex B): two header bytes, type = (byte0 >> 1) & 0x3F.
+// AV1 is NOT Annex-B (it is an OBU stream), so it is reported as such rather
+// than mis-parsed - the gate refuses AV1 anyway (codec-not-deliverable).
+void describeAnnexBNalTypes(const unsigned char* data, size_t size, const std::string& codec,
+                            char* out, size_t outSize) {
+  if (!out || outSize == 0) return;
+  out[0] = '\0';
+  if (!data || size == 0) { snprintf(out, outSize, "(empty)"); return; }
+  const bool hevc = (codec == "hevc" || codec == "h265");
+  if (codec == "av1") { snprintf(out, outSize, "(av1-obu, not annex-b)"); return; }
+  size_t used = 0;
+  int emitted = 0;
+  for (size_t i = 0; i + 3 < size && emitted < 12; ++i) {
+    // Start code: 00 00 01 or 00 00 00 01.
+    if (data[i] != 0 || data[i + 1] != 0) continue;
+    size_t payload = 0;
+    if (data[i + 2] == 1) payload = i + 3;
+    else if (data[i + 2] == 0 && data[i + 3] == 1) payload = i + 4;
+    else continue;
+    if (payload >= size) break;
+    int type = hevc ? ((data[payload] >> 1) & 0x3F) : (data[payload] & 0x1F);
+    const char* name = nullptr;
+    if (hevc) {
+      switch (type) {
+        case 32: name = "VPS"; break;
+        case 33: name = "SPS"; break;
+        case 34: name = "PPS"; break;
+        case 19: name = "IDR_W_RADL"; break;
+        case 20: name = "IDR_N_LP"; break;
+        case 21: name = "CRA"; break;
+        case 1:  name = "TRAIL_R"; break;
+        case 0:  name = "TRAIL_N"; break;
+        case 39: name = "PREFIX_SEI"; break;
+        case 40: name = "SUFFIX_SEI"; break;
+        case 35: name = "AUD"; break;
+        default: break;
+      }
+    } else {
+      switch (type) {
+        case 7: name = "SPS"; break;
+        case 8: name = "PPS"; break;
+        case 5: name = "IDR"; break;
+        case 1: name = "non-IDR"; break;
+        case 6: name = "SEI"; break;
+        case 9: name = "AUD"; break;
+        default: break;
+      }
+    }
+    char piece[48];
+    if (name) snprintf(piece, sizeof(piece), "%s%s(%d)", emitted ? "," : "", name, type);
+    else snprintf(piece, sizeof(piece), "%s%d", emitted ? "," : "", type);
+    const size_t len = strlen(piece);
+    if (used + len + 1 >= outSize) break;
+    memcpy(out + used, piece, len + 1);
+    used += len;
+    ++emitted;
+    i = payload;  // continue the scan past this header byte
+  }
+  if (emitted == 0) snprintf(out, outSize, "(no annex-b start code)");
 }
 
 // Owns a dedicated D3D11 device + the MF hardware encoder MFT + a D3D11 video
@@ -561,6 +642,28 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       ::corevideo::core::nativeLogf("[gpu-encode] first output chunk size=%zu keyframe=%d\n", chunk.size,
                                    chunk.keyframe ? 1 : 0);
     }
+    // #597 Task 8, Step 3b - THE PARAMETER-SET EVIDENCE.
+    //
+    // Lever B (StreamBackpressurePolicy's GOP-tail discard) drops every chunk
+    // ahead of the first keyframe in the outgoing queue. That is safe ONLY if
+    // each CleanPoint sample is a SELF-CONTAINED IDR carrying its own
+    // VPS/SPS/PPS in band. Nothing in this tree configures sequence-header
+    // repetition, so "does this MFT ever emit the parameter sets as a SEPARATE
+    // non-CleanPoint sample just before the IDR?" cannot be settled by reading
+    // code - only by looking at real chunks off the real hardware encoder.
+    // This trace is how the acceptance gate looks, for h264 and for hevc.
+    //
+    // Deliberately env-gated and BOUNDED: it is a diagnostic, not telemetry,
+    // and a per-chunk NAL walk has no business on a live show's hot path.
+    // COREVIDEO_GPU_ENCODE_CHUNK_TRACE=<n> traces the first n chunks.
+    if (chunkTraceRemaining_ > 0) {
+      --chunkTraceRemaining_;
+      char nals[256];
+      describeAnnexBNalTypes(chunk.data, chunk.size, config_.codec, nals, sizeof(nals));
+      ::corevideo::core::nativeLogf(
+          "[gpu-encode] chunk-trace #%d codec=%s size=%zu keyframe=%d nal=%s\n",
+          chunkTraceIndex_++, config_.codec.c_str(), chunk.size, chunk.keyframe ? 1 : 0, nals);
+    }
     if (sink_) sink_(chunk);
     buffer->Unlock();
   }
@@ -653,6 +756,9 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   std::string lastFailure_;
   bool capacityLeaseActive_ = false;
   bool firstEmitLogged_ = false;
+  // #597 Task 8 Step 3b: bounded, env-gated parameter-set trace (see emit()).
+  int chunkTraceRemaining_ = chunkTraceBudgetFromEnv();
+  int chunkTraceIndex_ = 0;
   // Output-drain accounting (encode thread only).
   uint64_t drainEvents_ = 0;
   uint64_t drainSamples_ = 0;
