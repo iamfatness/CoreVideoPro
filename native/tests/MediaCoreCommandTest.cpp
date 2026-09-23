@@ -4741,6 +4741,21 @@ class BackpressurePublishingSender : public corevideo::modules::IOutputSender {
     out.activeSenderCount = 2;
     out.senders.push_back(makeSender("rtmp", rtmpDivisor));
     out.senders.push_back(makeSender("srt", srtDivisor));
+    // An NDI destination on the raw path: it publishes NO backpressure at all.
+    // Absent is NOT "healthy" and it is NOT divisor 1 evidence - it must simply
+    // contribute nothing to the max.
+    corevideo::modules::OutputSender ndi;
+    ndi.senderId = ndi.destination = "ndi";
+    ndi.status = "live";
+    ndi.destinationHealth = "ok";
+    out.senders.push_back(ndi);
+    // A destination the operator already STOPPED, still carrying the divisor it
+    // reached before it stopped. It must not hold the compositor throttled.
+    auto stopped = makeSender("rtmp-previous", 4);
+    stopped.status = "stopped";
+    stopped.destinationHealth = "stopped";
+    stopped.lastResultCode = "stopped";
+    out.senders.push_back(stopped);
     return out;
   }
 
@@ -4779,25 +4794,57 @@ TEST(RtmpOutputSenderBackpressure, TheDivisorGatesTheEncoderTextureExport) {
   plan.skipCpuReadback = true;
 
   // An EXACT count, not a ratio: this leg has no timing in it at all.
-  int exportedEven = 0;
-  int exportedOdd = 0;
+  //
+  // A SHED frame is one whose pixels were not submitted, which is visible as
+  // encoderSharedTexture.frameNumber (the LAST ACTUALLY SUBMITTED number) not
+  // having advanced to this frame's number. The handle itself must be published
+  // on EVERY frame - see the companion assertion below and
+  // AShedFrameNeverRestartsTheSendersEncodePath for why.
+  int submittedEven = 0;
+  int submittedOdd = 0;
   int shedEven = 0;
   int shedOdd = 0;
+  int framesWithoutAHandle = 0;
+  int staleNumberMismatches = 0;
+  int64_t lastSubmitted = -1;
   for (int i = 0; i < 200; ++i) {
     const auto frame = compositor->render(plan, {});
-    const bool exported = !frame.encoderSharedTexture.sharedHandleHex.empty();
+    if (frame.encoderSharedTexture.sharedHandleHex.empty()) ++framesWithoutAHandle;
     const bool even = (frame.frameNumber % 2) == 0;
-    if (exported) {
-      (even ? exportedEven : exportedOdd)++;
+    const bool submitted = frame.encoderSharedTexture.frameNumber == frame.frameNumber;
+    if (submitted) {
+      lastSubmitted = frame.frameNumber;
+      (even ? submittedEven : submittedOdd)++;
     } else {
+      // A shed frame must report the last number that was really submitted,
+      // never this frame's - a consumer keying freshness on it would otherwise
+      // be told a frame arrived that the encoder never saw.
+      if (frame.encoderSharedTexture.frameNumber != lastSubmitted) ++staleNumberMismatches;
       (even ? shedEven : shedOdd)++;
     }
   }
 
-  EXPECT_EQ(exportedEven, 100);
-  EXPECT_EQ(shedOdd, 100);
-  EXPECT_EQ(exportedOdd, 0) << "an odd frame number was exported at divisor 2";
-  EXPECT_EQ(shedEven, 0) << "an even frame number was shed at divisor 2";
+  // THE GATE PROPERTY, exact: at divisor 2 an odd frame number is NEVER
+  // submitted. Nothing here depends on timing.
+  EXPECT_EQ(submittedOdd, 0) << "an odd frame number was submitted at divisor 2";
+  EXPECT_EQ(shedOdd, 100) << "every odd frame must be shed at divisor 2";
+  // ...and the even ones ARE submitted, so the test cannot pass by shedding
+  // everything. This is deliberately NOT an exact 100: D3DDecoupledExport has
+  // its own bounded 3-slot refusal (`dropped_`/`producerBusy_`) which predates
+  // Lever A and is not a shed, and conflating the two would make the assertion
+  // a flake rather than a property.
+  EXPECT_GT(submittedEven, 0) << "no frame was submitted at all";
+  EXPECT_EQ(shedEven + submittedEven, 100);
+  EXPECT_EQ(staleNumberMismatches, 0)
+      << "a shed frame published a frame number the encoder was never given";
+  // #597 fix round 1, finding 1: the ENCODER HANDLE IS NOT THE THROTTLE. The
+  // sender reads the presence of this handle as "GPU-direct is available"
+  // (resolveGpuEncodePath -> chooseStreamEncodePath), and a shed frame has not
+  // changed that fact. Publishing an empty handle on a shed frame restarts
+  // FFmpeg and the hardware encoder once per shed frame - #597 itself, amplified.
+  EXPECT_EQ(framesWithoutAHandle, 0)
+      << "a shed frame dropped the encoder handle; the sender reads that as the "
+         "encoder texture disappearing and restarts FFmpeg";
 #else
   EXPECT_TRUE(true) << "The encoder-texture export gate lives in the D3D11 compositor.";
 #endif
@@ -4815,6 +4862,21 @@ TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
     // H.265 without the enhanced-RTMP checkbox is refused BEFORE FFmpeg is
     // launched, so this drives the real sync() path with no child process.
     const auto settings = rtmpAdmissionSettings("h265", false);
+
+    // ABSENT IS NOT HEALTHY. With no injection and no GPU-direct path (this
+    // H.265 start is refused, so the sender stays on the raw CPU path) the
+    // sender has no bitstream queue to observe and must publish NOTHING -
+    // which is what makes applyEncoderExportDivisor's "skip senders with no
+    // backpressure" rule meaningful rather than decorative.
+    for (int i = 0; i < 3; ++i) {
+      (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
+    }
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      EXPECT_FALSE(session.senders[0].backpressure.has_value())
+          << "a sender with no queue to observe must publish no backpressure state";
+    }
 
     // A healthy queue never throttles, however long the stream runs.
     sender->setBackpressureObservationForTest(0, false);
@@ -4837,11 +4899,40 @@ TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
     for (int i = 0; i < ticks; ++i) {
       (void)sender->sync({"rtmp"}, &frame, 4000.0 + 33.0 * i, {settings});
     }
-    const auto session = sender->session();
-    ASSERT_FALSE(session.senders.empty());
-    ASSERT_TRUE(session.senders[0].backpressure.has_value());
-    EXPECT_GT(session.senders[0].backpressure->divisor, 1)
-        << "a sustained backlog must raise the published input divisor";
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      ASSERT_TRUE(session.senders[0].backpressure.has_value());
+      EXPECT_GT(session.senders[0].backpressure->divisor, 1)
+          << "a sustained backlog must raise the published input divisor";
+    }
+
+    // #597 fix round 1, finding 3: STOPPING THE STREAM CLEARS THE THROTTLE.
+    // Without this the stopped record keeps publishing divisor 4 forever, the
+    // compositor stays throttled with nothing streaming, and the NEXT stream
+    // opens at 15 fps on an empty queue.
+    sender->setBackpressureObservationForTest(-1, false);  // stop injecting
+    (void)sender->sync({}, &frame, 9000.0, {settings});
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      EXPECT_EQ(session.senders[0].status, "stopped");
+      EXPECT_FALSE(session.senders[0].backpressure.has_value())
+          << "a stopped destination must not keep publishing an input divisor";
+    }
+    // ...and the policy itself is reset, so the next run starts at 1 rather
+    // than resuming the ladder it left off at.
+    sender->setBackpressureObservationForTest(0, false);
+    for (int i = 0; i < 3; ++i) {
+      (void)sender->sync({"rtmp"}, &frame, 10000.0 + 33.0 * i, {settings});
+    }
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      ASSERT_TRUE(session.senders[0].backpressure.has_value());
+      EXPECT_EQ(session.senders[0].backpressure->divisor, 1)
+          << "a restarted stream must not resume the previous run's divisor";
+    }
   }
 #endif
 
@@ -4890,6 +4981,79 @@ TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
   ASSERT_EQ(compositorPtr->divisors.size(), 3u);
   EXPECT_EQ(compositorPtr->divisors.back(), 1);
+}
+
+// #597 fix round 1, finding 1/2 - THE COMBINATION NOTHING COVERED: a REAL
+// RtmpOutputSender looking at REAL frames a throttled compositor has shed.
+//
+// The sender decides GPU-direct vs the raw CPU path from
+// `!frame.encoderSharedTexture.sharedHandleHex.empty()`, and
+// ensureFfmpegProcess tears down FFmpeg AND the hardware encoder and relaunches
+// both whenever that decision changes. So if Lever A sheds by withholding the
+// handle, every shed frame is an encoder restart - tens per second, where the
+// incident that started this whole sub-project was EIGHT in twenty seconds. For
+// H.265 it is worse still: the restart is admitted off the GPU path,
+// StreamStartAdmission refuses it, startRefusedInadmissible_ latches, and the
+// stream is dead for the rest of the show.
+//
+// Shedding must therefore skip the SUBMIT and keep publishing the handle. This
+// test walks the exact comparison ensureFfmpegProcess makes over 40 real frames
+// from a compositor at divisor 2 and asserts the restart count does not grow.
+TEST(RtmpOutputSenderBackpressure, AShedFrameNeverRestartsTheSendersEncodePath) {
+#if COREVIDEO_WITH_D3D11 && COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent("AShedFrameNeverRestartsTheSendersEncodePath")) return;
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.renderPlanId = "backpressure-no-restart";
+  plan.sceneId = "backpressure-no-restart";
+  plan.width = 320;
+  plan.height = 180;
+  plan.fullProgramReadback = true;
+  plan.skipCpuReadback = true;
+
+  // One sync to configure the sender (codec, endpoint, runtime). H.265 without
+  // the enhanced-RTMP checkbox is refused before FFmpeg is launched, so no child
+  // process and no hardware encoder session is created by this test.
+  auto configuring = compositor->render(plan, {});
+  (void)sender->sync({"rtmp"}, &configuring, 0, {rtmpAdmissionSettings("h265", false)});
+
+  // Warm the path decision on an EXPORTED frame, so the first observed flip is
+  // the ordinary one-time start rather than an artefact of the initial state.
+  compositor->setEncoderExportDivisor(1);
+  auto warm = compositor->render(plan, {});
+  const bool warmIsGpuDirect = sender->wouldRestartForEncodePathForTest(warm);
+  if (!warmIsGpuDirect) {
+    // Already on the GPU path, or this machine has no hardware encoder at all.
+    // The latter would make the whole test vacuous, so say so and stop.
+    std::fprintf(stderr,
+                 "[  SKIPPED  ] RtmpOutputSenderBackpressure."
+                 "AShedFrameNeverRestartsTheSendersEncodePath (no GPU-direct path on this"
+                 " machine) - this test did NOT run\n");
+    return;
+  }
+
+  // Now throttle, and walk 40 real frames: 20 exported, 20 shed.
+  compositor->setEncoderExportDivisor(2);
+  int restarts = 0;
+  int shed = 0;
+  for (int i = 0; i < 40; ++i) {
+    auto frame = compositor->render(plan, {});
+    if (frame.encoderSharedTexture.frameNumber != frame.frameNumber) ++shed;
+    if (sender->wouldRestartForEncodePathForTest(frame)) ++restarts;
+  }
+
+  EXPECT_GT(shed, 0) << "the compositor shed nothing, so this proves nothing";
+  EXPECT_EQ(restarts, 0)
+      << "the sender flipped its encode path on a shed frame: that is an FFmpeg + "
+         "hardware-encoder teardown and relaunch per shed frame (#597 itself), and "
+         "for H.265 a permanent start refusal";
+#else
+  EXPECT_TRUE(true) << "Needs both the D3D11 compositor and the RTMP sender.";
+#endif
 }
 
 TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {

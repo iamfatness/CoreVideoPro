@@ -229,12 +229,17 @@ class D3D11Compositor final : public ICompositor {
     // export releases a new frame - NOT on the sender's submit(). Task 1 measured
     // it directly: skipping only submit() left the stream byte-identical (ratio
     // 0.998), while halving the export rate halved egress (0.500). So the throttle
-    // lives here. Skipping the export leaves the encoder waiting, which is exactly
+    // lives here. Skipping the SUBMIT leaves the encoder waiting, which is exactly
     // the intended "fewer frames, same quality each".
-    const int encoderExportDivisor = encoderExportDivisor_.load(std::memory_order_relaxed);
-    if (renderPlan.fullProgramReadback &&
-        (encoderExportDivisor <= 1 || (frame.frameNumber % encoderExportDivisor) == 0)) {
-      exportEncoderSharedTexture(frame);
+    //
+    // Only the SUBMIT is shed. The handle metadata is published on every frame -
+    // see exportEncoderSharedTexture, where withholding it costs a full FFmpeg +
+    // hardware-encoder restart per shed frame.
+    if (renderPlan.fullProgramReadback) {
+      const int encoderExportDivisor = encoderExportDivisor_.load(std::memory_order_relaxed);
+      const bool submitPixels =
+          encoderExportDivisor <= 1 || (frame.frameNumber % encoderExportDivisor) == 0;
+      exportEncoderSharedTexture(frame, submitPixels);
     }
     const auto vcamUs = stageUs();
     if (!buffered) exportSharedTexture(frame);
@@ -1701,7 +1706,28 @@ class D3D11Compositor final : public ICompositor {
   // the decoupled exporter. A slow hardware-encode consumer no longer inserts a
   // GPU wait into the render context (see D3DDecoupledExport); the render context
   // only hands the frame to a fast internal slot.
-  void exportEncoderSharedTexture(ProgramFrame& frame) {
+  // THIS FUNCTION DOES TWO SEPARABLE THINGS, AND ONLY ONE OF THEM MAY BE SHED
+  // (#597 Lever A, fix round 1):
+  //
+  //  - it SUBMITS pixels (`encoderExport_->submit`), which blits the program
+  //    into the shared texture and releases key 1 of the keyed mutex. THAT is
+  //    what advances the hardware encoder's thread, so withholding it IS the
+  //    throttle, and it is exactly what Task 1 measured (halving the submit rate
+  //    halved egress, 0.500);
+  //  - it PUBLISHES the handle metadata onto the frame. The sender reads the
+  //    mere PRESENCE of this handle as "GPU-direct is available"
+  //    (`resolveGpuEncodePath` -> `chooseStreamEncodePath`), and
+  //    `ensureFfmpegProcess` tears down FFmpeg AND the hardware encoder and
+  //    relaunches both whenever that answer changes.
+  //
+  // A shed frame has not changed whether a GPU encoder texture exists, so the
+  // metadata is published UNCONDITIONALLY. Withholding it would cost one full
+  // encoder restart per shed frame - tens per second, where the incident this
+  // whole sub-project exists to fix was eight restarts in twenty seconds - and
+  // for H.265 the relaunch is admitted off the GPU path, refused by
+  // StreamStartAdmission, and LATCHED, killing the stream for the rest of the
+  // show. Pinned by RtmpOutputSenderBackpressure.AShedFrameNeverRestartsTheSendersEncodePath.
+  void exportEncoderSharedTexture(ProgramFrame& frame, bool submitPixels) {
     if (!renderTarget_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
       return;
     }
@@ -1709,13 +1735,26 @@ class D3D11Compositor final : public ICompositor {
       encoderExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), targetWidth_, targetHeight_, "encoder");
       if (!encoderExport_->valid()) { encoderExport_.reset(); return; }
     }
-    encoderExport_->submit(context_.get(), renderTarget_.get(), frame.frameNumber);
+    if (submitPixels && encoderExport_->submit(context_.get(), renderTarget_.get(), frame.frameNumber)) {
+      lastSubmittedEncoderFrameNumber_ = frame.frameNumber;
+    }
     frame.encoderSharedTexture.publishedFrameNumber = encoderExport_->publishedFrameNumber();
     frame.encoderSharedTexture.sharedHandleHex = handleToHex(encoderExport_->handle());
     frame.encoderSharedTexture.width = targetWidth_;
     frame.encoderSharedTexture.height = targetHeight_;
     frame.encoderSharedTexture.format = "B8G8R8A8_UNORM";
-    frame.encoderSharedTexture.frameNumber = frame.frameNumber;
+    // THE LAST ACTUALLY SUBMITTED NUMBER, never this frame's. A consumer keying
+    // freshness on this field must not be told a frame arrived that the encoder
+    // was never given - the whole point of shedding is that it was not.
+    //
+    // Tracked here rather than read from publishedFrameNumber(): that counter is
+    // stored by D3DDecoupledExport's OWN export thread once the slot has been
+    // pulled and republished, so it lags the render thread by an unbounded
+    // amount and is not a synchronous answer to "did this render submit?".
+    // Note it only advances when submit() actually SUCCEEDED - the exporter's
+    // bounded slot drop is a pre-existing refusal, unrelated to Lever A, and
+    // must not be reported as a submitted frame either.
+    frame.encoderSharedTexture.frameNumber = lastSubmittedEncoderFrameNumber_;
   }
 
   // Export one keyed-mutex shared texture per participant for the multiview tiles,
@@ -2654,6 +2693,7 @@ class D3D11Compositor final : public ICompositor {
   int targetHeight_ = 0;
   int64_t frameNumber_ = 0;
   std::atomic<int> encoderExportDivisor_{1};  // #597 Lever A; 1 = export every frame
+  int64_t lastSubmittedEncoderFrameNumber_ = -1;  // render thread only; -1 = nothing yet
   std::atomic<int> requestedProgramFrames_{0};
   int64_t programProductionSlot_ = -1, programProductionAnchorNs_ = 0;
   mutable std::mutex programBufferMutex_;

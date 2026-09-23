@@ -8355,11 +8355,21 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
 void MediaCore::applyEncoderExportDivisor(const modules::OutputSenderSession& senderSession) {
   int desired = 1;
   for (const auto& sender : senderSession.senders) {
+    // ACTIVE senders only. A stopped or idle record stays in senders[] carrying
+    // whatever divisor it last reached; counting it would hold the compositor
+    // throttled with nothing streaming (fix round 1, finding 3). "warning" and
+    // "failed" DO count - such a destination may still be GPU-direct with a
+    // backed-up queue, which is exactly when the lever matters.
+    if (sender.status == "stopped" || sender.status == "idle") continue;
+    // ABSENT IS NOT HEALTHY: a sender with no bitstream queue to observe (the
+    // raw CPU path) simply contributes nothing, rather than voting for 1.
     if (!sender.backpressure) continue;
     desired = (std::max)(desired, sender.backpressure->divisor);
   }
-  if (desired == lastEncoderExportDivisor_) return;  // control plane: only on CHANGE
-  lastEncoderExportDivisor_ = desired;
+  if (desired == lastEncoderExportDivisor_.load(std::memory_order_relaxed)) {
+    return;  // control plane: only on CHANGE
+  }
+  lastEncoderExportDivisor_.store(desired, std::memory_order_relaxed);
   if (modules_.compositor) modules_.compositor->setEncoderExportDivisor(desired);
 }
 

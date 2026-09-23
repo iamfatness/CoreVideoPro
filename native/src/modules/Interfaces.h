@@ -1165,6 +1165,17 @@ class IOutputSender {
   // the real measurement.
   virtual void setBackpressureObservationForTest(std::int64_t /*bufferedMs*/,
                                                  bool /*keyframeInQueue*/) {}
+  // TEST-ONLY (same structural guard). Answers "would THIS program frame make
+  // the sender flip its encode path?" - i.e. tear down FFmpeg AND the hardware
+  // encoder and relaunch both. It evaluates the exact comparison
+  // ensureFfmpegProcess makes (`resolveGpuEncodePath(frame) != activeUseGpuDirect_`)
+  // and then ADOPTS the result the way a restart would, so a test can walk a
+  // frame sequence the way the live sender walks it and count the restarts.
+  //
+  // This exists because #597's whole subject is encoder restarts, and the one
+  // combination no test covered was a real sender looking at a frame the
+  // compositor's Lever A had shed.
+  virtual bool wouldRestartForEncodePathForTest(const ProgramFrame& /*frame*/) { return false; }
 };
 
 class ICaptureDevice {

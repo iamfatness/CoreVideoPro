@@ -662,6 +662,16 @@ class RtmpOutputSender final : public IOutputSender {
       videoFramePacer_.reset();
       clearFfmpegRetryBackoff();
       startRefusedInadmissible_ = false;  // Stream off/on re-evaluates the refusal
+      // #597 Lever A: A STOPPED DESTINATION HAS NO QUEUE. observeStreamBackpressure()
+      // lives far below this return, so without these two lines the stopped record
+      // keeps publishing whatever divisor it last reached, MediaCore keeps taking it
+      // as the max, and the compositor stays throttled with nothing streaming - and
+      // renderVideoOutputTick stops calling sync() once the last destination goes,
+      // so nothing would ever correct it. Resetting the policy object (rather than
+      // only clearing the published value) is what stops the NEXT stream opening at
+      // 15 fps on an empty queue; its cumulative counters are per stream RUN.
+      backpressure_ = corevideo::core::StreamBackpressurePolicy{};
+      sender_.backpressure.reset();
       if (sender_.status != "idle" && sender_.status != "stopped") {
         sender_.status = "stopped";
         sender_.stoppedAtMs = elapsedMs;
@@ -799,6 +809,16 @@ class RtmpOutputSender final : public IOutputSender {
     // it per-frame quality - holds while the data rate falls. Observed once per
     // sync(), here, where the sender already holds the frame and before any
     // path that can return early on a configuration refusal.
+    //
+    // THE POLICY THEREFORE TICKS AT THE RENDER RATE, NOT THE CONFIGURED STREAM
+    // FPS - this site is above videoFramePacer_. So kEnterAfterOverWaterTicks
+    // (30) is ~0.5 s on the 60 Hz video tick (~0.6 s on the ~50 Hz direct path)
+    // whether the stream is declared at 30 or 60 fps, and kRecoverAfterHealthyTicks
+    // (600) is ~10 s. A reader of StreamBackpressurePolicy.h will reasonably
+    // assume one tick == one submitted frame; here it does not. This is safe
+    // because the SIGNAL the policy acts on (bufferedMs) is wall-clock by
+    // construction - see that header - so only the streak lengths are rate
+    // dependent, not the thresholds.
     observeStreamBackpressure();
 
     // Skip BEFORE ensureFfmpegProcess: that call pins FFmpeg's -s geometry from
@@ -940,6 +960,15 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession session() const override { return snapshot(); }
+
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  bool wouldRestartForEncodePathForTest(const ProgramFrame& frame) override {
+    const bool desiredGpuDirect =
+        resolveGpuEncodePath(frame, videoWidth(frame), videoHeight(frame)) == GpuEncodePath::GpuDirect;
+    const bool gpuPathChanged = desiredGpuDirect != activeUseGpuDirect_;
+    activeUseGpuDirect_ = desiredGpuDirect;  // exactly what a real restart records
+    return gpuPathChanged;
+  }
 
   // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
   void setBackpressureObservationForTest(std::int64_t bufferedMs, bool keyframeInQueue) override {

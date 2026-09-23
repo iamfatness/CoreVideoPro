@@ -968,7 +968,14 @@ class MediaCore {
   // #597 Lever A. The encoder-export divisor last pushed to the compositor.
   // setEncoderExportDivisor is a CONTROL-PLANE call made only when this
   // changes - never once per frame.
-  int lastEncoderExportDivisor_ = 1;
+  //
+  // ATOMIC because it is written from BOTH output paths: the dedicated
+  // video-output thread (renderVideoOutputTick) and the audio worker's
+  // synchronous fallback in runAudioOutputWork. Those are mutually exclusive
+  // only by the runtime flag videoOutputTickRunning_, which JsonRpcServer sets
+  // at run time - a runtime invariant, not a structural one - so a plain int
+  // here is a formal data race across a flip.
+  std::atomic<int> lastEncoderExportDivisor_{1};
   struct ProgramOutputConfiguration {
     std::vector<std::string> destinations;
     std::vector<modules::OutputDestinationSettings> settings;
