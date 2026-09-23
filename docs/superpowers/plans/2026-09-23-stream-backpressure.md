@@ -1,0 +1,799 @@
+# Stream Backpressure Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** A live stream whose destination cannot sustain the configured bitrate sheds frame rate, recovers its accumulated latency, and stays up, with zero encoder rebuilds.
+
+**Architecture:** A pure policy reads one signal — the wall-clock age of the oldest chunk in the GPU-direct bitstream queue — and drives two levers. Lever A skips program frames before they reach the encoder, which lowers the data rate while holding per-frame quality. Lever B discards the queued chunks ahead of the next keyframe, which recovers latency Lever A cannot. The policy mirrors `core/MonitorShedPolicy.h` in shape: integer-only, enter fast, recover slowly, hysteresis band between.
+
+**Tech Stack:** C++20 core (`native/`), the in-house gtest shim (`native/tests/gtest/gtest.h`), Media Foundation hardware encoders on Windows, FFmpeg N-124549 as muxer, Node for the acceptance gate.
+
+**Spec:** `docs/superpowers/specs/2026-09-23-stream-backpressure-design.md`
+
+## Global Constraints
+
+- **Task 1 gates everything.** If the CBR bits-per-frame assumption fails, Lever A cannot work as designed. Stop and report to the owner rather than substituting dynamic bitrate, which contradicts their "keep quality" ruling.
+- The measure is **buffered milliseconds**, defined as `now - oldestQueuedChunkEnqueuedAt`. Never convert a frame count to milliseconds: that conversion is wrong precisely while the frame rate is being changed underneath it.
+- Thresholds, exact: `kThrottleAboveBufferedMs = 250`, `kDiscardAboveBufferedMs = 750`, `kRecoverBelowBufferedMs = 100`, `kMaxDivisor = 4`, `kEnterAfterOverWaterTicks = 30`, `kRecoverAfterHealthyTicks = 600`, `kDiscardCooldownTicks = 60`.
+- Divisor ladder: 1 = 60 fps, 2 = 30, 3 = 20, 4 = 15.
+- **Never discard an arbitrary chunk.** The only safe discard is every chunk ahead of a keyframe already in the queue. With no keyframe queued, discard nothing.
+- **A network or destination fault must never rebuild the encoder.** It restarts the connection and muxer and asks the running encoder for a keyframe.
+- Both levers apply to the GPU-direct path only. The raw CPU path already drops stale frames and is unchanged.
+- Per destination. One struggling destination must not throttle or discard for a healthy sibling.
+- The gtest shim's `--gtest_filter` takes ONE positive wildcard. No `:` lists, no `-` negation. Run suites separately.
+- Build Release: `cmake --build native\build-dev --config Release --target corevideo-native-tests corevideo-native`. Debug and Release write the same exe path, so a missing `--config Release` silently builds Debug (~8 MB vs ~2.3 MB).
+- Never run the native suite while the owner's installed app is streaming or has the virtual camera on.
+- Counters saturate at `kCounterCeiling` and never wrap; a snapshot must never see one go down.
+
+---
+
+### Task 1: Measure the CBR bits-per-frame assumption (gates the whole plan)
+
+**Files:**
+- Create: `native/tests/StreamBackpressureRateProbeTest.cpp`
+- Modify: `native/CMakeLists.txt` (register it beside `tests/MediaFoundationGpuVideoEncoderTest.cpp`, inside the same `COREVIDEO_WITH_MF_ENCODER` guard)
+
+**Interfaces:**
+- Consumes: `corevideo::modules::createMediaFoundationGpuVideoEncoder()`, `GpuVideoEncoderConfig`, `GpuEncodedChunkSink` (all in `native/src/modules/GpuVideoEncoder.h` and the MF impl).
+- Produces: a measured ratio, printed and asserted. No production code.
+
+Lever A assumes the encoder allocates `bitrate / declaredFrameRate` bits per frame, so halving the input frame rate roughly halves egress while per-frame quality holds. If instead its rate control chases the bitrate on a wall clock, it will spend more bits per frame and egress will not fall.
+
+- [ ] **Step 1: Write the probe test**
+
+```cpp
+#include <gtest/gtest.h>
+#if defined(_WIN32) && defined(COREVIDEO_WITH_MF_ENCODER) && COREVIDEO_WITH_MF_ENCODER
+// Feed the SAME source at 60 submits/s and at 30 submits/s for the same wall
+// time, and compare bytes emitted. Lever A of the backpressure design rests on
+// this ratio: bits per frame constant => egress falls with the frame rate.
+TEST(StreamBackpressureRateProbe, HalvingTheInputRateRoughlyHalvesEgress) {
+  const auto bytesFor = [](int submitsPerSecond) -> std::int64_t {
+    // Reuse MediaFoundationGpuVideoEncoderTest's compositor + encoder setup
+    // verbatim (same plan, same 1920x1080@60 config, 10000 kbps, codec h264);
+    // the ONLY difference is how often submit() is called over 10 seconds.
+    // Sum chunk.size in the sink.
+    return 0;  // replaced by the real harness below
+  };
+  const auto full = bytesFor(60);
+  const auto half = bytesFor(30);
+  if (full == 0 || half == 0) {
+    std::fprintf(stderr, "[  SKIPPED ] StreamBackpressureRateProbe (no hardware encoder)\n");
+    return;
+  }
+  const double ratio = static_cast<double>(half) / static_cast<double>(full);
+  std::fprintf(stderr, "[rate-probe] full=%lld half=%lld ratio=%.3f\n",
+               static_cast<long long>(full), static_cast<long long>(half), ratio);
+  EXPECT_GT(ratio, 0.35) << "egress collapsed far below half: check submit pacing";
+  EXPECT_LT(ratio, 0.75) << "egress did NOT fall with the input rate: the CBR "
+                            "bits-per-frame assumption is FALSE and Lever A "
+                            "cannot work as designed — STOP and report";
+}
+#endif
+```
+
+Build the real harness by copying the compositor/encoder setup out of `native/tests/MediaFoundationGpuVideoEncoderTest.cpp`'s `runRoundTrip` (same plan, same config, same self-skip shape) and driving `submit()` on a fixed schedule for 10 seconds per leg. Sum `chunk.size` in the sink.
+
+- [ ] **Step 2: Configure, build, run**
+
+```powershell
+$vs = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"
+cmd /c "call `"$vs`" -arch=amd64 >nul 2>&1 && cmake -S native -B native\build-dev >nul && cmake --build native\build-dev --config Release --target corevideo-native-tests 2>&1" | Select-String " error |tests.vcxproj -> "
+native\build-dev\corevideo-native-tests.exe --gtest_filter='StreamBackpressureRateProbe.*'
+```
+
+- [ ] **Step 3: Act on the result**
+
+Ratio in (0.35, 0.75): the assumption holds. Record the measured number in the report and continue to Task 2.
+
+Ratio at or above 0.75: **STOP.** Report `BLOCKED` with the measured ratio. Lever A does not reduce egress on this encoder and the design needs an owner ruling, because the alternative (dynamic bitrate) contradicts "keep quality". Do not proceed to Task 2.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add native/tests/StreamBackpressureRateProbeTest.cpp native/CMakeLists.txt
+git commit -m "Probe: does halving the encoder's input rate halve egress (gates Lever A)"
+```
+
+---
+
+### Task 2: The pure policy
+
+**Files:**
+- Create: `native/src/core/StreamBackpressurePolicy.h`
+- Create: `native/tests/StreamBackpressurePolicyTest.cpp`
+- Modify: `native/CMakeLists.txt` (register the test in the UNCONDITIONAL list, right after `tests/MonitorShedPolicyTest.cpp` at line ~643)
+
+**Interfaces:**
+- Produces, consumed by Tasks 4, 5 and 6:
+```cpp
+namespace corevideo::core {
+struct StreamBackpressureObservation {
+  std::int64_t bufferedMs = -1;   // < 0 = unknown; the tick is ignored
+  bool keyframeInQueue = false;   // is a GOP-tail discard possible right now?
+};
+enum class StreamBackpressureTransition { None, Enter, StepUp, StepDown, Exit };
+struct StreamBackpressureDecision {
+  StreamBackpressureTransition transition = StreamBackpressureTransition::None;
+  bool discardBacklog = false;
+};
+class StreamBackpressurePolicy {
+ public:
+  StreamBackpressureDecision observe(const StreamBackpressureObservation&);
+  int divisor() const;          // 1..kMaxDivisor
+  int level() const;            // divisor - 1
+  std::int64_t enteredCount() const;
+  std::int64_t shedFrames() const;
+  std::int64_t discardEvents() const;
+  const char* lastReason() const;             // "none"|"buffered-above-threshold"|"recovered"|"backlog-discard"
+  std::int64_t lastTransitionBufferedMs() const;
+  void noteShedFrame();                       // called when Lever A skips a frame
+  static const char* transitionName(StreamBackpressureTransition);
+  static constexpr int kMaxDivisor = 4;
+  static constexpr std::int64_t kThrottleAboveBufferedMs = 250;
+  static constexpr std::int64_t kDiscardAboveBufferedMs = 750;
+  static constexpr std::int64_t kRecoverBelowBufferedMs = 100;
+  static constexpr std::int64_t kEnterAfterOverWaterTicks = 30;
+  static constexpr std::int64_t kRecoverAfterHealthyTicks = 600;
+  static constexpr std::int64_t kDiscardCooldownTicks = 60;
+};
+}
+```
+
+- [ ] **Step 1: Write the failing tests**
+
+```cpp
+#include "core/StreamBackpressurePolicy.h"
+
+#include <gtest/gtest.h>
+
+using corevideo::core::StreamBackpressureObservation;
+using corevideo::core::StreamBackpressurePolicy;
+using corevideo::core::StreamBackpressureTransition;
+
+namespace {
+StreamBackpressureObservation at(std::int64_t bufferedMs, bool keyframe = true) {
+  StreamBackpressureObservation o;
+  o.bufferedMs = bufferedMs;
+  o.keyframeInQueue = keyframe;
+  return o;
+}
+// Feed `ticks` observations at `bufferedMs` and return the last decision.
+corevideo::core::StreamBackpressureDecision feed(StreamBackpressurePolicy& p, std::int64_t bufferedMs,
+                                                 int ticks, bool keyframe = true) {
+  corevideo::core::StreamBackpressureDecision d;
+  for (int i = 0; i < ticks; ++i) d = p.observe(at(bufferedMs, keyframe));
+  return d;
+}
+}  // namespace
+
+TEST(StreamBackpressurePolicy, StartsUnthrottled) {
+  StreamBackpressurePolicy p;
+  EXPECT_EQ(p.divisor(), 1);
+  EXPECT_EQ(std::string(p.lastReason()), "none");
+}
+
+TEST(StreamBackpressurePolicy, AnUnknownMeasurementIsIgnored) {
+  StreamBackpressurePolicy p;
+  feed(p, -1, 5000);
+  EXPECT_EQ(p.divisor(), 1);
+}
+
+// A keyframe spikes the queue for a tick or two. Only sustained growth throttles.
+TEST(StreamBackpressurePolicy, ASingleSpikeDoesNotThrottle) {
+  StreamBackpressurePolicy p;
+  feed(p, 900, StreamBackpressurePolicy::kEnterAfterOverWaterTicks - 1);
+  EXPECT_EQ(p.divisor(), 1);
+  feed(p, 0, 1);  // one healthy tick clears the streak
+  feed(p, 900, StreamBackpressurePolicy::kEnterAfterOverWaterTicks - 1);
+  EXPECT_EQ(p.divisor(), 1);
+}
+
+TEST(StreamBackpressurePolicy, SustainedBacklogStepsDownOneLevelAtATime) {
+  StreamBackpressurePolicy p;
+  const auto enter = feed(p, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
+  EXPECT_EQ(p.divisor(), 2);
+  EXPECT_EQ(enter.transition, StreamBackpressureTransition::Enter);
+  EXPECT_EQ(std::string(p.lastReason()), "buffered-above-threshold");
+  const auto up = feed(p, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
+  EXPECT_EQ(p.divisor(), 3);
+  EXPECT_EQ(up.transition, StreamBackpressureTransition::StepUp);
+}
+
+TEST(StreamBackpressurePolicy, NeverExceedsTheFloor) {
+  StreamBackpressurePolicy p;
+  feed(p, 900, StreamBackpressurePolicy::kEnterAfterOverWaterTicks * 20);
+  EXPECT_EQ(p.divisor(), StreamBackpressurePolicy::kMaxDivisor);
+}
+
+// The 100-250ms band is the anti-flap hysteresis. Throttling drains the queue,
+// so recovering at the throttle threshold would oscillate.
+TEST(StreamBackpressurePolicy, TheHysteresisBandHoldsWithoutRecovering) {
+  StreamBackpressurePolicy p;
+  feed(p, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
+  ASSERT_EQ(p.divisor(), 2);
+  feed(p, 200, StreamBackpressurePolicy::kRecoverAfterHealthyTicks * 3);
+  EXPECT_EQ(p.divisor(), 2) << "buffered inside the band must neither throttle nor recover";
+}
+
+TEST(StreamBackpressurePolicy, RecoversOnlyAfterASustainedHealthyRun) {
+  StreamBackpressurePolicy p;
+  feed(p, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
+  ASSERT_EQ(p.divisor(), 2);
+  feed(p, 10, StreamBackpressurePolicy::kRecoverAfterHealthyTicks - 1);
+  EXPECT_EQ(p.divisor(), 2);
+  const auto exit = feed(p, 10, 1);
+  EXPECT_EQ(p.divisor(), 1);
+  EXPECT_EQ(exit.transition, StreamBackpressureTransition::Exit);
+  EXPECT_EQ(std::string(p.lastReason()), "recovered");
+}
+
+// Lever B: only above the higher threshold, only once the throttle has engaged,
+// only when a keyframe is queued to discard up to, and never every tick.
+TEST(StreamBackpressurePolicy, DiscardNeedsBacklogThrottleKeyframeAndCooldown) {
+  StreamBackpressurePolicy p;
+  EXPECT_FALSE(feed(p, 900, 1).discardBacklog) << "not while still at divisor 1";
+  feed(p, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
+  ASSERT_EQ(p.divisor(), 2);
+  EXPECT_FALSE(p.observe(at(400)).discardBacklog) << "400ms is below the discard threshold";
+  EXPECT_FALSE(p.observe(at(900, /*keyframe=*/false)).discardBacklog) << "no keyframe to discard up to";
+  const auto fired = p.observe(at(900));
+  EXPECT_TRUE(fired.discardBacklog);
+  EXPECT_EQ(std::string(p.lastReason()), "backlog-discard");
+  EXPECT_EQ(p.discardEvents(), 1);
+  EXPECT_FALSE(p.observe(at(900)).discardBacklog) << "cooldown: never two ticks running";
+  feed(p, 900, StreamBackpressurePolicy::kDiscardCooldownTicks);
+  EXPECT_EQ(p.discardEvents(), 2);
+}
+
+TEST(StreamBackpressurePolicy, ShedFramesAndEnteredCountAreCounted) {
+  StreamBackpressurePolicy p;
+  feed(p, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
+  p.noteShedFrame();
+  p.noteShedFrame();
+  EXPECT_EQ(p.shedFrames(), 2);
+  EXPECT_EQ(p.enteredCount(), 1);
+}
+```
+
+Register the test file in `native/CMakeLists.txt` immediately after `tests/MonitorShedPolicyTest.cpp`.
+
+- [ ] **Step 2: Configure, build, confirm RED**
+
+```powershell
+cmd /c "call `"$vs`" -arch=amd64 >nul 2>&1 && cmake -S native -B native\build-dev >nul && cmake --build native\build-dev --config Release --target corevideo-native-tests 2>&1" | Select-String " error "
+```
+Expected: `Cannot open include file: 'core/StreamBackpressurePolicy.h'`.
+
+- [ ] **Step 3: Write the policy**
+
+Create `native/src/core/StreamBackpressurePolicy.h` with a header comment that states: the incident (#597), the signal (age of the oldest queued chunk, never a frame-count conversion), the two levers and why Lever B exists (Lever A stops growth but never clears what is already queued), why the discard is a GOP tail (our B-frames-off configuration leaves two priority tiers), and that the shape deliberately mirrors `MonitorShedPolicy`.
+
+```cpp
+StreamBackpressureDecision observe(const StreamBackpressureObservation& o) {
+  StreamBackpressureDecision decision;
+  if (o.bufferedMs < 0) return decision;           // no evidence either way
+  if (discardCooldown_ > 0) --discardCooldown_;
+
+  // Lever B is independent of the divisor ladder, but never precedes it: the
+  // throttle is invisible, a discard is a visible skip.
+  if (o.bufferedMs >= kDiscardAboveBufferedMs && divisor_ > 1 && o.keyframeInQueue &&
+      discardCooldown_ == 0) {
+    decision.discardBacklog = true;
+    discardCooldown_ = kDiscardCooldownTicks;
+    if (discardEvents_ < kCounterCeiling) ++discardEvents_;
+    lastReason_ = "backlog-discard";
+    lastTransitionBufferedMs_ = o.bufferedMs;
+  }
+
+  if (o.bufferedMs >= kThrottleAboveBufferedMs) {
+    healthyStreak_ = 0;
+    if (overStreak_ < kCounterCeiling) ++overStreak_;
+    if (overStreak_ >= kEnterAfterOverWaterTicks && divisor_ < kMaxDivisor) {
+      overStreak_ = 0;
+      ++divisor_;
+      lastReason_ = "buffered-above-threshold";
+      lastTransitionBufferedMs_ = o.bufferedMs;
+      if (divisor_ == 2) {
+        if (enteredCount_ < kCounterCeiling) ++enteredCount_;
+        decision.transition = StreamBackpressureTransition::Enter;
+      } else {
+        decision.transition = StreamBackpressureTransition::StepUp;
+      }
+    }
+    return decision;
+  }
+  overStreak_ = 0;
+  if (divisor_ == 1) return decision;
+  if (o.bufferedMs > kRecoverBelowBufferedMs) {
+    // Inside the hysteresis band: the shed is working. Hold.
+    healthyStreak_ = 0;
+    return decision;
+  }
+  if (++healthyStreak_ < kRecoverAfterHealthyTicks) return decision;
+  healthyStreak_ = 0;
+  --divisor_;
+  lastReason_ = "recovered";
+  lastTransitionBufferedMs_ = o.bufferedMs;
+  decision.transition = divisor_ == 1 ? StreamBackpressureTransition::Exit
+                                      : StreamBackpressureTransition::StepDown;
+  return decision;
+}
+```
+
+State: `int divisor_ = 1;` plus `overStreak_`, `healthyStreak_`, `discardCooldown_`, `enteredCount_`, `shedFrames_`, `discardEvents_`, `lastReason_ = "none"`, `lastTransitionBufferedMs_ = 0`, and `static constexpr std::int64_t kCounterCeiling = INT64_C(1) << 62;` (copy the saturating-counter discipline from `MonitorShedPolicy`).
+
+- [ ] **Step 4: Build and run GREEN**
+
+```powershell
+native\build-dev\corevideo-native-tests.exe --gtest_filter='StreamBackpressurePolicy.*'
+```
+Expected: 9 passed, 0 failed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add native/src/core/StreamBackpressurePolicy.h native/tests/StreamBackpressurePolicyTest.cpp native/CMakeLists.txt
+git commit -m "StreamBackpressurePolicy: buffered-ms signal, input divisor, GOP-tail discard"
+```
+
+---
+
+### Task 3: Publish the queue's buffered latency
+
+**Files:**
+- Modify: `native/src/modules/RtmpOutputSenderAdapter.cpp` — `QueuedBitstream` (line ~2383), members (~2387-2392), `enqueueBitstream` (~1783), `bitstreamWriterLoop` (~1801)
+
+**Interfaces:**
+- Produces, consumed by Tasks 4 and 5: private members
+  `std::atomic<std::int64_t> bitstreamHeadEnqueuedNs_{0}` (0 = queue empty),
+  `std::atomic<std::int64_t> bitstreamQueuedChunks_{0}`,
+  `std::atomic<bool> bitstreamQueueHasKeyframe_{false}`,
+  and a helper `std::int64_t bitstreamBufferedMs() const`.
+
+The submit path must read buffered latency without taking `bitstreamQueueMutex_`: the submit runs on the sender's sync path while the writer thread services the queue. Publishing the HEAD'S ENQUEUE TIME rather than a precomputed age is what makes the read correct — the age keeps growing while the queue is untouched.
+
+- [ ] **Step 1: Add the enqueue timestamp to the queued chunk**
+
+```cpp
+  struct QueuedBitstream {
+    std::vector<uint8_t> bytes;
+    GpuEncodedChunk metadata;
+    // Wall-clock moment this chunk entered the queue. The backpressure signal is
+    // the AGE of the head of the queue, which is the only measure that stays
+    // honest while the frame rate is being changed underneath it.
+    std::chrono::steady_clock::time_point enqueuedAt{};
+  };
+```
+
+- [ ] **Step 2: Add the atomics and the republish helper**
+
+Next to the existing queue members:
+
+```cpp
+  // Read by the submit path with NO lock (see bitstreamBufferedMs). Written only
+  // under bitstreamQueueMutex_, where the queue is already being mutated.
+  std::atomic<std::int64_t> bitstreamHeadEnqueuedNs_{0};  // 0 = empty
+  std::atomic<std::int64_t> bitstreamQueuedChunks_{0};
+  std::atomic<bool> bitstreamQueueHasKeyframe_{false};
+```
+
+```cpp
+  // Caller must hold bitstreamQueueMutex_.
+  void republishQueueTelemetryLocked() {
+    bitstreamQueuedChunks_.store(static_cast<std::int64_t>(bitstreamQueue_.size()),
+                                 std::memory_order_relaxed);
+    bitstreamHeadEnqueuedNs_.store(
+        bitstreamQueue_.empty()
+            ? 0
+            : bitstreamQueue_.front().enqueuedAt.time_since_epoch().count(),
+        std::memory_order_relaxed);
+    bool keyframe = false;
+    for (const auto& q : bitstreamQueue_) {
+      if (q.metadata.keyframe) { keyframe = true; break; }
+    }
+    bitstreamQueueHasKeyframe_.store(keyframe, std::memory_order_relaxed);
+  }
+
+  // 0 when the queue is empty. Lock-free: reads the head's enqueue time and ages
+  // it against now, so the number keeps rising while the writer is blocked.
+  [[nodiscard]] std::int64_t bitstreamBufferedMs() const {
+    const auto head = bitstreamHeadEnqueuedNs_.load(std::memory_order_relaxed);
+    if (head == 0) return 0;
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto ageNs = now - head;
+    return ageNs <= 0 ? 0 : static_cast<std::int64_t>(ageNs / 1'000'000);
+  }
+```
+
+- [ ] **Step 3: Stamp on enqueue and republish on both sides**
+
+In `enqueueBitstream`, replace the push with:
+```cpp
+      bitstreamQueue_.push_back({std::vector<uint8_t>(chunk.data, chunk.data + chunk.size), chunk,
+                                 std::chrono::steady_clock::now()});
+      bitstreamQueuedBytes_ += chunk.size;
+      republishQueueTelemetryLocked();
+```
+In `bitstreamWriterLoop`, immediately after `bitstreamQueuedBytes_ -= packet.bytes.size();` (still under the lock) add `republishQueueTelemetryLocked();`.
+
+Wherever the queue is cleared on stop/failure, call `republishQueueTelemetryLocked()` too, so a stopped sender does not leave a stale non-zero head.
+
+Add `#include <atomic>` and `#include <chrono>` if absent.
+
+- [ ] **Step 4: Build and run the full suite (no behavior change yet)**
+
+```powershell
+cmd /c "call `"$vs`" -arch=amd64 >nul 2>&1 && cmake --build native\build-dev --config Release --target corevideo-native-tests corevideo-native 2>&1" | Select-String " error "
+native\build-dev\corevideo-native-tests.exe
+```
+Expected: the suite's current total, 0 failed. This task adds telemetry only.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add native/src/modules/RtmpOutputSenderAdapter.cpp
+git commit -m "Publish the bitstream queue's buffered latency, lock-free for the submit path"
+```
+
+---
+
+### Task 4: Lever A — the input divisor
+
+**Files:**
+- Modify: `native/src/modules/RtmpOutputSenderAdapter.cpp` — `submitFrameToGpuEncoder` (~line 1875 after Task 3's edits), members
+- Modify: `native/tests/MediaCoreCommandTest.cpp` — a sender-level test
+
+**Interfaces:**
+- Consumes: Task 2's policy, Task 3's `bitstreamBufferedMs()` / `bitstreamQueueHasKeyframe_`.
+- Produces: private `corevideo::core::StreamBackpressurePolicy backpressure_;` and `std::int64_t backpressureFrameCounter_ = 0;`, consumed by Tasks 5 and 6.
+
+- [ ] **Step 1: Write the failing sender-level test**
+
+In `native/tests/MediaCoreCommandTest.cpp`, beside the existing tests that drive `createRtmpOutputSender()->sync()` (the harness used for the codec-refusal tests):
+
+```cpp
+// #597: the divisor must actually gate the submit. Deleting the gate in
+// submitFrameToGpuEncoder must fail this test — the #481 rule, test the whole
+// decision and not just the leaf policy.
+TEST(RtmpOutputSenderBackpressure, TheDivisorGatesFramesReachingTheEncoder) {
+  // Drive the sender with a program frame carrying an encoder texture, holding
+  // the bitstream queue artificially backed up past kThrottleAboveBufferedMs for
+  // more than kEnterAfterOverWaterTicks frames, then assert the encoder saw
+  // roughly half the submitted frames. Use the existing fake/stub GPU encoder
+  // seam (gpuEncoderFactory_) to count submit() calls.
+  //   submitted:   kEnterAfterOverWaterTicks + 200 frames
+  //   encoder saw: the first kEnterAfterOverWaterTicks, then ~1 in 2
+  // Assert the ratio over the post-throttle window is 0.45..0.55.
+}
+```
+
+Build the harness from the existing sender tests: install a counting `GpuVideoEncoder` through the sender's encoder factory seam, and force the buffered measure by seeding the queue (or by injecting the policy's observation through a test-only setter if seeding proves impractical — say which you used and why in the report).
+
+- [ ] **Step 2: Build and confirm RED**
+
+```powershell
+native\build-dev\corevideo-native-tests.exe --gtest_filter='RtmpOutputSenderBackpressure.*'
+```
+Expected: FAIL — every frame reaches the encoder because no gate exists.
+
+- [ ] **Step 3: Implement the gate**
+
+Add `#include "core/StreamBackpressurePolicy.h"`. At the top of `submitFrameToGpuEncoder`, after the existing health guards and before the handle check:
+
+```cpp
+    // #597 Lever A: skip program frames BEFORE the encoder. Compressed frames
+    // cannot be dropped individually, so the only safe throttle is upstream. The
+    // encoder's declared frame rate is unchanged, so bits-per-frame — and with
+    // it per-frame quality — holds while the data rate falls.
+    corevideo::core::StreamBackpressureObservation observation;
+    observation.bufferedMs = bitstreamBufferedMs();
+    observation.keyframeInQueue = bitstreamQueueHasKeyframe_.load(std::memory_order_relaxed);
+    const auto decision = backpressure_.observe(observation);
+    if (decision.transition != corevideo::core::StreamBackpressureTransition::None) {
+      ::corevideo::core::nativeLogf(
+          "[stream-backpressure] %s divisor=%d buffered=%lldms\n",
+          corevideo::core::StreamBackpressurePolicy::transitionName(decision.transition),
+          backpressure_.divisor(), static_cast<long long>(observation.bufferedMs));
+    }
+    // Task 5 handles decision.discardBacklog here.
+    ++backpressureFrameCounter_;
+    if (backpressure_.divisor() > 1 && (backpressureFrameCounter_ % backpressure_.divisor()) != 0) {
+      backpressure_.noteShedFrame();
+      return true;  // a shed frame is not a failure
+    }
+```
+
+**Document the counter semantics at the site:** a shed frame still counts toward `sender_.framesSent` in the caller, because the sender did accept responsibility for it and the pipeline is healthy by design at that moment. The difference is visible as `shedFrames` in the snapshot node (Task 6). Do not make a shed frame return false: that would fail the sender.
+
+- [ ] **Step 4: Build and run GREEN**
+
+```powershell
+native\build-dev\corevideo-native-tests.exe --gtest_filter='RtmpOutputSenderBackpressure.*'
+native\build-dev\corevideo-native-tests.exe
+```
+Expected: the new test passes; full suite 0 failed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add native/src/modules/RtmpOutputSenderAdapter.cpp native/tests/MediaCoreCommandTest.cpp
+git commit -m "Lever A: throttle the encoder's input when the destination falls behind"
+```
+
+---
+
+### Task 5: Lever B — discard the backlog to the next keyframe
+
+**Files:**
+- Modify: `native/src/modules/RtmpOutputSenderAdapter.cpp` — new `discardBacklogToNextKeyframe()`, called from `submitFrameToGpuEncoder`
+- Modify: `native/tests/MediaCoreCommandTest.cpp` — discard-correctness tests
+
+**Interfaces:**
+- Consumes: Task 2's `decision.discardBacklog`, Task 3's queue telemetry.
+- Produces: `std::size_t discardBacklogToNextKeyframe()` returning how many chunks it dropped.
+
+- [ ] **Step 1: Write the failing tests**
+
+```cpp
+// A queue with no keyframe must discard NOTHING: dropping an arbitrary
+// reference frame corrupts every frame after it until the next keyframe.
+TEST(RtmpOutputSenderBackpressure, DiscardWithNoQueuedKeyframeDropsNothing) { /* ... */ }
+
+// With a keyframe queued, discard drops exactly the chunks ahead of it and
+// never the keyframe itself, so the stream resumes cleanly at that point.
+TEST(RtmpOutputSenderBackpressure, DiscardDropsTheGopTailAndKeepsTheKeyframe) { /* ... */ }
+
+// The head's enqueue time must be republished after a discard, or buffered
+// latency would keep reporting the age of a chunk that is gone.
+TEST(RtmpOutputSenderBackpressure, DiscardRepublishesTheBufferedMeasure) { /* ... */ }
+```
+
+Fill these in against the queue directly through a test seam on the sender (the queue is private; add a narrow test-only accessor following whatever seam this file already uses, and say which in the report).
+
+- [ ] **Step 2: Build and confirm RED**
+
+- [ ] **Step 3: Implement**
+
+```cpp
+  // #597 Lever B. Lever A stops the queue growing; it never clears what is
+  // already in it, so a stream can stabilise a full second behind and stay
+  // there. Discarding every chunk AHEAD of the next queued keyframe recovers
+  // that latency as a clean skip. Dropping an arbitrary chunk instead would
+  // corrupt every frame until the next keyframe. Our HEVC/AV1 encoders run with
+  // B-frames disabled (the low-latency work), so there are no non-reference
+  // frames to drop cheaply and the GOP tail is the only safe unit.
+  std::size_t discardBacklogToNextKeyframe() {
+    std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+    std::size_t keyframeIndex = 0;
+    bool found = false;
+    for (std::size_t i = 0; i < bitstreamQueue_.size(); ++i) {
+      if (bitstreamQueue_[i].metadata.keyframe) { keyframeIndex = i; found = true; break; }
+    }
+    if (!found || keyframeIndex == 0) return 0;  // nothing ahead of a keyframe to drop
+    std::size_t dropped = 0;
+    for (std::size_t i = 0; i < keyframeIndex; ++i) {
+      bitstreamQueuedBytes_ -= bitstreamQueue_.front().bytes.size();
+      bitstreamQueue_.pop_front();
+      ++dropped;
+    }
+    republishQueueTelemetryLocked();
+    return dropped;
+  }
+```
+
+In `submitFrameToGpuEncoder`, where Task 4 left the placeholder:
+```cpp
+    if (decision.discardBacklog) {
+      const auto dropped = discardBacklogToNextKeyframe();
+      if (dropped > 0) {
+        backpressureDiscardedChunks_ += static_cast<std::int64_t>(dropped);
+        ::corevideo::core::nativeLogf(
+            "[stream-backpressure] discard dropped=%zu divisor=%d buffered=%lldms\n",
+            dropped, backpressure_.divisor(), static_cast<long long>(observation.bufferedMs));
+      }
+    }
+```
+Add `std::int64_t backpressureDiscardedChunks_ = 0;`.
+
+- [ ] **Step 4: Build and run GREEN**
+
+```powershell
+native\build-dev\corevideo-native-tests.exe --gtest_filter='RtmpOutputSenderBackpressure.*'
+native\build-dev\corevideo-native-tests.exe
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add native/src/modules/RtmpOutputSenderAdapter.cpp native/tests/MediaCoreCommandTest.cpp
+git commit -m "Lever B: recover latency by discarding the GOP tail ahead of a queued keyframe"
+```
+
+---
+
+### Task 6: The snapshot node
+
+**Files:**
+- Modify: `native/src/modules/Interfaces.h` — a `backpressure` optional on `OutputSender` beside `supervisor` (line ~679)
+- Modify: `native/src/modules/RtmpOutputSenderAdapter.cpp` — populate it in `snapshot()`
+- Modify: `native/src/core/MediaCore.cpp` — emit it beside the `supervisor` node (line ~5281)
+
+**Interfaces:**
+- Produces: `sessionState().outputSenders.senders[].backpressure` = `{divisor, level, bufferedMs, queuedChunks, enteredCount, shedFrames, discardedChunks, discardEvents, lastReason, lastTransitionBufferedMs}`.
+
+- [ ] **Step 1: Add the struct**
+
+In `Interfaces.h`, next to `OutputSupervisorState`:
+```cpp
+// #597: the backpressure policy's view of this destination. Published
+// UNCONDITIONALLY for a GPU-direct sender (the multiviewer-node rule: a node
+// that vanishes in the case worth detecting is the mistake). A stream quietly
+// running at 15 fps is the same class of defect as a silent codec downgrade.
+struct OutputBackpressureState {
+  int divisor = 1;
+  int level = 0;
+  std::int64_t bufferedMs = 0;
+  std::int64_t queuedChunks = 0;
+  std::int64_t enteredCount = 0;
+  std::int64_t shedFrames = 0;
+  std::int64_t discardedChunks = 0;
+  std::int64_t discardEvents = 0;
+  std::string lastReason = "none";
+  std::int64_t lastTransitionBufferedMs = 0;
+};
+```
+and `std::optional<OutputBackpressureState> backpressure;` on `OutputSender`.
+
+- [ ] **Step 2: Populate it in the sender's `snapshot()`**
+
+Set it whenever `useGpuDirect_` is true, from `backpressure_`, `bitstreamBufferedMs()`, `bitstreamQueuedChunks_` and `backpressureDiscardedChunks_`.
+
+- [ ] **Step 3: Emit it in MediaCore**
+
+Directly after the `supervisor` block:
+```cpp
+    if (sender.backpressure) {
+      const auto& bp = *sender.backpressure;
+      senderJson.emplace("backpressure", rpc::Json::Object{
+          {"divisor", bp.divisor},
+          {"level", bp.level},
+          {"bufferedMs", static_cast<double>(bp.bufferedMs)},
+          {"queuedChunks", static_cast<double>(bp.queuedChunks)},
+          {"enteredCount", static_cast<double>(bp.enteredCount)},
+          {"shedFrames", static_cast<double>(bp.shedFrames)},
+          {"discardedChunks", static_cast<double>(bp.discardedChunks)},
+          {"discardEvents", static_cast<double>(bp.discardEvents)},
+          {"lastReason", bp.lastReason},
+          {"lastTransitionBufferedMs", static_cast<double>(bp.lastTransitionBufferedMs)},
+      });
+    }
+```
+
+- [ ] **Step 4: Build, run the full suite**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add native/src/modules/Interfaces.h native/src/modules/RtmpOutputSenderAdapter.cpp native/src/core/MediaCore.cpp
+git commit -m "Publish the backpressure node so a degraded stream is visible, not inferred"
+```
+
+---
+
+### Task 7: The restart floor
+
+**Files:**
+- Modify: `native/src/modules/OutputDestinationSupervisor.cpp` and/or `OutputDestinationSupervisorPolicy.h`
+- Modify: `native/tests/OutputDestinationSupervisorTest.cpp`
+
+**Interfaces:**
+- Produces: no two encoder rebuilds for one destination closer together than the ladder's current rung.
+
+The incident's restarts were 2.5 to 3.5 seconds apart while the ladder's first rung is 5 seconds (`kHealthyRunMs` is 30 s, so a healthy-run budget return cannot explain it). The ladder was demonstrably not being applied.
+
+- [ ] **Step 1: Find out why, and write it down before changing anything**
+
+Read the path from a sender failure to `PendingAction{Restart}` and identify what resets the per-destination policy state. The first candidate to check is the destination record and its `policy` being reconstructed — and therefore `reset()` — as the sender list is re-synced each tick, which would restart the ladder at rung one every time. Record the finding in the report with file:line before writing a fix; if the cause is something else, the fix follows the real cause, not this guess.
+
+- [ ] **Step 2: Write the failing test**
+
+```cpp
+// #597: eight rebuilds in twenty seconds, 2.5-3.5s apart, against a ladder whose
+// first rung is 5s. Whatever resets the ladder, the destination must never be
+// rebuilt faster than its current rung.
+TEST(OutputDestinationSupervisor, RestartsAreNeverCloserThanTheCurrentLadderRung) {
+  // Drive a destination through repeated failures with the sender list re-synced
+  // between each, as the live path does, and assert the interval between
+  // successive Restart actions is monotonically non-decreasing and never below
+  // the first rung.
+}
+```
+
+- [ ] **Step 3: Confirm RED, fix per the Step 1 finding, confirm GREEN**
+
+- [ ] **Step 4: Full suite, then commit**
+
+```bash
+git add native/src/modules/OutputDestinationSupervisor.cpp native/src/modules/OutputDestinationSupervisorPolicy.h native/tests/OutputDestinationSupervisorTest.cpp
+git commit -m "Restart floor: a destination is never rebuilt faster than its ladder rung (#597)"
+```
+
+---
+
+### Task 8: The acceptance gate — a deliberately slow sink
+
+**Files:**
+- Modify: `scripts/validate-gpu-encode.mjs`
+
+**Interfaces:**
+- Produces: `node scripts/validate-gpu-encode.mjs --slow-sink [--sink-rate 0.85] [--seconds 240]`.
+
+- [ ] **Step 1: Add the slow sink**
+
+The listener at line ~106-109 currently reads as fast as it can. Add `--slow-sink`, which sets the reader's input to a fraction of real time so the destination cannot keep up. Try FFmpeg's `-readrate <speed>` on the listener input first (this build is N-124549 and should have it); verify it actually throttles by watching the queue grow, and if it does not, fall back to piping the listener's output through a rate-limited consumer. Say in the report which mechanism you used and how you verified it throttles.
+
+- [ ] **Step 2: Assert the whole property**
+
+Over `--seconds 240` with `--slow-sink`, assert all of:
+- the stream never stops (the sender never reaches `failed`),
+- **zero encoder rebuilds** — no second `[gpu-encode] started` line for the run,
+- the divisor steps down and later recovers (read the backpressure node from `/snapshot`, or the `[stream-backpressure]` lines),
+- buffered latency returns below `kRecoverBelowBufferedMs` rather than sitting at the bound,
+- Program holds 60 fps,
+- the shell-side sample cadence stays in its normal band — see Step 3.
+
+- [ ] **Step 3: Assert the #597 signature specifically**
+
+The incident's fingerprint was a 21 s gap in `perf.log` whose SAMPLE COUNTER advanced normally. Assert the core's snapshot emission cadence stays within its normal band for the whole run, measured against the counter rather than wall time alone, so a producer slowdown is distinguishable from a UI freeze. This is the assertion that would have caught #597.
+
+- [ ] **Step 4: Run it, and re-run the healthy gates**
+
+```bash
+node scripts/validate-gpu-encode.mjs --seconds 240 --slow-sink
+node scripts/validate-gpu-encode.mjs --seconds 30 --codec h264
+node scripts/validate-gpu-encode.mjs --seconds 30 --codec hevc
+```
+Paste all three summary blocks into the report. The last two must pass unchanged against a healthy sink.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/validate-gpu-encode.mjs
+git commit -m "Gate: a deliberately slow sink must degrade the stream, never rebuild the encoder"
+```
+
+---
+
+### Task 9: Documentation
+
+**Files:**
+- Modify: `CLAUDE.md` (the GPU-direct streaming section), `docs/BACKLOG.md`
+- Modify: `docs/superpowers/specs/2026-09-23-stream-backpressure-design.md` (an Outcome section)
+
+- [ ] **Step 1: CLAUDE.md**
+
+Add a bullet to the GPU-direct section covering: the #597 incident in two sentences with the measured numbers; the signal (age of the oldest queued chunk, and why not a frame-count conversion); the two levers and why both are needed; why the discard is a GOP tail (our own B-frames-off configuration); the thresholds with their justification against the ~1 s queue; that a network fault must never rebuild the encoder; the gate command; and the Task 1 rate-probe result. Include the diagnostic technique: **compare `perf.log` gaps against the sample COUNTER, not wall time — a normal counter delta with 0.0 ms dispatch is a producer slowdown, a frozen counter is a UI block.**
+
+- [ ] **Step 2: Spec Outcome section**
+
+Record what the Task 1 probe measured, what the Task 7 investigation found, and any threshold the gate forced you to re-tune with the number and the reason.
+
+- [ ] **Step 3: Backlog row**
+
+Amend the #597 row: slice 1 shipped, what it covers, and that the egress-based health signal and the phantom-fault fix remain as slice 2.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add CLAUDE.md docs/BACKLOG.md docs/superpowers/specs/2026-09-23-stream-backpressure-design.md
+git commit -m "Document the backpressure design, its measured numbers, and the #597 diagnostic technique"
+```
+
+---
+
+## Self-review
+
+- **Spec coverage:** §1 signal → Task 3; §2 Lever A → Tasks 2, 4; §3 Lever B → Tasks 2, 5; §4 thresholds → Task 2; §5 encoder/connection separation → Task 7 (floor) and the Task 8 zero-rebuild assertion; §6 restart floor → Task 7; §7 observability → Task 6; §8 scope → Tasks 4, 5 (GPU-direct only, per destination); Testing → Tasks 2, 4, 5, 8; Risks: the CBR assumption → Task 1 (gates the plan), the understated measure → recorded in Task 9, keyframe cadence → Task 9 Step 2, one-rig calibration → Task 8 re-tuning.
+- **Placeholder scan:** Tasks 4, 5 and 7 carry test bodies described rather than fully written, because each needs a seam into private sender or supervisor state whose shape must be read from the current file first. Each says explicitly what to assert, what the RED looks like, and to report which seam was used. Every production-code step carries its real code.
+- **Type consistency:** `StreamBackpressureObservation{bufferedMs, keyframeInQueue}` and `StreamBackpressureDecision{transition, discardBacklog}` (Task 2) are what Task 4 constructs and reads; `bitstreamBufferedMs()` / `bitstreamQueueHasKeyframe_` / `republishQueueTelemetryLocked()` (Task 3) are what Tasks 4, 5 and 6 call; `discardBacklogToNextKeyframe()` (Task 5) is called only from the site Task 4 marked; `OutputBackpressureState` (Task 6) names the same fields the policy exposes.
