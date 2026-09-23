@@ -765,6 +765,25 @@ Then DELETE `noteShedFrame()`, `shedFrames()` and `shedFrames_` from
 (rename it to `EnteredCountIsCounted`). Nothing can call them: the object that
 sheds is the compositor, which holds no reference to a sender's policy.
 
+- [ ] **Step 3c: Two residuals carried from Task 4's re-review**
+
+Both are one-liners in files this task already opens. Neither is on air today;
+both are traps for the next person.
+
+1. **Reset `lastSubmittedEncoderFrameNumber_` when `encoderExport_` is
+   recreated** (a dimension change). Without it, a shed frame after a
+   recreation publishes a frame number that was submitted to the PREVIOUS
+   exporter. There are no production readers of that field today, which is
+   exactly why this must be fixed now rather than when one is added.
+2. **Note the stop-path residual at `applyEncoderExportDivisor`.**
+   `AsyncOutputSender::sync` returns a CACHED pre-stop snapshot, so the final
+   "one tick past the last destination" sync can feed a stale `live` record and
+   leave the divisor set with nothing streaming. It is inert —
+   `fullProgramReadback` is false in that state, so nothing is shed, and the
+   next stream's first sync pushes 1 — but the worst case is one shed frame at
+   the next stream's start. A comment naming it, not a guard; do not add a
+   second reset path that could fight the first.
+
 - [ ] **Step 4: Build, run the full suite**
 
 - [ ] **Step 5: Commit**
