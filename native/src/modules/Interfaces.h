@@ -646,6 +646,14 @@ struct OutputBackpressureState {
   int divisor = 1;  // Task 6 adds the remaining published fields
 };
 
+// TEST-ONLY (see IOutputSender::bitstreamQueueSnapshotForTest). A single
+// struct so a test needs ONE call to read the queue back, not three.
+struct BitstreamQueueSnapshotForTest {
+  std::size_t depth = 0;
+  bool hasKeyframe = false;
+  std::int64_t bufferedMs = 0;
+};
+
 struct OutputSender {
   std::string senderId;
   std::string destination;
@@ -1177,22 +1185,24 @@ class IOutputSender {
   // compositor's Lever A had shed.
   virtual bool wouldRestartForEncodePathForTest(const ProgramFrame& /*frame*/) { return false; }
 
-  // TEST-ONLY (same structural guard). #597 Lever B: pushes a chunk directly
-  // onto the sender's bitstream queue, bypassing the real GPU encoder, so
-  // discard-to-next-keyframe correctness can be tested without a hardware
-  // encoder and a real congested network.
+  // TEST-ONLY (same structural guard). #597 Lever B fix round 1 (review
+  // finding 2): this is the ONLY seam the discard needed after the decision
+  // logic moved out to the pure core::discardableGopTailLength() (see
+  // StreamBackpressurePolicy.h) - boundary-condition coverage lives there,
+  // with NO sender and NO seam at all. What is left to prove is that
+  // observeStreamBackpressure()/sync() actually REACH the discard on a real
+  // sender, which needs some way to put a real chunk in the real queue.
+  // Pushes a chunk directly onto the bitstream queue, bypassing the real GPU
+  // encoder, so that one call-site test can run without a hardware encoder
+  // and a real congested network.
   virtual void enqueueBitstreamChunkForTest(std::size_t /*bytes*/, bool /*keyframe*/) {}
-  // TEST-ONLY. Runs the real discardBacklogToNextKeyframe() and returns how
-  // many chunks it dropped.
-  virtual std::size_t discardBacklogToNextKeyframeForTest() { return 0; }
-  // TEST-ONLY. Current queue depth (chunk count) and whether a keyframe is
-  // queued, read back without going through the (possibly overridden)
-  // observation injected by setBackpressureObservationForTest.
-  virtual std::size_t bitstreamQueueDepthForTest() const { return 0; }
-  virtual bool bitstreamQueueHasKeyframeForTest() const { return false; }
-  // TEST-ONLY. The real bitstreamBufferedMs() measurement, unaffected by the
-  // setBackpressureObservationForTest() override.
-  virtual std::int64_t bitstreamBufferedMsForTest() const { return 0; }
+  // TEST-ONLY (same structural guard). One read of the queue's true state -
+  // depth, whether a keyframe is queued, and the real bitstreamBufferedMs()
+  // measurement - unaffected by setBackpressureObservationForTest()'s
+  // override, so a call-site test can confirm the queue actually shrank.
+  virtual BitstreamQueueSnapshotForTest bitstreamQueueSnapshotForTest() const {
+    return BitstreamQueueSnapshotForTest{};
+  }
 };
 
 class ICaptureDevice {

@@ -2,6 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <vector>
+
+using corevideo::core::discardableGopTailLength;
 using corevideo::core::StreamBackpressureObservation;
 using corevideo::core::StreamBackpressurePolicy;
 using corevideo::core::StreamBackpressureTransition;
@@ -154,4 +157,61 @@ TEST(StreamBackpressurePolicy, ShedFramesAndEnteredCountAreCounted) {
   p.noteShedFrame();
   EXPECT_EQ(p.shedFrames(), 2);
   EXPECT_EQ(p.enteredCount(), 1);
+}
+
+namespace {
+auto identity() {
+  return [](bool keyframe) { return keyframe; };
+}
+}  // namespace
+
+// #597 Lever B, fix round 1 (review findings 2 + 5): the discard decision,
+// extracted to core::discardableGopTailLength() so every boundary condition
+// is provable with NO seam of any kind - not a sender, not a queue, not even
+// a fake one. Just a std::vector<bool> of keyframe flags.
+
+// The regression this whole suite exists to catch: initializing the "not
+// found" sentinel to something a real index can also equal (e.g. 0) makes
+// "no keyframe queued" and "keyframe at the head" the SAME value, and then a
+// missing or wrong not-found guard can silently drop the ENTIRE queue - the
+// stream-corruption failure the brief opens with. Because the real
+// implementation uses `size()` as the sentinel (a value no real index can
+// ever equal), this queue's non-empty, no-keyframe case can ONLY read 0 if
+// the not-found guard is present and correct; regressing the guard away
+// returns `size()` (5) here, which fails this assertion.
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_NoKeyframeDropsNothing) {
+  const std::vector<bool> allReferenceFrames{false, false, false, false, false};
+  EXPECT_EQ(discardableGopTailLength(allReferenceFrames, identity()), 0u)
+      << "no keyframe anywhere: nothing is safe to cut forward to";
+}
+
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_EmptyQueueDropsNothing) {
+  const std::vector<bool> empty;
+  EXPECT_EQ(discardableGopTailLength(empty, identity()), 0u);
+}
+
+// Distinct from the "not found" case above: here a keyframe genuinely exists
+// at index 0, so there is nothing AHEAD of it, not "nothing found".
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_KeyframeAlreadyAtHeadDropsNothing) {
+  const std::vector<bool> keyframeFirst{true, false, false, false};
+  EXPECT_EQ(discardableGopTailLength(keyframeFirst, identity()), 0u);
+}
+
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_AllKeyframesDropsNothing) {
+  const std::vector<bool> allKeyframes{true, true, true};
+  EXPECT_EQ(discardableGopTailLength(allKeyframes, identity()), 0u);
+}
+
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_DropsExactlyTheChunksAheadOfTheKeyframe) {
+  // [P, P, K, P] - the two stale P-frames ahead of the keyframe are safe to
+  // drop; the keyframe and the P-frame that depends on it are not.
+  const std::vector<bool> referenceThenKeyframeThenReference{false, false, true, false};
+  EXPECT_EQ(discardableGopTailLength(referenceThenKeyframeThenReference, identity()), 2u);
+}
+
+// Takes the FIRST keyframe, not the last - over-discarding past a nearer
+// safe cut point would throw away video for nothing.
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_StopsAtTheFirstKeyframeNotTheLast) {
+  const std::vector<bool> twoKeyframes{false, true, false, true, false};
+  EXPECT_EQ(discardableGopTailLength(twoKeyframes, identity()), 1u);
 }

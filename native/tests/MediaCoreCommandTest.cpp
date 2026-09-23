@@ -5056,105 +5056,86 @@ TEST(RtmpOutputSenderBackpressure, AShedFrameNeverRestartsTheSendersEncodePath) 
 #endif
 }
 
-// #597 Lever B: discard the queued backlog up to the next keyframe, so a
-// stream that stabilised a full second behind can catch back up instead of
-// sitting there forever (Lever A only stops the queue growing further).
-//
-// A queue with no keyframe queued must discard NOTHING: dropping an
-// arbitrary reference frame corrupts every frame after it until the next
-// keyframe, because HEVC/AV1 here run with B-frames disabled.
-TEST(RtmpOutputSenderBackpressure, DiscardWithNoQueuedKeyframeDropsNothing) {
+// #597 Lever B, fix round 1 (review finding 4): the discard-correctness
+// boundary conditions (no keyframe queued, keyframe at the head, an
+// all-keyframe queue, the exact GOP tail dropped, the buffered measure
+// republished after a discard) are now `StreamBackpressurePolicy,
+// DiscardableGopTailLength*` in StreamBackpressurePolicyTest.cpp, against the
+// pure core::discardableGopTailLength() directly - no sender, no queue, no
+// seam of any kind. What is NOT provable there is that
+// observeStreamBackpressure()/sync() actually REACH
+// discardBacklogToNextKeyframe() on a real sender: deleting the entire
+// `if (decision.discardBacklog) { ... }` block left every discard-shaped test
+// green as long as it only drove the pure function or an empty real queue.
+// This test builds a REAL backlog on the real bitstream queue via the
+// enqueueBitstreamChunkForTest seam, pushes the DECISION (not the queue) past
+// the discard threshold via Task 4's setBackpressureObservationForTest, and
+// asserts the real queue actually shrank - which only happens if the call
+// site is wired.
+TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndObserveStreamBackpressure) {
 #if COREVIDEO_WITH_RTMP_OUTPUT
-  auto sender = corevideo::modules::createRtmpOutputSender();
-  ASSERT_NE(sender, nullptr);
+  if (senderAdmissionFfmpegPresent(
+          "DiscardBacklogReachesTheQueueThroughSyncAndObserveStreamBackpressure")) {
+    auto sender = corevideo::modules::createRtmpOutputSender();
+    ASSERT_NE(sender, nullptr);
+    auto frame = startableProgramFrame("rtmp-backpressure-discard");
+    // H.265 without the enhanced-RTMP checkbox is refused BEFORE FFmpeg is
+    // launched (and after observeStreamBackpressure(), which sits above every
+    // admission refusal), so this drives the real path with no child process.
+    const auto settings = rtmpAdmissionSettings("h265", false);
 
-  // An empty queue: nothing to drop.
-  EXPECT_EQ(sender->discardBacklogToNextKeyframeForTest(), 0u);
+    // Lever B only ever fires once the divisor is already above 1 - get there
+    // first, the same way TheSendersDivisorReachesTheCompositor does.
+    sender->setBackpressureObservationForTest(
+        corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
+        /*keyframeInQueue=*/true);
+    const int enterTicks =
+        static_cast<int>(corevideo::core::StreamBackpressurePolicy::kEnterAfterOverWaterTicks) + 2;
+    for (int i = 0; i < enterTicks; ++i) {
+      (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
+    }
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      ASSERT_TRUE(session.senders[0].backpressure.has_value());
+      ASSERT_GT(session.senders[0].backpressure->divisor, 1)
+          << "the divisor must be above 1 before a discard can fire";
+    }
 
-  // A queue full of ordinary reference frames, no keyframe anywhere.
-  for (int i = 0; i < 5; ++i) {
+    // Build a REAL backlog on the REAL queue: two STALE reference frames
+    // (aged by the sleep below, so the head's bufferedMs is provably old),
+    // then a fresh keyframe, then one fresh reference frame that must
+    // survive. This also lets the same test prove republishQueueTelemetryLocked()
+    // fires: bufferedMs must fall once the stale head is discarded, or
+    // bitstreamBufferedMs() would keep reporting the age of a chunk that no
+    // longer exists (the risk named in the original brief).
     sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    const auto before = sender->bitstreamQueueSnapshotForTest();
+    ASSERT_EQ(before.depth, 4u);
+    EXPECT_GE(before.bufferedMs, 50) << "the head is the STALE chunk before the discard";
+
+    // Push the injected OBSERVATION (not the queue) above the discard
+    // threshold and tick once more.
+    sender->setBackpressureObservationForTest(
+        corevideo::core::StreamBackpressurePolicy::kDiscardAboveBufferedMs + 10,
+        /*keyframeInQueue=*/true);
+    (void)sender->sync({"rtmp"}, &frame, 5000.0, {settings});
+
+    const auto after = sender->bitstreamQueueSnapshotForTest();
+    EXPECT_EQ(after.depth, 2u)
+        << "decision.discardBacklog must have reached discardBacklogToNextKeyframe() "
+           "through observeStreamBackpressure()/sync() and dropped the two stale chunks "
+           "ahead of the keyframe - deleting that call site leaves this at 4";
+    EXPECT_TRUE(after.hasKeyframe) << "the keyframe itself must never be dropped";
+    EXPECT_LT(after.bufferedMs, before.bufferedMs)
+        << "the buffered measure must republish against the NEW head (the keyframe), not "
+           "keep reporting the age of the chunk the discard just dropped";
+    EXPECT_LT(after.bufferedMs, 50) << "the new head (the keyframe) was enqueued moments ago";
   }
-  ASSERT_EQ(sender->bitstreamQueueDepthForTest(), 5u);
-  ASSERT_FALSE(sender->bitstreamQueueHasKeyframeForTest());
-
-  EXPECT_EQ(sender->discardBacklogToNextKeyframeForTest(), 0u)
-      << "no keyframe is queued, so nothing is safe to drop";
-  EXPECT_EQ(sender->bitstreamQueueDepthForTest(), 5u)
-      << "the queue must be untouched when there is no keyframe to land on";
-#else
-  GTEST_SKIP() << "Needs the RTMP sender.";
-#endif
-}
-
-// With a keyframe queued, discard drops exactly the chunks ahead of it and
-// never the keyframe itself (nor anything after it — those are reference
-// frames that depend on it), so the stream resumes cleanly at that point.
-TEST(RtmpOutputSenderBackpressure, DiscardDropsTheGopTailAndKeepsTheKeyframe) {
-#if COREVIDEO_WITH_RTMP_OUTPUT
-  auto sender = corevideo::modules::createRtmpOutputSender();
-  ASSERT_NE(sender, nullptr);
-
-  // Two stale reference frames, then a keyframe, then one fresh reference
-  // frame that depends on it and must survive.
-  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-  sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
-  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-  ASSERT_EQ(sender->bitstreamQueueDepthForTest(), 4u);
-
-  EXPECT_EQ(sender->discardBacklogToNextKeyframeForTest(), 2u)
-      << "exactly the two chunks ahead of the keyframe must be dropped";
-  EXPECT_EQ(sender->bitstreamQueueDepthForTest(), 2u)
-      << "the keyframe and the reference frame after it must both survive";
-  EXPECT_TRUE(sender->bitstreamQueueHasKeyframeForTest())
-      << "the keyframe itself must never be dropped";
-
-  // A keyframe already at the head has nothing ahead of it to drop.
-  EXPECT_EQ(sender->discardBacklogToNextKeyframeForTest(), 0u)
-      << "a keyframe already at the head means nothing is ahead of it";
-  EXPECT_EQ(sender->bitstreamQueueDepthForTest(), 2u);
-
-  // A queue that is ENTIRELY keyframes has nothing ahead of the first one.
-  auto allKeyframes = corevideo::modules::createRtmpOutputSender();
-  ASSERT_NE(allKeyframes, nullptr);
-  allKeyframes->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
-  allKeyframes->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
-  allKeyframes->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
-  EXPECT_EQ(allKeyframes->discardBacklogToNextKeyframeForTest(), 0u)
-      << "the first queued chunk is already a keyframe; nothing is ahead of it";
-  EXPECT_EQ(allKeyframes->bitstreamQueueDepthForTest(), 3u);
-#else
-  GTEST_SKIP() << "Needs the RTMP sender.";
-#endif
-}
-
-// The head's enqueue time must be republished after a discard, or buffered
-// latency would keep reporting the age of a chunk that is gone — the exact
-// contract bitstreamBufferedMs() depends on (it reads only the head).
-TEST(RtmpOutputSenderBackpressure, DiscardRepublishesTheBufferedMeasure) {
-#if COREVIDEO_WITH_RTMP_OUTPUT
-  auto sender = corevideo::modules::createRtmpOutputSender();
-  ASSERT_NE(sender, nullptr);
-
-  // An old, stale reference frame at the head...
-  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
-  std::this_thread::sleep_for(std::chrono::milliseconds(60));
-  // ...then a much more recent keyframe.
-  sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
-
-  const auto bufferedBeforeDiscard = sender->bitstreamBufferedMsForTest();
-  EXPECT_GE(bufferedBeforeDiscard, 50)
-      << "buffered age must reflect the STALE head before the discard";
-
-  ASSERT_EQ(sender->discardBacklogToNextKeyframeForTest(), 1u);
-
-  const auto bufferedAfterDiscard = sender->bitstreamBufferedMsForTest();
-  EXPECT_LT(bufferedAfterDiscard, bufferedBeforeDiscard)
-      << "the buffered measure must republish against the NEW head (the "
-         "keyframe), not keep reporting the age of the chunk that was dropped";
-  EXPECT_LT(bufferedAfterDiscard, 50)
-      << "the new head (the keyframe) was enqueued moments ago";
 #else
   GTEST_SKIP() << "Needs the RTMP sender.";
 #endif

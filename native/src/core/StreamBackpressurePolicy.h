@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace corevideo::core {
@@ -233,5 +234,41 @@ class StreamBackpressurePolicy {
   const char* lastReason_ = "none";
   std::int64_t lastTransitionBufferedMs_ = 0;
 };
+
+// #597 Lever B, fix round 1 (review finding 2): the "what to discard" decision,
+// extracted so it can be unit-tested with NO seam of any kind on the sender -
+// no queue, no lock, no mutex, no encoder. Pure value-in/value-out, exactly
+// like StreamBackpressurePolicy::observe() above it.
+//
+// `chunks[i]` is any indexable, sized range; `isKeyframe(chunks[i])` answers
+// whether that element is a keyframe. The caller's real bitstream queue and a
+// bare vector<bool> in a test both satisfy this with zero adaptation.
+//
+// Returns the number of elements strictly AHEAD of the first keyframe found -
+// exactly what is safe to discard (see the discard-safety rationale on
+// StreamBackpressureDecision::discardBacklog above). With no keyframe present
+// anywhere in the range, returns 0: there is nothing safe to cut forward to.
+//
+// THE SENTINEL IS THE WHOLE POINT (review finding 5). `keyframeIndex` starts
+// at `size`, not `0` - so "no keyframe found" and "keyframe already at the
+// head" are DISTINCT values, and only the explicit `keyframeIndex == size`
+// guard turns "not found" into "drop nothing". Initializing the sentinel to 0
+// instead collapses those two cases and makes a "no keyframe queued drops
+// nothing" test pass even with the guard deleted - the regression this exists
+// to prevent is initializing the sentinel to `size` and then OMITTING the
+// guard, which drops the ENTIRE queue with nothing safe to resume at.
+template <typename Chunks, typename IsKeyframe>
+[[nodiscard]] std::size_t discardableGopTailLength(const Chunks& chunks, IsKeyframe isKeyframe) {
+  const std::size_t size = chunks.size();
+  std::size_t keyframeIndex = size;  // sentinel: no keyframe found yet
+  for (std::size_t i = 0; i < size; ++i) {
+    if (isKeyframe(chunks[i])) {
+      keyframeIndex = i;
+      break;
+    }
+  }
+  if (keyframeIndex == size) return 0;  // no keyframe queued: nothing safe to drop
+  return keyframeIndex;  // 0 when the keyframe is already at the head
+}
 
 }  // namespace corevideo::core

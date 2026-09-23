@@ -671,6 +671,10 @@ class RtmpOutputSender final : public IOutputSender {
       // only clearing the published value) is what stops the NEXT stream opening at
       // 15 fps on an empty queue; its cumulative counters are per stream RUN.
       backpressure_ = corevideo::core::StreamBackpressurePolicy{};
+      // #597 Lever B: the discard counter is per-stream-run state exactly like
+      // the policy object above it - reset it here too, or the next run's
+      // Task 6 telemetry would report the PREVIOUS show's discards as its own.
+      backpressureDiscardedChunks_ = 0;
       sender_.backpressure.reset();
       if (sender_.status != "idle" && sender_.status != "stopped") {
         sender_.status = "stopped";
@@ -819,7 +823,14 @@ class RtmpOutputSender final : public IOutputSender {
     // because the SIGNAL the policy acts on (bufferedMs) is wall-clock by
     // construction - see that header - so only the streak lengths are rate
     // dependent, not the thresholds.
+    //
+    // observeStreamBackpressure() (and discardBacklogToNextKeyframe() beneath
+    // it) live inside the #if defined(_WIN32) bitstream-queue block, because
+    // the queue itself is Windows-only - guard the call here too, or a POSIX
+    // build with COREVIDEO_WITH_RTMP_OUTPUT=ON fails to compile.
+#if defined(_WIN32)
     observeStreamBackpressure();
+#endif
 
     // Skip BEFORE ensureFfmpegProcess: that call pins FFmpeg's -s geometry from
     // this frame, so letting a preview-sized frame through here is what
@@ -995,38 +1006,17 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
-  std::size_t discardBacklogToNextKeyframeForTest() override {
+  // ONE read of the queue's true state - depth, keyframe presence, and the
+  // real bitstreamBufferedMs() - so a call-site test needs one call instead
+  // of three, and none of them go through the setBackpressureObservationForTest
+  // override.
+  BitstreamQueueSnapshotForTest bitstreamQueueSnapshotForTest() const override {
 #if defined(_WIN32)
-    return discardBacklogToNextKeyframe();
+    return BitstreamQueueSnapshotForTest{
+        static_cast<std::size_t>(bitstreamQueuedChunks_.load(std::memory_order_relaxed)),
+        bitstreamQueueHasKeyframe_.load(std::memory_order_relaxed), bitstreamBufferedMs()};
 #else
-    return 0;
-#endif
-  }
-
-  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
-  std::size_t bitstreamQueueDepthForTest() const override {
-#if defined(_WIN32)
-    return static_cast<std::size_t>(bitstreamQueuedChunks_.load(std::memory_order_relaxed));
-#else
-    return 0;
-#endif
-  }
-
-  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
-  bool bitstreamQueueHasKeyframeForTest() const override {
-#if defined(_WIN32)
-    return bitstreamQueueHasKeyframe_.load(std::memory_order_relaxed);
-#else
-    return false;
-#endif
-  }
-
-  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
-  std::int64_t bitstreamBufferedMsForTest() const override {
-#if defined(_WIN32)
-    return bitstreamBufferedMs();
-#else
-    return 0;
+    return BitstreamQueueSnapshotForTest{};
 #endif
   }
 
@@ -1903,25 +1893,21 @@ class RtmpOutputSender final : public IOutputSender {
   // B-frames disabled (the low-latency work), so there are no non-reference
   // frames to drop cheaply and the GOP tail is the only safe unit.
   //
+  // The DECISION (how many chunks are safe to drop) is the pure
+  // corevideo::core::discardableGopTailLength() in StreamBackpressurePolicy.h,
+  // unit-tested there with no seam of any kind - not even a fake queue. This
+  // is just the locked mutation: pop that many, keep the byte accounting
+  // exact, and republish telemetry so bitstreamBufferedMs() cannot keep
+  // reporting the age of a chunk that no longer exists.
   std::size_t discardBacklogToNextKeyframe() {
     std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
-    std::size_t keyframeIndex = 0;
-    bool found = false;
-    for (std::size_t i = 0; i < bitstreamQueue_.size(); ++i) {
-      if (bitstreamQueue_[i].metadata.keyframe) {
-        keyframeIndex = i;
-        found = true;
-        break;
-      }
-    }
-    if (!found || keyframeIndex == 0) return 0;  // nothing ahead of a keyframe to drop
-    std::size_t dropped = 0;
-    for (std::size_t i = 0; i < keyframeIndex; ++i) {
+    const std::size_t dropped = corevideo::core::discardableGopTailLength(
+        bitstreamQueue_, [](const QueuedBitstream& chunk) { return chunk.metadata.keyframe; });
+    for (std::size_t i = 0; i < dropped; ++i) {
       bitstreamQueuedBytes_ -= bitstreamQueue_.front().bytes.size();
       bitstreamQueue_.pop_front();
-      ++dropped;
     }
-    republishQueueTelemetryLocked();
+    if (dropped > 0) republishQueueTelemetryLocked();
     return dropped;
   }
 
