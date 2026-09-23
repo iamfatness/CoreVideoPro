@@ -902,12 +902,16 @@ rpc::Json MediaCore::sessionState() const {
       // Published unconditionally, like monitorShed above: divisor 1 / 0 shed
       // frames is the healthy READING, not an absent node.
       // `shedFrames` is CUMULATIVE for the life of the process (see
-      // ICompositor::encoderExportShedFrames()'s doc) - unlike `divisor`,
-      // which can lag between shows (fix round 1, finding 9: applyEncoderExportDivisor's
-      // stop-path residual). `exporting` is this tick's own readback of whether
-      // the compositor is actually exporting the encoder texture right now, so
-      // a stale `divisor` between streams reads as "divisor > 1, NOT exporting"
-      // rather than looking like a live throttle.
+      // ICompositor::encoderExportShedFrames()'s doc) - unlike `divisor`, which
+      // is per-run and corrected back to 1 the moment no destination is being
+      // asked to stream (fix round 2, item 4: see applyEncoderExportDivisor
+      // and its caller in renderVideoOutputTick). `exporting` answers a
+      // narrower, separate question - is ANYTHING consuming the encoder
+      // texture right now (the virtual camera, a recording, or a stream -
+      // `fullProgramReadback` is the OR of all three) - and must NOT be read
+      // as "a stream is throttled": `divisor > 1` together with `exporting`
+      // is equally consistent with "only the vcam is on" (see
+      // ICompositor::encoderExporting()'s doc comment for the full rule).
       {"encoderExport", rpc::Json::Object{
           {"divisor", modules_.compositor ? modules_.compositor->encoderExportDivisor() : 1},
           {"shedFrames", static_cast<double>(
@@ -8407,23 +8411,27 @@ void MediaCore::applyEncoderExportDivisor(const modules::OutputSenderSession& se
     desired = (std::max)(desired, sender.backpressure->divisor);
   }
   if (desired == lastEncoderExportDivisor_.load(std::memory_order_relaxed)) {
-    // Task 6 fix round 1, finding 9: this residual is NO LONGER INERT.
-    // `AsyncOutputSender::sync()` returns a CACHED pre-stop snapshot, so the
-    // final "one tick past the last destination" call into this function can
-    // observe a stale `live` record still carrying the divisor the stream
-    // reached before it stopped - `desired` stays high here and this early
-    // return leaves `lastEncoderExportDivisor_` (and therefore
-    // `realtimeEvidence.encoderExport.divisor`) uncorrected. Before Task 6
-    // published that divisor this was truly inert (nothing read it while
-    // idle); now it is a false-DEGRADED reading that can stand indefinitely
-    // between shows. `realtimeEvidence.encoderExport.exporting` is the fix:
-    // it carries the compositor's OWN last-tick `fullProgramReadback` state,
-    // so a consumer can tell "divisor 3, not exporting" (stale, ignore the
-    // divisor) from "divisor 3, exporting" (a live show genuinely throttled).
-    // Do NOT add a second reset path here to close the divisor itself - that
-    // risks fighting the one reset path that matters, the sender's own
-    // `!wantsRtmp` stop-path reset of backpressure_
-    // (see RtmpOutputSenderAdapter.cpp).
+    // Task 6 fix round 1, finding 9 / fix round 2, item 4: this residual was
+    // NOT inert once the divisor became published telemetry, and IS FIXED
+    // NOW - at the CALL SITE, not in here. `AsyncOutputSender::sync()` can
+    // return a CACHED pre-stop snapshot, so the final "one tick past the
+    // last destination" call into this function used to be able to observe a
+    // stale `live` record still carrying the divisor a stream reached before
+    // it stopped, latching `lastEncoderExportDivisor_` (and therefore
+    // `realtimeEvidence.encoderExport.divisor`) indefinitely between shows -
+    // a false-DEGRADED reading. `renderVideoOutputTick` now passes THIS
+    // function an explicitly empty `OutputSenderSession` on that exact tick
+    // (it already knows, synchronously and authoritatively, that
+    // `senderDestinations` is empty - not from asking the possibly-stale
+    // sender), so `desired` here correctly computes 1 and this function pops
+    // the divisor back down the same way any other change does. This
+    // function itself still needs no second reset path - the fix is entirely
+    // in what the CALLER hands it. `realtimeEvidence.encoderExport.exporting`
+    // is a SEPARATE, narrower signal (see its doc comment): it answers
+    // whether anything at all is consuming the encoder texture (vcam,
+    // recording, or a stream), not whether a stream specifically is
+    // throttled - do not read `divisor > 1 && exporting` as proof of a live
+    // throttle.
     return;  // control plane: only on CHANGE
   }
   lastEncoderExportDivisor_.store(desired, std::memory_order_relaxed);
@@ -8582,9 +8590,26 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     // Program buses are canonical 48 kHz. Reading the mutable mixer from the
     // independent video thread would reintroduce an audio-domain data race.
     const int declaredSampleRate = senderExpectsAudio ? 48000 : 0;
-    applyEncoderExportDivisor(modules_.outputSender->sync(
+    const auto senderSyncResult = modules_.outputSender->sync(
         senderDestinations, (!buffered || bufferedFrameAvailable) ? &frame : nullptr, outputElapsedMs,
-        senderSettings, nullptr, declaredChannels, declaredSampleRate));
+        senderSettings, nullptr, declaredChannels, declaredSampleRate);
+    // #597 fix round 2, item 4: on the FINAL tick (senderDestinations just went
+    // empty - see senderSyncActive_ above), `outputSender->sync()` still has to
+    // run to actually stop the senders, but its RETURN VALUE can be a CACHED
+    // pre-stop snapshot: `AsyncOutputSender::sync()` enqueues the stop and
+    // returns its last cached `session()`, which can still report a "live"
+    // sender carrying its last divisor before the stop is processed. Trusting
+    // that here left `realtimeEvidence.encoderExport.divisor` latched at
+    // whatever it was mid-show, INDEFINITELY, since this is the last call
+    // `applyEncoderExportDivisor` ever receives until the next stream starts
+    // (`senderSyncActive_` goes false right after this and the tick early-
+    // returns from then on). MediaCore already KNOWS, synchronously and
+    // authoritatively, that no destination is being asked to stream on this
+    // tick - `senderDestinations` is MediaCore's own desired-state list, not
+    // a report from the sender - so an empty list is proof enough to push 1
+    // directly rather than trust a snapshot that has not caught up yet.
+    applyEncoderExportDivisor(senderDestinations.empty() ? modules::OutputSenderSession{}
+                                                          : senderSyncResult);
   } catch (const std::exception& ex) {
     failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
   } catch (...) {

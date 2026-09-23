@@ -924,7 +924,15 @@ TEST(MediaCoreCommand, EncoderExportIsPublishedUnconditionallyOnAFreshStubCore) 
          "exactly like monitorShed beside it - a divisor of 1 and 0 shed frames "
          "is the healthy READING, not an absent node";
   EXPECT_EQ(encoderExport->getNumber("divisor"), 1);
-  EXPECT_EQ(encoderExport->getNumber("shedFrames"), 0);
+  // #597 fix round 2, item 3: EXPECT_EQ(getNumber("shedFrames"), 0) alone
+  // cannot catch a typo in the key "shedFrames" - Json::getNumber's fallback
+  // for a MISSING key is also 0, so a mis-spelled key and a genuinely healthy
+  // reading are indistinguishable to that assertion. Null-check the key
+  // itself first, the same way the `exporting` assertion right below already
+  // does.
+  const auto* shedFrames = encoderExport->get("shedFrames");
+  ASSERT_NE(shedFrames, nullptr);
+  EXPECT_EQ(shedFrames->asNumber(), 0);
   const auto* exporting = encoderExport->get("exporting");
   ASSERT_NE(exporting, nullptr);
   EXPECT_FALSE(exporting->asBool())
@@ -5144,6 +5152,59 @@ TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
   ASSERT_EQ(compositorPtr->divisors.size(), 3u);
   EXPECT_EQ(compositorPtr->divisors.back(), 1);
+}
+
+// #597 fix round 2, finding 1: the real red/green, no seam, no injection, no
+// reorder - drives the ACTUAL production defect through the public sync() path.
+//
+// The mechanism: `ensureFfmpegProcess` sets `useGpuDirect_ = desiredGpuDirect`
+// (the sender's own request) BEFORE it knows whether FFmpeg will start, then
+// calls `startFfmpegProcess`. That function's FIRST admission block - the
+// codec-compatibility refusal (H.265 over RTMP without Enhanced RTMP ticked) -
+// returns false WITHOUT clearing `useGpuDirect_` (only the SECOND admission
+// block, below the GPU-encoder start, clears it). `ensureFfmpegProcess` then
+// sets `activeUseGpuDirect_ = false` on that same failed-start path. So a
+// destination that WANTS the GPU path (a frame carrying a non-empty
+// `encoderSharedTexture.sharedHandleHex` - `resolveGpuEncodePath`'s only input
+// besides the codec/probe, no D3D11 compositor required to set it) and gets
+// refused for an unrelated compatibility reason lands EXACTLY in finding 1's
+// state: `useGpuDirect_ == true`, `activeUseGpuDirect_ == false`, no running
+// FFmpeg, no queue. Before the fix, `observeStreamBackpressure()` gated on the
+// former and published a pristine `divisor 1 / bufferedMs 0` node for that
+// destination; after the fix it gates on the latter and correctly goes absent.
+TEST(RtmpOutputSenderBackpressure, AGpuDirectRequestRefusedForCompatibilityPublishesNoBackpressure) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent(
+          "AGpuDirectRequestRefusedForCompatibilityPublishesNoBackpressure")) {
+    return;
+  }
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+  auto frame = startableProgramFrame("rtmp-finding1-no-seam");
+  // The one thing that makes this destination WANT the GPU path: a non-empty
+  // encoder-texture handle. No compositor is needed to set this field.
+  frame.encoderSharedTexture.sharedHandleHex = "0xDEADBEEF";
+  // H.265 without Enhanced RTMP ticked: refused at startFfmpegProcess's FIRST
+  // admission block (compatibility), before the GPU-encoder-start clause that
+  // would otherwise clear useGpuDirect_ back down.
+  const auto settings = rtmpAdmissionSettings("h265", /*allowEnhancedRtmp=*/false);
+
+  // Two syncs: the first arms the desired state and attempts (and fails) the
+  // start; the second observes the resulting steady state.
+  (void)sender->sync({"rtmp"}, &frame, 0.0, {settings});
+  const auto session = sender->sync({"rtmp"}, &frame, 33.0, {settings});
+
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].lastResultCode, "enhanced-rtmp-required")
+      << "this test proves nothing unless the refusal actually happened for "
+         "the GPU-direct compatibility reason";
+  EXPECT_FALSE(session.senders[0].backpressure.has_value())
+      << "a destination that wanted the GPU path and has no running FFmpeg "
+         "must read ABSENT, not a pristine divisor-1/bufferedMs-0 healthy node "
+         "(#597 fix round 1, finding 1)";
+#else
+  EXPECT_TRUE(true) << "Needs the RTMP sender.";
+#endif
 }
 
 // #597 fix round 1, finding 1/2 - THE COMBINATION NOTHING COVERED: a REAL

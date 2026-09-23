@@ -235,12 +235,17 @@ class D3D11Compositor final : public ICompositor {
     // Only the SUBMIT is shed. The handle metadata is published on every frame -
     // see exportEncoderSharedTexture, where withholding it costs a full FFmpeg +
     // hardware-encoder restart per shed frame.
-    // #597 Task 6 fix round 1, finding 9: this tick's OWN readback of whether
-    // the encoder texture is actually being exported right now - published as
-    // realtimeEvidence.encoderExport.exporting so a consumer can tell a
-    // genuinely-throttled live stream (divisor > 1, exporting) from a stale
-    // divisor left over from a stream that already stopped (divisor > 1, NOT
-    // exporting - see MediaCore::applyEncoderExportDivisor's stop-path residual).
+    // #597 Task 6 fix round 1, finding 9 (fix round 2, item 2: corrected
+    // claim): this tick's OWN readback of whether the encoder texture is
+    // being exported right now - published as
+    // realtimeEvidence.encoderExport.exporting. `renderPlan.fullProgramReadback`
+    // is `virtualCameraEnabled_ || outputActive || recording`, so this is
+    // "is anything consuming the encoder texture", NOT "is a stream
+    // throttled" - it reads true with only the vcam on and no stream at all.
+    // See ICompositor::encoderExporting()'s doc comment for the full rule and
+    // what it is actually good for (distinguishing a genuinely fresh divisor
+    // of 1 from a stale non-1 divisor while something is still consuming the
+    // texture).
     encoderExporting_.store(renderPlan.fullProgramReadback, std::memory_order_relaxed);
     if (renderPlan.fullProgramReadback) {
       const int encoderExportDivisor = encoderExportDivisor_.load(std::memory_order_relaxed);

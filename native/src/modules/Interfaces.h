@@ -1039,12 +1039,21 @@ class ICompositor {
   // previous run's sheds.
   [[nodiscard]] virtual int encoderExportDivisor() const { return 1; }
   [[nodiscard]] virtual std::int64_t encoderExportShedFrames() const { return 0; }
-  // #597 Task 6 fix round 1, finding 9: was this compositor ACTUALLY exporting
-  // the encoder texture on its last render tick (the last tick's
-  // `renderPlan.fullProgramReadback`)? `encoderExportDivisor()` can be stale
-  // between shows (see MediaCore::applyEncoderExportDivisor) - `exporting`
-  // lets a consumer tell a genuinely-throttled live stream from a leftover
-  // divisor nothing is applying. Defaulted false so Metal/stub read as not
+  // #597 Task 6 fix round 1, finding 9 (fix round 2, item 2: corrected claim):
+  // was this compositor exporting the dedicated encoder texture on its last
+  // render tick (the last tick's `renderPlan.fullProgramReadback`)? THIS IS
+  // NOT "a stream is live" - `fullProgramReadback` is
+  // `virtualCameraEnabled_ || outputActive || recording` (see MediaCore.cpp),
+  // so `exporting` reads true with only the virtual camera on, or only a
+  // recording running, and NO stream at all. It answers exactly one question:
+  // "is SOMETHING consuming the encoder texture right now" - which is enough
+  // to tell a genuinely fresh divisor of 1 (nothing consuming it, texture
+  // export idle) from a stale non-1 divisor that could still be latched from
+  // a stream that already ended (see `encoderExportDivisor()`'s doc and
+  // MediaCore::applyEncoderExportDivisor's stop-path residual) - it does NOT
+  // by itself prove a live STREAM is throttled; `divisor > 1` while `exporting`
+  // is equally consistent with "the vcam or a recording is on and a throttled
+  // stream ended minutes ago". Defaulted false so Metal/stub read as not
   // exporting, which is the honest answer for a compositor that never does.
   [[nodiscard]] virtual bool encoderExporting() const { return false; }
 };
