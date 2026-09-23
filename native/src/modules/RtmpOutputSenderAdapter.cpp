@@ -1,4 +1,5 @@
 #include "core/BoundedAsyncLog.h"
+#include "core/StreamBackpressurePolicy.h"
 #include "modules/Interfaces.h"
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
@@ -792,6 +793,14 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
 
+    // #597 Lever A: skip program frames BEFORE the encoder. Compressed frames
+    // cannot be dropped individually, so the only safe throttle is upstream. The
+    // encoder's declared frame rate is unchanged, so bits-per-frame - and with
+    // it per-frame quality - holds while the data rate falls. Observed once per
+    // sync(), here, where the sender already holds the frame and before any
+    // path that can return early on a configuration refusal.
+    observeStreamBackpressure();
+
     // Skip BEFORE ensureFfmpegProcess: that call pins FFmpeg's -s geometry from
     // this frame, so letting a preview-sized frame through here is what
     // restarted the encoder mid-stream.
@@ -931,6 +940,12 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession session() const override { return snapshot(); }
+
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  void setBackpressureObservationForTest(std::int64_t bufferedMs, bool keyframeInQueue) override {
+    backpressureBufferedMsForTest_.store(bufferedMs, std::memory_order_relaxed);
+    backpressureKeyframeForTest_.store(keyframeInQueue, std::memory_order_relaxed);
+  }
 
   void interrupt(const std::string& destination) override {
     if (destination != protocol_.destination) {
@@ -1797,6 +1812,42 @@ class RtmpOutputSender final : public IOutputSender {
     bitstreamQueueHasKeyframe_.store(keyframe, std::memory_order_relaxed);
   }
 
+  // #597 Lever A. Observe this destination's own outgoing queue once per sync
+  // and publish the input divisor the policy asks for. MediaCore reads
+  // OutputSender::backpressure and drives ICompositor::setEncoderExportDivisor
+  // with the MAX across active GPU-direct senders - one encoder texture feeds
+  // them all, so the divisor cannot be per destination here (Lever B, the
+  // GOP-tail discard, is).
+  //
+  // A NEGATIVE bufferedMs is "no evidence" and the policy ignores the tick
+  // entirely: the bitstream queue only exists on the GPU-direct path, and the
+  // raw CPU path already drops stale frames and is deliberately untouched by
+  // this lever. Absent backpressure is therefore NOT "healthy" - it is
+  // "nothing to observe here".
+  void observeStreamBackpressure() {
+    const std::int64_t injected = backpressureBufferedMsForTest_.load(std::memory_order_relaxed);
+    corevideo::core::StreamBackpressureObservation observation;
+    if (injected >= 0) {
+      observation.bufferedMs = injected;
+      observation.keyframeInQueue = backpressureKeyframeForTest_.load(std::memory_order_relaxed);
+    } else if (useGpuDirect_) {
+      observation.bufferedMs = bitstreamBufferedMs();
+      observation.keyframeInQueue = bitstreamQueueHasKeyframe_.load(std::memory_order_relaxed);
+    } else {
+      sender_.backpressure.reset();
+      return;
+    }
+    const auto decision = backpressure_.observe(observation);
+    if (decision.transition != corevideo::core::StreamBackpressureTransition::None) {
+      ::corevideo::core::nativeLogf(
+          "[stream-backpressure] %s divisor=%d buffered=%lldms\n",
+          corevideo::core::StreamBackpressurePolicy::transitionName(decision.transition),
+          backpressure_.divisor(), static_cast<long long>(observation.bufferedMs));
+    }
+    // Task 5 handles decision.discardBacklog here.
+    sender_.backpressure = OutputBackpressureState{backpressure_.divisor()};
+  }
+
   // 0 when the queue is empty. Lock-free: reads the head's enqueue time and ages
   // it against now, so the number keeps rising while the writer is blocked.
   [[nodiscard]] std::int64_t bitstreamBufferedMs() const {
@@ -2394,6 +2445,13 @@ class RtmpOutputSender final : public IOutputSender {
   // The factory is injectable for tests; default is the real MF encoder.
   std::function<std::unique_ptr<GpuVideoEncoder>()> gpuEncoderFactory_;
   std::unique_ptr<GpuVideoEncoder> gpuEncoder_;
+  // #597 Lever A. Private to this destination; MediaCore takes the MAX across
+  // senders because one encoder texture feeds every GPU-direct destination.
+  corevideo::core::StreamBackpressurePolicy backpressure_;
+  // TEST-ONLY override of the queue measurement (see
+  // IOutputSender::setBackpressureObservationForTest). Negative = not set.
+  std::atomic<std::int64_t> backpressureBufferedMsForTest_{-1};
+  std::atomic<bool> backpressureKeyframeForTest_{false};
   bool useGpuDirect_ = false;        // desired path for the next/running process
   bool activeUseGpuDirect_ = false;  // path baked into the RUNNING FFmpeg args
   std::string gpuEncodePathReason_ = "cpu-fallback";

@@ -165,6 +165,17 @@ class MediaCore {
   // sampled through the audio worker's 20ms grid. Call setVideoOutputTickRunning
   // before driving it, or the audio worker will submit video too.
   void renderVideoOutputTick(std::mutex& coreMutex);
+  // #597 Lever A. Take the MAX input divisor across the active GPU-direct
+  // senders and drive the compositor with it when - and only when - it changes.
+  //
+  // MAX, and per ENCODER rather than per destination: ONE encoder shared
+  // texture feeds every GPU-direct destination, so the spec's "one struggling
+  // destination must not throttle a healthy sibling" cannot hold for this
+  // lever while a single encoder serves them all. A healthy sibling IS
+  // throttled by a struggling one. That is a real limitation of this slice,
+  // named rather than hidden; Lever B (the GOP-tail queue discard) stays
+  // genuinely per destination, and that is where the constraint still binds.
+  void applyEncoderExportDivisor(const modules::OutputSenderSession& senderSession);
   // Wake the video-out tick after a render. MUST be called with coreMutex
   // RELEASED — notifying under it wakes a thread that instantly blocks on it.
   void notifyProgramFramePublished() { videoOutCv_.notify_one(); }
@@ -954,6 +965,10 @@ class MediaCore {
   // Destinations the tick last synced. A change must reach the senders even on a
   // tick with no new frame — that is how they get STOPPED.
   std::vector<std::string> lastVideoOutDestinations_;
+  // #597 Lever A. The encoder-export divisor last pushed to the compositor.
+  // setEncoderExportDivisor is a CONTROL-PLANE call made only when this
+  // changes - never once per frame.
+  int lastEncoderExportDivisor_ = 1;
   struct ProgramOutputConfiguration {
     std::vector<std::string> destinations;
     std::vector<modules::OutputDestinationSettings> settings;

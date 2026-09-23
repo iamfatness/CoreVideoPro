@@ -1,6 +1,7 @@
 ﻿#include "compositor/CompositorLayout.h"
 #include "core/AudioControlSourcePolicy.h"
 #include "core/BoundedAsyncLog.h"
+#include "core/StreamBackpressurePolicy.h"
 #include "core/MediaCore.h"
 
 #include "EncoderCapacityProbeTestSupport.h"
@@ -4638,6 +4639,257 @@ TEST(OutputSenderAdapter, RtmpRefusesAv1AsNotDeliverableEvenWithEnhancedRtmpOn) 
 #else
   EXPECT_TRUE(true);
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// #597 Lever A: the input divisor, applied at the ENCODER-TEXTURE EXPORT.
+//
+// These two tests pin the decision where it is APPLIED, not in the leaf policy
+// (StreamBackpressurePolicyTest already proves the policy in isolation, and a
+// test that only re-proved it would stay green while the product did nothing).
+// Between them, deleting EITHER the compositor's export gate OR the
+// sender -> MediaCore -> compositor plumbing fails a test.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Records every setEncoderExportDivisor call and otherwise behaves exactly like
+// the compositor MediaCore was built with, so the rest of the core tick is real.
+class DivisorRecordingCompositor : public corevideo::modules::ICompositor {
+ public:
+  explicit DivisorRecordingCompositor(std::unique_ptr<corevideo::modules::ICompositor> inner)
+      : inner_(std::move(inner)) {}
+
+  std::vector<int> divisors;
+
+  void setEncoderExportDivisor(int divisor) override { divisors.push_back(divisor); }
+
+  std::string rendererName() const override { return inner_->rendererName(); }
+  corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+                                          const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    return inner_->render(plan, frames);
+  }
+  void configureProgramBuffer(int frames) override { inner_->configureProgramBuffer(frames); }
+  void prepareProgramBuffer(int width, int height) override { inner_->prepareProgramBuffer(width, height); }
+  void setProgramProductionTiming(int64_t slot, int64_t anchorNs) override {
+    inner_->setProgramProductionTiming(slot, anchorNs);
+  }
+  int programBufferFrames() const override { return inner_->programBufferFrames(); }
+  bool latestDeliveredProgramFrame(corevideo::modules::ProgramFrame& out) const override {
+    return inner_->latestDeliveredProgramFrame(out);
+  }
+  bool takeDeliveredProgramFrame(corevideo::modules::ProgramFrame& out, int timeoutMs) override {
+    return inner_->takeDeliveredProgramFrame(out, timeoutMs);
+  }
+  corevideo::modules::ProgramBufferDiagnostics programBufferDiagnostics() const override {
+    return inner_->programBufferDiagnostics();
+  }
+  bool takeVcamNv12(std::vector<uint8_t>& outNv12, int& width, int& height) override {
+    return inner_->takeVcamNv12(outNv12, width, height);
+  }
+  corevideo::modules::ProgramFrameSharedTexture renderMultiview(
+      const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    return inner_->renderMultiview(plan, frames);
+  }
+  corevideo::modules::ProgramFrameSharedTexture renderPreview(
+      const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    return inner_->renderPreview(plan, frames);
+  }
+  corevideo::modules::CompositorSourceTexStats sourceTexStats() const override {
+    return inner_->sourceTexStats();
+  }
+  bool wantsFullProgramReadbackForRecording() const override {
+    return inner_->wantsFullProgramReadbackForRecording();
+  }
+  bool suppliesProgramNv12() const override { return inner_->suppliesProgramNv12(); }
+  void setVcamFrameSink(VcamFrameSink sink) override { inner_->setVcamFrameSink(std::move(sink)); }
+  bool publishesVcamFrames() const override { return inner_->publishesVcamFrames(); }
+
+ private:
+  std::unique_ptr<corevideo::modules::ICompositor> inner_;
+};
+
+// Two GPU-direct destinations, each publishing whatever divisor the test sets.
+// Stands in for the real senders so the MAX-across-senders rule can be driven
+// without a hardware encoder and a congested network.
+class BackpressurePublishingSender : public corevideo::modules::IOutputSender {
+ public:
+  int rtmpDivisor = 1;
+  int srtDivisor = 1;
+
+  corevideo::modules::OutputSenderSession sync(
+      const std::vector<std::string>& /*destinations*/,
+      const corevideo::modules::ProgramFrame* /*frame*/,
+      double /*elapsedMs*/,
+      const std::vector<corevideo::modules::OutputDestinationSettings>& /*settings*/,
+      const std::vector<float>* /*pcm*/,
+      int /*channels*/,
+      int /*sampleRate*/) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession fail(const std::string&, const std::string&, double) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession recover(const std::string&, double, const std::string&) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession session() const override {
+    corevideo::modules::OutputSenderSession out;
+    out.status = "live";
+    out.activeSenderCount = 2;
+    out.senders.push_back(makeSender("rtmp", rtmpDivisor));
+    out.senders.push_back(makeSender("srt", srtDivisor));
+    return out;
+  }
+
+ private:
+  static corevideo::modules::OutputSender makeSender(const char* id, int divisor) {
+    corevideo::modules::OutputSender sender;
+    sender.senderId = id;
+    sender.destination = id;
+    sender.status = "live";
+    sender.destinationHealth = "ok";
+    sender.lastResultCode = "encoder-input-accepted";
+    sender.backpressure = corevideo::modules::OutputBackpressureState{divisor};
+    return sender;
+  }
+};
+
+}  // namespace
+
+// #597: the divisor must gate the EXPORT. Task 1 proved gating submit() does
+// nothing (ratio 0.998) - the keyed mutex paces the encoder. Deleting the export
+// gate must fail this test.
+TEST(RtmpOutputSenderBackpressure, TheDivisorGatesTheEncoderTextureExport) {
+#if COREVIDEO_WITH_D3D11
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  compositor->setEncoderExportDivisor(2);
+
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.renderPlanId = "backpressure-export-gate";
+  plan.sceneId = "backpressure-export-gate";
+  plan.width = 320;
+  plan.height = 180;
+  // The stream is up: this is exactly the flag that makes the compositor export
+  // the dedicated encoder texture on every render.
+  plan.fullProgramReadback = true;
+  plan.skipCpuReadback = true;
+
+  // An EXACT count, not a ratio: this leg has no timing in it at all.
+  int exportedEven = 0;
+  int exportedOdd = 0;
+  int shedEven = 0;
+  int shedOdd = 0;
+  for (int i = 0; i < 200; ++i) {
+    const auto frame = compositor->render(plan, {});
+    const bool exported = !frame.encoderSharedTexture.sharedHandleHex.empty();
+    const bool even = (frame.frameNumber % 2) == 0;
+    if (exported) {
+      (even ? exportedEven : exportedOdd)++;
+    } else {
+      (even ? shedEven : shedOdd)++;
+    }
+  }
+
+  EXPECT_EQ(exportedEven, 100);
+  EXPECT_EQ(shedOdd, 100);
+  EXPECT_EQ(exportedOdd, 0) << "an odd frame number was exported at divisor 2";
+  EXPECT_EQ(shedEven, 0) << "an even frame number was shed at divisor 2";
+#else
+  EXPECT_TRUE(true) << "The encoder-texture export gate lives in the D3D11 compositor.";
+#endif
+}
+
+// #597: a backed-up sender must PUBLISH a divisor, and MediaCore must carry the
+// max across senders to the compositor. Deleting either half fails this.
+TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
+  // --- Half one: the SENDER observes its own bitstream queue and publishes. ---
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (senderAdmissionFfmpegPresent("TheSendersDivisorReachesTheCompositor")) {
+    auto sender = corevideo::modules::createRtmpOutputSender();
+    ASSERT_NE(sender, nullptr);
+    auto frame = startableProgramFrame("rtmp-backpressure");
+    // H.265 without the enhanced-RTMP checkbox is refused BEFORE FFmpeg is
+    // launched, so this drives the real sync() path with no child process.
+    const auto settings = rtmpAdmissionSettings("h265", false);
+
+    // A healthy queue never throttles, however long the stream runs.
+    sender->setBackpressureObservationForTest(0, false);
+    for (int i = 0; i < 120; ++i) {
+      (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
+    }
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      ASSERT_TRUE(session.senders[0].backpressure.has_value())
+          << "a sender observing its queue must publish a backpressure state";
+      EXPECT_EQ(session.senders[0].backpressure->divisor, 1);
+    }
+
+    // Now hold it above the throttle threshold for longer than the enter streak.
+    sender->setBackpressureObservationForTest(
+        corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10, false);
+    const int ticks =
+        static_cast<int>(corevideo::core::StreamBackpressurePolicy::kEnterAfterOverWaterTicks) + 2;
+    for (int i = 0; i < ticks; ++i) {
+      (void)sender->sync({"rtmp"}, &frame, 4000.0 + 33.0 * i, {settings});
+    }
+    const auto session = sender->session();
+    ASSERT_FALSE(session.senders.empty());
+    ASSERT_TRUE(session.senders[0].backpressure.has_value());
+    EXPECT_GT(session.senders[0].backpressure->divisor, 1)
+        << "a sustained backlog must raise the published input divisor";
+  }
+#endif
+
+  // --- Half two: MediaCore carries the MAX across senders to the compositor,
+  // once on the transition and never per tick. ---
+  auto modules = corevideo::modules::createStubModules();
+  auto compositor = std::make_unique<DivisorRecordingCompositor>(std::move(modules.compositor));
+  auto* compositorPtr = compositor.get();
+  modules.compositor = std::move(compositor);
+  auto senders = std::make_unique<BackpressurePublishingSender>();
+  auto* sendersPtr = senders.get();
+  modules.outputSender = std::move(senders);
+
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  const corevideo::rpc::Json startOutputs = corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"rtmp", "srt"}},
+  };
+
+  // One struggling destination (divisor 3) and one healthy sibling (divisor 1).
+  sendersPtr->rtmpDivisor = 3;
+  sendersPtr->srtDivisor = 1;
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
+  ASSERT_EQ(compositorPtr->divisors.size(), 1u)
+      << "the struggling destination's divisor never reached the compositor";
+  EXPECT_EQ(compositorPtr->divisors.back(), 3) << "MediaCore must carry the MAX across senders";
+
+  // Steady state at the same divisor is a control-plane no-op, never per tick.
+  for (int i = 0; i < 5; ++i) {
+    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
+  }
+  EXPECT_EQ(compositorPtr->divisors.size(), 1u)
+      << "setEncoderExportDivisor must be called only when the value CHANGES";
+
+  // The max is taken across ALL senders, not the first one: move the backlog
+  // onto the SECOND destination and the compositor must follow it there.
+  sendersPtr->rtmpDivisor = 1;
+  sendersPtr->srtDivisor = 4;
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
+  ASSERT_EQ(compositorPtr->divisors.size(), 2u);
+  EXPECT_EQ(compositorPtr->divisors.back(), 4)
+      << "the MAX must be taken across every sender, not just the first";
+
+  // Recovery travels the same way.
+  sendersPtr->srtDivisor = 1;
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
+  ASSERT_EQ(compositorPtr->divisors.size(), 3u);
+  EXPECT_EQ(compositorPtr->divisors.back(), 1);
 }
 
 TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {

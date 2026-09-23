@@ -637,6 +637,15 @@ struct OutputSupervisorState {
   bool interruptible = false;
 };
 
+// #597 Lever A, published so MediaCore can drive the compositor with it. The
+// input divisor this destination currently wants: 1 = every frame (60 fps at
+// the product's rate), 2 = 30, 3 = 20, 4 = 15. Absent means this destination is
+// not on the GPU-direct path and has no bitstream queue to observe, which is
+// NOT the same as "healthy" - never read an absent value as divisor 1 evidence.
+struct OutputBackpressureState {
+  int divisor = 1;  // Task 6 adds the remaining published fields
+};
+
 struct OutputSender {
   std::string senderId;
   std::string destination;
@@ -677,6 +686,11 @@ struct OutputSender {
   // Populated by modules::SupervisedOutputSender; absent when a build wires an
   // output sender without a supervisor (unit tests, the synthetic sender).
   std::optional<OutputSupervisorState> supervisor;
+  // #597 Lever A. Set by the sender on every sync while it is running
+  // GPU-direct; absent on the raw CPU path (which already drops stale frames
+  // and is deliberately untouched by this lever) and on a sender that has not
+  // started. MediaCore reads it and drives ICompositor::setEncoderExportDivisor.
+  std::optional<OutputBackpressureState> backpressure;
 };
 
 struct OutputSenderSession {
@@ -917,6 +931,26 @@ class ICompositor {
   // Does this compositor push frames to that sink? When it does, MediaCore must
   // NOT also publish from the output worker or every frame is published twice.
   [[nodiscard]] virtual bool publishesVcamFrames() const { return false; }
+
+  // #597 Lever A: FEED THE ENCODER FEWER FRAMES, at the one place that actually
+  // paces it. The hardware encoder's thread advances on the KEYED MUTEX of the
+  // encoder shared texture - it acquires, encodes, releases, and can only
+  // acquire again once the compositor's next export releases a new frame. Task 1
+  // measured this directly: skipping only the sender's submit() while still
+  // exporting every render left the stream byte-identical (ratio 0.998), while
+  // halving the EXPORT rate halved egress (0.500). So the throttle lives here,
+  // in the producer, not in the sender.
+  //
+  // At divisor d this compositor exports the encoder texture on frame numbers
+  // divisible by d and holds the rest: 1 = every frame (60 fps), 2 = 30,
+  // 3 = 20, 4 = 15. The encoder's DECLARED frame rate never changes, so
+  // bits-per-frame - and with it per-frame quality - is untouched.
+  //
+  // Control plane, not a per-frame call: MediaCore calls this only when the
+  // value CHANGES. Defaulted to a no-op so the Metal and stub compositors are
+  // unaffected; only the D3D11 adapter, which owns the encoder export,
+  // implements it.
+  virtual void setEncoderExportDivisor(int /*divisor*/) {}
 };
 
 class IMediaFrameSource {
@@ -1118,6 +1152,19 @@ class IOutputSender {
   // release a sender stuck in pipe/network I/O. Implementations should only
   // interrupt the transport here; normal state cleanup remains in sync().
   virtual void interrupt(const std::string&) {}
+  // TEST-ONLY seam, structural guard only - the same guarantee
+  // MediaCore::setStillImageDecoderForTest relies on: no env var, no command,
+  // no config key and no wire field reaches it, and nothing outside
+  // native/tests calls it. (A compile-time gate is impossible here:
+  // corevideo-native-tests links the same corevideo_native library the product
+  // does, so gating the seam out would delete it from the tests too.)
+  //
+  // Overrides the bitstream-queue measurement #597's Lever A observes, so the
+  // backpressure decision can be driven without a hardware encoder and a real
+  // congested network. A NEGATIVE bufferedMs clears the override and restores
+  // the real measurement.
+  virtual void setBackpressureObservationForTest(std::int64_t /*bufferedMs*/,
+                                                 bool /*keyframeInQueue*/) {}
 };
 
 class ICaptureDevice {

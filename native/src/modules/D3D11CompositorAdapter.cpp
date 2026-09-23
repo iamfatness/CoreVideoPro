@@ -225,7 +225,15 @@ class D3D11Compositor final : public ICompositor {
     // or not: when buffered, frame.encoderSharedTexture rides the program buffer to
     // the sender (the handle is stable and the copy is the latest composed frame,
     // so the stream taps live pixels rather than inheriting the buffer's delay).
-    if (renderPlan.fullProgramReadback) {
+    // #597 Lever A. The encoder's thread advances on the KEYED MUTEX - when this
+    // export releases a new frame - NOT on the sender's submit(). Task 1 measured
+    // it directly: skipping only submit() left the stream byte-identical (ratio
+    // 0.998), while halving the export rate halved egress (0.500). So the throttle
+    // lives here. Skipping the export leaves the encoder waiting, which is exactly
+    // the intended "fewer frames, same quality each".
+    const int encoderExportDivisor = encoderExportDivisor_.load(std::memory_order_relaxed);
+    if (renderPlan.fullProgramReadback &&
+        (encoderExportDivisor <= 1 || (frame.frameNumber % encoderExportDivisor) == 0)) {
       exportEncoderSharedTexture(frame);
     }
     const auto vcamUs = stageUs();
@@ -2481,6 +2489,14 @@ class D3D11Compositor final : public ICompositor {
   // This adapter's full-resolution program tap is NV12 (there is no full BGRA
   // readback on Windows — that would be an 8MB/frame GPU->CPU Map). Recording
   // mixes from it via RecordingSessionRequest::programNv12.
+  // #597 Lever A control plane. Called by MediaCore only when the value
+  // CHANGES (a transition, never per frame), from the output tick rather than
+  // the render thread - hence the relaxed atomic: the render thread reads it
+  // once per frame and a one-frame-late adoption of a new divisor is harmless.
+  void setEncoderExportDivisor(int divisor) override {
+    encoderExportDivisor_.store((std::max)(1, divisor), std::memory_order_relaxed);
+  }
+
   [[nodiscard]] bool suppliesProgramNv12() const override { return true; }
 
   void setVcamFrameSink(VcamFrameSink sink) override {
@@ -2637,6 +2653,7 @@ class D3D11Compositor final : public ICompositor {
   int targetWidth_ = 0;
   int targetHeight_ = 0;
   int64_t frameNumber_ = 0;
+  std::atomic<int> encoderExportDivisor_{1};  // #597 Lever A; 1 = export every frame
   std::atomic<int> requestedProgramFrames_{0};
   int64_t programProductionSlot_ = -1, programProductionAnchorNs_ = 0;
   mutable std::mutex programBufferMutex_;

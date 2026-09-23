@@ -8187,14 +8187,14 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
           std::chrono::duration_cast<std::chrono::milliseconds>(
               std::chrono::steady_clock::now() - outputClockEpoch)
               .count());
-      modules_.outputSender->sync(
+      applyEncoderExportDivisor(modules_.outputSender->sync(
           outputDestinations,
           &outputProgramFrame,
           outputElapsedMs,
           work.outputDestinationSettings,
           outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
           outputAudioChannels,
-          modules_.mixer->monitorBusSampleRate());
+          modules_.mixer->monitorBusSampleRate()));
       const auto outMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - tOut0)
                              .count();
@@ -8344,6 +8344,25 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
 // fan-out. Video never takes audioOutputMutex_: even a slow encoder/sender queue
 // cannot steal a 20 ms audio deadline. The async sinks provide their own queue
 // synchronization for concurrent audio/video submissions.
+// #597 Lever A, the control plane. See the declaration in MediaCore.h for why
+// this is the MAX across senders (one encoder texture, many destinations) and
+// what that costs a healthy sibling.
+//
+// An ABSENT backpressure state means the destination is not on the GPU-direct
+// path and has no queue to observe - never read as divisor 1 evidence, so it
+// simply contributes nothing. With no GPU-direct sender at all the max stays 1,
+// which is also the value the compositor already holds, so nothing is called.
+void MediaCore::applyEncoderExportDivisor(const modules::OutputSenderSession& senderSession) {
+  int desired = 1;
+  for (const auto& sender : senderSession.senders) {
+    if (!sender.backpressure) continue;
+    desired = (std::max)(desired, sender.backpressure->divisor);
+  }
+  if (desired == lastEncoderExportDivisor_) return;  // control plane: only on CHANGE
+  lastEncoderExportDivisor_ = desired;
+  if (modules_.compositor) modules_.compositor->setEncoderExportDivisor(desired);
+}
+
 void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
   const bool buffered = modules_.compositor->programBufferFrames() > 0;
   modules::ProgramFrame frame;
@@ -8496,8 +8515,9 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     // Program buses are canonical 48 kHz. Reading the mutable mixer from the
     // independent video thread would reintroduce an audio-domain data race.
     const int declaredSampleRate = senderExpectsAudio ? 48000 : 0;
-    modules_.outputSender->sync(senderDestinations, (!buffered || bufferedFrameAvailable) ? &frame : nullptr, outputElapsedMs, senderSettings,
-                                nullptr, declaredChannels, declaredSampleRate);
+    applyEncoderExportDivisor(modules_.outputSender->sync(
+        senderDestinations, (!buffered || bufferedFrameAvailable) ? &frame : nullptr, outputElapsedMs,
+        senderSettings, nullptr, declaredChannels, declaredSampleRate));
   } catch (const std::exception& ex) {
     failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
   } catch (...) {
