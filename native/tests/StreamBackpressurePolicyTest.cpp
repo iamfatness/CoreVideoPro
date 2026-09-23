@@ -34,6 +34,34 @@ TEST(StreamBackpressurePolicy, AnUnknownMeasurementIsIgnored) {
   EXPECT_EQ(p.divisor(), 1);
 }
 
+// An unknown tick is NO EVIDENCE EITHER WAY: it must feed neither streak. The
+// assertion above cannot prove that on its own -- it runs entirely at divisor 1,
+// where a negative measurement also falls below the throttle threshold and takes
+// the divisor_ == 1 short-circuit harmlessly. Deleting the `bufferedMs < 0` guard
+// leaves it green. These two do fail, because without the guard a negative value
+// both RESETS overStreak_ and ADVANCES healthyStreak_.
+TEST(StreamBackpressurePolicy, AnUnknownMeasurementBreaksNeitherStreak) {
+  // Entry: an unknown tick in the middle of a backlog run must not reset it.
+  StreamBackpressurePolicy entering;
+  feed(entering, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks - 1);
+  ASSERT_EQ(entering.divisor(), 1);
+  feed(entering, -1, 1);
+  const auto entered = feed(entering, 300, 1);
+  EXPECT_EQ(entering.divisor(), 2);
+  EXPECT_EQ(entered.transition, StreamBackpressureTransition::Enter);
+
+  // Recovery: an unknown tick must not count toward the healthy run either.
+  StreamBackpressurePolicy recovering;
+  feed(recovering, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
+  ASSERT_EQ(recovering.divisor(), 2);
+  feed(recovering, 10, StreamBackpressurePolicy::kRecoverAfterHealthyTicks - 1);
+  feed(recovering, -1, 1);
+  EXPECT_EQ(recovering.divisor(), 2);
+  const auto exited = feed(recovering, 10, 1);
+  EXPECT_EQ(recovering.divisor(), 1);
+  EXPECT_EQ(exited.transition, StreamBackpressureTransition::Exit);
+}
+
 // A keyframe spikes the queue for a tick or two. Only sustained growth throttles.
 TEST(StreamBackpressurePolicy, ASingleSpikeDoesNotThrottle) {
   StreamBackpressurePolicy p;
@@ -44,7 +72,7 @@ TEST(StreamBackpressurePolicy, ASingleSpikeDoesNotThrottle) {
   EXPECT_EQ(p.divisor(), 1);
 }
 
-TEST(StreamBackpressurePolicy, SustainedBacklogStepsDownOneLevelAtATime) {
+TEST(StreamBackpressurePolicy, SustainedBacklogStepsUpOneLevelAtATime) {
   StreamBackpressurePolicy p;
   const auto enter = feed(p, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
   EXPECT_EQ(p.divisor(), 2);
@@ -53,6 +81,24 @@ TEST(StreamBackpressurePolicy, SustainedBacklogStepsDownOneLevelAtATime) {
   const auto up = feed(p, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
   EXPECT_EQ(p.divisor(), 3);
   EXPECT_EQ(up.transition, StreamBackpressureTransition::StepUp);
+}
+
+// The step-DOWN half, which nothing asserted: recovery gives back one level at a
+// time, and only the last one reports Exit.
+TEST(StreamBackpressurePolicy, RecoveryStepsDownOneLevelAtATime) {
+  StreamBackpressurePolicy p;
+  feed(p, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
+  feed(p, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
+  ASSERT_EQ(p.divisor(), 3);
+
+  const auto down = feed(p, 10, StreamBackpressurePolicy::kRecoverAfterHealthyTicks);
+  EXPECT_EQ(p.divisor(), 2);
+  EXPECT_EQ(down.transition, StreamBackpressureTransition::StepDown);
+  EXPECT_EQ(std::string(p.lastReason()), "recovered");
+
+  const auto exit = feed(p, 10, StreamBackpressurePolicy::kRecoverAfterHealthyTicks);
+  EXPECT_EQ(p.divisor(), 1);
+  EXPECT_EQ(exit.transition, StreamBackpressureTransition::Exit);
 }
 
 TEST(StreamBackpressurePolicy, NeverExceedsTheFloor) {
