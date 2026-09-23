@@ -625,6 +625,7 @@ if(BUILD_TESTING)
     tests/ImageResizeTest.cpp
     tests/VirtualCameraShmRoundtripTest.cpp
     tests/MediaFoundationGpuVideoEncoderTest.cpp
+    tests/StreamBackpressureRateProbeTest.cpp
     tests/WgcScreenCaptureTest.cpp
     tests/CaptureIngestTest.cpp
     tests/ProgramFramePreviewHealthTest.cpp
