@@ -896,6 +896,129 @@ TEST(MediaCoreCommand, StreamingSenderFailureDoesNotEscapeRenderTick) {
   EXPECT_NE(sender.getString("lastError").find("simulated sender startup failure"), std::string::npos);
 }
 
+// #597 Task 6 fix round 1 (declared coverage gap, section 4 of the review):
+// before this, ZERO tests in the tree touched `encoderExport` or
+// `get("backpressure")` on the JSON snapshot itself - every existing test
+// drives the underlying mechanism (the policy, the compositor's shed count,
+// the sender's own struct) but nothing ever asserted on the ACTUAL wire keys
+// Task 8's live gate reads from `/snapshot`. A key typo or a mis-nested
+// object would ship silently. This test and the one below it are that
+// coverage, stub-buildable (`createStubModules()`, no GPU/FFmpeg/RTMP needed)
+// - they are WRITTEN AND BUILT here (they compile into the same
+// corevideo-native-tests.exe the two permitted filters run from) but
+// DELIBERATELY NOT RUN under either `RtmpOutputSenderBackpressure.*` or
+// `StreamBackpressurePolicy.*`, per the hard testing constraint. The
+// coordinator will run them (and the rest of the suite) at the first clear
+// window.
+//
+// Mirrors `MonitorShedIntegration.TheSnapshotPublishesTheHealthyStateUnconditionally`
+// (MonitorShedPolicyTest.cpp) - the precedent named for exactly this property.
+TEST(MediaCoreCommand, EncoderExportIsPublishedUnconditionallyOnAFreshStubCore) {
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  const auto state = core.sessionState();
+  const auto* evidence = state.get("realtimeEvidence");
+  ASSERT_NE(evidence, nullptr);
+  const auto* encoderExport = evidence->get("encoderExport");
+  ASSERT_NE(encoderExport, nullptr)
+      << "realtimeEvidence.encoderExport must exist before any stream starts, "
+         "exactly like monitorShed beside it - a divisor of 1 and 0 shed frames "
+         "is the healthy READING, not an absent node";
+  EXPECT_EQ(encoderExport->getNumber("divisor"), 1);
+  EXPECT_EQ(encoderExport->getNumber("shedFrames"), 0);
+  const auto* exporting = encoderExport->get("exporting");
+  ASSERT_NE(exporting, nullptr);
+  EXPECT_FALSE(exporting->asBool())
+      << "a stub core with no compositor export activity is not exporting";
+}
+
+namespace {
+// A minimal fake sender that publishes every field of OutputBackpressureState
+// with a DISTINCT, non-default value, so a test reading the JSON back can
+// catch a key typo (a wrong field reads a default/zero and a naive test could
+// pass by accident) or a value silently dropped in the MediaCore.cpp mapping.
+class FullBackpressureFieldsSender : public corevideo::modules::IOutputSender {
+ public:
+  corevideo::modules::OutputSenderSession sync(
+      const std::vector<std::string>& /*destinations*/,
+      const corevideo::modules::ProgramFrame* /*frame*/,
+      double /*elapsedMs*/,
+      const std::vector<corevideo::modules::OutputDestinationSettings>& /*settings*/,
+      const std::vector<float>* /*pcm*/,
+      int /*channels*/,
+      int /*sampleRate*/) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession fail(const std::string&, const std::string&, double) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession recover(const std::string&, double, const std::string&) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession session() const override {
+    corevideo::modules::OutputSenderSession out;
+    out.status = "live";
+    out.activeSenderCount = 1;
+    corevideo::modules::OutputSender sender;
+    sender.senderId = sender.destination = "rtmp";
+    sender.status = "live";
+    sender.destinationHealth = "ok";
+    sender.lastResultCode = "encoder-input-accepted";
+    corevideo::modules::OutputBackpressureState bp;
+    bp.divisor = 3;
+    bp.level = 2;
+    bp.bufferedMs = 812;
+    bp.queuedChunks = 47;
+    bp.enteredCount = 5;
+    bp.discardedChunks = 19;
+    bp.discardEvents = 2;
+    bp.lastReason = "buffered-above-threshold";
+    bp.lastTransitionBufferedMs = 300;
+    bp.runId = 4;
+    bp.observedAtMs = 12345.0;
+    sender.backpressure = bp;
+    out.senders.push_back(sender);
+    return out;
+  }
+};
+}  // namespace
+
+// See the comment above EncoderExportIsPublishedUnconditionallyOnAFreshStubCore:
+// same coverage gap, the per-sender half of the node. Also pins the CORRECTED
+// wire path (`outputSenderSession.senders[].backpressure`) rather than the
+// brief's/CLAUDE.md's stated `outputSenders.senders[]`, which does not exist
+// on this core - the review corrected both docs upstream in 25961c5e.
+TEST(MediaCoreCommand, OutputSenderSessionPublishesEveryBackpressureField) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.outputSender = std::make_unique<FullBackpressureFieldsSender>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  const corevideo::rpc::Json startOutputs = corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"rtmp"}},
+  };
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
+
+  const auto* output = state.get("outputSenderSession");
+  ASSERT_NE(output, nullptr);
+  const auto* senders = output->get("senders");
+  ASSERT_NE(senders, nullptr);
+  ASSERT_TRUE(senders->isArray());
+  ASSERT_FALSE(senders->asArray().empty());
+  const auto& sender = senders->asArray().front();
+  const auto* bp = sender.get("backpressure");
+  ASSERT_NE(bp, nullptr) << "outputSenderSession.senders[].backpressure must exist";
+  EXPECT_EQ(bp->getNumber("divisor"), 3);
+  EXPECT_EQ(bp->getNumber("level"), 2);
+  EXPECT_EQ(bp->getNumber("bufferedMs"), 812);
+  EXPECT_EQ(bp->getNumber("queuedChunks"), 47);
+  EXPECT_EQ(bp->getNumber("enteredCount"), 5);
+  EXPECT_EQ(bp->getNumber("discardedChunks"), 19);
+  EXPECT_EQ(bp->getNumber("discardEvents"), 2);
+  EXPECT_EQ(bp->getString("lastReason"), "buffered-above-threshold");
+  EXPECT_EQ(bp->getNumber("lastTransitionBufferedMs"), 300);
+  EXPECT_EQ(bp->getNumber("runId"), 4);
+  EXPECT_EQ(bp->getNumber("observedAtMs"), 12345.0);
+}
+
 TEST(MediaCoreCommand, AudioMonitorRendersRoutedMonBusWhenPresent) {
   auto modules = corevideo::modules::createStubModules();
   modules.zoom = std::make_unique<PcmTestZoomSource>();
@@ -4850,6 +4973,46 @@ TEST(RtmpOutputSenderBackpressure, TheDivisorGatesTheEncoderTextureExport) {
 #endif
 }
 
+// #597 Task 6 fix round 1 (declared coverage gap, secondary): the test above
+// exercises the identical `!submitPixels` branch that increments
+// encoderExportShedFrames_ byte-for-byte, but never reads the counter back -
+// "the branch is covered" is not "the counter reads back the right number".
+// This does, inside the same permitted filter as the test it extends.
+TEST(RtmpOutputSenderBackpressure, EncoderExportShedFramesCountsExactlyWhatItSkipped) {
+#if COREVIDEO_WITH_D3D11
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  compositor->setEncoderExportDivisor(4);
+
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.renderPlanId = "backpressure-shed-counter";
+  plan.sceneId = "backpressure-shed-counter";
+  plan.width = 320;
+  plan.height = 180;
+  plan.fullProgramReadback = true;
+  plan.skipCpuReadback = true;
+
+  const auto before = compositor->encoderExportShedFrames();
+  int shed = 0;
+  for (int i = 0; i < 40; ++i) {
+    const auto frame = compositor->render(plan, {});
+    if (frame.encoderSharedTexture.frameNumber != frame.frameNumber) ++shed;
+  }
+  const auto after = compositor->encoderExportShedFrames();
+
+  EXPECT_GT(shed, 0) << "the compositor shed nothing, so this proves nothing";
+  EXPECT_EQ(after - before, shed)
+      << "encoderExportShedFrames() must count exactly the frames actually shed, "
+         "no more and no less - not D3DDecoupledExport's own unrelated bounded-slot refusal";
+  EXPECT_TRUE(compositor->encoderExporting())
+      << "the compositor is actively exporting on a fullProgramReadback plan; "
+         "encoderExporting() must say so on the SAME tick, not lag";
+  EXPECT_EQ(compositor->encoderExportDivisor(), 4);
+#else
+  EXPECT_TRUE(true) << "The encoder-texture export gate lives in the D3D11 compositor.";
+#endif
+}
+
 // #597: a backed-up sender must PUBLISH a divisor, and MediaCore must carry the
 // max across senders to the compositor. Deleting either half fails this.
 TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
@@ -5176,12 +5339,22 @@ TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRu
       corevideo::core::StreamBackpressurePolicy::kDiscardAboveBufferedMs + 10,
       /*keyframeInQueue=*/true);
   (void)sender->sync({"rtmp"}, &frame, 5000.0, {settings});
+  std::int64_t run1RunId = -1;
   {
     const auto session = sender->session();
     ASSERT_FALSE(session.senders.empty());
     ASSERT_TRUE(session.senders[0].backpressure.has_value());
-    ASSERT_GT(session.senders[0].backpressure->discardedChunks, 0)
+    const auto& bp = *session.senders[0].backpressure;
+    ASSERT_GT(bp.discardedChunks, 0)
         << "run 1 must have actually discarded something, or this test proves nothing";
+    // The rest of run 1's per-run state, so the fix-round-1 extension below has
+    // something real to compare against: a divisor above 1, at least one
+    // engagement, and at least one discard event (distinct from discardedChunks
+    // - see the divergence documented on OutputBackpressureState).
+    ASSERT_GT(bp.divisor, 1);
+    ASSERT_GT(bp.enteredCount, 0);
+    ASSERT_GT(bp.discardEvents, 0);
+    run1RunId = bp.runId;
   }
 
   // --- Stop the destination: the same `!wantsRtmp` path that resets
@@ -5205,8 +5378,27 @@ TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRu
     const auto session = sender->session();
     ASSERT_FALSE(session.senders.empty());
     ASSERT_TRUE(session.senders[0].backpressure.has_value());
-    EXPECT_EQ(session.senders[0].backpressure->discardedChunks, 0)
+    const auto& bp = *session.senders[0].backpressure;
+    EXPECT_EQ(bp.discardedChunks, 0)
         << "the next stream run must not report the PREVIOUS run's discards as its own";
+    // Fix round 1, finding 7: the stop path resets the WHOLE policy object
+    // (`backpressure_ = StreamBackpressurePolicy{}`), not just
+    // backpressureDiscardedChunks_ beside it - pin all four other per-run
+    // fields too. Deleting the policy reset alone (leaving only the discard
+    // counter reset) would open the next stream at the PREVIOUS run's divisor
+    // and pass every assertion above while failing these.
+    EXPECT_EQ(bp.divisor, 1)
+        << "a fresh, never-throttled run must not open at the previous run's divisor";
+    EXPECT_EQ(bp.level, 0);
+    EXPECT_EQ(bp.enteredCount, 0)
+        << "a fresh run must not carry forward the previous run's engagement count";
+    EXPECT_EQ(bp.discardEvents, 0)
+        << "a fresh run must not carry forward the previous run's discard-event count";
+    // Fix round 1, finding 11: the reset must mint a NEW run identity, so a
+    // consumer that polled across the stop without observing the node's
+    // momentary absence can still tell this is a reset, not the same run's
+    // counters somehow decreasing.
+    EXPECT_NE(bp.runId, run1RunId) << "a stop/restart must mint a new runId";
   }
 #else
   GTEST_SKIP() << "Needs the RTMP sender.";

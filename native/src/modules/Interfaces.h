@@ -658,7 +658,12 @@ struct OutputBackpressureState {
   // Always divisor - 1; published separately because a consumer should not
   // have to re-derive it.
   int level = 0;
-  // Wall-clock age (ms) of the oldest chunk still queued for send.
+  // Wall-clock age (ms) of the oldest chunk still queued for send, AS OF THE
+  // OBSERVATION THAT DROVE THIS TICK'S DECISION - not necessarily the queue's
+  // current state a moment later. On a tick where Lever B fires, this is
+  // re-read AFTER the discard (see observeStreamBackpressure()), so it and
+  // `queuedChunks` below describe the SAME instant rather than a pre-discard/
+  // post-discard mismatch.
   std::int64_t bufferedMs = 0;
   std::int64_t queuedChunks = 0;
   // Times throttling was ENGAGED (1 -> 2). Steps within a throttle do not count.
@@ -666,14 +671,43 @@ struct OutputBackpressureState {
   // Cumulative chunks Lever B (the GOP-tail discard) has dropped from THIS
   // destination's queue. Per-stream-run: reset alongside the policy object
   // whenever this destination stops (see the `!wantsRtmp` stop path).
+  // ONE discard EVENT (see discardEvents below) can drop MANY chunks - a
+  // whole GOP tail at once - so discardedChunks >= discardEvents always, and
+  // discardedChunks / discardEvents is the mean GOP tail length discarded.
+  // They are deliberately two different counters, not a duplicate: discardEvents
+  // answers "how many times did Lever B fire", discardedChunks answers "how
+  // much video did it actually cost".
   std::int64_t discardedChunks = 0;
-  // Cumulative GOP-tail discard events fired.
+  // Cumulative GOP-tail discard events fired. See discardedChunks above for
+  // how the two diverge.
   std::int64_t discardEvents = 0;
   // Why the divisor or discard state last changed:
   // "none" | "buffered-above-threshold" | "recovered" | "backlog-discard".
-  std::string lastReason = "none";
+  // A static string literal from StreamBackpressurePolicy - never heap-owned,
+  // so publishing it every tick (the 60 Hz output path, one GPU-direct sender)
+  // costs no allocation.
+  const char* lastReason = "none";
   // The bufferedMs observed on the tick that caused the last change.
   std::int64_t lastTransitionBufferedMs = 0;
+  // Bumped every time the underlying StreamBackpressurePolicy is RECONSTRUCTED
+  // (the `!wantsRtmp` stop path) - i.e. every time the per-run counters above
+  // reset to zero. The node itself goes ABSENT between the stop and the next
+  // GPU-direct tick, but that gap is invisible across a poll interval (the
+  // shell polls at 250ms); `runId` gives a consumer that DID catch two
+  // consecutive readings a way to tell "these counters are continuous, they
+  // can only have grown" (same runId) from "a reset happened between these
+  // two readings, do not diff them" (different runId) even without observing
+  // the absence in between.
+  std::int64_t runId = 0;
+  // Wall-clock elapsedMs (the same clock every other OutputSender timestamp on
+  // this destination uses - see startedAtMs/stoppedAtMs) at the moment this
+  // state was last written by observeStreamBackpressure(). sync() has several
+  // early-return paths above the Lever A/B observation (missing settings,
+  // missing endpoint, no runtime, no frame yet, no program pixels yet); this
+  // node is NOT refreshed on those ticks and snapshot() re-serves the same
+  // struct - observedAtMs is what lets a consumer tell that a freeze happened,
+  // the "a peek is not an observation" rule applied here.
+  double observedAtMs = 0;
 };
 
 // TEST-ONLY (see IOutputSender::bitstreamQueueSnapshotForTest). A single
@@ -996,8 +1030,23 @@ class ICompositor {
   // node. Defaulted to 1/0 (the healthy reading) so Metal and the stub
   // compositor are unaffected; only the D3D11 adapter, which owns the encoder
   // export, tracks a real shed count.
+  //
+  // encoderExportShedFrames() is CUMULATIVE FOR THE LIFE OF THE PROCESS - it is
+  // never reset when a stream stops, unlike the per-sender counters beside it
+  // in OutputBackpressureState (divisor/enteredCount/discardedChunks/discardEvents
+  // are all per-run). A consumer computing "this show shed N frames" must diff
+  // it itself across the run boundary; reading it directly includes every
+  // previous run's sheds.
   [[nodiscard]] virtual int encoderExportDivisor() const { return 1; }
   [[nodiscard]] virtual std::int64_t encoderExportShedFrames() const { return 0; }
+  // #597 Task 6 fix round 1, finding 9: was this compositor ACTUALLY exporting
+  // the encoder texture on its last render tick (the last tick's
+  // `renderPlan.fullProgramReadback`)? `encoderExportDivisor()` can be stale
+  // between shows (see MediaCore::applyEncoderExportDivisor) - `exporting`
+  // lets a consumer tell a genuinely-throttled live stream from a leftover
+  // divisor nothing is applying. Defaulted false so Metal/stub read as not
+  // exporting, which is the honest answer for a compositor that never does.
+  [[nodiscard]] virtual bool encoderExporting() const { return false; }
 };
 
 class IMediaFrameSource {

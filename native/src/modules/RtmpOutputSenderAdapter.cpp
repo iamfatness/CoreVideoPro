@@ -675,6 +675,11 @@ class RtmpOutputSender final : public IOutputSender {
       // the policy object above it - reset it here too, or the next run's
       // Task 6 telemetry would report the PREVIOUS show's discards as its own.
       backpressureDiscardedChunks_ = 0;
+      // #597 Task 6 fix round 1, finding 11: a new run gets a new identity, so
+      // a consumer that reads across this reset without observing the node's
+      // momentary absence can still tell the counters were RESET, not merely
+      // decreased.
+      ++backpressureRunId_;
       sender_.backpressure.reset();
       if (sender_.status != "idle" && sender_.status != "stopped") {
         sender_.status = "stopped";
@@ -829,7 +834,7 @@ class RtmpOutputSender final : public IOutputSender {
     // the queue itself is Windows-only - guard the call here too, or a POSIX
     // build with COREVIDEO_WITH_RTMP_OUTPUT=ON fails to compile.
 #if defined(_WIN32)
-    observeStreamBackpressure();
+    observeStreamBackpressure(elapsedMs);
 #endif
 
     // Skip BEFORE ensureFfmpegProcess: that call pins FFmpeg's -s geometry from
@@ -1923,13 +1928,24 @@ class RtmpOutputSender final : public IOutputSender {
   // raw CPU path already drops stale frames and is deliberately untouched by
   // this lever. Absent backpressure is therefore NOT "healthy" - it is
   // "nothing to observe here".
-  void observeStreamBackpressure() {
+  //
+  // Task 6 fix round 1, finding 1: gated on `activeUseGpuDirect_` (the path
+  // baked into the RUNNING FFmpeg args), never `useGpuDirect_` (only the
+  // DESIRED path for the next/running process). `ensureFfmpegProcess` sets
+  // `useGpuDirect_` BEFORE it knows whether FFmpeg will actually start
+  // (`RtmpOutputSenderAdapter.cpp` near `startFfmpegProcess`), and only sets
+  // `activeUseGpuDirect_` once that start genuinely SUCCEEDED. Gating on the
+  // desired field published a pristine `divisor 1 / bufferedMs 0 /
+  // queuedChunks 0` node - the textbook healthy reading - for a destination
+  // whose FFmpeg failed to start and is retrying with no encoder, no
+  // process and no queue at all.
+  void observeStreamBackpressure(double elapsedMs) {
     const std::int64_t injected = backpressureBufferedMsForTest_.load(std::memory_order_relaxed);
     corevideo::core::StreamBackpressureObservation observation;
     if (injected >= 0) {
       observation.bufferedMs = injected;
       observation.keyframeInQueue = backpressureKeyframeForTest_.load(std::memory_order_relaxed);
-    } else if (useGpuDirect_) {
+    } else if (activeUseGpuDirect_) {
       observation.bufferedMs = bitstreamBufferedMs();
       observation.keyframeInQueue = bitstreamQueueHasKeyframe_.load(std::memory_order_relaxed);
     } else {
@@ -1943,19 +1959,31 @@ class RtmpOutputSender final : public IOutputSender {
           corevideo::core::StreamBackpressurePolicy::transitionName(decision.transition),
           backpressure_.divisor(), static_cast<long long>(observation.bufferedMs));
     }
+    // Task 6 fix round 1, finding 2: `publishedBufferedMs` starts as the
+    // pre-discard observation that DROVE this tick's decision, but on a tick
+    // where Lever B actually fires it is re-read AFTER the discard - the same
+    // discipline the adjacent Task 5 test already demands of
+    // bitstreamBufferedMs() itself ("the buffered measure must republish
+    // against the NEW head"). Without this, the published node paired a
+    // pre-discard bufferedMs with a post-discard queuedChunks on exactly the
+    // tick worth inspecting, describing two different instants at once.
+    std::int64_t publishedBufferedMs = observation.bufferedMs;
     if (decision.discardBacklog) {
       const auto dropped = discardBacklogToNextKeyframe();
       if (dropped > 0) {
-        backpressureDiscardedChunks_ += static_cast<std::int64_t>(dropped);
+        backpressureDiscardedChunks_ = (std::min)(
+            backpressureDiscardedChunks_ + static_cast<std::int64_t>(dropped),
+            kBackpressureDiscardedChunksCeiling);
         ::corevideo::core::nativeLogf(
             "[stream-backpressure] discard dropped=%zu divisor=%d buffered=%lldms\n",
             dropped, backpressure_.divisor(), static_cast<long long>(observation.bufferedMs));
+        publishedBufferedMs = bitstreamBufferedMs();
       }
     }
     OutputBackpressureState state;
     state.divisor = backpressure_.divisor();
     state.level = backpressure_.level();
-    state.bufferedMs = observation.bufferedMs;
+    state.bufferedMs = publishedBufferedMs;
     state.queuedChunks = static_cast<std::int64_t>(
         bitstreamQueuedChunks_.load(std::memory_order_relaxed));
     state.enteredCount = backpressure_.enteredCount();
@@ -1965,6 +1993,8 @@ class RtmpOutputSender final : public IOutputSender {
     state.discardEvents = backpressure_.discardEvents();
     state.lastReason = backpressure_.lastReason();
     state.lastTransitionBufferedMs = backpressure_.lastTransitionBufferedMs();
+    state.runId = backpressureRunId_;
+    state.observedAtMs = elapsedMs;
     sender_.backpressure = state;
   }
 
@@ -2570,7 +2600,17 @@ class RtmpOutputSender final : public IOutputSender {
   corevideo::core::StreamBackpressurePolicy backpressure_;
   // #597 Lever B. Per-destination (unlike the divisor above): each sender
   // discards its OWN bitstream backlog, never reaching across senders.
+  // Saturates rather than wraps, same discipline as every other counter in
+  // this feature (StreamBackpressurePolicy's, encoderExportShedFrames_'s).
   std::int64_t backpressureDiscardedChunks_ = 0;
+  static constexpr std::int64_t kBackpressureDiscardedChunksCeiling = INT64_C(1) << 62;
+  // #597 Task 6 fix round 1, finding 11: bumped every time backpressure_ is
+  // RECONSTRUCTED (the `!wantsRtmp` stop path), i.e. every time the per-run
+  // counters reset to zero. Published as OutputBackpressureState::runId so a
+  // consumer who polls across a stop/restart without observing the node's
+  // momentary absence can still tell a genuine reset from a counter going
+  // backwards.
+  std::int64_t backpressureRunId_ = 0;
   // TEST-ONLY override of the queue measurement (see
   // IOutputSender::setBackpressureObservationForTest). Negative = not set.
   std::atomic<std::int64_t> backpressureBufferedMsForTest_{-1};

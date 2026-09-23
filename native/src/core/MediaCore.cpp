@@ -901,10 +901,18 @@ rpc::Json MediaCore::sessionState() const {
       // destination, so this is published ONCE here, never per sender.
       // Published unconditionally, like monitorShed above: divisor 1 / 0 shed
       // frames is the healthy READING, not an absent node.
+      // `shedFrames` is CUMULATIVE for the life of the process (see
+      // ICompositor::encoderExportShedFrames()'s doc) - unlike `divisor`,
+      // which can lag between shows (fix round 1, finding 9: applyEncoderExportDivisor's
+      // stop-path residual). `exporting` is this tick's own readback of whether
+      // the compositor is actually exporting the encoder texture right now, so
+      // a stale `divisor` between streams reads as "divisor > 1, NOT exporting"
+      // rather than looking like a live throttle.
       {"encoderExport", rpc::Json::Object{
           {"divisor", modules_.compositor ? modules_.compositor->encoderExportDivisor() : 1},
           {"shedFrames", static_cast<double>(
-              modules_.compositor ? modules_.compositor->encoderExportShedFrames() : 0)}}},
+              modules_.compositor ? modules_.compositor->encoderExportShedFrames() : 0)},
+          {"exporting", modules_.compositor ? modules_.compositor->encoderExporting() : false}}},
       {"audio", rpc::Json::Object{
           {"generation", static_cast<double>(audioWorkerGeneration_.load(std::memory_order_relaxed))},
           {"observed", audioLastProgressNs > 0},
@@ -5323,6 +5331,8 @@ rpc::Json MediaCore::outputSenderSessionState() const {
           {"discardEvents", static_cast<double>(bp.discardEvents)},
           {"lastReason", bp.lastReason},
           {"lastTransitionBufferedMs", static_cast<double>(bp.lastTransitionBufferedMs)},
+          {"runId", static_cast<double>(bp.runId)},
+          {"observedAtMs", bp.observedAtMs},
       });
     }
     senderJson.emplace("lifecycle", contracts::toJson(lifecycle));
@@ -8397,22 +8407,28 @@ void MediaCore::applyEncoderExportDivisor(const modules::OutputSenderSession& se
     desired = (std::max)(desired, sender.backpressure->divisor);
   }
   if (desired == lastEncoderExportDivisor_.load(std::memory_order_relaxed)) {
+    // Task 6 fix round 1, finding 9: this residual is NO LONGER INERT.
+    // `AsyncOutputSender::sync()` returns a CACHED pre-stop snapshot, so the
+    // final "one tick past the last destination" call into this function can
+    // observe a stale `live` record still carrying the divisor the stream
+    // reached before it stopped - `desired` stays high here and this early
+    // return leaves `lastEncoderExportDivisor_` (and therefore
+    // `realtimeEvidence.encoderExport.divisor`) uncorrected. Before Task 6
+    // published that divisor this was truly inert (nothing read it while
+    // idle); now it is a false-DEGRADED reading that can stand indefinitely
+    // between shows. `realtimeEvidence.encoderExport.exporting` is the fix:
+    // it carries the compositor's OWN last-tick `fullProgramReadback` state,
+    // so a consumer can tell "divisor 3, not exporting" (stale, ignore the
+    // divisor) from "divisor 3, exporting" (a live show genuinely throttled).
+    // Do NOT add a second reset path here to close the divisor itself - that
+    // risks fighting the one reset path that matters, the sender's own
+    // `!wantsRtmp` stop-path reset of backpressure_
+    // (see RtmpOutputSenderAdapter.cpp).
     return;  // control plane: only on CHANGE
   }
   lastEncoderExportDivisor_.store(desired, std::memory_order_relaxed);
   if (modules_.compositor) modules_.compositor->setEncoderExportDivisor(desired);
 }
-// Task 6 residual (carried from Task 4's re-review, not fixed here - a
-// COMMENT, not a guard): AsyncOutputSender::sync() returns a CACHED pre-stop
-// snapshot, so the final "one tick past the last destination" call into this
-// function can still observe a stale `live` record carrying the divisor the
-// stream reached before it stopped. That is inert in practice -
-// `fullProgramReadback` is already false by then, so the compositor sheds
-// nothing regardless of the divisor it is holding - and the worst case is one
-// shed frame at the START of the NEXT stream, before its own first sync pushes
-// 1. Do not add a second reset path here to close it: that risks fighting the
-// one reset path that matters, the sender's own `!wantsRtmp` stop-path reset
-// of backpressure_ (see RtmpOutputSenderAdapter.cpp).
 
 void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
   const bool buffered = modules_.compositor->programBufferFrames() > 0;

@@ -235,6 +235,13 @@ class D3D11Compositor final : public ICompositor {
     // Only the SUBMIT is shed. The handle metadata is published on every frame -
     // see exportEncoderSharedTexture, where withholding it costs a full FFmpeg +
     // hardware-encoder restart per shed frame.
+    // #597 Task 6 fix round 1, finding 9: this tick's OWN readback of whether
+    // the encoder texture is actually being exported right now - published as
+    // realtimeEvidence.encoderExport.exporting so a consumer can tell a
+    // genuinely-throttled live stream (divisor > 1, exporting) from a stale
+    // divisor left over from a stream that already stopped (divisor > 1, NOT
+    // exporting - see MediaCore::applyEncoderExportDivisor's stop-path residual).
+    encoderExporting_.store(renderPlan.fullProgramReadback, std::memory_order_relaxed);
     if (renderPlan.fullProgramReadback) {
       const int encoderExportDivisor = encoderExportDivisor_.load(std::memory_order_relaxed);
       const bool submitPixels =
@@ -2564,6 +2571,9 @@ class D3D11Compositor final : public ICompositor {
   [[nodiscard]] std::int64_t encoderExportShedFrames() const override {
     return encoderExportShedFrames_.load(std::memory_order_relaxed);
   }
+  [[nodiscard]] bool encoderExporting() const override {
+    return encoderExporting_.load(std::memory_order_relaxed);
+  }
 
   [[nodiscard]] bool suppliesProgramNv12() const override { return true; }
 
@@ -2730,6 +2740,10 @@ class D3D11Compositor final : public ICompositor {
   // see it go down.
   std::atomic<std::int64_t> encoderExportShedFrames_{0};
   static constexpr std::int64_t kEncoderExportShedFramesCeiling = INT64_C(1) << 62;
+  // #597 Task 6 fix round 1, finding 9: this tick's own `renderPlan.fullProgramReadback`,
+  // written every render() call (never just while streaming) so it reads false
+  // promptly once a stream stops - see the write site and encoderExporting().
+  std::atomic<bool> encoderExporting_{false};
   std::atomic<int> requestedProgramFrames_{0};
   int64_t programProductionSlot_ = -1, programProductionAnchorNs_ = 0;
   mutable std::mutex programBufferMutex_;
