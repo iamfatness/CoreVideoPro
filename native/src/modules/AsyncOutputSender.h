@@ -38,6 +38,8 @@ class AsyncOutputSender final : public IOutputSender {
   void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override;
   OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override;
   OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override;
+  OutputSenderSession restartForSupervisor(const std::string& destination, double elapsedMs,
+                                           const std::string& reason) override;
   OutputSenderSession session() const override;
   void interrupt(const std::string& destination) override;
 
@@ -58,6 +60,10 @@ class AsyncOutputSender final : public IOutputSender {
     int audioSampleRate = 0;
     std::string destination;
     std::string message;
+    // #597: a Recover item carries WHICH authority asked, so the inner sender
+    // can keep its restart floor for a supervisor restart and drop it for an
+    // operator. Meaningless for every other kind.
+    bool supervisedRestart = false;
   };
 
   struct State {

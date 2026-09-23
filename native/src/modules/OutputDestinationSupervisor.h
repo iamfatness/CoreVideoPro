@@ -178,6 +178,10 @@ class SupervisedOutputSender final : public IOutputSender {
   void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override;
   OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override;
   OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override;
+  // Forwarded for the WRAPPER LAW: a supervisor stacked above another one must
+  // not turn the outer one's automatic restart into an operator reset.
+  OutputSenderSession restartForSupervisor(const std::string& destination, double elapsedMs,
+                                           const std::string& reason) override;
   OutputSenderSession session() const override;
   void interrupt(const std::string& destination) override;
 

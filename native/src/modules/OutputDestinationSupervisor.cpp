@@ -144,6 +144,13 @@ OutputSenderSession SupervisedOutputSender::recover(const std::string& destinati
   return session;
 }
 
+OutputSenderSession SupervisedOutputSender::restartForSupervisor(const std::string& destination, double elapsedMs,
+                                                                 const std::string& reason) {
+  auto session = child_ ? child_->restartForSupervisor(destination, elapsedMs, reason) : OutputSenderSession{};
+  applyReportsTo(session);
+  return session;
+}
+
 OutputSenderSession SupervisedOutputSender::session() const {
   auto session = child_ ? child_->session() : OutputSenderSession{};
   applyReportsTo(session);
@@ -349,8 +356,12 @@ void SupervisedOutputSender::evaluate() {
         // interrupt() first: for RTMP/SRT this ends the FFmpeg child, which also
         // releases a writer blocked in a pipe write so recover() can be applied.
         child_->interrupt(action.destination);
-        child_->recover(action.destination, action.elapsedMs,
-                        "Output supervisor restarted this destination: " + action.reason);
+        // restartForSupervisor(), NOT recover(): this is the supervisor's own
+        // AUTOMATIC restart, and a child holding a restart floor must keep it.
+        // recover() here (task 7 round 0) handed every supervisor restart a key
+        // to the adapter's floor, so that route had no backstop at either level.
+        child_->restartForSupervisor(action.destination, action.elapsedMs,
+                                     "Output supervisor restarted this destination: " + action.reason);
       }
     } else if (action.action == SupervisorAction::GiveUp) {
       ::corevideo::core::nativeLogf("[outputSupervisor] giving up on %s: %s\n", action.destination.c_str(),

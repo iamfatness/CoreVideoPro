@@ -8226,6 +8226,14 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     try {
       // Wall time, never frameNumber — a frameNumber clock advanced with the
       // tick rate and pushed a declared 30fps stream at nearly 50.
+      //
+      // MUTUALLY EXCLUSIVE WITH THE VIDEO TICK'S OWN EPOCH (the identical
+      // function-local static in renderVideoOutputTick). This call site is the
+      // `else` of `videoOutputTickRunning_`, so exactly one of the two epochs
+      // ever initialises in a given process. #597 task 7 keys the RTMP/SRT
+      // sender's restart floor on this `elapsedMs`, so a future change that let
+      // BOTH sync sites run would feed that floor two unrelated epochs. If you
+      // do that, give the sender its own clock first.
       static const auto outputClockEpoch = std::chrono::steady_clock::now();
       const double outputElapsedMs = static_cast<double>(
           std::chrono::duration_cast<std::chrono::milliseconds>(

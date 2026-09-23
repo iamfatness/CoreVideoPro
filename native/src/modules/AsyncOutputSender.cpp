@@ -208,6 +208,19 @@ OutputSenderSession AsyncOutputSender::recover(const std::string& destination, d
   return session();
 }
 
+OutputSenderSession AsyncOutputSender::restartForSupervisor(const std::string& destination, double elapsedMs,
+                                                            const std::string& reason) {
+  interrupt(destination);
+  Item item;
+  item.kind = Kind::Recover;
+  item.destination = destination;
+  item.message = reason;
+  item.elapsedMs = elapsedMs;
+  item.supervisedRestart = true;
+  enqueue(std::move(item));
+  return session();
+}
+
 OutputSenderSession AsyncOutputSender::session() const {
   std::lock_guard<std::mutex> lock(state_->snapshotMutex);
   return state_->snapshot;
@@ -278,6 +291,8 @@ void AsyncOutputSender::writerLoop(std::shared_ptr<State> state) {
       } else if (item.kind == Kind::Audio) {
         state->inner->submitAudio(item.audioPcm, item.audioChannels, item.audioSampleRate);
         updatesSnapshot = false;  // audio carries no session state to publish
+      } else if (item.supervisedRestart) {
+        fresh = state->inner->restartForSupervisor(item.destination, item.elapsedMs, item.message);
       } else {
         fresh = state->inner->recover(item.destination, item.elapsedMs, item.message);
       }

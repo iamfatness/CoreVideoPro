@@ -1252,6 +1252,20 @@ class IOutputSender {
   virtual void submitAudio(const std::vector<float>& /*pcm*/, int /*channels*/, int /*sampleRate*/) {}
   virtual OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) = 0;
   virtual OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) = 0;
+  // The destination's OWN SUPERVISOR restarting it automatically, as opposed to
+  // recover(), which is the OPERATOR re-arming it. They were the same call until
+  // #597 task 7 round 1, and a sender that holds its own restart floor cannot
+  // treat them alike: a supervisor restart is precisely the restart the floor
+  // exists to bound, while an operator is entitled to an immediate retry (the
+  // house rule "an operator action always clears give-up"). The default forwards
+  // to recover(), so every sender without a floor is unchanged - but the WRAPPER
+  // LAW still applies: AsyncOutputSender / CompositeOutputSender /
+  // SupervisedOutputSender must FORWARD it, or the distinction is silently
+  // swallowed one layer up, which is the 1-arg connect() shape.
+  virtual OutputSenderSession restartForSupervisor(const std::string& destination, double elapsedMs,
+                                                   const std::string& reason) {
+    return recover(destination, elapsedMs, reason);
+  }
   virtual OutputSenderSession session() const = 0;
   // Non-blocking emergency cancellation used by the live async wrapper to
   // release a sender stuck in pipe/network I/O. Implementations should only

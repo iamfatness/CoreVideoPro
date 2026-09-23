@@ -701,7 +701,10 @@ TEST(TransportRestartFloor, AnOperatorOrSupervisorResetClearsTheFloor) {
   EXPECT_EQ(floor.consecutiveFailures(), 0);
 }
 
-// THE WHOLE DECISION, NOT THE LEAF (CLAUDE.md #481 / #506).
+// THE WHOLE DECISION, NOT THE LEAF (CLAUDE.md #481 / #506) — for the ADAPTER's
+// restart authority. The SUPERVISOR's is the test below this one; round 0 named
+// this test for the supervisor and drove none, which is how the supervisor-side
+// defect survived the task (round 1 finding 3).
 //
 // The three tests above are built against TransportRestartFloor alone, and a
 // regression that put `clearFfmpegRetryBackoff()` back at the accepted-frame
@@ -731,13 +734,13 @@ TEST(TransportRestartFloor, AnOperatorOrSupervisorResetClearsTheFloor) {
 // This one is SLOW on purpose (~23 s): the floor is a real wait an operator
 // serves, and the clock it is keyed to is part of what is under test, so the
 // test cannot fast-forward it without assuming the answer.
-TEST(OutputDestinationSupervisor, RestartsAreNeverCloserThanTheCurrentLadderRung) {
+TEST(RtmpOutputSender, TransportRebuildsAreNeverCloserThanTheCurrentLadderRung) {
 #if COREVIDEO_WITH_RTMP_OUTPUT
   std::error_code missing;
   if (!std::filesystem::exists(std::filesystem::path("C:\\ffmpeg\\bin") / "ffmpeg.exe", missing)) {
     std::fprintf(stderr,
-                 "[  SKIPPED ] OutputDestinationSupervisor."
-                 "RestartsAreNeverCloserThanTheCurrentLadderRung (ffmpeg absent at"
+                 "[  SKIPPED ] RtmpOutputSender."
+                 "TransportRebuildsAreNeverCloserThanTheCurrentLadderRung (ffmpeg absent at"
                  " C:\\ffmpeg\\bin) - this test did NOT run\n");
     return;
   }
@@ -783,8 +786,8 @@ TEST(OutputDestinationSupervisor, RestartsAreNeverCloserThanTheCurrentLadderRung
     const auto& record = session.senders.front();
     if (record.lastResultCode == "ffmpeg-missing" || record.lastResultCode == "runtime-missing") {
       std::fprintf(stderr,
-                   "[  SKIPPED ] OutputDestinationSupervisor."
-                   "RestartsAreNeverCloserThanTheCurrentLadderRung (%s) - this test did"
+                   "[  SKIPPED ] RtmpOutputSender."
+                   "TransportRebuildsAreNeverCloserThanTheCurrentLadderRung (%s) - this test did"
                    " NOT run\n", record.lastResultCode.c_str());
       return;
     }
@@ -824,14 +827,134 @@ TEST(OutputDestinationSupervisor, RestartsAreNeverCloserThanTheCurrentLadderRung
            " rung " << (i + 1) << " (" << rungMs << "ms) - either the floor is below the"
            " house ladder, or a restart that accepted one frame and died returned the"
            " budget. Both were true before #597 task 7; the measured pre-fix sequence"
-           " was a FLAT 6735ms / 6703ms.";
-    if (i > 0) {
-      EXPECT_GE(intervals[i], intervals[i - 1])
-          << "the ladder went BACKWARDS between interval " << (i - 1) << " and " << i
-          << " - something is returning the budget without a healthy run";
-    }
+           " was a FLAT 6725ms / 6691ms.";
   }
+  // NOTE (round 1, finding 4): there is deliberately no `intervals[i] >=
+  // intervals[i-1]` line here. The pre-fix run SATISFIED it on a 1 ms margin
+  // (6725 then 6691 failed only because 6691 < rung 2), so it falsified
+  // nothing, and the per-rung assertion above already implies it - the rungs
+  // are non-decreasing by construction.
 #else
   EXPECT_TRUE(true) << "Needs the RTMP sender.";
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// THE SUPERVISOR'S OWN RESTART AUTHORITY (#597 task 7 round 1, finding 1)
+// ---------------------------------------------------------------------------
+// There are TWO things that rebuild a destination. The test above bounds the
+// adapter's. This one bounds the supervisor's, and it exists because that one
+// was NOT bounded: OutputDestinationSupervisorPolicy::observe() returned the
+// budget on a healthy INSTANT of a run older than kHealthyRunMs -
+// `failures_ = 0; nextAttemptAtMs_ = 0;` - WITHOUT clearing `faultPending_`, so
+// the restart gate three lines below fired on the very next 250 ms tick against
+// a 5,000 ms rung.
+//
+// The preconditions are the ORDINARY shape of a mid-show failure, which is why
+// this was not exotic: `decision.healthy` is decided from acceptedUnits
+// FRESHNESS (kProgressStaleMs, 1 s) and not from `status`, so a destination that
+// fails while its last accepted unit is under a second old is `failed` and
+// `healthy` in the same observation. It is the incident's 21:09:10.088 restart,
+// 0.78 s after the 21:09:09.306 overflow whose reason string it carries.
+//
+// Driven the way the live path drives it: the destination list is RE-SYNCED on
+// every tick (the part a naive test omits), the clock is injected, and the
+// supervisor is pumped on this thread so nothing sleeps.
+TEST(OutputDestinationSupervisor, RestartsAreNeverCloserThanTheCurrentLadderRung) {
+  auto owned = std::make_unique<FakeDestinationChild>("rtmp");
+  auto* child = owned.get();
+  SupervisedOutputSender::Options options;
+  std::int64_t now = 0;
+  options.clock = [&now] { return now; };
+  options.startThread = false;  // pumped below, so the ladder is walked in microseconds
+  SupervisedOutputSender sender(std::move(owned), options);
+
+  ProgramFrame frame;
+  frame.frameNumber = 1;
+
+  // A healthy RUN, comfortably past kHealthyRunMs, accepting output every tick.
+  constexpr std::int64_t kTickMs = 250;
+  const std::int64_t healthyUntil = OutputDestinationSupervisorPolicy::kHealthyRunMs * 2;
+  for (; now < healthyUntil; now += kTickMs) {
+    child->produce(1);
+    sender.sync({"rtmp"}, &frame, 0);
+    sender.pumpForTest();
+  }
+  ASSERT_EQ(child->recovers(), 0) << "a healthy destination must not be restarted at all";
+
+  // Now it fails WHILE ITS LAST ACCEPTED UNIT IS STILL FRESH - the queue
+  // overflow of the incident, reason string and all.
+  child->crash("bitstream-queue-overflow",
+               "Compressed-video queue overflow; the stream transport could not drain encoded"
+               " video fast enough.");
+  const std::int64_t faultAtMs = now;
+
+  std::vector<std::int64_t> restarts;
+  int seenRecovers = child->recovers();
+  for (; now < faultAtMs + 300'000 && restarts.size() < 3; now += kTickMs) {
+    sender.sync({"rtmp"}, &frame, 0);  // the live path re-syncs the list every tick
+    sender.pumpForTest();
+    if (child->recovers() > seenRecovers) {
+      seenRecovers = child->recovers();
+      restarts.push_back(now);
+    }
+  }
+
+  ASSERT_GE(restarts.size(), 3u) << "the supervisor never restarted the destination";
+  for (std::size_t i = 0; i < restarts.size(); ++i) {
+    std::fprintf(stderr, "[supervisor-floor] restart %zu at +%lldms\n", i,
+                 static_cast<long long>(restarts[i] - faultAtMs));
+  }
+
+  // THE PROPERTY, and the falsifier: the FIRST restart may not come sooner than
+  // the ladder's first rung after the fault was observable. Pre-fix this was
+  // measured at ONE TICK (250 ms) against a 5,000 ms rung.
+  EXPECT_GE(restarts.front() - faultAtMs,
+            OutputDestinationSupervisorPolicy::backoffMsForFailureCount(0))
+      << "the supervisor restarted " << (restarts.front() - faultAtMs)
+      << "ms after the fault, inside its own first rung - a healthy INSTANT is"
+         " releasing a PENDING fault's rung";
+
+  // And the ladder must climb. Each later generation costs kStartGraceMs before
+  // it faults (nothing is produced after the first restart), so the interval is
+  // grace + rung; the falsifier is the STEP between them, which is a whole rung
+  // wide and cannot be satisfied by a one-millisecond margin the way round 0's
+  // monotonic assertion was (round 1, finding 4).
+  const auto firstGap = restarts[1] - restarts[0];
+  const auto secondGap = restarts[2] - restarts[1];
+  std::fprintf(stderr, "[supervisor-floor] gaps %lldms then %lldms\n",
+               static_cast<long long>(firstGap), static_cast<long long>(secondGap));
+  EXPECT_GE(secondGap - firstGap,
+            OutputDestinationSupervisorPolicy::backoffMsForFailureCount(1) -
+                OutputDestinationSupervisorPolicy::backoffMsForFailureCount(0))
+      << "the ladder did not climb a full rung between restarts";
+  EXPECT_FALSE(sender.report().empty());
+}
+
+// The same defect stated as a pure property of the policy, so a reader can see
+// what the mechanism test above is actually pinning. This one fails the moment
+// the `!faultPending_` guard is removed, with no supervisor and no child.
+TEST(OutputDestinationSupervisorPolicyLadder, AHealthyInstantNeverReleasesAPendingFaultsRung) {
+  OutputDestinationSupervisorPolicy policy;
+  std::int64_t now = 0;
+  policy.onGenerationStarted(now);
+  // A healthy run: accepted units advancing every tick, well past kHealthyRunMs.
+  std::int64_t units = 0;
+  for (; now < OutputDestinationSupervisorPolicy::kHealthyRunMs * 2; now += 250) {
+    (void)policy.observe(activeObservation(now, ++units, "live", "encoder-input-accepted"));
+  }
+  // It fails while the last accepted unit is still under kProgressStaleMs old,
+  // so the policy calls it `healthy` and `failed` in the same observation.
+  const auto armed = policy.observe(activeObservation(now, units, "failed", "bitstream-queue-overflow"));
+  ASSERT_EQ(armed.action, SupervisorAction::None);
+  ASSERT_TRUE(policy.faultPending());
+  const std::int64_t faultAtMs = now;
+
+  for (now += 250; now < faultAtMs + OutputDestinationSupervisorPolicy::kBaseBackoffMs; now += 250) {
+    const auto decision = policy.observe(activeObservation(now, units, "failed", "bitstream-queue-overflow"));
+    ASSERT_NE(decision.action, SupervisorAction::Restart)
+        << "restarted at +" << (now - faultAtMs) << "ms, inside the 5s first rung";
+  }
+  const auto restart = policy.observe(activeObservation(now, units, "failed", "bitstream-queue-overflow"));
+  EXPECT_EQ(restart.action, SupervisorAction::Restart) << "and it must still restart once the rung is served";
 }

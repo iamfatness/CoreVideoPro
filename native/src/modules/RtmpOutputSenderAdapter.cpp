@@ -958,16 +958,29 @@ class RtmpOutputSender final : public IOutputSender {
     return snapshot();
   }
 
+  // THE OPERATOR re-arming this destination. Clears the floor: the house rule is
+  // that an operator action always clears give-up, and making them wait out a
+  // ladder they just overrode is the opposite of that.
   OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override {
+    return reopen(destination, elapsedMs, reason, /*clearRestartFloor=*/true);
+  }
+
+  // THE SUPERVISOR restarting this destination automatically. Identical in every
+  // respect EXCEPT that it KEEPS the floor (#597 task 7 round 1, finding 1).
+  // Round 0 routed this through recover(), so every supervisor restart wiped the
+  // adapter's floor and the composed path had no backstop at either level.
+  OutputSenderSession restartForSupervisor(const std::string& destination, double elapsedMs,
+                                           const std::string& reason) override {
+    return reopen(destination, elapsedMs, reason, /*clearRestartFloor=*/false);
+  }
+
+  OutputSenderSession reopen(const std::string& destination, double elapsedMs, const std::string& reason,
+                             bool clearRestartFloor) {
     if (destination != protocol_.destination) {
       return snapshot();
     }
     stopFfmpegProcess();
-    // The operator/supervisor reset. recover() is what the output supervisor
-    // calls when ITS ladder admits a restart, so clearing the adapter-local
-    // floor here is what keeps the supervisor the senior authority rather than
-    // making an operator wait out both ladders.
-    restartFloor_.clear();
+    if (clearRestartFloor) restartFloor_.clear();
     runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     runtimeDetail_ = runtimeProbe_.detail;
     runtimeAvailable_ = runtimeProbe_.available;
@@ -1227,14 +1240,27 @@ class RtmpOutputSender final : public IOutputSender {
     // adapter's own private ladder: first rung ONE second (below the house
     // ladder's five), and cleared by the first accepted frame. A destination
     // that came up, took a frame and died was therefore rebuilt every ~3 s
-    // forever — the eight rebuilds in eighteen seconds of the #597 incident,
-    // only two of which the supervisor ever decided. It now holds the house
-    // ladder (TransportRestartFloor), so no two opens of one destination are
-    // closer together than the ladder's current rung.
+    // forever - the rebuild storm of the #597 incident, five of whose seven
+    // starts the supervisor never decided. It now holds the house ladder
+    // (TransportRestartFloor), so no two opens of one destination are closer
+    // together than the ladder's current rung.
     //
-    // It is deliberately gated on `!ffmpegRunning_`: a settings change while the
-    // transport is up is operator intent and restarts immediately.
-    if (!ffmpegRunning_ && !restartFloor_.mayOpenAt(static_cast<std::int64_t>(elapsedMs))) {
+    // THE ONE EXEMPTION IS A SETTINGS APPLY, NOT "the transport is running"
+    // (round 1, finding 2). Round 0 exempted every restart taken while
+    // ffmpegRunning_ was true and justified it as operator intent - but that
+    // branch is also reached by `gpuPathChanged` (the encoder texture appearing
+    // or disappearing, which under exactly this incident's load can flap at tick
+    // rate), by `sizeChanged`/`pixelFormatChanged`, and by `audioChanged`. None
+    // of those comes from an operator, and each was an unfloored rebuild per
+    // flap. The floor now applies to every restart NOT caused by a change in the
+    // operator's OutputDestinationSettings. A resolution change that arrives
+    // while the floor is armed does wait a rung - correct, not a regression: an
+    // armed floor means this destination is already failing repeatedly.
+    const bool settingsApplied = endpointChanged || executableChanged || fpsChanged || bitrateChanged ||
+                                 audioBitrateChanged || codecChanged || encoderModeChanged ||
+                                 keyframeChanged || rateControlChanged || h264ProfileChanged ||
+                                 bFramesChanged || enhancedChanged;
+    if (!settingsApplied && !restartFloor_.mayOpenAt(static_cast<std::int64_t>(elapsedMs))) {
       const auto retryMs = restartFloor_.remainingMs(static_cast<std::int64_t>(elapsedMs));
       sender_.status = "failed";
       sender_.destinationHealth = "failed";

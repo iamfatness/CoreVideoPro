@@ -252,7 +252,19 @@ class OutputDestinationSupervisorPolicy {
 
     // A healthy RUN — producing now, and producing for long enough — returns the
     // budget. A healthy instant does not.
-    if (decision.healthy && o.nowMs - generationStartedMs_ >= kHealthyRunMs) {
+    //
+    // #597 task 7 round 1, finding 1: AND IT MUST NOT RELEASE A PENDING FAULT'S
+    // RUNG. This branch zeroed `nextAttemptAtMs_` while `faultPending_` stayed
+    // true, and the restart gate below fires on `nowMs >= nextAttemptAtMs_` —
+    // so the fault restarted on the NEXT 250 ms tick against a 5,000 ms rung.
+    // The preconditions are the ordinary shape of a mid-show failure, because
+    // `decision.healthy` is decided from acceptedUnits FRESHNESS (1 s) and not
+    // from `status`: a destination that fails while its last accepted unit is
+    // under a second old is `failed` and `healthy` in the same observation.
+    // That is the incident's otherwise unexplained 21:09:10.088 restart, 0.78 s
+    // after the 21:09:09.306 queue overflow it names. The budget still returns
+    // on a healthy run — just not while a fault is waiting out its rung.
+    if (decision.healthy && !faultPending_ && o.nowMs - generationStartedMs_ >= kHealthyRunMs) {
       failures_ = 0;
       nextAttemptAtMs_ = 0;
     }

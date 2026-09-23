@@ -656,6 +656,19 @@ class CompositeOutputSender final : public IOutputSender {
     return combined;
   }
 
+  // THE WRAPPER LAW (#597 task 7 round 1). Inheriting the default here would
+  // turn every supervisor restart back into an operator reset for every member.
+  OutputSenderSession restartForSupervisor(const std::string& destination, double elapsedMs,
+                                           const std::string& reason) override {
+    OutputSenderSession combined;
+    for (const auto& sender : senders_) {
+      mergeInto(combined, sender->restartForSupervisor(destination, elapsedMs, reason));
+    }
+    finalize(combined);
+    { std::lock_guard<std::mutex> lock(sessionMutex_); lastSession_ = combined; }
+    return combined;
+  }
+
   OutputSenderSession session() const override {
     OutputSenderSession combined;
     for (const auto& sender : senders_) {
