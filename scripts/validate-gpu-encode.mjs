@@ -527,6 +527,25 @@ try {
       },
       {
         type: "start-program-output",
+        // THE STREAM PROFILE DECIDES THE CODEC FOR AN RTMP DESTINATION, and
+        // `destinationSettings[].videoCodec` does NOT (fix round 2, item 0).
+        // MediaCore::startProgramOutput reads `streamOutputProfile.codec` into
+        // streamVideoCodec_ and then OVERWRITES every rtmp/rtmps destination's
+        // videoCodec with it - so sending the codec only in destinationSettings
+        // left streamVideoCodec_ at its "h264" default and the core encoded
+        // h264 while this banner said hevc. (SRT destinations are not
+        // overwritten, which is why the pre-slow-sink SRT gate never saw it.)
+        // The gate CAUGHT this itself - "expected GPU-direct codec=hevc but the
+        // core reported codec=h264" - rather than silently passing an h264 run
+        // as an HEVC one, which is the assertion doing its job.
+        // ONLY the codec. Every other key in this profile defaults to the
+        // core's CURRENT value when absent, so passing width/height/fps/
+        // targetBitrateMbps here would silently re-set them - and setting
+        // targetBitrateMbps to `bitrate` would drop the real stream from the
+        // 8.2 Mbps the core actually encodes to 6, widening the link relative
+        // to the stream and making the congestion gate EASIER. The link
+        // ceiling is computed from `bitrate`; the stream must not be.
+        streamOutputProfile: { codec: wireCodec },
         destinations: [destinationId],
         destinationSettings: [rtmpSink ? {
           id: "rtmp",
@@ -821,11 +840,26 @@ if (slowSink) {
     if (!burstStallsApplied) {
       failures.push("burst mode applied ZERO link stalls - the proxy never carried a byte, so the " +
                     "stall schedule never armed and this run tested nothing");
-    } else if (overflowDiscardLines.length === 0 && overflowFailLines.length === 0) {
-      failures.push(`burst mode stalled the link ${burstStallsApplied} time(s) but the queue never ` +
-                    "reached its cap: NO overflow-discard and NO nothing-safe-to-drop line was logged, " +
-                    "so enqueueBitstream's overflow branch was never entered and this run proves " +
-                    "nothing about it. Lengthen --burst-stall-ms rather than accepting the green.");
+    } else if (overflowDiscardLines.length === 0) {
+      // Fix round 2, item 1. This used to accept EITHER line, which made the
+      // check satisfiable by the branch FAILING: a run where the discard freed
+      // nothing logs only nothing-safe-to-drop and cleared the assertion. That
+      // is the third harness in this sub-project able to report success while
+      // measuring nothing (the SRT sink that dropped rather than blocked, and
+      // the rate limiter that throttled media time, were the first two). A
+      // successful discard is the only evidence the branch WORKED.
+      failures.push(`burst mode stalled the link ${burstStallsApplied} time(s) but NO ` +
+                    "overflow-discard line was logged, so the queue's overflow discard never " +
+                    "successfully freed room and this run proves nothing about it. Lengthen " +
+                    "--burst-stall-ms rather than accepting the green.");
+    }
+    // A failed overflow is the ONLY remaining path from a destination fault to
+    // an encoder rebuild, so a run that hits it has not passed - reaching the
+    // branch is necessary, surviving it is the property.
+    if (overflowFailLines.length) {
+      failures.push(`the queue's overflow failed the sender ${overflowFailLines.length} time(s) ` +
+                    "(nothing safe to drop) - that fails the sender, its supervisor restarts it and " +
+                    "the encoder is rebuilt, which is #597 itself");
     }
   } else if (overflowDiscardLines.length || overflowFailLines.length) {
     // Sustained runs do not normally reach the cap; when they do, say so.

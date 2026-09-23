@@ -240,12 +240,15 @@ TEST(StreamBackpressurePolicy, DiscardableGopTailLength_LastCutPointTakesTheFurt
       << "the last resort must free the most room a safe cut can free";
 }
 
-// THE CASE FIX ROUND 1 EXISTS FOR. A full queue whose ONLY keyframe is at the
-// head frees NOTHING under Nearest - so the overflow path failed the sender,
-// and with the GOP about the size of the queue that position is a rolling coin
-// flip. Under Last it is unchanged, because the head keyframe IS the last one:
-// this is the boundary that proves Last is not a blanket "drop more" - there is
-// genuinely nothing ahead of it.
+// CHARACTERISATION TEST, NOT COVERAGE (fix round 2, item 4). A full queue whose
+// ONLY keyframe is at the head frees nothing under EITHER cut point - the head
+// keyframe is also the last one, so there is genuinely nothing ahead of it, and
+// no mutation of the code this touches changes the answer. It is kept because
+// it documents the boundary that proves Last is not a blanket "drop more", and
+// because it is the shape fix round 1 exists for (under Nearest, with a LATER
+// keyframe present, this case froze at 0 and failed the sender - that case is
+// LastCutPointFreesRoomWhereNearestFreesNone, which does have a killer line).
+// Do not count this one as coverage.
 TEST(StreamBackpressurePolicy, DiscardableGopTailLength_LastCutPointStillDropsNothingForAHeadOnlyKeyframe) {
   const std::vector<bool> keyframeFirst{true, false, false, false};
   EXPECT_EQ(discardableGopTailLength(keyframeFirst, identity(), GopCutPoint::Last), 0u);
@@ -305,6 +308,10 @@ TEST(StreamBackpressurePolicy, DiscardableBacklogForArrival_ANonKeyframeArrivalD
   EXPECT_EQ(discardableBacklogForArrival(twoKeyframes, identity(), true, GopCutPoint::Last), 5u);
 }
 
+// CHARACTERISATION TEST, NOT COVERAGE (fix round 2, item 4): an empty queue has
+// nothing to drop under every cut point and every arrival, so no mutation of
+// the code it touches can fail it. Kept as documentation of the degenerate
+// input; do not count it as coverage.
 TEST(StreamBackpressurePolicy, DiscardableBacklogForArrival_AKeyframeArrivalOnAnEmptyQueueDropsNothing) {
   const std::vector<bool> empty;
   EXPECT_EQ(discardableBacklogForArrival(empty, identity(), true, GopCutPoint::Last), 0u);

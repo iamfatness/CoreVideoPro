@@ -2137,6 +2137,19 @@ class RtmpOutputSender final : public IOutputSender {
     // count lives in its own atomic and is summed here rather than mutating
     // backpressureDiscardedChunks_ (owned by this sync thread) off-thread.
     // Both are per stream run and both are reset together on the stop path.
+    //
+    // THE TWO COUNTERS DELIBERATELY COUNT DIFFERENT POPULATIONS (fix round 2,
+    // item 3), and a reader must not diagnose that as a bug. `discardedChunks`
+    // counts chunks dropped by BOTH discard sites - Lever B's policy-driven
+    // discard AND the queue's last-resort overflow discard. `discardEvents`
+    // counts only the POLICY's decisions (StreamBackpressurePolicy::observe
+    // returning discardBacklog), because that is what the policy's own
+    // hysteresis and cooldown are keyed on, and inventing policy events from
+    // the encoder thread would corrupt the decisions those counters feed.
+    // So `discardedChunks > 0` with `discardEvents == 0` is the SIGNATURE of a
+    // run that hit the hard cap without the policy ever asking for a discard -
+    // exactly the burst-gate case - and is a real reading, not a counter bug.
+    // The `overflow-discard` log line is what names that site explicitly.
     state.discardedChunks = (std::min)(
         backpressureDiscardedChunks_ + overflowDiscardedChunks_.load(std::memory_order_relaxed),
         kBackpressureDiscardedChunksCeiling);
@@ -2205,6 +2218,15 @@ class RtmpOutputSender final : public IOutputSender {
       if (full()) {
         // Already holding bitstreamQueueMutex_ - hence the ...Locked form (see
         // the deadlock note on discardBacklogToNextKeyframe).
+        //
+        // A KEYFRAME ARRIVAL DROPS THE WHOLE BACKLOG, even when cutting to a
+        // queued keyframe would have freed enough room (fix round 2, item 5).
+        // That is deliberate and it is a LATENCY-FIRST choice: this is the last
+        // resort, the queue here is by definition a full second or more behind
+        // real time, and a freshly arrived IDR lets the stream resume at NOW
+        // instead of at a cut point that is itself already stale. The cost is
+        // picture that would have survived a narrower cut; the benefit is that
+        // the destination stops being behind rather than merely less behind.
         const std::size_t dropped = discardBacklogToNextKeyframeLocked(
             corevideo::core::GopCutPoint::Last, /*arrivalIsKeyframe=*/chunk.keyframe);
         if (dropped > 0) {
@@ -2221,7 +2243,16 @@ class RtmpOutputSender final : public IOutputSender {
         }
         if (full()) {
           bitstreamFailure_.record(BitstreamFailure::QueueOverflow);
-          ::corevideo::core::nativeLogf("[gpu-encode] bitstream queue overflow with nothing safe to drop (no keyframe queued); queuedBytes=%zu queuedChunks=%zu incomingBytes=%zu; sender unhealthy -> supervisor\n", bitstreamQueuedBytes_, bitstreamQueue_.size(), chunk.size);
+          // Fix round 2, item 2: SAY WHICH ONE HAPPENED. This used to report
+          // "no keyframe queued" unconditionally, but the cut can also succeed
+          // and still leave the BYTE budget over - a different situation with a
+          // different fix, and a sentence that would send a live diagnosis
+          // looking for a missing keyframe that was never missing.
+          ::corevideo::core::nativeLogf(
+              "[gpu-encode] bitstream queue overflow, %s; queuedBytes=%zu queuedChunks=%zu incomingBytes=%zu; sender unhealthy -> supervisor\n",
+              dropped > 0 ? "the cut freed 60-chunk room but the 2 MiB byte budget is still over"
+                          : "nothing safe to drop (no keyframe queued and none arriving)",
+              bitstreamQueuedBytes_, bitstreamQueue_.size(), chunk.size);
           return;
         }
       }
