@@ -5154,6 +5154,59 @@ TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
   EXPECT_EQ(compositorPtr->divisors.back(), 1);
 }
 
+// #597 fix round 2, item 4: THE FALSE-DEGRADED HALF, and the one the reviewers
+// kept having to re-judge. Task 4 left the stop path alone because nothing read
+// the divisor, so a latched value was inert. Task 6 published it, and the same
+// residual became a node that reads "throttled" with nothing streaming at all -
+// worse than no node, because `encoderExport.exporting` is fullProgramReadback
+// (vcam OR output OR recording), so it is TRUE between shows whenever the
+// virtual camera is on. Together they make an idle machine look degraded.
+//
+// The fix cannot come from asking the sender: `AsyncOutputSender::sync()`
+// returns a CACHED pre-stop snapshot, so on the tick the last destination goes
+// away the sender still reports the divisor it had while live. MediaCore's own
+// `senderDestinations` list is the authoritative, synchronous answer. The fake
+// sender below models the cache exactly - it keeps reporting divisor 4 forever,
+// destinations or not - so this test fails if anyone ever "simplifies"
+// renderVideoOutputTick back to trusting the sender's snapshot.
+TEST(RtmpOutputSenderBackpressure, TheDivisorReturnsToOneWhenNothingIsStreaming) {
+  auto modules = corevideo::modules::createStubModules();
+  auto compositor = std::make_unique<DivisorRecordingCompositor>(std::move(modules.compositor));
+  auto* compositorPtr = compositor.get();
+  modules.compositor = std::move(compositor);
+  auto senders = std::make_unique<BackpressurePublishingSender>();
+  auto* sendersPtr = senders.get();
+  modules.outputSender = std::move(senders);
+
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  std::mutex coreMutex;
+
+  // A struggling destination, live: the compositor is throttled to 1-in-4.
+  sendersPtr->rtmpDivisor = 4;
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"rtmp"}},
+  });
+  mediaCore.renderVideoOutputTick(coreMutex);
+  ASSERT_FALSE(compositorPtr->divisors.empty())
+      << "the live divisor never reached the compositor, so this test proves nothing";
+  EXPECT_EQ(compositorPtr->divisors.back(), 4);
+
+  // The operator stops the stream. The sender STILL reports divisor 4 - that is
+  // the cached snapshot, not a bug in the fake - but nothing is streaming, so
+  // the compositor must be released back to every frame.
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{}},
+  });
+  mediaCore.renderVideoOutputTick(coreMutex);
+  ASSERT_GE(compositorPtr->divisors.size(), 2u)
+      << "nothing was pushed to the compositor when the last destination went away";
+  EXPECT_EQ(compositorPtr->divisors.back(), 1)
+      << "with no destination streaming, the published divisor must be 1 - a "
+         "latched 2-4 reads as a live throttle on an idle machine";
+}
+
 // #597 fix round 2, finding 1: the real red/green, no seam, no injection, no
 // reorder - drives the ACTUAL production defect through the public sync() path.
 //
