@@ -765,6 +765,14 @@ Then DELETE `noteShedFrame()`, `shedFrames()` and `shedFrames_` from
 (rename it to `EnteredCountIsCounted`). Nothing can call them: the object that
 sheds is the compositor, which holds no reference to a sender's policy.
 
+- [ ] **Step 3b-bis: Reset the discard counter with the policy**
+
+Task 5 leaves `backpressureDiscardedChunks_` write-only. Publishing it here is
+half the job: it must ALSO be reset on the `!wantsRtmp` stop path, right beside
+the `backpressure_` reset Task 4 added. Backpressure state is per-stream-run,
+so a counter carried across runs would report the previous show's discards as
+this one's — the same reasoning that made resetting the policy correct.
+
 - [ ] **Step 3c: Two residuals carried from Task 4's re-review**
 
 Both are one-liners in files this task already opens. Neither is on air today;
