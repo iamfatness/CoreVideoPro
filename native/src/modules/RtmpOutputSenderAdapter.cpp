@@ -976,6 +976,60 @@ class RtmpOutputSender final : public IOutputSender {
     backpressureKeyframeForTest_.store(keyframeInQueue, std::memory_order_relaxed);
   }
 
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  // #597 Lever B seam: pushes straight onto bitstreamQueue_ so discard
+  // correctness can be exercised with no hardware encoder.
+  void enqueueBitstreamChunkForTest(std::size_t bytes, bool keyframe) override {
+#if defined(_WIN32)
+    GpuEncodedChunk metadata;
+    metadata.keyframe = keyframe;
+    std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+    bitstreamQueue_.push_back(
+        QueuedBitstream{std::vector<uint8_t>(bytes, 0), metadata, std::chrono::steady_clock::now()});
+    bitstreamQueuedBytes_ += bytes;
+    republishQueueTelemetryLocked();
+#else
+    (void)bytes;
+    (void)keyframe;
+#endif
+  }
+
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  std::size_t discardBacklogToNextKeyframeForTest() override {
+#if defined(_WIN32)
+    return discardBacklogToNextKeyframe();
+#else
+    return 0;
+#endif
+  }
+
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  std::size_t bitstreamQueueDepthForTest() const override {
+#if defined(_WIN32)
+    return static_cast<std::size_t>(bitstreamQueuedChunks_.load(std::memory_order_relaxed));
+#else
+    return 0;
+#endif
+  }
+
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  bool bitstreamQueueHasKeyframeForTest() const override {
+#if defined(_WIN32)
+    return bitstreamQueueHasKeyframe_.load(std::memory_order_relaxed);
+#else
+    return false;
+#endif
+  }
+
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  std::int64_t bitstreamBufferedMsForTest() const override {
+#if defined(_WIN32)
+    return bitstreamBufferedMs();
+#else
+    return 0;
+#endif
+  }
+
   void interrupt(const std::string& destination) override {
     if (destination != protocol_.destination) {
       return;
@@ -1841,6 +1895,36 @@ class RtmpOutputSender final : public IOutputSender {
     bitstreamQueueHasKeyframe_.store(keyframe, std::memory_order_relaxed);
   }
 
+  // #597 Lever B. Lever A stops the queue growing; it never clears what is
+  // already in it, so a stream can stabilise a full second behind and stay
+  // there. Discarding every chunk AHEAD of the next queued keyframe recovers
+  // that latency as a clean skip. Dropping an arbitrary chunk instead would
+  // corrupt every frame until the next keyframe. Our HEVC/AV1 encoders run with
+  // B-frames disabled (the low-latency work), so there are no non-reference
+  // frames to drop cheaply and the GOP tail is the only safe unit.
+  //
+  std::size_t discardBacklogToNextKeyframe() {
+    std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+    std::size_t keyframeIndex = 0;
+    bool found = false;
+    for (std::size_t i = 0; i < bitstreamQueue_.size(); ++i) {
+      if (bitstreamQueue_[i].metadata.keyframe) {
+        keyframeIndex = i;
+        found = true;
+        break;
+      }
+    }
+    if (!found || keyframeIndex == 0) return 0;  // nothing ahead of a keyframe to drop
+    std::size_t dropped = 0;
+    for (std::size_t i = 0; i < keyframeIndex; ++i) {
+      bitstreamQueuedBytes_ -= bitstreamQueue_.front().bytes.size();
+      bitstreamQueue_.pop_front();
+      ++dropped;
+    }
+    republishQueueTelemetryLocked();
+    return dropped;
+  }
+
   // #597 Lever A. Observe this destination's own outgoing queue once per sync
   // and publish the input divisor the policy asks for. MediaCore reads
   // OutputSender::backpressure and drives ICompositor::setEncoderExportDivisor
@@ -1873,7 +1957,15 @@ class RtmpOutputSender final : public IOutputSender {
           corevideo::core::StreamBackpressurePolicy::transitionName(decision.transition),
           backpressure_.divisor(), static_cast<long long>(observation.bufferedMs));
     }
-    // Task 5 handles decision.discardBacklog here.
+    if (decision.discardBacklog) {
+      const auto dropped = discardBacklogToNextKeyframe();
+      if (dropped > 0) {
+        backpressureDiscardedChunks_ += static_cast<std::int64_t>(dropped);
+        ::corevideo::core::nativeLogf(
+            "[stream-backpressure] discard dropped=%zu divisor=%d buffered=%lldms\n",
+            dropped, backpressure_.divisor(), static_cast<long long>(observation.bufferedMs));
+      }
+    }
     sender_.backpressure = OutputBackpressureState{backpressure_.divisor()};
   }
 
@@ -2477,6 +2569,9 @@ class RtmpOutputSender final : public IOutputSender {
   // #597 Lever A. Private to this destination; MediaCore takes the MAX across
   // senders because one encoder texture feeds every GPU-direct destination.
   corevideo::core::StreamBackpressurePolicy backpressure_;
+  // #597 Lever B. Per-destination (unlike the divisor above): each sender
+  // discards its OWN bitstream backlog, never reaching across senders.
+  std::int64_t backpressureDiscardedChunks_ = 0;
   // TEST-ONLY override of the queue measurement (see
   // IOutputSender::setBackpressureObservationForTest). Negative = not set.
   std::atomic<std::int64_t> backpressureBufferedMsForTest_{-1};

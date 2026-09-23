@@ -1176,6 +1176,23 @@ class IOutputSender {
   // combination no test covered was a real sender looking at a frame the
   // compositor's Lever A had shed.
   virtual bool wouldRestartForEncodePathForTest(const ProgramFrame& /*frame*/) { return false; }
+
+  // TEST-ONLY (same structural guard). #597 Lever B: pushes a chunk directly
+  // onto the sender's bitstream queue, bypassing the real GPU encoder, so
+  // discard-to-next-keyframe correctness can be tested without a hardware
+  // encoder and a real congested network.
+  virtual void enqueueBitstreamChunkForTest(std::size_t /*bytes*/, bool /*keyframe*/) {}
+  // TEST-ONLY. Runs the real discardBacklogToNextKeyframe() and returns how
+  // many chunks it dropped.
+  virtual std::size_t discardBacklogToNextKeyframeForTest() { return 0; }
+  // TEST-ONLY. Current queue depth (chunk count) and whether a keyframe is
+  // queued, read back without going through the (possibly overridden)
+  // observation injected by setBackpressureObservationForTest.
+  virtual std::size_t bitstreamQueueDepthForTest() const { return 0; }
+  virtual bool bitstreamQueueHasKeyframeForTest() const { return false; }
+  // TEST-ONLY. The real bitstreamBufferedMs() measurement, unaffected by the
+  // setBackpressureObservationForTest() override.
+  virtual std::int64_t bitstreamBufferedMsForTest() const { return 0; }
 };
 
 class ICaptureDevice {

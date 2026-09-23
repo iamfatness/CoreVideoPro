@@ -5056,6 +5056,110 @@ TEST(RtmpOutputSenderBackpressure, AShedFrameNeverRestartsTheSendersEncodePath) 
 #endif
 }
 
+// #597 Lever B: discard the queued backlog up to the next keyframe, so a
+// stream that stabilised a full second behind can catch back up instead of
+// sitting there forever (Lever A only stops the queue growing further).
+//
+// A queue with no keyframe queued must discard NOTHING: dropping an
+// arbitrary reference frame corrupts every frame after it until the next
+// keyframe, because HEVC/AV1 here run with B-frames disabled.
+TEST(RtmpOutputSenderBackpressure, DiscardWithNoQueuedKeyframeDropsNothing) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  // An empty queue: nothing to drop.
+  EXPECT_EQ(sender->discardBacklogToNextKeyframeForTest(), 0u);
+
+  // A queue full of ordinary reference frames, no keyframe anywhere.
+  for (int i = 0; i < 5; ++i) {
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  }
+  ASSERT_EQ(sender->bitstreamQueueDepthForTest(), 5u);
+  ASSERT_FALSE(sender->bitstreamQueueHasKeyframeForTest());
+
+  EXPECT_EQ(sender->discardBacklogToNextKeyframeForTest(), 0u)
+      << "no keyframe is queued, so nothing is safe to drop";
+  EXPECT_EQ(sender->bitstreamQueueDepthForTest(), 5u)
+      << "the queue must be untouched when there is no keyframe to land on";
+#else
+  GTEST_SKIP() << "Needs the RTMP sender.";
+#endif
+}
+
+// With a keyframe queued, discard drops exactly the chunks ahead of it and
+// never the keyframe itself (nor anything after it — those are reference
+// frames that depend on it), so the stream resumes cleanly at that point.
+TEST(RtmpOutputSenderBackpressure, DiscardDropsTheGopTailAndKeepsTheKeyframe) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  // Two stale reference frames, then a keyframe, then one fresh reference
+  // frame that depends on it and must survive.
+  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  ASSERT_EQ(sender->bitstreamQueueDepthForTest(), 4u);
+
+  EXPECT_EQ(sender->discardBacklogToNextKeyframeForTest(), 2u)
+      << "exactly the two chunks ahead of the keyframe must be dropped";
+  EXPECT_EQ(sender->bitstreamQueueDepthForTest(), 2u)
+      << "the keyframe and the reference frame after it must both survive";
+  EXPECT_TRUE(sender->bitstreamQueueHasKeyframeForTest())
+      << "the keyframe itself must never be dropped";
+
+  // A keyframe already at the head has nothing ahead of it to drop.
+  EXPECT_EQ(sender->discardBacklogToNextKeyframeForTest(), 0u)
+      << "a keyframe already at the head means nothing is ahead of it";
+  EXPECT_EQ(sender->bitstreamQueueDepthForTest(), 2u);
+
+  // A queue that is ENTIRELY keyframes has nothing ahead of the first one.
+  auto allKeyframes = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(allKeyframes, nullptr);
+  allKeyframes->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+  allKeyframes->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+  allKeyframes->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+  EXPECT_EQ(allKeyframes->discardBacklogToNextKeyframeForTest(), 0u)
+      << "the first queued chunk is already a keyframe; nothing is ahead of it";
+  EXPECT_EQ(allKeyframes->bitstreamQueueDepthForTest(), 3u);
+#else
+  GTEST_SKIP() << "Needs the RTMP sender.";
+#endif
+}
+
+// The head's enqueue time must be republished after a discard, or buffered
+// latency would keep reporting the age of a chunk that is gone — the exact
+// contract bitstreamBufferedMs() depends on (it reads only the head).
+TEST(RtmpOutputSenderBackpressure, DiscardRepublishesTheBufferedMeasure) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  // An old, stale reference frame at the head...
+  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  // ...then a much more recent keyframe.
+  sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+
+  const auto bufferedBeforeDiscard = sender->bitstreamBufferedMsForTest();
+  EXPECT_GE(bufferedBeforeDiscard, 50)
+      << "buffered age must reflect the STALE head before the discard";
+
+  ASSERT_EQ(sender->discardBacklogToNextKeyframeForTest(), 1u);
+
+  const auto bufferedAfterDiscard = sender->bitstreamBufferedMsForTest();
+  EXPECT_LT(bufferedAfterDiscard, bufferedBeforeDiscard)
+      << "the buffered measure must republish against the NEW head (the "
+         "keyframe), not keep reporting the age of the chunk that was dropped";
+  EXPECT_LT(bufferedAfterDiscard, 50)
+      << "the new head (the keyframe) was enqueued moments ago";
+#else
+  GTEST_SKIP() << "Needs the RTMP sender.";
+#endif
+}
+
 TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
 #if COREVIDEO_WITH_RTMP_OUTPUT
   auto sender = corevideo::modules::createRtmpOutputSender();
