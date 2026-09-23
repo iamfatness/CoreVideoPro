@@ -44,6 +44,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Issue | Remaining work |
 |---|---|
+| [#597](https://github.com/iamfatness/CoreVideoPro/issues/597) | **Owner-observed show-survival stall:** installed beta `58d4fab` appeared unresponsive for ~20 seconds while H.264 10 Mbps streamed to YouTube. Logs preserve repeated RTMP non-acceptance, a compressed-video queue overflow/restart burst, and a matching 21.009-second transport-telemetry gap. Isolate which thread/resource stalled, bound recovery without freezing Program or controls, and validate the packaged path; no crash or root cause is yet established. |
 | [#590](https://github.com/iamfatness/CoreVideoPro/issues/590) | Simplify and prune Sources for live operation. Audit accumulated controls, remove or relocate redundant and misleading UI, and verify source assignment with realistic inputs. Coordinate with #505 and #588. |
 | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Rework starter Scenes and scene creation. Owner sees the same source repeated in default scenes; reproduce and fix that behavior, make common looks easy to build, and preserve saved custom scenes. Related: #451. |
 | [#592](https://github.com/iamfatness/CoreVideoPro/issues/592) | Lower-third second line visibly refreshes as “Guest” and sometimes briefly shows lowercase “g”. Trace metadata, key-state, and rendering updates; fix the cause and verify stable installed output. |
