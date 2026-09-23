@@ -910,6 +910,71 @@ git commit -m "Gate: a deliberately slow sink must degrade the stream, never reb
 
 ---
 
+### Task 8b: Close the storm gap the gate found
+
+> **ADDED after Task 8 measured it (controller ruling).** The gate ran the
+> congested case three times. Two runs held at exactly one encoder start; the
+> third stormed with eleven. The gate did its job — this is the negative result
+> the whole task existed to produce, and it must be closed before Lever A and
+> Lever B can be described as working.
+
+**The cause chain the gate measured**, in order:
+1. The outgoing queue crossed 22 to 60 chunks — its hard cap — inside one second.
+2. `enqueueBitstream`'s overflow path **fails the sender on purpose** so the
+   supervisor restarts it (`RtmpOutputSenderAdapter.cpp`, the comment reads "An
+   overrun fails the sender so its supervisor can restart it").
+3. The supervisor restarted it, and the encoder was rebuilt.
+
+**So backpressure's own last-resort bound calls the restart storm.** That
+predates this plan and is exactly what the spec forbids: a destination fault
+must never rebuild the encoder. Three things lose the race that gets us there —
+Lever B is gated on `divisor > 1` so it cannot fire during the ~0.5 s Lever A
+needs to step; the 750 ms discard threshold sits only ~15 chunks below the
+60-chunk cap; and Lever B's yield is phase-dependent (measured 2 to 51 chunks
+freed) because the GOP is about the size of the whole queue.
+
+**Files:**
+- Modify: `native/src/modules/RtmpOutputSenderAdapter.cpp` — the overflow path
+- Modify: `native/tests/MediaCoreCommandTest.cpp`
+
+- [ ] **Step 1: Write the failing test**
+
+A full queue whose contents include a keyframe must NOT fail the sender. Drive
+the real queue to its cap through the existing enqueue seam with a keyframe
+somewhere in it, and assert: the sender is still healthy, the queue shrank, and
+no overflow failure was recorded. Then the case with NO keyframe queued: there
+the sender must still fail, because there is nothing safe to drop and a bounded
+queue is not optional.
+
+- [ ] **Step 2: Confirm RED, then implement**
+
+On overflow, run the GOP-tail discard FIRST and accept the incoming chunk if it
+freed room. Fail only when the discard frees nothing — i.e. no keyframe is
+queued, which is the one case where dropping anything would corrupt the stream
+until the next keyframe.
+
+This is Lever B doing exactly the job it was built for, at the one moment it
+matters most, and it removes the `divisor > 1` race by construction: the
+overflow path does not consult the divisor at all. Do NOT raise the 60-chunk cap
+to buy headroom — an unbounded queue is unbounded latency, which is the defect
+this whole sub-project exists to remove.
+
+- [ ] **Step 3: Re-run the gate**
+
+`node scripts/validate-gpu-encode.mjs --seconds 240 --slow-sink`, three times.
+Report every run. One storming run out of three is a FAILURE, not noise — that
+is the state this task exists to remove, and reporting two greens out of three
+as a pass would be the same mistake as calling a flaky test green.
+
+- [ ] **Step 4: Full suite, then commit**
+
+```bash
+git add native/src/modules/RtmpOutputSenderAdapter.cpp native/tests/MediaCoreCommandTest.cpp
+git commit -m "Queue overflow discards the GOP tail instead of failing the sender (#597)"
+```
+
+---
+
 ### Task 9: Documentation
 
 **Files:**
