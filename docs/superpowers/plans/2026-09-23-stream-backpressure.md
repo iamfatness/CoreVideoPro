@@ -676,13 +676,31 @@ git commit -m "Lever B: recover latency by discarding the GOP tail ahead of a qu
 
 ### Task 6: The snapshot node
 
+> **AMENDED after Task 4 (controller ruling).** `shedFrames` was specified as a
+> PER-SENDER field, which became a category error the moment Lever A's gate moved
+> into the compositor: ONE encoder texture serves every GPU-direct destination, so
+> frames are shed once, globally — not once per sender. Publishing the same global
+> count on each sender would read as each having shed its own, and publishing 0
+> (what `StreamBackpressurePolicy::shedFrames()` returns, since nothing on the
+> sender side sheds anything any more) would be worse. So: `shedFrames` LEAVES the
+> per-sender node and the real count is published ONCE, from the compositor, beside
+> the effective divisor. The per-sender node keeps only what is genuinely
+> per-destination — the divisor THIS sender asked for, its buffered age, its queue
+> depth, and its own discards.
+>
+> `StreamBackpressurePolicy::noteShedFrame()` / `shedFrames()` are now dead by
+> construction (the compositor sheds, and it holds no reference to any sender's
+> policy). Delete both, and their `shedFrames_` member, in this task — do not leave
+> a public method nothing can ever call.
+
 **Files:**
 - Modify: `native/src/modules/Interfaces.h` — a `backpressure` optional on `OutputSender` beside `supervisor` (line ~679)
 - Modify: `native/src/modules/RtmpOutputSenderAdapter.cpp` — populate it in `snapshot()`
 - Modify: `native/src/core/MediaCore.cpp` — emit it beside the `supervisor` node (line ~5281)
 
 **Interfaces:**
-- Produces: `sessionState().outputSenders.senders[].backpressure` = `{divisor, level, bufferedMs, queuedChunks, enteredCount, shedFrames, discardedChunks, discardEvents, lastReason, lastTransitionBufferedMs}`.
+- Produces: `sessionState().outputSenders.senders[].backpressure` = `{divisor, level, bufferedMs, queuedChunks, enteredCount, discardedChunks, discardEvents, lastReason, lastTransitionBufferedMs}` — the per-destination facts.
+- Produces: `sessionState().realtimeEvidence.encoderExport` = `{divisor, shedFrames}` — the ONE effective divisor MediaCore pushed to the compositor (the MAX across GPU-direct senders) and the frames the compositor actually held back. Published unconditionally, like the multiviewer node: a divisor of 1 and 0 shed frames is the healthy reading, not an absent node.
 
 - [ ] **Step 1: Add the struct**
 
@@ -698,7 +716,9 @@ struct OutputBackpressureState {
   std::int64_t bufferedMs = 0;
   std::int64_t queuedChunks = 0;
   std::int64_t enteredCount = 0;
-  std::int64_t shedFrames = 0;
+  // NO shedFrames here: the compositor sheds once for every destination, so a
+  // per-sender count would claim this destination shed them on its own. The real
+  // number is published once, at realtimeEvidence.encoderExport.shedFrames.
   std::int64_t discardedChunks = 0;
   std::int64_t discardEvents = 0;
   std::string lastReason = "none";
@@ -723,7 +743,6 @@ Directly after the `supervisor` block:
           {"bufferedMs", static_cast<double>(bp.bufferedMs)},
           {"queuedChunks", static_cast<double>(bp.queuedChunks)},
           {"enteredCount", static_cast<double>(bp.enteredCount)},
-          {"shedFrames", static_cast<double>(bp.shedFrames)},
           {"discardedChunks", static_cast<double>(bp.discardedChunks)},
           {"discardEvents", static_cast<double>(bp.discardEvents)},
           {"lastReason", bp.lastReason},
@@ -731,6 +750,20 @@ Directly after the `supervisor` block:
       });
     }
 ```
+
+- [ ] **Step 3b: Publish the compositor's real shed count**
+
+`D3D11CompositorAdapter` already skips the export; have it COUNT what it skipped
+in a saturating `std::int64_t encoderExportShedFrames_` and expose it, with the
+applied divisor, through `ICompositor` (default implementations returning 1 and 0,
+so Metal and the stub are unaffected). Emit both in `realtimeEvidence` as
+`encoderExport {divisor, shedFrames}`, unconditionally.
+
+Then DELETE `noteShedFrame()`, `shedFrames()` and `shedFrames_` from
+`StreamBackpressurePolicy`, and the assertion on `shedFrames()` in
+`StreamBackpressurePolicyTest.cpp`'s `ShedFramesAndEnteredCountAreCounted`
+(rename it to `EnteredCountIsCounted`). Nothing can call them: the object that
+sheds is the compositor, which holds no reference to a sender's policy.
 
 - [ ] **Step 4: Build, run the full suite**
 
