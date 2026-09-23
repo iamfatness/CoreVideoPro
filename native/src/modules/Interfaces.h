@@ -638,13 +638,42 @@ struct OutputSupervisorState {
   bool interruptible = false;
 };
 
-// #597 Lever A, published so MediaCore can drive the compositor with it. The
-// input divisor this destination currently wants: 1 = every frame (60 fps at
-// the product's rate), 2 = 30, 3 = 20, 4 = 15. Absent means this destination is
-// not on the GPU-direct path and has no bitstream queue to observe, which is
-// NOT the same as "healthy" - never read an absent value as divisor 1 evidence.
+// #597: the backpressure policy's view of THIS destination. Published
+// UNCONDITIONALLY for a GPU-direct sender (the multiviewer-node rule: a node
+// that vanishes in the case worth detecting is the mistake). A stream quietly
+// running at 15 fps is the same class of defect as a silent codec downgrade.
+// Absent means this destination is not on the GPU-direct path and has no
+// bitstream queue to observe, which is NOT the same as "healthy" - never read
+// an absent value as divisor 1 evidence.
+//
+// `divisor` (1 = every frame at the product's rate, 2 = half, 3 = a third,
+// 4 = a quarter) is Lever A's input throttle. NO shedFrames HERE: the
+// compositor sheds once for every destination (one encoder texture serves
+// them all), so a per-sender count would claim this destination shed frames
+// on its own. The real, global count is published once, at
+// realtimeEvidence.encoderExport.shedFrames.
 struct OutputBackpressureState {
-  int divisor = 1;  // Task 6 adds the remaining published fields
+  int divisor = 1;
+  // 0 = not throttled; StreamBackpressurePolicy::kMaxDivisor - 1 at the floor.
+  // Always divisor - 1; published separately because a consumer should not
+  // have to re-derive it.
+  int level = 0;
+  // Wall-clock age (ms) of the oldest chunk still queued for send.
+  std::int64_t bufferedMs = 0;
+  std::int64_t queuedChunks = 0;
+  // Times throttling was ENGAGED (1 -> 2). Steps within a throttle do not count.
+  std::int64_t enteredCount = 0;
+  // Cumulative chunks Lever B (the GOP-tail discard) has dropped from THIS
+  // destination's queue. Per-stream-run: reset alongside the policy object
+  // whenever this destination stops (see the `!wantsRtmp` stop path).
+  std::int64_t discardedChunks = 0;
+  // Cumulative GOP-tail discard events fired.
+  std::int64_t discardEvents = 0;
+  // Why the divisor or discard state last changed:
+  // "none" | "buffered-above-threshold" | "recovered" | "backlog-discard".
+  std::string lastReason = "none";
+  // The bufferedMs observed on the tick that caused the last change.
+  std::int64_t lastTransitionBufferedMs = 0;
 };
 
 // TEST-ONLY (see IOutputSender::bitstreamQueueSnapshotForTest). A single
@@ -960,6 +989,15 @@ class ICompositor {
   // unaffected; only the D3D11 adapter, which owns the encoder export,
   // implements it.
   virtual void setEncoderExportDivisor(int /*divisor*/) {}
+
+  // #597 Task 6: the ONE effective divisor this compositor is applying, and
+  // the frames it has actually held back because of it - published together
+  // at realtimeEvidence.encoderExport, unconditionally, like the multiviewer
+  // node. Defaulted to 1/0 (the healthy reading) so Metal and the stub
+  // compositor are unaffected; only the D3D11 adapter, which owns the encoder
+  // export, tracks a real shed count.
+  [[nodiscard]] virtual int encoderExportDivisor() const { return 1; }
+  [[nodiscard]] virtual std::int64_t encoderExportShedFrames() const { return 0; }
 };
 
 class IMediaFrameSource {

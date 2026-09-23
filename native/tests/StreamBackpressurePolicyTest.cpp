@@ -150,12 +150,13 @@ TEST(StreamBackpressurePolicy, DiscardNeedsBacklogThrottleKeyframeAndCooldown) {
   EXPECT_EQ(p.discardEvents(), 2);
 }
 
-TEST(StreamBackpressurePolicy, ShedFramesAndEnteredCountAreCounted) {
+// #597 Task 6 (amended after Task 4): noteShedFrame()/shedFrames() are gone -
+// the compositor sheds once for every destination and holds no reference to
+// any sender's policy, so nothing could ever call them. Only enteredCount()
+// remains here.
+TEST(StreamBackpressurePolicy, EnteredCountIsCounted) {
   StreamBackpressurePolicy p;
   feed(p, 300, StreamBackpressurePolicy::kEnterAfterOverWaterTicks);
-  p.noteShedFrame();
-  p.noteShedFrame();
-  EXPECT_EQ(p.shedFrames(), 2);
   EXPECT_EQ(p.enteredCount(), 1);
 }
 

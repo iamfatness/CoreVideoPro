@@ -1952,7 +1952,20 @@ class RtmpOutputSender final : public IOutputSender {
             dropped, backpressure_.divisor(), static_cast<long long>(observation.bufferedMs));
       }
     }
-    sender_.backpressure = OutputBackpressureState{backpressure_.divisor()};
+    OutputBackpressureState state;
+    state.divisor = backpressure_.divisor();
+    state.level = backpressure_.level();
+    state.bufferedMs = observation.bufferedMs;
+    state.queuedChunks = static_cast<std::int64_t>(
+        bitstreamQueuedChunks_.load(std::memory_order_relaxed));
+    state.enteredCount = backpressure_.enteredCount();
+    // Per-stream-run, reset alongside backpressure_ on the !wantsRtmp stop
+    // path above (see backpressureDiscardedChunks_).
+    state.discardedChunks = backpressureDiscardedChunks_;
+    state.discardEvents = backpressure_.discardEvents();
+    state.lastReason = backpressure_.lastReason();
+    state.lastTransitionBufferedMs = backpressure_.lastTransitionBufferedMs();
+    sender_.backpressure = state;
   }
 
   // 0 when the queue is empty. Lock-free: reads the head's enqueue time and ages

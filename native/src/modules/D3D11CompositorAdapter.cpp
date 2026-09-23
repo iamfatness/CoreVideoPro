@@ -1734,9 +1734,27 @@ class D3D11Compositor final : public ICompositor {
     if (!encoderExport_ || !encoderExport_->dimensions(targetWidth_, targetHeight_)) {
       encoderExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), targetWidth_, targetHeight_, "encoder");
       if (!encoderExport_->valid()) { encoderExport_.reset(); return; }
+      // Task 6 residual (carried from Task 4's re-review): a dimension change
+      // recreates encoderExport_ with a fresh internal frame counter, but
+      // lastSubmittedEncoderFrameNumber_ is this render thread's own field and
+      // survives the recreation untouched. Without this reset, a shed frame
+      // right after a recreation would publish a frame number that was
+      // submitted to the PREVIOUS exporter - no production reader depends on
+      // that today, which is exactly why it must be fixed now rather than
+      // when one is added.
+      lastSubmittedEncoderFrameNumber_ = -1;
     }
     if (submitPixels && encoderExport_->submit(context_.get(), renderTarget_.get(), frame.frameNumber)) {
       lastSubmittedEncoderFrameNumber_ = frame.frameNumber;
+    } else if (!submitPixels) {
+      // #597 Task 6: this is the one place a frame is actually shed - count it
+      // here, once, globally. (submit() returning false without a shed request
+      // is D3DDecoupledExport's own pre-existing bounded-slot refusal, unrelated
+      // to Lever A, and must not be counted as a shed - see the comment above
+      // on frame.encoderSharedTexture.frameNumber.)
+      if (encoderExportShedFrames_.load(std::memory_order_relaxed) < kEncoderExportShedFramesCeiling) {
+        encoderExportShedFrames_.fetch_add(1, std::memory_order_relaxed);
+      }
     }
     frame.encoderSharedTexture.publishedFrameNumber = encoderExport_->publishedFrameNumber();
     frame.encoderSharedTexture.sharedHandleHex = handleToHex(encoderExport_->handle());
@@ -2536,6 +2554,17 @@ class D3D11Compositor final : public ICompositor {
     encoderExportDivisor_.store((std::max)(1, divisor), std::memory_order_relaxed);
   }
 
+  // #597 Task 6: the applied divisor and the shed count, published together at
+  // realtimeEvidence.encoderExport. encoderExportShedFrames_ is bumped once,
+  // on the render thread, exactly where exportEncoderSharedTexture() decides
+  // NOT to submit - see the increment there.
+  [[nodiscard]] int encoderExportDivisor() const override {
+    return encoderExportDivisor_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::int64_t encoderExportShedFrames() const override {
+    return encoderExportShedFrames_.load(std::memory_order_relaxed);
+  }
+
   [[nodiscard]] bool suppliesProgramNv12() const override { return true; }
 
   void setVcamFrameSink(VcamFrameSink sink) override {
@@ -2694,6 +2723,13 @@ class D3D11Compositor final : public ICompositor {
   int64_t frameNumber_ = 0;
   std::atomic<int> encoderExportDivisor_{1};  // #597 Lever A; 1 = export every frame
   int64_t lastSubmittedEncoderFrameNumber_ = -1;  // render thread only; -1 = nothing yet
+  // #597 Task 6: frames actually held back by the divisor above. Written only
+  // on the render thread (exportEncoderSharedTexture), read from any thread via
+  // encoderExportShedFrames() - a relaxed atomic, the same discipline as
+  // encoderExportDivisor_. Saturates rather than wraps; a snapshot must never
+  // see it go down.
+  std::atomic<std::int64_t> encoderExportShedFrames_{0};
+  static constexpr std::int64_t kEncoderExportShedFramesCeiling = INT64_C(1) << 62;
   std::atomic<int> requestedProgramFrames_{0};
   int64_t programProductionSlot_ = -1, programProductionAnchorNs_ = 0;
   mutable std::mutex programBufferMutex_;

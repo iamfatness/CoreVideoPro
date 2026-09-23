@@ -194,8 +194,6 @@ class StreamBackpressurePolicy {
   [[nodiscard]] int level() const { return divisor_ - 1; }
   // Times throttling was ENGAGED (1 -> 2). Steps within a throttle do not count.
   [[nodiscard]] std::int64_t enteredCount() const { return enteredCount_; }
-  // Cumulative frames the caller reported skipping via noteShedFrame().
-  [[nodiscard]] std::int64_t shedFrames() const { return shedFrames_; }
   // Cumulative GOP-tail discard events fired.
   [[nodiscard]] std::int64_t discardEvents() const { return discardEvents_; }
   // Why the divisor or discard state last changed:
@@ -203,11 +201,6 @@ class StreamBackpressurePolicy {
   [[nodiscard]] const char* lastReason() const { return lastReason_; }
   // The bufferedMs observed on the tick that caused the last change.
   [[nodiscard]] std::int64_t lastTransitionBufferedMs() const { return lastTransitionBufferedMs_; }
-  // Called by the caller whenever Lever A actually skips a frame, purely for
-  // observability — the policy itself never decides which frames to skip.
-  void noteShedFrame() {
-    if (shedFrames_ < kCounterCeiling) ++shedFrames_;
-  }
 
   [[nodiscard]] static const char* transitionName(StreamBackpressureTransition t) {
     switch (t) {
@@ -229,7 +222,6 @@ class StreamBackpressurePolicy {
   std::int64_t healthyStreak_ = 0;
   std::int64_t discardCooldown_ = 0;
   std::int64_t enteredCount_ = 0;
-  std::int64_t shedFrames_ = 0;
   std::int64_t discardEvents_ = 0;
   const char* lastReason_ = "none";
   std::int64_t lastTransitionBufferedMs_ = 0;

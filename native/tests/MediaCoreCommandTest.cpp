@@ -5141,6 +5141,78 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
 #endif
 }
 
+// #597 Task 6: the review finding this whole task exists to close. Publishing
+// `backpressure->discardedChunks` made the counter reset OBSERVABLE for the
+// first time - and therefore testable for the first time. Task 4/5 added
+// `backpressureDiscardedChunks_ = 0` beside the `backpressure_ = {}` reset on
+// the `!wantsRtmp` stop path, but nothing before this test could see whether
+// that reset actually reached anything a consumer reads. A destination that
+// discarded chunks, then stopped, must not report the previous run's discards
+// on its NEXT run.
+TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRun) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent("ADiscardedChunkCounterResetsOnTheNextStreamRun")) return;
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+  auto frame = startableProgramFrame("rtmp-backpressure-discard-reset");
+  // H.265 without the enhanced-RTMP checkbox is refused before FFmpeg is
+  // launched, so this drives the real sync()/observeStreamBackpressure() path
+  // with no child process - exactly like the discard test above it.
+  const auto settings = rtmpAdmissionSettings("h265", false);
+
+  // --- Run 1: drive the divisor above 1, then force a real discard. ---
+  sender->setBackpressureObservationForTest(
+      corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
+      /*keyframeInQueue=*/true);
+  const int enterTicks =
+      static_cast<int>(corevideo::core::StreamBackpressurePolicy::kEnterAfterOverWaterTicks) + 2;
+  for (int i = 0; i < enterTicks; ++i) {
+    (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
+  }
+  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+  sender->setBackpressureObservationForTest(
+      corevideo::core::StreamBackpressurePolicy::kDiscardAboveBufferedMs + 10,
+      /*keyframeInQueue=*/true);
+  (void)sender->sync({"rtmp"}, &frame, 5000.0, {settings});
+  {
+    const auto session = sender->session();
+    ASSERT_FALSE(session.senders.empty());
+    ASSERT_TRUE(session.senders[0].backpressure.has_value());
+    ASSERT_GT(session.senders[0].backpressure->discardedChunks, 0)
+        << "run 1 must have actually discarded something, or this test proves nothing";
+  }
+
+  // --- Stop the destination: the same `!wantsRtmp` path that resets
+  // backpressure_ and backpressureDiscardedChunks_ together. ---
+  sender->setBackpressureObservationForTest(-1, false);  // stop injecting
+  (void)sender->sync({}, &frame, 9000.0, {settings});
+  {
+    const auto session = sender->session();
+    ASSERT_FALSE(session.senders.empty());
+    EXPECT_EQ(session.senders[0].status, "stopped");
+    EXPECT_FALSE(session.senders[0].backpressure.has_value())
+        << "a stopped destination must not keep publishing its last discard count";
+  }
+
+  // --- Run 2: a fresh stream, never throttled, no discard fired. ---
+  sender->setBackpressureObservationForTest(0, false);
+  for (int i = 0; i < 3; ++i) {
+    (void)sender->sync({"rtmp"}, &frame, 10000.0 + 33.0 * i, {settings});
+  }
+  {
+    const auto session = sender->session();
+    ASSERT_FALSE(session.senders.empty());
+    ASSERT_TRUE(session.senders[0].backpressure.has_value());
+    EXPECT_EQ(session.senders[0].backpressure->discardedChunks, 0)
+        << "the next stream run must not report the PREVIOUS run's discards as its own";
+  }
+#else
+  GTEST_SKIP() << "Needs the RTMP sender.";
+#endif
+}
+
 TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
 #if COREVIDEO_WITH_RTMP_OUTPUT
   auto sender = corevideo::modules::createRtmpOutputSender();

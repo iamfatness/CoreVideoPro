@@ -894,6 +894,17 @@ rpc::Json MediaCore::sessionState() const {
            static_cast<double>(monitorShed_.lastTransitionObservation().monitorCycleCostNs) / 1e6},
           {"lastTransitionBudgetMs",
            static_cast<double>(monitorShed_.lastTransitionObservation().budgetNs) / 1e6}}},
+      // #597 Task 6 (amended after Task 4): the ONE effective divisor MediaCore
+      // pushed to the compositor (the MAX across GPU-direct senders - see
+      // applyEncoderExportDivisor) and the frames the compositor actually held
+      // back because of it. One encoder texture serves every GPU-direct
+      // destination, so this is published ONCE here, never per sender.
+      // Published unconditionally, like monitorShed above: divisor 1 / 0 shed
+      // frames is the healthy READING, not an absent node.
+      {"encoderExport", rpc::Json::Object{
+          {"divisor", modules_.compositor ? modules_.compositor->encoderExportDivisor() : 1},
+          {"shedFrames", static_cast<double>(
+              modules_.compositor ? modules_.compositor->encoderExportShedFrames() : 0)}}},
       {"audio", rpc::Json::Object{
           {"generation", static_cast<double>(audioWorkerGeneration_.load(std::memory_order_relaxed))},
           {"observed", audioLastProgressNs > 0},
@@ -5295,6 +5306,25 @@ rpc::Json MediaCore::outputSenderSessionState() const {
           {"interruptible", supervisor.interruptible},
       });
     }
+    // #597 Task 6: this destination's own view of Lever A/B - published
+    // whenever the sender populated it (GPU-direct senders only; see
+    // OutputBackpressureState in Interfaces.h). The one global fact this node
+    // deliberately omits (how many frames the compositor actually shed) is
+    // published once, unconditionally, at realtimeEvidence.encoderExport below.
+    if (sender.backpressure) {
+      const auto& bp = *sender.backpressure;
+      senderJson.emplace("backpressure", rpc::Json::Object{
+          {"divisor", bp.divisor},
+          {"level", bp.level},
+          {"bufferedMs", static_cast<double>(bp.bufferedMs)},
+          {"queuedChunks", static_cast<double>(bp.queuedChunks)},
+          {"enteredCount", static_cast<double>(bp.enteredCount)},
+          {"discardedChunks", static_cast<double>(bp.discardedChunks)},
+          {"discardEvents", static_cast<double>(bp.discardEvents)},
+          {"lastReason", bp.lastReason},
+          {"lastTransitionBufferedMs", static_cast<double>(bp.lastTransitionBufferedMs)},
+      });
+    }
     senderJson.emplace("lifecycle", contracts::toJson(lifecycle));
     senders.emplace_back(std::move(senderJson));
   }
@@ -8372,6 +8402,17 @@ void MediaCore::applyEncoderExportDivisor(const modules::OutputSenderSession& se
   lastEncoderExportDivisor_.store(desired, std::memory_order_relaxed);
   if (modules_.compositor) modules_.compositor->setEncoderExportDivisor(desired);
 }
+// Task 6 residual (carried from Task 4's re-review, not fixed here - a
+// COMMENT, not a guard): AsyncOutputSender::sync() returns a CACHED pre-stop
+// snapshot, so the final "one tick past the last destination" call into this
+// function can still observe a stale `live` record carrying the divisor the
+// stream reached before it stopped. That is inert in practice -
+// `fullProgramReadback` is already false by then, so the compositor sheds
+// nothing regardless of the divisor it is holding - and the worst case is one
+// shed frame at the START of the NEXT stream, before its own first sync pushes
+// 1. Do not add a second reset path here to close it: that risks fighting the
+// one reset path that matters, the sender's own `!wantsRtmp` stop-path reset
+// of backpressure_ (see RtmpOutputSenderAdapter.cpp).
 
 void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
   const bool buffered = modules_.compositor->programBufferFrames() > 0;
