@@ -62,6 +62,15 @@
  * FAILS if the outgoing queue never actually grew (`bufferedMs` never crossed
  * the policy's own throttle threshold).
  *
+ * Burst mode (#597 Task 8b fix round 1): `--slow-sink --burst-sink` keeps the
+ * sustained narrowing AND stalls the link outright for `--burst-stall-ms`
+ * (default 3000) every `--burst-period-ms` (default 20000), starting
+ * `--burst-first-ms` (default 25000) after the link first carries a byte. That
+ * reproduces the 22-to-60-chunk onset Task 8 measured, which a sustained
+ * narrowing never reaches. A burst run ASSERTS it entered the queue's overflow
+ * branch: if the core logs no overflow line at all, the run tested nothing and
+ * FAILS.
+ *
  * Usage: node ./scripts/validate-gpu-encode.mjs [--seconds 30] [--port 1935]
  *                                               [--fps 60] [--bitrate 6]
  *                                               [--codec h264|hevc|av1]
@@ -94,6 +103,35 @@ const bitrate = Number(argValue("bitrate", 6));
 const forceRaw = args.includes("--force-raw");
 const slowSink = args.includes("--slow-sink");
 const sinkRate = Number(argValue("sink-rate", 0.85));
+// #597 Task 8b fix round 1: BURST MODE.
+//
+// The sustained gate could not reach the state it exists to judge. Task 8
+// measured the storm's onset as 22 chunks to the 60-chunk cap INSIDE ONE
+// SECOND, but a sustained narrowing never reproduces that: Levers A and B hold
+// the queue at 38-47 of 60 for twelve minutes, so `enqueueBitstream`'s overflow
+// branch is never entered and the gate reports success about a branch it never
+// ran. Narrowing further does NOT help and makes it worse - below about 0.5x
+// the link is too narrow for FFmpeg's own RTMP handshake, the egress child dies
+// at ~14 frames with "Cannot read RTMP handshake response", and the supervisor
+// correctly restarts a sender whose destination is dead. That failure is real
+// but it is a DEAD DESTINATION, not a queue bound, and gating on it would be
+// the same class of mistake as the SRT sink that dropped rather than blocked.
+//
+// So: keep the sustained narrowing (which is gentle enough that the handshake
+// always completes), and periodically STALL the link outright for ~1s. At 60fps
+// a full stall queues ~60 chunks, which is the measured onset. The first stall
+// is deliberately late so it can never land on the handshake.
+const burstSink = args.includes("--burst-sink");
+// 3000ms, not the 1000ms that first looked right. At 60fps a 1s stall queues
+// ~60 chunks - but only at divisor 1. Lever A is usually ALREADY engaged when a
+// stall lands (that is the point: the queue is under pressure), and at divisor
+// 4 the encoder is fed 15fps, so a 1s stall queues ~15 chunks and the cap is
+// never reached. Measured: a 1s-stall run peaked at 45 of 60 and the gate
+// correctly FAILED it for never entering the overflow branch. 3s covers the
+// divisor-4 case with margin and is still an ordinary uplink outage.
+const burstStallMs = Number(argValue("burst-stall-ms", 3000));
+const burstPeriodMs = Number(argValue("burst-period-ms", 20000));
+const burstFirstMs = Number(argValue("burst-first-ms", 25000));
 const pollMs = Number(argValue("poll-ms", 1000));
 // SRT LATENCY IS LOAD-BEARING FOR THE SLOW SINK, and this default is a finding,
 // not a preference. Measured on this rig: at the product default of 120ms an
@@ -141,6 +179,14 @@ const destinationId = rtmpSink ? "rtmp" : "srt";
 // listener binds `port + 1`.
 const listenerPort = slowSink && rtmpSink ? port + 1 : port;
 const rtmpListenUrl = `rtmp://127.0.0.1:${listenerPort}/live/${rtmpStreamKey}`;
+if (burstSink && !slowSink) {
+  console.error("--burst-sink requires --slow-sink (it stalls the slow sink's proxy link)");
+  process.exit(2);
+}
+if (burstSink && !(burstStallMs > 0 && burstPeriodMs > burstStallMs && burstFirstMs >= 0)) {
+  console.error("--burst-stall-ms must be > 0 and --burst-period-ms must exceed it");
+  process.exit(2);
+}
 if (slowSink && !(sinkRate > 0 && sinkRate < 1)) {
   console.error(`--sink-rate must be between 0 and 1 exclusive (got ${sinkRate})`);
   process.exit(2);
@@ -235,6 +281,26 @@ let proxyBytesForwarded = 0;
 let proxyConnections = 0;
 let proxyStartedAt = 0;
 let proxyServer = null;
+// Burst bookkeeping, reported and asserted below.
+let burstStallsApplied = 0;
+let burstStallUntil = 0;
+let burstNextAt = 0;
+let burstBaselineAt = 0;   // set when the first byte is forwarded: the stall
+                           // schedule is measured from a link that is CARRYING
+                           // the stream, never from process start.
+const burstStalling = (now) => {
+  if (!burstSink) return false;
+  if (!burstBaselineAt) return false;
+  if (!burstNextAt) burstNextAt = burstBaselineAt + burstFirstMs;
+  if (now < burstStallUntil) return true;
+  if (now >= burstNextAt) {
+    burstStallUntil = now + burstStallMs;
+    burstNextAt = now + burstPeriodMs;
+    burstStallsApplied += 1;
+    return true;
+  }
+  return false;
+};
 if (slowSink && rtmpSink) {
   proxyServer = net.createServer((client) => {
     proxyConnections += 1;
@@ -258,12 +324,20 @@ if (slowSink && rtmpSink) {
     });
     const timer = setInterval(() => {
       if (closed) return;
+      // A stall forwards NOTHING and banks NOTHING. The client keeps writing
+      // into the 64 KB hold buffer, that fills, the inbound socket is paused,
+      // TCP's receive window closes on the egress FFmpeg, its stdin backs up,
+      // and our bitstream queue ages - which is exactly the onset Task 8
+      // measured. Nothing is dropped and nothing is reordered: the link simply
+      // stops carrying for a second, the way a real uplink does.
+      if (burstStalling(Date.now())) return;
       credit += proxyCapacityBytesPerSec * (tickMs / 1000);
       while (credit >= 1 && heldBytes > 0) {
         const head = held[0];
         const take = Math.min(head.length, Math.floor(credit));
         if (take <= 0) break;
         upstream.write(head.subarray(0, take));
+        if (!burstBaselineAt) burstBaselineAt = Date.now();
         proxyBytesForwarded += take;
         credit -= take;
         heldBytes -= take;
@@ -725,6 +799,39 @@ if (slowSink) {
   console.log(`                (link ceiling ${(proxyCapacityBytesPerSec * 8 / 1e6).toFixed(2)}Mbps vs ` +
               `${bitrate}Mbps configured; a delivered rate under the ceiling is Lever A working)`);
   for (const line of backpressureLines()) console.log(`  core        : ${line.trim()}`);
+
+  // --- BURST MODE: did the run actually ENTER the overflow branch? ---------
+  // The whole point of fix round 1's harness work. `overflow-discard` is logged
+  // (rate-limited to 1/s) every time the queue hit its cap and the GOP-tail
+  // discard made room instead of failing the sender; the second line is the
+  // case where nothing was safe to drop. A burst run that logs NEITHER never
+  // reached the state it is asserting about, and must FAIL rather than pass -
+  // a gate that cannot enter its own branch reports success while testing
+  // nothing, which is how the original storm went unseen.
+  const overflowDiscardLines = coreStderr.split(/\r?\n/).filter((l) => l.includes("overflow-discard"));
+  const overflowFailLines = coreStderr.split(/\r?\n/)
+      .filter((l) => l.includes("queue overflow with nothing safe to drop"));
+  if (burstSink) {
+    console.log(`burst sink    : ${burstStallsApplied} link stall(s) of ${burstStallMs}ms ` +
+                `(first at +${burstFirstMs}ms, then every ${burstPeriodMs}ms) on top of the ${sinkRate}x link`);
+    console.log(`overflow path : ${overflowDiscardLines.length} overflow-discard line(s), ` +
+                `${overflowFailLines.length} nothing-safe-to-drop line(s)`);
+    for (const line of overflowDiscardLines.slice(0, 6)) console.log(`  core        : ${line.trim()}`);
+    for (const line of overflowFailLines.slice(0, 6)) console.log(`  core        : ${line.trim()}`);
+    if (!burstStallsApplied) {
+      failures.push("burst mode applied ZERO link stalls - the proxy never carried a byte, so the " +
+                    "stall schedule never armed and this run tested nothing");
+    } else if (overflowDiscardLines.length === 0 && overflowFailLines.length === 0) {
+      failures.push(`burst mode stalled the link ${burstStallsApplied} time(s) but the queue never ` +
+                    "reached its cap: NO overflow-discard and NO nothing-safe-to-drop line was logged, " +
+                    "so enqueueBitstream's overflow branch was never entered and this run proves " +
+                    "nothing about it. Lengthen --burst-stall-ms rather than accepting the green.");
+    }
+  } else if (overflowDiscardLines.length || overflowFailLines.length) {
+    // Sustained runs do not normally reach the cap; when they do, say so.
+    console.log(`overflow path : ${overflowDiscardLines.length} overflow-discard line(s), ` +
+                `${overflowFailLines.length} nothing-safe-to-drop line(s) (reported, not required here)`);
+  }
 
   // --- (0) Did the sink ACTUALLY throttle? ---------------------------------
   // A sink that silently fails to throttle turns every assertion below into a

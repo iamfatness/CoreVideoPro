@@ -5476,6 +5476,77 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailI
 #endif
 }
 
+// #597 Task 8b fix round 1. The residual case the first cut still failed on,
+// and the reason the ruling changed: the discard used to cut to the FIRST
+// queued keyframe, so a full queue whose ONLY keyframe sat at the HEAD freed
+// nothing and failed the sender anyway - and with the measured GOP (60 frames)
+// about the size of the cap (60 chunks), where the keyframe sits is a rolling
+// coin flip. The overflow path now cuts to the LAST queued keyframe. Same
+// safety argument (every keyframe here is a self-contained IDR), strictly more
+// room freed, and nothing about which preceding chunks are headers.
+TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesRoomInsteadOfFailing) {
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  // The cap, with a keyframe at the HEAD and one more mid-queue - the ordinary
+  // steady state at 60 fps with a 1 s GOP and a 60-chunk cap.
+  constexpr std::size_t kCap = 60;
+  constexpr std::size_t kSecondKeyframeIndex = 45;
+  for (std::size_t i = 0; i < kCap; ++i) {
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == 0 || i == kSecondKeyframeIndex);
+  }
+  const auto before = sender->bitstreamQueueSnapshotForTest();
+  ASSERT_EQ(before.depth, kCap);
+  ASSERT_TRUE(before.hasKeyframe);
+
+  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+
+  const auto after = sender->bitstreamQueueSnapshotForTest();
+  EXPECT_FALSE(after.overflowFailed)
+      << "cutting to the FIRST keyframe frees 0 here and fails the sender - which restarts it "
+         "and rebuilds the encoder, #597 itself";
+  EXPECT_EQ(after.depth, kCap - kSecondKeyframeIndex + 1)
+      << "the overflow path must cut to the LAST queued keyframe, freeing the most room a safe "
+         "cut can free";
+  EXPECT_TRUE(after.hasKeyframe) << "the keyframe cut TO must never be dropped";
+#else
+  GTEST_SKIP() << "Needs the Windows RTMP sender's bitstream queue.";
+#endif
+}
+
+// #597 Task 8b fix round 1, the case the BURST gate measured (and the reason
+// the arriving chunk became a cut point). A full queue of pure reference
+// frames - no keyframe anywhere, because the window is one GOP wide and the
+// last keyframe has already drained - while the chunk being refused is itself
+// a keyframe. Cutting to a QUEUED keyframe frees nothing here and the sender
+// fails; the decoder can resume at the ARRIVING IDR, so the whole backlog goes.
+TEST(RtmpOutputSenderBackpressure, AKeyframeArrivingAtAFullAllReferenceQueueReplacesTheWholeBacklog) {
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  constexpr std::size_t kCap = 60;
+  for (std::size_t i = 0; i < kCap; ++i) {
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  }
+  const auto before = sender->bitstreamQueueSnapshotForTest();
+  ASSERT_EQ(before.depth, kCap);
+  ASSERT_FALSE(before.hasKeyframe) << "the measured shape: 60 queued chunks, no keyframe among them";
+
+  sender->offerBitstreamChunkForTest(2000, /*keyframe=*/true);
+
+  const auto after = sender->bitstreamQueueSnapshotForTest();
+  EXPECT_FALSE(after.overflowFailed)
+      << "the sender failed with a usable cut point at the door - that restarts it and rebuilds "
+         "the encoder, which is #597 itself";
+  EXPECT_EQ(after.depth, 1u) << "the backlog is replaced by the arriving IDR";
+  EXPECT_TRUE(after.hasKeyframe);
+#else
+  GTEST_SKIP() << "Needs the Windows RTMP sender's bitstream queue.";
+#endif
+}
+
 // #597 Task 8b, the other half: a bounded queue is NOT optional. With NO
 // keyframe queued there is nothing safe to drop - dropping an arbitrary chunk
 // corrupts every frame until the next keyframe - so the overflow must still

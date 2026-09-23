@@ -249,18 +249,77 @@ class StreamBackpressurePolicy {
 // nothing" test pass even with the guard deleted - the regression this exists
 // to prevent is initializing the sentinel to `size` and then OMITTING the
 // guard, which drops the ENTIRE queue with nothing safe to resume at.
+//
+// WHICH keyframe to cut forward to is a PARAMETER, not a second copy of this
+// logic, because the two callers want opposite things (Task 8b fix round 1):
+//
+//   - `GopCutPoint::Nearest` (the default, Lever B's ordinary discard) takes
+//     the FIRST queued keyframe. Its job is recovering latency as the smallest
+//     clean skip that helps; cutting further throws away picture the situation
+//     did not need.
+//   - `GopCutPoint::Last` (the queue's OVERFLOW path) takes the LAST queued
+//     keyframe, maximising the room freed. It is the last resort and its only
+//     alternative is failing the sender, which restarts it and rebuilds the
+//     encoder - #597 itself. There, more freed room is unambiguously better.
+//
+// BOTH REST ON THE SAME SAFETY ARGUMENT, and it is the one the acceptance gate
+// measured: every keyframe sample this encoder emits is a self-contained IDR
+// carrying its own parameter sets in band (200 traced chunks each for h264 and
+// hevc), so a decoder resumes cleanly at ANY of them. This is NOT the discard
+// reasoning about which PRECEDING chunks are headers - that judgement stays
+// forbidden, and nothing here inspects a chunk for anything but `isKeyframe`.
+enum class GopCutPoint {
+  Nearest,  // first queued keyframe: the smallest clean skip
+  Last,     // last queued keyframe: the most room a safe cut can free
+};
+
 template <typename Chunks, typename IsKeyframe>
-[[nodiscard]] std::size_t discardableGopTailLength(const Chunks& chunks, IsKeyframe isKeyframe) {
+[[nodiscard]] std::size_t discardableGopTailLength(const Chunks& chunks, IsKeyframe isKeyframe,
+                                                  GopCutPoint cutPoint = GopCutPoint::Nearest) {
   const std::size_t size = chunks.size();
   std::size_t keyframeIndex = size;  // sentinel: no keyframe found yet
   for (std::size_t i = 0; i < size; ++i) {
     if (isKeyframe(chunks[i])) {
       keyframeIndex = i;
-      break;
+      if (cutPoint == GopCutPoint::Nearest) break;
+      // GopCutPoint::Last keeps scanning: the LAST keyframe wins.
     }
   }
   if (keyframeIndex == size) return 0;  // no keyframe queued: nothing safe to drop
-  return keyframeIndex;  // 0 when the keyframe is already at the head
+  return keyframeIndex;  // 0 when the chosen keyframe is already at the head
+}
+
+// #597 Task 8b fix round 1, measured half-way through: THE ARRIVING CHUNK IS
+// ALSO A CUT POINT.
+//
+// The burst gate reached the cap and the sender still failed, with this exact
+// shape (two runs, both identical):
+//
+//   nothing safe to drop (no keyframe queued); queuedBytes=590149
+//   queuedChunks=60 incomingBytes=22623
+//
+// 60 queued chunks averaging 9.8 KB - all P-frames, no keyframe anywhere, so
+// `discardableGopTailLength` correctly frees nothing - while the chunk being
+// REFUSED is 22.6 KB, keyframe-sized. The queue could not be cut because its
+// own cut point was the thing at the door. (The window is one GOP wide and the
+// GOP is 60 frames, so a queue that has just drained its keyframe holds none
+// until the next one arrives - and Lever A stretches that wait in wall time,
+// because it sheds INPUT frames while the keyframe interval is counted in
+// frames.)
+//
+// A keyframe ARRIVAL makes the entire backlog discardable: the decoder resumes
+// at that IDR, which is the identical safety argument as cutting to a queued
+// one - the gate proved every keyframe here is self-contained - and it is the
+// natural completion of "cut to the LAST keyframe", because the arrival IS the
+// newest keyframe. Nothing here inspects a chunk for anything but `isKeyframe`.
+//
+// Returns how many QUEUED chunks are safe to drop to make room for `arrival`.
+template <typename Chunks, typename IsKeyframe>
+[[nodiscard]] std::size_t discardableBacklogForArrival(const Chunks& chunks, IsKeyframe isKeyframe,
+                                                      bool arrivalIsKeyframe,
+                                                      GopCutPoint cutPoint = GopCutPoint::Nearest) {
+  if (arrivalIsKeyframe) return chunks.size();  // resume at the arriving IDR
+  return discardableGopTailLength(chunks, isKeyframe, cutPoint);
 }
 
 }  // namespace corevideo::core

@@ -2040,10 +2040,18 @@ class RtmpOutputSender final : public IOutputSender {
     return discardBacklogToNextKeyframeLocked();
   }
 
-  // Caller must hold bitstreamQueueMutex_.
-  std::size_t discardBacklogToNextKeyframeLocked() {
-    const std::size_t dropped = corevideo::core::discardableGopTailLength(
-        bitstreamQueue_, [](const QueuedBitstream& chunk) { return chunk.metadata.keyframe; });
+  // Caller must hold bitstreamQueueMutex_. `cutPoint` is the Task 8b fix-round-1
+  // split BY SITE: Lever B's ordinary discard cuts to the NEAREST keyframe (the
+  // smallest clean skip that recovers latency), the overflow path cuts to the
+  // LAST (the most room a safe cut can free, because its only alternative is
+  // failing the sender and rebuilding the encoder). The choice is a parameter
+  // on the pure policy, never a second copy of the logic.
+  std::size_t discardBacklogToNextKeyframeLocked(
+      corevideo::core::GopCutPoint cutPoint = corevideo::core::GopCutPoint::Nearest,
+      bool arrivalIsKeyframe = false) {
+    const std::size_t dropped = corevideo::core::discardableBacklogForArrival(
+        bitstreamQueue_, [](const QueuedBitstream& chunk) { return chunk.metadata.keyframe; },
+        arrivalIsKeyframe, cutPoint);
     for (std::size_t i = 0; i < dropped; ++i) {
       bitstreamQueuedBytes_ -= bitstreamQueue_.front().bytes.size();
       bitstreamQueue_.pop_front();
@@ -2164,10 +2172,16 @@ class RtmpOutputSender final : public IOutputSender {
   //
   // So on overflow we spend LEVER B first - the GOP-tail discard, at the one
   // moment it matters most - and accept the arriving chunk if that freed room.
-  // Failing is reserved for the case where the discard frees NOTHING, i.e. no
-  // keyframe is queued, which is the one case where dropping anything would
-  // corrupt the stream until the next keyframe. The cap is NOT raised: an
-  // unbounded queue is unbounded latency, the defect this all exists to remove.
+  // Failing is reserved for the case where the discard frees NOTHING - which,
+  // since fix round 1 cut this site to the LAST keyframe and let the ARRIVING
+  // chunk be a cut point too, means "no keyframe anywhere, queued or
+  // arriving", the one case where
+  // dropping anything would corrupt the stream until the next keyframe. (Cutting
+  // to the FIRST keyframe left a second, avoidable failure: a full queue whose
+  // only keyframe sat at the HEAD freed nothing and failed the sender anyway,
+  // and with the GOP about the size of the queue that position is a rolling
+  // coin flip.) The cap is NOT raised: an unbounded queue is unbounded latency,
+  // the defect this all exists to remove.
   //
   // This also removes by construction the divisor > 1 race the gate named:
   // Lever B's ordinary trigger cannot fire until Lever A has stepped (~0.5 s),
@@ -2191,7 +2205,8 @@ class RtmpOutputSender final : public IOutputSender {
       if (full()) {
         // Already holding bitstreamQueueMutex_ - hence the ...Locked form (see
         // the deadlock note on discardBacklogToNextKeyframe).
-        const std::size_t dropped = discardBacklogToNextKeyframeLocked();
+        const std::size_t dropped = discardBacklogToNextKeyframeLocked(
+            corevideo::core::GopCutPoint::Last, /*arrivalIsKeyframe=*/chunk.keyframe);
         if (dropped > 0) {
           overflowDiscardedChunks_.fetch_add(static_cast<std::int64_t>(dropped),
                                              std::memory_order_relaxed);

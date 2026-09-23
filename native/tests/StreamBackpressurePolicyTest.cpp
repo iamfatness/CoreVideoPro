@@ -5,6 +5,8 @@
 #include <vector>
 
 using corevideo::core::discardableGopTailLength;
+using corevideo::core::discardableBacklogForArrival;
+using corevideo::core::GopCutPoint;
 using corevideo::core::StreamBackpressureObservation;
 using corevideo::core::StreamBackpressurePolicy;
 using corevideo::core::StreamBackpressureTransition;
@@ -221,6 +223,93 @@ TEST(StreamBackpressurePolicy, DiscardableGopTailLength_StopsAtTheFirstKeyframeN
 // pinned the case where the keyframe is LAST and the whole rest of the queue is
 // discardable - the shape that recovers the most latency and is therefore the
 // one most worth getting wrong by one.
+// --- Task 8b fix round 1: the cut point is a PARAMETER, split by site. ------
+//
+// Lever B's ordinary discard keeps cutting to the NEAREST keyframe (every test
+// above, which passes no cut point at all and therefore also pins the DEFAULT).
+// The queue's OVERFLOW path cuts to the LAST, because its only alternative is
+// failing the sender and rebuilding the encoder. Both rest on the same safety
+// argument - every keyframe here is a self-contained IDR - so neither inspects
+// a chunk for anything but `isKeyframe`.
+
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_LastCutPointTakesTheFurthestKeyframe) {
+  // [P, K, P, K, P] - Nearest frees 1, Last frees 3. Same queue, same safety.
+  const std::vector<bool> twoKeyframes{false, true, false, true, false};
+  EXPECT_EQ(discardableGopTailLength(twoKeyframes, identity(), GopCutPoint::Nearest), 1u);
+  EXPECT_EQ(discardableGopTailLength(twoKeyframes, identity(), GopCutPoint::Last), 3u)
+      << "the last resort must free the most room a safe cut can free";
+}
+
+// THE CASE FIX ROUND 1 EXISTS FOR. A full queue whose ONLY keyframe is at the
+// head frees NOTHING under Nearest - so the overflow path failed the sender,
+// and with the GOP about the size of the queue that position is a rolling coin
+// flip. Under Last it is unchanged, because the head keyframe IS the last one:
+// this is the boundary that proves Last is not a blanket "drop more" - there is
+// genuinely nothing ahead of it.
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_LastCutPointStillDropsNothingForAHeadOnlyKeyframe) {
+  const std::vector<bool> keyframeFirst{true, false, false, false};
+  EXPECT_EQ(discardableGopTailLength(keyframeFirst, identity(), GopCutPoint::Last), 0u);
+}
+
+// ...and the shape that actually rescues the head-keyframe case at the cap: a
+// LATER keyframe exists, so Last frees the whole run ahead of it where Nearest
+// would have frozen at 0 and failed the sender.
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_LastCutPointFreesRoomWhereNearestFreesNone) {
+  const std::vector<bool> headKeyframeThenAnother{true, false, false, true, false};
+  EXPECT_EQ(discardableGopTailLength(headKeyframeThenAnother, identity(), GopCutPoint::Nearest), 0u);
+  EXPECT_EQ(discardableGopTailLength(headKeyframeThenAnother, identity(), GopCutPoint::Last), 3u);
+}
+
+// The not-found guard must survive the Last scan too: it keeps assigning
+// `keyframeIndex` as it walks, so a range with NO keyframe must still leave the
+// `size` sentinel intact and return 0 rather than dropping the whole queue.
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_LastCutPointWithNoKeyframeStillDropsNothing) {
+  const std::vector<bool> allReferenceFrames{false, false, false, false, false};
+  EXPECT_EQ(discardableGopTailLength(allReferenceFrames, identity(), GopCutPoint::Last), 0u);
+}
+
+// An all-keyframe queue is the maximum-drop boundary under Last: every chunk
+// but the final keyframe is ahead of the cut point, so `size - 1` is dropped.
+// That is correct - each is independently decodable, and the stream resumes at
+// the newest picture - and it is the value most worth pinning, because it is
+// the one place an off-by-one would drop the chunk we are cutting TO.
+TEST(StreamBackpressurePolicy, DiscardableGopTailLength_LastCutPointOnAnAllKeyframeQueueKeepsOnlyTheNewest) {
+  const std::vector<bool> allKeyframes{true, true, true};
+  EXPECT_EQ(discardableGopTailLength(allKeyframes, identity(), GopCutPoint::Nearest), 0u);
+  EXPECT_EQ(discardableGopTailLength(allKeyframes, identity(), GopCutPoint::Last), 2u)
+      << "never size (that would drop the keyframe being cut to), never 0";
+}
+
+// --- The arriving chunk is a cut point too (fix round 1, second half). -----
+// Measured on the burst gate: 60 queued P-frames, no keyframe anywhere, and
+// the chunk being refused was itself keyframe-sized. The queue could not be
+// cut because its own cut point was at the door.
+TEST(StreamBackpressurePolicy, DiscardableBacklogForArrival_AKeyframeArrivalMakesTheWholeBacklogDiscardable) {
+  const std::vector<bool> allReferenceFrames{false, false, false, false, false};
+  EXPECT_EQ(discardableBacklogForArrival(allReferenceFrames, identity(), /*arrivalIsKeyframe=*/false,
+                                         GopCutPoint::Last),
+            0u)
+      << "no keyframe queued and none arriving: there is genuinely nothing safe to drop";
+  EXPECT_EQ(discardableBacklogForArrival(allReferenceFrames, identity(), /*arrivalIsKeyframe=*/true,
+                                         GopCutPoint::Last),
+            5u)
+      << "the decoder resumes at the arriving IDR, so the whole backlog is discardable";
+}
+
+// A non-keyframe arrival changes nothing anywhere: this delegates to
+// discardableGopTailLength unchanged, including its cut point.
+TEST(StreamBackpressurePolicy, DiscardableBacklogForArrival_ANonKeyframeArrivalDelegatesUnchanged) {
+  const std::vector<bool> twoKeyframes{false, true, false, true, false};
+  EXPECT_EQ(discardableBacklogForArrival(twoKeyframes, identity(), false, GopCutPoint::Nearest), 1u);
+  EXPECT_EQ(discardableBacklogForArrival(twoKeyframes, identity(), false, GopCutPoint::Last), 3u);
+  EXPECT_EQ(discardableBacklogForArrival(twoKeyframes, identity(), true, GopCutPoint::Last), 5u);
+}
+
+TEST(StreamBackpressurePolicy, DiscardableBacklogForArrival_AKeyframeArrivalOnAnEmptyQueueDropsNothing) {
+  const std::vector<bool> empty;
+  EXPECT_EQ(discardableBacklogForArrival(empty, identity(), true, GopCutPoint::Last), 0u);
+}
+
 TEST(StreamBackpressurePolicy, DiscardableGopTailLength_DropsEveryChunkAheadOfATrailingKeyframe) {
   const std::vector<bool> chunks{false, false, false, true};
   EXPECT_EQ(corevideo::core::discardableGopTailLength(
