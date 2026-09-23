@@ -660,7 +660,7 @@ class RtmpOutputSender final : public IOutputSender {
     if (!wantsRtmp) {
       stopFfmpegProcess();
       videoFramePacer_.reset();
-      clearFfmpegRetryBackoff();
+      restartFloor_.clear();
       startRefusedInadmissible_ = false;  // Stream off/on re-evaluates the refusal
       // #597 Lever A: A STOPPED DESTINATION HAS NO QUEUE. observeStreamBackpressure()
       // lives far below this return, so without these two lines the stopped record
@@ -902,7 +902,10 @@ class RtmpOutputSender final : public IOutputSender {
         sender_.lastResultCode = "ffmpeg-write-failed";
       }
       const auto proofStatus = sender_.lastResultCode;
-      scheduleFfmpegRetry();
+      // #597: climb the ladder. This is the site the incident hammered — a
+      // queue overflow, a 1 s wait, a rebuild, one accepted frame, and round
+      // again at 2.5–3.5 s. The streak now survives that one frame.
+      restartFloor_.noteFailure(static_cast<std::int64_t>(elapsedMs));
       // STOP FIRST, THEN READ THE STDERR. A failed stdin write is observed the
       // instant the pipe breaks, which is BEFORE FFmpeg has flushed the line that
       // says why - measured live 2026-09-12 against a refusing endpoint, where the
@@ -932,7 +935,10 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
     sender_.destinationHealth = "ok";
     sender_.lastResultCode = "encoder-input-accepted";
-    clearFfmpegRetryBackoff();
+    // NOT clear(): a single accepted frame is a launch, not a healthy run. The
+    // budget comes back only after kHealthyRunMs of this run accepting output —
+    // the same rule OutputDestinationSupervisorPolicy states for the supervisor.
+    restartFloor_.noteAccepted(static_cast<std::int64_t>(elapsedMs));
     appendSendProof(frame, "sent");
     return snapshot();
   }
@@ -957,7 +963,11 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
     stopFfmpegProcess();
-    clearFfmpegRetryBackoff();
+    // The operator/supervisor reset. recover() is what the output supervisor
+    // calls when ITS ladder admits a restart, so clearing the adapter-local
+    // floor here is what keeps the supervisor the senior authority rather than
+    // making an operator wait out both ladders.
+    restartFloor_.clear();
     runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     runtimeDetail_ = runtimeProbe_.detail;
     runtimeAvailable_ = runtimeProbe_.available;
@@ -1212,11 +1222,20 @@ class RtmpOutputSender final : public IOutputSender {
       return true;
     }
 
-    if (!ffmpegRunning_ && ffmpegRetryAfter_ != std::chrono::steady_clock::time_point{} &&
-        std::chrono::steady_clock::now() < ffmpegRetryAfter_) {
-      const auto retryMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                               ffmpegRetryAfter_ - std::chrono::steady_clock::now())
-                               .count();
+    // #597 THE RESTART FLOOR. This is the ONE gate every re-open of this
+    // destination's transport passes through, and until 2026-09-23 it was the
+    // adapter's own private ladder: first rung ONE second (below the house
+    // ladder's five), and cleared by the first accepted frame. A destination
+    // that came up, took a frame and died was therefore rebuilt every ~3 s
+    // forever — the eight rebuilds in eighteen seconds of the #597 incident,
+    // only two of which the supervisor ever decided. It now holds the house
+    // ladder (TransportRestartFloor), so no two opens of one destination are
+    // closer together than the ladder's current rung.
+    //
+    // It is deliberately gated on `!ffmpegRunning_`: a settings change while the
+    // transport is up is operator intent and restarts immediately.
+    if (!ffmpegRunning_ && !restartFloor_.mayOpenAt(static_cast<std::int64_t>(elapsedMs))) {
+      const auto retryMs = restartFloor_.remainingMs(static_cast<std::int64_t>(elapsedMs));
       sender_.status = "failed";
       sender_.destinationHealth = "failed";
       sender_.lastResultCode = "ffmpeg-retry-backoff";
@@ -1247,6 +1266,8 @@ class RtmpOutputSender final : public IOutputSender {
     useGpuDirect_ = desiredGpuDirect;  // startFfmpegProcess may downgrade if the encoder fails to start
     if (startFfmpegProcess(width, height, pixelFormat)) {
       activeUseGpuDirect_ = useGpuDirect_;
+      // The healthy-RUN window opens here, not at the first accepted frame.
+      restartFloor_.noteOpened(static_cast<std::int64_t>(elapsedMs));
       sender_.startedAtMs = elapsedMs;
       sender_.destinationHealth = "starting";
       sender_.lastResultCode = "ffmpeg-started";
@@ -1256,22 +1277,11 @@ class RtmpOutputSender final : public IOutputSender {
     if (startRefusedInadmissible_) {
       // A configuration refusal is not a transient failure: leave the named code
       // and sentence standing instead of burying them under ffmpeg-retry-backoff.
-      clearFfmpegRetryBackoff();
+      restartFloor_.clear();
     } else {
-      scheduleFfmpegRetry();
+      restartFloor_.noteFailure(static_cast<std::int64_t>(elapsedMs));
     }
     return false;
-  }
-
-  void scheduleFfmpegRetry() {
-    consecutiveFfmpegFailures_ = (std::min)(consecutiveFfmpegFailures_ + 1, 6);
-    const int delaySeconds = (std::min)(30, 1 << (consecutiveFfmpegFailures_ - 1));
-    ffmpegRetryAfter_ = std::chrono::steady_clock::now() + std::chrono::seconds(delaySeconds);
-  }
-
-  void clearFfmpegRetryBackoff() {
-    consecutiveFfmpegFailures_ = 0;
-    ffmpegRetryAfter_ = {};
   }
 
   // Never emit a raw endpoint: RTMP carries the stream key in the path and SRT
@@ -2555,8 +2565,9 @@ class RtmpOutputSender final : public IOutputSender {
   double activeBitrateMbps_ = 0;
   int activeAudioBitrateKbps_ = 0;
   bool ffmpegRunning_ = false;
-  int consecutiveFfmpegFailures_ = 0;
-  std::chrono::steady_clock::time_point ffmpegRetryAfter_{};
+  // #597 the restart floor: the house 5/10/20/40/60 s ladder, keyed on the same
+  // monotonic `elapsedMs` clock the video pacer already uses.
+  TransportRestartFloor restartFloor_;
   // Latest real program-audio mix for this tick (interleaved float PCM), and the
   // audio layout currently baked into the running FFmpeg process. `pending*` is
   // refreshed by sync(); `active*` reflects the live process configuration.

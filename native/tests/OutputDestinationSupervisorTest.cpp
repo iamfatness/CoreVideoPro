@@ -19,6 +19,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <filesystem>
+#include <system_error>
+#include <vector>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -612,4 +616,222 @@ TEST(OutputDestinationSupervisor, SupervisorActionsNeverRunOnTheCallersThread) {
   }
   ASSERT_GT(child->interrupts(), 0) << "the supervisor never acted";
   EXPECT_NE(child->actionThread(), std::this_thread::get_id());
+}
+
+// ---------------------------------------------------------------------------
+// #597 — THE RESTART FLOOR
+// ---------------------------------------------------------------------------
+// Step 1 finding (2026-09-23), from the incident logs themselves: the eight
+// encoder rebuilds between 21:09:10.48 and 21:09:28.49 were NOT the
+// supervisor's. Only two `[outputSupervisor] restarting rtmp` lines exist in
+// that window; the other six `[gpu-encode] started` lines have no supervisor
+// decision behind them at all. They came from
+// `RtmpOutputSenderAdapter::ensureFfmpegProcess`, which re-opens its own
+// transport from the media tick under an adapter-local backoff whose first rung
+// was ONE second (below the house ladder's five) and whose streak was cleared by
+// the FIRST accepted frame. Overflow -> 1 s -> rebuild -> one accepted frame ->
+// ~2 s -> overflow: the incident's 2.5-3.5 s cadence, measured off the log.
+//
+// The ladder was never "not applied" — it was never consulted.
+//
+// `kHealthyRunMs` (30 s) is ruled out explicitly and twice over: it cannot
+// produce a 2.5-3.5 s interval at all, and the supervisor did not decide six of
+// the eight rebuilds, so no supervisor budget could have been involved in them.
+
+TEST(TransportRestartFloor, TheFloorIsTheHouseLadderAndTheFirstOpenIsNeverDelayed) {
+  TransportRestartFloor floor;
+  EXPECT_TRUE(floor.mayOpenAt(0)) << "a destination's FIRST open must never wait";
+
+  floor.noteOpened(0);
+  floor.noteFailure(1'000);
+  EXPECT_FALSE(floor.mayOpenAt(1'000 + 4'999));
+  EXPECT_TRUE(floor.mayOpenAt(1'000 + 5'000)) << "rung 1 is 5s, not the old 1s";
+
+  floor.noteOpened(6'000);
+  floor.noteFailure(7'000);
+  EXPECT_FALSE(floor.mayOpenAt(7'000 + 9'999));
+  EXPECT_TRUE(floor.mayOpenAt(7'000 + 10'000));
+
+  floor.noteOpened(20'000);
+  floor.noteFailure(21'000);
+  EXPECT_TRUE(floor.mayOpenAt(21'000 + 20'000));
+  floor.noteOpened(50'000);
+  floor.noteFailure(51'000);
+  EXPECT_TRUE(floor.mayOpenAt(51'000 + 40'000));
+  floor.noteOpened(100'000);
+  floor.noteFailure(101'000);
+  EXPECT_TRUE(floor.mayOpenAt(101'000 + 60'000)) << "capped at 60s";
+  EXPECT_FALSE(floor.mayOpenAt(101'000 + 59'999));
+}
+
+TEST(TransportRestartFloor, OneAcceptedFrameDoesNotReturnTheBudgetButAHealthyRunDoes) {
+  TransportRestartFloor floor;
+  floor.noteOpened(0);
+  floor.noteFailure(1'000);
+  EXPECT_EQ(floor.consecutiveFailures(), 1);
+
+  // The incident's exact shape: the transport re-opens and accepts output, then
+  // dies again well inside the healthy-run window.
+  floor.noteOpened(6'000);
+  floor.noteAccepted(6'100);
+  floor.noteAccepted(8'000);
+  EXPECT_EQ(floor.consecutiveFailures(), 1)
+      << "a restart that produces one frame and dies must CLIMB the ladder";
+  floor.noteFailure(8'500);
+  EXPECT_FALSE(floor.mayOpenAt(8'500 + 9'999)) << "rung 2 is 10s";
+  EXPECT_TRUE(floor.mayOpenAt(8'500 + 10'000));
+
+  // A real healthy run returns the budget.
+  floor.noteOpened(20'000);
+  floor.noteAccepted(20'000 + OutputDestinationSupervisorPolicy::kHealthyRunMs - 1);
+  EXPECT_EQ(floor.consecutiveFailures(), 2) << "one millisecond short is not a run";
+  floor.noteAccepted(20'000 + OutputDestinationSupervisorPolicy::kHealthyRunMs);
+  EXPECT_EQ(floor.consecutiveFailures(), 0);
+  EXPECT_TRUE(floor.mayOpenAt(20'000 + OutputDestinationSupervisorPolicy::kHealthyRunMs));
+}
+
+TEST(TransportRestartFloor, AnOperatorOrSupervisorResetClearsTheFloor) {
+  TransportRestartFloor floor;
+  floor.noteOpened(0);
+  floor.noteFailure(0);
+  floor.noteFailure(0);
+  EXPECT_FALSE(floor.mayOpenAt(1));
+  floor.clear();
+  EXPECT_TRUE(floor.mayOpenAt(1));
+  EXPECT_EQ(floor.consecutiveFailures(), 0);
+}
+
+// THE WHOLE DECISION, NOT THE LEAF (CLAUDE.md #481 / #506).
+//
+// The three tests above are built against TransportRestartFloor alone, and a
+// regression that put `clearFfmpegRetryBackoff()` back at the accepted-frame
+// call site — which is exactly the defect — leaves every one of them green.
+// This one drives a REAL RtmpOutputSender through its REAL `sync()` with the
+// destination list RE-SYNCED on every tick, the way renderVideoOutputTick does,
+// and measures the interval between successive transport opens.
+//
+// The destination is 127.0.0.1:1, so every FFmpeg launch dies at connect. The
+// program frame is deliberately TINY (64x36 BGRA, 9216 bytes) so it fits inside
+// the stdin pipe buffer and the first write of each generation SUCCEEDS: that
+// accepted frame is the thing the old code reset its streak on, so without it
+// this test could not tell the two defects apart.
+//
+// MEASURED, both ways, on this rig. Pre-fix: 6725 ms then 6691 ms - FLAT, the
+// second one 3.3 s inside the rung it should have been serving, because that
+// one accepted frame called clearFfmpegRetryBackoff() every single generation.
+// Post-fix: 5742 ms then 10266 ms - rung 1 then rung 2, each carrying the ~0.7 s
+// the FFmpeg child lived on top.
+//
+// NOTE what this harness does NOT reproduce: the incident's sub-5 s interval.
+// Here a refused RTMP connect keeps FFmpeg alive ~6 s, so even the old 1 s rung
+// produced a 6.7 s gap. What it DOES reproduce is the amplifier - a ladder that
+// never climbs is an unbounded rebuild loop whatever its first rung. The rung
+// VALUE (1 s vs 5 s) is pinned by TransportRestartFloor's own tests above.
+//
+// This one is SLOW on purpose (~23 s): the floor is a real wait an operator
+// serves, and the clock it is keyed to is part of what is under test, so the
+// test cannot fast-forward it without assuming the answer.
+TEST(OutputDestinationSupervisor, RestartsAreNeverCloserThanTheCurrentLadderRung) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  std::error_code missing;
+  if (!std::filesystem::exists(std::filesystem::path("C:\\ffmpeg\\bin") / "ffmpeg.exe", missing)) {
+    std::fprintf(stderr,
+                 "[  SKIPPED ] OutputDestinationSupervisor."
+                 "RestartsAreNeverCloserThanTheCurrentLadderRung (ffmpeg absent at"
+                 " C:\\ffmpeg\\bin) - this test did NOT run\n");
+    return;
+  }
+  auto sender = createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  ProgramFrame frame{64, 36, 2, 7, "restart-floor", "d3d11"};
+  frame.programFullBgra.width = 64;
+  frame.programFullBgra.height = 36;
+  frame.programFullBgra.bgra.assign(64u * 36u * 4u, 0x10);
+
+  OutputDestinationSettings settings;
+  settings.id = "rtmp";
+  settings.label = "RTMP";
+  settings.protocol = "rtmp";
+  // Port 1: the connect is refused immediately, so every launched FFmpeg dies
+  // without ever reaching the destination. No network, no listener, no waiting.
+  settings.url = "rtmp://127.0.0.1:1/live";
+  settings.streamKey = "restart-floor";
+  settings.ffmpegBinDirectory = "C:\\ffmpeg\\bin";
+  settings.videoCodec = "h264";
+
+  // The sender's clock is the `elapsedMs` argument MediaCore feeds it, so the
+  // test drives it from real wall time: the point of the assertion is the floor
+  // an operator actually waits out, and a virtual clock would let a build whose
+  // backoff is keyed to something else (the pre-fix adapter's own steady_clock)
+  // look correct. Three opens is two intervals — 5 s then 10 s — which is the
+  // smallest window in which "below the first rung" and "the ladder never
+  // climbed" are both falsifiable.
+  std::vector<double> opens;
+  bool sawAcceptedFrame = false;
+  double lastStartedAtMs = -1;
+  const auto wallStart = std::chrono::steady_clock::now();
+  const auto wallDeadline = wallStart + std::chrono::seconds(75);
+  while (opens.size() < 3 && std::chrono::steady_clock::now() < wallDeadline) {
+    const double elapsedMs = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - wallStart)
+            .count());
+    const auto session = sender->sync({"rtmp"}, &frame, elapsedMs, {settings});
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (session.senders.empty()) continue;
+    const auto& record = session.senders.front();
+    if (record.lastResultCode == "ffmpeg-missing" || record.lastResultCode == "runtime-missing") {
+      std::fprintf(stderr,
+                   "[  SKIPPED ] OutputDestinationSupervisor."
+                   "RestartsAreNeverCloserThanTheCurrentLadderRung (%s) - this test did"
+                   " NOT run\n", record.lastResultCode.c_str());
+      return;
+    }
+    // A transport OPEN, not a status string: `startedAtMs` is stamped by
+    // ensureFfmpegProcess the instant startFfmpegProcess() succeeds, and
+    // lastResultCode is overwritten by the first accepted frame in the SAME
+    // sync() call, so it cannot be used to count opens.
+    if (record.startedAtMs != lastStartedAtMs) {
+      lastStartedAtMs = record.startedAtMs;
+      opens.push_back(record.startedAtMs);
+    }
+    if (record.lastResultCode == "encoder-input-accepted") sawAcceptedFrame = true;
+  }
+
+  ASSERT_GE(opens.size(), 3u)
+      << "this test proves nothing unless the sender actually re-opened its"
+         " transport several times (opens=" << opens.size() << ")";
+  EXPECT_TRUE(sawAcceptedFrame)
+      << "the accepted frame is the thing the pre-fix code reset its streak on;"
+         " without one this test cannot distinguish the two defects";
+
+  std::vector<double> intervals;
+  for (std::size_t i = 1; i < opens.size(); ++i) intervals.push_back(opens[i] - opens[i - 1]);
+
+  for (std::size_t i = 0; i < intervals.size(); ++i) {
+    std::fprintf(stderr, "[restart-floor] interval %zu = %.0fms\n", i, intervals[i]);
+  }
+  // THE PROPERTY: interval i must be at least the rung the ladder has reached by
+  // then. Each interval also carries the transport's own lifetime (the seconds
+  // FFmpeg lived before its write failed), so the rung is a FLOOR, never an
+  // equality - which is exactly how the assertion is stated.
+  for (std::size_t i = 0; i < intervals.size(); ++i) {
+    const auto rungMs = static_cast<double>(
+        OutputDestinationSupervisorPolicy::backoffMsForFailureCount(static_cast<int>(i)));
+    EXPECT_GE(intervals[i], rungMs)
+        << "interval " << i << " (" << intervals[i] << "ms) is closer than the ladder's"
+           " rung " << (i + 1) << " (" << rungMs << "ms) - either the floor is below the"
+           " house ladder, or a restart that accepted one frame and died returned the"
+           " budget. Both were true before #597 task 7; the measured pre-fix sequence"
+           " was a FLAT 6735ms / 6703ms.";
+    if (i > 0) {
+      EXPECT_GE(intervals[i], intervals[i - 1])
+          << "the ladder went BACKWARDS between interval " << (i - 1) << " and " << i
+          << " - something is returning the budget without a healthy run";
+    }
+  }
+#else
+  EXPECT_TRUE(true) << "Needs the RTMP sender.";
+#endif
 }

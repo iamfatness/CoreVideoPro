@@ -364,4 +364,84 @@ class OutputDestinationSupervisorPolicy {
   std::string terminalReason_;
 };
 
+// ---------------------------------------------------------------------------
+// #597 — THE RESTART FLOOR
+// ---------------------------------------------------------------------------
+// The supervisor above is not the only thing that can rebuild a destination.
+// An adapter that re-opens its OWN transport from the media tick (the RTMP/SRT
+// sender's ensureFfmpegProcess is the one in this tree) is a second restart
+// authority, and on 2026-09-22 it rebuilt the encoder EIGHT times in eighteen
+// seconds, 2.5–3.5 s apart, while only two of those rebuilds carried an
+// `[outputSupervisor] restarting` line. The ladder was not "not applied" — it
+// was not consulted, because the restarts were never the supervisor's.
+//
+// This is the ladder, in a form such an authority can hold. Two rules, and the
+// second is the one the incident broke:
+//
+//   * THE FLOOR IS THE HOUSE LADDER'S CURRENT RUNG — 5, 10, 20, 40, 60 s. Two
+//     opens of one destination are never closer together than that. The old
+//     adapter-local backoff started at ONE second, below the first rung.
+//   * A RUN RETURNS THE BUDGET ONLY AFTER kHealthyRunMs (30 s) OF ACCEPTING.
+//     The old adapter-local backoff was cleared by the FIRST accepted frame, so
+//     a destination that came up, took one frame and died reset the ladder to
+//     rung one every single time — which is exactly the shape the policy header
+//     above already forbids for the supervisor ("A restart that produces one
+//     frame and dies must climb the ladder, not reset it").
+//
+// Pure, injected clock, no threads. The caller supplies a monotonic millisecond
+// clock; the sender uses the same `elapsedMs` it already paces video with.
+class TransportRestartFloor {
+ public:
+  // True when a (re)open is admissible at nowMs. Always true before the first
+  // failure, so a destination's FIRST open is never delayed.
+  [[nodiscard]] bool mayOpenAt(std::int64_t nowMs) const { return nowMs >= floorUntilMs_; }
+
+  [[nodiscard]] std::int64_t remainingMs(std::int64_t nowMs) const {
+    return floorUntilMs_ > nowMs ? floorUntilMs_ - nowMs : 0;
+  }
+
+  // The transport failed. Climbs one rung and arms the floor against the rung
+  // the streak has now reached.
+  void noteFailure(std::int64_t nowMs) {
+    runOpen_ = false;
+    floorUntilMs_ = nowMs + OutputDestinationSupervisorPolicy::backoffMsForFailureCount(failures_);
+    failures_ = (std::min)(failures_ + 1, OutputDestinationSupervisorPolicy::kMaxConsecutiveFailures);
+  }
+
+  // The transport was (re)opened at nowMs. Starts the healthy-run window; it
+  // does NOT return any budget.
+  void noteOpened(std::int64_t nowMs) {
+    runOpen_ = true;
+    runOpenedMs_ = nowMs;
+  }
+
+  // The transport accepted output. Returns the budget ONLY once this run has
+  // been accepting for kHealthyRunMs — never on the first accepted frame.
+  void noteAccepted(std::int64_t nowMs) {
+    if (!runOpen_) return;
+    if (nowMs - runOpenedMs_ < OutputDestinationSupervisorPolicy::kHealthyRunMs) return;
+    failures_ = 0;
+    floorUntilMs_ = 0;
+  }
+
+  // Operator / supervisor intervention: a recover(), a re-arm, or the stream
+  // being switched off and on. Always clears the floor, exactly like
+  // OutputDestinationSupervisorPolicy::reset().
+  void clear() {
+    failures_ = 0;
+    floorUntilMs_ = 0;
+    runOpen_ = false;
+    runOpenedMs_ = 0;
+  }
+
+  [[nodiscard]] int consecutiveFailures() const { return failures_; }
+
+ private:
+  int failures_ = 0;
+  bool runOpen_ = false;
+  std::int64_t runOpenedMs_ = 0;
+  std::int64_t floorUntilMs_ = 0;
+};
+
+
 }  // namespace corevideo::modules
