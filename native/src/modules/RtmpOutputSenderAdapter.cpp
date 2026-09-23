@@ -1315,11 +1315,16 @@ class RtmpOutputSender final : public IOutputSender {
       // Say what is actually true: not delivering, a retry IS scheduled, and
       // this is rung N of a bounded ladder - not a destination we have given up
       // on. Give-up is the supervisor's word and reads `supervisor-gave-up`.
+      // NOT "attempt K of 5". The streak CLAMPS at kMaxConsecutiveFailures, so
+      // an "of 5" form publishes "attempt 6 of 5" forever once the ladder tops
+      // out - and it implies a give-up this floor never performs. The floor
+      // retries at the top rung indefinitely; give-up belongs to the supervisor
+      // and has its own word (`supervisor-gave-up`). Say the rung, not a fake
+      // countdown.
       sender_.warning = sender_.lastError + " Retry paused for " +
                         std::to_string((std::max)(int64_t{1}, retryMs / 1000 + 1)) +
-                        "s (attempt " + std::to_string(restartFloor_.consecutiveFailures() + 1) +
-                        " of " +
-                        std::to_string(OutputDestinationSupervisorPolicy::kMaxConsecutiveFailures) + ").";
+                        "s (consecutive failures: " +
+                        std::to_string(restartFloor_.consecutiveFailures()) + ").";
       return false;
     }
 
