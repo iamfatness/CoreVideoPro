@@ -716,6 +716,13 @@ struct BitstreamQueueSnapshotForTest {
   std::size_t depth = 0;
   bool hasKeyframe = false;
   std::int64_t bufferedMs = 0;
+  // #597 Task 8b. True once the queue's overflow path has FAILED the sender
+  // (BitstreamFailure::QueueOverflow). The sender-level symptom - status
+  // "failed", lastResultCode "bitstream-queue-overflow" - only appears on a
+  // sync() tick that actually reaches submitFrameToGpuEncoder(), i.e. with a
+  // real hardware encoder and a launched FFmpeg, so a test that drives the
+  // queue alone needs to read the failure where it is RECORDED.
+  bool overflowFailed = false;
 };
 
 struct OutputSender {
@@ -1319,6 +1326,13 @@ class IOutputSender {
   // encoder, so that one call-site test can run without a hardware encoder
   // and a real congested network.
   virtual void enqueueBitstreamChunkForTest(std::size_t /*bytes*/, bool /*keyframe*/) {}
+  // TEST-ONLY (same structural guard). #597 Task 8b. The seam above pushes
+  // STRAIGHT onto the queue so a discard test can build a backlog; this one
+  // offers a chunk through the REAL enqueueBitstream(), which is where the
+  // 60-chunk / 2 MiB bound - and, since Task 8b, the last-resort GOP-tail
+  // discard that replaced failing the sender - actually lives. Nothing else
+  // can drive that path without a hardware encoder and a congested network.
+  virtual void offerBitstreamChunkForTest(std::size_t /*bytes*/, bool /*keyframe*/) {}
   // TEST-ONLY (same structural guard). One read of the queue's true state -
   // depth, whether a keyframe is queued, and the real bitstreamBufferedMs()
   // measurement - unaffected by setBackpressureObservationForTest()'s

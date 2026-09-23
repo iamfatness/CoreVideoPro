@@ -5426,6 +5426,86 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
 #endif
 }
 
+// #597 Task 8b. THE DEFECT the acceptance gate (Task 8) measured: the outgoing
+// queue's overflow path failed the sender ON PURPOSE so the supervisor would
+// restart it - and a supervisor restart rebuilds the encoder, which is the one
+// thing this whole sub-project exists to stop. A destination fault must never
+// rebuild the encoder.
+//
+// The bound itself is not optional (an unbounded queue is unbounded latency),
+// so the fix is to spend Lever B at the moment it matters most: on overflow,
+// run the GOP-tail discard FIRST and accept the chunk if that freed room.
+// Here the full queue CONTAINS a keyframe, so there is a safe unit to drop and
+// the sender must survive.
+//
+// Drives the REAL enqueueBitstream() through offerBitstreamChunkForTest - the
+// direct-push seam next to it deliberately bypasses the bound, so it cannot
+// see this at all.
+TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailInsteadOfFailingTheSender) {
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  // Fill the real queue to its hard cap with a keyframe 30 chunks in - the
+  // middle of the GOP, the ordinary case at 60 fps with a 1 s GOP.
+  constexpr std::size_t kCap = 60;
+  constexpr std::size_t kKeyframeIndex = 30;
+  for (std::size_t i = 0; i < kCap; ++i) {
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == kKeyframeIndex);
+  }
+  const auto before = sender->bitstreamQueueSnapshotForTest();
+  ASSERT_EQ(before.depth, kCap) << "the queue must actually be AT the cap, or this proves nothing";
+  ASSERT_TRUE(before.hasKeyframe);
+  ASSERT_FALSE(before.overflowFailed);
+
+  // One more chunk arrives from the encoder with the queue already full.
+  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+
+  const auto after = sender->bitstreamQueueSnapshotForTest();
+  EXPECT_FALSE(after.overflowFailed)
+      << "the overflow path failed the sender while a keyframe was queued: its supervisor "
+         "will restart it and rebuild the encoder, which is #597 itself";
+  EXPECT_LT(after.depth, before.depth)
+      << "the queue must have SHRUNK - the discard is what makes room for the arriving chunk";
+  EXPECT_EQ(after.depth, kCap - kKeyframeIndex + 1)
+      << "exactly the GOP tail ahead of the keyframe is dropped, and the arriving chunk is "
+         "then accepted";
+  EXPECT_TRUE(after.hasKeyframe) << "the keyframe itself must never be dropped";
+#else
+  GTEST_SKIP() << "Needs the Windows RTMP sender's bitstream queue.";
+#endif
+}
+
+// #597 Task 8b, the other half: a bounded queue is NOT optional. With NO
+// keyframe queued there is nothing safe to drop - dropping an arbitrary chunk
+// corrupts every frame until the next keyframe - so the overflow must still
+// fail the sender. Without this the fix above would read as "never bound the
+// queue", which is unbounded latency: the defect this sub-project removes.
+TEST(RtmpOutputSenderBackpressure, AFullQueueWithNoKeyframeStillFailsTheSender) {
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  constexpr std::size_t kCap = 60;
+  for (std::size_t i = 0; i < kCap; ++i) {
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  }
+  const auto before = sender->bitstreamQueueSnapshotForTest();
+  ASSERT_EQ(before.depth, kCap);
+  ASSERT_FALSE(before.hasKeyframe) << "this case is defined by there being nothing safe to drop";
+
+  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+
+  const auto after = sender->bitstreamQueueSnapshotForTest();
+  EXPECT_TRUE(after.overflowFailed)
+      << "with no keyframe queued the discard frees nothing, and an unbounded queue is "
+         "unbounded latency - the bound must still bite";
+  EXPECT_EQ(after.depth, kCap) << "nothing may be dropped, and nothing may be accepted";
+#else
+  GTEST_SKIP() << "Needs the Windows RTMP sender's bitstream queue.";
+#endif
+}
+
 // #597 Task 6: the review finding this whole task exists to close. Publishing
 // `backpressure->discardedChunks` made the counter reset OBSERVABLE for the
 // first time - and therefore testable for the first time. Task 4/5 added
