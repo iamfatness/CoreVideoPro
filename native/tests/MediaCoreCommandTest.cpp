@@ -5001,16 +5001,24 @@ TEST(RtmpOutputSenderBackpressure, EncoderExportShedFramesCountsExactlyWhatItSki
   plan.skipCpuReadback = true;
 
   const auto before = compositor->encoderExportShedFrames();
-  int shed = 0;
+  int expectedShed = 0;
   for (int i = 0; i < 40; ++i) {
     const auto frame = compositor->render(plan, {});
-    if (frame.encoderSharedTexture.frameNumber != frame.frameNumber) ++shed;
+    // A Lever A shed is decided by the DIVISOR and nothing else. Do NOT infer it
+    // from `encoderSharedTexture.frameNumber != frameNumber`: on a frame where
+    // D3DDecoupledExport takes its OWN bounded 3-slot refusal the published
+    // number also fails to advance, with no shed having happened, so that
+    // heuristic counts a refusal as a shed and the assertion fails against a
+    // counter that is correct. Measured: it failed about one run in three, which
+    // is worse than no test - the Task 5 review warned about exactly this
+    // conflation and the sibling test above already avoids it.
+    if ((frame.frameNumber % 4) != 0) ++expectedShed;
   }
   const auto after = compositor->encoderExportShedFrames();
 
-  EXPECT_GT(shed, 0) << "the compositor shed nothing, so this proves nothing";
-  EXPECT_EQ(after - before, shed)
-      << "encoderExportShedFrames() must count exactly the frames actually shed, "
+  EXPECT_GT(expectedShed, 0) << "the compositor shed nothing, so this proves nothing";
+  EXPECT_EQ(after - before, expectedShed)
+      << "encoderExportShedFrames() must count exactly the frames the DIVISOR shed, "
          "no more and no less - not D3DDecoupledExport's own unrelated bounded-slot refusal";
   EXPECT_TRUE(compositor->encoderExporting())
       << "the compositor is actively exporting on a fullProgramReadback plan; "
