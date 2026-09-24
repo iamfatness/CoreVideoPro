@@ -2377,11 +2377,23 @@ class RtmpOutputSender final : public IOutputSender {
       if (bitstreamWriterStop_.load()) return;
       DWORD written = 0;
       const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
-      if (!WriteFile(ffmpegStdin_, data, chunk, &written, nullptr) || written == 0) {
+      const auto writeStarted = std::chrono::steady_clock::now();
+      const BOOL writeSucceeded = WriteFile(ffmpegStdin_, data, chunk, &written, nullptr);
+      const DWORD writeError = writeSucceeded ? ERROR_SUCCESS : GetLastError();
+      const auto writeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - writeStarted).count();
+      if (writeMs >= 100) {
+        ::corevideo::core::nativeLogf(
+            "[ffmpeg-pipe] video slow-write elapsedMs=%lld requested=%lu written=%lu error=%lu stopping=%d\n",
+            static_cast<long long>(writeMs), static_cast<unsigned long>(chunk),
+            static_cast<unsigned long>(written), static_cast<unsigned long>(writeError),
+            bitstreamWriterStop_.load() ? 1 : 0);
+      }
+      if (!writeSucceeded || written == 0) {
         if (bitstreamWriterStop_.load()) return;
         bitstreamFailure_.record(BitstreamFailure::PipeWrite);
         ::corevideo::core::nativeLogf("[gpu-encode] bitstream WriteFile failed err=%lu (encoder->ffmpeg pipe broke)\n",
-                                     static_cast<unsigned long>(GetLastError()));
+                                     static_cast<unsigned long>(writeError));
         return;
       }
       data += written;
@@ -2630,7 +2642,17 @@ class RtmpOutputSender final : public IOutputSender {
       while (bytesRemaining > 0) {
         DWORD written = 0;
         const DWORD chunk = static_cast<DWORD>((std::min)(bytesRemaining, static_cast<size_t>(1) << 20));
+        const auto writeStarted = std::chrono::steady_clock::now();
         const BOOL writeSucceeded = WriteFile(audioPipeServer_, data, chunk, &written, nullptr);
+        const DWORD writeError = writeSucceeded ? ERROR_SUCCESS : GetLastError();
+        const auto writeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - writeStarted).count();
+        if (writeMs >= 100) {
+          ::corevideo::core::nativeLogf(
+              "[ffmpeg-pipe] audio slow-write elapsedMs=%lld requested=%lu written=%lu error=%lu\n",
+              static_cast<long long>(writeMs), static_cast<unsigned long>(chunk),
+              static_cast<unsigned long>(written), static_cast<unsigned long>(writeError));
+        }
         if (writeSucceeded && written == 0) {
           // A zero-byte success must not end the audio writer; retain the same
           // buffer and let pipe backpressure clear.
@@ -2642,7 +2664,7 @@ class RtmpOutputSender final : public IOutputSender {
           continue;
         }
         if (!writeSucceeded) {
-          const DWORD error = GetLastError();
+          const DWORD error = writeError;
           if (error == ERROR_OPERATION_ABORTED && audioWriterStop_) {
             return;
           }

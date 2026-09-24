@@ -235,3 +235,28 @@ network/snapshot JSONL, summary.json, backpressure-events.json, final-snapshot.j
 and ffmpeg-complete.log. The candidate executable is restored and the app remains
 joined; no further stream was automatically started. Full incident acceptance
 remains open, with neither release nor merge authorized by this test result.
+
+## Follow-up pipe diagnostics
+
+Code inspection found that queue telemetry excludes the chunk already removed
+by the writer before its blocking WriteFile call, as well as FFmpeg/TCP buffers.
+An empty application queue therefore does not establish end-to-end recovery.
+The measured 600-tick recovery threshold explains each ten-second divisor step;
+it has not been shortened without evidence about the initiating stall.
+
+The GPU-bitstream video writer and audio pipe writer now log writes lasting at
+least 100 ms, including duration, requested/written bytes and the captured Win32
+error; the video entry also marks shutdown. Win32 errors are saved immediately
+after WriteFile so diagnostic work cannot overwrite the failure code. These
+bounded asynchronous log entries appear only after the write returns, including
+cancellation; they are not a detector for a write that never returns. They do not
+change queue limits, pacing, bitrate, frame rate or recovery thresholds.
+
+Release native and test targets compiled. Focused existing suites passed:
+13 FFmpeg argument, 5 asynchronous sender, 9 bitstream queue and 26 backpressure
+policy tests (53 total). The first test command selected zero cases and was
+replaced with verified per-suite filters; it is not counted as validation.
+No new live stream was started. The diagnostic executable is saved locally as
+artifacts/live-601/corevideo-native-pipe-diagnostics.exe, SHA256
+D16DD4673CC6CE5FF6B6FA3CB944DA688BFFF6A09982264B9BFDBA6D085A9219.
+The running app remains the earlier coalescing candidate.
