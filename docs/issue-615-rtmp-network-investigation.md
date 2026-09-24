@@ -648,3 +648,60 @@ change does not auto-resubscribe or alter live behavior. Release native build
 and all 30 `ZoomEngineRuntime.*` tests passed locally. The captured 21:39 loss
 predates these counters, so it cannot be retrospectively assigned to one side
 of that boundary.
+
+A first external run with these counters lasted 12 minutes before the
+**independent test guard**, not CoreVideo, exited on a Windows status-file
+sharing collision. The runner failed closed and stopped its owned stream;
+the app, native process and FFmpeg then exited and original preferences were
+verified restored. All 761 snapshots retained eight Tiles; all eight inputs
+were simultaneously 1920×1080 in 567 snapshots. The greatest measured
+per-source core-frame age was 428 ms; writer/reader sequences stayed within
+four increments. Output pressure, queued discards, sender restarts and skipped
+render slots remained zero. One new render deadline miss occurred. Mean
+whole-adapter upload was 11.161 Mbps / 1,772 packets per second, with 20
+isolated internet probe timeouts and no gateway failures. This is a finite
+clean media interval, not root-cause proof or strict 60-frame-per-second
+acceptance. Local evidence is `full-app-external-boundary-15min`.
+
+The guard wrote status with `Set-Content`, whose exclusive file open collided
+with the runner's read. Its status writer now allows shared reads and retries
+transient sharing errors; an offline validation completed 786 concurrent
+reads with no incomplete read or guard exit. A further bounded run uses this
+corrected run-bound guard and the same diagnostic native build.
+
+### External output stall captured with encoder history, September 24, 22:04–22:12 UTC
+
+The corrected-guard run stopped at the **first backpressure entry** after
+approximately 7 minutes 35 seconds. Eight Tiles remained present. In the
+last ten snapshots all eight Zoom video sources advanced by 285–435 frames,
+with zero source drops. No new render deadline miss or skipped slot, audio
+sample loss, queued discard or sender restart was recorded through stop.
+The app, native process, FFmpeg and owned guard exited, and original production
+preferences were verified restored byte-for-byte. Raw evidence is under
+`artifacts/live-601/full-app-external-boundary-20min`.
+
+At 22:12:06.471 UTC the video pipe's successful `WriteFile` took 261 ms for a
+311,906-byte keyframe. A second 311,586-byte keyframe took 686 ms at
+22:12:07.903. Later, 37,087- and 12,514-byte non-key packets took 310 and
+141 ms. Backpressure entered at 22:12:09.969 with 740 ms of buffered work;
+the runner stopped immediately. A 766 ms write of another 336,003-byte
+keyframe completed as stop proceeded. None of these writes reported a Win32
+error. The writer-owned 16-packet histories before the first two slow
+keyframe writes show valid encoder PTS/DTS advancing normally by 16.67 ms,
+zero queue age and preceding writes completing in approximately 0 ms.
+This rules out an encoder timestamp discontinuity or a pre-existing native
+queue backlog as the *immediate* cause of those two pipe blocks. It does not
+locate the block beyond the pipe: FFmpeg mux/interleave, RTMP socket buffering,
+the network path and the receiver remain possible downstream causes.
+
+Whole-adapter upload dropped from about 11 Mbps to 7.5–8.7 Mbps starting
+around 22:12:03, before the first logged slow pipe write; host TCP
+retransmissions increased. Gateway and internet ICMP probes succeeded near
+onset. Those host-wide observations support a downstream throughput pause,
+but do not prove it occurred on the RTMP socket or identify its cause. A
+controlled local receiver pause previously reproduced a video pipe block,
+and full-app loopback runs with 340 KB keyframes did not. Taken together,
+these results localize the product's **observed backpressure** to the output
+chain after the encoder while leaving the original PC-wide Battle.net/AVD
+disconnection trigger unproven. They are separate from the 21:39 Zoom
+single-feed ingest stall that removed a Tile with no output backpressure.
