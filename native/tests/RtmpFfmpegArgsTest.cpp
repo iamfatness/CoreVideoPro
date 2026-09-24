@@ -209,13 +209,13 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeNamesTheRawDemuxerPerCodec) {
   }
 }
 
-TEST(RtmpFfmpegArgs, BitstreamRtmpDisablesTcpDelayWithoutChangingSrt) {
+TEST(RtmpFfmpegArgs, BitstreamRtmpCoalescesSmallWritesWithoutChangingSrt) {
   auto config = baseConfig();
   config.videoBitstreamInput = true;
   for (const auto* endpoint : {"rtmp://live.example/app/test", "rtmps://live.example/app/test"}) {
     config.endpoint = endpoint;
     const auto args = buildRtmpFfmpegArguments(config);
-    EXPECT_NE(args.find(" -tcp_nodelay 1 -f flv "), std::string::npos);
+    EXPECT_NE(args.find(" -tcp_nodelay 0 -f flv "), std::string::npos);
     EXPECT_NE(args.find(" -c:v copy"), std::string::npos);
   }
   config.endpoint = "srt://127.0.0.1:9021?mode=caller";

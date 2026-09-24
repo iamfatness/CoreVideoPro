@@ -119,4 +119,7 @@ This is explicit rate-control configuration and measured conformance, not a
 transport shaper or a guarantee on arbitrary random noise. Hard-ceiling
 behavior under quantizer saturation remains unresolved. No new destination
 stop, resolution reduction, frame-rate reduction or release deployment was
-introduced. Intel/AMD hardware and real external receivers remain untested.
+introduced. Intel/AMD hardware remains untested. Subsequent external RTMP tests
+found excessive packet traffic despite an approximately correct encoded bitrate;
+the transport change and its limits are recorded in
+[the #615 investigation](issue-615-rtmp-network-investigation.md).
