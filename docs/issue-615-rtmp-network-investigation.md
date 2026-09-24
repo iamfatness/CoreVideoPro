@@ -435,3 +435,23 @@ signals therefore also occur without the stream and cannot identify its socket.
 The initial code commit's macOS stub job failed a background-media reopen test;
 the latest document-only commit's same job passed. No unrelated code was changed;
 the overall CI workflow is still pending.
+
+### Local RTMP receiver comparison
+
+The same paced H.264/PCM fixture was sent through FFmpeg RTMP over loopback
+with TCP coalescing enabled and real-audio `-re` removed. A second FFmpeg
+process listened on loopback and copied received packets to FLV. The baseline
+and a variant pausing the receiver's output drain for 1.8 seconds both completed
+in 30 seconds with 1,800 video / 1,408 AAC packets, nondecreasing DTS and zero
+process errors. Baseline had no input writes above 50 ms. The paused receiver
+caused one 711 ms video pipe write, completing approximately 2.5 ms after drain
+resumed, with no subsequent slow input writes or slow audio writes.
+
+This confirms that downstream receiver blocking can propagate to the video
+pipe through the actual RTMP path, and that the corrected fixture recovers
+promptly. It does not prove the external receiver blocked, or reproduce the
+full app's encoder queue policy. Receiver mux/socket buffers are additional
+to the direct-pipe fixture, so pause durations are not interchangeable. No
+external destination or meeting configuration was changed. Both owned local
+processes exited, and no loopback listener remains. Evidence:
+`artifacts/live-601/local-rtmp-paced.py` and `local-rtmp-paced-summary.json`.
