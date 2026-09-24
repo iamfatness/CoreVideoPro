@@ -260,3 +260,20 @@ No new live stream was started. The diagnostic executable is saved locally as
 artifacts/live-601/corevideo-native-pipe-diagnostics.exe, SHA256
 D16DD4673CC6CE5FF6B6FA3CB944DA688BFFF6A09982264B9BFDBA6D085A9219.
 The running app remains the earlier coalescing candidate.
+
+## Diagnostic build: first ten-minute run did not reproduce the stall
+
+The instrumented candidate ran from 15:39:54 to 15:49:55 UTC on 2026-09-24.
+All eight tiles remained present in 639 samples. No backpressure entry, encoder
+frame shedding, skipped render slot or audio-loss counter increase occurred.
+FFmpeg finished at 36,036 frames / 600.70 seconds media time / 600.28 seconds
+elapsed, 10.110 Mbps muxed bitrate and 60 fps average. Adapter means were
+11.097 Mbps and 1,848 packets/s. No slow-pipe diagnostic event was captured.
+Six render deadline misses still occurred, so this is not strict performance
+acceptance and does not invalidate the earlier reproduced stall.
+
+Evidence: artifacts/live-601/pipe-diagnostic-run. Streaming stopped normally.
+The owner directed continued investigation. A separately bounded 30-minute run
+started at 15:51:04 UTC with the same diagnostic binary and settings, independent
+local watchdog, and first-backpressure stop in addition to connectivity/tile
+checks. That run is diagnostic capture, not a claim that the defect is fixed.
