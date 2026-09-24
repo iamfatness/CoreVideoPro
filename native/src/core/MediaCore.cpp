@@ -5318,6 +5318,15 @@ rpc::Json MediaCore::outputSenderSessionState() const {
           {"interruptible", supervisor.interruptible},
       });
     }
+    if (sender.asyncWorker) {
+      const auto& worker = *sender.asyncWorker;
+      senderJson.emplace("asyncWorker", rpc::Json::Object{
+          {"operation", worker.operation},
+          {"operationAgeMs", static_cast<double>(worker.operationAgeMs)},
+          {"queuedItems", static_cast<double>(worker.queuedItems)},
+          {"droppedSyncs", static_cast<double>(worker.droppedSyncs)},
+      });
+    }
     // #597 Task 6: this destination's own view of Lever A/B - published
     // whenever the sender populated it (GPU-direct senders only; see
     // OutputBackpressureState in Interfaces.h). The one global fact this node

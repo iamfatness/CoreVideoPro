@@ -818,6 +818,16 @@ struct OutputSender {
   // and is deliberately untouched by this lever) and on a sender that has not
   // started. MediaCore reads it and drives ICompositor::setEncoderExportDivisor.
   std::optional<OutputBackpressureState> backpressure;
+  // AsyncOutputSender's own worker, independent of FFmpeg pipe writes. A
+  // destination can stop accepting sync/audio while the encoder's separate
+  // thread continues to write video; pipe telemetry alone misses that pause.
+  struct AsyncWorkerState {
+    std::string operation = "idle";
+    std::int64_t operationAgeMs = 0;
+    std::int64_t queuedItems = 0;
+    std::int64_t droppedSyncs = 0;
+  };
+  std::optional<AsyncWorkerState> asyncWorker;
 };
 
 struct OutputSenderSession {

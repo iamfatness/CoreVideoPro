@@ -77,6 +77,9 @@ class AsyncOutputSender final : public IOutputSender {
     bool stop = false;
     bool writerDone = false;
     std::atomic<uint64_t> dropped{0};
+    bool workerBusy = false;
+    Kind workerKind = Kind::Sync;
+    std::chrono::steady_clock::time_point workerStarted{};
     std::mutex snapshotMutex;
     OutputSenderSession snapshot;
     std::unordered_map<std::string, uint64_t> recoveryBarriers;

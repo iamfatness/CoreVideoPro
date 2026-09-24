@@ -744,3 +744,48 @@ minimize system calls. `flush_packets` controls buffering *before* this RTMP
 writer, so it cannot coalesce those internal writes. This explains why enabling
 `TCP_NODELAY` amplified packet traffic in our earlier external comparison;
 it does not establish that Nagle/delayed ACK caused the later pipe stalls.
+
+### Guarded external soak failed, September 24, 22:45–23:02 UTC
+
+The requested 30-minute 1080p60, operator-selected 10 Mbps soak did **not**
+pass. The first attempt stopped after approximately 15 seconds when video and
+audio acceptance counters stopped advancing and the RTMP supervisor restarted
+the destination for five seconds of no progress. Its staged binary predated
+the new pipe snapshot counters, so that short attempt cannot distinguish a
+blocked pipe from another sender pause. Its evidence is under
+`artifacts/live-601/full-app-external-soak-30min`.
+
+We then staged the current build with pipe counters and started a fresh
+guarded 30-minute run. The runner stopped at the first sender interruption
+after 11 minutes 23 seconds, at 23:02:27 UTC. All eight Tiles feeds remained
+present at 1920×1080, and their source frame and audio counters, renderer
+slots, and audio worker continued advancing. The RTMP sender's local video
+and audio acceptance counters froze just before the supervisor declared the
+destination interrupted. Its pipe telemetry reported **zero slow writes**
+and a maximum video `WriteFile` duration of **5 ms** across 709 snapshots;
+no backpressure entry, render skip, source drop, or recorded audio sample loss
+occurred. FFmpeg had reported about 60 fps and 10.13 Mbps through the last
+logged interval. The run also accumulated 46 render deadline misses and 92
+monitor-shed ticks, so it would fail strict continuity even apart from the
+sender interruption. Mean whole-adapter upload was 11.304 Mbps / 2,018
+packets per second, with 15 isolated internet probe timeouts and no sustained
+guard trigger. Raw evidence and a local summary are under
+`artifacts/live-601/full-app-external-pipe-diagnostic-30min`.
+
+This second failure differs from the earlier 22:12 pipe-blocking event. It
+locates an additional pause between frame/audio production and the sender's
+acceptance accounting, while the GPU encoder and FFmpeg may continue from
+their separate work loop. The current snapshots do not identify which
+`AsyncOutputSender` operation was in flight, so the initiating cause is still
+unknown. Both tests ended with external streaming off, the staged app and
+native process closed, owned guards retired, and original production output
+preferences verified restored byte-for-byte. Neither test confirms a complete
+fix for #615 or the original PC-wide network outage.
+
+To distinguish a blocked sender operation from a queueing pause on a later
+guarded run, `AsyncOutputSender` now exposes its active operation, duration,
+pending item count and dropped sync count in the per-destination snapshot.
+This is read-only instrumentation and does not change the selected bitrate,
+resolution, frame rate, or backpressure policy. The native Release build and
+five focused `AsyncOutputSender` tests plus the output-session snapshot test
+pass. It is not a continuity fix.
