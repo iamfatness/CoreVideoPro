@@ -1379,6 +1379,13 @@ class RtmpOutputSender final : public IOutputSender {
     useGpuDirect_ = desiredGpuDirect;  // startFfmpegProcess may downgrade if the encoder fails to start
     if (startFfmpegProcess(width, height, pixelFormat)) {
       activeUseGpuDirect_ = useGpuDirect_;
+      // Final re-review, still-open 1: the THIRD restart door. The operator stop
+      // and the supervisor restart both reset the policy; the adapter's OWN
+      // re-open at the end of a floor rung did not, so a self-reopened
+      // transport resumed at its PRE-FAILURE divisor against an empty queue and
+      // needed ~30s of health to climb back. Quality, never stream-off - but a
+      // new run is a new run by every other measure this adapter keeps.
+      resetBackpressureForNewRun();
       // The healthy-RUN window opens here, not at the first accepted frame.
       restartFloor_.noteOpened(static_cast<std::int64_t>(elapsedMs));
       backoffProofWritten_ = false;

@@ -2556,7 +2556,7 @@ Spec + full evidence: `docs/superpowers/specs/2026-09-23-stream-backpressure-des
   incident you would read them to diagnose.
   [#603](https://github.com/iamfatness/CoreVideoPro/issues/603) was one of them and is
   now **FIXED AND CLOSED** — see "A DESTINATION SERVING ITS OWN RESTART BACKOFF IS
-  WAITING, NOT FAILING" below; it is recorded here because the REASONING for un-deferring
+  WAITING, NOT FAILING" above; it is recorded here because the REASONING for un-deferring
   it is the transferable part.
   [#604](https://github.com/iamfatness/CoreVideoPro/issues/604): `stopFfmpegProcess()`
   waits 500 ms and never terminates, so a stopped destination on a congested link keeps
