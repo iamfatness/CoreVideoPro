@@ -507,3 +507,36 @@ The ten-minute fixture's clean result does not rule out burst-sensitive pipe,
 FFmpeg or downstream behavior under the app's actual encoded output. Large
 chunks alone do not prove link saturation or identify the original outage cause;
 they define a missing dimension in that comparison. No new stream was started.
+
+### Full staged app to local RTMP receiver, September 24, 20:37–20:47 UTC
+
+Following renewed owner authorization, the full app sent eight live Tiles feeds
+to a loopback RTMP receiver for ten minutes at 10 Mbps, 1920×1080/60. The guarded
+runner stopped normally and restored the original output preferences verbatim;
+streaming and engine were verified off afterward. Evidence remains locally in
+`artifacts/live-601/full-app-local-10min`.
+
+Across 638 snapshots, all eight expected Tiles remained present, every source's
+video and audio counters advanced, and there were zero backpressure entries,
+encoder shed frames, new render deadline misses, skipped slots or lost audio
+samples. No session-scoped slow-pipe log occurred. The native sender supervisor
+reported zero restarts and remained healthy. The shared app log nevertheless
+contains output-supervisor restart/give-up messages during this same session;
+their relationship to the healthy sender telemetry needs reconciliation before
+calling the entire supervision path clean.
+
+The receiver exited successfully and retained 36,032 video packets and 28,149 AAC
+packets, spanning approximately 600.5 seconds. Video packets averaged 20,827 bytes,
+peaked at 342,903 bytes, and included 601 packets over 100 KB. This closes the
+earlier fixture's small-packet limitation: actual native bursts of the observed
+live size traversed the local path without captured backpressure. It does not
+establish that an external server or network caused the earlier stall.
+
+Five equal video DTS values and a maximum 34 ms video DTS gap remain; no backward
+DTS occurred. Thus 60 fps average and clean pressure counters are not proof of
+perfect per-frame delivery. Source dimensions also varied among 320×180,
+640×360 and 1120×630, versus 1920×1080 sources in the earlier failing external
+run. Output resolution/rate were unchanged, but this is not a matched source
+workload. Whole-adapter upload averaged 0.254 Mbps with RTMP confined to loopback;
+15 isolated internet probe failures still occurred. Original PC-wide outage
+causality remains unresolved.
