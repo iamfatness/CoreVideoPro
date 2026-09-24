@@ -107,7 +107,7 @@ The repeated run is `tcp-candidate-matched.jsonl`; its completed FFmpeg log is
 
 ## Remaining acceptance
 
-Repeat with a valid full test-meeting link and all eight live Zoom inputs; verify
+Repeat with all eight live Zoom inputs using the recovered test link; verify
 audio and decoded receiver delivery. The original Battle.net/AVD disruption is
 still an open acceptance item. RTMPS, other network adapters, other ISPs and
 other receivers have not been measured. No fleet-wide or unlimited-duration
@@ -154,5 +154,43 @@ path. Neither observation proves the absence of another blocking path.
 The confirmed transport defect remains excessive small-packet traffic with
 TCP_NODELAY enabled. Whether that traffic triggered the original PC-wide outage
 remains unproven. Do not label the incident resolved from the lower-packet-rate
-background-only runs. The required full-meeting reproduction still needs a
-working join link; rejoining the saved number timed out.
+background-only runs. The saved meeting number alone timed out. The full link was subsequently recovered
+from prior tasks and successfully rejoined; there is no missing-user-input blocker.
+
+
+## Full meeting recovered and exercised (2026-09-24, 10:19-10:23 EDT)
+
+The owner had already supplied the full test-meeting URL in previous tasks.
+It was retrieved from those tasks and joined successfully; requesting it again
+was unnecessary. The native runtime verified joined=true, synthetic=false and
+10 participants. All eight routed video feeds reached 1920x1080. The link is
+stored locally with CurrentUser DPAPI and is not included in this report.
+
+Candidate, 120-second bounded run, 128 approximately one-second observations:
+
+- Eight drawn Tiles members in every snapshot.
+- Mean whole-adapter upload 11.141 Mbps and 1,967 outgoing packets/s, with the
+  operator encoder target unchanged at 10 Mbps / 1080p60.
+- Zero increases in render deadline misses, skipped slots, encoder shed frames
+  or audio lost samples. Zero sender restarts or backpressure entries.
+- Sender audio counters advanced by 5,748,480 sample frames; this is transport
+  evidence, not a listening test or decoded receiver verification.
+- Six isolated internet ICMP timeouts; no three-consecutive watchdog trigger.
+
+A bounded reversal to the original TCP_NODELAY setting rejoined the same real
+meeting and routed the same eight tiles. It was stopped by the watchdog after
+about 15 seconds, rather than completing its planned 120 seconds. Outgoing
+packets reached 16,464/s at 10:22:45, followed by three consecutive internet
+ICMP timeouts at 10:22:48-50. Whole-adapter upload fell from 14.49 Mbps to
+4.96, 4.98 and 2.41 Mbps. The local gateway answered throughout at 0 ms. The
+last captured sender buffer reached 363 ms; eight tiles were still present in
+all captured snapshots, with no recorded backpressure-policy entry. Streaming
+was verified off after the watchdog.
+
+This strengthens the evidence that the original transport setting contributes
+to network degradation under the real meeting workload. It is not reproduction
+of every original symptom: no Battle.net/AVD session failure was measured, the
+watchdog ended before tile loss, and a run of ICMP failures alone does not prove
+all internet traffic stopped. Longer candidate testing and external receiver
+validation remain required. Raw evidence is local under artifacts/live-601/
+full-meeting and full-meeting-original; both sampled native snapshots each second.
