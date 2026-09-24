@@ -693,6 +693,10 @@ This rules out an encoder timestamp discontinuity or a pre-existing native
 queue backlog as the *immediate* cause of those two pipe blocks. It does not
 locate the block beyond the pipe: FFmpeg mux/interleave, RTMP socket buffering,
 the network path and the receiver remain possible downstream causes.
+FFmpeg did log non-monotonic DTS corrections earlier in the run; the encoder
+history shows no matching timestamp disorder immediately before these writes,
+so those warnings are a separate cadence concern rather than evidence for the
+captured onset.
 
 Whole-adapter upload dropped from about 11 Mbps to 7.5–8.7 Mbps starting
 around 22:12:03, before the first logged slow pipe write; host TCP
@@ -705,3 +709,5 @@ these results localize the product's **observed backpressure** to the output
 chain after the encoder while leaving the original PC-wide Battle.net/AVD
 disconnection trigger unproven. They are separate from the 21:39 Zoom
 single-feed ingest stall that removed a Tile with no output backpressure.
+That distinct feed-delivery defect is tracked as #624; this investigation
+continues on #615's RTMP/network path.
