@@ -737,3 +737,10 @@ WAN packet measurements, but the candidate showed no packet-count advantage
 in this controlled comparison. It is not promoted to production or used as an
 explanation for the external stall. Local fixture and summaries remain under
 `artifacts/live-601/rtmp-flush-comparison.py` and `flush-*-summary.json`.
+The result matches [the RTMP packet writer in our FFmpeg build](https://github.com/FFmpeg/FFmpeg/blob/1572784128/libavformat/rtmppkt.c#L357-L383):
+it calls the TCP protocol separately for a packet header, each RTMP chunk and
+continuation markers, and its own source notes that this path does not yet
+minimize system calls. `flush_packets` controls buffering *before* this RTMP
+writer, so it cannot coalesce those internal writes. This explains why enabling
+`TCP_NODELAY` amplified packet traffic in our earlier external comparison;
+it does not establish that Nagle/delayed ACK caused the later pipe stalls.
