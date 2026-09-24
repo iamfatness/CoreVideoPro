@@ -821,12 +821,16 @@ operator's original whole-PC connectivity outage.
 The Program buffer prepares submitted frames serially before its fixed-clock
 delivery worker can publish them. When preparation lags, the front frame can
 remain behind the delivery deadline and prevent newer frames from being
-published. The recovery change reclaims a queued frame before costly NV12
-preparation if the delivery clock has skipped its slot, or if a newer frame is
-waiting and
-less than one 60 Hz frame period remains. It leaves normal future startup
-frames in FIFO order and does not shift the playout clock or change the
-operator's 10 Mbps, 1080p60 settings. A D3D hardware test with 25 ms of
-artificial preparation per 16.7 ms input frame verifies that recent frames
-continue to arrive; all six Program-buffer hardware tests pass. Live soak
-validation of this change is still required.
+published. A first recovery candidate skipped queued frames with less than one
+frame period remaining. It passed six D3D hardware tests, including a test
+with 25 ms of artificial preparation per 16.7 ms input frame, but failed live
+continuity: during a roughly 90-second eight-feed run, Program underruns and
+overflows reached 723 each while the sender remained healthy. An adaptive
+cutoff based on measured preparation duration was also rejected after a
+roughly 140-second run: the counters rose from the startup baseline of ten
+underruns and six overflows to 554 and 550. Both owned streams were stopped,
+all eight feeds stayed present, and the app and original output preferences
+were restored. The early-skip behavior and its test have been reverted from
+the proposed code. These failures show that skipping near-deadline frames is
+not a continuity fix for this workload; the preparation and delivery pipeline
+needs a deeper change validated at full 1080p60 with all eight feeds.
