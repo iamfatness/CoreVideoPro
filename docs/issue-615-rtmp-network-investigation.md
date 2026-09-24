@@ -722,3 +722,18 @@ backpressure snapshot. These values reset with the stream run and do not change
 the backpressure policy or the operator's bitrate, resolution, or frame rate.
 They will make a future stall visible while a write is still blocked; they do
 not identify which downstream component first slowed in the captured run.
+
+### RTMP flush option ruled out locally
+
+FFmpeg [documents `-flush_packets 0`](https://www.ffmpeg.org/ffmpeg-formats.html)
+as a way to leave output I/O buffered.
+We tested a paced 30-second H.264/PCM loopback RTMP fixture with the current
+automatic flush plus `tcp_nodelay=0` against explicit `-flush_packets 0` plus
+`tcp_nodelay=1`. Both delivered exactly 1,800 video and 1,408 AAC packets,
+completed without slow input writes, and produced equal-size FLV outputs.
+Host-wide TCP segments sent during the two legs were 1,191,690 and 1,203,538
+respectively (about 39.7k and 40.1k/s). These loopback/host counters are not
+WAN packet measurements, but the candidate showed no packet-count advantage
+in this controlled comparison. It is not promoted to production or used as an
+explanation for the external stall. Local fixture and summaries remain under
+`artifacts/live-601/rtmp-flush-comparison.py` and `flush-*-summary.json`.
