@@ -711,3 +711,14 @@ disconnection trigger unproven. They are separate from the 21:39 Zoom
 single-feed ingest stall that removed a Tile with no output backpressure.
 That distinct feed-delivery defect is tracked as #624; this investigation
 continues on #615's RTMP/network path.
+
+### Follow-up pipe visibility
+
+The native queue removes a packet before its blocking `WriteFile` into FFmpeg.
+Consequently `bufferedMs: 0` did not mean that the output path was free: one
+packet could already be stuck in flight. The GPU-direct sender now publishes
+`inFlightWriteMs`, `maxWriteMs`, and `slowWriteCount` in its per-destination
+backpressure snapshot. These values reset with the stream run and do not change
+the backpressure policy or the operator's bitrate, resolution, or frame rate.
+They will make a future stall visible while a write is still blocked; they do
+not identify which downstream component first slowed in the captured run.

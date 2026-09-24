@@ -2097,6 +2097,11 @@ class RtmpOutputSender final : public IOutputSender {
     backpressure_ = corevideo::core::StreamBackpressurePolicy{};
     backpressureDiscardedChunks_ = 0;
     overflowDiscardedChunks_.store(0, std::memory_order_relaxed);
+#if defined(_WIN32)
+    pipeWriteStartedSteadyMs_.store(0, std::memory_order_relaxed);
+    pipeWriteMaxMs_.store(0, std::memory_order_relaxed);
+    pipeSlowWriteCount_.store(0, std::memory_order_relaxed);
+#endif
     ++backpressureRunId_;
     sender_.backpressure.reset();
   }
@@ -2171,6 +2176,16 @@ class RtmpOutputSender final : public IOutputSender {
     state.bufferedMs = publishedBufferedMs;
     state.queuedChunks = static_cast<std::int64_t>(
         bitstreamQueuedChunks_.load(std::memory_order_relaxed));
+#if defined(_WIN32)
+    const auto writeStartedMs = pipeWriteStartedSteadyMs_.load(std::memory_order_relaxed);
+    if (writeStartedMs > 0) {
+      const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+      state.inFlightWriteMs = (std::max)(std::int64_t{0}, nowMs - writeStartedMs);
+    }
+    state.maxWriteMs = pipeWriteMaxMs_.load(std::memory_order_relaxed);
+    state.slowWriteCount = pipeSlowWriteCount_.load(std::memory_order_relaxed);
+#endif
     state.enteredCount = backpressure_.enteredCount();
     // Per-stream-run, reset alongside backpressure_ on the !wantsRtmp stop
     // path above (see backpressureDiscardedChunks_).
@@ -2398,11 +2413,19 @@ class RtmpOutputSender final : public IOutputSender {
       DWORD written = 0;
       const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
       const auto writeStarted = std::chrono::steady_clock::now();
+      pipeWriteStartedSteadyMs_.store(
+          std::chrono::duration_cast<std::chrono::milliseconds>(writeStarted.time_since_epoch()).count(),
+          std::memory_order_relaxed);
       const BOOL writeSucceeded = WriteFile(ffmpegStdin_, data, chunk, &written, nullptr);
       const DWORD writeError = writeSucceeded ? ERROR_SUCCESS : GetLastError();
+      pipeWriteStartedSteadyMs_.store(0, std::memory_order_relaxed);
       const auto writeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - writeStarted).count();
+      if (writeMs > pipeWriteMaxMs_.load(std::memory_order_relaxed)) {
+        pipeWriteMaxMs_.store(writeMs, std::memory_order_relaxed);
+      }
       if (writeMs >= 100) {
+        pipeSlowWriteCount_.fetch_add(1, std::memory_order_relaxed);
         ::corevideo::core::nativeLogf(
             "[ffmpeg-pipe] video slow-write elapsedMs=%lld requested=%lu written=%lu error=%lu stopping=%d\n",
             static_cast<long long>(writeMs), static_cast<unsigned long>(chunk),
@@ -3010,6 +3033,9 @@ class RtmpOutputSender final : public IOutputSender {
   std::array<PipeWriteTrace, 16> writeTrace_{};
   size_t writeTraceNext_ = 0;
   std::chrono::steady_clock::time_point lastWriteTraceLog_{};
+  std::atomic<std::int64_t> pipeWriteStartedSteadyMs_{0};
+  std::atomic<std::int64_t> pipeWriteMaxMs_{0};
+  std::atomic<std::int64_t> pipeSlowWriteCount_{0};
   std::mutex bitstreamQueueMutex_;
   std::condition_variable bitstreamQueueCv_;
   struct QueuedBitstream {

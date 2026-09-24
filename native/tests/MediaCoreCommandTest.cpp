@@ -976,6 +976,9 @@ class FullBackpressureFieldsSender : public corevideo::modules::IOutputSender {
     bp.level = 2;
     bp.bufferedMs = 812;
     bp.queuedChunks = 47;
+    bp.inFlightWriteMs = 686;
+    bp.maxWriteMs = 691;
+    bp.slowWriteCount = 3;
     bp.enteredCount = 5;
     bp.discardedChunks = 19;
     bp.discardEvents = 2;
@@ -1035,6 +1038,9 @@ TEST(MediaCoreCommand, OutputSenderSessionPublishesEveryBackpressureField) {
   EXPECT_EQ(bp->getNumber("level"), 2);
   EXPECT_EQ(bp->getNumber("bufferedMs"), 812);
   EXPECT_EQ(bp->getNumber("queuedChunks"), 47);
+  EXPECT_EQ(bp->getNumber("inFlightWriteMs"), 686);
+  EXPECT_EQ(bp->getNumber("maxWriteMs"), 691);
+  EXPECT_EQ(bp->getNumber("slowWriteCount"), 3);
   EXPECT_EQ(bp->getNumber("enteredCount"), 5);
   EXPECT_EQ(bp->getNumber("discardedChunks"), 19);
   EXPECT_EQ(bp->getNumber("discardEvents"), 2);

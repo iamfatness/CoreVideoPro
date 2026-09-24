@@ -686,6 +686,13 @@ struct OutputBackpressureState {
   // post-discard mismatch.
   std::int64_t bufferedMs = 0;
   std::int64_t queuedChunks = 0;
+  // A chunk leaves the queue before the blocking FFmpeg pipe write begins.
+  // These separate measurements expose that otherwise invisible interval.
+  // inFlightWriteMs is zero between writes; maxWriteMs and slowWriteCount are
+  // cumulative for this stream run. They are observations, not policy inputs.
+  std::int64_t inFlightWriteMs = 0;
+  std::int64_t maxWriteMs = 0;
+  std::int64_t slowWriteCount = 0;
   // Times throttling was ENGAGED (1 -> 2). Steps within a throttle do not count.
   std::int64_t enteredCount = 0;
   // Cumulative chunks Lever B (the GOP-tail discard) has dropped from THIS

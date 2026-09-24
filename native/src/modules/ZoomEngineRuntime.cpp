@@ -1036,8 +1036,9 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
         {"lastChangeMs", entry.lastChangeMs},
     };
     if (entry.kind == "participant-video") {
+      const std::string sourceId = sourceUuid;
       const auto stats = std::find_if(runtime.subscriptions.begin(), runtime.subscriptions.end(),
-                                     [&](const auto& item) { return item.sourceUuid == sourceUuid; });
+                                     [&sourceId](const auto& item) { return item.sourceUuid == sourceId; });
       if (stats != runtime.subscriptions.end()) {
         source.emplace("engineFrameBeacons", static_cast<double>(stats->framesReceived));
         source.emplace("coreFramesIngested", static_cast<double>(stats->framesIngested));
