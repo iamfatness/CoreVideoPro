@@ -194,3 +194,44 @@ watchdog ended before tile loss, and a run of ICMP failures alone does not prove
 all internet traffic stopped. Longer candidate testing and external receiver
 validation remain required. Raw evidence is local under artifacts/live-601/
 full-meeting and full-meeting-original; both sampled native snapshots each second.
+
+## Ten-minute full-meeting candidate result: acceptance FAILED
+
+On 2026-09-24 from 15:14:16 to 15:24:17 UTC, the restored candidate ran the
+same eight real Zoom video inputs at operator-selected 10 Mbps / 1080p60.
+The runner completed normally, and streaming was verified off afterward.
+There were 637 approximately one-second native/network samples.
+
+- All eight Tiles members remained present throughout; all eight video-source
+  frame counters and ISO audio sample counters advanced. Sources ended at
+  1920x1080. This is not receiver-decoded or listening verification.
+- Mean whole-adapter upload was 10.699 Mbps, mean outgoing packet rate 1,808/s,
+  and maximum sampled upload 16.010 Mbps. Host TCP retransmissions rose by 1,926.
+- Fifteen isolated internet ICMP timeouts; zero gateway failures, gateway maximum
+  1 ms, and no sustained-connectivity watchdog trigger.
+- Seven additional render deadline misses; zero skipped render slots, zero
+  recorded audio lost samples, zero sender restarts. Sender audio advanced by
+  28,763,520 sample frames between first and last snapshots.
+- **One backpressure entry and 1,254 encoder frames shed.** FFmpeg's final
+  progress was 34,716 frames, 599.85 seconds media time, 599.37 seconds elapsed,
+  9.756 Mbps muxed bitrate and approximately 58 fps average. This fails the
+  requested uninterrupted 1080p60 behavior.
+
+The captured failure began at 15:22:12 UTC with 577 ms buffered. The policy
+stepped through divisors 2, 3 and 4 by 15:22:13. It recovered in ten-second steps:
+divisor 3 at 15:22:24.543, divisor 2 at 15:22:34.543, and full-rate divisor 1 at
+15:22:44.543. The logged buffer was already zero at all three recovery steps.
+Thus the existing backpressure policy prolonged frame shedding after the buffer
+cleared. The queue's initiating stall still needs attribution.
+
+Around onset, upload fell to 2.91 Mbps at 15:22:11 and fluctuated afterward,
+while gateway and internet probes continued to succeed and all tiles remained
+present. This is not the original PC-wide outage, and coalescing alone is not a
+complete fix for output continuity. The later pipe error at 15:24:17 coincides
+with the scheduled stream stop, not the start of this stall.
+
+Evidence is preserved locally under artifacts/live-601/full-meeting-candidate-10min:
+network/snapshot JSONL, summary.json, backpressure-events.json, final-snapshot.json
+and ffmpeg-complete.log. The candidate executable is restored and the app remains
+joined; no further stream was automatically started. Full incident acceptance
+remains open, with neither release nor merge authorized by this test result.
