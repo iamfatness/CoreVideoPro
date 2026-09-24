@@ -789,3 +789,15 @@ This is read-only instrumentation and does not change the selected bitrate,
 resolution, frame rate, or backpressure policy. The native Release build and
 five focused `AsyncOutputSender` tests plus the output-session snapshot test
 pass. It is not a continuity fix.
+
+The next diagnostic layer distinguishes which part of the RTMP sender's
+`sync()` call is active if this no-progress signature recurs: configuration,
+runtime probing, proof-file open/write, FFmpeg process setup, audio queueing,
+hardware encoder submission, or session snapshot. The stage is read from an
+atomic marker through the async worker snapshot, so it can be observed while
+that worker is blocked without waiting for its state lock. In particular,
+the sender currently flushes a proof line to disk on every accepted frame,
+and hardware submission also runs on the same worker; either is a possible
+pause point, **not an established cause**. The stage marker changes no
+transport or encoder behavior. Five focused async-sender tests and the
+output-session snapshot test pass with this additional read-only field.

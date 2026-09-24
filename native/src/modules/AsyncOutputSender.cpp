@@ -242,6 +242,7 @@ OutputSenderSession AsyncOutputSender::session() const {
       }
       worker.operationAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - state_->workerStarted).count();
+      if (state_->inner) worker.stage = state_->inner->diagnosticStage();
     }
   }
   worker.droppedSyncs = static_cast<std::int64_t>(state_->dropped.load());

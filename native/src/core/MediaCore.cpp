@@ -5322,6 +5322,7 @@ rpc::Json MediaCore::outputSenderSessionState() const {
       const auto& worker = *sender.asyncWorker;
       senderJson.emplace("asyncWorker", rpc::Json::Object{
           {"operation", worker.operation},
+          {"stage", worker.stage},
           {"operationAgeMs", static_cast<double>(worker.operationAgeMs)},
           {"queuedItems", static_cast<double>(worker.queuedItems)},
           {"droppedSyncs", static_cast<double>(worker.droppedSyncs)},

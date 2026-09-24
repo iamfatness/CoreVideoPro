@@ -616,6 +616,7 @@ class RtmpOutputSender final : public IOutputSender {
   // per-tick path uses; the borrow ends inside writeAudioToFfmpeg (it copies into
   // audioQueue_), so holding a caller-owned reference here is safe.
   void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override {
+    ActiveStageScope stageScope(activeStage_, "audio-enqueue");
     if (pcm.empty() || channels <= 0 || sampleRate <= 0) {
       return;
     }
@@ -635,6 +636,7 @@ class RtmpOutputSender final : public IOutputSender {
       const std::vector<float>* programAudioPcm = nullptr,
       int audioChannels = 0,
       int audioSampleRate = 0) override {
+    ActiveStageScope stageScope(activeStage_, "sync-config");
     // Capture the latest real program-audio mix for this tick so the FFmpeg
     // process is configured with (and fed) the second PCM input instead of the
     // `anullsrc` silence source. We treat "audio available" as having a positive
@@ -769,6 +771,7 @@ class RtmpOutputSender final : public IOutputSender {
     // Re-probing on every 20 ms sync previously loaded/unloaded FFmpeg DLLs
     // hundreds of times and crashed corevideo-native during a live stream.
     if (ffmpegBinDirectoryChanged || runtimeProbe_.candidates.empty()) {
+      activeStage_.store("runtime-probe", std::memory_order_relaxed);
       runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     }
     runtimeDetail_ = runtimeProbe_.detail;
@@ -784,6 +787,7 @@ class RtmpOutputSender final : public IOutputSender {
       ffmpegExecutable_ = runtimeProbe_.ffmpegExecutable;
     }
     sender_.runtimeDetail = runtimeDetail_;
+    activeStage_.store("proof-open", std::memory_order_relaxed);
     openSendProofIfNeeded();
     if (configuredEndpoint_.empty()) {
       sender_.status = "warning";
@@ -859,6 +863,7 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
 
+    activeStage_.store("ffmpeg-ensure", std::memory_order_relaxed);
     if (!ensureFfmpegProcess(*frame, elapsedMs)) {
       // A latched refusal already wrote its one proof line with the named code;
       // appending per frame would flood the proof file for the rest of the show.
@@ -881,6 +886,7 @@ class RtmpOutputSender final : public IOutputSender {
     // Audio follows the 20 ms output-worker cadence. Video does not: pace it to
     // the configured stream fps so a 50 Hz worker cannot overfill FFmpeg's raw
     // 4K input pipe (the 2026-07-14 live freeze reproduced at 42 frames/0.84 s).
+    activeStage_.store("audio-enqueue", std::memory_order_relaxed);
     writeAudioToFfmpeg();
     if (!videoFramePacer_.shouldWrite(elapsedMs, configuredFps_)) {
       sender_.status = hasWrittenVideo_ ? "live" : "starting";
@@ -895,6 +901,7 @@ class RtmpOutputSender final : public IOutputSender {
 
     // GPU-direct: hand the compositor's encoder texture to the hardware encoder,
     // whose sink writes the bitstream to FFmpeg. Raw path writes NV12/BGRA itself.
+    activeStage_.store(useGpuDirect_ ? "encoder-submit" : "raw-video-write", std::memory_order_relaxed);
     const bool videoWriteOk =
         useGpuDirect_ ? submitFrameToGpuEncoder(*frame) : writeFrameToFfmpeg(*frame);
     if (!videoWriteOk) {
@@ -1119,7 +1126,18 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
   }
 
+  const char* diagnosticStage() const override {
+    return activeStage_.load(std::memory_order_relaxed);
+  }
+
  private:
+  struct ActiveStageScope {
+    std::atomic<const char*>& stage;
+    ActiveStageScope(std::atomic<const char*>& stage, const char* name) : stage(stage) {
+      stage.store(name, std::memory_order_relaxed);
+    }
+    ~ActiveStageScope() { stage.store("idle", std::memory_order_relaxed); }
+  };
   static bool hasProgramNv12(const ProgramFrame& frame) {
     if (frame.programNv12Width <= 0 || frame.programNv12Height <= 0) {
       return false;
@@ -2852,6 +2870,7 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   void appendSendProof(const ProgramFrame* frame, const std::string& status) {
+    activeStage_.store("send-proof", std::memory_order_relaxed);
     if (!sendProof_.is_open()) {
       return;
     }
@@ -2877,6 +2896,7 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession snapshot() const {
+    activeStage_.store("session-snapshot", std::memory_order_relaxed);
     OutputSenderSession session;
     if (!sender_.senderId.empty()) {
       session.senders.push_back(sender_);
@@ -3071,6 +3091,7 @@ class RtmpOutputSender final : public IOutputSender {
   RtmpVideoFramePacer videoFramePacer_;
   std::atomic<bool> hasWrittenVideo_{false};
   std::ofstream sendProof_;
+  mutable std::atomic<const char*> activeStage_{"idle"};
 };
 #endif
 

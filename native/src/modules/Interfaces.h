@@ -823,6 +823,7 @@ struct OutputSender {
   // thread continues to write video; pipe telemetry alone misses that pause.
   struct AsyncWorkerState {
     std::string operation = "idle";
+    std::string stage;
     std::int64_t operationAgeMs = 0;
     std::int64_t queuedItems = 0;
     std::int64_t droppedSyncs = 0;
@@ -1344,6 +1345,10 @@ class IOutputSender {
     return recover(destination, elapsedMs, reason);
   }
   virtual OutputSenderSession session() const = 0;
+  // Optional lock-free stage of an in-flight sender call. AsyncOutputSender
+  // reads this while its worker may be blocked; implementations must not take
+  // a transport or state lock here.
+  virtual const char* diagnosticStage() const { return ""; }
   // Non-blocking emergency cancellation used by the live async wrapper to
   // release a sender stuck in pipe/network I/O. Implementations should only
   // interrupt the transport here; normal state cleanup remains in sync().
