@@ -113,12 +113,21 @@ frame. The encoder's thread is paced by the keyed mutex and only advances when a
 new handle is published, so skipping submits genuinely reduces its output rate
 rather than merely delaying it.
 
-| divisor | encoder input | intended use |
-|---|---|---|
-| 1 | 60 fps | healthy |
-| 2 | 30 fps | first step |
-| 3 | 20 fps | second step |
-| 4 | 15 fps | floor |
+| divisor | encoder input | at a 60 fps program | intended use |
+|---|---|---|---|
+| 1 | programFps / 1 | 60 fps | healthy |
+| 2 | programFps / 2 | 30 fps | first step |
+| 3 | programFps / 3 | 20 fps | second step |
+| 4 | programFps / 4 | 15 fps | floor |
+
+**AMENDED (final review, finding 9): the frame rates in the third column are a
+FUNCTION OF THE CONFIGURED PROGRAM RATE, not an invariant.** The divisor is
+applied to the compositor's RENDER FRAME NUMBERS and `startProgramOutput` clamps
+`outputFps_` to 1–120, so at a 30 fps program the same ladder is 30 / 15 / 10 /
+**7.5** fps. Quote `programFps / divisor`; the 60/30/20/15 column is the value at
+the 60 fps program this product targets. This mattered because §4 below justified
+`kMaxDivisor = 4` with "15 fps is the lowest frame rate worth putting on air",
+which is not what the floor delivers at any other program rate.
 
 **Why this satisfies "keep quality".** Under CBR the encoder allocates
 approximately `bitrate / declaredFrameRate` bits per frame. The declared frame
@@ -159,7 +168,7 @@ against the ~1000 ms hard bound.
 | `kThrottleAboveBufferedMs` | 250 | a quarter of the budget: act early, while the response is still invisible |
 | `kDiscardAboveBufferedMs` | 750 | three quarters: recover latency before the hard bound, and only after Lever A has failed to hold it |
 | `kRecoverBelowBufferedMs` | 100 | the 100–250 ms band is the anti-flap hysteresis; throttling drains the queue, so recovering at the throttle threshold would oscillate |
-| `kMaxDivisor` | 4 | 15 fps is the lowest frame rate worth putting on air |
+| `kMaxDivisor` | 4 | a quarter of the program rate is the lowest worth putting on air — 15 fps at a 60 fps program, and **7.5 fps at a 30 fps one** (finding 9: the justification is rate-dependent, and the constant is not derived from the configured rate) |
 | `kEnterAfterOverWaterTicks` | 30 (0.5 s) | a single keyframe spikes the queue; sustained growth is the signal |
 | `kRecoverAfterHealthyTicks` | 600 (10 s) | network capacity changes far more slowly than render load, so recovery is 20x slower than entry |
 
@@ -172,6 +181,19 @@ restarts the connection and muxer; it must never rebuild the encoder.** The
 encoder keeps running across a reconnect and is asked for a keyframe so the new
 connection has an entry point (`CODECAPI_AVEncVideoForceKeyFrame`, the same
 `ICodecAPI` surface the B-frame work already uses).
+
+> **AMENDED (final review, finding 8) — WHAT SHIPPED IS NOT THIS ABSOLUTE.** In
+> the shipped code EVERY restart path — the operator's `recover()`,
+> `restartForSupervisor()`, and the adapter's own re-open — goes through
+> `stopFfmpegProcess()` → `stopGpuEncoder()` → `gpuEncoder_.reset()` and rebuilds
+> the hardware encoder. What this slice actually delivers is (a) removal of the
+> overflow trigger that caused rebuilds in the first place and (b) a RATE BOUND
+> on rebuilds (`TransportRestartFloor`, plus the supervisor ladder). The
+> force-IDR half of the paragraph above is not implemented at all and is tracked
+> as [#605](https://github.com/iamfatness/CoreVideoPro/issues/605). Keeping the
+> encoder alive across a transport restart is slice 2. `CLAUDE.md` is correct as
+> written — it claims only the gate's "zero encoder rebuilds" under congestion,
+> which is true — and this paragraph is the one that overstated it.
 
 If the queue still breaches its hard bound at divisor 4 with discard engaged,
 the destination cannot carry even 15 fps at this bitrate. The existing overflow
@@ -208,12 +230,37 @@ The operator-facing readout must say the stream is degraded and at what frame
 rate. A stream quietly running at 15 fps is the same class of defect as a silent
 codec downgrade.
 
+> **AMENDED (final review, finding 7) — TWO CORRECTIONS TO THIS SECTION, both
+> things a reader would otherwise believe shipped.**
+>
+> 1. **The operator-facing readout was NOT built and is DEFERRED.** No shell or
+>    renderer file is touched anywhere on this branch and no plan task covered
+>    it (Tasks 1–9 are native, gate and docs). The evidence exists on the wire —
+>    `outputSenderSession.senders[].backpressure` carries `divisor`,
+>    `appliedDivisor`, `level` and `lastReason`, and `/snapshot` serves it
+>    verbatim — but nothing in the operator console binds to it, so today a
+>    degraded stream is visible to a diagnostician and not to an operator.
+>    Tracked as [#610](https://github.com/iamfatness/CoreVideoPro/issues/610).
+> 2. **`shedFrames` is NOT in the per-sender node** and deliberately so. It is
+>    published once, unconditionally, at
+>    `realtimeEvidence.encoderExport.shedFrames`, because the compositor's
+>    encoder-texture export is per-ENCODER and shedding is therefore a single
+>    global fact, not a per-destination one (`Interfaces.h` explains it at the
+>    field). The node instead gained `appliedDivisor` — the rate this
+>    destination is actually FED at, as opposed to `divisor`, which is what it
+>    is ASKING for (final review, finding 3: with two GPU-direct destinations
+>    the healthy sibling's node reported divisor 1 while being fed at the max).
+
 ### 8. Scope of application
 
 Both levers apply to the GPU-direct path, which is where compressed frames
 queue. The raw CPU path already drops stale frames by design and is unchanged.
 The policy is per destination: one struggling destination must not throttle or
-discard for a healthy sibling.
+discard for a healthy sibling. **AMENDED: this holds for Lever B only.** Lever A
+is per-ENCODER — one encoder texture feeds every GPU-direct sender — so MediaCore
+applies the MAX divisor across the active ones and a healthy sibling DOES run at
+the struggling destination's frame rate. Ruled in `progress.md`; the per-sender
+node publishes `appliedDivisor` alongside `divisor` so the node cannot hide it.
 
 ## Testing
 
@@ -289,6 +336,22 @@ discard for a healthy sibling.
 Shipped: both levers, the observability node, the restart floor, and the live
 acceptance gate. Native suite 1231/0 on a confirmed Release core. What follows is what
 the work MEASURED, including where it contradicted this document.
+
+**Final-review fix wave (2026-09-23), before merge.** Thirteen findings from the
+whole-branch review, all taken: the restart floor no longer accrues supervisor faults
+(#603, CLOSED — see the issues list below); the backpressure policy is reset on a
+transport REOPEN and not only on an operator stop, so a recovered destination no longer
+republishes its pre-failure divisor against an empty queue; the per-sender node publishes
+`appliedDivisor` so a healthy sibling stops reporting a rate it is not running at; six
+`GTEST_SKIP()` calls that would not compile against the vendored shim were replaced with
+the house `[  SKIPPED ]` idiom; the byte-budget overflow message regained the words
+"queue overflow" and its `dropped` count and stopped printing the chunk cap as the cut's
+yield; all three sender-failing overflow branches now carry one grepped marker so the
+gate's attribution column counts what its comment claims; §5, §7, §8 and the divisor
+ladder are amended below and in place; and two items too wide to fix here were filed as
+[#610](https://github.com/iamfatness/CoreVideoPro/issues/610) (the operator readout) and
+[#611](https://github.com/iamfatness/CoreVideoPro/issues/611) (the five test-only
+virtuals on `IOutputSender`).
 
 ### What the Task 1 probe measured (the load-bearing CBR assumption)
 
@@ -396,9 +459,16 @@ child before serving the rung.
   in ~23 chunks and never approaches 60. That unit mismatch is
   [#607](https://github.com/iamfatness/CoreVideoPro/issues/607).
 - **HEVC discards were observed not to corrupt the RTMP/FLV path** (nine ordinary Lever B
-  discards, 164 chunks dropped, 7808 frames decoded cleanly). **The MPEG-TS/SRT case —
-  where an unsignalled PCR jump was the actual concern — remains UNOBSERVED, because the
-  slow-sink harness runs on an RTMP sink.**
+  discards, 164 chunks dropped, 7808 frames decoded cleanly). **That evidence establishes
+  DECODABILITY, not A/V SYNC, and saying so precisely strengthens it rather than weakening
+  it.** The GPU-direct HEVC path sets `timestampedHevcInput` and rides the mpegts envelope
+  with real encoder PTS (`RtmpFfmpegArgs.h:141/154`), so a discard's PTS gap is carried
+  honestly through the container rather than being renumbered away — which is exactly why
+  7808 frames decoded cleanly across a 164-chunk cut. What was NOT measured is the
+  resulting audio/video drift across that cut: the harness judged decoded video and did
+  not compare an audio timeline against it. **The MPEG-TS/SRT case — where an unsignalled
+  PCR jump was the actual concern — remains UNOBSERVED, because the slow-sink harness runs
+  on an RTMP sink.**
 - The POSIX RTMP compile fix is verified structurally only; the overflow call-site test
   self-skips without `C:\ffmpeg\bin`.
 
@@ -407,8 +477,13 @@ child before serving the rung.
 [#601](https://github.com/iamfatness/CoreVideoPro/issues/601) encoder ignores its
 configured bitrate · [#602](https://github.com/iamfatness/CoreVideoPro/issues/602) every
 supervised sender supervises every other destination's name ·
-[#603](https://github.com/iamfatness/CoreVideoPro/issues/603) a destination serving a
-long floor backoff can be walked to supervisor-gave-up ·
+~~[#603](https://github.com/iamfatness/CoreVideoPro/issues/603) a destination serving a
+long floor backoff can be walked to supervisor-gave-up~~ **— FIXED and CLOSED in the
+final-review fix wave, not deferred. The deferral rested on "fixing it changes give-up
+semantics"; that did not survive the fact that this branch raised the rungs from 1–30 s to
+5–60 s and so made the defect materially worse. A destination serving its own bounded
+retry is WAITING, not failing, and accrues no fault (see
+`isSelfManagedRetryResultCode`).** ·
 [#604](https://github.com/iamfatness/CoreVideoPro/issues/604) `stopFfmpegProcess()` never
 terminates, so a stopped destination keeps publishing and a restart can spawn a second
 child · [#605](https://github.com/iamfatness/CoreVideoPro/issues/605) keyframe interval

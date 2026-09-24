@@ -985,6 +985,23 @@ class FullBackpressureFieldsSender : public corevideo::modules::IOutputSender {
     bp.observedAtMs = 12345.0;
     sender.backpressure = bp;
     out.senders.push_back(sender);
+
+    // FINAL-REVIEW FINDING 3: A HEALTHY SIBLING. Lever A is per-ENCODER - one
+    // encoder texture feeds every GPU-direct destination - so this destination
+    // asks for divisor 1 and is nonetheless FED at the max across senders (3).
+    // Its node used to report a textbook-healthy `divisor: 1` and nothing else,
+    // which is what an operator readout binds to.
+    corevideo::modules::OutputSender sibling;
+    sibling.senderId = sibling.destination = "rtmp-sibling";
+    sibling.status = "live";
+    sibling.destinationHealth = "ok";
+    sibling.lastResultCode = "encoder-input-accepted";
+    corevideo::modules::OutputBackpressureState healthy;  // every default: divisor 1, level 0
+    healthy.runId = 4;
+    healthy.observedAtMs = 12345.0;
+    sibling.backpressure = healthy;
+    out.senders.push_back(sibling);
+    out.activeSenderCount = 2;
     return out;
   }
 };
@@ -1025,6 +1042,34 @@ TEST(MediaCoreCommand, OutputSenderSessionPublishesEveryBackpressureField) {
   EXPECT_EQ(bp->getNumber("lastTransitionBufferedMs"), 300);
   EXPECT_EQ(bp->getNumber("runId"), 4);
   EXPECT_EQ(bp->getNumber("observedAtMs"), 12345.0);
+
+  // FINAL-REVIEW FINDING 3, THE HEALTHY SIBLING - the node lied for it.
+  //
+  // Lever A is per-ENCODER: one encoder texture feeds every GPU-direct sender,
+  // so MediaCore applies the MAX divisor across the active ones. With two
+  // GPU-direct destinations the healthy one's node reported `divisor: 1` while
+  // it was actually being fed at the maximum - a textbook-healthy reading for a
+  // source running at a quarter rate. The lever's per-encoder limitation was
+  // named in three comments; the NODE's was not, and the node is what an
+  // operator readout binds to.
+  //
+  // `appliedDivisor` is the rate the compositor is actually exporting at,
+  // written by MediaCore where that fact exists. Sourcing it from `bp.divisor`
+  // instead - the obvious wrong fix - passes for the throttled sender above and
+  // fails here, which is the whole point of asserting it on the SIBLING.
+  ASSERT_GT(senders->asArray().size(), 1u)
+      << "this test needs the healthy sibling to say anything about finding 3";
+  const auto* siblingBp = senders->asArray()[1].get("backpressure");
+  ASSERT_NE(siblingBp, nullptr);
+  EXPECT_EQ(siblingBp->getNumber("divisor"), 1)
+      << "the sibling's own REQUEST is unthrottled - that part was always true";
+  EXPECT_EQ(siblingBp->getNumber("appliedDivisor"), 3)
+      << "the sibling is fed at the MAX across senders; its node must say so instead of "
+         "publishing a healthy-looking rate it is not running at";
+  // And the throttled sender's own node carries it too, so a reader never has
+  // to know which destination is the worst one to learn the applied rate.
+  ASSERT_NE(bp->get("appliedDivisor"), nullptr);
+  EXPECT_EQ(bp->getNumber("appliedDivisor"), 3);
 }
 
 TEST(MediaCoreCommand, AudioMonitorRendersRoutedMonBusWhenPresent) {
@@ -5422,7 +5467,10 @@ TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndOb
     EXPECT_LT(after.bufferedMs, 50) << "the new head (the keyframe) was enqueued moments ago";
   }
 #else
-  GTEST_SKIP() << "Needs the RTMP sender.";
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.DiscardBacklogReachesTheQueueThroughSyncAndObserveStreamBackpressure"
+                       " (Needs the RTMP sender) - this test did NOT run\n");
+  return;
 #endif
 }
 
@@ -5472,7 +5520,10 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailI
          "then accepted";
   EXPECT_TRUE(after.hasKeyframe) << "the keyframe itself must never be dropped";
 #else
-  GTEST_SKIP() << "Needs the Windows RTMP sender's bitstream queue.";
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AFullQueueHoldingAKeyframeDiscardsItsGopTailInsteadOfFailingTheSender"
+                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+  return;
 #endif
 }
 
@@ -5511,7 +5562,10 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesR
          "cut can free";
   EXPECT_TRUE(after.hasKeyframe) << "the keyframe cut TO must never be dropped";
 #else
-  GTEST_SKIP() << "Needs the Windows RTMP sender's bitstream queue.";
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AFullQueueWhoseKeyframeIsAtTheHeadStillFreesRoomInsteadOfFailing"
+                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+  return;
 #endif
 }
 
@@ -5543,7 +5597,10 @@ TEST(RtmpOutputSenderBackpressure, AKeyframeArrivingAtAFullAllReferenceQueueRepl
   EXPECT_EQ(after.depth, 1u) << "the backlog is replaced by the arriving IDR";
   EXPECT_TRUE(after.hasKeyframe);
 #else
-  GTEST_SKIP() << "Needs the Windows RTMP sender's bitstream queue.";
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AKeyframeArrivingAtAFullAllReferenceQueueReplacesTheWholeBacklog"
+                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+  return;
 #endif
 }
 
@@ -5573,7 +5630,10 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWithNoKeyframeStillFailsTheSender) 
          "unbounded latency - the bound must still bite";
   EXPECT_EQ(after.depth, kCap) << "nothing may be dropped, and nothing may be accepted";
 #else
-  GTEST_SKIP() << "Needs the Windows RTMP sender's bitstream queue.";
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AFullQueueWithNoKeyframeStillFailsTheSender"
+                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+  return;
 #endif
 }
 
@@ -5674,7 +5734,101 @@ TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRu
     EXPECT_NE(bp.runId, run1RunId) << "a stop/restart must mint a new runId";
   }
 #else
-  GTEST_SKIP() << "Needs the RTMP sender.";
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.ADiscardedChunkCounterResetsOnTheNextStreamRun"
+                       " (Needs the RTMP sender) - this test did NOT run\n");
+  return;
+#endif
+}
+
+// #597 FINAL REVIEW, FINDING 2 - RED/GREEN, and a CROSS-TASK defect no
+// per-task review could see. Task 7 owned the restart path; Tasks 4 and 6
+// owned the policy lifetime; only the operator-STOP path reconstructed the
+// policy. So after any fault and reopen a destination republished its
+// pre-failure divisor against an EMPTY queue and needed ~30 s of healthy
+// streaming (kRecoverAfterHealthyTicks = 600, one step per 10 s) to return to
+// full rate, while the compositor visibly snapped 4 -> 1 -> 4 across the
+// outage with lastReason still reading the pre-fault value.
+//
+// Deleting `resetBackpressureForNewRun()` from reopen() turns this red on the
+// divisor assertion alone.
+TEST(RtmpOutputSenderBackpressure, AReopenedTransportStartsUnthrottledNotAtItsPreFailureDivisor) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent(
+          "AReopenedTransportStartsUnthrottledNotAtItsPreFailureDivisor")) return;
+  const auto settings = rtmpAdmissionSettings("h265", false);
+  const int enterTicks =
+      static_cast<int>(corevideo::core::StreamBackpressurePolicy::kEnterAfterOverWaterTicks) + 2;
+
+  // Both reopen doors must reset: the SUPERVISOR's automatic restart and the
+  // OPERATOR's recover(). They differ only in whether the restart floor is
+  // cleared, and a fix applied to one of them would pass a test that only
+  // drives the other.
+  for (int door = 0; door < 2; ++door) {
+    const bool viaSupervisor = door == 0;
+    auto sender = corevideo::modules::createRtmpOutputSender();
+    ASSERT_NE(sender, nullptr);
+    auto frame = startableProgramFrame("rtmp-backpressure-reopen");
+
+    // --- Climb to the floor of the ladder on a congested link. ---
+    sender->setBackpressureObservationForTest(
+        corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
+        /*keyframeInQueue=*/true);
+    double t = 0.0;
+    for (int step = 0; step < corevideo::core::StreamBackpressurePolicy::kMaxDivisor; ++step) {
+      for (int i = 0; i < enterTicks; ++i) {
+        t += 33.0;
+        (void)sender->sync({"rtmp"}, &frame, t, {settings});
+      }
+    }
+    std::int64_t beforeRunId = -1;
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      ASSERT_TRUE(session.senders[0].backpressure.has_value());
+      const auto& bp = *session.senders[0].backpressure;
+      ASSERT_GT(bp.divisor, 1)
+          << "the precondition failed: nothing was throttled, so the reopen proves nothing";
+      ASSERT_GT(bp.enteredCount, 0);
+      beforeRunId = bp.runId;
+    }
+
+    // --- The transport faults and is reopened. The queue is now EMPTY. ---
+    t += 33.0;
+    if (viaSupervisor) {
+      (void)sender->restartForSupervisor("rtmp", t, "transport fault");
+    } else {
+      (void)sender->recover("rtmp", t, "operator re-armed");
+    }
+
+    // --- The first observation after the reopen sees a healthy, empty queue. ---
+    sender->setBackpressureObservationForTest(0, /*keyframeInQueue=*/false);
+    t += 33.0;
+    (void)sender->sync({"rtmp"}, &frame, t, {settings});
+
+    const auto session = sender->session();
+    ASSERT_FALSE(session.senders.empty());
+    ASSERT_TRUE(session.senders[0].backpressure.has_value());
+    const auto& bp = *session.senders[0].backpressure;
+    EXPECT_EQ(bp.divisor, 1)
+        << (viaSupervisor ? "supervisor restart" : "operator recover")
+        << ": a reopened transport republished its PRE-FAILURE divisor against an empty queue, "
+           "so the compositor stays throttled for ~30s of healthy streaming for nothing";
+    EXPECT_EQ(bp.level, 0);
+    EXPECT_EQ(bp.enteredCount, 0)
+        << "a reopened transport is a new run; it must not carry the old run's engagement count";
+    EXPECT_EQ(bp.discardEvents, 0);
+    EXPECT_EQ(bp.discardedChunks, 0);
+    EXPECT_STREQ(bp.lastReason, "none")
+        << "lastReason must not still read the pre-fault reason after a reopen";
+    EXPECT_NE(bp.runId, beforeRunId)
+        << "a reopen resets the per-run counters, so it must mint a new run identity";
+  }
+#else
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AReopenedTransportStartsUnthrottledNotAtItsPreFailureDivisor"
+                       " (Needs the RTMP sender) - this test did NOT run\n");
+  return;
 #endif
 }
 

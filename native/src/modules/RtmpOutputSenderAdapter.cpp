@@ -682,18 +682,15 @@ class RtmpOutputSender final : public IOutputSender {
       // so nothing would ever correct it. Resetting the policy object (rather than
       // only clearing the published value) is what stops the NEXT stream opening at
       // 15 fps on an empty queue; its cumulative counters are per stream RUN.
-      backpressure_ = corevideo::core::StreamBackpressurePolicy{};
       // #597 Lever B: the discard counter is per-stream-run state exactly like
-      // the policy object above it - reset it here too, or the next run's
-      // Task 6 telemetry would report the PREVIOUS show's discards as its own.
-      backpressureDiscardedChunks_ = 0;
-      overflowDiscardedChunks_.store(0, std::memory_order_relaxed);
+      // the policy object - it is reset here too, or the next run's Task 6
+      // telemetry would report the PREVIOUS show's discards as its own.
       // #597 Task 6 fix round 1, finding 11: a new run gets a new identity, so
       // a consumer that reads across this reset without observing the node's
       // momentary absence can still tell the counters were RESET, not merely
-      // decreased.
-      ++backpressureRunId_;
-      sender_.backpressure.reset();
+      // decreased. All of it lives in resetBackpressureForNewRun(), which the
+      // reopen path shares (final-review finding 2).
+      resetBackpressureForNewRun();
       if (sender_.status != "idle" && sender_.status != "stopped") {
         sender_.status = "stopped";
         sender_.stoppedAtMs = elapsedMs;
@@ -1005,6 +1002,10 @@ class RtmpOutputSender final : public IOutputSender {
     }
     stopFfmpegProcess();
     if (clearRestartFloor) restartFloor_.clear();
+    // Final-review finding 2: a reopened transport starts from an EMPTY queue,
+    // so it must start from an unthrottled policy too. See
+    // resetBackpressureForNewRun() for the full reasoning.
+    resetBackpressureForNewRun();
     runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     runtimeDetail_ = runtimeProbe_.detail;
     runtimeAvailable_ = runtimeProbe_.available;
@@ -2061,6 +2062,35 @@ class RtmpOutputSender final : public IOutputSender {
     return dropped;
   }
 
+  // #597 THE POLICY AND ITS PER-RUN COUNTERS ARE ONE UNIT OF LIFETIME.
+  //
+  // FINAL-REVIEW FINDING 2, and it is a CROSS-TASK defect no per-task review
+  // could see: only the operator-stop path (`!wantsRtmp`) used to reconstruct
+  // `backpressure_`. `reopen()` - both `recover()` and
+  // `restartForSupervisor()` - stopped FFmpeg and cleared the floor but left
+  // the policy holding whatever divisor it had reached before the fault. So
+  // after ANY fault and reopen the destination republished, say, divisor 4
+  // against an EMPTY queue, and `kRecoverAfterHealthyTicks = 600` meant about
+  // ten seconds per step and roughly thirty seconds of healthy streaming
+  // before 60 fps returned - while the compositor visibly snapped 4 -> 1 (the
+  // node goes absent, so applyEncoderExportDivisor correctly pops to 1) -> 4
+  // across the outage, with `lastReason` still reading
+  // `buffered-above-threshold` from before the fault. Task 7 owned the restart
+  // and Tasks 4/6 owned the policy lifetime, which is exactly the seam it fell
+  // through.
+  //
+  // A reopen IS a new run by every other measure this adapter keeps -
+  // `framesSent`, `bytesSent` and `startedAtMs` are all reset there - so the
+  // per-run backpressure counters reset with them and the run identity
+  // advances, which is what lets a consumer tell a reset from a decrease.
+  void resetBackpressureForNewRun() {
+    backpressure_ = corevideo::core::StreamBackpressurePolicy{};
+    backpressureDiscardedChunks_ = 0;
+    overflowDiscardedChunks_.store(0, std::memory_order_relaxed);
+    ++backpressureRunId_;
+    sender_.backpressure.reset();
+  }
+
   // #597 Lever A. Observe this destination's own outgoing queue once per sync
   // and publish the input divisor the policy asks for. MediaCore reads
   // OutputSender::backpressure and drives ICompositor::setEncoderExportDivisor
@@ -2226,7 +2256,13 @@ class RtmpOutputSender final : public IOutputSender {
       // visible skip and still fail.
       if (chunk.size > maxBytes) {
         bitstreamFailure_.record(BitstreamFailure::QueueOverflow);
-        ::corevideo::core::nativeLogf("[gpu-encode] bitstream chunk larger than the whole queue budget; incomingBytes=%zu; sender unhealthy -> supervisor\n", chunk.size);
+        // Final-review finding 6: composed in modules/BitstreamQueueOverflow.h
+        // so this branch carries kQueueOverflowSenderFailedMarker too. It used
+        // to be the only one of the three sender-failing overflow branches with
+        // a hand-written string and no grepped marker at all.
+        ::corevideo::core::nativeLogf(
+            "%s", corevideo::modules::describeQueueOverflowOversizedChunk(chunk.size, maxBytes)
+                      .c_str());
         return;
       }
       const auto full = [&] {

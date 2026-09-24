@@ -2368,7 +2368,10 @@ Spec + full evidence: `docs/superpowers/specs/2026-09-23-stream-backpressure-des
   frames→ms would lie. It is honestly a LOWER bound — FFmpeg buffers behind us.
 
 - **TWO levers, because throttling does not recover latency already accumulated.**
-  Lever A (input divisor 1/2/3/4 = 60/30/20/15 fps) stops the queue growing and holds
+  Lever A (input divisor 1/2/3/4 feeds the encoder at **programFps / divisor** — 60/30/20/15
+  fps at the 60 fps program this product targets, but 30/15/10/**7.5** at a 30 fps one, because
+  the divisor is applied to RENDER FRAME NUMBERS and `startProgramOutput` clamps `outputFps_`
+  to 1–120; never quote the ladder as an invariant) stops the queue growing and holds
   per-frame quality; Lever B (GOP-tail discard — drop from the head up to a keyframe)
   clears the ~1 s already sitting there. Thresholds, against that ~1 s budget:
   throttle >250 ms (a quarter — act while the response is still invisible), discard
@@ -2416,6 +2419,50 @@ Spec + full evidence: `docs/superpowers/specs/2026-09-23-stream-backpressure-des
   noise**). The floor's refusal path also STOPS the child before serving the rung: a
   live-but-unfed child holds the single SRT caller slot, and this repo has been bitten by
   exactly that before.
+
+- **A DESTINATION SERVING ITS OWN RESTART BACKOFF IS WAITING, NOT FAILING (final review,
+  #603 — un-deferred and fixed here).** The floor publishes `status="failed"` /
+  `lastResultCode="ffmpeg-retry-backoff"` for the WHOLE rung it serves — the only
+  vocabulary it had for "not delivering" — and the supervisor classed that Retryable,
+  armed a fault per rung and gave up after five. So the floor that exists to PROTECT the
+  encoder became a new path from "congested link" to "stream off until the operator
+  re-arms", and this branch raising the rungs from 1–30 s to 5–60 s grew that exposure
+  window two- to sixfold. It was first deferred as #603 on the grounds that fixing it
+  changes give-up semantics; **that reasoning does not survive making the defect worse,
+  and shipping a known stream-off regression behind a filed issue is not acceptable.**
+  `isSelfManagedRetryResultCode` is the distinction, and it took TWO halves: `classify()`
+  returning `None` is not enough on its own, because a destination serving a 60 s rung
+  accepts no units and the "stopped accepting output for Ns" branch arms a fault after
+  5 s by a different door — the whole fault-arming block is skipped while a self-managed
+  retry is pending. Deliberately narrow: an already-armed fault keeps its rung, the
+  terminal bypass and give-up are untouched, an unknown code is still RETRYABLE, and the
+  next observation carrying any other code restores the ordinary rules.
+
+- **A TRANSPORT REOPEN RESETS THE BACKPRESSURE POLICY, not just an operator stop (final
+  review, finding 2 — cross-task, which is why no per-task review saw it).** Only the
+  `!wantsRtmp` operator-stop path used to reconstruct `backpressure_`. `reopen()` — both
+  `recover()` and `restartForSupervisor()` — stopped FFmpeg and cleared the floor but
+  left the policy holding its pre-failure divisor, so the destination came back
+  republishing divisor 4 against an EMPTY queue and needed ~30 s of healthy streaming
+  (`kRecoverAfterHealthyTicks = 600`, one step per 10 s) to return to full rate, while
+  the compositor visibly snapped 4 → 1 → 4 across the outage. A reopen IS a new run by
+  every other measure the adapter keeps (`framesSent`, `bytesSent`, `startedAtMs` all
+  reset there), so the per-run counters reset with them and `runId` advances.
+  `resetBackpressureForNewRun()` is the one place, shared by both doors. **Task 7 owned
+  the restart and Tasks 4/6 owned the policy lifetime — a lifetime that spans two tasks'
+  seams belongs to neither, and only a whole-branch read finds it.**
+
+- **THE NODE MUST SAY THE RATE THE DESTINATION IS FED AT, NOT ONLY THE RATE IT ASKS FOR
+  (final review, finding 3).** Lever A is per-ENCODER, and that limitation was named in
+  three comments — but not on the NODE, and the node is what an operator readout binds
+  to. With two GPU-direct destinations the healthy sibling published `divisor: 1`, a
+  textbook-healthy reading, while being fed at the max across senders; a destination
+  added mid-show beside a throttled sibling started at a quarter rate and looked
+  perfect. The per-sender node now carries BOTH: `divisor` (this destination's REQUEST,
+  which its own hysteresis and counters are keyed on) and `appliedDivisor` (what the
+  compositor is actually exporting at, written by MediaCore where that fact exists).
+  Read `appliedDivisor` for the rate. **Naming a limitation in the implementation's
+  comments is not the same as publishing it where the consumer reads.**
 
 - **BACKPRESSURE'S OWN LAST-RESORT BOUND CALLED THE STORM.** `enqueueBitstream`'s
   overflow path failed the sender ON PURPOSE so the supervisor would restart it — which
@@ -2480,13 +2527,22 @@ Spec + full evidence: `docs/superpowers/specs/2026-09-23-stream-backpressure-des
   cap counts CHUNKS while the throttle limits the ARRIVAL RATE, so at divisor 4 the queue
   reaches seconds of latency in ~23 chunks and never approaches 60 (that is #607). HEVC
   discards were observed NOT to corrupt the RTMP/FLV path (nine ordinary Lever B
-  discards, 164 chunks dropped, 7808 frames decoded cleanly) — but **the MPEG-TS/SRT
-  case, where an unsignalled PCR jump was the actual concern, remains UNOBSERVED, because
-  the slow-sink harness runs on an RTMP sink.** The POSIX RTMP compile fix is structural
+  discards, 164 chunks dropped, 7808 frames decoded cleanly) — but **that evidence
+  establishes DECODABILITY, NOT A/V SYNC**, and saying so precisely strengthens it: the
+  GPU-direct HEVC path sets `timestampedHevcInput` and rides the mpegts envelope with
+  real encoder PTS, so a discard's gap is carried honestly through the container instead
+  of being renumbered away — which is why 7808 frames decoded cleanly across a 164-chunk
+  cut. The resulting audio/video DRIFT across that cut was never measured. And **the
+  MPEG-TS/SRT case, where an unsignalled PCR jump was the actual concern, remains
+  UNOBSERVED, because the slow-sink harness runs on an RTMP sink.** The operator-facing
+  "this stream is degraded and at what frame rate" readout spec §7 requires was **not
+  built at all** — the evidence is on the wire and nothing in the console binds to it
+  ([#610](https://github.com/iamfatness/CoreVideoPro/issues/610)). The POSIX RTMP compile fix is structural
   only (no POSIX toolchain here), and the overflow call-site test self-skips wholesale
   without `C:\ffmpeg\bin`.
 
-- **Seven issues were filed for defects too wide to fix here.**
+- **Nine issues were filed for defects too wide to fix here; one of them (#603) was
+  then un-deferred and fixed before merge.**
   [#601](https://github.com/iamfatness/CoreVideoPro/issues/601) is the one to read first,
   and it may well be the incident's REAL TRIGGER: the GPU-direct encoder **ignores its
   configured bitrate** — ~59.5 Mbps measured at 10000 kbps and ~59.4 Mbps at 2000 kbps,
@@ -2498,9 +2554,10 @@ Spec + full evidence: `docs/superpowers/specs/2026-09-23-stream-backpressure-des
   sender creates a Destination record for every OTHER name in the sync list and faults it
   forever — doubled restart traffic and misleading supervisor logs during exactly the
   incident you would read them to diagnose.
-  [#603](https://github.com/iamfatness/CoreVideoPro/issues/603): a destination correctly
-  serving a long floor backoff publishes `failed`, so the supervisor accrues a fault per
-  tick and can walk it to gave-up and an operator re-arm.
+  [#603](https://github.com/iamfatness/CoreVideoPro/issues/603) was one of them and is
+  now **FIXED AND CLOSED** — see "A DESTINATION SERVING ITS OWN RESTART BACKOFF IS
+  WAITING, NOT FAILING" below; it is recorded here because the REASONING for un-deferring
+  it is the transferable part.
   [#604](https://github.com/iamfatness/CoreVideoPro/issues/604): `stopFfmpegProcess()`
   waits 500 ms and never terminates, so a stopped destination on a congested link keeps
   being published to (measured alive at the 22.6 s bound) and a restart can spawn a

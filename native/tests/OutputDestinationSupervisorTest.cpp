@@ -408,6 +408,63 @@ TEST(OutputDestinationSupervisorPolicy, ARetryableFailureClimbsTheLadderAndGives
   EXPECT_NE(policy.giveUpReason().find("Re-arm"), std::string::npos);
 }
 
+// #597 FINAL REVIEW, FINDING 1 - RED/GREEN. THE FLOOR MUST NOT BECOME A PATH
+// TO "STREAM OFF UNTIL THE OPERATOR RE-ARMS".
+//
+// The adapter's restart floor publishes status/health "failed" with
+// lastResultCode "ffmpeg-retry-backoff" for the WHOLE rung it is serving, and
+// this branch raised those rungs from 1-30 s to 5-60 s. Before the fix the
+// supervisor classed that Retryable, armed a fault per rung and gave up after
+// five - so a congested link walked a destination to gave-up with the exposure
+// window two to six times wider than before this branch.
+//
+// This test walks a destination through far more than kMaxConsecutiveFailures
+// rungs of pure backoff. Reverting either half of the fix (the `classify`
+// early return OR the `servingSelfManagedRetry` guard on the fault-arming
+// block) turns it red: the classify half alone leaves the
+// "stopped accepting output" branch arming faults after 5 s.
+TEST(OutputDestinationSupervisorPolicy, ADestinationServingItsOwnRestartBackoffIsWaitingNotFailing) {
+  EXPECT_TRUE(isSelfManagedRetryResultCode("ffmpeg-retry-backoff"));
+  EXPECT_FALSE(isSelfManagedRetryResultCode("ffmpeg-exited"));
+  // It must NOT be terminal either: the destination IS coming back on its own.
+  EXPECT_FALSE(isTerminalResultCode("ffmpeg-retry-backoff"));
+
+  OutputDestinationSupervisorPolicy policy;
+  policy.onGenerationStarted(0);
+  // The destination came up and delivered, so `everProduced_` is true and the
+  // "stopped accepting output for Ns" branch is armed - the exact live shape.
+  policy.observe(activeObservation(100, 5, "live", "encoder-input-accepted"));
+
+  std::int64_t now = 100;
+  int restarts = 0;
+  // Ten minutes of solid backoff: far past 5 x the tallest 60 s rung.
+  for (int tick = 0; tick < 2400; ++tick) {
+    now += 250;  // the supervisor's own observation cadence
+    const auto decision = policy.observe(activeObservation(now, 5, "failed", "ffmpeg-retry-backoff"));
+    if (decision.action == SupervisorAction::Restart) {
+      ++restarts;
+      policy.onGenerationStarted(now);
+    }
+    ASSERT_NE(decision.action, SupervisorAction::GiveUp)
+        << "a destination serving its OWN bounded retry was walked to give-up at tick " << tick
+        << " - that is the floor turning a congested link into a dead stream";
+    ASSERT_EQ(decision.failureClass, DestinationFailureClass::None)
+        << "waiting out a self-managed retry is not a failure class";
+  }
+  EXPECT_FALSE(policy.gaveUp());
+  EXPECT_EQ(restarts, 0)
+      << "the supervisor must not stack a second restart ladder on top of the adapter's own";
+  EXPECT_EQ(policy.consecutiveFailures(), 0)
+      << "no fault may be accrued for a destination that is already retrying itself";
+
+  // AND THE STAND-OFF IS NARROW: the moment the adapter reports anything else,
+  // the ordinary rules apply again and the fault arms as it always did.
+  now += 250;
+  const auto real = policy.observe(activeObservation(now, 5, "failed", "ffmpeg-exited"));
+  EXPECT_EQ(real.failureClass, DestinationFailureClass::Retryable);
+  EXPECT_FALSE(real.reason.empty());
+}
+
 TEST(OutputDestinationSupervisorPolicy, AnUnknownFailureCodeIsRetryableNotTerminal) {
   // Guessing "terminal" would silently stop protecting a destination.
   EXPECT_FALSE(isTerminalResultCode("ffmpeg-exited"));

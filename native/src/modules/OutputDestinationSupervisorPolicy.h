@@ -149,6 +149,39 @@ struct DestinationObservation {
   std::int64_t nowMs = 0;
 };
 
+// #597 FINAL REVIEW, FINDING 1 - A DESTINATION SERVING ITS OWN RESTART-FLOOR
+// BACKOFF IS **WAITING**, NOT FAILING.
+//
+// `RtmpOutputSenderAdapter`'s TransportRestartFloor refuses to re-open a
+// transport before its ladder rung elapses, and while it serves that rung it
+// publishes `status="failed"` / `destinationHealth="failed"` /
+// `lastResultCode="ffmpeg-retry-backoff"` - the only vocabulary it had for "not
+// delivering". The supervisor classed that as Retryable, armed a fault, and
+// gave up after kMaxConsecutiveFailures, leaving the destination dead until the
+// operator re-armed it. This branch RAISED the rungs from 1-30 s to 5-60 s, so
+// the floor that exists to protect the encoder became a new path from
+// "congested link" to "stream off, operator intervention required", with the
+// exposure window grown two- to sixfold.
+//
+// It was first deferred as issue #603 on the grounds that fixing it changes
+// give-up semantics. That reasoning does not survive the fact that this branch
+// made the defect materially worse rather than merely leaving it alone, so the
+// distinction is drawn here instead: a destination whose own bounded retry is
+// pending accrues NO fault of any kind - not from `status`, not from progress
+// staleness, and not from the start grace. It is managing its own retry on a
+// ladder that is itself bounded and observable, and the supervisor standing a
+// second ladder on top of it is double-counting one failure.
+//
+// DELIBERATELY NARROW: nothing else changes. A fault already armed keeps its
+// rung and still fires; the terminal-code bypass, the healthy-run budget
+// return and give-up are untouched; and the moment the adapter publishes any
+// other result code the ordinary rules apply again. An UNKNOWN code is still
+// RETRYABLE - this list only ever grows by an explicit decision that the
+// adapter is already retrying on its own bounded ladder.
+[[nodiscard]] inline bool isSelfManagedRetryResultCode(const std::string& code) {
+  return code == "ffmpeg-retry-backoff";
+}
+
 enum class SupervisorAction {
   None,
   Restart,  // bump the generation and re-open this destination NOW
@@ -184,6 +217,12 @@ class OutputDestinationSupervisorPolicy {
   }
 
   [[nodiscard]] static DestinationFailureClass classify(const DestinationObservation& o) {
+    // Finding 1: waiting out a bounded self-managed retry is not a fault. See
+    // isSelfManagedRetryResultCode above for why this is drawn here rather than
+    // left to #603.
+    if (isSelfManagedRetryResultCode(o.lastResultCode)) {
+      return DestinationFailureClass::None;
+    }
     const bool failed = o.status == "failed" || o.destinationHealth == "failed";
     // `warning` + a terminal result code is the shape the adapters use for an
     // inadmissible configuration (runtime-missing, source-name-invalid): they
@@ -290,7 +329,19 @@ class OutputDestinationSupervisorPolicy {
       return decision;
     }
 
-    if (!faultPending_) {
+    // Finding 1, the other half. Classing the backoff as None is not enough on
+    // its own: a destination serving a 60 s rung accepts no units, so the
+    // `stopped accepting output for Ns` branch below would arm a fault after
+    // 5 s and the `never accepted output` branch after 15 s - the same walk to
+    // give-up by a different door. While the adapter's own bounded retry is
+    // pending, NO fault is armed at all.
+    const bool servingSelfManagedRetry = isSelfManagedRetryResultCode(o.lastResultCode);
+    if (servingSelfManagedRetry && !faultPending_) {
+      // Say so, so a support bundle shows standing off rather than silence.
+      decision.reason = "Destination is serving its own bounded restart backoff (" +
+                        o.lastResultCode + "); the supervisor is standing off.";
+    }
+    if (!faultPending_ && !servingSelfManagedRetry) {
       std::string faultReason;
       if (decision.failureClass == DestinationFailureClass::Retryable) {
         faultReason = o.lastError.empty()
@@ -454,6 +505,5 @@ class TransportRestartFloor {
   std::int64_t runOpenedMs_ = 0;
   std::int64_t floorUntilMs_ = 0;
 };
-
 
 }  // namespace corevideo::modules

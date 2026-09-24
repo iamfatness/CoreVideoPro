@@ -5326,7 +5326,16 @@ rpc::Json MediaCore::outputSenderSessionState() const {
     if (sender.backpressure) {
       const auto& bp = *sender.backpressure;
       senderJson.emplace("backpressure", rpc::Json::Object{
+          // FINAL-REVIEW FINDING 3. `divisor` is this destination's REQUEST.
+          // `appliedDivisor` is the rate the compositor is actually exporting
+          // the encoder texture at - the MAX across active GPU-direct senders,
+          // because one texture feeds them all (see applyEncoderExportDivisor).
+          // Without this pair, the healthy sibling of a throttled destination
+          // published `divisor: 1` while being fed at the maximum: a
+          // textbook-healthy reading for a source running at 15 fps. An
+          // operator readout binds to the NODE, so the node has to say it.
           {"divisor", bp.divisor},
+          {"appliedDivisor", lastEncoderExportDivisor_.load(std::memory_order_relaxed)},
           {"level", bp.level},
           {"bufferedMs", static_cast<double>(bp.bufferedMs)},
           {"queuedChunks", static_cast<double>(bp.queuedChunks)},
@@ -5336,7 +5345,7 @@ rpc::Json MediaCore::outputSenderSessionState() const {
           // #597 fix round 3, item 3: the two counters above count different
           // populations, and this says so WHERE A READER MEETS THEM instead of
           // only in a C++ comment they will never see.
-          {"discardCounterNote", bp.discardCounterNote},
+          {"discardCounterNote", std::string(bp.discardCounterNote)},
           {"lastReason", bp.lastReason},
           {"lastTransitionBufferedMs", static_cast<double>(bp.lastTransitionBufferedMs)},
           {"runId", static_cast<double>(bp.runId)},

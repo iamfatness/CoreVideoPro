@@ -841,17 +841,29 @@ if (slowSink) {
   // side now composes both messages in modules/BitstreamQueueOverflow.h and
   // pins these exact markers in native/tests/BitstreamQueueOverflowTest.cpp.
   // IF YOU CHANGE EITHER STRING, CHANGE BOTH FILES - the test names this one.
+  // FINAL-REVIEW FINDING 6. There are THREE branches that fail the sender on
+  // queue overflow, and `kOverflowFailureMarker` names only the keyframe-less
+  // one - so this column used to UNDERCOUNT, and the comment below it claimed a
+  // completeness the grep did not have. `kOverflowSenderFailedMarker` is the
+  // prefix every one of the three now carries
+  // (modules/BitstreamQueueOverflow.h::kQueueOverflowSenderFailedMarker); the
+  // keyframe-less marker is kept as its own sub-case because its message is the
+  // one a diagnostician wants named.
   const kOverflowDiscardMarker = "overflow-discard";
+  const kOverflowSenderFailedMarker = "[gpu-encode] bitstream queue overflow";
   const kOverflowFailureMarker = "queue overflow with nothing safe to drop";
   const overflowDiscardLines = coreStderr.split(/\r?\n/)
       .filter((l) => l.includes(kOverflowDiscardMarker));
   const overflowFailLines = coreStderr.split(/\r?\n/)
+      .filter((l) => l.includes(kOverflowSenderFailedMarker));
+  const overflowNoKeyframeLines = overflowFailLines
       .filter((l) => l.includes(kOverflowFailureMarker));
   if (burstSink) {
     console.log(`burst sink    : ${burstStallsApplied} link stall(s) of ${burstStallMs}ms ` +
                 `(first at +${burstFirstMs}ms, then every ${burstPeriodMs}ms) on top of the ${sinkRate}x link`);
     console.log(`overflow path : ${overflowDiscardLines.length} overflow-discard line(s), ` +
-                `${overflowFailLines.length} nothing-safe-to-drop line(s)`);
+                `${overflowFailLines.length} sender-failed line(s) ` +
+                `(${overflowNoKeyframeLines.length} of them nothing-safe-to-drop)`);
     for (const line of overflowDiscardLines.slice(0, 6)) console.log(`  core        : ${line.trim()}`);
     for (const line of overflowFailLines.slice(0, 6)) console.log(`  core        : ${line.trim()}`);
     if (!burstStallsApplied) {
@@ -872,16 +884,18 @@ if (slowSink) {
     }
     // A failed overflow is the ONLY remaining path from a destination fault to
     // an encoder rebuild, so a run that hits it has not passed - reaching the
-    // branch is necessary, surviving it is the property.
+    // branch is necessary, surviving it is the property. Finding 6: this now
+    // counts ALL THREE sender-failing overflow branches, not just the
+    // keyframe-less one, so the count means what this sentence says.
     if (overflowFailLines.length) {
       failures.push(`the queue's overflow failed the sender ${overflowFailLines.length} time(s) ` +
-                    "(nothing safe to drop) - that fails the sender, its supervisor restarts it and " +
-                    "the encoder is rebuilt, which is #597 itself");
+                    `(${overflowNoKeyframeLines.length} with nothing safe to drop) - that fails the ` +
+                    "sender, its supervisor restarts it and the encoder is rebuilt, which is #597 itself");
     }
   } else if (overflowDiscardLines.length || overflowFailLines.length) {
     // Sustained runs do not normally reach the cap; when they do, say so.
     console.log(`overflow path : ${overflowDiscardLines.length} overflow-discard line(s), ` +
-                `${overflowFailLines.length} nothing-safe-to-drop line(s) (reported, not required here)`);
+                `${overflowFailLines.length} sender-failed line(s) (reported, not required here)`);
   }
 
   // --- (0) Did the sink ACTUALLY throttle? ---------------------------------

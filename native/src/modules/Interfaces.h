@@ -653,6 +653,26 @@ struct OutputSupervisorState {
 // on its own. The real, global count is published once, at
 // realtimeEvidence.encoderExport.shedFrames.
 struct OutputBackpressureState {
+  // THIS DESTINATION'S REQUEST, NOT THE RATE IT IS FED AT.
+  //
+  // FINAL-REVIEW FINDING 3. Lever A is per-ENCODER, not per destination: ONE
+  // encoder texture feeds every GPU-direct sender, so MediaCore takes the MAX
+  // divisor across the active ones and drives
+  // ICompositor::setEncoderExportDivisor with that. The lever's limitation is
+  // named in three places (MediaCore.h, the spec Outcome, CLAUDE.md) - but the
+  // NODE's was not, and the node is what an operator readout binds to. With two
+  // GPU-direct destinations the healthy sibling's node reported `divisor: 1`
+  // while it was actually being fed at the maximum across senders, and a
+  // destination added mid-show beside a throttled sibling published a
+  // textbook-healthy reading at 15 fps.
+  //
+  // The snapshot therefore publishes BOTH: `divisor` (this value - what this
+  // destination is asking for, which is what its own hysteresis and counters
+  // are keyed on) and `appliedDivisor` (what the compositor is actually
+  // exporting at, written by MediaCore where that fact exists - see
+  // MediaCore::applyEncoderExportDivisor). Read `appliedDivisor` for the rate;
+  // read `divisor` for this destination's own state. They differ exactly when a
+  // sibling is worse off.
   int divisor = 1;
   // 0 = not throttled; StreamBackpressurePolicy::kMaxDivisor - 1 at the floor.
   // Always divisor - 1; published separately because a consumer should not
@@ -686,6 +706,16 @@ struct OutputBackpressureState {
   // A static string literal from StreamBackpressurePolicy - never heap-owned,
   // so publishing it every tick (the 60 Hz output path, one GPU-direct sender)
   // costs no allocation.
+  //
+  // FINAL-REVIEW FINDING 12, said rather than changed: BOTH LEVERS WRITE THIS
+  // ONE FIELD. On a tick where Lever B discards AND the divisor steps, the
+  // policy's discard branch and its divisor ladder both assign `lastReason_`
+  // in the same observe() call, and the ladder wins - so the published reason
+  // reads "buffered-above-threshold" and the discard that happened on that same
+  // tick is invisible HERE. Nothing is lost: `discardEvents` and
+  // `discardedChunks` still count it, and the `[stream-backpressure] discard`
+  // log line still names it. Do not read an absent "backlog-discard" as
+  // evidence no discard occurred on that tick; read the counters.
   const char* lastReason = "none";
   // The bufferedMs observed on the tick that caused the last change.
   std::int64_t lastTransitionBufferedMs = 0;
@@ -701,8 +731,15 @@ struct OutputBackpressureState {
   std::int64_t runId = 0;
   // #597 fix round 3. Why `discardedChunks` and `discardEvents` can disagree,
   // carried NEXT TO THEM so a reader of the snapshot meets the explanation
-  // where they meet the numbers. A constant string, not per-tick state.
-  std::string discardCounterNote;
+  // where they meet the numbers.
+  //
+  // FINAL-REVIEW FINDING 11: this was a `std::string`, so a ~300-byte
+  // allocation and copy rode every sync tick - and every OutputSenderSession
+  // copy through AsyncOutputSender's snapshot mutex and into sessionState() -
+  // two lines below the comment justifying `lastReason` as a `const char*`
+  // precisely to avoid that. It is a compile-time constant sentence; it is now
+  // typed as one.
+  const char* discardCounterNote = "";
   // Wall-clock elapsedMs (the same clock every other OutputSender timestamp on
   // this destination uses - see startedAtMs/stoppedAtMs) at the moment this
   // state was last written by observeStreamBackpressure(). sync() has several
@@ -1024,10 +1061,22 @@ class ICompositor {
   // halving the EXPORT rate halved egress (0.500). So the throttle lives here,
   // in the producer, not in the sender.
   //
-  // At divisor d this compositor exports the encoder texture on frame numbers
-  // divisible by d and holds the rest: 1 = every frame (60 fps), 2 = 30,
-  // 3 = 20, 4 = 15. The encoder's DECLARED frame rate never changes, so
-  // bits-per-frame - and with it per-frame quality - is untouched.
+  // At divisor d this compositor exports the encoder texture on RENDER FRAME
+  // NUMBERS divisible by d and holds the rest, so the resulting encoder input
+  // rate is programFps / d - NOT a fixed 60/30/20/15 ladder.
+  //
+  // FINAL-REVIEW FINDING 9: that ladder was stated as an invariant here, in
+  // CLAUDE.md and - load-bearingly - in the spec's justification for
+  // kMaxDivisor ("15 fps is the lowest frame rate worth putting on air"). It is
+  // only true AT A 60 fps PROGRAM. `startProgramOutput` clamps `outputFps_` to
+  // 1-120, so at a 30 fps program the same ladder is 30 / 15 / 10 / 7.5 fps and
+  // the floor's whole justification is gone. Say the function, not one of its
+  // values: divisor 1/2/3/4 feeds programFps / 1, / 2, / 3, / 4 - which IS
+  // 60/30/20/15 at the 60 fps program this product targets, and is the number
+  // to recompute for any other configured rate.
+  //
+  // The encoder's DECLARED frame rate never changes, so bits-per-frame - and
+  // with it per-frame quality - is untouched.
   //
   // Control plane, not a per-frame call: MediaCore calls this only when the
   // value CHANGES. Defaulted to a no-op so the Metal and stub compositors are
@@ -1289,9 +1338,31 @@ class IOutputSender {
   // read seam's default is a ZERO/false value that makes a test's precondition
   // ASSERT fail loudly (e.g. ASSERT_EQ(before.depth, 4u)) rather than pass with
   // nothing under test - the silent-swallow shape that cost this codebase the
-  // 1-arg connect() pink tiles and SRT's dropped pollAudioFrames. If a THIRD
-  // seam is ever wanted here, do not add it: move these behind a narrow
+  // 1-arg connect() pink tiles and SRT's dropped pollAudioFrames.
+  //
+  // FINAL-REVIEW FINDING 10. This block used to end "If a THIRD seam is ever
+  // wanted here, do not add it: move these behind a narrow
   // IBitstreamQueueTestAccess in its own header, reached by a
+  // createRtmpOutputSenderForTest()." THERE ARE NOW FIVE. Tasks 5, 6 and 8b
+  // each added one past that line without amending it, which is the same
+  // failure mode as a disarmed assertion: an unamended rule nobody obeys stops
+  // being a rule and becomes noise a reader learns to skip.
+  //
+  // THE RULE IS CORRECTED RATHER THAN OBEYED, and that choice is stated here
+  // so the next reader can disagree with it knowingly. The extraction is the
+  // right end state and is deliberately NOT done here: it moves five virtuals,
+  // every call site in MediaCoreCommandTest.cpp and
+  // OutputDestinationSupervisorTest.cpp, and the wrapper-law reasoning above -
+  // a pure-refactor risk taken at merge time, on a branch whose whole subject
+  // is an on-air regression, for no behavioural gain. Filed as
+  // https://github.com/iamfatness/CoreVideoPro/issues/611.
+  //
+  // WHAT HOLDS UNTIL THEN: the guarantee above is PER-SEAM, not per-count.
+  // Every one of the five defaults to a ZERO/false value that makes a test's
+  // precondition ASSERT fail loudly rather than pass with nothing under test,
+  // so five is no less safe than two. DO NOT ADD A SIXTH to this interface:
+  // the next seam that is wanted is the trigger to do the extraction, and the
+  // extraction is IBitstreamQueueTestAccess in its own header, reached by a
   // createRtmpOutputSenderForTest() that returns the concrete type.
   //
   // TEST-ONLY seam, structural guard only - the same guarantee
