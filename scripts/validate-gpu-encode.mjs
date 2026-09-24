@@ -815,8 +815,15 @@ if (slowSink) {
   // put the stream under the link - so a low average here is the lever working,
   // not the link failing to bite. What proves the link bit is the queue-growth
   // precondition immediately below.
-  console.log(`                (link ceiling ${(proxyCapacityBytesPerSec * 8 / 1e6).toFixed(2)}Mbps vs ` +
-              `${bitrate}Mbps configured; a delivered rate under the ceiling is Lever A working)`);
+  // Fix round 3, item 4: `bitrate` is the HARNESS's --bitrate, which sizes the
+  // link ceiling. It is NOT the encoded bitrate - the core encodes at its own
+  // configured rate (8.2Mbps on this rig's default profile), and nothing here
+  // measures what the encoder actually produced. Say which number this is
+  // rather than letting it read as the stream's bitrate.
+  console.log(`                (link ceiling ${(proxyCapacityBytesPerSec * 8 / 1e6).toFixed(2)}Mbps, ` +
+              `sized from --bitrate ${bitrate}Mbps - the harness's link parameter, NOT the ` +
+              `encoded bitrate, which this gate does not measure; a delivered rate under the ` +
+              `ceiling is Lever A working)`);
   for (const line of backpressureLines()) console.log(`  core        : ${line.trim()}`);
 
   // --- BURST MODE: did the run actually ENTER the overflow branch? ---------
@@ -827,9 +834,19 @@ if (slowSink) {
   // reached the state it is asserting about, and must FAIL rather than pass -
   // a gate that cannot enter its own branch reports success while testing
   // nothing, which is how the original storm went unseen.
-  const overflowDiscardLines = coreStderr.split(/\r?\n/).filter((l) => l.includes("overflow-discard"));
+  // THESE TWO SUBSTRINGS ARE A LOAD-BEARING INTERFACE WITH THE CORE, and in
+  // fix round 2 one of them was reworded in the same commit that tightened the
+  // assertion depending on it - so `overflowFailLines` was permanently empty
+  // and every reported zero was UNMEASURED rather than measured-zero. The core
+  // side now composes both messages in modules/BitstreamQueueOverflow.h and
+  // pins these exact markers in native/tests/BitstreamQueueOverflowTest.cpp.
+  // IF YOU CHANGE EITHER STRING, CHANGE BOTH FILES - the test names this one.
+  const kOverflowDiscardMarker = "overflow-discard";
+  const kOverflowFailureMarker = "queue overflow with nothing safe to drop";
+  const overflowDiscardLines = coreStderr.split(/\r?\n/)
+      .filter((l) => l.includes(kOverflowDiscardMarker));
   const overflowFailLines = coreStderr.split(/\r?\n/)
-      .filter((l) => l.includes("queue overflow with nothing safe to drop"));
+      .filter((l) => l.includes(kOverflowFailureMarker));
   if (burstSink) {
     console.log(`burst sink    : ${burstStallsApplied} link stall(s) of ${burstStallMs}ms ` +
                 `(first at +${burstFirstMs}ms, then every ${burstPeriodMs}ms) on top of the ${sinkRate}x link`);

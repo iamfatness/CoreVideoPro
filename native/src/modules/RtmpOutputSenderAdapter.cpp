@@ -10,6 +10,7 @@
 #include "modules/EncoderPolicy.h"
 #include "modules/StreamStartAdmission.h"
 #include "modules/OutputDestinationSupervisorPolicy.h"
+#include "modules/BitstreamQueueOverflow.h"
 #include "modules/FfmpegSenderDiagnostics.h"
 #include "modules/SrtFfmpegArgs.h"
 
@@ -2144,8 +2145,15 @@ class RtmpOutputSender final : public IOutputSender {
     // discard AND the queue's last-resort overflow discard. `discardEvents`
     // counts only the POLICY's decisions (StreamBackpressurePolicy::observe
     // returning discardBacklog), because that is what the policy's own
-    // hysteresis and cooldown are keyed on, and inventing policy events from
-    // the encoder thread would corrupt the decisions those counters feed.
+    // hysteresis and cooldown are keyed on. THE REASON IS THE DATA RACE, NOT
+    // THE COOLDOWN (fix round 3, item 3 - the earlier justification here was
+    // wrong in detail and the reviewer was right to check it): discardEvents_
+    // is a pure OUTPUT and feeds no decision, so counting overflow discards
+    // into it would not corrupt any policy behaviour. What it WOULD do is
+    // mutate the non-atomic StreamBackpressurePolicy object from the encoder
+    // thread while the sync thread reads and writes it - an actual data race
+    // on an object with no lock of its own. That is why the two counters stay
+    // separate.
     // So `discardedChunks > 0` with `discardEvents == 0` is the SIGNATURE of a
     // run that hit the hard cap without the policy ever asking for a discard -
     // exactly the burst-gate case - and is a real reading, not a counter bug.
@@ -2154,6 +2162,15 @@ class RtmpOutputSender final : public IOutputSender {
         backpressureDiscardedChunks_ + overflowDiscardedChunks_.load(std::memory_order_relaxed),
         kBackpressureDiscardedChunksCeiling);
     state.discardEvents = backpressure_.discardEvents();
+    // Fix round 3, item 3: say it ON THE WIRE, not only in a C++ comment. A
+    // reader of the snapshot meets `discardedChunks` above zero next to
+    // `discardEvents` at zero and has nothing telling them that is a real
+    // reading rather than a broken counter.
+    state.discardCounterNote =
+        "discardedChunks counts BOTH discard sites (the policy's Lever B discard and the "
+        "queue's last-resort overflow discard); discardEvents counts only the policy's own "
+        "decisions. discardedChunks > 0 with discardEvents == 0 means the hard cap was hit "
+        "without the policy ever asking for a discard - a real reading, not a counter bug.";
     state.lastReason = backpressure_.lastReason();
     state.lastTransitionBufferedMs = backpressure_.lastTransitionBufferedMs();
     state.runId = backpressureRunId_;
@@ -2203,7 +2220,7 @@ class RtmpOutputSender final : public IOutputSender {
     if (!chunk.data || !chunk.size || bitstreamWriterStop_.load() || bitstreamFailure_.failed()) return;
     {
       std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
-      constexpr size_t maxBytes = 2u << 20;
+      constexpr size_t maxBytes = kMaxQueuedBytes;
       // A single chunk larger than the whole byte budget can never fit, no
       // matter what is dropped - discarding a GOP tail for it would cost a
       // visible skip and still fail.
@@ -2213,7 +2230,8 @@ class RtmpOutputSender final : public IOutputSender {
         return;
       }
       const auto full = [&] {
-        return bitstreamQueuedBytes_ > maxBytes - chunk.size || bitstreamQueue_.size() >= 60;
+        return bitstreamQueuedBytes_ > maxBytes - chunk.size ||
+               bitstreamQueue_.size() >= kMaxQueuedChunks;
       };
       if (full()) {
         // Already holding bitstreamQueueMutex_ - hence the ...Locked form (see
@@ -2238,21 +2256,23 @@ class RtmpOutputSender final : public IOutputSender {
           if (lastOverflowDiscardLog_ == std::chrono::steady_clock::time_point{} ||
               now - lastOverflowDiscardLog_ >= std::chrono::seconds(1)) {
             lastOverflowDiscardLog_ = now;
-            ::corevideo::core::nativeLogf("[stream-backpressure] overflow-discard dropped=%zu queuedChunks=%zu queuedBytes=%zu (queue full; GOP tail dropped instead of failing the sender)\n", dropped, bitstreamQueue_.size(), bitstreamQueuedBytes_);
+            // Composed in modules/BitstreamQueueOverflow.h, which the gate
+            // greps and BitstreamQueueOverflowTest.cpp pins - see the header.
+            ::corevideo::core::nativeLogf(
+                "%s", corevideo::modules::describeQueueOverflowDiscard(
+                          dropped, bitstreamQueue_.size(), bitstreamQueuedBytes_).c_str());
           }
         }
         if (full()) {
           bitstreamFailure_.record(BitstreamFailure::QueueOverflow);
-          // Fix round 2, item 2: SAY WHICH ONE HAPPENED. This used to report
-          // "no keyframe queued" unconditionally, but the cut can also succeed
-          // and still leave the BYTE budget over - a different situation with a
-          // different fix, and a sentence that would send a live diagnosis
-          // looking for a missing keyframe that was never missing.
+          // Composed in modules/BitstreamQueueOverflow.h. Fix round 2 reworded
+          // this message in the same commit that tightened the gate's grep for
+          // it, which disarmed that assertion silently; both branches are now
+          // pinned by BitstreamQueueOverflowTest.cpp - see the header.
           ::corevideo::core::nativeLogf(
-              "[gpu-encode] bitstream queue overflow, %s; queuedBytes=%zu queuedChunks=%zu incomingBytes=%zu; sender unhealthy -> supervisor\n",
-              dropped > 0 ? "the cut freed 60-chunk room but the 2 MiB byte budget is still over"
-                          : "nothing safe to drop (no keyframe queued and none arriving)",
-              bitstreamQueuedBytes_, bitstreamQueue_.size(), chunk.size);
+              "%s", corevideo::modules::describeQueueOverflowFailure(
+                        dropped, bitstreamQueuedBytes_, bitstreamQueue_.size(), chunk.size,
+                        kMaxQueuedChunks, kMaxQueuedBytes).c_str());
           return;
         }
       }
@@ -2893,6 +2913,12 @@ class RtmpOutputSender final : public IOutputSender {
   std::atomic<std::int64_t> bitstreamHeadEnqueuedNs_{0};  // 0 = empty
   std::atomic<std::int64_t> bitstreamQueuedChunks_{0};
   std::atomic<bool> bitstreamQueueHasKeyframe_{false};
+  // #597 fix round 3, item 5. The queue's two bounds, named once so the code
+  // that enforces them and the message that describes them cannot disagree.
+  // (These are MEMORY bounds standing in for a latency bound - filed as #607,
+  // deliberately not changed here.)
+  static constexpr std::size_t kMaxQueuedChunks = 60;
+  static constexpr std::size_t kMaxQueuedBytes = 2u << 20;
   // Guarded by bitstreamQueueMutex_ (written only inside enqueueBitstream).
   std::chrono::steady_clock::time_point lastOverflowDiscardLog_{};
 #endif

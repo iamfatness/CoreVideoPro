@@ -699,6 +699,10 @@ struct OutputBackpressureState {
   // two readings, do not diff them" (different runId) even without observing
   // the absence in between.
   std::int64_t runId = 0;
+  // #597 fix round 3. Why `discardedChunks` and `discardEvents` can disagree,
+  // carried NEXT TO THEM so a reader of the snapshot meets the explanation
+  // where they meet the numbers. A constant string, not per-tick state.
+  std::string discardCounterNote;
   // Wall-clock elapsedMs (the same clock every other OutputSender timestamp on
   // this destination uses - see startedAtMs/stoppedAtMs) at the moment this
   // state was last written by observeStreamBackpressure(). sync() has several

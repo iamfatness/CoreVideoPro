@@ -5333,6 +5333,10 @@ rpc::Json MediaCore::outputSenderSessionState() const {
           {"enteredCount", static_cast<double>(bp.enteredCount)},
           {"discardedChunks", static_cast<double>(bp.discardedChunks)},
           {"discardEvents", static_cast<double>(bp.discardEvents)},
+          // #597 fix round 3, item 3: the two counters above count different
+          // populations, and this says so WHERE A READER MEETS THEM instead of
+          // only in a C++ comment they will never see.
+          {"discardCounterNote", bp.discardCounterNote},
           {"lastReason", bp.lastReason},
           {"lastTransitionBufferedMs", static_cast<double>(bp.lastTransitionBufferedMs)},
           {"runId", static_cast<double>(bp.runId)},
