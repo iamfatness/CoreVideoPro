@@ -523,7 +523,16 @@ samples. No session-scoped slow-pipe log occurred. The native sender supervisor
 reported zero restarts and remained healthy. The shared app log nevertheless
 contains output-supervisor restart/give-up messages during this same session;
 their relationship to the healthy sender telemetry needs reconciliation before
-calling the entire supervision path clean.
+calling the entire supervision path clean. Follow-up code inspection reconciles
+this with existing issue #602: `CompositeOutputSender::sync` fans the complete
+destination list to every protocol supervisor, and `noteDesired` creates records
+for every name. The SRT and NDI supervisors therefore also supervise `rtmp` even
+though their adapters ignore RTMP recovery/interrupt requests. The two paired
+warning sequences are consistent with these non-owning supervisors; the actual
+RTMP sender remains generation 1 with zero restarts and continuous recorded
+output. This is misleading supervision logging, not evidence of an RTMP process
+restart or the initiating network stall. No duplicate issue or unrelated fix was
+introduced; #602 already defines the ownership fix and regression coverage.
 
 The receiver exited successfully and retained 36,032 video packets and 28,149 AAC
 packets, spanning approximately 600.5 seconds. Video packets averaged 20,827 bytes,
