@@ -801,3 +801,32 @@ and hardware submission also runs on the same worker; either is a possible
 pause point, **not an established cause**. The stage marker changes no
 transport or encoder behavior. Five focused async-sender tests and the
 output-session snapshot test pass with this additional read-only field.
+
+### Program-buffer starvation captured, September 24, 23:29–23:36 UTC
+
+A guarded repeat stopped after approximately 6 minutes 15 seconds when the
+RTMP destination made no progress. The earlier attempt was invalidated by an
+operator Tile change, which the operator confirmed; this repeat kept all eight
+Tiles feeds present. At onset, the async sender was idle with no queued items,
+and its pipe reported zero slow writes and a 4 ms maximum. Renderer slots,
+source frames and audio counters continued advancing, but the Program buffer's
+delivered count froze at 22,878 while its produced count advanced from 22,880
+to 22,932. Occupancy rose from two to five, overflows from six to 64, and
+underruns from ten to 70. The output worker returns without submitting a
+sender frame when no Program frame is delivered. This establishes the Program
+buffer as the cause of **this captured sender stop**, distinct from the earlier
+FFmpeg pipe blocking signature. It does not establish the cause of the
+operator's original whole-PC connectivity outage.
+
+The Program buffer prepares submitted frames serially before its fixed-clock
+delivery worker can publish them. When preparation lags, the front frame can
+remain behind the delivery deadline and prevent newer frames from being
+published. The recovery change reclaims a queued frame before costly NV12
+preparation if the delivery clock has skipped its slot, or if a newer frame is
+waiting and
+less than one 60 Hz frame period remains. It leaves normal future startup
+frames in FIFO order and does not shift the playout clock or change the
+operator's 10 Mbps, 1080p60 settings. A D3D hardware test with 25 ms of
+artificial preparation per 16.7 ms input frame verifies that recent frames
+continue to arrive; all six Program-buffer hardware tests pass. Live soak
+validation of this change is still required.

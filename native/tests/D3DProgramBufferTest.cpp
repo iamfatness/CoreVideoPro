@@ -27,7 +27,47 @@ struct ProgramBufferTimerResolution {
 namespace corevideo::modules {
 struct D3DProgramBufferTestAccess {
   static void fail(D3DProgramBuffer& buffer) { buffer.fail("test-injected"); }
+  static void delayPreparation(D3DProgramBuffer& buffer, int milliseconds) {
+    buffer.prepareDelayForTestMs_.store(milliseconds);
+  }
 };
+}
+
+TEST(D3DProgramBuffer, SlowPreparationContinuesDeliveringRecentFrames) {
+  ProgramBufferTimerResolution timer;
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+      device.put(), nullptr, context.put())));
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT; desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ComPtrLite<ID3D11Texture2D> source;
+  ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, source.put())));
+  std::atomic<int> deliveries{0};
+  D3DProgramBuffer buffer(device.get(), 64, 64, 2, 1,
+      [&](const ProgramFrame&) { deliveries.fetch_add(1); });
+  ASSERT_TRUE(buffer.valid());
+  D3DProgramBufferTestAccess::delayPreparation(buffer, 25);
+  const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+  int middleDeliveries = 0;
+  for (int slot = 0; slot < 150; ++slot) {
+    std::this_thread::sleep_until(anchor + std::chrono::nanoseconds(static_cast<int64_t>(slot) * 1'000'000'000 / 60));
+    ProgramFrame frame; frame.frameNumber = slot + 1; frame.productionSlot = slot;
+    frame.productionAnchorNs = anchorNs; frame.width = frame.height = 64;
+    buffer.submit(context.get(), source.get(), std::move(frame), false);
+    context->Flush();
+    if (slot == 75) middleDeliveries = deliveries.load();
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  EXPECT_GT(buffer.diagnostics().overflows, 0u);
+  // A serial worker slower than 60 Hz cannot deliver every frame, but it must
+  // keep publishing new content instead of preparing permanently late work.
+  EXPECT_GT(deliveries.load() - middleDeliveries, 10);
 }
 
 TEST(D3DProgramBuffer, FailedProducerKeepsEmptyOutputReadsPaced) {

@@ -12,6 +12,7 @@
 #include <mutex>
 #include <thread>
 #include <functional>
+#include <atomic>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -316,6 +317,40 @@ class D3DProgramBuffer {
         if (stopped_) return;
         continue;
       }
+      bool expired = false;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // Preparation is serial. Skip a queued frame only when it has already
+        // missed its slot or has less than one frame period left and a newer
+        // frame is waiting. Future startup frames must remain FIFO even when
+        // several are submitted before the delivery clock begins.
+        expired = (timeline_ && timeline_->isExpired(slot->productionSlot)) ||
+            (timeline_ && submitted_.size() > 1 &&
+                submitted_.back()->productionSlot > slot->productionSlot &&
+                now100ns() * 100 + 1'000'000'000LL / 60 >= timeline_->deadlineNs(slot->productionSlot));
+      }
+      if (expired) {
+        if (slot->prepareMutex->ReleaseSync(0) != S_OK) {
+          fail("expire-release");
+          return;
+        }
+        prepareContext_->Flush();
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          submitted_.pop_front();
+          const auto it = std::find(delivery_.begin(), delivery_.end(), slot);
+          if (it != delivery_.end()) delivery_.erase(it);
+          slot->state = State::Free;
+          ++diagnostics_.overflows;
+          diagnostics_.occupancy = static_cast<int>(delivery_.size());
+        }
+        changed_.notify_all();
+        continue;
+      }
+      // Test-only scheduling fault. Zero in production; placed after the
+      // stale-work check to model the expensive preparation being avoided.
+      const int delayMs = prepareDelayForTestMs_.load(std::memory_order_relaxed);
+      if (delayMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
       const bool pixelsReady = !slot->needsNv12 || prepareNv12(*slot);
       // Submit the keyed handoff before waiting for its GPU event. State stays
       // Preparing, so delivery cannot acquire key 2 until the query completes;
@@ -489,6 +524,7 @@ class D3DProgramBuffer {
   int64_t maximumExportSubmitNs_ = 0, maximumExportSubmitLateNs_ = 0;
   ComPtrLite<ID3D11Query> prepareComplete_;
   std::function<void(const ProgramFrame&)> deliveredCallback_;
+  std::atomic<int> prepareDelayForTestMs_{0};
   std::thread prepareThread_, deliveryThread_;
   ComPtrLite<ID3D11Device> prepareDevice_, deliveryDevice_;
   ComPtrLite<ID3D11DeviceContext> prepareContext_, deliveryContext_;
