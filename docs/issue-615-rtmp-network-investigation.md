@@ -277,3 +277,39 @@ The owner directed continued investigation. A separately bounded 30-minute run
 started at 15:51:04 UTC with the same diagnostic binary and settings, independent
 local watchdog, and first-backpressure stop in addition to connectivity/tile
 checks. That run is diagnostic capture, not a claim that the defect is fixed.
+
+## Instrumented stall captured; guarded run stopped at first backpressure
+
+The planned 30-minute run stopped automatically after about 6m43s at
+15:57:46 UTC, 2026-09-24. All eight tiles stayed present in 426 saved snapshots.
+Before shutdown, the video writer logged two successful but slow WriteFile calls:
+727 ms for 334,595 bytes at 15:57:45.638, then 836 ms for 10,815 bytes at
+15:57:46.474. Both logged error=0 and stopping=0. No audio slow-write event was
+captured. These establish actual encoder-to-FFmpeg pipe blocking; they do not
+alone identify what prevented FFmpeg consuming video sooner.
+
+Backpressure entered at 15:57:45.669 with 674 ms buffered. The next captured
+state recorded one GOP-tail discard of 55 chunks. Sixteen encoder frames were
+shed through the last saved streaming snapshot, increasing to 23 in the live
+post-stop snapshot. The guard prevented another extended throttled recovery.
+There were three render deadline misses, zero skipped render slots and zero
+recorded audio loss through the saved samples.
+
+Adapter upload fell before the pipe-write logs: 10.69 Mbps at 15:57:41.7,
+9.52 at 42.7, 7.36 at 43.6, 6.73 at 44.6 and 5.96 at 45.5. Host TCP retransmissions
+rose by 63 between 41.7 and 45.5. There was one internet ICMP timeout at 42.7;
+subsequent internet probes succeeded, and the gateway remained responsive.
+These are host/adapter counters, not proof of loss on the RTMP socket itself.
+
+FFmpeg reported its PCM input resuming with a 1.050 catch-up rate after an
+850 ms lag. The earlier failing ten-minute run also logged a 492 ms lag; the
+clean instrumented ten-minute run logged none. Audio read pacing remains a
+hypothesis: this message can follow blocked input OR output and does not prove
+that pacing initiated the network/pipe slowdown. Do not remove it on correlation
+alone. A controlled comparison or more direct transport evidence is required.
+
+Raw evidence is preserved under artifacts/live-601/pipe-diagnostic-30min,
+including the completed FFmpeg log, native/performance logs, summary and per-second
+snapshots/network samples. Streaming is off. CI and CodeQL both passed for the
+instrumentation commit b1fb1f6b. Neither the original PC-wide outage nor sustained
+1080p60 acceptance is declared fixed.
