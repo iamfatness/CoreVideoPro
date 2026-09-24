@@ -356,3 +356,24 @@ stops streaming in `finally`. Raw local comparison evidence and the live run
 remain under ignored `artifacts/live-601`; no meeting or destination secrets
 are included here. Neither the PC-wide outage nor production acceptance is
 declared resolved.
+
+### Guarded candidate run interrupted by harness fault
+
+The first audio-pacing candidate run ended at 16:20:35 UTC after approximately
+169 seconds. The runner read an empty watchdog status file during its
+truncate/write publication and failed closed on a null process ID. The
+independent watchdog remained alive and healthy; streaming was verified off.
+This is an invalidated soak, not a detected media/network failure or a pass.
+
+Its 178 saved samples retained all eight Tiles feeds with zero backpressure,
+encoder shedding, recorded audio loss or sender restarts. One render deadline
+miss occurred, with zero skipped render slots. Adapter mean upload was
+11.097 Mbps at 1,825 packets/s. Final FFmpeg progress was 10,141 frames,
+169.23 seconds of media and 60 fps average. Logs and summary are preserved in
+`artifacts/live-601/audio-pacing-candidate-30min`.
+
+The local runner now retries incomplete status reads three times, 50 ms apart;
+stale, expired, latched or dead guards still stop the test. Valid acceptance,
+empty/latched rejection and 100 live status reads were checked. A new bounded
+30-minute run started around 16:23 UTC with the same native executable and
+settings, under `artifacts/live-601/audio-pacing-candidate-repeat30min`.
