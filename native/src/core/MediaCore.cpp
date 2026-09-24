@@ -894,6 +894,29 @@ rpc::Json MediaCore::sessionState() const {
            static_cast<double>(monitorShed_.lastTransitionObservation().monitorCycleCostNs) / 1e6},
           {"lastTransitionBudgetMs",
            static_cast<double>(monitorShed_.lastTransitionObservation().budgetNs) / 1e6}}},
+      // #597 Task 6 (amended after Task 4): the ONE effective divisor MediaCore
+      // pushed to the compositor (the MAX across GPU-direct senders - see
+      // applyEncoderExportDivisor) and the frames the compositor actually held
+      // back because of it. One encoder texture serves every GPU-direct
+      // destination, so this is published ONCE here, never per sender.
+      // Published unconditionally, like monitorShed above: divisor 1 / 0 shed
+      // frames is the healthy READING, not an absent node.
+      // `shedFrames` is CUMULATIVE for the life of the process (see
+      // ICompositor::encoderExportShedFrames()'s doc) - unlike `divisor`, which
+      // is per-run and corrected back to 1 the moment no destination is being
+      // asked to stream (fix round 2, item 4: see applyEncoderExportDivisor
+      // and its caller in renderVideoOutputTick). `exporting` answers a
+      // narrower, separate question - is ANYTHING consuming the encoder
+      // texture right now (the virtual camera, a recording, or a stream -
+      // `fullProgramReadback` is the OR of all three) - and must NOT be read
+      // as "a stream is throttled": `divisor > 1` together with `exporting`
+      // is equally consistent with "only the vcam is on" (see
+      // ICompositor::encoderExporting()'s doc comment for the full rule).
+      {"encoderExport", rpc::Json::Object{
+          {"divisor", modules_.compositor ? modules_.compositor->encoderExportDivisor() : 1},
+          {"shedFrames", static_cast<double>(
+              modules_.compositor ? modules_.compositor->encoderExportShedFrames() : 0)},
+          {"exporting", modules_.compositor ? modules_.compositor->encoderExporting() : false}}},
       {"audio", rpc::Json::Object{
           {"generation", static_cast<double>(audioWorkerGeneration_.load(std::memory_order_relaxed))},
           {"observed", audioLastProgressNs > 0},
@@ -5295,6 +5318,40 @@ rpc::Json MediaCore::outputSenderSessionState() const {
           {"interruptible", supervisor.interruptible},
       });
     }
+    // #597 Task 6: this destination's own view of Lever A/B - published
+    // whenever the sender populated it (GPU-direct senders only; see
+    // OutputBackpressureState in Interfaces.h). The one global fact this node
+    // deliberately omits (how many frames the compositor actually shed) is
+    // published once, unconditionally, at realtimeEvidence.encoderExport below.
+    if (sender.backpressure) {
+      const auto& bp = *sender.backpressure;
+      senderJson.emplace("backpressure", rpc::Json::Object{
+          // FINAL-REVIEW FINDING 3. `divisor` is this destination's REQUEST.
+          // `appliedDivisor` is the rate the compositor is actually exporting
+          // the encoder texture at - the MAX across active GPU-direct senders,
+          // because one texture feeds them all (see applyEncoderExportDivisor).
+          // Without this pair, the healthy sibling of a throttled destination
+          // published `divisor: 1` while being fed at the maximum: a
+          // textbook-healthy reading for a source running at 15 fps. An
+          // operator readout binds to the NODE, so the node has to say it.
+          {"divisor", bp.divisor},
+          {"appliedDivisor", lastEncoderExportDivisor_.load(std::memory_order_relaxed)},
+          {"level", bp.level},
+          {"bufferedMs", static_cast<double>(bp.bufferedMs)},
+          {"queuedChunks", static_cast<double>(bp.queuedChunks)},
+          {"enteredCount", static_cast<double>(bp.enteredCount)},
+          {"discardedChunks", static_cast<double>(bp.discardedChunks)},
+          {"discardEvents", static_cast<double>(bp.discardEvents)},
+          // #597 fix round 3, item 3: the two counters above count different
+          // populations, and this says so WHERE A READER MEETS THEM instead of
+          // only in a C++ comment they will never see.
+          {"discardCounterNote", std::string(bp.discardCounterNote)},
+          {"lastReason", bp.lastReason},
+          {"lastTransitionBufferedMs", static_cast<double>(bp.lastTransitionBufferedMs)},
+          {"runId", static_cast<double>(bp.runId)},
+          {"observedAtMs", bp.observedAtMs},
+      });
+    }
     senderJson.emplace("lifecycle", contracts::toJson(lifecycle));
     senders.emplace_back(std::move(senderJson));
   }
@@ -8182,19 +8239,27 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     try {
       // Wall time, never frameNumber — a frameNumber clock advanced with the
       // tick rate and pushed a declared 30fps stream at nearly 50.
+      //
+      // MUTUALLY EXCLUSIVE WITH THE VIDEO TICK'S OWN EPOCH (the identical
+      // function-local static in renderVideoOutputTick). This call site is the
+      // `else` of `videoOutputTickRunning_`, so exactly one of the two epochs
+      // ever initialises in a given process. #597 task 7 keys the RTMP/SRT
+      // sender's restart floor on this `elapsedMs`, so a future change that let
+      // BOTH sync sites run would feed that floor two unrelated epochs. If you
+      // do that, give the sender its own clock first.
       static const auto outputClockEpoch = std::chrono::steady_clock::now();
       const double outputElapsedMs = static_cast<double>(
           std::chrono::duration_cast<std::chrono::milliseconds>(
               std::chrono::steady_clock::now() - outputClockEpoch)
               .count());
-      modules_.outputSender->sync(
+      applyEncoderExportDivisor(modules_.outputSender->sync(
           outputDestinations,
           &outputProgramFrame,
           outputElapsedMs,
           work.outputDestinationSettings,
           outputProgramAudio.empty() ? nullptr : &outputProgramAudio,
           outputAudioChannels,
-          modules_.mixer->monitorBusSampleRate());
+          modules_.mixer->monitorBusSampleRate()));
       const auto outMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - tOut0)
                              .count();
@@ -8344,6 +8409,56 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
 // fan-out. Video never takes audioOutputMutex_: even a slow encoder/sender queue
 // cannot steal a 20 ms audio deadline. The async sinks provide their own queue
 // synchronization for concurrent audio/video submissions.
+// #597 Lever A, the control plane. See the declaration in MediaCore.h for why
+// this is the MAX across senders (one encoder texture, many destinations) and
+// what that costs a healthy sibling.
+//
+// An ABSENT backpressure state means the destination is not on the GPU-direct
+// path and has no queue to observe - never read as divisor 1 evidence, so it
+// simply contributes nothing. With no GPU-direct sender at all the max stays 1,
+// which is also the value the compositor already holds, so nothing is called.
+void MediaCore::applyEncoderExportDivisor(const modules::OutputSenderSession& senderSession) {
+  int desired = 1;
+  for (const auto& sender : senderSession.senders) {
+    // ACTIVE senders only. A stopped or idle record stays in senders[] carrying
+    // whatever divisor it last reached; counting it would hold the compositor
+    // throttled with nothing streaming (fix round 1, finding 3). "warning" and
+    // "failed" DO count - such a destination may still be GPU-direct with a
+    // backed-up queue, which is exactly when the lever matters.
+    if (sender.status == "stopped" || sender.status == "idle") continue;
+    // ABSENT IS NOT HEALTHY: a sender with no bitstream queue to observe (the
+    // raw CPU path) simply contributes nothing, rather than voting for 1.
+    if (!sender.backpressure) continue;
+    desired = (std::max)(desired, sender.backpressure->divisor);
+  }
+  if (desired == lastEncoderExportDivisor_.load(std::memory_order_relaxed)) {
+    // Task 6 fix round 1, finding 9 / fix round 2, item 4: this residual was
+    // NOT inert once the divisor became published telemetry, and IS FIXED
+    // NOW - at the CALL SITE, not in here. `AsyncOutputSender::sync()` can
+    // return a CACHED pre-stop snapshot, so the final "one tick past the
+    // last destination" call into this function used to be able to observe a
+    // stale `live` record still carrying the divisor a stream reached before
+    // it stopped, latching `lastEncoderExportDivisor_` (and therefore
+    // `realtimeEvidence.encoderExport.divisor`) indefinitely between shows -
+    // a false-DEGRADED reading. `renderVideoOutputTick` now passes THIS
+    // function an explicitly empty `OutputSenderSession` on that exact tick
+    // (it already knows, synchronously and authoritatively, that
+    // `senderDestinations` is empty - not from asking the possibly-stale
+    // sender), so `desired` here correctly computes 1 and this function pops
+    // the divisor back down the same way any other change does. This
+    // function itself still needs no second reset path - the fix is entirely
+    // in what the CALLER hands it. `realtimeEvidence.encoderExport.exporting`
+    // is a SEPARATE, narrower signal (see its doc comment): it answers
+    // whether anything at all is consuming the encoder texture (vcam,
+    // recording, or a stream), not whether a stream specifically is
+    // throttled - do not read `divisor > 1 && exporting` as proof of a live
+    // throttle.
+    return;  // control plane: only on CHANGE
+  }
+  lastEncoderExportDivisor_.store(desired, std::memory_order_relaxed);
+  if (modules_.compositor) modules_.compositor->setEncoderExportDivisor(desired);
+}
+
 void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
   const bool buffered = modules_.compositor->programBufferFrames() > 0;
   modules::ProgramFrame frame;
@@ -8496,8 +8611,26 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     // Program buses are canonical 48 kHz. Reading the mutable mixer from the
     // independent video thread would reintroduce an audio-domain data race.
     const int declaredSampleRate = senderExpectsAudio ? 48000 : 0;
-    modules_.outputSender->sync(senderDestinations, (!buffered || bufferedFrameAvailable) ? &frame : nullptr, outputElapsedMs, senderSettings,
-                                nullptr, declaredChannels, declaredSampleRate);
+    const auto senderSyncResult = modules_.outputSender->sync(
+        senderDestinations, (!buffered || bufferedFrameAvailable) ? &frame : nullptr, outputElapsedMs,
+        senderSettings, nullptr, declaredChannels, declaredSampleRate);
+    // #597 fix round 2, item 4: on the FINAL tick (senderDestinations just went
+    // empty - see senderSyncActive_ above), `outputSender->sync()` still has to
+    // run to actually stop the senders, but its RETURN VALUE can be a CACHED
+    // pre-stop snapshot: `AsyncOutputSender::sync()` enqueues the stop and
+    // returns its last cached `session()`, which can still report a "live"
+    // sender carrying its last divisor before the stop is processed. Trusting
+    // that here left `realtimeEvidence.encoderExport.divisor` latched at
+    // whatever it was mid-show, INDEFINITELY, since this is the last call
+    // `applyEncoderExportDivisor` ever receives until the next stream starts
+    // (`senderSyncActive_` goes false right after this and the tick early-
+    // returns from then on). MediaCore already KNOWS, synchronously and
+    // authoritatively, that no destination is being asked to stream on this
+    // tick - `senderDestinations` is MediaCore's own desired-state list, not
+    // a report from the sender - so an empty list is proof enough to push 1
+    // directly rather than trust a snapshot that has not caught up yet.
+    applyEncoderExportDivisor(senderDestinations.empty() ? modules::OutputSenderSession{}
+                                                          : senderSyncResult);
   } catch (const std::exception& ex) {
     failOutputSenderSync(std::string("Output sender failed during sync: ") + ex.what());
   } catch (...) {

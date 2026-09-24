@@ -2596,6 +2596,242 @@ realtime** on the GPU path. Slice 1 is the stream only; recording/ISO and macOS
   nobody mistakes the pass for AV1 working. It must stop passing by refusal and
   start passing by streaming before AV1 can be called done.
 
+### Stream backpressure: shed frame rate, never rebuild the encoder (#597, 2026-09-23)
+
+A live 10 Mbps H.264 YouTube stream on beta `58d4fab` stalled the operator's app for
+~20 s: FFmpeg slipped just under 1x, the compressed-video queue hit its bound, the
+sender was failed to its supervisor, and the core tore down and rebuilt the hardware
+encoder **eight times in 20 s** — each rebuild pushing a fresh ~75 KB keyframe into an
+already-backed-up pipe. **The core was starving; the UI was never blocked.** Two levers
+plus a restart floor now absorb a destination that cannot carry the configured bitrate.
+Spec + full evidence: `docs/superpowers/specs/2026-09-23-stream-backpressure-design.md`.
+
+- **THE DIAGNOSTIC TECHNIQUE, worth more than the fix: compare `perf.log` gaps against
+  the sample COUNTER, not wall time.** The incident's one 21.01 s gap
+  (21:09:12.06 → 21:09:33.07) carried a NORMAL counter delta (10860 → 10890, the usual
+  30) with `dispatchQueue=0.0ms` on both sides — a PRODUCER slowdown. A frozen counter
+  would have been a UI block. The operator's Stop was recorded while the gap was still
+  open, which is the same evidence read a second way.
+
+- **The signal is the wall-clock AGE of the oldest queued chunk** (`bufferedMs = now -
+  oldestQueuedChunkEnqueuedAt`), published atomically where the queue is already mutated
+  under `bitstreamQueueMutex_`. **Deliberately not a frame-count conversion**: the frame
+  rate is being changed underneath the measurement by Lever A, which is exactly when
+  frames→ms would lie. It is honestly a LOWER bound — FFmpeg buffers behind us.
+
+- **TWO levers, because throttling does not recover latency already accumulated.**
+  Lever A (input divisor 1/2/3/4 feeds the encoder at **programFps / divisor** — 60/30/20/15
+  fps at the 60 fps program this product targets, but 30/15/10/**7.5** at a 30 fps one, because
+  the divisor is applied to RENDER FRAME NUMBERS and `startProgramOutput` clamps `outputFps_`
+  to 1–120; never quote the ladder as an invariant) stops the queue growing and holds
+  per-frame quality; Lever B (GOP-tail discard — drop from the head up to a keyframe)
+  clears the ~1 s already sitting there. Thresholds, against that ~1 s budget:
+  throttle >250 ms (a quarter — act while the response is still invisible), discard
+  >750 ms (three quarters — only after Lever A failed to hold it), recover <100 ms (the
+  100–250 ms band is the anti-flap hysteresis, since throttling itself drains the queue),
+  enter after 30 ticks (0.5 s — a single keyframe spikes the queue), recover after 600
+  (10 s — network capacity changes far more slowly than render load), one step at a time
+  both ways. Same shape as `core/MonitorShedPolicy.h`; read that one first.
+
+- **LEVER A'S LOCATION WAS MEASURED, NOT REASONED — and the obvious site is inert.**
+  Skipping only the sender's `submitFrameToGpuEncoder` left the stream **byte-identical
+  (ratio 0.998)**: the encoder's thread advances on the KEYED MUTEX when the compositor
+  releases a frame, so a skipped submit delays nothing. The gate is the compositor's
+  encoder-texture export (`D3D11CompositorAdapter`, via
+  `ICompositor::setEncoderExportDivisor`, a control-plane call made on transitions only)
+  — halving that halved egress: 74,401,369 B at 60/s vs 37,260,524 B at 30/s, **ratio
+  0.500 / 0.501**, ~124 KB per frame either way, so the CBR bits-per-frame assumption
+  holds. **Consequence: Lever A is per-ENCODER, not per destination** (one texture feeds
+  every GPU-direct sender, so MediaCore takes the MAX divisor across the active ones) —
+  a healthy sibling runs at the struggling destination's frame rate until it recovers.
+  Lever B (the queue discard) stays genuinely per destination.
+
+- **A SHED FRAME MUST STILL PUBLISH THE ENCODER TEXTURE HANDLE.**
+  `exportEncoderSharedTexture` does two separable things: SUBMIT pixels and PUBLISH
+  metadata. Shedding skips only the submit. The sender reads the handle's presence as
+  "GPU-direct is available"; an absent handle resolves to `CpuFallback`, flips
+  `gpuPathChanged`, and relaunches FFmpeg **and the encoder once per shed frame** — #597
+  amplified to tens per second (and on HEVC the restart takes the CPU path,
+  `startRefusedInadmissible_` latches, and the stream is dead for the rest of the show).
+  A shed frame publishes the LAST SUBMITTED frame number, tracked on the render thread —
+  `D3DDecoupledExport::publishedFrameNumber()` is written by its own export thread and
+  lags the render thread by an unbounded amount.
+
+- **THERE WERE TWO RESTART AUTHORITIES, and the plan only knew about one.** The
+  supervisor's 5→10→20→40→60 s ladder was never bypassed — it was never CONSULTED: five
+  of the seven rebuilds were `RtmpOutputSenderAdapter::ensureFfmpegProcess` re-opening
+  its own transport from the media tick under an ADAPTER-LOCAL backoff whose first rung
+  was **1 s** and whose streak was cleared by the first accepted frame. `1 s wait + ~2 s
+  of life` is the measured 2.5–3.5 s cadence exactly. Both authorities are now
+  independently bounded and no longer share a key: `TransportRestartFloor` for the
+  adapter, and `IOutputSender::restartForSupervisor()` split from the operator's
+  `recover()`, so a supervisor restart cannot erase the floor that bounds it. A healthy
+  INSTANT must not release a pending fault's rung (it did — that was the 21:09:10.088
+  log line the investigation had listed as "Unsure"; **an "Unsure" entry is a lead, not
+  noise**). The floor's refusal path also STOPS the child before serving the rung: a
+  live-but-unfed child holds the single SRT caller slot, and this repo has been bitten by
+  exactly that before.
+
+- **A DESTINATION SERVING ITS OWN RESTART BACKOFF IS WAITING, NOT FAILING (final review,
+  #603 — un-deferred and fixed here).** The floor publishes `status="failed"` /
+  `lastResultCode="ffmpeg-retry-backoff"` for the WHOLE rung it serves — the only
+  vocabulary it had for "not delivering" — and the supervisor classed that Retryable,
+  armed a fault per rung and gave up after five. So the floor that exists to PROTECT the
+  encoder became a new path from "congested link" to "stream off until the operator
+  re-arms", and this branch raising the rungs from 1–30 s to 5–60 s grew that exposure
+  window two- to sixfold. It was first deferred as #603 on the grounds that fixing it
+  changes give-up semantics; **that reasoning does not survive making the defect worse,
+  and shipping a known stream-off regression behind a filed issue is not acceptable.**
+  `isSelfManagedRetryResultCode` is the distinction, and it took TWO halves: `classify()`
+  returning `None` is not enough on its own, because a destination serving a 60 s rung
+  accepts no units and the "stopped accepting output for Ns" branch arms a fault after
+  5 s by a different door — the whole fault-arming block is skipped while a self-managed
+  retry is pending. Deliberately narrow: an already-armed fault keeps its rung, the
+  terminal bypass and give-up are untouched, an unknown code is still RETRYABLE, and the
+  next observation carrying any other code restores the ordinary rules.
+
+- **A TRANSPORT REOPEN RESETS THE BACKPRESSURE POLICY, not just an operator stop (final
+  review, finding 2 — cross-task, which is why no per-task review saw it).** Only the
+  `!wantsRtmp` operator-stop path used to reconstruct `backpressure_`. `reopen()` — both
+  `recover()` and `restartForSupervisor()` — stopped FFmpeg and cleared the floor but
+  left the policy holding its pre-failure divisor, so the destination came back
+  republishing divisor 4 against an EMPTY queue and needed ~30 s of healthy streaming
+  (`kRecoverAfterHealthyTicks = 600`, one step per 10 s) to return to full rate, while
+  the compositor visibly snapped 4 → 1 → 4 across the outage. A reopen IS a new run by
+  every other measure the adapter keeps (`framesSent`, `bytesSent`, `startedAtMs` all
+  reset there), so the per-run counters reset with them and `runId` advances.
+  `resetBackpressureForNewRun()` is the one place, shared by both doors. **Task 7 owned
+  the restart and Tasks 4/6 owned the policy lifetime — a lifetime that spans two tasks'
+  seams belongs to neither, and only a whole-branch read finds it.**
+
+- **THE NODE MUST SAY THE RATE THE DESTINATION IS FED AT, NOT ONLY THE RATE IT ASKS FOR
+  (final review, finding 3).** Lever A is per-ENCODER, and that limitation was named in
+  three comments — but not on the NODE, and the node is what an operator readout binds
+  to. With two GPU-direct destinations the healthy sibling published `divisor: 1`, a
+  textbook-healthy reading, while being fed at the max across senders; a destination
+  added mid-show beside a throttled sibling started at a quarter rate and looked
+  perfect. The per-sender node now carries BOTH: `divisor` (this destination's REQUEST,
+  which its own hysteresis and counters are keyed on) and `appliedDivisor` (what the
+  compositor is actually exporting at, written by MediaCore where that fact exists).
+  Read `appliedDivisor` for the rate. **Naming a limitation in the implementation's
+  comments is not the same as publishing it where the consumer reads.**
+
+- **BACKPRESSURE'S OWN LAST-RESORT BOUND CALLED THE STORM.** `enqueueBitstream`'s
+  overflow path failed the sender ON PURPOSE so the supervisor would restart it — which
+  rebuilds the encoder. It predates this work and only the live gate could see it (two
+  of three 240 s congested runs were clean; the third stormed with eleven encoder
+  starts). It now runs the GOP-tail discard FIRST and fails only when the discard frees
+  nothing. Two rulings behind that: ordinary Lever B cuts to the FIRST queued keyframe
+  (the smallest clean skip that recovers meaningful latency), the OVERFLOW path cuts to
+  the LAST (last resort, whose alternative is rebuilding the encoder, so maximising freed
+  room is right) — one pure policy, parameterised, never a second copy; and **a keyframe
+  ARRIVAL makes the whole backlog discardable**, because cutting forward to an arriving
+  IDR rests on the identical safety argument as cutting to a queued one. That was
+  measured, not assumed: the burst gate twice found 60 queued chunks averaging 9.8 KB,
+  **all reference frames, no keyframe anywhere**, while the refused 22.6 KB chunk was the
+  keyframe at the door. All three discard paths are forward-only PREFIX deletions, so the
+  survivor is always a contiguous suffix starting at a self-contained IDR. **Never teach
+  the discard to reason about which preceding chunks are parameter-set headers** — that
+  is a judgement it will get wrong under load. (Re-entrancy: the discard splits into a
+  `…Locked` mutation plus a thin locking wrapper — no recursive mutex, no unlock/relock
+  window, since `enqueueBitstream` already holds `bitstreamQueueMutex_`.)
+
+- **PARAMETER SETS ARE IN BAND, and that is what makes the GOP-tail discard safe.**
+  Traced on this rig, 200 chunks each codec: every h264 CleanPoint sample is
+  `AUD,SPS,PPS,IDR` and every hevc one `AUD,VPS,SPS,PPS,IDR_W_RADL`, with **zero**
+  non-keyframe chunks carrying a parameter set. No encoder change was needed; the
+  pre-ruled mitigation (`CODECAPI_AVEncVideoPrependSPSPPSToIDR`) is NOT used. Re-derive
+  this only if the encoder configuration changes.
+
+- **The gate:** `node scripts/validate-gpu-encode.mjs --seconds 240 --slow-sink`
+  (sustained congestion via a bandwidth-limited TCP proxy) and the same with
+  `--burst-sink` (stalls the link outright, reproducing the 22→60-chunk onset so the
+  overflow branch is actually ENTERED — and a run with no overflow-discard line FAILS).
+  It asserts the stream never stops, the divisor steps down and later steps back up,
+  zero encoder rebuilds, Program holds 60 fps, and the `perf.log` sample cadence stays in
+  its 5–6 s band measured against the COUNTER — the assertion that would have caught
+  #597.
+
+- **FOUR MEASURING INSTRUMENTS IN THIS SUB-PROJECT COULD HAVE REPORTED SUCCESS WHILE
+  MEASURING NOTHING, and we introduced one of them ourselves while fixing another.**
+  (1) The first slow sink used SRT `transtype=live`, which DROPS rather than blocks, so
+  the queue never aged past 0 ms and the gate was a silent no-op; (2) FFmpeg's
+  `-readrate` throttles MEDIA TIME, not bandwidth, which Lever A cannot answer by
+  construction — a confident WRONG NEGATIVE; (3) the burst gate's branch-entry assertion
+  was written as a DISJUNCTION that a `nothing-safe-to-drop` FAILURE line satisfied, so
+  a run where the discard never worked cleared the check; (4) one commit tightened that
+  assertion to require zero `nothing-safe-to-drop` lines AND reworded the very string
+  being grepped — leaving it vacuous by construction, so every reported zero in that
+  column was UNMEASURED, not measured-zero. The repair was not the grep: the two failure
+  messages and the discard line are now composed in `modules/BitstreamQueueOverflow.h`
+  and pinned by `BitstreamQueueOverflowTest.cpp`, so a rewording breaks a test instead of
+  silently disarming a gate. **Two rules: an assertion nobody has watched FAIL is not yet
+  an assertion — mutate the code and see it go red; and a load-bearing log string is an
+  INTERFACE that needs a test.** A related habit that paid twice here: a subagent's green
+  is not evidence until re-run independently (one reported 1208/0 was a 1-in-3 flake that
+  would have merged).
+
+- **WHAT IS NOT PROVEN, precisely — do not upgrade any of these.** Six-plus clean gate
+  runs are a FINITE SOAK, not a guarantee (three earlier greens were three draws at a
+  ~1-in-3 failure rate, which is exactly what the next round's burst runs exposed).
+  Restart-ladder **rung 1 is pinned only by pure unit tests** — no end-to-end run has
+  measured its value. **The HEVC overflow branch has never fired**, because the queue's
+  cap counts CHUNKS while the throttle limits the ARRIVAL RATE, so at divisor 4 the queue
+  reaches seconds of latency in ~23 chunks and never approaches 60 (that is #607). HEVC
+  discards were observed NOT to corrupt the RTMP/FLV path (nine ordinary Lever B
+  discards, 164 chunks dropped, 7808 frames decoded cleanly) — but **that evidence
+  establishes DECODABILITY, NOT A/V SYNC**, and saying so precisely strengthens it: the
+  GPU-direct HEVC path sets `timestampedHevcInput` and rides the mpegts envelope with
+  real encoder PTS, so a discard's gap is carried honestly through the container instead
+  of being renumbered away — which is why 7808 frames decoded cleanly across a 164-chunk
+  cut. The resulting audio/video DRIFT across that cut was never measured. And **the
+  MPEG-TS/SRT case, where an unsignalled PCR jump was the actual concern, remains
+  UNOBSERVED, because the slow-sink harness runs on an RTMP sink.** The operator-facing
+  "this stream is degraded and at what frame rate" readout spec §7 requires was **not
+  built at all** — the evidence is on the wire and nothing in the console binds to it
+  ([#610](https://github.com/iamfatness/CoreVideoPro/issues/610)). The POSIX RTMP compile fix is structural
+  only (no POSIX toolchain here), and the overflow call-site test self-skips wholesale
+  without `C:\ffmpeg\bin`.
+
+- **Nine issues were filed for defects too wide to fix here; one of them (#603) was
+  then un-deferred and fixed before merge.**
+  [#601](https://github.com/iamfatness/CoreVideoPro/issues/601) is the one to read first,
+  and it may well be the incident's REAL TRIGGER: the GPU-direct encoder **ignores its
+  configured bitrate** — ~59.5 Mbps measured at 10000 kbps and ~59.4 Mbps at 2000 kbps,
+  the same bytes either way, because only `MF_MT_AVG_BITRATE` is set and no
+  `CODECAPI_AVEncCommonRateControlMode` / `MeanBitRate` call exists, so
+  `rateControl="cbr"` is inert. **Backpressure MASKS that symptom without fixing it** —
+  it sheds input frames so egress falls, while the stream still does not honour its rate.
+  Then [#602](https://github.com/iamfatness/CoreVideoPro/issues/602): every supervised
+  sender creates a Destination record for every OTHER name in the sync list and faults it
+  forever — doubled restart traffic and misleading supervisor logs during exactly the
+  incident you would read them to diagnose.
+  [#603](https://github.com/iamfatness/CoreVideoPro/issues/603) was one of them and is
+  now **FIXED AND CLOSED** — see "A DESTINATION SERVING ITS OWN RESTART BACKOFF IS
+  WAITING, NOT FAILING" above; it is recorded here because the REASONING for un-deferring
+  it is the transferable part.
+  [#604](https://github.com/iamfatness/CoreVideoPro/issues/604): `stopFfmpegProcess()`
+  waits 500 ms and never terminates, so a stopped destination on a congested link keeps
+  being published to (measured alive at the 22.6 s bound) and a restart can spawn a
+  second child beside a live one — the restart floor assumes stopping a child stops it,
+  which makes the SRT caller-slot release a bounded best-effort claim, not a guarantee.
+  [#605](https://github.com/iamfatness/CoreVideoPro/issues/605):
+  `keyframeIntervalSeconds` is NEVER applied (there is no GOP codec-API call in
+  `MediaFoundationGpuVideoEncoder`) and nothing can request an IDR on demand, so the MFT
+  runs at its driver default — and because the interval counts FRAMES while Lever A sheds
+  frames, a GOP spans ~4 s at divisor 4, which is why a 60-chunk queue can hold no cut
+  point. [#606](https://github.com/iamfatness/CoreVideoPro/issues/606):
+  `MediaCore::startProgramOutput` unconditionally overwrites `videoCodec`, fps and
+  `targetBitrateMbps` on every rtmp/rtmps destination from `streamOutputProfile` while
+  leaving SRT alone — a **silent codec downgrade path** sitting BEFORE the sender, so the
+  refuse-never-downgrade guard sees nothing to refuse (masked today only because the shell
+  always sends a profile; it took a gate failure to find it).
+  [#607](https://github.com/iamfatness/CoreVideoPro/issues/607): the 60-chunk and 2 MiB
+  caps are MEMORY bounds doing a LATENCY bound's job, and both are elastic in the wrong
+  variable (1 s at divisor 1 vs 4 s at divisor 4; ~2 s h264 vs ~9 s HEVC) — the last place
+  in this sub-project where a count stands in for time, and the final line of defence
+  before a destination fault reaches the encoder.
+
 ## Secrets at rest + OAuth return URI (beta S4, 2026-07-18)
 
 - **Credentials at rest use DPAPI** via `DpapiSecretProtector` (WinUI, CurrentUser

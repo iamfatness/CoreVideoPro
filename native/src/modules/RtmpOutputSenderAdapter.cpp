@@ -1,4 +1,5 @@
 #include "core/BoundedAsyncLog.h"
+#include "core/StreamBackpressurePolicy.h"
 #include "modules/Interfaces.h"
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
@@ -9,6 +10,7 @@
 #include "modules/EncoderPolicy.h"
 #include "modules/StreamStartAdmission.h"
 #include "modules/OutputDestinationSupervisorPolicy.h"
+#include "modules/BitstreamQueueOverflow.h"
 #include "modules/FfmpegSenderDiagnostics.h"
 #include "modules/SrtFfmpegArgs.h"
 
@@ -659,8 +661,36 @@ class RtmpOutputSender final : public IOutputSender {
     if (!wantsRtmp) {
       stopFfmpegProcess();
       videoFramePacer_.reset();
-      clearFfmpegRetryBackoff();
+      // THE ONE UNFLOORED ROUTE, AND THE INVARIANT IT RESTS ON (round 2, item 4).
+      // Stream off drops the streak AND the floor, which is right: switching a
+      // destination off and on again is the operator re-arming it. It is safe
+      // ONLY because `outputDestinations_` is COMMAND state (MediaCore's
+      // start/stop-program-output), so this branch is entered on an operator
+      // action and not once per tick. A producer that made the destination list
+      // tick-derived - or that alternated it - would reset both ladders every
+      // tick and re-open the #597 storm through this door. If destinations ever
+      // become derived state, this clear() has to become an edge-triggered
+      // operator signal, not a per-sync observation.
+      restartFloor_.clear();
+      backoffProofWritten_ = false;
       startRefusedInadmissible_ = false;  // Stream off/on re-evaluates the refusal
+      // #597 Lever A: A STOPPED DESTINATION HAS NO QUEUE. observeStreamBackpressure()
+      // lives far below this return, so without these two lines the stopped record
+      // keeps publishing whatever divisor it last reached, MediaCore keeps taking it
+      // as the max, and the compositor stays throttled with nothing streaming - and
+      // renderVideoOutputTick stops calling sync() once the last destination goes,
+      // so nothing would ever correct it. Resetting the policy object (rather than
+      // only clearing the published value) is what stops the NEXT stream opening at
+      // 15 fps on an empty queue; its cumulative counters are per stream RUN.
+      // #597 Lever B: the discard counter is per-stream-run state exactly like
+      // the policy object - it is reset here too, or the next run's Task 6
+      // telemetry would report the PREVIOUS show's discards as its own.
+      // #597 Task 6 fix round 1, finding 11: a new run gets a new identity, so
+      // a consumer that reads across this reset without observing the node's
+      // momentary absence can still tell the counters were RESET, not merely
+      // decreased. All of it lives in resetBackpressureForNewRun(), which the
+      // reopen path shares (final-review finding 2).
+      resetBackpressureForNewRun();
       if (sender_.status != "idle" && sender_.status != "stopped") {
         sender_.status = "stopped";
         sender_.stoppedAtMs = elapsedMs;
@@ -792,6 +822,31 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
 
+    // #597 Lever A: skip program frames BEFORE the encoder. Compressed frames
+    // cannot be dropped individually, so the only safe throttle is upstream. The
+    // encoder's declared frame rate is unchanged, so bits-per-frame - and with
+    // it per-frame quality - holds while the data rate falls. Observed once per
+    // sync(), here, where the sender already holds the frame and before any
+    // path that can return early on a configuration refusal.
+    //
+    // THE POLICY THEREFORE TICKS AT THE RENDER RATE, NOT THE CONFIGURED STREAM
+    // FPS - this site is above videoFramePacer_. So kEnterAfterOverWaterTicks
+    // (30) is ~0.5 s on the 60 Hz video tick (~0.6 s on the ~50 Hz direct path)
+    // whether the stream is declared at 30 or 60 fps, and kRecoverAfterHealthyTicks
+    // (600) is ~10 s. A reader of StreamBackpressurePolicy.h will reasonably
+    // assume one tick == one submitted frame; here it does not. This is safe
+    // because the SIGNAL the policy acts on (bufferedMs) is wall-clock by
+    // construction - see that header - so only the streak lengths are rate
+    // dependent, not the thresholds.
+    //
+    // observeStreamBackpressure() (and discardBacklogToNextKeyframe() beneath
+    // it) live inside the #if defined(_WIN32) bitstream-queue block, because
+    // the queue itself is Windows-only - guard the call here too, or a POSIX
+    // build with COREVIDEO_WITH_RTMP_OUTPUT=ON fails to compile.
+#if defined(_WIN32)
+    observeStreamBackpressure(elapsedMs);
+#endif
+
     // Skip BEFORE ensureFfmpegProcess: that call pins FFmpeg's -s geometry from
     // this frame, so letting a preview-sized frame through here is what
     // restarted the encoder mid-stream.
@@ -806,9 +861,19 @@ class RtmpOutputSender final : public IOutputSender {
     if (!ensureFfmpegProcess(*frame, elapsedMs)) {
       // A latched refusal already wrote its one proof line with the named code;
       // appending per frame would flood the proof file for the rest of the show.
-      if (!startRefusedInadmissible_) {
-        appendSendProof(frame, "ffmpeg-start-failed");
+      //
+      // A SERVED BACKOFF IS LATCHED THE SAME WAY (round 2, item 6). This runs on
+      // every program frame, so a rung is 60 Hz x its length of flushed lines -
+      // and round 1 raised the rungs from 1-30 s to 5-60 s, which would have
+      // made a rung-5 backoff ~3,600 lines saying the identical thing. One line
+      // per backoff WINDOW: the latch is cleared wherever the floor state can
+      // next change (a real open, a fresh failure, or a clear), so every
+      // distinct window still gets its line.
+      const bool servingBackoff = sender_.lastResultCode == "ffmpeg-retry-backoff";
+      if (!startRefusedInadmissible_ && !(servingBackoff && backoffProofWritten_)) {
+        appendSendProof(frame, servingBackoff ? "ffmpeg-retry-backoff" : "ffmpeg-start-failed");
       }
+      backoffProofWritten_ = servingBackoff;
       return snapshot();
     }
 
@@ -857,7 +922,11 @@ class RtmpOutputSender final : public IOutputSender {
         sender_.lastResultCode = "ffmpeg-write-failed";
       }
       const auto proofStatus = sender_.lastResultCode;
-      scheduleFfmpegRetry();
+      // #597: climb the ladder. This is the site the incident hammered — a
+      // queue overflow, a 1 s wait, a rebuild, one accepted frame, and round
+      // again at 2.5–3.5 s. The streak now survives that one frame.
+      restartFloor_.noteFailure(static_cast<std::int64_t>(elapsedMs));
+      backoffProofWritten_ = false;
       // STOP FIRST, THEN READ THE STDERR. A failed stdin write is observed the
       // instant the pipe breaks, which is BEFORE FFmpeg has flushed the line that
       // says why - measured live 2026-09-12 against a refusing endpoint, where the
@@ -887,7 +956,10 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 0;
     sender_.destinationHealth = "ok";
     sender_.lastResultCode = "encoder-input-accepted";
-    clearFfmpegRetryBackoff();
+    // NOT clear(): a single accepted frame is a launch, not a healthy run. The
+    // budget comes back only after kHealthyRunMs of this run accepting output —
+    // the same rule OutputDestinationSupervisorPolicy states for the supervisor.
+    restartFloor_.noteAccepted(static_cast<std::int64_t>(elapsedMs));
     appendSendProof(frame, "sent");
     return snapshot();
   }
@@ -907,12 +979,33 @@ class RtmpOutputSender final : public IOutputSender {
     return snapshot();
   }
 
+  // THE OPERATOR re-arming this destination. Clears the floor: the house rule is
+  // that an operator action always clears give-up, and making them wait out a
+  // ladder they just overrode is the opposite of that.
   OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override {
+    return reopen(destination, elapsedMs, reason, /*clearRestartFloor=*/true);
+  }
+
+  // THE SUPERVISOR restarting this destination automatically. Identical in every
+  // respect EXCEPT that it KEEPS the floor (#597 task 7 round 1, finding 1).
+  // Round 0 routed this through recover(), so every supervisor restart wiped the
+  // adapter's floor and the composed path had no backstop at either level.
+  OutputSenderSession restartForSupervisor(const std::string& destination, double elapsedMs,
+                                           const std::string& reason) override {
+    return reopen(destination, elapsedMs, reason, /*clearRestartFloor=*/false);
+  }
+
+  OutputSenderSession reopen(const std::string& destination, double elapsedMs, const std::string& reason,
+                             bool clearRestartFloor) {
     if (destination != protocol_.destination) {
       return snapshot();
     }
     stopFfmpegProcess();
-    clearFfmpegRetryBackoff();
+    if (clearRestartFloor) restartFloor_.clear();
+    // Final-review finding 2: a reopened transport starts from an EMPTY queue,
+    // so it must start from an unthrottled policy too. See
+    // resetBackpressureForNewRun() for the full reasoning.
+    resetBackpressureForNewRun();
     runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     runtimeDetail_ = runtimeProbe_.detail;
     runtimeAvailable_ = runtimeProbe_.available;
@@ -931,6 +1024,80 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession session() const override { return snapshot(); }
+
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  bool wouldRestartForEncodePathForTest(const ProgramFrame& frame) override {
+    const bool desiredGpuDirect =
+        resolveGpuEncodePath(frame, videoWidth(frame), videoHeight(frame)) == GpuEncodePath::GpuDirect;
+    const bool gpuPathChanged = desiredGpuDirect != activeUseGpuDirect_;
+    activeUseGpuDirect_ = desiredGpuDirect;  // exactly what a real restart records
+    return gpuPathChanged;
+  }
+
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  void setBackpressureObservationForTest(std::int64_t bufferedMs, bool keyframeInQueue) override {
+    backpressureBufferedMsForTest_.store(bufferedMs, std::memory_order_relaxed);
+    backpressureKeyframeForTest_.store(keyframeInQueue, std::memory_order_relaxed);
+  }
+
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  // #597 Lever B seam: pushes straight onto bitstreamQueue_ so discard
+  // correctness can be exercised with no hardware encoder.
+  void enqueueBitstreamChunkForTest(std::size_t bytes, bool keyframe) override {
+#if defined(_WIN32)
+    GpuEncodedChunk metadata;
+    metadata.keyframe = keyframe;
+    std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+    bitstreamQueue_.push_back(
+        QueuedBitstream{std::vector<uint8_t>(bytes, 0), metadata, std::chrono::steady_clock::now()});
+    bitstreamQueuedBytes_ += bytes;
+    republishQueueTelemetryLocked();
+#else
+    (void)bytes;
+    (void)keyframe;
+#endif
+  }
+
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  // #597 Task 8b seam: offers a chunk through the REAL enqueueBitstream(), so
+  // the overflow path (and the GOP-tail discard that now guards it) can be
+  // exercised with no hardware encoder. bitstreamWriterStop_ defaults to true
+  // until a stream actually starts its writer thread, and enqueueBitstream()
+  // correctly refuses to queue anything in that state, so the seam clears it
+  // for exactly the duration of the call and puts it back - it must never
+  // leave a stopped sender looking started.
+  void offerBitstreamChunkForTest(std::size_t bytes, bool keyframe) override {
+#if defined(_WIN32)
+    std::vector<uint8_t> payload(bytes, 0);
+    GpuEncodedChunk chunk;
+    chunk.data = payload.data();
+    chunk.size = payload.size();
+    chunk.keyframe = keyframe;
+    const bool previousStop = bitstreamWriterStop_.exchange(false);
+    enqueueBitstream(chunk);
+    bitstreamWriterStop_.store(previousStop);
+#else
+    (void)bytes;
+    (void)keyframe;
+#endif
+  }
+
+  // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
+  // ONE read of the queue's true state - depth, keyframe presence, and the
+  // real bitstreamBufferedMs() - so a call-site test needs one call instead
+  // of three, and none of them go through the setBackpressureObservationForTest
+  // override.
+  BitstreamQueueSnapshotForTest bitstreamQueueSnapshotForTest() const override {
+#if defined(_WIN32)
+    return BitstreamQueueSnapshotForTest{
+        static_cast<std::size_t>(bitstreamQueuedChunks_.load(std::memory_order_relaxed)),
+        bitstreamQueueHasKeyframe_.load(std::memory_order_relaxed), bitstreamBufferedMs(),
+        bitstreamFailure_.failed() &&
+            bitstreamFailure_.reason() == BitstreamFailure::QueueOverflow};
+#else
+    return BitstreamQueueSnapshotForTest{};
+#endif
+  }
 
   void interrupt(const std::string& destination) override {
     if (destination != protocol_.destination) {
@@ -1119,16 +1286,74 @@ class RtmpOutputSender final : public IOutputSender {
       return true;
     }
 
-    if (!ffmpegRunning_ && ffmpegRetryAfter_ != std::chrono::steady_clock::time_point{} &&
-        std::chrono::steady_clock::now() < ffmpegRetryAfter_) {
-      const auto retryMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                               ffmpegRetryAfter_ - std::chrono::steady_clock::now())
-                               .count();
+    // #597 THE RESTART FLOOR. This is the ONE gate every re-open of this
+    // destination's transport passes through, and until 2026-09-23 it was the
+    // adapter's own private ladder: first rung ONE second (below the house
+    // ladder's five), and cleared by the first accepted frame. A destination
+    // that came up, took a frame and died was therefore rebuilt every ~3 s
+    // forever - the rebuild storm of the #597 incident, five of whose seven
+    // starts the supervisor never decided. It now holds the house ladder
+    // (TransportRestartFloor), so no two opens of one destination are closer
+    // together than the ladder's current rung.
+    //
+    // THE ONE EXEMPTION IS A SETTINGS APPLY, NOT "the transport is running"
+    // (round 1, finding 2). Round 0 exempted every restart taken while
+    // ffmpegRunning_ was true and justified it as operator intent - but that
+    // branch is also reached by `gpuPathChanged` (the encoder texture appearing
+    // or disappearing, which under exactly this incident's load can flap at tick
+    // rate), by `sizeChanged`/`pixelFormatChanged`, and by `audioChanged`. None
+    // of those comes from an operator, and each was an unfloored rebuild per
+    // flap. The floor now applies to every restart NOT caused by a change in the
+    // operator's OutputDestinationSettings. A resolution change that arrives
+    // while the floor is armed does wait a rung - correct, not a regression: an
+    // armed floor means this destination is already failing repeatedly.
+    const bool settingsApplied = endpointChanged || executableChanged || fpsChanged || bitrateChanged ||
+                                 audioBitrateChanged || codecChanged || encoderModeChanged ||
+                                 keyframeChanged || rateControlChanged || h264ProfileChanged ||
+                                 bFramesChanged || enhancedChanged;
+    if (!settingsApplied && !restartFloor_.mayOpenAt(static_cast<std::int64_t>(elapsedMs))) {
+      // A REFUSED REBUILD LEAVES NO LINGERING CHILD (round 2, item 1). Round 0's
+      // gate could only be reached with the transport already down, so falling
+      // straight to `return false` was safe. Round 1's gate can be reached with
+      // FFmpeg STILL RUNNING - the floor is armed from an earlier failure, a
+      // settings apply opened a new transport through the exemption inside that
+      // window, and a NON-settings change (gpuPathChanged, sizeChanged,
+      // pixelFormatChanged, audioChanged) then arrives. Without this stop the
+      // destination spends up to a full rung with a live child being fed
+      // nothing while it publishes `failed`.
+      //
+      // On RTMP that is untidy. On SRT it is a show-killer and this repo has
+      // already been bitten by it: an SRT listener accepts exactly ONE caller,
+      // so a child that outlives its own teardown holds the slot and the
+      // reconnect at the end of the rung is REFUSED - the stream never comes
+      // back. stopFfmpegProcess() closes stdin, waits for exit and releases the
+      // slot, so the rung is served with the transport genuinely down and
+      // `failed` is then a true statement rather than a description of a child
+      // that is still connected.
+      if (ffmpegRunning_) {
+        stopFfmpegProcess();
+        // And SAY it stopped. `stoppedAtMs` is how the rest of the system reads
+        // "this transport is down"; leaving it unset would publish `failed` for
+        // a destination whose child had just been killed without recording when.
+        sender_.stoppedAtMs = elapsedMs;
+      }
+      const auto retryMs = restartFloor_.remainingMs(static_cast<std::int64_t>(elapsedMs));
       sender_.status = "failed";
       sender_.destinationHealth = "failed";
       sender_.lastResultCode = "ffmpeg-retry-backoff";
+      // Say what is actually true: not delivering, a retry IS scheduled, and
+      // this is rung N of a bounded ladder - not a destination we have given up
+      // on. Give-up is the supervisor's word and reads `supervisor-gave-up`.
+      // NOT "attempt K of 5". The streak CLAMPS at kMaxConsecutiveFailures, so
+      // an "of 5" form publishes "attempt 6 of 5" forever once the ladder tops
+      // out - and it implies a give-up this floor never performs. The floor
+      // retries at the top rung indefinitely; give-up belongs to the supervisor
+      // and has its own word (`supervisor-gave-up`). Say the rung, not a fake
+      // countdown.
       sender_.warning = sender_.lastError + " Retry paused for " +
-                        std::to_string((std::max)(int64_t{1}, retryMs / 1000 + 1)) + "s.";
+                        std::to_string((std::max)(int64_t{1}, retryMs / 1000 + 1)) +
+                        "s (consecutive failures: " +
+                        std::to_string(restartFloor_.consecutiveFailures()) + ").";
       return false;
     }
 
@@ -1154,6 +1379,16 @@ class RtmpOutputSender final : public IOutputSender {
     useGpuDirect_ = desiredGpuDirect;  // startFfmpegProcess may downgrade if the encoder fails to start
     if (startFfmpegProcess(width, height, pixelFormat)) {
       activeUseGpuDirect_ = useGpuDirect_;
+      // Final re-review, still-open 1: the THIRD restart door. The operator stop
+      // and the supervisor restart both reset the policy; the adapter's OWN
+      // re-open at the end of a floor rung did not, so a self-reopened
+      // transport resumed at its PRE-FAILURE divisor against an empty queue and
+      // needed ~30s of health to climb back. Quality, never stream-off - but a
+      // new run is a new run by every other measure this adapter keeps.
+      resetBackpressureForNewRun();
+      // The healthy-RUN window opens here, not at the first accepted frame.
+      restartFloor_.noteOpened(static_cast<std::int64_t>(elapsedMs));
+      backoffProofWritten_ = false;
       sender_.startedAtMs = elapsedMs;
       sender_.destinationHealth = "starting";
       sender_.lastResultCode = "ffmpeg-started";
@@ -1163,22 +1398,12 @@ class RtmpOutputSender final : public IOutputSender {
     if (startRefusedInadmissible_) {
       // A configuration refusal is not a transient failure: leave the named code
       // and sentence standing instead of burying them under ffmpeg-retry-backoff.
-      clearFfmpegRetryBackoff();
+      restartFloor_.clear();
     } else {
-      scheduleFfmpegRetry();
+      restartFloor_.noteFailure(static_cast<std::int64_t>(elapsedMs));
     }
+    backoffProofWritten_ = false;
     return false;
-  }
-
-  void scheduleFfmpegRetry() {
-    consecutiveFfmpegFailures_ = (std::min)(consecutiveFfmpegFailures_ + 1, 6);
-    const int delaySeconds = (std::min)(30, 1 << (consecutiveFfmpegFailures_ - 1));
-    ffmpegRetryAfter_ = std::chrono::steady_clock::now() + std::chrono::seconds(delaySeconds);
-  }
-
-  void clearFfmpegRetryBackoff() {
-    consecutiveFfmpegFailures_ = 0;
-    ffmpegRetryAfter_ = {};
   }
 
   // Never emit a raw endpoint: RTMP carries the stream key in the path and SRT
@@ -1776,24 +2001,328 @@ class RtmpOutputSender final : public IOutputSender {
     std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
     bitstreamQueue_.clear();
     bitstreamQueuedBytes_ = 0;
+    republishQueueTelemetryLocked();
 #endif
   }
 
 #if defined(_WIN32)
+  // Caller must hold bitstreamQueueMutex_.
+  void republishQueueTelemetryLocked() {
+    bitstreamQueuedChunks_.store(static_cast<std::int64_t>(bitstreamQueue_.size()),
+                                 std::memory_order_relaxed);
+    bitstreamHeadEnqueuedNs_.store(
+        bitstreamQueue_.empty()
+            ? 0
+            : bitstreamQueue_.front().enqueuedAt.time_since_epoch().count(),
+        std::memory_order_relaxed);
+    bool keyframe = false;
+    for (const auto& q : bitstreamQueue_) {
+      if (q.metadata.keyframe) { keyframe = true; break; }
+    }
+    bitstreamQueueHasKeyframe_.store(keyframe, std::memory_order_relaxed);
+  }
+
+  // #597 Lever B. Lever A stops the queue growing; it never clears what is
+  // already in it, so a stream can stabilise a full second behind and stay
+  // there. Discarding every chunk AHEAD of the next queued keyframe recovers
+  // that latency as a clean skip. Dropping an arbitrary chunk instead would
+  // corrupt every frame until the next keyframe. Our HEVC/AV1 encoders run with
+  // B-frames disabled (the low-latency work), so there are no non-reference
+  // frames to drop cheaply and the GOP tail is the only safe unit.
+  //
+  // The DECISION (how many chunks are safe to drop) is the pure
+  // corevideo::core::discardableGopTailLength() in StreamBackpressurePolicy.h,
+  // unit-tested there with no seam of any kind - not even a fake queue. This
+  // is just the locked mutation: pop that many, keep the byte accounting
+  // exact, and republish telemetry so bitstreamBufferedMs() cannot keep
+  // reporting the age of a chunk that no longer exists.
+  //
+  // Task 8b split this in two. The mutation is the ...Locked form, because the
+  // OVERFLOW path in enqueueBitstream() now runs the same discard while it
+  // ALREADY holds bitstreamQueueMutex_ - std::mutex is not recursive, so
+  // calling the locking form from there would self-deadlock the encoder's
+  // event loop, which is strictly worse than the defect being fixed. The
+  // locking wrapper stays for observeStreamBackpressure(), which calls it from
+  // the sync thread holding nothing.
+  std::size_t discardBacklogToNextKeyframe() {
+    std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+    return discardBacklogToNextKeyframeLocked();
+  }
+
+  // Caller must hold bitstreamQueueMutex_. `cutPoint` is the Task 8b fix-round-1
+  // split BY SITE: Lever B's ordinary discard cuts to the NEAREST keyframe (the
+  // smallest clean skip that recovers latency), the overflow path cuts to the
+  // LAST (the most room a safe cut can free, because its only alternative is
+  // failing the sender and rebuilding the encoder). The choice is a parameter
+  // on the pure policy, never a second copy of the logic.
+  std::size_t discardBacklogToNextKeyframeLocked(
+      corevideo::core::GopCutPoint cutPoint = corevideo::core::GopCutPoint::Nearest,
+      bool arrivalIsKeyframe = false) {
+    const std::size_t dropped = corevideo::core::discardableBacklogForArrival(
+        bitstreamQueue_, [](const QueuedBitstream& chunk) { return chunk.metadata.keyframe; },
+        arrivalIsKeyframe, cutPoint);
+    for (std::size_t i = 0; i < dropped; ++i) {
+      bitstreamQueuedBytes_ -= bitstreamQueue_.front().bytes.size();
+      bitstreamQueue_.pop_front();
+    }
+    if (dropped > 0) republishQueueTelemetryLocked();
+    return dropped;
+  }
+
+  // #597 THE POLICY AND ITS PER-RUN COUNTERS ARE ONE UNIT OF LIFETIME.
+  //
+  // FINAL-REVIEW FINDING 2, and it is a CROSS-TASK defect no per-task review
+  // could see: only the operator-stop path (`!wantsRtmp`) used to reconstruct
+  // `backpressure_`. `reopen()` - both `recover()` and
+  // `restartForSupervisor()` - stopped FFmpeg and cleared the floor but left
+  // the policy holding whatever divisor it had reached before the fault. So
+  // after ANY fault and reopen the destination republished, say, divisor 4
+  // against an EMPTY queue, and `kRecoverAfterHealthyTicks = 600` meant about
+  // ten seconds per step and roughly thirty seconds of healthy streaming
+  // before 60 fps returned - while the compositor visibly snapped 4 -> 1 (the
+  // node goes absent, so applyEncoderExportDivisor correctly pops to 1) -> 4
+  // across the outage, with `lastReason` still reading
+  // `buffered-above-threshold` from before the fault. Task 7 owned the restart
+  // and Tasks 4/6 owned the policy lifetime, which is exactly the seam it fell
+  // through.
+  //
+  // A reopen IS a new run by every other measure this adapter keeps -
+  // `framesSent`, `bytesSent` and `startedAtMs` are all reset there - so the
+  // per-run backpressure counters reset with them and the run identity
+  // advances, which is what lets a consumer tell a reset from a decrease.
+  void resetBackpressureForNewRun() {
+    backpressure_ = corevideo::core::StreamBackpressurePolicy{};
+    backpressureDiscardedChunks_ = 0;
+    overflowDiscardedChunks_.store(0, std::memory_order_relaxed);
+    ++backpressureRunId_;
+    sender_.backpressure.reset();
+  }
+
+  // #597 Lever A. Observe this destination's own outgoing queue once per sync
+  // and publish the input divisor the policy asks for. MediaCore reads
+  // OutputSender::backpressure and drives ICompositor::setEncoderExportDivisor
+  // with the MAX across active GPU-direct senders - one encoder texture feeds
+  // them all, so the divisor cannot be per destination here (Lever B, the
+  // GOP-tail discard, is).
+  //
+  // A NEGATIVE bufferedMs is "no evidence" and the policy ignores the tick
+  // entirely: the bitstream queue only exists on the GPU-direct path, and the
+  // raw CPU path already drops stale frames and is deliberately untouched by
+  // this lever. Absent backpressure is therefore NOT "healthy" - it is
+  // "nothing to observe here".
+  //
+  // Task 6 fix round 1, finding 1: gated on `activeUseGpuDirect_` (the path
+  // baked into the RUNNING FFmpeg args), never `useGpuDirect_` (only the
+  // DESIRED path for the next/running process). `ensureFfmpegProcess` sets
+  // `useGpuDirect_` BEFORE it knows whether FFmpeg will actually start
+  // (`RtmpOutputSenderAdapter.cpp` near `startFfmpegProcess`), and only sets
+  // `activeUseGpuDirect_` once that start genuinely SUCCEEDED. Gating on the
+  // desired field published a pristine `divisor 1 / bufferedMs 0 /
+  // queuedChunks 0` node - the textbook healthy reading - for a destination
+  // whose FFmpeg failed to start and is retrying with no encoder, no
+  // process and no queue at all.
+  void observeStreamBackpressure(double elapsedMs) {
+    const std::int64_t injected = backpressureBufferedMsForTest_.load(std::memory_order_relaxed);
+    corevideo::core::StreamBackpressureObservation observation;
+    if (injected >= 0) {
+      observation.bufferedMs = injected;
+      observation.keyframeInQueue = backpressureKeyframeForTest_.load(std::memory_order_relaxed);
+    } else if (activeUseGpuDirect_) {
+      observation.bufferedMs = bitstreamBufferedMs();
+      observation.keyframeInQueue = bitstreamQueueHasKeyframe_.load(std::memory_order_relaxed);
+    } else {
+      sender_.backpressure.reset();
+      return;
+    }
+    const auto decision = backpressure_.observe(observation);
+    if (decision.transition != corevideo::core::StreamBackpressureTransition::None) {
+      ::corevideo::core::nativeLogf(
+          "[stream-backpressure] %s divisor=%d buffered=%lldms\n",
+          corevideo::core::StreamBackpressurePolicy::transitionName(decision.transition),
+          backpressure_.divisor(), static_cast<long long>(observation.bufferedMs));
+    }
+    // Task 6 fix round 1, finding 2: `publishedBufferedMs` starts as the
+    // pre-discard observation that DROVE this tick's decision, but on a tick
+    // where Lever B actually fires it is re-read AFTER the discard - the same
+    // discipline the adjacent Task 5 test already demands of
+    // bitstreamBufferedMs() itself ("the buffered measure must republish
+    // against the NEW head"). Without this, the published node paired a
+    // pre-discard bufferedMs with a post-discard queuedChunks on exactly the
+    // tick worth inspecting, describing two different instants at once.
+    std::int64_t publishedBufferedMs = observation.bufferedMs;
+    if (decision.discardBacklog) {
+      const auto dropped = discardBacklogToNextKeyframe();
+      if (dropped > 0) {
+        backpressureDiscardedChunks_ = (std::min)(
+            backpressureDiscardedChunks_ + static_cast<std::int64_t>(dropped),
+            kBackpressureDiscardedChunksCeiling);
+        ::corevideo::core::nativeLogf(
+            "[stream-backpressure] discard dropped=%zu divisor=%d buffered=%lldms\n",
+            dropped, backpressure_.divisor(), static_cast<long long>(observation.bufferedMs));
+        publishedBufferedMs = bitstreamBufferedMs();
+      }
+    }
+    OutputBackpressureState state;
+    state.divisor = backpressure_.divisor();
+    state.level = backpressure_.level();
+    state.bufferedMs = publishedBufferedMs;
+    state.queuedChunks = static_cast<std::int64_t>(
+        bitstreamQueuedChunks_.load(std::memory_order_relaxed));
+    state.enteredCount = backpressure_.enteredCount();
+    // Per-stream-run, reset alongside backpressure_ on the !wantsRtmp stop
+    // path above (see backpressureDiscardedChunks_).
+    // Task 8b: the overflow path discards too, from the ENCODER thread, so its
+    // count lives in its own atomic and is summed here rather than mutating
+    // backpressureDiscardedChunks_ (owned by this sync thread) off-thread.
+    // Both are per stream run and both are reset together on the stop path.
+    //
+    // THE TWO COUNTERS DELIBERATELY COUNT DIFFERENT POPULATIONS (fix round 2,
+    // item 3), and a reader must not diagnose that as a bug. `discardedChunks`
+    // counts chunks dropped by BOTH discard sites - Lever B's policy-driven
+    // discard AND the queue's last-resort overflow discard. `discardEvents`
+    // counts only the POLICY's decisions (StreamBackpressurePolicy::observe
+    // returning discardBacklog), because that is what the policy's own
+    // hysteresis and cooldown are keyed on. THE REASON IS THE DATA RACE, NOT
+    // THE COOLDOWN (fix round 3, item 3 - the earlier justification here was
+    // wrong in detail and the reviewer was right to check it): discardEvents_
+    // is a pure OUTPUT and feeds no decision, so counting overflow discards
+    // into it would not corrupt any policy behaviour. What it WOULD do is
+    // mutate the non-atomic StreamBackpressurePolicy object from the encoder
+    // thread while the sync thread reads and writes it - an actual data race
+    // on an object with no lock of its own. That is why the two counters stay
+    // separate.
+    // So `discardedChunks > 0` with `discardEvents == 0` is the SIGNATURE of a
+    // run that hit the hard cap without the policy ever asking for a discard -
+    // exactly the burst-gate case - and is a real reading, not a counter bug.
+    // The `overflow-discard` log line is what names that site explicitly.
+    state.discardedChunks = (std::min)(
+        backpressureDiscardedChunks_ + overflowDiscardedChunks_.load(std::memory_order_relaxed),
+        kBackpressureDiscardedChunksCeiling);
+    state.discardEvents = backpressure_.discardEvents();
+    // Fix round 3, item 3: say it ON THE WIRE, not only in a C++ comment. A
+    // reader of the snapshot meets `discardedChunks` above zero next to
+    // `discardEvents` at zero and has nothing telling them that is a real
+    // reading rather than a broken counter.
+    state.discardCounterNote =
+        "discardedChunks counts BOTH discard sites (the policy's Lever B discard and the "
+        "queue's last-resort overflow discard); discardEvents counts only the policy's own "
+        "decisions. discardedChunks > 0 with discardEvents == 0 means the hard cap was hit "
+        "without the policy ever asking for a discard - a real reading, not a counter bug.";
+    state.lastReason = backpressure_.lastReason();
+    state.lastTransitionBufferedMs = backpressure_.lastTransitionBufferedMs();
+    state.runId = backpressureRunId_;
+    state.observedAtMs = elapsedMs;
+    sender_.backpressure = state;
+  }
+
+  // 0 when the queue is empty. Lock-free: reads the head's enqueue time and ages
+  // it against now, so the number keeps rising while the writer is blocked.
+  [[nodiscard]] std::int64_t bitstreamBufferedMs() const {
+    const auto head = bitstreamHeadEnqueuedNs_.load(std::memory_order_relaxed);
+    if (head == 0) return 0;
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto ageNs = now - head;
+    return ageNs <= 0 ? 0 : static_cast<std::int64_t>(ageNs / 1'000'000);
+  }
+
+  // Never block the MFT event loop on network I/O, and never grow latency
+  // without bound: the queue is capped at 60 chunks / 2 MiB.
+  //
+  // #597 TASK 8B - WHAT THIS PATH USED TO DO, AND WHY IT CHANGED. An overrun
+  // used to FAIL the sender on purpose so its supervisor would restart it. A
+  // supervisor restart rebuilds the encoder, so backpressure's own last-resort
+  // bound was itself a caller of the restart storm this sub-project exists to
+  // remove - and the spec is explicit that a destination fault must never
+  // rebuild the encoder. The acceptance gate measured it: the queue crossed 22
+  // chunks to the 60-chunk cap inside one second, the overflow path failed the
+  // sender, and the encoder was rebuilt (1 of 3 congested 240 s runs).
+  //
+  // So on overflow we spend LEVER B first - the GOP-tail discard, at the one
+  // moment it matters most - and accept the arriving chunk if that freed room.
+  // Failing is reserved for the case where the discard frees NOTHING - which,
+  // since fix round 1 cut this site to the LAST keyframe and let the ARRIVING
+  // chunk be a cut point too, means "no keyframe anywhere, queued or
+  // arriving", the one case where
+  // dropping anything would corrupt the stream until the next keyframe. (Cutting
+  // to the FIRST keyframe left a second, avoidable failure: a full queue whose
+  // only keyframe sat at the HEAD freed nothing and failed the sender anyway,
+  // and with the GOP about the size of the queue that position is a rolling
+  // coin flip.) The cap is NOT raised: an unbounded queue is unbounded latency,
+  // the defect this all exists to remove.
+  //
+  // This also removes by construction the divisor > 1 race the gate named:
+  // Lever B's ordinary trigger cannot fire until Lever A has stepped (~0.5 s),
+  // and this path does not consult the divisor at all.
   void enqueueBitstream(const GpuEncodedChunk& chunk) {
     if (!chunk.data || !chunk.size || bitstreamWriterStop_.load() || bitstreamFailure_.failed()) return;
     {
       std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
-      // Never block the MFT event loop on network I/O or grow latency without
-      // bound. An overrun fails the sender so its supervisor can restart it.
-      constexpr size_t maxBytes = 2u << 20;
-      if (chunk.size > maxBytes || bitstreamQueuedBytes_ > maxBytes - chunk.size || bitstreamQueue_.size() >= 60) {
+      constexpr size_t maxBytes = kMaxQueuedBytes;
+      // A single chunk larger than the whole byte budget can never fit, no
+      // matter what is dropped - discarding a GOP tail for it would cost a
+      // visible skip and still fail.
+      if (chunk.size > maxBytes) {
         bitstreamFailure_.record(BitstreamFailure::QueueOverflow);
-        ::corevideo::core::nativeLogf("[gpu-encode] bitstream queue overflow; queuedBytes=%zu queuedChunks=%zu incomingBytes=%zu; sender unhealthy -> supervisor\n", bitstreamQueuedBytes_, bitstreamQueue_.size(), chunk.size);
+        // Final-review finding 6: composed in modules/BitstreamQueueOverflow.h
+        // so this branch carries kQueueOverflowSenderFailedMarker too. It used
+        // to be the only one of the three sender-failing overflow branches with
+        // a hand-written string and no grepped marker at all.
+        ::corevideo::core::nativeLogf(
+            "%s", corevideo::modules::describeQueueOverflowOversizedChunk(chunk.size, maxBytes)
+                      .c_str());
         return;
       }
-      bitstreamQueue_.push_back({std::vector<uint8_t>(chunk.data, chunk.data + chunk.size), chunk});
+      const auto full = [&] {
+        return bitstreamQueuedBytes_ > maxBytes - chunk.size ||
+               bitstreamQueue_.size() >= kMaxQueuedChunks;
+      };
+      if (full()) {
+        // Already holding bitstreamQueueMutex_ - hence the ...Locked form (see
+        // the deadlock note on discardBacklogToNextKeyframe).
+        //
+        // A KEYFRAME ARRIVAL DROPS THE WHOLE BACKLOG, even when cutting to a
+        // queued keyframe would have freed enough room (fix round 2, item 5).
+        // That is deliberate and it is a LATENCY-FIRST choice: this is the last
+        // resort, the queue here is by definition a full second or more behind
+        // real time, and a freshly arrived IDR lets the stream resume at NOW
+        // instead of at a cut point that is itself already stale. The cost is
+        // picture that would have survived a narrower cut; the benefit is that
+        // the destination stops being behind rather than merely less behind.
+        const std::size_t dropped = discardBacklogToNextKeyframeLocked(
+            corevideo::core::GopCutPoint::Last, /*arrivalIsKeyframe=*/chunk.keyframe);
+        if (dropped > 0) {
+          overflowDiscardedChunks_.fetch_add(static_cast<std::int64_t>(dropped),
+                                             std::memory_order_relaxed);
+          // Rate-limited: at the cap this can fire once per frame, and a log
+          // line per frame is how a diagnostic becomes the incident.
+          const auto now = std::chrono::steady_clock::now();
+          if (lastOverflowDiscardLog_ == std::chrono::steady_clock::time_point{} ||
+              now - lastOverflowDiscardLog_ >= std::chrono::seconds(1)) {
+            lastOverflowDiscardLog_ = now;
+            // Composed in modules/BitstreamQueueOverflow.h, which the gate
+            // greps and BitstreamQueueOverflowTest.cpp pins - see the header.
+            ::corevideo::core::nativeLogf(
+                "%s", corevideo::modules::describeQueueOverflowDiscard(
+                          dropped, bitstreamQueue_.size(), bitstreamQueuedBytes_).c_str());
+          }
+        }
+        if (full()) {
+          bitstreamFailure_.record(BitstreamFailure::QueueOverflow);
+          // Composed in modules/BitstreamQueueOverflow.h. Fix round 2 reworded
+          // this message in the same commit that tightened the gate's grep for
+          // it, which disarmed that assertion silently; both branches are now
+          // pinned by BitstreamQueueOverflowTest.cpp - see the header.
+          ::corevideo::core::nativeLogf(
+              "%s", corevideo::modules::describeQueueOverflowFailure(
+                        dropped, bitstreamQueuedBytes_, bitstreamQueue_.size(), chunk.size,
+                        kMaxQueuedChunks, kMaxQueuedBytes).c_str());
+          return;
+        }
+      }
+      bitstreamQueue_.push_back({std::vector<uint8_t>(chunk.data, chunk.data + chunk.size), chunk,
+                                 std::chrono::steady_clock::now()});
       bitstreamQueuedBytes_ += chunk.size;
+      republishQueueTelemetryLocked();
     }
     bitstreamQueueCv_.notify_one();
   }
@@ -1810,6 +2339,7 @@ class RtmpOutputSender final : public IOutputSender {
         packet = std::move(bitstreamQueue_.front());
         bitstreamQueue_.pop_front();
         bitstreamQueuedBytes_ -= packet.bytes.size();
+        republishQueueTelemetryLocked();
       }
       packet.metadata.data = packet.bytes.data();
       if (gpuEncodeSentCodec_ == "hevc") {
@@ -2324,8 +2854,11 @@ class RtmpOutputSender final : public IOutputSender {
   double activeBitrateMbps_ = 0;
   int activeAudioBitrateKbps_ = 0;
   bool ffmpegRunning_ = false;
-  int consecutiveFfmpegFailures_ = 0;
-  std::chrono::steady_clock::time_point ffmpegRetryAfter_{};
+  // #597 the restart floor: the house 5/10/20/40/60 s ladder, keyed on the same
+  // monotonic `elapsedMs` clock the video pacer already uses.
+  TransportRestartFloor restartFloor_;
+  // One send-proof line per served backoff WINDOW, not one per program frame.
+  bool backoffProofWritten_ = false;
   // Latest real program-audio mix for this tick (interleaved float PCM), and the
   // audio layout currently baked into the running FFmpeg process. `pending*` is
   // refreshed by sync(); `active*` reflects the live process configuration.
@@ -2364,6 +2897,30 @@ class RtmpOutputSender final : public IOutputSender {
   // The factory is injectable for tests; default is the real MF encoder.
   std::function<std::unique_ptr<GpuVideoEncoder>()> gpuEncoderFactory_;
   std::unique_ptr<GpuVideoEncoder> gpuEncoder_;
+  // #597 Lever A. Private to this destination; MediaCore takes the MAX across
+  // senders because one encoder texture feeds every GPU-direct destination.
+  corevideo::core::StreamBackpressurePolicy backpressure_;
+  // #597 Lever B. Per-destination (unlike the divisor above): each sender
+  // discards its OWN bitstream backlog, never reaching across senders.
+  // Saturates rather than wraps, same discipline as every other counter in
+  // this feature (StreamBackpressurePolicy's, encoderExportShedFrames_'s).
+  std::int64_t backpressureDiscardedChunks_ = 0;
+  // Written by the encoder thread under bitstreamQueueMutex_, read by the sync
+  // thread; atomic so the two never race. Summed into the published
+  // discardedChunks - see observeStreamBackpressure().
+  std::atomic<std::int64_t> overflowDiscardedChunks_{0};
+  static constexpr std::int64_t kBackpressureDiscardedChunksCeiling = INT64_C(1) << 62;
+  // #597 Task 6 fix round 1, finding 11: bumped every time backpressure_ is
+  // RECONSTRUCTED (the `!wantsRtmp` stop path), i.e. every time the per-run
+  // counters reset to zero. Published as OutputBackpressureState::runId so a
+  // consumer who polls across a stop/restart without observing the node's
+  // momentary absence can still tell a genuine reset from a counter going
+  // backwards.
+  std::int64_t backpressureRunId_ = 0;
+  // TEST-ONLY override of the queue measurement (see
+  // IOutputSender::setBackpressureObservationForTest). Negative = not set.
+  std::atomic<std::int64_t> backpressureBufferedMsForTest_{-1};
+  std::atomic<bool> backpressureKeyframeForTest_{false};
   bool useGpuDirect_ = false;        // desired path for the next/running process
   bool activeUseGpuDirect_ = false;  // path baked into the RUNNING FFmpeg args
   std::string gpuEncodePathReason_ = "cpu-fallback";
@@ -2383,6 +2940,10 @@ class RtmpOutputSender final : public IOutputSender {
   struct QueuedBitstream {
     std::vector<uint8_t> bytes;
     GpuEncodedChunk metadata;
+    // Wall-clock moment this chunk entered the queue. The backpressure signal is
+    // the AGE of the head of the queue, which is the only measure that stays
+    // honest while the frame rate is being changed underneath it.
+    std::chrono::steady_clock::time_point enqueuedAt{};
   };
   std::deque<QueuedBitstream> bitstreamQueue_;
   size_t bitstreamQueuedBytes_ = 0;
@@ -2390,6 +2951,19 @@ class RtmpOutputSender final : public IOutputSender {
   std::atomic<bool> bitstreamWriterStop_{true};
   BitstreamFailureState bitstreamFailure_;
   std::atomic<bool> bitstreamWriterExited_{true};
+  // Read by the submit path with NO lock (see bitstreamBufferedMs). Written only
+  // under bitstreamQueueMutex_, where the queue is already being mutated.
+  std::atomic<std::int64_t> bitstreamHeadEnqueuedNs_{0};  // 0 = empty
+  std::atomic<std::int64_t> bitstreamQueuedChunks_{0};
+  std::atomic<bool> bitstreamQueueHasKeyframe_{false};
+  // #597 fix round 3, item 5. The queue's two bounds, named once so the code
+  // that enforces them and the message that describes them cannot disagree.
+  // (These are MEMORY bounds standing in for a latency bound - filed as #607,
+  // deliberately not changed here.)
+  static constexpr std::size_t kMaxQueuedChunks = 60;
+  static constexpr std::size_t kMaxQueuedBytes = 2u << 20;
+  // Guarded by bitstreamQueueMutex_ (written only inside enqueueBitstream).
+  std::chrono::steady_clock::time_point lastOverflowDiscardLog_{};
 #endif
 
   OutputSender sender_;

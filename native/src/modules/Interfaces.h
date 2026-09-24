@@ -2,6 +2,7 @@
 
 #include "contracts/Lifecycle.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <atomic>
 #include <functional>
@@ -637,6 +638,134 @@ struct OutputSupervisorState {
   bool interruptible = false;
 };
 
+// #597: the backpressure policy's view of THIS destination. Published
+// UNCONDITIONALLY for a GPU-direct sender (the multiviewer-node rule: a node
+// that vanishes in the case worth detecting is the mistake). A stream quietly
+// running at 15 fps is the same class of defect as a silent codec downgrade.
+// Absent means this destination is not on the GPU-direct path and has no
+// bitstream queue to observe, which is NOT the same as "healthy" - never read
+// an absent value as divisor 1 evidence.
+//
+// `divisor` (1 = every frame at the product's rate, 2 = half, 3 = a third,
+// 4 = a quarter) is Lever A's input throttle. NO shedFrames HERE: the
+// compositor sheds once for every destination (one encoder texture serves
+// them all), so a per-sender count would claim this destination shed frames
+// on its own. The real, global count is published once, at
+// realtimeEvidence.encoderExport.shedFrames.
+struct OutputBackpressureState {
+  // THIS DESTINATION'S REQUEST, NOT THE RATE IT IS FED AT.
+  //
+  // FINAL-REVIEW FINDING 3. Lever A is per-ENCODER, not per destination: ONE
+  // encoder texture feeds every GPU-direct sender, so MediaCore takes the MAX
+  // divisor across the active ones and drives
+  // ICompositor::setEncoderExportDivisor with that. The lever's limitation is
+  // named in three places (MediaCore.h, the spec Outcome, CLAUDE.md) - but the
+  // NODE's was not, and the node is what an operator readout binds to. With two
+  // GPU-direct destinations the healthy sibling's node reported `divisor: 1`
+  // while it was actually being fed at the maximum across senders, and a
+  // destination added mid-show beside a throttled sibling published a
+  // textbook-healthy reading at 15 fps.
+  //
+  // The snapshot therefore publishes BOTH: `divisor` (this value - what this
+  // destination is asking for, which is what its own hysteresis and counters
+  // are keyed on) and `appliedDivisor` (what the compositor is actually
+  // exporting at, written by MediaCore where that fact exists - see
+  // MediaCore::applyEncoderExportDivisor). Read `appliedDivisor` for the rate;
+  // read `divisor` for this destination's own state. They differ exactly when a
+  // sibling is worse off.
+  int divisor = 1;
+  // 0 = not throttled; StreamBackpressurePolicy::kMaxDivisor - 1 at the floor.
+  // Always divisor - 1; published separately because a consumer should not
+  // have to re-derive it.
+  int level = 0;
+  // Wall-clock age (ms) of the oldest chunk still queued for send, AS OF THE
+  // OBSERVATION THAT DROVE THIS TICK'S DECISION - not necessarily the queue's
+  // current state a moment later. On a tick where Lever B fires, this is
+  // re-read AFTER the discard (see observeStreamBackpressure()), so it and
+  // `queuedChunks` below describe the SAME instant rather than a pre-discard/
+  // post-discard mismatch.
+  std::int64_t bufferedMs = 0;
+  std::int64_t queuedChunks = 0;
+  // Times throttling was ENGAGED (1 -> 2). Steps within a throttle do not count.
+  std::int64_t enteredCount = 0;
+  // Cumulative chunks Lever B (the GOP-tail discard) has dropped from THIS
+  // destination's queue. Per-stream-run: reset alongside the policy object
+  // whenever this destination stops (see the `!wantsRtmp` stop path).
+  // ONE discard EVENT (see discardEvents below) can drop MANY chunks - a
+  // whole GOP tail at once - so discardedChunks >= discardEvents always, and
+  // discardedChunks / discardEvents is the mean GOP tail length discarded.
+  // They are deliberately two different counters, not a duplicate: discardEvents
+  // answers "how many times did Lever B fire", discardedChunks answers "how
+  // much video did it actually cost".
+  std::int64_t discardedChunks = 0;
+  // Cumulative GOP-tail discard events fired. See discardedChunks above for
+  // how the two diverge.
+  std::int64_t discardEvents = 0;
+  // Why the divisor or discard state last changed:
+  // "none" | "buffered-above-threshold" | "recovered" | "backlog-discard".
+  // A static string literal from StreamBackpressurePolicy - never heap-owned,
+  // so publishing it every tick (the 60 Hz output path, one GPU-direct sender)
+  // costs no allocation.
+  //
+  // FINAL-REVIEW FINDING 12, said rather than changed: BOTH LEVERS WRITE THIS
+  // ONE FIELD. On a tick where Lever B discards AND the divisor steps, the
+  // policy's discard branch and its divisor ladder both assign `lastReason_`
+  // in the same observe() call, and the ladder wins - so the published reason
+  // reads "buffered-above-threshold" and the discard that happened on that same
+  // tick is invisible HERE. Nothing is lost: `discardEvents` and
+  // `discardedChunks` still count it, and the `[stream-backpressure] discard`
+  // log line still names it. Do not read an absent "backlog-discard" as
+  // evidence no discard occurred on that tick; read the counters.
+  const char* lastReason = "none";
+  // The bufferedMs observed on the tick that caused the last change.
+  std::int64_t lastTransitionBufferedMs = 0;
+  // Bumped every time the underlying StreamBackpressurePolicy is RECONSTRUCTED
+  // (the `!wantsRtmp` stop path) - i.e. every time the per-run counters above
+  // reset to zero. The node itself goes ABSENT between the stop and the next
+  // GPU-direct tick, but that gap is invisible across a poll interval (the
+  // shell polls at 250ms); `runId` gives a consumer that DID catch two
+  // consecutive readings a way to tell "these counters are continuous, they
+  // can only have grown" (same runId) from "a reset happened between these
+  // two readings, do not diff them" (different runId) even without observing
+  // the absence in between.
+  std::int64_t runId = 0;
+  // #597 fix round 3. Why `discardedChunks` and `discardEvents` can disagree,
+  // carried NEXT TO THEM so a reader of the snapshot meets the explanation
+  // where they meet the numbers.
+  //
+  // FINAL-REVIEW FINDING 11: this was a `std::string`, so a ~300-byte
+  // allocation and copy rode every sync tick - and every OutputSenderSession
+  // copy through AsyncOutputSender's snapshot mutex and into sessionState() -
+  // two lines below the comment justifying `lastReason` as a `const char*`
+  // precisely to avoid that. It is a compile-time constant sentence; it is now
+  // typed as one.
+  const char* discardCounterNote = "";
+  // Wall-clock elapsedMs (the same clock every other OutputSender timestamp on
+  // this destination uses - see startedAtMs/stoppedAtMs) at the moment this
+  // state was last written by observeStreamBackpressure(). sync() has several
+  // early-return paths above the Lever A/B observation (missing settings,
+  // missing endpoint, no runtime, no frame yet, no program pixels yet); this
+  // node is NOT refreshed on those ticks and snapshot() re-serves the same
+  // struct - observedAtMs is what lets a consumer tell that a freeze happened,
+  // the "a peek is not an observation" rule applied here.
+  double observedAtMs = 0;
+};
+
+// TEST-ONLY (see IOutputSender::bitstreamQueueSnapshotForTest). A single
+// struct so a test needs ONE call to read the queue back, not three.
+struct BitstreamQueueSnapshotForTest {
+  std::size_t depth = 0;
+  bool hasKeyframe = false;
+  std::int64_t bufferedMs = 0;
+  // #597 Task 8b. True once the queue's overflow path has FAILED the sender
+  // (BitstreamFailure::QueueOverflow). The sender-level symptom - status
+  // "failed", lastResultCode "bitstream-queue-overflow" - only appears on a
+  // sync() tick that actually reaches submitFrameToGpuEncoder(), i.e. with a
+  // real hardware encoder and a launched FFmpeg, so a test that drives the
+  // queue alone needs to read the failure where it is RECORDED.
+  bool overflowFailed = false;
+};
+
 struct OutputSender {
   std::string senderId;
   std::string destination;
@@ -677,6 +806,11 @@ struct OutputSender {
   // Populated by modules::SupervisedOutputSender; absent when a build wires an
   // output sender without a supervisor (unit tests, the synthetic sender).
   std::optional<OutputSupervisorState> supervisor;
+  // #597 Lever A. Set by the sender on every sync while it is running
+  // GPU-direct; absent on the raw CPU path (which already drops stale frames
+  // and is deliberately untouched by this lever) and on a sender that has not
+  // started. MediaCore reads it and drives ICompositor::setEncoderExportDivisor.
+  std::optional<OutputBackpressureState> backpressure;
 };
 
 struct OutputSenderSession {
@@ -917,6 +1051,71 @@ class ICompositor {
   // Does this compositor push frames to that sink? When it does, MediaCore must
   // NOT also publish from the output worker or every frame is published twice.
   [[nodiscard]] virtual bool publishesVcamFrames() const { return false; }
+
+  // #597 Lever A: FEED THE ENCODER FEWER FRAMES, at the one place that actually
+  // paces it. The hardware encoder's thread advances on the KEYED MUTEX of the
+  // encoder shared texture - it acquires, encodes, releases, and can only
+  // acquire again once the compositor's next export releases a new frame. Task 1
+  // measured this directly: skipping only the sender's submit() while still
+  // exporting every render left the stream byte-identical (ratio 0.998), while
+  // halving the EXPORT rate halved egress (0.500). So the throttle lives here,
+  // in the producer, not in the sender.
+  //
+  // At divisor d this compositor exports the encoder texture on RENDER FRAME
+  // NUMBERS divisible by d and holds the rest, so the resulting encoder input
+  // rate is programFps / d - NOT a fixed 60/30/20/15 ladder.
+  //
+  // FINAL-REVIEW FINDING 9: that ladder was stated as an invariant here, in
+  // CLAUDE.md and - load-bearingly - in the spec's justification for
+  // kMaxDivisor ("15 fps is the lowest frame rate worth putting on air"). It is
+  // only true AT A 60 fps PROGRAM. `startProgramOutput` clamps `outputFps_` to
+  // 1-120, so at a 30 fps program the same ladder is 30 / 15 / 10 / 7.5 fps and
+  // the floor's whole justification is gone. Say the function, not one of its
+  // values: divisor 1/2/3/4 feeds programFps / 1, / 2, / 3, / 4 - which IS
+  // 60/30/20/15 at the 60 fps program this product targets, and is the number
+  // to recompute for any other configured rate.
+  //
+  // The encoder's DECLARED frame rate never changes, so bits-per-frame - and
+  // with it per-frame quality - is untouched.
+  //
+  // Control plane, not a per-frame call: MediaCore calls this only when the
+  // value CHANGES. Defaulted to a no-op so the Metal and stub compositors are
+  // unaffected; only the D3D11 adapter, which owns the encoder export,
+  // implements it.
+  virtual void setEncoderExportDivisor(int /*divisor*/) {}
+
+  // #597 Task 6: the ONE effective divisor this compositor is applying, and
+  // the frames it has actually held back because of it - published together
+  // at realtimeEvidence.encoderExport, unconditionally, like the multiviewer
+  // node. Defaulted to 1/0 (the healthy reading) so Metal and the stub
+  // compositor are unaffected; only the D3D11 adapter, which owns the encoder
+  // export, tracks a real shed count.
+  //
+  // encoderExportShedFrames() is CUMULATIVE FOR THE LIFE OF THE PROCESS - it is
+  // never reset when a stream stops, unlike the per-sender counters beside it
+  // in OutputBackpressureState (divisor/enteredCount/discardedChunks/discardEvents
+  // are all per-run). A consumer computing "this show shed N frames" must diff
+  // it itself across the run boundary; reading it directly includes every
+  // previous run's sheds.
+  [[nodiscard]] virtual int encoderExportDivisor() const { return 1; }
+  [[nodiscard]] virtual std::int64_t encoderExportShedFrames() const { return 0; }
+  // #597 Task 6 fix round 1, finding 9 (fix round 2, item 2: corrected claim):
+  // was this compositor exporting the dedicated encoder texture on its last
+  // render tick (the last tick's `renderPlan.fullProgramReadback`)? THIS IS
+  // NOT "a stream is live" - `fullProgramReadback` is
+  // `virtualCameraEnabled_ || outputActive || recording` (see MediaCore.cpp),
+  // so `exporting` reads true with only the virtual camera on, or only a
+  // recording running, and NO stream at all. It answers exactly one question:
+  // "is SOMETHING consuming the encoder texture right now" - which is enough
+  // to tell a genuinely fresh divisor of 1 (nothing consuming it, texture
+  // export idle) from a stale non-1 divisor that could still be latched from
+  // a stream that already ended (see `encoderExportDivisor()`'s doc and
+  // MediaCore::applyEncoderExportDivisor's stop-path residual) - it does NOT
+  // by itself prove a live STREAM is throttled; `divisor > 1` while `exporting`
+  // is equally consistent with "the vcam or a recording is on and a throttled
+  // stream ended minutes ago". Defaulted false so Metal/stub read as not
+  // exporting, which is the honest answer for a compositor that never does.
+  [[nodiscard]] virtual bool encoderExporting() const { return false; }
 };
 
 class IMediaFrameSource {
@@ -1113,11 +1312,109 @@ class IOutputSender {
   virtual void submitAudio(const std::vector<float>& /*pcm*/, int /*channels*/, int /*sampleRate*/) {}
   virtual OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) = 0;
   virtual OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) = 0;
+  // The destination's OWN SUPERVISOR restarting it automatically, as opposed to
+  // recover(), which is the OPERATOR re-arming it. They were the same call until
+  // #597 task 7 round 1, and a sender that holds its own restart floor cannot
+  // treat them alike: a supervisor restart is precisely the restart the floor
+  // exists to bound, while an operator is entitled to an immediate retry (the
+  // house rule "an operator action always clears give-up"). The default forwards
+  // to recover(), so every sender without a floor is unchanged - but the WRAPPER
+  // LAW still applies: AsyncOutputSender / CompositeOutputSender /
+  // SupervisedOutputSender must FORWARD it, or the distinction is silently
+  // swallowed one layer up, which is the 1-arg connect() shape.
+  virtual OutputSenderSession restartForSupervisor(const std::string& destination, double elapsedMs,
+                                                   const std::string& reason) {
+    return recover(destination, elapsedMs, reason);
+  }
   virtual OutputSenderSession session() const = 0;
   // Non-blocking emergency cancellation used by the live async wrapper to
   // release a sender stuck in pipe/network I/O. Implementations should only
   // interrupt the transport here; normal state cleanup remains in sync().
   virtual void interrupt(const std::string&) {}
+  // THE WRAPPER LAW APPLIES TO EVERY TEST-ONLY VIRTUAL BELOW, and none of them
+  // is forwarded by AsyncOutputSender / SupervisedOutputSender /
+  // CompositeOutputSender / the NDI sender. A test must therefore hold the
+  // CONCRETE sender, never a wrapped one. That is survivable only because each
+  // read seam's default is a ZERO/false value that makes a test's precondition
+  // ASSERT fail loudly (e.g. ASSERT_EQ(before.depth, 4u)) rather than pass with
+  // nothing under test - the silent-swallow shape that cost this codebase the
+  // 1-arg connect() pink tiles and SRT's dropped pollAudioFrames.
+  //
+  // FINAL-REVIEW FINDING 10. This block used to end "If a THIRD seam is ever
+  // wanted here, do not add it: move these behind a narrow
+  // IBitstreamQueueTestAccess in its own header, reached by a
+  // createRtmpOutputSenderForTest()." THERE ARE NOW FIVE. Tasks 5, 6 and 8b
+  // each added one past that line without amending it, which is the same
+  // failure mode as a disarmed assertion: an unamended rule nobody obeys stops
+  // being a rule and becomes noise a reader learns to skip.
+  //
+  // THE RULE IS CORRECTED RATHER THAN OBEYED, and that choice is stated here
+  // so the next reader can disagree with it knowingly. The extraction is the
+  // right end state and is deliberately NOT done here: it moves five virtuals,
+  // every call site in MediaCoreCommandTest.cpp and
+  // OutputDestinationSupervisorTest.cpp, and the wrapper-law reasoning above -
+  // a pure-refactor risk taken at merge time, on a branch whose whole subject
+  // is an on-air regression, for no behavioural gain. Filed as
+  // https://github.com/iamfatness/CoreVideoPro/issues/611.
+  //
+  // WHAT HOLDS UNTIL THEN: the guarantee above is PER-SEAM, not per-count.
+  // Every one of the five defaults to a ZERO/false value that makes a test's
+  // precondition ASSERT fail loudly rather than pass with nothing under test,
+  // so five is no less safe than two. DO NOT ADD A SIXTH to this interface:
+  // the next seam that is wanted is the trigger to do the extraction, and the
+  // extraction is IBitstreamQueueTestAccess in its own header, reached by a
+  // createRtmpOutputSenderForTest() that returns the concrete type.
+  //
+  // TEST-ONLY seam, structural guard only - the same guarantee
+  // MediaCore::setStillImageDecoderForTest relies on: no env var, no command,
+  // no config key and no wire field reaches it, and nothing outside
+  // native/tests calls it. (A compile-time gate is impossible here:
+  // corevideo-native-tests links the same corevideo_native library the product
+  // does, so gating the seam out would delete it from the tests too.)
+  //
+  // Overrides the bitstream-queue measurement #597's Lever A observes, so the
+  // backpressure decision can be driven without a hardware encoder and a real
+  // congested network. A NEGATIVE bufferedMs clears the override and restores
+  // the real measurement.
+  virtual void setBackpressureObservationForTest(std::int64_t /*bufferedMs*/,
+                                                 bool /*keyframeInQueue*/) {}
+  // TEST-ONLY (same structural guard). Answers "would THIS program frame make
+  // the sender flip its encode path?" - i.e. tear down FFmpeg AND the hardware
+  // encoder and relaunch both. It evaluates the exact comparison
+  // ensureFfmpegProcess makes (`resolveGpuEncodePath(frame) != activeUseGpuDirect_`)
+  // and then ADOPTS the result the way a restart would, so a test can walk a
+  // frame sequence the way the live sender walks it and count the restarts.
+  //
+  // This exists because #597's whole subject is encoder restarts, and the one
+  // combination no test covered was a real sender looking at a frame the
+  // compositor's Lever A had shed.
+  virtual bool wouldRestartForEncodePathForTest(const ProgramFrame& /*frame*/) { return false; }
+
+  // TEST-ONLY (same structural guard). #597 Lever B fix round 1 (review
+  // finding 2): this is the ONLY seam the discard needed after the decision
+  // logic moved out to the pure core::discardableGopTailLength() (see
+  // StreamBackpressurePolicy.h) - boundary-condition coverage lives there,
+  // with NO sender and NO seam at all. What is left to prove is that
+  // observeStreamBackpressure()/sync() actually REACH the discard on a real
+  // sender, which needs some way to put a real chunk in the real queue.
+  // Pushes a chunk directly onto the bitstream queue, bypassing the real GPU
+  // encoder, so that one call-site test can run without a hardware encoder
+  // and a real congested network.
+  virtual void enqueueBitstreamChunkForTest(std::size_t /*bytes*/, bool /*keyframe*/) {}
+  // TEST-ONLY (same structural guard). #597 Task 8b. The seam above pushes
+  // STRAIGHT onto the queue so a discard test can build a backlog; this one
+  // offers a chunk through the REAL enqueueBitstream(), which is where the
+  // 60-chunk / 2 MiB bound - and, since Task 8b, the last-resort GOP-tail
+  // discard that replaced failing the sender - actually lives. Nothing else
+  // can drive that path without a hardware encoder and a congested network.
+  virtual void offerBitstreamChunkForTest(std::size_t /*bytes*/, bool /*keyframe*/) {}
+  // TEST-ONLY (same structural guard). One read of the queue's true state -
+  // depth, whether a keyframe is queued, and the real bitstreamBufferedMs()
+  // measurement - unaffected by setBackpressureObservationForTest()'s
+  // override, so a call-site test can confirm the queue actually shrank.
+  virtual BitstreamQueueSnapshotForTest bitstreamQueueSnapshotForTest() const {
+    return BitstreamQueueSnapshotForTest{};
+  }
 };
 
 class ICaptureDevice {

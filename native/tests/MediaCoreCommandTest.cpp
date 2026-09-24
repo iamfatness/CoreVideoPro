@@ -1,6 +1,7 @@
 ﻿#include "compositor/CompositorLayout.h"
 #include "core/AudioControlSourcePolicy.h"
 #include "core/BoundedAsyncLog.h"
+#include "core/StreamBackpressurePolicy.h"
 #include "core/MediaCore.h"
 
 #include "EncoderCapacityProbeTestSupport.h"
@@ -893,6 +894,182 @@ TEST(MediaCoreCommand, StreamingSenderFailureDoesNotEscapeRenderTick) {
   EXPECT_EQ(sender.getString("status"), "failed");
   EXPECT_EQ(sender.getString("lastResultCode"), "failed");
   EXPECT_NE(sender.getString("lastError").find("simulated sender startup failure"), std::string::npos);
+}
+
+// #597 Task 6 fix round 1 (declared coverage gap, section 4 of the review):
+// before this, ZERO tests in the tree touched `encoderExport` or
+// `get("backpressure")` on the JSON snapshot itself - every existing test
+// drives the underlying mechanism (the policy, the compositor's shed count,
+// the sender's own struct) but nothing ever asserted on the ACTUAL wire keys
+// Task 8's live gate reads from `/snapshot`. A key typo or a mis-nested
+// object would ship silently. This test and the one below it are that
+// coverage, stub-buildable (`createStubModules()`, no GPU/FFmpeg/RTMP needed)
+// - they are WRITTEN AND BUILT here (they compile into the same
+// corevideo-native-tests.exe the two permitted filters run from) but
+// DELIBERATELY NOT RUN under either `RtmpOutputSenderBackpressure.*` or
+// `StreamBackpressurePolicy.*`, per the hard testing constraint. The
+// coordinator will run them (and the rest of the suite) at the first clear
+// window.
+//
+// Mirrors `MonitorShedIntegration.TheSnapshotPublishesTheHealthyStateUnconditionally`
+// (MonitorShedPolicyTest.cpp) - the precedent named for exactly this property.
+TEST(MediaCoreCommand, EncoderExportIsPublishedUnconditionallyOnAFreshStubCore) {
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  const auto state = core.sessionState();
+  const auto* evidence = state.get("realtimeEvidence");
+  ASSERT_NE(evidence, nullptr);
+  const auto* encoderExport = evidence->get("encoderExport");
+  ASSERT_NE(encoderExport, nullptr)
+      << "realtimeEvidence.encoderExport must exist before any stream starts, "
+         "exactly like monitorShed beside it - a divisor of 1 and 0 shed frames "
+         "is the healthy READING, not an absent node";
+  EXPECT_EQ(encoderExport->getNumber("divisor"), 1);
+  // #597 fix round 2, item 3: EXPECT_EQ(getNumber("shedFrames"), 0) alone
+  // cannot catch a typo in the key "shedFrames" - Json::getNumber's fallback
+  // for a MISSING key is also 0, so a mis-spelled key and a genuinely healthy
+  // reading are indistinguishable to that assertion. Null-check the key
+  // itself first, the same way the `exporting` assertion right below already
+  // does.
+  const auto* shedFrames = encoderExport->get("shedFrames");
+  ASSERT_NE(shedFrames, nullptr);
+  EXPECT_EQ(shedFrames->asNumber(), 0);
+  const auto* exporting = encoderExport->get("exporting");
+  ASSERT_NE(exporting, nullptr);
+  EXPECT_FALSE(exporting->asBool())
+      << "a stub core with no compositor export activity is not exporting";
+}
+
+namespace {
+// A minimal fake sender that publishes every field of OutputBackpressureState
+// with a DISTINCT, non-default value, so a test reading the JSON back can
+// catch a key typo (a wrong field reads a default/zero and a naive test could
+// pass by accident) or a value silently dropped in the MediaCore.cpp mapping.
+class FullBackpressureFieldsSender : public corevideo::modules::IOutputSender {
+ public:
+  corevideo::modules::OutputSenderSession sync(
+      const std::vector<std::string>& /*destinations*/,
+      const corevideo::modules::ProgramFrame* /*frame*/,
+      double /*elapsedMs*/,
+      const std::vector<corevideo::modules::OutputDestinationSettings>& /*settings*/,
+      const std::vector<float>* /*pcm*/,
+      int /*channels*/,
+      int /*sampleRate*/) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession fail(const std::string&, const std::string&, double) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession recover(const std::string&, double, const std::string&) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession session() const override {
+    corevideo::modules::OutputSenderSession out;
+    out.status = "live";
+    out.activeSenderCount = 1;
+    corevideo::modules::OutputSender sender;
+    sender.senderId = sender.destination = "rtmp";
+    sender.status = "live";
+    sender.destinationHealth = "ok";
+    sender.lastResultCode = "encoder-input-accepted";
+    corevideo::modules::OutputBackpressureState bp;
+    bp.divisor = 3;
+    bp.level = 2;
+    bp.bufferedMs = 812;
+    bp.queuedChunks = 47;
+    bp.enteredCount = 5;
+    bp.discardedChunks = 19;
+    bp.discardEvents = 2;
+    bp.lastReason = "buffered-above-threshold";
+    bp.lastTransitionBufferedMs = 300;
+    bp.runId = 4;
+    bp.observedAtMs = 12345.0;
+    sender.backpressure = bp;
+    out.senders.push_back(sender);
+
+    // FINAL-REVIEW FINDING 3: A HEALTHY SIBLING. Lever A is per-ENCODER - one
+    // encoder texture feeds every GPU-direct destination - so this destination
+    // asks for divisor 1 and is nonetheless FED at the max across senders (3).
+    // Its node used to report a textbook-healthy `divisor: 1` and nothing else,
+    // which is what an operator readout binds to.
+    corevideo::modules::OutputSender sibling;
+    sibling.senderId = sibling.destination = "rtmp-sibling";
+    sibling.status = "live";
+    sibling.destinationHealth = "ok";
+    sibling.lastResultCode = "encoder-input-accepted";
+    corevideo::modules::OutputBackpressureState healthy;  // every default: divisor 1, level 0
+    healthy.runId = 4;
+    healthy.observedAtMs = 12345.0;
+    sibling.backpressure = healthy;
+    out.senders.push_back(sibling);
+    out.activeSenderCount = 2;
+    return out;
+  }
+};
+}  // namespace
+
+// See the comment above EncoderExportIsPublishedUnconditionallyOnAFreshStubCore:
+// same coverage gap, the per-sender half of the node. Also pins the CORRECTED
+// wire path (`outputSenderSession.senders[].backpressure`) rather than the
+// brief's/CLAUDE.md's stated `outputSenders.senders[]`, which does not exist
+// on this core - the review corrected both docs upstream in 25961c5e.
+TEST(MediaCoreCommand, OutputSenderSessionPublishesEveryBackpressureField) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.outputSender = std::make_unique<FullBackpressureFieldsSender>();
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  const corevideo::rpc::Json startOutputs = corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"rtmp"}},
+  };
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
+
+  const auto* output = state.get("outputSenderSession");
+  ASSERT_NE(output, nullptr);
+  const auto* senders = output->get("senders");
+  ASSERT_NE(senders, nullptr);
+  ASSERT_TRUE(senders->isArray());
+  ASSERT_FALSE(senders->asArray().empty());
+  const auto& sender = senders->asArray().front();
+  const auto* bp = sender.get("backpressure");
+  ASSERT_NE(bp, nullptr) << "outputSenderSession.senders[].backpressure must exist";
+  EXPECT_EQ(bp->getNumber("divisor"), 3);
+  EXPECT_EQ(bp->getNumber("level"), 2);
+  EXPECT_EQ(bp->getNumber("bufferedMs"), 812);
+  EXPECT_EQ(bp->getNumber("queuedChunks"), 47);
+  EXPECT_EQ(bp->getNumber("enteredCount"), 5);
+  EXPECT_EQ(bp->getNumber("discardedChunks"), 19);
+  EXPECT_EQ(bp->getNumber("discardEvents"), 2);
+  EXPECT_EQ(bp->getString("lastReason"), "buffered-above-threshold");
+  EXPECT_EQ(bp->getNumber("lastTransitionBufferedMs"), 300);
+  EXPECT_EQ(bp->getNumber("runId"), 4);
+  EXPECT_EQ(bp->getNumber("observedAtMs"), 12345.0);
+
+  // FINAL-REVIEW FINDING 3, THE HEALTHY SIBLING - the node lied for it.
+  //
+  // Lever A is per-ENCODER: one encoder texture feeds every GPU-direct sender,
+  // so MediaCore applies the MAX divisor across the active ones. With two
+  // GPU-direct destinations the healthy one's node reported `divisor: 1` while
+  // it was actually being fed at the maximum - a textbook-healthy reading for a
+  // source running at a quarter rate. The lever's per-encoder limitation was
+  // named in three comments; the NODE's was not, and the node is what an
+  // operator readout binds to.
+  //
+  // `appliedDivisor` is the rate the compositor is actually exporting at,
+  // written by MediaCore where that fact exists. Sourcing it from `bp.divisor`
+  // instead - the obvious wrong fix - passes for the throttled sender above and
+  // fails here, which is the whole point of asserting it on the SIBLING.
+  ASSERT_GT(senders->asArray().size(), 1u)
+      << "this test needs the healthy sibling to say anything about finding 3";
+  const auto* siblingBp = senders->asArray()[1].get("backpressure");
+  ASSERT_NE(siblingBp, nullptr);
+  EXPECT_EQ(siblingBp->getNumber("divisor"), 1)
+      << "the sibling's own REQUEST is unthrottled - that part was always true";
+  EXPECT_EQ(siblingBp->getNumber("appliedDivisor"), 3)
+      << "the sibling is fed at the MAX across senders; its node must say so instead of "
+         "publishing a healthy-looking rate it is not running at";
+  // And the throttled sender's own node carries it too, so a reader never has
+  // to know which destination is the worst one to learn the applied rate.
+  ASSERT_NE(bp->get("appliedDivisor"), nullptr);
+  EXPECT_EQ(bp->getNumber("appliedDivisor"), 3);
 }
 
 TEST(MediaCoreCommand, AudioMonitorRendersRoutedMonBusWhenPresent) {
@@ -4637,6 +4814,1021 @@ TEST(OutputSenderAdapter, RtmpRefusesAv1AsNotDeliverableEvenWithEnhancedRtmpOn) 
   EXPECT_NE(session.senders[0].warning.find("does not produce a usable stream"), std::string::npos);
 #else
   EXPECT_TRUE(true);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// #597 Lever A: the input divisor, applied at the ENCODER-TEXTURE EXPORT.
+//
+// These two tests pin the decision where it is APPLIED, not in the leaf policy
+// (StreamBackpressurePolicyTest already proves the policy in isolation, and a
+// test that only re-proved it would stay green while the product did nothing).
+// Between them, deleting EITHER the compositor's export gate OR the
+// sender -> MediaCore -> compositor plumbing fails a test.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Records every setEncoderExportDivisor call and otherwise behaves exactly like
+// the compositor MediaCore was built with, so the rest of the core tick is real.
+class DivisorRecordingCompositor : public corevideo::modules::ICompositor {
+ public:
+  explicit DivisorRecordingCompositor(std::unique_ptr<corevideo::modules::ICompositor> inner)
+      : inner_(std::move(inner)) {}
+
+  std::vector<int> divisors;
+
+  void setEncoderExportDivisor(int divisor) override { divisors.push_back(divisor); }
+
+  std::string rendererName() const override { return inner_->rendererName(); }
+  corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+                                          const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    return inner_->render(plan, frames);
+  }
+  void configureProgramBuffer(int frames) override { inner_->configureProgramBuffer(frames); }
+  void prepareProgramBuffer(int width, int height) override { inner_->prepareProgramBuffer(width, height); }
+  void setProgramProductionTiming(int64_t slot, int64_t anchorNs) override {
+    inner_->setProgramProductionTiming(slot, anchorNs);
+  }
+  int programBufferFrames() const override { return inner_->programBufferFrames(); }
+  bool latestDeliveredProgramFrame(corevideo::modules::ProgramFrame& out) const override {
+    return inner_->latestDeliveredProgramFrame(out);
+  }
+  bool takeDeliveredProgramFrame(corevideo::modules::ProgramFrame& out, int timeoutMs) override {
+    return inner_->takeDeliveredProgramFrame(out, timeoutMs);
+  }
+  corevideo::modules::ProgramBufferDiagnostics programBufferDiagnostics() const override {
+    return inner_->programBufferDiagnostics();
+  }
+  bool takeVcamNv12(std::vector<uint8_t>& outNv12, int& width, int& height) override {
+    return inner_->takeVcamNv12(outNv12, width, height);
+  }
+  corevideo::modules::ProgramFrameSharedTexture renderMultiview(
+      const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    return inner_->renderMultiview(plan, frames);
+  }
+  corevideo::modules::ProgramFrameSharedTexture renderPreview(
+      const corevideo::modules::CompositorRenderPlan& plan,
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    return inner_->renderPreview(plan, frames);
+  }
+  corevideo::modules::CompositorSourceTexStats sourceTexStats() const override {
+    return inner_->sourceTexStats();
+  }
+  bool wantsFullProgramReadbackForRecording() const override {
+    return inner_->wantsFullProgramReadbackForRecording();
+  }
+  bool suppliesProgramNv12() const override { return inner_->suppliesProgramNv12(); }
+  void setVcamFrameSink(VcamFrameSink sink) override { inner_->setVcamFrameSink(std::move(sink)); }
+  bool publishesVcamFrames() const override { return inner_->publishesVcamFrames(); }
+
+ private:
+  std::unique_ptr<corevideo::modules::ICompositor> inner_;
+};
+
+// Two GPU-direct destinations, each publishing whatever divisor the test sets.
+// Stands in for the real senders so the MAX-across-senders rule can be driven
+// without a hardware encoder and a congested network.
+class BackpressurePublishingSender : public corevideo::modules::IOutputSender {
+ public:
+  int rtmpDivisor = 1;
+  int srtDivisor = 1;
+
+  corevideo::modules::OutputSenderSession sync(
+      const std::vector<std::string>& /*destinations*/,
+      const corevideo::modules::ProgramFrame* /*frame*/,
+      double /*elapsedMs*/,
+      const std::vector<corevideo::modules::OutputDestinationSettings>& /*settings*/,
+      const std::vector<float>* /*pcm*/,
+      int /*channels*/,
+      int /*sampleRate*/) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession fail(const std::string&, const std::string&, double) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession recover(const std::string&, double, const std::string&) override {
+    return session();
+  }
+  corevideo::modules::OutputSenderSession session() const override {
+    corevideo::modules::OutputSenderSession out;
+    out.status = "live";
+    out.activeSenderCount = 2;
+    out.senders.push_back(makeSender("rtmp", rtmpDivisor));
+    out.senders.push_back(makeSender("srt", srtDivisor));
+    // An NDI destination on the raw path: it publishes NO backpressure at all.
+    // Absent is NOT "healthy" and it is NOT divisor 1 evidence - it must simply
+    // contribute nothing to the max.
+    corevideo::modules::OutputSender ndi;
+    ndi.senderId = ndi.destination = "ndi";
+    ndi.status = "live";
+    ndi.destinationHealth = "ok";
+    out.senders.push_back(ndi);
+    // A destination the operator already STOPPED, still carrying the divisor it
+    // reached before it stopped. It must not hold the compositor throttled.
+    auto stopped = makeSender("rtmp-previous", 4);
+    stopped.status = "stopped";
+    stopped.destinationHealth = "stopped";
+    stopped.lastResultCode = "stopped";
+    out.senders.push_back(stopped);
+    return out;
+  }
+
+ private:
+  static corevideo::modules::OutputSender makeSender(const char* id, int divisor) {
+    corevideo::modules::OutputSender sender;
+    sender.senderId = id;
+    sender.destination = id;
+    sender.status = "live";
+    sender.destinationHealth = "ok";
+    sender.lastResultCode = "encoder-input-accepted";
+    sender.backpressure = corevideo::modules::OutputBackpressureState{divisor};
+    return sender;
+  }
+};
+
+}  // namespace
+
+// #597: the divisor must gate the EXPORT. Task 1 proved gating submit() does
+// nothing (ratio 0.998) - the keyed mutex paces the encoder. Deleting the export
+// gate must fail this test.
+TEST(RtmpOutputSenderBackpressure, TheDivisorGatesTheEncoderTextureExport) {
+#if COREVIDEO_WITH_D3D11
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  compositor->setEncoderExportDivisor(2);
+
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.renderPlanId = "backpressure-export-gate";
+  plan.sceneId = "backpressure-export-gate";
+  plan.width = 320;
+  plan.height = 180;
+  // The stream is up: this is exactly the flag that makes the compositor export
+  // the dedicated encoder texture on every render.
+  plan.fullProgramReadback = true;
+  plan.skipCpuReadback = true;
+
+  // An EXACT count, not a ratio: this leg has no timing in it at all.
+  //
+  // A SHED frame is one whose pixels were not submitted, which is visible as
+  // encoderSharedTexture.frameNumber (the LAST ACTUALLY SUBMITTED number) not
+  // having advanced to this frame's number. The handle itself must be published
+  // on EVERY frame - see the companion assertion below and
+  // AShedFrameNeverRestartsTheSendersEncodePath for why.
+  int submittedEven = 0;
+  int submittedOdd = 0;
+  int shedEven = 0;
+  int shedOdd = 0;
+  int framesWithoutAHandle = 0;
+  int staleNumberMismatches = 0;
+  int64_t lastSubmitted = -1;
+  for (int i = 0; i < 200; ++i) {
+    const auto frame = compositor->render(plan, {});
+    if (frame.encoderSharedTexture.sharedHandleHex.empty()) ++framesWithoutAHandle;
+    const bool even = (frame.frameNumber % 2) == 0;
+    const bool submitted = frame.encoderSharedTexture.frameNumber == frame.frameNumber;
+    if (submitted) {
+      lastSubmitted = frame.frameNumber;
+      (even ? submittedEven : submittedOdd)++;
+    } else {
+      // A shed frame must report the last number that was really submitted,
+      // never this frame's - a consumer keying freshness on it would otherwise
+      // be told a frame arrived that the encoder never saw.
+      if (frame.encoderSharedTexture.frameNumber != lastSubmitted) ++staleNumberMismatches;
+      (even ? shedEven : shedOdd)++;
+    }
+  }
+
+  // THE GATE PROPERTY, exact: at divisor 2 an odd frame number is NEVER
+  // submitted. Nothing here depends on timing.
+  EXPECT_EQ(submittedOdd, 0) << "an odd frame number was submitted at divisor 2";
+  EXPECT_EQ(shedOdd, 100) << "every odd frame must be shed at divisor 2";
+  // ...and the even ones ARE submitted, so the test cannot pass by shedding
+  // everything. This is deliberately NOT an exact 100: D3DDecoupledExport has
+  // its own bounded 3-slot refusal (`dropped_`/`producerBusy_`) which predates
+  // Lever A and is not a shed, and conflating the two would make the assertion
+  // a flake rather than a property.
+  EXPECT_GT(submittedEven, 0) << "no frame was submitted at all";
+  EXPECT_EQ(shedEven + submittedEven, 100);
+  EXPECT_EQ(staleNumberMismatches, 0)
+      << "a shed frame published a frame number the encoder was never given";
+  // #597 fix round 1, finding 1: the ENCODER HANDLE IS NOT THE THROTTLE. The
+  // sender reads the presence of this handle as "GPU-direct is available"
+  // (resolveGpuEncodePath -> chooseStreamEncodePath), and a shed frame has not
+  // changed that fact. Publishing an empty handle on a shed frame restarts
+  // FFmpeg and the hardware encoder once per shed frame - #597 itself, amplified.
+  EXPECT_EQ(framesWithoutAHandle, 0)
+      << "a shed frame dropped the encoder handle; the sender reads that as the "
+         "encoder texture disappearing and restarts FFmpeg";
+#else
+  EXPECT_TRUE(true) << "The encoder-texture export gate lives in the D3D11 compositor.";
+#endif
+}
+
+// #597 Task 6 fix round 1 (declared coverage gap, secondary): the test above
+// exercises the identical `!submitPixels` branch that increments
+// encoderExportShedFrames_ byte-for-byte, but never reads the counter back -
+// "the branch is covered" is not "the counter reads back the right number".
+// This does, inside the same permitted filter as the test it extends.
+TEST(RtmpOutputSenderBackpressure, EncoderExportShedFramesCountsExactlyWhatItSkipped) {
+#if COREVIDEO_WITH_D3D11
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  compositor->setEncoderExportDivisor(4);
+
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.renderPlanId = "backpressure-shed-counter";
+  plan.sceneId = "backpressure-shed-counter";
+  plan.width = 320;
+  plan.height = 180;
+  plan.fullProgramReadback = true;
+  plan.skipCpuReadback = true;
+
+  const auto before = compositor->encoderExportShedFrames();
+  int expectedShed = 0;
+  for (int i = 0; i < 40; ++i) {
+    const auto frame = compositor->render(plan, {});
+    // A Lever A shed is decided by the DIVISOR and nothing else. Do NOT infer it
+    // from `encoderSharedTexture.frameNumber != frameNumber`: on a frame where
+    // D3DDecoupledExport takes its OWN bounded 3-slot refusal the published
+    // number also fails to advance, with no shed having happened, so that
+    // heuristic counts a refusal as a shed and the assertion fails against a
+    // counter that is correct. Measured: it failed about one run in three, which
+    // is worse than no test - the Task 5 review warned about exactly this
+    // conflation and the sibling test above already avoids it.
+    if ((frame.frameNumber % 4) != 0) ++expectedShed;
+  }
+  const auto after = compositor->encoderExportShedFrames();
+
+  EXPECT_GT(expectedShed, 0) << "the compositor shed nothing, so this proves nothing";
+  EXPECT_EQ(after - before, expectedShed)
+      << "encoderExportShedFrames() must count exactly the frames the DIVISOR shed, "
+         "no more and no less - not D3DDecoupledExport's own unrelated bounded-slot refusal";
+  EXPECT_TRUE(compositor->encoderExporting())
+      << "the compositor is actively exporting on a fullProgramReadback plan; "
+         "encoderExporting() must say so on the SAME tick, not lag";
+  EXPECT_EQ(compositor->encoderExportDivisor(), 4);
+#else
+  EXPECT_TRUE(true) << "The encoder-texture export gate lives in the D3D11 compositor.";
+#endif
+}
+
+// #597: a backed-up sender must PUBLISH a divisor, and MediaCore must carry the
+// max across senders to the compositor. Deleting either half fails this.
+TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
+  // --- Half one: the SENDER observes its own bitstream queue and publishes. ---
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (senderAdmissionFfmpegPresent("TheSendersDivisorReachesTheCompositor")) {
+    auto sender = corevideo::modules::createRtmpOutputSender();
+    ASSERT_NE(sender, nullptr);
+    auto frame = startableProgramFrame("rtmp-backpressure");
+    // H.265 without the enhanced-RTMP checkbox is refused BEFORE FFmpeg is
+    // launched, so this drives the real sync() path with no child process.
+    const auto settings = rtmpAdmissionSettings("h265", false);
+
+    // ABSENT IS NOT HEALTHY. With no injection and no GPU-direct path (this
+    // H.265 start is refused, so the sender stays on the raw CPU path) the
+    // sender has no bitstream queue to observe and must publish NOTHING -
+    // which is what makes applyEncoderExportDivisor's "skip senders with no
+    // backpressure" rule meaningful rather than decorative.
+    for (int i = 0; i < 3; ++i) {
+      (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
+    }
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      EXPECT_FALSE(session.senders[0].backpressure.has_value())
+          << "a sender with no queue to observe must publish no backpressure state";
+    }
+
+    // A healthy queue never throttles, however long the stream runs.
+    sender->setBackpressureObservationForTest(0, false);
+    for (int i = 0; i < 120; ++i) {
+      (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
+    }
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      ASSERT_TRUE(session.senders[0].backpressure.has_value())
+          << "a sender observing its queue must publish a backpressure state";
+      EXPECT_EQ(session.senders[0].backpressure->divisor, 1);
+    }
+
+    // Now hold it above the throttle threshold for longer than the enter streak.
+    sender->setBackpressureObservationForTest(
+        corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10, false);
+    const int ticks =
+        static_cast<int>(corevideo::core::StreamBackpressurePolicy::kEnterAfterOverWaterTicks) + 2;
+    for (int i = 0; i < ticks; ++i) {
+      (void)sender->sync({"rtmp"}, &frame, 4000.0 + 33.0 * i, {settings});
+    }
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      ASSERT_TRUE(session.senders[0].backpressure.has_value());
+      EXPECT_GT(session.senders[0].backpressure->divisor, 1)
+          << "a sustained backlog must raise the published input divisor";
+    }
+
+    // #597 fix round 1, finding 3: STOPPING THE STREAM CLEARS THE THROTTLE.
+    // Without this the stopped record keeps publishing divisor 4 forever, the
+    // compositor stays throttled with nothing streaming, and the NEXT stream
+    // opens at 15 fps on an empty queue.
+    sender->setBackpressureObservationForTest(-1, false);  // stop injecting
+    (void)sender->sync({}, &frame, 9000.0, {settings});
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      EXPECT_EQ(session.senders[0].status, "stopped");
+      EXPECT_FALSE(session.senders[0].backpressure.has_value())
+          << "a stopped destination must not keep publishing an input divisor";
+    }
+    // ...and the policy itself is reset, so the next run starts at 1 rather
+    // than resuming the ladder it left off at.
+    sender->setBackpressureObservationForTest(0, false);
+    for (int i = 0; i < 3; ++i) {
+      (void)sender->sync({"rtmp"}, &frame, 10000.0 + 33.0 * i, {settings});
+    }
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      ASSERT_TRUE(session.senders[0].backpressure.has_value());
+      EXPECT_EQ(session.senders[0].backpressure->divisor, 1)
+          << "a restarted stream must not resume the previous run's divisor";
+    }
+  }
+#endif
+
+  // --- Half two: MediaCore carries the MAX across senders to the compositor,
+  // once on the transition and never per tick. ---
+  auto modules = corevideo::modules::createStubModules();
+  auto compositor = std::make_unique<DivisorRecordingCompositor>(std::move(modules.compositor));
+  auto* compositorPtr = compositor.get();
+  modules.compositor = std::move(compositor);
+  auto senders = std::make_unique<BackpressurePublishingSender>();
+  auto* sendersPtr = senders.get();
+  modules.outputSender = std::move(senders);
+
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  const corevideo::rpc::Json startOutputs = corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"rtmp", "srt"}},
+  };
+
+  // One struggling destination (divisor 3) and one healthy sibling (divisor 1).
+  sendersPtr->rtmpDivisor = 3;
+  sendersPtr->srtDivisor = 1;
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
+  ASSERT_EQ(compositorPtr->divisors.size(), 1u)
+      << "the struggling destination's divisor never reached the compositor";
+  EXPECT_EQ(compositorPtr->divisors.back(), 3) << "MediaCore must carry the MAX across senders";
+
+  // Steady state at the same divisor is a control-plane no-op, never per tick.
+  for (int i = 0; i < 5; ++i) {
+    (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
+  }
+  EXPECT_EQ(compositorPtr->divisors.size(), 1u)
+      << "setEncoderExportDivisor must be called only when the value CHANGES";
+
+  // The max is taken across ALL senders, not the first one: move the backlog
+  // onto the SECOND destination and the compositor must follow it there.
+  sendersPtr->rtmpDivisor = 1;
+  sendersPtr->srtDivisor = 4;
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
+  ASSERT_EQ(compositorPtr->divisors.size(), 2u);
+  EXPECT_EQ(compositorPtr->divisors.back(), 4)
+      << "the MAX must be taken across every sender, not just the first";
+
+  // Recovery travels the same way.
+  sendersPtr->srtDivisor = 1;
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
+  ASSERT_EQ(compositorPtr->divisors.size(), 3u);
+  EXPECT_EQ(compositorPtr->divisors.back(), 1);
+}
+
+// #597 fix round 2, item 4: THE FALSE-DEGRADED HALF, and the one the reviewers
+// kept having to re-judge. Task 4 left the stop path alone because nothing read
+// the divisor, so a latched value was inert. Task 6 published it, and the same
+// residual became a node that reads "throttled" with nothing streaming at all -
+// worse than no node, because `encoderExport.exporting` is fullProgramReadback
+// (vcam OR output OR recording), so it is TRUE between shows whenever the
+// virtual camera is on. Together they make an idle machine look degraded.
+//
+// The fix cannot come from asking the sender: `AsyncOutputSender::sync()`
+// returns a CACHED pre-stop snapshot, so on the tick the last destination goes
+// away the sender still reports the divisor it had while live. MediaCore's own
+// `senderDestinations` list is the authoritative, synchronous answer. The fake
+// sender below models the cache exactly - it keeps reporting divisor 4 forever,
+// destinations or not - so this test fails if anyone ever "simplifies"
+// renderVideoOutputTick back to trusting the sender's snapshot.
+TEST(RtmpOutputSenderBackpressure, TheDivisorReturnsToOneWhenNothingIsStreaming) {
+  auto modules = corevideo::modules::createStubModules();
+  auto compositor = std::make_unique<DivisorRecordingCompositor>(std::move(modules.compositor));
+  auto* compositorPtr = compositor.get();
+  modules.compositor = std::move(compositor);
+  auto senders = std::make_unique<BackpressurePublishingSender>();
+  auto* sendersPtr = senders.get();
+  modules.outputSender = std::move(senders);
+
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  std::mutex coreMutex;
+
+  // A struggling destination, live: the compositor is throttled to 1-in-4.
+  sendersPtr->rtmpDivisor = 4;
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"rtmp"}},
+  });
+  mediaCore.renderVideoOutputTick(coreMutex);
+  ASSERT_FALSE(compositorPtr->divisors.empty())
+      << "the live divisor never reached the compositor, so this test proves nothing";
+  EXPECT_EQ(compositorPtr->divisors.back(), 4);
+
+  // The operator stops the stream. The sender STILL reports divisor 4 - that is
+  // the cached snapshot, not a bug in the fake - but nothing is streaming, so
+  // the compositor must be released back to every frame.
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{}},
+  });
+  mediaCore.renderVideoOutputTick(coreMutex);
+  ASSERT_GE(compositorPtr->divisors.size(), 2u)
+      << "nothing was pushed to the compositor when the last destination went away";
+  EXPECT_EQ(compositorPtr->divisors.back(), 1)
+      << "with no destination streaming, the published divisor must be 1 - a "
+         "latched 2-4 reads as a live throttle on an idle machine";
+}
+
+// #597 fix round 2, finding 1: the real red/green, no seam, no injection, no
+// reorder - drives the ACTUAL production defect through the public sync() path.
+//
+// The mechanism: `ensureFfmpegProcess` sets `useGpuDirect_ = desiredGpuDirect`
+// (the sender's own request) BEFORE it knows whether FFmpeg will start, then
+// calls `startFfmpegProcess`. That function's FIRST admission block - the
+// codec-compatibility refusal (H.265 over RTMP without Enhanced RTMP ticked) -
+// returns false WITHOUT clearing `useGpuDirect_` (only the SECOND admission
+// block, below the GPU-encoder start, clears it). `ensureFfmpegProcess` then
+// sets `activeUseGpuDirect_ = false` on that same failed-start path. So a
+// destination that WANTS the GPU path (a frame carrying a non-empty
+// `encoderSharedTexture.sharedHandleHex` - `resolveGpuEncodePath`'s only input
+// besides the codec/probe, no D3D11 compositor required to set it) and gets
+// refused for an unrelated compatibility reason lands EXACTLY in finding 1's
+// state: `useGpuDirect_ == true`, `activeUseGpuDirect_ == false`, no running
+// FFmpeg, no queue. Before the fix, `observeStreamBackpressure()` gated on the
+// former and published a pristine `divisor 1 / bufferedMs 0` node for that
+// destination; after the fix it gates on the latter and correctly goes absent.
+TEST(RtmpOutputSenderBackpressure, AGpuDirectRequestRefusedForCompatibilityPublishesNoBackpressure) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent(
+          "AGpuDirectRequestRefusedForCompatibilityPublishesNoBackpressure")) {
+    return;
+  }
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+  auto frame = startableProgramFrame("rtmp-finding1-no-seam");
+  // The one thing that makes this destination WANT the GPU path: a non-empty
+  // encoder-texture handle. No compositor is needed to set this field.
+  frame.encoderSharedTexture.sharedHandleHex = "0xDEADBEEF";
+  // H.265 without Enhanced RTMP ticked: refused at startFfmpegProcess's FIRST
+  // admission block (compatibility), before the GPU-encoder-start clause that
+  // would otherwise clear useGpuDirect_ back down.
+  const auto settings = rtmpAdmissionSettings("h265", /*allowEnhancedRtmp=*/false);
+
+  // Two syncs: the first arms the desired state and attempts (and fails) the
+  // start; the second observes the resulting steady state.
+  (void)sender->sync({"rtmp"}, &frame, 0.0, {settings});
+  const auto session = sender->sync({"rtmp"}, &frame, 33.0, {settings});
+
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].lastResultCode, "enhanced-rtmp-required")
+      << "this test proves nothing unless the refusal actually happened for "
+         "the GPU-direct compatibility reason";
+  EXPECT_FALSE(session.senders[0].backpressure.has_value())
+      << "a destination that wanted the GPU path and has no running FFmpeg "
+         "must read ABSENT, not a pristine divisor-1/bufferedMs-0 healthy node "
+         "(#597 fix round 1, finding 1)";
+#else
+  EXPECT_TRUE(true) << "Needs the RTMP sender.";
+#endif
+}
+
+// #597 fix round 1, finding 1/2 - THE COMBINATION NOTHING COVERED: a REAL
+// RtmpOutputSender looking at REAL frames a throttled compositor has shed.
+//
+// The sender decides GPU-direct vs the raw CPU path from
+// `!frame.encoderSharedTexture.sharedHandleHex.empty()`, and
+// ensureFfmpegProcess tears down FFmpeg AND the hardware encoder and relaunches
+// both whenever that decision changes. So if Lever A sheds by withholding the
+// handle, every shed frame is an encoder restart - tens per second, where the
+// incident that started this whole sub-project was EIGHT in twenty seconds. For
+// H.265 it is worse still: the restart is admitted off the GPU path,
+// StreamStartAdmission refuses it, startRefusedInadmissible_ latches, and the
+// stream is dead for the rest of the show.
+//
+// Shedding must therefore skip the SUBMIT and keep publishing the handle. This
+// test walks the exact comparison ensureFfmpegProcess makes over 40 real frames
+// from a compositor at divisor 2 and asserts the restart count does not grow.
+TEST(RtmpOutputSenderBackpressure, AShedFrameNeverRestartsTheSendersEncodePath) {
+#if COREVIDEO_WITH_D3D11 && COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent("AShedFrameNeverRestartsTheSendersEncodePath")) return;
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.renderPlanId = "backpressure-no-restart";
+  plan.sceneId = "backpressure-no-restart";
+  plan.width = 320;
+  plan.height = 180;
+  plan.fullProgramReadback = true;
+  plan.skipCpuReadback = true;
+
+  // One sync to configure the sender (codec, endpoint, runtime). H.265 without
+  // the enhanced-RTMP checkbox is refused before FFmpeg is launched, so no child
+  // process and no hardware encoder session is created by this test.
+  auto configuring = compositor->render(plan, {});
+  (void)sender->sync({"rtmp"}, &configuring, 0, {rtmpAdmissionSettings("h265", false)});
+
+  // Warm the path decision on an EXPORTED frame, so the first observed flip is
+  // the ordinary one-time start rather than an artefact of the initial state.
+  compositor->setEncoderExportDivisor(1);
+  auto warm = compositor->render(plan, {});
+  const bool warmIsGpuDirect = sender->wouldRestartForEncodePathForTest(warm);
+  if (!warmIsGpuDirect) {
+    // Already on the GPU path, or this machine has no hardware encoder at all.
+    // The latter would make the whole test vacuous, so say so and stop.
+    std::fprintf(stderr,
+                 "[  SKIPPED  ] RtmpOutputSenderBackpressure."
+                 "AShedFrameNeverRestartsTheSendersEncodePath (no GPU-direct path on this"
+                 " machine) - this test did NOT run\n");
+    return;
+  }
+
+  // Now throttle, and walk 40 real frames: 20 exported, 20 shed.
+  compositor->setEncoderExportDivisor(2);
+  int restarts = 0;
+  int shed = 0;
+  for (int i = 0; i < 40; ++i) {
+    auto frame = compositor->render(plan, {});
+    if (frame.encoderSharedTexture.frameNumber != frame.frameNumber) ++shed;
+    if (sender->wouldRestartForEncodePathForTest(frame)) ++restarts;
+  }
+
+  EXPECT_GT(shed, 0) << "the compositor shed nothing, so this proves nothing";
+  EXPECT_EQ(restarts, 0)
+      << "the sender flipped its encode path on a shed frame: that is an FFmpeg + "
+         "hardware-encoder teardown and relaunch per shed frame (#597 itself), and "
+         "for H.265 a permanent start refusal";
+#else
+  EXPECT_TRUE(true) << "Needs both the D3D11 compositor and the RTMP sender.";
+#endif
+}
+
+// #597 Lever B, fix round 1 (review finding 4): the discard-correctness
+// boundary conditions (no keyframe queued, keyframe at the head, an
+// all-keyframe queue, the exact GOP tail dropped, the buffered measure
+// republished after a discard) are now `StreamBackpressurePolicy,
+// DiscardableGopTailLength*` in StreamBackpressurePolicyTest.cpp, against the
+// pure core::discardableGopTailLength() directly - no sender, no queue, no
+// seam of any kind. What is NOT provable there is that
+// observeStreamBackpressure()/sync() actually REACH
+// discardBacklogToNextKeyframe() on a real sender: deleting the entire
+// `if (decision.discardBacklog) { ... }` block left every discard-shaped test
+// green as long as it only drove the pure function or an empty real queue.
+// This test builds a REAL backlog on the real bitstream queue via the
+// enqueueBitstreamChunkForTest seam, pushes the DECISION (not the queue) past
+// the discard threshold via Task 4's setBackpressureObservationForTest, and
+// asserts the real queue actually shrank - which only happens if the call
+// site is wired.
+TEST(RtmpOutputSenderBackpressure, DiscardBacklogReachesTheQueueThroughSyncAndObserveStreamBackpressure) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (senderAdmissionFfmpegPresent(
+          "DiscardBacklogReachesTheQueueThroughSyncAndObserveStreamBackpressure")) {
+    auto sender = corevideo::modules::createRtmpOutputSender();
+    ASSERT_NE(sender, nullptr);
+    auto frame = startableProgramFrame("rtmp-backpressure-discard");
+    // H.265 without the enhanced-RTMP checkbox is refused BEFORE FFmpeg is
+    // launched (and after observeStreamBackpressure(), which sits above every
+    // admission refusal), so this drives the real path with no child process.
+    const auto settings = rtmpAdmissionSettings("h265", false);
+
+    // Lever B only ever fires once the divisor is already above 1 - get there
+    // first, the same way TheSendersDivisorReachesTheCompositor does.
+    sender->setBackpressureObservationForTest(
+        corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
+        /*keyframeInQueue=*/true);
+    const int enterTicks =
+        static_cast<int>(corevideo::core::StreamBackpressurePolicy::kEnterAfterOverWaterTicks) + 2;
+    for (int i = 0; i < enterTicks; ++i) {
+      (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
+    }
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      ASSERT_TRUE(session.senders[0].backpressure.has_value());
+      ASSERT_GT(session.senders[0].backpressure->divisor, 1)
+          << "the divisor must be above 1 before a discard can fire";
+    }
+
+    // Build a REAL backlog on the REAL queue: two STALE reference frames
+    // (aged by the sleep below, so the head's bufferedMs is provably old),
+    // then a fresh keyframe, then one fresh reference frame that must
+    // survive. This also lets the same test prove republishQueueTelemetryLocked()
+    // fires: bufferedMs must fall once the stale head is discarded, or
+    // bitstreamBufferedMs() would keep reporting the age of a chunk that no
+    // longer exists (the risk named in the original brief).
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+    const auto before = sender->bitstreamQueueSnapshotForTest();
+    ASSERT_EQ(before.depth, 4u);
+    EXPECT_GE(before.bufferedMs, 50) << "the head is the STALE chunk before the discard";
+
+    // Push the injected OBSERVATION (not the queue) above the discard
+    // threshold and tick once more.
+    sender->setBackpressureObservationForTest(
+        corevideo::core::StreamBackpressurePolicy::kDiscardAboveBufferedMs + 10,
+        /*keyframeInQueue=*/true);
+    (void)sender->sync({"rtmp"}, &frame, 5000.0, {settings});
+
+    const auto after = sender->bitstreamQueueSnapshotForTest();
+    EXPECT_EQ(after.depth, 2u)
+        << "decision.discardBacklog must have reached discardBacklogToNextKeyframe() "
+           "through observeStreamBackpressure()/sync() and dropped the two stale chunks "
+           "ahead of the keyframe - deleting that call site leaves this at 4";
+    EXPECT_TRUE(after.hasKeyframe) << "the keyframe itself must never be dropped";
+    EXPECT_LT(after.bufferedMs, before.bufferedMs)
+        << "the buffered measure must republish against the NEW head (the keyframe), not "
+           "keep reporting the age of the chunk the discard just dropped";
+    EXPECT_LT(after.bufferedMs, 50) << "the new head (the keyframe) was enqueued moments ago";
+  }
+#else
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.DiscardBacklogReachesTheQueueThroughSyncAndObserveStreamBackpressure"
+                       " (Needs the RTMP sender) - this test did NOT run\n");
+  return;
+#endif
+}
+
+// #597 Task 8b. THE DEFECT the acceptance gate (Task 8) measured: the outgoing
+// queue's overflow path failed the sender ON PURPOSE so the supervisor would
+// restart it - and a supervisor restart rebuilds the encoder, which is the one
+// thing this whole sub-project exists to stop. A destination fault must never
+// rebuild the encoder.
+//
+// The bound itself is not optional (an unbounded queue is unbounded latency),
+// so the fix is to spend Lever B at the moment it matters most: on overflow,
+// run the GOP-tail discard FIRST and accept the chunk if that freed room.
+// Here the full queue CONTAINS a keyframe, so there is a safe unit to drop and
+// the sender must survive.
+//
+// Drives the REAL enqueueBitstream() through offerBitstreamChunkForTest - the
+// direct-push seam next to it deliberately bypasses the bound, so it cannot
+// see this at all.
+TEST(RtmpOutputSenderBackpressure, AFullQueueHoldingAKeyframeDiscardsItsGopTailInsteadOfFailingTheSender) {
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  // Fill the real queue to its hard cap with a keyframe 30 chunks in - the
+  // middle of the GOP, the ordinary case at 60 fps with a 1 s GOP.
+  constexpr std::size_t kCap = 60;
+  constexpr std::size_t kKeyframeIndex = 30;
+  for (std::size_t i = 0; i < kCap; ++i) {
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == kKeyframeIndex);
+  }
+  const auto before = sender->bitstreamQueueSnapshotForTest();
+  ASSERT_EQ(before.depth, kCap) << "the queue must actually be AT the cap, or this proves nothing";
+  ASSERT_TRUE(before.hasKeyframe);
+  ASSERT_FALSE(before.overflowFailed);
+
+  // One more chunk arrives from the encoder with the queue already full.
+  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+
+  const auto after = sender->bitstreamQueueSnapshotForTest();
+  EXPECT_FALSE(after.overflowFailed)
+      << "the overflow path failed the sender while a keyframe was queued: its supervisor "
+         "will restart it and rebuild the encoder, which is #597 itself";
+  EXPECT_LT(after.depth, before.depth)
+      << "the queue must have SHRUNK - the discard is what makes room for the arriving chunk";
+  EXPECT_EQ(after.depth, kCap - kKeyframeIndex + 1)
+      << "exactly the GOP tail ahead of the keyframe is dropped, and the arriving chunk is "
+         "then accepted";
+  EXPECT_TRUE(after.hasKeyframe) << "the keyframe itself must never be dropped";
+#else
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AFullQueueHoldingAKeyframeDiscardsItsGopTailInsteadOfFailingTheSender"
+                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+  return;
+#endif
+}
+
+// #597 Task 8b fix round 1. The residual case the first cut still failed on,
+// and the reason the ruling changed: the discard used to cut to the FIRST
+// queued keyframe, so a full queue whose ONLY keyframe sat at the HEAD freed
+// nothing and failed the sender anyway - and with the measured GOP (60 frames)
+// about the size of the cap (60 chunks), where the keyframe sits is a rolling
+// coin flip. The overflow path now cuts to the LAST queued keyframe. Same
+// safety argument (every keyframe here is a self-contained IDR), strictly more
+// room freed, and nothing about which preceding chunks are headers.
+TEST(RtmpOutputSenderBackpressure, AFullQueueWhoseKeyframeIsAtTheHeadStillFreesRoomInsteadOfFailing) {
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  // The cap, with a keyframe at the HEAD and one more mid-queue - the ordinary
+  // steady state at 60 fps with a 1 s GOP and a 60-chunk cap.
+  constexpr std::size_t kCap = 60;
+  constexpr std::size_t kSecondKeyframeIndex = 45;
+  for (std::size_t i = 0; i < kCap; ++i) {
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/i == 0 || i == kSecondKeyframeIndex);
+  }
+  const auto before = sender->bitstreamQueueSnapshotForTest();
+  ASSERT_EQ(before.depth, kCap);
+  ASSERT_TRUE(before.hasKeyframe);
+
+  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+
+  const auto after = sender->bitstreamQueueSnapshotForTest();
+  EXPECT_FALSE(after.overflowFailed)
+      << "cutting to the FIRST keyframe frees 0 here and fails the sender - which restarts it "
+         "and rebuilds the encoder, #597 itself";
+  EXPECT_EQ(after.depth, kCap - kSecondKeyframeIndex + 1)
+      << "the overflow path must cut to the LAST queued keyframe, freeing the most room a safe "
+         "cut can free";
+  EXPECT_TRUE(after.hasKeyframe) << "the keyframe cut TO must never be dropped";
+#else
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AFullQueueWhoseKeyframeIsAtTheHeadStillFreesRoomInsteadOfFailing"
+                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+  return;
+#endif
+}
+
+// #597 Task 8b fix round 1, the case the BURST gate measured (and the reason
+// the arriving chunk became a cut point). A full queue of pure reference
+// frames - no keyframe anywhere, because the window is one GOP wide and the
+// last keyframe has already drained - while the chunk being refused is itself
+// a keyframe. Cutting to a QUEUED keyframe frees nothing here and the sender
+// fails; the decoder can resume at the ARRIVING IDR, so the whole backlog goes.
+TEST(RtmpOutputSenderBackpressure, AKeyframeArrivingAtAFullAllReferenceQueueReplacesTheWholeBacklog) {
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  constexpr std::size_t kCap = 60;
+  for (std::size_t i = 0; i < kCap; ++i) {
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  }
+  const auto before = sender->bitstreamQueueSnapshotForTest();
+  ASSERT_EQ(before.depth, kCap);
+  ASSERT_FALSE(before.hasKeyframe) << "the measured shape: 60 queued chunks, no keyframe among them";
+
+  sender->offerBitstreamChunkForTest(2000, /*keyframe=*/true);
+
+  const auto after = sender->bitstreamQueueSnapshotForTest();
+  EXPECT_FALSE(after.overflowFailed)
+      << "the sender failed with a usable cut point at the door - that restarts it and rebuilds "
+         "the encoder, which is #597 itself";
+  EXPECT_EQ(after.depth, 1u) << "the backlog is replaced by the arriving IDR";
+  EXPECT_TRUE(after.hasKeyframe);
+#else
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AKeyframeArrivingAtAFullAllReferenceQueueReplacesTheWholeBacklog"
+                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+  return;
+#endif
+}
+
+// #597 Task 8b, the other half: a bounded queue is NOT optional. With NO
+// keyframe queued there is nothing safe to drop - dropping an arbitrary chunk
+// corrupts every frame until the next keyframe - so the overflow must still
+// fail the sender. Without this the fix above would read as "never bound the
+// queue", which is unbounded latency: the defect this sub-project removes.
+TEST(RtmpOutputSenderBackpressure, AFullQueueWithNoKeyframeStillFailsTheSender) {
+#if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+
+  constexpr std::size_t kCap = 60;
+  for (std::size_t i = 0; i < kCap; ++i) {
+    sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  }
+  const auto before = sender->bitstreamQueueSnapshotForTest();
+  ASSERT_EQ(before.depth, kCap);
+  ASSERT_FALSE(before.hasKeyframe) << "this case is defined by there being nothing safe to drop";
+
+  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+
+  const auto after = sender->bitstreamQueueSnapshotForTest();
+  EXPECT_TRUE(after.overflowFailed)
+      << "with no keyframe queued the discard frees nothing, and an unbounded queue is "
+         "unbounded latency - the bound must still bite";
+  EXPECT_EQ(after.depth, kCap) << "nothing may be dropped, and nothing may be accepted";
+#else
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AFullQueueWithNoKeyframeStillFailsTheSender"
+                       " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
+  return;
+#endif
+}
+
+// #597 Task 6: the review finding this whole task exists to close. Publishing
+// `backpressure->discardedChunks` made the counter reset OBSERVABLE for the
+// first time - and therefore testable for the first time. Task 4/5 added
+// `backpressureDiscardedChunks_ = 0` beside the `backpressure_ = {}` reset on
+// the `!wantsRtmp` stop path, but nothing before this test could see whether
+// that reset actually reached anything a consumer reads. A destination that
+// discarded chunks, then stopped, must not report the previous run's discards
+// on its NEXT run.
+TEST(RtmpOutputSenderBackpressure, ADiscardedChunkCounterResetsOnTheNextStreamRun) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent("ADiscardedChunkCounterResetsOnTheNextStreamRun")) return;
+  auto sender = corevideo::modules::createRtmpOutputSender();
+  ASSERT_NE(sender, nullptr);
+  auto frame = startableProgramFrame("rtmp-backpressure-discard-reset");
+  // H.265 without the enhanced-RTMP checkbox is refused before FFmpeg is
+  // launched, so this drives the real sync()/observeStreamBackpressure() path
+  // with no child process - exactly like the discard test above it.
+  const auto settings = rtmpAdmissionSettings("h265", false);
+
+  // --- Run 1: drive the divisor above 1, then force a real discard. ---
+  sender->setBackpressureObservationForTest(
+      corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
+      /*keyframeInQueue=*/true);
+  const int enterTicks =
+      static_cast<int>(corevideo::core::StreamBackpressurePolicy::kEnterAfterOverWaterTicks) + 2;
+  for (int i = 0; i < enterTicks; ++i) {
+    (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
+  }
+  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  sender->enqueueBitstreamChunkForTest(1000, /*keyframe=*/false);
+  sender->enqueueBitstreamChunkForTest(2000, /*keyframe=*/true);
+  sender->setBackpressureObservationForTest(
+      corevideo::core::StreamBackpressurePolicy::kDiscardAboveBufferedMs + 10,
+      /*keyframeInQueue=*/true);
+  (void)sender->sync({"rtmp"}, &frame, 5000.0, {settings});
+  std::int64_t run1RunId = -1;
+  {
+    const auto session = sender->session();
+    ASSERT_FALSE(session.senders.empty());
+    ASSERT_TRUE(session.senders[0].backpressure.has_value());
+    const auto& bp = *session.senders[0].backpressure;
+    ASSERT_GT(bp.discardedChunks, 0)
+        << "run 1 must have actually discarded something, or this test proves nothing";
+    // The rest of run 1's per-run state, so the fix-round-1 extension below has
+    // something real to compare against: a divisor above 1, at least one
+    // engagement, and at least one discard event (distinct from discardedChunks
+    // - see the divergence documented on OutputBackpressureState).
+    ASSERT_GT(bp.divisor, 1);
+    ASSERT_GT(bp.enteredCount, 0);
+    ASSERT_GT(bp.discardEvents, 0);
+    run1RunId = bp.runId;
+  }
+
+  // --- Stop the destination: the same `!wantsRtmp` path that resets
+  // backpressure_ and backpressureDiscardedChunks_ together. ---
+  sender->setBackpressureObservationForTest(-1, false);  // stop injecting
+  (void)sender->sync({}, &frame, 9000.0, {settings});
+  {
+    const auto session = sender->session();
+    ASSERT_FALSE(session.senders.empty());
+    EXPECT_EQ(session.senders[0].status, "stopped");
+    EXPECT_FALSE(session.senders[0].backpressure.has_value())
+        << "a stopped destination must not keep publishing its last discard count";
+  }
+
+  // --- Run 2: a fresh stream, never throttled, no discard fired. ---
+  sender->setBackpressureObservationForTest(0, false);
+  for (int i = 0; i < 3; ++i) {
+    (void)sender->sync({"rtmp"}, &frame, 10000.0 + 33.0 * i, {settings});
+  }
+  {
+    const auto session = sender->session();
+    ASSERT_FALSE(session.senders.empty());
+    ASSERT_TRUE(session.senders[0].backpressure.has_value());
+    const auto& bp = *session.senders[0].backpressure;
+    EXPECT_EQ(bp.discardedChunks, 0)
+        << "the next stream run must not report the PREVIOUS run's discards as its own";
+    // Fix round 1, finding 7: the stop path resets the WHOLE policy object
+    // (`backpressure_ = StreamBackpressurePolicy{}`), not just
+    // backpressureDiscardedChunks_ beside it - pin all four other per-run
+    // fields too. Deleting the policy reset alone (leaving only the discard
+    // counter reset) would open the next stream at the PREVIOUS run's divisor
+    // and pass every assertion above while failing these.
+    EXPECT_EQ(bp.divisor, 1)
+        << "a fresh, never-throttled run must not open at the previous run's divisor";
+    EXPECT_EQ(bp.level, 0);
+    EXPECT_EQ(bp.enteredCount, 0)
+        << "a fresh run must not carry forward the previous run's engagement count";
+    EXPECT_EQ(bp.discardEvents, 0)
+        << "a fresh run must not carry forward the previous run's discard-event count";
+    // Fix round 1, finding 11: the reset must mint a NEW run identity, so a
+    // consumer that polled across the stop without observing the node's
+    // momentary absence can still tell this is a reset, not the same run's
+    // counters somehow decreasing.
+    EXPECT_NE(bp.runId, run1RunId) << "a stop/restart must mint a new runId";
+  }
+#else
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.ADiscardedChunkCounterResetsOnTheNextStreamRun"
+                       " (Needs the RTMP sender) - this test did NOT run\n");
+  return;
+#endif
+}
+
+// #597 FINAL REVIEW, FINDING 2 - RED/GREEN, and a CROSS-TASK defect no
+// per-task review could see. Task 7 owned the restart path; Tasks 4 and 6
+// owned the policy lifetime; only the operator-STOP path reconstructed the
+// policy. So after any fault and reopen a destination republished its
+// pre-failure divisor against an EMPTY queue and needed ~30 s of healthy
+// streaming (kRecoverAfterHealthyTicks = 600, one step per 10 s) to return to
+// full rate, while the compositor visibly snapped 4 -> 1 -> 4 across the
+// outage with lastReason still reading the pre-fault value.
+//
+// Deleting `resetBackpressureForNewRun()` from reopen() turns this red on the
+// divisor assertion alone.
+TEST(RtmpOutputSenderBackpressure, AReopenedTransportStartsUnthrottledNotAtItsPreFailureDivisor) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  if (!senderAdmissionFfmpegPresent(
+          "AReopenedTransportStartsUnthrottledNotAtItsPreFailureDivisor")) return;
+  const auto settings = rtmpAdmissionSettings("h265", false);
+  const int enterTicks =
+      static_cast<int>(corevideo::core::StreamBackpressurePolicy::kEnterAfterOverWaterTicks) + 2;
+
+  // Both reopen doors must reset: the SUPERVISOR's automatic restart and the
+  // OPERATOR's recover(). They differ only in whether the restart floor is
+  // cleared, and a fix applied to one of them would pass a test that only
+  // drives the other.
+  for (int door = 0; door < 2; ++door) {
+    const bool viaSupervisor = door == 0;
+    auto sender = corevideo::modules::createRtmpOutputSender();
+    ASSERT_NE(sender, nullptr);
+    auto frame = startableProgramFrame("rtmp-backpressure-reopen");
+
+    // --- Climb to the floor of the ladder on a congested link. ---
+    sender->setBackpressureObservationForTest(
+        corevideo::core::StreamBackpressurePolicy::kThrottleAboveBufferedMs + 10,
+        /*keyframeInQueue=*/true);
+    double t = 0.0;
+    for (int step = 0; step < corevideo::core::StreamBackpressurePolicy::kMaxDivisor; ++step) {
+      for (int i = 0; i < enterTicks; ++i) {
+        t += 33.0;
+        (void)sender->sync({"rtmp"}, &frame, t, {settings});
+      }
+    }
+    std::int64_t beforeRunId = -1;
+    {
+      const auto session = sender->session();
+      ASSERT_FALSE(session.senders.empty());
+      ASSERT_TRUE(session.senders[0].backpressure.has_value());
+      const auto& bp = *session.senders[0].backpressure;
+      ASSERT_GT(bp.divisor, 1)
+          << "the precondition failed: nothing was throttled, so the reopen proves nothing";
+      ASSERT_GT(bp.enteredCount, 0);
+      beforeRunId = bp.runId;
+    }
+
+    // --- The transport faults and is reopened. The queue is now EMPTY. ---
+    t += 33.0;
+    if (viaSupervisor) {
+      (void)sender->restartForSupervisor("rtmp", t, "transport fault");
+    } else {
+      (void)sender->recover("rtmp", t, "operator re-armed");
+    }
+
+    // --- The first observation after the reopen sees a healthy, empty queue. ---
+    sender->setBackpressureObservationForTest(0, /*keyframeInQueue=*/false);
+    t += 33.0;
+    (void)sender->sync({"rtmp"}, &frame, t, {settings});
+
+    const auto session = sender->session();
+    ASSERT_FALSE(session.senders.empty());
+    ASSERT_TRUE(session.senders[0].backpressure.has_value());
+    const auto& bp = *session.senders[0].backpressure;
+    EXPECT_EQ(bp.divisor, 1)
+        << (viaSupervisor ? "supervisor restart" : "operator recover")
+        << ": a reopened transport republished its PRE-FAILURE divisor against an empty queue, "
+           "so the compositor stays throttled for ~30s of healthy streaming for nothing";
+    EXPECT_EQ(bp.level, 0);
+    EXPECT_EQ(bp.enteredCount, 0)
+        << "a reopened transport is a new run; it must not carry the old run's engagement count";
+    EXPECT_EQ(bp.discardEvents, 0);
+    EXPECT_EQ(bp.discardedChunks, 0);
+    EXPECT_STREQ(bp.lastReason, "none")
+        << "lastReason must not still read the pre-fault reason after a reopen";
+    EXPECT_NE(bp.runId, beforeRunId)
+        << "a reopen resets the per-run counters, so it must mint a new run identity";
+  }
+#else
+  // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AReopenedTransportStartsUnthrottledNotAtItsPreFailureDivisor"
+                       " (Needs the RTMP sender) - this test did NOT run\n");
+  return;
 #endif
 }
 

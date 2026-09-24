@@ -625,6 +625,7 @@ if(BUILD_TESTING)
     tests/ImageResizeTest.cpp
     tests/VirtualCameraShmRoundtripTest.cpp
     tests/MediaFoundationGpuVideoEncoderTest.cpp
+    tests/StreamBackpressureRateProbeTest.cpp
     tests/WgcScreenCaptureTest.cpp
     tests/CaptureIngestTest.cpp
     tests/ProgramFramePreviewHealthTest.cpp
@@ -641,6 +642,8 @@ if(BUILD_TESTING)
     tests/EmptyRouteBlankTest.cpp
     tests/OutputLifecyclePolicyTest.cpp
     tests/MonitorShedPolicyTest.cpp
+    tests/BitstreamQueueOverflowTest.cpp
+    tests/StreamBackpressurePolicyTest.cpp
     tests/RenderedSceneAttributionTest.cpp
     tests/ProgramPixelContinuityTest.cpp
     tests/SourceContinuityLedgerTest.cpp

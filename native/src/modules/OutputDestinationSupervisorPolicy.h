@@ -149,6 +149,39 @@ struct DestinationObservation {
   std::int64_t nowMs = 0;
 };
 
+// #597 FINAL REVIEW, FINDING 1 - A DESTINATION SERVING ITS OWN RESTART-FLOOR
+// BACKOFF IS **WAITING**, NOT FAILING.
+//
+// `RtmpOutputSenderAdapter`'s TransportRestartFloor refuses to re-open a
+// transport before its ladder rung elapses, and while it serves that rung it
+// publishes `status="failed"` / `destinationHealth="failed"` /
+// `lastResultCode="ffmpeg-retry-backoff"` - the only vocabulary it had for "not
+// delivering". The supervisor classed that as Retryable, armed a fault, and
+// gave up after kMaxConsecutiveFailures, leaving the destination dead until the
+// operator re-armed it. This branch RAISED the rungs from 1-30 s to 5-60 s, so
+// the floor that exists to protect the encoder became a new path from
+// "congested link" to "stream off, operator intervention required", with the
+// exposure window grown two- to sixfold.
+//
+// It was first deferred as issue #603 on the grounds that fixing it changes
+// give-up semantics. That reasoning does not survive the fact that this branch
+// made the defect materially worse rather than merely leaving it alone, so the
+// distinction is drawn here instead: a destination whose own bounded retry is
+// pending accrues NO fault of any kind - not from `status`, not from progress
+// staleness, and not from the start grace. It is managing its own retry on a
+// ladder that is itself bounded and observable, and the supervisor standing a
+// second ladder on top of it is double-counting one failure.
+//
+// DELIBERATELY NARROW: nothing else changes. A fault already armed keeps its
+// rung and still fires; the terminal-code bypass, the healthy-run budget
+// return and give-up are untouched; and the moment the adapter publishes any
+// other result code the ordinary rules apply again. An UNKNOWN code is still
+// RETRYABLE - this list only ever grows by an explicit decision that the
+// adapter is already retrying on its own bounded ladder.
+[[nodiscard]] inline bool isSelfManagedRetryResultCode(const std::string& code) {
+  return code == "ffmpeg-retry-backoff";
+}
+
 enum class SupervisorAction {
   None,
   Restart,  // bump the generation and re-open this destination NOW
@@ -184,6 +217,12 @@ class OutputDestinationSupervisorPolicy {
   }
 
   [[nodiscard]] static DestinationFailureClass classify(const DestinationObservation& o) {
+    // Finding 1: waiting out a bounded self-managed retry is not a fault. See
+    // isSelfManagedRetryResultCode above for why this is drawn here rather than
+    // left to #603.
+    if (isSelfManagedRetryResultCode(o.lastResultCode)) {
+      return DestinationFailureClass::None;
+    }
     const bool failed = o.status == "failed" || o.destinationHealth == "failed";
     // `warning` + a terminal result code is the shape the adapters use for an
     // inadmissible configuration (runtime-missing, source-name-invalid): they
@@ -252,7 +291,19 @@ class OutputDestinationSupervisorPolicy {
 
     // A healthy RUN — producing now, and producing for long enough — returns the
     // budget. A healthy instant does not.
-    if (decision.healthy && o.nowMs - generationStartedMs_ >= kHealthyRunMs) {
+    //
+    // #597 task 7 round 1, finding 1: AND IT MUST NOT RELEASE A PENDING FAULT'S
+    // RUNG. This branch zeroed `nextAttemptAtMs_` while `faultPending_` stayed
+    // true, and the restart gate below fires on `nowMs >= nextAttemptAtMs_` —
+    // so the fault restarted on the NEXT 250 ms tick against a 5,000 ms rung.
+    // The preconditions are the ordinary shape of a mid-show failure, because
+    // `decision.healthy` is decided from acceptedUnits FRESHNESS (1 s) and not
+    // from `status`: a destination that fails while its last accepted unit is
+    // under a second old is `failed` and `healthy` in the same observation.
+    // That is the incident's otherwise unexplained 21:09:10.088 restart, 0.78 s
+    // after the 21:09:09.306 queue overflow it names. The budget still returns
+    // on a healthy run — just not while a fault is waiting out its rung.
+    if (decision.healthy && !faultPending_ && o.nowMs - generationStartedMs_ >= kHealthyRunMs) {
       failures_ = 0;
       nextAttemptAtMs_ = 0;
     }
@@ -278,7 +329,19 @@ class OutputDestinationSupervisorPolicy {
       return decision;
     }
 
-    if (!faultPending_) {
+    // Finding 1, the other half. Classing the backoff as None is not enough on
+    // its own: a destination serving a 60 s rung accepts no units, so the
+    // `stopped accepting output for Ns` branch below would arm a fault after
+    // 5 s and the `never accepted output` branch after 15 s - the same walk to
+    // give-up by a different door. While the adapter's own bounded retry is
+    // pending, NO fault is armed at all.
+    const bool servingSelfManagedRetry = isSelfManagedRetryResultCode(o.lastResultCode);
+    if (servingSelfManagedRetry && !faultPending_) {
+      // Say so, so a support bundle shows standing off rather than silence.
+      decision.reason = "Destination is serving its own bounded restart backoff (" +
+                        o.lastResultCode + "); the supervisor is standing off.";
+    }
+    if (!faultPending_ && !servingSelfManagedRetry) {
       std::string faultReason;
       if (decision.failureClass == DestinationFailureClass::Retryable) {
         faultReason = o.lastError.empty()
@@ -362,6 +425,85 @@ class OutputDestinationSupervisorPolicy {
   std::int64_t nextAttemptAtMs_ = 0;
   std::string pendingReason_;
   std::string terminalReason_;
+};
+
+// ---------------------------------------------------------------------------
+// #597 — THE RESTART FLOOR
+// ---------------------------------------------------------------------------
+// The supervisor above is not the only thing that can rebuild a destination.
+// An adapter that re-opens its OWN transport from the media tick (the RTMP/SRT
+// sender's ensureFfmpegProcess is the one in this tree) is a second restart
+// authority, and on 2026-09-22 it rebuilt the encoder EIGHT times in eighteen
+// seconds, 2.5–3.5 s apart, while only two of those rebuilds carried an
+// `[outputSupervisor] restarting` line. The ladder was not "not applied" — it
+// was not consulted, because the restarts were never the supervisor's.
+//
+// This is the ladder, in a form such an authority can hold. Two rules, and the
+// second is the one the incident broke:
+//
+//   * THE FLOOR IS THE HOUSE LADDER'S CURRENT RUNG — 5, 10, 20, 40, 60 s. Two
+//     opens of one destination are never closer together than that. The old
+//     adapter-local backoff started at ONE second, below the first rung.
+//   * A RUN RETURNS THE BUDGET ONLY AFTER kHealthyRunMs (30 s) OF ACCEPTING.
+//     The old adapter-local backoff was cleared by the FIRST accepted frame, so
+//     a destination that came up, took one frame and died reset the ladder to
+//     rung one every single time — which is exactly the shape the policy header
+//     above already forbids for the supervisor ("A restart that produces one
+//     frame and dies must climb the ladder, not reset it").
+//
+// Pure, injected clock, no threads. The caller supplies a monotonic millisecond
+// clock; the sender uses the same `elapsedMs` it already paces video with.
+class TransportRestartFloor {
+ public:
+  // True when a (re)open is admissible at nowMs. Always true before the first
+  // failure, so a destination's FIRST open is never delayed.
+  [[nodiscard]] bool mayOpenAt(std::int64_t nowMs) const { return nowMs >= floorUntilMs_; }
+
+  [[nodiscard]] std::int64_t remainingMs(std::int64_t nowMs) const {
+    return floorUntilMs_ > nowMs ? floorUntilMs_ - nowMs : 0;
+  }
+
+  // The transport failed. Climbs one rung and arms the floor against the rung
+  // the streak has now reached.
+  void noteFailure(std::int64_t nowMs) {
+    runOpen_ = false;
+    floorUntilMs_ = nowMs + OutputDestinationSupervisorPolicy::backoffMsForFailureCount(failures_);
+    failures_ = (std::min)(failures_ + 1, OutputDestinationSupervisorPolicy::kMaxConsecutiveFailures);
+  }
+
+  // The transport was (re)opened at nowMs. Starts the healthy-run window; it
+  // does NOT return any budget.
+  void noteOpened(std::int64_t nowMs) {
+    runOpen_ = true;
+    runOpenedMs_ = nowMs;
+  }
+
+  // The transport accepted output. Returns the budget ONLY once this run has
+  // been accepting for kHealthyRunMs — never on the first accepted frame.
+  void noteAccepted(std::int64_t nowMs) {
+    if (!runOpen_) return;
+    if (nowMs - runOpenedMs_ < OutputDestinationSupervisorPolicy::kHealthyRunMs) return;
+    failures_ = 0;
+    floorUntilMs_ = 0;
+  }
+
+  // Operator / supervisor intervention: a recover(), a re-arm, or the stream
+  // being switched off and on. Always clears the floor, exactly like
+  // OutputDestinationSupervisorPolicy::reset().
+  void clear() {
+    failures_ = 0;
+    floorUntilMs_ = 0;
+    runOpen_ = false;
+    runOpenedMs_ = 0;
+  }
+
+  [[nodiscard]] int consecutiveFailures() const { return failures_; }
+
+ private:
+  int failures_ = 0;
+  bool runOpen_ = false;
+  std::int64_t runOpenedMs_ = 0;
+  std::int64_t floorUntilMs_ = 0;
 };
 
 }  // namespace corevideo::modules

@@ -225,8 +225,33 @@ class D3D11Compositor final : public ICompositor {
     // or not: when buffered, frame.encoderSharedTexture rides the program buffer to
     // the sender (the handle is stable and the copy is the latest composed frame,
     // so the stream taps live pixels rather than inheriting the buffer's delay).
+    // #597 Lever A. The encoder's thread advances on the KEYED MUTEX - when this
+    // export releases a new frame - NOT on the sender's submit(). Task 1 measured
+    // it directly: skipping only submit() left the stream byte-identical (ratio
+    // 0.998), while halving the export rate halved egress (0.500). So the throttle
+    // lives here. Skipping the SUBMIT leaves the encoder waiting, which is exactly
+    // the intended "fewer frames, same quality each".
+    //
+    // Only the SUBMIT is shed. The handle metadata is published on every frame -
+    // see exportEncoderSharedTexture, where withholding it costs a full FFmpeg +
+    // hardware-encoder restart per shed frame.
+    // #597 Task 6 fix round 1, finding 9 (fix round 2, item 2: corrected
+    // claim): this tick's OWN readback of whether the encoder texture is
+    // being exported right now - published as
+    // realtimeEvidence.encoderExport.exporting. `renderPlan.fullProgramReadback`
+    // is `virtualCameraEnabled_ || outputActive || recording`, so this is
+    // "is anything consuming the encoder texture", NOT "is a stream
+    // throttled" - it reads true with only the vcam on and no stream at all.
+    // See ICompositor::encoderExporting()'s doc comment for the full rule and
+    // what it is actually good for (distinguishing a genuinely fresh divisor
+    // of 1 from a stale non-1 divisor while something is still consuming the
+    // texture).
+    encoderExporting_.store(renderPlan.fullProgramReadback, std::memory_order_relaxed);
     if (renderPlan.fullProgramReadback) {
-      exportEncoderSharedTexture(frame);
+      const int encoderExportDivisor = encoderExportDivisor_.load(std::memory_order_relaxed);
+      const bool submitPixels =
+          encoderExportDivisor <= 1 || (frame.frameNumber % encoderExportDivisor) == 0;
+      exportEncoderSharedTexture(frame, submitPixels);
     }
     const auto vcamUs = stageUs();
     if (!buffered) exportSharedTexture(frame);
@@ -1693,21 +1718,73 @@ class D3D11Compositor final : public ICompositor {
   // the decoupled exporter. A slow hardware-encode consumer no longer inserts a
   // GPU wait into the render context (see D3DDecoupledExport); the render context
   // only hands the frame to a fast internal slot.
-  void exportEncoderSharedTexture(ProgramFrame& frame) {
+  // THIS FUNCTION DOES TWO SEPARABLE THINGS, AND ONLY ONE OF THEM MAY BE SHED
+  // (#597 Lever A, fix round 1):
+  //
+  //  - it SUBMITS pixels (`encoderExport_->submit`), which blits the program
+  //    into the shared texture and releases key 1 of the keyed mutex. THAT is
+  //    what advances the hardware encoder's thread, so withholding it IS the
+  //    throttle, and it is exactly what Task 1 measured (halving the submit rate
+  //    halved egress, 0.500);
+  //  - it PUBLISHES the handle metadata onto the frame. The sender reads the
+  //    mere PRESENCE of this handle as "GPU-direct is available"
+  //    (`resolveGpuEncodePath` -> `chooseStreamEncodePath`), and
+  //    `ensureFfmpegProcess` tears down FFmpeg AND the hardware encoder and
+  //    relaunches both whenever that answer changes.
+  //
+  // A shed frame has not changed whether a GPU encoder texture exists, so the
+  // metadata is published UNCONDITIONALLY. Withholding it would cost one full
+  // encoder restart per shed frame - tens per second, where the incident this
+  // whole sub-project exists to fix was eight restarts in twenty seconds - and
+  // for H.265 the relaunch is admitted off the GPU path, refused by
+  // StreamStartAdmission, and LATCHED, killing the stream for the rest of the
+  // show. Pinned by RtmpOutputSenderBackpressure.AShedFrameNeverRestartsTheSendersEncodePath.
+  void exportEncoderSharedTexture(ProgramFrame& frame, bool submitPixels) {
     if (!renderTarget_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
       return;
     }
     if (!encoderExport_ || !encoderExport_->dimensions(targetWidth_, targetHeight_)) {
       encoderExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), targetWidth_, targetHeight_, "encoder");
       if (!encoderExport_->valid()) { encoderExport_.reset(); return; }
+      // Task 6 residual (carried from Task 4's re-review): a dimension change
+      // recreates encoderExport_ with a fresh internal frame counter, but
+      // lastSubmittedEncoderFrameNumber_ is this render thread's own field and
+      // survives the recreation untouched. Without this reset, a shed frame
+      // right after a recreation would publish a frame number that was
+      // submitted to the PREVIOUS exporter - no production reader depends on
+      // that today, which is exactly why it must be fixed now rather than
+      // when one is added.
+      lastSubmittedEncoderFrameNumber_ = -1;
     }
-    encoderExport_->submit(context_.get(), renderTarget_.get(), frame.frameNumber);
+    if (submitPixels && encoderExport_->submit(context_.get(), renderTarget_.get(), frame.frameNumber)) {
+      lastSubmittedEncoderFrameNumber_ = frame.frameNumber;
+    } else if (!submitPixels) {
+      // #597 Task 6: this is the one place a frame is actually shed - count it
+      // here, once, globally. (submit() returning false without a shed request
+      // is D3DDecoupledExport's own pre-existing bounded-slot refusal, unrelated
+      // to Lever A, and must not be counted as a shed - see the comment above
+      // on frame.encoderSharedTexture.frameNumber.)
+      if (encoderExportShedFrames_.load(std::memory_order_relaxed) < kEncoderExportShedFramesCeiling) {
+        encoderExportShedFrames_.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
     frame.encoderSharedTexture.publishedFrameNumber = encoderExport_->publishedFrameNumber();
     frame.encoderSharedTexture.sharedHandleHex = handleToHex(encoderExport_->handle());
     frame.encoderSharedTexture.width = targetWidth_;
     frame.encoderSharedTexture.height = targetHeight_;
     frame.encoderSharedTexture.format = "B8G8R8A8_UNORM";
-    frame.encoderSharedTexture.frameNumber = frame.frameNumber;
+    // THE LAST ACTUALLY SUBMITTED NUMBER, never this frame's. A consumer keying
+    // freshness on this field must not be told a frame arrived that the encoder
+    // was never given - the whole point of shedding is that it was not.
+    //
+    // Tracked here rather than read from publishedFrameNumber(): that counter is
+    // stored by D3DDecoupledExport's OWN export thread once the slot has been
+    // pulled and republished, so it lags the render thread by an unbounded
+    // amount and is not a synchronous answer to "did this render submit?".
+    // Note it only advances when submit() actually SUCCEEDED - the exporter's
+    // bounded slot drop is a pre-existing refusal, unrelated to Lever A, and
+    // must not be reported as a submitted frame either.
+    frame.encoderSharedTexture.frameNumber = lastSubmittedEncoderFrameNumber_;
   }
 
   // Export one keyed-mutex shared texture per participant for the multiview tiles,
@@ -2481,6 +2558,28 @@ class D3D11Compositor final : public ICompositor {
   // This adapter's full-resolution program tap is NV12 (there is no full BGRA
   // readback on Windows — that would be an 8MB/frame GPU->CPU Map). Recording
   // mixes from it via RecordingSessionRequest::programNv12.
+  // #597 Lever A control plane. Called by MediaCore only when the value
+  // CHANGES (a transition, never per frame), from the output tick rather than
+  // the render thread - hence the relaxed atomic: the render thread reads it
+  // once per frame and a one-frame-late adoption of a new divisor is harmless.
+  void setEncoderExportDivisor(int divisor) override {
+    encoderExportDivisor_.store((std::max)(1, divisor), std::memory_order_relaxed);
+  }
+
+  // #597 Task 6: the applied divisor and the shed count, published together at
+  // realtimeEvidence.encoderExport. encoderExportShedFrames_ is bumped once,
+  // on the render thread, exactly where exportEncoderSharedTexture() decides
+  // NOT to submit - see the increment there.
+  [[nodiscard]] int encoderExportDivisor() const override {
+    return encoderExportDivisor_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::int64_t encoderExportShedFrames() const override {
+    return encoderExportShedFrames_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] bool encoderExporting() const override {
+    return encoderExporting_.load(std::memory_order_relaxed);
+  }
+
   [[nodiscard]] bool suppliesProgramNv12() const override { return true; }
 
   void setVcamFrameSink(VcamFrameSink sink) override {
@@ -2637,6 +2736,19 @@ class D3D11Compositor final : public ICompositor {
   int targetWidth_ = 0;
   int targetHeight_ = 0;
   int64_t frameNumber_ = 0;
+  std::atomic<int> encoderExportDivisor_{1};  // #597 Lever A; 1 = export every frame
+  int64_t lastSubmittedEncoderFrameNumber_ = -1;  // render thread only; -1 = nothing yet
+  // #597 Task 6: frames actually held back by the divisor above. Written only
+  // on the render thread (exportEncoderSharedTexture), read from any thread via
+  // encoderExportShedFrames() - a relaxed atomic, the same discipline as
+  // encoderExportDivisor_. Saturates rather than wraps; a snapshot must never
+  // see it go down.
+  std::atomic<std::int64_t> encoderExportShedFrames_{0};
+  static constexpr std::int64_t kEncoderExportShedFramesCeiling = INT64_C(1) << 62;
+  // #597 Task 6 fix round 1, finding 9: this tick's own `renderPlan.fullProgramReadback`,
+  // written every render() call (never just while streaming) so it reads false
+  // promptly once a stream stops - see the write site and encoderExporting().
+  std::atomic<bool> encoderExporting_{false};
   std::atomic<int> requestedProgramFrames_{0};
   int64_t programProductionSlot_ = -1, programProductionAnchorNs_ = 0;
   mutable std::mutex programBufferMutex_;
