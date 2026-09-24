@@ -377,3 +377,32 @@ stale, expired, latched or dead guards still stop the test. Valid acceptance,
 empty/latched rejection and 100 live status reads were checked. A new bounded
 30-minute run started around 16:23 UTC with the same native executable and
 settings, under `artifacts/live-601/audio-pacing-candidate-repeat30min`.
+
+### Corrected candidate still encounters the initial stall
+
+The repeat stopped on its first backpressure event at 16:29:43 UTC, approximately
+seven minutes after starting. Streaming was verified off and the watchdog was
+healthy. All eight expected Tiles feeds remained present in all 449 samples.
+There were 26 encoder frames shed through the final saved sample, one render
+deadline miss, zero skipped slots and zero recorded audio loss. Backpressure
+entered with 743 ms buffered; no queued chunks were discarded before stopping.
+
+Pre-stop successful video pipe writes took 193, 450, 169, 691 and 613 ms near
+onset; no audio slow-write or read-rate catch-up message was recorded. Thus
+removing real-audio pacing does not prevent the initiating stall. Its controlled
+local recovery benefit must not be presented as an explanation of that trigger.
+
+Upload declined from 11.59 Mbps at 16:29:35 to 7.81 Mbps at 16:29:42, while
+internet probe latency rose into the 41–73 ms range, with one timeout at :39.
+The gateway remained responsive. Host retransmissions increased by only 16
+between :35 and :43, versus 63 around the previous instrumented failure; these
+are not RTMP-socket counters. Run means were 11.024 Mbps and 1,841 packets/s,
+with 19 internet probe timeouts overall and no sustained guard trigger.
+
+Final FFmpeg progress was 25,449 frames / 424.85 seconds of media / 424.56
+seconds elapsed, about 60 fps average, which does not negate frame shedding.
+Two non-monotonic DTS warnings at approximately media second 191 corrected
+191680 to 191700, well before final onset. Arrival-derived H.264 timestamps
+remain an independent continuity concern. Native, performance and FFmpeg logs,
+network samples, snapshots and summary are preserved in the repeat directory.
+No further external stream was automatically started after this failure.
