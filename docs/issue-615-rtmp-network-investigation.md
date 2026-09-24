@@ -496,3 +496,14 @@ the encoder/FFmpeg path from downstream transport, nor explain the earlier
 PC-wide outage. Sender `framesSent` increments on local input acceptance and
 must not be interpreted as receiver-delivered frames. The local evidence file
 `audio-pacing-candidate-repeat30min/onset-source-progress.json` retains details.
+
+### Fixture burst-size limitation
+
+Inspection of the 1,800 access units in `pacing-fixture-packets.json` found a
+20,861-byte mean and 45,102-byte maximum. In contrast, slow live pipe writes
+included complete encoded chunks around 335,000 bytes. Matching average bitrate
+and input cadence therefore did not match the live stream's packet-size bursts.
+The ten-minute fixture's clean result does not rule out burst-sensitive pipe,
+FFmpeg or downstream behavior under the app's actual encoded output. Large
+chunks alone do not prove link saturation or identify the original outage cause;
+they define a missing dimension in that comparison. No new stream was started.
