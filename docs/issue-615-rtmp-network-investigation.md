@@ -112,3 +112,47 @@ audio and decoded receiver delivery. The original Battle.net/AVD disruption is
 still an open acceptance item. RTMPS, other network adapters, other ISPs and
 other receivers have not been measured. No fleet-wide or unlimited-duration
 stability claim follows from these finite runs.
+
+## Original incident timeline and diagnostic limits
+
+All times below are local EDT on 2026-09-24, from the preserved original app,
+native and performance logs, not the later matched network experiments.
+
+- 08:19:48: GPU encoder drain reached 3,060 samples. FFmpeg output subsequently
+  stopped advancing around frame 3,033 / media time 50.75 seconds.
+- 08:19:50: the sender entered backpressure at 742 ms buffered; by 08:19:51 it
+  reached divisor 4. Queue-overflow discards continued until streaming stopped.
+- 08:19:55.256 to 08:20:12.306: the shell's every-30-thumbnail-event diagnostic
+  had a 17.05-second interval, versus approximately two seconds immediately
+  before and after. These are thumbnail events, not roster snapshots. The
+  sample counter is shell-local; this cannot identify whether the missing
+  delivery originated in Zoom, core ingest or event transport.
+- 08:20:09.678: the shell recorded an operator stream-stop request. The pipe
+  failure at 08:20:09.692 followed that request and is not evidence that a pipe
+  error initiated the incident.
+- 08:20:25: several Zoom inputs changed from 1280x720 to 640x360; some later
+  recovered. This is consistent with degraded video delivery, but does not
+  identify its cause.
+
+The Tiles membership gate removes a feed after 1,500 ms without a new frameId.
+This explains how a video stall can remove a tile while the participant remains
+in the meeting roster. It does not establish that the participant left Zoom.
+
+The Windows RDP client log has no events between 08:17 and 08:24. It records a
+disconnection at 08:25:43 and subsequent receive-thread watchdog warnings.
+Battle.net's available Chromium log records window closure at 08:25:46, without
+network-failure diagnostics for the earlier interval. These later events do not
+establish the onset or cause of the operator-observed loss of connectivity.
+
+Zoom SDK logs from the incident were preserved locally, but their contents are
+encrypted. The engine currently leaves onMeetingStatisticsWarningNotification
+and onUserNetworkStatusChanged empty, so those SDK callbacks provide no saved
+network-quality evidence. The asynchronous RTMP writer releases its queue mutex
+before blocking in WriteFile; no shared Zoom lock was identified in that write
+path. Neither observation proves the absence of another blocking path.
+
+The confirmed transport defect remains excessive small-packet traffic with
+TCP_NODELAY enabled. Whether that traffic triggered the original PC-wide outage
+remains unproven. Do not label the incident resolved from the lower-packet-rate
+background-only runs. The required full-meeting reproduction still needs a
+working join link; rejoining the saved number timed out.
