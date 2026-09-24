@@ -455,3 +455,26 @@ to the direct-pipe fixture, so pause durations are not interchangeable. No
 external destination or meeting configuration was changed. Both owned local
 processes exited, and no loopback listener remains. Evidence:
 `artifacts/live-601/local-rtmp-paced.py` and `local-rtmp-paced-summary.json`.
+
+### Ten-minute loopback baseline
+
+The paced local RTMP fixture completed 600 seconds at 16:56:40 UTC with no
+input write reaching the 50 ms logging threshold. Sender and receiver exited
+zero and producer threads finished. The receiver retained all 36,000 video
+packets and 28,126 AAC packets; video last PTS was 599.975 seconds and audio
+600.000. Neither stream had backward DTS, but video had three equal DTS pairs
+and a maximum 47 ms interval. Thus packet retention is established, not perfect
+per-frame timing. Receiver stderr reported I/O termination at sender disconnect
+and inability to update a non-seekable FLV header; packet counts were complete.
+
+This baseline uses repeated encoded fixture access units, not the native live
+encoder, queue/drop policy or full app. It narrows the remaining investigation
+but cannot attribute the external stall to the network or receiver. A full-app
+test against a local receiver would distinguish those remaining paths more
+directly. External streaming remained off; all owned fixture processes ended.
+Evidence: `loopback-rtmp-10min-summary.json`, FLV and logs under local artifacts.
+
+Latest fa5a2619 CodeQL passed; its macOS stub test again failed the background
+media reopen assertion at RenderedSceneAttributionTest.cpp:603, while that job
+passed at 132f373e with the same relevant code. Windows CI was still pending.
+No unrelated test was weakened or production behavior changed for this failure.
