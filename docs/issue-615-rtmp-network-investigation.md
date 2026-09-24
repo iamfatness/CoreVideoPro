@@ -406,3 +406,32 @@ Two non-monotonic DTS warnings at approximately media second 191 corrected
 remain an independent continuity concern. Native, performance and FFmpeg logs,
 network samples, snapshots and summary are preserved in the repeat directory.
 No further external stream was automatically started after this failure.
+
+### Short-pause local comparison
+
+An 850 ms downstream pause was absorbed by fixture buffering in both variants:
+neither recorded a pipe write above 50 ms, and both retained all packets and
+normal endpoint timestamps. It does not reproduce the observed input stall.
+
+A 1.8-second downstream pause did produce an initial video pipe block of
+834 ms with audio `-re` and 859 ms without it. With `-re`, there were 49 video
+writes above 50 ms and the last such write completed 9.115 seconds after the
+downstream reader resumed. Without it, only the initial write crossed 50 ms;
+it completed approximately 1 ms after reader resume. Neither variant logged
+an audio write above 50 ms. Consequently, absence of an audio slow-write log
+does not exclude the extra pacing clock's effect on video recovery.
+
+Both retained 1,800 video / 1,408 AAC packets, nondecreasing DTS and approximately
+30-second completion; the old variant caught up before the fixture ended.
+These single short-pause comparisons supplement the repeated long-pause test;
+they do not establish the live stall's initiating cause. Evidence is in
+`local-pacing-short-summary.json` and `local-pacing-short1800-summary.json`
+under the ignored artifacts directory.
+
+A separate 30-second passive baseline with streaming off and the meeting still
+joined averaged 0.078 Mbps upload, with one internet probe timeout, up to 61 ms
+probe latency and 51 host TCP retransmissions. Occasional host-level probe/loss
+signals therefore also occur without the stream and cannot identify its socket.
+The initial code commit's macOS stub job failed a background-media reopen test;
+the latest document-only commit's same job passed. No unrelated code was changed;
+the overall CI workflow is still pending.
