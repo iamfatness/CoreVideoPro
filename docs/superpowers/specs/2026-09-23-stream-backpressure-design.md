@@ -283,3 +283,140 @@ discard for a healthy sibling.
   the snapshot, which the incident capture did not preserve.
 - Adaptive bitrate as an operator setting, macOS/VideoToolbox, and the raw-path
   throughput work (its own sub-project).
+
+## Outcome (2026-09-23, branch `feat/stream-backpressure`)
+
+Shipped: both levers, the observability node, the restart floor, and the live
+acceptance gate. Native suite 1231/0 on a confirmed Release core. What follows is what
+the work MEASURED, including where it contradicted this document.
+
+### What the Task 1 probe measured (the load-bearing CBR assumption)
+
+**The assumption holds, and the gate's location does not.** Two legs of the encoder at
+the incident's 10000 kbps, each window self-timed (9.99–10.01 s):
+
+| leg | bytes | chunks | rate |
+|---|---|---|---|
+| A — export every frame (60/s) | 74,401,369 | 599 | 59,568 kbps |
+| B — export every 2nd frame (30/s) | 37,260,524 | 300 | 29,811 kbps |
+
+**Ratio 0.500 / 0.501** across two runs, ~124 KB per frame either way: egress falls with
+the input rate and per-frame bits are unchanged, which is the "keep quality" ruling
+satisfied. The dynamic-bitrate fallback named in Risks was not needed.
+
+**But §2's gate site was wrong.** Skipping only `submitFrameToGpuEncoder` produced a
+**byte-identical stream (ratio 0.998)** — the encoder's thread advances on the keyed
+mutex when the compositor RELEASES a frame, so a skipped submit paces nothing. The
+throttle moved to the compositor's encoder-texture export, via a new
+`ICompositor::setEncoderExportDivisor(int)` set only on a policy transition. The numbers
+above are that gate. **Consequence, and a deviation from the Global Constraint in §8:**
+one encoder texture feeds every GPU-direct sender, so Lever A is per-ENCODER (MediaCore
+takes the MAX divisor across active GPU-direct senders) and a healthy sibling runs at
+the struggling destination's frame rate until it recovers. Per-destination Lever A needs
+one encoder per destination, which is out of scope here. **Lever B remains genuinely per
+destination**, which is where §8's constraint still binds.
+
+A shed frame still PUBLISHES the encoder-texture handle and its last submitted frame
+number; only the pixel submit is skipped. An absent handle reads as `CpuFallback` to the
+sender and relaunches FFmpeg and the encoder once per shed frame — #597 amplified.
+
+**Second Task 1 finding, deliberately not acted on here:** the encoder emitted ~59.5 Mbps
+at 10000 kbps and ~59.4 Mbps at 2000 kbps — the same bytes — because only
+`MF_MT_AVG_BITRATE` is set and no rate-control-mode codec API is called. Filed as
+[#601](https://github.com/iamfatness/CoreVideoPro/issues/601). It may well be the
+incident's real trigger, and **backpressure masks the symptom without fixing it**: it
+sheds input frames, so egress falls, while the stream still does not honour its rate.
+
+### What the Task 7 investigation found (§6, the restart floor)
+
+**This document's hypothesis was disproven by construction, not merely unproven.** §6
+guessed the supervisor's per-destination record was being reconstructed and `reset()` as
+the sender list re-synced. It was not. **Five of the seven rebuilds had no supervisor
+decision behind them at all:** `RtmpOutputSenderAdapter::ensureFfmpegProcess` re-opens
+its own transport from the media tick under an ADAPTER-LOCAL backoff
+(`scheduleFfmpegRetry`) whose first rung was **1 s** and whose streak was cleared by the
+first accepted frame after each rebuild. `1 s wait + ~2 s of life` reproduces the
+measured 2.5–3.5 s cadence. `kHealthyRunMs` was ruled out twice. **There were two
+restart authorities; the ladder was never bypassed, it was never consulted.**
+
+Both are now independently bounded and no longer share a key: `TransportRestartFloor` for
+the adapter, and `IOutputSender::restartForSupervisor()` split from the operator's
+`recover()` so a supervisor restart cannot erase the floor. Two residual defects found
+in the same place: a healthy INSTANT released a pending fault's rung (the supervisor
+restarted 250 ms into a 5,000 ms rung), and the floor's refusal path could leave a
+running-but-unfed FFmpeg child holding the single SRT caller slot — it now stops the
+child before serving the rung.
+
+### What the gate forced, and what it exposed
+
+- **One threshold re-tuned, and it is a gate assertion, not a product constant.** The
+  Lever-A recovery assertion went from "final divisor below peak" to "the divisor stepped
+  down at some point", because congestion cycles and where the last poll lands is an
+  accident of the clock. No value was weakened — it still fails a storming run. **No
+  policy constant in §4 was changed by the gate.**
+- **"Zero encoder rebuilds" did NOT hold on the first attempt, and the cause was this
+  design's own last-resort bound.** Two of three 240 s congested runs were clean; the
+  third stormed with eleven encoder starts. `enqueueBitstream`'s overflow path fails the
+  sender ON PURPOSE so the supervisor restarts it — which rebuilds the encoder. §5 assumed
+  that path fires "once" as a terminal condition; under congestion it is a storm caller.
+  Task 8b changed it: overflow now runs the GOP-tail discard first and fails only when the
+  discard frees nothing. Ordinary Lever B cuts to the FIRST queued keyframe; the overflow
+  path cuts to the LAST; and a keyframe ARRIVAL makes the whole backlog discardable —
+  measured twice, the queue held 60 reference frames with no keyframe anywhere while the
+  refused chunk was the keyframe at the door. Raising the 60-chunk cap was refused (an
+  unbounded queue is unbounded latency).
+- **§3's discard is safe as written: parameter sets are IN BAND.** 200 traced chunks per
+  codec: every h264 CleanPoint sample is `AUD,SPS,PPS,IDR`, every hevc one
+  `AUD,VPS,SPS,PPS,IDR_W_RADL`, with zero non-keyframe chunks carrying a parameter set.
+  The pre-ruled `CODECAPI_AVEncVideoPrependSPSPPSToIDR` mitigation is not used.
+- **The keyframe-cadence risk is answered and it is worse than stated:**
+  `keyframeIntervalSeconds` is never applied at all (no GOP codec-API call exists) and
+  nothing can force an IDR, so the MFT runs at its driver default. Because the interval
+  counts FRAMES and Lever A sheds frames, a GOP spans ~4 s at divisor 4 — which is why a
+  60-chunk queue can hold no cut point. Filed as
+  [#605](https://github.com/iamfatness/CoreVideoPro/issues/605).
+- **Four harnesses could have reported success while measuring nothing** (an SRT sink that
+  dropped rather than blocked, so the queue never aged; FFmpeg's `-readrate`, which
+  throttles media time rather than bandwidth and produced a confident wrong negative; a
+  branch-entry assertion written as a disjunction a FAILURE line satisfied; and a commit
+  that tightened that assertion while rewording the grepped string, leaving it vacuous by
+  construction). The shipped sink is a bandwidth-limited TCP proxy, the gate FAILS if the
+  queue did not grow, and the overflow messages now live in
+  `modules/BitstreamQueueOverflow.h` with tests, so a rewording breaks a test instead of
+  disarming a gate.
+
+### Not established
+
+- Six-plus clean gate runs are a finite soak. Three earlier greens were three draws at a
+  ~1-in-3 failure rate — which the next round's burst runs then exposed.
+- **Restart-ladder rung 1 is pinned only by pure unit tests**; no end-to-end run has
+  measured its value.
+- **The HEVC overflow branch has never fired.** The queue's cap counts CHUNKS while the
+  throttle limits the ARRIVAL RATE, so at divisor 4 the queue reaches seconds of latency
+  in ~23 chunks and never approaches 60. That unit mismatch is
+  [#607](https://github.com/iamfatness/CoreVideoPro/issues/607).
+- **HEVC discards were observed not to corrupt the RTMP/FLV path** (nine ordinary Lever B
+  discards, 164 chunks dropped, 7808 frames decoded cleanly). **The MPEG-TS/SRT case —
+  where an unsignalled PCR jump was the actual concern — remains UNOBSERVED, because the
+  slow-sink harness runs on an RTMP sink.**
+- The POSIX RTMP compile fix is verified structurally only; the overflow call-site test
+  self-skips without `C:\ffmpeg\bin`.
+
+### Issues filed, all out of scope for this slice
+
+[#601](https://github.com/iamfatness/CoreVideoPro/issues/601) encoder ignores its
+configured bitrate · [#602](https://github.com/iamfatness/CoreVideoPro/issues/602) every
+supervised sender supervises every other destination's name ·
+[#603](https://github.com/iamfatness/CoreVideoPro/issues/603) a destination serving a
+long floor backoff can be walked to supervisor-gave-up ·
+[#604](https://github.com/iamfatness/CoreVideoPro/issues/604) `stopFfmpegProcess()` never
+terminates, so a stopped destination keeps publishing and a restart can spawn a second
+child · [#605](https://github.com/iamfatness/CoreVideoPro/issues/605) keyframe interval
+never applied, no force-IDR · [#606](https://github.com/iamfatness/CoreVideoPro/issues/606)
+`startProgramOutput` overwrites codec/fps/bitrate for rtmp/rtmps — a silent codec
+downgrade path before the sender ·
+[#607](https://github.com/iamfatness/CoreVideoPro/issues/607) the queue's caps are memory
+bounds doing a latency bound's job.
+
+The two items in "Out of scope" above — the egress-based health signal and the
+phantom-fault fix — remain slice 2.
