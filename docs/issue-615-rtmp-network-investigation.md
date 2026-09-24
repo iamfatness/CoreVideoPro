@@ -549,3 +549,16 @@ run. Output resolution/rate were unchanged, but this is not a matched source
 workload. Whole-adapter upload averaged 0.254 Mbps with RTMP confined to loopback;
 15 isolated internet probe failures still occurred. Original PC-wide outage
 causality remains unresolved.
+
+Packet-neighborhood analysis of this recording localizes the five equal DTS
+pairs: two occur during startup (21 and 54 ms), and three at 282.055, 407.054
+and 570.055 seconds. Each later pair follows a 33–34 ms interval and consists
+of small non-key packets (roughly 1–8 KB), not the large keyframe bursts. All
+601 packets above 100 KB are keyframes, with exactly 60 video packets between
+successive keyframes. The equal timestamps therefore also occur without the
+captured output-backpressure symptom or a coincident large packet. This is
+consistent with the known arrival-clock timestamp weakness but does not locate
+whether encoder scheduling, pipe delivery or FFmpeg parsing created each pair;
+the recording does not retain original encoder PTS. Local details are saved in
+`full-app-local-10min/packet-timing-detail.json`. Do not infer a network outage
+cause from these DTS pairs.
