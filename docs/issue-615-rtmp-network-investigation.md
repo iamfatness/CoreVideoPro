@@ -593,3 +593,58 @@ external transport stall or the original PC-wide outage. Its owned independent
 guard was retired; original output preferences were verified byte-for-byte
 restored, and streaming and the engine were off after the run. Raw evidence
 remains under `artifacts/live-601/full-app-local-trace-verified10min`.
+
+### External eight-Tiles feed loss, September 24, 21:34–21:39 UTC
+
+A guarded test to the original external RTMP destination stopped after 5 minutes
+20 seconds on the first missing expected Tiles feed. Output remained at the
+operator's 10 Mbps, 1920×1080 and 60 fps. All eight incoming Zoom sources were
+1920×1080 near the event. The run-bound guard and staged app were closed, and
+production output preferences were verified byte-for-byte restored. Evidence is
+under `artifacts/live-601/full-app-external-trace-15min`.
+
+One participant's `framesIngested` advanced from 11,694 at 21:39:24.220 UTC to
+11,699 at 21:39:25.165 UTC, then did not advance by 21:39:26.110 UTC. Source
+health changed to `stalled` in the 21:39:25 snapshot; its Tile was still
+present then but absent one second later. The other seven Zoom video sources
+continued to advance (23–44 frames each in the final sampled second). The
+participant count remained nine. The affected video subscription remained
+`subscribed=true`, generation 1, resolution tier 2, with zero churn and no
+departure, video-off, cap-eviction or resolution-change event. Thus the Tile
+was removed by the documented 1.5-second stale-frame admission gate after
+one Zoom feed stopped advancing, rather than by a participant departure or
+route change. The stored frame and `hasVideo=true` remained in the source
+snapshot; this is a delivery stall, not proof of an intentional camera-off.
+
+During the observed loss the RTMP sender advanced from 15,685 to 15,778 accepted
+frames and 653.5 to 657.4 MB, with zero backpressure entries, discarded chunks
+and sender restarts. No session-scoped slow FFmpeg pipe write was logged. This
+capture therefore reproduces the operator's Tiles warning sign **without** the
+earlier output-backpressure signature. Whole-adapter upload remained around
+10–12 Mbps; an isolated internet ICMP timeout occurred ten seconds earlier,
+while gateway probes stayed healthy. Host-level probes and TCP counters cannot
+identify the RTMP or Zoom connection responsible. The clean local RTMP run had
+all eight sources at 1080p for 82% of its snapshots, but it occurred at another
+time and does not prove external upload caused this feed's stall.
+
+The core's 1.5-second Tiles gate is behaving as designed: it prevents a frozen
+participant from occupying a live slot. The unresolved point is **why the
+Zoom raw-frame callback or shared-memory delivery stopped for this subscribed
+participant**. Current snapshots expose core ingestion and subscription intent,
+but no per-feed engine callback counter or shared-memory sequence at the instant
+of the loss. The engine emits periodic `video_frame_received` diagnostics in
+code, yet those were not present in the preserved app log for this session.
+Distinguishing SDK callback starvation from a shared-memory reader stall is the
+next diagnostic requirement before changing subscription recovery behavior.
+
+The next diagnostic build adds four non-media counters to each video source's
+`zoomSubscriptionChurn.sources` snapshot: engine frame-beacon count, core frame
+ingest count and age, and shared-memory writer/reader sequences (plus whether
+the region is mapped). The engine emits a beacon approximately once per second
+while callbacks continue. On a future stall, advancing beacons and writer
+sequence with a frozen reader sequence point to the core reader; frozen beacons
+and writer sequence point earlier, at the engine/SDK delivery boundary. This
+change does not auto-resubscribe or alter live behavior. Release native build
+and all 30 `ZoomEngineRuntime.*` tests passed locally. The captured 21:39 loss
+predates these counters, so it cannot be retrospectively assigned to one side
+of that boundary.

@@ -1007,6 +1007,12 @@ void ZoomEngineRuntime::resetSubscriptionChurnLocked() {
 
 rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
   std::lock_guard<std::mutex> lock(mutex_);
+  // Keep the three video-delivery boundaries visible in the same diagnostic
+  // snapshot: engine frame beacons, the shared-memory writer sequence, and the
+  // last sequence the core actually published. A subscribed source can retain
+  // its roster/intent while one of these boundaries stops advancing.
+  const auto runtime = state_.snapshot();
+  const double nowMs = static_cast<double>(runtimeElapsedMs());
   rpc::Json::Array sources;
   std::uint64_t resolutionChanges = 0, evictions = 0, unrouted = 0, videoOff = 0, departures = 0,
                 subscribed = 0;
@@ -1017,7 +1023,7 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
     if (entry.lastReason == "unrouted") ++unrouted;
     if (entry.lastReason == "video-off") ++videoOff;
     if (entry.lastReason == "departure") ++departures;
-    sources.emplace_back(rpc::Json::Object{
+    rpc::Json::Object source{
         {"sourceUuid", sourceUuid},
         {"participantId", entry.participantId},
         {"kind", entry.kind},
@@ -1028,7 +1034,28 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
         {"churn", static_cast<double>(entry.churn)},
         {"lastReason", entry.lastReason},
         {"lastChangeMs", entry.lastChangeMs},
-    });
+    };
+    if (entry.kind == "participant-video") {
+      const auto stats = std::find_if(runtime.subscriptions.begin(), runtime.subscriptions.end(),
+                                     [&](const auto& item) { return item.sourceUuid == sourceUuid; });
+      if (stats != runtime.subscriptions.end()) {
+        source.emplace("engineFrameBeacons", static_cast<double>(stats->framesReceived));
+        source.emplace("coreFramesIngested", static_cast<double>(stats->framesIngested));
+        source.emplace("lastCoreFrameAgeMs", stats->lastFrameAtMs < 0.0
+                                                  ? -1.0 : (std::max)(0.0, nowMs - stats->lastFrameAtMs));
+        source.emplace("malformedFrameCount", static_cast<double>(stats->malformedFrameCount));
+      }
+      if (const auto stream = videoStreams_.find(sourceUuid); stream != videoStreams_.end()) {
+        source.emplace("readerSequence", static_cast<double>(stream->second.lastSequence));
+        const auto* region = static_cast<const ShmRegion*>(stream->second.regionOpaque.get());
+        source.emplace("sharedMemoryMapped", region != nullptr);
+        if (region) {
+          source.emplace("writerSequence", static_cast<double>(
+              readZoomEngineI420FrameSequence(region->ptr, region->size)));
+        }
+      }
+    }
+    sources.emplace_back(std::move(source));
   }
   return rpc::Json::Object{
       {"engine", true},

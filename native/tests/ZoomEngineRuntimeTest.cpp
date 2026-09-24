@@ -234,7 +234,7 @@ TEST(ZoomEngineRuntime, DeliveredFpsIsZeroForABeaconOnlyStatsEntryNeverIngested)
   // framesIngested stays 0 for this participant's stats entry.
   ZoomEngineEvent beacon;
   beacon.kind = ZoomEngineEventKind::Frame;
-  beacon.sourceUuid = "beacon-only-source";
+  beacon.sourceUuid = "participant-video-5150-camera";
   beacon.participantId = 5150;
   beacon.width = 1920;
   beacon.height = 1080;
@@ -256,6 +256,20 @@ TEST(ZoomEngineRuntime, DeliveredFpsIsZeroForABeaconOnlyStatsEntryNeverIngested)
   EXPECT_EQ(found->getString("status"), "subscribed");
   EXPECT_EQ(found->get("deliveredFps")->asNumber(), 0.0)
       << "a beacon-only stats entry (framesIngested==0) must report 0, not the old hard-coded 30";
+  const auto churn = runtime.subscriptionChurnState();
+  const auto* diagnosticSources = churn.get("sources");
+  ASSERT_NE(diagnosticSources, nullptr);
+  ASSERT_TRUE(diagnosticSources->isArray());
+  const auto diagnostic = std::find_if(diagnosticSources->asArray().begin(),
+                                       diagnosticSources->asArray().end(),
+      [](const corevideo::rpc::Json& entry) {
+        return entry.getString("sourceUuid") == "participant-video-5150-camera";
+      });
+  ASSERT_NE(diagnostic, diagnosticSources->asArray().end());
+  EXPECT_EQ(diagnostic->getNumber("engineFrameBeacons"), 1);
+  EXPECT_EQ(diagnostic->getNumber("coreFramesIngested"), 0);
+  EXPECT_EQ(diagnostic->getNumber("lastCoreFrameAgeMs"), -1);
+  EXPECT_EQ(diagnostic->getNumber("malformedFrameCount"), 0);
 
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
