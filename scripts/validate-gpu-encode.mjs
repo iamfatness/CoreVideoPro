@@ -74,6 +74,7 @@
  * Usage: node ./scripts/validate-gpu-encode.mjs [--seconds 30] [--port 1935]
  *                                               [--fps 60] [--bitrate 6]
  *                                               [--codec h264|hevc|av1]
+ *                                               [--check-bitrate]
  *                                               [--slow-sink [--sink-rate 0.85]]
  *                                               [--poll-ms 1000]
  *                                               [--force-raw] [--keep]
@@ -100,8 +101,14 @@ const seconds = Number(argValue("seconds", 30));
 const port = Number(argValue("port", 9021));
 const TARGET_FPS = Number(argValue("fps", 60));
 const bitrate = Number(argValue("bitrate", 6));
+// Rate conformance sets the actual stream profile as well as destination
+// settings. Legacy congestion runs retain their independently sized link.
+const checkBitrate = args.includes("--check-bitrate");
 const forceRaw = args.includes("--force-raw");
 const slowSink = args.includes("--slow-sink");
+if (checkBitrate && (slowSink || !Number.isFinite(bitrate) || bitrate < 0.5 || bitrate > 80)) {
+  throw new Error("--check-bitrate requires an unthrottled sink and --bitrate between 0.5 and 80 Mbps");
+}
 const sinkRate = Number(argValue("sink-rate", 0.85));
 // #597 Task 8b fix round 1: BURST MODE.
 //
@@ -193,6 +200,9 @@ if (slowSink && !(sinkRate > 0 && sinkRate < 1)) {
 }
 const codecArgIndex = args.indexOf("--codec");
 const codec = codecArgIndex >= 0 ? String(args[codecArgIndex + 1] || "h264").toLowerCase() : "h264";
+if (checkBitrate && codec === "av1") {
+  throw new Error("AV1 is refused on this path; bitrate conformance requires h264 or hevc");
+}
 if (!["h264", "hevc", "h265", "av1"].includes(codec)) {
   console.error(`--codec must be h264, hevc or av1 (got ${codec})`);
   process.exit(2);
@@ -545,7 +555,9 @@ try {
         // 8.2 Mbps the core actually encodes to 6, widening the link relative
         // to the stream and making the congestion gate EASIER. The link
         // ceiling is computed from `bitrate`; the stream must not be.
-        streamOutputProfile: { codec: wireCodec },
+        streamOutputProfile: checkBitrate
+          ? { codec: wireCodec, fps: TARGET_FPS, targetBitrateMbps: bitrate }
+          : { codec: wireCodec },
         destinations: [destinationId],
         destinationSettings: [rtmpSink ? {
           id: "rtmp",
@@ -745,6 +757,44 @@ if (size < 10000) {
   if (!video) failures.push("received stream carries no decodable video");
 
   if (video) {
+    if (checkBitrate) {
+      // Sum video payload only: container overhead and AAC are not part of
+      // the operator's video target. Exclude startup and shutdown, and use
+      // receiver timestamps rather than the configured/declared bitrate.
+      const packetProbe = spawnSync(ffprobe,
+        ["-v", "error", "-select_streams", "v:0", "-show_packets",
+         "-show_entries", "packet=pts_time,size", "-of", "json", received],
+        { encoding: "utf8", timeout: 20000, maxBuffer: 16 * 1024 * 1024 });
+      try {
+        if (packetProbe.status !== 0) throw new Error("ffprobe failed");
+        const packets = JSON.parse(packetProbe.stdout).packets.map((p) => ({
+          time: Number(p.pts_time), bytes: Number(p.size),
+        }));
+        if (!packets.length || packets.some((p) => !Number.isFinite(p.time) ||
+            !Number.isFinite(p.bytes) || p.bytes <= 0)) throw new Error("invalid video packets");
+        const start = Math.min(...packets.map((p) => p.time)) + 2;
+        const end = Math.max(...packets.map((p) => p.time)) - 1;
+        if (end - start < 5) throw new Error("less than five seconds of settled video");
+        const bytes = packets.filter((p) => p.time >= start && p.time < end)
+          .reduce((sum, p) => sum + p.bytes, 0);
+        const mbps = bytes * 8 / (end - start) / 1e6;
+        console.log(`video bitrate : ${mbps.toFixed(3)} Mbps / target ${bitrate} Mbps ` +
+                    `(${(end - start).toFixed(2)}s receiver window; video payload only)`);
+        // Simple pictures may use fewer bits without padding. Overshoot is
+        // bounded here; the changing-content hardware fixture tests both bounds.
+        if (!(mbps > 0 && mbps <= bitrate * 1.10)) {
+          failures.push(`received video ${mbps.toFixed(3)} Mbps exceeds target ${bitrate} Mbps +10%`);
+        }
+      } catch (error) {
+        failures.push(`could not measure received video bitrate: ${error.message}`);
+      }
+      if (!forceRaw && !coreStderr.includes(`@${TARGET_FPS} ${Math.round(bitrate * 1000)}kbps`)) {
+        failures.push("encoder did not start with the operator's requested fps/bitrate");
+      }
+      if (samples.some((r) => r.exportDivisor !== 1 || r.shedFrames > 0)) {
+        failures.push("rate conformance cannot pass by shedding encoder input frames");
+      }
+    }
     const countOut = spawnSync(ffprobe,
       ["-v", "error", "-select_streams", "v:0", "-count_frames",
        "-show_entries", "stream=nb_read_frames", "-of", "default=nw=1:nk=1", received],

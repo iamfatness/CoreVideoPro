@@ -6,6 +6,7 @@
 #include "modules/RtmpFfmpegArgs.h"
 #include "modules/HevcTransportStream.h"
 
+#include <codecapi.h>
 #include <d3d11.h>
 
 #include <gtest/gtest.h>
@@ -19,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -282,6 +284,45 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
     std::error_code fec;
     std::filesystem::remove(flvPath, fec);
   }
+}
+
+// #601: the configured rate control must reach the MFT, and it must mean the
+// same thing the CPU (FFmpeg) path means by it. Pure mapping - no hardware, so
+// this runs on every Windows machine. The measurement that proves the mapping
+// actually BINDS is StreamBackpressureRateProbe.ConfiguredBitrateIsHonoured.
+TEST(MediaFoundationGpuVideoEncoder, RateControlVocabularyMapsOntoTheCodecApi) {
+  using corevideo::modules::mediaFoundationPeakBitrateBps;
+  using corevideo::modules::mediaFoundationRateControlMode;
+
+  EXPECT_EQ(mediaFoundationRateControlMode("cbr"),
+            static_cast<unsigned int>(eAVEncCommonRateControlMode_CBR));
+  EXPECT_EQ(mediaFoundationRateControlMode("vbr"),
+            static_cast<unsigned int>(eAVEncCommonRateControlMode_PeakConstrainedVBR));
+  // normalizeRateControl() only ever produces "cbr" or "vbr"; anything else
+  // reaching here is a caller that skipped it, and cbr is the safe reading.
+  EXPECT_EQ(mediaFoundationRateControlMode("nonsense"),
+            static_cast<unsigned int>(eAVEncCommonRateControlMode_CBR));
+
+  // The peak mirrors RtmpFfmpegArgs' maxrate rule exactly.
+  EXPECT_EQ(mediaFoundationPeakBitrateBps("cbr", 6000), 6000u * 1000u);
+  EXPECT_EQ(mediaFoundationPeakBitrateBps("vbr", 6000), 9000u * 1000u);
+  EXPECT_EQ(mediaFoundationPeakBitrateBps("vbr", 2001), 3001500u);
+  EXPECT_GT(mediaFoundationPeakBitrateBps("cbr", 0), 0u);
+}
+
+TEST(MediaFoundationGpuVideoEncoder, RejectsUnrepresentableBitrateBeforeHardwareStartup) {
+  auto encoder = corevideo::modules::createMediaFoundationGpuVideoEncoder();
+  ASSERT_TRUE(encoder != nullptr);
+  corevideo::modules::GpuVideoEncoderConfig config{1920, 1080, 60, 0, 2.0, "cbr", "high"};
+  for (int rate : {0, -1, (std::numeric_limits<int>::max)()}) {
+    config.bitrateKbps = rate;
+    EXPECT_FALSE(encoder->start(config, [](const corevideo::modules::GpuEncodedChunk&) {}));
+    EXPECT_EQ(encoder->lastFailure(), "invalid-bitrate");
+  }
+  config.rateControl = "vbr";
+  config.bitrateKbps = static_cast<int>((std::numeric_limits<unsigned int>::max)() / 1500u + 1u);
+  EXPECT_FALSE(encoder->start(config, [](const corevideo::modules::GpuEncodedChunk&) {}));
+  EXPECT_EQ(encoder->lastFailure(), "invalid-bitrate");
 }
 
 TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) { runRoundTrip("h264", "h264", false); }

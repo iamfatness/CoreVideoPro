@@ -1454,7 +1454,7 @@ class RtmpOutputSender final : public IOutputSender {
     config.width = width;
     config.height = height;
     config.fps = (std::max)(1, configuredFps_);
-    config.bitrateKbps = static_cast<int>((std::max)(1000.0, sender_.bitrateMbps * 1000.0));
+    config.bitrateKbps = static_cast<int>((std::max)(500.0, sender_.bitrateMbps * 1000.0));
     config.videoInputPixelFormat = videoInputPixelFormat;
     config.videoEncoder = selectedFfmpegVideoEncoder_.empty()
                               ? ffmpegVideoEncoderFor(compatibility.videoCodec, configuredEncoderMode_)
@@ -1949,7 +1949,7 @@ class RtmpOutputSender final : public IOutputSender {
     cfg.width = width;
     cfg.height = height;
     cfg.fps = (std::max)(1, configuredFps_);
-    cfg.bitrateKbps = static_cast<int>((std::max)(1000.0, sender_.bitrateMbps * 1000.0));
+    cfg.bitrateKbps = static_cast<int>((std::max)(500.0, sender_.bitrateMbps * 1000.0));
     cfg.keyframeIntervalSeconds = configuredKeyframeIntervalSeconds_;
     cfg.rateControl = configuredRateControl_;
     cfg.h264Profile = configuredH264Profile_.empty() ? "high" : configuredH264Profile_;

@@ -63,7 +63,7 @@ constexpr int kSourceWidth = 640;
 constexpr int kSourceHeight = 360;
 constexpr int kNoiseFrames = 16;
 
-std::vector<std::shared_ptr<std::vector<uint8_t>>> makeNoiseBank() {
+std::vector<std::shared_ptr<std::vector<uint8_t>>> makeNoiseBank(bool rateControlFixture = false) {
   std::vector<std::shared_ptr<std::vector<uint8_t>>> bank;
   bank.reserve(kNoiseFrames);
   uint32_t state = 0x13579bdfu;
@@ -74,9 +74,14 @@ std::vector<std::shared_ptr<std::vector<uint8_t>>> makeNoiseBank() {
       state ^= state << 13;
       state ^= state >> 17;
       state ^= state << 5;
-      (*pixels)[p + 0] = static_cast<uint8_t>(state & 0xFF);
-      (*pixels)[p + 1] = static_cast<uint8_t>((state >> 8) & 0xFF);
-      (*pixels)[p + 2] = static_cast<uint8_t>((state >> 16) & 0xFF);
+      // Full-range independent noise saturates H.264 at QP 51 even at
+      // 10 Mbps on the RTX 4090. Keep that stress input for the original
+      // backpressure probe; rate-control conformance needs achievable content.
+      const auto mask = rateControlFixture ? 63u : 255u;
+      const auto offset = rateControlFixture ? 96u : 0u;
+      (*pixels)[p + 0] = static_cast<uint8_t>(offset + (state & mask));
+      (*pixels)[p + 1] = static_cast<uint8_t>(offset + ((state >> 8) & mask));
+      (*pixels)[p + 2] = static_cast<uint8_t>(offset + ((state >> 16) & mask));
       (*pixels)[p + 3] = 0xFF;
     }
     bank.push_back(std::move(pixels));
@@ -106,6 +111,7 @@ struct LegResult {
   int64_t renders = 0;
   double measuredSeconds = 0.0;
   bool ran = false;
+  bool unavailable = false;
 };
 
 int probeBitrateKbps() {
@@ -120,7 +126,9 @@ int probeBitrateKbps() {
 
 // One leg. `halfInputRate` is the ONLY difference between the two: it produces a
 // program frame (and submits it) every second 60 Hz slot instead of every slot.
-LegResult runLeg(const char* label, bool halfInputRate) {
+LegResult runLeg(const char* label, bool halfInputRate, int bitrateKbps = -1,
+                 int settleMs = 2500, int measureMs = 10000, bool rateControlFixture = false,
+                 const char* codec = "h264", const char* rateControl = "cbr") {
   using clock = std::chrono::steady_clock;
   LegResult result;
 
@@ -159,24 +167,28 @@ LegResult runLeg(const char* label, bool halfInputRate) {
   int64_t countedBytes = 0;
   int64_t countedChunks = 0;
   auto sink = [&](const corevideo::modules::GpuEncodedChunk& chunk) {
-    if (!counting.load(std::memory_order_relaxed)) return;
     std::lock_guard<std::mutex> lock(sinkMutex);
+    if (!counting.load(std::memory_order_relaxed)) return;
     countedBytes += static_cast<int64_t>(chunk.size);
     ++countedChunks;
   };
 
   corevideo::modules::GpuVideoEncoderConfig config{
-      kProbeWidth, kProbeHeight, kProbeFps, probeBitrateKbps(), 2.0, "cbr", "high"};
-  config.codec = "h264";
+      kProbeWidth, kProbeHeight, kProbeFps,
+      bitrateKbps > 0 ? bitrateKbps : probeBitrateKbps(), 2.0, rateControl, "high"};
+  config.codec = codec;
   if (!encoder->start(config, sink)) {
     std::fprintf(stderr, "[rate-probe] encoder start unavailable on this machine (%s)\n",
                  encoder->lastFailure().c_str());
+    result.unavailable = encoder->lastFailure() == std::string("no-hardware-mft-") + codec;
+    ASSERT_TRUE(!rateControlFixture || result.unavailable) << "hardware rate-control test failed to start: "
+                                    << encoder->lastFailure();
     return result;
   }
 
-  const auto bank = makeNoiseBank();
-  const auto kSettle = std::chrono::milliseconds(2500);
-  const auto kMeasure = std::chrono::seconds(10);
+  const auto bank = makeNoiseBank(rateControlFixture);
+  const auto kSettle = std::chrono::milliseconds(settleMs);
+  const auto kMeasure = std::chrono::milliseconds(measureMs);
   const auto kTail = std::chrono::milliseconds(300);
   const auto slotInterval = std::chrono::nanoseconds(1000000000LL / kProbeFps);
   const auto legStart = clock::now();
@@ -272,5 +284,60 @@ TEST(StreamBackpressureRateProbe, HalvingTheInputRateRoughlyHalvesEgress) {
   EXPECT_LT(ratio, 0.75) << "egress did NOT fall with the input rate: the CBR "
                             "bits-per-frame assumption is FALSE and the input "
                             "throttle cannot work as designed - STOP and report";
+}
+
+// #601: Measure actual output for achievable, changing content at four rates.
+// This does not prove a hard ceiling for arbitrary content: full-range noise
+// saturates the encoder at QP 51. The original media-type-only configuration
+// also passes this fixture; explicit codec properties are not a proven fix
+// for saturation. Tolerance is +/-10% over six seconds after settling.
+static void verifyConfiguredBitrate(const char* codec) {
+  struct Case {
+    const char* label;
+    int kbps;
+  };
+  const Case cases[] = {{"cbr 2000", 2000}, {"cbr 4500", 4500},
+                        {"cbr 6000", 6000}, {"cbr 10000", 10000}};
+  std::vector<double> measured;
+  for (const auto& c : cases) {
+    const auto leg = runLeg(c.label, false, c.kbps, 1500, 6000, true, codec);
+    if (leg.unavailable) {
+      std::fprintf(stderr, "[  SKIPPED ] bitrate conformance: no hardware %s MFT\n", codec);
+      return;
+    }
+    ASSERT_TRUE(leg.ran) << c.label << ": encoder emitted no bytes";
+    EXPECT_GT(leg.measuredSeconds, 5.9) << "encoder stopped before the measurement window completed";
+    // A bitrate pass bought by suppressing frames is not a rate-control pass.
+    EXPECT_GT(leg.chunks / leg.measuredSeconds, kProbeFps * 0.97);
+    const double kbps = static_cast<double>(leg.bytes) * 8.0 / leg.measuredSeconds / 1000.0;
+    measured.push_back(kbps);
+    EXPECT_GT(kbps, c.kbps * 0.90)
+        << c.label << ": measured " << kbps << " kbps - encoder starved far below the "
+        << "configured rate";
+    EXPECT_LT(kbps, c.kbps * 1.10)
+        << c.label << ": measured " << kbps << " kbps exceeds the configured rate tolerance";
+  }
+  // The defect's signature was that the rates were indistinguishable. Make that
+  // impossible to pass: 10000 must actually cost about 5x what 2000 costs.
+  ASSERT_EQ(measured.size(), 4u);
+  EXPECT_GT(measured.back() / measured.front(), 3.0)
+      << "10000 kbps and 2000 kbps produced nearly the same bytes - the setting is "
+      << "not binding";
+}
+
+TEST(StreamBackpressureRateProbe, ConfiguredBitrateIsHonoured) { verifyConfiguredBitrate("h264"); }
+TEST(StreamBackpressureRateProbe, HevcConfiguredBitrateIsHonoured) { verifyConfiguredBitrate("hevc"); }
+
+TEST(StreamBackpressureRateProbe, VbrRespectsItsConfiguredPeakWithoutSheddingFrames) {
+  for (const char* codec : {"h264", "hevc"}) {
+    const auto leg = runLeg("vbr 6000 peak 9000", false, 6000, 1500, 6000, true, codec, "vbr");
+    if (leg.unavailable) continue;
+    ASSERT_TRUE(leg.ran);
+    EXPECT_GT(leg.measuredSeconds, 5.9);
+    EXPECT_GT(leg.chunks / leg.measuredSeconds, kProbeFps * 0.97);
+    const double kbps = leg.bytes * 8.0 / leg.measuredSeconds / 1000;
+    EXPECT_GT(kbps, 6000 * 0.70);
+    EXPECT_LT(kbps, 9000 * 1.10);
+  }
 }
 #endif
