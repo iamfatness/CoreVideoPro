@@ -1518,27 +1518,58 @@ registry mutex 60x/s").
 Slice 1 of `docs/superpowers/specs/2026-09-10-persistent-sources-design.md`: a
 media asset is now one decoder with one clock, not one per bus.
 
+**READ THIS FIRST: parts of this section were REPLACED by #535 slice 3b
+(merged 2026-09-21, [#567](https://github.com/iamfatness/CoreVideoPro/pull/567)).**
+The `preview:media:<id>` cue-poster namespace, the
+`media:<id>:live:<n>` go-live generation, `MediaGoLiveLedger`'s operator-paused
+set and the cue→Program decoder hand-off are all DELETED code — play/pause/cue
+state lives in the core now, one source per asset. The paragraphs below are kept
+because their reasoning is why the replacement has the shape it does; each one
+says what its rule WAS and what took its place. The live rules are in "Slice 3b"
+in the source-bus section below. **The T1.2 "pause is a clock state, not a new
+decoder" reasoning is unchanged and still true.**
+
 - **Same source id on both buses.** `buildPreviewCompositorRenderPlan` no longer
   renames every Preview media layer to `preview:<id>` — Program and Preview
   address the SAME source: `media:<assetId>` for a routed asset or still,
-  `background:<assetId>` for a scene background. So `OwnedMediaFrameSource` runs
-  one decoder (and `StillMediaFrameCache` one entry) for a background or still
-  shared by both scenes, and a Take cannot restart it. **The one exception:** a
-  paused, non-still `media-video` layer (a clip cue poster) still gets `preview:` —
-  its paused poster frame is a different playback position from Program's rolling
-  copy, and the two must never replace each other in the frame set.
+  `background:<assetId>` for a scene background. So the decoder owner runs one
+  decoder (and `StillMediaFrameCache` one entry) for a background or still
+  shared by both scenes, and a Take cannot restart it. (That owner was
+  `modules::OwnedMediaFrameSource` until slice 3b; it is `core::MediaTransports`
+  now, and the ids are unchanged.) **There WAS one exception,
+  retired by slice 3b:** a paused, non-still `media-video` layer (a clip cue
+  poster) still got a `preview:` key, because its paused poster frame was a
+  different playback position from Program's rolling copy and the two must never
+  replace each other in the frame set. Slice 3b removed the difference instead of
+  the collision — a cue and its live clip are ONE entry with ONE clock, so the
+  `preview:` namespace and the `pausedClipCue` re-key in
+  `buildPreviewCompositorRenderPlan` are deleted and a clip on both buses shows
+  one rolling picture by construction.
 - **Route stills never reach a decoder.** A still on both buses arrives playing
-  on Program and paused on Preview; `OwnedMediaFrameSource::requests()` skips
-  `media-video` stills (`isStillImageMediaAsset`, the MF adapter's own filter),
-  so they are served only by `StillMediaFrameCache` — no dead decoder threads, no
-  false "two playback identities" warning. Background stills keep the decoder path.
+  on Program and paused on Preview; the decoder owner skips `media-video` stills
+  (`isStillImageMediaAsset`, the MF adapter's own filter), so they are served only
+  by `StillMediaFrameCache` — no dead decoder threads, no false "two playback
+  identities" warning. Background stills keep the decoder path. **Still true after
+  slice 3b, one level up:** the filter now lives in
+  `MediaCore::syncMediaTransportsDesired()`, which never puts a still in the
+  desired set, so a still can never mint a `media:<assetId>` transport that would
+  shadow the cache's own bus source.
 - **The route wire carries the loop flag** (`mediaAssetLoop`, from
   `MediaRoutePlaybackService.IsLoopingAsset`), parsed at BOTH scene parse sites
   onto `SceneRouteState` and the layer — without it a looping route asset played
   once and froze. The preview-scene dedup signature includes the media path,
   playback key, playing and loop flags, so a change to any of them is applied.
-- **Loop vs clip go-live policy** (shell, `MediaRoutePlaybackService` /
-  `TransportCoordinator` / `StudioViewModel`). A looping background asset (kind
+  **Slice 3b:** `mediaAssetLoop` is still parsed and is now an input to the
+  transport's desired row; the playback-key and playing halves of that signature
+  went with the fields themselves.
+- **Loop vs clip go-live policy — THIS WAS THE SHELL'S JOB UNTIL SLICE 3B, and
+  is now the core's.** Slice 3b deleted the playback key, the generation and
+  `MediaGoLiveLedger` outright: the core decides go-live from scene membership at
+  command time ("enters Program → roll from 0", "stays on Program across a Take →
+  nothing"), and the shell keeps only `AssetsEnteringProgram` + `ChooseAssetToPromote`
+  to move the bin SELECTION. The rule as it stood, and why it was shaped that way
+  (shell, `MediaRoutePlaybackService` /
+  `TransportCoordinator` / `StudioViewModel`): a looping background asset (kind
   "background") plays under key `media:<id>` on both buses, identical to Program,
   matching §2 of the spec ("nothing" on go-live for loops). A clip (non-loop)
   plays under `media:<id>:live:<n>` — paused on first frame while only in
@@ -1547,15 +1578,24 @@ media asset is now one decoder with one clock, not one per bus.
   the asset enters Program for the first time — never on every Take, and never
   from Pause/Play on an already-live clip (pause is a clock state, below) — so a
   clip already playing on Program stays rolling across an unrelated cut. `ChooseAssetToPromote` /
-  `ITransportHost.RecordProgramMediaGoLive` runs promotion only for the assets
+  `ITransportHost.RecordProgramMediaGoLive` ran promotion only for the assets
   that actually went live, and never for a still (`SupportsPlayback` filter).
-  **Operator pause is PER-ASSET state, not "is it the selection":**
-  `MediaGoLiveLedger` keeps an operator-paused set — pausing a Program-routed clip
-  adds it, playing it removes it, the clip GOING LIVE clears it — and
+  `ChooseAssetToPromote` and the `SupportsPlayback` filter survive 3b;
+  `RecordProgramMediaGoLive` does not.
+  **Operator pause is PER-ASSET state, not "is it the selection"** — the rule
+  survives slice 3b, its owner does not: pause is now the CORE's per-source
+  transport state, set by the one-shot `set-media-transport` gesture and read back
+  from `mediaSources[]`, so there is no shell-side paused set to keep in step with
+  anything. As it was:
+  `MediaGoLiveLedger` kept an operator-paused set — pausing a Program-routed clip
+  added it, playing it removed it, the clip GOING LIVE cleared it — and
   `ShouldPlaySceneMediaRoute` / `ResolveSceneRoutePlayback` read that set (loops
   always play). Promotion only moves the selection, so a paused clip that stays
-  on Program stays paused when another asset goes live. Selecting a Program clip
-  in the bin reports its real state instead of pausing it.
+  on Program stays paused when another asset goes live; selecting a Program clip
+  in the bin reports its real state instead of pausing it. Both of those
+  properties still hold in slice 3b, for a better reason: the pause is a property
+  of the core's transport, so nothing the shell does to the selection can disturb
+  it, and the bin reads the state back rather than asserting one.
 - **PAUSE IS A CLOCK STATE, NOT A NEW DECODER (T1.2, 2026-09-10).** `playing` used
   to be part of the decoder's identity in two places — the owned source's request
   key and the MF adapter's playback identity — so promoting another asset (or a
@@ -1582,29 +1622,34 @@ media asset is now one decoder with one clock, not one per bus.
   `MediaCore::renderSyntheticTick`, Program's media layers are gathered BEFORE
   Preview's are appended — Program-first ordering is what keeps Program
   authoritative when a shared source id (same clip on both buses) arrives
-  paused on Preview: the Program request always wins the one shared clock
-  (`OwnedMediaFrameSource::requests()` lets the FIRST request for a key win).
-  **Restart from the top happens ONLY via the go-live generation**
+  paused on Preview: the Program request always wins the one shared clock (the
+  owner let the FIRST request for a key win). **Slice 3b retired that whole
+  race:** nothing is derived from the plan any more, so there is no per-tick
+  request ordering to get right — the desired row for a source id carries
+  `onProgram`/`onPreview` together and the state machine decides once, at command
+  time. **Restart from the top used to happen ONLY via the go-live generation**
   (`media:<id>:live:<n>` advancing) — never from Pause, Play or a bin-row tap.
-  The Preview cue poster exception above (a paused, non-still `media-video`
-  layer keeps its own `preview:` key) is unchanged by this — it is a genuinely
-  different playback position from Program's rolling copy, not the same clip's
-  pause/resume.
+  Slice 3b keeps the property and drops the generation: a restart happens only on
+  a transition the desired set names (entering Program from absent, leaving
+  Program while cued, a path change). The Preview cue-poster exception named
+  above is gone with it.
   **The shell surfaces the real on-air state, not "is it the selection"**
   (`MediaRoutePlaybackService.IsPlayingOnAir` / `ResolveTap`): the media bin
   row shows a rolling Program clip as playing even when it is not the current
   selection (`ApplyMediaSelection` calls `IsMediaAssetPlaying` per row), and
-  tapping that row pauses it via the ledger (`RecordPause`/`RecordPlay`) —
-  `PlayMediaAsset` no longer restarts anything, and `MediaGoLiveLedger` no
-  longer even HAS a `RecordRestart` method (deleted as dead code once its one
-  caller was removed). **The transport toggle (`MediaPlaybackButtonLabel`,
+  tapping that row pauses it. That rule is unchanged; what carries it is not.
+  It USED to be the ledger (`MediaGoLiveLedger.RecordPause`/`RecordPlay`, with
+  `PlayMediaAsset` no longer restarting anything and `RecordRestart` deleted as
+  dead code once its one caller was removed). **Since slice 3b the row reads
+  `mediaSources[]` and the tap sends the one-shot `set-media-transport` gesture;
+  the ledger is gone entirely.** **The transport toggle (`MediaPlaybackButtonLabel`,
   "Pause Program"/"Resume Program"/"Audition") still only reflects the
   SELECTED asset** — `FormatMediaPlaybackActionLabel` reads
   `SelectedMediaAssetPlaying`, not the tapped bin row's id, so it does not (yet)
   show an unselected rolling clip's state; only the bin row does. A tap on a
   looping asset (kind `background`) is always just a selection
-  (`MediaTapAction.Select`) — a loop is always playing and has no useful ledger
-  pause state. `TransportCoordinator.TakeAsync` (and
+  (`MediaTapAction.Select`) — a loop is always playing and has no useful pause
+  state (since 3b, `decideMediaOperator` refuses pause/play for a loop outright). `TransportCoordinator.TakeAsync` (and
   `StudioViewModel.UpdateScene`) also calls
   `ITransportHost.RefreshMediaBinPlaybackIndicators` so a clip that LEAVES
   Program on a Take stops reading "playing" — `PromoteProgramMediaRouteToPlayback`
@@ -1632,20 +1677,24 @@ media asset is now one decoder with one clock, not one per bus.
   decides what stands: the pre-Take selection, unless the operator moved it
   while the sync was pending (their choice is kept, like the scene rollback's
   newer-edits rule); and for a clip on the restored Program, the playing flag
-  and status come from the real on-air state (`IsPlayingOnAir` over the paused
-  set), never from the saved flag. One more case: if the operator picked a clip
+  and status come from the real on-air state (`IsPlayingOnAir`, which since slice
+  3b reads the core's `mediaSources[]` rows rather than a shell-side paused set),
+  never from the saved flag. One more case: if the operator picked a clip
   on the ATTEMPTED Program and the rollback takes it off air, it reads "<name> left
   Program" and is not playing. `RequestTakeReconciliation` runs right after the scene
   rollback, before `RestoreMediaSelectionAfterRollback`, so a throwing restore
   cannot skip it. The restore then rebuilds the bin ONCE. A refused rollback
   restores nothing. The go-live
-  ledger and the paused set are still deliberately NOT rewound. Tests:
+  ledger and the paused set were deliberately NOT rewound — and since slice 3b
+  there is neither: the core's transport state is the only play state, so a
+  rollback has nothing of the kind left to rewind. Tests:
   `TransportCoordinatorTests.Take_Rollback*` and
   `Take_RefusedRollbackLeavesTheSelectionAlone`.
   Tests: `native/tests/MediaPlaybackTimelineTest.cpp`
   (`MediaPlaybackTimeline.PauseFreezesElapsedAndResumeContinues`,
-  `OwnedMediaFrameSource.PauseAndResumeKeepOneDecoder` /
-  `PauseHoldsTheOnAirFrame` / `NoAudioWhilePausedAndAudioResumes`),
+  `MediaTransports.PauseAndResumeKeepOneDecoder` /
+  `PauseHoldsTheOnAirFrame` / `NoAudioWhilePausedAndAudioResumes` — the
+  `OwnedMediaFrameSource.*` cases under their post-3b owner),
   `native/tests/MediaCoreCommandTest.cpp`
   (`AFailedFfmpegResumeRetriesAtTheClockPositionNeverFromTheTop`), and
   `MediaRoutePlaybackServiceTests` (`ResolveTap_*`, `IsPlayingOnAir_*`,
@@ -1654,7 +1703,16 @@ media asset is now one decoder with one clock, not one per bus.
   `Take_DoesNotDoubleRefreshWhenPromoteAlreadyRebuiltTheBin`,
   `Take_DoesNotRefreshTheMediaBinWhenTheProgramMediaSetIsUnchanged`) on the
   shell side.
-- **A CUED CLIP HANDS ITS WARM DECODER TO PROGRAM (T1.11 / #449, 2026-09-12).**
+- **A CUED CLIP HANDS ITS WARM DECODER TO PROGRAM (T1.11 / #449, 2026-09-12) —
+  REPLACED BY SLICE 3B, 2026-09-20.** The hand-off, `modules/MediaCueHandoff.h`,
+  `adoptCuedDecoders` and `Entry::everPlayed` are all DELETED. What replaced it:
+  a cue and its live clip are ONE source id and ONE entry, so entering Program is
+  an in-place **Resume** of the decoder that was already posting frame 0 — there
+  is no arriving request to match, nothing to re-key, and none of the five
+  conditions below to get right. The reasoning is kept because it is why the
+  replacement is shaped the way it is (and trap 2 below — dropping the queued
+  frames scheduled against the paused epoch — survives inside the Resume action).
+  As it was:
   The Preview cue poster (`preview:media:<id>`) and the rolling Program source
   (`media:<id>`) are two decoders, because a clip changes identity TWICE on
   go-live: the `preview:` namespace collapses, and `MediaGoLiveLedger` advances
@@ -1698,23 +1756,32 @@ media asset is now one decoder with one clock, not one per bus.
      match and Program painted the placeholder anyway.
   The take record now reads `missingSources=[]` for this case because the cold
   start stopped happening — **the judge was not touched, and must not be**.
-  Tests: `MediaCueHandoffTest.cpp` (every refusal),
+  Tests, as they were: `MediaCueHandoffTest.cpp` (every refusal),
   `OwnedMediaFrameSource.ACuedClipHandsItsWarmDecoderToProgram` /
   `ACueThatAlreadyRolledIsNeverHandedOver` /
-  `AnAdoptedCueRollsInsteadOfFreezingOnItsPoster` / `AnAdoptedCueTurnsItsAudioOn`,
-  and `ProgramPixelContinuity.ACuedClipTakenToProgramNeverShowsThePlaceholder`
-  (the end-to-end pixel proof, over a REAL `OwnedMediaFrameSource`).
+  `AnAdoptedCueRollsInsteadOfFreezingOnItsPoster` / `AnAdoptedCueTurnsItsAudioOn`
+  — all deleted with the hand-off. What survives and now covers the property is
+  `MediaTransports.ACuedClipEnteringProgramRollsTheSameDecoderWithAudio` /
+  `LeavingProgramWhileCuedRestartsBehindTheHeldFrame` and
+  `ProgramPixelContinuity.ACuedClipTakenToProgramNeverShowsThePlaceholder` (the
+  end-to-end pixel proof, unchanged as a test, now driven by a REAL
+  `core::MediaTransports` over a real decoder factory).
   **Still cold-starts, honestly:** a clip cut to Program that was never cued in
   Preview has no warm decoder to adopt. That is step 1 of #449 (hold the
-  outgoing picture until the first real frame), not done here.
-- **The 16-decoder cap warning names the refused source** (`OwnedMediaFrameSource`)
-  instead of just stating the count, and a loud, once-per-id `[media-playback]`
-  warning fires when two different playback identities request one source id —
-  now a real risk once media sources outlive buses (spec §5 risk called out
-  up front).
+  outgoing picture until the first real frame), **still not done** — slice 3b did
+  not change it either, and `scripts/qa/media-take-ab.py --skip-cue` is the
+  control run that measures exactly that gap (it FAILS, deliberately).
+- **The 16-decoder cap warning names the refused source** instead of just stating
+  the count, and a loud, once-per-id `[media-playback]` warning fired when two
+  different playback identities requested one source id — a real risk once media
+  sources outlived buses (spec §5 risk called out up front). **Slice 3b:** the cap
+  and its rate-limited `[media-decoder]` refusal moved into `MediaTransports`; the
+  two-identities warning is gone because the collision is impossible by
+  construction — one source id is one entry with one identity.
 
 Tests: `native/tests/MediaCoreCommandTest.cpp` (media identity across buses),
-`native/tests/MediaPlaybackTimelineTest.cpp` (`OwnedMediaFrameSource.*`),
+`native/tests/MediaPlaybackTimelineTest.cpp` (the `OwnedMediaFrameSource.*` cases
+were migrated onto `MediaTransports.*` by slice 3b and live in the same file),
 `native/tests/ProgramPixelContinuityTest.cpp` (dark 0x10 fill placed outside the
 placeholder colour range — fails against the old per-bus rename),
 `MediaRoutePlaybackServiceTests` (incl. the per-asset pause rules) /
@@ -1962,7 +2029,8 @@ bus removing it matches what nothing draws for it today.
   one before the roster merge) now excludes both media kinds — a stale media
   frame injected before its request update would otherwise get duplicated once
   the real one lands.
-- **What did NOT move, and why it cannot yet.** The request set (which decoders
+- **What did NOT move in 3a, and why it could not yet** (all of it moved in 3b —
+  next bullet). The request set (which decoders
   exist, `requests(layers)`), pause/hold (`mediaAssetPlaying`, `clockFrozen`), the
   cue→Program hand-off (#449), and the `preview:media:<id>` poster key all stay
   inside `OwnedMediaFrameSource`. Media is the one kind whose producer is
@@ -2016,11 +2084,12 @@ bus removing it matches what nothing draws for it today.
   `StillMediaRouteCompositesDecodedPixels` passing through the bus path, plus the
   new tests' pixel probe (`MediaCoreCommand.MediaRouteAppearsOnTheSourceBusAndLeavesWhenUnrouted`,
   `StillMediaFrameCache.StillRouteAppearsOnTheSourceBusAsKindStill`).
-- **Next: slice 3b** (own spec, blocked on the owner's Take-semantics ruling)
-  drops the `layers` argument — media request state moves to source state set at
-  command time, `poll(ts)` applies hold/roll from that state, and the cue
-  hand-off + `preview:` poster move inside the source. See
-  `docs/superpowers/specs/2026-09-18-source-bus-design.md` §5.
+- **Slice 3b DID THIS, merged 2026-09-21 in
+  [#567](https://github.com/iamfatness/CoreVideoPro/pull/567)** — it drops the
+  `layers` argument: media request state moves to source state set at command
+  time, `poll(ts)` serves what that state is due, and the cue hand-off and the
+  `preview:` poster are DELETED rather than moved. See "Slice 3b" below and
+  `docs/superpowers/specs/2026-09-20-source-bus-slice3b-media-source-state-design.md`.
 
 **Slice 4a (2026-09-19): bus health on air.** Retires the per-kind "pink tile"
 (`colorFromParticipantId` placeholder) everywhere a layer's source is not
@@ -2175,6 +2244,189 @@ the bus; retiring them is **slice 4b**
   `dropoutPolicy` string still only warns rather than refusing the whole
   command; a long `sourceDisplayName` on the multiview tile has not been
   live-eyeballed for the double-label stacking noted above.
+
+**Slice 3b (merged 2026-09-21 in
+[#567](https://github.com/iamfatness/CoreVideoPro/pull/567)): media
+play/pause/cue state lives in the CORE.** Spec:
+`docs/superpowers/specs/2026-09-20-source-bus-slice3b-media-source-state-design.md`.
+Slice 3a put media FRAMES on the bus but left the decoder request-driven from the
+render plan every tick and the play state decided in the shell. 3b makes a media
+asset ONE core source owning its decoder, its clock and its transport state, and
+closes the MEDIA half of #449.
+
+- **What moved.** `core::MediaTransports` (`native/src/core/MediaTransports.h`,
+  evolved from the now-deleted `modules::OwnedMediaFrameSource`) owns one `Entry`
+  per source id: the decoder instance, its worker thread, the presentation queue,
+  the audio queue, the warnings and the transport state.
+  `MediaCore::syncMediaTransportsDesired()` computes a DESIRED SET at COMMAND
+  time from BOTH scene graphs — the `syncStillMediaDesired()` shape, run at the
+  end of `loadSceneGraph` and `applyPreviewScene`, on the command thread, never
+  on a render or audio tick — and hands it to
+  `MediaTransports::apply(desired, nowNs)`, which returns the bus membership
+  changes. Ids are unchanged: `media:<assetId>` for a route,
+  `background:<assetId>` for a scene background, so the same file behind a scene
+  and routed as a clip is still TWO sources (a loop role and a clip role).
+  `native/src/core/MediaTransportPolicy.h` is the PURE transition table (the
+  `CaptureReaderStallPolicy`/`TakeRecordPolicy` shape — decoder-free, one test per
+  row). `MediaAssetSource` wraps an entry on the bus, so media video rides the
+  ORDINARY EARLY bus ingest alongside Zoom and capture (3a's post-plan media poll
+  is gone; only stills still ingest at their own later point), and media audio is
+  drained on the audio worker with no render plan built for it at all.
+  **Corrected for #583 (2026-09-21, merged after 3b):** 3b popped media PCM
+  straight out of `MediaTransports::popAudio(nowMs)` into the mix. Media PCM now
+  crosses the bus like every other kind — `core::ingestSourceAudio`
+  (`native/src/core/SourceAudioIngress.h`, called once from
+  `MediaCore::gatherAudioOutputWork`) drains `popAudio` and STAGES each frame onto
+  its `MediaAssetSource`, and `SourceBus::ingestAudio` is what emits it, counting
+  `audioPacketsIngested`/`audioSamplesIngested` per source on the way. The staging
+  step refuses PCM whose id has no owned kind-`"media"` transport
+  (`[source-bus] media PCM without owned transport`), because bus membership is
+  command-owned and a stray packet must never resurrect a retired decoder.
+  `ModuleSet::mediaFrames` became
+  `ModuleSet::mediaDecoderFactory`; `IMediaFrameSource`/`IMediaVideoPrefetch`
+  survive ONLY as the per-entry DECODER contract (retired in slice 4b).
+- **The transitions, stated as rules** (`decideMediaTransport`, decided against
+  the PREVIOUS desired row — never a clock, never a generation string): a source
+  that appears on Program (or any loop) opens and **rolls from 0 with audio**; one
+  that appears on Preview only opens a **poster at 0**, silent (`Cued`); **a cued
+  clip entering Program RESUMES THE SAME DECODER** — this is what replaced the
+  #449 cue hand-off, and there is nothing left to re-key because a cue and its
+  live clip are now one id and one entry; a clip that LEAVES Program while still
+  cued gets a new decoder at 0 **behind the held frame**; a clip that STAYS on
+  Program across a Take does **nothing** (it never left Program, so it is not a
+  go-live); a path or loop-flag change on the same id is a Reopen; absent from
+  both buses is a Release; and an IDENTICAL desired row is a **no-op**, so the
+  repeating sync and a respawn re-apply cost nothing. A LOOP is live on any bus,
+  never pauses and never restarts on a Take: `decideMediaOperator` refuses
+  pause/play for a loop — and for anything not on Program — with a
+  scene-validation warning and no state change.
+- **`Ended` is DECODER EVIDENCE, and it is RECOVERABLE IN PLACE.** It comes from
+  `IMediaVideoPrefetch::mediaEnded()`; the MF adapter implements it off its own
+  `state.ended` and NEVER reports it for a loop (a loop reopens at EOS behind its
+  last good frame, so `ended` is a transient there). A 6 s no-new-frame window
+  survives only as a BACKSTOP for a decoder that cannot say, and a clip cannot end
+  before it has produced a frame. A new frameId returns an Ended entry to Live
+  keeping its position, so the decoder layer reports Ended as still PLAYING and
+  the worker keeps polling — the stated price is that an Ended clip's worker runs
+  its 20 ms loop instead of idling, bought deliberately because a worker that
+  stops reading can never see the frame that proves the stall is over.
+  **This is the trap, and it nearly shipped:** the first cut inferred Ended from a
+  **500 ms frame-arrival heuristic** and made it TERMINAL. That is shorter than a
+  cold Media Foundation open (95-250 ms) plus an FFmpeg spawn, shorter than one
+  rung of the FFmpeg resume ladder (250 ms / 500 ms / 1 s / 2 s), and shorter than
+  an ordinary hiccup on a loaded box — and the presentation queue is only 3 deep
+  (~50 ms at 60 fps), so `queued() == 0` is the ordinary state of a HEALTHY clip.
+  On air it would have frozen and silenced a Program clip whose only exit gesture
+  restarts it from 0. No test could see it: every fake decoder answers instantly.
+- **`Release` has a 750 ms grace, and a source inside it is published on NEITHER
+  bus.** `applyPreviewScene` rides the REPEATING spine sync as well as the
+  production sync, so ONE spine tick carrying the post-swap Preview while Program
+  still holds the outgoing scene leaves a CUED clip absent from both desired sets
+  for that single tick; retiring on the spot destroys the warm decoder the Take is
+  about to claim, and 3b deleted the hand-off that used to be the second chance.
+  The grace is swept by a later `apply()` **and** by a render-tick
+  `collectExpiredReleases()` — `apply()` only runs at command time, so without the
+  sweep a source nothing mentions again would hold its decoder forever. The
+  desired row is carried forward so a re-claim is an ordinary transition, and the
+  audio goes silent IMMEDIATELY (a clip genuinely cut off Program must not keep
+  feeding the mix for the length of the grace). **And `snapshot()` publishes a
+  source in its grace with `onProgram`/`onPreview` FALSE.** That is a READ-SIDE
+  projection only and must stay one — it can never reach `decideMediaTransport`,
+  which reads `Entry::desired`. Without it an ordinary Take left the row reporting
+  `onProgram: true` for up to three 250 ms polls, `MediaBinPlaybackProjection`
+  (which gates its whole selection rewrite on `OnProgram`) re-set
+  `SelectedMediaAssetPlaying = true`, and the wrong value LATCHED once the row
+  finally went: the operator's toggle read "Pause Program" for an off-air clip and
+  the core refused the gesture. Same family as the T1.3 rollback defect above.
+- **Threading.** Lock order is `coreMutex` -> `MediaTransports::mutex_` ->
+  `Entry::mutex`, never reversed. `apply()` starts worker threads (outside the
+  owner lock) and **never opens a decoder inline** — the worker opens, exactly as
+  the retired `OwnedMediaFrameSource::run` did, and a restart is a flag the worker
+  acts on. The 16-decoder cap and its rate-limited `[media-decoder]` refusal moved
+  with the code, and a refused open is retried on the next apply rather than
+  remembered as permanent. `mediaTransports_` is **declared after `sourceBus_`**
+  so it is DESTROYED FIRST: every kind-`"media"` bus source holds a `shared_ptr`
+  to one of its entries and the transports' destructor joins the decoder workers.
+- **The wire.** New one-shot **`set-media-transport {mediaAssetId, action:
+  "pause"|"play"}`** — a GESTURE, not desired state, so it is deliberately **not**
+  re-sent per sync (a core respawn reloads the scene and rolls the clip from 0,
+  unchanged from today) and it never calls `syncMediaTransportsDesired()`,
+  because pause/play moves a transport's STATE and never which sources are on the
+  bus. `set-media-playback` is **selection only**. A route's `mediaPlaybackKey` /
+  `mediaAssetPlaying` and a scene background's `playing` are **IGNORED, never
+  refused** (an old shell against a new core plays clips by scene membership and
+  loses shell-side pause until it updates; a new shell against an old core has no
+  transport command and is refused loudly by the unknown-command path). Snapshot:
+  a new **`mediaSources[]`** node published unconditionally (the multiviewer-node
+  rule; an empty array is the honest answer to "no media is routed") carrying
+  `{sourceId, mediaAssetId, state, loop, positionMs, durationMs, onProgram,
+  onPreview}`, and `mediaPlayback.status`/`playing` now report the SELECTED
+  asset's real transport state over the vocabulary
+  `idle | cued | live | paused | ended | unavailable` — `unavailable` meaning
+  selected but on neither bus, which a stale shell flag used to report as
+  "paused". `mediaPlaybackKey` survives as an empty string so an older reader
+  finds a value rather than a missing key.
+- **The shell half.** No playback keys, no go-live generations, no operator-paused
+  set. `MediaRoutePlaybackService` keeps only what the shell still decides: which
+  asset a route names, `IsLoopingAsset`, `AssetsEnteringProgram` (the pure set
+  diff that replaced `MediaGoLiveLedger.RecordTake` — it stores nothing),
+  `ChooseAssetToPromote`, `ResolveTap`, and `IsPlayingOnAir`/`ResolveTransportRow`
+  read back from the core's rows. `MediaBinPlaybackProjection` is the WHOLE
+  snapshot-apply decision as one pure function — the "test the whole decision, not
+  the leaf" rule, and the only way to pin it while `StudioViewModel` is not
+  constructible: it adopts the core's flag for the selection **only while that
+  asset's row is `OnProgram`**, because a clip cued in Preview has a row too
+  (state `cued`) and adopting it switched off an audition the operator had started
+  <=250 ms earlier. A **`media:` row beats a `background:` row** for an asset's
+  tap/played state, and that ordering is load-bearing: a background is a loop, so
+  its row is permanently `live`; letting it answer showed a cued or paused clip as
+  playing, made `ResolveTap` return Pause, and sent a pause the core correctly
+  refuses for a loop — the UI flipped and nothing on air moved.
+  `MediaTransportGestureLedger` makes the gesture **latest-wins per asset**: a
+  claim token checked immediately before EVERY send, attempt 0 included (the first
+  cut gated only the retry SCHEDULING, so a stale pause already scheduled still
+  landed after a newer resume), with a bounded re-arm and a VISIBLE give-up.
+- **Deleted, so nobody hunts for them:** `OwnedMediaFrameSource`,
+  `MediaCueHandoff` (with `adoptCuedDecoders` and `Entry::everPlayed`),
+  `MediaGoLiveLedger`, `BuildSceneMediaPlaybackKey` /
+  `ResolveSceneRoutePlayback` / `ShouldPlaySceneMediaRoute`, the
+  `preview:media:<id>` namespace and the `pausedClipCue` re-key in
+  `buildPreviewCompositorRenderPlan`, and `ModuleSet::mediaFrames` (now
+  `ModuleSet::mediaDecoderFactory`).
+- **Gate numbers — WHAT THE BRANCH MEASURED AT MERGE (2026-09-20, on the merged
+  head `45644587`), not a claim about main today:** full Windows dev suite
+  **1113 passed / 0 failed**; stub gate
+  `scripts/test-native.ps1` exit 0, **100% passed**; `dotnet test` MediaCore
+  **2232/0**, Control **74/0**, WinUI **1519/0**, and the WinUI Release x64 build
+  **0 errors**; `node scripts/validate-multiview.mjs` PASS and `node
+  scripts/validate-tiles.mjs` PASS (10/10 checks);
+  `scripts/qa/zoom-gap-hold-ab.py --label s3b-hold` — 248 frames, Program luma
+  held **187.5-204.7**, 0 frames below 150, take record verdict `cut` with
+  `restartedSources=[]` and `missingSources=[]`; show drill
+  (`COREVIDEO_FAKE_ENGINE_FPS=60`, `mac-show-drill.py --seconds 40 --load 8`, on a
+  quiet box) **PASSED** — 100% of decoded frames delivered, source->render p50
+  **26.9 ms** / p99 **37.7 ms**.
+- **The new live oracle is FALSIFIABLE, which is the whole point.**
+  `scripts/qa/media-take-ab.py` cues a clip in Preview, records Program, Takes,
+  and judges the MP4 with `ffmpeg signalstats` YAVG: the first Program frames
+  after the Take must carry the clip's own first-frame luma (never a slate), and
+  the luma must then MOVE. Run after the Ended/Release fix wave (`--label
+  s3b-final`): **PASS** — take frame #54 at YAVG 85.00, all 15 post-take frames
+  85.00, rolling window 49/49 at 125.6, 251 frames at 60.23 fps. Its
+  **`--skip-cue` control** — the same Take with the clip never cued, i.e. exactly
+  the #449 step 1 cold cut — **FAILS (exit 1)** with 4 warming-slate frames at
+  YAVG 42. A run that passes with `--skip-cue` is judging nothing. (Calibration
+  worth keeping: the slate lumas quoted elsewhere in this file are FULL-range, and
+  a limited-range recording carries them as 42 warming / 39 failed; the fixture is
+  neutral grey 85 because the spec's `0x10A0F0` read 116 against `testsrc2`'s 126
+  — too close to separate.)
+- **What is NOT done, honestly.** Nothing here has run against a real Zoom meeting
+  or the real WinUI app: there is **no live cue / Take / pause / resume gate**.
+  **#449 step 1 — hold the outgoing picture on a COLD cut, a clip that was never
+  cued — is still open**, and the `--skip-cue` control measures exactly that gap.
+  The 750 ms release grace is REASONED, not measured against the real spine
+  cadence. And only the MF adapter implements `mediaEnded()`, so the stub and
+  macOS decoders fall back to the 6 s backstop.
 
 ## GPU-direct hardware encode for streaming (#521 slice 1, 2026-09-13)
 
