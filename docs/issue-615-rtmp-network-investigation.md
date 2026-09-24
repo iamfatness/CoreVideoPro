@@ -478,3 +478,21 @@ Latest fa5a2619 CodeQL passed; its macOS stub test again failed the background
 media reopen assertion at RenderedSceneAttributionTest.cpp:603, while that job
 passed at 132f373e with the same relevant code. Windows CI was still pending.
 No unrelated test was weakened or production behavior changed for this failure.
+
+### Source/render progress through captured output onset
+
+The final ten saved snapshots of the corrected candidate span served times
+16:29:34.322–16:29:43.098 UTC. Every expected Zoom source advanced its ingest
+counter by 269–399 frames, with zero increases in source dropped-frame counters.
+The three sources with advancing audio counters each added 432,000 samples;
+the other five audio counters did not advance, so this is not a claim of audio
+delivery from all eight sources. Render completed-slot counters added 540 with
+no new deadline miss, while audio worker ticks added 450. Snapshot publication
+and caching mean these are counter deltas, not exact wall-clock delivery rates.
+
+These observations argue against stopped Zoom ingestion or a whole-render-loop
+stall as the cause of this captured output episode. They do not distinguish
+the encoder/FFmpeg path from downstream transport, nor explain the earlier
+PC-wide outage. Sender `framesSent` increments on local input acceptance and
+must not be interpreted as receiver-delivered frames. The local evidence file
+`audio-pacing-candidate-repeat30min/onset-source-progress.json` retains details.
