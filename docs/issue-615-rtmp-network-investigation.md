@@ -313,3 +313,46 @@ including the completed FFmpeg log, native/performance logs, summary and per-sec
 snapshots/network samples. Streaming is off. CI and CodeQL both passed for the
 instrumentation commit b1fb1f6b. Neither the original PC-wide outage nor sustained
 1080p60 acceptance is declared fixed.
+
+## Controlled live-input pacing comparison (September 24, 16:10–16:14 UTC)
+
+A local two-input FFmpeg fixture now isolates a recovery defect from internet
+variability. H.264 access units arrive at 60 Hz through a 1 MiB anonymous pipe;
+stereo 48 kHz float PCM arrives in 20 ms blocks through a 1 MiB named pipe.
+The input/mux arguments match the GPU H.264 path, including both 512-packet
+input queues. A local FLV reader pauses for 12 seconds at approximately second
+6, then resumes. This deliberately blocks downstream output without a network.
+The only argument varied is the real PCM input's `-re`. Each variant ran twice,
+with the order reversed on the second comparison.
+
+With audio `-re`, video writes remained blocked for approximately another
+21.7 seconds after the downstream reader resumed. Thirty seconds of source
+material took 39.87 seconds to finish. Last video PTS was 39.78–39.79 seconds,
+against audio PTS 30.016 seconds. Without `-re`, the additional video write
+block was 0.175 seconds, the run finished in 29.99 seconds, and last video PTS
+was 29.967–29.973 seconds. All four outputs retained 1,800 video packets and
+1,408 AAC packets, with nondecreasing DTS in each stream.
+
+The fixture demonstrates that the second pacing clock can prolong recovery
+and distort arrival-derived video timing. It does not establish the cause of
+the original external network slowdown. Its producers catch up after blocked
+writes; the native app's bounded queue/drop policy is not simulated. Burst
+arrival timestamps also produce repeated DTS after rescaling to the null
+decoder output's frame timebase, so this is not proof of smooth per-frame
+delivery. A codec-only decode with regenerated frame timestamps is clean.
+
+The candidate removes `-re` only for real PCM in the GPU bitstream branch.
+Synthetic unlimited `anullsrc` remains paced. Bitrate, resolution, frame rate,
+input queue sizes and backpressure hysteresis are unchanged. Release build and
+14 FFmpeg argument tests pass, including live PCM versus synthetic silence for
+H.264, HEVC and AV1. Candidate native SHA256:
+`07FE60895D28BDFA92348DE1FBD7CC5C3AFF595BCA5441F7E549474580E48411`.
+
+A guarded 30-minute real-meeting comparison started around 16:18 UTC with eight
+Tiles feeds and saved operator stream settings of 10 Mbps / 1080p60. Results
+are pending. The runner stops on first backpressure, missing expected feed,
+three degraded connectivity probes or unhealthy independent watchdog, and
+stops streaming in `finally`. Raw local comparison evidence and the live run
+remain under ignored `artifacts/live-601`; no meeting or destination secrets
+are included here. Neither the PC-wide outage nor production acceptance is
+declared resolved.

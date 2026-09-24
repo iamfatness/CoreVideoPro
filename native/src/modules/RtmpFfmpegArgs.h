@@ -145,7 +145,10 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     if (config.hasAudio) {
       const int channels = (std::max)(1, config.audioChannels);
       const int sampleRate = (std::max)(8000, config.audioSampleRate);
-      args << " -re -thread_queue_size 512 -probesize 32 -analyzeduration 1 -f " << config.audioSampleFormat << " -ar " << sampleRate
+      // Live PCM is already paced by the mixer. A second read-rate clock can
+      // prolong video pipe blocking after an output stall while audio catches
+      // up (#615). Only the synthetic, unbounded silence source needs -re.
+      args << " -thread_queue_size 512 -probesize 32 -analyzeduration 1 -f " << config.audioSampleFormat << " -ar " << sampleRate
            << " -ac " << channels << " -i " << config.audioInput;
     } else {
       args << " -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";

@@ -225,6 +225,24 @@ TEST(RtmpFfmpegArgs, BitstreamRtmpCoalescesSmallWritesWithoutChangingSrt) {
   EXPECT_NE(args.find(" -f mpegts "), std::string::npos);
 }
 
+TEST(RtmpFfmpegArgs, LiveBitstreamAudioDoesNotAddASecondPacingClock) {
+  auto config = baseConfig();
+  config.videoBitstreamInput = true;
+  for (const auto* codec : {"h264", "hevc", "av1"}) {
+    config.videoBitstreamCodec = codec;
+    config.timestampedHevcInput = std::string(codec) == "hevc";
+    config.hasAudio = true;
+    config.audioInput = "pipe:3";
+    const auto live = buildRtmpFfmpegArguments(config);
+    EXPECT_EQ(live.find(" -re "), std::string::npos);
+    EXPECT_NE(live.find(" -i pipe:3"), std::string::npos);
+    EXPECT_NE(live.find(" -af aresample=async=1:first_pts=0"), std::string::npos);
+    config.hasAudio = false;
+    const auto silence = buildRtmpFfmpegArguments(config);
+    EXPECT_NE(silence.find(" -re -f lavfi -i anullsrc="), std::string::npos);
+  }
+}
+
 TEST(RtmpFfmpegArgs, TimestampedHevcUsesContainerClockWithoutRewritingTimestamps) {
   auto config = baseConfig();
   config.videoBitstreamInput = true;
