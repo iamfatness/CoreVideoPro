@@ -562,3 +562,34 @@ whether encoder scheduling, pipe delivery or FFmpeg parsing created each pair;
 the recording does not retain original encoder PTS. Local details are saved in
 `full-app-local-10min/packet-timing-detail.json`. Do not infer a network outage
 cause from these DTS pairs.
+
+### Instrumented full-app local comparison, September 24, 21:16–21:26 UTC
+
+Native commit `8303a640` retains the previous 16 encoded packets on the writer
+thread and emits their encoder PTS/DTS, keyframe flag, size, queue age and write
+timing only when a pipe write takes at least 100 ms (rate limited to once per
+second). Normal frames produce no trace output and no media bytes are retained.
+The separate Release native build succeeded, as did 14 FFmpeg argument, 9 queue
+overflow and 26 backpressure-policy tests. Its staged SHA256 was
+`50139949546779EB98FD5EDE4E8E99C07F1E73E9A8657F438BF8B7981DAFF93D`.
+
+The guarded ten-minute eight-Tiles run to the local RTMP receiver completed
+without a slow write, so the new history was not triggered. All expected feeds
+remained present through 639 snapshots; each source advanced video and audio
+ingest with no source drops. Sender restarts, backpressure entries, encoder
+shedding, skipped render slots and recorded audio loss were zero. There were
+**two new render deadline misses**, which fail strict frame-delivery acceptance.
+The receiver exited successfully with 36,070 video and 28,179 AAC packets over
+approximately 601 seconds. Video peaked at 340,004 bytes per packet, with 602
+packets above 100 KB, one equal DTS and no backward DTS.
+
+Incoming source dimensions varied among 320×180, 640×360, 1280×720 and
+1920×1080 during the run. All eight were simultaneously 1920×1080 in 524 of
+639 snapshots (82%), so most of this local comparison did match the earlier
+failing external source geometry. Whole
+adapter upload averaged 0.205 Mbps while sending to loopback, with 14 isolated
+internet ICMP timeouts. The local test cannot establish what initiates the
+external transport stall or the original PC-wide outage. Its owned independent
+guard was retired; original output preferences were verified byte-for-byte
+restored, and streaming and the engine were off after the run. Raw evidence
+remains under `artifacts/live-601/full-app-local-trace-verified10min`.
