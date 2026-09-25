@@ -379,12 +379,8 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     return frames;
   }
 
-  std::vector<AudioFrame> pollAudioFrames() override {
-    if (!joined_) {
-      return {};
-    }
-
-    std::vector<AudioFrame> frames;
+  void captureAudioTick() override {
+    if (!joined_) return;
     for (const auto& state : subscriptionStates()) {
       const auto& request = state.request;
       if (state.status == "failed" || request.kind != "participant-audio") {
@@ -394,11 +390,10 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
       const auto subscriptionId = subscriptionIdFor(request);
       const auto previousCount = lastPolledAudioPacketCounts_[subscriptionId];
       if (state.audioPacketsReceived > previousCount) {
-        frames.push_back({request.participantId, 48000, 1, ++timestampMs_});
+        postAudio({request.participantId, 48000, 1, ++timestampMs_});
         lastPolledAudioPacketCounts_[subscriptionId] = state.audioPacketsReceived;
       }
     }
-    return frames;
   }
 
   std::string activeSpeakerId() const override {

@@ -944,11 +944,38 @@ struct SrtIngestSourceConfig {
   std::string passphrase;
 };
 
+class IZoomAudioConsumer {
+ public:
+  virtual ~IZoomAudioConsumer() = default;
+  virtual void publish(AudioFrame frame) = 0;
+};
+
 class IZoomCaptureSource {
  public:
   virtual ~IZoomCaptureSource() = default;
   virtual std::vector<VideoFrame> pollVideoFrames() = 0;
-  virtual std::vector<AudioFrame> pollAudioFrames() = 0;
+  // Drain packets pushed since the last call. The audio worker calls this
+  // outside coreMutex, at the same site that used to pull pollAudioFrames().
+  void deliverAudio(IZoomAudioConsumer& consumer) {
+    captureAudioTick();
+    std::vector<AudioFrame> frames;
+    {
+      std::lock_guard<std::mutex> lock(zoomAudioMutex_);
+      frames.swap(audioQueue_);
+    }
+    for (auto& frame : frames) consumer.publish(std::move(frame));
+  }
+
+ protected:
+  virtual void captureAudioTick() {}
+  void postAudio(AudioFrame frame) {
+    std::lock_guard<std::mutex> lock(zoomAudioMutex_);
+    audioQueue_.push_back(std::move(frame));
+  }
+
+ private:
+  std::mutex zoomAudioMutex_;
+  std::vector<AudioFrame> audioQueue_;
 };
 
 class IAudioCaptureSource {

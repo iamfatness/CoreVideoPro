@@ -3,7 +3,7 @@
 **This is the only ordered list of work.** Status and detailed evidence live on
 linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 
-Owner-approved order updated 2026-09-24: finish #535 adapter lifecycle, then make
+Owner-approved order updated 2026-09-25: finish #535 adapter lifecycle, then make
 the wire honest (#616 with #619/#620), then constructed capabilities (#617), then
 a Windows production-native CI compile lane (#618), then SRT/NDI edge I/O (#538).
 Owner accepted live lip sync (#579) and first Takes (#555) on beta `db9e703`.
@@ -28,7 +28,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Order | Issue | Remaining work / next evidence |
 |---|---|---|
-| 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video and media transport slices are shipped. **Slice 3b (media TRANSPORT into the core) SHIPPED — merged 2026-09-21 in [#567](https://github.com/iamfatness/CoreVideoPro/pull/567)**. Capture session control now lives on `ICaptureDeviceLifecycle`. Capture adapters push frames and embedded PCM into a mailbox (`postVideo` / `postAudio`). `deliverVideo` and `deliverAudio` only flush that mailbox. `snapshotVideo` and `snapshotAudio` are gone. The per-clip decoder is `IMediaDecoder`: one `MediaDecodeRequest`, not a plan-layer vector. Remaining: retire `IZoomCaptureSource` (clap-gated; do not move Zoom audio onto the bus in this slice). Capture dropout liveness is #562. Do not start #616 while this is open unless the owner re-ranks. |
+| 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video and media transport slices are shipped. **Slice 3b (media TRANSPORT into the core) SHIPPED — merged 2026-09-21 in [#567](https://github.com/iamfatness/CoreVideoPro/pull/567)**. Capture session control lives on `ICaptureDeviceLifecycle`. Capture adapters push pictures and embedded PCM into a mailbox; `deliverVideo` and `deliverAudio` only flush it. The media decoder is `IMediaDecoder` and takes one `MediaDecodeRequest` ([#626](https://github.com/iamfatness/CoreVideoPro/pull/626)). Zoom audio uses the same mailbox and is drained by `pollZoomAudioUnlocked` outside the core lock. Headless clap on that build (2026-09-25, `scripts/validate-av-clap.mjs`): 8 pairs, median skew -39.0 ms (audio lags video), spread 14.3 ms, inside the 50 ms gate. A live-meeting clap was not run. `IZoomCaptureSource::pollVideoFrames` still supplies the synthetic slate. Per-participant audio delay is [#627](https://github.com/iamfatness/CoreVideoPro/issues/627), unranked. Capture dropout liveness is #562. Do not start #616 while this is open unless the owner re-ranks. |
 | 2 | [#601](https://github.com/iamfatness/CoreVideoPro/issues/601) | Owner requested 2026-09-24: preserve the configured frame rate. Explicit encoder rate control and measured conformance at 4.5/6/10 Mbps, with 2 Mbps as a stress check. Full-range noise reaches QP 51; the original claim that bitrate never reaches the encoder is not established. Hard saturation remains distinct from normal bitrate control. Evidence: [investigation](issue-601-rate-control-investigation.md). Await live acceptance. |
 
 ## Deferred by owner
@@ -57,7 +57,8 @@ These can preempt Next on a show night. They do not replace #535 as Now until th
 
 | Issue | Remaining work |
 |---|---|
-| [#615](https://github.com/iamfatness/CoreVideoPro/issues/615) | RTMP packet amplification is measured and coalesced. Encoder frames that never reached the shed counter are retained. The original PC-wide outage and full-show continuity still need fleet acceptance. |
+| [#615](https://github.com/iamfatness/CoreVideoPro/issues/615) | RTMP packet amplification is measured and coalesced. Encoder frames that never reached the shed counter are retained (main `61e83ed1`). The original PC-wide outage and full-show continuity still need fleet acceptance. |
+| [#627](https://github.com/iamfatness/CoreVideoPro/issues/627) | Per-participant audio delay. Capture devices already have `setAudioSyncOffset`; a Zoom guest does not. Headless clap on the Zoom-audio mailbox build measured one pipeline skew (median -39.0 ms, audio lags video), not a per-person offset. |
 | [#608](https://github.com/iamfatness/CoreVideoPro/issues/608) | Audio drops out for remaining participants when others disconnect; selecting their source restores it. |
 | [#624](https://github.com/iamfatness/CoreVideoPro/issues/624) | Recover a subscribed Zoom video feed that stops advancing in Tiles. |
 | [#597](https://github.com/iamfatness/CoreVideoPro/issues/597) | **Backpressure slice 1 shipped on `feat/stream-backpressure`; owner acceptance and merge remain.** Slice 2: egress-based health signal and phantom-fault fix. Deferred from that slice: #601 (encoder ignores configured bitrate), #602, #603, #604 (`stopFfmpegProcess` never kills the child), #605, #606, #607. |

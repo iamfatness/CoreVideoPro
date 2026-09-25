@@ -407,7 +407,6 @@ class TwoGuestZoomSource final : public corevideo::modules::IZoomCaptureSource {
     }
     return frames;
   }
-  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override { return {}; }
 
  private:
   std::vector<std::string> ids_{"guest-1", "operator-1"};

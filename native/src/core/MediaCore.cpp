@@ -7458,7 +7458,12 @@ void MediaCore::enableAudioOutputWorker() {
 // constructor and never reset, so calling them unlocked is safe — the same
 // reasoning that already lets drainZoomVideoFrameEvents run off the core lock.
 std::vector<modules::AudioFrame> MediaCore::pollZoomAudioUnlocked() {
-  std::vector<modules::AudioFrame> audioFrames = modules_.zoom->pollAudioFrames();
+  struct Collect final : modules::IZoomAudioConsumer {
+    std::vector<modules::AudioFrame> frames;
+    void publish(modules::AudioFrame frame) override { frames.push_back(std::move(frame)); }
+  } collect;
+  modules_.zoom->deliverAudio(collect);
+  std::vector<modules::AudioFrame> audioFrames = std::move(collect.frames);
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     // Frame number from the atomic mirror rather than lastProgramFrame_: one
     // render tick of staleness is irrelevant here (this is a synthetic

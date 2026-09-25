@@ -227,7 +227,6 @@ class IsoZoomSource final : public corevideo::modules::IZoomCaptureSource {
     }
     return frames;
   }
-  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override { return {}; }
   std::vector<std::string> participants{"host", "guest"};
   int64_t frameId = 0;
 };
