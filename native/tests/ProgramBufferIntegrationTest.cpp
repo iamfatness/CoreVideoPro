@@ -213,9 +213,8 @@ namespace {
 // the difference away.
 class IsoZoomSource final : public corevideo::modules::IZoomCaptureSource {
  public:
-  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
+  void captureVideoTick() override {
     ++frameId;
-    std::vector<corevideo::modules::VideoFrame> frames;
     for (const auto& participantId : participants) {
       corevideo::modules::VideoFrame frame;
       frame.participantId = participantId;
@@ -223,9 +222,8 @@ class IsoZoomSource final : public corevideo::modules::IZoomCaptureSource {
       frame.i420Width = frame.i420Height = 2;
       frame.i420 = std::make_shared<const std::vector<uint8_t>>(6, 128);
       frame.frameId = frameId;
-      frames.push_back(std::move(frame));
+      postVideo(std::move(frame));
     }
-    return frames;
   }
   std::vector<std::string> participants{"host", "guest"};
   int64_t frameId = 0;

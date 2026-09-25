@@ -395,17 +395,15 @@ class TwoGuestZoomSource final : public corevideo::modules::IZoomCaptureSource {
  public:
   TwoGuestZoomSource() = default;
   explicit TwoGuestZoomSource(std::vector<std::string> ids) : ids_(std::move(ids)) {}
-  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
-    std::vector<corevideo::modules::VideoFrame> frames;
+  void captureVideoTick() override {
     for (const auto& participantId : ids_) {
       corevideo::modules::VideoFrame frame;
       frame.participantId = participantId;
       frame.width = frame.height = frame.i420Width = frame.i420Height = 2;
       frame.frameId = ++frameId_;
       frame.i420 = std::make_shared<const std::vector<std::uint8_t>>(6, 128);
-      frames.push_back(std::move(frame));
+      postVideo(std::move(frame));
     }
-    return frames;
   }
 
  private:

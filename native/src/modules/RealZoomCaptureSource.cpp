@@ -111,7 +111,7 @@ void RealZoomCaptureSource::ingestFrameEvents(const std::vector<rpc::Json>& even
   }
 }
 
-std::vector<VideoFrame> RealZoomCaptureSource::pollVideoFrames() {
+void RealZoomCaptureSource::captureVideoTick() {
   std::vector<VideoFrame> result;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -139,9 +139,10 @@ std::vector<VideoFrame> RealZoomCaptureSource::pollVideoFrames() {
     }
   }
   if (result.empty() && fallback_) {
-    return fallback_->pollVideoFrames();
+    for (auto& frame : fallback_->deliverVideo()) postVideo(std::move(frame));
+    return;
   }
-  return result;
+  for (auto& frame : result) postVideo(std::move(frame));
 }
 
 void RealZoomCaptureSource::captureAudioTick() {

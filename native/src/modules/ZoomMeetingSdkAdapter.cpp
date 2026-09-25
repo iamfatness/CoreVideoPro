@@ -349,12 +349,8 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     }
   }
 
-  std::vector<VideoFrame> pollVideoFrames() override {
-    if (!joined_) {
-      return {};
-    }
-
-    std::vector<VideoFrame> frames;
+  void captureVideoTick() override {
+    if (!joined_) return;
     for (const auto& state : subscriptionStates()) {
       const auto& request = state.request;
       if (state.status == "failed" || (request.kind != "participant-video" && request.kind != "screen-share")) {
@@ -372,11 +368,10 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
         frame.naturalWidth = frame.width;
         frame.naturalHeight = frame.height;
         frame.timestampMs = ++timestampMs_;
-        frames.push_back(std::move(frame));
+        postVideo(std::move(frame));
         lastPolledVideoFrameCounts_[subscriptionId] = state.framesReceived;
       }
     }
-    return frames;
   }
 
   void captureAudioTick() override {

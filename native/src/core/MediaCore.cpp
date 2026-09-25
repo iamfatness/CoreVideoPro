@@ -6454,7 +6454,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   markStage(s_subTapUs, 0);
   const bool engineLive = zoomEngineRuntime_ && zoomEngineRuntime_->configured();
   auto videoFrames =
-      engineLive ? std::vector<modules::VideoFrame>{} : modules_.zoom->pollVideoFrames();
+      engineLive ? std::vector<modules::VideoFrame>{} : modules_.zoom->deliverVideo();
   // Capture devices deliver their held picture onto the bus. The render tick
   // no longer pulls pollVideoFrames. Browser sources are still polled; they
   // are not capture devices.

@@ -953,7 +953,16 @@ class IZoomAudioConsumer {
 class IZoomCaptureSource {
  public:
   virtual ~IZoomCaptureSource() = default;
-  virtual std::vector<VideoFrame> pollVideoFrames() = 0;
+  // Drain pictures pushed for this tick. The render tick calls this only when
+  // no Zoom engine is configured, at the same site that used to pull
+  // pollVideoFrames(). Live engine frames stay on the source bus.
+  std::vector<VideoFrame> deliverVideo() {
+    captureVideoTick();
+    std::lock_guard<std::mutex> lock(zoomVideoMutex_);
+    std::vector<VideoFrame> frames;
+    frames.swap(videoQueue_);
+    return frames;
+  }
   // Drain packets pushed since the last call. The audio worker calls this
   // outside coreMutex, at the same site that used to pull pollAudioFrames().
   void deliverAudio(IZoomAudioConsumer& consumer) {
@@ -967,13 +976,20 @@ class IZoomCaptureSource {
   }
 
  protected:
+  virtual void captureVideoTick() {}
   virtual void captureAudioTick() {}
+  void postVideo(VideoFrame frame) {
+    std::lock_guard<std::mutex> lock(zoomVideoMutex_);
+    videoQueue_.push_back(std::move(frame));
+  }
   void postAudio(AudioFrame frame) {
     std::lock_guard<std::mutex> lock(zoomAudioMutex_);
     audioQueue_.push_back(std::move(frame));
   }
 
  private:
+  std::mutex zoomVideoMutex_;
+  std::vector<VideoFrame> videoQueue_;
   std::mutex zoomAudioMutex_;
   std::vector<AudioFrame> audioQueue_;
 };

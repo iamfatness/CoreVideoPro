@@ -50,7 +50,6 @@ using corevideo::core::MediaCore;
 // Zoom side stays silent.
 class NoZoomCaptureSource final : public corevideo::modules::IZoomCaptureSource {
  public:
-  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override { return {}; }
 };
 
 // The default stub capture device (FakeCaptureDevice) ships one pre-connected

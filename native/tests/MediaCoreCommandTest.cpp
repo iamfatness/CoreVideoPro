@@ -76,7 +76,7 @@ corevideo::modules::ProgramFrame makeTestProgramFrame(int64_t frameNumber) {
 // source is metadata-only).
 class PcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
  public:
-  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
+  void captureVideoTick() override {
     corevideo::modules::VideoFrame frame;
     frame.participantId = "pcm-speaker";
     frame.width = 1280;
@@ -84,7 +84,7 @@ class PcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
     frame.naturalWidth = 1280;
     frame.naturalHeight = 720;
     frame.timestampMs = ++tick_ * 16;
-    return {frame};
+    postVideo(std::move(frame));
   }
   void captureAudioTick() override {
     corevideo::modules::AudioFrame frame;
@@ -102,7 +102,7 @@ class PcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
 
 class QuietPcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
  public:
-  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
+  void captureVideoTick() override {
     corevideo::modules::VideoFrame frame;
     frame.participantId = "quiet-speaker";
     frame.width = 1280;
@@ -110,7 +110,7 @@ class QuietPcmTestZoomSource final : public corevideo::modules::IZoomCaptureSour
     frame.naturalWidth = 1280;
     frame.naturalHeight = 720;
     frame.timestampMs = ++tick_ * 16;
-    return {frame};
+    postVideo(std::move(frame));
   }
 
   void captureAudioTick() override {
@@ -129,7 +129,7 @@ class QuietPcmTestZoomSource final : public corevideo::modules::IZoomCaptureSour
 
 class SinePcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
  public:
-  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
+  void captureVideoTick() override {
     corevideo::modules::VideoFrame frame;
     frame.participantId = "pcm-speaker";
     frame.width = 1280;
@@ -137,7 +137,7 @@ class SinePcmTestZoomSource final : public corevideo::modules::IZoomCaptureSourc
     frame.naturalWidth = 1280;
     frame.naturalHeight = 720;
     frame.timestampMs = ++tick_ * 16;
-    return {frame};
+    postVideo(std::move(frame));
   }
 
   void captureAudioTick() override {
@@ -6028,7 +6028,7 @@ TEST(ZoomMeetingSdkAdapter, DevGateDoesNotEmitFramesForDeferredRawSubscriptions)
       {"12345", "screen-share", "program", 3},
   });
 
-  EXPECT_TRUE(source->pollVideoFrames().empty());
+  EXPECT_TRUE(source->deliverVideo().empty());
   struct Collect final : corevideo::modules::IZoomAudioConsumer {
     int count = 0;
     void publish(corevideo::modules::AudioFrame) override { ++count; }
