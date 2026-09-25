@@ -19,21 +19,19 @@ TEST(MediaFrameSourceCompatibility, DecodesConfiguredProductionMov) {
 
   auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_TRUE(source != nullptr);
-  corevideo::modules::CompositorRenderPlanLayer layer;
-  layer.layerId = "production-mov";
-  layer.kind = "media-video";
-  layer.sourceId = "media:production-mov";
-  layer.mediaAssetId = "production-mov";
-  layer.mediaAssetName = "Production MOV";
-  layer.mediaAssetKind = "stinger";
-  layer.mediaAssetPath = configuredPath;
-  layer.mediaAssetPlaying = true;
-  layer.mediaAssetLoop = true;
+  corevideo::modules::MediaDecodeRequest request;
+  request.kind = "media-video";
+  request.sourceId = "media:production-mov";
+  request.assetId = "production-mov";
+  request.assetKind = "stinger";
+  request.assetPath = configuredPath;
+  request.playing = true;
+  request.loop = true;
 
   std::vector<corevideo::modules::VideoFrame> frames;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
   while (frames.empty() && std::chrono::steady_clock::now() < deadline) {
-    frames = source->pollMediaFrames({layer}, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    frames = source->pollMediaFrames(request, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     if (frames.empty()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
@@ -50,7 +48,7 @@ TEST(MediaFrameSourceCompatibility, DecodesConfiguredProductionMov) {
   const auto advanceDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (frames.front().frameId <= firstFrameId &&
          std::chrono::steady_clock::now() < advanceDeadline) {
-    auto next = source->pollMediaFrames({layer}, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    auto next = source->pollMediaFrames(request, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     if (!next.empty()) {
       frames = std::move(next);
     }
@@ -71,7 +69,7 @@ TEST(MediaFrameSourceCompatibility, DecodesConfiguredProductionMov) {
     const auto loopDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
     while (frames.front().frameId <= firstLoopFrameCount &&
            std::chrono::steady_clock::now() < loopDeadline) {
-      auto next = source->pollMediaFrames({layer}, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+      auto next = source->pollMediaFrames(request, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
       if (!next.empty()) {
         frames = std::move(next);
       }
@@ -85,7 +83,7 @@ TEST(MediaFrameSourceCompatibility, DecodesConfiguredProductionMov) {
 
   // This fixture is a video-only production backdrop. Lack of an audio stream
   // is valid media, not an operator warning.
-  const auto audio = source->pollMediaAudioFrames({layer}, 33);
+  const auto audio = source->pollMediaAudioFrames(request, 33);
   EXPECT_TRUE(audio.empty());
   EXPECT_TRUE(source->warnings().empty());
 #endif
@@ -112,17 +110,18 @@ TEST(MediaFrameSourceCompatibility, DecodedAudioUsesCanonicalLayerRoutingIdentit
   }
   auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_TRUE(source != nullptr);
-  corevideo::modules::CompositorRenderPlanLayer explicitLayer;
-  explicitLayer.kind = "media-video"; explicitLayer.mediaAssetId = "asset-one";
-  explicitLayer.sourceId = "media:custom-route"; explicitLayer.mediaAssetPath = path.string();
-  explicitLayer.mediaAssetPlaying = true;
-  auto fallbackLayer = explicitLayer;
-  fallbackLayer.sourceId.clear(); fallbackLayer.mediaAssetId = "asset-two";
+  corevideo::modules::MediaDecodeRequest explicitRequest;
+  explicitRequest.kind = "media-video"; explicitRequest.assetId = "asset-one";
+  explicitRequest.sourceId = "media:custom-route"; explicitRequest.assetPath = path.string();
+  explicitRequest.playing = true;
+  auto fallbackRequest = explicitRequest;
+  fallbackRequest.sourceId.clear(); fallbackRequest.assetId = "asset-two";
   std::vector<corevideo::modules::AudioFrame> frames;
   bool sawExplicit = false, sawFallback = false;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   while ((!sawExplicit || !sawFallback) && std::chrono::steady_clock::now() < deadline) {
-    for (auto& frame : source->pollMediaAudioFrames({explicitLayer, fallbackLayer}, 100)) {
+    for (const auto& clip : {explicitRequest, fallbackRequest})
+    for (auto& frame : source->pollMediaAudioFrames(clip, 100)) {
       if (frame.participantId == "media:custom-route" && !sawExplicit) { frames.push_back(frame); sawExplicit = true; }
       if (frame.participantId == "media:asset-two" && !sawFallback) { frames.push_back(frame); sawFallback = true; }
     }
@@ -149,9 +148,9 @@ TEST(MediaFrameSourceCompatibility, ConfiguredFlashFixtureKeepsAllVideoPulseEdge
   if (!fixture || !*fixture) return; // Explicit real1080p60 H264 fixture from the recorded A/V harness.
   auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_TRUE(source != nullptr);
-  corevideo::modules::CompositorRenderPlanLayer layer;
-  layer.kind = "media-video"; layer.sourceId = "media:flash-probe"; layer.mediaAssetId = "flash-probe";
-  layer.mediaAssetPath = fixture; layer.mediaAssetPlaying = true;
+  corevideo::modules::MediaDecodeRequest request;
+  request.kind = "media-video"; request.sourceId = "media:flash-probe"; request.assetId = "flash-probe";
+  request.assetPath = fixture; request.playing = true;
   const auto anchor = std::chrono::steady_clock::now();
   std::vector<double> starts, widths;
   bool white = false;
@@ -159,7 +158,7 @@ TEST(MediaFrameSourceCompatibility, ConfiguredFlashFixtureKeepsAllVideoPulseEdge
     const auto scheduled = anchor + std::chrono::nanoseconds(tick * 1000000000LL / 60);
     std::this_thread::sleep_until(scheduled);
     const auto pts = std::chrono::duration_cast<std::chrono::nanoseconds>(scheduled.time_since_epoch()).count() / 100;
-    const auto frames = source->pollMediaFramesAt100ns({layer}, pts);
+    const auto frames = source->pollMediaFramesAt100ns(request, pts);
     if (frames.empty()) continue;
     const auto& frame = frames.front();
     ASSERT_TRUE(frame.hasPixels());

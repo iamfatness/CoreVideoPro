@@ -347,30 +347,26 @@ corevideo::modules::VideoFrame solidMediaFrame(const std::string& sourceId, std:
   return frame;
 }
 
-std::string mediaSourceId(const corevideo::modules::CompositorRenderPlanLayer& layer) {
-  return layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+std::string mediaSourceId(const corevideo::modules::MediaDecodeRequest& request) {
+  return request.sourceId.empty() ? "media:" + request.assetId : request.sourceId;
 }
 
 // SolidMediaFrameSource (MediaCoreCommandTest.cpp) with one change: every
 // source runs its OWN frame clock, the way a real decoder does, and a test can
 // reopen one (`restart`) so its frame ids go back to 1.
-class CountingMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
+class CountingMediaFrameSource final : public corevideo::modules::IMediaDecoder {
  public:
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
-      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
+      const corevideo::modules::MediaDecodeRequest& request,
       int64_t timestampMs) override {
-    std::vector<corevideo::modules::VideoFrame> frames;
-    for (const auto& layer : layers) {
-      if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
-      const auto sourceId = mediaSourceId(layer);
-      std::int64_t next = 0;
-      {
-        std::lock_guard<std::mutex> lock(mutex());
-        next = ++frameIds[sourceId];
-      }
-      frames.push_back(solidMediaFrame(sourceId, next, timestampMs, 16, 16));
+    if (request.assetId.empty() || request.assetPath.empty()) return {};
+    const auto sourceId = mediaSourceId(request);
+    std::int64_t next = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex());
+      next = ++frameIds[sourceId];
     }
-    return frames;
+    return {solidMediaFrame(sourceId, next, timestampMs, 16, 16)};
   }
   // #535 slice 3b: the module set carries a FACTORY, so each media source gets
   // its own instance on its own worker. The frame-id book is shared and static
@@ -403,22 +399,18 @@ class CountingMediaFrameSource final : public corevideo::modules::IMediaFrameSou
 // A decoder that cold-starts: the first time a source is asked for, it has
 // nothing yet; every later poll delivers a frame on that source's own clock.
 // An optional gate holds the decoder cold until the test explicitly releases it.
-class ColdStartMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
+class ColdStartMediaFrameSource final : public corevideo::modules::IMediaDecoder {
  public:
   explicit ColdStartMediaFrameSource(std::shared_ptr<std::atomic<bool>> ready = {})
       : ready_(std::move(ready)) {}
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
-      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
+      const corevideo::modules::MediaDecodeRequest& request,
       int64_t timestampMs) override {
     if (ready_ && !ready_->load()) return {};
-    std::vector<corevideo::modules::VideoFrame> frames;
-    for (const auto& layer : layers) {
-      if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
-      const auto sourceId = mediaSourceId(layer);
-      if (polled.insert(sourceId).second) continue;  // first poll: still opening
-      frames.push_back(solidMediaFrame(sourceId, ++frameIds[sourceId], timestampMs, 16, 9));
-    }
-    return frames;
+    if (request.assetId.empty() || request.assetPath.empty()) return {};
+    const auto sourceId = mediaSourceId(request);
+    if (polled.insert(sourceId).second) return {};  // first poll: still opening
+    return {solidMediaFrame(sourceId, ++frameIds[sourceId], timestampMs, 16, 9)};
   }
   std::set<std::string> polled;
   std::map<std::string, std::int64_t> frameIds;

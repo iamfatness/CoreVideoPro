@@ -78,17 +78,16 @@ class NoCaptureDevice final : public corevideo::modules::ICaptureDevice {
 // placeholder's range. 0x10 (16) sits far below either placeholder's range,
 // so the two can never be confused regardless of which id/health produces
 // the placeholder.
-class ColdStartGreyMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
+class ColdStartGreyMediaFrameSource final : public corevideo::modules::IMediaDecoder {
  public:
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
-      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
+      const corevideo::modules::MediaDecodeRequest& request, int64_t timestampMs) override {
     std::vector<corevideo::modules::VideoFrame> frames;
-    for (const auto& layer : layers) {
-      if (layer.mediaAssetId.empty()) continue;
-      const std::string sourceId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
-      if (polled_.insert(sourceId).second) continue;  // first poll: still opening, no frame yet
-      corevideo::modules::VideoFrame frame;
-      frame.participantId = sourceId;
+    if (request.assetId.empty()) return frames;
+    const std::string sourceId = request.sourceId.empty() ? "media:" + request.assetId : request.sourceId;
+    if (polled_.insert(sourceId).second) return frames;  // first poll: still opening, no frame yet
+    corevideo::modules::VideoFrame frame;
+    frame.participantId = sourceId;
       frame.width = frame.pixelWidth = frame.naturalWidth = 64;
       frame.height = frame.pixelHeight = frame.naturalHeight = 36;
       frame.pixelStride = 64 * 4;
@@ -102,9 +101,8 @@ class ColdStartGreyMediaFrameSource final : public corevideo::modules::IMediaFra
       auto pixels = std::make_shared<std::vector<std::uint8_t>>(
           static_cast<std::size_t>(64) * static_cast<std::size_t>(36) * 4u, 0x10);
       for (std::size_t i = 3; i < pixels->size(); i += 4) (*pixels)[i] = 0xff;
-      frame.pixels = std::move(pixels);
-      frames.push_back(std::move(frame));
-    }
+    frame.pixels = std::move(pixels);
+    frames.push_back(std::move(frame));
     return frames;
   }
 
@@ -150,15 +148,14 @@ corevideo::rpc::Json sceneWithNoBackground(const char* sceneId, const char* type
 // the owner's transport bookkeeping, not a stand-in for it. Every fresh decoder yields nothing on its first poll (still
 // opening) and a flat dark 0x10 frame afterwards, the same 0x10 sentinel and the
 // same reasoning as ColdStartGreyMediaFrameSource above.
-class ColdStartClipDecoder final : public corevideo::modules::IMediaFrameSource {
+class ColdStartClipDecoder final : public corevideo::modules::IMediaDecoder {
  public:
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
-      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
-    if (layers.empty() || layers.front().mediaAssetId.empty()) return {};
+      const corevideo::modules::MediaDecodeRequest& request, int64_t timestampMs) override {
+    if (request.assetId.empty()) return {};
     if (!opened_) { opened_ = true; return {}; }  // first poll: the reader is still opening
-    const auto& layer = layers.front();
     corevideo::modules::VideoFrame frame;
-    frame.participantId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+    frame.participantId = request.sourceId.empty() ? "media:" + request.assetId : request.sourceId;
     frame.width = frame.pixelWidth = frame.naturalWidth = 64;
     frame.height = frame.pixelHeight = frame.naturalHeight = 36;
     frame.pixelStride = 64 * 4;

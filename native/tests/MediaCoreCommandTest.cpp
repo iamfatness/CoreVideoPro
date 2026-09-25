@@ -169,7 +169,7 @@ class SinePcmTestZoomSource final : public corevideo::modules::IZoomCaptureSourc
 // reads it. `seenSourceIds` is first-seen order with no duplicates and
 // `seenLoops` carries the LATEST loop flag per id, because a worker polls its
 // own layer over and over rather than the whole plan once per tick.
-class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource {
+class SolidMediaFrameSource final : public corevideo::modules::IMediaDecoder {
  public:
   SolidMediaFrameSource() { ++created; }
 
@@ -202,24 +202,21 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
   }
 
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
-      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
+      const corevideo::modules::MediaDecodeRequest& request,
       int64_t timestampMs) override {
     const int64_t poll = ++pollCount;
     std::vector<corevideo::modules::VideoFrame> frames;
-    for (const auto& layer : layers) {
-      if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) {
-        continue;
+    if (request.assetId.empty() || request.assetPath.empty()) return frames;
+    {
+      std::lock_guard<std::mutex> lock(seenMutex());
+      const auto id = request.sourceId.empty() ? "media:" + request.assetId : request.sourceId;
+      if (std::find(seenSourceIds.begin(), seenSourceIds.end(), id) == seenSourceIds.end()) {
+        seenSourceIds.push_back(id);
       }
-      {
-        std::lock_guard<std::mutex> lock(seenMutex());
-        const auto id = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
-        if (std::find(seenSourceIds.begin(), seenSourceIds.end(), id) == seenSourceIds.end()) {
-          seenSourceIds.push_back(id);
-        }
-        seenLoops[id] = layer.mediaAssetLoop;
-      }
-      corevideo::modules::VideoFrame frame;
-      frame.participantId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+      seenLoops[id] = request.loop;
+    }
+    corevideo::modules::VideoFrame frame;
+    frame.participantId = request.sourceId.empty() ? "media:" + request.assetId : request.sourceId;
       frame.width = kWidth;
       frame.height = kHeight;
       frame.naturalWidth = kWidth;
@@ -236,27 +233,23 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
         (*pixels)[index + 2] = red;
         (*pixels)[index + 3] = 0xff;
       }
-      frame.pixels = std::move(pixels);
-      frames.push_back(std::move(frame));
-    }
+    frame.pixels = std::move(pixels);
+    frames.push_back(std::move(frame));
     return frames;
   }
 
   std::vector<corevideo::modules::AudioFrame> pollMediaAudioFrames(
-      const std::vector<corevideo::modules::CompositorRenderPlanLayer>& layers,
+      const corevideo::modules::MediaDecodeRequest& request,
       int64_t timestampMs) override {
     std::vector<corevideo::modules::AudioFrame> frames;
-    for (const auto& layer : layers) {
-      if (layer.kind != "media-video" || layer.mediaAssetId.empty() || !layer.mediaAssetPlaying) {
-        continue;
-      }
+    if (request.kind != "media-video" || request.assetId.empty() || !request.playing) return frames;
 
-      corevideo::modules::AudioFrame frame;
-      // Exactly what the real decoder stamps since #408
-      // (MediaFoundationMediaFrameSourceAdapter decodeLayerAudio →
-      // mediaFrameSourceId): the layer's own `media:<assetId>`. This fake used
-      // to emit the shell's generic "media", which is why no test saw T1.6.
-      frame.participantId = layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+    corevideo::modules::AudioFrame frame;
+    // Exactly what the real decoder stamps since #408
+    // (MediaFoundationMediaFrameSourceAdapter decodeLayerAudio →
+    // mediaFrameSourceId): the clip's own `media:<assetId>`. This fake used
+    // to emit the shell's generic "media", which is why no test saw T1.6.
+    frame.participantId = request.sourceId.empty() ? "media:" + request.assetId : request.sourceId;
       frame.sampleRate = 48000;
       frame.channels = 2;
       frame.timestampMs = timestampMs;
@@ -274,8 +267,7 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaFrameSource
         frame.pcm[static_cast<size_t>(sampleIndex) * 2u] = sample;
         frame.pcm[static_cast<size_t>(sampleIndex) * 2u + 1u] = sample;
       }
-      frames.push_back(std::move(frame));
-    }
+    frames.push_back(std::move(frame));
     if (!frames.empty()) {
       ++audioPollCount;
     }
@@ -3467,17 +3459,17 @@ TEST(MediaFoundationMediaFrameSource, DecodesFirstFrameForPausedPreviewCue) {
 
   auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
-  corevideo::modules::CompositorRenderPlanLayer layer;
-  layer.kind = "media-video";
-  layer.sourceId = "preview:media:diagnostic";
-  layer.mediaAssetId = "diagnostic";
-  layer.mediaAssetKind = "stinger";
-  layer.mediaAssetPath = videoPath.string();
-  layer.mediaAssetPlaying = false;
+  corevideo::modules::MediaDecodeRequest request;
+  request.kind = "media-video";
+  request.sourceId = "preview:media:diagnostic";
+  request.assetId = "diagnostic";
+  request.assetKind = "stinger";
+  request.assetPath = videoPath.string();
+  request.playing = false;
   std::vector<corevideo::modules::VideoFrame> frames;
   const auto readyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   while (frames.empty() && std::chrono::steady_clock::now() < readyDeadline) {
-    frames = source->pollMediaFrames({layer}, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    frames = source->pollMediaFrames(request, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     if (frames.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
   ASSERT_FALSE(frames.empty());
@@ -3502,18 +3494,18 @@ TEST(MediaFoundationMediaFrameSource, DecodesSceneMediaAudioPcmFromLocalWav) {
   auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
 
-  corevideo::modules::CompositorRenderPlanLayer layer;
-  layer.kind = "media-video";
-  layer.sourceId = "media:clip-audio";
-  layer.mediaAssetId = "clip-audio";
-  layer.mediaAssetKind = "video";
-  layer.mediaAssetPath = wavPath.string();
-  layer.mediaAssetPlaying = true;
+  corevideo::modules::MediaDecodeRequest request;
+  request.kind = "media-video";
+  request.sourceId = "media:clip-audio";
+  request.assetId = "clip-audio";
+  request.assetKind = "video";
+  request.assetPath = wavPath.string();
+  request.playing = true;
 
   std::vector<corevideo::modules::AudioFrame> frames;
   const auto readyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   while (frames.empty() && std::chrono::steady_clock::now() < readyDeadline) {
-    frames = source->pollMediaAudioFrames({layer}, 33);
+    frames = source->pollMediaAudioFrames(request, 33);
     if (frames.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
   ASSERT_FALSE(frames.empty());
@@ -3582,38 +3574,38 @@ TEST(MediaFoundationMediaFrameSource, PausingMidPlaybackHoldsTheOnAirFrameAndRes
   struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{videoPath};
   auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
-  corevideo::modules::CompositorRenderPlanLayer layer;
-  layer.kind = "media-video";
-  layer.sourceId = "media:pause-clip";
-  layer.mediaAssetId = "pause-clip";
-  layer.mediaAssetKind = "video";
-  layer.mediaAssetPath = videoPath.string();
-  layer.mediaAssetPlaying = true;
+  corevideo::modules::MediaDecodeRequest request;
+  request.kind = "media-video";
+  request.sourceId = "media:pause-clip";
+  request.assetId = "pause-clip";
+  request.assetKind = "video";
+  request.assetPath = videoPath.string();
+  request.playing = true;
 
   int64_t held = -1;
   auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   while (held < 5 && std::chrono::steady_clock::now() < deadline) {
-    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    const auto frames = source->pollMediaFramesAt100ns(request, steadyNow100ns());
     if (!frames.empty()) held = frames.front().frameId;
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
   ASSERT_TRUE(held >= 5);
   ASSERT_TRUE(held < 25); // Still mid-clip (30 frames), so resume has frames to continue with.
 
-  layer.mediaAssetPlaying = false;
+  request.playing = false;
   const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
   while (std::chrono::steady_clock::now() < pauseEnd) {
-    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    const auto frames = source->pollMediaFramesAt100ns(request, steadyNow100ns());
     ASSERT_EQ(frames.size(), 1u);
     EXPECT_EQ(frames.front().frameId, held);
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
 
-  layer.mediaAssetPlaying = true;
+  request.playing = true;
   int64_t next = held;
   deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (next == held && std::chrono::steady_clock::now() < deadline) {
-    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    const auto frames = source->pollMediaFramesAt100ns(request, steadyNow100ns());
     if (!frames.empty()) next = frames.front().frameId;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
@@ -3633,21 +3625,21 @@ TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePaused
   struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); } } cleanup{wavPath};
   auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
-  corevideo::modules::CompositorRenderPlanLayer layer;
-  layer.kind = "media-video";
-  layer.sourceId = "media:pause-audio";
-  layer.mediaAssetId = "pause-audio";
-  layer.mediaAssetKind = "video";
-  layer.mediaAssetPath = wavPath.string();
-  layer.mediaAssetPlaying = true;
+  corevideo::modules::MediaDecodeRequest request;
+  request.kind = "media-video";
+  request.sourceId = "media:pause-audio";
+  request.assetId = "pause-audio";
+  request.assetKind = "video";
+  request.assetPath = wavPath.string();
+  request.playing = true;
   const auto nowMs = [] {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
   };
   // MediaCore polls a Program layer on the video path every render tick as
   // well; that is what keeps the source alive while its audio is paused.
   const auto poll = [&] {
-    (void)source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
-    return source->pollMediaAudioFrames({layer}, nowMs());
+    (void)source->pollMediaFramesAt100ns(request, steadyNow100ns());
+    return source->pollMediaAudioFrames(request, nowMs());
   };
 
   int lastHeardMs = -1;
@@ -3660,14 +3652,14 @@ TEST(MediaFoundationMediaFrameSource, PausedAudioIsSilentAndResumesFromThePaused
   }
   ASSERT_TRUE(lastHeardMs >= 300);
 
-  layer.mediaAssetPlaying = false;
+  request.playing = false;
   const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
   while (std::chrono::steady_clock::now() < pauseEnd) {
     EXPECT_TRUE(poll().empty());
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
 
-  layer.mediaAssetPlaying = true;
+  request.playing = true;
   int resumedMs = -1;
   deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (resumedMs < 0 && std::chrono::steady_clock::now() < deadline) {
@@ -3714,13 +3706,13 @@ TEST(MediaFoundationMediaFrameSource, AnFfmpegDecodedClipResumesFromThePausedPos
 
   auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
-  corevideo::modules::CompositorRenderPlanLayer layer;
-  layer.kind = "media-video";
-  layer.sourceId = "media:prores";
-  layer.mediaAssetId = "prores";
-  layer.mediaAssetKind = "video";
-  layer.mediaAssetPath = clip.string();
-  layer.mediaAssetPlaying = true;
+  corevideo::modules::MediaDecodeRequest request;
+  request.kind = "media-video";
+  request.sourceId = "media:prores";
+  request.assetId = "prores";
+  request.assetKind = "video";
+  request.assetPath = clip.string();
+  request.playing = true;
   // Seconds of media time, read back from the frame's centre luma.
   const auto mediaSeconds = [](const corevideo::modules::VideoFrame& frame) {
     const auto centre = static_cast<size_t>(frame.pixelHeight / 2) * frame.pixelStride + static_cast<size_t>(frame.pixelWidth / 2) * 4;
@@ -3731,7 +3723,7 @@ TEST(MediaFoundationMediaFrameSource, AnFfmpegDecodedClipResumesFromThePausedPos
   corevideo::modules::VideoFrame held;
   auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
   while ((!held.hasPixels() || mediaSeconds(held) < 0.6) && std::chrono::steady_clock::now() < deadline) {
-    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    const auto frames = source->pollMediaFramesAt100ns(request, steadyNow100ns());
     if (!frames.empty() && frames.front().hasPixels()) held = frames.front();
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
@@ -3741,20 +3733,20 @@ TEST(MediaFoundationMediaFrameSource, AnFfmpegDecodedClipResumesFromThePausedPos
                held.pixelWidth == 1920 ? "ffmpeg" : "media-foundation", static_cast<long long>(held.frameId), heldSeconds);
   ASSERT_TRUE(heldSeconds >= 0.6 && heldSeconds < 2.5);
 
-  layer.mediaAssetPlaying = false;
+  request.playing = false;
   const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
   while (std::chrono::steady_clock::now() < pauseEnd) {
-    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    const auto frames = source->pollMediaFramesAt100ns(request, steadyNow100ns());
     ASSERT_EQ(frames.size(), 1u);
     EXPECT_EQ(frames.front().frameId, held.frameId);
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 
-  layer.mediaAssetPlaying = true;
+  request.playing = true;
   corevideo::modules::VideoFrame resumed;
   deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
   while (!resumed.hasPixels() && std::chrono::steady_clock::now() < deadline) {
-    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    const auto frames = source->pollMediaFramesAt100ns(request, steadyNow100ns());
     if (!frames.empty() && frames.front().frameId != held.frameId) resumed = frames.front();
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
@@ -3800,13 +3792,13 @@ TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositi
 
   auto source = corevideo::modules::createMediaFoundationMediaDecoderFactory()();
   ASSERT_NE(source, nullptr);
-  corevideo::modules::CompositorRenderPlanLayer layer;
-  layer.kind = "media-video";
-  layer.sourceId = "media:prores-retry";
-  layer.mediaAssetId = "prores-retry";
-  layer.mediaAssetKind = "video";
-  layer.mediaAssetPath = clip.string();
-  layer.mediaAssetPlaying = true;
+  corevideo::modules::MediaDecodeRequest request;
+  request.kind = "media-video";
+  request.sourceId = "media:prores-retry";
+  request.assetId = "prores-retry";
+  request.assetKind = "video";
+  request.assetPath = clip.string();
+  request.playing = true;
   const auto mediaSeconds = [](const corevideo::modules::VideoFrame& frame) {
     const auto centre = static_cast<size_t>(frame.pixelHeight / 2) * frame.pixelStride + static_cast<size_t>(frame.pixelWidth / 2) * 4;
     return ((*frame.pixels)[centre + 1] * 219.0 / 255.0) / 25.0;
@@ -3815,7 +3807,7 @@ TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositi
   corevideo::modules::VideoFrame held;
   auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
   while ((!held.hasPixels() || mediaSeconds(held) < 0.6) && std::chrono::steady_clock::now() < deadline) {
-    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    const auto frames = source->pollMediaFramesAt100ns(request, steadyNow100ns());
     if (!frames.empty() && frames.front().hasPixels()) held = frames.front();
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
@@ -3823,10 +3815,10 @@ TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositi
   ASSERT_TRUE(held.pixelWidth == 1920); // This test is about the FFmpeg path.
   const double heldSeconds = mediaSeconds(held);
 
-  layer.mediaAssetPlaying = false;
+  request.playing = false;
   const auto pauseEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
   while (std::chrono::steady_clock::now() < pauseEnd) {
-    (void)source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    (void)source->pollMediaFramesAt100ns(request, steadyNow100ns());
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 
@@ -3834,11 +3826,11 @@ TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositi
   _putenv_s("COREVIDEO_FFMPEG_BIN_DIR", (dir / "no-ffmpeg-here").string().c_str());
   _putenv_s("FFMPEG_BIN_DIR", "");
   _putenv_s("PATH", "C:\\Windows\\System32");
-  layer.mediaAssetPlaying = true;
+  request.playing = true;
   bool warned = false;
   const auto outageEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(700);
   while (std::chrono::steady_clock::now() < outageEnd) {
-    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    const auto frames = source->pollMediaFramesAt100ns(request, steadyNow100ns());
     ASSERT_EQ(frames.size(), 1u);
     EXPECT_EQ(frames.front().frameId, held.frameId); // Holds the paused frame; nothing from the top.
     for (const auto& warning : source->warnings())
@@ -3853,7 +3845,7 @@ TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositi
   corevideo::modules::VideoFrame resumed;
   deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
   while (!resumed.hasPixels() && std::chrono::steady_clock::now() < deadline) {
-    const auto frames = source->pollMediaFramesAt100ns({layer}, steadyNow100ns());
+    const auto frames = source->pollMediaFramesAt100ns(request, steadyNow100ns());
     if (!frames.empty() && frames.front().frameId != held.frameId) resumed = frames.front();
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }

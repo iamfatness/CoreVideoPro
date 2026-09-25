@@ -39,7 +39,7 @@ namespace corevideo::core {
 // reason — one id, one entry — so their warnings are gone too.
 class MediaTransports final {
  public:
-  using DecoderFactory = std::function<std::unique_ptr<modules::IMediaFrameSource>()>;
+  using DecoderFactory = std::function<std::unique_ptr<modules::IMediaDecoder>()>;
 
   struct Entry {
     // Guarded by `mutex`, all of it. The worker builds the decoder layer from
@@ -475,16 +475,16 @@ class MediaTransports final {
     return result;
   }
 
-  // The layer the decoder is handed. Play state == (state == Live), NEVER the
-  // render plan's. Caller holds `e.mutex`.
-  static modules::CompositorRenderPlanLayer decoderLayerOf(const Entry& e) {
-    modules::CompositorRenderPlanLayer l;
-    l.kind = e.desired.sourceId.rfind("background:", 0) == 0 ? "media-background" : "media-video";
-    l.sourceId = e.desired.sourceId;
-    l.mediaAssetId = e.desired.assetId;
-    l.mediaAssetPath = e.desired.path;
-    l.mediaAssetKind = e.desired.kind;
-    l.mediaAssetLoop = e.desired.loop;
+  // The one clip this entry's decoder is handed. Play state == (state == Live),
+  // NEVER a render plan. Caller holds `e.mutex`.
+  static modules::MediaDecodeRequest decoderRequestOf(const Entry& e) {
+    modules::MediaDecodeRequest request;
+    request.kind = e.desired.sourceId.rfind("background:", 0) == 0 ? "media-background" : "media-video";
+    request.sourceId = e.desired.sourceId;
+    request.assetId = e.desired.assetId;
+    request.assetPath = e.desired.path;
+    request.assetKind = e.desired.kind;
+    request.loop = e.desired.loop;
     // ENDED IS STILL "PLAYING" TO THE DECODER, deliberately. Ended means the
     // MEDIA ran out, not that an operator stopped it: the decoder must stay in
     // its playing mode (holding its last picture at EOS) rather than fall into
@@ -501,9 +501,9 @@ class MediaTransports final {
     // so it is cheap; it is bought deliberately, because a worker that stops
     // reading can never see the new frame that proves the stall is over, and
     // in-place recovery is the whole point.
-    l.mediaAssetPlaying =
+    request.playing =
         e.state == MediaTransportState::Live || e.state == MediaTransportState::Ended;
-    return l;
+    return request;
   }
 
  private:
@@ -588,13 +588,13 @@ class MediaTransports final {
       while (!entry->stop.load()) {
         const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
         if (lastNewFrameMs == 0) lastNewFrameMs = nowMs;
-        modules::CompositorRenderPlanLayer layer;
+        modules::MediaDecodeRequest request;
         bool restart = false, resume = false;
         {
           std::lock_guard<std::mutex> lock(entry->mutex);
           restart = std::exchange(entry->restartRequested, false);
           resume = std::exchange(entry->resumeRequested, false);
-          layer = decoderLayerOf(*entry);
+          request = decoderRequestOf(*entry);
         }
         if (restart) {
           // RestartCued: a NEW decoder instance at 0. video.current_ (the held
@@ -618,13 +618,13 @@ class MediaTransports final {
           std::lock_guard<std::mutex> lock(entry->mutex);
           entry->video.dropQueued(); entry->audio.clear();
         }
-        const bool playing = layer.mediaAssetPlaying;
+        const bool playing = request.playing;
         // PAUSE / RESUME (T1.2). Every transition is carried to the decoder's
         // clock at one instant (nowMs) and the SAME instant is recorded here,
         // so the prepared frames are re-timed by exactly the paused duration
         // the decoder's epoch moves by. One decoder throughout.
         if (!haveSyncedPlaying || playing != syncedPlaying) {
-          if (prefetchDecoder) prefetchDecoder->syncMediaClock({layer}, nowMs);
+          if (prefetchDecoder) prefetchDecoder->syncMediaClock(request, nowMs);
           std::lock_guard<std::mutex> lock(entry->mutex);
           if (!playing && playedOnce && !entry->clockFrozen) {
             entry->clockFrozen = true; entry->frozenAtMs = nowMs;
@@ -667,9 +667,9 @@ class MediaTransports final {
         { std::lock_guard<std::mutex> lock(entry->mutex); videoRoom = entry->video.hasRoom(); }
         if (entry->wantsVideo.load() && videoRoom) {
           if (prefetchDecoder) {
-            video = prefetchDecoder->prefetchMediaVideo({layer}, nowMs);
+            video = prefetchDecoder->prefetchMediaVideo(request, nowMs);
           } else {
-            for (auto& frame : decoder->pollMediaFrames({layer}, nowMs)) video.push_back({std::move(frame), nowMs * 10000});
+            for (auto& frame : decoder->pollMediaFrames(request, nowMs)) video.push_back({std::move(frame), nowMs * 10000});
           }
         }
         bool sawNewFrame = false;
@@ -682,7 +682,7 @@ class MediaTransports final {
         { std::lock_guard<std::mutex> lock(entry->mutex);
           audioRoom = entry->audio.size() < 2; audioTarget = entry->audioNextTime + static_cast<int64_t>(entry->audio.size()) * 20;
         }
-        auto audio = playing && entry->wantsAudio.load() && audioRoom ? decoder->pollMediaAudioFrames({layer}, audioTarget) : std::vector<modules::AudioFrame>{};
+        auto audio = playing && entry->wantsAudio.load() && audioRoom ? decoder->pollMediaAudioFrames(request, audioTarget) : std::vector<modules::AudioFrame>{};
         auto warnings = decoder->warnings();
         // Read AFTER the poll that could have moved it: the decoder reaches
         // EOS inside prefetchMediaVideo/pollMediaFrames.
@@ -709,7 +709,7 @@ class MediaTransports final {
             if (entry->state == MediaTransportState::Ended && sawNewFrame) {
               entry->state = MediaTransportState::Live;
               entry->wantsAudio.store(true);
-            } else if (playing && !layer.mediaAssetLoop && everProducedFrame &&
+            } else if (playing && !request.loop && everProducedFrame &&
                        entry->state == MediaTransportState::Live &&
                        (decoderEnded ||
                         (entry->video.queued() == 0 &&

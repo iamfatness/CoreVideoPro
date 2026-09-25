@@ -14,8 +14,8 @@
 #include <vector>
 namespace corevideo::testing {
 template <typename Decoder, typename... Args>
-std::function<std::unique_ptr<modules::IMediaFrameSource>()> mediaFactoryOf(Args... args) {
-  return [=] { return std::unique_ptr<modules::IMediaFrameSource>(new Decoder(args...)); };
+std::function<std::unique_ptr<modules::IMediaDecoder>()> mediaFactoryOf(Args... args) {
+  return [=] { return std::unique_ptr<modules::IMediaDecoder>(new Decoder(args...)); };
 }
 // Renders display ticks until `done(core)` is true or `timeoutMs` elapses; returns whether it became true.
 // Media frames are produced by a worker thread (exactly as in production), so a test that wants pixels
@@ -70,7 +70,7 @@ inline void applyTicks(core::MediaCore& core, int ticks) {
 // also the only place a test can read "the frame id on Program" — `sources[]`
 // publishes framesIngested (a deduped per-frame COUNT) but not lastFrameId,
 // and this task deliberately does not widen the wire to see it.
-class CountingDecoder : public modules::IMediaFrameSource {
+class CountingDecoder : public modules::IMediaDecoder {
  public:
   // maxFrames == 0 means unlimited; a positive value stops producing NEW
   // pictures after that many — the end of the media, with the decoder still
@@ -78,10 +78,10 @@ class CountingDecoder : public modules::IMediaFrameSource {
   explicit CountingDecoder(int64_t maxFrames = 0) : maxFrames_(maxFrames) { ++created; }
 
   std::vector<modules::VideoFrame> pollMediaFrames(
-      const std::vector<modules::CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
-    if (layers.empty() || layers.front().mediaAssetId.empty()) return {};
+      const modules::MediaDecodeRequest& request, int64_t timestampMs) override {
+    if (request.assetId.empty()) return {};
     if (maxFrames_ > 0 && frameId_ >= maxFrames_) return {};
-    const auto sourceId = sourceIdOf(layers.front());
+    const auto sourceId = sourceIdOf(request);
     modules::VideoFrame frame;
     frame.participantId = sourceId;
     frame.width = frame.pixelWidth = frame.naturalWidth = kWidth;
@@ -98,10 +98,10 @@ class CountingDecoder : public modules::IMediaFrameSource {
   }
 
   std::vector<modules::AudioFrame> pollMediaAudioFrames(
-      const std::vector<modules::CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
-    if (layers.empty() || layers.front().mediaAssetId.empty()) return {};
+      const modules::MediaDecodeRequest& request, int64_t timestampMs) override {
+    if (request.assetId.empty()) return {};
     modules::AudioFrame frame;
-    frame.participantId = sourceIdOf(layers.front());
+    frame.participantId = sourceIdOf(request);
     frame.sampleRate = 48000;
     frame.channels = 2;
     frame.sampleCount = 960;
@@ -144,8 +144,8 @@ class CountingDecoder : public modules::IMediaFrameSource {
   static inline std::atomic<std::int64_t> audioPolls{0};
 
  protected:
-  static std::string sourceIdOf(const modules::CompositorRenderPlanLayer& layer) {
-    return layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
+  static std::string sourceIdOf(const modules::MediaDecodeRequest& request) {
+    return request.sourceId.empty() ? "media:" + request.assetId : request.sourceId;
   }
   static std::mutex& bookMutex() {
     static std::mutex mutex;
@@ -176,7 +176,7 @@ class CountingDecoder : public modules::IMediaFrameSource {
 // looks like from the owner's side).
 //
 // It implements IMediaVideoPrefetch because that is where `mediaEnded()` lives
-// — a plain IMediaFrameSource has no way to say "the media ran out", and the
+// — a plain IMediaDecoder has no way to say "the media ran out", and the
 // owner falls back to its (deliberately long) no-new-frame backstop for one.
 // Frames, ids and the restart book are CountingDecoder's, so every existing
 // assertion helper reads this decoder too.
@@ -201,16 +201,16 @@ class ScriptedDecoder final : public CountingDecoder, public modules::IMediaVide
   }
 
   std::vector<modules::VideoFrame> pollMediaFrames(
-      const std::vector<modules::CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
+      const modules::MediaDecodeRequest& request, int64_t timestampMs) override {
     if (!producing()) return {};
-    return CountingDecoder::pollMediaFrames(layers, timestampMs);
+    return CountingDecoder::pollMediaFrames(request, timestampMs);
   }
 
   std::vector<modules::ScheduledMediaVideo> prefetchMediaVideo(
-      const std::vector<modules::CompositorRenderPlanLayer>& layers, int64_t nowMsArg) override {
+      const modules::MediaDecodeRequest& request, int64_t nowMsArg) override {
     std::vector<modules::ScheduledMediaVideo> result;
     // Due immediately, exactly like the owner's non-prefetch fallback path.
-    for (auto& frame : pollMediaFrames(layers, nowMsArg)) result.push_back({std::move(frame), nowMsArg * 10000});
+    for (auto& frame : pollMediaFrames(request, nowMsArg)) result.push_back({std::move(frame), nowMsArg * 10000});
     return result;
   }
 

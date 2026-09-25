@@ -417,10 +417,6 @@ struct CompositorRenderPlanLayer {
   std::string mediaAssetName;
   std::string mediaAssetKind;
   std::string mediaAssetPath;
-  // Written only by MediaTransports::decoderLayerOf for the decoder; never by
-  // a plan (#535 slice 3b). The retired per-route `mediaPlaybackKey` went with
-  // the wire field it mirrored: play state is decided at command time now.
-  bool mediaAssetPlaying = false;
   // Backgrounds are continuous show elements; stingers/clips remain one-shot.
   // Kept on the shared render layer so SuperSource and Tiles use the same
   // playback contract rather than inventing independent loop controls.
@@ -1142,17 +1138,30 @@ class ICompositor {
   [[nodiscard]] virtual bool encoderExporting() const { return false; }
 };
 
-class IMediaFrameSource {
+// One clip, for the one decoder MediaTransports owns per source. Play, pause,
+// and loop are properties of that clip. The compositor plan is not a decode
+// request: a plan layer never carries play state.
+struct MediaDecodeRequest {
+  std::string kind;  // "media-video" or "media-background"
+  std::string sourceId;
+  std::string assetId;
+  std::string assetKind;
+  std::string assetPath;
+  bool playing = false;
+  bool loop = false;
+};
+
+class IMediaDecoder {
  public:
-  virtual ~IMediaFrameSource() = default;
-  virtual std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) = 0;
+  virtual ~IMediaDecoder() = default;
+  virtual std::vector<VideoFrame> pollMediaFrames(const MediaDecodeRequest& request, int64_t timestampMs) = 0;
   // Exact monotonic presentation time for scheduled media. Legacy adapters
   // retain their millisecond contract through this additive default.
-  virtual std::vector<VideoFrame> pollMediaFramesAt100ns(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestamp100ns) {
-    return pollMediaFrames(layers, timestamp100ns / 10000);
+  virtual std::vector<VideoFrame> pollMediaFramesAt100ns(const MediaDecodeRequest& request, int64_t timestamp100ns) {
+    return pollMediaFrames(request, timestamp100ns / 10000);
   }
-  virtual std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) {
-    (void)layers;
+  virtual std::vector<AudioFrame> pollMediaAudioFrames(const MediaDecodeRequest& request, int64_t timestampMs) {
+    (void)request;
     (void)timestampMs;
     return {};
   }
@@ -1588,7 +1597,7 @@ struct ModuleSet {
   // owner object. core::MediaTransports owns one decoder per media source
   // and calls this to open each. Empty on a platform with no media
   // decoder (and in the stub build), which is what MediaCore tests for.
-  std::function<std::unique_ptr<IMediaFrameSource>()> mediaDecoderFactory;
+  std::function<std::unique_ptr<IMediaDecoder>()> mediaDecoderFactory;
   std::unique_ptr<IAudioMixer> mixer;
   std::unique_ptr<IAudioMonitorOutput> monitorOutput;
   std::unique_ptr<IAudioCaptureSource> audioCapture;
@@ -1610,7 +1619,7 @@ std::unique_ptr<ICompositor> createD3D11Compositor();
 // the D3D11 null factory — each is non-null on at most one platform).
 std::unique_ptr<ICompositor> createMetalCompositor();
 // One MF decoder per call; empty on a build with no Media Foundation.
-std::function<std::unique_ptr<IMediaFrameSource>()> createMediaFoundationMediaDecoderFactory();
+std::function<std::unique_ptr<IMediaDecoder>()> createMediaFoundationMediaDecoderFactory();
 std::unique_ptr<IAudioMonitorOutput> createStubAudioMonitorOutput();
 // macOS CoreAudio twins; nullptr unless COREVIDEO_WITH_COREAUDIO.
 std::unique_ptr<IAudioMonitorOutput> createCoreAudioMonitorOutput();
