@@ -781,7 +781,7 @@ class FakeCaptureDevice final : public ICaptureDevice {
   // core as a first-class capture source (participantId "capture:<deviceId>"),
   // so a scene route can composite a real-pixel program frame from a UVC/SDI
   // input exactly like the hardware adapters will.
-  std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
+  void captureVideoTick(int64_t timestampMs) override {
     std::vector<VideoFrame> frames;
     for (const auto& device : devices_) {
       if (device.connectionState != "connected" || !device.signalPresent) {
@@ -801,7 +801,7 @@ class FakeCaptureDevice final : public ICaptureDevice {
       frame.frameId = ++frameId_;
       frames.push_back(std::move(frame));
     }
-    return frames;
+    replaceVideo(std::move(frames));
   }
 
   std::vector<CaptureDeviceInfo> selectInput(const std::string& deviceId, const std::string& inputId) override {
@@ -936,28 +936,41 @@ class CompositeCaptureDevice final : public ICaptureDevice {
     return enumerate();
   }
 
-  std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
-    std::vector<VideoFrame> result;
+  void registerCaptureBuffer(const std::string& deviceId, const std::string& shmName, int width, int height) override {
     for (const auto& device : devices_) {
-      auto frames = device->pollVideoFrames(timestampMs);
-      result.insert(result.end(), frames.begin(), frames.end());
+      device->registerCaptureBuffer(deviceId, shmName, width, height);
     }
-    return result;
+  }
+
+  void unregisterCaptureBuffer(const std::string& deviceId) override {
+    for (const auto& device : devices_) {
+      device->unregisterCaptureBuffer(deviceId);
+    }
+  }
+
+  void captureVideoTick(int64_t timestampMs) override {
+    struct Collect final : ICaptureVideoConsumer {
+      std::vector<VideoFrame> frames;
+      void publish(VideoFrame frame) override { frames.push_back(std::move(frame)); }
+      void end(const std::string&) override {}
+    } collect;
+    for (const auto& device : devices_) device->deliverVideo(collect, timestampMs);
+    replaceVideo(std::move(collect.frames));
+  }
+
+  void captureAudioTick(int64_t timestampMs) override {
+    struct Collect final : ICaptureAudioConsumer {
+      CompositeCaptureDevice* self = nullptr;
+      void publish(AudioFrame frame) override { self->postAudio(std::move(frame)); }
+    } collect;
+    collect.self = this;
+    for (const auto& device : devices_) device->deliverAudio(collect, timestampMs);
   }
 
   std::vector<std::string> audioSourceIds() const override {
     std::vector<std::string> result;
     for (const auto& device : devices_) {
       for (auto& id : device->audioSourceIds()) result.push_back(std::move(id));
-    }
-    return result;
-  }
-
-  std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) override {
-    std::vector<AudioFrame> result;
-    for (const auto& device : devices_) {
-      auto frames = device->pollAudioFrames(timestampMs);
-      result.insert(result.end(), frames.begin(), frames.end());
     }
     return result;
   }

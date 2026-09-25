@@ -230,7 +230,13 @@ TEST(UvcCaptureDeviceFactory, GatedByBuildFlag) {
     EXPECT_EQ(info.connectionState, "detected");
   }
   // No device was connected, so no frames may flow.
-  EXPECT_TRUE(device->pollVideoFrames(1000).empty());
+  struct NoVideo final : corevideo::modules::ICaptureVideoConsumer {
+    int count = 0;
+    void publish(corevideo::modules::VideoFrame) override { ++count; }
+    void end(const std::string&) override {}
+  } none;
+  device->deliverVideo(none, 1000);
+  EXPECT_EQ(none.count, 0);
 #else
   EXPECT_EQ(corevideo::modules::createUvcCaptureDevice(), nullptr);
 #endif

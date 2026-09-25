@@ -14,7 +14,7 @@
 #include "modules/AsyncEncoderSink.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/RealZoomCaptureSource.h"
-#include "modules/WinUiCaptureDeviceAdapter.h"
+
 
 #include <algorithm>
 #include <array>
@@ -460,35 +460,35 @@ rpc::Json MediaCore::captureDevices() const {
 }
 
 rpc::Json MediaCore::selectCaptureInput(const std::string& deviceId, const std::string& inputId) {
-  return captureDeviceArray(modules_.captureDevice->selectInput(deviceId, inputId));
+  modules::ICaptureDeviceLifecycle& lifecycle = *modules_.captureDevice;
+  return captureDeviceArray(lifecycle.selectInput(deviceId, inputId));
 }
 
 rpc::Json MediaCore::setCaptureAudioSyncOffset(const std::string& deviceId, int offsetMs) {
-  return captureDeviceArray(modules_.captureDevice->setAudioSyncOffset(deviceId, offsetMs));
+  modules::ICaptureDeviceLifecycle& lifecycle = *modules_.captureDevice;
+  return captureDeviceArray(lifecycle.setAudioSyncOffset(deviceId, offsetMs));
 }
 
 rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId,
                                           const std::string& outputSourceId) {
+  modules::ICaptureDeviceLifecycle& lifecycle = *modules_.captureDevice;
   return captureDeviceArray(
-      outputSourceId.empty() ? modules_.captureDevice->connect(deviceId)
-                             : modules_.captureDevice->connect(deviceId, outputSourceId));
+      outputSourceId.empty() ? lifecycle.connect(deviceId)
+                             : lifecycle.connect(deviceId, outputSourceId));
 }
 
 rpc::Json MediaCore::disconnectCaptureDevice(const std::string& deviceId) {
   ::corevideo::core::nativeLogf("[lifecycle] disconnect capture %s\n", deviceId.c_str());
-  return captureDeviceArray(modules_.captureDevice->disconnect(deviceId));
+  modules::ICaptureDeviceLifecycle& lifecycle = *modules_.captureDevice;
+  return captureDeviceArray(lifecycle.disconnect(deviceId));
 }
 
 void MediaCore::registerCaptureShm(const std::string& deviceId, const std::string& shmName, int width, int height) {
-  if (auto* adapter = dynamic_cast<modules::WinUiCaptureDeviceAdapter*>(modules_.captureDevice.get())) {
-    adapter->registerCaptureBuffer(deviceId, shmName, width, height);
-  }
+  modules_.captureDevice->registerCaptureBuffer(deviceId, shmName, width, height);
 }
 
 void MediaCore::unregisterCaptureShm(const std::string& deviceId) {
-  if (auto* adapter = dynamic_cast<modules::WinUiCaptureDeviceAdapter*>(modules_.captureDevice.get())) {
-    adapter->unregisterCaptureBuffer(deviceId);
-  }
+  modules_.captureDevice->unregisterCaptureBuffer(deviceId);
 }
 
 rpc::Json MediaCore::addBrowserSource(const rpc::Json& payload, std::string& error) {
@@ -6455,23 +6455,27 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   const bool engineLive = zoomEngineRuntime_ && zoomEngineRuntime_->configured();
   auto videoFrames =
       engineLive ? std::vector<modules::VideoFrame>{} : modules_.zoom->pollVideoFrames();
-  auto polledCapture = modules_.captureDevice->pollVideoFrames(frameTimestampMs);
-  // Browser-source frames ride the capture stream (keyed "capture:browser:<n>"),
-  // so scenes/multiview/routing treat them exactly like any capture device. Same
-  // per-frame copy cost as one WinUI capture-shm bridge device.
+  // Capture devices deliver their held picture onto the bus. The render tick
+  // no longer pulls pollVideoFrames. Browser sources are still polled; they
+  // are not capture devices.
+  struct CaptureVideoToBus final : modules::ICaptureVideoConsumer {
+    core::SourceBus& bus;
+    explicit CaptureVideoToBus(core::SourceBus& bus) : bus(bus) {}
+    void publish(modules::VideoFrame frame) override {
+      core::publishHeldCaptureFrame(bus, std::move(frame));
+    }
+    void end(const std::string& participantId) override {
+      core::endHeldCaptureFrame(bus, participantId);
+    }
+  };
+  CaptureVideoToBus captureVideo(*sourceBus_);
+  modules_.captureDevice->deliverVideo(captureVideo, frameTimestampMs);
+  std::vector<modules::VideoFrame> browserFrames;
   if (!browserSources_->empty()) {
-    auto browserFrames = browserSources_->pollVideoFrames(frameTimestampMs);
-    polledCapture.insert(polledCapture.end(),
-                         std::make_move_iterator(browserFrames.begin()),
-                         std::make_move_iterator(browserFrames.end()));
+    browserFrames = browserSources_->pollVideoFrames(frameTimestampMs);
   }
   markStage(s_subPollUs, 0);
-  // #535 slice 2: capture rides the bus. The adapters hold their frames; the bus
-  // mirrors this tick's poll (CaptureBusRoster.h), so on-air output is identical.
-  // Unconditional: sourceBus_ is constructed in the ctor and never reset, so a
-  // guard here could only ever silently drop every capture pixel with no log
-  // if that ever stopped being true — an assertion, not a real runtime branch.
-  core::syncCaptureSources(*sourceBus_, polledCapture);
+  core::syncCaptureSources(*sourceBus_, browserFrames);
   // Bus ingest, partitioned by kind so the merged vector keeps today's order:
   // capture frames first (where the direct insert used to put them), then Zoom.
   std::vector<modules::VideoFrame> captureFrames;   // KEEP this name: the merge below uses it

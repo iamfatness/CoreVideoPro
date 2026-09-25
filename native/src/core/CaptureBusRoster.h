@@ -20,6 +20,33 @@ namespace corevideo::core {
 // configured audio can keep the source identity alive. Zoom instead retains
 // video through subscription gaps (#554); capture adapters already re-emit
 // their held picture, so a missing capture frame removes video membership.
+inline void publishHeldCaptureFrame(SourceBus& bus, modules::VideoFrame frame) {
+  if (!bus.contains(frame.participantId)) {
+    const int w = frame.pixelWidth > 0 ? frame.pixelWidth : frame.i420Width;
+    const int h = frame.pixelHeight > 0 ? frame.pixelHeight : frame.i420Height;
+    bus.add(std::make_shared<CaptureDeviceSource>(frame.participantId, w, h));
+  }
+  ISource* existing = bus.sourceFor(frame.participantId);
+  if (auto* capture = dynamic_cast<CaptureDeviceSource*>(existing)) {
+    capture->setLatest(std::move(frame));
+    capture->holdVideo(true);
+  } else if (existing) {
+    static std::atomic<uint32_t> skips{0};
+    if (skips++ % 300 == 0) {
+      nativeLogf("[source-bus] capture frame for '%s' skipped: bus entry is kind '%s'\n",
+                 frame.participantId.c_str(), existing->descriptor().kind.c_str());
+    }
+  }
+}
+
+inline void endHeldCaptureFrame(SourceBus& bus, const std::string& id) {
+  auto* source = dynamic_cast<CaptureDeviceSource*>(bus.sourceFor(id));
+  if (!source) return;
+  source->holdVideo(false);
+  source->clearVideo();
+  if (!source->descriptor().hasAudio) bus.remove(id);
+}
+
 inline void syncCaptureSources(SourceBus& bus,
                                const std::vector<modules::VideoFrame>& captureFrames) {
   std::unordered_set<std::string> present;
@@ -46,7 +73,7 @@ inline void syncCaptureSources(SourceBus& bus,
   }
   for (const std::string& id : bus.sourceIds()) {
     auto* source = dynamic_cast<CaptureDeviceSource*>(bus.sourceFor(id));
-    if (source && present.find(id) == present.end()) {
+    if (source && !source->videoHeld() && present.find(id) == present.end()) {
       source->clearVideo();
       if (!source->descriptor().hasAudio) bus.remove(id);
     }

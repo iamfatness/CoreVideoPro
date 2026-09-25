@@ -28,7 +28,7 @@ class Transport final : public modules::ICaptureDevice {
   std::vector<modules::CaptureDeviceInfo> setAudioSyncOffset(const std::string&, int) override { return {}; }
   std::vector<modules::CaptureDeviceInfo> connect(const std::string&) override { return {}; }
   std::vector<std::string> audioSourceIds() const override { return {"capture:srt-1"}; }
-  std::vector<modules::AudioFrame> pollAudioFrames(int64_t stamp) override { return {pcm("capture:srt-1", stamp, .75f)}; }
+  void captureAudioTick(int64_t stamp) override { postAudio(pcm("capture:srt-1", stamp, .75f)); }
 };
 }
 

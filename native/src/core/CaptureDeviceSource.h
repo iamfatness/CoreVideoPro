@@ -54,6 +54,11 @@ class CaptureDeviceSource final : public ISource {
     descriptor_.hasVideo = false;
     descriptor_.width = descriptor_.height = 0;
   }
+  // Set when the device delivered this picture through deliverVideo. The
+  // browser poll must not treat the source as gone just because this tick's
+  // browser list does not name it.
+  void holdVideo(bool hold) { videoHeld_ = hold; }
+  bool videoHeld() const { return videoHeld_; }
   void prepareAudio(bool configured) {
     pendingAudio_.clear();
     descriptor_.hasAudio = configured;
@@ -72,6 +77,7 @@ class CaptureDeviceSource final : public ISource {
   SourceDescriptor descriptor_;
   modules::VideoFrame latest_;
   bool hasFrame_ = false;
+  bool videoHeld_ = false;
   SourceIngestCounters counters_;
   std::vector<modules::AudioFrame> pendingAudio_;
 };

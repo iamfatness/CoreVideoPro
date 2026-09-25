@@ -431,7 +431,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
   // The feed's embedded audio, keyed "capture:<deviceId>" — the SAME id as its
   // video — so it lands in the existing routing, metering and ISO paths with no
   // special-casing, exactly like a paired capture input.
-  std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) override {
+  void captureAudioTick(int64_t timestampMs) override {
     std::vector<std::shared_ptr<ReaderChannel>> channels;
     {
       std::lock_guard lock(mutex_);
@@ -441,7 +441,6 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       }
     }
 
-    std::vector<AudioFrame> frames;
     for (auto& channel : channels) {
       std::vector<float> pcm;
       {
@@ -465,12 +464,11 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       frame.timestampMs = timestampMs;
       frame.sampleCount = static_cast<int>(frameCount);
       frame.pcm = std::move(pcm);
-      frames.push_back(std::move(frame));
+      postAudio(std::move(frame));
     }
-    return frames;
   }
 
-  std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
+  void captureVideoTick(int64_t timestampMs) override {
     std::vector<std::shared_ptr<ReaderChannel>> channels;
     {
       std::lock_guard lock(mutex_);
@@ -507,7 +505,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       frame.frameId = frameId;
       frames.push_back(std::move(frame));
     }
-    return frames;
+    replaceVideo(std::move(frames));
   }
 
  private:

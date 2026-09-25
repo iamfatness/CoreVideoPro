@@ -107,9 +107,14 @@ void WinUiCaptureDeviceAdapter::unregisterCaptureBuffer(const std::string& devic
   }
 }
 
-std::vector<VideoFrame> WinUiCaptureDeviceAdapter::pollVideoFrames(int64_t timestampMs) {
-  // Keep whatever the inner device produces (e.g. dev hardware test patterns).
-  std::vector<VideoFrame> frames = inner_->pollVideoFrames(timestampMs);
+void WinUiCaptureDeviceAdapter::captureVideoTick(int64_t timestampMs) {
+  struct Collect final : ICaptureVideoConsumer {
+    std::vector<VideoFrame> frames;
+    void publish(VideoFrame frame) override { frames.push_back(std::move(frame)); }
+    void end(const std::string&) override {}
+  } collect;
+  inner_->deliverVideo(collect, timestampMs);
+  std::vector<VideoFrame> frames = std::move(collect.frames);
 
   std::lock_guard<std::mutex> lock(mutex_);
   for (auto& entry : buffers_) {
@@ -171,7 +176,7 @@ std::vector<VideoFrame> WinUiCaptureDeviceAdapter::pollVideoFrames(int64_t times
     frames.push_back(std::move(frame));
   }
 
-  return frames;
+  replaceVideo(std::move(frames));
 }
 
 }  // namespace corevideo::modules

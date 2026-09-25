@@ -6,9 +6,12 @@
 #include <cstdint>
 #include <atomic>
 #include <functional>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace corevideo::modules {
@@ -1442,9 +1445,13 @@ class IOutputSender {
   }
 };
 
-class ICaptureDevice {
+// Session control for a capture adapter (#535 lifecycle slice). ISource stays
+// delivery-only. Opening, selecting, offsetting, and retiring a device session
+// is this contract. Frame polling is not: that remains on ICaptureDevice until
+// the bus is the only consumer.
+class ICaptureDeviceLifecycle {
  public:
-  virtual ~ICaptureDevice() = default;
+  virtual ~ICaptureDeviceLifecycle() = default;
   virtual std::vector<CaptureDeviceInfo> enumerate() const = 0;
   virtual std::vector<CaptureDeviceInfo> selectInput(const std::string& deviceId, const std::string& inputId) = 0;
   virtual std::vector<CaptureDeviceInfo> setAudioSyncOffset(const std::string& deviceId, int offsetMs) = 0;
@@ -1461,21 +1468,117 @@ class ICaptureDevice {
     (void)outputSourceId;
     return connect(deviceId);
   }
-  // Lifecycle L2: stop the device session and release its resources. Default
-  // no-op for adapters without live sessions.
+  // Stop the device session and release its resources. Default no-op for
+  // adapters without live sessions.
   virtual std::vector<CaptureDeviceInfo> disconnect(const std::string&) { return enumerate(); }
   virtual std::vector<CaptureDeviceInfo> configureSrtIngestSources(const std::vector<SrtIngestSourceConfig>&) { return enumerate(); }
-  virtual std::vector<VideoFrame> pollVideoFrames(int64_t) { return {}; }
-  // Audio EMBEDDED in the capture transport itself, keyed "capture:<deviceId>"
-  // like every other capture source. Local cameras and cards pair a separate
-  // WASAPI input instead (CaptureAudioSourceConfig), but an SRT contribution feed
-  // carries its guest's audio inside the same stream and there is no OS audio
-  // device to pair with it. Defaults to empty, so only transports that actually
-  // carry audio implement it.
-  virtual std::vector<AudioFrame> pollAudioFrames(int64_t) { return {}; }
+  // Shell-announced shared-memory session. Default no-op: only the WinUI bridge
+  // maps a buffer. Callers must not cast to that adapter.
+  virtual void registerCaptureBuffer(const std::string&, const std::string&, int, int) {}
+  virtual void unregisterCaptureBuffer(const std::string&) {}
+};
+
+class ICaptureVideoConsumer {
+ public:
+  virtual ~ICaptureVideoConsumer() = default;
+  virtual void publish(VideoFrame frame) = 0;
+  virtual void end(const std::string& participantId) = 0;
+};
+
+class ICaptureAudioConsumer {
+ public:
+  virtual ~ICaptureAudioConsumer() = default;
+  virtual void publish(AudioFrame frame) = 0;
+};
+
+class ICaptureDevice : public ICaptureDeviceLifecycle {
+ public:
+  ~ICaptureDevice() override = default;
+  // Publish what adapters have already pushed. The render tick does not pull
+  // a frame vector. Video slots are re-published with this tick's timestamp so
+  // a held picture stays on air and a frozen frameId can still age out.
+  // Slots marked ended are removed. Audio packets are drained in order.
+  void deliverVideo(ICaptureVideoConsumer& consumer, int64_t timestampMs) {
+    captureVideoTick(timestampMs);
+    std::vector<VideoFrame> frames;
+    std::vector<std::string> ended;
+    {
+      std::lock_guard<std::mutex> lock(captureMailboxMutex_);
+      for (auto it = videoSlots_.begin(); it != videoSlots_.end();) {
+        if (it->second.ended) {
+          ended.push_back(it->first);
+          it = videoSlots_.erase(it);
+        } else {
+          frames.push_back(it->second.frame);
+          ++it;
+        }
+      }
+    }
+    for (auto& frame : frames) {
+      frame.timestampMs = timestampMs;
+      consumer.publish(std::move(frame));
+    }
+    for (const auto& id : ended) consumer.end(id);
+  }
+  void deliverAudio(ICaptureAudioConsumer& consumer, int64_t timestampMs) {
+    captureAudioTick(timestampMs);
+    std::vector<AudioFrame> frames;
+    {
+      std::lock_guard<std::mutex> lock(captureMailboxMutex_);
+      frames.swap(audioQueue_);
+    }
+    for (auto& frame : frames) consumer.publish(std::move(frame));
+  }
+
+ protected:
+  // Adapters that learn about a frame only by looking (shared memory, a test
+  // double) push during this hook. Adapters with their own arrival thread push
+  // from that thread and leave the hook empty.
+  virtual void captureVideoTick(int64_t) {}
+  virtual void captureAudioTick(int64_t) {}
+
+  void postVideo(VideoFrame frame) {
+    const auto id = frame.participantId;
+    std::lock_guard<std::mutex> lock(captureMailboxMutex_);
+    videoSlots_[id] = VideoSlot{std::move(frame), false};
+  }
+  void postVideoEnd(const std::string& id) {
+    std::lock_guard<std::mutex> lock(captureMailboxMutex_);
+    auto& slot = videoSlots_[id];
+    slot.ended = true;
+    if (slot.frame.participantId.empty()) slot.frame.participantId = id;
+  }
+  // Replace the whole video set. Ids that disappeared are ended on the next deliver.
+  void replaceVideo(std::vector<VideoFrame> frames) {
+    std::unordered_set<std::string> live;
+    std::lock_guard<std::mutex> lock(captureMailboxMutex_);
+    for (auto& frame : frames) {
+      auto id = frame.participantId;
+      live.insert(id);
+      videoSlots_[std::move(id)] = VideoSlot{std::move(frame), false};
+    }
+    for (auto& [id, slot] : videoSlots_) {
+      if (!live.count(id)) slot.ended = true;
+    }
+  }
+  void postAudio(AudioFrame frame) {
+    std::lock_guard<std::mutex> lock(captureMailboxMutex_);
+    audioQueue_.push_back(std::move(frame));
+  }
+
+ public:
   // Configured transport identities, including temporary PCM gaps. Must be a
   // cheap state snapshot, not device enumeration or network I/O.
   virtual std::vector<std::string> audioSourceIds() const { return {}; }
+
+ private:
+  struct VideoSlot {
+    VideoFrame frame;
+    bool ended = false;
+  };
+  std::mutex captureMailboxMutex_;
+  std::map<std::string, VideoSlot> videoSlots_;
+  std::vector<AudioFrame> audioQueue_;
 };
 
 struct ModuleSet {

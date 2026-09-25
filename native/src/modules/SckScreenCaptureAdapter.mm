@@ -201,7 +201,7 @@ class SckScreenCaptureDevice final : public ICaptureDevice {
     return infosLocked();
   }
 
-  std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
+  void captureVideoTick(int64_t timestampMs) override {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<VideoFrame> frames;
     for (auto& [id, session] : sessions_) {
@@ -228,7 +228,7 @@ class SckScreenCaptureDevice final : public ICaptureDevice {
       frame.timestampMs = timestampMs;
       frames.push_back(std::move(frame));  // held frame re-emitted every tick
     }
-    return frames;
+    replaceVideo(std::move(frames));
   }
 
  private:

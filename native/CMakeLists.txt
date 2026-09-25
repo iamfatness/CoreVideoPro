@@ -627,6 +627,8 @@ if(BUILD_TESTING)
     tests/MediaFoundationGpuVideoEncoderTest.cpp
     tests/StreamBackpressureRateProbeTest.cpp
     tests/WgcScreenCaptureTest.cpp
+    tests/CaptureDeviceLifecycleTest.cpp
+    tests/CaptureDeviceLifecycleTest.cpp
     tests/CaptureIngestTest.cpp
     tests/ProgramFramePreviewHealthTest.cpp
     tests/SourceBusTest.cpp
