@@ -901,3 +901,13 @@ unknown. Early proactive frame shedding was rejected by the live tests above;
 future recovery work must preserve the normal one-for-one cadence and prove a
 bounded catch-up after an injected preparation stall before another external
 candidate test.
+
+The first non-startup miss in that failure was a delivery attempt for slot
+22,886 that began 4.19 ms *after* its deadline; acquiring the keyed mutex then
+took only 0.049 ms. Slot 22,887 began 2.47 ms late and acquired in 0.067 ms.
+The next slot, 22,888, missed while its front was still Preparing, followed by
+the sustained one-to-four-slot lag. This excludes a slow keyed-mutex acquire
+as the immediate cause of those first two deadline misses. The old log did not
+record when preparation marked each slot Ready or when the delivery thread was
+scheduled, so it cannot distinguish late GPU preparation from a late thread
+wake. A clean 20-minute run had no comparable post-startup sequence.
