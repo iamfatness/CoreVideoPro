@@ -357,9 +357,10 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
     return infosLocked();
   }
 
-  std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
-    std::lock_guard<std::mutex> lock(mutex_);
+  void captureVideoTick(int64_t timestampMs) override {
     std::vector<VideoFrame> frames;
+    {
+    std::lock_guard<std::mutex> lock(mutex_);
     for (auto& [deviceId, session] : sessions_) {
       std::shared_ptr<const std::vector<std::uint8_t>> bgra;
       int width = 0;
@@ -382,7 +383,8 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
       frame.pixelStride = width * 4;
       frames.push_back(std::move(frame));
     }
-    return frames;
+    }
+    replaceVideo(std::move(frames));
   }
 
  private:

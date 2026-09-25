@@ -22,6 +22,16 @@ uint32_t previewPixelRgba(const corevideo::modules::ProgramFramePreviewPixels& p
          static_cast<uint32_t>(preview.bgra[offset + 0]);
 }
 
+std::vector<corevideo::modules::VideoFrame> deliveredVideo(corevideo::modules::ICaptureDevice& device, int64_t timestampMs) {
+  struct Collect final : corevideo::modules::ICaptureVideoConsumer {
+    std::vector<corevideo::modules::VideoFrame> frames;
+    void publish(corevideo::modules::VideoFrame frame) override { frames.push_back(std::move(frame)); }
+    void end(const std::string&) override {}
+  } collect;
+  device.deliverVideo(collect, timestampMs);
+  return std::move(collect.frames);
+}
+
 }  // namespace
 
 TEST(CaptureIngest, ConnectedDeviceEmitsTestPatternPixels) {
@@ -29,7 +39,7 @@ TEST(CaptureIngest, ConnectedDeviceEmitsTestPatternPixels) {
   ASSERT_NE(modules.captureDevice, nullptr);
 
   // decklink-1 is connected with signal in the stub device set.
-  const auto frames = modules.captureDevice->pollVideoFrames(1000);
+  const auto frames = deliveredVideo(*modules.captureDevice, 1000);
   const corevideo::modules::VideoFrame* camera = nullptr;
   for (const auto& frame : frames) {
     if (frame.participantId == "capture:decklink-1") {
@@ -57,7 +67,7 @@ TEST(CaptureIngest, ConnectedDeviceEmitsTestPatternPixels) {
 
 TEST(CaptureIngest, DisconnectedDeviceEmitsNoFrame) {
   auto modules = corevideo::modules::createStubModules();
-  const auto frames = modules.captureDevice->pollVideoFrames(1000);
+  const auto frames = deliveredVideo(*modules.captureDevice, 1000);
   // aja-io-1 is only "detected" (no signal) in the stub set, so it must not emit.
   for (const auto& frame : frames) {
     EXPECT_NE(frame.participantId, "capture:aja-io-1");
@@ -66,7 +76,7 @@ TEST(CaptureIngest, DisconnectedDeviceEmitsNoFrame) {
 
 TEST(CaptureIngest, CaptureFrameCompositesRealPixelsIntoProgramPreview) {
   auto modules = corevideo::modules::createStubModules();
-  const auto frames = modules.captureDevice->pollVideoFrames(1000);
+  const auto frames = deliveredVideo(*modules.captureDevice, 1000);
   ASSERT_FALSE(frames.empty());
 
   // Route a connected capture source full-frame into the program.

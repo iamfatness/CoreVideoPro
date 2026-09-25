@@ -58,22 +58,27 @@ class WinUiCaptureDeviceAdapter final : public ICaptureDevice {
 
   // Real capture frames from the WinUI shared-memory buffers, merged with whatever
   // the inner device produces (e.g. dev test patterns for hardware adapters).
-  std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override;
+  void captureVideoTick(int64_t timestampMs) override;
 
   // MUST forward: the shell bridge carries no audio, but the devices this wraps do
   // (SRT ingest carries its guest's audio embedded in the transport). The
   // ICaptureDevice default returns {} — inheriting it silently swallowed every
   // ingested audio frame while video flowed fine, the same shape as the 1-arg
   // connect() bug above. Any new ICaptureDevice method must be forwarded here.
-  std::vector<AudioFrame> pollAudioFrames(int64_t timestampMs) override {
-    return inner_->pollAudioFrames(timestampMs);
+  void captureAudioTick(int64_t timestampMs) override {
+    struct Collect final : ICaptureAudioConsumer {
+      WinUiCaptureDeviceAdapter* self = nullptr;
+      void publish(AudioFrame frame) override { self->postAudio(std::move(frame)); }
+    } collect;
+    collect.self = this;
+    inner_->deliverAudio(collect, timestampMs);
   }
   std::vector<std::string> audioSourceIds() const override { return inner_->audioSourceIds(); }
 
   // Map (or re-map on size change) a WinUI capture buffer for a device.
-  void registerCaptureBuffer(const std::string& deviceId, const std::string& shmName, int width, int height);
+  void registerCaptureBuffer(const std::string& deviceId, const std::string& shmName, int width, int height) override;
   // Release a device's buffer (device disconnected / capture stopped).
-  void unregisterCaptureBuffer(const std::string& deviceId);
+  void unregisterCaptureBuffer(const std::string& deviceId) override;
 
  private:
   struct Buffer {

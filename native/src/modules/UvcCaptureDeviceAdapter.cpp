@@ -651,9 +651,10 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
     return snapshotLocked();
   }
 
-  std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
-    std::lock_guard<std::mutex> lock(mutex_);
+  void captureVideoTick(int64_t timestampMs) override {
     std::vector<VideoFrame> frames;
+    {
+    std::lock_guard<std::mutex> lock(mutex_);
     for (auto& entry : devices_) {
       if (!entry.session) {
         continue;
@@ -699,7 +700,8 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       frame.i420Bt601 = snapshot.bt601;
       frames.push_back(std::move(frame));
     }
-    return frames;
+    }
+    replaceVideo(std::move(frames));
   }
 
  private:

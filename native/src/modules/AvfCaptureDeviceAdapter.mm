@@ -234,7 +234,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
     return snapshotLocked();
   }
 
-  std::vector<VideoFrame> pollVideoFrames(int64_t timestampMs) override {
+  void captureVideoTick(int64_t timestampMs) override {
     std::lock_guard<std::mutex> lock(shared_->mutex);
     // Consent arrived after a connect bailed — start those sessions now.
     if (shared_->retryAfterPermission.exchange(false)) {
@@ -342,7 +342,7 @@ class AvfCaptureDevice final : public ICaptureDevice {
         frames.push_back(std::move(frame));  // re-emit held frame every tick
       }
     }
-    return frames;
+    replaceVideo(std::move(frames));
   }
 
  private:

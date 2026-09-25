@@ -65,7 +65,12 @@ inline std::vector<modules::AudioFrame> ingestSourceAudio(
   auto frames = capture ? capture->pollAudioFrames(timestampMs) : std::vector<modules::AudioFrame>{};
   if (transport) {
     for (auto& id : transport->audioSourceIds()) configured.insert(std::move(id));
-    for (auto& frame : transport->pollAudioFrames(timestampMs)) frames.push_back(std::move(frame));
+    struct TransportAudio final : modules::ICaptureAudioConsumer {
+      std::vector<modules::AudioFrame> frames;
+      void publish(modules::AudioFrame frame) override { frames.push_back(std::move(frame)); }
+    } delivered;
+    transport->deliverAudio(delivered, timestampMs);
+    for (auto& frame : delivered.frames) frames.push_back(std::move(frame));
   }
   stageCaptureAudioSources(bus, std::move(frames), configured);
   stageMediaAudioSources(bus, media ? media->popAudio(timestampMs) : std::vector<modules::AudioFrame>{});

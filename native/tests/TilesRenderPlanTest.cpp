@@ -186,7 +186,7 @@ class FrozenFrameIdCaptureDevice final : public corevideo::modules::ICaptureDevi
   }
   std::vector<corevideo::modules::CaptureDeviceInfo> connect(const std::string&) override { return {}; }
 
-  std::vector<corevideo::modules::VideoFrame> pollVideoFrames(int64_t timestampMs) override {
+  void captureVideoTick(int64_t timestampMs) override {
     corevideo::modules::VideoFrame frame;
     frame.participantId = "capture:frozen-1";
     frame.width = frame.naturalWidth = frame.pixelWidth = 64;
@@ -201,7 +201,7 @@ class FrozenFrameIdCaptureDevice final : public corevideo::modules::ICaptureDevi
     // NEVER advances — the frozen-guest scenario I4 exists to catch.
     frame.frameId = 1;
     frame.pixels = pixels_;
-    return {frame};
+    replaceVideo({std::move(frame)});
   }
 
  private:
@@ -885,8 +885,8 @@ class LiveWallCaptureDevice final : public corevideo::modules::ICaptureDevice {
   }
   std::vector<corevideo::modules::CaptureDeviceInfo> connect(const std::string&) override { return {}; }
 
-  std::vector<corevideo::modules::VideoFrame> pollVideoFrames(int64_t timestampMs) override {
-    if (!delivering_) return {};
+  void captureVideoTick(int64_t timestampMs) override {
+    if (!delivering_) { replaceVideo({}); return; }
     if (!frozen_) ++frameId_;
     std::vector<corevideo::modules::VideoFrame> frames;
     frames.reserve(ids_.size());
@@ -901,7 +901,7 @@ class LiveWallCaptureDevice final : public corevideo::modules::ICaptureDevice {
       frame.pixels = pixels_;
       frames.push_back(std::move(frame));
     }
-    return frames;
+    replaceVideo(std::move(frames));
   }
 
  private:

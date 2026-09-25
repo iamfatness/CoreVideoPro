@@ -91,7 +91,13 @@ TEST(MacCaptureAdapters, AvfFactoryEnumeratesTruthfully) {
     EXPECT_FALSE(info.nativeDeviceId.empty());
     EXPECT_EQ(info.connectionState, "detected");
   }
-  EXPECT_TRUE(device->pollVideoFrames(0).empty());
+  struct NoVideo final : corevideo::modules::ICaptureVideoConsumer {
+    int count = 0;
+    void publish(corevideo::modules::VideoFrame) override { ++count; }
+    void end(const std::string&) override {}
+  } none;
+  device->deliverVideo(none, 0);
+  EXPECT_EQ(none.count, 0);
   // Connecting an unknown id must not crash and must not fabricate a device.
   const auto after = device->connect("no-such-camera", "capture-key");
   EXPECT_EQ(after.size(), devices.size());
@@ -112,7 +118,13 @@ TEST(MacCaptureAdapters, SckFactoryEnumeratesWithoutCrashing) {
     EXPECT_EQ(info.vendor, "ScreenCaptureKit");
     EXPECT_TRUE(info.kind == "screen" || info.kind == "window");
   }
-  EXPECT_TRUE(device->pollVideoFrames(0).empty());
+  struct NoVideo final : corevideo::modules::ICaptureVideoConsumer {
+    int count = 0;
+    void publish(corevideo::modules::VideoFrame) override { ++count; }
+    void end(const std::string&) override {}
+  } none;
+  device->deliverVideo(none, 0);
+  EXPECT_EQ(none.count, 0);
   const auto after = device->disconnect("screen:99");
   EXPECT_EQ(after.size(), devices.size());
 }
