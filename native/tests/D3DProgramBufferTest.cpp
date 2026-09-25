@@ -3,6 +3,7 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <atomic>
 
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
 #ifndef NOMINMAX
@@ -28,6 +29,44 @@ namespace corevideo::modules {
 struct D3DProgramBufferTestAccess {
   static void fail(D3DProgramBuffer& buffer) { buffer.fail("test-injected"); }
 };
+}
+
+TEST(D3DProgramBuffer, SustainsFullSizeNv12PreparationAtSixtyHertz) {
+  ProgramBufferTimerResolution timer;
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+      device.put(), nullptr, context.put())));
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = 1920; desc.Height = 1080; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT; desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ComPtrLite<ID3D11Texture2D> source;
+  ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, source.put())));
+  D3DProgramBuffer buffer(device.get(), 1920, 1080, 2, 1, {});
+  ASSERT_TRUE(buffer.valid());
+  const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+  for (int slot = 0; slot < 180; ++slot) {
+    std::this_thread::sleep_until(anchor + std::chrono::nanoseconds(static_cast<int64_t>(slot) * 1'000'000'000 / 60));
+    ProgramFrame frame; frame.frameNumber = slot + 1; frame.productionSlot = slot;
+    frame.productionAnchorNs = anchorNs; frame.width = 1920; frame.height = 1080;
+    buffer.submit(context.get(), source.get(), std::move(frame), true);
+    context->Flush();
+    ProgramFrame delivered;
+    while (buffer.take(delivered, 0)) {}
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const auto diagnostics = buffer.diagnostics();
+  std::cerr << "full-size Nv12 produced=" << diagnostics.produced
+            << " delivered=" << diagnostics.delivered
+            << " underruns=" << diagnostics.underruns
+            << " overflows=" << diagnostics.overflows << '\n';
+  EXPECT_GE(diagnostics.delivered, 170u);
+  EXPECT_LE(diagnostics.underruns, 5u);
+  EXPECT_LE(diagnostics.overflows, 5u);
 }
 
 TEST(D3DProgramBuffer, FailedProducerKeepsEmptyOutputReadsPaced) {

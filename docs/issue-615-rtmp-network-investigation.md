@@ -834,3 +834,31 @@ were restored. The early-skip behavior and its test have been reverted from
 the proposed code. These failures show that skipping near-deadline frames is
 not a continuity fix for this workload; the preparation and delivery pipeline
 needs a deeper change validated at full 1080p60 with all eight feeds.
+
+### Local preparation timing baseline, September 25 UTC
+
+Read-only Program-buffer diagnostics now expose completed preparations, the
+last and maximum time waiting in its submission queue, and the last and
+maximum preparation duration. An isolated D3D hardware test delivered all
+180 full-size NV12 frames paced at 60 Hz with no overflow. With the full app
+joined to the eight-feed meeting but streaming off, a three-minute run
+produced and delivered 10,755 additional frames one-for-one; neither underruns
+nor overflows increased. The maximum queue wait was 7.6 ms and maximum
+preparation 9.9 ms.
+
+The same instrumented app then streamed at 10 Mbps and 1080p60 to a local
+RTMP receiver for five minutes. It produced and delivered 17,985 additional
+frames one-for-one with no new underruns, overflows, sender restarts or
+backpressure. Queue wait peaked at 9.0 ms, preparation at 11.9 ms, and the
+receiver recorded 18,076 H.264 and 14,121 AAC packets before exiting
+normally. Both legs kept eight Tiles feeds, but their incoming Zoom video was
+1280×720; this is not an exact workload match for the earlier eight-feed
+1920×1080 failure. The output setting remained 1920×1080 at 60 fps and
+10 Mbps. The local run and original preferences were shut down and restored.
+
+These results show that full-size NV12 preparation and local RTMP encoding can
+sustain this specific meeting without the external upload. They do not prove
+that the RTMP network path itself stalls Program delivery; the external path
+may add host scheduling or GPU contention. A guarded external run with the new
+timings must stop at the first new Program miss to distinguish a preparation
+slowdown from a delivery-thread scheduling delay.

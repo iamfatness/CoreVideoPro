@@ -238,6 +238,9 @@ struct ProgramBufferDiagnostics {
   uint64_t produced = 0, delivered = 0, underruns = 0, overflows = 0;
   uint64_t gpuNotReady = 0, deadlineMisses = 0;
   uint64_t displayUnconsumed = 0, displayBusy = 0;
+  uint64_t prepared = 0;
+  double lastQueueWaitMs = 0, maxQueueWaitMs = 0;
+  double lastPreparationMs = 0, maxPreparationMs = 0;
   uint64_t generation = 0;
   std::string status = "unsupported";
 };

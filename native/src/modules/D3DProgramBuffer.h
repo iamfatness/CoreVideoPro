@@ -84,6 +84,7 @@ class D3DProgramBuffer {
       std::lock_guard<std::mutex> lock(mutex_);
       slot->frame = std::move(frame);
       slot->needsNv12 = nv12;
+      slot->submittedAt = std::chrono::steady_clock::now();
       slot->state = State::Submitted;
       submitted_.push_back(slot);
       delivery_.push_back(slot);
@@ -135,6 +136,7 @@ class D3DProgramBuffer {
     ProgramFrame frame;
     bool needsNv12 = false;
     int64_t productionSlot = 0;
+    std::chrono::steady_clock::time_point submittedAt{};
   };
   // Retained by every published frame, so replacing the buffer cannot destroy
   // the shell's exported resource while its last delivered metadata is leased.
@@ -309,6 +311,9 @@ class D3DProgramBuffer {
         changed_.wait(lock, [&] { return stopped_ || !submitted_.empty(); });
         if (stopped_) return;
         slot = submitted_.front(); slot->state = State::Preparing;
+        diagnostics_.lastQueueWaitMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - slot->submittedAt).count();
+        diagnostics_.maxQueueWaitMs = (std::max)(diagnostics_.maxQueueWaitMs, diagnostics_.lastQueueWaitMs);
       }
       if (slot->prepareMutex->AcquireSync(1, 0) != S_OK) {
         std::unique_lock<std::mutex> lock(mutex_); ++diagnostics_.gpuNotReady;
@@ -316,6 +321,7 @@ class D3DProgramBuffer {
         if (stopped_) return;
         continue;
       }
+      const auto prepareBegin = std::chrono::steady_clock::now();
       const bool pixelsReady = !slot->needsNv12 || prepareNv12(*slot);
       // Submit the keyed handoff before waiting for its GPU event. State stays
       // Preparing, so delivery cannot acquire key 2 until the query completes;
@@ -324,6 +330,10 @@ class D3DProgramBuffer {
       const bool ready = pixelsReady && released && completePreparation();
       {
         std::lock_guard<std::mutex> lock(mutex_);
+        diagnostics_.lastPreparationMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - prepareBegin).count();
+        diagnostics_.maxPreparationMs = (std::max)(diagnostics_.maxPreparationMs, diagnostics_.lastPreparationMs);
+        ++diagnostics_.prepared;
         submitted_.pop_front(); slot->state = State::Ready;
         // Delivery also retires expired ready slots, returning key 0 exactly once.
         if (!ready) { diagnostics_.status = "failed"; diagnostics_.activeFrames = 0; stopped_ = true; }
