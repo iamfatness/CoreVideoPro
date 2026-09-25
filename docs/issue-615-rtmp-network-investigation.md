@@ -925,3 +925,16 @@ when applicable, since entering Preparing or Ready. This covers a failure
 whose first missed frame never reaches the delivery-acquire stage. An age of
 `-1` means that slot or phase was absent; a Preparing age starts at the latest
 preparation attempt if the GPU-key acquisition had to retry.
+
+The first guarded attempt with these fields did not reach a valid soak: the
+stream-start action returned, but the runner could not observe a sender run ID
+within its two-second startup window and stopped the owned stream. The app and
+guard exited and original output preferences were verified unchanged. During
+this app/meeting startup, Program misses were already present. Slot 276 was
+still Preparing 30.9 ms after that attempt began; slot 279 became Ready about
+0.75 ms after its delivery deadline, and acquisition began 0.007 ms later.
+Thus late readiness, rather than a slow delivery wake, explains that particular
+startup deadline miss. This is not evidence that the earlier 23:35 steady-state
+failure had the same trigger. No valid external-run continuity result came
+from this aborted attempt; evidence is under
+`artifacts/live-601/full-app-external-ready-phase-20min` locally.
