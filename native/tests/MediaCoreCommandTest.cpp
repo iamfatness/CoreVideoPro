@@ -86,14 +86,14 @@ class PcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
     frame.timestampMs = ++tick_ * 16;
     return {frame};
   }
-  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override {
+  void captureAudioTick() override {
     corevideo::modules::AudioFrame frame;
     frame.participantId = "pcm-speaker";
     frame.sampleRate = 48000;
     frame.channels = 2;
     frame.sampleCount = 480;
     frame.pcm.assign(static_cast<size_t>(frame.sampleCount) * frame.channels, 0.5f);
-    return {frame};
+    postAudio(std::move(frame));
   }
 
  private:
@@ -113,14 +113,14 @@ class QuietPcmTestZoomSource final : public corevideo::modules::IZoomCaptureSour
     return {frame};
   }
 
-  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override {
+  void captureAudioTick() override {
     corevideo::modules::AudioFrame frame;
     frame.participantId = "quiet-speaker";
     frame.sampleRate = 48000;
     frame.channels = 2;
     frame.sampleCount = 480;
     frame.pcm.assign(static_cast<size_t>(frame.sampleCount) * frame.channels, 0.04f);
-    return {frame};
+    postAudio(std::move(frame));
   }
 
  private:
@@ -140,7 +140,7 @@ class SinePcmTestZoomSource final : public corevideo::modules::IZoomCaptureSourc
     return {frame};
   }
 
-  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override {
+  void captureAudioTick() override {
     corevideo::modules::AudioFrame frame;
     frame.participantId = "pcm-speaker";
     frame.sampleRate = 48000;
@@ -155,7 +155,7 @@ class SinePcmTestZoomSource final : public corevideo::modules::IZoomCaptureSourc
       frame.pcm[static_cast<size_t>(index) * 2] = sample;
       frame.pcm[static_cast<size_t>(index) * 2 + 1] = sample;
     }
-    return {frame};
+    postAudio(std::move(frame));
   }
 
  private:
@@ -6029,7 +6029,12 @@ TEST(ZoomMeetingSdkAdapter, DevGateDoesNotEmitFramesForDeferredRawSubscriptions)
   });
 
   EXPECT_TRUE(source->pollVideoFrames().empty());
-  EXPECT_TRUE(source->pollAudioFrames().empty());
+  struct Collect final : corevideo::modules::IZoomAudioConsumer {
+    int count = 0;
+    void publish(corevideo::modules::AudioFrame) override { ++count; }
+  } collect;
+  source->deliverAudio(collect);
+  EXPECT_EQ(collect.count, 0);
 #else
   EXPECT_TRUE(true);
 #endif

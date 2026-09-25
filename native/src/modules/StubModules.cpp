@@ -23,6 +23,8 @@
 namespace corevideo::modules {
 namespace {
 
+// Fallback video keeps the UI renderable without a meeting. Audio stays silent
+// so meters and monitor output only represent real routed PCM.
 class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
  public:
   std::vector<VideoFrame> pollVideoFrames() override {
@@ -43,12 +45,6 @@ class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
     second.naturalHeight = 720;
     second.timestampMs = frameNumber_ * 16;
     return {first, second};
-  }
-
-  std::vector<AudioFrame> pollAudioFrames() override {
-    // Fallback video keeps the UI renderable without a meeting. Audio must stay
-    // silent here so meters and monitor output only represent real routed PCM.
-    return {};
   }
 
  private:

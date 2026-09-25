@@ -488,7 +488,6 @@ class CountingZoomSource final : public corevideo::modules::IZoomCaptureSource {
     }
     return frames;
   }
-  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override { return {}; }
   void restart(const std::string& participantId) { frameIds[participantId] = 0; }
   std::vector<std::string> participants{"7"};
   std::set<std::string> paused;

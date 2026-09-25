@@ -116,8 +116,8 @@ TEST(SourceBusAudio, MediaCorePublishesMeasuredPcmIngestForAnAudioOnlyGuest) {
   class AudioGuest final : public corevideo::modules::IZoomCaptureSource {
    public:
     std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override { return {}; }
-    std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override {
-      return {zoomPcm("audio-only", 1234, .25f)};
+    void captureAudioTick() override {
+      postAudio(zoomPcm("audio-only", 1234, .25f));
     }
   };
   auto modules = corevideo::modules::createStubModules();

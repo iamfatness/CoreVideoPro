@@ -105,13 +105,20 @@ Status legend: **Real** = implemented and exercised in the portable/CI build · 
 > [release evidence setup](docs/release-evidence.md). A green portable suite is not
 > verified live-media evidence.
 
-## Current priority (2026-09-24)
+## Current priority (2026-09-25)
 
 Ranked work is only in [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
-1. **Now:** finish source-bus adapter lifecycle ([#535](https://github.com/iamfatness/CoreVideoPro/issues/535)).
-2. **Next:** make the wire honest ([#616](https://github.com/iamfatness/CoreVideoPro/issues/616) with [#619](https://github.com/iamfatness/CoreVideoPro/issues/619) / [#620](https://github.com/iamfatness/CoreVideoPro/issues/620)), then constructed capabilities ([#617](https://github.com/iamfatness/CoreVideoPro/issues/617)), then a Windows production-native CI compile lane ([#618](https://github.com/iamfatness/CoreVideoPro/issues/618)), then [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) SRT/NDI edge I/O.
-3. Live incidents (#615, #608, #624, #597 acceptance) stay unranked until the owner promotes them; they can preempt this list on a show night.
+1. **Now:** finish the source bus ([#535](https://github.com/iamfatness/CoreVideoPro/issues/535)). Capture pictures and embedded PCM are mailbox delivery. The media decoder takes one clip request. Zoom audio is a mailbox drained outside the core lock. The synthetic Zoom video slate is still polled. Capture dropout liveness stays [#562](https://github.com/iamfatness/CoreVideoPro/issues/562).
+2. **Next:** make the wire honest ([#616](https://github.com/iamfatness/CoreVideoPro/issues/616) with [#619](https://github.com/iamfatness/CoreVideoPro/issues/619) / [#620](https://github.com/iamfatness/CoreVideoPro/issues/620)), then constructed capabilities ([#617](https://github.com/iamfatness/CoreVideoPro/issues/617)), then a Windows production-native CI compile lane ([#618](https://github.com/iamfatness/CoreVideoPro/issues/618)), then [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) SRT/NDI edge I/O. Do not start #616 while #535 is open unless the owner re-ranks.
+3. Live incidents (#615, #608, #624, #597 acceptance) stay unranked until the owner promotes them; they can preempt this list on a show night. Per-participant audio delay is [#627](https://github.com/iamfatness/CoreVideoPro/issues/627), also unranked.
+
+Shipped on main since 2026-09-24, still waiting on a fleet show for [#601](https://github.com/iamfatness/CoreVideoPro/issues/601) and [#615](https://github.com/iamfatness/CoreVideoPro/issues/615):
+
+- The GPU encoder keeps the newest prepared frame when publish is busy, and the program buffer waits on a high-resolution timer (`61e83ed1`, [#614](https://github.com/iamfatness/CoreVideoPro/pull/614)). Unsigned beta `beta-2026-09-24-61e83ed`.
+- Capture polling is retired. Adapters push into a mailbox (`4519ade0`, [#625](https://github.com/iamfatness/CoreVideoPro/pull/625)). Unsigned beta `beta-2026-09-25-4519ade`.
+- `IMediaDecoder` takes one `MediaDecodeRequest` (`02e61c43`, [#626](https://github.com/iamfatness/CoreVideoPro/pull/626)). Unsigned beta `beta-2026-09-25-02e61c4`.
+- Zoom audio is drained from a mailbox outside the core lock. Headless clap on that build (`scripts/validate-av-clap.mjs`, 2026-09-25): 8 pairs, median skew -39.0 ms (audio lags video by 39 ms), spread 14.3 ms, inside the 50 ms gate. A person clapping in a live meeting was not recorded.
 
 ## Repository layout
 

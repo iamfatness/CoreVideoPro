@@ -51,7 +51,6 @@ using corevideo::core::MediaCore;
 class NoZoomCaptureSource final : public corevideo::modules::IZoomCaptureSource {
  public:
   std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override { return {}; }
-  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override { return {}; }
 };
 
 // The default stub capture device (FakeCaptureDevice) ships one pre-connected

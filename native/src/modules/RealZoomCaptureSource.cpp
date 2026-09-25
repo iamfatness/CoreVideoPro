@@ -144,11 +144,14 @@ std::vector<VideoFrame> RealZoomCaptureSource::pollVideoFrames() {
   return result;
 }
 
-std::vector<AudioFrame> RealZoomCaptureSource::pollAudioFrames() {
-  if (fallback_) {
-    return fallback_->pollAudioFrames();
-  }
-  return {};
+void RealZoomCaptureSource::captureAudioTick() {
+  if (!fallback_) return;
+  struct Forward final : IZoomAudioConsumer {
+    RealZoomCaptureSource* self = nullptr;
+    void publish(AudioFrame frame) override { self->postAudio(std::move(frame)); }
+  } forward;
+  forward.self = this;
+  fallback_->deliverAudio(forward);
 }
 
 size_t RealZoomCaptureSource::participantCount() const {

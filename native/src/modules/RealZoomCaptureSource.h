@@ -70,7 +70,7 @@ class RealZoomCaptureSource final : public IZoomCaptureSource {
   // when no real frames are available.
   std::vector<VideoFrame> pollVideoFrames() override;
 
-  std::vector<AudioFrame> pollAudioFrames() override;
+  void captureAudioTick() override;
 
   // Number of participants with a stored frame (test/diagnostic helper).
   [[nodiscard]] size_t participantCount() const;

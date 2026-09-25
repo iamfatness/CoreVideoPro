@@ -13,6 +13,8 @@
 
 namespace {
 
+using corevideo::modules::AudioFrame;
+using corevideo::modules::IZoomAudioConsumer;
 using corevideo::modules::IZoomCaptureSource;
 using corevideo::modules::RealZoomCaptureSource;
 using corevideo::modules::VideoFrame;
@@ -44,9 +46,9 @@ class CountingSyntheticSource final : public IZoomCaptureSource {
     ++videoPolls;
     return {{"synthetic-1", 1280, 720, 0}};
   }
-  std::vector<corevideo::modules::AudioFrame> pollAudioFrames() override {
+  void captureAudioTick() override {
     ++audioPolls;
-    return {{"synthetic-1", 48000, 1, 0}};
+    postAudio({"synthetic-1", 48000, 1, 0});
   }
   std::atomic<int> videoPolls{0};
   std::atomic<int> audioPolls{0};
@@ -117,8 +119,12 @@ TEST(RealZoomCaptureSource, FallsBackToSyntheticWhenNoRealFrames) {
   EXPECT_EQ(fallbackPtr->videoPolls.load(), 1);
 
   // Audio always delegates to the fallback.
-  const auto audio = source.pollAudioFrames();
-  EXPECT_EQ(audio.size(), 1u);
+  struct Collect final : IZoomAudioConsumer {
+    std::vector<AudioFrame> frames;
+    void publish(AudioFrame frame) override { frames.push_back(std::move(frame)); }
+  } collect;
+  source.deliverAudio(collect);
+  EXPECT_EQ(collect.frames.size(), 1u);
   EXPECT_EQ(fallbackPtr->audioPolls.load(), 1);
 
   // Once a real frame is ingested, the fallback is no longer consulted for video.
