@@ -920,3 +920,8 @@ to delivery-thread scheduling or lock wait. The second field includes the
 time from Ready transition until the delivery thread begins the keyed-mutex
 acquire; it is not a direct GPU measurement. These are read-only timestamps,
 with no change to frame selection, deadlines, bitrate, or frame rate.
+Source-stage misses also record the front slot's age since submission and,
+when applicable, since entering Preparing or Ready. This covers a failure
+whose first missed frame never reaches the delivery-acquire stage. An age of
+`-1` means that slot or phase was absent; a Preparing age starts at the latest
+preparation attempt if the GPU-key acquisition had to retry.

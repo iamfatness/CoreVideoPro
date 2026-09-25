@@ -137,6 +137,7 @@ class D3DProgramBuffer {
     bool needsNv12 = false;
     int64_t productionSlot = 0;
     std::chrono::steady_clock::time_point submittedAt{};
+    std::chrono::steady_clock::time_point preparingAt{};
     std::chrono::steady_clock::time_point readyAt{};
   };
   // Retained by every published frame, so replacing the buffer cannot destroy
@@ -311,7 +312,9 @@ class D3DProgramBuffer {
         std::unique_lock<std::mutex> lock(mutex_);
         changed_.wait(lock, [&] { return stopped_ || !submitted_.empty(); });
         if (stopped_) return;
-        slot = submitted_.front(); slot->state = State::Preparing;
+        slot = submitted_.front();
+        slot->preparingAt = std::chrono::steady_clock::now();
+        slot->state = State::Preparing;
         diagnostics_.lastQueueWaitMs = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - slot->submittedAt).count();
         diagnostics_.maxQueueWaitMs = (std::max)(diagnostics_.maxQueueWaitMs, diagnostics_.lastQueueWaitMs);
@@ -367,10 +370,18 @@ class D3DProgramBuffer {
       if (delivery_.empty() || delivery_.front()->state != State::Ready || delivery_.front()->productionSlot != targetSlot) {
         if (const auto due = timeline_->takeDue(now100ns() * 100)) {
           diagnostics_.underruns += due->skippedSlots + 1;
-          ::corevideo::core::nativeLogf("[program-buffer-miss] stage=source target=%lld front=%lld state=%d skipped=%lld late_ns=%lld\n",
-              static_cast<long long>(targetSlot), delivery_.empty() ? -1LL : static_cast<long long>(delivery_.front()->productionSlot),
-              delivery_.empty() ? -1 : static_cast<int>(delivery_.front()->state), static_cast<long long>(due->skippedSlots),
-              static_cast<long long>(now100ns() * 100 - due->deadlineNs));
+          const auto* front = delivery_.empty() ? nullptr : delivery_.front();
+          const auto observed = std::chrono::steady_clock::now();
+          const auto ageNs = [&](std::chrono::steady_clock::time_point since) {
+            return static_cast<long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(observed - since).count());
+          };
+          ::corevideo::core::nativeLogf("[program-buffer-miss] stage=source target=%lld front=%lld state=%d skipped=%lld late_ns=%lld submitted_age_ns=%lld preparing_age_ns=%lld ready_age_ns=%lld\n",
+              static_cast<long long>(targetSlot), front ? static_cast<long long>(front->productionSlot) : -1LL,
+              front ? static_cast<int>(front->state) : -1, static_cast<long long>(due->skippedSlots),
+              static_cast<long long>(now100ns() * 100 - due->deadlineNs),
+              front ? ageNs(front->submittedAt) : -1LL,
+              front && front->state == State::Preparing ? ageNs(front->preparingAt) : -1LL,
+              front && front->state == State::Ready ? ageNs(front->readyAt) : -1LL);
         }
         continue;
       }
