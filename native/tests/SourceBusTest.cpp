@@ -115,7 +115,6 @@ TEST(SourceBusAudio, RemovingAudioKeepsVideoAndDoesNotReemitOldPcm) {
 TEST(SourceBusAudio, MediaCorePublishesMeasuredPcmIngestForAnAudioOnlyGuest) {
   class AudioGuest final : public corevideo::modules::IZoomCaptureSource {
    public:
-    std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override { return {}; }
     void captureAudioTick() override {
       postAudio(zoomPcm("audio-only", 1234, .25f));
     }

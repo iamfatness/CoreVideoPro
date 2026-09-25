@@ -27,7 +27,7 @@ namespace {
 // so meters and monitor output only represent real routed PCM.
 class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
  public:
-  std::vector<VideoFrame> pollVideoFrames() override {
+  void captureVideoTick() override {
     ++frameNumber_;
     VideoFrame first;
     first.participantId = "synthetic-speaker-1";
@@ -44,7 +44,8 @@ class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
     second.naturalWidth = 1280;
     second.naturalHeight = 720;
     second.timestampMs = frameNumber_ * 16;
-    return {first, second};
+    postVideo(std::move(first));
+    postVideo(std::move(second));
   }
 
  private:

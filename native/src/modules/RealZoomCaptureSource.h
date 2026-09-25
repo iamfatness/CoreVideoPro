@@ -16,9 +16,9 @@ namespace corevideo::modules {
 //
 // The Zoom engine decodes participant video into BGRA frames inside
 // ZoomEngineRuntime. Those frames are ingested here, keyed by participantId,
-// and surfaced through pollVideoFrames() carrying their real pixels (the
+// and surfaced through deliverVideo() carrying their real pixels (the
 // SyntheticZoomCaptureSource only ever returned metadata). When no participant
-// has a fresh frame, pollVideoFrames() falls back to the wrapped synthetic
+// has a fresh frame, deliverVideo() falls back to the wrapped synthetic
 // source so there is no regression when there is no meeting or no video.
 class RealZoomCaptureSource final : public IZoomCaptureSource {
  public:
@@ -65,10 +65,10 @@ class RealZoomCaptureSource final : public IZoomCaptureSource {
   // not video frames or that are malformed are ignored.
   void ingestFrameEvents(const std::vector<rpc::Json>& events);
 
-  // Returns one VideoFrame per participant that has a stored frame, each
+  // Posts one VideoFrame per participant that has a stored frame, each
   // carrying its real BGRA pixels. Falls back to the wrapped synthetic source
   // when no real frames are available.
-  std::vector<VideoFrame> pollVideoFrames() override;
+  void captureVideoTick() override;
 
   void captureAudioTick() override;
 

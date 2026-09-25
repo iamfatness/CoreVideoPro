@@ -470,23 +470,19 @@ corevideo::rpc::Json zoomRouteScene(const char* sceneId, const char* participant
 // reopens a guest (frame ids go back to 1); `pause` stops it delivering.
 class CountingZoomSource final : public corevideo::modules::IZoomCaptureSource {
  public:
-  std::vector<corevideo::modules::VideoFrame> pollVideoFrames() override {
-    std::vector<corevideo::modules::VideoFrame> frames;
+  void captureVideoTick() override {
     for (const auto& participantId : participants) {
       if (paused.count(participantId) > 0) continue;
       corevideo::modules::VideoFrame frame;
       frame.participantId = participantId;
       frame.width = frame.height = 2;
       frame.frameId = ++frameIds[participantId];
-      if (metadataOnly.count(participantId) > 0) {  // roster entry: no pixels, no I420
-        frames.push_back(std::move(frame));
-        continue;
+      if (metadataOnly.count(participantId) == 0) {
+        frame.i420Width = frame.i420Height = 2;
+        frame.i420 = std::make_shared<const std::vector<std::uint8_t>>(6, 128);
       }
-      frame.i420Width = frame.i420Height = 2;
-      frame.i420 = std::make_shared<const std::vector<std::uint8_t>>(6, 128);
-      frames.push_back(std::move(frame));
+      postVideo(std::move(frame));
     }
-    return frames;
   }
   void restart(const std::string& participantId) { frameIds[participantId] = 0; }
   std::vector<std::string> participants{"7"};
