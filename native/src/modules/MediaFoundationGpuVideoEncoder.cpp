@@ -568,6 +568,14 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     nv.Usage = D3D11_USAGE_DEFAULT;
     nv.BindFlags = D3D11_BIND_RENDER_TARGET;
     if (FAILED(device_->CreateTexture2D(&nv, nullptr, &nv12_))) return fail("nv12-texture");
+    // Private copy of the compositor's shared BGRA. The keyed mutex must be
+    // released before the video-processor blit: holding it for the blit makes
+    // the exporter drop every newer frame (its unreported consumer-busy path)
+    // for as long as this conversion runs.
+    D3D11_TEXTURE2D_DESC bgra = nv;
+    bgra.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    bgra.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    if (FAILED(device_->CreateTexture2D(&bgra, nullptr, &bgraSource_))) return fail("bgra-source");
     return true;
   }
 
@@ -590,20 +598,26 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   // processor. Acquires the keyed mutex (key 1) held by the producer, then releases
   // key 0 for it to continue rendering.
   bool convertToNv12(const std::string& hex, const std::shared_ptr<std::atomic<int64_t>>& published, int64_t& frameNumber) {
-    if (!ensureOpened(hex) || !openedMutex_) return false;
+    if (!ensureOpened(hex) || !openedMutex_ || !bgraSource_) return false;
     // Wait up to ~2 frame periods for the producer (the 60Hz render thread) to
     // release key 1. A 4ms wait missed the 16ms production cadence on almost
     // every frame, so most converts timed out, wasted the MFT's input slot and
     // starved the encoder to ~2fps. Bounded so stop() is never blocked for long.
     if (openedMutex_->AcquireSync(1, 34) != S_OK) return false;
     if (published) frameNumber = published->load(std::memory_order_acquire);
+    // Copy out and hand the key back before the blit. VideoProcessorBlt can
+    // sit on a busy GPU for a whole frame period; the exporter's publish is
+    // non-blocking and previously discarded those frames with no counter the
+    // sender reports.
+    context_->CopyResource(bgraSource_.Get(), openedTexture_.Get());
+    openedMutex_->ReleaseSync(0);
     bool ok = false;
     do {
       D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd{};
       ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
       ivd.Texture2D.MipSlice = 0;
       ComPtr<ID3D11VideoProcessorInputView> inView;
-      if (FAILED(videoDevice_->CreateVideoProcessorInputView(openedTexture_.Get(),
+      if (FAILED(videoDevice_->CreateVideoProcessorInputView(bgraSource_.Get(),
                                                              videoProcessorEnum_.Get(), &ivd, &inView))) {
         break;
       }
@@ -620,7 +634,6 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       stream.pInputSurface = inView.Get();
       ok = SUCCEEDED(videoContext_->VideoProcessorBlt(videoProcessor_.Get(), outView.Get(), 0, 1, &stream));
     } while (false);
-    openedMutex_->ReleaseSync(0);
     return ok;
   }
 
@@ -871,6 +884,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   ComPtr<ID3D11VideoProcessorEnumerator> videoProcessorEnum_;
   ComPtr<ID3D11VideoProcessor> videoProcessor_;
   ComPtr<ID3D11Texture2D> nv12_;
+  ComPtr<ID3D11Texture2D> bgraSource_;
   ComPtr<ID3D11Texture2D> openedTexture_;
   ComPtr<IDXGIKeyedMutex> openedMutex_;
   std::string openedHandleHex_;

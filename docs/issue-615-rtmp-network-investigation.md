@@ -940,3 +940,29 @@ startup deadline miss. This is not evidence that the earlier 23:35 steady-state
 failure had the same trigger. No valid external-run continuity result came
 from this aborted attempt; evidence is under
 `artifacts/live-601/full-app-external-ready-phase-20min` locally.
+
+### Where the uncounted drops are
+
+Two paths discard a program frame without incrementing `encoderExportShedFrames`,
+source-drop counters, or the sender's slow-write count.
+
+1. The hardware encoder acquired the compositor export's keyed mutex and held
+   it across `VideoProcessorBlt`. `D3DDecoupledExport` publishes with a zero
+   timeout and, on failure, threw the frame away in `consumerBusy_`. That
+   counter is not in the sender snapshot, so a GPU stall looks like a clean
+   60 fps accept. The blit now samples a private copy, and the mutex is
+   released before it. If the key is still busy, the exporter keeps the newest
+   prepared frame and publishes it when the key frees, instead of requiring
+   another render submit.
+2. Program delivery waits with `condition_variable::wait_until`. That wait is
+   millisecond-quantized; the render thread already abandoned it because it
+   overshoots 1–2 ms at `timeBeginPeriod(1)` and more under load. A late wake
+   is the 4.19 ms / 2.47 ms "acquire began after the deadline" signature, and
+   the keyed-mutex acquire itself was under 0.1 ms. Delivery now waits on the
+   same high-resolution timer as the render pacer, and still wakes as soon as
+   the slot is Ready. Separately, a frame that is already past its deadline
+   was still paying the full NV12 readback before the next frame could start,
+   so one miss could not be caught up. Preparation now returns that slot's
+   key without the readback. Frames that still have time left are not shed;
+   the earlier live-failed candidate skipped frames that were only close to
+   the deadline.

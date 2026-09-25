@@ -239,4 +239,65 @@ TEST(D3DDecoupledExport, ProducerNeverWedgesWithNoConsumer) {
   EXPECT_GT(D3DDecoupledExportTestAccess::published(exporter), 0u);
 }
 
+TEST(D3DDecoupledExport, BusyConsumerDoesNotDiscardTheNewestFrame) {
+  // The encoder holds the output key for the whole time it samples the texture.
+  // Frames that arrive in that window used to be dropped inside the exporter,
+  // and nothing the sender reports counted them. The newest one has to be
+  // published once the key is released, without requiring another submit.
+  ComPtrLite<ID3D11Device> device; ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(makeDevice(device, context));
+  D3DDecoupledExport exporter(device.get(), kW, kH, "busy-consumer");
+  ASSERT_TRUE(exporter.valid());
+
+  ComPtrLite<ID3D11Device> consumer; ComPtrLite<ID3D11DeviceContext> consumerCtx;
+  ASSERT_TRUE(makeDevice(consumer, consumerCtx));
+
+  constexpr std::uint32_t kFirst = 0xFF010101u;
+  constexpr std::uint32_t kNewest = 0xFF050505u;
+  ComPtrLite<ID3D11Texture2D> first;
+  ASSERT_TRUE(makeUniformSource(device.get(), context.get(), kFirst, first));
+  ASSERT_TRUE(exporter.submit(context.get(), first.get(), 1));
+  context->Flush();
+
+  const auto published = exporter.publishedFrameNumber();
+  const auto armDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (published->load(std::memory_order_acquire) != 1 &&
+         std::chrono::steady_clock::now() < armDeadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_EQ(published->load(std::memory_order_acquire), 1);
+
+  ComPtrLite<ID3D11Texture2D> opened;
+  ASSERT_TRUE(SUCCEEDED(consumer->OpenSharedResource(
+      exporter.handle(), __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(opened.put()))));
+  ComPtrLite<IDXGIKeyedMutex> held;
+  ASSERT_TRUE(SUCCEEDED(opened->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(held.put()))));
+  ASSERT_EQ(held->AcquireSync(1, 1000), S_OK);
+
+  for (int frame = 2; frame <= 5; ++frame) {
+    ComPtrLite<ID3D11Texture2D> src;
+    const auto color = frame == 5 ? kNewest : static_cast<std::uint32_t>(0xFF000000u | frame);
+    ASSERT_TRUE(makeUniformSource(device.get(), context.get(), color, src));
+    ASSERT_TRUE(exporter.submit(context.get(), src.get(), frame));
+    context->Flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(8));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(40));
+  held->ReleaseSync(0);
+
+  std::uint32_t pixel = 0;
+  int64_t frameNumber = -1;
+  bool matched = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (readOutputPixel(consumer.get(), consumerCtx.get(), exporter.handle(), pixel, published, &frameNumber) &&
+        pixel == kNewest && frameNumber == 5) {
+      matched = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(matched) << "pixel=" << pixel << " frame=" << frameNumber;
+}
+
 #endif  // _WIN32 && dev adapters

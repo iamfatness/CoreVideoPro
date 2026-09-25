@@ -183,54 +183,79 @@ class D3DDecoupledExport {
     return true;
   }
 
+  // Publish prepared_ to the consumer texture. False means the encoder still
+  // holds the key; the pixels stay in prepared_ and must be retried. Dropping
+  // them here is how frames vanished with encoderExportShedFrames still zero.
+  bool publishPrepared(int64_t frameNumber) {
+    bool owned = outputMutex_->AcquireSync(0, 0) == S_OK;
+    if (!owned) owned = outputMutex_->AcquireSync(1, 0) == S_OK;
+    if (!owned) return false;
+    exportContext_->CopyResource(output_.get(), prepared_.get());
+    publishedFrameNumber_->store(frameNumber, std::memory_order_release);
+    outputMutex_->ReleaseSync(1);
+    ++published_;
+    exportContext_->Flush();
+    return true;
+  }
+
   void exportLoop() {
+    bool pending = false;
+    int64_t pendingFrame = 0;
     for (;;) {
       Slot* slot = nullptr;
       {
         std::unique_lock<std::mutex> lock(mutex_);
-        changed_.wait(lock, [&] { return stopped_ || !queue_.empty(); });
-        if (stopped_) return;
-        slot = queue_.front();
-        queue_.pop_front();
-        slot->state = State::Consuming;
+        if (!pending) {
+          changed_.wait(lock, [&] { return stopped_ || !queue_.empty(); });
+        } else if (queue_.empty() && !stopped_) {
+          // The newest frame is already in prepared_. Wait until the encoder
+          // releases the output key or a newer slot arrives. Do not discard it.
+          changed_.wait_for(lock, std::chrono::milliseconds(1), [&] {
+            return stopped_ || !queue_.empty();
+          });
+        }
+        if (stopped_ && queue_.empty() && !pending) return;
+        if (!queue_.empty()) {
+          slot = queue_.front();
+          queue_.pop_front();
+          slot->state = State::Consuming;
+        } else if (stopped_) {
+          return;
+        }
       }
 
-      // Pull the slot into private staging. AcquireSync(1) returns S_OK on the CPU
-      // as soon as the producer's ReleaseSync(1) handed over the key; the fence
-      // wait for the producer copy is on THIS export context, never the render one.
-      const bool pulled = slot->mutex->AcquireSync(1, 0) == S_OK;
-      const int64_t frameNumber = slot->frameNumber;
-      if (pulled) {
-        exportContext_->CopyResource(prepared_.get(), slot->opened.get());
-        slot->mutex->ReleaseSync(0);  // slot free for the producer immediately
-      } else {
-        // Should not happen (producer released before enqueue); return the key so
-        // the producer can never wedge on a slot we failed to take.
-        slot->mutex->ReleaseSync(0);
+      if (slot) {
+        // Pull the slot into private staging. AcquireSync(1) returns S_OK on the CPU
+        // as soon as the producer's ReleaseSync(1) handed over the key; the fence
+        // wait for the producer copy is on THIS export context, never the render one.
+        const bool pulled = slot->mutex->AcquireSync(1, 0) == S_OK;
+        const int64_t frameNumber = slot->frameNumber;
+        if (pulled) {
+          exportContext_->CopyResource(prepared_.get(), slot->opened.get());
+          slot->mutex->ReleaseSync(0);  // slot free for the producer immediately
+        } else {
+          // Should not happen (producer released before enqueue); return the key so
+          // the producer can never wedge on a slot we failed to take.
+          slot->mutex->ReleaseSync(0);
+        }
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          slot->state = State::Free;
+        }
+        changed_.notify_all();
+        if (pulled) {
+          pending = true;
+          pendingFrame = frameNumber;
+        }
       }
-      {
-        std::lock_guard<std::mutex> lock(mutex_);
-        slot->state = State::Free;
-      }
-      changed_.notify_all();
-      if (!pulled) continue;
 
-      // Publish to the shell-facing output on the export timeline. Non-blocking:
-      // if the consumer still holds the texture, skip (the shell keeps its last
-      // frame) rather than stall. Reclaim our own released key when there is no
-      // consumer at all, so the output never wedges on frame 1 (same rule as the
-      // per-participant export).
-      bool owned = outputMutex_->AcquireSync(0, 0) == S_OK;
-      if (!owned) owned = outputMutex_->AcquireSync(1, 0) == S_OK;
-      if (owned) {
-        exportContext_->CopyResource(output_.get(), prepared_.get());
-        publishedFrameNumber_->store(frameNumber, std::memory_order_release);
-        outputMutex_->ReleaseSync(1);
-        ++published_;
+      if (!pending) continue;
+      if (publishPrepared(pendingFrame)) {
+        pending = false;
       } else {
         ++consumerBusy_;
+        if (stopped_) return;
       }
-      exportContext_->Flush();
     }
   }
 
