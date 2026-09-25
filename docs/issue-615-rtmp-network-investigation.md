@@ -862,3 +862,36 @@ that the RTMP network path itself stalls Program delivery; the external path
 may add host scheduling or GPU contention. A guarded external run with the new
 timings must stop at the first new Program miss to distinguish a preparation
 slowdown from a delivery-thread scheduling delay.
+
+A first guarded external run with these fields reached its five-minute cap
+without a new Program miss: 17,956 additional frames were produced and
+delivered one-for-one, all eight feeds remained present, and there were no
+sender restarts or backpressure entries. Maximum queue wait was 6.0 ms,
+maximum preparation 10.2 ms, and maximum FFmpeg pipe write 4 ms. The guard
+retired, the stream and staged app stopped, and the original preferences were
+verified restored. This is a clean bounded observation, not a soak pass: the
+earlier Program-output stop appeared after roughly six minutes. A longer
+first-miss guarded run is needed to capture the intermittent onset.
+
+That longer run completed its 20-minute cap without a recurrence. Across
+1,242 snapshots, Program production and delivery each advanced by 71,970
+frames; underruns and overflows did not increase after startup. All eight
+Tiles feeds remained present, the sender never restarted, and backpressure
+never entered. Maximum queue wait was 6.8 ms, preparation 12.0 ms, and pipe
+write 5 ms. FFmpeg reported 72,001 video frames in 20:00.17 at about 60 fps
+and 10.14 Mbps. Mean whole-adapter upload was 11.2 Mbps, with 42 isolated
+internet ICMP timeouts but no sustained guard trigger. The owned stream
+stopped on schedule; app and guard exited, and original preferences were
+verified restored. This is a meaningful bounded pass on the instrumented
+original behavior, not proof that the intermittent stop is fixed.
+
+In the earlier failure's per-frame log, the delivery front continued advancing
+but remained one to four slots behind the clock (for example target 22,890
+front 22,889, later target 22,954 front 22,950), alternating between
+Preparing and Ready. That points to a throughput/phase-lag problem rather than
+a single permanently wedged keyed mutex. The new preparation timing fields
+were not present in that failing run, so the exact initiating stage remains
+unknown. Early proactive frame shedding was rejected by the live tests above;
+future recovery work must preserve the normal one-for-one cadence and prove a
+bounded catch-up after an injected preparation stall before another external
+candidate test.
