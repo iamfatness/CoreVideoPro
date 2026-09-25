@@ -15,6 +15,7 @@
 #include "modules/SrtFfmpegArgs.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -615,6 +616,7 @@ class RtmpOutputSender final : public IOutputSender {
   // per-tick path uses; the borrow ends inside writeAudioToFfmpeg (it copies into
   // audioQueue_), so holding a caller-owned reference here is safe.
   void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override {
+    ActiveStageScope stageScope(activeStage_, "audio-enqueue");
     if (pcm.empty() || channels <= 0 || sampleRate <= 0) {
       return;
     }
@@ -634,6 +636,7 @@ class RtmpOutputSender final : public IOutputSender {
       const std::vector<float>* programAudioPcm = nullptr,
       int audioChannels = 0,
       int audioSampleRate = 0) override {
+    ActiveStageScope stageScope(activeStage_, "sync-config");
     // Capture the latest real program-audio mix for this tick so the FFmpeg
     // process is configured with (and fed) the second PCM input instead of the
     // `anullsrc` silence source. We treat "audio available" as having a positive
@@ -768,6 +771,7 @@ class RtmpOutputSender final : public IOutputSender {
     // Re-probing on every 20 ms sync previously loaded/unloaded FFmpeg DLLs
     // hundreds of times and crashed corevideo-native during a live stream.
     if (ffmpegBinDirectoryChanged || runtimeProbe_.candidates.empty()) {
+      activeStage_.store("runtime-probe", std::memory_order_relaxed);
       runtimeProbe_ = probeFfmpegRuntime(configuredFfmpegBinDirectory_);
     }
     runtimeDetail_ = runtimeProbe_.detail;
@@ -783,6 +787,7 @@ class RtmpOutputSender final : public IOutputSender {
       ffmpegExecutable_ = runtimeProbe_.ffmpegExecutable;
     }
     sender_.runtimeDetail = runtimeDetail_;
+    activeStage_.store("proof-open", std::memory_order_relaxed);
     openSendProofIfNeeded();
     if (configuredEndpoint_.empty()) {
       sender_.status = "warning";
@@ -858,6 +863,7 @@ class RtmpOutputSender final : public IOutputSender {
       return snapshot();
     }
 
+    activeStage_.store("ffmpeg-ensure", std::memory_order_relaxed);
     if (!ensureFfmpegProcess(*frame, elapsedMs)) {
       // A latched refusal already wrote its one proof line with the named code;
       // appending per frame would flood the proof file for the rest of the show.
@@ -880,6 +886,7 @@ class RtmpOutputSender final : public IOutputSender {
     // Audio follows the 20 ms output-worker cadence. Video does not: pace it to
     // the configured stream fps so a 50 Hz worker cannot overfill FFmpeg's raw
     // 4K input pipe (the 2026-07-14 live freeze reproduced at 42 frames/0.84 s).
+    activeStage_.store("audio-enqueue", std::memory_order_relaxed);
     writeAudioToFfmpeg();
     if (!videoFramePacer_.shouldWrite(elapsedMs, configuredFps_)) {
       sender_.status = hasWrittenVideo_ ? "live" : "starting";
@@ -894,6 +901,7 @@ class RtmpOutputSender final : public IOutputSender {
 
     // GPU-direct: hand the compositor's encoder texture to the hardware encoder,
     // whose sink writes the bitstream to FFmpeg. Raw path writes NV12/BGRA itself.
+    activeStage_.store(useGpuDirect_ ? "encoder-submit" : "raw-video-write", std::memory_order_relaxed);
     const bool videoWriteOk =
         useGpuDirect_ ? submitFrameToGpuEncoder(*frame) : writeFrameToFfmpeg(*frame);
     if (!videoWriteOk) {
@@ -1118,7 +1126,18 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
   }
 
+  const char* diagnosticStage() const override {
+    return activeStage_.load(std::memory_order_relaxed);
+  }
+
  private:
+  struct ActiveStageScope {
+    std::atomic<const char*>& stage;
+    ActiveStageScope(std::atomic<const char*>& stage, const char* name) : stage(stage) {
+      stage.store(name, std::memory_order_relaxed);
+    }
+    ~ActiveStageScope() { stage.store("idle", std::memory_order_relaxed); }
+  };
   static bool hasProgramNv12(const ProgramFrame& frame) {
     if (frame.programNv12Width <= 0 || frame.programNv12Height <= 0) {
       return false;
@@ -1454,7 +1473,7 @@ class RtmpOutputSender final : public IOutputSender {
     config.width = width;
     config.height = height;
     config.fps = (std::max)(1, configuredFps_);
-    config.bitrateKbps = static_cast<int>((std::max)(1000.0, sender_.bitrateMbps * 1000.0));
+    config.bitrateKbps = static_cast<int>((std::max)(500.0, sender_.bitrateMbps * 1000.0));
     config.videoInputPixelFormat = videoInputPixelFormat;
     config.videoEncoder = selectedFfmpegVideoEncoder_.empty()
                               ? ffmpegVideoEncoderFor(compatibility.videoCodec, configuredEncoderMode_)
@@ -1949,7 +1968,7 @@ class RtmpOutputSender final : public IOutputSender {
     cfg.width = width;
     cfg.height = height;
     cfg.fps = (std::max)(1, configuredFps_);
-    cfg.bitrateKbps = static_cast<int>((std::max)(1000.0, sender_.bitrateMbps * 1000.0));
+    cfg.bitrateKbps = static_cast<int>((std::max)(500.0, sender_.bitrateMbps * 1000.0));
     cfg.keyframeIntervalSeconds = configuredKeyframeIntervalSeconds_;
     cfg.rateControl = configuredRateControl_;
     cfg.h264Profile = configuredH264Profile_.empty() ? "high" : configuredH264Profile_;
@@ -2002,6 +2021,8 @@ class RtmpOutputSender final : public IOutputSender {
     bitstreamQueue_.clear();
     bitstreamQueuedBytes_ = 0;
     republishQueueTelemetryLocked();
+    writeTraceNext_ = 0;
+    lastWriteTraceLog_ = {};
 #endif
   }
 
@@ -2094,6 +2115,11 @@ class RtmpOutputSender final : public IOutputSender {
     backpressure_ = corevideo::core::StreamBackpressurePolicy{};
     backpressureDiscardedChunks_ = 0;
     overflowDiscardedChunks_.store(0, std::memory_order_relaxed);
+#if defined(_WIN32)
+    pipeWriteStartedSteadyMs_.store(0, std::memory_order_relaxed);
+    pipeWriteMaxMs_.store(0, std::memory_order_relaxed);
+    pipeSlowWriteCount_.store(0, std::memory_order_relaxed);
+#endif
     ++backpressureRunId_;
     sender_.backpressure.reset();
   }
@@ -2168,6 +2194,16 @@ class RtmpOutputSender final : public IOutputSender {
     state.bufferedMs = publishedBufferedMs;
     state.queuedChunks = static_cast<std::int64_t>(
         bitstreamQueuedChunks_.load(std::memory_order_relaxed));
+#if defined(_WIN32)
+    const auto writeStartedMs = pipeWriteStartedSteadyMs_.load(std::memory_order_relaxed);
+    if (writeStartedMs > 0) {
+      const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+      state.inFlightWriteMs = (std::max)(std::int64_t{0}, nowMs - writeStartedMs);
+    }
+    state.maxWriteMs = pipeWriteMaxMs_.load(std::memory_order_relaxed);
+    state.slowWriteCount = pipeSlowWriteCount_.load(std::memory_order_relaxed);
+#endif
     state.enteredCount = backpressure_.enteredCount();
     // Per-stream-run, reset alongside backpressure_ on the !wantsRtmp stop
     // path above (see backpressureDiscardedChunks_).
@@ -2350,9 +2386,9 @@ class RtmpOutputSender final : public IOutputSender {
               packet.metadata.timingValid ? 1 : 0);
           break;
         }
-        writeBitstreamToFfmpeg(wire.data(), wire.size());
+        writeBitstreamToFfmpeg(wire.data(), wire.size(), &packet.metadata, packet.enqueuedAt);
       } else {
-        writeBitstreamToFfmpeg(packet.bytes.data(), packet.bytes.size());
+        writeBitstreamToFfmpeg(packet.bytes.data(), packet.bytes.size(), &packet.metadata, packet.enqueuedAt);
       }
     }
     bitstreamWriterExited_.store(true);
@@ -2361,7 +2397,9 @@ class RtmpOutputSender final : public IOutputSender {
 
   // Write one encoded chunk to FFmpeg's stdin. Windows runs this on its
   // transport worker; stopGpuEncoder joins both workers before stdin is closed.
-  void writeBitstreamToFfmpeg(const uint8_t* data, size_t size) {
+  void writeBitstreamToFfmpeg(const uint8_t* data, size_t size,
+                             const GpuEncodedChunk* metadata = nullptr,
+                             std::chrono::steady_clock::time_point enqueuedAt = {}) {
     if (!data || size == 0) return;
 #if defined(_WIN32)
     if (!ffmpegRunning_ || !ffmpegStdin_) {
@@ -2372,21 +2410,73 @@ class RtmpOutputSender final : public IOutputSender {
       }
       return;
     }
+    const auto packetWriteStarted = std::chrono::steady_clock::now();
+    // Writer-owned, fixed-size history. Retain timing without logging on the
+    // encoder or render thread and without retaining encoded media.
+    const size_t traceSlot = writeTraceNext_++ % writeTrace_.size();
+    auto& trace = writeTrace_[traceSlot];
+    trace = {metadata ? metadata->frameNumber : -1,
+             metadata ? metadata->pts100ns : 0,
+             metadata ? metadata->dts100ns : 0,
+             metadata ? metadata->keyframe : false,
+             metadata ? metadata->timingValid : false,
+             size,
+             enqueuedAt == std::chrono::steady_clock::time_point{} ? -1
+                 : std::chrono::duration_cast<std::chrono::milliseconds>(packetWriteStarted - enqueuedAt).count(),
+             std::chrono::duration_cast<std::chrono::milliseconds>(packetWriteStarted.time_since_epoch()).count(),
+             -1};
     size_t remaining = size;
     while (remaining > 0) {
       if (bitstreamWriterStop_.load()) return;
       DWORD written = 0;
       const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(1) << 20));
-      if (!WriteFile(ffmpegStdin_, data, chunk, &written, nullptr) || written == 0) {
+      const auto writeStarted = std::chrono::steady_clock::now();
+      pipeWriteStartedSteadyMs_.store(
+          std::chrono::duration_cast<std::chrono::milliseconds>(writeStarted.time_since_epoch()).count(),
+          std::memory_order_relaxed);
+      const BOOL writeSucceeded = WriteFile(ffmpegStdin_, data, chunk, &written, nullptr);
+      const DWORD writeError = writeSucceeded ? ERROR_SUCCESS : GetLastError();
+      pipeWriteStartedSteadyMs_.store(0, std::memory_order_relaxed);
+      const auto writeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - writeStarted).count();
+      if (writeMs > pipeWriteMaxMs_.load(std::memory_order_relaxed)) {
+        pipeWriteMaxMs_.store(writeMs, std::memory_order_relaxed);
+      }
+      if (writeMs >= 100) {
+        pipeSlowWriteCount_.fetch_add(1, std::memory_order_relaxed);
+        ::corevideo::core::nativeLogf(
+            "[ffmpeg-pipe] video slow-write elapsedMs=%lld requested=%lu written=%lu error=%lu stopping=%d\n",
+            static_cast<long long>(writeMs), static_cast<unsigned long>(chunk),
+            static_cast<unsigned long>(written), static_cast<unsigned long>(writeError),
+            bitstreamWriterStop_.load() ? 1 : 0);
+        const auto now = std::chrono::steady_clock::now();
+        if (lastWriteTraceLog_ == std::chrono::steady_clock::time_point{} ||
+            now - lastWriteTraceLog_ >= std::chrono::seconds(1)) {
+          lastWriteTraceLog_ = now;
+          for (size_t back = 0; back < (std::min)(writeTraceNext_, writeTrace_.size()); ++back) {
+            const auto& prior = writeTrace_[(writeTraceNext_ - 1 - back) % writeTrace_.size()];
+            ::corevideo::core::nativeLogf(
+                "[ffmpeg-pipe-history] back=%zu frame=%lld pts100ns=%lld dts100ns=%lld valid=%d key=%d bytes=%zu queueAgeMs=%lld writeStartSteadyMs=%lld writeMs=%lld\n",
+                back, static_cast<long long>(prior.frameNumber), static_cast<long long>(prior.pts100ns),
+                static_cast<long long>(prior.dts100ns), prior.timingValid ? 1 : 0,
+                prior.keyframe ? 1 : 0, prior.bytes, static_cast<long long>(prior.queueAgeMs),
+                static_cast<long long>(prior.writeStartSteadyMs),
+                static_cast<long long>(back == 0 ? writeMs : prior.writeMs));
+          }
+        }
+      }
+      if (!writeSucceeded || written == 0) {
         if (bitstreamWriterStop_.load()) return;
         bitstreamFailure_.record(BitstreamFailure::PipeWrite);
         ::corevideo::core::nativeLogf("[gpu-encode] bitstream WriteFile failed err=%lu (encoder->ffmpeg pipe broke)\n",
-                                     static_cast<unsigned long>(GetLastError()));
+                                     static_cast<unsigned long>(writeError));
         return;
       }
       data += written;
       remaining -= written;
     }
+    trace.writeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - packetWriteStarted).count();
     if (!firstBitstreamLogged_) {
       firstBitstreamLogged_ = true;
       ::corevideo::core::nativeLogf("[gpu-encode] first bitstream write to ffmpeg size=%zu\n", size);
@@ -2630,7 +2720,17 @@ class RtmpOutputSender final : public IOutputSender {
       while (bytesRemaining > 0) {
         DWORD written = 0;
         const DWORD chunk = static_cast<DWORD>((std::min)(bytesRemaining, static_cast<size_t>(1) << 20));
+        const auto writeStarted = std::chrono::steady_clock::now();
         const BOOL writeSucceeded = WriteFile(audioPipeServer_, data, chunk, &written, nullptr);
+        const DWORD writeError = writeSucceeded ? ERROR_SUCCESS : GetLastError();
+        const auto writeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - writeStarted).count();
+        if (writeMs >= 100) {
+          ::corevideo::core::nativeLogf(
+              "[ffmpeg-pipe] audio slow-write elapsedMs=%lld requested=%lu written=%lu error=%lu\n",
+              static_cast<long long>(writeMs), static_cast<unsigned long>(chunk),
+              static_cast<unsigned long>(written), static_cast<unsigned long>(writeError));
+        }
         if (writeSucceeded && written == 0) {
           // A zero-byte success must not end the audio writer; retain the same
           // buffer and let pipe backpressure clear.
@@ -2642,7 +2742,7 @@ class RtmpOutputSender final : public IOutputSender {
           continue;
         }
         if (!writeSucceeded) {
-          const DWORD error = GetLastError();
+          const DWORD error = writeError;
           if (error == ERROR_OPERATION_ABORTED && audioWriterStop_) {
             return;
           }
@@ -2770,6 +2870,7 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   void appendSendProof(const ProgramFrame* frame, const std::string& status) {
+    activeStage_.store("send-proof", std::memory_order_relaxed);
     if (!sendProof_.is_open()) {
       return;
     }
@@ -2795,6 +2896,7 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession snapshot() const {
+    activeStage_.store("session-snapshot", std::memory_order_relaxed);
     OutputSenderSession session;
     if (!sender_.senderId.empty()) {
       session.senders.push_back(sender_);
@@ -2935,6 +3037,25 @@ class RtmpOutputSender final : public IOutputSender {
   std::string gpuEncoderFailureDetail_;
   bool firstBitstreamLogged_ = false;
 #if defined(_WIN32)
+  struct PipeWriteTrace {
+    int64_t frameNumber = -1;
+    int64_t pts100ns = 0;
+    int64_t dts100ns = 0;
+    bool keyframe = false;
+    bool timingValid = false;
+    size_t bytes = 0;
+    int64_t queueAgeMs = -1;
+    int64_t writeStartSteadyMs = -1;
+    int64_t writeMs = -1;
+  };
+  // Only the bitstream writer touches these fields. A stall prints at most one
+  // 16-entry history per second; normal frames perform no I/O for this trace.
+  std::array<PipeWriteTrace, 16> writeTrace_{};
+  size_t writeTraceNext_ = 0;
+  std::chrono::steady_clock::time_point lastWriteTraceLog_{};
+  std::atomic<std::int64_t> pipeWriteStartedSteadyMs_{0};
+  std::atomic<std::int64_t> pipeWriteMaxMs_{0};
+  std::atomic<std::int64_t> pipeSlowWriteCount_{0};
   std::mutex bitstreamQueueMutex_;
   std::condition_variable bitstreamQueueCv_;
   struct QueuedBitstream {
@@ -2970,6 +3091,7 @@ class RtmpOutputSender final : public IOutputSender {
   RtmpVideoFramePacer videoFramePacer_;
   std::atomic<bool> hasWrittenVideo_{false};
   std::ofstream sendProof_;
+  mutable std::atomic<const char*> activeStage_{"idle"};
 };
 #endif
 

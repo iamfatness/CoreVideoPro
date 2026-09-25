@@ -29,6 +29,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 | Order | Issue | Remaining work / next evidence |
 |---|---|---|
 | 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video and media transport slices are shipped. **Slice 3b (media TRANSPORT into the core) SHIPPED — merged 2026-09-21 in [#567](https://github.com/iamfatness/CoreVideoPro/pull/567)**. Remaining: adapter lifecycle and retirement of the old poll interfaces. Capture dropout liveness is #562. Do not start #616 while this is open unless the owner re-ranks. |
+| 2 | [#601](https://github.com/iamfatness/CoreVideoPro/issues/601) | Owner requested 2026-09-24: preserve the configured frame rate. Explicit encoder rate control and measured conformance at 4.5/6/10 Mbps, with 2 Mbps as a stress check. Full-range noise reaches QP 51; the original claim that bitrate never reaches the encoder is not established. Hard saturation remains distinct from normal bitrate control. Evidence: [investigation](issue-601-rate-control-investigation.md). Await live acceptance. |
 
 ## Deferred by owner
 
@@ -56,7 +57,7 @@ These can preempt Next on a show night. They do not replace #535 as Now until th
 
 | Issue | Remaining work |
 |---|---|
-| [#615](https://github.com/iamfatness/CoreVideoPro/issues/615) | RTMP streaming amplifies packet traffic; investigate PC-wide connectivity loss. |
+| [#615](https://github.com/iamfatness/CoreVideoPro/issues/615) | RTMP packet amplification is measured and coalesced. Encoder frames that never reached the shed counter are retained. The original PC-wide outage and full-show continuity still need fleet acceptance. |
 | [#608](https://github.com/iamfatness/CoreVideoPro/issues/608) | Audio drops out for remaining participants when others disconnect; selecting their source restores it. |
 | [#624](https://github.com/iamfatness/CoreVideoPro/issues/624) | Recover a subscribed Zoom video feed that stops advancing in Tiles. |
 | [#597](https://github.com/iamfatness/CoreVideoPro/issues/597) | **Backpressure slice 1 shipped on `feat/stream-backpressure`; owner acceptance and merge remain.** Slice 2: egress-based health signal and phantom-fault fix. Deferred from that slice: #601 (encoder ignores configured bitrate), #602, #603, #604 (`stopFfmpegProcess` never kills the child), #605, #606, #607. |

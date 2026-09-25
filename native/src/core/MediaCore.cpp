@@ -767,6 +767,11 @@ rpc::Json MediaCore::sessionState() const {
       {"overflows", static_cast<double>(buffer.overflows)},
       {"gpuNotReady", static_cast<double>(buffer.gpuNotReady)},
       {"deadlineMisses", static_cast<double>(buffer.deadlineMisses)},
+      {"prepared", static_cast<double>(buffer.prepared)},
+      {"lastQueueWaitMs", buffer.lastQueueWaitMs},
+      {"maxQueueWaitMs", buffer.maxQueueWaitMs},
+      {"lastPreparationMs", buffer.lastPreparationMs},
+      {"maxPreparationMs", buffer.maxPreparationMs},
       {"displayUnconsumed", static_cast<double>(buffer.displayUnconsumed)},
       {"displayBusy", static_cast<double>(buffer.displayBusy)},
       {"outputSequenceGaps", static_cast<double>(bufferedOutputSequenceGaps_.load())},
@@ -5318,6 +5323,16 @@ rpc::Json MediaCore::outputSenderSessionState() const {
           {"interruptible", supervisor.interruptible},
       });
     }
+    if (sender.asyncWorker) {
+      const auto& worker = *sender.asyncWorker;
+      senderJson.emplace("asyncWorker", rpc::Json::Object{
+          {"operation", worker.operation},
+          {"stage", worker.stage},
+          {"operationAgeMs", static_cast<double>(worker.operationAgeMs)},
+          {"queuedItems", static_cast<double>(worker.queuedItems)},
+          {"droppedSyncs", static_cast<double>(worker.droppedSyncs)},
+      });
+    }
     // #597 Task 6: this destination's own view of Lever A/B - published
     // whenever the sender populated it (GPU-direct senders only; see
     // OutputBackpressureState in Interfaces.h). The one global fact this node
@@ -5339,6 +5354,9 @@ rpc::Json MediaCore::outputSenderSessionState() const {
           {"level", bp.level},
           {"bufferedMs", static_cast<double>(bp.bufferedMs)},
           {"queuedChunks", static_cast<double>(bp.queuedChunks)},
+          {"inFlightWriteMs", static_cast<double>(bp.inFlightWriteMs)},
+          {"maxWriteMs", static_cast<double>(bp.maxWriteMs)},
+          {"slowWriteCount", static_cast<double>(bp.slowWriteCount)},
           {"enteredCount", static_cast<double>(bp.enteredCount)},
           {"discardedChunks", static_cast<double>(bp.discardedChunks)},
           {"discardEvents", static_cast<double>(bp.discardEvents)},

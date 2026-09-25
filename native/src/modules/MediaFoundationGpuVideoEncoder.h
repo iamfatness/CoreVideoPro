@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string_view>
 
 #include "modules/GpuVideoEncoder.h"
 
@@ -22,5 +23,21 @@ namespace corevideo::modules {
 // uses the CPU-pipe fallback). A non-null instance still reports failure through
 // start() returning false if init fails at stream time.
 [[nodiscard]] std::unique_ptr<GpuVideoEncoder> createMediaFoundationGpuVideoEncoder();
+
+#if defined(_WIN32)
+// #601: the product's rate-control vocabulary ("cbr" | "vbr" - the only two
+// spellings normalizeRateControl() produces) mapped onto the Media Foundation
+// codec-API rate-control mode. Exposed (rather than kept private to the .cpp)
+// so the mapping is testable without a hardware encoder; the return value is an
+// eAVEncCommonRateControlMode, widened to UINT32 so this header stays free of
+// codecapi.h.
+[[nodiscard]] unsigned int mediaFoundationRateControlMode(std::string_view rateControl);
+
+// The peak bitrate to declare alongside the mean, in BITS per second. Mirrors
+// the CPU path's rule in RtmpFfmpegArgs (maxrate = 1.5x the target under vbr,
+// = the target under cbr) so both paths mean the same thing by "vbr".
+[[nodiscard]] unsigned int mediaFoundationPeakBitrateBps(std::string_view rateControl,
+                                                         int bitrateKbps);
+#endif
 
 }  // namespace corevideo::modules

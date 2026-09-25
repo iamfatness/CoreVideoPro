@@ -238,6 +238,9 @@ struct ProgramBufferDiagnostics {
   uint64_t produced = 0, delivered = 0, underruns = 0, overflows = 0;
   uint64_t gpuNotReady = 0, deadlineMisses = 0;
   uint64_t displayUnconsumed = 0, displayBusy = 0;
+  uint64_t prepared = 0;
+  double lastQueueWaitMs = 0, maxQueueWaitMs = 0;
+  double lastPreparationMs = 0, maxPreparationMs = 0;
   uint64_t generation = 0;
   std::string status = "unsupported";
 };
@@ -686,6 +689,13 @@ struct OutputBackpressureState {
   // post-discard mismatch.
   std::int64_t bufferedMs = 0;
   std::int64_t queuedChunks = 0;
+  // A chunk leaves the queue before the blocking FFmpeg pipe write begins.
+  // These separate measurements expose that otherwise invisible interval.
+  // inFlightWriteMs is zero between writes; maxWriteMs and slowWriteCount are
+  // cumulative for this stream run. They are observations, not policy inputs.
+  std::int64_t inFlightWriteMs = 0;
+  std::int64_t maxWriteMs = 0;
+  std::int64_t slowWriteCount = 0;
   // Times throttling was ENGAGED (1 -> 2). Steps within a throttle do not count.
   std::int64_t enteredCount = 0;
   // Cumulative chunks Lever B (the GOP-tail discard) has dropped from THIS
@@ -811,6 +821,17 @@ struct OutputSender {
   // and is deliberately untouched by this lever) and on a sender that has not
   // started. MediaCore reads it and drives ICompositor::setEncoderExportDivisor.
   std::optional<OutputBackpressureState> backpressure;
+  // AsyncOutputSender's own worker, independent of FFmpeg pipe writes. A
+  // destination can stop accepting sync/audio while the encoder's separate
+  // thread continues to write video; pipe telemetry alone misses that pause.
+  struct AsyncWorkerState {
+    std::string operation = "idle";
+    std::string stage;
+    std::int64_t operationAgeMs = 0;
+    std::int64_t queuedItems = 0;
+    std::int64_t droppedSyncs = 0;
+  };
+  std::optional<AsyncWorkerState> asyncWorker;
 };
 
 struct OutputSenderSession {
@@ -1327,6 +1348,10 @@ class IOutputSender {
     return recover(destination, elapsedMs, reason);
   }
   virtual OutputSenderSession session() const = 0;
+  // Optional lock-free stage of an in-flight sender call. AsyncOutputSender
+  // reads this while its worker may be blocked; implementations must not take
+  // a transport or state lock here.
+  virtual const char* diagnosticStage() const { return ""; }
   // Non-blocking emergency cancellation used by the live async wrapper to
   // release a sender stuck in pipe/network I/O. Implementations should only
   // interrupt the transport here; normal state cleanup remains in sync().

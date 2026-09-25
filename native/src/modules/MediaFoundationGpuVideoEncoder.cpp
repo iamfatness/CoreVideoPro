@@ -1,6 +1,7 @@
 #include "modules/MediaFoundationGpuVideoEncoder.h"
 
 #include <algorithm>
+#include <limits>
 
 #include "modules/EncoderCapacityProbe.h"
 
@@ -16,6 +17,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -158,6 +160,14 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     sink_ = std::move(sink);
     if (config_.width <= 0 || config_.height <= 0 || config_.fps <= 0 || !sink_) {
       return fail("invalid-config");
+    }
+    // The codec API takes UINT32 bits/s. Reject an unrepresentable target
+    // rather than wrapping it into a different operator bitrate.
+    const auto peakMultiplier = config_.rateControl == "vbr" ? 1500u : 1000u;
+    if (config_.bitrateKbps <= 0 ||
+        static_cast<unsigned int>(config_.bitrateKbps) >
+            (std::numeric_limits<unsigned int>::max)() / peakMultiplier) {
+      return fail("invalid-bitrate");
     }
     EncoderCapacityCache::instance().beginLiveEncoding();
     capacityLeaseActive_ = true;
@@ -350,9 +360,12 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     // fails only when BOTH are refused: a stream the muxer starves on or rejects
     // twenty frames in is far worse than a start() that refuses loudly.
     //
-    // H.264 IS DELIBERATELY EXCLUDED and its configuration stays byte-identical:
-    // it is the shipped, gate-proven path, it holds 60.0 fps with sink speed
-    // ~1.37x at the MFT defaults, and it has nothing to gain from this ladder.
+    // H.264 IS EXCLUDED FROM *THIS* LADDER (b-frames / low latency) and only
+    // from this one: it is the shipped, gate-proven path, it holds 60.0 fps
+    // with sink speed ~1.37x at the MFT defaults, and it has nothing to gain
+    // from the b-frame ladder. It is NOT excluded from the codec API in
+    // general - see applyRateControl() below, which runs for every codec
+    // including H.264 (#601); both codecs have measured bitrate tests.
     if (config_.codec != "h264") {
       ComPtr<ICodecAPI> codecApi;
       if (FAILED(encoder_.As(&codecApi)) || !codecApi) return fail("no-codec-api");
@@ -391,6 +404,12 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       }
     }
 
+    // Make the operator's CBR/VBR choice explicit before negotiating types.
+    // MF_MT_AVG_BITRATE alone can also control rate, but does not select the
+    // mode or bound the HRD buffer. Success is verified on emitted bytes in
+    // the hardware tests, not by reading these settings back.
+    if (!applyRateControl()) return false;
+
     // Output type FIRST (encoders require it), then input.
     ComPtr<IMFMediaType> outType;
     MFCreateMediaType(&outType);
@@ -425,6 +444,82 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     if (FAILED(encoder_.As(&eventGen_)) || !eventGen_) return fail("no-event-generator");
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+    return true;
+  }
+
+  // Map the product's own rate-control vocabulary onto the MFT (#601). The
+  // product already carries rateControl ("cbr" | "vbr") from
+  // OutputDestinationSettings through RtmpOutputSenderAdapter's
+  // configuredRateControl_ into GpuVideoEncoderConfig::rateControl; it simply
+  // never reached the encoder. Nothing new is invented here - the vbr peak
+  // mirrors the CPU path's maxrate rule in RtmpFfmpegArgs.
+  bool applyRateControl() {
+    ComPtr<ICodecAPI> codecApi;
+    if (FAILED(encoder_.As(&codecApi)) || !codecApi) return fail("no-codec-api");
+
+    VARIANT mode;
+    VariantInit(&mode);
+    mode.vt = VT_UI4;
+    mode.ulVal = mediaFoundationRateControlMode(config_.rateControl);
+    const HRESULT mhr = codecApi->SetValue(&CODECAPI_AVEncCommonRateControlMode, &mode);
+    if (FAILED(mhr)) {
+      ::corevideo::core::nativeLogf(
+          "[gpu-encode] %s MFT refused CODECAPI_AVEncCommonRateControlMode(%s) hr=0x%08lX\n",
+          config_.codec.c_str(), config_.rateControl.c_str(), static_cast<unsigned long>(mhr));
+      return fail("set-rate-control-mode");
+    }
+
+    VARIANT mean;
+    VariantInit(&mean);
+    mean.vt = VT_UI4;
+    mean.ulVal = static_cast<UINT32>((std::max)(1, config_.bitrateKbps)) * 1000u;
+    const HRESULT bhr = codecApi->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &mean);
+    if (FAILED(bhr)) {
+      // Do not advertise a configuration the driver refused.
+      ::corevideo::core::nativeLogf(
+          "[gpu-encode] %s MFT refused CODECAPI_AVEncCommonMeanBitRate hr=0x%08lX\n",
+          config_.codec.c_str(), static_cast<unsigned long>(bhr));
+      return fail("set-mean-bitrate");
+    }
+
+    VARIANT peak;
+    VariantInit(&peak);
+    peak.vt = VT_UI4;
+    peak.ulVal = mediaFoundationPeakBitrateBps(config_.rateControl, config_.bitrateKbps);
+    // MaxBitRate is defined for peak-constrained VBR. In CBR the mean
+    // bitrate is the HRD drain rate; do not require an inapplicable property.
+    const HRESULT phr = config_.rateControl == "vbr"
+                            ? codecApi->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &peak)
+                            : S_OK;
+    if (FAILED(phr)) {
+      ::corevideo::core::nativeLogf(
+          "[gpu-encode] %s MFT refused CODECAPI_AVEncCommonMaxBitRate hr=0x%08lX\n",
+          config_.codec.c_str(), static_cast<unsigned long>(phr));
+      return fail("set-peak-bitrate");
+    }
+
+    // H.264/HEVC express their HRD size in BYTES, unlike NVENC's bit units.
+    // One second of target video rate limits startup/burst headroom without
+    // changing frame cadence. AV1 uses its driver buffer convention.
+    if (config_.codec == "h264" || config_.codec == "hevc" || config_.codec == "h265") {
+      VARIANT buffer;
+      VariantInit(&buffer);
+      buffer.vt = VT_UI4;
+      buffer.ulVal = mean.ulVal / 8;
+      const HRESULT hr = codecApi->SetValue(&CODECAPI_AVEncCommonBufferSize, &buffer);
+      if (FAILED(hr)) {
+        ::corevideo::core::nativeLogf(
+            "[gpu-encode] %s MFT refused CODECAPI_AVEncCommonBufferSize hr=0x%08lX\n",
+            config_.codec.c_str(), static_cast<unsigned long>(hr));
+        return fail("set-rate-control-buffer");
+      }
+    }
+
+    ::corevideo::core::nativeLogf(
+        "[gpu-encode] %s rate-control=%s mean=%lu bps peak=%lu bps (mode hr=0x%08lX)\n",
+        config_.codec.c_str(), config_.rateControl.c_str(),
+        static_cast<unsigned long>(mean.ulVal), static_cast<unsigned long>(peak.ulVal),
+        static_cast<unsigned long>(mhr));
     return true;
   }
 
@@ -473,6 +568,14 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     nv.Usage = D3D11_USAGE_DEFAULT;
     nv.BindFlags = D3D11_BIND_RENDER_TARGET;
     if (FAILED(device_->CreateTexture2D(&nv, nullptr, &nv12_))) return fail("nv12-texture");
+    // Private copy of the compositor's shared BGRA. The keyed mutex must be
+    // released before the video-processor blit: holding it for the blit makes
+    // the exporter drop every newer frame (its unreported consumer-busy path)
+    // for as long as this conversion runs.
+    D3D11_TEXTURE2D_DESC bgra = nv;
+    bgra.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    bgra.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    if (FAILED(device_->CreateTexture2D(&bgra, nullptr, &bgraSource_))) return fail("bgra-source");
     return true;
   }
 
@@ -495,20 +598,26 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   // processor. Acquires the keyed mutex (key 1) held by the producer, then releases
   // key 0 for it to continue rendering.
   bool convertToNv12(const std::string& hex, const std::shared_ptr<std::atomic<int64_t>>& published, int64_t& frameNumber) {
-    if (!ensureOpened(hex) || !openedMutex_) return false;
+    if (!ensureOpened(hex) || !openedMutex_ || !bgraSource_) return false;
     // Wait up to ~2 frame periods for the producer (the 60Hz render thread) to
     // release key 1. A 4ms wait missed the 16ms production cadence on almost
     // every frame, so most converts timed out, wasted the MFT's input slot and
     // starved the encoder to ~2fps. Bounded so stop() is never blocked for long.
     if (openedMutex_->AcquireSync(1, 34) != S_OK) return false;
     if (published) frameNumber = published->load(std::memory_order_acquire);
+    // Copy out and hand the key back before the blit. VideoProcessorBlt can
+    // sit on a busy GPU for a whole frame period; the exporter's publish is
+    // non-blocking and previously discarded those frames with no counter the
+    // sender reports.
+    context_->CopyResource(bgraSource_.Get(), openedTexture_.Get());
+    openedMutex_->ReleaseSync(0);
     bool ok = false;
     do {
       D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd{};
       ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
       ivd.Texture2D.MipSlice = 0;
       ComPtr<ID3D11VideoProcessorInputView> inView;
-      if (FAILED(videoDevice_->CreateVideoProcessorInputView(openedTexture_.Get(),
+      if (FAILED(videoDevice_->CreateVideoProcessorInputView(bgraSource_.Get(),
                                                              videoProcessorEnum_.Get(), &ivd, &inView))) {
         break;
       }
@@ -525,7 +634,6 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       stream.pInputSurface = inView.Get();
       ok = SUCCEEDED(videoContext_->VideoProcessorBlt(videoProcessor_.Get(), outView.Get(), 0, 1, &stream));
     } while (false);
-    openedMutex_->ReleaseSync(0);
     return ok;
   }
 
@@ -776,6 +884,7 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   ComPtr<ID3D11VideoProcessorEnumerator> videoProcessorEnum_;
   ComPtr<ID3D11VideoProcessor> videoProcessor_;
   ComPtr<ID3D11Texture2D> nv12_;
+  ComPtr<ID3D11Texture2D> bgraSource_;
   ComPtr<ID3D11Texture2D> openedTexture_;
   ComPtr<IDXGIKeyedMutex> openedMutex_;
   std::string openedHandleHex_;
@@ -789,6 +898,24 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
 };
 
 }  // namespace
+
+unsigned int mediaFoundationRateControlMode(std::string_view rateControl) {
+  // "vbr" is peak-CONSTRAINED, not unconstrained: the product's vbr already
+  // means "a target with a ceiling" everywhere else (RtmpFfmpegArgs sets
+  // -maxrate to 1.5x the target), and an unconstrained VBR encoder on a live
+  // uplink is the same class of surprise #601 is about.
+  if (rateControl == "vbr") {
+    return static_cast<unsigned int>(eAVEncCommonRateControlMode_PeakConstrainedVBR);
+  }
+  return static_cast<unsigned int>(eAVEncCommonRateControlMode_CBR);
+}
+
+unsigned int mediaFoundationPeakBitrateBps(std::string_view rateControl, int bitrateKbps) {
+  const long long kbps = bitrateKbps > 0 ? bitrateKbps : 1;
+  const long long peakBps = kbps * (rateControl == "vbr" ? 1500 : 1000);
+  return static_cast<unsigned int>((std::min)(peakBps,
+      static_cast<long long>((std::numeric_limits<unsigned int>::max)())));
+}
 
 bool mediaFoundationHardwareEncoderAvailable(int width, int height, int fps) {
   if (width <= 0 || height <= 0 || fps <= 0) return false;

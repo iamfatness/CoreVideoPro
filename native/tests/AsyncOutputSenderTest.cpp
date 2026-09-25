@@ -39,6 +39,7 @@ class DelayedRecoverySender final : public IOutputSender {
     return result;
   }
   OutputSenderSession fail(const std::string&, const std::string&, double) override { return session(); }
+  const char* diagnosticStage() const override { return stage.load() == 1 ? "test-sync-gate" : "idle"; }
   bool waitFor(int value) {
     std::unique_lock<std::mutex> lock(mutex);
     return changed.wait_for(lock, std::chrono::seconds(2), [&] { return stage >= value; });
@@ -56,7 +57,7 @@ class DelayedRecoverySender final : public IOutputSender {
   }
   std::mutex mutex;
   std::condition_variable changed;
-  int stage = 0;
+  std::atomic<int> stage{0};
   bool releaseOld = false, releaseRecovery = false;
 };
 
@@ -66,7 +67,14 @@ TEST(AsyncOutputSender, RecoveryRejectsLateOldFailureAndPreservesSibling) {
   AsyncOutputSender sender(std::move(inner));
   sender.sync({"rtmp", "srt"}, nullptr, 0);
   EXPECT_TRUE(raw->waitFor(1));
+  const auto blocked = sender.session();
+  ASSERT_TRUE(blocked.senders[0].asyncWorker.has_value());
+  EXPECT_EQ(blocked.senders[0].asyncWorker->operation, "sync");
+  EXPECT_EQ(blocked.senders[0].asyncWorker->stage, "test-sync-gate");
+  EXPECT_GE(blocked.senders[0].asyncWorker->operationAgeMs, 0);
   const auto pending = sender.recover("rtmp", 1, "retry");
+  ASSERT_TRUE(pending.senders[0].asyncWorker.has_value());
+  EXPECT_GE(pending.senders[0].asyncWorker->queuedItems, 1);
   EXPECT_EQ(pending.senders[0].status, "starting");
   raw->release(false);
   EXPECT_TRUE(raw->waitFor(2));
@@ -83,6 +91,7 @@ TEST(AsyncOutputSender, RecoveryRejectsLateOldFailureAndPreservesSibling) {
   }
   raw->release(true);
   EXPECT_TRUE(sender.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sender.session().senders[0].asyncWorker->operation, "idle");
 }
 
 class BlockingOutputSender final : public IOutputSender {

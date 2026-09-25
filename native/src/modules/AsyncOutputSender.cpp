@@ -222,8 +222,32 @@ OutputSenderSession AsyncOutputSender::restartForSupervisor(const std::string& d
 }
 
 OutputSenderSession AsyncOutputSender::session() const {
-  std::lock_guard<std::mutex> lock(state_->snapshotMutex);
-  return state_->snapshot;
+  OutputSenderSession result;
+  {
+    std::lock_guard<std::mutex> lock(state_->snapshotMutex);
+    result = state_->snapshot;
+  }
+  // enqueue(Recover) takes queueMutex before snapshotMutex. Keep these reads
+  // separate so diagnostics remain available while the worker is stalled.
+  OutputSender::AsyncWorkerState worker;
+  {
+    std::lock_guard<std::mutex> lock(state_->queueMutex);
+    worker.queuedItems = static_cast<std::int64_t>(state_->queue.size());
+    if (state_->workerBusy) {
+      switch (state_->workerKind) {
+        case Kind::Sync: worker.operation = "sync"; break;
+        case Kind::Audio: worker.operation = "audio"; break;
+        case Kind::Fail: worker.operation = "fail"; break;
+        case Kind::Recover: worker.operation = "recover"; break;
+      }
+      worker.operationAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - state_->workerStarted).count();
+      if (state_->inner) worker.stage = state_->inner->diagnosticStage();
+    }
+  }
+  worker.droppedSyncs = static_cast<std::int64_t>(state_->dropped.load());
+  for (auto& sender : result.senders) sender.asyncWorker = worker;
+  return result;
 }
 
 void AsyncOutputSender::refreshSessionSummary(OutputSenderSession& session) {
@@ -272,6 +296,9 @@ void AsyncOutputSender::writerLoop(std::shared_ptr<State> state) {
       }
       item = std::move(state->queue.front());
       state->queue.pop_front();
+      state->workerBusy = true;
+      state->workerKind = item.kind;
+      state->workerStarted = std::chrono::steady_clock::now();
     }
 
     OutputSenderSession fresh;
@@ -316,6 +343,7 @@ void AsyncOutputSender::writerLoop(std::shared_ptr<State> state) {
     {
       std::lock_guard<std::mutex> lock(state->queueMutex);
       state->appliedSeq = item.seq;
+      state->workerBusy = false;
     }
     state->appliedCv.notify_all();
   }

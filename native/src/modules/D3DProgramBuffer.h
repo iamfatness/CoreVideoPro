@@ -34,6 +34,10 @@ class D3DProgramBuffer {
     if (!initialize(producer)) { fail("initialize"); return; }
     diagnostics_.activeFrames = depth_;
     diagnostics_.status = "priming";
+    // Auto-reset. Delivery waits on this together with a high-resolution timer
+    // because condition_variable::wait_until is quantized to milliseconds and
+    // was starting publication after the frame deadline.
+    wakeEvent_ = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
     try {
       prepareThread_ = std::thread([this] { try { prepareLoop(); } catch (...) { fail("prepare-worker"); } });
       deliveryThread_ = std::thread([this] { try { deliveryLoop(); } catch (...) { fail("delivery-worker"); } });
@@ -45,9 +49,10 @@ class D3DProgramBuffer {
   }
   ~D3DProgramBuffer() {
     { std::lock_guard<std::mutex> lock(mutex_); stopped_ = true; }
-    changed_.notify_all();
+    notifyChanged();
     if (prepareThread_.joinable()) prepareThread_.join();
     if (deliveryThread_.joinable()) deliveryThread_.join();
+    if (wakeEvent_) ::CloseHandle(wakeEvent_);
   }
   bool valid() const { return initialized_; }
   bool dimensions(int width, int height, int depth) const {
@@ -84,13 +89,14 @@ class D3DProgramBuffer {
       std::lock_guard<std::mutex> lock(mutex_);
       slot->frame = std::move(frame);
       slot->needsNv12 = nv12;
+      slot->submittedAt = std::chrono::steady_clock::now();
       slot->state = State::Submitted;
       submitted_.push_back(slot);
       delivery_.push_back(slot);
       ++diagnostics_.produced;
       diagnostics_.occupancy = static_cast<int>(delivery_.size());
     }
-    changed_.notify_all();
+    notifyChanged();
   }
   bool latest(ProgramFrame& frame) const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -124,7 +130,11 @@ class D3DProgramBuffer {
     ::corevideo::core::nativeLogf("[program-buffer-failure] stage=%s prepare_device_hr=0x%08lx delivery_device_hr=0x%08lx\n",
         stage, static_cast<unsigned long>(prepareDevice_ ? prepareDevice_->GetDeviceRemovedReason() : E_FAIL),
         static_cast<unsigned long>(deliveryDevice_ ? deliveryDevice_->GetDeviceRemovedReason() : E_FAIL));
+    notifyChanged();
+  }
+  void notifyChanged() {
     changed_.notify_all();
+    if (wakeEvent_) ::SetEvent(wakeEvent_);
   }
   enum class State { Free, Writing, Submitted, Preparing, Ready, Delivering };
   struct Slot {
@@ -135,6 +145,9 @@ class D3DProgramBuffer {
     ProgramFrame frame;
     bool needsNv12 = false;
     int64_t productionSlot = 0;
+    std::chrono::steady_clock::time_point submittedAt{};
+    std::chrono::steady_clock::time_point preparingAt{};
+    std::chrono::steady_clock::time_point readyAt{};
   };
   // Retained by every published frame, so replacing the buffer cannot destroy
   // the shell's exported resource while its last delivered metadata is leased.
@@ -308,7 +321,44 @@ class D3DProgramBuffer {
         std::unique_lock<std::mutex> lock(mutex_);
         changed_.wait(lock, [&] { return stopped_ || !submitted_.empty(); });
         if (stopped_) return;
-        slot = submitted_.front(); slot->state = State::Preparing;
+        slot = submitted_.front();
+        // A frame whose deadline already passed cannot be published. Spending
+        // the NV12 readback on it is what kept the next, still-viable frame
+        // behind after a single miss: retirement used to happen only once this
+        // slot reached Ready. Hand the key back and move on.
+        if (timeline_->isExpired(slot->productionSlot)) {
+          lock.unlock();
+          const bool held = slot->prepareMutex->AcquireSync(1, 0) == S_OK;
+          if (held) slot->prepareMutex->ReleaseSync(0);
+          lock.lock();
+          if (stopped_) return;
+          if (!held) {
+            ++diagnostics_.gpuNotReady;
+            changed_.wait_for(lock, std::chrono::milliseconds(1), [&] { return stopped_; });
+            if (stopped_) return;
+            continue;
+          }
+          submitted_.pop_front();
+          for (auto it = delivery_.begin(); it != delivery_.end(); ++it) {
+            if (*it == slot) { delivery_.erase(it); break; }
+          }
+          slot->state = State::Free;
+          ++diagnostics_.overflows;
+          diagnostics_.occupancy = static_cast<int>(delivery_.size());
+          const auto now = std::chrono::steady_clock::now();
+          if (lastExpiredSkipLog_.time_since_epoch().count() == 0 || now - lastExpiredSkipLog_ >= std::chrono::seconds(1)) {
+            lastExpiredSkipLog_ = now;
+            ::corevideo::core::nativeLogf("[program-buffer-miss] stage=expired-before-prepare slot=%lld\n",
+                static_cast<long long>(slot->productionSlot));
+          }
+          notifyChanged();
+          continue;
+        }
+        slot->preparingAt = std::chrono::steady_clock::now();
+        slot->state = State::Preparing;
+        diagnostics_.lastQueueWaitMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - slot->submittedAt).count();
+        diagnostics_.maxQueueWaitMs = (std::max)(diagnostics_.maxQueueWaitMs, diagnostics_.lastQueueWaitMs);
       }
       if (slot->prepareMutex->AcquireSync(1, 0) != S_OK) {
         std::unique_lock<std::mutex> lock(mutex_); ++diagnostics_.gpuNotReady;
@@ -316,6 +366,7 @@ class D3DProgramBuffer {
         if (stopped_) return;
         continue;
       }
+      const auto prepareBegin = std::chrono::steady_clock::now();
       const bool pixelsReady = !slot->needsNv12 || prepareNv12(*slot);
       // Submit the keyed handoff before waiting for its GPU event. State stays
       // Preparing, so delivery cannot acquire key 2 until the query completes;
@@ -324,19 +375,60 @@ class D3DProgramBuffer {
       const bool ready = pixelsReady && released && completePreparation();
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        submitted_.pop_front(); slot->state = State::Ready;
+        diagnostics_.lastPreparationMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - prepareBegin).count();
+        diagnostics_.maxPreparationMs = (std::max)(diagnostics_.maxPreparationMs, diagnostics_.lastPreparationMs);
+        ++diagnostics_.prepared;
+        submitted_.pop_front();
+        slot->readyAt = std::chrono::steady_clock::now();
+        slot->state = State::Ready;
         // Delivery also retires expired ready slots, returning key 0 exactly once.
         if (!ready) { diagnostics_.status = "failed"; diagnostics_.activeFrames = 0; stopped_ = true; }
       }
       prepareContext_->Flush();
-      changed_.notify_all();
+      notifyChanged();
       if (!ready) return;
     }
   }
+  // condition_variable::wait_until rounds to milliseconds and then sleeps, which
+  // the render pacer already measured as a 1-2ms overshoot at timeBeginPeriod(1)
+  // and several milliseconds under GPU load. Wake early when the slot becomes
+  // Ready, and wake at the deadline from a high-resolution timer.
+  template <typename Pred>
+  void waitUntilPrecise(std::unique_lock<std::mutex>& lock,
+                        std::chrono::steady_clock::time_point deadline,
+                        HANDLE timer, Pred pred) {
+    while (!pred()) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) return;
+      if (!timer || !wakeEvent_) {
+        changed_.wait_until(lock, deadline, pred);
+        return;
+      }
+      const auto remain100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now).count() / 100;
+      LARGE_INTEGER due;
+      due.QuadPart = remain100ns > 0 ? -remain100ns : -1;
+      if (!::SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+        changed_.wait_until(lock, deadline, pred);
+        return;
+      }
+      lock.unlock();
+      HANDLE handles[2] = {timer, wakeEvent_};
+      ::WaitForMultipleObjects(2, handles, FALSE, 50);
+      lock.lock();
+    }
+  }
   void deliveryLoop() {
+    const HANDLE timer = ::CreateWaitableTimerExW(
+        nullptr, nullptr,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION | CREATE_WAITABLE_TIMER_MANUAL_RESET,
+        TIMER_ALL_ACCESS);
     std::unique_lock<std::mutex> lock(mutex_);
     changed_.wait(lock, [&] { return stopped_ || !delivery_.empty(); });
-    if (stopped_) return;
+    if (stopped_) {
+      if (timer) ::CloseHandle(timer);
+      return;
+    }
     diagnostics_.status = "running";
     while (!stopped_) {
       while (!delivery_.empty() && delivery_.front()->state == State::Ready && timeline_->isExpired(delivery_.front()->productionSlot)) {
@@ -347,17 +439,25 @@ class D3DProgramBuffer {
       const auto targetSlot = timeline_->nextSlot();
       const auto deadline = std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           std::chrono::nanoseconds(timeline_->nextDeadlineNs())));
-      changed_.wait_until(lock, deadline, [&] {
+      waitUntilPrecise(lock, deadline, timer, [&] {
         return stopped_ || (!delivery_.empty() && delivery_.front()->state == State::Ready && delivery_.front()->productionSlot == targetSlot);
       });
       if (stopped_) break;
       if (delivery_.empty() || delivery_.front()->state != State::Ready || delivery_.front()->productionSlot != targetSlot) {
         if (const auto due = timeline_->takeDue(now100ns() * 100)) {
           diagnostics_.underruns += due->skippedSlots + 1;
-          ::corevideo::core::nativeLogf("[program-buffer-miss] stage=source target=%lld front=%lld state=%d skipped=%lld late_ns=%lld\n",
-              static_cast<long long>(targetSlot), delivery_.empty() ? -1LL : static_cast<long long>(delivery_.front()->productionSlot),
-              delivery_.empty() ? -1 : static_cast<int>(delivery_.front()->state), static_cast<long long>(due->skippedSlots),
-              static_cast<long long>(now100ns() * 100 - due->deadlineNs));
+          const auto* front = delivery_.empty() ? nullptr : delivery_.front();
+          const auto observed = std::chrono::steady_clock::now();
+          const auto ageNs = [&](std::chrono::steady_clock::time_point since) {
+            return static_cast<long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(observed - since).count());
+          };
+          ::corevideo::core::nativeLogf("[program-buffer-miss] stage=source target=%lld front=%lld state=%d skipped=%lld late_ns=%lld submitted_age_ns=%lld preparing_age_ns=%lld ready_age_ns=%lld\n",
+              static_cast<long long>(targetSlot), front ? static_cast<long long>(front->productionSlot) : -1LL,
+              front ? static_cast<int>(front->state) : -1, static_cast<long long>(due->skippedSlots),
+              static_cast<long long>(now100ns() * 100 - due->deadlineNs),
+              front ? ageNs(front->submittedAt) : -1LL,
+              front && front->state == State::Preparing ? ageNs(front->preparingAt) : -1LL,
+              front && front->state == State::Ready ? ageNs(front->readyAt) : -1LL);
         }
         continue;
       }
@@ -375,17 +475,20 @@ class D3DProgramBuffer {
       lock.lock();
       const auto acquireNs = std::chrono::duration_cast<std::chrono::nanoseconds>(completed - acquireBegin).count();
       const auto deliveryLeadNs = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - acquireBegin).count();
+      const auto readyLeadNs = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - slot->readyAt).count();
+      const auto beginAfterReadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(acquireBegin - slot->readyAt).count();
       const auto completionLateNs = std::chrono::duration_cast<std::chrono::nanoseconds>(completed - deadline).count();
       maximumAcquireNs_ = (std::max)(maximumAcquireNs_, static_cast<int64_t>(acquireNs));
       minimumDeliveryLeadNs_ = (std::min)(minimumDeliveryLeadNs_, static_cast<int64_t>(deliveryLeadNs));
       maximumCompletionLateNs_ = (std::max)(maximumCompletionLateNs_, static_cast<int64_t>(completionLateNs));
       if (completed > deadline) {
         ++diagnostics_.deadlineMisses;
-        ::corevideo::core::nativeLogf("[program-buffer-miss] stage=delivery-acquire slot=%lld lead_ns=%lld acquire_ns=%lld late_ns=%lld\n",
-            static_cast<long long>(slot->productionSlot), static_cast<long long>(deliveryLeadNs),
-            static_cast<long long>(acquireNs), static_cast<long long>(completionLateNs));
+        ::corevideo::core::nativeLogf("[program-buffer-miss] stage=delivery-acquire slot=%lld lead_ns=%lld ready_lead_ns=%lld begin_after_ready_ns=%lld acquire_ns=%lld late_ns=%lld\n",
+             static_cast<long long>(slot->productionSlot), static_cast<long long>(deliveryLeadNs),
+             static_cast<long long>(readyLeadNs), static_cast<long long>(beginAfterReadyNs),
+             static_cast<long long>(acquireNs), static_cast<long long>(completionLateNs));
       }
-      if (!stopped_) changed_.wait_until(lock, deadline, [&] { return stopped_; });
+      if (!stopped_) waitUntilPrecise(lock, deadline, timer, [&] { return stopped_; });
       const auto due = timeline_->takeDue(now100ns() * 100);
       const bool current = due && due->slot == slot->productionSlot;
       if (due) diagnostics_.underruns += due->skippedSlots;
@@ -445,7 +548,7 @@ class D3DProgramBuffer {
       if (!acquired || !gpuReady) {
         ++diagnostics_.underruns; ++diagnostics_.gpuNotReady;
         // A failed GPU query cannot prove this slot or either exported image.
-        diagnostics_.status = "failed"; diagnostics_.activeFrames = 0; stopped_ = true; changed_.notify_all(); break;
+        diagnostics_.status = "failed"; diagnostics_.activeFrames = 0; stopped_ = true; notifyChanged(); break;
       }
       slot->frame.deliverySequence = ++diagnostics_.delivered;
       slot->frame.deliveredAt100ns = now100ns();
@@ -462,11 +565,12 @@ class D3DProgramBuffer {
       delivered_.push_back(*published);
       delivery_.pop_front(); slot->state = State::Free;
       diagnostics_.occupancy = static_cast<int>(delivery_.size());
-      changed_.notify_all();
+      notifyChanged();
       lock.unlock();
       if (deliveredCallback_) deliveredCallback_(*published);
       lock.lock();
     }
+    if (timer) ::CloseHandle(timer);
   }
   int width_, height_, depth_;
   bool initialized_ = false, stopped_ = false;
@@ -490,6 +594,8 @@ class D3DProgramBuffer {
   ComPtrLite<ID3D11Query> prepareComplete_;
   std::function<void(const ProgramFrame&)> deliveredCallback_;
   std::thread prepareThread_, deliveryThread_;
+  HANDLE wakeEvent_ = nullptr;
+  std::chrono::steady_clock::time_point lastExpiredSkipLog_{};
   ComPtrLite<ID3D11Device> prepareDevice_, deliveryDevice_;
   ComPtrLite<ID3D11DeviceContext> prepareContext_, deliveryContext_;
   ComPtrLite<ID3D11VertexShader> vs_;
