@@ -884,6 +884,12 @@ internet ICMP timeouts but no sustained guard trigger. The owned stream
 stopped on schedule; app and guard exited, and original preferences were
 verified restored. This is a meaningful bounded pass on the instrumented
 original behavior, not proof that the intermittent stop is fixed.
+All eight incoming Zoom feeds reached 1920×1080 by snapshot 197 and stayed
+there for the final 1,045 snapshots (roughly 17 minutes). In the prior failed
+repeat, all eight reached 1920×1080 by snapshot 222 and remained so for its
+final 169 snapshots (roughly three minutes). Thus the clean run did include a
+longer matched high-resolution feed load; resolution alone does not explain
+the difference between these runs.
 
 In the earlier failure's per-frame log, the delivery front continued advancing
 but remained one to four slots behind the clock (for example target 22,890
