@@ -104,26 +104,26 @@ struct DecodeGate {
   bool released = false;
   std::atomic<int> blocked{0}, audioReads{0}, destroyed{0};
 };
-class TestDecoder final : public IMediaFrameSource {
+class TestDecoder final : public IMediaDecoder {
  public:
   explicit TestDecoder(std::shared_ptr<DecodeGate> gate) : gate_(std::move(gate)) {}
   ~TestDecoder() override { ++gate_->destroyed; }
-  std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
-    if (layers.front().mediaAssetId == "blocked") {
+  std::vector<VideoFrame> pollMediaFrames(const MediaDecodeRequest& request, int64_t) override {
+    if (request.assetId == "blocked") {
       ++gate_->blocked;
       std::unique_lock<std::mutex> lock(gate_->mutex);
       gate_->changed.wait(lock, [&] { return gate_->released; });
     }
     VideoFrame frame;
-    frame.participantId = layers.front().sourceId;
+    frame.participantId = request.sourceId;
     frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
-    frame.pixelStride = 4; frame.frameId = layers.front().mediaAssetId == "blocked" ? 1 : 2;
+    frame.pixelStride = 4; frame.frameId = request.assetId == "blocked" ? 1 : 2;
     frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
     return {frame};
   }
-  std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
+  std::vector<AudioFrame> pollMediaAudioFrames(const MediaDecodeRequest& request, int64_t) override {
     ++gate_->audioReads;
-    AudioFrame frame; frame.participantId = layers.front().sourceId;
+    AudioFrame frame; frame.participantId = request.sourceId;
     frame.sampleRate = 48000; frame.channels = 2; frame.sampleCount = 960; frame.pcm.resize(1920, 0.5f);
     return {frame};
   }
@@ -285,27 +285,27 @@ int64_t pollUntilFrame(MediaTransports::Entry& entry, int64_t greaterThan = 0) {
 // The playback identity no longer carries a playback key, so a retired
 // generation is separated by its PATH (a Reopen) - which is exactly the
 // transition this test now covers.
-class PathGatedDecoder final : public IMediaFrameSource {
+class PathGatedDecoder final : public IMediaDecoder {
  public:
   explicit PathGatedDecoder(std::shared_ptr<DecodeGate> gate) : gate_(std::move(gate)) {}
   ~PathGatedDecoder() override { ++gate_->destroyed; }
-  std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
-    const bool blocked = layers.front().mediaAssetPath == "blocked.wav";
+  std::vector<VideoFrame> pollMediaFrames(const MediaDecodeRequest& request, int64_t) override {
+    const bool blocked = request.assetPath == "blocked.wav";
     if (blocked) {
       ++gate_->blocked;
       std::unique_lock<std::mutex> lock(gate_->mutex);
       gate_->changed.wait(lock, [&] { return gate_->released; });
     }
     VideoFrame frame;
-    frame.participantId = layers.front().sourceId;
+    frame.participantId = request.sourceId;
     frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
     frame.pixelStride = 4; frame.frameId = blocked ? 1 : 2;
     frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
     return {frame};
   }
-  std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
+  std::vector<AudioFrame> pollMediaAudioFrames(const MediaDecodeRequest& request, int64_t) override {
     ++gate_->audioReads;
-    AudioFrame frame; frame.participantId = layers.front().sourceId;
+    AudioFrame frame; frame.participantId = request.sourceId;
     frame.sampleRate = 48000; frame.channels = 2; frame.sampleCount = 960; frame.pcm.resize(1920, 0.5f);
     return {frame};
   }
@@ -584,28 +584,28 @@ struct ProbeState {
   std::atomic<int64_t> positionMs{4200}, durationMs{9000};
   std::atomic<int64_t> frameId{0};
 };
-class ProbePrefetchDecoder final : public IMediaFrameSource, public IMediaVideoPrefetch {
+class ProbePrefetchDecoder final : public IMediaDecoder, public IMediaVideoPrefetch {
  public:
   explicit ProbePrefetchDecoder(std::shared_ptr<ProbeState> state) : state_(std::move(state)) {}
-  std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
+  std::vector<VideoFrame> pollMediaFrames(const MediaDecodeRequest& request, int64_t) override {
     if (!state_->producing.load()) return {};
     if (state_->stallTicks.load() > 0) { state_->stallTicks.fetch_sub(1); return {}; }
     VideoFrame frame;
-    frame.participantId = layers.front().sourceId;
+    frame.participantId = request.sourceId;
     frame.width = frame.pixelWidth = frame.height = frame.pixelHeight = 1;
     frame.pixelStride = 4; frame.frameId = state_->frameId.fetch_add(1) + 1;
     frame.pixels = std::make_shared<std::vector<uint8_t>>(4, 255);
     return {frame};
   }
   std::vector<ScheduledMediaVideo> prefetchMediaVideo(
-      const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {
+      const MediaDecodeRequest& request, int64_t nowMs) override {
     std::vector<ScheduledMediaVideo> result;
-    for (auto& frame : pollMediaFrames(layers, nowMs)) result.push_back({std::move(frame), nowMs * 10000});
+    for (auto& frame : pollMediaFrames(request, nowMs)) result.push_back({std::move(frame), nowMs * 10000});
     return result;
   }
-  std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t) override {
+  std::vector<AudioFrame> pollMediaAudioFrames(const MediaDecodeRequest& request, int64_t) override {
     if (!state_->producing.load()) return {};
-    AudioFrame frame; frame.participantId = layers.front().sourceId;
+    AudioFrame frame; frame.participantId = request.sourceId;
     frame.sampleRate = 48000; frame.channels = 2; frame.sampleCount = 960; frame.pcm.resize(1920, 0.5f);
     return {frame};
   }

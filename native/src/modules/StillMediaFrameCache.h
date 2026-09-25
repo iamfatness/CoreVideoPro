@@ -114,7 +114,7 @@ class StillMediaFrameCache {
   [[nodiscard]] std::vector<VideoFrame> collectFrames(int64_t timestampMs);
 
   // Current decode/stat failures, one human-readable line per failing key
-  // (mirrors IMediaFrameSource::warnings() so the render plan can carry them).
+  // (mirrors IMediaDecoder::warnings() so the render plan can carry them).
   [[nodiscard]] std::vector<std::string> warnings() const;
 
   // Blocks until the worker has processed every setDesired issued so far (or

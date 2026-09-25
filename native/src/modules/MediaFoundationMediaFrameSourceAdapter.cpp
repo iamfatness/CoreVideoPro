@@ -32,7 +32,6 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -173,17 +172,8 @@ std::string normalizeMediaPath(std::string path) {
   return normalizeMediaAssetPath(std::move(path));
 }
 
-std::string mediaFrameSourceId(const CompositorRenderPlanLayer& layer) {
-  return layer.sourceId.empty() ? "media:" + layer.mediaAssetId : layer.sourceId;
-}
-
-// #535 slice 3b: the playback KEY is gone. core::MediaTransports owns one
-// decoder per source id and expresses a go-live as an in-place Resume on that
-// same decoder, so there is no longer a generation baked into the layer for the
-// identity to carry. Playing/paused was already excluded (T1.2): a pause is a
-// state of the clip's clock and must never open a new reader.
-std::string mediaLayerStateKey(const CompositorRenderPlanLayer& layer) {
-  return mediaFrameSourceId(layer) + "|" + normalizeMediaPath(layer.mediaAssetPath);
+std::string mediaFrameSourceId(const MediaDecodeRequest& request) {
+  return request.sourceId.empty() ? "media:" + request.assetId : request.sourceId;
 }
 
 std::wstring quoteWindowsArgument(const std::wstring& value) {
@@ -233,7 +223,7 @@ inline std::string narrowForLog(const std::wstring& value) {
 
 // Media Foundation does not decode common production MOV profiles such as
 // Apple ProRes HQ/4444. This worker is a compatibility decoder behind the same
-// IMediaFrameSource boundary: FFmpeg performs the codec + BT.709 range conversion
+// IMediaDecoder boundary: FFmpeg performs the codec + BT.709 range conversion
 // off the render thread and publishes only the latest 1080p BGRA frame.
 class FfmpegVideoDecoder {
  public:
@@ -549,7 +539,7 @@ bool copyWicImageToFrame(IWICImagingFactory* factory, const std::string& path, V
   return true;
 }
 
-class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public IMediaVideoPrefetch {
+class MediaFoundationMediaFrameSource final : public IMediaDecoder, public IMediaVideoPrefetch {
  public:
   MediaFoundationMediaFrameSource() {
     const HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -575,9 +565,9 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
   void setMediaWakeCallback(std::function<void()> callback) override { mediaWake_ = std::move(callback); }
 
   // #535 slice 3b transport telemetry. One MediaTransports entry owns ONE of
-  // these and hands it exactly one layer, so `states_` holds exactly one asset
+  // these and hands it exactly one clip, so `states_` holds exactly one asset
   // in the owned configuration and "the active state" is unambiguous. Any
-  // other size (a direct caller driving several layers through one decoder)
+  // other size (a direct caller driving several clips through one decoder)
   // has no single answer, and -1 says so rather than naming an arbitrary one.
   int64_t playbackPositionMs() const override {
     if (states_.size() != 1) return -1;
@@ -611,18 +601,16 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     return state.ended && !state.loop;
   }
 
-  void syncMediaClock(const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {
-    for (const auto& layer : layers) {
-      if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) continue;
-      if (layer.kind == "media-video" && isStillImageMediaAsset(layer.mediaAssetKind, layer.mediaAssetPath)) continue;
-      (void)stateFor(layer, nowMs); // Configures the clock with the layer's play state at nowMs.
-    }
+  void syncMediaClock(const MediaDecodeRequest& request, int64_t nowMs) override {
+    if (request.assetId.empty() || request.assetPath.empty()) return;
+    if (request.kind == "media-video" && isStillImageMediaAsset(request.assetKind, request.assetPath)) return;
+    (void)stateFor(request, nowMs); // Configures the clock with the clip's play state at nowMs.
   }
 
   std::vector<ScheduledMediaVideo> prefetchMediaVideo(
-      const std::vector<CompositorRenderPlanLayer>& layers, int64_t nowMs) override {
+      const MediaDecodeRequest& request, int64_t nowMs) override {
     prefetchingVideo_ = true;
-    const auto frames = pollMediaFrames(layers, nowMs);
+    const auto frames = pollMediaFrames(request, nowMs);
     prefetchingVideo_ = false;
     std::vector<ScheduledMediaVideo> result;
     for (const auto& frame : frames) {
@@ -636,54 +624,32 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     return result;
   }
 
-  std::vector<VideoFrame> pollMediaFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
+  std::vector<VideoFrame> pollMediaFrames(const MediaDecodeRequest& request, int64_t timestampMs) override {
     warnings_.clear();
-    std::vector<VideoFrame> frames;
-    std::set<std::string> seen;
-    for (const auto& layer : layers) {
-      if (layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) {
-        continue;
-      }
-      // Still-image ROUTE layers are served by MediaCore's StillMediaFrameCache
-      // (decoded once on its background thread, injected into the frame set
-      // before this poll) — decoding them here would repeat the work on the
-      // render thread. Background still layers keep the in-place WIC path.
-      if (layer.kind == "media-video" &&
-          isStillImageMediaAsset(layer.mediaAssetKind, layer.mediaAssetPath)) {
-        continue;
-      }
-      if (!seen.insert(mediaLayerStateKey(layer)).second) {
-        continue;
-      }
-      VideoFrame frame;
-      frame.participantId = mediaFrameSourceId(layer);
-      frame.timestampMs = timestampMs;
-      if (decodeLayer(layer, timestampMs, frame) && frame.hasPixels()) {
-        frames.push_back(std::move(frame));
-      }
+    if (request.assetId.empty() || request.assetPath.empty()) return {};
+    // Still-image ROUTE clips are served by MediaCore's StillMediaFrameCache
+    // (decoded once on its background thread, injected into the frame set
+    // before this poll) — decoding them here would repeat the work on the
+    // render thread. Background stills keep the in-place WIC path.
+    if (request.kind == "media-video" &&
+        isStillImageMediaAsset(request.assetKind, request.assetPath)) {
+      return {};
     }
-    return frames;
+    VideoFrame frame;
+    frame.participantId = mediaFrameSourceId(request);
+    frame.timestampMs = timestampMs;
+    if (decodeLayer(request, timestampMs, frame) && frame.hasPixels()) return {std::move(frame)};
+    return {};
   }
 
-  std::vector<AudioFrame> pollMediaAudioFrames(const std::vector<CompositorRenderPlanLayer>& layers, int64_t timestampMs) override {
+  std::vector<AudioFrame> pollMediaAudioFrames(const MediaDecodeRequest& request, int64_t timestampMs) override {
     warnings_.clear();
-    std::vector<AudioFrame> frames;
-    std::set<std::string> seen;
-    for (const auto& layer : layers) {
-      if (layer.kind != "media-video" || layer.mediaAssetId.empty() || layer.mediaAssetPath.empty()) {
-        continue;
-      }
-      if (!layer.mediaAssetPlaying || isStillImagePath(normalizeMediaPath(layer.mediaAssetPath))) {
-        continue;
-      }
-      if (!seen.insert(mediaLayerStateKey(layer)).second) {
-        continue;
-      }
-      if (auto frame = decodeLayerAudio(layer, timestampMs); frame.sampleCount > 0 && !frame.pcm.empty()) {
-        frames.push_back(std::move(frame));
-      }
+    if (request.kind != "media-video" || request.assetId.empty() || request.assetPath.empty()) return {};
+    if (!request.playing || isStillImagePath(normalizeMediaPath(request.assetPath))) return {};
+    if (auto frame = decodeLayerAudio(request, timestampMs); frame.sampleCount > 0 && !frame.pcm.empty()) {
+      return {std::move(frame)};
     }
-    return frames;
+    return {};
   }
 
   std::vector<std::string> warnings() const override { return warnings_; }
@@ -739,29 +705,29 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
   // The identity is path + loop mode, never play state and (since #535 slice 3b)
   // never a playback key: a new identity is a new reader from 0; a pause or
   // resume is carried by the SAME clock (MediaPlaybackTimeline) on every call.
-  AssetState& stateFor(const CompositorRenderPlanLayer& layer, int64_t timestampMs) {
-    const auto key = mediaFrameSourceId(layer);
-    const auto identity = normalizeMediaPath(layer.mediaAssetPath) + (layer.mediaAssetLoop ? "|loop" : "|once");
+  AssetState& stateFor(const MediaDecodeRequest& request, int64_t timestampMs) {
+    const auto key = mediaFrameSourceId(request);
+    const auto identity = normalizeMediaPath(request.assetPath) + (request.loop ? "|loop" : "|once");
     auto& state = states_[key];
     if (state.generationIdentity != identity) {
       cancelReaders(state);
       state = {};
       state.generationIdentity = identity;
-      state.path = normalizeMediaPath(layer.mediaAssetPath);
-      state.loop = layer.mediaAssetLoop;
+      state.path = normalizeMediaPath(request.assetPath);
+      state.loop = request.loop;
     }
-    state.clock.configure(identity, layer.mediaAssetPlaying, timestampMs * 10000);
+    state.clock.configure(identity, request.playing, timestampMs * 10000);
     // FFmpeg paces itself (-re) and would keep decoding through a pause, so a
     // paused clip that is holding a frame stops it; Play restarts it at the
     // frozen clock position (decodeLayer). Media Foundation readers are pulled
     // one sample at a time and simply stop being read.
-    if (!layer.mediaAssetPlaying && state.wasPlaying && state.ffmpegVideo && !state.ffmpegPoster &&
+    if (!request.playing && state.wasPlaying && state.ffmpegVideo && !state.ffmpegPoster &&
         state.lastFrame.hasPixels()) {
       state.ffmpegVideo = {};
       state.ffmpegResumePending = true;
     }
     // A fresh operator Pause (then Play) re-arms a resume that had given up.
-    if (!layer.mediaAssetPlaying && state.ffmpegResumePending) {
+    if (!request.playing && state.ffmpegResumePending) {
       state.ffmpegResumeAttempts = 0;
       state.ffmpegResumeNextMs = 0;
       state.ffmpegResumeGaveUp = false;
@@ -770,20 +736,20 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     return state;
   }
 
-  bool decodeLayer(const CompositorRenderPlanLayer& layer, int64_t timestampMs, VideoFrame& frame) {
-    const std::string frameSourceId = mediaFrameSourceId(layer);
-    auto& state = stateFor(layer, timestampMs);
-    const auto path = normalizeMediaPath(layer.mediaAssetPath);
-    if (state.path != path || state.loop != layer.mediaAssetLoop) {
+  bool decodeLayer(const MediaDecodeRequest& request, int64_t timestampMs, VideoFrame& frame) {
+    const std::string frameSourceId = mediaFrameSourceId(request);
+    auto& state = stateFor(request, timestampMs);
+    const auto path = normalizeMediaPath(request.assetPath);
+    if (state.path != path || state.loop != request.loop) {
       state = {};
       state.path = path;
-      state.loop = layer.mediaAssetLoop;
+      state.loop = request.loop;
     }
     if (isStillImagePath(path)) {
       if (!state.imageLoaded) {
         state.lastFrame.participantId = frameSourceId;
         if (!copyWicImageToFrame(wicFactory_.get(), path, state.lastFrame)) {
-          warnings_.push_back("Media asset " + layer.mediaAssetId + " could not be decoded as an image.");
+          warnings_.push_back("Media asset " + request.assetId + " could not be decoded as an image.");
           return false;
         }
         state.imageLoaded = true;
@@ -793,7 +759,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       frame.timestampMs = timestampMs;
       return true;
     }
-    if (!layer.mediaAssetPlaying) {
+    if (!request.playing) {
       // PAUSED AFTER IT ROLLED: hold the frame on air and read nothing. The
       // reader stays where it is, so Play continues with the next frame.
       const VideoFrame& held = state.presentedFrame.hasPixels() ? state.presentedFrame : state.lastFrame;
@@ -808,13 +774,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       // and retain it until Take.
       if (!state.lastFrame.hasPixels()) {
         if (!state.reader && !state.ffmpegVideo &&
-            !openVideoReader(path, state, true, layer.mediaAssetLoop)) {
-          warnings_.push_back("Media asset " + layer.mediaAssetId +
+            !openVideoReader(path, state, true, request.loop)) {
+          warnings_.push_back("Media asset " + request.assetId +
                               " could not be opened for Preview cueing" +
                               (state.videoDecoderError.empty() ? "." : ": " + state.videoDecoderError));
           return false;
         }
-        if (!readNextVideoFrame(layer.mediaAssetId, frameSourceId, state, timestampMs)) {
+        if (!readNextVideoFrame(request.assetId, frameSourceId, state, timestampMs)) {
           return false;
         }
       }
@@ -842,13 +808,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       static constexpr int kMaxResumeAttempts = 5;
       if (!state.ffmpegResumeGaveUp && timestampMs >= state.ffmpegResumeNextMs) {
         int64_t position = state.clock.elapsed100ns(timestampMs * 10000);
-        if (layer.mediaAssetLoop && state.mediaDuration100ns > 0) position %= state.mediaDuration100ns;
+        if (request.loop && state.mediaDuration100ns > 0) position %= state.mediaDuration100ns;
         std::string fallbackError;
         state.ffmpegFrameIdBase = state.lastFrame.hasPixels() ? state.lastFrame.frameId : 0;
         state.ffmpegPublishedFrameId = 0;
         state.ended = false;
         state.ffmpegPoster = false;
-        state.ffmpegVideo = FfmpegVideoDecoder::start(path, false, layer.mediaAssetLoop, fallbackError, position);
+        state.ffmpegVideo = FfmpegVideoDecoder::start(path, false, request.loop, fallbackError, position);
         ++state.ffmpegResumeAttempts;
         if (state.ffmpegVideo) {
           state.ffmpegResumePending = false;
@@ -868,7 +834,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       }
       if (!state.ffmpegVideo) {
         // Loud every poll while it lasts (the decoder warnings are rebuilt per poll).
-        warnings_.push_back("Media asset " + layer.mediaAssetId + " could not resume after a pause" +
+        warnings_.push_back("Media asset " + request.assetId + " could not resume after a pause" +
                             (state.ffmpegResumeGaveUp ? " (gave up after " + std::to_string(state.ffmpegResumeAttempts) +
                                                             " attempts; holding the paused frame, pause and play to retry)"
                                                       : " (retrying at the clock position)") +
@@ -882,13 +848,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     }
     state.wasPlaying = true;
     if (!state.reader && !state.ffmpegVideo &&
-        !openVideoReader(path, state, false, layer.mediaAssetLoop)) {
-      warnings_.push_back("Media asset " + layer.mediaAssetId +
+        !openVideoReader(path, state, false, request.loop)) {
+      warnings_.push_back("Media asset " + request.assetId +
                           " could not be opened for Program playback" +
                           (state.videoDecoderError.empty() ? "." : ": " + state.videoDecoderError));
       return false;
     }
-    if (state.ended && layer.mediaAssetLoop) {
+    if (state.ended && request.loop) {
       state.videoLoopOffset += state.decodedVideoPts + state.decodedVideoDuration;
       state.videoPending = false;
       // Media Foundation is the fast path for compatible clips but does not
@@ -899,7 +865,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       state.ffmpegPublishedFrameId = 0;
       state.ended = false;
       if (!openVideoReader(path, state, false, true)) {
-        warnings_.push_back("Media background " + layer.mediaAssetId +
+        warnings_.push_back("Media background " + request.assetId +
                             " could not restart its loop" +
                             (state.videoDecoderError.empty() ? "." : ": " + state.videoDecoderError));
         return state.lastFrame.hasPixels();
@@ -915,13 +881,13 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       return false;
     }
     if (state.ffmpegVideo) {
-      if (!readNextVideoFrame(layer.mediaAssetId, frameSourceId, state, timestampMs)) return false;
+      if (!readNextVideoFrame(request.assetId, frameSourceId, state, timestampMs)) return false;
       frame = state.lastFrame;
       return frame.hasPixels();
     }
     if (prefetchingVideo_) {
       const auto previousId = state.frameId;
-      if (!readNextVideoFrame(layer.mediaAssetId, frameSourceId, state, timestampMs) || state.frameId == previousId) return false;
+      if (!readNextVideoFrame(request.assetId, frameSourceId, state, timestampMs) || state.frameId == previousId) return false;
       frame = state.lastFrame;
       return frame.hasPixels();
     }
@@ -930,7 +896,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     for (int decoded = 0; decoded < 4; ++decoded) {
       if (!state.videoPending) {
         const auto previousId = state.frameId;
-        if (!readNextVideoFrame(layer.mediaAssetId, frameSourceId, state, timestampMs) || state.frameId == previousId) break;
+        if (!readNextVideoFrame(request.assetId, frameSourceId, state, timestampMs) || state.frameId == previousId) break;
         state.videoPending = true;
       }
       if (!state.clock.videoDue(state.videoLoopOffset + state.decodedVideoPts, timestampMs * 10000)) break;
@@ -941,7 +907,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     return frame.hasPixels();
   }
 
-  AudioFrame decodeLayerAudio(const CompositorRenderPlanLayer& layer, int64_t timestampMs) {
+  AudioFrame decodeLayerAudio(const MediaDecodeRequest& request, int64_t timestampMs) {
     AudioFrame frame;
     // A paused clip emits no PCM. Returning before stateFor also keeps an
     // audio-slot timestamp (which runs ahead of now) from ever becoming the
@@ -949,10 +915,10 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     // On resume the clock's frozen elapsed time is where audio continues:
     // audioWindows seeks back to it (replaying from its short history the
     // windows that were decoded ahead but dropped unheard at the pause).
-    if (!layer.mediaAssetPlaying) return frame;
-    const std::string frameSourceId = mediaFrameSourceId(layer);
-    auto& state = stateFor(layer, timestampMs);
-    const auto path = normalizeMediaPath(layer.mediaAssetPath);
+    if (!request.playing) return frame;
+    const std::string frameSourceId = mediaFrameSourceId(request);
+    auto& state = stateFor(request, timestampMs);
+    const auto path = normalizeMediaPath(request.assetPath);
     if (state.path != path) {
       state = {};
       state.path = path;
@@ -962,7 +928,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
       state.audioEnded = false;
     }
     state.audioWasPlaying = true;
-    if (state.audioEnded && state.audioReader && layer.mediaAssetLoop) {
+    if (state.audioEnded && state.audioReader && request.loop) {
       state.audioLoopOffset = state.audioEndPts;
       if (state.audioCallback) state.audioCallback->cancel();
       state.audioReader->Flush(MF_SOURCE_READER_ALL_STREAMS);
@@ -971,7 +937,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     if (state.audioEnded && !state.audioReader) return {};
     currentAudioRequestMs_ = timestampMs;
     if (!state.audioReader && !openAudioReader(path, state)) {
-      warnings_.push_back("Media asset " + layer.mediaAssetId + " could not be opened for Program audio.");
+      warnings_.push_back("Media asset " + request.assetId + " could not be opened for Program audio.");
       return frame;
     }
     if (!state.audioReader || (state.audioEnded && state.audioWindows.bufferedThrough() <= state.audioWindows.cursor())) return {};
@@ -981,7 +947,7 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
     for (int chunks = 0; chunks < 8 && !state.audioEnded &&
          state.audioWindows.bufferedThrough() < state.audioWindows.cursor() + windowFrames; ++chunks) {
       AudioFrame decoded;
-      if (!readNextAudioFrame(layer.mediaAssetId, state, timestampMs, decoded)) break;
+      if (!readNextAudioFrame(request.assetId, state, timestampMs, decoded)) break;
       state.audioWindows.append(state.decodedAudioPts, std::move(decoded.pcm));
     }
     if (state.audioWindows.bufferedThrough() <= state.audioWindows.cursor() ||
@@ -1297,8 +1263,8 @@ class MediaFoundationMediaFrameSource final : public IMediaFrameSource, public I
 
 }  // namespace
 
-std::function<std::unique_ptr<IMediaFrameSource>()> createMediaFoundationMediaDecoderFactory() {
-  return [] { return std::unique_ptr<IMediaFrameSource>(new MediaFoundationMediaFrameSource()); };
+std::function<std::unique_ptr<IMediaDecoder>()> createMediaFoundationMediaDecoderFactory() {
+  return [] { return std::unique_ptr<IMediaDecoder>(new MediaFoundationMediaFrameSource()); };
 }
 
 }  // namespace corevideo::modules
@@ -1307,7 +1273,7 @@ std::function<std::unique_ptr<IMediaFrameSource>()> createMediaFoundationMediaDe
 
 namespace corevideo::modules {
 
-std::function<std::unique_ptr<IMediaFrameSource>()> createMediaFoundationMediaDecoderFactory() {
+std::function<std::unique_ptr<IMediaDecoder>()> createMediaFoundationMediaDecoderFactory() {
   return {};
 }
 

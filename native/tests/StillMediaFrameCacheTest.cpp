@@ -110,11 +110,11 @@ class FakeStillDecoder final : public IStillImageDecoder {
 // #535 slice 3b: proves a still route never reaches the media DECODER factory.
 // It produces nothing — if a still ever opened one of these, the count alone is
 // the failure.
-class CountingMediaDecoder final : public corevideo::modules::IMediaFrameSource {
+class CountingMediaDecoder final : public corevideo::modules::IMediaDecoder {
  public:
   CountingMediaDecoder() { ++created; }
   std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
-      const std::vector<corevideo::modules::CompositorRenderPlanLayer>&, int64_t) override {
+      const corevideo::modules::MediaDecodeRequest&, int64_t) override {
     return {};
   }
   static inline std::atomic<int> created{0};
