@@ -930,7 +930,9 @@ The first guarded attempt with these fields did not reach a valid soak: the
 stream-start action returned, but the runner could not observe a sender run ID
 within its two-second startup window and stopped the owned stream. The app and
 guard exited and original output preferences were verified unchanged. During
-this app/meeting startup, Program misses were already present. Slot 276 was
+the startup interval, the independent guard sampled `streaming=false` every
+second, so the evidence does not show an established RTMP sender. Program
+misses were already present during app/meeting startup. Slot 276 was
 still Preparing 30.9 ms after that attempt began; slot 279 became Ready about
 0.75 ms after its delivery deadline, and acquisition began 0.007 ms later.
 Thus late readiness, rather than a slow delivery wake, explains that particular
