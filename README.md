@@ -5,6 +5,9 @@ live shows, recordings, and streams directly from Zoom participants — Magic Sc
 auto-layout, lower-thirds, captions, smart framing, audio leveling, and
 multi-destination output, in a single operator console.
 
+**Work order lives in one place:** [`docs/BACKLOG.md`](docs/BACKLOG.md). This README is
+as-built status, not a queue.
+
 ## Architecture
 
 ```text
@@ -33,9 +36,13 @@ transports. Windows uses D3D11 and Media Foundation; macOS uses Metal and AVFoun
 
 The additive [lifecycle schema](contracts/lifecycle.schema.json) generates C++, C#,
 TypeScript, and Swift models and runtime validators. Golden wire fixtures run across
-language suites. Legacy scene/audio/capture protocols still have handwritten mirrors;
-see the [coverage inventory](contracts/README.md) and
-[ownership map](docs/architecture-ownership.md) for their migration boundaries.
+language suites. Legacy scene/audio/capture **and production command/capability**
+protocols still have handwritten mirrors; see the [coverage inventory](contracts/README.md)
+and [ownership map](docs/architecture-ownership.md). A listed capability is not yet an
+admission check — `profileCapabilities()` follows compile flags more closely than
+successfully constructed adapters ([#617](https://github.com/iamfatness/CoreVideoPro/issues/617)).
+Unknown commands in a production-sync batch can be dropped
+([#616](https://github.com/iamfatness/CoreVideoPro/issues/616)).
 
 Recording intent, verified media activity, and file finalization are distinct.
 A Stop acknowledgement does not certify a playable finalized file. Zoom join/auth
@@ -49,6 +56,12 @@ and hardware-transport code lives behind `COREVIDEO_ENABLE_DEV_ADAPTERS` plus a 
 `COREVIDEO_WITH_*` flag. Windows and macOS builds select their platform adapters;
 vendor integrations require the corresponding SDKs and runtimes.
 
+Windows **merge CI compiles that stub core** plus the WinUI shell. The production D3D11,
+Media Foundation, WASAPI, UVC, WGC, and virtual-camera configuration is a local-dev /
+packaged-candidate build, not the merge gate
+([#618](https://github.com/iamfatness/CoreVideoPro/issues/618)). macOS CI already builds
+the real Metal/AVFoundation configuration.
+
 ## Capabilities & status
 
 Status legend: **Real** = implemented and exercised in the portable/CI build · **Dev-gated**
@@ -61,7 +74,7 @@ Status legend: **Real** = implemented and exercised in the portable/CI build · 
 | | Real Zoom Meeting SDK ingest via the vendored `corevideo-zoom-engine` (raw I420 over shared memory) | Dev-gated (`COREVIDEO_WITH_ZOOM`) |
 | | Test-pattern / local-camera source delivering real pixels into the core | Real |
 | | Native UVC camera capture inside the core (Media Foundation source reader, 1080p60-targeted NV12/YUY2/MJPG negotiation, I420 → GPU shader convert with per-frame range/matrix, hot-unplug safe; WinUI shm bridge stays the per-device fallback; native capture is default-on and can be disabled with `COREVIDEO_NATIVE_UVC=0`). Uses first-frame confirmation before committing the native path; errors/timeouts fall back to the managed bridge | Dev-gated (`COREVIDEO_WITH_UVC`), default-on when available |
-| | Live DeckLink/AJA frames reaching the core (not just WinUI preview) | In progress |
+| | Live DeckLink/AJA frames reaching the core (not just WinUI preview) | In progress — probe/enumerate only; no pixels on the source bus ([#537](https://github.com/iamfatness/CoreVideoPro/issues/537)) |
 | **Compositor** | Route resolver, render-plan layers, program/preview parity math | Real |
 | | Per-source framing (fit/fill/stretch, zoom/pan, borders) | Real (D3D11 + CPU stub) |
 | | Overlay / lower-third / caption **text & image rasterization** — shared layout (`computeOverlayTileLayout`), signature-cached | Real (CPU full-ASCII bitmap-font tile) · Dev-gated (DirectWrite/D2D + WIC, zero-copy GPU raster) |
@@ -77,19 +90,28 @@ Status legend: **Real** = implemented and exercised in the portable/CI build · 
 | **Production** | Magic Scene, Set & Forget auto-director, presets, brand kit, media playback | Real (heuristic, no ML) |
 | **Diagnostics** | Support bundle with redacted secrets, output/recording health, crash events | Real |
 
-> **Release readiness.** The contract surface is broad and well-tested, but the native
-> hardware paths require evidence for the exact packaged candidate (real Zoom
-> join, GPU/encoder, record-and-stream and clean-machine installation). See
-> [`docs/alpha-plan.md`](docs/alpha-plan.md) and
-> [`docs/native-production-completion-plan.md`](docs/native-production-completion-plan.md)
-> for the exit bar and the remaining real-implementation work.
+> **Release readiness.** The portable/CI contract surface is broad, but Windows production
+> media paths (D3D11, MF encode, WASAPI, real Zoom, UVC/WGC, vcam) are proven on a
+> packaged or dev-rig candidate, not by the stub merge job. Exact-candidate evidence
+> still required: real Zoom join, GPU/encoder, record-and-stream, clean-machine install.
+> See [`docs/alpha-plan.md`](docs/alpha-plan.md) and
+> [`docs/native-production-completion-plan.md`](docs/native-production-completion-plan.md).
 
-> **Architecture hardening.** Windows CI includes the WinUI suite; configuration saves
-> use atomic replacement and backup recovery; LAN HTTP control requires authentication.
-> Signed release candidates must pass automated checks and controlled-rig evidence
-> validation before publication. The rig harness must be provisioned separately:
-> [release evidence setup](docs/release-evidence.md). Code availability and a green
-> portable suite are not a substitute for verified live-media evidence.
+> **Architecture hardening.** Process isolation (Zoom child, FFmpeg, vcam, browser, VST)
+> is the shipped shape; NDI remains in-process. Windows CI covers the WinUI suite and the
+> stub core. Configuration saves use atomic replacement and backup recovery; LAN HTTP
+> control requires authentication. Signed release candidates must pass automated checks
+> and controlled-rig evidence before publication:
+> [release evidence setup](docs/release-evidence.md). A green portable suite is not
+> verified live-media evidence.
+
+## Current priority (2026-09-24)
+
+Ranked work is only in [`docs/BACKLOG.md`](docs/BACKLOG.md).
+
+1. **Now:** finish source-bus adapter lifecycle ([#535](https://github.com/iamfatness/CoreVideoPro/issues/535)).
+2. **Next:** make the wire honest ([#616](https://github.com/iamfatness/CoreVideoPro/issues/616) with [#619](https://github.com/iamfatness/CoreVideoPro/issues/619) / [#620](https://github.com/iamfatness/CoreVideoPro/issues/620)), then constructed capabilities ([#617](https://github.com/iamfatness/CoreVideoPro/issues/617)), then a Windows production-native CI compile lane ([#618](https://github.com/iamfatness/CoreVideoPro/issues/618)), then [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) SRT/NDI edge I/O.
+3. Live incidents (#615, #608, #624, #597 acceptance) stay unranked until the owner promotes them; they can preempt this list on a show night.
 
 ## Repository layout
 
@@ -103,7 +125,7 @@ Status legend: **Real** = implemented and exercised in the portable/CI build · 
 | `native-core/` | Node.js mirror of the media-core protocol/runtime for in-container tests |
 | `services/` | Backend services (caption broker, license) |
 | `scripts/` | PowerShell build / package / sign / validation scripts (Windows) |
-| `docs/` | Roadmap, alpha plan, native completion plan, and reference specs |
+| `docs/` | Ranked work order ([BACKLOG.md](docs/BACKLOG.md)), alpha plan, native completion plan, reference specs |
 
 ## Commands
 
@@ -153,6 +175,7 @@ The first fully useful milestone:
 
 ## Further reading
 
+- **Ranked work order:** [`docs/BACKLOG.md`](docs/BACKLOG.md).
 - **Working guide (build/run/architecture/crash class/current state):** [`CLAUDE.md`](CLAUDE.md).
 - GPU multiview implementation plan: [`docs/gpu-multiview-plan.md`](docs/gpu-multiview-plan.md).
 - Operator performance investigation & plan: [`docs/operator-performance-plan.md`](docs/operator-performance-plan.md) · present-stutter fix spec: [`docs/present-stutter-fix-spec.md`](docs/present-stutter-fix-spec.md).
