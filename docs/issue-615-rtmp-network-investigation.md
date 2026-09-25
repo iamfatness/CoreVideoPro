@@ -911,3 +911,12 @@ as the immediate cause of those first two deadline misses. The old log did not
 record when preparation marked each slot Ready or when the delivery thread was
 scheduled, so it cannot distinguish late GPU preparation from a late thread
 wake. A clean 20-minute run had no comparable post-startup sequence.
+
+The next diagnostic build records `ready_lead_ns` and
+`begin_after_ready_ns` on each late delivery-acquire log entry. A negative
+ready lead means preparation did not mark the slot Ready until after its
+deadline; a positive ready lead with a late acquisition start instead points
+to delivery-thread scheduling or lock wait. The second field includes the
+time from Ready transition until the delivery thread begins the keyed-mutex
+acquire; it is not a direct GPU measurement. These are read-only timestamps,
+with no change to frame selection, deadlines, bitrate, or frame rate.

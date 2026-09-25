@@ -137,6 +137,7 @@ class D3DProgramBuffer {
     bool needsNv12 = false;
     int64_t productionSlot = 0;
     std::chrono::steady_clock::time_point submittedAt{};
+    std::chrono::steady_clock::time_point readyAt{};
   };
   // Retained by every published frame, so replacing the buffer cannot destroy
   // the shell's exported resource while its last delivered metadata is leased.
@@ -334,7 +335,9 @@ class D3DProgramBuffer {
             std::chrono::steady_clock::now() - prepareBegin).count();
         diagnostics_.maxPreparationMs = (std::max)(diagnostics_.maxPreparationMs, diagnostics_.lastPreparationMs);
         ++diagnostics_.prepared;
-        submitted_.pop_front(); slot->state = State::Ready;
+        submitted_.pop_front();
+        slot->readyAt = std::chrono::steady_clock::now();
+        slot->state = State::Ready;
         // Delivery also retires expired ready slots, returning key 0 exactly once.
         if (!ready) { diagnostics_.status = "failed"; diagnostics_.activeFrames = 0; stopped_ = true; }
       }
@@ -385,15 +388,18 @@ class D3DProgramBuffer {
       lock.lock();
       const auto acquireNs = std::chrono::duration_cast<std::chrono::nanoseconds>(completed - acquireBegin).count();
       const auto deliveryLeadNs = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - acquireBegin).count();
+      const auto readyLeadNs = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - slot->readyAt).count();
+      const auto beginAfterReadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(acquireBegin - slot->readyAt).count();
       const auto completionLateNs = std::chrono::duration_cast<std::chrono::nanoseconds>(completed - deadline).count();
       maximumAcquireNs_ = (std::max)(maximumAcquireNs_, static_cast<int64_t>(acquireNs));
       minimumDeliveryLeadNs_ = (std::min)(minimumDeliveryLeadNs_, static_cast<int64_t>(deliveryLeadNs));
       maximumCompletionLateNs_ = (std::max)(maximumCompletionLateNs_, static_cast<int64_t>(completionLateNs));
       if (completed > deadline) {
         ++diagnostics_.deadlineMisses;
-        ::corevideo::core::nativeLogf("[program-buffer-miss] stage=delivery-acquire slot=%lld lead_ns=%lld acquire_ns=%lld late_ns=%lld\n",
-            static_cast<long long>(slot->productionSlot), static_cast<long long>(deliveryLeadNs),
-            static_cast<long long>(acquireNs), static_cast<long long>(completionLateNs));
+        ::corevideo::core::nativeLogf("[program-buffer-miss] stage=delivery-acquire slot=%lld lead_ns=%lld ready_lead_ns=%lld begin_after_ready_ns=%lld acquire_ns=%lld late_ns=%lld\n",
+             static_cast<long long>(slot->productionSlot), static_cast<long long>(deliveryLeadNs),
+             static_cast<long long>(readyLeadNs), static_cast<long long>(beginAfterReadyNs),
+             static_cast<long long>(acquireNs), static_cast<long long>(completionLateNs));
       }
       if (!stopped_) changed_.wait_until(lock, deadline, [&] { return stopped_; });
       const auto due = timeline_->takeDue(now100ns() * 100);
