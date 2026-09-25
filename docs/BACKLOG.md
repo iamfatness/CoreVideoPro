@@ -3,10 +3,15 @@
 **This is the only ordered list of work.** Status and detailed evidence live on
 linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 
-Owner-approved order updated 2026-09-22: finish #535's remaining media/capture
-audio and adapter lifecycle work, then SRT/NDI hardening (#538). Owner accepted
-live lip sync (#579) and first Takes (#555) on beta `db9e703`. #513 validation
-remains deferred; #582's content-aware range correction is in live validation.
+Owner-approved order updated 2026-09-24: finish #535 adapter lifecycle, then make
+the wire honest (#616 with #619/#620), then constructed capabilities (#617), then
+a Windows production-native CI compile lane (#618), then SRT/NDI edge I/O (#538).
+Owner accepted live lip sync (#579) and first Takes (#555) on beta `db9e703`.
+#513 validation remains deferred; #582 range correction is in live validation.
+
+Architecture review pin: commit `6f4f025` (2026-09-24). Issues #616–#622 are that
+review. Live incidents (#615, #608, #624, #597 acceptance) stay unranked and may
+preempt this list on a show night.
 
 ## How to use this file
 
@@ -23,71 +28,82 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Order | Issue | Remaining work / next evidence |
 |---|---|---|
-| 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video and media transport slices are shipped. **Slice 3b (media TRANSPORT into the core) SHIPPED — merged 2026-09-21 in [#567](https://github.com/iamfatness/CoreVideoPro/pull/567)**, spec `docs/superpowers/specs/2026-09-20-source-bus-slice3b-media-source-state-design.md`: the `layers` argument is gone, a media asset is ONE core source (`media:<assetId>` / `background:<assetId>`) owning its decoder, clock and transport state (cued/live/paused/ended), fed a DESIRED SET computed at COMMAND time from both scene graphs (`MediaCore::syncMediaTransportsDesired`), with `core::MediaTransports` as the owner and the pure `MediaTransportPolicy.h` as the transition table. Enters Program → roll from 0 with audio; cued in Preview → poster at 0; a cued clip entering Program RESUMES the same decoder (this DELETED the #449 cue hand-off, `MediaCueHandoff`/`adoptCuedDecoders`, along with `OwnedMediaFrameSource`, `MediaGoLiveLedger`, the `media:<id>:live:<n>` go-live generation, `BuildSceneMediaPlaybackKey` and the `preview:media:<id>` poster namespace); staying on Program across a Take does nothing; loops never pause or restart. `Ended` is decoder evidence (`IMediaVideoPrefetch::mediaEnded`, MF-only, never for a loop) with a 6 s backstop and in-place recovery; `Release` carries a 750 ms grace, and a source inside it publishes `onProgram`/`onPreview` false (read-side only). Wire: one-shot `set-media-transport {mediaAssetId, action}` (a GESTURE, never re-sent per sync), `set-media-playback` is selection only, new `mediaSources[]` snapshot node and the `idle\\|cued\\|live\\|paused\\|ended\\|unavailable` vocabulary on `mediaPlayback`. Branch gates at merge: full Windows dev suite 1113/0, stub gate 100%, `dotnet test` MediaCore 2232/0 + Control 74/0 + WinUI 1519/0 + Release x64 0 errors, `validate-multiview.mjs` and `validate-tiles.mjs` PASS, `zoom-gap-hold-ab.py --label s3b-hold` 248 frames luma 187.5–204.7 with take verdict `cut`, show drill PASSED (100% delivery, source→render p50 26.9 ms / p99 37.7 ms), and the new `scripts/qa/media-take-ab.py` PASS with its `--skip-cue` control correctly FAILING. **Not gated live:** no run against a real Zoom meeting or the real WinUI app; the 750 ms grace is reasoned, not measured against the real spine cadence; only the MF adapter implements `mediaEnded()`, so stub/mac decoders wait for the 6 s backstop. Zoom PCM integration shipped in #577 and live sync is owner-accepted. Media/capture PCM migration shipped in #583 / beta `6782b09` (1,167 native tests and real media recording checked) — that is what moved media audio off 3b's direct `popAudio` pop and onto the bus via `SourceAudioIngress`. Remaining afterward: adapter lifecycle and retirement of the old interfaces. Capture dropout liveness is tracked by #562. |
+| 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video and media transport slices are shipped. **Slice 3b (media TRANSPORT into the core) SHIPPED — merged 2026-09-21 in [#567](https://github.com/iamfatness/CoreVideoPro/pull/567)**. Remaining: adapter lifecycle and retirement of the old poll interfaces. Capture dropout liveness is #562. Do not start #616 while this is open unless the owner re-ranks. |
 
 ## Deferred by owner
 
 | Issue | Status |
 |---|---|
-| [#513](https://github.com/iamfatness/CoreVideoPro/issues/513) | Owner reports an overnight run with no recurrence and will validate later. Pooling/teardown fixes and the earlier 151-minute soak remain evidence of reduced exposure, not root-cause closure. Not a blocker for #535/#555. |
+| [#513](https://github.com/iamfatness/CoreVideoPro/issues/513) | Owner reports an overnight run with no recurrence and will validate later. Pooling/teardown fixes and the earlier 151-minute soak remain evidence of reduced exposure, not root-cause closure. Not a blocker for #535. |
 
-## Next — existing priority order
+## Next — control plane, then edge I/O
 
 | Order | Issue | Remaining work |
 |---|---|---|
-| 1 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send hardening and real endpoint acceptance. Existing transport code does not establish the full edge-I/O matrix. |
-| 2 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decoding to real pixels/PCM on the source bus, followed by the 30+ minute contribution soak. Depends on #535. |
-| 3 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) | Signing + first external install. The current beta is still unsigned; certificate/service onboarding remains. |
-| 4 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) | **Cold Take acceptance, reopened.** The **MEDIA half of #449 is CLOSED by #535 slice 3b** (merged 2026-09-21, [#567](https://github.com/iamfatness/CoreVideoPro/pull/567)): the core owns the transport, go-live is decided from scene membership at command time ("enters Program → roll from 0", "stays on Program across a Take → nothing"), and a cued clip entering Program resumes its own warm decoder in place — which is why the cue→Program hand-off (#492) could be deleted rather than moved. Restart-from-zero semantics are decided. **Step 1 remains OPEN:** holding the outgoing picture on a COLD cut — a clip cut to Program that was NEVER cued still cold-starts into the warming slate — is not established by the cued-path oracle or the late-frame playback test. `scripts/qa/media-take-ab.py --skip-cue` is the falsification control that measures exactly that gap (it fails by design; a run that passes with `--skip-cue` is judging nothing). Verify/fix this remaining step; no new owner ruling is required for the restart semantics. |
+| 1 | [#616](https://github.com/iamfatness/CoreVideoPro/issues/616) | **Make the wire honest.** One command manifest from the live C++ dispatcher; reject unknown batched commands; implement or delete the three production-sync no-ops. Ride [#619](https://github.com/iamfatness/CoreVideoPro/issues/619) (Program texture events on the preview queue) and [#620](https://github.com/iamfatness/CoreVideoPro/issues/620) (bound the high-priority response lane) in the same change. Not #530. |
+| 2 | [#617](https://github.com/iamfatness/CoreVideoPro/issues/617) | Capabilities describe constructed adapters, not compile flags. Required before #538/#536 admission. Do not advertise DeckLink/AJA until [#537](https://github.com/iamfatness/CoreVideoPro/issues/537) has pixels. |
+| 3 | [#618](https://github.com/iamfatness/CoreVideoPro/issues/618) | Windows CI production-native compile lane (`COREVIDEO_STUB=OFF` + the flags the beta ships). Compile-only; no 60 fps soak on the runner. Not #575. |
+| 4 | [#622](https://github.com/iamfatness/CoreVideoPro/issues/622) | Single-slot sync plus UI-thread snapshot apply can drop a fire-and-forget command. After the wire is honest. Not #509. |
+| 5 | [#621](https://github.com/iamfatness/CoreVideoPro/issues/621) | One generated observation model; typed snapshot, redacted qualification JSON, and ControlState are views of it. Lets #610/#519/#551 stop growing a fourth projection. |
+| 6 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send hardening and real endpoint acceptance. NDI stays in-process this cycle; classify it as process-fatal in #617. |
+| 7 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decoding to real pixels/PCM on the source bus, then the 30+ minute contribution soak. Depends on #535 and honest #617 capabilities. |
+| 8 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) | Signing + first external install. Current beta is still unsigned. |
+| 9 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) | **Cold Take acceptance.** Media half closed by #535 slice 3b. Step 1 open: a never-cued clip cut to Program still cold-starts into the warming slate. `scripts/qa/media-take-ab.py --skip-cue` is the falsification control. |
 
-## Unranked — fixes awaiting acceptance / new findings
+## Unranked — show survival and operator findings
+
+These can preempt Next on a show night. They do not replace #535 as Now until the owner says so.
 
 | Issue | Remaining work |
 |---|---|
-| [#616](https://github.com/iamfatness/CoreVideoPro/issues/616) | **Unranked (architecture review 2026-09-24, commit `6f4f025`).** Production command contract is not authoritative: sync emits dispatcher no-ops; unknown batch members are dropped; parity matches a non-shipping TypeScript mirror. Related, not duplicate of #530. |
-| [#617](https://github.com/iamfatness/CoreVideoPro/issues/617) | **Unranked (architecture review 2026-09-24).** Capability handshake advertises compile flags, not constructed adapters. Do not advertise DeckLink/AJA until #537 has pixels. |
-| [#618](https://github.com/iamfatness/CoreVideoPro/issues/618) | **Unranked (architecture review 2026-09-24).** Windows CI compiles the stub core; production D3D11/MF/WASAPI/UVC/WGC adapters can merge unbuilt. Not #575 (staging secrets). |
-| [#619](https://github.com/iamfatness/CoreVideoPro/issues/619) | **Unranked (architecture review 2026-09-24).** Program shared-texture events ride the throttled preview queue; dedicated drain is empty. Small fix; can ride with #616. |
-| [#620](https://github.com/iamfatness/CoreVideoPro/issues/620) | **Unranked (architecture review 2026-09-24).** High-priority stdout response queue is unbounded; a wedged shell can stall the writer. |
-| [#621](https://github.com/iamfatness/CoreVideoPro/issues/621) | **Unranked (architecture review 2026-09-24).** Three snapshot truths (typed operator snapshot, redacted qualification JSON, ControlState) drift independently. #610 is one field on one projection, not this issue. |
-| [#622](https://github.com/iamfatness/CoreVideoPro/issues/622) | **Unranked (architecture review 2026-09-24).** Single-slot sync plus UI-thread snapshot apply can drop a fire-and-forget command. Not #509 (197 ms rebuild). |
-| [#599](https://github.com/iamfatness/CoreVideoPro/issues/599) | After the #597 stream stall, the Zoom SDK helper and video frames recovered but the Zoom Meeting panel remained hidden on display 2. A targeted window restore made the existing window visible without restarting the meeting; explain the hide/mini-window transition and provide a reliable operator recovery path. Causality with #597 is unproven. |
-| [#597](https://github.com/iamfatness/CoreVideoPro/issues/597) | **Backpressure slice 1 shipped on `feat/stream-backpressure`; owner acceptance and merge remain.** The ~20 s stall was the CORE starving, not the UI blocking (the `perf.log` gap carried a normal sample-COUNTER delta), amplified by eight hardware-encoder rebuilds in 20 s. Shipped: a buffered-age signal on the compressed-video queue; Lever A (an input divisor at the compositor's encoder-texture export, measured to halve egress) and Lever B (GOP-tail discard, safe because parameter sets are in band); a restart floor over BOTH restart authorities (the adapter re-opened its own transport on a 1 s rung, never consulting the supervisor ladder); the queue-overflow path now discards instead of failing the sender into a restart storm; a per-sender `backpressure` snapshot node; and a live slow-sink/burst acceptance gate. Not proven: a finite soak only, ladder rung 1 pinned by unit tests alone, and the HEVC overflow branch has never fired (#607). Slice 2 remains: the egress-based health signal and the phantom-fault fix. Defects found and deferred: #601 (the encoder ignores its configured bitrate — possibly the real trigger, which backpressure now masks), #602, #603, #604, #605, #606, #607. |
-| [#590](https://github.com/iamfatness/CoreVideoPro/issues/590) | Simplify and prune Sources for live operation. Audit accumulated controls, remove or relocate redundant and misleading UI, and verify source assignment with realistic inputs. Coordinate with #505 and #588. |
-| [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Rework starter Scenes and scene creation. Owner sees the same source repeated in default scenes; reproduce and fix that behavior, make common looks easy to build, and preserve saved custom scenes. Related: #451. |
-| [#592](https://github.com/iamfatness/CoreVideoPro/issues/592) | Lower-third second line visibly refreshes as “Guest” and sometimes briefly shows lowercase “g”. Trace metadata, key-state, and rendering updates; fix the cause and verify stable installed output. |
-| [#593](https://github.com/iamfatness/CoreVideoPro/issues/593) | Add per-source lower-third name and editable secondary line (title, organization, website, or other text) in Sources, reusing the existing DisplayName override and persisting the new field. |
-| [#594](https://github.com/iamfatness/CoreVideoPro/issues/594) | Put Health and support tools inside Settings; replace the top-level Health button with Settings and remove the Diagnose label without losing diagnostic access. |
-| [#595](https://github.com/iamfatness/CoreVideoPro/issues/595) | Hide OHG Show from default navigation until explicitly enabled in Settings. Preserve existing OHG configuration; #450 remains the broader redesign. |
-| [#565](https://github.com/iamfatness/CoreVideoPro/issues/565) | AV1 streaming remains explicitly refused: the GPU encoder emitted near-empty 1080p60 access units. Fix and verify a playable packaged receiver-side stream before enabling AV1; never silently substitute a codec. |
-| [#588](https://github.com/iamfatness/CoreVideoPro/issues/588) | Make local display/window capture an obvious, reliable source-to-Preview/Program workflow. WGC capture and generic device routing exist, but the operator path is fragmented and lacks current installed-beta end-to-end acceptance. Distinguish this from incoming Zoom screen share; verify lifecycle, failure status, frame cadence, and audio labeling. |
-| [#582](https://github.com/iamfatness/CoreVideoPro/issues/582) | **Confirmed by owner in Preview and multiview** on beta `4dfe476`, including a non-active participant. Live callback evidence found the SDK's limited-range flag stayed true across range-like frame changes while raw out-of-range pixels collapsed and returned. Default-on correction in #586 yielded 0 isolated luma jumps in 88,159 frames over five minutes across 8 feeds, with zero subscription churn; the owner reports the corrected picture stable so far. CI, longer visual acceptance, and shipping remain. |
-| [#587](https://github.com/iamfatness/CoreVideoPro/issues/587) | First Join after changing the Zoom meeting URL used the stale placeholder meeting number; a second click used the visible URL. Fix the URL binding/command boundary and verify first-click Join uses the visible meeting. |
-| [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Stale retry fencing is merged in #566 and regression-tested. Still needs the installed operator sequence: AV1 refusal → explicit HEVC retry without app restart, with genuine new failures visible and sibling outputs uninterrupted. |
-| [#581](https://github.com/iamfatness/CoreVideoPro/issues/581) | Zoom window appears slower than Program. Producer/Windows serving cadence was approximately 60 fps; Zoom self-view versus receive statistics and real presentation timing await owner validation. No confirmed fix; source-bus work continues. |
-| [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | Owner reports H.265 streaming still fails in current testing; exact installed build and symptom await capture. Earlier Preparing/offline symptom was repaired in #566, with YouTube LIVE/Excellent and moving public playback verified through a 30m16s run. Reproduce the new report and establish repeatable receiver-side video/audio acceptance; distinguish sending from verified playback. Do not assume the old symptom recurred. |
-| [#575](https://github.com/iamfatness/CoreVideoPro/issues/575) | Scheduled staging smoke cannot execute because required Actions secrets are missing. Existing configuration gap; application CI passed. Supply secrets through the appropriate secure configuration path, then rerun staging checks. |
+| [#615](https://github.com/iamfatness/CoreVideoPro/issues/615) | RTMP streaming amplifies packet traffic; investigate PC-wide connectivity loss. |
+| [#608](https://github.com/iamfatness/CoreVideoPro/issues/608) | Audio drops out for remaining participants when others disconnect; selecting their source restores it. |
+| [#624](https://github.com/iamfatness/CoreVideoPro/issues/624) | Recover a subscribed Zoom video feed that stops advancing in Tiles. |
+| [#597](https://github.com/iamfatness/CoreVideoPro/issues/597) | **Backpressure slice 1 shipped on `feat/stream-backpressure`; owner acceptance and merge remain.** Slice 2: egress-based health signal and phantom-fault fix. Deferred from that slice: #601 (encoder ignores configured bitrate), #602, #603, #604 (`stopFfmpegProcess` never kills the child), #605, #606, #607. |
+| [#599](https://github.com/iamfatness/CoreVideoPro/issues/599) | After the #597 stream stall, Zoom Meeting panel stayed hidden on display 2. Targeted restore worked; need a reliable operator path. Causality with #597 unproven. |
+| [#610](https://github.com/iamfatness/CoreVideoPro/issues/610) | Operator-facing degraded-stream readout. Implement on the #621 model; do not hand-write a fourth snapshot. |
+| [#590](https://github.com/iamfatness/CoreVideoPro/issues/590) | Simplify and prune Sources for live operation. Coordinate with #505 and #588. |
+| [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Rework starter Scenes and scene creation; owner sees the same source repeated in defaults. |
+| [#592](https://github.com/iamfatness/CoreVideoPro/issues/592) | Lower-third second line refreshes as “Guest” / brief lowercase “g”. |
+| [#593](https://github.com/iamfatness/CoreVideoPro/issues/593) | Persist per-source lower-third name and editable secondary line. |
+| [#594](https://github.com/iamfatness/CoreVideoPro/issues/594) | Move Health into Settings; replace Diagnose label. |
+| [#595](https://github.com/iamfatness/CoreVideoPro/issues/595) | Hide OHG Show until explicitly enabled in Settings. |
+| [#565](https://github.com/iamfatness/CoreVideoPro/issues/565) | AV1 streaming explicitly refused until a playable packaged receiver-side stream exists. |
+| [#588](https://github.com/iamfatness/CoreVideoPro/issues/588) | Local display/window capture as a first-class Program source. |
+| [#582](https://github.com/iamfatness/CoreVideoPro/issues/582) | Speaker-change brightness flashes. Content-aware range correction in live validation; CI and shipping remain. |
+| [#587](https://github.com/iamfatness/CoreVideoPro/issues/587) | First Join after editing the meeting URL used the stale placeholder number. |
+| [#568](https://github.com/iamfatness/CoreVideoPro/issues/568) | Installed operator sequence: AV1 refusal → explicit HEVC retry without app restart. |
+| [#581](https://github.com/iamfatness/CoreVideoPro/issues/581) | Zoom window appears slower than Program; owner validation pending. |
+| [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | H.265 streaming needs repeatable installed receiver acceptance. |
+| [#575](https://github.com/iamfatness/CoreVideoPro/issues/575) | Scheduled staging smoke blocked on missing Actions secrets. Not #618. |
 
 ## Papercuts and deferred workload gates — existing order
 
 | Issue | Remaining work |
 |---|---|
-| [#562](https://github.com/iamfatness/CoreVideoPro/issues/562) | Capture dropout policy needs adapter liveness via `signalPresent`; frame cadence alone is not a valid signal for static content. |
-| [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | Async ISO writer status still omits live `framesWritten` / `bytesWritten` updates; files record correctly. Confirmed in `refreshIsoStreams` on main. |
+| [#562](https://github.com/iamfatness/CoreVideoPro/issues/562) | Capture dropout policy needs adapter liveness via `signalPresent`. |
+| [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | Async ISO writer status still omits live `framesWritten` / `bytesWritten`. |
 | [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points; UI design still needed. |
-| [#530](https://github.com/iamfatness/CoreVideoPro/issues/530) | Control manifest still advertises `programPreview`; implementation spelling is `program-preview`. Fix alias/validation and reject invalid modes. |
-| [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct HEVC is shipped in #566. AV1 remains explicitly refused pending [#565](https://github.com/iamfatness/CoreVideoPro/issues/565). Raw fallback at real time and recording/ISO on the encoder seam remain; neither is covered by HEVC stream acceptance. |
-| [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) | Participant export-device reuse and the Program readiness fix shipped (#566/#574). Full 16-guest / 1080p-input render-budget acceptance remains. The clean eight-feed soak used adaptive 320x180 inputs, not eight 1080p feeds. |
-| [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | RTMP `bytesSent` still uses `estimatedFrameBytes`; `latencyMs` remains hard-coded to 2100 on main. Replace with measured/explicitly unavailable values. |
-| [#509](https://github.com/iamfatness/CoreVideoPro/issues/509) | Roster-change UI work exceeded 16.7 ms in measured sessions; several projections contribute. Earlier throttling reduced cost, but acceptance for the remaining rebuild work is not documented. |
-| [#508](https://github.com/iamfatness/CoreVideoPro/issues/508) | **Watch item per owner report:** multiview label/click mismatch after unassign has not recurred. Capture synchronized overlay/texture geometry if a persistent mismatch returns; no speculative geometry fix. |
-| [#507](https://github.com/iamfatness/CoreVideoPro/issues/507) | Debug text on operator surfaces and transport layout movement: no closing fix/acceptance identified in this audit. |
+| [#530](https://github.com/iamfatness/CoreVideoPro/issues/530) | Control manifest advertises `programPreview`; implementation spelling is `program-preview`. |
+| [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct HEVC shipped in #566. AV1 refused pending #565. Raw fallback and recording/ISO on the encoder seam remain. |
+| [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) | Full 16-guest / 1080p-input render-budget acceptance remains. |
+| [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | RTMP `bytesSent` still estimated; `latencyMs` hard-coded to 2100. |
+| [#509](https://github.com/iamfatness/CoreVideoPro/issues/509) | 197 ms participant-rebuild stutter. Command-drop on the same apply graph is #622. |
+| [#540](https://github.com/iamfatness/CoreVideoPro/issues/540) | Split ingest off MediaCore.cpp after F1 has one consumer. Not a god-object epic. |
+| [#537](https://github.com/iamfatness/CoreVideoPro/issues/537) | DeckLink/AJA: live frames on the source bus (not probe-only). Parked for beta. |
+| [#508](https://github.com/iamfatness/CoreVideoPro/issues/508) | Watch item: multiview label/click mismatch after unassign has not recurred. |
+| [#507](https://github.com/iamfatness/CoreVideoPro/issues/507) | Debug text on operator surfaces shifts transport buttons. |
 
 ## Later — parked
 
 | Issue | Item |
 |---|---|
-| [#539](https://github.com/iamfatness/CoreVideoPro/issues/539) | MXL / ZoomISO Cloud / Kubernetes; remains parked until the source bus and plant I/O exist. |
+| [#539](https://github.com/iamfatness/CoreVideoPro/issues/539) | MXL / ZoomISO Cloud / Kubernetes; parked until the source bus and plant I/O exist. |
+
+Parked from the 2026-09-24 architecture review (do not start from that document):
+MediaCore/StudioViewModel extraction beyond #540, Program/Preview/Multiview thread
+split, atomic native Take, NDI out of process, retiring React/`native-core` from CI,
+enabling DeckLink/AJA before #537 has pixels.
 
 ## Done — reconciled merged fixes
 
