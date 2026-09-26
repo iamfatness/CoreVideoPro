@@ -236,6 +236,16 @@
       "qualification": "include",
       "control": "include"
     },
+    "rosterEpoch": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "rosterRevision": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
     "sceneId": {
       "typed": "include",
       "qualification": "include",

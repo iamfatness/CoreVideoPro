@@ -143,6 +143,17 @@ export function validatePlanGeneration(value: unknown): value is PlanGeneration 
   if (!(typeof v["clockGeneration"] === "number" && Number.isInteger(v["clockGeneration"]) && v["clockGeneration"] as number >= 1 && v["clockGeneration"] as number <= 9007199254740991)) return false;
   return true;
 }
+export type ZoomRosterSnapshotRevision = {
+  rosterEpoch: string;
+  rosterRevision: number;
+};
+export function validateZoomRosterSnapshotRevision(value: unknown): value is ZoomRosterSnapshotRevision {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  if (!(typeof v["rosterEpoch"] === "string" && (v["rosterEpoch"] as string).length >= 1)) return false;
+  if (!(typeof v["rosterRevision"] === "number" && Number.isInteger(v["rosterRevision"]) && v["rosterRevision"] as number >= 1 && v["rosterRevision"] as number <= 9007199254740991)) return false;
+  return true;
+}
 export type ControlOperationIdentity = {
   operationId: string;
   authorityEpoch: string;

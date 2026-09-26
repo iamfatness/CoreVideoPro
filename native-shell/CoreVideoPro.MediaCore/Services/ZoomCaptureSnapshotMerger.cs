@@ -12,6 +12,8 @@ public static class ZoomCaptureSnapshotMerger
         NativeMediaCoreStateSnapshot? existing,
         RawCaptureSnapshot capture)
     {
+        if (!ZoomRosterSnapshotPolicy.Accept(existing, capture.RosterEpoch, capture.RosterRevision))
+            return existing!;
         var baseSnapshot = existing ?? SyntheticMediaCore.SynthesizeSnapshot([], 0, 0);
         var meetingState = ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(capture.MeetingState);
         var inMeeting = meetingState.Equals("in_meeting", StringComparison.Ordinal);
@@ -46,6 +48,8 @@ public static class ZoomCaptureSnapshotMerger
         return baseSnapshot with
         {
             MeetingState = meetingState,
+            RosterEpoch = capture.RosterEpoch,
+            RosterRevision = capture.RosterRevision,
             ActiveSpeakerId = inMeeting ? capture.ActiveSpeakerId : null,
             Participants = inMeeting ? capture.Participants : [],
             SourceSnapshot = sourceSnapshot,

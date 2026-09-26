@@ -1087,6 +1087,9 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
   rpc::Json::Object result{
       {"meetingState", snapshot.meetingState == "in-meeting" ? "in_meeting" : snapshot.meetingState},
       {"participants", participants},
+      {"rosterEpoch", std::to_string(processGeneration_) + ":" +
+                          std::to_string(snapshot.meetingGeneration) + ":" + instanceToken_},
+      {"rosterRevision", static_cast<double>(snapshot.rosterRevision)},
       {"tick", fallbackTick_},
       // Engine-reported truth (raw_media_status events), NOT the last command
       // sent: the shell's Capture state/status reads this.
@@ -1146,6 +1149,9 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
       {"activeSpeakerId", runtime.activeSpeakerId},
       {"screenShareParticipantId", runtime.screenShareParticipantId},
       {"participants", state_.participantsJson()},
+      {"rosterEpoch", std::to_string(processGeneration_) + ":" +
+                          std::to_string(runtime.meetingGeneration) + ":" + instanceToken_},
+      {"rosterRevision", static_cast<double>(runtime.rosterRevision)},
       {"subscriptions", subscriptions},
       {"recording",
        rpc::Json::Object{
