@@ -39,6 +39,7 @@ const maxVideoFeeds = numberArg(args["max-video-feeds"], Math.max(minVideoFeeds,
 const maxFirstFrameMs = numberArg(args["max-first-frame-ms"], 1000);
 const observeMs = numberArg(args["observe-ms"], 0);
 const monitorControlProbeRequested = booleanArg(args["monitor-control-probe"]);
+const rejoinProbeRequested = booleanArg(args["rejoin-probe"]);
 const requireActiveSpeaker = !booleanArg(args["allow-no-active-speaker"]);
 const nativeCore = resolve(args["native-core"] ?? join(buildDir, `corevideo-native${exeSuffix}`));
 const zoomEngine = resolve(args["zoom-engine"] ?? process.env.COREVIDEO_ZOOM_ENGINE_PATH ?? join(buildDir, `corevideo-zoom-engine${exeSuffix}`));
@@ -89,6 +90,7 @@ const pending = new Map();
 const warnings = [];
 const rosterTransitions = [];
 let monitorControlProbe;
+let rejoinProbe;
 let lastRosterKey = "";
 let previousRoster = new Map();
 const stderrLines = [];
@@ -132,19 +134,19 @@ try {
   console.log(`Handshake   : ${handshake.profile?.name ?? "unknown"} (${(handshake.profile?.capabilities ?? []).join(", ")})`);
   recordCoreCounters((await send("snapshot")).snapshot);
 
-  joinSnapshot = await send("zoom-join", {
-    payload: {
-      meetingUrl,
-      displayName,
-      webinar: booleanArg(args.webinar),
-      ...(passcode ? { passcode } : {}),
-    },
-  });
+  const joinPayload = {
+    meetingUrl,
+    displayName,
+    webinar: booleanArg(args.webinar),
+    ...(passcode ? { passcode } : {}),
+  };
+  joinSnapshot = await send("zoom-join", { payload: joinPayload });
   latestSnapshot = joinSnapshot.snapshot;
   recordSnapshot(latestSnapshot);
   console.log(`Join state  : ${normalizeMeetingState(latestSnapshot?.meetingState)} with ${participantCount(latestSnapshot)} participant(s)`);
 
   await validationLoop();
+  if (rejoinProbeRequested) rejoinProbe = await probeRejoin(joinPayload);
   const report = buildReport("passed");
   printReport(report);
   cleanup(0);
@@ -152,6 +154,57 @@ try {
   const report = buildReport("failed", error instanceof Error ? error.message : String(error));
   printReport(report);
   cleanup(1);
+}
+
+async function probeRejoin(joinPayload) {
+  const beforeEpoch = latestSnapshot?.rosterEpoch;
+  const beforeRevision = latestSnapshot?.rosterRevision;
+  const beforeFrames = [...frameCountsByParticipant.values()].reduce((sum, frames) => sum + frames, 0);
+  if (!beforeEpoch) throw new Error("rejoin probe requires a versioned initial roster");
+  await send("zoom-leave");
+  let left;
+  const leaveDeadline = Date.now() + 15000;
+  while (Date.now() < leaveDeadline) {
+    left = (await send("zoom-snapshot")).snapshot;
+    latestSnapshot = left;
+    recordSnapshot(left);
+    if (normalizeMeetingState(left?.meetingState) === "idle") break;
+    await sleep(300);
+  }
+  if (normalizeMeetingState(left?.meetingState) !== "idle" || usableParticipants(left).length !== 0) {
+    throw new Error("rejoin probe: leave did not publish an empty roster barrier");
+  }
+  await send("zoom-join", { payload: joinPayload });
+  let rejoined;
+  let resumedMedia = false;
+  const joinDeadline = Date.now() + Math.max(30000, joinWaitMs);
+  while (Date.now() < joinDeadline) {
+    rejoined = (await send("zoom-snapshot")).snapshot;
+    latestSnapshot = rejoined;
+    recordSnapshot(rejoined);
+    const participants = usableParticipants(rejoined);
+    if (normalizeMeetingState(rejoined?.meetingState) === "in-meeting" && participants.length > 0) {
+      latestSpineSnapshot = (await send("zoom-media-spine-sync", {
+        spinePayload: buildSpinePayload(participants), elapsedMs: Date.now() - startedAt,
+      })).spineSnapshot;
+      recordSpineSnapshot(latestSpineSnapshot);
+      const frames = [...frameCountsByParticipant.values()].reduce((sum, count) => sum + count, 0);
+      if (frames > beforeFrames) { resumedMedia = true; break; }
+    }
+    await sleep(500);
+  }
+  if (!resumedMedia || !rejoined?.rosterEpoch || rejoined.rosterEpoch === beforeEpoch) {
+    throw new Error("rejoin probe: new roster epoch or resumed media was not observed");
+  }
+  recordCoreCounters((await send("snapshot")).snapshot);
+  return {
+    beforeEpoch, beforeRevision,
+    leftEpoch: left.rosterEpoch, leftRevision: left.rosterRevision,
+    emptyBarrier: usableParticipants(left).length === 0,
+    rejoinedEpoch: rejoined.rosterEpoch, rejoinedRevision: rejoined.rosterRevision,
+    rejoinedParticipantCount: usableParticipants(rejoined).length,
+    resumedMedia,
+  };
 }
 
 async function validationLoop() {
@@ -615,6 +668,7 @@ function buildReport(status, failureReason) {
     subscriptions: latestSpineSnapshot?.subscriptions ?? [],
     rosterTransitions,
     monitorControlProbe: monitorControlProbe ?? null,
+    rejoinProbe: rejoinProbe ?? null,
     audioLostSamplesDelta: (lastCoreCounters?.audioLostSamples ?? 0) - (firstCoreCounters?.audioLostSamples ?? 0),
     monitorUnderrunsDelta: (lastCoreCounters?.monitorUnderruns ?? 0) - (firstCoreCounters?.monitorUnderruns ?? 0),
     warnings: collectWarnings(),
