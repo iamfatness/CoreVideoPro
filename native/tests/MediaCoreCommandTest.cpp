@@ -2555,6 +2555,72 @@ TEST(MediaCoreCommand, SyncsAudioMonitorState) {
               audio->getString("monitorStatus") == "stub-monitor" || audio->getString("monitorStatus") == "unavailable");
 }
 
+TEST(MediaCoreCommand, RevisionedMonitorControlRejectsStaleClientAndDedupesRetry) {
+  using corevideo::rpc::Json;
+  corevideo::core::MediaCore mediaCore;
+  const auto initial = mediaCore.sessionState();
+  const auto* firstControl = initial.get("audioMixSession")->get("monitorControl");
+  ASSERT_NE(firstControl, nullptr);
+  const auto epoch = firstControl->getString("authorityEpoch");
+  EXPECT_FALSE(epoch.empty());
+
+  auto command = [&](const std::string& operation, int expected, bool enabled) {
+    return Json::Object{{"type", "set-audio-monitor-control"},
+                        {"operationId", operation}, {"authorityEpoch", epoch},
+                        {"expectedRevision", expected}, {"enabled", enabled},
+                        {"deviceId", ""}, {"deviceName", ""}, {"volume", 0.5}};
+  };
+  const auto applied = mediaCore.applyCommand(command("client-a-1", 0, true));
+  const auto* audio = applied.get("audioMixSession");
+  EXPECT_TRUE(audio->get("monitorEnabled")->asBool());
+  EXPECT_EQ(audio->get("monitorControl")->getNumber("revision"), 1);
+  EXPECT_EQ(audio->get("monitorControl")->get("lastResult")->getString("status"), "applied");
+
+  const auto stale = mediaCore.applyCommand(command("client-b-1", 0, false));
+  audio = stale.get("audioMixSession");
+  EXPECT_TRUE(audio->get("monitorEnabled")->asBool());
+  EXPECT_EQ(audio->get("monitorControl")->get("lastResult")->getString("status"), "conflict");
+
+  const auto legacy = mediaCore.applyCommand(Json::Object{{"type", "sync-audio-monitor"},
+      {"enabled", false}, {"volume", 0.1}});
+  EXPECT_TRUE(legacy.get("audioMixSession")->get("monitorEnabled")->asBool());
+
+  const auto duplicate = mediaCore.applyCommand(command("client-a-1", 0, true));
+  audio = duplicate.get("audioMixSession");
+  EXPECT_EQ(audio->get("monitorControl")->getNumber("revision"), 1);
+  EXPECT_EQ(audio->get("monitorControl")->get("lastResult")->getString("status"), "applied");
+
+  const auto rebased = mediaCore.applyCommand(command("client-b-2", 1, false));
+  audio = rebased.get("audioMixSession");
+  EXPECT_FALSE(audio->get("monitorEnabled")->asBool());
+  EXPECT_EQ(audio->get("monitorControl")->getNumber("revision"), 2);
+}
+
+TEST(MediaCoreCommand, MonitorAuthorityEpochRejectsCommandFromRetiredCore) {
+  using corevideo::rpc::Json;
+  corevideo::core::MediaCore retired;
+  const auto oldEpoch = retired.sessionState().get("audioMixSession")
+      ->get("monitorControl")->getString("authorityEpoch");
+  corevideo::core::MediaCore restarted;
+  const auto newEpoch = restarted.sessionState().get("audioMixSession")
+      ->get("monitorControl")->getString("authorityEpoch");
+  ASSERT_NE(oldEpoch, newEpoch);
+  auto command = [&](const std::string& epoch, const std::string& id) {
+    return Json::Object{{"type", "set-audio-monitor-control"},
+                        {"operationId", id}, {"authorityEpoch", epoch},
+                        {"expectedRevision", 0}, {"enabled", true},
+                        {"deviceId", ""}, {"deviceName", ""}, {"volume", 0.5}};
+  };
+  const auto stale = restarted.applyCommand(command(oldEpoch, "old-client"));
+  EXPECT_FALSE(stale.get("audioMixSession")->get("monitorEnabled")->asBool());
+  EXPECT_EQ(stale.get("audioMixSession")->get("monitorControl")
+      ->get("lastResult")->getString("status"), "conflict");
+  const auto accepted = restarted.applyCommand(command(newEpoch, "new-client"));
+  EXPECT_TRUE(accepted.get("audioMixSession")->get("monitorEnabled")->asBool());
+  EXPECT_EQ(accepted.get("audioMixSession")->get("monitorControl")
+      ->getNumber("revision"), 1);
+}
+
 TEST(MediaCoreAudioMonitor, MixerSumsParticipantPcmIntoStereoMonitorBus) {
   auto modules = corevideo::modules::createStubModules();
 

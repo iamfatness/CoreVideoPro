@@ -12,6 +12,9 @@
  * Optional:
  *   --passcode "..." --min-participants 3 --min-video-feeds 3
  *   --timeout-ms 120000 --max-first-frame-ms 1000 --allow-no-active-speaker
+ *   --observe-ms 120000 keeps polling after first passing frame to record
+ *   versioned roster transitions. For meetings requiring signed-in join, run
+ *   via scripts/qa/zoom-signed-in-validator (uses the app's local OAuth grant).
  */
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -34,6 +37,9 @@ const minParticipants = numberArg(args["min-participants"], 3);
 const minVideoFeeds = numberArg(args["min-video-feeds"], minParticipants);
 const maxVideoFeeds = numberArg(args["max-video-feeds"], Math.max(minVideoFeeds, 6));
 const maxFirstFrameMs = numberArg(args["max-first-frame-ms"], 1000);
+const observeMs = numberArg(args["observe-ms"], 0);
+const monitorControlProbeRequested = booleanArg(args["monitor-control-probe"]);
+const rejoinProbeRequested = booleanArg(args["rejoin-probe"]);
 const requireActiveSpeaker = !booleanArg(args["allow-no-active-speaker"]);
 const nativeCore = resolve(args["native-core"] ?? join(buildDir, `corevideo-native${exeSuffix}`));
 const zoomEngine = resolve(args["zoom-engine"] ?? process.env.COREVIDEO_ZOOM_ENGINE_PATH ?? join(buildDir, `corevideo-zoom-engine${exeSuffix}`));
@@ -67,6 +73,8 @@ let handshake;
 let joinSnapshot;
 let latestSnapshot;
 let latestSpineSnapshot;
+let firstCoreCounters;
+let lastCoreCounters;
 let firstFrameAtMs;
 let firstSpineSyncAtMs;
 let firstFrameParticipantId;
@@ -80,6 +88,11 @@ const audioPacketsByParticipant = new Map();
 const rawAudioStatusByParticipant = new Map();
 const pending = new Map();
 const warnings = [];
+const rosterTransitions = [];
+let monitorControlProbe;
+let rejoinProbe;
+let lastRosterKey = "";
+let previousRoster = new Map();
 const stderrLines = [];
 
 child.stdout.on("data", (chunk) => {
@@ -119,20 +132,21 @@ try {
 
   handshake = await waitForHandshake();
   console.log(`Handshake   : ${handshake.profile?.name ?? "unknown"} (${(handshake.profile?.capabilities ?? []).join(", ")})`);
+  recordCoreCounters((await send("snapshot")).snapshot);
 
-  joinSnapshot = await send("zoom-join", {
-    payload: {
-      meetingUrl,
-      displayName,
-      webinar: booleanArg(args.webinar),
-      ...(passcode ? { passcode } : {}),
-    },
-  });
+  const joinPayload = {
+    meetingUrl,
+    displayName,
+    webinar: booleanArg(args.webinar),
+    ...(passcode ? { passcode } : {}),
+  };
+  joinSnapshot = await send("zoom-join", { payload: joinPayload });
   latestSnapshot = joinSnapshot.snapshot;
   recordSnapshot(latestSnapshot);
   console.log(`Join state  : ${normalizeMeetingState(latestSnapshot?.meetingState)} with ${participantCount(latestSnapshot)} participant(s)`);
 
   await validationLoop();
+  if (rejoinProbeRequested) rejoinProbe = await probeRejoin(joinPayload);
   const report = buildReport("passed");
   printReport(report);
   cleanup(0);
@@ -142,15 +156,75 @@ try {
   cleanup(1);
 }
 
+async function probeRejoin(joinPayload) {
+  const beforeEpoch = latestSnapshot?.rosterEpoch;
+  const beforeRevision = latestSnapshot?.rosterRevision;
+  const beforeFrames = [...frameCountsByParticipant.values()].reduce((sum, frames) => sum + frames, 0);
+  if (!beforeEpoch) throw new Error("rejoin probe requires a versioned initial roster");
+  await send("zoom-leave");
+  let left;
+  const leaveDeadline = Date.now() + 15000;
+  while (Date.now() < leaveDeadline) {
+    left = (await send("zoom-snapshot")).snapshot;
+    latestSnapshot = left;
+    recordSnapshot(left);
+    if (normalizeMeetingState(left?.meetingState) === "idle") break;
+    await sleep(300);
+  }
+  if (normalizeMeetingState(left?.meetingState) !== "idle" || usableParticipants(left).length !== 0) {
+    throw new Error("rejoin probe: leave did not publish an empty roster barrier");
+  }
+  if (left.rosterEpoch !== beforeEpoch || left.rosterRevision <= beforeRevision) {
+    throw new Error("rejoin probe: empty roster barrier was not versioned after the live roster");
+  }
+  await send("zoom-join", { payload: joinPayload });
+  let rejoined;
+  let resumedMedia = false;
+  const joinDeadline = Date.now() + Math.max(30000, joinWaitMs);
+  while (Date.now() < joinDeadline) {
+    rejoined = (await send("zoom-snapshot")).snapshot;
+    latestSnapshot = rejoined;
+    recordSnapshot(rejoined);
+    const participants = usableParticipants(rejoined);
+    if (normalizeMeetingState(rejoined?.meetingState) === "in-meeting" && participants.length > 0) {
+      latestSpineSnapshot = (await send("zoom-media-spine-sync", {
+        spinePayload: buildSpinePayload(participants), elapsedMs: Date.now() - startedAt,
+      })).spineSnapshot;
+      recordSpineSnapshot(latestSpineSnapshot);
+      const frames = [...frameCountsByParticipant.values()].reduce((sum, count) => sum + count, 0);
+      if (frames > beforeFrames) { resumedMedia = true; break; }
+    }
+    await sleep(500);
+  }
+  if (!resumedMedia || !rejoined?.rosterEpoch || rejoined.rosterEpoch === beforeEpoch) {
+    throw new Error("rejoin probe: new roster epoch or resumed media was not observed");
+  }
+  recordCoreCounters((await send("snapshot")).snapshot);
+  return {
+    beforeEpoch, beforeRevision,
+    leftEpoch: left.rosterEpoch, leftRevision: left.rosterRevision,
+    emptyBarrier: usableParticipants(left).length === 0,
+    rejoinedEpoch: rejoined.rosterEpoch, rejoinedRevision: rejoined.rosterRevision,
+    rejoinedParticipantCount: usableParticipants(rejoined).length,
+    resumedMedia,
+  };
+}
+
 async function validationLoop() {
   const deadline = startedAt + timeoutMs;
   let lastSpineSyncAt = 0;
+  let lastCoreSnapshotAt = 0;
   let captureRetryIssued = false;
+  let qualifiedAt;
 
   while (Date.now() < deadline) {
     const snapshotResponse = await send("zoom-snapshot");
     latestSnapshot = snapshotResponse.snapshot;
     recordSnapshot(latestSnapshot);
+    if (Date.now() - lastCoreSnapshotAt >= 1000) {
+      recordCoreCounters((await send("snapshot")).snapshot);
+      lastCoreSnapshotAt = Date.now();
+    }
 
     const state = normalizeMeetingState(latestSnapshot?.meetingState);
     if (state === "error") {
@@ -178,12 +252,62 @@ async function validationLoop() {
 
     await send("ping").catch(() => undefined);
     if (criteriaMet()) {
-      return;
+      qualifiedAt ??= Date.now();
+      if (monitorControlProbeRequested && !monitorControlProbe) {
+        monitorControlProbe = await probeMonitorControl();
+      }
     }
+    if (qualifiedAt !== undefined && Date.now() - qualifiedAt >= observeMs) return;
     await sleep(pollMs);
   }
 
   throw new Error("Timed out before live Zoom criteria were met.");
+}
+
+async function probeMonitorControl() {
+  const initial = (await send("snapshot")).snapshot?.audioMixSession?.monitorControl;
+  if (!initial?.authorityEpoch || !Number.isSafeInteger(initial.revision)) {
+    throw new Error("monitor control probe requires an epoch and safe revision");
+  }
+  const command = (operationId, expectedRevision, volume) => ({
+    type: "set-audio-monitor-control", operationId,
+    authorityEpoch: initial.authorityEpoch, expectedRevision,
+    enabled: false, deviceId: "", deviceName: "", volume,
+  });
+  const sendControl = async (entry) => {
+    const response = await send("media-core-sync", { commands: [entry], elapsedMs: Date.now() - startedAt });
+    return response.snapshot?.audioMixSession;
+  };
+  const firstCommand = command("validator-monitor-first", initial.revision, 0.5);
+  const first = await sendControl(firstCommand);
+  if (first?.monitorControl?.lastResult?.status !== "applied" ||
+      first.monitorControl.revision !== initial.revision + 1 || first.monitorVolume !== 0.5) {
+    throw new Error("monitor control probe: first command did not apply");
+  }
+  const stale = await sendControl(command("validator-monitor-stale", initial.revision, 0.25));
+  if (stale?.monitorControl?.lastResult?.status !== "conflict" ||
+      stale.monitorControl.revision !== initial.revision + 1 || stale.monitorVolume !== 0.5) {
+    throw new Error("monitor control probe: stale client overwrote applied state");
+  }
+  const duplicate = await sendControl(firstCommand);
+  if (duplicate?.monitorControl?.lastResult?.status !== "applied" ||
+      duplicate.monitorControl.revision !== initial.revision + 1) {
+    throw new Error("monitor control probe: duplicate retry changed the revision");
+  }
+  const rebased = await sendControl(command("validator-monitor-rebased", initial.revision + 1, 0.25));
+  if (rebased?.monitorControl?.lastResult?.status !== "applied" ||
+      rebased.monitorControl.revision !== initial.revision + 2 || rebased.monitorVolume !== 0.25) {
+    throw new Error("monitor control probe: rebased command did not apply");
+  }
+  return {
+    authorityEpoch: initial.authorityEpoch,
+    initialRevision: initial.revision,
+    finalRevision: rebased.monitorControl.revision,
+    staleStatus: stale.monitorControl.lastResult.status,
+    duplicateStatus: duplicate.monitorControl.lastResult.status,
+    enabled: rebased.monitorEnabled,
+    volume: rebased.monitorVolume,
+  };
 }
 
 function onLine(line) {
@@ -264,6 +388,7 @@ function recordSnapshot(snapshot) {
     return;
   }
   const participants = usableParticipants(snapshot);
+  recordRosterRevision(snapshot, participants);
   maxParticipantCount = Math.max(maxParticipantCount, participants.length);
   for (const participant of participants) {
     participantsById.set(participant.id, participant);
@@ -274,6 +399,35 @@ function recordSnapshot(snapshot) {
   for (const warning of snapshot.warnings ?? []) {
     warnings.push(warning);
   }
+}
+
+function recordRosterRevision(snapshot, participants) {
+  if (!snapshot.rosterEpoch || !snapshot.rosterRevision) return;
+  const key = `${snapshot.rosterEpoch}/${snapshot.rosterRevision}`;
+  if (key === lastRosterKey) return;
+  const current = new Map(participants.map(p => [p.id, Boolean(p.muted)]));
+  const changes = [];
+  for (const [id, muted] of current) {
+    if (!previousRoster.has(id)) changes.push({ kind: "joined", id });
+    else if (previousRoster.get(id) !== muted) changes.push({ kind: muted ? "muted" : "unmuted", id });
+  }
+  for (const id of previousRoster.keys()) {
+    if (!current.has(id)) changes.push({ kind: "left", id });
+  }
+  rosterTransitions.push({ atMs: Date.now() - startedAt, epoch: snapshot.rosterEpoch,
+    revision: snapshot.rosterRevision, changes });
+  if (rosterTransitions.length > 200) rosterTransitions.shift();
+  previousRoster = current;
+  lastRosterKey = key;
+}
+
+function recordCoreCounters(snapshot) {
+  const counters = {
+    audioLostSamples: Number(snapshot?.realtimeEvidence?.audio?.audioLostSamples ?? 0),
+    monitorUnderruns: Number(snapshot?.audioMixSession?.monitorUnderruns ?? 0),
+  };
+  firstCoreCounters ??= counters;
+  lastCoreCounters = counters;
 }
 
 function recordSpineSnapshot(snapshot) {
@@ -515,6 +669,11 @@ function buildReport(status, failureReason) {
     criteriaResults,
     participants: participantRows,
     subscriptions: latestSpineSnapshot?.subscriptions ?? [],
+    rosterTransitions,
+    monitorControlProbe: monitorControlProbe ?? null,
+    rejoinProbe: rejoinProbe ?? null,
+    audioLostSamplesDelta: (lastCoreCounters?.audioLostSamples ?? 0) - (firstCoreCounters?.audioLostSamples ?? 0),
+    monitorUnderrunsDelta: (lastCoreCounters?.monitorUnderruns ?? 0) - (firstCoreCounters?.monitorUnderruns ?? 0),
     warnings: collectWarnings(),
     recentStderr: stderrLines.slice(-10),
   };

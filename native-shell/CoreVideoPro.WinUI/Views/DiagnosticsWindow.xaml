@@ -143,6 +143,8 @@
                                        TextWrapping="WrapWholeWords" />
                             <TextBlock Text="{x:Bind ViewModel.AudioMonitorEngineStatus, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
+                            <TextBlock Text="{x:Bind ViewModel.ControlRecoverySummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                     </Border>
 

@@ -592,10 +592,28 @@ public sealed class NativeMediaCoreAudioMixSession
     public string? MonitorDeviceId { get; init; }
     public string? MonitorDeviceName { get; init; }
     public double MonitorVolume { get; init; }
+    public NativeMediaCoreMonitorControl? MonitorControl { get; init; }
     public int MonitorFramesPlayed { get; init; }
     public IReadOnlyList<NativeMediaCoreParticipantAudioChannel> Participants { get; init; } = [];
     public required string Summary { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+public sealed class NativeMediaCoreMonitorControl
+{
+    public string AuthorityEpoch { get; init; } = string.Empty;
+    public long Revision { get; init; }
+    public NativeMediaCoreMonitorControlResult? LastResult { get; init; }
+    public IReadOnlyList<NativeMediaCoreMonitorControlResult> RecentResults { get; init; } = [];
+}
+
+public sealed class NativeMediaCoreMonitorControlResult
+{
+    public string OperationId { get; init; } = string.Empty;
+    public string Status { get; init; } = string.Empty;
+    public string AuthorityEpoch { get; init; } = string.Empty;
+    public long Revision { get; init; }
+    public long ExpectedRevision { get; init; }
 }
 
 public sealed class NativeMediaCoreCaptionCue
@@ -898,6 +916,8 @@ public sealed record NativeMediaCoreStateSnapshot
     public NativeMediaCoreAutoProduction? AutoProduction { get; init; }
     /// <summary>Optional wire field: Zoom meeting state (e.g. in_meeting, idle). Stub until native core publishes it.</summary>
     public string? MeetingState { get; init; }
+    public string? RosterEpoch { get; init; }
+    public long RosterRevision { get; init; }
     /// <summary>Optional wire field: active breakout room id. Stub until native core publishes it.</summary>
     public string? BreakoutRoomId { get; init; }
     /// <summary>Optional wire field: active breakout room label.</summary>

@@ -306,7 +306,10 @@ rpc::Json ZoomEngineRuntime::leave() {
   if (process_ && process_->running()) {
     enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
   }
-  state_.reset();
+  // The operator's Leave is an authoritative empty-roster barrier. A plain
+  // reset discards its meeting generation and revision, so the shell rejects
+  // the resulting revision-zero snapshot and keeps stale participant strips.
+  state_.apply({ZoomEngineEventKind::Left});
   mediaStarted_ = false;
   latestDecodedFrames_.clear();
   frameSync_.clear();
@@ -1087,6 +1090,9 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
   rpc::Json::Object result{
       {"meetingState", snapshot.meetingState == "in-meeting" ? "in_meeting" : snapshot.meetingState},
       {"participants", participants},
+      {"rosterEpoch", std::to_string(processGeneration_) + ":" +
+                          std::to_string(snapshot.meetingGeneration) + ":" + instanceToken_},
+      {"rosterRevision", static_cast<double>(snapshot.rosterRevision)},
       {"tick", fallbackTick_},
       // Engine-reported truth (raw_media_status events), NOT the last command
       // sent: the shell's Capture state/status reads this.
@@ -1146,6 +1152,9 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
       {"activeSpeakerId", runtime.activeSpeakerId},
       {"screenShareParticipantId", runtime.screenShareParticipantId},
       {"participants", state_.participantsJson()},
+      {"rosterEpoch", std::to_string(processGeneration_) + ":" +
+                          std::to_string(runtime.meetingGeneration) + ":" + instanceToken_},
+      {"rosterRevision", static_cast<double>(runtime.rosterRevision)},
       {"subscriptions", subscriptions},
       {"recording",
        rpc::Json::Object{

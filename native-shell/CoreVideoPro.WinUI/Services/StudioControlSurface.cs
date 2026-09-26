@@ -331,11 +331,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 return ControlInvokeResult.Fail("mode must be 'perGuestIso' or 'programMix'.");
             }
             case "audio.monitor.set":
-                _vm.AudioMonitoringEnabled = Bool(args, 0);
-                return ControlInvokeResult.Success;
+                return await ApplyAudioMonitorControlAsync(args, enabled: Bool(args, 0));
             case "audio.monitor.volume":
-                _vm.AudioMonitorVolume = Math.Clamp(Double(args, 0), 0.0, 1.0);
-                return ControlInvokeResult.Success;
+                return await ApplyAudioMonitorControlAsync(args, volume: Math.Clamp(Double(args, 0), 0.0, 1.0));
             case "audio.masterLimiter.set":
                 _vm.MasterLimiterEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
@@ -536,6 +534,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             .GroupBy(input => input.SourceId!, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First().Name, StringComparer.Ordinal);
         var audioMix = _vm.AudioMix;
+        var appliedMonitor = _vm.AppliedAudioMonitorSession;
         var audioSources = audioMix.Participants
             .Where(source => !string.IsNullOrWhiteSpace(source.ParticipantId))
             .OrderBy(source => source.ParticipantId, StringComparer.Ordinal)
@@ -574,8 +573,12 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             AutoAssignInputs = _vm.AutomationAutoAssignInputsEnabled,
             AutoLowerThirds = _vm.AutomationLowerThirdsEnabled,
             AutoCaptions = _vm.AutomationCaptionsEnabled,
-            AudioMonitorOn = _vm.AudioMonitoringEnabled,
-            AudioMonitorVolume = _vm.AudioMonitorVolume,
+            AudioMonitorOn = appliedMonitor?.MonitorEnabled ?? false,
+            AudioMonitorVolume = appliedMonitor?.MonitorVolume ?? 0,
+            AudioMonitorAuthorityEpoch = appliedMonitor?.MonitorControl?.AuthorityEpoch ?? string.Empty,
+            AudioMonitorRevision = appliedMonitor?.MonitorControl?.Revision ?? 0,
+            AudioMonitorLastResult = appliedMonitor?.MonitorControl?.LastResult?.Status ?? string.Empty,
+            ControlRecoverySummary = _vm.ControlRecoverySummary,
             ZoomAudioMode = ZoomAudioModePreference.Format(_vm.ZoomAudioMode),
             MasterLimiterOn = _vm.MasterLimiterEnabled,
             MasteringOn = _vm.MasteringEnabled,
@@ -882,6 +885,26 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
     private static int Int(IReadOnlyList<object?> args, int index) => args.Count > index && args[index] is int i ? i : 0;
 
     private static double Double(IReadOnlyList<object?> args, int index) => args.Count > index && args[index] is double d ? d : 0.0;
+
+    private async Task<ControlInvokeResult> ApplyAudioMonitorControlAsync(
+        IReadOnlyList<object?> args, bool? enabled = null, double? volume = null)
+    {
+        var epoch = Str(args, 1);
+        var revision = args.Count > 2 && args[2] is double value && double.IsFinite(value) &&
+                       value >= 0 && value <= 9007199254740991d && value == Math.Truncate(value)
+            ? (long?)value : null;
+        if (args.Count > 2 && args[2] is not null && revision is null)
+            return ControlInvokeResult.Fail("expectedRevision must be a nonnegative safe integer.");
+        var operationId = Str(args, 3);
+        var result = await _vm.RequestAudioMonitorControlAsync(
+            enabled, volume, string.IsNullOrWhiteSpace(epoch) ? null : epoch,
+            revision, string.IsNullOrWhiteSpace(operationId) ? null : operationId).ConfigureAwait(true);
+        return result.Kind == AudioMonitorControlOutcomeKind.Applied
+            ? ControlInvokeResult.Success
+            : ControlInvokeResult.Fail(result.Kind == AudioMonitorControlOutcomeKind.Conflict
+                ? $"Monitor control conflict at revision {result.Control?.Revision}; read state and retry with the current epoch and revision."
+                : $"Monitor control {result.Kind.ToString().ToLowerInvariant()}; application is unconfirmed.");
+    }
 
     public void Dispose()
     {

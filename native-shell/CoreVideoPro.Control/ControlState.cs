@@ -63,6 +63,10 @@ public sealed record ControlState
 
     public bool AudioMonitorOn { get; init; }
     public double AudioMonitorVolume { get; init; }
+    public string AudioMonitorAuthorityEpoch { get; init; } = string.Empty;
+    public long AudioMonitorRevision { get; init; }
+    public string AudioMonitorLastResult { get; init; } = string.Empty;
+    public string ControlRecoverySummary { get; init; } = string.Empty;
     public string ZoomAudioMode { get; init; } = string.Empty;
     public bool MasterLimiterOn { get; init; }
     public bool MasteringOn { get; init; }

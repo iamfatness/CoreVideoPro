@@ -35,6 +35,16 @@ std::uint32_t uintField(const Json& object, const std::string& key) {
   return number > 0 ? static_cast<std::uint32_t>(number) : 0;
 }
 
+std::uint64_t revisionField(const Json& object, const std::string& key) {
+  const Json* value = object.get(key);
+  if (!value || !value->isNumber()) return 0;
+  const auto number = value->asNumber();
+  // JSON numbers are doubles in this parser. Stay inside the exactly
+  // representable integer range so a rounded revision cannot pass a barrier.
+  return number >= 1 && number <= 9007199254740991.0 && std::floor(number) == number
+             ? static_cast<std::uint64_t>(number) : 0;
+}
+
 bool boolField(const Json& object, const std::string& key) {
   const Json* value = object.get(key);
   return value ? value->asBool(false) : false;
@@ -185,6 +195,8 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
   }
   event.participantId = uintField(*parsed, "participant_id");
   event.activeSpeakerId = uintField(*parsed, "active_speaker_id");
+  event.meetingGeneration = revisionField(*parsed, "meeting_generation");
+  event.rosterRevision = revisionField(*parsed, "roster_revision");
   if (event.activeSpeakerId == 0) {
     event.activeSpeakerId = uintField(*parsed, "active");
   }

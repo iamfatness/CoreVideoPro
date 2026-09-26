@@ -5,7 +5,8 @@ linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 
 Owner-approved order updated 2026-09-26: #616, #601, #617, #622, #530, #621, and #540 are closed.
 The owner paused the remaining private-SDK CI work in #618 pending research.
-Owner promoted and completed source-bus ingest extraction (#540). Next: SRT/NDI edge I/O (#538).
+Owner promoted and completed source-bus ingest extraction (#540). On 2026-09-26 the
+owner approved executing the #657 control-state plan before SRT/NDI edge I/O (#538).
 Owner accepted live lip sync (#579) and first Takes (#555) on beta `db9e703`.
 #513 validation remains deferred; #582 range correction is in live validation.
 
@@ -26,7 +27,11 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 ## Now — existing priority order
 
-No issue is currently in Now. The first unblocked ranked item is #538 below.
+| Order | Issue | Remaining work |
+|---|---|---|
+| 1 | [#659](https://github.com/iamfatness/CoreVideoPro/issues/659) | First consumer: versioned Zoom roster into core and shell participant/audio projection, with stale snapshot and reused-ID rejection. |
+| 2 | [#661](https://github.com/iamfatness/CoreVideoPro/issues/661) | First revisioned editor command: one bounded control domain shared by the shell and Control API, with applied result and conflict reconciliation. |
+| 3 | [#663](https://github.com/iamfatness/CoreVideoPro/issues/663) | Recovery and pressure for these consumers, using the existing bounded mailbox and process epochs. |
 
 ## Deferred by owner
 
@@ -50,7 +55,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
-| [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Cross-component control-state authority and event propagation: spec and execution plan define owners, revisions, reconciliation and the first Zoom-to-audio consumer. Owner rank pending. |
+| [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Parent control-state plan tracking #659, #661 and #663; keep open through installed acceptance. |
 | [#652](https://github.com/iamfatness/CoreVideoPro/issues/652) | Live display versus GoXLR monitor A/V sync: same-run clap measured a large monitor delay despite passing recorded Program. Low-period WASAPI monitor change is in validation; real-human acceptance remains. |
 | [#649](https://github.com/iamfatness/CoreVideoPro/issues/649) | RTMP demuxer test compares `const char*` literal addresses; use content comparison so Debug native gate is deterministic. |
 | [#637](https://github.com/iamfatness/CoreVideoPro/issues/637) | Live Zoom validator requests subscriptions but never starts raw capture after the explicit Engine On gate. Set `startCapture` in the dedicated harness and repeat meeting media validation. |
