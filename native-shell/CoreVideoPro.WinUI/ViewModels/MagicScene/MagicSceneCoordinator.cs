@@ -21,8 +21,13 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
 {
     private readonly IMagicSceneHost _host;
     private readonly IAutomationTimer _timer;
+    private readonly Func<DateTimeOffset> _clock;
+    private readonly DirectorBindingHoldPolicy _bindingHold = new();
 
     private string? _pendingSceneId;
+    private string? _pendingBindingKey;
+    private bool _pendingBindingsApplied;
+    private IReadOnlyList<CoreVideoPro.MediaCore.Models.NativeDirectorSlotBinding>? _lastTakenBindings;
     private DateTimeOffset? _pendingSince;
     private bool _takeInFlight;
     private bool _settingPreview;
@@ -79,9 +84,10 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     public AutoProductionState Recommendation { get; set; } =
         ProductionStateHelper.BuildAutomationRecommendation([], ProductionCatalog.Scenes);
 
-    public MagicSceneCoordinator(IMagicSceneHost host)
+    public MagicSceneCoordinator(IMagicSceneHost host, Func<DateTimeOffset>? clock = null)
     {
         _host = host;
+        _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _timer = host.CreateAutomationTimer(EvaluateAutomationPolicy);
     }
 
@@ -201,7 +207,10 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
             }
 
             _pendingSceneId = null;
+            _pendingBindingKey = null;
+            _pendingBindingsApplied = false;
             _pendingSince = null;
+            _bindingHold.Reset();
             AutomationLastAction = "Manual mode - automation is not changing scenes";
             return;
         }
@@ -253,43 +262,88 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
             AutomationLastAction = "Recommended scene is no longer available";
             return;
         }
-        if (string.Equals(targetSceneId, _host.ActiveSceneId, StringComparison.Ordinal))
+        if (Recommendation.SlotBindings.Count == 0)
+        {
+            AutomationLastAction = $"Holding Program: no source to bind on Preview. {Recommendation.Reason}";
+            return;
+        }
+        var now = _clock();
+        var bindingDecision = _bindingHold.Evaluate(_host.ActiveSceneId, _lastTakenBindings,
+            targetSceneId, Recommendation.SlotBindings, now);
+        if (!bindingDecision.Ready)
         {
             _pendingSceneId = null;
+            _pendingBindingKey = null;
+            _pendingBindingsApplied = false;
+            _pendingSince = null;
+            AutomationLastAction = $"Holding person bindings: {bindingDecision.ElapsedMs}/{bindingDecision.RequiredMs} ms";
+            return;
+        }
+        var bindingKey = string.Join("|", Recommendation.SlotBindings.OrderBy(binding => binding.SlotIndex)
+            .Select(binding => $"{binding.SlotIndex}:{binding.PersonId}:{binding.SourceId}"));
+        var sceneHoldSeconds = DirectorBindingHoldPolicy.RequiredSceneHoldSeconds(
+            _host.ActiveSceneId, targetSceneId, AutomationSwitchDelaySeconds);
+        if (string.Equals(targetSceneId, _host.ActiveSceneId, StringComparison.Ordinal) &&
+            _lastTakenBindings is not null && string.Equals(bindingKey,
+                string.Join("|", _lastTakenBindings.OrderBy(binding => binding.SlotIndex)
+                    .Select(binding => $"{binding.SlotIndex}:{binding.PersonId}:{binding.SourceId}")),
+                StringComparison.Ordinal))
+        {
+            _pendingSceneId = null;
+            _pendingBindingKey = null;
+            _pendingBindingsApplied = false;
             _pendingSince = null;
             AutomationLastAction = $"{RecommendedSceneName} is already on program";
             return;
         }
 
-        var now = DateTimeOffset.UtcNow;
-        if (!string.Equals(_pendingSceneId, targetSceneId, StringComparison.Ordinal))
+        if (!string.Equals(_pendingSceneId, targetSceneId, StringComparison.Ordinal) ||
+            !string.Equals(_pendingBindingKey, bindingKey, StringComparison.Ordinal))
         {
             _pendingSceneId = targetSceneId;
+            _pendingBindingKey = bindingKey;
+            _pendingBindingsApplied = false;
             _pendingSince = now;
             // #478 R5: cue Preview at the START of the hold, not at the Take. Only sources are
             // subscribed now, so a guest who is not already on the wall has no feed until their
             // scene is on a bus; cueing it here lets the whole hold warm the subscription (the
             // spine syncs every 500 ms) instead of cutting Program to a cold source.
             CuePreview(targetSceneId);
-            AutomationLastAction = $"Holding {RecommendedSceneName} for {AutomationSwitchDelaySeconds:0}s before switching";
+            if (!_host.ApplyPreviewBindings(targetSceneId, Recommendation.SlotBindings, out var bindingReason))
+            {
+                _pendingSceneId = null;
+                _pendingBindingKey = null;
+                AutomationLastAction = $"Holding Program: Preview binding failed. {bindingReason}";
+                return;
+            }
+            AutomationLastAction = $"Holding {RecommendedSceneName} for {sceneHoldSeconds:0.0}s before switching";
             return;
         }
 
         var elapsedSeconds = _pendingSince is { } pendingSince
             ? (now - pendingSince).TotalSeconds
             : 0;
-        if (elapsedSeconds < AutomationSwitchDelaySeconds)
+        if (elapsedSeconds < sceneHoldSeconds)
         {
-            AutomationLastAction = $"Holding {RecommendedSceneName}: {elapsedSeconds:0.0}/{AutomationSwitchDelaySeconds:0}s";
+            AutomationLastAction = $"Holding {RecommendedSceneName}: {elapsedSeconds:0.0}/{sceneHoldSeconds:0.0}s";
             return;
         }
 
+        if (_pendingBindingsApplied && (!AutomationAutoTakeEnabled || Recommendation.Confidence < 88)) return;
         CuePreview(targetSceneId);
+        if (!_host.ApplyPreviewBindings(targetSceneId, Recommendation.SlotBindings, out var finalBindingReason))
+        {
+            _pendingSceneId = null;
+            _pendingBindingKey = null;
+            AutomationLastAction = $"Holding Program: Preview binding failed. {finalBindingReason}";
+            return;
+        }
+        _pendingBindingsApplied = true;
 
-        if (AutomationAutoTakeEnabled)
+        if (AutomationAutoTakeEnabled && Recommendation.Confidence >= 88)
         {
             AutomationLastAction = $"Taking {RecommendedSceneName} to program";
-            _ = TakeAutomationPreviewAsync(targetSceneId);
+            _ = TakeAutomationPreviewAsync(targetSceneId, Recommendation.SlotBindings.ToArray());
         }
         else
         {
@@ -298,7 +352,8 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         }
     }
 
-    private async Task TakeAutomationPreviewAsync(string targetSceneId)
+    private async Task TakeAutomationPreviewAsync(string targetSceneId,
+        IReadOnlyList<CoreVideoPro.MediaCore.Models.NativeDirectorSlotBinding> takenBindings)
     {
         if (_takeInFlight || !string.Equals(_host.PreviewSceneId, targetSceneId, StringComparison.Ordinal) || !_host.CanTake)
         {
@@ -312,6 +367,8 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
             await _host.TakeAsync();
             if (generation != _modeGeneration) return;
             _pendingSceneId = null;
+            _pendingBindingKey = null;
+            _pendingBindingsApplied = false;
             _pendingSince = null;
             if (!_host.IsMediaCoreRunning || !string.Equals(_host.ActiveSceneId, targetSceneId, StringComparison.Ordinal))
             {
@@ -320,6 +377,7 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
                 return;
             }
             var sceneName = _host.Scenes.FirstOrDefault(scene => scene.Id == targetSceneId)?.Name ?? targetSceneId;
+            _lastTakenBindings = takenBindings;
             AutomationLastAction = $"{sceneName} taken by automation";
         }
         catch (Exception ex)
@@ -403,7 +461,11 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         _modeGeneration++;
         if (value != ProductionMode.SetAndForget) _timer.Stop();
         _pendingSceneId = null;
+        _pendingBindingKey = null;
+        _pendingBindingsApplied = false;
         _pendingSince = null;
+        _bindingHold.Reset();
+        _lastTakenBindings = null;
         _overlayPolicyDirty = true;
         AutomationButtonLabel = value == ProductionMode.SetAndForget ? "Automation enabled" : "Automation disabled";
         RefreshTransportAutomationState();
@@ -467,6 +529,8 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
     {
         _overlayPolicyDirty = true;
         _pendingSceneId = null;
+        _pendingBindingKey = null;
+        _pendingBindingsApplied = false;
         _pendingSince = null;
         _host.NotifyAutomationPolicySummaries();
         _host.RefreshProgramLowerThirdKeyPosition();

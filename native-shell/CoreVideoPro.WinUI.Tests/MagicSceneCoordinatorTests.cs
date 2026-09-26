@@ -32,10 +32,10 @@ public sealed class MagicSceneCoordinatorTests
             : [new NativeDirectorSlotBinding { SlotIndex = 0, PersonId = "a", SourceId = "zoom:a" }]
     };
 
-    private static (MagicSceneCoordinator Coordinator, FakeMagicSceneHost Host) Build()
+    private static (MagicSceneCoordinator Coordinator, FakeMagicSceneHost Host) Build(Func<DateTimeOffset>? clock = null)
     {
         var host = new FakeMagicSceneHost { Scenes = Scenes };
-        var coordinator = new MagicSceneCoordinator(host);
+        var coordinator = new MagicSceneCoordinator(host, clock);
         return (coordinator, host);
     }
 
@@ -58,7 +58,8 @@ public sealed class MagicSceneCoordinatorTests
     [Fact]
     public async Task AutoTake_FiresOnce_WhenConfidenceMeetsThresholdAndDelayElapsedAndNotInFlight()
     {
-        var (coordinator, host) = Build();
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
         host.RoomVideoParticipantCount = 2;
         host.ActiveSceneId = "intro";
         host.CanTake = true;
@@ -71,7 +72,8 @@ public sealed class MagicSceneCoordinatorTests
         coordinator.ProductionMode = ProductionMode.SetAndForget;
         Assert.Equal(0, host.TakeAsyncCallCount);
 
-        // Second eval: pending == target, delay elapsed -> cue preview + auto-take.
+        now = now.AddMilliseconds(1200);
+        coordinator.EvaluateAutomationPolicy(); // binding hold completes and arms scene hold
         coordinator.EvaluateAutomationPolicy();
         await host.DrainTakeAsync();
         Assert.Equal(1, host.TakeAsyncCallCount);
@@ -100,7 +102,8 @@ public sealed class MagicSceneCoordinatorTests
     [Fact]
     public async Task AutoTake_DoesNotReenter_WhileTakeIsInFlight()
     {
-        var (coordinator, host) = Build();
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
         host.RoomVideoParticipantCount = 2;
         host.ActiveSceneId = "intro";
         host.CanTake = true;
@@ -111,6 +114,8 @@ public sealed class MagicSceneCoordinatorTests
         coordinator.Recommendation = Recommendation("interview", confidence: 90);
 
         coordinator.ProductionMode = ProductionMode.SetAndForget; // eval #1 arms pending
+        now = now.AddMilliseconds(1200);
+        coordinator.EvaluateAutomationPolicy();                   // binding hold completes
         coordinator.EvaluateAutomationPolicy();                   // eval #2 starts the take (in flight)
         coordinator.EvaluateAutomationPolicy();                   // eval #3 must be blocked by the in-flight guard
 
@@ -211,6 +216,82 @@ public sealed class MagicSceneCoordinatorTests
     }
 
     [Fact]
+    public void SetAndForgetQueuesPreviewBelowEightyEightWithoutTaking()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 2;
+        host.CanTake = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Recommendation("interview", 80);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddMilliseconds(1200);
+        coordinator.EvaluateAutomationPolicy();
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal(["a", "b"], host.PreviewBindings.Select(binding => binding.PersonId).ToArray());
+        Assert.Equal(0, host.TakeAsyncCallCount);
+    }
+
+    [Fact]
+    public void SetAndForgetKeepsTwoUpForEightSecondsButMagicSceneCuesImmediately()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 2;
+        host.ActiveSceneId = "interview";
+        host.PreviewSceneId = "interview";
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Recommendation("intro", 90);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddMilliseconds(7999);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal("interview", host.PreviewSceneId);
+        Assert.Equal(0, host.TakeAsyncCallCount);
+        now = now.AddMilliseconds(1);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal("intro", host.PreviewSceneId);
+        Assert.Equal("a", Assert.Single(host.PreviewBindings).PersonId);
+
+        var (oneShot, manualHost) = Build();
+        manualHost.ActiveSceneId = "interview";
+        manualHost.PreviewSceneId = "interview";
+        oneShot.Recommendation = Recommendation("intro", 90);
+        oneShot.RunMagicSceneCommand.Execute(null);
+        Assert.Equal("intro", manualHost.PreviewSceneId);
+        Assert.Equal(0, manualHost.TakeAsyncCallCount);
+    }
+
+    [Fact]
+    public void SetAndForgetHoldsFollowSpeakerBindingOnTheSameScene()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
+        host.RoomVideoParticipantCount = 2;
+        host.CanTake = true;
+        coordinator.AutomationSwitchDelaySeconds = 0;
+        coordinator.Recommendation = Recommendation("intro", 90);
+        coordinator.ProductionMode = ProductionMode.SetAndForget;
+        coordinator.EvaluateAutomationPolicy(); // establish the first Program binding
+        Assert.Equal(1, host.TakeAsyncCallCount);
+
+        coordinator.Recommendation = new AutoProductionState
+        {
+            RecommendedSceneId = "intro", Confidence = 90, Reason = "new guest speaker", Action = "hold",
+            SlotBindings = [new NativeDirectorSlotBinding { SlotIndex = 0, PersonId = "b", SourceId = "zoom:b" }]
+        };
+        coordinator.EvaluateAutomationPolicy();
+        now = now.AddMilliseconds(1499);
+        coordinator.EvaluateAutomationPolicy();
+        Assert.Equal(1, host.TakeAsyncCallCount);
+        now = now.AddMilliseconds(1);
+        coordinator.EvaluateAutomationPolicy(); // arm scene hold
+        coordinator.EvaluateAutomationPolicy(); // take bound Preview
+        Assert.Equal(2, host.TakeAsyncCallCount);
+        Assert.Equal("b", Assert.Single(host.PreviewBindings).PersonId);
+    }
+
+    [Fact]
     public void ManualPreviewSelectionDisablesAutomationAndLeavesSelectionAlone()
     {
         var (coordinator, host) = Build();
@@ -245,7 +326,8 @@ public sealed class MagicSceneCoordinatorTests
     [InlineData(true)]
     public void FailedAutoTakePausesInsteadOfRetryingOrClaimingSuccess(bool throws)
     {
-        var (coordinator, host) = Build();
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
         host.RoomVideoParticipantCount = 2;
         host.CanTake = true;
         host.FailTake = true;
@@ -253,6 +335,7 @@ public sealed class MagicSceneCoordinatorTests
         coordinator.AutomationSwitchDelaySeconds = 0;
         coordinator.Recommendation = Recommendation("interview", 90);
         coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddMilliseconds(1200);
         coordinator.EvaluateAutomationPolicy();
         for (var i = 0; i < 10; i++) coordinator.EvaluateAutomationPolicy();
         Assert.Equal(ProductionMode.Manual, coordinator.ProductionMode);
@@ -264,13 +347,16 @@ public sealed class MagicSceneCoordinatorTests
     [Fact]
     public async Task PendingTakeFreezesPreviewAndDisabledModeIgnoresLateCompletion()
     {
-        var (coordinator, host) = Build();
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
         host.RoomVideoParticipantCount = 2;
         host.CanTake = true;
         host.HoldTakeAsync = true;
         coordinator.AutomationSwitchDelaySeconds = 0;
         coordinator.Recommendation = Recommendation("interview", 90);
         coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddMilliseconds(1200);
+        coordinator.EvaluateAutomationPolicy();
         coordinator.EvaluateAutomationPolicy();
         coordinator.Recommendation = Recommendation("speaker-slides", 90);
         coordinator.EvaluateAutomationPolicy();
@@ -286,7 +372,8 @@ public sealed class MagicSceneCoordinatorTests
     [Fact]
     public void AutomationCueSurvivesPreviewCallbackAndNestedReadoutRefresh()
     {
-        var (coordinator, host) = Build();
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
         host.RoomVideoParticipantCount = 2;
         host.CanTake = true;
         host.OnPreviewChanged = () =>
@@ -297,6 +384,8 @@ public sealed class MagicSceneCoordinatorTests
         coordinator.AutomationSwitchDelaySeconds = 0;
         coordinator.Recommendation = Recommendation("interview", 90);
         coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddMilliseconds(1200);
+        coordinator.EvaluateAutomationPolicy();
         coordinator.EvaluateAutomationPolicy();
         Assert.Equal(ProductionMode.SetAndForget, coordinator.ProductionMode);
         Assert.Equal("interview", host.ActiveSceneId);
@@ -348,12 +437,14 @@ public sealed class MagicSceneCoordinatorTests
         // #478 R5: only sources are subscribed, so a scene's guests have no feed until the
         // scene is on a bus. Cueing at the Take (the old behaviour) cut Program to a cold
         // subscription; cueing when the hold STARTS gives the whole hold to warm it.
-        var (coordinator, host) = Build();
+        var now = DateTimeOffset.UtcNow;
+        var (coordinator, host) = Build(() => now);
         host.RoomVideoParticipantCount = 2;
         host.CanTake = true;
         coordinator.AutomationSwitchDelaySeconds = 30;
         coordinator.Recommendation = Recommendation("interview", 90);
         coordinator.ProductionMode = ProductionMode.SetAndForget;
+        now = now.AddMilliseconds(1200);
         coordinator.EvaluateAutomationPolicy();
 
         Assert.Equal("interview", host.PreviewSceneId);
