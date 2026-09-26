@@ -55,7 +55,6 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
-| [#665](https://github.com/iamfatness/CoreVideoPro/issues/665) | Live beta Monitor Off leaves WASAPI output playing: live audio snapshot omits the revisioned monitor control state. Fix and validate on installed build; owner rank pending. |
 | [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Parent control-state plan tracking #659, #661 and #663; keep open through installed acceptance. |
 | [#652](https://github.com/iamfatness/CoreVideoPro/issues/652) | Live display versus GoXLR monitor A/V sync: same-run clap measured a large monitor delay despite passing recorded Program. Low-period WASAPI monitor change is in validation; real-human acceptance remains. |
 | [#649](https://github.com/iamfatness/CoreVideoPro/issues/649) | RTMP demuxer test compares `const char*` literal addresses; use content comparison so Debug native gate is deterministic. |
@@ -117,6 +116,7 @@ These rows record specific fixes, not blanket production or fleet reliability.
 
 | Issue | Merged fix / acceptance |
 |---|---|
+| [#665](https://github.com/iamfatness/CoreVideoPro/issues/665) | Live monitor control snapshot fix merged in #666 and shipped in beta `975076b8`; installed Off/On applied on GoXLR Game, native monitor muted/playing, and the owner confirmed the button works. |
 | [#540](https://github.com/iamfatness/CoreVideoPro/issues/540) | Source video merge and per-source health projection extracted from MediaCore.cpp into SourceVideoIngress; frame order, Zoom roster, capture end, and still behavior covered by native tests. |
 | [#621](https://github.com/iamfatness/CoreVideoPro/issues/621) | Generated observation model and per-view field policies in #648; typed, qualification, and ControlState views covered by contract and shell tests. |
 | [#622](https://github.com/iamfatness/CoreVideoPro/issues/622) | Command syncs queue behind one bridge slot while empty polls coalesce; overlap/cancellation tests and live meeting Control API check passed in #645. |
