@@ -18,6 +18,13 @@ struct MonitorControlProjection {
     private var draftExpectedEpoch = ""
     private var draftExpectedRevision: Int64 = 0
 
+    mutating func resetForProcess() {
+        authorityEpoch = ""
+        revision = 0
+        pendingOperationId = nil
+        notice = "Monitor edit reconciling with restarted core"
+    }
+
     mutating func edit(_ next: Draft) {
         draft = next
         // Capture before the async command path; a concurrent client may apply

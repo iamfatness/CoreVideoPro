@@ -53,6 +53,13 @@ enum ShellTests {
                                           "status": "conflict"]))
         expect(projection.draft != nil, "conflict retains local draft")
         expect(projection.notice.contains("conflicted"), "conflict is visible")
+        projection.resetForProcess()
+        expectEqual(projection.authorityEpoch, "", "restart waits for a new core epoch")
+        projection.observe(["monitorEnabled": false, "monitorVolume": 0.5,
+                            "monitorControl": ["authorityEpoch": "core-2", "revision": 0]])
+        let afterRestart = projection.nextCommand()
+        expectEqual(afterRestart?["authorityEpoch"] as? String, "core-2",
+                    "held edit rebases on restarted core")
     }
 
     private static func expect(_ condition: Bool, _ what: String,
