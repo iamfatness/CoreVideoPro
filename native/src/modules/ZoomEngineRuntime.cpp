@@ -247,6 +247,9 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     command.meetingId = meetingId;
     command.displayName = payload.getString("displayName", "CoreVideo Pro");
     command.passcode = payload.getString("passcode", config_.passcode);
+    if (command.passcode.empty()) {
+      command.passcode = passcodeFromJoinUrl(payload.getString("meetingUrl"));
+    }
     command.onBehalfToken = config_.onBehalfToken;
     const auto payloadZak = payload.getString("userZak");
     command.userZak = !payloadZak.empty() ? payloadZak : config_.userZak;

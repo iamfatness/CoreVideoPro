@@ -29,4 +29,23 @@ inline std::string meetingIdFromJoinInput(std::string_view meetingNumber,
   return std::string(path.substr(start, end - start));
 }
 
+// The Meeting SDK accepts the pwd token from a Zoom join link as its psw
+// parameter. Preserve an explicitly supplied passcode over the link value.
+inline std::string passcodeFromJoinUrl(std::string_view meetingUrl) {
+  const auto queryStart = meetingUrl.find('?');
+  if (queryStart == std::string_view::npos) return {};
+  auto cursor = queryStart + 1;
+  while (cursor < meetingUrl.size()) {
+    const auto end = meetingUrl.find_first_of("&#", cursor);
+    const auto field = meetingUrl.substr(cursor, end == std::string_view::npos
+        ? end : end - cursor);
+    if (field.substr(0, 4) == "pwd=" && field.size() > 4) {
+      return std::string(field.substr(4));
+    }
+    if (end == std::string_view::npos || meetingUrl[end] == '#') break;
+    cursor = end + 1;
+  }
+  return {};
+}
+
 }  // namespace corevideo::modules

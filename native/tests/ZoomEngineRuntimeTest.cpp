@@ -39,6 +39,14 @@ TEST(ZoomMeetingId, IgnoresHostAndPasscodeDigitsInJoinUrl) {
       "https://zoom.us/j/123abc?pwd=4").empty());
 }
 
+TEST(ZoomMeetingId, ReadsPwdTokenFromJoinUrl) {
+  EXPECT_EQ(corevideo::modules::passcodeFromJoinUrl(
+      "https://example.zoom.us/j/1234567890?foo=1&pwd=AbC123%3D#success"),
+      "AbC123%3D");
+  EXPECT_TRUE(corevideo::modules::passcodeFromJoinUrl(
+      "https://example.zoom.us/j/1234567890?notpwd=abc").empty());
+}
+
 void setEnv(const char* name, const char* value) {
 #if defined(_WIN32)
   _putenv_s(name, value);
