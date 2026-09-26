@@ -32,6 +32,7 @@ enum ShellTests {
         projection.observe(mix(0, false))
         expect(!projection.legacyCoreConfirmed, "new-core snapshot revokes fallback")
         projection.edit(.init(enabled: true, volume: 0.5))
+        projection.observe(mix(1, false))
         let first = projection.nextCommand()
         let operation = first?["operationId"] as? String ?? ""
         expectEqual(first?["expectedRevision"] as? Int64, 0, "first editor uses observed revision")
