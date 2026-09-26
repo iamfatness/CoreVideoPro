@@ -662,6 +662,47 @@ TEST(TilesRenderPlan, APreviewSceneCarryingOnlyAWallStillComposites) {
       << "the preview composite ran but did not carry the wall's background";
 }
 
+TEST(SpeakerFloorRenderPlan, PreviewAlsoRefusesDuplicatePersonSlots) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>();
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  MediaCore core(std::move(modules));
+
+  const auto command = corevideo::rpc::Json::parse(R"({"type":"set-preview-scene","sceneId":"preview-two-up","routes":[{"routeId":"left","mode":"fixed","participantId":"guest-7"},{"routeId":"right","mode":"fixed","participantId":"guest-7"}]})");
+  ASSERT_TRUE(command.has_value());
+  (void)core.applyCommands(corevideo::rpc::Json::Array{*command});
+  ASSERT_GE(compositor->previewRenderCount, 1);
+  const auto* left = findLayer(compositor->lastPreviewPlan, "route:left");
+  const auto* right = findLayer(compositor->lastPreviewPlan, "route:right");
+  ASSERT_NE(left, nullptr);
+  ASSERT_NE(right, nullptr);
+  EXPECT_EQ(left->sourceId, "zoom:guest-7");
+  EXPECT_TRUE(right->sourceId.empty());
+  EXPECT_TRUE(right->hasFillColor);
+  EXPECT_EQ(right->opacity, 0.f);
+  EXPECT_FALSE(compositor->lastPreviewPlan.warnings.empty());
+}
+
+TEST(SpeakerFloorRenderPlan, PreviewIdentityChangeRebuildsItsBindings) {
+  auto modules = corevideo::modules::createStubModules();
+  auto ownedCompositor = std::make_unique<RecordingCompositor>();
+  auto* compositor = ownedCompositor.get();
+  modules.compositor = std::move(ownedCompositor);
+  MediaCore core(std::move(modules));
+
+  const auto withoutLink = corevideo::rpc::Json::parse(R"({"type":"set-preview-scene","sceneId":"preview-two-up","routes":[{"routeId":"camera","mode":"capture-input","captureDeviceId":"camera-2"},{"routeId":"zoom","mode":"fixed","participantId":"guest-7"}]})");
+  const auto withLink = corevideo::rpc::Json::parse(R"({"type":"set-preview-scene","sceneId":"preview-two-up","routes":[{"routeId":"camera","mode":"capture-input","captureDeviceId":"camera-2","personId":"guest-7"},{"routeId":"zoom","mode":"fixed","participantId":"guest-7"}]})");
+  ASSERT_TRUE(withoutLink.has_value());
+  ASSERT_TRUE(withLink.has_value());
+  (void)core.applyCommands(corevideo::rpc::Json::Array{*withoutLink});
+  ASSERT_NE(findLayer(compositor->lastPreviewPlan, "route:zoom"), nullptr);
+  EXPECT_EQ(findLayer(compositor->lastPreviewPlan, "route:zoom")->sourceId, "zoom:guest-7");
+  (void)core.applyCommands(corevideo::rpc::Json::Array{*withLink});
+  ASSERT_NE(findLayer(compositor->lastPreviewPlan, "route:zoom"), nullptr);
+  EXPECT_TRUE(findLayer(compositor->lastPreviewPlan, "route:zoom")->sourceId.empty());
+}
+
 // Re-review (reviewer's cheap suggestion): routes + a wall in ONE scene is
 // accepted silently by the wire. Make it AUDIBLE — the characterization test
 // below pins WHAT happens; this pins that we SAY something.

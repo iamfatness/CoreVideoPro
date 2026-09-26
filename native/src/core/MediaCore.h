@@ -498,6 +498,9 @@ class MediaCore {
     std::string routeId;
     std::string mode;
     std::string participantId;
+    // Optional operator identity link for capture routes. Zoom routes always
+    // derive person identity from their Zoom user id in SpeakerFloor.
+    std::string personId;
     std::string captureDeviceId;
     std::string audioRole;
     std::string mediaAssetId;

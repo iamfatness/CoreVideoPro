@@ -231,6 +231,7 @@ public static class MediaCoreCommandBuilder
             ["mode"] = route.Mode,
             ["audioRole"] = route.AudioRole,
             ["participantId"] = route.ParticipantId,
+            ["personId"] = route.PersonId,
             ["captureDeviceId"] = route.CaptureDeviceId,
             ["fitMode"] = route.FitMode,
             ["borderStyle"] = route.BorderStyle,

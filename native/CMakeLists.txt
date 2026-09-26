@@ -649,6 +649,7 @@ if(BUILD_TESTING)
     tests/CompositorFramingTest.cpp
     tests/ContractParityTest.cpp
     tests/RouteSourcePolicyTest.cpp
+    tests/SpeakerFloorTest.cpp
     tests/SourceRegistryTest.cpp
     tests/SourceRegistryComposedTest.cpp
     tests/EmptyRouteBlankTest.cpp

@@ -31,7 +31,8 @@ public sealed record MediaCoreSceneRouteWire(
     // source's play state (cued/live/paused/ended) and decides it at command time from which
     // bus the route is on; a shell-asserted key or playing flag could only fight that
     // decision. The route carries the ASSET and its loop flag, nothing about transport.
-    bool MediaAssetLoop = false);
+    bool MediaAssetLoop = false,
+    string? PersonId = null);
 
 /// <summary>
 /// One ordered multiview tile source for <c>set-multiview-layout</c>. <paramref name="Kind"/> is
