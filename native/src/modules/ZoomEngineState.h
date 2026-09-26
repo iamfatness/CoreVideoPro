@@ -79,6 +79,8 @@ class ZoomEngineRuntimeState {
   // ZoomActiveSpeakerDirector). `active == false` lifts the restriction.
   void setSpeakerSources(bool active, std::vector<std::uint32_t> sourceParticipantIds,
                          std::uint64_t nowMs);
+  void setSpeakerExclusions(std::vector<std::uint32_t> excludedParticipantIds,
+                            std::uint64_t nowMs);
   void reset();
 
   [[nodiscard]] ZoomEngineRuntimeSnapshot snapshot() const;

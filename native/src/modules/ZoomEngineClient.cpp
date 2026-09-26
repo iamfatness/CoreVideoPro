@@ -225,6 +225,8 @@ std::optional<ZoomEngineEvent> parseZoomEngineEvent(const std::string& line) {
           boolField(participant, "is_talking"),
           boolField(participant, "is_muted"),
           boolField(participant, "is_sharing_screen"),
+          boolField(participant, "is_host"),
+          boolField(participant, "is_me"),
       });
     }
   }

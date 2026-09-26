@@ -164,6 +164,13 @@ void ZoomEngineRuntimeState::setSpeakerSources(bool active,
   activeSpeakerId_ = speakerDirector_.directedSpeakerId();
 }
 
+void ZoomEngineRuntimeState::setSpeakerExclusions(
+    std::vector<std::uint32_t> excludedParticipantIds, std::uint64_t nowMs) {
+  speakerDirector_.setExcluded(std::move(excludedParticipantIds));
+  speakerDirector_.tick(nowMs);
+  activeSpeakerId_ = speakerDirector_.directedSpeakerId();
+}
+
 void ZoomEngineRuntimeState::advanceActiveSpeaker(std::uint64_t nowMs) {
   speakerDirector_.tick(nowMs);
   activeSpeakerId_ = speakerDirector_.directedSpeakerId();
@@ -318,13 +325,15 @@ rpc::Json::Array ZoomEngineRuntimeState::participantsJson() const {
         {"sdkUserId", participantIdString(id)},
         {"displayName", participant.displayName},
         {"persistentId", participant.persistentId},
-        {"role", "guest"},
+        {"role", participant.isHost ? "host" : "guest"},
         {"videoOn", participant.hasVideo},
         {"muted", participant.isMuted},
         {"talking", participant.isTalking || id == activeSpeakerId_},
         {"sharingScreen", participant.isSharingScreen},
         {"audioLevel", participant.isTalking || id == activeSpeakerId_ ? 70 : 0},
         {"networkQuality", "good"},
+        {"isHost", participant.isHost},
+        {"isMe", participant.isMe},
     });
   }
   return result;
