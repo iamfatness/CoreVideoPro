@@ -55,6 +55,7 @@ enum ShellTests {
         expect(projection.notice.contains("conflicted"), "conflict is visible")
         projection.resetForProcess()
         expectEqual(projection.authorityEpoch, "", "restart waits for a new core epoch")
+        expect(!projection.legacyCoreConfirmed, "restart revokes old-core fallback")
         projection.observe(["monitorEnabled": true, "monitorVolume": 0.5,
                             "monitorControl": ["authorityEpoch": "core-2", "revision": 0]])
         let afterRestart = projection.nextCommand()
