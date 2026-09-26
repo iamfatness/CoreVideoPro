@@ -3,6 +3,7 @@
 #include "core/BoundedAsyncLog.h"
 #include "core/StreamBackpressurePolicy.h"
 #include "core/MediaCore.h"
+#include "core/ZoomParticipantSource.h"
 
 #include "EncoderCapacityProbeTestSupport.h"
 #include "MediaTestSupport.h"

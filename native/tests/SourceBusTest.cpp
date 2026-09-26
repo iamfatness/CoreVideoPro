@@ -5,6 +5,7 @@
 #include "core/MediaBusRoster.h"
 #include "core/MediaCore.h"
 #include "core/SourceBus.h"
+#include "core/SourceVideoIngress.h"
 #include "core/TestPatternSource.h"
 #include "core/ZoomBusRoster.h"
 #include "core/ZoomParticipantSource.h"
@@ -677,4 +678,61 @@ TEST(MediaBusRoster, MirrorsTheOwnersTickPerKindAndNeverTouchesOtherKinds) {
   auto onlyMedia = bus.ingest(0, 1000, [](const corevideo::core::SourceDescriptor& d) { return d.kind == "media"; });
   ASSERT_EQ(onlyMedia.video.size(), 1u);
   EXPECT_EQ(onlyMedia.video[0].participantId, "media:clip-1");
+}
+
+TEST(SourceVideoIngress, LiveRosterKeepsRealZoomPixelsAndAppendsCaptureAndMedia) {
+  corevideo::core::SourceBus bus;
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("42", 7)}, {"42", "77"});
+  corevideo::core::publishHeldCaptureFrame(bus, bgraFrame("capture:camera", 4, 4, 3));
+  corevideo::core::syncMediaSources(bus, {bgraFrame("media:clip", 4, 4, 5)}, "media");
+  corevideo::modules::VideoFrame missing;
+  missing.participantId = "77";
+  auto frames = corevideo::core::gatherSourceVideo(bus, nullptr,
+      {missing, zoomFrame("42", 0)}, {}, true, 0, 1000);
+  ASSERT_EQ(frames.size(), 4u);
+  EXPECT_EQ(frames[0].participantId, "77");
+  EXPECT_FALSE(frames[0].hasPixels());
+  EXPECT_FALSE(frames[0].hasI420());
+  EXPECT_EQ(frames[1].participantId, "42");
+  EXPECT_EQ(frames[1].frameId, 7);
+  EXPECT_TRUE(frames[1].hasI420());
+  EXPECT_EQ(frames[2].participantId, "capture:camera");
+  EXPECT_EQ(frames[3].participantId, "media:clip");
+  corevideo::core::appendStillSourceVideo(bus,
+      {bgraFrame("media:logo", 4, 4, 1)}, 0, 1000, frames);
+  ASSERT_EQ(frames.size(), 5u);
+  EXPECT_EQ(frames.back().participantId, "media:logo");
+  corevideo::core::appendStillSourceVideo(bus, {}, 0, 1001, frames);
+  EXPECT_FALSE(bus.contains("media:logo"));
+}
+
+TEST(SourceVideoIngress, CaptureDeliveryUsesTheSameBusMembershipAndEndSignal) {
+  corevideo::core::SourceBus bus;
+  corevideo::core::CaptureVideoToSourceBus consumer(bus);
+  consumer.publish(bgraFrame("capture:camera", 4, 4, 2));
+  ASSERT_TRUE(bus.contains("capture:camera"));
+  auto frames = corevideo::core::gatherSourceVideo(bus, nullptr, {}, {}, false, 0, 100);
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].participantId, "capture:camera");
+  consumer.end("capture:camera");
+  EXPECT_FALSE(bus.contains("capture:camera"));
+}
+
+TEST(SourceVideoIngress, SourceHealthIsAlwaysPublishedWithPolicyAndRealCounters) {
+  corevideo::core::SourceBus bus;
+  auto empty = corevideo::core::sourceHealthState(&bus, 100,
+      [](const std::string&) { return corevideo::core::SourcePresentationPolicy{}; });
+  ASSERT_TRUE(empty.isArray());
+  EXPECT_TRUE(empty.asArray().empty());
+  corevideo::core::syncZoomParticipantSources(bus, {zoomFrame("42", 7)}, {"42"});
+  bus.ingest(0, 100);
+  auto state = corevideo::core::sourceHealthState(&bus, 100,
+      [](const std::string&) { return corevideo::core::SourcePresentationPolicy{"cut", "Guest"}; });
+  ASSERT_EQ(state.asArray().size(), 1u);
+  const auto& source = state.asArray().front();
+  EXPECT_EQ(source.getString("sourceId"), "42");
+  EXPECT_EQ(source.getString("health"), "producing");
+  EXPECT_EQ(source.getNumber("framesIngested"), 1);
+  EXPECT_EQ(source.getString("dropoutPolicy"), "cut");
+  EXPECT_EQ(source.getString("displayName"), "Guest");
 }

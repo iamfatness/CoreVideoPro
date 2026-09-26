@@ -67,6 +67,7 @@ add_library(corevideo_native
   src/core/MediaCore.cpp
   src/core/ComApartmentLifetime.cpp
   src/core/SourceRegistry.cpp
+  src/core/SourceVideoIngress.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
   src/modules/OutputDestinationSupervisor.cpp
