@@ -1,4 +1,5 @@
 #include "modules/ZoomEngineRuntime.h"
+#include "modules/ZoomMeetingId.h"
 
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomSubscriptionResolutionPolicy.h"
@@ -28,6 +29,23 @@
 #endif
 
 namespace {
+
+TEST(ZoomMeetingId, IgnoresHostAndPasscodeDigitsInJoinUrl) {
+  EXPECT_EQ(corevideo::modules::meetingIdFromJoinInput("",
+      "https://us02web.zoom.us/j/1234567890?pwd=abc4d5"), "1234567890");
+  EXPECT_EQ(corevideo::modules::meetingIdFromJoinInput("987 654 3210",
+      "https://us02web.zoom.us/j/1234567890?pwd=abc4d5"), "9876543210");
+  EXPECT_TRUE(corevideo::modules::meetingIdFromJoinInput("",
+      "https://zoom.us/j/123abc?pwd=4").empty());
+}
+
+TEST(ZoomMeetingId, ReadsPwdTokenFromJoinUrl) {
+  EXPECT_EQ(corevideo::modules::passcodeFromJoinUrl(
+      "https://example.zoom.us/j/1234567890?foo=1&pwd=AbC123%3D#success"),
+      "AbC123%3D");
+  EXPECT_TRUE(corevideo::modules::passcodeFromJoinUrl(
+      "https://example.zoom.us/j/1234567890?notpwd=abc").empty());
+}
 
 void setEnv(const char* name, const char* value) {
 #if defined(_WIN32)

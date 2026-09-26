@@ -1,5 +1,6 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineRuntime.h"
+#include "modules/ZoomMeetingId.h"
 
 #include "config/ZoomMeetingSdkConfig.h"
 #include "engine-ipc.h"
@@ -40,21 +41,6 @@ std::string participantIdString(std::uint32_t id) {
 std::uint64_t monotonicMs() {
   return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count());
-}
-
-std::string meetingIdFromJoinPayload(const rpc::Json& payload) {
-  std::string source = payload.getString("meetingNumber");
-  if (source.empty()) {
-    source = payload.getString("meetingUrl");
-  }
-
-  std::string digits;
-  for (char ch : source) {
-    if (ch >= '0' && ch <= '9') {
-      digits.push_back(ch);
-    }
-  }
-  return digits;
 }
 
 rpc::Json::Array stringArray(const std::vector<std::string>& values) {
@@ -185,7 +171,8 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   if (cancelled && cancelled()) return nullptr;
   applyJoinCredentialsFromPayload(payload);
 
-  const auto meetingId = meetingIdFromJoinPayload(payload);
+  const auto meetingId = meetingIdFromJoinInput(
+      payload.getString("meetingNumber"), payload.getString("meetingUrl"));
   if (meetingId.empty()) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (cancelled && cancelled()) return nullptr;
@@ -260,6 +247,9 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     command.meetingId = meetingId;
     command.displayName = payload.getString("displayName", "CoreVideo Pro");
     command.passcode = payload.getString("passcode", config_.passcode);
+    if (command.passcode.empty()) {
+      command.passcode = passcodeFromJoinUrl(payload.getString("meetingUrl"));
+    }
     command.onBehalfToken = config_.onBehalfToken;
     const auto payloadZak = payload.getString("userZak");
     command.userZak = !payloadZak.empty() ? payloadZak : config_.userZak;
