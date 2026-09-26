@@ -8,6 +8,7 @@
 #include "core/AudioControlSourcePolicy.h"
 #include "core/SourceAudioIngress.h"
 #include "core/SourceVideoIngress.h"
+#include "core/AvSyncClapProbe.h"
 #include "core/ZoomBusRoster.h"
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
@@ -71,6 +72,27 @@ int64_t monotonic100ns() {
       std::chrono::duration_cast<std::chrono::duration<int64_t, std::ratio<1, 10'000'000>>>(
           std::chrono::steady_clock::now().time_since_epoch())
           .count());
+}
+
+bool avSyncTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("COREVIDEO_AV_SYNC_TRACE");
+    return value != nullptr && std::string_view(value) == "1";
+  }();
+  return enabled;
+}
+
+// WASAPI's capture-client QPC timestamps are expressed in 100 ns units. Use
+// that same clock domain for the Program texture publish marker.
+int64_t avSyncQpc100ns() {
+#ifdef _WIN32
+  LARGE_INTEGER counter{}, frequency{};
+  if (::QueryPerformanceCounter(&counter) && ::QueryPerformanceFrequency(&frequency) && frequency.QuadPart > 0) {
+    return static_cast<int64_t>((static_cast<long double>(counter.QuadPart) * 10'000'000.0L) /
+                                static_cast<long double>(frequency.QuadPart));
+  }
+#endif
+  return monotonic100ns();
 }
 
 // Key parameters are normalized: a value outside 0..1 is a caller bug, and
@@ -6988,6 +7010,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
+  if (avSyncTraceEnabled() && hasWhiteClapSource(videoFrames, "101")) {
+    avSyncWhiteProducedFrames_.push_back(producedFrame.frameNumber);
+    if (avSyncWhiteProducedFrames_.size() > 32) avSyncWhiteProducedFrames_.pop_front();
+  }
   advanceTakeTransition(static_cast<double>(frameIntervalMs));
   lastProducedFrameNumber_ = producedFrame.frameNumber;
   if (modules_.compositor->programBufferFrames() > 0) {
@@ -7041,6 +7067,20 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     renderedProgramSources_.invalidate();
     renderedSceneAttributionState_ = "unknown";
   }
+  }
+  if (avSyncTraceEnabled() && !lastProgramFrame_.sharedTexture.sharedHandleHex.empty() &&
+      std::find(avSyncWhiteProducedFrames_.begin(), avSyncWhiteProducedFrames_.end(),
+                lastProgramFrame_.frameNumber) != avSyncWhiteProducedFrames_.end()) {
+    const int64_t now100ns = avSyncQpc100ns();
+    if (now100ns - avSyncLastDisplayClap100ns_ > 10'000'000) {
+      avSyncLastDisplayClap100ns_ = now100ns;
+      ::corevideo::core::nativeLogf(
+          "[av-sync] program-publish qpc100ns=%lld frame=%lld delivery=%lld produced100ns=%lld delivered100ns=%lld\n",
+          static_cast<long long>(now100ns), static_cast<long long>(lastProgramFrame_.frameNumber),
+          static_cast<long long>(lastProgramFrame_.deliverySequence),
+          static_cast<long long>(lastProgramFrame_.producedAt100ns),
+          static_cast<long long>(lastProgramFrame_.deliveredAt100ns));
+    }
   }
   // Mirrored for the audio worker's PRE-LOCK engine poll: it needs a frame
   // number to stamp audio with, but must not take coreMutex to read one.

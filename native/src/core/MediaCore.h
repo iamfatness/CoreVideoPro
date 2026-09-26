@@ -1374,6 +1374,10 @@ class MediaCore {
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
   std::vector<rpc::Json> pendingProgramSharedTextureEvents_;
   std::vector<rpc::Json> pendingParticipantSharedTextureEvents_;
+  // #652 test trace: match the fake engine's white source frame to the exact
+  // buffered Program frame that reaches the shared-texture publish path.
+  std::deque<int64_t> avSyncWhiteProducedFrames_;
+  int64_t avSyncLastDisplayClap100ns_ = 0;
   // Throttles base64 program-preview/shared-texture stdout events so they don't
   // flood the RPC channel and starve command responses (see JsonRpcServer::run).
   std::chrono::steady_clock::time_point lastFrameEventEmit_{};

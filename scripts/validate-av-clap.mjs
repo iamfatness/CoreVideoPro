@@ -21,9 +21,11 @@
  * Usage: node ./scripts/validate-av-clap.mjs [--seconds 24] [--budget-ms 50]
  *                                            [--no-frame-sync] [--keep-artifact]
  *                                            [--build-dir path/to/binaries]
+ *                                            [--live-paths --monitor-device "Game"
+ *                                             --monitor-id <WASAPI endpoint id>]
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,10 +48,18 @@ const budgetMs = Number(argValue("budget-ms", 50));
 const keepArtifact = args.includes("--keep-artifact");
 const frameSyncOff = args.includes("--no-frame-sync");
 const verbose = args.includes("--verbose");
+const livePaths = args.includes("--live-paths");
+const monitorDevice = argValue("monitor-device", "Game (TC-HELICON GoXLR)");
+const monitorId = argValue("monitor-id", "");
+const loopbackRecorder = join(buildDir, `corevideo-loopback-rec${exeSuffix}`);
 const clapIntervalMs = 3000;
 
 if (!existsSync(nativeCore) || !existsSync(fakeEngine)) {
   console.error(`Missing ${nativeCore} or ${fakeEngine}. Build them first.`);
+  process.exit(1);
+}
+if (livePaths && (process.platform !== "win32" || !existsSync(loopbackRecorder))) {
+  console.error(`--live-paths needs Windows and ${loopbackRecorder}`);
   process.exit(1);
 }
 
@@ -73,6 +83,7 @@ const env = {
   COREVIDEO_FAKE_NO_CHURN: "1",
   COREVIDEO_FAKE_CLAP_MS: String(clapIntervalMs),
 };
+if (livePaths) env.COREVIDEO_AV_SYNC_TRACE = "1";
 if (frameSyncOff) env.COREVIDEO_FRAME_SYNC = "0";
 
 const child = spawn(nativeCore, [], { cwd: buildDir, env, stdio: ["pipe", "pipe", "pipe"] });
@@ -82,6 +93,8 @@ let nextId = 1;
 let stdoutBuffer = "";
 let handshake;
 const pending = new Map();
+const displayClaps = [];
+let stderrBuffer = "";
 
 child.stdout.on("data", (chunk) => {
   stdoutBuffer += chunk.toString();
@@ -101,7 +114,20 @@ child.stdout.on("data", (chunk) => {
     }
   }
 });
-child.stderr.on("data", (c) => { if (verbose) process.stderr.write(c.toString()); });
+child.stderr.on("data", (c) => {
+  const chunk = c.toString();
+  if (verbose) process.stderr.write(chunk);
+  if (!livePaths) return;
+  stderrBuffer += chunk;
+  let idx;
+  while ((idx = stderrBuffer.indexOf("\n")) >= 0) {
+    const line = stderrBuffer.slice(0, idx);
+    stderrBuffer = stderrBuffer.slice(idx + 1);
+    const match = line.match(/\[av-sync\] program-publish qpc100ns=(\d+) frame=(\d+)/);
+    if (match) displayClaps.push({ qpc100ns: Number(match[1]), frame: Number(match[2]) });
+  }
+  if (stderrBuffer.length > 8192) stderrBuffer = stderrBuffer.slice(-8192);
+});
 child.once("exit", (code) => {
   for (const { reject, timer } of pending.values()) {
     clearTimeout(timer);
@@ -198,8 +224,62 @@ function pairEvents(videoTimes, audioTimes) {
   return pairs;
 }
 
+/** Map each endpoint loopback burst to the packet's WASAPI QPC clock. */
+function loopbackBurstTimes(rawPath, packetPath, sampleRate, channels) {
+  const pcm = readFileSync(rawPath);
+  const packetRows = readFileSync(packetPath, "utf8").trim().split(/\r?\n/).slice(1)
+    .map((line) => line.split(",").map(Number))
+    .filter((row) => row.length === 4 && row.every(Number.isFinite));
+  if (!packetRows.length) return [];
+  const frameBytes = channels * 4;
+  const frameCount = Math.floor(pcm.length / frameBytes);
+  let peak = 0;
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    for (let channel = 0; channel < channels; channel += 1) {
+      peak = Math.max(peak, Math.abs(pcm.readFloatLE(frame * frameBytes + channel * 4)));
+    }
+  }
+  if (peak < 0.08) return [];
+  const threshold = peak * 0.6;
+  const times = [];
+  let lastHit = -Infinity;
+  let packet = 0;
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    let loud = false;
+    for (let channel = 0; channel < channels; channel += 1) {
+      if (Math.abs(pcm.readFloatLE(frame * frameBytes + channel * 4)) >= threshold) loud = true;
+    }
+    if (!loud || frame - lastHit <= sampleRate * 0.5) continue;
+    while (packet + 1 < packetRows.length && packetRows[packet + 1][0] <= frame) packet += 1;
+    const [start, count, qpc100ns] = packetRows[packet];
+    if (qpc100ns > 0 && frame < start + count) {
+      times.push((qpc100ns + (frame - start) * 1e7 / sampleRate) / 1e7);
+      lastHit = frame;
+    }
+  }
+  return times;
+}
+
+function describePairs(label, pairs) {
+  if (pairs.length < 2) throw new Error(`${label}: only ${pairs.length} paired claps; all live paths are required`);
+  const sorted = [...pairs].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const spread = sorted.at(-1) - sorted[0];
+  console.log(`${label.padEnd(14)}: median ${median.toFixed(1)} ms (${(median / (1000 / 60)).toFixed(2)} frames), spread ${spread.toFixed(1)} ms; video-audio ${median < 0 ? "audio late" : "audio early"}`);
+  return { pairsMs: pairs, medianMs: median, spreadMs: spread, framesAt60: median / (1000 / 60) };
+}
+
 const failures = [];
 let artifactAbsolute = null;
+let loopback = null;
+let loopbackDone = null;
+let loopbackStderr = "";
+const liveCaptureDir = join(buildDir, "Recordings", "CoreVideoPro", "validate-av-clap", `live-paths-${Date.now()}`);
+const loopbackRaw = join(liveCaptureDir, "monitor.f32");
+const loopbackPackets = join(liveCaptureDir, "monitor-packets.csv");
+let startCounters = null;
+let endCounters = null;
+let recordSummary = null;
 try {
   for (let i = 0; i < 200 && !handshake; i += 1) await sleep(50);
   if (!handshake) throw new Error("no native-core handshake");
@@ -246,8 +326,13 @@ try {
         sends: [
           { sourceId: "zoom-mix", busId: "master", gainDb: 0 },
           { sourceId: "zoom-mix", busId: "stream", gainDb: 0 },
+          ...(livePaths ? [{ sourceId: "zoom-mix", busId: "mon", gainDb: 0 }] : []),
         ],
       },
+      ...(livePaths ? [{
+        type: "sync-audio-monitor", enabled: true,
+        deviceId: monitorId, deviceName: monitorDevice, volume: 1.0,
+      }] : []),
       { type: "prepare-encoder-session", preparedAtMs: Date.now() - startedAt, reason: "av-clap warmup" },
       { type: "start-program-output", destinations: ["recording"], isoParticipantIds: [] },
       {
@@ -259,7 +344,21 @@ try {
   });
   await sleep(2000);
 
-  await send("media-core-sync", {
+  if (livePaths) {
+    mkdirSync(liveCaptureDir, { recursive: true });
+    loopback = spawn(loopbackRecorder,
+      [monitorDevice, String(recordSeconds + 5), loopbackRaw, loopbackPackets],
+      { cwd: buildDir, stdio: ["ignore", "ignore", "pipe"] });
+    loopback.stderr.on("data", (chunk) => { loopbackStderr += chunk.toString(); });
+    loopbackDone = new Promise((resolvePromise, reject) => {
+      loopback.once("error", reject);
+      loopback.once("exit", (code) => code === 0 ? resolvePromise() : reject(new Error(`loopback recorder exited ${code}: ${loopbackStderr}`)));
+    });
+    loopbackDone.catch(() => {}); // handled after the recording has finalized
+    await sleep(500);
+  }
+
+  const startResp = await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
     commands: [{
       type: "start-recording-session", sessionId: "av-clap", startedAtMs: Date.now(),
@@ -267,6 +366,7 @@ try {
       filenamePrefix: "av-clap", format: "mp4", quality: "high", isoParticipantIds: [],
     }],
   });
+  startCounters = startResp.snapshot;
   console.log(`Recording     : ${recordSeconds}s (clap every ${clapIntervalMs}ms)...`);
 
   let last = null;
@@ -275,12 +375,14 @@ try {
     await sleep(Math.min(5000, Math.max(1000, deadline - Date.now())));
     const syncResp = await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] });
     last = syncResp.snapshot?.recording ?? {};
+    endCounters = syncResp.snapshot;
   }
 
   const stopResp = await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
     commands: [{ type: "stop-recording-session", reason: "av-clap complete" }],
   });
+  endCounters = stopResp.snapshot ?? endCounters;
   const artifact = stopResp.snapshot?.recording?.artifactPath ?? last?.artifactPath ?? null;
   if (!artifact) throw new Error("no recording artifact");
   artifactAbsolute = resolve(buildDir, artifact);
@@ -329,6 +431,7 @@ try {
     const mean = pairs.reduce((a, b) => a + b, 0) / pairs.length;
     const median = pairs[Math.floor(pairs.length / 2)];
     const spread = pairs[pairs.length - 1] - pairs[0];
+    if (livePaths) recordSummary = describePairs("Record v-a", pairs);
     console.log(`Skew (v-a)    : ${pairs.map((p) => p.toFixed(1)).join(", ")} ms`);
     console.log(`              : median ${median.toFixed(1)}ms, mean ${mean.toFixed(1)}ms, spread ${spread.toFixed(1)}ms`);
     console.log(median > 0
@@ -338,12 +441,49 @@ try {
       failures.push(`A/V skew ${median.toFixed(1)}ms exceeds the ${budgetMs}ms budget`);
     }
   }
+
+  if (livePaths) {
+    await loopbackDone;
+    const format = loopbackStderr.match(/format: (\d+)Hz (\d+)ch 32-bit/);
+    if (!format) throw new Error(`loopback format missing: ${loopbackStderr}`);
+    const monitorTimes = loopbackBurstTimes(loopbackRaw, loopbackPackets, Number(format[1]), Number(format[2]));
+    const displayTimes = displayClaps.map((clap) => clap.qpc100ns / 1e7);
+    const monitorSummary = describePairs("Display-MON", pairEvents(displayTimes, monitorTimes));
+    if (!recordSummary) throw new Error("recording clap result missing while live paths were requested");
+    const monitorBefore = startCounters?.audioMixSession?.monitorUnderruns;
+    const monitorAfter = endCounters?.audioMixSession?.monitorUnderruns;
+    const lostBefore = startCounters?.realtimeEvidence?.audio?.audioLostSamples;
+    const lostAfter = endCounters?.realtimeEvidence?.audio?.audioLostSamples;
+    if (![monitorBefore, monitorAfter, lostBefore, lostAfter].every(Number.isFinite)) {
+      throw new Error("monitor underrun or lost-sample counters missing from the same run");
+    }
+    const monitorUnderruns = monitorAfter - monitorBefore;
+    const lostSamples = lostAfter - lostBefore;
+    console.log(`Continuity    : monitor underruns +${monitorUnderruns}, audio lost samples +${lostSamples}`);
+    if (monitorUnderruns !== 0 || lostSamples !== 0) {
+      failures.push(`continuity failed: monitor underruns +${monitorUnderruns}, audio lost samples +${lostSamples}`);
+    }
+    const evidencePath = join(liveCaptureDir, "evidence.json");
+    writeFileSync(evidencePath, JSON.stringify({
+      source: "fake-engine timed clap; Program texture publish, endpoint WASAPI loopback, and recorded Program from one run",
+      buildDir, monitorDevice, monitorId, seconds: recordSeconds,
+      displayMarker: "delivered Program source frame at DXGI shared-texture publish; actual monitor vsync is not measured",
+      displayClaps, monitorTimes, recordSummary, monitorSummary,
+      monitorUnderruns, lostSamples, recordingArtifact: artifactAbsolute,
+      loopbackRaw, loopbackPackets, loopbackCaptureLog: loopbackStderr,
+    }, null, 2));
+    console.log(`Live evidence : ${evidencePath}`);
+    if (Math.abs(monitorSummary.medianMs) > budgetMs) {
+      failures.push(`live display/monitor skew ${monitorSummary.medianMs.toFixed(1)}ms exceeds the ${budgetMs}ms budget`);
+    }
+  }
 } catch (error) {
   failures.push(error.message);
 } finally {
+  if (loopback && loopback.exitCode === null) loopback.kill();
   try { child.stdin.end(); } catch {}
   child.kill();
-  if (!keepArtifact && artifactAbsolute && existsSync(artifactAbsolute)) {
+  if (!keepArtifact && !livePaths && artifactAbsolute && existsSync(artifactAbsolute)) {
     try { rmSync(artifactAbsolute); } catch {}
   } else if (artifactAbsolute) {
     console.log(`Artifact      : ${artifactAbsolute}`);

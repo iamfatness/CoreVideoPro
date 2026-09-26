@@ -1,6 +1,9 @@
 // Minimal WASAPI loopback recorder: captures what a render endpoint is
 // playing (i.e., exactly what the operator hears) to raw float32 interleaved.
-// Usage: loopback-rec.exe <device-name-substring> <seconds> <out.f32>
+// Usage: loopback-rec.exe <device-name-substring> <seconds> <out.f32> [packets.csv]
+// packets.csv records the first frame index and WASAPI's QPC timestamp (100ns)
+// for each captured packet, so a transient in out.f32 can be aligned with a
+// Program texture publish on the same machine and in the same run.
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -19,19 +22,21 @@ static std::string wideToUtf8(const wchar_t* wide) {
   if (!wide) return {};
   const int needed = WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
   if (needed <= 1) return {};
-  std::string out(static_cast<size_t>(needed - 1), '\0');
+  std::string out(static_cast<size_t>(needed), '\0');
   WideCharToMultiByte(CP_UTF8, 0, wide, -1, &out[0], needed, nullptr, nullptr);
+  out.resize(static_cast<size_t>(needed - 1));
   return out;
 }
 
 int main(int argc, char** argv) {
   if (argc < 4) {
-    std::fprintf(stderr, "usage: loopback-rec <device-substring> <seconds> <out.f32>\n");
+    std::fprintf(stderr, "usage: loopback-rec <device-substring> <seconds> <out.f32> [packets.csv]\n");
     return 2;
   }
   const std::string wanted = argv[1];
   const int seconds = std::atoi(argv[2]);
   const char* outPath = argv[3];
+  const char* packetPath = argc >= 5 ? argv[4] : nullptr;
 
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   IMMDeviceEnumerator* enumerator = nullptr;
@@ -101,6 +106,16 @@ int main(int argc, char** argv) {
       format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
       (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
        reinterpret_cast<WAVEFORMATEXTENSIBLE*>(format)->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
+  if (!isFloat || format->wBitsPerSample != 32) {
+    std::fprintf(stderr, "loopback-rec requires a float32 endpoint mix format\n");
+    return 1;
+  }
+  FILE* packets = packetPath ? std::fopen(packetPath, "w") : nullptr;
+  if (packetPath && !packets) {
+    std::fprintf(stderr, "could not open packet timestamp file\n");
+    return 1;
+  }
+  if (packets) std::fprintf(packets, "frameStart,frames,qpc100ns,flags\n");
   const ULONGLONG endTick = GetTickCount64() + static_cast<ULONGLONG>(seconds) * 1000ULL;
   long long frames = 0;
   long long gapEvents = 0;
@@ -114,7 +129,11 @@ int main(int argc, char** argv) {
     BYTE* data = nullptr;
     UINT32 got = 0;
     DWORD flags = 0;
-    if (FAILED(capture->GetBuffer(&data, &got, &flags, nullptr, nullptr))) break;
+    UINT64 devicePosition = 0;
+    UINT64 qpc100ns = 0;
+    if (FAILED(capture->GetBuffer(&data, &got, &flags, &devicePosition, &qpc100ns))) break;
+    if (packets) std::fprintf(packets, "%lld,%u,%llu,%lu\n", frames, got,
+                              static_cast<unsigned long long>(qpc100ns), flags);
     if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) ++gapEvents;
     if (isFloat) {
       if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
@@ -129,6 +148,7 @@ int main(int argc, char** argv) {
   }
   client->Stop();
   std::fclose(out);
+  if (packets) std::fclose(packets);
   std::fprintf(stderr, "captured %lld frames (%.1fs), %lld discontinuity flags\n", frames,
                frames / static_cast<double>(format->nSamplesPerSec), gapEvents);
   return 0;
