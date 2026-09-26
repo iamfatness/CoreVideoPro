@@ -7,13 +7,25 @@ namespace CoreVideoPro.MediaCore.Services;
 /// </summary>
 internal sealed class MediaCoreSyncScheduler
 {
+    internal const int MaxWaitingCommands = 32;
     private readonly SemaphoreSlim _slot = new(1, 1);
     private int _waitingCommands;
+    private long _overloadCount;
+    private long _coalescedPollCount;
+
+    public int WaitingCommands => Volatile.Read(ref _waitingCommands);
+    public long OverloadCount => Interlocked.Read(ref _overloadCount);
+    public long CoalescedPollCount => Interlocked.Read(ref _coalescedPollCount);
 
     public async Task<T> RunCommandAsync<T>(Func<Task<T>> send, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(send);
-        Interlocked.Increment(ref _waitingCommands);
+        if (Interlocked.Increment(ref _waitingCommands) > MaxWaitingCommands)
+        {
+            Interlocked.Decrement(ref _waitingCommands);
+            Interlocked.Increment(ref _overloadCount);
+            throw new MediaCoreCommandOverloadedException();
+        }
         try
         {
             await _slot.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -40,6 +52,7 @@ internal sealed class MediaCoreSyncScheduler
         cancellationToken.ThrowIfCancellationRequested();
         if (Volatile.Read(ref _waitingCommands) != 0 || !_slot.Wait(0))
         {
+            Interlocked.Increment(ref _coalescedPollCount);
             throw new MediaCoreSyncInFlightException();
         }
 
@@ -49,6 +62,7 @@ internal sealed class MediaCoreSyncScheduler
             // the slot. Yield it the next sync rather than running another poll.
             if (Volatile.Read(ref _waitingCommands) != 0)
             {
+                Interlocked.Increment(ref _coalescedPollCount);
                 throw new MediaCoreSyncInFlightException();
             }
             cancellationToken.ThrowIfCancellationRequested();

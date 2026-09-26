@@ -582,6 +582,8 @@ final class AppModel: ObservableObject {
                     self?.onConnected()
                 }
                 if case .exited(let code) = status {
+                    self?.monitorControl.resetForProcess()
+                    self?.monitorControlNotice = "Monitor edit reconciling with restarted core"
                     self?.recordingCommands.interrupted()
                     self?.recordingDesired = false
                     self?.streamingDesired = false
@@ -623,6 +625,8 @@ final class AppModel: ObservableObject {
     }
 
     private func onConnected() {
+        monitorControl.resetForProcess()
+        setMonitor(enabled: monitorEnabled, volume: monitorVolume)
         applyMultiviewConfig()
         // Re-assert a restored grade: the core starts neutral every launch, so
         // a persisted grade that is never pushed silently does nothing.
