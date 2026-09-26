@@ -17,6 +17,8 @@ export type NativeMediaCoreCapability =
   | "rtmp-output"
   | "ndi-output"
   | "srt-output"
+  | "srt-ingest"
+  | "uvc-capture"
   | "webrtc-output"
   | "virtual-camera"
   | "decklink-capture"
@@ -30,6 +32,11 @@ export type NativeMediaCoreProfile = {
   maxParticipantFeeds: number;
   maxIsoRecordings: number;
   capabilities: NativeMediaCoreCapability[];
+  capabilityStates?: Partial<Record<NativeMediaCoreCapability, {
+    state: "available" | "omitted" | "failed-to-construct";
+    detail: string;
+    failureScope?: "process";
+  }>>;
 };
 
 export type NativeMediaCoreCommand =
@@ -706,7 +713,10 @@ export type MediaCoreHealth = {
 };
 
 export function validateNativeMediaCoreProfile(profile: NativeMediaCoreProfile): NativeMediaCoreValidation {
-  const missingCapabilities = requiredMvpMediaCoreCapabilities.filter((capability) => !profile.capabilities.includes(capability));
+  const missingCapabilities = requiredMvpMediaCoreCapabilities.filter((capability) =>
+    profile.capabilityStates
+      ? profile.capabilityStates[capability]?.state !== "available"
+      : !profile.capabilities.includes(capability));
   const warnings: string[] = [];
 
   if (profile.renderer === "software") {

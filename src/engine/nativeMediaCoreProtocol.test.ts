@@ -30,6 +30,15 @@ describe("native media core protocol", () => {
     expect(validation.warnings).toEqual([]);
   });
 
+  it("does not admit an advertised path that failed factory admission", () => {
+    const validation = validateNativeMediaCoreProfile({
+      ...productionProfile,
+      capabilityStates: { "rtmp-output": { state: "omitted", detail: "ffmpeg-runtime-missing" } }
+    });
+    expect(validation.ready).toBe(false);
+    expect(validation.missingCapabilities).toContain("rtmp-output");
+  });
+
   it("rejects a shell-only or software-rendered profile for production switching", () => {
     const validation = validateNativeMediaCoreProfile({
       ...productionProfile,

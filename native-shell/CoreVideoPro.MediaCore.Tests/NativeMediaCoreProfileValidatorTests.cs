@@ -63,4 +63,26 @@ public sealed class NativeMediaCoreProfileValidatorTests
         Assert.Contains("local-audio-capture", validation.MissingCapabilities);
         Assert.Contains("audio-monitor-output", validation.MissingCapabilities);
     }
+
+    [Fact]
+    public void FactoryStateOverridesAStaleAdvertisedCapability()
+    {
+        var validation = NativeMediaCoreProfileValidator.Validate(new NativeMediaCoreProfile
+        {
+            Name = "Missing FFmpeg",
+            Renderer = "direct3d11",
+            MaxProgramResolution = "3840x2160",
+            MaxProgramFps = 60,
+            MaxParticipantFeeds = 8,
+            MaxIsoRecordings = 8,
+            Capabilities = NativeMediaCoreProfileValidator.RequiredMvpCapabilities.ToList(),
+            CapabilityStates = new Dictionary<string, NativeMediaCoreCapabilityState>
+            {
+                ["rtmp-output"] = new() { State = "omitted", Detail = "ffmpeg-runtime-missing" }
+            }
+        });
+
+        Assert.False(validation.Ready);
+        Assert.Contains("rtmp-output", validation.MissingCapabilities);
+    }
 }

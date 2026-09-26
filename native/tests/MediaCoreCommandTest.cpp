@@ -1767,12 +1767,10 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
 #else
   EXPECT_FALSE(jsonArrayContains(capabilities, "gpu-compositor"));
 #endif
-#if COREVIDEO_WITH_ZOOM
-  EXPECT_TRUE(jsonArrayContains(capabilities, "zoom-raw-video"));
-  EXPECT_TRUE(jsonArrayContains(capabilities, "zoom-raw-audio"));
-#else
-  EXPECT_FALSE(jsonArrayContains(capabilities, "zoom-raw-video"));
-#endif
+  EXPECT_EQ(jsonArrayContains(capabilities, "zoom-raw-video"),
+            COREVIDEO_WITH_ZOOM && mediaCore.zoomEngineConfigured());
+  EXPECT_EQ(jsonArrayContains(capabilities, "zoom-raw-audio"),
+            COREVIDEO_WITH_ZOOM && mediaCore.zoomEngineConfigured());
 #if COREVIDEO_WITH_MF_ENCODER
   EXPECT_TRUE(jsonArrayContains(capabilities, "program-recording"));
   EXPECT_TRUE(jsonArrayContains(capabilities, "iso-recording"));
@@ -1782,26 +1780,60 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
 #else
   EXPECT_FALSE(jsonArrayContains(capabilities, "program-recording"));
 #endif
-#if COREVIDEO_WITH_UVC || COREVIDEO_WITH_AVF_CAPTURE
-  EXPECT_TRUE(jsonArrayContains(capabilities, "uvc-capture"));
+  EXPECT_EQ(jsonArrayContains(capabilities, "uvc-capture"),
+            corevideo::modules::createUvcCaptureDevice() != nullptr ||
+            corevideo::modules::createAvfCaptureDevice() != nullptr);
+  const auto rtmp = corevideo::modules::createRtmpOutputSender();
+  const auto ndi = corevideo::modules::createNdiOutputSender();
+  const auto srt = corevideo::modules::createSrtOutputSender();
+  EXPECT_EQ(jsonArrayContains(capabilities, "rtmp-output"),
+            rtmp && rtmp->runtimeAvailableAtConstruction());
+  EXPECT_EQ(jsonArrayContains(capabilities, "ndi-output"),
+            ndi && ndi->runtimeAvailableAtConstruction());
+  EXPECT_EQ(jsonArrayContains(capabilities, "srt-output"),
+            srt && srt->runtimeAvailableAtConstruction());
+  EXPECT_FALSE(jsonArrayContains(capabilities, "srt-ingest"));
+  EXPECT_FALSE(jsonArrayContains(capabilities, "decklink-capture"));
+  EXPECT_FALSE(jsonArrayContains(capabilities, "aja-capture"));
+  const auto* states = profile.get("capabilityStates");
+  ASSERT_NE(states, nullptr);
+  EXPECT_EQ(states->get("rtmp-output")->getString("state"),
+            rtmp && rtmp->runtimeAvailableAtConstruction() ? "available" :
+            rtmp ? "omitted" : COREVIDEO_WITH_RTMP_OUTPUT ? "failed-to-construct" : "omitted");
+  EXPECT_EQ(states->get("ndi-output")->getString("failureScope"),
+            COREVIDEO_WITH_NDI_OUTPUT ? "process" : "");
+}
+
+TEST(MediaCoreCommand, ProfileDistinguishesStubFromConstructedAdapters) {
+  corevideo::core::MediaCore stub(corevideo::modules::createStubModules());
+  corevideo::core::MediaCore production(corevideo::modules::createDefaultModules());
+  const auto stubProfile = stub.profile();
+  const auto productionProfile = production.profile();
+  const auto* stubStates = stubProfile.get("capabilityStates");
+  const auto* productionStates = productionProfile.get("capabilityStates");
+  ASSERT_NE(stubStates, nullptr);
+  ASSERT_NE(productionStates, nullptr);
+  EXPECT_EQ(stubStates->get("gpu-compositor")->getString("state"), "omitted");
+#if COREVIDEO_WITH_D3D11 || COREVIDEO_WITH_METAL
+  EXPECT_EQ(productionStates->get("gpu-compositor")->getString("state"), "available");
+  EXPECT_NE(stubProfile.get("capabilities")->stringify(),
+            productionProfile.get("capabilities")->stringify());
 #else
-  EXPECT_FALSE(jsonArrayContains(capabilities, "uvc-capture"));
+  EXPECT_EQ(productionStates->get("gpu-compositor")->getString("state"), "omitted");
 #endif
-#if COREVIDEO_WITH_RTMP_OUTPUT
-  EXPECT_TRUE(jsonArrayContains(capabilities, "rtmp-output"));
-#else
-  EXPECT_FALSE(jsonArrayContains(capabilities, "rtmp-output"));
-#endif
-#if COREVIDEO_WITH_NDI_OUTPUT
-  EXPECT_TRUE(jsonArrayContains(capabilities, "ndi-output"));
-#else
-  EXPECT_FALSE(jsonArrayContains(capabilities, "ndi-output"));
-#endif
-#if COREVIDEO_WITH_SRT_OUTPUT
-  EXPECT_TRUE(jsonArrayContains(capabilities, "srt-output"));
-#else
-  EXPECT_FALSE(jsonArrayContains(capabilities, "srt-output"));
-#endif
+}
+
+TEST(MediaCoreCommand, FailedAdapterConstructionIsVisibleButNotAdmitted) {
+  auto modules = corevideo::modules::createStubModules();
+  modules.capabilityConstruction["ndi-output"] = {"failed-to-construct", "factory-returned-null", "process"};
+  corevideo::core::MediaCore core(std::move(modules));
+  const auto profile = core.profile();
+  EXPECT_FALSE(jsonArrayContains(*profile.get("capabilities"), "ndi-output"));
+  const auto* ndi = profile.get("capabilityStates")->get("ndi-output");
+  ASSERT_NE(ndi, nullptr);
+  EXPECT_EQ(ndi->getString("state"), "failed-to-construct");
+  EXPECT_EQ(ndi->getString("detail"), "factory-returned-null");
+  EXPECT_EQ(ndi->getString("failureScope"), "process");
 }
 
 TEST(MediaCoreCommand, DefaultFactoryReportsActiveRendererInHealth) {

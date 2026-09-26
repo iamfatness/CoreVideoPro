@@ -8742,7 +8742,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         string[] requiredAudioCapabilities = ["audio-mixer", "local-audio-capture", "audio-monitor-output"];
         var missing = requiredAudioCapabilities
-            .Where(capability => !profile.Capabilities.Contains(capability, StringComparer.Ordinal))
+            .Where(capability => !profile.HasAvailableCapability(capability))
             .ToList();
 
         if (missing.Count == 0)

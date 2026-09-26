@@ -1311,6 +1311,9 @@ class IEncoderSink {
 class IOutputSender {
  public:
   virtual ~IOutputSender() = default;
+  // Factory-time admission only. A constructed sender can still be unusable
+  // when its FFmpeg or NDI runtime was not found. Query before wrapping it.
+  virtual bool runtimeAvailableAtConstruction() const { return true; }
   // Push the program frame (and, optionally, the real program-audio mix) to the
   // active network destinations each tick. `programAudioPcm` is interleaved
   // float PCM in [-1, 1] with `audioChannels` channels at `audioSampleRate` Hz
@@ -1584,6 +1587,15 @@ class ICaptureDevice : public ICaptureDeviceLifecycle {
 };
 
 struct ModuleSet {
+
+  struct CapabilityConstruction {
+    std::string state = "omitted";  // available | omitted | failed-to-construct
+    std::string detail;
+    std::string failureScope;  // "process" for in-process NDI; empty otherwise
+  };
+  // Recorded by the factory that actually attempted each adapter. The hello
+  // profile consumes this, rather than guessing availability from build flags.
+  std::map<std::string, CapabilityConstruction> capabilityConstruction;
 
   std::unique_ptr<ICompositor> compositor;
   // #535 slice 3b: the module set carries a DECODER FACTORY, not one

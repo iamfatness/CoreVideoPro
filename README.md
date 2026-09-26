@@ -38,9 +38,11 @@ The additive [lifecycle schema](contracts/lifecycle.schema.json) generates C++, 
 TypeScript, and Swift models and runtime validators. Golden wire fixtures run across
 language suites. Legacy scene/audio/capture **and production command/capability**
 protocols still have handwritten mirrors; see the [coverage inventory](contracts/README.md)
-and [ownership map](docs/architecture-ownership.md). A listed capability is not yet an
-admission check — `profileCapabilities()` follows compile flags more closely than
-successfully constructed adapters ([#617](https://github.com/iamfatness/CoreVideoPro/issues/617)).
+and [ownership map](docs/architecture-ownership.md). The native hello profile now
+reports capabilities from constructed adapters. `capabilityStates` distinguishes
+available, omitted, and failed-to-construct paths; the legacy `capabilities` list
+contains only available paths. An available path still needs live endpoint
+acceptance ([#617](https://github.com/iamfatness/CoreVideoPro/issues/617)).
 Unknown commands in a production-sync batch can be dropped
 ([#616](https://github.com/iamfatness/CoreVideoPro/issues/616)).
 

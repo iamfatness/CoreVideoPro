@@ -948,6 +948,13 @@ class CompositeCaptureDevice final : public ICaptureDevice {
 
 }  // namespace
 
+namespace {
+void recordCapability(ModuleSet& modules, const char* name, const char* state,
+                      const char* detail = "", const char* failureScope = "") {
+  modules.capabilityConstruction[name] = {state, detail, failureScope};
+}
+}  // namespace
+
 std::unique_ptr<IOutputSender> createIsolatedOutputSender(
     std::vector<std::unique_ptr<IOutputSender>> senders, std::vector<std::string> supportedDestinations) {
   auto composite = std::make_unique<CompositeOutputSender>(std::move(senders), std::move(supportedDestinations));
@@ -957,6 +964,11 @@ std::unique_ptr<IOutputSender> createIsolatedOutputSender(
 
 ModuleSet createStubModules() {
   ModuleSet modules;
+  for (const char* name : {"gpu-compositor", "local-audio-capture", "audio-monitor-output",
+                           "rtmp-output", "srt-output", "ndi-output", "srt-ingest",
+                           "decklink-capture", "aja-capture", "uvc-capture"}) {
+    recordCapability(modules, name, "omitted", "stub-or-unbuilt");
+  }
   modules.compositor = std::make_unique<CpuNoopCompositor>();
   // No media decoder in the stub build: MediaCore leaves mediaTransports_ null.
   modules.mediaDecoderFactory = {};
@@ -1002,19 +1014,34 @@ ModuleSet createDefaultModules() {
   } else if (auto metalCompositor = createMetalCompositor()) {
     modules.compositor = std::move(metalCompositor);
   }
+  recordCapability(modules, "gpu-compositor", modules.compositor->rendererName() != "software"
+      ? "available" : (COREVIDEO_WITH_D3D11 || COREVIDEO_WITH_METAL)
+          ? "failed-to-construct" : "omitted", COREVIDEO_STUB ? "stub-build" : "");
   if (auto mediaDecoderFactory = createMediaFoundationMediaDecoderFactory()) {
     modules.mediaDecoderFactory = std::move(mediaDecoderFactory);
   }
+  bool monitorConstructed = false;
   if (auto monitorOutput = createWasapiMonitorOutput()) {
     modules.monitorOutput = std::move(monitorOutput);
+    monitorConstructed = true;
   } else if (auto coreAudioMonitor = createCoreAudioMonitorOutput()) {
     modules.monitorOutput = std::move(coreAudioMonitor);
+    monitorConstructed = true;
   }
+  recordCapability(modules, "audio-monitor-output", monitorConstructed ? "available"
+      : (COREVIDEO_WITH_WASAPI_MONITOR || COREVIDEO_WITH_COREAUDIO) ? "failed-to-construct" : "omitted",
+      COREVIDEO_STUB ? "stub-build" : "");
+  bool audioCaptureConstructed = false;
   if (auto audioCapture = createWasapiAudioCaptureSource()) {
     modules.audioCapture = std::move(audioCapture);
+    audioCaptureConstructed = true;
   } else if (auto coreAudioCapture = createCoreAudioCaptureSource()) {
     modules.audioCapture = std::move(coreAudioCapture);
+    audioCaptureConstructed = true;
   }
+  recordCapability(modules, "local-audio-capture", audioCaptureConstructed ? "available"
+      : (COREVIDEO_WITH_WASAPI_CAPTURE || COREVIDEO_WITH_COREAUDIO) ? "failed-to-construct" : "omitted",
+      COREVIDEO_STUB ? "stub-build" : "");
   if (auto avfEncoder = createAVFoundationEncoderSink()) {
     modules.encoder = std::move(avfEncoder);
   } else if (auto encoder = createMediaFoundationEncoderSink()) {
@@ -1023,16 +1050,31 @@ ModuleSet createDefaultModules() {
   std::vector<std::unique_ptr<IOutputSender>> outputSenders;
   std::vector<std::string> supportedOutputDestinations;
   if (auto outputSender = createRtmpOutputSender()) {
+    recordCapability(modules, "rtmp-output", outputSender->runtimeAvailableAtConstruction()
+        ? "available" : "omitted", outputSender->runtimeAvailableAtConstruction()
+        ? "" : "ffmpeg-runtime-missing");
     outputSenders.push_back(std::move(outputSender));
     supportedOutputDestinations.push_back("rtmp");
+  } else if (COREVIDEO_WITH_RTMP_OUTPUT) {
+    recordCapability(modules, "rtmp-output", "failed-to-construct");
   }
   if (auto srtSender = createSrtOutputSender()) {
+    recordCapability(modules, "srt-output", srtSender->runtimeAvailableAtConstruction()
+        ? "available" : "omitted", srtSender->runtimeAvailableAtConstruction()
+        ? "" : "ffmpeg-runtime-missing");
     outputSenders.push_back(std::move(srtSender));
     supportedOutputDestinations.push_back("srt");
+  } else if (COREVIDEO_WITH_RTMP_OUTPUT) {
+    recordCapability(modules, "srt-output", "failed-to-construct");
   }
   if (auto ndiSender = createNdiOutputSender()) {
+    recordCapability(modules, "ndi-output", ndiSender->runtimeAvailableAtConstruction()
+        ? "available" : "omitted", ndiSender->runtimeAvailableAtConstruction()
+        ? "" : "ndi-runtime-missing", "process");
     outputSenders.push_back(std::move(ndiSender));
     supportedOutputDestinations.push_back("ndi");
+  } else if (COREVIDEO_WITH_NDI_OUTPUT) {
+    recordCapability(modules, "ndi-output", "failed-to-construct", "", "process");
   }
   if (!outputSenders.empty()) {
     modules.outputSender = std::make_unique<CompositeOutputSender>(std::move(outputSenders), std::move(supportedOutputDestinations));
@@ -1042,24 +1084,37 @@ ModuleSet createDefaultModules() {
   if (auto srtIngest = createSrtIngestCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(srtIngest));
   }
+  // This scaffold has no decoded pixels/PCM yet (#536), even if it constructs.
+  // Missing libsrt is separately visible in the state detail.
+  recordCapability(modules, "srt-ingest", "omitted",
+      COREVIDEO_STUB ? "stub-build" : COREVIDEO_HAS_LIBSRT ? "decoder-not-implemented" : "libsrt-missing");
   if (auto deckLink = createDeckLinkCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(deckLink));
   }
   if (auto aja = createAjaCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(aja));
   }
+  // Probe-only hardware adapters are not Program sources until #537 has pixels.
+  recordCapability(modules, "decklink-capture", "omitted", COREVIDEO_STUB ? "stub-build" : "no-live-pixels");
+  recordCapability(modules, "aja-capture", "omitted", COREVIDEO_STUB ? "stub-build" : "no-live-pixels");
   // Native UVC (Media Foundation) capture: webcams/capture cards enumerated and
   // streamed inside the core, no WinUI shared-memory hop (dev-gated; nullptr in
   // stub builds). The WinUiCaptureDeviceAdapter wrap below still supersedes
   // these frames for a device the shell bridges via shm, so the WinUI path
   // remains the fallback arbiter for the same device id.
+  bool cameraConstructed = false;
   if (auto uvc = createUvcCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(uvc));
+    cameraConstructed = true;
   }
   // macOS camera capture (AVFoundation): the UVC twin, same arbitration rules.
   if (auto avfCameras = createAvfCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(avfCameras));
+    cameraConstructed = true;
   }
+  recordCapability(modules, "uvc-capture", cameraConstructed ? "available"
+      : (COREVIDEO_WITH_UVC || COREVIDEO_WITH_AVF_CAPTURE) ? "failed-to-construct" : "omitted",
+      COREVIDEO_STUB ? "stub-build" : "");
   // macOS screen/window capture (ScreenCaptureKit): the WGC twin.
   if (auto sckScreens = createSckScreenCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(sckScreens));
