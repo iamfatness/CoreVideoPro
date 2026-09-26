@@ -262,6 +262,9 @@ class MediaCore {
   // Nothing outside native/tests/ calls this — production has no registered
   // sources, so the bus stays empty and the ingest in renderSyntheticTick is a
   // guarded no-op.
+  // Drops the default no-meeting slate and installs these sources instead.
+  // An empty list leaves no Zoom slate. Test-only, same rules as addSourceForTest.
+  void useZoomSourcesForTest(std::vector<std::shared_ptr<core::ISource>> sources);
   void addSourceForTest(std::shared_ptr<core::ISource> source);
 
   // Test seam (#535 slice 3b): the media transport owner, or nullptr when the
@@ -596,6 +599,7 @@ class MediaCore {
   static constexpr const char* kCoreProcessEpoch = "core-process";
   core::SourceRegistry sourceRegistry_{"core-registry"};
   std::unique_ptr<core::SourceBus> sourceBus_;
+  bool defaultZoomSlate_ = true;
   // DECLARED AFTER sourceBus_ ON PURPOSE, so it is DESTROYED FIRST. Every
   // kind-"media" bus source holds a shared_ptr to one of its entries, and the
   // transports' destructor joins the decoder workers — tearing the bus down

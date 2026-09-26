@@ -48,10 +48,6 @@ using corevideo::core::MediaCore;
 // arrived" legacy fallback), which would corrupt the very luma this test
 // measures. This test is about the media-background decoder only, so the
 // Zoom side stays silent.
-class NoZoomCaptureSource final : public corevideo::modules::IZoomCaptureSource {
- public:
-};
-
 // The default stub capture device (FakeCaptureDevice) ships one pre-connected
 // device ("decklink-1") that polls a real test-pattern frame every tick, which
 // the same legacy fallback above would also paint over the background. No
@@ -194,9 +190,10 @@ corevideo::rpc::Json sceneWithClipRoute(const char* sceneId, const char* type) {
 TEST(ProgramPixelContinuity, ASharedBackgroundDoesNotFlickerAcrossATake) {
   auto modules = corevideo::modules::createStubModules();
   modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartGreyMediaFrameSource>();
-  modules.zoom = std::make_unique<NoZoomCaptureSource>();
+
   modules.captureDevice = std::make_unique<NoCaptureDevice>();
   MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({});
   core.enableAudioOutputWorker();
 
   // Program: scene-a, no background, empty routes.
@@ -250,9 +247,10 @@ TEST(ProgramPixelContinuity, ASharedBackgroundDoesNotFlickerAcrossATake) {
 TEST(ProgramPixelContinuity, ACuedClipTakenToProgramNeverShowsThePlaceholder) {
   auto modules = corevideo::modules::createStubModules();
   modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<ColdStartClipDecoder>();
-  modules.zoom = std::make_unique<NoZoomCaptureSource>();
+
   modules.captureDevice = std::make_unique<NoCaptureDevice>();
   MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({});
   core.enableAudioOutputWorker();
 
   // Program: scene-a, nothing. Preview: scene-b, the clip CUED (paused, gen 1).

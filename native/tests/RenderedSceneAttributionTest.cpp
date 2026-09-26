@@ -468,9 +468,17 @@ corevideo::rpc::Json zoomRouteScene(const char* sceneId, const char* participant
 // A Zoom capture source whose frames are keyed by the BARE participant id, the
 // way the real engine keys them, each guest on its own frame clock. `restart`
 // reopens a guest (frame ids go back to 1); `pause` stops it delivering.
-class CountingZoomSource final : public corevideo::modules::IZoomCaptureSource {
+class CountingZoomSource final : public corevideo::core::ISource {
  public:
-  void captureVideoTick() override {
+  CountingZoomSource() {
+    descriptor_.sourceId = "counting-zoom";
+    descriptor_.kind = "zoom-slate";
+    descriptor_.hasVideo = true;
+  }
+  const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
+  corevideo::core::SourceTick poll(int64_t) override {
+    corevideo::core::SourceTick tick;
+    tick.health = corevideo::core::SourceHealth::Producing;
     for (const auto& participantId : participants) {
       if (paused.count(participantId) > 0) continue;
       corevideo::modules::VideoFrame frame;
@@ -481,14 +489,19 @@ class CountingZoomSource final : public corevideo::modules::IZoomCaptureSource {
         frame.i420Width = frame.i420Height = 2;
         frame.i420 = std::make_shared<const std::vector<std::uint8_t>>(6, 128);
       }
-      postVideo(std::move(frame));
+      tick.video.push_back(std::move(frame));
     }
+    return tick;
   }
+  corevideo::core::SourceIngestCounters counters() const override { return {}; }
   void restart(const std::string& participantId) { frameIds[participantId] = 0; }
   std::vector<std::string> participants{"7"};
   std::set<std::string> paused;
   std::set<std::string> metadataOnly;
   std::map<std::string, std::int64_t> frameIds;
+
+ private:
+  corevideo::core::SourceDescriptor descriptor_;
 };
 
 // Bounded wait on real decoder work: poll `CountingMediaFrameSource`'s own
@@ -641,10 +654,10 @@ TEST(TakeRecord, AMediaBackgroundThatHasNoFrameOnTheFirstProgramTickIsRebuilt) {
 TEST(TakeRecord, AZoomGuestWhoseRendererRestartedAcrossTheTakeIsRebuilt) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  auto zoom = std::make_unique<CountingZoomSource>();
+  auto zoom = std::make_shared<CountingZoomSource>();
   auto* zoomPtr = zoom.get();
-  modules.zoom = std::move(zoom);
   MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({zoom});
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-a", "7")});
@@ -666,8 +679,9 @@ TEST(TakeRecord, AZoomGuestWhoseRendererRestartedAcrossTheTakeIsRebuilt) {
 TEST(TakeRecord, AZoomGuestWhoKeptRunningAcrossTheTakeIsACut) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  modules.zoom = std::make_unique<CountingZoomSource>();
+
   MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({std::make_shared<CountingZoomSource>()});
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-a", "7")});
@@ -695,8 +709,9 @@ TEST(TakeRecord, AZoomGuestWhoKeptRunningAcrossTheTakeIsACut) {
 TEST(TakeRecord, ASourceSeenOnPreviewBeforeTheTakeIsJudgedAsShared) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  modules.zoom = std::make_unique<CountingZoomSource>();
+
   MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({std::make_shared<CountingZoomSource>()});
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{
@@ -764,10 +779,10 @@ TEST(TakeRecord, ABackgroundTakenFromPreviewIsAlreadyRunningOnProgram) {
 TEST(TakeRecord, ASourceLongGoneBeforeTheTakeIsNotCalledMissing) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  auto zoom = std::make_unique<CountingZoomSource>();
+  auto zoom = std::make_shared<CountingZoomSource>();
   auto* zoomPtr = zoom.get();
-  modules.zoom = std::move(zoom);
   MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({zoom});
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-a", "7")});
@@ -793,10 +808,10 @@ TEST(TakeRecord, ASourceLongGoneBeforeTheTakeIsNotCalledMissing) {
 TEST(TakeRecord, AZoomGuestRunningAtTheTakeWithNoFirstFrameIsMissing) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  auto zoom = std::make_unique<CountingZoomSource>();
+  auto zoom = std::make_shared<CountingZoomSource>();
   auto* zoomPtr = zoom.get();
-  modules.zoom = std::move(zoom);
   MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({zoom});
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-a", "7")});
@@ -819,10 +834,10 @@ TEST(TakeRecord, AZoomGuestRunningAtTheTakeWithNoFirstFrameIsMissing) {
 TEST(TakeRecord, AMetadataOnlyZoomFrameDoesNotCountAsHavingAFrame) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = std::make_unique<DeliveringCompositor>();
-  auto zoom = std::make_unique<CountingZoomSource>();
+  auto zoom = std::make_shared<CountingZoomSource>();
   auto* zoomPtr = zoom.get();
-  modules.zoom = std::move(zoom);
   MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({zoom});
   core.enableAudioOutputWorker();
 
   (void)core.applyCommands(corevideo::rpc::Json::Array{zoomRouteScene("scene-a", "7")});

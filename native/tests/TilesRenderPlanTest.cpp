@@ -391,22 +391,33 @@ TEST(TilesRenderPlan, AStaleMemberIsNotDrawnAndTheWallReflows) {
 // DIRECTED speaker. The stub Zoom session directs "operator-1"; the frame gather
 // lists "guest-1" FIRST, so the old positional binding shows the wrong person.
 namespace {
-class TwoGuestZoomSource final : public corevideo::modules::IZoomCaptureSource {
+class TwoGuestZoomSource final : public corevideo::core::ISource {
  public:
-  TwoGuestZoomSource() = default;
-  explicit TwoGuestZoomSource(std::vector<std::string> ids) : ids_(std::move(ids)) {}
-  void captureVideoTick() override {
+  TwoGuestZoomSource() { init(); }
+  explicit TwoGuestZoomSource(std::vector<std::string> ids) : ids_(std::move(ids)) { init(); }
+  const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
+  corevideo::core::SourceTick poll(int64_t) override {
+    corevideo::core::SourceTick tick;
+    tick.health = corevideo::core::SourceHealth::Producing;
     for (const auto& participantId : ids_) {
       corevideo::modules::VideoFrame frame;
       frame.participantId = participantId;
       frame.width = frame.height = frame.i420Width = frame.i420Height = 2;
       frame.frameId = ++frameId_;
       frame.i420 = std::make_shared<const std::vector<std::uint8_t>>(6, 128);
-      postVideo(std::move(frame));
+      tick.video.push_back(std::move(frame));
     }
+    return tick;
   }
+  corevideo::core::SourceIngestCounters counters() const override { return {}; }
 
  private:
+  void init() {
+    descriptor_.sourceId = "two-guest-zoom";
+    descriptor_.kind = "zoom-slate";
+    descriptor_.hasVideo = true;
+  }
+  corevideo::core::SourceDescriptor descriptor_;
   std::vector<std::string> ids_{"guest-1", "operator-1"};
   std::int64_t frameId_ = 0;
 };
@@ -443,8 +454,8 @@ TEST(TilesRenderPlan, AFollowSpeakerRouteWhoseSpeakerHasNoFrameRendersEmptyNotAS
   auto ownedCompositor = std::make_unique<RecordingCompositor>();
   auto* compositor = ownedCompositor.get();
   modules.compositor = std::move(ownedCompositor);
-  modules.zoom = std::make_unique<TwoGuestZoomSource>(std::vector<std::string>{"guest-1"});
   MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({std::make_shared<TwoGuestZoomSource>(std::vector<std::string>{"guest-1"})});
   (void)core.joinZoom(corevideo::rpc::Json::Object{});  // directs "operator-1", who has no frame
 
   (void)core.applyCommands(followSpeakerScene());
@@ -459,8 +470,8 @@ TEST(TilesRenderPlan, LeavingTheMeetingForgetsTheFollowRoutesHeldSpeaker) {
   auto ownedCompositor = std::make_unique<RecordingCompositor>();
   auto* compositor = ownedCompositor.get();
   modules.compositor = std::move(ownedCompositor);
-  modules.zoom = std::make_unique<TwoGuestZoomSource>();
   MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({std::make_shared<TwoGuestZoomSource>()});
   (void)core.joinZoom(corevideo::rpc::Json::Object{});
   (void)core.applyCommands(followSpeakerScene());
   core.renderDisplayTick();
@@ -478,8 +489,8 @@ TEST(TilesRenderPlan, AFollowSpeakerRouteShowsTheDirectedSpeakerNotTheFirstFrame
   auto ownedCompositor = std::make_unique<RecordingCompositor>();
   auto* compositor = ownedCompositor.get();
   modules.compositor = std::move(ownedCompositor);
-  modules.zoom = std::make_unique<TwoGuestZoomSource>();
   MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({std::make_shared<TwoGuestZoomSource>()});
   (void)core.joinZoom(corevideo::rpc::Json::Object{});
   ASSERT_EQ(core.zoomSnapshot().getString("activeSpeakerId"), "operator-1");
 

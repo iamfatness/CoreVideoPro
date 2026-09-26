@@ -944,56 +944,6 @@ struct SrtIngestSourceConfig {
   std::string passphrase;
 };
 
-class IZoomAudioConsumer {
- public:
-  virtual ~IZoomAudioConsumer() = default;
-  virtual void publish(AudioFrame frame) = 0;
-};
-
-class IZoomCaptureSource {
- public:
-  virtual ~IZoomCaptureSource() = default;
-  // Drain pictures pushed for this tick. The render tick calls this only when
-  // no Zoom engine is configured, at the same site that used to pull
-  // pollVideoFrames(). Live engine frames stay on the source bus.
-  std::vector<VideoFrame> deliverVideo() {
-    captureVideoTick();
-    std::lock_guard<std::mutex> lock(zoomVideoMutex_);
-    std::vector<VideoFrame> frames;
-    frames.swap(videoQueue_);
-    return frames;
-  }
-  // Drain packets pushed since the last call. The audio worker calls this
-  // outside coreMutex, at the same site that used to pull pollAudioFrames().
-  void deliverAudio(IZoomAudioConsumer& consumer) {
-    captureAudioTick();
-    std::vector<AudioFrame> frames;
-    {
-      std::lock_guard<std::mutex> lock(zoomAudioMutex_);
-      frames.swap(audioQueue_);
-    }
-    for (auto& frame : frames) consumer.publish(std::move(frame));
-  }
-
- protected:
-  virtual void captureVideoTick() {}
-  virtual void captureAudioTick() {}
-  void postVideo(VideoFrame frame) {
-    std::lock_guard<std::mutex> lock(zoomVideoMutex_);
-    videoQueue_.push_back(std::move(frame));
-  }
-  void postAudio(AudioFrame frame) {
-    std::lock_guard<std::mutex> lock(zoomAudioMutex_);
-    audioQueue_.push_back(std::move(frame));
-  }
-
- private:
-  std::mutex zoomVideoMutex_;
-  std::vector<VideoFrame> videoQueue_;
-  std::mutex zoomAudioMutex_;
-  std::vector<AudioFrame> audioQueue_;
-};
-
 class IAudioCaptureSource {
  public:
   virtual ~IAudioCaptureSource() = default;
@@ -1634,7 +1584,7 @@ class ICaptureDevice : public ICaptureDeviceLifecycle {
 };
 
 struct ModuleSet {
-  std::unique_ptr<IZoomCaptureSource> zoom;
+
   std::unique_ptr<ICompositor> compositor;
   // #535 slice 3b: the module set carries a DECODER FACTORY, not one
   // owner object. core::MediaTransports owns one decoder per media source

@@ -70,6 +70,10 @@ class SourceBus {
  public:
   struct IngestResult {
     std::vector<modules::VideoFrame> video;
+    // Parallel to `video`: the kind of the source that produced each frame.
+    // A source may emit several participant ids, so the kind cannot be
+    // recovered by looking the frame id up on the bus.
+    std::vector<std::string> videoKinds;
     std::vector<modules::AudioFrame> audio;
   };
   struct SourceStatus {
@@ -110,6 +114,7 @@ class SourceBus {
     for (auto& [id, e] : entries_) {
       if (!select(e.source->descriptor())) continue;
       SourceTick tick = e.source->poll(programTime100ns);
+      const auto kind = e.source->descriptor().kind;
       for (auto& v : tick.video) {
         const bool isNew = !e.everProduced || v.frameId != e.counters.lastFrameId;
         if (isNew) {
@@ -119,6 +124,7 @@ class SourceBus {
           e.everProduced = true;
         }
         out.video.push_back(std::move(v));
+        out.videoKinds.push_back(kind);
       }
       for (auto& a : tick.audio) out.audio.push_back(std::move(a));
     }

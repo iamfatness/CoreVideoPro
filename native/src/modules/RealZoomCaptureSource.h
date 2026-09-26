@@ -12,17 +12,18 @@
 
 namespace corevideo::modules {
 
-// Real Zoom capture source backed by decoded participant frames.
-//
-// The Zoom engine decodes participant video into BGRA frames inside
-// ZoomEngineRuntime. Those frames are ingested here, keyed by participantId,
-// and surfaced through deliverVideo() carrying their real pixels (the
-// SyntheticZoomCaptureSource only ever returned metadata). When no participant
-// has a fresh frame, deliverVideo() falls back to the wrapped synthetic
-// source so there is no regression when there is no meeting or no video.
-class RealZoomCaptureSource final : public IZoomCaptureSource {
+// Stores decoded participant frames for tests and for callers that ingest a
+// zoom-video-frame event directly. On-air pixels go through the source bus.
+// When no participant frame is stored, frames() returns the fallback slate.
+class ZoomVideoFallback {
  public:
-  explicit RealZoomCaptureSource(std::unique_ptr<IZoomCaptureSource> fallback = nullptr);
+  virtual ~ZoomVideoFallback() = default;
+  virtual std::vector<VideoFrame> frames() = 0;
+};
+
+class RealZoomCaptureSource {
+ public:
+  explicit RealZoomCaptureSource(std::unique_ptr<ZoomVideoFallback> fallback = nullptr);
 
   // Ingest a single decoded BGRA frame for a participant. The latest frame per
   // participant is retained; older frames are overwritten. `bgra` is copied so
@@ -65,12 +66,9 @@ class RealZoomCaptureSource final : public IZoomCaptureSource {
   // not video frames or that are malformed are ignored.
   void ingestFrameEvents(const std::vector<rpc::Json>& events);
 
-  // Posts one VideoFrame per participant that has a stored frame, each
-  // carrying its real BGRA pixels. Falls back to the wrapped synthetic source
+  // One VideoFrame per stored participant. Falls back to the wrapped slate
   // when no real frames are available.
-  void captureVideoTick() override;
-
-  void captureAudioTick() override;
+  std::vector<VideoFrame> frames();
 
   // Number of participants with a stored frame (test/diagnostic helper).
   [[nodiscard]] size_t participantCount() const;
@@ -91,7 +89,7 @@ class RealZoomCaptureSource final : public IZoomCaptureSource {
 
   mutable std::mutex mutex_;
   std::map<std::string, StoredFrame> frames_;
-  std::unique_ptr<IZoomCaptureSource> fallback_;
+  std::unique_ptr<ZoomVideoFallback> fallback_;
 };
 
 }  // namespace corevideo::modules

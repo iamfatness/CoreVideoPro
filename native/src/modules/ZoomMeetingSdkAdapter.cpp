@@ -349,8 +349,9 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
     }
   }
 
-  void captureVideoTick() override {
-    if (!joined_) return;
+  std::vector<VideoFrame> takeVideoFrames() override {
+    if (!joined_) return {};
+    std::vector<VideoFrame> frames;
     for (const auto& state : subscriptionStates()) {
       const auto& request = state.request;
       if (state.status == "failed" || (request.kind != "participant-video" && request.kind != "screen-share")) {
@@ -368,14 +369,16 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
         frame.naturalWidth = frame.width;
         frame.naturalHeight = frame.height;
         frame.timestampMs = ++timestampMs_;
-        postVideo(std::move(frame));
+        frames.push_back(std::move(frame));
         lastPolledVideoFrameCounts_[subscriptionId] = state.framesReceived;
       }
     }
+    return frames;
   }
 
-  void captureAudioTick() override {
-    if (!joined_) return;
+  std::vector<AudioFrame> takeAudioFrames() override {
+    if (!joined_) return {};
+    std::vector<AudioFrame> frames;
     for (const auto& state : subscriptionStates()) {
       const auto& request = state.request;
       if (state.status == "failed" || request.kind != "participant-audio") {
@@ -385,10 +388,11 @@ class ZoomMeetingSdkCaptureSource final : public IZoomMeetingSdkCaptureSource {
       const auto subscriptionId = subscriptionIdFor(request);
       const auto previousCount = lastPolledAudioPacketCounts_[subscriptionId];
       if (state.audioPacketsReceived > previousCount) {
-        postAudio({request.participantId, 48000, 1, ++timestampMs_});
+        frames.push_back({request.participantId, 48000, 1, ++timestampMs_});
         lastPolledAudioPacketCounts_[subscriptionId] = state.audioPacketsReceived;
       }
     }
+    return frames;
   }
 
   std::string activeSpeakerId() const override {

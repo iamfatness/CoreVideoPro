@@ -12,8 +12,8 @@
 #include "core/RouteSourcePolicy.h"
 #include "modules/AudioDsp.h"
 #include "modules/AsyncEncoderSink.h"
+#include "core/SyntheticZoomSlateSource.h"
 #include "modules/ProgramFramePreview.h"
-#include "modules/RealZoomCaptureSource.h"
 
 
 #include <algorithm>
@@ -354,6 +354,7 @@ MediaCore::MediaCore(modules::ModuleSet modules)
   // early-out for the no-source case (no meeting, no capture device), not a
   // production-vs-test switch.
   sourceBus_ = std::make_unique<core::SourceBus>();
+  sourceBus_->add(std::make_shared<core::SyntheticZoomSlateSource>());
   // #535 slice 3b: the media transport owner. One decoder per media source id,
   // created and retired by apply() from the command-time desired set. Null when
   // the build has no media decoder (the stub), which is what every media path
@@ -2551,6 +2552,16 @@ void MediaCore::setStillImageDecoderForTest(std::unique_ptr<modules::IStillImage
   stillMediaCache_ =
       std::make_unique<modules::StillMediaFrameCache>(std::move(decoder), cacheBudgetBytes);
   syncStillMediaDesired();
+}
+
+void MediaCore::useZoomSourcesForTest(std::vector<std::shared_ptr<core::ISource>> sources) {
+  defaultZoomSlate_ = false;
+  if (!sourceBus_) return;
+  for (const auto& id : sourceBus_->sourceIds()) {
+    const auto* source = sourceBus_->sourceFor(id);
+    if (source && source->descriptor().kind == "zoom-slate") sourceBus_->remove(id);
+  }
+  for (auto& source : sources) sourceBus_->add(std::move(source));
 }
 
 void MediaCore::addSourceForTest(std::shared_ptr<core::ISource> source) {
@@ -6405,7 +6416,6 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // one ZoomParticipantSource per participant, keyed by the SAME
   // participantId this loop always used. Reading them here does NOT drain
   // the stdout/event queue that feeds the multiview tiles.
-  auto* realZoom = dynamic_cast<modules::RealZoomCaptureSource*>(modules_.zoom.get());
   // The engine's subscription roster, polled ONCE per tick: it gates the bus
   // removals in the tap (a participant the engine still lists keeps their last
   // frame across a subscription gap, see ZoomBusRoster.h) and is the same
@@ -6414,7 +6424,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     engineFrames = zoomEngineRuntime_->pollCompositorVideoFrames(frameTimestampMs);
   }
-  if (realZoom && zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
+  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     const auto decoded = zoomEngineRuntime_->latestDecodedVideoFrames(frameTimestampMs);
     markStage(s_subFetchUs, 0);
     std::vector<modules::VideoFrame> zoomFrames;
@@ -6453,8 +6463,12 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // so an empty videoFrames here is unchanged on-air (#535 slice 1).
   markStage(s_subTapUs, 0);
   const bool engineLive = zoomEngineRuntime_ && zoomEngineRuntime_->configured();
-  auto videoFrames =
-      engineLive ? std::vector<modules::VideoFrame>{} : modules_.zoom->deliverVideo();
+  if (engineLive) {
+    if (sourceBus_->contains("zoom-slate")) sourceBus_->remove("zoom-slate");
+  } else if (defaultZoomSlate_ && sourceBus_ && !sourceBus_->contains("zoom-slate")) {
+    sourceBus_->add(std::make_shared<core::SyntheticZoomSlateSource>());
+  }
+  std::vector<modules::VideoFrame> videoFrames;
   // Capture devices deliver their held picture onto the bus. The render tick
   // no longer pulls pollVideoFrames. Browser sources are still polled; they
   // are not capture devices.
@@ -6479,6 +6493,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // Bus ingest, partitioned by kind so the merged vector keeps today's order:
   // capture frames first (where the direct insert used to put them), then Zoom.
   std::vector<modules::VideoFrame> captureFrames;   // KEEP this name: the merge below uses it
+  std::vector<modules::VideoFrame> slateFrames;
   std::vector<modules::VideoFrame> zoomBusFrames;
   // #535 slice 3b. Media rides the early ingest now, but it must SURVIVE the
   // engine-roster merge below, which rebuilds videoFrames from the engine's
@@ -6508,15 +6523,22 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // they already join the gather below.
     auto busResult = sourceBus_->ingest(
         mediaPresentationTime100ns, nowNs,
-        [](const core::SourceDescriptor& d) { return d.kind != "still"; });
-    for (auto& frame : busResult.video) {
-      const auto* source = sourceBus_->sourceFor(frame.participantId);
-      const auto kind = source ? source->descriptor().kind : std::string{};
-      auto& bucket = kind == "capture" ? captureFrames : (kind == "media" ? mediaBusFrames : zoomBusFrames);
-      bucket.push_back(std::move(frame));
+        [engineLive](const core::SourceDescriptor& d) {
+          if (d.kind == "still") return false;
+          if (engineLive && d.kind == "zoom-slate") return false;
+          return true;
+        });
+    for (size_t index = 0; index < busResult.video.size(); ++index) {
+      const auto& kind = index < busResult.videoKinds.size() ? busResult.videoKinds[index] : std::string{};
+      auto& bucket = kind == "zoom-slate" ? slateFrames
+          : kind == "capture" ? captureFrames
+          : kind == "media" ? mediaBusFrames
+          : zoomBusFrames;
+      bucket.push_back(std::move(busResult.video[index]));
     }
     // PCM is consumed separately by the audio-worker source-bus gather.
   }
+  videoFrames.insert(videoFrames.end(), slateFrames.begin(), slateFrames.end());
   videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
   videoFrames.insert(videoFrames.end(),
                      std::make_move_iterator(zoomBusFrames.begin()),
@@ -7458,12 +7480,10 @@ void MediaCore::enableAudioOutputWorker() {
 // constructor and never reset, so calling them unlocked is safe — the same
 // reasoning that already lets drainZoomVideoFrameEvents run off the core lock.
 std::vector<modules::AudioFrame> MediaCore::pollZoomAudioUnlocked() {
-  struct Collect final : modules::IZoomAudioConsumer {
-    std::vector<modules::AudioFrame> frames;
-    void publish(modules::AudioFrame frame) override { frames.push_back(std::move(frame)); }
-  } collect;
-  modules_.zoom->deliverAudio(collect);
-  std::vector<modules::AudioFrame> audioFrames = std::move(collect.frames);
+  // Zoom PCM that is not from the engine is produced by sources on the bus
+  // and drained under the lock by ingestSourceAudio. Only the engine poll
+  // stays here: it takes the engine mutex and must not run under coreMutex.
+  std::vector<modules::AudioFrame> audioFrames;
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     // Frame number from the atomic mirror rather than lastProgramFrame_: one
     // render tick of staleness is irrelevant here (this is a synthetic
