@@ -320,6 +320,9 @@ final class AppModel: ObservableObject {
     @Published var monitorFeedbackRisk = false
     @Published var monitorEnabled = false
     @Published var monitorVolume = 0.7
+    @Published var monitorControlNotice = ""
+    private var monitorControl = MonitorControlProjection()
+    private var monitorControlSending = false
     @Published var warnings: [String] = []
     @Published var programSurfaceId: UInt32 = 0
     @Published var programFrameNumber: Int64 = 0
@@ -744,6 +747,8 @@ final class AppModel: ObservableObject {
             recordingWarning = warning
         }
         if let mix = snapshot["audioMixSession"] as? JSONObject {
+            monitorControl.observe(mix)
+            monitorControlNotice = monitorControl.notice
             masterLevel = mix["masterLevel"] as? Int ?? masterLevel
             limiterActive = mix["limiterActive"] as? Bool ?? limiterActive
             monitorStatus = mix["monitorStatus"] as? String ?? monitorStatus
@@ -2308,16 +2313,59 @@ final class AppModel: ObservableObject {
         guard let bridge else { return }
         monitorEnabled = enabled
         monitorVolume = volume
+        monitorControl.edit(.init(enabled: enabled, volume: volume))
+        monitorControlNotice = monitorControl.notice
+        guard !monitorControlSending else { return }
+        monitorControlSending = true
         Task {
-            _ = try? await bridge.request([
-                "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                "commands": [
-                    [
-                        "type": "sync-audio-monitor", "enabled": enabled, "deviceId": "",
-                        "deviceName": "System default output", "volume": volume,
-                    ]
-                ],
-            ])
+            defer { monitorControlSending = false }
+            // A core older than this contract still accepts the legacy command.
+            // Once an epoch is observed, every subsequent edit is revisioned.
+            if monitorControl.authorityEpoch.isEmpty {
+                if let response = try? await bridge.request([
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [],
+                ]), let snapshot = response["snapshot"] as? JSONObject {
+                    applySnapshot(snapshot)
+                }
+            }
+            if monitorControl.authorityEpoch.isEmpty && monitorControl.legacyCoreConfirmed {
+                _ = try? await bridge.request([
+                    "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                    "commands": [["type": "sync-audio-monitor", "enabled": enabled,
+                                  "deviceId": "", "deviceName": "System default output",
+                                  "volume": volume]],
+                ])
+                return
+            }
+            if monitorControl.authorityEpoch.isEmpty {
+                monitorControl.markUnconfirmed()
+                monitorControlNotice = "Monitor edit reconciling; core contract is unconfirmed"
+                return
+            }
+            while let command = monitorControl.nextCommand() {
+                do {
+                    let response = try await bridge.request([
+                        "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                        "commands": [command],
+                    ])
+                    if let snapshot = response["snapshot"] as? JSONObject { applySnapshot(snapshot) }
+                } catch {
+                    // The core may have applied the edit before its reply was
+                    // lost. Read a barrier before considering another command.
+                    if let response = try? await bridge.request([
+                        "type": "media-core-sync", "elapsedMs": elapsedMs(),
+                        "commands": [],
+                    ]), let snapshot = response["snapshot"] as? JSONObject {
+                        applySnapshot(snapshot)
+                    }
+                }
+                if monitorControl.pendingOperationId != nil {
+                    monitorControl.markUnconfirmed()
+                    monitorControlNotice = monitorControl.notice
+                    break
+                }
+                if monitorControl.notice.contains("conflicted") { break }
+            }
         }
     }
 

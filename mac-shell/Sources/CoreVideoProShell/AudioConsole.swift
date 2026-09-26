@@ -73,6 +73,10 @@ struct AudioPane: View {
                                 .foregroundStyle(Studio.secondary)
                         }
                     }
+                    if !model.monitorControlNotice.isEmpty {
+                        Text(model.monitorControlNotice).font(.plexMono(10))
+                            .foregroundStyle(Studio.amber)
+                    }
                     if model.monitorFeedbackRisk {
                         Text("Monitor output matches the loopback device — feedback risk")
                             .font(.grotesk(12)).foregroundStyle(Studio.amber)

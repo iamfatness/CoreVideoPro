@@ -1,5 +1,6 @@
 using System.Text.Json;
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Contracts;
 
 namespace CoreVideoPro.MediaCore.Services;
 
@@ -9,6 +10,19 @@ namespace CoreVideoPro.MediaCore.Services;
 /// </summary>
 public static class MediaCoreCommandBuilder
 {
+    public static NativeMediaCoreCommand BuildAudioMonitorControlCommand(
+        MediaCoreAudioMonitorWire monitor, ControlOperationIdentity operation) =>
+        Command("set-audio-monitor-control", new Dictionary<string, object?>
+        {
+            ["operationId"] = operation.OperationId,
+            ["authorityEpoch"] = operation.AuthorityEpoch,
+            ["expectedRevision"] = operation.ExpectedRevision,
+            ["enabled"] = monitor.Enabled,
+            ["deviceId"] = monitor.DeviceId,
+            ["deviceName"] = monitor.DeviceName,
+            ["volume"] = Math.Clamp(monitor.Volume, 0, 1)
+        });
+
     public static IReadOnlyList<NativeMediaCoreCommand> BuildSyncCommands(MediaCoreProductionSyncContext context)
     {
         var commands = new List<NativeMediaCoreCommand>();

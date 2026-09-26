@@ -222,6 +222,21 @@ public static class PlanGenerationContract {
     return true;
   }
 }
+public sealed record ZoomRosterSnapshotRevision {
+  [JsonPropertyName("rosterEpoch")] public required string RosterEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("rosterRevision")] public required long RosterRevision { get; init; }
+}
+public static class ZoomRosterSnapshotRevisionContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasRosterEpoch = value.TryGetProperty("rosterEpoch", out var rosterEpoch);
+    if (!hasRosterEpoch || !(rosterEpoch.ValueKind == JsonValueKind.String && rosterEpoch.GetString()!.Length >= 1)) return false;
+    var hasRosterRevision = value.TryGetProperty("rosterRevision", out var rosterRevision);
+    if (!hasRosterRevision || !(rosterRevision.ValueKind == JsonValueKind.Number && rosterRevision.TryGetDouble(out var rosterRevisionNumber) && double.IsFinite(rosterRevisionNumber) && Math.Truncate(rosterRevisionNumber) == rosterRevisionNumber && rosterRevisionNumber >= 1 && rosterRevisionNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
 public sealed record ControlOperationIdentity {
   [JsonPropertyName("operationId")] public required string OperationId { get; init; }
   [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }

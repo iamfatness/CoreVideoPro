@@ -6,6 +6,8 @@
 #include "compositor/TilesPinnedLayout.h"
 #include "compositor/TilesMembership.h"
 #include "core/AudioControlSourcePolicy.h"
+#include "core/ControlCommandPolicy.h"
+#include "contracts/Lifecycle.h"
 #include "core/SourceAudioIngress.h"
 #include "core/SourceVideoIngress.h"
 #include "core/AvSyncClapProbe.h"
@@ -29,6 +31,7 @@
 #include <exception>
 #include <iterator>
 #include <map>
+#include <random>
 #include <set>
 #include <sstream>
 #include <string_view>
@@ -353,6 +356,9 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 
 MediaCore::MediaCore(modules::ModuleSet modules)
     : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {
+  std::random_device random;
+  audioMonitorControlEpoch_ = "monitor-" + std::to_string(monotonicMs()) + "-" +
+                              std::to_string(random());
   // #535 slice 0: the source bus. Since slice 1 (Zoom video) and slice 2
   // (capture), the bus carries every live Zoom participant and every
   // connected capture device in production — it is no longer test-only. The
@@ -975,6 +981,12 @@ rpc::Json MediaCore::sessionState() const {
   if (zoomCapture.get("participants")) {
     state.emplace("participants", *zoomCapture.get("participants"));
   }
+  if (zoomCapture.get("rosterEpoch")) {
+    state.emplace("rosterEpoch", *zoomCapture.get("rosterEpoch"));
+  }
+  if (zoomCapture.get("rosterRevision")) {
+    state.emplace("rosterRevision", *zoomCapture.get("rosterRevision"));
+  }
   if (const auto activeSpeakerId = zoomCapture.getString("activeSpeakerId"); !activeSpeakerId.empty()) {
     state.emplace("activeSpeakerId", activeSpeakerId);
   }
@@ -1499,7 +1511,11 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
   } else if (type == "sync-virtual-camera") {
     syncVirtualCamera(command);
   } else if (type == "sync-audio-monitor") {
-    syncAudioMonitor(command);
+    // Legacy full sync initializes a fresh core. After the first revisioned
+    // monitor edit, it must not overwrite the accepted state on a later batch.
+    if (audioMonitorControlRevision_ == 0) syncAudioMonitor(command);
+  } else if (type == "set-audio-monitor-control") {
+    setAudioMonitorControl(command);
   } else if (type == "scan-vst-plugins") {
     startPluginHostScan();
   } else if (type == "open-vst-editor") {
@@ -3196,6 +3212,57 @@ rpc::Json MediaCore::virtualCameraState() const {
   };
 }
 
+rpc::Json MediaCore::audioMonitorControlState() const {
+  rpc::Json::Array recentResults;
+  for (const auto& operationId : audioMonitorOperationOrder_) {
+    recentResults.emplace_back(audioMonitorOperationResults_.at(operationId));
+  }
+  return rpc::Json::Object{
+      {"authorityEpoch", audioMonitorControlEpoch_},
+      {"revision", static_cast<double>(audioMonitorControlRevision_)},
+      {"lastResult", audioMonitorControlResult_},
+      {"recentResults", recentResults},
+  };
+}
+
+void MediaCore::setAudioMonitorControl(const rpc::Json& command) {
+  const auto operationId = command.getString("operationId");
+  const bool valid = contracts::validateControlOperationIdentity(command);
+  const auto found = audioMonitorOperationResults_.find(operationId);
+  const auto expectedRevision = valid
+      ? static_cast<std::uint64_t>(command.getNumber("expectedRevision")) : 0;
+  const auto decision = decideControlCommand(
+      valid, found != audioMonitorOperationResults_.end(),
+      audioMonitorControlEpoch_, audioMonitorControlRevision_,
+      command.getString("authorityEpoch"), expectedRevision);
+  if (decision == ControlCommandDecision::Duplicate) {
+    audioMonitorControlResult_ = found->second;
+    return;
+  }
+
+  const char* status = decision == ControlCommandDecision::Apply ? "applied" :
+                       decision == ControlCommandDecision::Conflict ? "conflict" : "invalid";
+  if (decision == ControlCommandDecision::Apply) {
+    syncAudioMonitor(command);
+    ++audioMonitorControlRevision_;
+  }
+  audioMonitorControlResult_ = rpc::Json::Object{
+      {"operationId", operationId},
+      {"status", status},
+      {"authorityEpoch", audioMonitorControlEpoch_},
+      {"revision", static_cast<double>(audioMonitorControlRevision_)},
+      {"expectedRevision", static_cast<double>(expectedRevision)},
+  };
+  if (valid) {
+    audioMonitorOperationResults_[operationId] = audioMonitorControlResult_;
+    audioMonitorOperationOrder_.push_back(operationId);
+    if (audioMonitorOperationOrder_.size() > 32) {
+      audioMonitorOperationResults_.erase(audioMonitorOperationOrder_.front());
+      audioMonitorOperationOrder_.pop_front();
+    }
+  }
+}
+
 void MediaCore::syncAudioMonitor(const rpc::Json& command) {
   // monitorOutput->start/stop + mixer reads mutate/read audio/output module state the
   // worker also touches (monitorOutput->render, mixer->monitorBus*); guard the whole
@@ -4368,6 +4435,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
           {"monitorDeviceId", audioMonitorDeviceId_},
           {"monitorDeviceName", audioMonitorDeviceName_},
           {"monitorVolume", audioMonitorVolume_},
+          {"monitorControl", audioMonitorControlState()},
           {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
           {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
           {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
@@ -4400,6 +4468,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"monitorDeviceId", audioMonitorDeviceId_},
         {"monitorDeviceName", audioMonitorDeviceName_},
         {"monitorVolume", audioMonitorVolume_},
+        {"monitorControl", audioMonitorControlState()},
         {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
         {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
         {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},

@@ -74,6 +74,7 @@ TEST(ContractParity, IdentityGoldenMessagesMatchSchema) {
     else if (name == "ControlRevision") valid = validateControlRevision(*payload);
     else if (name == "PlanGeneration") valid = validatePlanGeneration(*payload);
     else if (name == "ControlOperationIdentity") valid = validateControlOperationIdentity(*payload);
+    else if (name == "ZoomRosterSnapshotRevision") valid = validateZoomRosterSnapshotRevision(*payload);
     else ASSERT_TRUE(false) << "Unknown identity contract: " << name;
     EXPECT_EQ(valid, fixture.get("accepted")->asBool()) << fixture.getString("id");
   }

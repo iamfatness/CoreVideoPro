@@ -1,4 +1,5 @@
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Contracts;
 using CoreVideoPro.MediaCore.Services;
 using Xunit;
 
@@ -6,6 +7,58 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class ZoomCaptureSnapshotMergerTests
 {
+    [Fact]
+    public void VersionedRosterConvergesMuteWithoutPreviewAndRejectsReusedIdFromOldMeeting()
+    {
+        // The same generated wire vocabulary validated by all four language
+        // fixtures drives the shipping roster consumer below.
+        var barrier = System.Text.Json.JsonSerializer.Deserialize<ZoomRosterSnapshotRevision>(
+            "{\"rosterEpoch\":\"1:1:engine-a\",\"rosterRevision\":1}")!;
+        Assert.Equal(1, barrier.RosterRevision);
+        static RawCaptureSnapshot Capture(string epoch, long revision, string name, bool muted) => new()
+        {
+            MeetingState = "in_meeting",
+            RosterEpoch = epoch,
+            RosterRevision = revision,
+            Participants = [new RawParticipantEvent { UserId = "42", DisplayName = name, Muted = muted, VideoOn = true }]
+        };
+
+        var muted = ZoomCaptureSnapshotMerger.Merge(null, Capture(barrier.RosterEpoch, barrier.RosterRevision, "Guest", true));
+        var unmuted = ZoomCaptureSnapshotMerger.Merge(muted, Capture("1:1:engine-a", 2, "Guest", false));
+        Assert.False(Assert.Single(LiveProductionSync.MapSnapshotParticipants(unmuted)!).IsMuted);
+        Assert.Same(unmuted, ZoomCaptureSnapshotMerger.Merge(unmuted, Capture("1:1:engine-a", 1, "Guest", true)));
+
+        var rejoined = ZoomCaptureSnapshotMerger.Merge(unmuted, Capture("1:2:engine-a", 1, "New guest", false));
+        Assert.Equal("New guest", Assert.Single(LiveProductionSync.MapSnapshotParticipants(rejoined)!).Name);
+        Assert.Same(rejoined, ZoomCaptureSnapshotMerger.Merge(rejoined, Capture("1:1:engine-a", 3, "Old guest", true)));
+        Assert.Equal(1, rejoined.RosterRevision);
+
+        var left = ZoomCaptureSnapshotMerger.Merge(rejoined, new RawCaptureSnapshot
+        {
+            MeetingState = "idle", RosterEpoch = "1:2:engine-a", RosterRevision = 2,
+            Participants = []
+        });
+        Assert.Empty(LiveProductionSync.MapSnapshotParticipants(left)!);
+        Assert.Same(left, ZoomCaptureSnapshotMerger.Merge(left, Capture("1:2:engine-a", 1, "New guest", false)));
+
+        var newerProgram = SyntheticMediaCore.SynthesizeSnapshot([], 5000, 8) with
+        {
+            ProgramFrameCount = 8,
+            MeetingState = "in_meeting",
+            RosterEpoch = "1:2:engine-a",
+            RosterRevision = 1,
+            Participants = Capture("1:2:engine-a", 1, "Stale guest", true).Participants
+        };
+        var reconciled = ZoomMediaSpineSnapshotMerger.CarrySubscriptions(left, newerProgram);
+        Assert.Equal(8, reconciled.ProgramFrameCount);
+        Assert.Equal("idle", reconciled.MeetingState);
+        Assert.Empty(reconciled.Participants);
+
+        var restarted = ZoomCaptureSnapshotMerger.Merge(left, Capture("2:1:engine-b", 1, "Restarted guest", false));
+        Assert.Equal("Restarted guest", Assert.Single(restarted.Participants).DisplayName);
+        Assert.Same(restarted, ZoomCaptureSnapshotMerger.Merge(restarted, Capture("1:3:engine-a", 10, "Late old guest", true)));
+    }
+
     [Fact]
     public void MergeInMeetingCaptureSnapshotUpdatesRosterAndMeetingState()
     {

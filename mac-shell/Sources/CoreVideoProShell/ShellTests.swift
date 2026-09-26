@@ -19,6 +19,42 @@ enum ShellTests {
     private static var failures: [String] = []
     private static var checks = 0
 
+    private static func testMonitorControlProjection() {
+        var projection = MonitorControlProjection()
+        expect(!projection.legacyCoreConfirmed, "timeout cannot authorize an unversioned write")
+        projection.observe(["monitorEnabled": false, "monitorVolume": 0.5])
+        expect(projection.legacyCoreConfirmed, "successful old-core snapshot permits legacy fallback")
+        func mix(_ revision: Int, _ enabled: Bool, _ result: JSONObject? = nil) -> JSONObject {
+            ["monitorEnabled": enabled, "monitorVolume": 0.5,
+             "monitorControl": ["authorityEpoch": "core-1", "revision": revision,
+                                "recentResults": result.map { [$0] } ?? []] as JSONObject]
+        }
+        projection.observe(mix(0, false))
+        expect(!projection.legacyCoreConfirmed, "new-core snapshot revokes fallback")
+        var alreadyApplied = projection
+        alreadyApplied.edit(.init(enabled: false, volume: 0.5))
+        alreadyApplied.observe(mix(0, false))
+        expect(alreadyApplied.draft == nil, "matching snapshot clears unsent draft")
+        expectEqual(alreadyApplied.notice, "", "matching snapshot clears pending label")
+        projection.edit(.init(enabled: true, volume: 0.5))
+        projection.observe(mix(1, false))
+        let first = projection.nextCommand()
+        let operation = first?["operationId"] as? String ?? ""
+        expectEqual(first?["expectedRevision"] as? Int64, 0, "first editor uses observed revision")
+        expect(projection.nextCommand() == nil, "pending edit cannot be sent twice")
+        projection.observe(mix(1, true, ["operationId": operation, "status": "applied"]))
+        expect(projection.draft == nil, "applied snapshot clears draft")
+        projection.edit(.init(enabled: false, volume: 0.5))
+        let second = projection.nextCommand()
+        expectEqual(second?["expectedRevision"] as? Int64, 1, "second editor rebases on applied revision")
+        projection.observe(mix(0, false))
+        expectEqual(projection.revision, 1, "stale snapshot cannot rewind revision")
+        projection.observe(mix(1, true, ["operationId": second?["operationId"] as? String ?? "",
+                                          "status": "conflict"]))
+        expect(projection.draft != nil, "conflict retains local draft")
+        expect(projection.notice.contains("conflicted"), "conflict is visible")
+    }
+
     private static func expect(_ condition: Bool, _ what: String,
                                _ file: StaticString = #file, _ line: UInt = #line) {
         checks += 1
@@ -192,6 +228,7 @@ enum ShellTests {
                 case "ControlRevision": validate = validateControlRevision
                 case "PlanGeneration": validate = validatePlanGeneration
                 case "ControlOperationIdentity": validate = validateControlOperationIdentity
+                case "ZoomRosterSnapshotRevision": validate = validateZoomRosterSnapshotRevision
                 case "AcceptedOperationObservation": validate = validateAcceptedOperationObservation
                 case "AppliedOperationObservation": validate = validateAppliedOperationObservation
                 case "RenderedMediaObservation": validate = validateRenderedMediaObservation
@@ -220,6 +257,7 @@ enum ShellTests {
                     case "ControlRevision": encoded = try JSONEncoder().encode(JSONDecoder().decode(ControlRevision.self, from: payloadData))
                     case "PlanGeneration": encoded = try JSONEncoder().encode(JSONDecoder().decode(PlanGeneration.self, from: payloadData))
                     case "ControlOperationIdentity": encoded = try JSONEncoder().encode(JSONDecoder().decode(ControlOperationIdentity.self, from: payloadData))
+                    case "ZoomRosterSnapshotRevision": encoded = try JSONEncoder().encode(JSONDecoder().decode(ZoomRosterSnapshotRevision.self, from: payloadData))
                     case "AcceptedOperationObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(AcceptedOperationObservation.self, from: payloadData))
                     case "AppliedOperationObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(AppliedOperationObservation.self, from: payloadData))
                     case "RenderedMediaObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(RenderedMediaObservation.self, from: payloadData))
@@ -659,6 +697,7 @@ enum ShellTests {
         checks = 0
 
         let cases: [(String, () -> Void)] = [
+            ("monitor/revisioned-projection", testMonitorControlProjection),
             ("recording/command-retry", testRecordingCommandRetriesAndSupersession),
             ("bridge/generation-lifecycle", testBridgeGenerationRejectsStaleWork),
             ("wire/shared-lifecycle-contracts", testSharedLifecycleContracts),
