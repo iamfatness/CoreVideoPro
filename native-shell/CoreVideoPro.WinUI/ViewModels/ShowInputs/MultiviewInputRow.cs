@@ -22,4 +22,5 @@ public sealed partial class MultiviewInputRow : ObservableObject
     [ObservableProperty] private bool _capDiffers;
     [ObservableProperty] private bool _formatStale;
     [ObservableProperty] private double _frameAgeMs = -1;
+    [ObservableProperty] private string _recLabel = "OFF";
 }

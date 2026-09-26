@@ -19,6 +19,7 @@ public interface IMediaCoreBridge : IAsyncDisposable
     event Action<string>? StatusChanged;
     event Action<NativeMediaCoreProfile>? ProfileChanged;
     event Action<NativeMediaCoreStateSnapshot>? SnapshotChanged;
+    event Action<IsoOutputLifecycleFact>? OutputLifecycleChanged;
     event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
     event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;

@@ -1172,6 +1172,7 @@ public sealed class TransportCoordinatorTests
         public event Action<string>? StatusChanged;
         public event Action<NativeMediaCoreProfile>? ProfileChanged;
         public event Action<NativeMediaCoreStateSnapshot>? SnapshotChanged;
+        public event Action<IsoOutputLifecycleFact>? OutputLifecycleChanged;
         public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
         public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
         public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;

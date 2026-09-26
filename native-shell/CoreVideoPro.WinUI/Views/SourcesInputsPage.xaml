@@ -467,11 +467,17 @@
                                              video-bearing sources (Zoom guests + capture devices) show it; it
                                              feeds the operator's isoSourceIds selection (armed only when the
                                              transport "Program + ISOs" switch is on). -->
-                                        <CheckBox Grid.Column="5" Content="ISO" MinWidth="0" Margin="0"
+                                        <StackPanel Grid.Column="5" Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+                                        <Border Background="#152535" CornerRadius="3" Padding="5,2">
+                                            <TextBlock Text="{x:Bind Inspector.RecLabel, Mode=OneWay}"
+                                                       FontSize="10" FontWeight="SemiBold" />
+                                        </Border>
+                                        <CheckBox Content="ISO" MinWidth="0" Margin="0"
                                                   IsChecked="{x:Bind IsoEnabled, Mode=TwoWay}"
                                                   Visibility="{x:Bind ShowIsoToggle, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                   ToolTipService.ToolTip="Record an isolated per-source file for this input (Program + ISOs)"
                                                   VerticalAlignment="Center" />
+                                        </StackPanel>
                                         <Button Grid.Column="6"
                                                 Content="Grade"
                                                 Style="{StaticResource OperatorGhostButton}"
