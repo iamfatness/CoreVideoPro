@@ -524,7 +524,8 @@ public static class CoreProtocolParser
     private static NativeMediaCoreStateSnapshot? DeserializeSnapshot(JsonElement element)
     {
         var json = ValidatedRecordingLifecycleJson(element);
-        var snapshot = JsonSerializer.Deserialize<NativeMediaCoreStateSnapshot>(json, MediaCoreJson.Options);
+        var snapshot = JsonSerializer.Deserialize<NativeMediaCoreStateSnapshot>(
+            CoreObservationModel.Parse(json).TypedJson(), MediaCoreJson.Options);
         return snapshot is null
             ? null
             : snapshot with { RawJson = json, RawReceivedUtc = DateTimeOffset.UtcNow };
@@ -552,7 +553,8 @@ public static class CoreProtocolParser
             return null;
         }
 
-        return JsonSerializer.Deserialize<NativeMediaCoreWireState>(ValidatedRecordingLifecycleJson(wireElement), MediaCoreJson.Options);
+        return JsonSerializer.Deserialize<NativeMediaCoreWireState>(
+            CoreObservationModel.Parse(ValidatedRecordingLifecycleJson(wireElement)).TypedJson(), MediaCoreJson.Options);
     }
 
     private static string ValidatedRecordingLifecycleJson(JsonElement snapshot)

@@ -10,6 +10,21 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class NativeControlEvidenceTests
 {
     [Fact]
+    public void ControlStateCarriesCompleteRedactedNativeObservation()
+    {
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            RawJson = """{"sceneId":"program","encoderEvidence":{"queueDepth":4},"browserSources":{"url":"https://example.com/?access_token=secret123"}}"""
+        };
+        var state = NativeControlEvidence.Apply(ControlState.Empty, snapshot);
+        Assert.NotNull(state.NativeObservation);
+        var native = state.NativeObservation!.Value;
+        Assert.Equal(4, native.GetProperty("encoderEvidence").GetProperty("queueDepth").GetInt32());
+        Assert.DoesNotContain("secret123", native.GetRawText());
+        Assert.Null(NativeControlEvidence.Apply(state, null).NativeObservation);
+    }
+
+    [Fact]
     public void ProgramBufferDiagnosticsSurviveWireMappingAndControlSerializationWithoutDefaultProof()
     {
         const string json = """{"programBuffer":{"activeFrames":3,"occupancy":2,"underruns":1,"delivered":90,"deadlineMisses":4,"outputSequenceGaps":2,"displayPresentationVerified":false}}""";

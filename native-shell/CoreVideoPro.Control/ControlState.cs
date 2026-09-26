@@ -44,6 +44,9 @@ public sealed record ControlState
     public bool? NativeLowerThirdVisible { get; init; }
     public int? NativeProgramFrameCount { get; init; }
     public System.Text.Json.JsonElement? NativeProgramBuffer { get; init; }
+    /// <summary>Complete redacted core observation. Flat native fields above remain for
+    /// existing feedback clients; new evidence should be read from this generated view.</summary>
+    public System.Text.Json.JsonElement? NativeObservation { get; init; }
     public int? ProgramBufferRequestedFrames { get; init; }
     public int? ProgramBufferSessionRequestedFrames { get; init; }
     public bool? ProgramBufferRestartRequired { get; init; }

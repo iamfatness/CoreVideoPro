@@ -14,6 +14,33 @@ namespace CoreVideoPro.MediaCore.Tests;
 /// </summary>
 public sealed class CoreSnapshotObserverTests
 {
+    [Fact]
+    public void GeneratedViewsKeepTypedEvidenceAndRedactPublicEvidence()
+    {
+        const string json = """{"sceneId":"program","autoProduction":{"ruleId":"r1"},"programBuffer":{"underruns":2},"browserSources":{"sources":[{"url":"https://example.com/?access_token=secret123"}]}}""";
+        var model = CoreObservationModel.Parse(json);
+        Assert.Equal("program", model.SceneId?.GetString());
+        using var typed = JsonDocument.Parse(model.TypedJson());
+        Assert.Equal("r1", typed.RootElement.GetProperty("autoProduction").GetProperty("ruleId").GetString());
+        using var qualification = JsonDocument.Parse(model.QualificationJson());
+        using var control = JsonDocument.Parse(model.ControlJson());
+        foreach (var view in new[] { qualification.RootElement, control.RootElement })
+        {
+            Assert.Equal(2, view.GetProperty("programBuffer").GetProperty("underruns").GetInt32());
+            Assert.DoesNotContain("secret123", view.GetRawText());
+        }
+    }
+
+    [Fact]
+    public void SecretNamedObjectsAreRedactedAsAUnit()
+    {
+        var model = CoreObservationModel.Parse("""{"sceneId":"program","browserSources":{"credential":{"value":"hidden"}}}""");
+        using var view = JsonDocument.Parse(model.ControlJson());
+        Assert.Equal("[redacted]", view.RootElement.GetProperty("browserSources")
+            .GetProperty("credential").GetString());
+        Assert.DoesNotContain("hidden", view.RootElement.GetRawText());
+    }
+
     private static NativeMediaCoreStateSnapshot Parse(string state)
     {
         using var response = JsonDocument.Parse($"{{\"id\":\"core-1\",\"ok\":true,\"state\":{state}}}");

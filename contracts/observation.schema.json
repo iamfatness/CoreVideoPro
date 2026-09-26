@@ -1,0 +1,285 @@
+{
+  "description": "Top-level fields emitted by MediaCore::sessionState. Each view must explicitly choose include, omit, or redact. Included public views are recursively sanitized by CoreSnapshotObserver.",
+  "fields": {
+    "active": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "activeSpeakerId": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "audioMixSession": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "audioRoutingMatrix": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "autoProduction": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "brandKit": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "breakoutRoomId": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "breakoutRoomName": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "browserSources": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "captionTrack": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "captureAudioSources": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "captureDevices": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "codec": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "commandProtocolFailures": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "compositor": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "compositorRenderer": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "encoder": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "encoderEvidence": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "encoderSession": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "hardwareEncoder": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "health": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "isoParticipantIds": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "isoSourceIds": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "mediaPlayback": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "mediaSources": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "meetingState": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "multiviewSharedTexture": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "multiviewer": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "nativeDiagnostics": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "outputProfile": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "outputSenderSession": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "outputs": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "overlayCount": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "overlayState": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "participants": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "previewScene": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "previewSharedTexture": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "profile": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "programBuffer": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "programFrame": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "programFrameCount": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "programFramePreview": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "programSharedTexture": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "realtimeEvidence": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "recording": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "renderPlanId": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "routeCount": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "sceneId": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "sources": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "takeRecords": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "takeTransition": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "tiles": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "transformCount": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "virtualCamera": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "zoom": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
+    "zoomSubscriptionChurn": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    }
+  }
+}
