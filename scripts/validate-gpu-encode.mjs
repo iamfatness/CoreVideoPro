@@ -91,8 +91,11 @@ const buildDir = join(repoRoot, "native", "build-dev");
 const exeSuffix = process.platform === "win32" ? ".exe" : "";
 const nativeCore = join(buildDir, `corevideo-native${exeSuffix}`);
 const fakeEngine = join(buildDir, `corevideo-zoom-engine-fake${exeSuffix}`);
+const realEngine = join(buildDir, `corevideo-zoom-engine${exeSuffix}`);
 
 const args = process.argv.slice(2);
+const liveZoom = args.includes("--live-zoom");
+const meetingUrl = process.env.COREVIDEO_TEST_MEETING_URL;
 const argValue = (name, fallback) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
@@ -230,17 +233,19 @@ if (!ffmpeg || !ffprobe) {
   console.error("ffmpeg/ffprobe are required for the GPU-direct encode gate.");
   process.exit(1);
 }
-if (!existsSync(nativeCore) || !existsSync(fakeEngine)) {
-  console.error(`Missing ${nativeCore} or ${fakeEngine}. Build --config Release first.`);
+if (!existsSync(nativeCore) || !existsSync(liveZoom ? realEngine : fakeEngine)) {
+  console.error(`Missing ${nativeCore} or ${liveZoom ? realEngine : fakeEngine}. Build --config Release first.`);
   process.exit(1);
 }
+if (liveZoom && !meetingUrl) throw new Error("--live-zoom requires COREVIDEO_TEST_MEETING_URL");
+if (liveZoom && slowSink) throw new Error("--live-zoom uses the healthy receiver gate, not --slow-sink");
 
 const received = join(buildDir, `gpu-encode-received-${Date.now()}.${rtmpSink ? "flv" : "ts"}`);
 // SRT listener sink. -stats gives us the realtime ratio (media-time/wall-time) of
 // what actually arrives; -c copy means no re-encode padding to hide a lag.
 // listen_timeout (microseconds) must exceed the core's join+arm time or the
 // listener gives up before the caller connects.
-const listenerUrl = `srt://0.0.0.0:${port}?mode=listener&transtype=live&listen_timeout=30000000`;
+const listenerUrl = `srt://0.0.0.0:${port}?mode=listener&transtype=live&listen_timeout=${liveZoom ? 120000000 : 30000000}`;
 // The sink itself reads at full speed. With --slow-sink the narrowing happens
 // at the bandwidth-limited proxy in front of it (see below), never here.
 const listenerArgs = ["-hide_banner", "-loglevel", "warning", "-stats", "-stats_period", "1", "-y",
@@ -380,11 +385,12 @@ const child = spawn(nativeCore, [], {
   cwd: buildDir,
   env: {
     ...process.env,
-    COREVIDEO_ZOOM_ENGINE_PATH: fakeEngine,
-    COREVIDEO_FAKE_NO_CHURN: "1",
+    COREVIDEO_ZOOM_ENGINE_PATH: liveZoom ? realEngine : fakeEngine,
+    ...(!liveZoom ? { COREVIDEO_FAKE_NO_CHURN: "1" } : {}),
     // Pin the source rate: an unpinned fake engine delivers 30fps, which would
     // starve the 60fps gate and read as a pipeline failure (CLAUDE.md rule).
-    COREVIDEO_FAKE_ENGINE_FPS: String(TARGET_FPS),
+    ...(!liveZoom ? { COREVIDEO_FAKE_ENGINE_FPS: String(TARGET_FPS) } : {}),
+    ...(liveZoom ? { COREVIDEO_ZOOM_JOIN_WAIT_MS: "90000" } : {}),
     ...(forceRaw ? { COREVIDEO_GPU_ENCODE: "0" } : {}),
   },
   stdio: ["pipe", "pipe", "pipe"],
@@ -417,10 +423,10 @@ child.stdout.on("data", (chunk) => {
   }
 });
 
-function send(type, payload = {}) {
+function send(type, payload = {}, timeoutMs = 30000) {
   const id = `gpu-${nextId++}`;
   return new Promise((res, rej) => {
-    const timer = setTimeout(() => { pending.delete(id); rej(new Error(`${type} timed out`)); }, 30000);
+    const timer = setTimeout(() => { pending.delete(id); rej(new Error(`${type} timed out`)); }, timeoutMs);
     pending.set(id, { resolve: res, reject: rej, timer });
     child.stdin.write(`${JSON.stringify({ id, type, ...payload })}\n`);
   }).then((r) => {
@@ -519,8 +525,52 @@ try {
   console.log(`listener      : up on ${rtmpSink ? rtmpFullUrl : `srt://127.0.0.1:${port}`}` +
               `${slowSink ? ` behind a ${(proxyCapacityBytesPerSec * 8 / 1e6).toFixed(2)}Mbps link` : ""}`);
 
-  await send("zoom-join", { payload: { meetingNumber: "1234567890", displayName: "gpu-encode-proof" } });
-  await sleep(3000);
+  let sourceParticipantId = "101";
+  if (liveZoom) {
+    await send("zoom-join", { payload: { meetingUrl, displayName: "CoreVideo Live Encode Validator" } }, 100000);
+    const rosterDeadline = Date.now() + 30000;
+    let participant;
+    while (Date.now() < rosterDeadline && !participant) {
+      const roster = (await send("zoom-snapshot")).snapshot?.participants ?? [];
+      participant = roster.find((p) => p.videoOn !== false && (p.userId ?? p.sdkUserId));
+      if (!participant) await sleep(500);
+    }
+    if (!participant) throw new Error("live meeting has no participant with video");
+    sourceParticipantId = String(participant.userId ?? participant.sdkUserId);
+    const spinePayload = {
+      readiness: { status: "ready", platform: "windows", sdkVersion: "zoom-engine",
+        checks: [], blockers: [], warnings: [] },
+      participants: [{ sdkUserId: sourceParticipantId, displayName: participant.displayName ?? "",
+        role: "guest", videoOn: true, muted: !!participant.muted, talking: !!participant.talking,
+        audioLevel: participant.talking ? 70 : 0, networkQuality: "good" }],
+      subscriptions: [
+        { participantId: sourceParticipantId, kind: "meeting-audio", purpose: "program", priority: 0 },
+        { participantId: sourceParticipantId, kind: "participant-video", purpose: "program", priority: 10 },
+      ],
+      startCapture: true, blocked: false, warnings: [], summary: "Live encode validator raw capture",
+    };
+    const mediaStartedAt = Date.now();
+    let retriedCapture = false, framesReceived = 0;
+    while (Date.now() - mediaStartedAt < 30000) {
+      if (!retriedCapture && Date.now() - mediaStartedAt >= 10000) {
+        await send("zoom-stop-capture");
+        retriedCapture = true;
+      }
+      const response = await send("zoom-media-spine-sync", {
+        spinePayload, elapsedMs: Date.now() - startedAt,
+      });
+      framesReceived = (response.spineSnapshot?.subscriptions ?? [])
+        .filter((subscription) => subscription.kind === "participant-video")
+        .reduce((sum, subscription) => sum + Number(subscription.framesReceived ?? 0), 0);
+      if (framesReceived > 0) break;
+      await sleep(500);
+    }
+    if (framesReceived === 0) throw new Error("live participant produced no raw video frames after Engine On retry");
+    console.log(`live Zoom     : participant source admitted with ${framesReceived} raw frame(s)`);
+  } else {
+    await send("zoom-join", { payload: { meetingNumber: "1234567890", displayName: "gpu-encode-proof" } });
+    await sleep(3000);
+  }
 
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
@@ -528,7 +578,7 @@ try {
       {
         type: "load-scene-graph",
         sceneId: "gpu-encode-proof",
-        routes: [{ routeId: "program", mode: "fixed", audioRole: "mix", participantId: "101" }],
+        routes: [{ routeId: "program", mode: "fixed", audioRole: "mix", participantId: sourceParticipantId }],
       },
       {
         type: "sync-audio-routing-matrix",
@@ -757,6 +807,21 @@ if (size < 10000) {
   if (!video) failures.push("received stream carries no decodable video");
 
   if (video) {
+    if (liveZoom) {
+      const motionProbe = spawnSync(ffmpeg,
+        ["-v", "error", "-i", received,
+         "-vf", "tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-",
+         "-f", "null", "-"],
+        { encoding: "utf8", timeout: 60000, maxBuffer: 16 * 1024 * 1024 });
+      const differences = [...(motionProbe.stdout ?? "").matchAll(/YAVG=([\d.]+)/g)]
+        .map((match) => Number(match[1]));
+      const moving = differences.filter((value) => value > 0.05).length;
+      const movingRatio = differences.length ? moving / differences.length : 0;
+      console.log(`live pixels   : ${(movingRatio * 100).toFixed(1)}% adjacent frames changed spatially`);
+      if (motionProbe.status !== 0 || movingRatio < 0.05) {
+        failures.push("live SRT receiver picture is frozen or spatial motion could not be measured");
+      }
+    }
     if (checkBitrate) {
       // Sum video payload only: container overhead and AAC are not part of
       // the operator's video target. Exclude startup and shutdown, and use
