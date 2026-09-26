@@ -1305,7 +1305,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string AudioMonitorVolumeLabel => $"{AudioMonitorVolume * 100:0}%";
 
     public string AudioMonitorStatus =>
-        AudioMonitoringEnabled
+        !string.IsNullOrWhiteSpace(_audioMonitorControlNotice)
+            ? _audioMonitorControlNotice
+            : AudioMonitoringEnabled
             ? $"Monitor target - {SelectedAudioMonitorDeviceName}"
             : "Monitor muted";
 
@@ -7881,7 +7883,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         RefreshAudioMonitorBindings();
-        SaveProductionOutputPreferences();
+        if (_suppressAudioMonitorControlSubmission)
+        {
+            SaveProductionOutputPreferences();
+            return;
+        }
+        _ = QueueAudioMonitorDraftAsync();
         _ = TrySyncMediaCoreAsync();
     }
 

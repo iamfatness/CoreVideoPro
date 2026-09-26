@@ -52,6 +52,31 @@ public sealed class ControlActionRegistryTests
         Assert.Equal("https://zoom.us/j/123", join[0]);
         Assert.Null(join[1]);
         Assert.Null(join[2]);
+
+        Assert.True(ControlActionRegistry.TryBind("audio.monitor.set",
+            new object?[] { true }, out var legacyMonitor, out _));
+        Assert.Equal(4, legacyMonitor.Count);
+        Assert.Null(legacyMonitor[1]);
+        Assert.True(ControlActionRegistry.TryBind("audio.monitor.volume",
+            new object?[] { 0.5, "core-1", 2, "client-a" }, out var versionedMonitor, out _));
+        Assert.Equal("core-1", versionedMonitor[1]);
+        Assert.Equal(2.0, versionedMonitor[2]);
+        Assert.Equal("client-a", versionedMonitor[3]);
+    }
+
+    [Fact]
+    public void MonitorStateExposesAppliedEpochAndRevisionForSecondClient()
+    {
+        var state = new ControlState
+        {
+            AudioMonitorOn = true, AudioMonitorVolume = 0.5,
+            AudioMonitorAuthorityEpoch = "core-1", AudioMonitorRevision = 3,
+            AudioMonitorLastResult = "applied"
+        };
+        var json = System.Text.Json.JsonSerializer.Serialize(state);
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        Assert.Equal("core-1", document.RootElement.GetProperty("AudioMonitorAuthorityEpoch").GetString());
+        Assert.Equal(3, document.RootElement.GetProperty("AudioMonitorRevision").GetInt64());
     }
 
     [Fact]
