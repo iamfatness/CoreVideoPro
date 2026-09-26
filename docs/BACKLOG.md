@@ -57,6 +57,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 |---|---|
 | [#637](https://github.com/iamfatness/CoreVideoPro/issues/637) | Live Zoom validator requests subscriptions but never starts raw capture after the explicit Engine On gate. Set `startCapture` in the dedicated harness and repeat meeting media validation. |
 | [#634](https://github.com/iamfatness/CoreVideoPro/issues/634) | Real test meeting join failed because the Zoom runtime appended passcode-query digits to the meeting number. Repair parsing and repeat the live join. |
+| [#640](https://github.com/iamfatness/CoreVideoPro/issues/640) | Handshake CI test parses the entire JSONL output as one object; assert the first complete message is the handshake. |
 | [#632](https://github.com/iamfatness/CoreVideoPro/issues/632) | Restore native CI after the constructed Zoom slate made the old empty-source snapshot assertion stale. |
 | [#615](https://github.com/iamfatness/CoreVideoPro/issues/615) | RTMP packet amplification is measured and coalesced. Encoder frames that never reached the shed counter are retained (main `61e83ed1`). The original PC-wide outage and full-show continuity still need fleet acceptance. |
 | [#627](https://github.com/iamfatness/CoreVideoPro/issues/627) | Per-participant audio delay. Capture devices already have `setAudioSyncOffset`; a Zoom guest does not. Headless clap on the Zoom-audio mailbox build measured one pipeline skew (median -39.0 ms, audio lags video), not a per-person offset. |
