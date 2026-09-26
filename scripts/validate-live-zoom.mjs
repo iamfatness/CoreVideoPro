@@ -12,6 +12,9 @@
  * Optional:
  *   --passcode "..." --min-participants 3 --min-video-feeds 3
  *   --timeout-ms 120000 --max-first-frame-ms 1000 --allow-no-active-speaker
+ *   --observe-ms 120000 keeps polling after first passing frame to record
+ *   versioned roster transitions. For meetings requiring signed-in join, run
+ *   via scripts/qa/zoom-signed-in-validator (uses the app's local OAuth grant).
  */
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -34,6 +37,7 @@ const minParticipants = numberArg(args["min-participants"], 3);
 const minVideoFeeds = numberArg(args["min-video-feeds"], minParticipants);
 const maxVideoFeeds = numberArg(args["max-video-feeds"], Math.max(minVideoFeeds, 6));
 const maxFirstFrameMs = numberArg(args["max-first-frame-ms"], 1000);
+const observeMs = numberArg(args["observe-ms"], 0);
 const requireActiveSpeaker = !booleanArg(args["allow-no-active-speaker"]);
 const nativeCore = resolve(args["native-core"] ?? join(buildDir, `corevideo-native${exeSuffix}`));
 const zoomEngine = resolve(args["zoom-engine"] ?? process.env.COREVIDEO_ZOOM_ENGINE_PATH ?? join(buildDir, `corevideo-zoom-engine${exeSuffix}`));
@@ -67,6 +71,8 @@ let handshake;
 let joinSnapshot;
 let latestSnapshot;
 let latestSpineSnapshot;
+let firstCoreCounters;
+let lastCoreCounters;
 let firstFrameAtMs;
 let firstSpineSyncAtMs;
 let firstFrameParticipantId;
@@ -80,6 +86,9 @@ const audioPacketsByParticipant = new Map();
 const rawAudioStatusByParticipant = new Map();
 const pending = new Map();
 const warnings = [];
+const rosterTransitions = [];
+let lastRosterKey = "";
+let previousRoster = new Map();
 const stderrLines = [];
 
 child.stdout.on("data", (chunk) => {
@@ -119,6 +128,7 @@ try {
 
   handshake = await waitForHandshake();
   console.log(`Handshake   : ${handshake.profile?.name ?? "unknown"} (${(handshake.profile?.capabilities ?? []).join(", ")})`);
+  recordCoreCounters((await send("snapshot")).snapshot);
 
   joinSnapshot = await send("zoom-join", {
     payload: {
@@ -145,12 +155,18 @@ try {
 async function validationLoop() {
   const deadline = startedAt + timeoutMs;
   let lastSpineSyncAt = 0;
+  let lastCoreSnapshotAt = 0;
   let captureRetryIssued = false;
+  let qualifiedAt;
 
   while (Date.now() < deadline) {
     const snapshotResponse = await send("zoom-snapshot");
     latestSnapshot = snapshotResponse.snapshot;
     recordSnapshot(latestSnapshot);
+    if (Date.now() - lastCoreSnapshotAt >= 1000) {
+      recordCoreCounters((await send("snapshot")).snapshot);
+      lastCoreSnapshotAt = Date.now();
+    }
 
     const state = normalizeMeetingState(latestSnapshot?.meetingState);
     if (state === "error") {
@@ -177,9 +193,8 @@ async function validationLoop() {
     }
 
     await send("ping").catch(() => undefined);
-    if (criteriaMet()) {
-      return;
-    }
+    if (criteriaMet()) qualifiedAt ??= Date.now();
+    if (qualifiedAt !== undefined && Date.now() - qualifiedAt >= observeMs) return;
     await sleep(pollMs);
   }
 
@@ -264,6 +279,7 @@ function recordSnapshot(snapshot) {
     return;
   }
   const participants = usableParticipants(snapshot);
+  recordRosterRevision(snapshot, participants);
   maxParticipantCount = Math.max(maxParticipantCount, participants.length);
   for (const participant of participants) {
     participantsById.set(participant.id, participant);
@@ -274,6 +290,35 @@ function recordSnapshot(snapshot) {
   for (const warning of snapshot.warnings ?? []) {
     warnings.push(warning);
   }
+}
+
+function recordRosterRevision(snapshot, participants) {
+  if (!snapshot.rosterEpoch || !snapshot.rosterRevision) return;
+  const key = `${snapshot.rosterEpoch}/${snapshot.rosterRevision}`;
+  if (key === lastRosterKey) return;
+  const current = new Map(participants.map(p => [p.id, Boolean(p.muted)]));
+  const changes = [];
+  for (const [id, muted] of current) {
+    if (!previousRoster.has(id)) changes.push({ kind: "joined", id });
+    else if (previousRoster.get(id) !== muted) changes.push({ kind: muted ? "muted" : "unmuted", id });
+  }
+  for (const id of previousRoster.keys()) {
+    if (!current.has(id)) changes.push({ kind: "left", id });
+  }
+  rosterTransitions.push({ atMs: Date.now() - startedAt, epoch: snapshot.rosterEpoch,
+    revision: snapshot.rosterRevision, changes });
+  if (rosterTransitions.length > 200) rosterTransitions.shift();
+  previousRoster = current;
+  lastRosterKey = key;
+}
+
+function recordCoreCounters(snapshot) {
+  const counters = {
+    audioLostSamples: Number(snapshot?.realtimeEvidence?.audio?.audioLostSamples ?? 0),
+    monitorUnderruns: Number(snapshot?.audioMixSession?.monitorUnderruns ?? 0),
+  };
+  firstCoreCounters ??= counters;
+  lastCoreCounters = counters;
 }
 
 function recordSpineSnapshot(snapshot) {
@@ -515,6 +560,9 @@ function buildReport(status, failureReason) {
     criteriaResults,
     participants: participantRows,
     subscriptions: latestSpineSnapshot?.subscriptions ?? [],
+    rosterTransitions,
+    audioLostSamplesDelta: (lastCoreCounters?.audioLostSamples ?? 0) - (firstCoreCounters?.audioLostSamples ?? 0),
+    monitorUnderrunsDelta: (lastCoreCounters?.monitorUnderruns ?? 0) - (firstCoreCounters?.monitorUnderruns ?? 0),
     warnings: collectWarnings(),
     recentStderr: stderrLines.slice(-10),
   };

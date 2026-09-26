@@ -53,6 +53,10 @@ public sealed class ZoomCaptureSnapshotMergerTests
         Assert.Equal(8, reconciled.ProgramFrameCount);
         Assert.Equal("idle", reconciled.MeetingState);
         Assert.Empty(reconciled.Participants);
+
+        var restarted = ZoomCaptureSnapshotMerger.Merge(left, Capture("2:1:engine-b", 1, "Restarted guest", false));
+        Assert.Equal("Restarted guest", Assert.Single(restarted.Participants).DisplayName);
+        Assert.Same(restarted, ZoomCaptureSnapshotMerger.Merge(restarted, Capture("1:3:engine-a", 10, "Late old guest", true)));
     }
 
     [Fact]

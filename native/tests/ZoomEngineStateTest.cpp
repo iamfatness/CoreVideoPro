@@ -75,6 +75,12 @@ TEST(ZoomEngineRuntimeState, VersionedRosterRejectsLateMuteAndOldMeeting) {
   EXPECT_EQ(state.snapshot().participants[0].displayName, "New guest");
   EXPECT_FALSE(state.snapshot().participants[0].isMuted);
   EXPECT_EQ(state.snapshot().meetingGeneration, 2u);
+
+  state.apply(eventFrom(R"({"cmd":"left"})"), 6);
+  EXPECT_TRUE(state.snapshot().participants.empty());
+  EXPECT_EQ(state.snapshot().rosterRevision, 2u);
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":2,"roster_revision":1,"participants":[{"id":42,"name":"Late guest","is_muted":true}]})"), 7);
+  EXPECT_TRUE(state.snapshot().participants.empty());
 }
 
 TEST(ZoomEngineRuntimeState, DebouncesActiveSpeakerAndHonorsIncumbentHold) {
