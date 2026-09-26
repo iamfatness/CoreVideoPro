@@ -11,6 +11,36 @@ Owner intake 2026-09-26: the 10 Multiview inputs need a ZoomISO-style outputs
 table — live assignment, negotiated format/fps, ISO status, and the actual Zoom
 picture — without clicking a row to force a refresh.
 
+## Mockups
+
+These are operator-intent drawings, not shipping chrome. Implement the row
+model and event binding first; Slice D matches this layout.
+
+| Drawing | What it shows |
+|---|---|
+| [Table](mockups/multiview-input-inspector.svg) | 10 fixed slots: live Zoom, downshifted format, video-off, follow on Preview, stalled, host UVC on Program, idle 7–10 still visible |
+| [States](mockups/multiview-input-inspector-states.svg) | One slot across facts: size/fps change, talking tally, ISO Rec, video-off — no Preview/Take |
+| [Flow](mockups/multiview-input-inspector-flow.svg) | Zoom/core facts on the #657 bus; pixels stay on the Multiview texture |
+
+![Inspector table](mockups/multiview-input-inspector.svg)
+
+![Row state timeline](mockups/multiview-input-inspector-states.svg)
+
+![Control vs media path](mockups/multiview-input-inspector-flow.svg)
+
+```mermaid
+sequenceDiagram
+    participant Z as Zoom engine
+    participant C as Media core
+    participant B as Control-state bus
+    participant R as Input row 2
+    Z->>C: size/fps, video-off, talking
+    C->>B: SourceHealth / Subscription / ISO lifecycle
+    B->>R: patch Format Status Rec tally
+    Note over R: no SetScene, no Take, no click
+    C-->>R: Multiview texture crop only
+```
+
 ## What ZoomISO is doing in that screenshot
 
 ZoomISO's Video Outputs page is a **row per plant output**. Each row is:
