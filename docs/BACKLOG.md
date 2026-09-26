@@ -3,9 +3,9 @@
 **This is the only ordered list of work.** Status and detailed evidence live on
 linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 
-Owner-approved order updated 2026-09-26: #616, #601, #617, #622, and #530 are closed.
+Owner-approved order updated 2026-09-26: #616, #601, #617, #622, #530, and #621 are closed.
 The owner paused the remaining private-SDK CI work in #618 pending research.
-Next: observation model (#621), then SRT/NDI edge I/O (#538).
+Next: SRT/NDI edge I/O (#538).
 Owner accepted live lip sync (#579) and first Takes (#555) on beta `db9e703`.
 #513 validation remains deferred; #582 range correction is in live validation.
 
@@ -26,7 +26,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 ## Now — existing priority order
 
-No issue is currently in Now. The first unblocked ranked item is #621 below.
+No issue is currently in Now. The first unblocked ranked item is #538 below.
 
 ## Deferred by owner
 
@@ -39,11 +39,10 @@ No issue is currently in Now. The first unblocked ranked item is #621 below.
 
 | Order | Issue | Remaining work |
 |---|---|---|
-| 1 | [#621](https://github.com/iamfatness/CoreVideoPro/issues/621) | One generated observation model; typed snapshot, redacted qualification JSON, and ControlState are views of it. Lets #610/#519/#551 stop growing a fourth projection. |
-| 2 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send hardening and real endpoint acceptance. NDI stays in-process this cycle; classify it as process-fatal in #617. |
-| 3 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decoding to real pixels/PCM on the source bus, then the 30+ minute contribution soak. Depends on #535 and honest #617 capabilities. |
-| 4 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) | Signing + first external install. Current beta is still unsigned. |
-| 5 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) | **Cold Take acceptance.** Media half closed by #535 slice 3b. Step 1 open: a never-cued clip cut to Program still cold-starts into the warming slate. `scripts/qa/media-take-ab.py --skip-cue` is the falsification control. |
+| 1 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send hardening and real endpoint acceptance. NDI stays in-process this cycle; classify it as process-fatal in #617. |
+| 2 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decoding to real pixels/PCM on the source bus, then the 30+ minute contribution soak. Depends on #535 and honest #617 capabilities. |
+| 3 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) | Signing + first external install. Current beta is still unsigned. |
+| 4 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) | **Cold Take acceptance.** Media half closed by #535 slice 3b. Step 1 open: a never-cued clip cut to Program still cold-starts into the warming slate. `scripts/qa/media-take-ab.py --skip-cue` is the falsification control. |
 
 ## Unranked — show survival and operator findings
 
@@ -61,7 +60,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 | [#624](https://github.com/iamfatness/CoreVideoPro/issues/624) | Recover a subscribed Zoom video feed that stops advancing in Tiles. |
 | [#597](https://github.com/iamfatness/CoreVideoPro/issues/597) | **Backpressure slice 1 shipped on `feat/stream-backpressure`; owner acceptance and merge remain.** Slice 2: egress-based health signal and phantom-fault fix. Deferred from that slice: #601 (encoder ignores configured bitrate), #602, #603, #604 (`stopFfmpegProcess` never kills the child), #605, #606, #607. |
 | [#599](https://github.com/iamfatness/CoreVideoPro/issues/599) | After the #597 stream stall, Zoom Meeting panel stayed hidden on display 2. Targeted restore worked; need a reliable operator path. Causality with #597 unproven. |
-| [#610](https://github.com/iamfatness/CoreVideoPro/issues/610) | Operator-facing degraded-stream readout. Implement on the #621 model; do not hand-write a fourth snapshot. |
+| [#610](https://github.com/iamfatness/CoreVideoPro/issues/610) | Operator-facing degraded-stream readout. Consume the generated observation model; do not hand-write a fourth snapshot. |
 | [#590](https://github.com/iamfatness/CoreVideoPro/issues/590) | Simplify and prune Sources for live operation. Coordinate with #505 and #588. |
 | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Rework starter Scenes and scene creation; owner sees the same source repeated in defaults. |
 | [#592](https://github.com/iamfatness/CoreVideoPro/issues/592) | Lower-third second line refreshes as “Guest” / brief lowercase “g”. |
@@ -110,6 +109,7 @@ These rows record specific fixes, not blanket production or fleet reliability.
 
 | Issue | Merged fix / acceptance |
 |---|---|
+| [#621](https://github.com/iamfatness/CoreVideoPro/issues/621) | Generated observation model and per-view field policies in #648; typed, qualification, and ControlState views covered by contract and shell tests. |
 | [#622](https://github.com/iamfatness/CoreVideoPro/issues/622) | Command syncs queue behind one bridge slot while empty polls coalesce; overlap/cancellation tests and live meeting Control API check passed in #645. |
 | [#530](https://github.com/iamfatness/CoreVideoPro/issues/530) | Canonical and legacy dual-view modes now select ProgramPreview; invalid values are rejected. Live meeting Control API check passed in #646. |
 | [#616](https://github.com/iamfatness/CoreVideoPro/issues/616) | Live dispatcher command admission, protocol failure handling, parity coverage, Program event drain, and bounded response lane merged in #631 and #639. |
