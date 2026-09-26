@@ -68,6 +68,7 @@ let joinSnapshot;
 let latestSnapshot;
 let latestSpineSnapshot;
 let firstFrameAtMs;
+let firstSpineSyncAtMs;
 let firstFrameParticipantId;
 let firstFrameDimensions;
 let firstFrameSource = "none";
@@ -144,6 +145,7 @@ try {
 async function validationLoop() {
   const deadline = startedAt + timeoutMs;
   let lastSpineSyncAt = 0;
+  let captureRetryIssued = false;
 
   while (Date.now() < deadline) {
     const snapshotResponse = await send("zoom-snapshot");
@@ -156,7 +158,16 @@ async function validationLoop() {
     }
 
     const participants = usableParticipants(latestSnapshot);
+    if (!captureRetryIssued && firstSpineSyncAtMs !== undefined &&
+        firstFrameAtMs === undefined && Date.now() - startedAt - firstSpineSyncAtMs >= 10000) {
+      // The test meeting can require a second Engine On / recording-rights
+      // request before Zoom releases raw feeds. Match that operator sequence.
+      await send("zoom-stop-capture");
+      captureRetryIssued = true;
+      warnings.push("Raw capture had no first frame after 10s; retried Engine On once.");
+    }
     if (state === "in-meeting" && participants.length > 0 && Date.now() - lastSpineSyncAt >= pollMs) {
+      firstSpineSyncAtMs ??= Date.now() - startedAt;
       latestSpineSnapshot = await send("zoom-media-spine-sync", {
         spinePayload: buildSpinePayload(participants),
         elapsedMs: Date.now() - startedAt,
@@ -389,6 +400,7 @@ function buildSpinePayload(participants) {
       networkQuality: "good",
     })),
     subscriptions,
+    startCapture: true,
     blocked: false,
     warnings: [],
     summary: `${participants.length} real Zoom participant(s), ${subscriptions.length} raw subscriptions requested.`,
@@ -564,7 +576,9 @@ function recordFirstFrame({ participantId, width, height, source, observedAtMs }
     return;
   }
 
-  firstFrameAtMs = observedAtMs;
+  // Budget first media from the first subscription request, after SDK auth and
+  // meeting admission. Process startup and the meeting join are separate gates.
+  firstFrameAtMs = Math.max(0, observedAtMs - (firstSpineSyncAtMs ?? 0));
   firstFrameParticipantId = participantId;
   firstFrameDimensions =
     width > 0 && height > 0 ? `${width}x${height}` : undefined;

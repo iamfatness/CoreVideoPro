@@ -55,6 +55,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#637](https://github.com/iamfatness/CoreVideoPro/issues/637) | Live Zoom validator requests subscriptions but never starts raw capture after the explicit Engine On gate. Set `startCapture` in the dedicated harness and repeat meeting media validation. |
 | [#634](https://github.com/iamfatness/CoreVideoPro/issues/634) | Real test meeting join failed because the Zoom runtime appended passcode-query digits to the meeting number. Repair parsing and repeat the live join. |
 | [#632](https://github.com/iamfatness/CoreVideoPro/issues/632) | Restore native CI after the constructed Zoom slate made the old empty-source snapshot assertion stale. |
 | [#615](https://github.com/iamfatness/CoreVideoPro/issues/615) | RTMP packet amplification is measured and coalesced. Encoder frames that never reached the shed counter are retained (main `61e83ed1`). The original PC-wide outage and full-show continuity still need fleet acceptance. |
