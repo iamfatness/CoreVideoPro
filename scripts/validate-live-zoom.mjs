@@ -174,6 +174,9 @@ async function probeRejoin(joinPayload) {
   if (normalizeMeetingState(left?.meetingState) !== "idle" || usableParticipants(left).length !== 0) {
     throw new Error("rejoin probe: leave did not publish an empty roster barrier");
   }
+  if (left.rosterEpoch !== beforeEpoch || left.rosterRevision <= beforeRevision) {
+    throw new Error("rejoin probe: empty roster barrier was not versioned after the live roster");
+  }
   await send("zoom-join", { payload: joinPayload });
   let rejoined;
   let resumedMedia = false;
