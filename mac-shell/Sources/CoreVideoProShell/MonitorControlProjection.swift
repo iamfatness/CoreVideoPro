@@ -15,9 +15,15 @@ struct MonitorControlProjection {
     private(set) var pendingOperationId: String?
     private(set) var notice = ""
     private(set) var legacyCoreConfirmed = false
+    private var draftExpectedEpoch = ""
+    private var draftExpectedRevision: Int64 = 0
 
     mutating func edit(_ next: Draft) {
         draft = next
+        // Capture before the async command path; a concurrent client may apply
+        // while this editor is waiting to send.
+        draftExpectedEpoch = authorityEpoch
+        draftExpectedRevision = revision
         notice = "Monitor edit pending core application"
     }
 
@@ -55,7 +61,8 @@ struct MonitorControlProjection {
         let operation = UUID().uuidString
         pendingOperationId = operation
         return ["type": "set-audio-monitor-control", "operationId": operation,
-                "authorityEpoch": authorityEpoch, "expectedRevision": revision,
+                "authorityEpoch": draftExpectedEpoch.isEmpty ? authorityEpoch : draftExpectedEpoch,
+                "expectedRevision": draftExpectedEpoch.isEmpty ? revision : draftExpectedRevision,
                 "enabled": draft.enabled, "deviceId": "",
                 "deviceName": "System default output", "volume": draft.volume]
     }

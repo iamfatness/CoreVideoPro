@@ -18,13 +18,18 @@ public sealed partial class StudioViewModel
         var debounce = new CancellationTokenSource();
         _audioMonitorEditDebounce = debounce;
         var draft = CurrentAudioMonitorDraft();
+        // Bind the draft to the revision visible when the operator edited it.
+        // Debouncing must not silently rebase over a Control API client's write.
+        var observed = _bridge.LastSnapshot?.AudioMixSession.MonitorControl;
+        var editEpoch = observed?.AuthorityEpoch;
+        var editRevision = observed?.Revision;
         _audioMonitorPendingDraft = draft;
         _audioMonitorControlNotice = "Monitor edit pending core application";
         OnPropertyChanged(nameof(AudioMonitorStatus));
         try
         {
             await Task.Delay(75, debounce.Token).ConfigureAwait(true);
-            await SubmitAudioMonitorDraftAsync(draft).ConfigureAwait(true);
+            await SubmitAudioMonitorDraftAsync(draft, editEpoch, editRevision).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (debounce.IsCancellationRequested) { }
         finally
