@@ -21,12 +21,16 @@ enum ShellTests {
 
     private static func testMonitorControlProjection() {
         var projection = MonitorControlProjection()
+        expect(!projection.legacyCoreConfirmed, "timeout cannot authorize an unversioned write")
+        projection.observe(["monitorEnabled": false, "monitorVolume": 0.5])
+        expect(projection.legacyCoreConfirmed, "successful old-core snapshot permits legacy fallback")
         func mix(_ revision: Int, _ enabled: Bool, _ result: JSONObject? = nil) -> JSONObject {
             ["monitorEnabled": enabled, "monitorVolume": 0.5,
              "monitorControl": ["authorityEpoch": "core-1", "revision": revision,
                                 "recentResults": result.map { [$0] } ?? []] as JSONObject]
         }
         projection.observe(mix(0, false))
+        expect(!projection.legacyCoreConfirmed, "new-core snapshot revokes fallback")
         projection.edit(.init(enabled: true, volume: 0.5))
         let first = projection.nextCommand()
         let operation = first?["operationId"] as? String ?? ""

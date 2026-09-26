@@ -2328,13 +2328,18 @@ final class AppModel: ObservableObject {
                     applySnapshot(snapshot)
                 }
             }
-            if monitorControl.authorityEpoch.isEmpty {
+            if monitorControl.authorityEpoch.isEmpty && monitorControl.legacyCoreConfirmed {
                 _ = try? await bridge.request([
                     "type": "media-core-sync", "elapsedMs": elapsedMs(),
                     "commands": [["type": "sync-audio-monitor", "enabled": enabled,
                                   "deviceId": "", "deviceName": "System default output",
                                   "volume": volume]],
                 ])
+                return
+            }
+            if monitorControl.authorityEpoch.isEmpty {
+                monitorControl.markUnconfirmed()
+                monitorControlNotice = "Monitor edit reconciling; core contract is unconfirmed"
                 return
             }
             while let command = monitorControl.nextCommand() {
