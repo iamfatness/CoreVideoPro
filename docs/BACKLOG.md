@@ -3,8 +3,7 @@
 **This is the only ordered list of work.** Status and detailed evidence live on
 linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 
-Owner-approved order updated 2026-09-25: finish #535 adapter lifecycle, then make
-the wire honest (#616 with #619/#620), then constructed capabilities (#617), then
+Owner-approved order updated 2026-09-26: #535 is closed. Now: make the wire honest (#616 with #619/#620), then constructed capabilities (#617), then
 a Windows production-native CI compile lane (#618), then SRT/NDI edge I/O (#538).
 Owner accepted live lip sync (#579) and first Takes (#555) on beta `db9e703`.
 #513 validation remains deferred; #582 range correction is in live validation.
@@ -28,7 +27,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Order | Issue | Remaining work / next evidence |
 |---|---|---|
-| 1 | [#535](https://github.com/iamfatness/CoreVideoPro/issues/535) | **Finish the source bus.** Video and media transport slices are shipped. **Slice 3b (media TRANSPORT into the core) SHIPPED — merged 2026-09-21 in [#567](https://github.com/iamfatness/CoreVideoPro/pull/567)**. Capture session control lives on `ICaptureDeviceLifecycle`. Capture adapters push pictures and embedded PCM into a mailbox; `deliverVideo` and `deliverAudio` only flush it. The media decoder is `IMediaDecoder` and takes one `MediaDecodeRequest` ([#626](https://github.com/iamfatness/CoreVideoPro/pull/626)). Zoom audio uses the same mailbox and is drained by `pollZoomAudioUnlocked` outside the core lock. Headless clap on that build (2026-09-25, `scripts/validate-av-clap.mjs`): 8 pairs, median skew -39.0 ms (audio lags video), spread 14.3 ms, inside the 50 ms gate. A live-meeting clap was not run. `IZoomCaptureSource` is gone. The no-meeting slate is a `zoom-slate` source on the bus, skipped while a Zoom engine is configured. Zoom engine audio is still polled outside the core lock and then staged onto the bus. Browser sources are still polled. Per-participant audio delay is [#627](https://github.com/iamfatness/CoreVideoPro/issues/627), unranked. Capture dropout liveness is #562. Do not start #616 while this is open unless the owner re-ranks. |
+| 1 | [#616](https://github.com/iamfatness/CoreVideoPro/issues/616) | **Make the wire honest.** Command manifest is the live C++ dispatcher. Unknown batch commands are protocol failures. The three production-sync roster commands are handled. Program texture events use the program drain ([#619](https://github.com/iamfatness/CoreVideoPro/issues/619)). The high-priority response lane is bounded ([#620](https://github.com/iamfatness/CoreVideoPro/issues/620)). Not #530. |
 | 2 | [#601](https://github.com/iamfatness/CoreVideoPro/issues/601) | Owner requested 2026-09-24: preserve the configured frame rate. Explicit encoder rate control and measured conformance at 4.5/6/10 Mbps, with 2 Mbps as a stress check. Full-range noise reaches QP 51; the original claim that bitrate never reaches the encoder is not established. Hard saturation remains distinct from normal bitrate control. Evidence: [investigation](issue-601-rate-control-investigation.md). Await live acceptance. |
 
 ## Deferred by owner
@@ -41,19 +40,18 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Order | Issue | Remaining work |
 |---|---|---|
-| 1 | [#616](https://github.com/iamfatness/CoreVideoPro/issues/616) | **Make the wire honest.** One command manifest from the live C++ dispatcher; reject unknown batched commands; implement or delete the three production-sync no-ops. Ride [#619](https://github.com/iamfatness/CoreVideoPro/issues/619) (Program texture events on the preview queue) and [#620](https://github.com/iamfatness/CoreVideoPro/issues/620) (bound the high-priority response lane) in the same change. Not #530. |
-| 2 | [#617](https://github.com/iamfatness/CoreVideoPro/issues/617) | Capabilities describe constructed adapters, not compile flags. Required before #538/#536 admission. Do not advertise DeckLink/AJA until [#537](https://github.com/iamfatness/CoreVideoPro/issues/537) has pixels. |
-| 3 | [#618](https://github.com/iamfatness/CoreVideoPro/issues/618) | Windows CI production-native compile lane (`COREVIDEO_STUB=OFF` + the flags the beta ships). Compile-only; no 60 fps soak on the runner. Not #575. |
-| 4 | [#622](https://github.com/iamfatness/CoreVideoPro/issues/622) | Single-slot sync plus UI-thread snapshot apply can drop a fire-and-forget command. After the wire is honest. Not #509. |
-| 5 | [#621](https://github.com/iamfatness/CoreVideoPro/issues/621) | One generated observation model; typed snapshot, redacted qualification JSON, and ControlState are views of it. Lets #610/#519/#551 stop growing a fourth projection. |
-| 6 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send hardening and real endpoint acceptance. NDI stays in-process this cycle; classify it as process-fatal in #617. |
-| 7 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decoding to real pixels/PCM on the source bus, then the 30+ minute contribution soak. Depends on #535 and honest #617 capabilities. |
-| 8 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) | Signing + first external install. Current beta is still unsigned. |
-| 9 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) | **Cold Take acceptance.** Media half closed by #535 slice 3b. Step 1 open: a never-cued clip cut to Program still cold-starts into the warming slate. `scripts/qa/media-take-ab.py --skip-cue` is the falsification control. |
+| 1 | [#617](https://github.com/iamfatness/CoreVideoPro/issues/617) | Capabilities describe constructed adapters, not compile flags. Required before #538/#536 admission. Do not advertise DeckLink/AJA until [#537](https://github.com/iamfatness/CoreVideoPro/issues/537) has pixels. |
+| 2 | [#618](https://github.com/iamfatness/CoreVideoPro/issues/618) | Windows CI production-native compile lane (`COREVIDEO_STUB=OFF` + the flags the beta ships). Compile-only; no 60 fps soak on the runner. Not #575. |
+| 3 | [#622](https://github.com/iamfatness/CoreVideoPro/issues/622) | Single-slot sync plus UI-thread snapshot apply can drop a fire-and-forget command. After the wire is honest. Not #509. |
+| 4 | [#621](https://github.com/iamfatness/CoreVideoPro/issues/621) | One generated observation model; typed snapshot, redacted qualification JSON, and ControlState are views of it. Lets #610/#519/#551 stop growing a fourth projection. |
+| 5 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send hardening and real endpoint acceptance. NDI stays in-process this cycle; classify it as process-fatal in #617. |
+| 6 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decoding to real pixels/PCM on the source bus, then the 30+ minute contribution soak. Depends on #535 and honest #617 capabilities. |
+| 7 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) | Signing + first external install. Current beta is still unsigned. |
+| 8 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) | **Cold Take acceptance.** Media half closed by #535 slice 3b. Step 1 open: a never-cued clip cut to Program still cold-starts into the warming slate. `scripts/qa/media-take-ab.py --skip-cue` is the falsification control. |
 
 ## Unranked — show survival and operator findings
 
-These can preempt Next on a show night. They do not replace #535 as Now until the owner says so.
+These can preempt Next on a show night. They do not jump the ranked Now item until the owner says so.
 
 | Issue | Remaining work |
 |---|---|

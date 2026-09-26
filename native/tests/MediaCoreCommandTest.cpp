@@ -6136,8 +6136,12 @@ TEST(MediaCoreCommand, EmitsProgramSharedTextureHandleShape) {
   EXPECT_EQ(snapshotTexture->getString("format"), "B8G8R8A8_UNORM");
 
   const auto events = mediaCore.drainProgramSharedTextureEvents();
-  if (!events.empty()) {
-    EXPECT_EQ(events.back().getString("type"), "program-shared-texture");
+  ASSERT_FALSE(events.empty());
+  EXPECT_EQ(events.back().getString("type"), "program-shared-texture");
+  for (const auto& preview : mediaCore.drainProgramFramePreviewEvents()) {
+    EXPECT_NE(preview.getString("type"), "program-shared-texture");
+  }
+  {
     const auto* texture = events.back().get("texture");
     ASSERT_NE(texture, nullptr);
     const auto handleHex = texture->getString("sharedHandleHex");
@@ -6154,6 +6158,37 @@ TEST(MediaCoreCommand, EmitsProgramSharedTextureHandleShape) {
   EXPECT_TRUE(true) << "Shared texture export requires COREVIDEO_STUB or COREVIDEO_WITH_D3D11.";
   return;
 #endif
+}
+
+TEST(MediaCoreCommand, UnknownBatchCommandIsAProtocolFailure) {
+  corevideo::core::MediaCore mediaCore;
+  const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "not-a-command"}},
+      corevideo::rpc::Json::Object{{"type", "set-verbose-diagnostics"}, {"enabled", true}},
+  });
+  const auto* failures = state.get("commandProtocolFailures");
+  ASSERT_NE(failures, nullptr);
+  ASSERT_TRUE(failures->isArray());
+  ASSERT_EQ(failures->asArray().size(), 1u);
+  EXPECT_EQ(failures->asArray().front().asString(), "not-a-command");
+}
+
+TEST(MediaCoreCommand, ShellZoomRosterAndSpeakerAreAppliedWhenNoEngineIsConfigured) {
+  corevideo::core::MediaCore mediaCore;
+  (void)mediaCore.joinZoom(corevideo::rpc::Json::Object{});
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "set-active-speaker"},
+          {"participantId", "guest-9"},
+      },
+      corevideo::rpc::Json::Object{
+          {"type", "set-screen-share-source"},
+          {"participantId", "guest-9"},
+      },
+  });
+  const auto zoom = mediaCore.zoomSnapshot();
+  EXPECT_EQ(zoom.getString("activeSpeakerId"), "guest-9");
+  EXPECT_EQ(zoom.getString("screenShareParticipantId"), "guest-9");
 }
 
 TEST(MediaCoreCommand, CompositesRealZoomPixelsIntoProgramPreview) {

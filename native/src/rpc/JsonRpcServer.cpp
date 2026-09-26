@@ -1,4 +1,5 @@
 #include "core/BoundedAsyncLog.h"
+#include "rpc/BoundedResponseLane.h"
 #include "rpc/JsonRpcServer.h"
 
 #include "core/LockHoldGuardrail.h"
@@ -339,14 +340,17 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // fast but stuck in the output queue / blocked in flush() because the stdout pipe
   // is backed up by the high-rate base64 frame stream and a slow consumer".
   using Stamp = std::chrono::steady_clock::time_point;
-  std::deque<std::pair<std::string, Stamp>> outHi;  // command responses / failures
+  BoundedResponseLane outHi;  // command responses / failures, depth-capped
   std::deque<std::pair<std::string, Stamp>> outLo;  // frame-preview events (droppable)
   std::atomic<bool> stopping{false};
 
   auto enqueueResponse = [&](std::string message) {
     {
       std::lock_guard<std::mutex> lock(outMx);
-      outHi.emplace_back(std::move(message), std::chrono::steady_clock::now());
+      if (outHi.push(std::move(message))) {
+        ::corevideo::core::nativeLogf("[rpc] response lane overflow dropped=%llu depth=%zu\n",
+                     static_cast<unsigned long long>(outHi.dropped()), outHi.size());
+      }
     }
     outCv.notify_one();
   };
@@ -372,9 +376,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         std::size_t hiDepth = outHi.size();
         std::size_t loDepth = outLo.size();
         if (!outHi.empty()) {
-          message = std::move(outHi.front().first);
-          enqueuedAt = outHi.front().second;
-          outHi.pop_front();
+          auto item = outHi.popFront();
+          message = std::move(item.first);
+          enqueuedAt = item.second;
           isResponse = true;
         } else {
           message = std::move(outLo.front().first);

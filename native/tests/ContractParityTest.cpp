@@ -1,5 +1,6 @@
 #include "core/Protocol.h"
 #include "contracts/Lifecycle.h"
+#include "rpc/BoundedResponseLane.h"
 
 #include <gtest/gtest.h>
 
@@ -108,10 +109,34 @@ TEST(ContractParity, EvidenceGoldenMessagesMatchSchema) {
   }
 }
 
-TEST(ContractParity, MediaCoreCommandTypesMatchTypeScriptProtocol) {
-  const std::string source = readRepoFile("src/engine/nativeMediaCoreProtocol.ts");
-  ASSERT_FALSE(source.empty());
-  expectAllStringsPresent(source, corevideo::core::kNativeMediaCoreCommandTypes);
+TEST(ContractParity, ProductionBuilderCommandsAreInTheLiveDispatcher) {
+  const std::string builder = readRepoFile("native-shell/CoreVideoPro.MediaCore/Services/MediaCoreCommandBuilder.cs");
+  const std::string dispatcher = readRepoFile("native/src/core/MediaCore.cpp");
+  ASSERT_FALSE(builder.empty());
+  ASSERT_FALSE(dispatcher.empty());
+  std::size_t cursor = 0;
+  while ((cursor = builder.find("Command(\"", cursor)) != std::string::npos) {
+    cursor += std::string("Command(\"").size();
+    const auto end = builder.find('"', cursor);
+    ASSERT_NE(end, std::string::npos);
+    const auto name = builder.substr(cursor, end - cursor);
+    EXPECT_TRUE(corevideo::core::isNativeMediaCoreCommand(name)) << name;
+    cursor = end + 1;
+  }
+  for (const auto name : corevideo::core::kNativeMediaCoreCommandTypes) {
+    const auto needle = std::string("type == \"") + std::string(name) + "\"";
+    EXPECT_NE(dispatcher.find(needle), std::string::npos) << name;
+  }
+}
+
+TEST(ContractParity, ResponseLaneDropsOldestWhenFull) {
+  corevideo::rpc::BoundedResponseLane lane;
+  for (std::size_t i = 0; i < corevideo::rpc::BoundedResponseLane::kMaxDepth + 3; ++i) {
+    lane.push(std::to_string(i));
+  }
+  EXPECT_EQ(lane.size(), corevideo::rpc::BoundedResponseLane::kMaxDepth);
+  EXPECT_EQ(lane.dropped(), 3u);
+  EXPECT_EQ(lane.popFront().first, "3");
 }
 
 TEST(ContractParity, CapabilityStringsMatchTypeScriptProtocol) {
