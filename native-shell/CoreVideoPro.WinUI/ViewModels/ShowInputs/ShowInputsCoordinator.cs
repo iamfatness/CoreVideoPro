@@ -43,6 +43,11 @@ public sealed class ShowInputsCoordinator
         MultiviewInputRows = new MultiviewInputRowsProjection(host.ShowInputs);
         _bridge.SnapshotChanged += snapshot =>
             _host.RunOnUiThread(() => MultiviewInputRows.ApplyRosterFact(snapshot));
+        _bridge.HealthChanged += health =>
+        {
+            if (health.Stopped)
+                _host.RunOnUiThread(MultiviewInputRows.EngineStopped);
+        };
         if (_bridge.LastSnapshot is { } current)
             _host.RunOnUiThread(() => MultiviewInputRows.ApplyRosterFact(current));
     }

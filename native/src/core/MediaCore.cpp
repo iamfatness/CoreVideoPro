@@ -1194,11 +1194,15 @@ rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsed
         {"subscriptionId", kind + ":" + participantId + ":" + purpose},
         {"status", status},
         {"lastResultCode", lastResultCode},
-        {"deliveredWidth", kind == "screen-share" ? 1920 : lowResolution ? 640 : 1280},
-        {"deliveredHeight", kind == "screen-share" ? 1080 : lowResolution ? 360 : 720},
-        {"deliveredFps", kind == "screen-share" ? 30 : lowResolution ? 15 : 30},
+        {"deliveredWidth", framesReceived == 0 ? 0 : kind == "screen-share" ? 1920 : lowResolution ? 640 : 1280},
+        {"deliveredHeight", framesReceived == 0 ? 0 : kind == "screen-share" ? 1080 : lowResolution ? 360 : 720},
+        {"deliveredFps", framesReceived == 0 ? 0 : kind == "screen-share" ? 30 : lowResolution ? 15 : 30},
         {"framesReceived", framesReceived},
         {"audioPacketsReceived", audioPacketsReceived},
+        {"lastFrameAtMs", framesReceived == 0 ? -1.0 : elapsedMs},
+        {"lastFrameAgeMs", framesReceived == 0 ? -1.0 : 0.0},
+        {"lastFrameId", framesReceived},
+        {"frameFresh", framesReceived > 0},
     };
     if (participant) {
       subscription.emplace("displayName", participant->getString("displayName"));

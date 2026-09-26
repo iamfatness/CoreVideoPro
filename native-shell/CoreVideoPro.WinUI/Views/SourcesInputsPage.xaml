@@ -442,6 +442,10 @@
                                             <TextBlock Text="{x:Bind Inspector.FormatLabel, Mode=OneWay}"
                                                        MinWidth="105" VerticalAlignment="Center"
                                                        FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
+                                            <TextBlock Text="{x:Bind Inspector.ConfiguredCapLabel, Mode=OneWay}"
+                                                       Visibility="{x:Bind Inspector.CapDiffers, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                       VerticalAlignment="Center" FontSize="10"
+                                                       Foreground="{StaticResource StudioMutedBrush}" Opacity="0.5" />
                                             <Border Background="#152535" CornerRadius="3" Padding="5,2"
                                                     VerticalAlignment="Center">
                                                 <TextBlock Text="{x:Bind Inspector.StatusLabel, Mode=OneWay}"

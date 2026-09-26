@@ -43,7 +43,7 @@ public sealed class ShowInputsCoordinatorTests
             ZoomSubscriptions = [new ZoomMediaSpineSubscription
             {
                 ParticipantId = "guest-2", Kind = "participant-video", DeliveredWidth = 1920,
-                DeliveredHeight = 1080, DeliveredFps = 30
+                DeliveredHeight = 1080, DeliveredFps = 30, LastFrameAtMs = 1000, LastFrameAgeMs = 0
             }]
         });
         Assert.Equal("LIVE", row.StatusLabel);
@@ -66,12 +66,67 @@ public sealed class ShowInputsCoordinatorTests
             ZoomSubscriptions = [new ZoomMediaSpineSubscription
             {
                 ParticipantId = "guest-2", Kind = "participant-video", DeliveredWidth = 1920,
-                DeliveredHeight = 1080, DeliveredFps = 30
+                DeliveredHeight = 1080, DeliveredFps = 30, LastFrameAtMs = 1000, LastFrameAgeMs = 0
             }]
         });
         Assert.Equal("VIDEO OFF", row.StatusLabel);
         Assert.Equal("—", row.FormatLabel);
         Assert.Equal(0, bridge.SyncCalls);
+    }
+
+    [Fact]
+    public void DeliveredFormatAndAgePatchWithoutRosterRevisionThenEngineOffWipesOldMeeting()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using (ShowInputWriteScope.Enter("test"))
+        {
+            host.ShowInputs[0].Kind = ShowInputKind.ZoomParticipant;
+            host.ShowInputs[0].ParticipantId = "guest";
+            host.ShowInputs[0].InShow = true;
+        }
+        var row = coordinator.MultiviewInputRows.Rows[0];
+        void Emit(string epoch, long revision, int width, int height, int fps, int frameId, double atMs, double ageMs) =>
+            bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+            {
+                MeetingState = "in_meeting", RosterEpoch = epoch, RosterRevision = revision,
+                Participants = [new RawParticipantEvent { UserId = "guest", DisplayName = "Guest", VideoOn = true }],
+                ZoomSubscriptions = [new ZoomMediaSpineSubscription
+                {
+                    ParticipantId = "guest", Kind = "participant-video", DeliveredWidth = width,
+                    DeliveredHeight = height, DeliveredFps = fps, LastFrameId = frameId,
+                    LastFrameAtMs = atMs, LastFrameAgeMs = ageMs
+                }]
+            });
+        Emit("1:1:test", 7, 1920, 1080, 30, 1, 1000, 100);
+        Assert.Equal("1920×1080@30", row.FormatLabel);
+        Assert.Equal("cap 1080p60", row.ConfiguredCapLabel);
+        Emit("1:1:test", 7, 1280, 720, 15, 2, 1500, 200);
+        Assert.Equal("1280×720@15", row.FormatLabel);
+        Assert.Equal("LIVE", row.StatusLabel);
+        Emit("1:1:test", 7, 1280, 720, 15, 2, 1500, 1501);
+        Assert.Equal("STALLED", row.StatusLabel);
+        Assert.True(row.FormatStale);
+        Emit("1:1:test", 7, 1280, 720, 15, 2, 1500, 200);
+        Assert.Equal("STALLED", row.StatusLabel);
+
+        bridge.EmitHealth(new MediaCoreHealth { Stopped = true });
+        Assert.Equal("IDLE", row.StatusLabel);
+        Assert.Equal("—", row.FormatLabel);
+        Assert.Equal(-1, row.FrameAgeMs);
+        using (ShowInputWriteScope.Enter("test"))
+            host.ShowInputs[0].InShow = false;
+        Assert.Equal("—", row.FormatLabel);
+        using (ShowInputWriteScope.Enter("test"))
+            host.ShowInputs[0].InShow = true;
+        Assert.Equal("IDLE", row.StatusLabel);
+        Emit("1:1:test", 8, 1280, 720, 15, 3, 2000, 10);
+        Assert.Equal("IDLE", row.StatusLabel);
+        Emit("1:2:test", 1, 640, 360, 30, 1, 100, 30);
+        Assert.Equal("640×360@30", row.FormatLabel);
+        Assert.Equal("1:2:test", row.RosterEpoch);
+        Assert.Same(row, coordinator.MultiviewInputRows.Rows[0]);
     }
 
     private static (ShowInputsCoordinator Coordinator, FakeShowInputsHost Host) Build()
@@ -507,6 +562,7 @@ public sealed class ShowInputsCoordinatorTests
     {
         public int SyncCalls { get; private set; }
         public void EmitRoster(NativeMediaCoreStateSnapshot snapshot) => SnapshotChanged?.Invoke(snapshot);
+        public void EmitHealth(MediaCoreHealth health) => HealthChanged?.Invoke(health);
         public bool Running => true;
 
         public NativeMediaCoreProfile? Profile => null;

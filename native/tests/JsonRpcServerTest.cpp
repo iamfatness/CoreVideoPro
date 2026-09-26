@@ -292,6 +292,13 @@ TEST(JsonRpcServer, HandlesZoomMediaSpineSyncRequest) {
   ASSERT_NE(spineSnapshot, nullptr);
   EXPECT_EQ(spineSnapshot->getString("meetingState"), "in-meeting");
   EXPECT_EQ(spineSnapshot->getString("activeSpeakerId"), "sdk-presenter");
+  const auto& subscriptions = spineSnapshot->get("subscriptions")->asArray();
+  ASSERT_EQ(subscriptions.size(), 2u);
+  EXPECT_EQ(subscriptions[0].get("deliveredWidth")->asNumber(), 1280);
+  EXPECT_EQ(subscriptions[0].get("deliveredHeight")->asNumber(), 720);
+  EXPECT_EQ(subscriptions[0].get("deliveredFps")->asNumber(), 30);
+  EXPECT_EQ(subscriptions[0].get("lastFrameAgeMs")->asNumber(), 0);
+  EXPECT_TRUE(subscriptions[0].get("frameFresh")->asBool());
   EXPECT_EQ(spineSnapshot->get("recording")->get("evidence")->get("subscribedVideoFeeds")->asNumber(), 1);
   EXPECT_GE(spineSnapshot->get("recording")->get("evidence")->get("programFramesWritten")->asNumber(), 1);
 }
