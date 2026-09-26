@@ -38,6 +38,7 @@ const minVideoFeeds = numberArg(args["min-video-feeds"], minParticipants);
 const maxVideoFeeds = numberArg(args["max-video-feeds"], Math.max(minVideoFeeds, 6));
 const maxFirstFrameMs = numberArg(args["max-first-frame-ms"], 1000);
 const observeMs = numberArg(args["observe-ms"], 0);
+const monitorControlProbeRequested = booleanArg(args["monitor-control-probe"]);
 const requireActiveSpeaker = !booleanArg(args["allow-no-active-speaker"]);
 const nativeCore = resolve(args["native-core"] ?? join(buildDir, `corevideo-native${exeSuffix}`));
 const zoomEngine = resolve(args["zoom-engine"] ?? process.env.COREVIDEO_ZOOM_ENGINE_PATH ?? join(buildDir, `corevideo-zoom-engine${exeSuffix}`));
@@ -87,6 +88,7 @@ const rawAudioStatusByParticipant = new Map();
 const pending = new Map();
 const warnings = [];
 const rosterTransitions = [];
+let monitorControlProbe;
 let lastRosterKey = "";
 let previousRoster = new Map();
 const stderrLines = [];
@@ -193,12 +195,63 @@ async function validationLoop() {
     }
 
     await send("ping").catch(() => undefined);
-    if (criteriaMet()) qualifiedAt ??= Date.now();
+    if (criteriaMet()) {
+      qualifiedAt ??= Date.now();
+      if (monitorControlProbeRequested && !monitorControlProbe) {
+        monitorControlProbe = await probeMonitorControl();
+      }
+    }
     if (qualifiedAt !== undefined && Date.now() - qualifiedAt >= observeMs) return;
     await sleep(pollMs);
   }
 
   throw new Error("Timed out before live Zoom criteria were met.");
+}
+
+async function probeMonitorControl() {
+  const initial = (await send("snapshot")).snapshot?.audioMixSession?.monitorControl;
+  if (!initial?.authorityEpoch || !Number.isSafeInteger(initial.revision)) {
+    throw new Error("monitor control probe requires an epoch and safe revision");
+  }
+  const command = (operationId, expectedRevision, volume) => ({
+    type: "set-audio-monitor-control", operationId,
+    authorityEpoch: initial.authorityEpoch, expectedRevision,
+    enabled: false, deviceId: "", deviceName: "", volume,
+  });
+  const sendControl = async (entry) => {
+    const response = await send("media-core-sync", { commands: [entry], elapsedMs: Date.now() - startedAt });
+    return response.snapshot?.audioMixSession;
+  };
+  const firstCommand = command("validator-monitor-first", initial.revision, 0.5);
+  const first = await sendControl(firstCommand);
+  if (first?.monitorControl?.lastResult?.status !== "applied" ||
+      first.monitorControl.revision !== initial.revision + 1 || first.monitorVolume !== 0.5) {
+    throw new Error("monitor control probe: first command did not apply");
+  }
+  const stale = await sendControl(command("validator-monitor-stale", initial.revision, 0.25));
+  if (stale?.monitorControl?.lastResult?.status !== "conflict" ||
+      stale.monitorControl.revision !== initial.revision + 1 || stale.monitorVolume !== 0.5) {
+    throw new Error("monitor control probe: stale client overwrote applied state");
+  }
+  const duplicate = await sendControl(firstCommand);
+  if (duplicate?.monitorControl?.lastResult?.status !== "applied" ||
+      duplicate.monitorControl.revision !== initial.revision + 1) {
+    throw new Error("monitor control probe: duplicate retry changed the revision");
+  }
+  const rebased = await sendControl(command("validator-monitor-rebased", initial.revision + 1, 0.25));
+  if (rebased?.monitorControl?.lastResult?.status !== "applied" ||
+      rebased.monitorControl.revision !== initial.revision + 2 || rebased.monitorVolume !== 0.25) {
+    throw new Error("monitor control probe: rebased command did not apply");
+  }
+  return {
+    authorityEpoch: initial.authorityEpoch,
+    initialRevision: initial.revision,
+    finalRevision: rebased.monitorControl.revision,
+    staleStatus: stale.monitorControl.lastResult.status,
+    duplicateStatus: duplicate.monitorControl.lastResult.status,
+    enabled: rebased.monitorEnabled,
+    volume: rebased.monitorVolume,
+  };
 }
 
 function onLine(line) {
@@ -561,6 +614,7 @@ function buildReport(status, failureReason) {
     participants: participantRows,
     subscriptions: latestSpineSnapshot?.subscriptions ?? [],
     rosterTransitions,
+    monitorControlProbe: monitorControlProbe ?? null,
     audioLostSamplesDelta: (lastCoreCounters?.audioLostSamples ?? 0) - (firstCoreCounters?.audioLostSamples ?? 0),
     monitorUnderrunsDelta: (lastCoreCounters?.monitorUnderruns ?? 0) - (firstCoreCounters?.monitorUnderruns ?? 0),
     warnings: collectWarnings(),
