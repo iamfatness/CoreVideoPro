@@ -900,7 +900,8 @@ public sealed class MediaCoreCommandBuilderTests
         var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
         {
             ActiveSceneId = "interview",
-            SceneRoutes = [new("interview-1", "capture-input", "mix", null, CaptureDeviceId: "srt-ingest-01")],
+            SceneRoutes = [new("interview-1", "capture-input", "mix", null,
+                CaptureDeviceId: "srt-ingest-01", PersonId: "guest-7")],
             Participants = Participants,
             SrtIngestSources =
             [
@@ -933,6 +934,7 @@ public sealed class MediaCoreCommandBuilderTests
             .Single();
         Assert.Equal("capture-input", route.GetProperty("mode").GetString());
         Assert.Equal("srt-ingest-01", route.GetProperty("captureDeviceId").GetString());
+        Assert.Equal("guest-7", route.GetProperty("personId").GetString());
     }
 
     [Fact]

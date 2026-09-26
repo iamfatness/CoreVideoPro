@@ -15,6 +15,7 @@
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
 #include "core/RouteSourcePolicy.h"
+#include "core/SpeakerFloor.h"
 #include "modules/AudioDsp.h"
 #include "modules/AsyncEncoderSink.h"
 #include "core/SyntheticZoomSlateSource.h"
@@ -2407,6 +2408,7 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       state.routeId = route.getString("routeId");
       state.mode = route.getString("mode");
       state.participantId = route.getString("participantId");
+      state.personId = route.getString("personId");
       state.captureDeviceId = route.getString("captureDeviceId");
       state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
@@ -3795,6 +3797,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       state.routeId = route.getString("routeId");
       state.mode = route.getString("mode", "fixed");
       state.participantId = route.getString("participantId");
+      state.personId = route.getString("personId");
       state.captureDeviceId = route.getString("captureDeviceId");
       state.audioRole = route.getString("audioRole");
       state.mediaAssetId = route.getString("mediaAssetId");
@@ -3831,7 +3834,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
         state.routeId = "preview-route-" + std::to_string(routeIndex);
       }
       signature += "r:" + std::to_string(state.zIndex) + ":" + state.mode + ":" + state.participantId + ":" +
-                   state.captureDeviceId + ":" + state.mediaAssetId + ":" + state.mediaAssetPath + ":" +
+                   state.captureDeviceId + ":" + state.personId + ":" + state.mediaAssetId + ":" + state.mediaAssetPath + ":" +
                    (state.mediaAssetLoop ? "l" : "o") + ":" + state.fitMode + ":" +
                    std::to_string(state.rectX) + "," + std::to_string(state.rectY) + "," +
                    std::to_string(state.rectWidth) + "," + std::to_string(state.rectHeight) + "," +
@@ -5749,7 +5752,7 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
   auto plan = buildRenderPlanForScene(sceneId_, routeCount_, overlayCount_, sceneBackground_, sceneRoutes_,
                                       colorGrade_, overlayAssets_, captionEnabled_, captionText_, captionSpeaker_,
                                       videoFrames, tilesLayer_);
-  plan.warnings = sceneValidationWarnings_;
+  plan.warnings.insert(plan.warnings.end(), sceneValidationWarnings_.begin(), sceneValidationWarnings_.end());
   return applyTakeTransition(std::move(plan), videoFrames);
 }
 
@@ -5974,6 +5977,13 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
   // the gate that actually expresses it.
   // Regression test: TilesRenderPlan.AMemberLessWallStillOwnsTheSceneAndEmitsItsBackground.
   const bool wallActive = wall.present;
+  SpeakerFloor speakerFloor;
+  // Identity links belong to sources, not layer order. A capture alias declared
+  // on a later route must also apply to an earlier route using that camera.
+  for (const auto& route : sceneRoutes) {
+    if (route.mode == "capture-input" && !route.captureDeviceId.empty() && !route.personId.empty())
+      speakerFloor.observeSource("capture:" + route.captureDeviceId, route.personId);
+  }
 
   int videoLayerIndex = 0;
   const int videoLayerCount = routeCount > 0 ? routeCount : static_cast<int>(videoFrames.size());
@@ -6022,8 +6032,18 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     for (const auto& route : sceneRoutes) {
       modules::CompositorRenderPlanLayer layer;
       layer.layerId = "route:" + route.routeId;
-      const auto binding = resolveRouteSource({route.mode, route.mediaAssetId, route.mediaAssetPath,
+      auto binding = resolveRouteSource({route.mode, route.mediaAssetId, route.mediaAssetPath,
           route.captureDeviceId, route.participantId, directedSpeaker});
+      bool duplicatePerson = false;
+      if (binding.kind == "participant-video" && !binding.sourceId.empty()) {
+        speakerFloor.observeSource(binding.sourceId, route.personId);
+        if (!speakerFloor.claimPersonSlot(binding.sourceId)) {
+          duplicatePerson = true;
+          renderPlan.warnings.push_back("Duplicate person slot refused: route:" + route.routeId);
+          binding.sourceId.clear();
+          binding.participantId.clear();
+        }
+      }
       layer.kind = binding.kind;
       layer.sourceId = binding.sourceId;
       layer.participantId = binding.participantId;
@@ -6057,7 +6077,8 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       layer.colorGrade = route.colorGrade;
       layer.hasChromaKey = route.hasChromaKey;
       layer.chromaKey = route.chromaKey;
-      if (binding.sourceId.empty() && binding.participantId.empty() && route.mediaAssetId.empty()) {
+      if (binding.sourceId.empty() && binding.participantId.empty() &&
+          (route.mediaAssetId.empty() || duplicatePerson)) {
         // #480: a route with no source renders BLANK — a fully transparent fill.
         // An unbound layer would paint the default grey, a bound-but-frameless
         // one a colour slab, and the old positional fallback a random source,
@@ -6084,6 +6105,11 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     // scene's video layers exclusively.
     renderPlan.layers.reserve(videoFrames.size());
     for (size_t index = 0; index < videoFrames.size(); ++index) {
+      speakerFloor.observeSource("zoom:" + videoFrames[index].participantId);
+      if (!speakerFloor.claimPersonSlot("zoom:" + videoFrames[index].participantId)) {
+        renderPlan.warnings.push_back("Duplicate person slot refused: fallback video frame.");
+        continue;
+      }
       modules::CompositorRenderPlanLayer layer;
       layer.layerId = "zoom:" + videoFrames[index].participantId;
       layer.kind = "participant-video";
@@ -6259,6 +6285,11 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
         }
         if (slots[index].empty() || std::find(admitted.begin(), admitted.end(), slots[index]) == admitted.end() ||
             !drawn.insert(slots[index]).second) continue;
+        speakerFloor.observeSource(slots[index]);
+        if (!speakerFloor.claimPersonSlot(slots[index])) {
+          renderPlan.warnings.push_back("Duplicate person slot refused: tile:" + slots[index]);
+          continue;
+        }
         modules::CompositorRenderPlanLayer layer;
         layer.layerId = "tile:" + slots[index];
         layer.kind = "participant-video";
