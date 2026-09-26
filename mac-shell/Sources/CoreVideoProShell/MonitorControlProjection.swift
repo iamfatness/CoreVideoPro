@@ -14,6 +14,7 @@ struct MonitorControlProjection {
     private(set) var draft: Draft?
     private(set) var pendingOperationId: String?
     private(set) var notice = ""
+    private(set) var legacyCoreConfirmed = false
 
     mutating func edit(_ next: Draft) {
         draft = next
@@ -21,6 +22,7 @@ struct MonitorControlProjection {
     }
 
     mutating func observe(_ mix: JSONObject) {
+        legacyCoreConfirmed = mix["monitorControl"] == nil
         guard let control = mix["monitorControl"] as? JSONObject,
               let epoch = control["authorityEpoch"] as? String, !epoch.isEmpty,
               let number = control["revision"] as? NSNumber else { return }
