@@ -1458,11 +1458,6 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
 
 void MediaCore::applyCommandMutation(const rpc::Json& command) {
   const std::string type = command.getString("type");
-  if (!isNativeMediaCoreCommand(type)) {
-    commandProtocolFailures_.push_back(type.empty() ? "(missing type)" : type);
-    ::corevideo::core::nativeLogf("[cmd] rejected unknown command '%s'\n", type.c_str());
-    return;
-  }
   if (type == "begin-take-transition") {
     beginTakeTransition(command);
   } else if (type == "load-scene-graph") {
@@ -1571,6 +1566,10 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     ::corevideo::core::setNativeVerboseLoggingEnabled(enabled);
     ::corevideo::core::nativeLogf("[diagnostics] verbose logging %s by operator\n",
                                  enabled ? "enabled" : "disabled");
+  } else {
+    commandProtocolFailures_.push_back(type.empty() ? "(missing type)" : type);
+    ::corevideo::core::nativeLogf("[cmd] rejected unknown command '%s'\n", type.c_str());
+    return;
   }
   publishProgramOutputConfiguration();
 }
