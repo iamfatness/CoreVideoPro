@@ -360,13 +360,18 @@ TEST(SourceBusSnapshot, SourcesNodeCarriesPerSourceCounters) {
   EXPECT_EQ(testPatternEntry->get("droppedFrames")->asNumber(), 0.0);
 }
 
-TEST(SourceBusSnapshot, AFreshMediaCoreWithNoSourceStillEmitsAnEmptySourcesArray) {
+TEST(SourceBusSnapshot, AFreshMediaCoreReportsTheConstructedZoomSlate) {
   corevideo::core::MediaCore core(corevideo::modules::createStubModules());
 
   const auto state = core.sessionState();
   const auto* sources = state.get("sources");
   ASSERT_NE(sources, nullptr);
-  EXPECT_TRUE(sources->asArray().empty());
+  const auto& entries = sources->asArray();
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries.front().getString("sourceId"), "zoom-slate");
+  EXPECT_EQ(entries.front().getString("kind"), "zoom-slate");
+  EXPECT_EQ(entries.front().getString("health"), "warming");
+  EXPECT_EQ(entries.front().get("framesIngested")->asNumber(), 0.0);
 }
 
 // --- Task 1: ZoomParticipantSource ---
