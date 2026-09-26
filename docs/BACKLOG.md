@@ -9,6 +9,7 @@ Owner promoted and completed source-bus ingest extraction (#540). On 2026-09-26 
 owner approved executing the #657 control-state plan before SRT/NDI edge I/O (#538).
 Owner accepted live lip sync (#579) and first Takes (#555) on beta `db9e703`.
 #513 validation remains deferred; #582 range correction is in live validation.
+#668 speaker-floor director is intake only until the owner ranks it.
 
 Architecture review pin: commit `6f4f025` (2026-09-24). Issues #616–#622 are that
 review. Live incidents (#615, #608, #624, #597 acceptance) stay unranked and may
@@ -43,7 +44,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 ## Next — control plane, then edge I/O
 
 | Order | Issue | Remaining work |
-|---|---|---|
+|---|---|
 | 1 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send hardening and real endpoint acceptance. NDI stays in-process this cycle; classify it as process-fatal in #617. |
 | 2 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decoding to real pixels/PCM on the source bus, then the 30+ minute contribution soak. Depends on #535 and honest #617 capabilities. |
 | 3 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) | Signing + first external install. Current beta is still unsigned. |
@@ -55,6 +56,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#668](https://github.com/iamfatness/CoreVideoPro/issues/668) | Speaker-floor director: unique guest slots, host excluded from follow-speaker, talk-history galleries. Spec `docs/speaker-floor-director-spec.md`. Plan `docs/speaker-floor-director-plan.md`. Intake 2026-09-26; owner must rank before work. |
 | [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Parent control-state plan tracking #659, #661 and #663; keep open through installed acceptance. |
 | [#652](https://github.com/iamfatness/CoreVideoPro/issues/652) | Live display versus GoXLR monitor A/V sync: same-run clap measured a large monitor delay despite passing recorded Program. Low-period WASAPI monitor change is in validation; real-human acceptance remains. |
 | [#649](https://github.com/iamfatness/CoreVideoPro/issues/649) | RTMP demuxer test compares `const char*` literal addresses; use content comparison so Debug native gate is deterministic. |
