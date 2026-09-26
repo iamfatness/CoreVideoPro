@@ -227,7 +227,9 @@ try {
                   `frames=${senderSnapshot.framesSent ?? 0} slots=${evidence.render?.completedSlots ?? "?"} ` +
                   `videoTicks=${evidence.videoOutput?.completedTicks ?? "?"} ` +
                   `shed=${evidence.encoderExport?.shedFrames ?? "?"} ` +
-                  `bp=${senderSnapshot.backpressure?.divisor ?? 1} warning=${senderSnapshot.warning || "none"}`);
+                  `bp=${senderSnapshot.backpressure?.divisor ?? 1} ` +
+                  `droppedSyncs=${senderSnapshot.asyncWorker?.droppedSyncs ?? "?"} ` +
+                  `stage=${senderSnapshot.asyncWorker?.stage ?? "?"} warning=${senderSnapshot.warning || "none"}`);
       // Sample the sender's OWN accepted-frame counter. This — not the received
       // container's frame rate — is what reveals the feed cadence: FFmpeg pads
       // duplicates up to its declared -r, so a sender fed at 50fps still emits a

@@ -32,7 +32,10 @@ class RtmpVideoFramePacer {
       return true;
     }
 
-    if (elapsedMs + 0.001 < nextWriteAtMs_) {
+    // The caller timestamps a 60 Hz video tick in whole milliseconds. Its
+    // 16/17 ms alternation can land up to 0.67 ms before an ideal deadline;
+    // a sub-millisecond comparison silently rejects every third real frame.
+    if (elapsedMs + 1.0 < nextWriteAtMs_) {
       return false;
     }
 

@@ -142,6 +142,16 @@ TEST(RtmpVideoFramePacer, FiftyHertzProducerYieldsThirtyVideoWritesPerSecond) {
   EXPECT_EQ(accepted, 30);
 }
 
+TEST(RtmpVideoFramePacer, MillisecondClockDoesNotDiscardSixtyHertzFrames) {
+  RtmpVideoFramePacer pacer;
+  int accepted = 0;
+  for (int frame = 0; frame < 600; ++frame) {
+    const double elapsedMs = std::round(static_cast<double>(frame) * 1000.0 / 60.0);
+    accepted += pacer.shouldWrite(elapsedMs, 60) ? 1 : 0;
+  }
+  EXPECT_EQ(accepted, 600);
+}
+
 TEST(RtmpVideoFramePacer, ResetMakesNextFrameImmediatelyEligible) {
   RtmpVideoFramePacer pacer;
   EXPECT_TRUE(pacer.shouldWrite(1000.0, 30));
