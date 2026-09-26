@@ -122,7 +122,22 @@ inline DirectorRecommendation recommendScene(const DirectorSignals& signals,
     DirectorRecommendation result{"panel-discussion", "panel",
         clampDirectorConfidence(90.0 + (scoredCount >= 3 ? 3.0 : 0.0) - degradePenalty),
         "Guest floor supports a gallery."};
-    for (size_t index = 0; index < (std::min)(guests.size(), size_t{6}); ++index) bind(result, guests[index]);
+    // A score can remain positive from an old completed turn. Do not keep a
+    // quiet camera in the wall forever; retain the two-face minimum.
+    std::vector<const FloorPerson*> members;
+    for (const auto& guest : guests) {
+      const bool recentlyHeard = guest.lastSpokeAtMs > 0 && nowMs >= guest.lastSpokeAtMs &&
+          nowMs - guest.lastSpokeAtMs <= 20'000;
+      if (guest.talkingNow || recentlyHeard) members.push_back(&guest);
+    }
+    for (const auto& guest : guests) {
+      if (members.size() >= 2) break;
+      if (std::find(members.begin(), members.end(), &guest) == members.end()) members.push_back(&guest);
+    }
+    std::sort(members.begin(), members.end(),
+        [&byFloor](const FloorPerson* a, const FloorPerson* b) { return byFloor(*a, *b); });
+    for (size_t index = 0; index < (std::min)(members.size(), size_t{6}); ++index)
+      bind(result, *members[index]);
     return result;
   }
   if (guests.size() >= 2 && guests[0].score > 0.0 && recent(guests[1])) {

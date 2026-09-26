@@ -74,6 +74,26 @@ TEST(DirectorFloor, DuplicatePersonSnapshotsNeverProduceDuplicateInterviewSeats)
   EXPECT_EQ(result.slotBindings[0].sourceId, "zoom:a");
 }
 
+TEST(DirectorFloor, GalleryDropsQuietCamerasAfterTwentySecondsButKeepsTwoFaces) {
+  DirectorSignals signals;
+  std::vector<corevideo::core::FloorPerson> floor{
+      {.id="a", .sourceId="zoom:a", .hasVideo=true, .talkingNow=true, .lastSpokeAtMs=30'000, .score=5.0},
+      {.id="b", .sourceId="zoom:b", .hasVideo=true, .lastSpokeAtMs=25'000, .score=2.0},
+      {.id="c", .sourceId="zoom:c", .hasVideo=true, .lastSpokeAtMs=15'000, .score=1.0},
+      {.id="d", .sourceId="zoom:d", .hasVideo=true, .lastSpokeAtMs=2'000, .score=0.5},
+      {.id="e", .sourceId="zoom:e", .hasVideo=true, .score=0.0}};
+  const auto gallery = recommendScene(signals, floor, 30'000);
+  EXPECT_EQ(gallery.recommendedSceneId, "panel");
+  ASSERT_EQ(gallery.slotBindings.size(), 3u);
+  EXPECT_EQ(gallery.slotBindings[0].personId, "a");
+  EXPECT_EQ(gallery.slotBindings[1].personId, "b");
+  EXPECT_EQ(gallery.slotBindings[2].personId, "c");
+  floor[1].lastSpokeAtMs = 1'000;
+  const auto minimum = recommendScene(signals, floor, 30'000);
+  ASSERT_EQ(minimum.slotBindings.size(), 2u);
+  EXPECT_EQ(minimum.slotBindings[0].personId, "a");
+}
+
 // End-to-end through MediaCore: the recommend-auto-production command surfaces a
 // recommendation in the snapshot, derived from the core's current participants.
 TEST(Director, MediaCoreSurfacesRecommendationInSnapshot) {
