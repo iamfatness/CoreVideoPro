@@ -158,13 +158,26 @@ public sealed partial class MagicSceneCoordinator : ObservableObject
         var recommendedSceneId = Recommendation.RecommendedSceneId;
         if (!_host.Scenes.Any(scene => scene.Id == recommendedSceneId) || Recommendation.Confidence <= 0)
         {
-            _host.CommandStatus = "Magic Scene has no available scene recommendation";
+            MagicSceneStatus = $"Magic Scene has no available scene recommendation: {Recommendation.Reason}";
+            _host.CommandStatus = MagicSceneStatus;
+            return;
+        }
+        if (Recommendation.SlotBindings.Count == 0)
+        {
+            MagicSceneStatus = $"Magic Scene has no source to bind on Preview: {Recommendation.Reason}";
+            _host.CommandStatus = MagicSceneStatus;
             return;
         }
         ProductionMode = ProductionMode.Manual;
         CuePreview(recommendedSceneId);
+        if (!_host.ApplyPreviewBindings(recommendedSceneId, Recommendation.SlotBindings, out var bindingReason))
+        {
+            MagicSceneStatus = $"Magic Scene could not bind Preview: {bindingReason}";
+            _host.CommandStatus = MagicSceneStatus;
+            return;
+        }
         var sceneName = RecommendedSceneName;
-        MagicSceneStatus = $"Magic Scene applied: {sceneName} queued on preview";
+        MagicSceneStatus = $"Magic Scene applied: {sceneName} with {Recommendation.SlotBindings.Count} bound source(s) on Preview";
 
         _host.CommandStatus = $"{sceneName} queued by Magic Scene";
         _host.RefreshSceneItems();

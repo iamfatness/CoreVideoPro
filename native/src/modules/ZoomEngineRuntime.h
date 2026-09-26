@@ -57,6 +57,7 @@ class ZoomEngineRuntime {
   // none. Cheap: one lock, no snapshot build. Read on the render tick by the
   // follow-speaker route binding (#478 R2).
   [[nodiscard]] std::string directedSpeakerId();
+  [[nodiscard]] std::vector<ZoomEngineParticipant> floorParticipants();
   // Moves whenever the meeting session changes under the core: join, leave,
   // Engine off (stopCapture) and every new engine process. A follow-speaker
   // route forgets its speaker history when it moves (#478 N2). Lock-free.

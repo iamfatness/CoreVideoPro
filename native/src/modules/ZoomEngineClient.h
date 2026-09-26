@@ -49,6 +49,7 @@ struct ZoomEngineParticipant {
   bool isSharingScreen = false;
   bool isHost = false;
   bool isMe = false;
+  bool directorExcluded = false;
 };
 
 enum class ZoomEngineEventKind {

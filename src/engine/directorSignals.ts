@@ -101,6 +101,17 @@ export type DirectorIntelligenceSignals = {
   screenShare: ScreenShareContentSignal;
   engagement: EngagementSignal;
   feedHealth: FeedHealthSummary;
+  floor: FloorPersonSignal[];
+};
+
+export type FloorPersonSignal = {
+  id: string;
+  sourceId: string;
+  isHost: boolean;
+  hasVideo: boolean;
+  talkingNow: boolean;
+  lastSpokeAtMs: number;
+  score: number;
 };
 
 const EMPTY_HEALTH_BREAKDOWN: Record<FeedHealth, number> = {
@@ -183,6 +194,15 @@ export function buildDirectorIntelligenceSignals(signals: DirectorSignals): Dire
     speakerTurns: summarizeSpeakerTurns(liveParticipants, elapsedMs),
     screenShare: summarizeScreenShare(liveParticipants, snapshot.screenShareActive),
     engagement: summarizeEngagement(allParticipants, liveParticipants),
-    feedHealth: summarizeFeedHealth(allParticipants, liveParticipants)
+    feedHealth: summarizeFeedHealth(allParticipants, liveParticipants),
+    floor: liveParticipants.map((participant) => ({
+      id: participant.id,
+      sourceId: `zoom:${participant.id}`,
+      isHost: participant.role === "Host",
+      hasVideo: true,
+      talkingNow: participant.isActiveSpeaker,
+      lastSpokeAtMs: participant.isActiveSpeaker ? elapsedMs : 0,
+      score: participant.isActiveSpeaker ? 5 : 0
+    }))
   };
 }

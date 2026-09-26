@@ -1,4 +1,5 @@
 using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.WinUI.ViewModels.MagicScene;
 
@@ -49,6 +50,7 @@ public interface IMagicSceneHost
 
     // --- scene refresh ---
     void SchedulePreviewRoutingRefresh();
+    bool ApplyPreviewBindings(string sceneId, IReadOnlyList<NativeDirectorSlotBinding> bindings, out string reason);
 
     void RefreshSceneItems();
 

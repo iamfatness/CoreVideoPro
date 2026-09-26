@@ -7,6 +7,7 @@
 #include "core/MonitorShedPolicy.h"
 #include "core/OutputLifecyclePolicy.h"
 #include "core/FollowSpeakerHold.h"
+#include "core/SpeakerFloor.h"
 #include "core/RouteSourcePolicy.h"
 #include "core/RenderedProgramSources.h"
 #include "core/RenderedSceneAttributionPolicy.h"
@@ -1051,6 +1052,7 @@ class MediaCore {
   // Recently directed speakers for follow-speaker routes, scoped to one meeting
   // (#478 N2). Written only from plan builds, which run under coreMutex.
   mutable FollowSpeakerHold followSpeakerHold_;
+  SpeakerFloor speakerFloor_;
   // Moves on every stub join/leave, standing in for the engine's speaker epoch.
   std::uint64_t zoomStubEpoch_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";

@@ -141,6 +141,22 @@ public sealed partial class StudioViewModel : IMagicSceneHost
 
     void IMagicSceneHost.SchedulePreviewRoutingRefresh() => SchedulePreviewRoutingRefresh();
 
+    bool IMagicSceneHost.ApplyPreviewBindings(
+        string sceneId,
+        IReadOnlyList<CoreVideoPro.MediaCore.Models.NativeDirectorSlotBinding> bindings,
+        out string reason)
+    {
+        if (!string.Equals(PreviewSceneId, sceneId, StringComparison.Ordinal))
+        {
+            reason = "Preview changed before its source bindings arrived.";
+            return false;
+        }
+        var routes = GetPreviewEditableRoutes();
+        if (!MagicSceneBindingPolicy.Apply(routes, bindings, out reason)) return false;
+        SchedulePreviewRoutingRefresh();
+        return true;
+    }
+
     void IMagicSceneHost.RefreshSceneItems() => RefreshSceneItems();
 
     void IMagicSceneHost.RefreshProductionReadouts() => RefreshProductionReadouts();

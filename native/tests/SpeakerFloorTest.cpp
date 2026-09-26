@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <vector>
+#include <cmath>
 
 namespace {
 using corevideo::core::MediaCore;
@@ -51,6 +53,41 @@ TEST(SpeakerFloor, CaptureAliasUsesTheSamePersonAsZoom) {
   EXPECT_TRUE(floor.isHost("host-user"));
   EXPECT_TRUE(floor.claimPersonSlot("capture:host-camera"));
   EXPECT_FALSE(floor.claimPersonSlot("zoom:host-user"));
+}
+
+TEST(SpeakerFloorLedger, DebouncesTurnsScoresGuestsAndClearsOnEpoch) {
+  SpeakerFloor floor;
+  auto guest = [](bool talking) {
+    return std::vector<corevideo::core::FloorObservation>{{"zoom:guest-7", {}, false, true, talking}};
+  };
+  floor.observeFrame(1, 1'000, guest(true));
+  floor.observeFrame(1, 1'399, guest(true));
+  EXPECT_FALSE(floor.snapshot(1'399)[0].talkingNow);
+  floor.observeFrame(1, 1'400, guest(true));
+  EXPECT_TRUE(floor.snapshot(1'400)[0].talkingNow);
+  EXPECT_EQ(floor.snapshot(1'400)[0].turnStartedAtMs, 1'000u);
+  floor.observeFrame(1, 2'000, guest(false));
+  floor.observeFrame(1, 2'599, guest(false));
+  EXPECT_TRUE(floor.snapshot(2'599)[0].talkingNow);
+  floor.observeFrame(1, 2'600, guest(false));
+  const auto done = floor.snapshot(2'600);
+  EXPECT_FALSE(done[0].talkingNow);
+  EXPECT_EQ(done[0].lastTurnMs, 1'000u);
+  EXPECT_EQ(done[0].lastSpokeAtMs, 2'000u);
+  EXPECT_EQ(done[0].windowTalkMs, 1'000u);
+  EXPECT_NEAR(done[0].score, 2.0 * std::exp(-0.6 / 8.0) + 0.125 + 0.025, 0.000001);
+  floor.observeFrame(2, 3'000, guest(false));
+  EXPECT_EQ(floor.snapshot(3'000)[0].score, 0.0);
+}
+
+TEST(SpeakerFloorLedger, AliasesCollapseAndZoomFrameWinsPreferredSource) {
+  SpeakerFloor floor;
+  floor.observeFrame(1, 1'000, {{"capture:camera-2", "guest-7", false, true, true},
+                                {"zoom:guest-7", {}, false, true, true}});
+  const auto people = floor.snapshot(1'000);
+  ASSERT_EQ(people.size(), 1u);
+  EXPECT_EQ(people[0].id, "guest-7");
+  EXPECT_EQ(people[0].sourceId, "zoom:guest-7");
 }
 
 TEST(SpeakerFloorRenderPlan, TwoUpRefusesDuplicateZoomPersonOnProgram) {

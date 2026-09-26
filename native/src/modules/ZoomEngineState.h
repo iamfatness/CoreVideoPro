@@ -84,6 +84,7 @@ class ZoomEngineRuntimeState {
   void reset();
 
   [[nodiscard]] ZoomEngineRuntimeSnapshot snapshot() const;
+  [[nodiscard]] std::vector<ZoomEngineParticipant> floorParticipants() const;
   [[nodiscard]] bool sdkAuthenticated() const { return sdkAuthenticated_; }
   // The DIRECTED speaker (the director's choice, not Zoom's raw event), "" when none.
   [[nodiscard]] std::string directedSpeakerIdString() const {
