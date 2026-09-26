@@ -3,8 +3,9 @@
 **This is the only ordered list of work.** Status and detailed evidence live on
 linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 
-Owner-approved order updated 2026-09-26: #535 is closed. Now: make the wire honest (#616 with #619/#620), then constructed capabilities (#617), then
-a Windows production-native CI compile lane (#618), then SRT/NDI edge I/O (#538).
+Owner-approved order updated 2026-09-26: #616, #601, and #617 are closed.
+The owner paused the remaining private-SDK CI work in #618 pending research.
+Next: sync contention (#622), observation model (#621), then SRT/NDI edge I/O (#538).
 Owner accepted live lip sync (#579) and first Takes (#555) on beta `db9e703`.
 #513 validation remains deferred; #582 range correction is in live validation.
 
@@ -25,29 +26,25 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 ## Now — existing priority order
 
-| Order | Issue | Remaining work / next evidence |
-|---|---|---|
-| 1 | [#616](https://github.com/iamfatness/CoreVideoPro/issues/616) | **Make the wire honest.** Command manifest is the live C++ dispatcher. Unknown batch commands are protocol failures. The three production-sync roster commands are handled. Program texture events use the program drain ([#619](https://github.com/iamfatness/CoreVideoPro/issues/619)). The high-priority response lane is bounded ([#620](https://github.com/iamfatness/CoreVideoPro/issues/620)). Not #530. |
-| 2 | [#601](https://github.com/iamfatness/CoreVideoPro/issues/601) | Owner requested 2026-09-24: preserve the configured frame rate. Explicit encoder rate control and measured conformance at 4.5/6/10 Mbps, with 2 Mbps as a stress check. Full-range noise reaches QP 51; the original claim that bitrate never reaches the encoder is not established. Hard saturation remains distinct from normal bitrate control. Evidence: [investigation](issue-601-rate-control-investigation.md). Await live acceptance. |
+No issue is currently in Now. The first unblocked ranked item is #622 below.
 
 ## Deferred by owner
 
 | Issue | Status |
 |---|---|
 | [#513](https://github.com/iamfatness/CoreVideoPro/issues/513) | Owner reports an overnight run with no recurrence and will validate later. Pooling/teardown fixes and the earlier 151-minute soak remain evidence of reduced exposure, not root-cause closure. Not a blocker for #535. |
+| [#618](https://github.com/iamfatness/CoreVideoPro/issues/618) | Owner paused private Zoom SDK CI provisioning pending research. The non-stub Windows adapter compile lane passed in #643; real Zoom CI compile still reports `MISSING_EVIDENCE`. Keep open. |
 
 ## Next — control plane, then edge I/O
 
 | Order | Issue | Remaining work |
 |---|---|---|
-| 1 | [#617](https://github.com/iamfatness/CoreVideoPro/issues/617) | Capabilities describe constructed adapters, not compile flags. Required before #538/#536 admission. Do not advertise DeckLink/AJA until [#537](https://github.com/iamfatness/CoreVideoPro/issues/537) has pixels. |
-| 2 | [#618](https://github.com/iamfatness/CoreVideoPro/issues/618) | Windows CI production-native compile lane (`COREVIDEO_STUB=OFF` + the flags the beta ships). Compile-only; no 60 fps soak on the runner. Not #575. |
-| 3 | [#622](https://github.com/iamfatness/CoreVideoPro/issues/622) | Single-slot sync plus UI-thread snapshot apply can drop a fire-and-forget command. After the wire is honest. Not #509. |
-| 4 | [#621](https://github.com/iamfatness/CoreVideoPro/issues/621) | One generated observation model; typed snapshot, redacted qualification JSON, and ControlState are views of it. Lets #610/#519/#551 stop growing a fourth projection. |
-| 5 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send hardening and real endpoint acceptance. NDI stays in-process this cycle; classify it as process-fatal in #617. |
-| 6 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decoding to real pixels/PCM on the source bus, then the 30+ minute contribution soak. Depends on #535 and honest #617 capabilities. |
-| 7 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) | Signing + first external install. Current beta is still unsigned. |
-| 8 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) | **Cold Take acceptance.** Media half closed by #535 slice 3b. Step 1 open: a never-cued clip cut to Program still cold-starts into the warming slate. `scripts/qa/media-take-ab.py --skip-cue` is the falsification control. |
+| 1 | [#622](https://github.com/iamfatness/CoreVideoPro/issues/622) | Single-slot sync plus UI-thread snapshot apply can drop a fire-and-forget command. After the wire is honest. Not #509. |
+| 2 | [#621](https://github.com/iamfatness/CoreVideoPro/issues/621) | One generated observation model; typed snapshot, redacted qualification JSON, and ControlState are views of it. Lets #610/#519/#551 stop growing a fourth projection. |
+| 3 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | SRT send + NDI send hardening and real endpoint acceptance. NDI stays in-process this cycle; classify it as process-fatal in #617. |
+| 4 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | SRT ingest decoding to real pixels/PCM on the source bus, then the 30+ minute contribution soak. Depends on #535 and honest #617 capabilities. |
+| 5 | [#423](https://github.com/iamfatness/CoreVideoPro/issues/423) | Signing + first external install. Current beta is still unsigned. |
+| 6 | [#449](https://github.com/iamfatness/CoreVideoPro/issues/449) | **Cold Take acceptance.** Media half closed by #535 slice 3b. Step 1 open: a never-cued clip cut to Program still cold-starts into the warming slate. `scripts/qa/media-take-ab.py --skip-cue` is the falsification control. |
 
 ## Unranked — show survival and operator findings
 
@@ -115,6 +112,9 @@ These rows record specific fixes, not blanket production or fleet reliability.
 
 | Issue | Merged fix / acceptance |
 |---|---|
+| [#616](https://github.com/iamfatness/CoreVideoPro/issues/616) | Live dispatcher command admission, protocol failure handling, parity coverage, Program event drain, and bounded response lane merged in #631 and #639. |
+| [#601](https://github.com/iamfatness/CoreVideoPro/issues/601) | Live meeting Program 1080p60 recording and local SRT receiver bitrate acceptance merged in #641. |
+| [#617](https://github.com/iamfatness/CoreVideoPro/issues/617) | Constructed adapter capability reporting merged in #635. |
 | [#579](https://github.com/iamfatness/CoreVideoPro/issues/579), [#578](https://github.com/iamfatness/CoreVideoPro/issues/578) | Clap harness and source-video timing fixes shipped in #577; 32 recorded paired events within 41 ms. Owner reports good live lip sync in their overnight test (2026-09-22). |
 | [#555](https://github.com/iamfatness/CoreVideoPro/issues/555) | #554 fix, first-Take checks, and resolution-ramp coverage in #577; owner reports no first-Take oddness in their test (2026-09-22). |
 | [#570](https://github.com/iamfatness/CoreVideoPro/issues/570) | Async MFT drain/shutdown in #566. Hardware cycles, installed restarts, sustained run and normal drain/stop passed. |
