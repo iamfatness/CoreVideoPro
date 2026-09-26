@@ -1800,7 +1800,8 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_EQ(states->get("rtmp-output")->getString("state"),
             rtmp && rtmp->runtimeAvailableAtConstruction() ? "available" :
             rtmp ? "omitted" : COREVIDEO_WITH_RTMP_OUTPUT ? "failed-to-construct" : "omitted");
-  EXPECT_EQ(states->get("ndi-output")->getString("failureScope"), "process");
+  EXPECT_EQ(states->get("ndi-output")->getString("failureScope"),
+            COREVIDEO_WITH_NDI_OUTPUT ? "process" : "");
 }
 
 TEST(MediaCoreCommand, ProfileDistinguishesStubFromConstructedAdapters) {
