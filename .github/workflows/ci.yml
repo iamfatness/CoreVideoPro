@@ -371,9 +371,17 @@ jobs:
         shell: pwsh
         run: |
           $withZoom = if ($env:ZOOM_SDK_DIR) { 'ON' } else { 'OFF' }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $version = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+          if (-not $version) { throw 'Windows runner has no Visual Studio C++ toolchain.' }
+          $generator = switch ([int]($version.Split('.')[0])) {
+            17 { 'Visual Studio 17 2022' }
+            18 { 'Visual Studio 18 2026' }
+            default { throw "Unsupported Visual Studio version: $version" }
+          }
           $args = @(
             '-S', 'native', '-B', 'native/build-production-ci',
-            '-G', 'Visual Studio 17 2022', '-A', 'x64',
+            '-G', $generator, '-A', 'x64',
             '-DCOREVIDEO_STUB=OFF', '-DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON',
             '-DCOREVIDEO_WITH_D3D11=ON', '-DCOREVIDEO_WITH_MF_ENCODER=ON',
             '-DCOREVIDEO_WITH_WASAPI_MONITOR=ON', '-DCOREVIDEO_WITH_WASAPI_CAPTURE=ON',
