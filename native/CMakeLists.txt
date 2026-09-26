@@ -655,6 +655,7 @@ if(BUILD_TESTING)
     tests/OutputLifecyclePolicyTest.cpp
     tests/MonitorShedPolicyTest.cpp
     tests/AvSyncClapProbeTest.cpp
+    tests/MonitorLatencyPolicyTest.cpp
     tests/BitstreamQueueOverflowTest.cpp
     tests/StreamBackpressurePolicyTest.cpp
     tests/RenderedSceneAttributionTest.cpp

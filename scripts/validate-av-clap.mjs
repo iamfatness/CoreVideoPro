@@ -22,7 +22,8 @@
  *                                            [--no-frame-sync] [--keep-artifact]
  *                                            [--build-dir path/to/binaries]
  *                                            [--live-paths --monitor-device "Game"
- *                                             --monitor-id <WASAPI endpoint id>]
+ *                                             --monitor-id <WASAPI endpoint id>
+ *                                             --program-buffer 2]
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -51,6 +52,7 @@ const verbose = args.includes("--verbose");
 const livePaths = args.includes("--live-paths");
 const monitorDevice = argValue("monitor-device", "Game (TC-HELICON GoXLR)");
 const monitorId = argValue("monitor-id", "");
+const programBufferFrames = Number(argValue("program-buffer", "2"));
 const loopbackRecorder = join(buildDir, `corevideo-loopback-rec${exeSuffix}`);
 const clapIntervalMs = 3000;
 
@@ -60,6 +62,10 @@ if (!existsSync(nativeCore) || !existsSync(fakeEngine)) {
 }
 if (livePaths && (process.platform !== "win32" || !existsSync(loopbackRecorder))) {
   console.error(`--live-paths needs Windows and ${loopbackRecorder}`);
+  process.exit(1);
+}
+if (livePaths && ![2, 3].includes(programBufferFrames)) {
+  console.error("--program-buffer must be 2 or 3 frames");
   process.exit(1);
 }
 
@@ -83,7 +89,12 @@ const env = {
   COREVIDEO_FAKE_NO_CHURN: "1",
   COREVIDEO_FAKE_CLAP_MS: String(clapIntervalMs),
 };
-if (livePaths) env.COREVIDEO_AV_SYNC_TRACE = "1";
+if (livePaths) {
+  env.COREVIDEO_AV_SYNC_TRACE = "1";
+  // This is a process-start setting. Both sides of the A/B run use the same
+  // depth; the live operator reported active depth 2, so that is our default.
+  env.COREVIDEO_PROGRAM_BUFFER_FRAMES = String(programBufferFrames);
+}
 if (frameSyncOff) env.COREVIDEO_FRAME_SYNC = "0";
 
 const child = spawn(nativeCore, [], { cwd: buildDir, env, stdio: ["pipe", "pipe", "pipe"] });
@@ -284,6 +295,7 @@ try {
   for (let i = 0; i < 200 && !handshake; i += 1) await sleep(50);
   if (!handshake) throw new Error("no native-core handshake");
   console.log(`Frame sync    : ${frameSyncOff ? "OFF (control)" : "ON (default)"}`);
+  if (livePaths) console.log(`Program depth : ${programBufferFrames} frames (set before core launch)`);
 
   await send("zoom-join", { payload: { meetingNumber: "1234567890", displayName: "av-clap" } });
   await sleep(3000);
@@ -450,6 +462,9 @@ try {
     const displayTimes = displayClaps.map((clap) => clap.qpc100ns / 1e7);
     const monitorSummary = describePairs("Display-MON", pairEvents(displayTimes, monitorTimes));
     if (!recordSummary) throw new Error("recording clap result missing while live paths were requested");
+    if (endCounters?.audioMixSession?.monitorStatus !== "playing") {
+      throw new Error(`monitor did not stay playing: ${endCounters?.audioMixSession?.monitorStatus ?? "missing"}`);
+    }
     const monitorBefore = startCounters?.audioMixSession?.monitorUnderruns;
     const monitorAfter = endCounters?.audioMixSession?.monitorUnderruns;
     const lostBefore = startCounters?.realtimeEvidence?.audio?.audioLostSamples;
@@ -466,7 +481,7 @@ try {
     const evidencePath = join(liveCaptureDir, "evidence.json");
     writeFileSync(evidencePath, JSON.stringify({
       source: "fake-engine timed clap; Program texture publish, endpoint WASAPI loopback, and recorded Program from one run",
-      buildDir, monitorDevice, monitorId, seconds: recordSeconds,
+      buildDir, monitorDevice, monitorId, programBufferFrames, seconds: recordSeconds,
       displayMarker: "delivered Program source frame at DXGI shared-texture publish; actual monitor vsync is not measured",
       displayClaps, monitorTimes, recordSummary, monitorSummary,
       monitorUnderruns, lostSamples, recordingArtifact: artifactAbsolute,

@@ -88,6 +88,19 @@ int main(int argc, char** argv) {
   client->GetMixFormat(&format);
   std::fprintf(stderr, "format: %luHz %dch %d-bit\n", format->nSamplesPerSec, format->nChannels,
                format->wBitsPerSample);
+  IAudioClient3* client3 = nullptr;
+  if (SUCCEEDED(client->QueryInterface(__uuidof(IAudioClient3), reinterpret_cast<void**>(&client3)))) {
+    UINT32 defaultFrames = 0, fundamentalFrames = 0, minFrames = 0, maxFrames = 0;
+    const HRESULT periodHr = client3->GetSharedModeEnginePeriod(format, &defaultFrames,
+                                                                 &fundamentalFrames, &minFrames, &maxFrames);
+    if (SUCCEEDED(periodHr)) {
+      std::fprintf(stderr, "shared periods: default=%u fundamental=%u min=%u max=%u frames\n",
+                   defaultFrames, fundamentalFrames, minFrames, maxFrames);
+    } else {
+      std::fprintf(stderr, "shared periods unavailable: hr=0x%08lx\n", static_cast<unsigned long>(periodHr));
+    }
+    client3->Release();
+  }
   if (FAILED(client->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
                                 10'000'000, 0, format, nullptr))) {
     std::fprintf(stderr, "initialize(loopback) failed\n");
