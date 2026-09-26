@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <rect width="1280" height="640" fill="#1c1c1e"/>
+  <text x="24" y="36" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="18" font-weight="600">How a row moves without a tickle</text>
+  <text x="24" y="56" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Same slot 2. Facts patch cells. Collection of 10 rows does not rebuild. Preview/Take are not in this path.</text>
+
+  <rect x="24" y="80" width="1232" height="70" rx="8" fill="#232326"/>
+  <text x="40" y="108" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">t0 · subscribed</text>
+  <text x="40" y="130" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="14">2  OFF  Guest B  ZOOM  Sam Chen   1920×1080@30   LIVE</text>
+
+  <text x="620" y="168" fill="#64d2ff" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">SourceHealthChanged  1920×1080 → 1280×720 @15</text>
+  <rect x="24" y="180" width="1232" height="70" rx="8" fill="#232326"/>
+  <text x="40" y="208" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">t1 · Zoom negotiated down · Format cell only</text>
+  <text x="40" y="230" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="14">2  OFF  Guest B  ZOOM  Sam Chen   1280×720@15   LIVE    cap 1080p60 dimmed</text>
+
+  <text x="620" y="268" fill="#ffd60a" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">ActiveSpeakerChanged  tally on preview cell only</text>
+  <rect x="24" y="280" width="1232" height="70" rx="8" fill="#232326"/>
+  <text x="40" y="308" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">t2 · talking</text>
+  <text x="40" y="330" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="14">2  OFF  Guest B  ZOOM  Sam Chen   1280×720@15   TALKING   preview white border</text>
+
+  <text x="620" y="368" fill="#ff453a" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">OutputLifecycleChanged  ISO session recording</text>
+  <rect x="24" y="380" width="1232" height="70" rx="8" fill="#232326"/>
+  <text x="40" y="408" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">t3 · Rec chip</text>
+  <text x="40" y="430" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="14">2  REC  Guest B  ZOOM  Sam Chen   1280×720@15   TALKING</text>
+
+  <text x="620" y="468" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Participant video-off</text>
+  <rect x="24" y="480" width="1232" height="70" rx="8" fill="#232326"/>
+  <text x="40" y="508" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">t4 · video off · no click</text>
+  <text x="40" y="530" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="14">2  REC  Guest B  ZOOM  Sam Chen   —   VIDEO OFF   preview slate</text>
+
+  <text x="24" y="590" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Forbidden: SetScene, Take, row click, or full table rebuild as the way t0–t4 become visible.</text>
+  <text x="24" y="612" fill="#636366" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">Engine / meeting epoch change wipes Format, Status, and incarnation — last-meeting 1080p30 must not linger.</text>
+</svg>

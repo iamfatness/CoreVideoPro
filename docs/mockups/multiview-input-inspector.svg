@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect width="1280" height="720" fill="#1c1c1e"/>
+  <rect x="0" y="0" width="1280" height="44" fill="#2c2c2e"/>
+  <text x="20" y="28" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="15" font-weight="600">CoreVideo Pro — Inputs</text>
+  <text x="220" y="28" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Studio</text>
+  <text x="280" y="28" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Scenes</text>
+  <rect x="340" y="10" width="72" height="24" rx="4" fill="#0a84ff"/>
+  <text x="354" y="27" fill="#fff" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Inputs</text>
+  <text x="430" y="28" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Audio</text>
+  <text x="1140" y="28" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Meeting live</text>
+  <circle cx="1126" cy="23" r="5" fill="#30d158"/>
+
+  <text x="20" y="72" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="18" font-weight="600">Multiview inputs</text>
+  <text x="20" y="92" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">10 fixed slots · format is negotiated actual · Rec is ISO session · preview is the existing Multiview texture</text>
+
+  <rect x="16" y="108" width="1248" height="28" fill="#2c2c2e"/>
+  <g fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">
+    <text x="28" y="126">On</text>
+    <text x="62" y="126">#</text>
+    <text x="92" y="126">Rec</text>
+    <text x="148" y="126">Name</text>
+    <text x="280" y="126">Mode</text>
+    <text x="400" y="126">Selection</text>
+    <text x="600" y="126">Format</text>
+    <text x="760" y="126">Audio</text>
+    <text x="850" y="126">Status</text>
+    <text x="980" y="126">Preview</text>
+    <text x="1120" y="126">Meters</text>
+  </g>
+
+  <!-- row 1 live guest -->
+  <rect x="16" y="136" width="1248" height="52" fill="#232326"/>
+  <rect x="28" y="154" width="28" height="16" rx="8" fill="#30d158"/>
+  <circle cx="46" cy="162" r="6" fill="#fff"/>
+  <text x="66" y="167" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">1</text>
+  <rect x="90" y="150" width="46" height="20" rx="4" fill="#3a3a3c"/>
+  <text x="102" y="164" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">OFF</text>
+  <text x="148" y="167" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Guest A</text>
+  <rect x="276" y="150" width="78" height="20" rx="4" fill="#1c3a5c"/>
+  <text x="288" y="164" fill="#64d2ff" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">ZOOM</text>
+  <text x="400" y="167" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Alex Rivera</text>
+  <text x="600" y="160" fill="#f2f2f7" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="12">1920×1080@30</text>
+  <text x="600" y="176" fill="#636366" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">cap 1080p60</text>
+  <text x="760" y="167" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">ISO</text>
+  <rect x="848" y="150" width="52" height="20" rx="4" fill="#0e3b1e"/>
+  <text x="860" y="164" fill="#30d158" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">LIVE</text>
+  <rect x="978" y="142" width="72" height="40" rx="3" fill="#111" stroke="#30d158" stroke-width="2"/>
+  <text x="990" y="166" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="9">tile 1</text>
+  <rect x="1120" y="156" width="80" height="8" rx="2" fill="#3a3a3c"/>
+  <rect x="1120" y="156" width="48" height="8" rx="2" fill="#30d158"/>
+
+  <!-- row 2 recording + talking -->
+  <rect x="16" y="188" width="1248" height="52" fill="#1f1f21"/>
+  <rect x="28" y="206" width="28" height="16" rx="8" fill="#30d158"/>
+  <circle cx="46" cy="214" r="6" fill="#fff"/>
+  <text x="66" y="219" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">2</text>
+  <rect x="90" y="202" width="46" height="20" rx="4" fill="#ff453a"/>
+  <text x="100" y="216" fill="#fff" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">REC</text>
+  <text x="148" y="219" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Guest B</text>
+  <rect x="276" y="202" width="78" height="20" rx="4" fill="#1c3a5c"/>
+  <text x="288" y="216" fill="#64d2ff" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">ZOOM</text>
+  <text x="400" y="219" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Sam Chen</text>
+  <text x="600" y="212" fill="#f2f2f7" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="12">1280×720@15</text>
+  <text x="600" y="228" fill="#ffd60a" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">actual ≠ cap 1080p60</text>
+  <text x="760" y="219" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">ISO</text>
+  <rect x="848" y="202" width="70" height="20" rx="4" fill="#3a2a00"/>
+  <text x="856" y="216" fill="#ffd60a" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">TALKING</text>
+  <rect x="978" y="194" width="72" height="40" rx="3" fill="#111" stroke="#fff" stroke-width="2"/>
+  <text x="990" y="218" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="9">tile 2</text>
+  <rect x="1120" y="208" width="80" height="8" rx="2" fill="#3a3a3c"/>
+  <rect x="1120" y="208" width="70" height="8" rx="2" fill="#ffd60a"/>
+
+  <!-- row 3 video off -->
+  <rect x="16" y="240" width="1248" height="52" fill="#232326"/>
+  <rect x="28" y="258" width="28" height="16" rx="8" fill="#30d158"/>
+  <circle cx="46" cy="266" r="6" fill="#fff"/>
+  <text x="66" y="271" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">3</text>
+  <rect x="90" y="254" width="46" height="20" rx="4" fill="#3a3a3c"/>
+  <text x="102" y="268" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">OFF</text>
+  <text x="148" y="271" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Guest C</text>
+  <rect x="276" y="254" width="78" height="20" rx="4" fill="#1c3a5c"/>
+  <text x="288" y="268" fill="#64d2ff" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">ZOOM</text>
+  <text x="400" y="271" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Jordan Lee</text>
+  <text x="600" y="271" fill="#636366" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="12">—</text>
+  <text x="760" y="271" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Program</text>
+  <rect x="848" y="254" width="78" height="20" rx="4" fill="#3a3a3c"/>
+  <text x="856" y="268" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">VIDEO OFF</text>
+  <rect x="978" y="246" width="72" height="40" rx="3" fill="#111" stroke="#3a3a3c"/>
+  <text x="988" y="270" fill="#636366" font-family="Segoe UI, Helvetica, sans-serif" font-size="9">slate</text>
+  <rect x="1120" y="260" width="80" height="8" rx="2" fill="#3a3a3c"/>
+
+  <!-- row 4 follow speaker preview -->
+  <rect x="16" y="292" width="1248" height="52" fill="#1f1f21"/>
+  <rect x="28" y="310" width="28" height="16" rx="8" fill="#30d158"/>
+  <circle cx="46" cy="318" r="6" fill="#fff"/>
+  <text x="66" y="323" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">4</text>
+  <rect x="90" y="306" width="46" height="20" rx="4" fill="#3a3a3c"/>
+  <text x="102" y="320" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">OFF</text>
+  <text x="148" y="323" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Follow</text>
+  <rect x="276" y="306" width="96" height="20" rx="4" fill="#3a2a00"/>
+  <text x="284" y="320" fill="#ffd60a" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">FOLLOW</text>
+  <text x="400" y="323" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Sam Chen</text>
+  <text x="600" y="323" fill="#f2f2f7" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="12">1280×720@15</text>
+  <text x="760" y="323" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Program</text>
+  <rect x="848" y="306" width="70" height="20" rx="4" fill="#0e3b1e"/>
+  <text x="860" y="320" fill="#30d158" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">LIVE</text>
+  <rect x="978" y="298" width="72" height="40" rx="3" fill="#111" stroke="#32d74b" stroke-width="2"/>
+  <text x="988" y="322" fill="#32d74b" font-family="Segoe UI, Helvetica, sans-serif" font-size="9">PVW</text>
+  <rect x="1120" y="312" width="80" height="8" rx="2" fill="#3a3a3c"/>
+  <rect x="1120" y="312" width="40" height="8" rx="2" fill="#30d158"/>
+
+  <!-- row 5 stalled -->
+  <rect x="16" y="344" width="1248" height="52" fill="#232326"/>
+  <rect x="28" y="362" width="28" height="16" rx="8" fill="#30d158"/>
+  <circle cx="46" cy="370" r="6" fill="#fff"/>
+  <text x="66" y="375" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">5</text>
+  <rect x="90" y="358" width="46" height="20" rx="4" fill="#3a3a3c"/>
+  <text x="102" y="372" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">OFF</text>
+  <text x="148" y="375" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Guest D</text>
+  <rect x="276" y="358" width="78" height="20" rx="4" fill="#1c3a5c"/>
+  <text x="288" y="372" fill="#64d2ff" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">ZOOM</text>
+  <text x="400" y="375" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Riley Park</text>
+  <text x="600" y="368" fill="#ff9f0a" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="12">1920×1080@30</text>
+  <text x="600" y="384" fill="#ff9f0a" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">age 2.4s stale</text>
+  <text x="760" y="375" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">ISO</text>
+  <rect x="848" y="358" width="70" height="20" rx="4" fill="#3a2200"/>
+  <text x="858" y="372" fill="#ff9f0a" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">STALLED</text>
+  <rect x="978" y="350" width="72" height="40" rx="3" fill="#111" stroke="#ff9f0a"/>
+  <text x="988" y="374" fill="#ff9f0a" font-family="Segoe UI, Helvetica, sans-serif" font-size="9">hold</text>
+  <rect x="1120" y="364" width="80" height="8" rx="2" fill="#3a3a3c"/>
+
+  <!-- row 6 host UVC on program -->
+  <rect x="16" y="396" width="1248" height="52" fill="#1f1f21"/>
+  <rect x="28" y="414" width="28" height="16" rx="8" fill="#30d158"/>
+  <circle cx="46" cy="422" r="6" fill="#fff"/>
+  <text x="66" y="427" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">6</text>
+  <rect x="90" y="410" width="46" height="20" rx="4" fill="#3a3a3c"/>
+  <text x="102" y="424" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">OFF</text>
+  <text x="148" y="427" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Host cam</text>
+  <rect x="276" y="410" width="78" height="20" rx="4" fill="#2a2a40"/>
+  <text x="292" y="424" fill="#bf5af2" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">UVC</text>
+  <text x="400" y="427" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Host · exclude director</text>
+  <text x="600" y="427" fill="#f2f2f7" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="12">1920×1080@60</text>
+  <text x="760" y="427" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Program</text>
+  <rect x="848" y="410" width="52" height="20" rx="4" fill="#5c1a12"/>
+  <text x="858" y="424" fill="#ff453a" font-family="Segoe UI, Helvetica, sans-serif" font-size="10">PGM</text>
+  <rect x="978" y="402" width="72" height="40" rx="3" fill="#111" stroke="#ff9f0a" stroke-width="2"/>
+  <text x="990" y="426" fill="#ff9f0a" font-family="Segoe UI, Helvetica, sans-serif" font-size="9">PGM</text>
+  <rect x="1120" y="416" width="80" height="8" rx="2" fill="#3a3a3c"/>
+  <rect x="1120" y="416" width="36" height="8" rx="2" fill="#30d158"/>
+
+  <!-- rows 7-10 dimmed empty -->
+  <rect x="16" y="448" width="1248" height="160" fill="#18181a"/>
+  <g fill="#48484a" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">
+    <text x="66" y="480">7</text><text x="148" y="480">Input 7</text><text x="400" y="480">Select a source</text><text x="600" y="480">—</text><text x="850" y="480">idle</text>
+    <text x="66" y="520">8</text><text x="148" y="520">Input 8</text><text x="400" y="520">Select a source</text><text x="600" y="520">—</text><text x="850" y="520">idle</text>
+    <text x="66" y="560">9</text><text x="148" y="560">Input 9</text><text x="400" y="560">Select a source</text><text x="600" y="560">—</text><text x="850" y="560">idle</text>
+    <text x="66" y="600">10</text><text x="148" y="600">Input 10</text><text x="400" y="600">Select a source</text><text x="600" y="600">—</text><text x="850" y="600">idle</text>
+  </g>
+  <text x="20" y="640" fill="#636366" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">Empty slots stay in place. Do not collapse the 10-row map.</text>
+  <text x="20" y="700" fill="#636366" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">Mockup for #674 · not a screenshot of shipping UI</text>
+</svg>

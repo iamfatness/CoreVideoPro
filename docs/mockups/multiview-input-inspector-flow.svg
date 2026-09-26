@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520">
+  <rect width="1280" height="520" fill="#1c1c1e"/>
+  <text x="24" y="36" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="18" font-weight="600">Control path vs media path</text>
+
+  <rect x="24" y="64" width="240" height="88" rx="8" fill="#2c2c2e"/>
+  <text x="40" y="100" fill="#64d2ff" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Zoom engine</text>
+  <text x="40" y="122" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">roster, size/fps,</text>
+  <text x="40" y="138" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">video-off, talking</text>
+
+  <rect x="300" y="64" width="240" height="88" rx="8" fill="#2c2c2e"/>
+  <text x="316" y="100" fill="#30d158" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Media core</text>
+  <text x="316" y="122" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">health observation,</text>
+  <text x="316" y="138" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">ISO lifecycle, texture</text>
+
+  <rect x="576" y="64" width="280" height="88" rx="8" fill="#2c2c2e"/>
+  <text x="592" y="100" fill="#ffd60a" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">#657 / #659 bus</text>
+  <text x="592" y="122" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">DomainFact + snapshot</text>
+  <text x="592" y="138" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">revision, epoch, identity</text>
+
+  <rect x="892" y="64" width="364" height="88" rx="8" fill="#2c2c2e"/>
+  <text x="908" y="100" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">MultiviewInputRow ×10</text>
+  <text x="908" y="122" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">patch Format / Status / Rec</text>
+  <text x="908" y="138" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="11">preview = texture crop</text>
+
+  <path d="M264 108 H300" stroke="#636366" stroke-width="2"/>
+  <path d="M540 108 H576" stroke="#636366" stroke-width="2"/>
+  <path d="M856 108 H892" stroke="#636366" stroke-width="2"/>
+
+  <rect x="24" y="200" width="1232" height="120" rx="8" fill="#232326"/>
+  <text x="40" y="232" fill="#f2f2f7" font-family="Segoe UI, Helvetica, sans-serif" font-size="14">Pixels never ride this bus</text>
+  <text x="40" y="258" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Zoom raw I420 → core SourceBus → GPU Multiview compositor → shared texture → row Preview crop</text>
+  <text x="40" y="284" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">No CPU JPEG thumb. No extra Zoom subscribe to paint the inspector.</text>
+  <text x="40" y="308" fill="#8e8e93" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">A 250 ms snapshot repairs gaps only. Happy path is the fact.</text>
+
+  <rect x="24" y="344" width="400" height="140" rx="8" fill="#2c2c2e"/>
+  <text x="40" y="376" fill="#30d158" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Allowed</text>
+  <text x="40" y="400" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Cell patch on revision</text>
+  <text x="40" y="420" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Epoch wipe on Engine off</text>
+  <text x="40" y="440" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Pending vs applied On toggle</text>
+  <text x="40" y="460" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Reuse #659 projection</text>
+
+  <rect x="440" y="344" width="400" height="140" rx="8" fill="#2c2c2e"/>
+  <text x="456" y="376" fill="#ff453a" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Forbidden</text>
+  <text x="456" y="400" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Tickle / Preview / Take to refresh</text>
+  <text x="456" y="420" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Rebuild 10 rows on roster packet</text>
+  <text x="456" y="440" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Print configured cap as actual</text>
+  <text x="456" y="460" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Fourth snapshot / StudioViewModel dump</text>
+
+  <rect x="856" y="344" width="400" height="140" rx="8" fill="#2c2c2e"/>
+  <text x="872" y="376" fill="#ffd60a" font-family="Segoe UI, Helvetica, sans-serif" font-size="13">Tally</text>
+  <text x="872" y="400" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Program amber</text>
+  <text x="872" y="420" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Preview green</text>
+  <text x="872" y="440" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Talking white</text>
+  <text x="872" y="460" fill="#aeaeb2" font-family="Segoe UI, Helvetica, sans-serif" font-size="12">Stalled amber hold frame</text>
+</svg>
