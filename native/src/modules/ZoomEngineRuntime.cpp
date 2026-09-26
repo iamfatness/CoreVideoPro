@@ -306,7 +306,10 @@ rpc::Json ZoomEngineRuntime::leave() {
   if (process_ && process_->running()) {
     enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
   }
-  state_.reset();
+  // The operator's Leave is an authoritative empty-roster barrier. A plain
+  // reset discards its meeting generation and revision, so the shell rejects
+  // the resulting revision-zero snapshot and keeps stale participant strips.
+  state_.apply({ZoomEngineEventKind::Left});
   mediaStarted_ = false;
   latestDecodedFrames_.clear();
   frameSync_.clear();
