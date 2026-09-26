@@ -6,6 +6,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <regex>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -114,18 +116,31 @@ TEST(ContractParity, ProductionBuilderCommandsAreInTheLiveDispatcher) {
   const std::string dispatcher = readRepoFile("native/src/core/MediaCore.cpp");
   ASSERT_FALSE(builder.empty());
   ASSERT_FALSE(dispatcher.empty());
-  std::size_t cursor = 0;
-  while ((cursor = builder.find("Command(\"", cursor)) != std::string::npos) {
-    cursor += std::string("Command(\"").size();
-    const auto end = builder.find('"', cursor);
-    ASSERT_NE(end, std::string::npos);
-    const auto name = builder.substr(cursor, end - cursor);
-    EXPECT_TRUE(corevideo::core::isNativeMediaCoreCommand(name)) << name;
-    cursor = end + 1;
+  // Extract the executable branch names from the shipping C++ dispatcher.
+  // The manifest and shell builder must agree with those branches in both
+  // directions, so adding an unlisted branch or a phantom manifest entry fails.
+  const std::regex branchPattern("type\\s*==\\s*\"([^\"]+)\"");
+  std::set<std::string> liveBranches;
+  for (auto it = std::sregex_iterator(dispatcher.begin(), dispatcher.end(), branchPattern);
+       it != std::sregex_iterator(); ++it) {
+    liveBranches.insert((*it)[1].str());
   }
+  ASSERT_FALSE(liveBranches.empty());
+  std::set<std::string> manifest;
   for (const auto name : corevideo::core::kNativeMediaCoreCommandTypes) {
-    const auto needle = std::string("type == \"") + std::string(name) + "\"";
-    EXPECT_NE(dispatcher.find(needle), std::string::npos) << name;
+    EXPECT_TRUE(manifest.insert(std::string(name)).second) << "duplicate manifest command: " << name;
+  }
+  EXPECT_EQ(liveBranches, manifest);
+
+  const std::regex builderPattern("Command\\(\"([^\"]+)\"");
+  std::set<std::string> productionCommands;
+  for (auto it = std::sregex_iterator(builder.begin(), builder.end(), builderPattern);
+       it != std::sregex_iterator(); ++it) {
+    productionCommands.insert((*it)[1].str());
+  }
+  ASSERT_FALSE(productionCommands.empty());
+  for (const auto& name : productionCommands) {
+    EXPECT_TRUE(liveBranches.contains(name)) << "production command has no live dispatcher branch: " << name;
   }
 }
 

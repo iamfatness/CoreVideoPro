@@ -45,8 +45,9 @@ inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
     "rtmp-output",
 };
 
-// The live dispatcher in MediaCore::applyCommandMutation handles exactly these
-// names. A production builder that emits anything else is a protocol failure.
+// Contract view of the live MediaCore::applyCommandMutation branches. The
+// dispatcher itself decides admission; ContractParity checks this view and the
+// production builder against every branch in both directions.
 inline constexpr std::array<std::string_view, 45> kNativeMediaCoreCommandTypes = {
     "begin-take-transition",
     "load-scene-graph",
@@ -94,13 +95,6 @@ inline constexpr std::array<std::string_view, 45> kNativeMediaCoreCommandTypes =
     "set-active-speaker",
     "set-screen-share-source",
 };
-
-inline bool isNativeMediaCoreCommand(std::string_view type) {
-  for (const auto name : kNativeMediaCoreCommandTypes) {
-    if (name == type) return true;
-  }
-  return false;
-}
 
 inline constexpr std::array<std::string_view, 14> kNativeBridgeCommandTypes = {
     "join",
