@@ -12,7 +12,7 @@
  * points the core's program output at it, and fails unless decodable video
  * actually lands in the receiver.
  *
- * Usage: node ./scripts/validate-srt-output.mjs [--seconds 15] [--port 9020]
+ * Usage: node ./scripts/validate-srt-output.mjs [--seconds 30] [--port 9020]
  *                                               [--passphrase <10+ chars>] [--keep]
  */
 import { spawn, spawnSync } from "node:child_process";
@@ -32,7 +32,7 @@ const argValue = (name, fallback) => {
   const index = args.indexOf(`--${name}`);
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 };
-const seconds = Number(argValue("seconds", 15));
+const seconds = Number(argValue("seconds", 30));
 // The rate the sender below is configured to declare, and therefore the rate the
 // received stream must actually carry.
 const TARGET_FPS = 60;
@@ -161,6 +161,23 @@ try {
   await send("zoom-join", { payload: { meetingNumber: "1234567890", displayName: "srt-proof" } });
   await sleep(3000);
 
+  // The fake engine auto-subscribes video only. Arm the same explicit media
+  // spine used by the A/V clap proof so the receiver is judging real Zoom
+  // PCM and the video worker's 60 Hz feed, not the audio worker fallback.
+  await send("zoom-media-spine-sync", {
+    elapsedMs: Date.now() - startedAt,
+    spinePayload: {
+      readiness: { status: "ready", platform: "windows", sdkVersion: "fake-engine", checks: [], blockers: [], warnings: [] },
+      participants: [{ sdkUserId: "101", displayName: "srt-proof", role: "guest", videoOn: true, muted: false, talking: true, audioLevel: 60 }],
+      subscriptions: [
+        { participantId: "101", kind: "meeting-audio", purpose: "program", priority: 0 },
+        { participantId: "101", kind: "participant-video", purpose: "program", priority: 10 },
+      ],
+      startCapture: true, blocked: false, warnings: [], summary: "SRT delivery proof subscription",
+    },
+  });
+  await sleep(2000);
+
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
     commands: [
@@ -205,8 +222,12 @@ try {
     const senders = sync.snapshot?.outputSenders?.senders ?? sync.snapshot?.outputSenderSession?.senders ?? [];
     senderSnapshot = senders.find((s) => (s.destination ?? s.senderId ?? "").includes("srt")) ?? senders[0] ?? null;
     if (senderSnapshot) {
+      const evidence = sync.snapshot?.realtimeEvidence ?? {};
       console.log(`sender        : status=${senderSnapshot.status} health=${senderSnapshot.destinationHealth ?? "?"} ` +
-                  `frames=${senderSnapshot.framesSent ?? 0} warning=${senderSnapshot.warning || "none"}`);
+                  `frames=${senderSnapshot.framesSent ?? 0} slots=${evidence.render?.completedSlots ?? "?"} ` +
+                  `videoTicks=${evidence.videoOutput?.completedTicks ?? "?"} ` +
+                  `shed=${evidence.encoderExport?.shedFrames ?? "?"} ` +
+                  `bp=${senderSnapshot.backpressure?.divisor ?? 1} warning=${senderSnapshot.warning || "none"}`);
       // Sample the sender's OWN accepted-frame counter. This — not the received
       // container's frame rate — is what reveals the feed cadence: FFmpeg pads
       // duplicates up to its declared -r, so a sender fed at 50fps still emits a
@@ -312,16 +333,14 @@ if (senderFps.length) {
   const best = sorted[sorted.length - 1];
   console.log(`sender feed   : ${median.toFixed(1)}fps median, ${best.toFixed(1)}fps best ` +
               `of ${TARGET_FPS} (${senderFps.length} intervals)`);
-  // Judge on the BEST interval, not the median. The defect under test is a
-  // STRUCTURAL cap — video fed from the ~50Hz audio worker can never exceed ~50
-  // on any interval. A busy machine makes the async sender coalesce frames and
-  // dip (46-53fps observed on a dev box mid-build), which a median-based gate
-  // reports as the same failure. The peak separates "capped" from "loaded".
+  // Judge on the BEST interval, not the median. A 50Hz structural cap can
+  // never exceed ~50, while transient load can coalesce async frames. The
+  // longer default window leaves several settled intervals to distinguish them.
   if (best < TARGET_FPS * 0.92) {
     failures.push(
       `the sender never exceeded ${best.toFixed(1)}fps while the program is composited ` +
-      `at ${TARGET_FPS} — that is a cadence cap, not load: the stream carries ` +
-      `duplicated frames rather than ${TARGET_FPS}fps of motion`);
+      `at ${TARGET_FPS}; inspect videoTicks, shed and backpressure above to distinguish ` +
+      `a cadence cap from load. The receiver may contain duplicated frames`);
   }
 } else {
   console.log("sender feed   : not measurable (no frame-counter samples)");
