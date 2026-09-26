@@ -4658,6 +4658,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"monitorDeviceId", audioMonitorDeviceId_},
       {"monitorDeviceName", audioMonitorDeviceName_},
       {"monitorVolume", audioMonitorVolume_},
+      {"monitorControl", audioMonitorControlState()},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
       {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
       {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
