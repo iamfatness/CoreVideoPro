@@ -389,7 +389,7 @@ jobs:
             '-DCOREVIDEO_WITH_UVC=ON', '-DCOREVIDEO_WITH_WGC=ON',
             '-DCOREVIDEO_WITH_VIRTUALCAM=ON', '-DCOREVIDEO_WITH_BROWSER_HOST=ON',
             "-DCOREVIDEO_WITH_ZOOM=$withZoom", "-DCOREVIDEO_BUILD_ZOOM_ENGINE=$withZoom",
-            '-DBUILD_TESTING=OFF'
+            '-DBUILD_TESTING=ON'
           )
           if ($env:ZOOM_SDK_DIR) {
             $args += "-DCOREVIDEO_ZOOM_SDK_ROOT=$env:ZOOM_SDK_DIR"
@@ -400,7 +400,7 @@ jobs:
       - name: Compile production native targets
         shell: pwsh
         run: |
-          $targets = @('corevideo-native', 'corevideo-zoom-engine-fake', 'corevideo-plugin-host', 'corevideo-virtualcam', 'corevideo-browser-host')
+          $targets = @('corevideo-native', 'corevideo-native-tests', 'corevideo-zoom-engine-fake', 'corevideo-plugin-host', 'corevideo-virtualcam', 'corevideo-browser-host')
           if ($env:ZOOM_SDK_DIR) { $targets += 'corevideo-zoom-engine' }
           & cmake --build native/build-production-ci --config Release --parallel 4 --target $targets
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
