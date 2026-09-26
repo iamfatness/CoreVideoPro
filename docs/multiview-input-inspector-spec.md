@@ -1,6 +1,8 @@
 # Multiview input inspector
 
 Linked issue: [#674](https://github.com/iamfatness/CoreVideoPro/issues/674).
+Execution plan: [multiview-input-inspector-plan.md](multiview-input-inspector-plan.md).
+Agent brief: [agent-briefs/multiview-input-inspector.md](agent-briefs/multiview-input-inspector.md).
 Depends on the control-state contract: [control-state-events-spec.md](control-state-events-spec.md)
 ([#657](https://github.com/iamfatness/CoreVideoPro/issues/657) / [#659](https://github.com/iamfatness/CoreVideoPro/issues/659)).
 This is not a work queue. [BACKLOG.md](BACKLOG.md) owns rank.
@@ -61,7 +63,7 @@ Rules:
 | Audio | Mixer tap + Zoom mute fact | ISO / program / off. Zoom-muted vs strip-muted stay separate fields. |
 | Status | Source health + subscription generation | Live / connecting / video-off / stalled / no incoming. |
 | Preview | Multiview tile crop | Existing texture. Tally border: program amber, preview green, talking white. |
-| Meters | Core observation, coalesced | Peak only, ≥15 Hz UI. |
+| Meters | Core observation, coalesced | Peak only, ≤15 Hz UI. |
 
 Omit ZoomISO's Output Device and Participant Controls until SDI/NDI rows are
 real. Options menu: ISO folder, exclude-from-director (#668), open-in-Preview.
