@@ -29,9 +29,9 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Order | Issue | Remaining work |
 |---|---|---|
-| 1 | [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Execute the approved control-state authority plan in scoped consumer slices. The spec and execution plan are merged; implementation and live acceptance remain. |
-| 2 | [#659](https://github.com/iamfatness/CoreVideoPro/issues/659) | First consumer: versioned Zoom roster into core and shell participant/audio projection, with stale snapshot and reused-ID rejection. |
-| 3 | [#661](https://github.com/iamfatness/CoreVideoPro/issues/661) | First revisioned editor command: one bounded control domain shared by the shell and Control API, with applied result and conflict reconciliation. |
+| 1 | [#659](https://github.com/iamfatness/CoreVideoPro/issues/659) | First consumer: versioned Zoom roster into core and shell participant/audio projection, with stale snapshot and reused-ID rejection. |
+| 2 | [#661](https://github.com/iamfatness/CoreVideoPro/issues/661) | First revisioned editor command: one bounded control domain shared by the shell and Control API, with applied result and conflict reconciliation. |
+| 3 | [#663](https://github.com/iamfatness/CoreVideoPro/issues/663) | Recovery and pressure for these consumers, using the existing bounded mailbox and process epochs. |
 
 ## Deferred by owner
 
@@ -55,6 +55,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Parent control-state plan tracking #659, #661 and #663; keep open through installed acceptance. |
 | [#652](https://github.com/iamfatness/CoreVideoPro/issues/652) | Live display versus GoXLR monitor A/V sync: same-run clap measured a large monitor delay despite passing recorded Program. Low-period WASAPI monitor change is in validation; real-human acceptance remains. |
 | [#649](https://github.com/iamfatness/CoreVideoPro/issues/649) | RTMP demuxer test compares `const char*` literal addresses; use content comparison so Debug native gate is deterministic. |
 | [#637](https://github.com/iamfatness/CoreVideoPro/issues/637) | Live Zoom validator requests subscriptions but never starts raw capture after the explicit Engine On gate. Set `startCapture` in the dedicated harness and repeat meeting media validation. |

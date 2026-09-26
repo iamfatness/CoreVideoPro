@@ -6,6 +6,19 @@ namespace CoreVideoPro.WinUI.ViewModels;
 public sealed partial class StudioViewModel
 {
     public NativeMediaCoreAudioMixSession? AppliedAudioMonitorSession => _bridge.LastSnapshot?.AudioMixSession;
+
+    public string ControlRecoverySummary
+    {
+        get
+        {
+            var state = _bridge.ControlRecovery;
+            return $"barriers={state.SnapshotBarriers} rosterGaps={state.RosterMissingRevisions} " +
+                   $"rosterStale={state.RosterStaleSnapshots} monitorGaps={state.MonitorMissingRevisions} " +
+                   $"monitorStale={state.MonitorStaleSnapshots} queue={state.WaitingCommands} " +
+                   $"overloads={state.CommandOverloads} coalescedPolls={state.CoalescedPolls} " +
+                   $"coreResets={state.ProcessResets}";
+        }
+    }
     private bool _suppressAudioMonitorControlSubmission;
     private string _audioMonitorControlNotice = string.Empty;
     private MediaCoreAudioMonitorWire? _audioMonitorPendingDraft;

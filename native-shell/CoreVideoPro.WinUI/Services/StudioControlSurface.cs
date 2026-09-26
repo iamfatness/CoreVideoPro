@@ -578,6 +578,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             AudioMonitorAuthorityEpoch = appliedMonitor?.MonitorControl?.AuthorityEpoch ?? string.Empty,
             AudioMonitorRevision = appliedMonitor?.MonitorControl?.Revision ?? 0,
             AudioMonitorLastResult = appliedMonitor?.MonitorControl?.LastResult?.Status ?? string.Empty,
+            ControlRecoverySummary = _vm.ControlRecoverySummary,
             ZoomAudioMode = ZoomAudioModePreference.Format(_vm.ZoomAudioMode),
             MasterLimiterOn = _vm.MasterLimiterEnabled,
             MasteringOn = _vm.MasteringEnabled,
