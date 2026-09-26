@@ -1048,5 +1048,35 @@
     "contract": "ControlOperationIdentity",
     "accepted": false,
     "json": "{\"operationId\":\"opaque-1\",\"authorityEpoch\":\"opaque-1\",\"expectedRevision\":\"1\"}"
+  },
+  {
+    "id": "ZoomRosterSnapshotRevision-valid",
+    "contract": "ZoomRosterSnapshotRevision",
+    "accepted": true,
+    "json": "{\"rosterEpoch\":\"1:2:engine-a\",\"rosterRevision\":3}"
+  },
+  {
+    "id": "ZoomRosterSnapshotRevision-additive",
+    "contract": "ZoomRosterSnapshotRevision",
+    "accepted": true,
+    "json": "{\"rosterEpoch\":\"1:2:engine-a\",\"rosterRevision\":3,\"future\":true}"
+  },
+  {
+    "id": "ZoomRosterSnapshotRevision-missing-epoch",
+    "contract": "ZoomRosterSnapshotRevision",
+    "accepted": false,
+    "json": "{\"rosterRevision\":3}"
+  },
+  {
+    "id": "ZoomRosterSnapshotRevision-zero",
+    "contract": "ZoomRosterSnapshotRevision",
+    "accepted": false,
+    "json": "{\"rosterEpoch\":\"1:2:engine-a\",\"rosterRevision\":0}"
+  },
+  {
+    "id": "ZoomRosterSnapshotRevision-fraction",
+    "contract": "ZoomRosterSnapshotRevision",
+    "accepted": false,
+    "json": "{\"rosterEpoch\":\"1:2:engine-a\",\"rosterRevision\":1.5}"
   }
 ]

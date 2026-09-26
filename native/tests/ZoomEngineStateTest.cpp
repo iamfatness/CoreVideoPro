@@ -60,6 +60,29 @@ TEST(ZoomEngineRuntimeState, PreservesUtf8ParticipantIdentityAcrossIpcJson) {
   EXPECT_EQ(participants[0].getString("displayName"), "Elena Kovač — 東京");
 }
 
+TEST(ZoomEngineRuntimeState, VersionedRosterRejectsLateMuteAndOldMeeting) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":42,"name":"Guest","is_muted":true}]})"), 1);
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":1,"roster_revision":2,"participants":[{"id":42,"name":"Guest","is_muted":false}]})"), 2);
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":42,"name":"Guest","is_muted":true}]})"), 3);
+  ASSERT_EQ(state.snapshot().participants.size(), 1u);
+  EXPECT_FALSE(state.snapshot().participants[0].isMuted);
+  EXPECT_EQ(state.snapshot().rosterRevision, 2u);
+
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":2,"roster_revision":1,"participants":[{"id":42,"name":"New guest","is_muted":false}]})"), 4);
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":1,"roster_revision":3,"participants":[{"id":42,"name":"Old guest","is_muted":true}]})"), 5);
+  ASSERT_EQ(state.snapshot().participants.size(), 1u);
+  EXPECT_EQ(state.snapshot().participants[0].displayName, "New guest");
+  EXPECT_FALSE(state.snapshot().participants[0].isMuted);
+  EXPECT_EQ(state.snapshot().meetingGeneration, 2u);
+
+  state.apply(eventFrom(R"({"cmd":"left"})"), 6);
+  EXPECT_TRUE(state.snapshot().participants.empty());
+  EXPECT_EQ(state.snapshot().rosterRevision, 2u);
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":2,"roster_revision":1,"participants":[{"id":42,"name":"Late guest","is_muted":true}]})"), 7);
+  EXPECT_TRUE(state.snapshot().participants.empty());
+}
+
 TEST(ZoomEngineRuntimeState, DebouncesActiveSpeakerAndHonorsIncumbentHold) {
   corevideo::modules::ZoomEngineRuntimeState state;
   const auto roster = eventFrom(

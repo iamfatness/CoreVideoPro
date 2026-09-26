@@ -975,6 +975,12 @@ rpc::Json MediaCore::sessionState() const {
   if (zoomCapture.get("participants")) {
     state.emplace("participants", *zoomCapture.get("participants"));
   }
+  if (zoomCapture.get("rosterEpoch")) {
+    state.emplace("rosterEpoch", *zoomCapture.get("rosterEpoch"));
+  }
+  if (zoomCapture.get("rosterRevision")) {
+    state.emplace("rosterRevision", *zoomCapture.get("rosterRevision"));
+  }
   if (const auto activeSpeakerId = zoomCapture.getString("activeSpeakerId"); !activeSpeakerId.empty()) {
     state.emplace("activeSpeakerId", activeSpeakerId);
   }

@@ -11077,7 +11077,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var participants = LiveProductionSync.MapSnapshotParticipants(snapshot);
             MfT("mapParticipants");
             Settings.ApplyMeetingStateLabel(meetingState, participants?.Count ?? snapshot.Participants.Count);
-            if (participants is { Count: > 0 })
+            if (participants is { } && (participants.Count > 0 || snapshot.RosterRevision > 0))
             {
                 ApplyLiveParticipants(participants);
                 MfT("applyParticipants");

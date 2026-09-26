@@ -898,6 +898,8 @@ public sealed record NativeMediaCoreStateSnapshot
     public NativeMediaCoreAutoProduction? AutoProduction { get; init; }
     /// <summary>Optional wire field: Zoom meeting state (e.g. in_meeting, idle). Stub until native core publishes it.</summary>
     public string? MeetingState { get; init; }
+    public string? RosterEpoch { get; init; }
+    public long RosterRevision { get; init; }
     /// <summary>Optional wire field: active breakout room id. Stub until native core publishes it.</summary>
     public string? BreakoutRoomId { get; init; }
     /// <summary>Optional wire field: active breakout room label.</summary>
