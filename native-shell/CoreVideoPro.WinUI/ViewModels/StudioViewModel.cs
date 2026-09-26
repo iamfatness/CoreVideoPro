@@ -7767,6 +7767,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(AudioMonitorVolumeLabel));
         OnPropertyChanged(nameof(AudioMonitorStatus));
         OnPropertyChanged(nameof(AudioMonitorEngineStatus));
+        OnPropertyChanged(nameof(ControlRecoverySummary));
         OnPropertyChanged(nameof(LocalAudioSourceStatus));
         RefreshAudioDiagnosticSummaries(throttleDiagnostics);
     }
