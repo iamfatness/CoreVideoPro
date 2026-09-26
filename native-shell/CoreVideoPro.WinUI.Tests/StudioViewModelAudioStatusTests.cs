@@ -11,20 +11,36 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class StudioViewModelAudioStatusTests
 {
     [Theory]
-    [InlineData(false, false, false)]
-    [InlineData(true, false, true)]
-    [InlineData(false, true, true)]
-    [InlineData(true, true, true)]
-    public void ResolveEffectiveAudioMute_CombinesSourceAndMixMute(
-        bool sourceMuted,
-        bool mixMuted,
-        bool expected) =>
-        Assert.Equal(expected, StudioViewModel.ResolveEffectiveAudioMute(sourceMuted, mixMuted));
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public void ResolveMixerMute_OnlyFollowsOperatorMute(bool mixMuted, bool expected) =>
+        Assert.Equal(expected, StudioViewModel.ResolveMixerMute(mixMuted));
 
-    // #481: THE A1's MUTE IS ONLY EVER SET BY THE A1. A channel with no prior
-    // (first appearance in this session) must always start unmuted, no matter
-    // what the core's EFFECTIVE mute (nativeChannel.Muted, which folds in the
-    // Zoom mute) was on that first snapshot.
+    [Fact]
+    public void BuildAudioMixChannelWire_ZoomMuteThenUnmuteNeedsNoPreviewSync()
+    {
+        const string sourceId = "16796672";
+        var strip = new ParticipantAudioMix
+        {
+            ParticipantId = sourceId, OutputLevel = 0, GainDb = 0,
+            NoiseSuppression = false, Status = "native-pcm", Muted = false
+        };
+        var strips = new Dictionary<string, ParticipantAudioMix> { [sourceId] = strip };
+        var guest = new Participant { Id = sourceId, IsMuted = true, AudioLevel = 12 };
+        var roster = new Dictionary<string, Participant> { [sourceId] = guest };
+
+        // The sync made while Zoom says muted must not latch that source state
+        // into the core mixer. A later unmute can resume on the next PCM packet.
+        Assert.False(StudioViewModel.BuildAudioMixChannelWire(sourceId, strips, roster).Muted);
+        roster[sourceId] = new Participant { Id = sourceId, IsMuted = false, AudioLevel = 78 };
+        Assert.False(StudioViewModel.BuildAudioMixChannelWire(sourceId, strips, roster).Muted);
+
+        strip.Muted = true; // The operator's own mute still gates this channel.
+        Assert.True(StudioViewModel.BuildAudioMixChannelWire(sourceId, strips, roster).Muted);
+    }
+
+    // #481/#608: the mixer mute follows the operator's strip. A Zoom mute
+    // changes the source indicator and raw PCM availability, not this setting.
     [Fact]
     public void LiveCase485_BuildAudioMixChannelsOmitsNonSourceZoomGuests()
     {
@@ -193,8 +209,8 @@ public sealed class StudioViewModelAudioStatusTests
     // they never construct a native channel at all. These drive the WHOLE merge
     // (StudioViewModel.MergeNativeAudioChannel) through the exact live sequence
     // from the #481 meeting: a channel arrives while the guest is Zoom-muted
-    // (the core echoes that as its EFFECTIVE nativeChannel.Muted), then the guest
-    // unmutes in Zoom before the core's next wire catches up.
+    // (the core echoes that as nativeChannel.Muted), then the guest unmutes in
+    // Zoom before another mixer command reaches the core.
     private static NativeMediaCoreParticipantAudioChannel NativeChannel(bool muted) => new()
     {
         ParticipantId = "guest-1",
@@ -213,6 +229,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         Assert.False(result.Muted);
         Assert.True(result.SourceMuted);
+        Assert.False(StudioViewModel.ResolveMixerMute(result.Muted));
     }
 
     [Fact]
@@ -230,7 +247,7 @@ public sealed class StudioViewModelAudioStatusTests
 
         Assert.False(rebuild2.Muted);
         Assert.False(rebuild2.SourceMuted);
-        Assert.False(StudioViewModel.ResolveEffectiveAudioMute(rebuild2.SourceMuted, rebuild2.Muted));
+        Assert.False(StudioViewModel.ResolveMixerMute(rebuild2.Muted));
     }
 
     [Fact]

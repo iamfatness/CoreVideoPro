@@ -8869,22 +8869,16 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     /// #481: THE A1's MUTE IS ONLY EVER SET BY THE A1. A channel that has no
     /// `prior` in this session's map — because it is brand new, or because it
     /// only just got PCM — starts UNMUTED, full stop. Never seed it from the
-    /// core's `nativeChannel.Muted` (that is the core's EFFECTIVE mute, which
-    /// folds in the Zoom mute — see `ResolveEffectiveAudioMute`) and never from
+    /// core's `nativeChannel.Muted` (the last mixer command's mute) and never from
     /// any other derived value. A live meeting proved the bug: Courtney and Guy
     /// were unmuted in Zoom and talking, but their channels appeared for the
     /// first time already Zoom-muted, that got copied into `Muted`, `prior`
     /// preserved it forever, and the A1's console showed nobody muted while
     /// three guests were silently gated off every bus.
     ///
-    /// Explicit policy decision: a Zoom mute is surfaced ONLY as `SourceMuted`
-    /// (see `sourceMuted` above / the "muted in Zoom" strip indicator) and never
-    /// changes this field. `BuildAudioMixChannelWire` still ORs `SourceMuted`
-    /// into the EFFECTIVE mute it sends to the core (`ResolveEffectiveAudioMute`),
-    /// so a Zoom-muted guest is still gated out of the program mix — which is
-    /// harmless, since Zoom sends no audio while muted anyway — but that gating
-    /// is recomputed fresh every wire build, never latched into the A1's own
-    /// `Muted` state.
+    /// A Zoom mute is surfaced as `SourceMuted` on the strip. It must not be
+    /// serialized as a mixer mute: roster updates do not issue mixer commands,
+    /// so the old Zoom mute stayed latched until an unrelated scene sync (#608).
     /// </summary>
     public static bool ResolveMergedChannelMute(ParticipantAudioMix? prior) => prior?.Muted ?? false;
 
@@ -9749,7 +9743,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return completed;
     }
 
-    private MediaCoreAudioMixChannelWire BuildAudioMixChannelWire(
+    internal static MediaCoreAudioMixChannelWire BuildAudioMixChannelWire(
         string sourceId,
         IReadOnlyDictionary<string, ParticipantAudioMix> audioMixByParticipant,
         IReadOnlyDictionary<string, Participant> participantsById)
@@ -9758,14 +9752,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         participantsById.TryGetValue(sourceId, out var participant);
 
         var manualGain = NormalizeMixerGain(mix?.ManualGainDb ?? 0);
-        // #481 finding 2: a roster miss here is NOT evidence of a Zoom mute - fall
-        // back to false, never to mix?.SourceMuted (which would read as carrying a
-        // stale value forward, even though in practice it is this tick's already-
-        // fixed field; false keeps this site correct independently of that).
+        // #608: only the operator's mixer mute is durable mixer state. Zoom's
+        // source mute belongs to the live roster and the raw audio callback;
+        // serializing it here leaves an unmuted guest gated until the next sync.
         return new MediaCoreAudioMixChannelWire(
             sourceId,
             Math.Clamp(participant?.AudioLevel ?? mix?.OutputLevel ?? 0, 0, 100),
-            ResolveEffectiveAudioMute(participant?.IsMuted ?? false, mix?.Muted),
+            ResolveMixerMute(mix?.Muted),
             mix?.NoiseSuppression ?? false,
             Math.Abs(manualGain) < 0.05 ? null : manualGain,
             NormalizeMixerPan(mix?.Pan ?? 0),
@@ -9774,8 +9767,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             mix?.InsertSettings);
     }
 
-    public static bool ResolveEffectiveAudioMute(bool? sourceMuted, bool? mixMuted) =>
-        sourceMuted == true || mixMuted == true;
+    public static bool ResolveMixerMute(bool? mixMuted) =>
+        mixMuted == true;
 
     public static bool IsConfiguredCaptureAudioSource(MediaCoreCaptureAudioSourceWire source) =>
         source.Embedded ||
