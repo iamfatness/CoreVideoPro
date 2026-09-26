@@ -230,6 +230,42 @@ try {
 
   const chosen = roster.slice(0, wantSources);
   const pid = (p) => String(p.participantId ?? p.id ?? p.userId);
+  const spinePayload = {
+    readiness: { status: 'ready', platform: process.platform === 'darwin' ? 'macos' : 'windows',
+      sdkVersion: 'zoom-engine', checks: [], blockers: [], warnings: [] },
+    participants: chosen.map((p) => ({ sdkUserId: pid(p), displayName: p.displayName ?? p.name ?? '',
+      role: 'guest', videoOn: true, muted: !!p.muted, talking: !!p.talking,
+      audioLevel: p.talking ? 70 : 0, networkQuality: 'good' })),
+    subscriptions: [
+      { participantId: pid(chosen[0]), kind: 'meeting-audio', purpose: 'program', priority: 0 },
+      ...chosen.map((p, i) => ({ participantId: pid(p), kind: 'participant-video',
+        purpose: i === 0 ? 'active-speaker' : 'program', priority: 10 + i })),
+    ],
+    startCapture: true, blocked: false, warnings: [], summary: 'Live meeting soak raw capture',
+  };
+  // The roster alone is not evidence of pixels. Engine On is an explicit
+  // spine request; this meeting may need a second recording-rights request.
+  let videoFrames = 0, retriedCapture = false;
+  const mediaDeadline = Date.now() + 30000;
+  const mediaStartedAt = Date.now();
+  while (Date.now() < mediaDeadline) {
+    if (!retriedCapture && Date.now() - mediaStartedAt >= 10000) {
+      await send('zoom-stop-capture');
+      retriedCapture = true;
+    }
+    const response = await send('zoom-media-spine-sync',
+      { spinePayload, elapsedMs: Date.now() - mediaStartedAt });
+    if (response?.ok === false) throw new Error(`raw media sync failed: ${response.error?.message ?? 'unknown'}`);
+    videoFrames = (response?.spineSnapshot?.subscriptions ?? [])
+      .filter((s) => s.kind === 'participant-video')
+      .reduce((sum, s) => sum + Number(s.framesReceived ?? 0), 0);
+    if (videoFrames > 0) break;
+    await sleep(500);
+  }
+  evidence.rawVideoFramesBeforeOutput = videoFrames;
+  evidence.rawCaptureRetry = retriedCapture;
+  if (videoFrames === 0) throw new Error('no raw participant frame after Engine On and one retry');
+  console.log(`Raw media   : ${videoFrames} frame(s) before Program setup${retriedCapture ? ' after Engine On retry' : ''}`);
   const sources = chosen.map((p, i) => ({
     sourceId: `zoom:${pid(p)}`, kind: 'zoom', participantId: pid(p), slot: i,
     label: p.displayName ?? p.name ?? `CAM ${i + 1}`,
@@ -464,9 +500,9 @@ try {
       failures.push('full decode of the artifact reported errors');
     }
 
-    // PIXELS. 8995 frames of flat luma once passed every validator that counted
-    // frames, so measure the picture: mean luma must be in a sane range AND the
-    // frame-to-frame luma must actually MOVE.
+    // PIXELS. Mean luma catches blank output, but it cannot judge motion: a
+    // participant can move against a fixed background while whole-frame
+    // brightness stays almost constant. Compare decoded frames spatially.
     const stats = await exec('ffmpeg', ['-v', 'error', '-i', artifact,
       '-vf', 'signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-',
       '-f', 'null', '-'], { windowsHide: true, maxBuffer: 128 * 1024 * 1024 });
@@ -475,13 +511,20 @@ try {
     else {
       const mean = yavg.reduce((a, b) => a + b, 0) / yavg.length;
       const min = Math.min(...yavg), max = Math.max(...yavg);
-      const deltas = yavg.slice(1).map((v, i) => Math.abs(v - yavg[i]));
-      const movingFrames = deltas.filter((d) => d > 0.05).length;
+      const motion = await exec('ffmpeg', ['-v', 'error', '-i', artifact,
+        '-vf', 'tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-',
+        '-f', 'null', '-'], { windowsHide: true, maxBuffer: 128 * 1024 * 1024 });
+      const frameDifferences = [...String(motion.stdout).matchAll(/YAVG=([\d.]+)/g)].map((m) => Number(m[1]));
+      const movingFrames = frameDifferences.filter((value) => value > 0.05).length;
       evidence.pixels = { sampledFrames: yavg.length, meanLuma: mean, minLuma: min, maxLuma: max,
-        movingFrameRatio: deltas.length ? movingFrames / deltas.length : 0 };
+        meanFrameDifference: frameDifferences.length
+          ? frameDifferences.reduce((sum, value) => sum + value, 0) / frameDifferences.length : 0,
+        movingFrameRatio: frameDifferences.length ? movingFrames / frameDifferences.length : 0 };
       if (mean < 8 || mean > 247) failures.push(`mean luma ${mean.toFixed(1)} — the recording is effectively blank`);
+      if (frameDifferences.length !== Math.max(0, yavg.length - 1))
+        failures.push('could not compare every adjacent decoded video frame');
       if (evidence.pixels.movingFrameRatio < 0.2)
-        failures.push(`only ${(evidence.pixels.movingFrameRatio * 100).toFixed(0)}% of frames changed luma — the picture is not moving`);
+        failures.push(`only ${(evidence.pixels.movingFrameRatio * 100).toFixed(0)}% of frames changed spatially — the picture is not moving`);
     }
   }
 
