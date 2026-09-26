@@ -61,6 +61,8 @@ public sealed class CoreObservationModel
     public JsonElement? Recording => Get("recording");
     public JsonElement? RenderPlanId => Get("renderPlanId");
     public JsonElement? RouteCount => Get("routeCount");
+    public JsonElement? RosterEpoch => Get("rosterEpoch");
+    public JsonElement? RosterRevision => Get("rosterRevision");
     public JsonElement? SceneId => Get("sceneId");
     public JsonElement? Sources => Get("sources");
     public JsonElement? TakeRecords => Get("takeRecords");
@@ -146,6 +148,8 @@ public sealed class CoreObservationModel
         "recording" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "renderPlanId" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "routeCount" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
+        "rosterEpoch" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
+        "rosterRevision" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "sceneId" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "sources" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         "takeRecords" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },

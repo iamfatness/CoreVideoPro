@@ -460,6 +460,11 @@ public:
                 ZOOMSDK::IMeetingAudioController *audio_ctrl,
                 ZOOMSDK::IMeetingVideoController *video_ctrl)
     {
+        {
+            std::lock_guard<std::mutex> lk(m_mtx);
+            ++m_meeting_generation;
+            m_roster_revision = 0;
+        }
         m_ctrl = part_ctrl;
         if (m_ctrl) m_ctrl->SetEvent(this);
         m_audio_ctrl = audio_ctrl;
@@ -477,6 +482,7 @@ public:
             m_active_share_user.store(user_id, std::memory_order_release);
             for (auto &p : m_roster)
                 p.is_sharing_screen = user_id != 0 && p.user_id == user_id;
+            ++m_roster_revision;
         }
         send_roster();
     }
@@ -500,6 +506,7 @@ public:
             m_roster.clear();
             m_active_speaker = 0;
             m_active_share_user.store(0, std::memory_order_release);
+            ++m_roster_revision;
         }
         send_roster();
     }
@@ -529,6 +536,7 @@ public:
                         participant->is_talking = true;
                 }
             }
+            ++m_roster_revision;
         }
         EngineIpc::write( R"({"cmd":"active_speaker","participant_id":)" +
                        std::to_string(active) + "}");
@@ -617,6 +625,7 @@ private:
         }
         std::lock_guard<std::mutex> lk(m_mtx);
         m_roster = std::move(new_roster);
+        ++m_roster_revision;
         m_active_speaker = 0;
         const auto active = std::find_if(m_roster.begin(), m_roster.end(),
             [](const ParticipantInfo &p) { return p.is_talking; });
@@ -628,13 +637,19 @@ private:
     {
         std::vector<ParticipantInfo> roster;
         uint32_t active = 0;
+        uint64_t meeting_generation = 0;
+        uint64_t roster_revision = 0;
         {
             std::lock_guard<std::mutex> lk(m_mtx);
             roster = m_roster;
             active = m_active_speaker;
+            meeting_generation = m_meeting_generation;
+            roster_revision = m_roster_revision;
         }
 
-        std::string msg = R"({"cmd":"participants","active_speaker_id":)" +
+        std::string msg = R"({"cmd":"participants","meeting_generation":)" +
+            std::to_string(meeting_generation) + R"(,"roster_revision":)" +
+            std::to_string(roster_revision) + R"(,"active_speaker_id":)" +
             std::to_string(active) + R"(,"participants":[)";
         for (size_t i = 0; i < roster.size(); ++i) {
             const auto &p = roster[i];
@@ -658,6 +673,8 @@ private:
     ZOOMSDK::IMeetingVideoController *m_video_ctrl = nullptr;
     std::mutex m_mtx;
     std::vector<ParticipantInfo> m_roster;
+    uint64_t m_meeting_generation = 0;
+    uint64_t m_roster_revision = 0;
     uint32_t m_active_speaker = 0;
     std::atomic<uint32_t> m_active_share_user{0};
 };

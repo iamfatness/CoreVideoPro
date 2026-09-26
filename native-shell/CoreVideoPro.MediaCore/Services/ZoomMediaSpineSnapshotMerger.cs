@@ -11,6 +11,8 @@ public static class ZoomMediaSpineSnapshotMerger
         NativeMediaCoreStateSnapshot? existing,
         ZoomMediaSpineNativeSnapshot spine)
     {
+        if (!ZoomRosterSnapshotPolicy.Accept(existing, spine.RosterEpoch, spine.RosterRevision))
+            return existing!;
         var meetingState = NormalizeMeetingState(spine.MeetingState);
         var inMeeting = meetingState.Equals("in_meeting", StringComparison.Ordinal);
         var capture = ToCaptureSnapshot(spine, meetingState);
@@ -60,6 +62,21 @@ public static class ZoomMediaSpineSnapshotMerger
         NativeMediaCoreStateSnapshot? existing,
         NativeMediaCoreStateSnapshot incoming)
     {
+        if (!ZoomRosterSnapshotPolicy.Accept(existing, incoming.RosterEpoch, incoming.RosterRevision))
+        {
+            // Keep current Program/output state from the core sync while
+            // preserving the newer roster barrier already installed by a
+            // concurrent capture/spine response.
+            return incoming with
+            {
+                MeetingState = existing!.MeetingState,
+                ActiveSpeakerId = existing.ActiveSpeakerId,
+                Participants = existing.Participants,
+                RosterEpoch = existing.RosterEpoch,
+                RosterRevision = existing.RosterRevision,
+                ZoomSubscriptions = existing.ZoomSubscriptions
+            };
+        }
         if (incoming.ZoomSubscriptions.Count > 0 || existing is null || existing.ZoomSubscriptions.Count == 0)
         {
             return incoming;
@@ -80,6 +97,8 @@ public static class ZoomMediaSpineSnapshotMerger
         return new RawCaptureSnapshot
         {
             MeetingState = meetingState,
+            RosterEpoch = spine.RosterEpoch,
+            RosterRevision = spine.RosterRevision,
             ActiveSpeakerId = spine.ActiveSpeakerId,
             Participants = spine.Participants
                 .Select(participant => new RawParticipantEvent

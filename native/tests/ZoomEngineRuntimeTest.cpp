@@ -1,4 +1,5 @@
 #include "modules/ZoomEngineRuntime.h"
+#include "modules/ZoomEngineClient.h"
 #include "modules/ZoomMeetingId.h"
 
 #include "modules/ZoomEngineProcess.h"
@@ -786,6 +787,29 @@ TEST(ZoomEngineRuntime, CancellationInterruptsAuthWaitAndLeaveIgnoresLateJoined)
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
   unsetEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS");
+}
+
+TEST(ZoomEngineRuntime, ExplicitLeavePublishesVersionedEmptyRosterBarrier) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    const auto roster = corevideo::modules::parseZoomEngineEvent(
+        R"({"cmd":"participants","meeting_generation":1,"roster_revision":3,"participants":[{"id":42,"name":"Guest","is_muted":false}]})");
+    ASSERT_TRUE(roster.has_value());
+    runtime.applyEngineEventForTest(*roster);
+    const auto before = runtime.snapshot();
+    ASSERT_EQ(before.getNumber("rosterRevision"), 3);
+    ASSERT_EQ(before.get("participants")->asArray().size(), 1u);
+
+    const auto left = runtime.leave();
+    EXPECT_EQ(left.getString("meetingState"), "idle");
+    EXPECT_EQ(left.get("participants")->asArray().size(), 0u);
+    EXPECT_EQ(left.getString("rosterEpoch"), before.getString("rosterEpoch"));
+    EXPECT_EQ(left.getNumber("rosterRevision"), 4);
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
 
 

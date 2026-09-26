@@ -74,6 +74,8 @@ struct ZoomEngineEvent {
   std::string message;
   std::uint32_t participantId = 0;
   std::uint32_t activeSpeakerId = 0;
+  std::uint64_t meetingGeneration = 0;
+  std::uint64_t rosterRevision = 0;
   std::uint32_t width = 0;
   std::uint32_t height = 0;
   std::uint32_t byteLength = 0;

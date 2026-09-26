@@ -254,6 +254,24 @@ inline rpc::Json toJson(const PlanGeneration& value) {
   result.emplace("clockGeneration", static_cast<double>(value.clockGeneration));
   return result;
 }
+struct ZoomRosterSnapshotRevision {
+  std::string rosterEpoch{};
+  std::int64_t rosterRevision{};
+};
+inline bool validateZoomRosterSnapshotRevision(const rpc::Json& value) {
+  if (!value.isObject()) return false;
+  const auto* rosterEpoch = value.get("rosterEpoch");
+  if (!rosterEpoch || !(rosterEpoch->isString() && rosterEpoch->asString().size() >= 1)) return false;
+  const auto* rosterRevision = value.get("rosterRevision");
+  if (!rosterRevision || !(rosterRevision->isNumber() && std::floor(rosterRevision->asNumber()) == rosterRevision->asNumber() && rosterRevision->asNumber() >= 1 && rosterRevision->asNumber() <= 9007199254740991)) return false;
+  return true;
+}
+inline rpc::Json toJson(const ZoomRosterSnapshotRevision& value) {
+  rpc::Json::Object result;
+  result.emplace("rosterEpoch", value.rosterEpoch);
+  result.emplace("rosterRevision", static_cast<double>(value.rosterRevision));
+  return result;
+}
 struct ControlOperationIdentity {
   std::string operationId{};
   std::string authorityEpoch{};

@@ -458,6 +458,8 @@ struct ParticipantInfo {
 
 static std::vector<ParticipantInfo> g_roster;
 static uint32_t g_active_speaker = 0;
+static uint64_t g_meeting_generation = 0;
+static uint64_t g_roster_revision = 0;
 
 // Who is currently screen sharing, or 0. Written by the share delegate (main
 // queue) and read by user_to_info, which also runs there; atomic because the
@@ -536,7 +538,10 @@ static void rebuild_roster()
 
 static void send_roster()
 {
-    std::string msg = R"({"cmd":"participants","active_speaker_id":)" +
+    ++g_roster_revision;
+    std::string msg = R"({"cmd":"participants","meeting_generation":)" +
+        std::to_string(g_meeting_generation) + R"(,"roster_revision":)" +
+        std::to_string(g_roster_revision) + R"(,"active_speaker_id":)" +
         std::to_string(g_active_speaker) + R"(,"participants":[)";
     for (size_t i = 0; i < g_roster.size(); ++i) {
         const auto &p = g_roster[i];
@@ -577,6 +582,8 @@ static void send_roster()
 
     switch (state) {
     case ZoomSDKMeetingStatus_InMeeting: {
+        ++g_meeting_generation;
+        g_roster_revision = 0;
         EngineIpc::write(R"({"cmd":"joined"})");
         ZoomSDKMeetingActionController *ctrl = action_controller();
         if (!ctrl) {

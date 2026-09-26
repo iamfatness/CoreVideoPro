@@ -245,6 +245,22 @@ func validatePlanGeneration(_ value: [String: Any]) -> Bool {
   } else { return false }
   return true;
 }
+struct ZoomRosterSnapshotRevision: Codable {
+  var rosterEpoch: String
+  var rosterRevision: Int64
+}
+func validateZoomRosterSnapshotRevision(_ value: [String: Any]) -> Bool {
+  if let raw = value["rosterEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["rosterRevision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
 struct ControlOperationIdentity: Codable {
   var operationId: String
   var authorityEpoch: String

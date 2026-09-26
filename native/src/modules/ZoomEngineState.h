@@ -57,6 +57,8 @@ struct ZoomEngineRuntimeSnapshot {
   std::string meetingState = "idle";
   std::string activeSpeakerId;
   std::string screenShareParticipantId;
+  std::uint64_t meetingGeneration = 0;
+  std::uint64_t rosterRevision = 0;
   std::vector<ZoomEngineParticipant> participants;
   std::vector<ZoomEngineSubscriptionStats> subscriptions;
   std::vector<std::string> events;
@@ -120,6 +122,8 @@ class ZoomEngineRuntimeState {
   std::uint32_t activeSpeakerId_ = 0;
   std::uint32_t screenShareParticipantId_ = 0;
   std::map<std::uint32_t, ZoomEngineParticipant> participants_;
+  std::uint64_t meetingGeneration_ = 0;
+  std::uint64_t rosterRevision_ = 0;
   std::map<std::string, ZoomEngineSubscriptionStats> subscriptionStats_;
   std::vector<std::string> events_;
   std::vector<std::string> warnings_;

@@ -45,9 +45,17 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
       events_.emplace_back("Zoom meeting joined.");
       break;
     case ZoomEngineEventKind::Left:
+    {
+      const auto meetingGeneration = meetingGeneration_;
+      const auto rosterRevision = rosterRevision_;
       reset();
+      // Leaving is an authoritative empty-roster barrier. Keep the meeting
+      // identity so an older in-meeting snapshot cannot revive it in the shell.
+      meetingGeneration_ = meetingGeneration;
+      rosterRevision_ = rosterRevision > 0 ? rosterRevision + 1 : 0;
       events_.emplace_back("Zoom meeting left.");
       break;
+    }
     case ZoomEngineEventKind::AuthFail:
       sdkAuthenticated_ = false;
       meetingState_ = "error";
@@ -69,6 +77,23 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
                                         : "Zoom engine reported an error.");
       break;
     case ZoomEngineEventKind::Participants: {
+      if (event.meetingGeneration != 0 && event.rosterRevision != 0) {
+        if (event.meetingGeneration < meetingGeneration_ ||
+            (event.meetingGeneration == meetingGeneration_ &&
+             event.rosterRevision <= rosterRevision_)) {
+          break;
+        }
+        if (event.meetingGeneration != meetingGeneration_) {
+          subscriptionStats_.clear();
+          speakerDirector_.reset();
+        }
+        meetingGeneration_ = event.meetingGeneration;
+        rosterRevision_ = event.rosterRevision;
+      } else if (meetingGeneration_ != 0) {
+        // Once a versioned producer is seen, an unversioned delayed roster
+        // cannot replace its state. Legacy engines remain accepted initially.
+        break;
+      }
       participants_.clear();
       screenShareParticipantId_ = 0;
       for (const auto& participant : event.participants) {
@@ -231,6 +256,8 @@ void ZoomEngineRuntimeState::reset() {
   speakerDirector_.reset();
   screenShareParticipantId_ = 0;
   participants_.clear();
+  meetingGeneration_ = 0;
+  rosterRevision_ = 0;
   subscriptionStats_.clear();
   events_.clear();
   warnings_.clear();
@@ -241,6 +268,8 @@ ZoomEngineRuntimeSnapshot ZoomEngineRuntimeState::snapshot() const {
   snapshot.meetingState = meetingState_;
   snapshot.activeSpeakerId = participantIdString(activeSpeakerId_);
   snapshot.screenShareParticipantId = participantIdString(screenShareParticipantId_);
+  snapshot.meetingGeneration = meetingGeneration_;
+  snapshot.rosterRevision = rosterRevision_;
   for (const auto& [_, participant] : participants_) {
     snapshot.participants.push_back(participant);
   }

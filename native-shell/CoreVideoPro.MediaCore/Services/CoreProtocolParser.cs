@@ -633,6 +633,8 @@ public static class CoreProtocolParser
         return new RawCaptureSnapshot
         {
             MeetingState = ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(snapshot.MeetingState),
+            RosterEpoch = snapshot.RosterEpoch,
+            RosterRevision = snapshot.RosterRevision,
             Participants = snapshot.Participants,
             ActiveSpeakerId = snapshot.ActiveSpeakerId,
             Caption = snapshot.Caption,

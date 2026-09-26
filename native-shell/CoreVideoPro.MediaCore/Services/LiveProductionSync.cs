@@ -108,7 +108,10 @@ public static class LiveProductionSync
     {
         if (snapshot.Participants.Count == 0)
         {
-            return null;
+            // A versioned owner snapshot explicitly says the roster is empty.
+            // Legacy core snapshots omitted participants when roster was not
+            // available, so retain their null/no-update behavior.
+            return snapshot.RosterRevision > 0 ? [] : null;
         }
 
         var meetingState = ResolveMeetingStateLabel(snapshot);
