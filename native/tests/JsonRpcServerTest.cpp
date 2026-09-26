@@ -42,7 +42,10 @@ TEST(JsonRpcServer, EmitsHandshakeBeforeReadingInput) {
   server.run(input, output);
 
   std::string error;
-  auto line = corevideo::rpc::Json::parse(output.str(), &error);
+  std::istringstream messages(output.str());
+  std::string firstMessage;
+  ASSERT_TRUE(static_cast<bool>(std::getline(messages, firstMessage)));
+  auto line = corevideo::rpc::Json::parse(firstMessage, &error);
   ASSERT_TRUE(line.has_value()) << error;
   EXPECT_EQ(line->getString("id"), "handshake");
   EXPECT_TRUE(line->get("ok")->asBool());
