@@ -98,6 +98,35 @@ TEST(ZoomEngineRuntimeState, DebouncesActiveSpeakerAndHonorsIncumbentHold) {
   EXPECT_EQ(state.snapshot().activeSpeakerId, "77");
 }
 
+TEST(ZoomEngineRuntimeState, HostTalkingKeepsGuestWithFreshFrame) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(
+      R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"active_speaker_id":42,"participants":[{"id":42,"name":"Host","has_video":true,"is_talking":true,"is_muted":false,"is_host":true},{"id":77,"name":"Guest","has_video":true,"is_talking":false,"is_muted":false}]})"), 1'000);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "");
+  state.recordFrameIngestSuccess("participant-video-77-camera", 77, 1280, 720, 1, 1'001.0);
+  state.advanceActiveSpeaker(1'002);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "77");
+  state.apply(eventFrom(R"({"cmd":"active_speaker","participant_id":42})"), 1'100);
+  state.advanceActiveSpeaker(10'000);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "77");
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":2,"roster_revision":1,"active_speaker_id":42,"participants":[{"id":42,"name":"Host","has_video":true,"is_talking":true,"is_host":true}]})"), 11'000);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "");
+}
+
+TEST(ZoomEngineRuntimeState, SelfAndOperatorExcludedPeopleNeverTakeFollowSpeaker) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(
+      R"({"cmd":"participants","active_speaker_id":42,"participants":[{"id":42,"name":"Me","has_video":true,"is_talking":true,"is_me":true},{"id":77,"name":"Excluded","has_video":true},{"id":88,"name":"Guest","has_video":true}]})"), 1'000);
+  state.setSpeakerExclusions({77}, 1'001);
+  state.recordFrameIngestSuccess("participant-video-77-camera", 77, 1280, 720, 1, 1'002.0);
+  state.recordFrameIngestSuccess("participant-video-88-camera", 88, 1280, 720, 1, 1'002.0);
+  state.advanceActiveSpeaker(1'003);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "88");
+  state.apply(eventFrom(R"({"cmd":"active_speaker","participant_id":77})"), 2'000);
+  state.advanceActiveSpeaker(10'000);
+  EXPECT_EQ(state.snapshot().activeSpeakerId, "88");
+}
+
 // #478 R1: the director follows the talker only among the shell's SOURCES.
 TEST(ZoomEngineRuntimeState, DirectsOnlyAmongSourcesAndReleasesANonSourceIncumbent) {
   corevideo::modules::ZoomEngineRuntimeState state;

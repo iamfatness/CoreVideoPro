@@ -33,6 +33,10 @@ class ZoomActiveSpeakerDirector {
     sensitivityMs_ = sensitivityMs;
     holdMs_ = holdMs;
     requireVideo_ = requireVideo;
+    setExcluded(std::move(excludedParticipantIds));
+  }
+
+  void setExcluded(std::vector<std::uint32_t> excludedParticipantIds) {
     excludedParticipantIds.erase(
         std::remove(excludedParticipantIds.begin(), excludedParticipantIds.end(), 0),
         excludedParticipantIds.end());
@@ -103,6 +107,7 @@ class ZoomActiveSpeakerDirector {
     lastSwitchMs_ = 0;
     sourceParticipantIds_.clear();
     sourceFilterActive_ = false;
+    excludedParticipantIds_.clear();
   }
 
   [[nodiscard]] std::uint32_t directedSpeakerId() const { return directedSpeakerId_; }
@@ -141,8 +146,14 @@ class ZoomActiveSpeakerDirector {
                        [id](const auto& participant) { return participant.id == id; });
   }
 
+  [[nodiscard]] bool hostOrMe(std::uint32_t id) const {
+    const auto found = std::find_if(roster_.begin(), roster_.end(),
+                                    [id](const auto& participant) { return participant.id == id; });
+    return found != roster_.end() && (found->isHost || found->isMe);
+  }
+
   [[nodiscard]] bool participantAllowed(std::uint32_t id) const {
-    if (id == 0 || excluded(id) || !isSource(id)) {
+    if (id == 0 || excluded(id) || hostOrMe(id) || !isSource(id)) {
       return false;
     }
     const auto found = std::find_if(roster_.begin(), roster_.end(),
@@ -162,7 +173,19 @@ class ZoomActiveSpeakerDirector {
     const auto talking = std::find_if(roster_.begin(), roster_.end(), [this](const auto& participant) {
       return participant.isTalking && participantAllowed(participant.id);
     });
-    return talking == roster_.end() ? 0 : talking->id;
+    if (talking != roster_.end()) return talking->id;
+    // A host-only talk beat must not leave a vacancy while a guest already has
+    // a content frame. Keep the last guest if present; otherwise cue a fresh
+    // guest source rather than directing the host.
+    if (rawSpeakerId != 0 && (excluded(rawSpeakerId) || hostOrMe(rawSpeakerId))) {
+      if (participantAllowed(directedSpeakerId_) && participantFrameFresh(directedSpeakerId_))
+        return directedSpeakerId_;
+      const auto guest = std::find_if(roster_.begin(), roster_.end(), [this](const auto& participant) {
+        return participantAllowed(participant.id) && participantFrameFresh(participant.id);
+      });
+      if (guest != roster_.end()) return guest->id;
+    }
+    return 0;
   }
 
   void enforceIncumbent(std::uint64_t nowMs) {
@@ -170,7 +193,7 @@ class ZoomActiveSpeakerDirector {
       directedMissingSinceMs_ = 0;
       return;
     }
-    if (excluded(directedSpeakerId_) || !isSource(directedSpeakerId_)) {
+    if (excluded(directedSpeakerId_) || hostOrMe(directedSpeakerId_) || !isSource(directedSpeakerId_)) {
       directedSpeakerId_ = 0;
       directedMissingSinceMs_ = 0;
       return;

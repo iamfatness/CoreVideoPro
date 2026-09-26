@@ -45,6 +45,29 @@ public sealed class ZoomMediaSpinePayloadBuilderTests
             subscription["purpose"]?.ToString() == "program");
         Assert.Equal(2, subscriptions.Count(subscription => subscription["kind"]?.ToString() == "participant-video"));
         Assert.Equal(2, subscriptions.Count(subscription => subscription["kind"]?.ToString() == "participant-audio"));
+        Assert.Equal(["p1"], Assert.IsAssignableFrom<IReadOnlyList<string>>(payload["directorExcludedParticipantIds"]));
+    }
+
+    [Fact]
+    public void DirectorExclusionsDoNotRemoveHostAudioOrVideoSources()
+    {
+        var payload = ZoomMediaSpinePayloadBuilder.Build(new ZoomMediaSpinePayloadBuilder.BuildInput
+        {
+            EngineRunning = true,
+            Participants =
+            [
+                new MediaCoreParticipantWire("42", "Host", "Host", "main", "Main", true, false, false, 70, "live"),
+                new MediaCoreParticipantWire("77", "Guest", "guest", "main", "Main", false, false, false, 0, "live")
+            ],
+            DirectorExcludedParticipantIds = ["77"],
+            ProgramSceneRoutes = [Route("42")],
+            PreviewSceneRoutes = [Route("77")]
+        });
+
+        Assert.Equal(["42", "77"], Assert.IsAssignableFrom<IReadOnlyList<string>>(payload["directorExcludedParticipantIds"]));
+        Assert.Equal(["42", "77"], Assert.IsAssignableFrom<IReadOnlyList<string>>(payload["sourceParticipantIds"]));
+        Assert.Contains(Video(payload), subscription => Pid(subscription) == "42");
+        Assert.Contains(Video(payload), subscription => Pid(subscription) == "77");
     }
 
     [Fact]

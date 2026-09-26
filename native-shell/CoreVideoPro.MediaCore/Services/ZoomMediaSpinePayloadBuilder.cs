@@ -29,6 +29,7 @@ public static class ZoomMediaSpinePayloadBuilder
     public sealed record BuildInput
     {
         public IReadOnlyList<MediaCoreParticipantWire> Participants { get; init; } = [];
+        public IReadOnlyList<string> DirectorExcludedParticipantIds { get; init; } = [];
         public bool Recording { get; init; }
         public string SelectedBreakoutRoomId { get; init; } = "main";
         public int MaxVideoSubscriptions { get; init; } = DefaultMaxVideoSubscriptions;
@@ -143,6 +144,16 @@ public static class ZoomMediaSpinePayloadBuilder
             // non-source never has a subscription, so it could never pass the director's
             // fresh-frame gate and would deadlock speaker-following.
             ["sourceParticipantIds"] = ZoomSourceSetPolicy.SpeakerCandidateIds(sources).ToList(),
+            // Keep host audio/video subscribed; this list excludes them only from
+            // active-speaker direction. Explicit operator exclusions join the host role.
+            ["directorExcludedParticipantIds"] = input.Participants
+                .Where(participant => string.Equals(participant.Role, "host", StringComparison.OrdinalIgnoreCase) ||
+                                      string.Equals(participant.Role, "director-exclude", StringComparison.OrdinalIgnoreCase))
+                .Select(participant => participant.Id)
+                .Concat(input.DirectorExcludedParticipantIds)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.Ordinal)
+                .ToList(),
             // Structured twin of the warning above, for tests and the support bundle.
             ["videoSubscriptionShortfall"] = videoDecision.OverBudget
                 .Select(candidate => new Dictionary<string, object?>

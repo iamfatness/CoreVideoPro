@@ -428,6 +428,8 @@ struct ParticipantInfo {
     bool is_talking = false;
     bool is_muted = false;
     bool is_sharing_screen = false;
+    bool is_host = false;
+    bool is_me = false;
 };
 
 static std::string zchar_to_utf8(const zchar_t *name)
@@ -603,6 +605,8 @@ private:
         info.has_video = u->IsVideoOn();
         info.is_talking = u->IsTalking();
         info.is_muted = u->IsAudioMuted();
+        info.is_host = u->IsHost();
+        info.is_me = u->IsMySelf();
         info.is_sharing_screen =
             info.user_id == m_active_share_user.load(std::memory_order_acquire);
         return info;
@@ -660,6 +664,8 @@ private:
                 R"(","has_video":)" + (p.has_video ? "true" : "false") +
                 R"(,"is_talking":)" + (p.is_talking ? "true" : "false") +
                 R"(,"is_muted":)" + (p.is_muted ? "true" : "false") +
+                R"(,"is_host":)" + (p.is_host ? "true" : "false") +
+                R"(,"is_me":)" + (p.is_me ? "true" : "false") +
                 R"(,"is_sharing_screen":)" +
                 (p.is_sharing_screen ? "true" : "false") + "}";
         }

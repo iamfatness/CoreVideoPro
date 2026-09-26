@@ -454,6 +454,8 @@ struct ParticipantInfo {
     bool is_talking = false;
     bool is_muted = false;
     bool is_sharing_screen = false;
+    bool is_host = false;
+    bool is_me = false;
 };
 
 static std::vector<ParticipantInfo> g_roster;
@@ -498,6 +500,8 @@ static ParticipantInfo user_to_info(ZoomSDKUserInfo *u)
     }
     info.has_video    = [u isVideoOn] ? true : false;
     info.is_talking   = [u isTalking] ? true : false;
+    info.is_host      = [u isHost] ? true : false;
+    info.is_me        = [u isMySelf] ? true : false;
 
     // Windows reads IsAudioMuted() directly; macOS only exposes a status enum,
     // so fold the three muted variants onto the same boolean.
@@ -552,6 +556,8 @@ static void send_roster()
             R"(","has_video":)" + (p.has_video ? "true" : "false") +
             R"(,"is_talking":)" + (p.is_talking ? "true" : "false") +
             R"(,"is_muted":)" + (p.is_muted ? "true" : "false") +
+            R"(,"is_host":)" + (p.is_host ? "true" : "false") +
+            R"(,"is_me":)" + (p.is_me ? "true" : "false") +
             R"(,"is_sharing_screen":)" +
             (p.is_sharing_screen ? "true" : "false") + "}";
     }

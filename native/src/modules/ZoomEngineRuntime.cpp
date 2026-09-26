@@ -382,6 +382,17 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
     }
     state_.setSpeakerSources(true, std::move(sourceIds), monotonicMs());
   }
+  if (const rpc::Json* exclusions = payload.get("directorExcludedParticipantIds");
+      exclusions && exclusions->isArray()) {
+    std::vector<std::uint32_t> excludedIds;
+    for (const auto& entry : exclusions->asArray()) {
+      try {
+        excludedIds.push_back(static_cast<std::uint32_t>(std::stoul(entry.asString())));
+      } catch (...) {
+      }
+    }
+    state_.setSpeakerExclusions(std::move(excludedIds), monotonicMs());
+  }
   const rpc::Json* subscriptions = payload.get("subscriptions");
   if (process_ && process_->running() && subscriptions && subscriptions->isArray()) {
     // Build THIS tick's desired subscription set, sending a subscribe command ONLY
@@ -1077,7 +1088,8 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
         {"userId", participantIdString(participant.id)},
         {"displayName", participant.displayName.empty() ? "Zoom User " + participantIdString(participant.id) : participant.displayName},
         {"persistentId", participant.persistentId},
-        {"role", "Guest"},
+        {"role", participant.isHost ? "Host" : "Guest"},
+        {"isMe", participant.isMe},
         {"muted", participant.isMuted},
         {"videoOn", participant.hasVideo},
         {"talking", participant.isTalking || participantIdString(participant.id) == snapshot.activeSpeakerId},
