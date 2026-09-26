@@ -168,7 +168,7 @@ if ($WithAja) {
 $buildCmd = @(
   "call `"$vsDevCmd`" -arch=amd64",
   "cmake $(($cmakeArgs | ForEach-Object { Quote-CmdArg $_ }) -join ' ')",
-  "cmake --build `"$BuildDir`" --config $Config --target corevideo-zoom-engine corevideo-zoom-engine-fake corevideo-plugin-host corevideo-native corevideo-native-tests corevideo-virtualcam corevideo-browser-host"
+  "cmake --build `"$BuildDir`" --config $Config --target corevideo-zoom-engine corevideo-zoom-engine-fake corevideo-plugin-host corevideo-native corevideo-native-tests corevideo-virtualcam corevideo-browser-host corevideo-loopback-rec"
 ) -join " && "
 
 cmd /c $buildCmd

@@ -16,6 +16,7 @@
 // out of scope here (see the F2 completion plan).
 
 #include "modules/Interfaces.h"
+#include "modules/MonitorLatencyPolicy.h"
 
 #include <cstdio>
 #include <memory>
@@ -178,14 +179,44 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
       return false;
     }
 
-    // Pull model (docs/audio-pull-monitor-spec.md): the DEVICE paces delivery
-    // via the event; a dedicated render thread pulls from the SPSC ring. The
-    // engine's resampler (RATEADJUST) absorbs clock drift via the slow
-    // ring-depth trim — our code never time-warps samples.
-    constexpr REFERENCE_TIME kBufferDuration = 2'000'000;  // 200ms endpoint buffer
-    hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED,
-                             AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_RATEADJUST,
-                             kBufferDuration, 0, mixFormat_, nullptr);
+    // Pull model: the device event paces a dedicated SPSC-ring consumer.
+    // IAudioClient::Initialize negotiated 44.5 ms on GoXLR even with a zero
+    // buffer request. IAudioClient3 can request the device's supported 10 ms
+    // shared period without taking it away from Zoom or another application.
+    bool lowPeriod = false;
+    IAudioClient3* client3 = nullptr;
+    if (SUCCEEDED(client_->QueryInterface(__uuidof(IAudioClient3), reinterpret_cast<void**>(&client3))) &&
+        client3 != nullptr) {
+      UINT32 defaultFrames = 0, fundamentalFrames = 0, minFrames = 0, maxFrames = 0;
+      const HRESULT periodHr = client3->GetSharedModeEnginePeriod(
+          mixFormat_, &defaultFrames, &fundamentalFrames, &minFrames, &maxFrames);
+      if (SUCCEEDED(periodHr)) {
+        const UINT32 selected = MonitorLatencyPolicy::sharedPeriodFrames(
+            deviceSampleRate_, fundamentalFrames, minFrames, maxFrames);
+        if (selected > 0) {
+          hr = client3->InitializeSharedAudioStream(AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                                                     selected, mixFormat_, nullptr);
+          if (SUCCEEDED(hr)) {
+            lowPeriod = true;
+            ::corevideo::core::nativeLogf("[monitor] low-period shared stream selected=%u frames default=%u min=%u max=%u\n",
+                                         selected, defaultFrames, minFrames, maxFrames);
+          } else {
+            ::corevideo::core::nativeLogf("[monitor] low-period shared init failed hr=0x%08lx; trying legacy shared\n",
+                                         static_cast<unsigned long>(hr));
+          }
+        }
+      } else {
+        ::corevideo::core::nativeLogf("[monitor] shared-period query failed hr=0x%08lx; trying legacy shared\n",
+                                     static_cast<unsigned long>(periodHr));
+      }
+      safeRelease(client3);
+    }
+    constexpr REFERENCE_TIME kBufferDuration = MonitorLatencyPolicy::endpointBuffer100ns();
+    if (!lowPeriod) {
+      hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                               AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_RATEADJUST,
+                               kBufferDuration, 0, mixFormat_, nullptr);
+    }
     if (FAILED(hr)) {
       warn("Could not initialize the shared-mode render stream (hr=" + hexHr(hr) + ").");
       cleanup();
@@ -205,6 +236,11 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
       cleanup();
       return false;
     }
+    ::corevideo::core::nativeLogf("[monitor] endpoint '%s' mode=%s requested=%.1fms actual=%.1fms ring-target=%.1fms\n",
+                                deviceName_.c_str(), lowPeriod ? "shared-low-period" : "shared-legacy",
+                                kBufferDuration / 10'000.0,
+                                1000.0 * bufferFrameCount_ / deviceSampleRate_,
+                                1000.0 * MonitorLatencyPolicy::ringTargetFrames(deviceSampleRate_) / deviceSampleRate_);
 
     hr = client_->GetService(__uuidof(IAudioRenderClient), reinterpret_cast<void**>(&renderClient_));
     if (FAILED(hr) || renderClient_ == nullptr) {
@@ -213,13 +249,19 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
       return false;
     }
 
-    // Drift correction v3: the ENGINE resamples (SetSampleRate a few ppm on a
-    // slow loop) - we never touch sample data. Absence is non-fatal: without
-    // the service the cushion drains over ~27min and re-primes (one soft
-    // hiccup), which beats any hand-rolled warp.
-    if (FAILED(client_->GetService(__uuidof(IAudioClockAdjustment), reinterpret_cast<void**>(&clockAdjust_)))) {
+    // Drift correction v3: legacy shared streams expose RATEADJUST, so the
+    // engine can nudge its resampler by a few ppm without touching samples.
+    // IAudioClient3's low-period call does not accept RATEADJUST on this rig;
+    // long-show drift in that mode remains an explicit validation limit. Ring
+    // dryness is counted, never hidden by a hand-rolled sample warp.
+    const HRESULT clockHr = client_->GetService(__uuidof(IAudioClockAdjustment),
+                                               reinterpret_cast<void**>(&clockAdjust_));
+    if (FAILED(clockHr)) {
       clockAdjust_ = nullptr;
     }
+    ::corevideo::core::nativeLogf("[monitor] clock-adjustment=%s hr=0x%08lx\n",
+                                clockAdjust_ ? "available" : "unavailable",
+                                static_cast<unsigned long>(clockHr));
 
     hr = client_->Start();
     if (FAILED(hr)) {
@@ -476,7 +518,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
     }
     double depthAccum = 0.0;
     int depthSamples = 0;
-    const size_t primeFrames = static_cast<size_t>(deviceSampleRate_ * 0.060);  // 60 ms
+    const size_t primeFrames = MonitorLatencyPolicy::ringTargetFrames(deviceSampleRate_);
     bool ringPrimed = false;
     while (renderRun_.load(std::memory_order_acquire)) {
       if (::WaitForSingleObject(renderEvent_, 500) != WAIT_OBJECT_0) {
@@ -530,7 +572,7 @@ class WasapiMonitorOutput final : public IAudioMonitorOutput {
         const double averageDepth = depthAccum / depthSamples;
         depthAccum = 0.0;
         depthSamples = 0;
-        const double target = deviceSampleRate_ * 0.060;  // 60ms standing depth
+        const double target = static_cast<double>(MonitorLatencyPolicy::ringTargetFrames(deviceSampleRate_));
         const double correction =
             std::clamp((averageDepth - target) / (5.0 * deviceSampleRate_), -0.0005, 0.0005);
         // Ring too deep → engine consumes too slowly → RAISE its idea of our

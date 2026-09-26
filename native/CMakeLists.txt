@@ -2,6 +2,15 @@
 
 project(CoreVideoNativeMediaCore LANGUAGES CXX)
 
+if(WIN32)
+  # #652: independent endpoint loopback timestamps for the live A/V clap rig.
+  add_executable(corevideo-loopback-rec ../tools/audio/loopback-rec.cpp)
+  target_link_libraries(corevideo-loopback-rec PRIVATE ole32 uuid)
+  set_target_properties(corevideo-loopback-rec PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
+endif()
+
 # A single-config generator (Ninja/Makefiles) with no CMAKE_BUILD_TYPE compiles
 # at -O0. This is a REAL-TIME media core: unoptimized, a 10x1080p show ran the
 # render tick at 27ms/25fps instead of 3.9ms/57fps, because things like
@@ -645,6 +654,8 @@ if(BUILD_TESTING)
     tests/EmptyRouteBlankTest.cpp
     tests/OutputLifecyclePolicyTest.cpp
     tests/MonitorShedPolicyTest.cpp
+    tests/AvSyncClapProbeTest.cpp
+    tests/MonitorLatencyPolicyTest.cpp
     tests/BitstreamQueueOverflowTest.cpp
     tests/StreamBackpressurePolicyTest.cpp
     tests/RenderedSceneAttributionTest.cpp
