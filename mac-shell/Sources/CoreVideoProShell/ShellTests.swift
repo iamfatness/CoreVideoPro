@@ -19,6 +19,32 @@ enum ShellTests {
     private static var failures: [String] = []
     private static var checks = 0
 
+    private static func testMonitorControlProjection() {
+        var projection = MonitorControlProjection()
+        func mix(_ revision: Int, _ enabled: Bool, _ result: JSONObject? = nil) -> JSONObject {
+            ["monitorEnabled": enabled, "monitorVolume": 0.5,
+             "monitorControl": ["authorityEpoch": "core-1", "revision": revision,
+                                "recentResults": result.map { [$0] } ?? []] as JSONObject]
+        }
+        projection.observe(mix(0, false))
+        projection.edit(.init(enabled: true, volume: 0.5))
+        let first = projection.nextCommand()
+        let operation = first?["operationId"] as? String ?? ""
+        expectEqual(first?["expectedRevision"] as? Int64, 0, "first editor uses observed revision")
+        expect(projection.nextCommand() == nil, "pending edit cannot be sent twice")
+        projection.observe(mix(1, true, ["operationId": operation, "status": "applied"]))
+        expect(projection.draft == nil, "applied snapshot clears draft")
+        projection.edit(.init(enabled: false, volume: 0.5))
+        let second = projection.nextCommand()
+        expectEqual(second?["expectedRevision"] as? Int64, 1, "second editor rebases on applied revision")
+        projection.observe(mix(0, false))
+        expectEqual(projection.revision, 1, "stale snapshot cannot rewind revision")
+        projection.observe(mix(1, true, ["operationId": second?["operationId"] as? String ?? "",
+                                          "status": "conflict"]))
+        expect(projection.draft != nil, "conflict retains local draft")
+        expect(projection.notice.contains("conflicted"), "conflict is visible")
+    }
+
     private static func expect(_ condition: Bool, _ what: String,
                                _ file: StaticString = #file, _ line: UInt = #line) {
         checks += 1
@@ -661,6 +687,7 @@ enum ShellTests {
         checks = 0
 
         let cases: [(String, () -> Void)] = [
+            ("monitor/revisioned-projection", testMonitorControlProjection),
             ("recording/command-retry", testRecordingCommandRetriesAndSupersession),
             ("bridge/generation-lifecycle", testBridgeGenerationRejectsStaleWork),
             ("wire/shared-lifecycle-contracts", testSharedLifecycleContracts),

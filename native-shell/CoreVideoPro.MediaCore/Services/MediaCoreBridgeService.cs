@@ -6,6 +6,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 {
     private readonly MediaCoreSupervisor _supervisor;
     private readonly MediaCoreSyncScheduler _syncScheduler = new();
+    private readonly AudioMonitorControlCoordinator _audioMonitorControl;
     private readonly object _gate = new();
     private Timer? _pollTimer;
     private long _pollTimerGeneration;
@@ -24,6 +25,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     public MediaCoreBridgeService(MediaCoreSupervisor? supervisor = null)
     {
         _supervisor = supervisor ?? new MediaCoreSupervisor();
+        _audioMonitorControl = new AudioMonitorControlCoordinator(
+            commands => SyncAsync(commands), () => PollSnapshotAsync());
         _supervisor.HealthChanged += health =>
         {
             if (health.Recovering)
@@ -105,6 +108,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         lock (_gate)
         {
             _lastSnapshot = null;
+            _audioMonitorControl.Reset();
             _elapsedMs = 0;
             _spinePayloadFactory = null;
             _spineFactoryVersion++;
@@ -266,6 +270,11 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             () => SyncCoreAsync(submittedCommands, elapsedMs, cancellationToken),
             cancellationToken);
     }
+
+    public Task<AudioMonitorControlOutcome> SetAudioMonitorControlAsync(
+        MediaCoreAudioMonitorWire draft, string? expectedEpoch = null, long? expectedRevision = null,
+        string? operationId = null, CancellationToken cancellationToken = default) =>
+        _audioMonitorControl.SubmitAsync(draft, expectedEpoch, expectedRevision, operationId, cancellationToken);
 
     private async Task<NativeMediaCoreStateSnapshot> SyncCoreAsync(
         IReadOnlyList<NativeMediaCoreCommand> commands,
@@ -705,6 +714,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             // sync merged in, or the Sources page reads "not-requested" between spine ticks.
             snapshot = ZoomMediaSpineSnapshotMerger.CarrySubscriptions(_lastSnapshot, snapshot);
             _lastSnapshot = snapshot;
+            _audioMonitorControl.Observe(snapshot);
         }
 
         SnapshotChanged?.Invoke(snapshot);

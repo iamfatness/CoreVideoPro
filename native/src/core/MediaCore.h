@@ -400,6 +400,8 @@ class MediaCore {
   void syncVirtualCamera(const rpc::Json& command);
   [[nodiscard]] rpc::Json virtualCameraState() const;
   void syncAudioMonitor(const rpc::Json& command);
+  void setAudioMonitorControl(const rpc::Json& command);
+  [[nodiscard]] rpc::Json audioMonitorControlState() const;
   // VST host P1 (docs/vst-host-spec.md): operator-initiated plugin discovery.
   // Runs `corevideo-plugin-host --scan` on a detached thread; results live
   // behind pluginHostMutex_ (a leaf lock — held briefly by the thread and by
@@ -1074,6 +1076,11 @@ class MediaCore {
   std::string audioMonitorDeviceId_;
   std::string audioMonitorDeviceName_;
   double audioMonitorVolume_ = 0.0;
+  std::string audioMonitorControlEpoch_;
+  std::uint64_t audioMonitorControlRevision_ = 0;
+  rpc::Json audioMonitorControlResult_;
+  std::map<std::string, rpc::Json> audioMonitorOperationResults_;
+  std::deque<std::string> audioMonitorOperationOrder_;
   std::string audioMonitorStatus_ = "muted";
   int64_t audioMonitorFramesPlayed_ = 0;
   int64_t audioMonitorUnderruns_ = 0;  // cumulative device-dry gaps (spec R5)
