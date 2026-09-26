@@ -1,5 +1,6 @@
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
+using CoreVideoPro.WinUI.ViewModels.ShowInputs;
 using System.ComponentModel;
 
 namespace CoreVideoPro.WinUI.ViewModels;
@@ -23,13 +24,16 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     private bool _isoEnabled;
     private bool _suppressIsoCallback;
 
+    public MultiviewInputRow Inspector { get; }
+
     public ShowInputSlotViewModel(
         ShowInputSlot slot,
         Action onChanged,
         Action<string?, string?>? onAudioDeviceChanged = null,
         Func<string?, string, string>? resolveDisplayName = null,
         Action<string?, string?>? setDisplayName = null,
-        Action<string?, bool>? onIsoToggled = null)
+        Action<string?, bool>? onIsoToggled = null,
+        MultiviewInputRow? inspector = null)
     {
         _slot = slot;
         _onChanged = onChanged;
@@ -37,6 +41,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         _resolveDisplayName = resolveDisplayName ?? ((_, derived) => derived);
         _setDisplayName = setDisplayName ?? ((_, _) => { });
         _onIsoToggled = onIsoToggled ?? ((_, _) => { });
+        Inspector = inspector ?? new MultiviewInputRow(slot.SlotNumber);
         _slot.PropertyChanged += (_, _) =>
         {
             // Re-raise the VM's bound properties on ANY underlying model change. The roster
