@@ -55,6 +55,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#665](https://github.com/iamfatness/CoreVideoPro/issues/665) | Live beta Monitor Off leaves WASAPI output playing: live audio snapshot omits the revisioned monitor control state. Fix and validate on installed build; owner rank pending. |
 | [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Parent control-state plan tracking #659, #661 and #663; keep open through installed acceptance. |
 | [#652](https://github.com/iamfatness/CoreVideoPro/issues/652) | Live display versus GoXLR monitor A/V sync: same-run clap measured a large monitor delay despite passing recorded Program. Low-period WASAPI monitor change is in validation; real-human acceptance remains. |
 | [#649](https://github.com/iamfatness/CoreVideoPro/issues/649) | RTMP demuxer test compares `const char*` literal addresses; use content comparison so Debug native gate is deterministic. |

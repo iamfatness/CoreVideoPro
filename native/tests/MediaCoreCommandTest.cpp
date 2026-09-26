@@ -2596,6 +2596,60 @@ TEST(MediaCoreCommand, RevisionedMonitorControlRejectsStaleClientAndDedupesRetry
   EXPECT_EQ(audio->get("monitorControl")->getNumber("revision"), 2);
 }
 
+TEST(MediaCoreAudioMonitor, LiveMixPublishesControlAndRevisionedOffStopsOutput) {
+  using corevideo::rpc::Json;
+  auto modules = corevideo::modules::createStubModules();
+  auto* monitor = new RecordingMonitorOutput();
+  modules.monitorOutput.reset(monitor);
+  corevideo::core::MediaCore mediaCore{std::move(modules)};
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
+
+  const auto live = mediaCore.applyCommands(Json::Array{Json::Object{
+      {"type", "sync-audio-monitor"}, {"enabled", true},
+      {"deviceId", "render-stereo"}, {"volume", 0.5}}});
+  const auto* liveAudio = live.get("audioMixSession");
+  ASSERT_NE(liveAudio, nullptr);
+  ASSERT_EQ(liveAudio->getString("monitorStatus"), "playing");
+  ASSERT_TRUE(monitor->active());
+  const auto* control = liveAudio->get("monitorControl");
+  ASSERT_NE(control, nullptr);
+  const auto epoch = control->getString("authorityEpoch");
+  ASSERT_FALSE(epoch.empty());
+  const auto revision = control->getNumber("revision");
+
+  const auto off = mediaCore.applyCommand(Json::Object{
+      {"type", "set-audio-monitor-control"},
+      {"operationId", "live-monitor-off"},
+      {"authorityEpoch", epoch},
+      {"expectedRevision", revision},
+      {"enabled", false},
+      {"deviceId", "render-stereo"},
+      {"volume", 0.5}});
+  const auto* offAudio = off.get("audioMixSession");
+  ASSERT_NE(offAudio, nullptr);
+  EXPECT_FALSE(offAudio->get("monitorEnabled")->asBool());
+  EXPECT_EQ(offAudio->getString("monitorStatus"), "muted");
+  EXPECT_FALSE(monitor->active());
+  ASSERT_NE(offAudio->get("monitorControl"), nullptr);
+  EXPECT_EQ(offAudio->get("monitorControl")->getNumber("revision"), revision + 1);
+  EXPECT_EQ(offAudio->get("monitorControl")->get("lastResult")->getString("status"), "applied");
+
+  const auto on = mediaCore.applyCommands(Json::Array{Json::Object{
+      {"type", "set-audio-monitor-control"},
+      {"operationId", "live-monitor-on"},
+      {"authorityEpoch", epoch},
+      {"expectedRevision", revision + 1},
+      {"enabled", true},
+      {"deviceId", "render-stereo"},
+      {"volume", 0.5}}});
+  const auto* onAudio = on.get("audioMixSession");
+  ASSERT_NE(onAudio, nullptr);
+  EXPECT_TRUE(onAudio->get("monitorEnabled")->asBool());
+  EXPECT_EQ(onAudio->getString("monitorStatus"), "playing");
+  EXPECT_TRUE(monitor->active());
+  EXPECT_EQ(onAudio->get("monitorControl")->getNumber("revision"), revision + 2);
+}
+
 TEST(MediaCoreCommand, MonitorAuthorityEpochRejectsCommandFromRetiredCore) {
   using corevideo::rpc::Json;
   corevideo::core::MediaCore retired;
