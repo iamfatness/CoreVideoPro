@@ -62,12 +62,17 @@ try
         afterRestart.AuthorityEpoch, afterRestart.Revision, "bridge-new-epoch");
     Require(newEpoch.Kind == AudioMonitorControlOutcomeKind.Applied,
         "New core epoch command did not apply");
+    var recovery = bridge.ControlRecovery;
+    Require(recovery.ProcessResets >= 1 && recovery.SnapshotBarriers >= 2,
+        "Bridge did not report process reset and full snapshot barriers");
 
     Console.WriteLine(JsonSerializer.Serialize(new
     {
         status = "passed", firstRevision = revision + 1, finalRevision = revision + 2,
         staleStatus = stale.Kind.ToString(), duplicateStatus = duplicate.Kind.ToString(),
-        restartRejectedOldEpoch = true, newEpochApplied = true
+        restartRejectedOldEpoch = true, newEpochApplied = true,
+        recovery.ProcessResets, recovery.SnapshotBarriers,
+        recovery.CommandOverloads, recovery.CoalescedPolls
     }));
     return 0;
 }
