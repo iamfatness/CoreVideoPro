@@ -23,6 +23,8 @@ struct MonitorControlProjection {
         revision = 0
         pendingOperationId = nil
         legacyCoreConfirmed = false
+        draftExpectedEpoch = ""
+        draftExpectedRevision = 0
         notice = "Monitor edit reconciling with restarted core"
     }
 
