@@ -6,7 +6,7 @@
 
 namespace corevideo::modules {
 
-RealZoomCaptureSource::RealZoomCaptureSource(std::unique_ptr<IZoomCaptureSource> fallback)
+RealZoomCaptureSource::RealZoomCaptureSource(std::unique_ptr<ZoomVideoFallback> fallback)
     : fallback_(std::move(fallback)) {}
 
 void RealZoomCaptureSource::ingestFrame(const std::string& participantId,
@@ -111,7 +111,7 @@ void RealZoomCaptureSource::ingestFrameEvents(const std::vector<rpc::Json>& even
   }
 }
 
-void RealZoomCaptureSource::captureVideoTick() {
+std::vector<VideoFrame> RealZoomCaptureSource::frames() {
   std::vector<VideoFrame> result;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -138,21 +138,8 @@ void RealZoomCaptureSource::captureVideoTick() {
       result.push_back(std::move(frame));
     }
   }
-  if (result.empty() && fallback_) {
-    for (auto& frame : fallback_->deliverVideo()) postVideo(std::move(frame));
-    return;
-  }
-  for (auto& frame : result) postVideo(std::move(frame));
-}
-
-void RealZoomCaptureSource::captureAudioTick() {
-  if (!fallback_) return;
-  struct Forward final : IZoomAudioConsumer {
-    RealZoomCaptureSource* self = nullptr;
-    void publish(AudioFrame frame) override { self->postAudio(std::move(frame)); }
-  } forward;
-  forward.self = this;
-  fallback_->deliverAudio(forward);
+  if (result.empty() && fallback_) return fallback_->frames();
+  return result;
 }
 
 size_t RealZoomCaptureSource::participantCount() const {

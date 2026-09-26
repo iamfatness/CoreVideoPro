@@ -113,15 +113,26 @@ TEST(SourceBusAudio, RemovingAudioKeepsVideoAndDoesNotReemitOldPcm) {
 }
 
 TEST(SourceBusAudio, MediaCorePublishesMeasuredPcmIngestForAnAudioOnlyGuest) {
-  class AudioGuest final : public corevideo::modules::IZoomCaptureSource {
+  class AudioGuest final : public corevideo::core::ISource {
    public:
-    void captureAudioTick() override {
-      postAudio(zoomPcm("audio-only", 1234, .25f));
+    AudioGuest() {
+      descriptor_.sourceId = "audio-only";
+      descriptor_.kind = "zoom-slate";
+      descriptor_.hasAudio = true;
     }
+    const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
+    corevideo::core::SourceTick poll(int64_t) override { return {}; }
+    std::vector<corevideo::modules::AudioFrame> pollAudio(int64_t) override {
+      return {zoomPcm("audio-only", 1234, .25f)};
+    }
+    corevideo::core::SourceIngestCounters counters() const override { return {}; }
+
+   private:
+    corevideo::core::SourceDescriptor descriptor_;
   };
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<AudioGuest>();
   corevideo::core::MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({std::make_shared<AudioGuest>()});
   std::mutex coreMutex;
   core.renderAudioOutputTick(coreMutex);
   const auto state = core.sessionState();

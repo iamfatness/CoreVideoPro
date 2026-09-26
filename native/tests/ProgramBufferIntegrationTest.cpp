@@ -211,10 +211,13 @@ namespace {
 // A Zoom source that hands the render gather one decoded I420 frame per selected
 // ISO participant, advancing frameId every poll so nothing downstream can dedup
 // the difference away.
-class IsoZoomSource final : public corevideo::modules::IZoomCaptureSource {
+class IsoZoomSource final : public corevideo::core::ISource {
  public:
-  void captureVideoTick() override {
+  const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
+  corevideo::core::SourceTick poll(int64_t) override {
     ++frameId;
+    corevideo::core::SourceTick tick;
+    tick.health = corevideo::core::SourceHealth::Producing;
     for (const auto& participantId : participants) {
       corevideo::modules::VideoFrame frame;
       frame.participantId = participantId;
@@ -222,11 +225,22 @@ class IsoZoomSource final : public corevideo::modules::IZoomCaptureSource {
       frame.i420Width = frame.i420Height = 2;
       frame.i420 = std::make_shared<const std::vector<uint8_t>>(6, 128);
       frame.frameId = frameId;
-      postVideo(std::move(frame));
+      tick.video.push_back(std::move(frame));
     }
+    return tick;
   }
+  corevideo::core::SourceIngestCounters counters() const override { return {}; }
   std::vector<std::string> participants{"host", "guest"};
   int64_t frameId = 0;
+
+ private:
+  corevideo::core::SourceDescriptor descriptor_{[] {
+    corevideo::core::SourceDescriptor descriptor;
+    descriptor.sourceId = "iso-zoom";
+    descriptor.kind = "zoom-slate";
+    descriptor.hasVideo = true;
+    return descriptor;
+  }()};
 };
 
 // Counts which submit boundary each kind of media crossed. The point of the ISO
@@ -277,12 +291,12 @@ struct IsoCadenceRig {
 
 IsoCadenceRig makeRecordingIsoRig() {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<IsoZoomSource>();
   auto encoder = std::make_unique<IsoCountingEncoder>();
   IsoCadenceRig rig;
   rig.encoder = encoder.get();
   modules.encoder = std::move(encoder);
   rig.core = std::make_unique<corevideo::core::MediaCore>(std::move(modules));
+  rig.core->useZoomSourcesForTest({std::make_shared<IsoZoomSource>()});
   const corevideo::rpc::Json isoIds =
       corevideo::rpc::Json::Array{std::string("zoom:host"), std::string("zoom:guest")};
   (void)rig.core->applyCommand(corevideo::rpc::Json::Object{

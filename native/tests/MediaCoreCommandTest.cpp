@@ -74,9 +74,18 @@ corevideo::modules::ProgramFrame makeTestProgramFrame(int64_t frameNumber) {
 // Emits one stereo PCM audio frame per poll so the monitor path has a real
 // signal to render through an injected monitor output (the default synthetic
 // source is metadata-only).
-class PcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
+class PcmTestZoomSource final : public corevideo::core::ISource {
  public:
-  void captureVideoTick() override {
+  PcmTestZoomSource() {
+    descriptor_.sourceId = "pcm-speaker";
+    descriptor_.kind = "zoom-slate";
+    descriptor_.width = 1280;
+    descriptor_.height = 720;
+    descriptor_.hasVideo = true;
+    descriptor_.hasAudio = true;
+  }
+  const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
+  corevideo::core::SourceTick poll(int64_t) override {
     corevideo::modules::VideoFrame frame;
     frame.participantId = "pcm-speaker";
     frame.width = 1280;
@@ -84,25 +93,39 @@ class PcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
     frame.naturalWidth = 1280;
     frame.naturalHeight = 720;
     frame.timestampMs = ++tick_ * 16;
-    postVideo(std::move(frame));
+    corevideo::core::SourceTick tick;
+    tick.video.push_back(std::move(frame));
+    tick.health = corevideo::core::SourceHealth::Producing;
+    return tick;
   }
-  void captureAudioTick() override {
+  std::vector<corevideo::modules::AudioFrame> pollAudio(int64_t) override {
     corevideo::modules::AudioFrame frame;
     frame.participantId = "pcm-speaker";
     frame.sampleRate = 48000;
     frame.channels = 2;
     frame.sampleCount = 480;
     frame.pcm.assign(static_cast<size_t>(frame.sampleCount) * frame.channels, 0.5f);
-    postAudio(std::move(frame));
+    return {std::move(frame)};
   }
+  corevideo::core::SourceIngestCounters counters() const override { return {}; }
 
  private:
+  corevideo::core::SourceDescriptor descriptor_;
   int64_t tick_ = 0;
 };
 
-class QuietPcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
+class QuietPcmTestZoomSource final : public corevideo::core::ISource {
  public:
-  void captureVideoTick() override {
+  QuietPcmTestZoomSource() {
+    descriptor_.sourceId = "quiet-speaker";
+    descriptor_.kind = "zoom-slate";
+    descriptor_.width = 1280;
+    descriptor_.height = 720;
+    descriptor_.hasVideo = true;
+    descriptor_.hasAudio = true;
+  }
+  const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
+  corevideo::core::SourceTick poll(int64_t) override {
     corevideo::modules::VideoFrame frame;
     frame.participantId = "quiet-speaker";
     frame.width = 1280;
@@ -110,26 +133,39 @@ class QuietPcmTestZoomSource final : public corevideo::modules::IZoomCaptureSour
     frame.naturalWidth = 1280;
     frame.naturalHeight = 720;
     frame.timestampMs = ++tick_ * 16;
-    postVideo(std::move(frame));
+    corevideo::core::SourceTick tick;
+    tick.video.push_back(std::move(frame));
+    tick.health = corevideo::core::SourceHealth::Producing;
+    return tick;
   }
-
-  void captureAudioTick() override {
+  std::vector<corevideo::modules::AudioFrame> pollAudio(int64_t) override {
     corevideo::modules::AudioFrame frame;
     frame.participantId = "quiet-speaker";
     frame.sampleRate = 48000;
     frame.channels = 2;
     frame.sampleCount = 480;
     frame.pcm.assign(static_cast<size_t>(frame.sampleCount) * frame.channels, 0.04f);
-    postAudio(std::move(frame));
+    return {std::move(frame)};
   }
+  corevideo::core::SourceIngestCounters counters() const override { return {}; }
 
  private:
+  corevideo::core::SourceDescriptor descriptor_;
   int64_t tick_ = 0;
 };
 
-class SinePcmTestZoomSource final : public corevideo::modules::IZoomCaptureSource {
+class SinePcmTestZoomSource final : public corevideo::core::ISource {
  public:
-  void captureVideoTick() override {
+  SinePcmTestZoomSource() {
+    descriptor_.sourceId = "pcm-speaker";
+    descriptor_.kind = "zoom-slate";
+    descriptor_.width = 1280;
+    descriptor_.height = 720;
+    descriptor_.hasVideo = true;
+    descriptor_.hasAudio = true;
+  }
+  const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
+  corevideo::core::SourceTick poll(int64_t) override {
     corevideo::modules::VideoFrame frame;
     frame.participantId = "pcm-speaker";
     frame.width = 1280;
@@ -137,10 +173,12 @@ class SinePcmTestZoomSource final : public corevideo::modules::IZoomCaptureSourc
     frame.naturalWidth = 1280;
     frame.naturalHeight = 720;
     frame.timestampMs = ++tick_ * 16;
-    postVideo(std::move(frame));
+    corevideo::core::SourceTick tick;
+    tick.video.push_back(std::move(frame));
+    tick.health = corevideo::core::SourceHealth::Producing;
+    return tick;
   }
-
-  void captureAudioTick() override {
+  std::vector<corevideo::modules::AudioFrame> pollAudio(int64_t) override {
     corevideo::modules::AudioFrame frame;
     frame.participantId = "pcm-speaker";
     frame.sampleRate = 48000;
@@ -155,10 +193,12 @@ class SinePcmTestZoomSource final : public corevideo::modules::IZoomCaptureSourc
       frame.pcm[static_cast<size_t>(index) * 2] = sample;
       frame.pcm[static_cast<size_t>(index) * 2 + 1] = sample;
     }
-    postAudio(std::move(frame));
+    return {std::move(frame)};
   }
+  corevideo::core::SourceIngestCounters counters() const override { return {}; }
 
  private:
+  corevideo::core::SourceDescriptor descriptor_;
   int64_t tick_ = 0;
 };
 
@@ -1072,11 +1112,11 @@ TEST(MediaCoreCommand, OutputSenderSessionPublishesEveryBackpressureField) {
 
 TEST(MediaCoreCommand, AudioMonitorRendersRoutedMonBusWhenPresent) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   auto monitor = std::make_unique<RecordingMonitorOutput>();
   auto* monitorPtr = monitor.get();
   modules.monitorOutput = std::move(monitor);
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
@@ -2101,8 +2141,8 @@ TEST(MediaCoreCommand, ClampsAndWarnsOnInvalidAudioRoutingSends) {
 
 TEST(MediaCoreCommand, AudioMixSessionFallsBackToNativeMixerMetrics) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "start-program-output"},
       {"destinations", corevideo::rpc::Json::Array{"recording"}},
@@ -2120,8 +2160,8 @@ TEST(MediaCoreCommand, AudioMixSessionFallsBackToNativeMixerMetrics) {
 
 TEST(MediaCoreCommand, LowLevelNoiseSuppressionDoesNotMakeAudioMixWarning) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<QuietPcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<QuietPcmTestZoomSource>()});
 
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "start-program-output"},
@@ -2143,8 +2183,8 @@ TEST(MediaCoreCommand, LowLevelNoiseSuppressionDoesNotMakeAudioMixWarning) {
 
 TEST(MediaCoreCommand, AudioMixSessionUsesRealPcmMetersForSyncedChannels) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "sync-participant-audio-mix"},
@@ -2170,8 +2210,8 @@ TEST(MediaCoreCommand, AudioMixSessionUsesRealPcmMetersForSyncedChannels) {
 
 TEST(MediaCoreCommand, MutedPcmChannelPublishesSilentOutputMeters) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "sync-participant-audio-mix"},
@@ -2200,8 +2240,8 @@ TEST(MediaCoreCommand, MutedPcmChannelPublishesSilentOutputMeters) {
 // talking, so the pre-mute INPUT meters must keep reporting real levels.
 TEST(MediaCoreCommand, MutedPcmChannelStillPublishesLiveInputMeters) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "sync-participant-audio-mix"},
@@ -2283,8 +2323,8 @@ TEST(AudioDsp, TracksSilenceWithoutLeakingInternalMetricsIntoPublicAudioMixShape
   EXPECT_EQ(session.status, "warning");
 
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
   const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "start-program-output"},
       {"destinations", corevideo::rpc::Json::Array{"recording"}},
@@ -2326,8 +2366,8 @@ TEST(MediaCoreCommand, ReportsEncoderMetadataInHealthAndSession) {
 
 TEST(MediaCoreCommand, AppliesEncoderLifecycleAndRecordingCommands) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "prepare-encoder-session"},
@@ -2524,10 +2564,10 @@ TEST(MediaCoreAudioMonitor, MixerMonitorBusIsEmptyWithoutPcm) {
 
 TEST(MediaCoreAudioMonitor, RendersMonitorBusThroughOutputDeviceAtOperatorVolume) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   auto* monitor = new RecordingMonitorOutput();
   modules.monitorOutput.reset(monitor);
   corevideo::core::MediaCore mediaCore{std::move(modules)};
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
@@ -2558,10 +2598,10 @@ TEST(MediaCoreAudioMonitor, RendersMonitorBusThroughOutputDeviceAtOperatorVolume
 
 TEST(MediaCoreAudioMonitor, EmptyMonitorDeviceUsesSystemDefaultOutput) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   auto* monitor = new RecordingMonitorOutput();
   modules.monitorOutput.reset(monitor);
   corevideo::core::MediaCore mediaCore{std::move(modules)};
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
@@ -2586,10 +2626,10 @@ TEST(MediaCoreAudioMonitor, EmptyMonitorDeviceUsesSystemDefaultOutput) {
 
 TEST(MediaCoreAudioMonitor, TransientRenderFailureReportsDroppingAndClearsAfterRecovery) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   auto* monitor = new RecoveringMonitorOutput();
   modules.monitorOutput.reset(monitor);
   corevideo::core::MediaCore mediaCore{std::move(modules)};
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto dropping = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
@@ -2626,10 +2666,10 @@ TEST(MediaCoreAudioMonitor, TransientRenderFailureReportsDroppingAndClearsAfterR
 
 TEST(MediaCoreAudioMonitor, DisablingMonitorStopsTheOutputDevice) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   auto* monitor = new RecordingMonitorOutput();
   modules.monitorOutput.reset(monitor);
   corevideo::core::MediaCore mediaCore{std::move(modules)};
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto armed = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
@@ -2656,8 +2696,8 @@ TEST(MediaCoreAudioMonitor, DisablingMonitorStopsTheOutputDevice) {
 
 TEST(MediaCoreAudioMonitor, RoutingMatrixMixesPcmIntoProgramAndIsoTaps) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore{std::move(modules)};
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
@@ -2700,8 +2740,8 @@ TEST(MediaCoreAudioMonitor, RoutingMatrixMixesPcmIntoProgramAndIsoTaps) {
 
 TEST(MediaCoreCommand, RecordsRealProgramAudioPcmIntoMux) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
   const auto state = mediaCore.applyCommands(
       corevideo::rpc::Json::Array{
           corevideo::rpc::Json::Object{
@@ -2737,8 +2777,8 @@ TEST(MediaCoreCommand, RecordsRealProgramAudioPcmIntoMux) {
 
 TEST(MediaCoreCommand, MeasuresBs1770MasterLoudnessOnProgramTap) {
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<SinePcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<SinePcmTestZoomSource>()});
   const auto state = mediaCore.applyCommands(
       corevideo::rpc::Json::Array{
           corevideo::rpc::Json::Object{
@@ -2769,8 +2809,8 @@ TEST(MediaCoreAudioMonitor, BusInsertCompressorActsOnRoutedBusPcm) {
   // the real bus samples, not merely live as routing state.
   const auto programTapPeak = [](const corevideo::rpc::Json::Object& send) -> double {
     auto modules = corevideo::modules::createStubModules();
-    modules.zoom = std::make_unique<PcmTestZoomSource>();
     corevideo::core::MediaCore mediaCore{std::move(modules)};
+    mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
     (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
         corevideo::rpc::Json::Object{
             {"type", "sync-audio-routing-matrix"},
@@ -3309,6 +3349,7 @@ TEST(MediaCoreCommand, AnExplicitPerClipStripAndSendWinOverTheMediaAlias) {
     SolidMediaFrameSource::reset();
     modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
     corevideo::core::MediaCore mediaCore(std::move(modules));
+    mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
     // Generic Media strip muted, the clip's own strip open: the clip is audible.
     (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
         corevideo::rpc::Json::Object{
@@ -6028,13 +6069,8 @@ TEST(ZoomMeetingSdkAdapter, DevGateDoesNotEmitFramesForDeferredRawSubscriptions)
       {"12345", "screen-share", "program", 3},
   });
 
-  EXPECT_TRUE(source->deliverVideo().empty());
-  struct Collect final : corevideo::modules::IZoomAudioConsumer {
-    int count = 0;
-    void publish(corevideo::modules::AudioFrame) override { ++count; }
-  } collect;
-  source->deliverAudio(collect);
-  EXPECT_EQ(collect.count, 0);
+  EXPECT_TRUE(source->takeVideoFrames().empty());
+  EXPECT_TRUE(source->takeAudioFrames().empty());
 #else
   EXPECT_TRUE(true);
 #endif
@@ -6121,12 +6157,8 @@ TEST(MediaCoreCommand, EmitsProgramSharedTextureHandleShape) {
 }
 
 TEST(MediaCoreCommand, CompositesRealZoomPixelsIntoProgramPreview) {
-  // Build the stub module set so the zoom source is a RealZoomCaptureSource
-  // (synthetic fallback). Capture the raw pointer before moving the modules
-  // into the media core so the test can ingest a real frame.
   auto modules = corevideo::modules::createStubModules();
-  auto* zoom = dynamic_cast<corevideo::modules::RealZoomCaptureSource*>(modules.zoom.get());
-  ASSERT_NE(zoom, nullptr);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
 
   // A known solid BGRA color for the participant routed into the scene.
   constexpr uint8_t kBlue = 0x10;
@@ -6141,9 +6173,16 @@ TEST(MediaCoreCommand, CompositesRealZoomPixelsIntoProgramPreview) {
     pixels[i + 2] = kRed;
     pixels[i + 3] = 0xff;
   }
-  zoom->ingestFrame("1234", pixels.data(), kWidth, kHeight, /*frameId=*/1, /*timestampMs=*/0);
-
-  corevideo::core::MediaCore mediaCore(std::move(modules));
+  corevideo::modules::VideoFrame frame;
+  frame.participantId = "1234";
+  frame.width = frame.pixelWidth = frame.naturalWidth = kWidth;
+  frame.height = frame.pixelHeight = frame.naturalHeight = kHeight;
+  frame.pixelStride = kWidth * 4;
+  frame.frameId = 1;
+  frame.pixels = std::make_shared<const std::vector<uint8_t>>(pixels);
+  auto source = std::make_shared<corevideo::core::ZoomParticipantSource>("1234", kWidth, kHeight);
+  source->setLatest(std::move(frame));
+  mediaCore.addSourceForTest(source);
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
           {"type", "load-scene-graph"},
@@ -6874,7 +6913,6 @@ TEST(MediaCoreAudioMonitor, WarnsWhenMonitorPlaysIntoTheLoopbackCaptureEndpoint)
   // Spec R6: the out-of-box config loopback-captures the default render
   // endpoint; a monitor playing into that SAME endpoint re-enters the mix.
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   modules.monitorOutput = std::make_unique<EndpointMonitorOutput>("{0.0.0.00000000}.{ABCD-1234}");
   auto* capture = new RecordingAudioCaptureSource();
   corevideo::modules::CaptureAudioSourceMetrics loopback;
@@ -6886,6 +6924,7 @@ TEST(MediaCoreAudioMonitor, WarnsWhenMonitorPlaysIntoTheLoopbackCaptureEndpoint)
   capture->reportedMetrics.push_back(loopback);
   modules.audioCapture.reset(capture);
   corevideo::core::MediaCore mediaCore{std::move(modules)};
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto state = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
@@ -7073,8 +7112,8 @@ TEST(MediaCoreCommand, TransientEmptyRoutingSyncHoldsLiveRoutes) {
   // episode. The core must HOLD the last non-empty config through transient
   // blanks and adopt an empty sync only when it persists (a real clear-all).
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore{std::move(modules)};
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto routedSends = corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{{"sourceId", "pcm-speaker"}, {"busId", "master"}, {"gainDb", 0}},
@@ -7140,8 +7179,8 @@ TEST(MediaCoreCommand, PartialSyncMissingASourceHoldsItsRoutesAndChannel) {
   // punctured audio after the empty-sync guard. A source missing from one
   // sync keeps its sends AND channel strip until the absence persists.
   auto modules = corevideo::modules::createStubModules();
-  modules.zoom = std::make_unique<PcmTestZoomSource>();
   corevideo::core::MediaCore mediaCore{std::move(modules)};
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
@@ -7214,6 +7253,7 @@ TEST(MediaCoreCommand, ALoopingBackgroundHasOneFrameSourceIdOnBothBuses) {
   SolidMediaFrameSource::reset();
   modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
   corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
 
   const auto background = corevideo::rpc::Json::Object{
       {"mediaAssetId", "bg-loop"}, {"mediaAssetName", "Loop"}, {"mediaAssetKind", "video"},

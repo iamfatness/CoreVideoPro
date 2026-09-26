@@ -6,7 +6,6 @@
 #include "modules/IsolatedOutputSender.h"
 #include "modules/OutputDestinationSupervisor.h"
 #include "modules/ProgramFramePreview.h"
-#include "modules/RealZoomCaptureSource.h"
 #include "modules/WinUiCaptureDeviceAdapter.h"
 
 #include <algorithm>
@@ -22,35 +21,6 @@
 
 namespace corevideo::modules {
 namespace {
-
-// Fallback video keeps the UI renderable without a meeting. Audio stays silent
-// so meters and monitor output only represent real routed PCM.
-class SyntheticZoomCaptureSource final : public IZoomCaptureSource {
- public:
-  void captureVideoTick() override {
-    ++frameNumber_;
-    VideoFrame first;
-    first.participantId = "synthetic-speaker-1";
-    first.width = 1280;
-    first.height = 720;
-    first.naturalWidth = 1280;
-    first.naturalHeight = 720;
-    first.timestampMs = frameNumber_ * 16;
-
-    VideoFrame second;
-    second.participantId = "synthetic-speaker-2";
-    second.width = 1280;
-    second.height = 720;
-    second.naturalWidth = 1280;
-    second.naturalHeight = 720;
-    second.timestampMs = frameNumber_ * 16;
-    postVideo(std::move(first));
-    postVideo(std::move(second));
-  }
-
- private:
-  int64_t frameNumber_ = 0;
-};
 
 uint32_t programPreviewSignature(const ProgramFramePreviewPixels& preview) {
   if (preview.width <= 0 || preview.height <= 0 || preview.bgra.empty()) {
@@ -987,11 +957,6 @@ std::unique_ptr<IOutputSender> createIsolatedOutputSender(
 
 ModuleSet createStubModules() {
   ModuleSet modules;
-  // Real decoded Zoom frames are ingested into RealZoomCaptureSource by the
-  // media-core tick. The synthetic source stays wired as the fallback so the
-  // program/preview keeps rendering a slate when there is no meeting or no
-  // participant video yet.
-  modules.zoom = std::make_unique<RealZoomCaptureSource>(std::make_unique<SyntheticZoomCaptureSource>());
   modules.compositor = std::make_unique<CpuNoopCompositor>();
   // No media decoder in the stub build: MediaCore leaves mediaTransports_ null.
   modules.mediaDecoderFactory = {};

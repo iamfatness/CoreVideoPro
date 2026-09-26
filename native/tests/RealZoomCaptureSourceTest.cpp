@@ -14,9 +14,8 @@
 namespace {
 
 using corevideo::modules::AudioFrame;
-using corevideo::modules::IZoomAudioConsumer;
-using corevideo::modules::IZoomCaptureSource;
 using corevideo::modules::RealZoomCaptureSource;
+using corevideo::modules::ZoomVideoFallback;
 using corevideo::modules::VideoFrame;
 
 // Builds a tightly packed solid-color BGRA buffer for width x height.
@@ -40,18 +39,13 @@ const VideoFrame* findFrame(const std::vector<VideoFrame>& frames, const std::st
   return nullptr;
 }
 
-class CountingSyntheticSource final : public IZoomCaptureSource {
+class CountingSyntheticSource final : public ZoomVideoFallback {
  public:
-  void captureVideoTick() override {
+  std::vector<VideoFrame> frames() override {
     ++videoPolls;
-    postVideo({"synthetic-1", 1280, 720, 0});
-  }
-  void captureAudioTick() override {
-    ++audioPolls;
-    postAudio({"synthetic-1", 48000, 1, 0});
+    return {{"synthetic-1", 1280, 720, 0}};
   }
   std::atomic<int> videoPolls{0};
-  std::atomic<int> audioPolls{0};
 };
 
 }  // namespace
@@ -62,7 +56,7 @@ TEST(RealZoomCaptureSource, StoresAndReturnsRealPixels) {
   source.ingestFrame("p-1", pixels.data(), 4, 2, /*frameId=*/7, /*timestampMs=*/123);
 
   EXPECT_EQ(source.participantCount(), 1u);
-  const auto frames = source.deliverVideo();
+  const auto frames = source.frames();
   EXPECT_EQ(frames.size(), 1u);
   const auto* frame = findFrame(frames, "p-1");
   ASSERT_NE(frame, nullptr);
@@ -84,7 +78,7 @@ TEST(RealZoomCaptureSource, OverwritesLatestFramePerParticipant) {
   source.ingestFrame("p-1", second.data(), 2, 2, 2, 20);
 
   EXPECT_EQ(source.participantCount(), 1u);
-  const auto frames = source.deliverVideo();
+  const auto frames = source.frames();
   EXPECT_EQ(frames.size(), 1u);
   const auto* frame = findFrame(frames, "p-1");
   ASSERT_NE(frame, nullptr);
@@ -101,7 +95,7 @@ TEST(RealZoomCaptureSource, KeepsDistinctParticipants) {
   source.ingestFrame("p-2", b.data(), 2, 2, 1, 0);
 
   EXPECT_EQ(source.participantCount(), 2u);
-  const auto frames = source.deliverVideo();
+  const auto frames = source.frames();
   EXPECT_EQ(frames.size(), 2u);
   EXPECT_NE(findFrame(frames, "p-1"), nullptr);
   EXPECT_NE(findFrame(frames, "p-2"), nullptr);
@@ -112,25 +106,16 @@ TEST(RealZoomCaptureSource, FallsBackToSyntheticWhenNoRealFrames) {
   auto* fallbackPtr = fallback.get();
   RealZoomCaptureSource source(std::move(fallback));
 
-  const auto videoBefore = source.deliverVideo();
+  const auto videoBefore = source.frames();
   EXPECT_EQ(videoBefore.size(), 1u);
   EXPECT_NE(findFrame(videoBefore, "synthetic-1"), nullptr);
   EXPECT_FALSE(findFrame(videoBefore, "synthetic-1")->hasPixels());
   EXPECT_EQ(fallbackPtr->videoPolls.load(), 1);
 
-  // Audio always delegates to the fallback.
-  struct Collect final : IZoomAudioConsumer {
-    std::vector<AudioFrame> frames;
-    void publish(AudioFrame frame) override { frames.push_back(std::move(frame)); }
-  } collect;
-  source.deliverAudio(collect);
-  EXPECT_EQ(collect.frames.size(), 1u);
-  EXPECT_EQ(fallbackPtr->audioPolls.load(), 1);
-
   // Once a real frame is ingested, the fallback is no longer consulted for video.
   const auto pixels = solidBgra(2, 2, 0x12, 0x34, 0x56, 0xff);
   source.ingestFrame("p-1", pixels.data(), 2, 2, 1, 0);
-  const auto videoAfter = source.deliverVideo();
+  const auto videoAfter = source.frames();
   EXPECT_EQ(videoAfter.size(), 1u);
   EXPECT_NE(findFrame(videoAfter, "p-1"), nullptr);
   EXPECT_EQ(fallbackPtr->videoPolls.load(), 1);
@@ -160,7 +145,7 @@ TEST(RealZoomCaptureSource, IngestsBase64FrameEvents) {
   source.ingestFrameEvents(events);
 
   EXPECT_EQ(source.participantCount(), 1u);
-  const auto frames = source.deliverVideo();
+  const auto frames = source.frames();
   const auto* frame = findFrame(frames, "p-9");
   ASSERT_NE(frame, nullptr);
   EXPECT_EQ(frame->frameId, 5);
@@ -182,7 +167,7 @@ TEST(RealZoomCaptureSource, IsThreadSafeUnderConcurrentIngestAndPoll) {
 
   std::thread reader([&]() {
     for (int i = 0; i < 2000 && !stop.load(); ++i) {
-      const auto frames = source.deliverVideo();
+      const auto frames = source.frames();
       for (const auto& frame : frames) {
         // Touch the shared buffer to surface any data race under sanitizers.
         if (frame.hasPixels()) {
@@ -198,6 +183,6 @@ TEST(RealZoomCaptureSource, IsThreadSafeUnderConcurrentIngestAndPoll) {
   stop.store(true);
 
   EXPECT_GE(source.participantCount(), 1u);
-  const auto frames = source.deliverVideo();
+  const auto frames = source.frames();
   EXPECT_EQ(frames.size(), 2u);
 }

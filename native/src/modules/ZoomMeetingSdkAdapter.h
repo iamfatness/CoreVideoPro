@@ -75,9 +75,13 @@ struct ZoomMeetingSdkRuntimeConfig {
   bool rawShareEnabled = false;
 };
 
-class IZoomMeetingSdkCaptureSource : public IZoomCaptureSource {
+class IZoomMeetingSdkCaptureSource {
  public:
-  ~IZoomMeetingSdkCaptureSource() override = default;
+  virtual ~IZoomMeetingSdkCaptureSource() = default;
+  // Subscription counters observed since the previous take. The core does not
+  // call these; the meeting adapter is not a frame source. Tests use them.
+  virtual std::vector<VideoFrame> takeVideoFrames() = 0;
+  virtual std::vector<AudioFrame> takeAudioFrames() = 0;
   virtual bool join(const ZoomMeetingSdkJoinRequest& request) = 0;
   virtual void leave() = 0;
   virtual void syncSubscriptions(const std::vector<ZoomMeetingSdkSubscriptionRequest>& requests) = 0;

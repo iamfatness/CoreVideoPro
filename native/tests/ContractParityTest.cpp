@@ -177,7 +177,7 @@ TEST(ContractParity, ZoomMeetingSdkAdapterGateMatchesReadinessAndPackageContract
   EXPECT_NE(cmakeSource.find("COREVIDEO_ZOOM_SDK_ROOT"), std::string::npos);
   EXPECT_NE(cmakeSource.find("COREVIDEO_BUILD_ZOOM_ENGINE requires -DZOOM_SDK_DIR"), std::string::npos);
   EXPECT_NE(adapterHeader.find("IZoomMeetingSdkCaptureSource"), std::string::npos);
-  EXPECT_NE(adapterHeader.find("IZoomCaptureSource"), std::string::npos);
+  EXPECT_NE(adapterHeader.find("takeVideoFrames"), std::string::npos);
 
   const std::array<std::string_view, 7> requiredPackageFiles = {
       "bin/sdk.dll",
