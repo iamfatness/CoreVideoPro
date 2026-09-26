@@ -364,6 +364,10 @@ class CountingMediaFrameSource final : public corevideo::modules::IMediaDecoder 
     std::int64_t next = 0;
     {
       std::lock_guard<std::mutex> lock(mutex());
+      if (heldSources.count(sourceId) > 0) {
+        ++heldPolls[sourceId];
+        return {};
+      }
       next = ++frameIds[sourceId];
     }
     return {solidMediaFrame(sourceId, next, timestampMs, 16, 16)};
@@ -374,10 +378,22 @@ class CountingMediaFrameSource final : public corevideo::modules::IMediaDecoder 
   static void restart(const std::string& sourceId) {
     std::lock_guard<std::mutex> lock(mutex());
     frameIds[sourceId] = 0;
+    heldSources.erase(sourceId);
+  }
+  static int hold(const std::string& sourceId) {
+    std::lock_guard<std::mutex> lock(mutex());
+    heldSources.insert(sourceId);
+    return heldPolls[sourceId];
+  }
+  static int heldPollCount(const std::string& sourceId) {
+    std::lock_guard<std::mutex> lock(mutex());
+    return heldPolls[sourceId];
   }
   static void resetAll() {
     std::lock_guard<std::mutex> lock(mutex());
     frameIds.clear();
+    heldSources.clear();
+    heldPolls.clear();
   }
   // The decoder's OWN book, read without rendering. A take-record test has to
   // know the worker has produced the frame it is about to judge BEFORE it
@@ -394,6 +410,8 @@ class CountingMediaFrameSource final : public corevideo::modules::IMediaDecoder 
     return m;
   }
   static inline std::map<std::string, std::int64_t> frameIds;
+  static inline std::set<std::string> heldSources;
+  static inline std::map<std::string, int> heldPolls;
 };
 
 // A decoder that cold-starts: the first time a source is asked for, it has
@@ -579,7 +597,9 @@ TEST(TakeRecord, ASharedBackgroundThatKeptItsGenerationIsACut) {
 
 TEST(TakeRecord, ASharedBackgroundThatRestartedAcrossTheTakeIsRebuilt) {
   auto modules = corevideo::modules::createStubModules();
-  modules.compositor = std::make_unique<DeliveringCompositor>();
+  auto compositor = std::make_unique<DeliveringCompositor>();
+  auto* presentedFrames = compositor.get();
+  modules.compositor = std::move(compositor);
   CountingMediaFrameSource::resetAll();
   modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<CountingMediaFrameSource>();
   MediaCore core(std::move(modules));
@@ -593,11 +613,20 @@ TEST(TakeRecord, ASharedBackgroundThatRestartedAcrossTheTakeIsRebuilt) {
     core.renderDisplayTick();
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-  // The decoder reopens. It is restarted BEFORE the take command, then waited
-  // on (bounded) until the worker has actually decoded a post-restart frame:
-  // with the audio worker enabled applyCommands renders NO tick, so nothing
-  // observes the regression until the display tick below - which is exactly the
-  // first program tick after the take, where the record's "after" half is taken.
+  // Stop the test decoder while render ticks drain its bounded three-frame
+  // queue. Otherwise the worker can be blocked on a full queue and never poll
+  // after restart, however long the test waits (especially under TSan).
+  const auto priorHeldPolls = CountingMediaFrameSource::hold("background:bg-1");
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [&](MediaCore&) {
+    return CountingMediaFrameSource::heldPollCount("background:bg-1") > priorHeldPolls;
+  })) << "the media worker never acknowledged the hold";
+  const auto lastOldFrame = CountingMediaFrameSource::frameIdFor("background:bg-1");
+  ASSERT_TRUE(corevideo::testing::renderUntil(core, [&](MediaCore&) {
+    const auto found = presentedFrames->presentedFrameIds.find("background:bg-1");
+    return found != presentedFrames->presentedFrameIds.end() && found->second >= lastOldFrame;
+  })) << "the pre-restart queue never drained to Program";
+  // Release the worker at frame 1 BEFORE the Take. No render tick follows the
+  // release until the Take, so its first Program frame observes the regression.
   CountingMediaFrameSource::restart("background:bg-1");
   ASSERT_TRUE(waitForDecoderFrameId("background:bg-1",
                                     [](std::int64_t id) { return id >= 1; }))
