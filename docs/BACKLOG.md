@@ -3,9 +3,9 @@
 **This is the only ordered list of work.** Status and detailed evidence live on
 linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 
-Owner-approved order updated 2026-09-26: #616, #601, #617, #622, #530, and #621 are closed.
+Owner-approved order updated 2026-09-26: #616, #601, #617, #622, #530, #621, and #540 are closed.
 The owner paused the remaining private-SDK CI work in #618 pending research.
-Next: SRT/NDI edge I/O (#538).
+Owner promoted and completed source-bus ingest extraction (#540). Next: SRT/NDI edge I/O (#538).
 Owner accepted live lip sync (#579) and first Takes (#555) on beta `db9e703`.
 #513 validation remains deferred; #582 range correction is in live validation.
 
@@ -50,6 +50,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#649](https://github.com/iamfatness/CoreVideoPro/issues/649) | RTMP demuxer test compares `const char*` literal addresses; use content comparison so Debug native gate is deterministic. |
 | [#637](https://github.com/iamfatness/CoreVideoPro/issues/637) | Live Zoom validator requests subscriptions but never starts raw capture after the explicit Engine On gate. Set `startCapture` in the dedicated harness and repeat meeting media validation. |
 | [#634](https://github.com/iamfatness/CoreVideoPro/issues/634) | Real test meeting join failed because the Zoom runtime appended passcode-query digits to the meeting number. Repair parsing and repeat the live join. |
 | [#640](https://github.com/iamfatness/CoreVideoPro/issues/640) | Handshake CI test parses the entire JSONL output as one object; assert the first complete message is the handshake. |
@@ -87,7 +88,6 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 | [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) | Full 16-guest / 1080p-input render-budget acceptance remains. |
 | [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | RTMP `bytesSent` still estimated; `latencyMs` hard-coded to 2100. |
 | [#509](https://github.com/iamfatness/CoreVideoPro/issues/509) | 197 ms participant-rebuild stutter. Command-drop on the same apply graph is #622. |
-| [#540](https://github.com/iamfatness/CoreVideoPro/issues/540) | Split ingest off MediaCore.cpp after F1 has one consumer. Not a god-object epic. |
 | [#537](https://github.com/iamfatness/CoreVideoPro/issues/537) | DeckLink/AJA: live frames on the source bus (not probe-only). Parked for beta. |
 | [#508](https://github.com/iamfatness/CoreVideoPro/issues/508) | Watch item: multiview label/click mismatch after unassign has not recurred. |
 | [#507](https://github.com/iamfatness/CoreVideoPro/issues/507) | Debug text on operator surfaces shifts transport buttons. |
@@ -109,6 +109,7 @@ These rows record specific fixes, not blanket production or fleet reliability.
 
 | Issue | Merged fix / acceptance |
 |---|---|
+| [#540](https://github.com/iamfatness/CoreVideoPro/issues/540) | Source video merge and per-source health projection extracted from MediaCore.cpp into SourceVideoIngress; frame order, Zoom roster, capture end, and still behavior covered by native tests. |
 | [#621](https://github.com/iamfatness/CoreVideoPro/issues/621) | Generated observation model and per-view field policies in #648; typed, qualification, and ControlState views covered by contract and shell tests. |
 | [#622](https://github.com/iamfatness/CoreVideoPro/issues/622) | Command syncs queue behind one bridge slot while empty polls coalesce; overlap/cancellation tests and live meeting Control API check passed in #645. |
 | [#530](https://github.com/iamfatness/CoreVideoPro/issues/530) | Canonical and legacy dual-view modes now select ProgramPreview; invalid values are rejected. Live meeting Control API check passed in #646. |

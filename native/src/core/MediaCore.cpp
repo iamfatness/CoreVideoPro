@@ -7,6 +7,8 @@
 #include "compositor/TilesMembership.h"
 #include "core/AudioControlSourcePolicy.h"
 #include "core/SourceAudioIngress.h"
+#include "core/SourceVideoIngress.h"
+#include "core/ZoomBusRoster.h"
 #include "core/LockHoldGuardrail.h"
 #include "core/Protocol.h"
 #include "core/RouteSourcePolicy.h"
@@ -1038,41 +1040,15 @@ rpc::Json MediaCore::sessionState() const {
                                    {"showMeters", multiviewShowMeters_},
                                    {"showClock", multiviewShowClock_},
                                });
-  // Per-source bus health (#535 slice 0, Task 4): present even when empty —
-  // the multiviewer-node rule, so the empty (no-source) state stays
-  // observable rather than the node vanishing.
-  {
-    rpc::Json::Array sourcesArr;
-    if (sourceBus_) {
-      const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch()).count();
-      for (const auto& s : sourceBus_->snapshot(nowNs)) {
-        // #535 slice 4a: echo the persisted per-source policy (default "hold",
-        // no name) so the shell can confirm what it last sent stuck.
-        const auto policyIt = sourcePolicies_.find(s.descriptor.sourceId);
-        const std::string dropoutPolicy =
-            policyIt != sourcePolicies_.end() ? policyIt->second.dropoutPolicy : "hold";
-        const std::string displayName =
-            policyIt != sourcePolicies_.end() ? policyIt->second.displayName : std::string{};
-        sourcesArr.push_back(rpc::Json::Object{
-            {"sourceId", s.descriptor.sourceId},
-            {"kind", s.descriptor.kind},
-            {"width", static_cast<int>(s.descriptor.width)},
-            {"height", static_cast<int>(s.descriptor.height)},
-            {"framesIngested", static_cast<double>(s.counters.framesIngested)},
-            {"droppedFrames", static_cast<double>(s.counters.droppedFrames)},
-            {"hasVideo", s.descriptor.hasVideo},
-            {"hasAudio", s.descriptor.hasAudio},
-            {"audioPacketsIngested", static_cast<double>(s.counters.audioPacketsIngested)},
-            {"audioSamplesIngested", static_cast<double>(s.counters.audioSamplesIngested)},
-            {"health", sourceHealthName(s.health)},
-            {"dropoutPolicy", dropoutPolicy},
-            {"displayName", displayName},
-        });
-      }
-    }
-    state.emplace("sources", rpc::Json{sourcesArr});
-  }
+  const int64_t sourceHealthNowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  state.emplace("sources", core::sourceHealthState(sourceBus_.get(), sourceHealthNowNs,
+      [this](const std::string& id) {
+        const auto it = sourcePolicies_.find(id);
+        return it == sourcePolicies_.end()
+            ? core::SourcePresentationPolicy{}
+            : core::SourcePresentationPolicy{it->second.dropoutPolicy, it->second.displayName};
+      }));
   // Per-source media TRANSPORT state (#535 slice 3b). Published
   // unconditionally - the multiviewer-node rule again: an empty array is the
   // honest answer to "no media is routed", and a node that vanishes in the
@@ -6484,120 +6460,22 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   } else if (defaultZoomSlate_ && sourceBus_ && !sourceBus_->contains("zoom-slate")) {
     sourceBus_->add(std::make_shared<core::SyntheticZoomSlateSource>());
   }
-  std::vector<modules::VideoFrame> videoFrames;
   // Capture devices deliver their held picture onto the bus. The render tick
   // no longer pulls pollVideoFrames. Browser sources are still polled; they
   // are not capture devices.
-  struct CaptureVideoToBus final : modules::ICaptureVideoConsumer {
-    core::SourceBus& bus;
-    explicit CaptureVideoToBus(core::SourceBus& bus) : bus(bus) {}
-    void publish(modules::VideoFrame frame) override {
-      core::publishHeldCaptureFrame(bus, std::move(frame));
-    }
-    void end(const std::string& participantId) override {
-      core::endHeldCaptureFrame(bus, participantId);
-    }
-  };
-  CaptureVideoToBus captureVideo(*sourceBus_);
+  core::CaptureVideoToSourceBus captureVideo(*sourceBus_);
   modules_.captureDevice->deliverVideo(captureVideo, frameTimestampMs);
   std::vector<modules::VideoFrame> browserFrames;
   if (!browserSources_->empty()) {
     browserFrames = browserSources_->pollVideoFrames(frameTimestampMs);
   }
   markStage(s_subPollUs, 0);
-  core::syncCaptureSources(*sourceBus_, browserFrames);
-  // Bus ingest, partitioned by kind so the merged vector keeps today's order:
-  // capture frames first (where the direct insert used to put them), then Zoom.
-  std::vector<modules::VideoFrame> captureFrames;   // KEEP this name: the merge below uses it
-  std::vector<modules::VideoFrame> slateFrames;
-  std::vector<modules::VideoFrame> zoomBusFrames;
-  // #535 slice 3b. Media rides the early ingest now, but it must SURVIVE the
-  // engine-roster merge below, which rebuilds videoFrames from the engine's
-  // roster and re-appends only capture. A media source matches no engine
-  // participant id, so leaving its frames in the general pile would drop every
-  // clip, loop and background the moment a meeting is live. Kept apart and
-  // re-appended in the merge for exactly the same reason capture is.
-  std::vector<modules::VideoFrame> mediaBusFrames;
-  // Shared across every bus ingest this tick (early ingest here, plus the
-  // still and decoded-media ingests further down) — one clock read per tick.
+  // Adapter polling stays here; the source-bus roster, ingest, partition and
+  // draw-order merge are owned by the focused ingress unit.
   const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
-  if (mediaTransports_ && sourceBus_) {
-    // A media transport absent from both desired sets is retired after a short
-    // grace (MediaTransports::kReleaseGraceMs) so ONE interleaved spine tick
-    // cannot destroy a cued clip's warm decoder. apply() only runs at command
-    // time, so this render-tick sweep is what actually retires it when no
-    // further command arrives. Usually a no-op over an empty map.
-    for (const auto& change : mediaTransports_->collectExpiredReleases(nowNs)) {
-      if (!change.added) sourceBus_->remove(change.sourceId);
-    }
-  }
-  if (sourceBus_ && !sourceBus_->empty()) {
-    // #535 slice 3b: media rides THIS ingest, alongside Zoom and capture - its
-    // frames come from its own transport entry, not from a poll that must wait
-    // for the render plan. Only stills are ingested separately, at the point
-    // they already join the gather below.
-    auto busResult = sourceBus_->ingest(
-        mediaPresentationTime100ns, nowNs,
-        [engineLive](const core::SourceDescriptor& d) {
-          if (d.kind == "still") return false;
-          if (engineLive && d.kind == "zoom-slate") return false;
-          return true;
-        });
-    for (size_t index = 0; index < busResult.video.size(); ++index) {
-      const auto& kind = index < busResult.videoKinds.size() ? busResult.videoKinds[index] : std::string{};
-      auto& bucket = kind == "zoom-slate" ? slateFrames
-          : kind == "capture" ? captureFrames
-          : kind == "media" ? mediaBusFrames
-          : zoomBusFrames;
-      bucket.push_back(std::move(busResult.video[index]));
-    }
-    // PCM is consumed separately by the audio-worker source-bus gather.
-  }
-  videoFrames.insert(videoFrames.end(), slateFrames.begin(), slateFrames.end());
-  videoFrames.insert(videoFrames.end(), captureFrames.begin(), captureFrames.end());
-  videoFrames.insert(videoFrames.end(),
-                     std::make_move_iterator(zoomBusFrames.begin()),
-                     std::make_move_iterator(zoomBusFrames.end()));
-  // Media last, where the post-plan poll used to put it. The one order-sensitive
-  // consumer is the empty-render-plan grid fallback, which improvises one cell
-  // per DECODED FRAME — media frames included — so what this position preserves
-  // is that fallback's CELL ORDER, not media's absence from it.
-  videoFrames.insert(videoFrames.end(), mediaBusFrames.begin(), mediaBusFrames.end());
-  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    if (!engineFrames.empty()) {
-      // When the engine reports subscribed video participants, they are the
-      // authoritative roster (mirrors the prior synthetic-tick behavior). Start
-      // from the engine roster and carry over real BGRA pixels for any
-      // participant that has already decoded a frame above; the rest stay
-      // metadata-only and fall back to the synthetic slate.
-      std::vector<modules::VideoFrame> merged;
-      merged.reserve(engineFrames.size());
-      for (auto engineFrame : engineFrames) {
-        // Carry over any decoded frame for this participant â€” I420 (GPU path) OR
-        // BGRA. Matching only hasPixels() dropped the raw-I420 Zoom frames (which
-        // have hasI420() but NOT hasPixels()), replacing them with the metadata-only
-        // engine roster frame -> participant rendered BLANK on program/preview.
-        const auto withContent = std::find_if(
-            videoFrames.begin(), videoFrames.end(), [&](const modules::VideoFrame& candidate) {
-              return candidate.participantId == engineFrame.participantId &&
-                     (candidate.hasPixels() || candidate.hasI420());
-            });
-        if (withContent != videoFrames.end()) {
-          merged.push_back(*withContent);
-        } else {
-          merged.push_back(std::move(engineFrame));
-        }
-      }
-      for (auto& captureFrame : captureFrames) {
-        merged.push_back(std::move(captureFrame));
-      }
-      for (auto& mediaFrame : mediaBusFrames) {
-        merged.push_back(std::move(mediaFrame));
-      }
-      videoFrames = std::move(merged);
-    }
-  }
+  auto videoFrames = core::gatherSourceVideo(*sourceBus_, mediaTransports_.get(),
+      engineFrames, browserFrames, engineLive, mediaPresentationTime100ns, nowNs);
   markStage(s_subMergeUs, 0);
   // Still-image media routes (logos/bugs): inject the persistent decoded frames
   // (keyed "media:<assetId>") so program, preview bus and multiview all match
@@ -6607,15 +6485,13 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // layer keeps the existing placeholder.
   if (stillMediaCache_) {
     auto stillFrames = stillMediaCache_->collectFrames(frameTimestampMs);
-    core::syncMediaSources(*sourceBus_, stillFrames, "still");
-    auto stills = sourceBus_->ingest(mediaPresentationTime100ns, nowNs,
-                                     [](const core::SourceDescriptor& d) { return d.kind == "still"; });
-    videoFrames.insert(videoFrames.end(), std::make_move_iterator(stills.video.begin()),
-                       std::make_move_iterator(stills.video.end()));
+    core::appendStillSourceVideo(*sourceBus_, stillFrames,
+        mediaPresentationTime100ns, nowNs, videoFrames);
   } else {
     // No still-media cache (cannot happen today) — clear any stale "still" bus
     // sources rather than let them linger silently forever.
-    core::syncMediaSources(*sourceBus_, {}, "still");
+    core::appendStillSourceVideo(*sourceBus_, {},
+        mediaPresentationTime100ns, nowNs, videoFrames);
   }
   // ISO-1: snapshot the latest per-source video frame (keyed by canonical source
   // id) so the audio worker's gather can hand each selected ISO writer its own
