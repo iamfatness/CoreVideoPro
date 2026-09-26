@@ -14,6 +14,9 @@ Active records:
 
 - `06-decision-zoom-capture-path.md` - decision record: the vendored standalone Zoom
   capture engine (`native/zoom-engine/`) is the primary Zoom capture path.
+- `speaker-floor-director.md` - dispatch prompt for #668 (unique guest slots, host
+  excluded from follow-speaker, talk-history galleries). Do not start unless the
+  owner has ranked #668 or explicitly dispatched the brief.
 
 The earlier native-media-core build briefs (skeleton + next-milestones dispatch
 prompts) have been completed and are superseded by
