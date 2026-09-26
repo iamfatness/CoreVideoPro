@@ -39,6 +39,11 @@ struct MonitorControlProjection {
         revision = nextRevision
         applied = Draft(enabled: mix["monitorEnabled"] as? Bool ?? applied.enabled,
                         volume: (mix["monitorVolume"] as? NSNumber)?.doubleValue ?? applied.volume)
+        if pendingOperationId == nil, draft == applied {
+            draft = nil
+            notice = ""
+            return
+        }
         guard let operation = pendingOperationId else { return }
         let results = (control["recentResults"] as? [JSONObject] ?? [])
         let result = results.first { $0["operationId"] as? String == operation }
