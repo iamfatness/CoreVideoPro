@@ -5,6 +5,7 @@ namespace CoreVideoPro.MediaCore.Services;
 public sealed class MediaCoreBridgeService : IMediaCoreBridge
 {
     private readonly MediaCoreSupervisor _supervisor;
+    private readonly MediaCoreSyncScheduler _syncScheduler = new();
     private readonly object _gate = new();
     private Timer? _pollTimer;
     private long _pollTimerGeneration;
@@ -253,10 +254,23 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         return capture;
     }
 
-    public async Task<NativeMediaCoreStateSnapshot> SyncAsync(
+    public Task<NativeMediaCoreStateSnapshot> SyncAsync(
         IReadOnlyList<NativeMediaCoreCommand> commands,
         double? elapsedMs = null,
         CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(commands);
+        // A queued one-shot must retain exactly the command the caller submitted.
+        var submittedCommands = commands.ToArray();
+        return _syncScheduler.RunCommandAsync(
+            () => SyncCoreAsync(submittedCommands, elapsedMs, cancellationToken),
+            cancellationToken);
+    }
+
+    private async Task<NativeMediaCoreStateSnapshot> SyncCoreAsync(
+        IReadOnlyList<NativeMediaCoreCommand> commands,
+        double? elapsedMs,
+        CancellationToken cancellationToken)
     {
         lock (_gate)
         {
@@ -277,8 +291,11 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     public async Task<NativeMediaCoreStateSnapshot> PollSnapshotAsync(
         CancellationToken cancellationToken = default)
     {
-        AdvanceElapsed(16);
-        return await SyncAsync([], cancellationToken: cancellationToken).ConfigureAwait(false);
+        return await _syncScheduler.TryPollAsync(async () =>
+        {
+            AdvanceElapsed(16);
+            return await SyncCoreAsync([], null, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<ZoomMediaSpineNativeSnapshot> SyncZoomMediaSpineAsync(
