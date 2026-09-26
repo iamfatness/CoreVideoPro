@@ -5,6 +5,7 @@ namespace CoreVideoPro.WinUI.ViewModels;
 
 public sealed partial class StudioViewModel
 {
+    public NativeMediaCoreAudioMixSession? AppliedAudioMonitorSession => _bridge.LastSnapshot?.AudioMixSession;
     private bool _suppressAudioMonitorControlSubmission;
     private string _audioMonitorControlNotice = string.Empty;
     private MediaCoreAudioMonitorWire? _audioMonitorPendingDraft;

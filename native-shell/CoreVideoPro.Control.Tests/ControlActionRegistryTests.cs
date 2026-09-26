@@ -65,6 +65,21 @@ public sealed class ControlActionRegistryTests
     }
 
     [Fact]
+    public void MonitorStateExposesAppliedEpochAndRevisionForSecondClient()
+    {
+        var state = new ControlState
+        {
+            AudioMonitorOn = true, AudioMonitorVolume = 0.5,
+            AudioMonitorAuthorityEpoch = "core-1", AudioMonitorRevision = 3,
+            AudioMonitorLastResult = "applied"
+        };
+        var json = System.Text.Json.JsonSerializer.Serialize(state);
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        Assert.Equal("core-1", document.RootElement.GetProperty("AudioMonitorAuthorityEpoch").GetString());
+        Assert.Equal(3, document.RootElement.GetProperty("AudioMonitorRevision").GetInt64());
+    }
+
+    [Fact]
     public void TryBind_RejectsUnknownAction()
     {
         Assert.False(ControlActionRegistry.TryBind("bogus.action", System.Array.Empty<object?>(), out _, out var error));

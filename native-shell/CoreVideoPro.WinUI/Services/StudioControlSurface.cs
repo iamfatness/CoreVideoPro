@@ -534,6 +534,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             .GroupBy(input => input.SourceId!, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First().Name, StringComparer.Ordinal);
         var audioMix = _vm.AudioMix;
+        var appliedMonitor = _vm.AppliedAudioMonitorSession;
         var audioSources = audioMix.Participants
             .Where(source => !string.IsNullOrWhiteSpace(source.ParticipantId))
             .OrderBy(source => source.ParticipantId, StringComparer.Ordinal)
@@ -572,8 +573,11 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             AutoAssignInputs = _vm.AutomationAutoAssignInputsEnabled,
             AutoLowerThirds = _vm.AutomationLowerThirdsEnabled,
             AutoCaptions = _vm.AutomationCaptionsEnabled,
-            AudioMonitorOn = audioMix.MonitorEnabled,
-            AudioMonitorVolume = audioMix.MonitorVolume,
+            AudioMonitorOn = appliedMonitor?.MonitorEnabled ?? false,
+            AudioMonitorVolume = appliedMonitor?.MonitorVolume ?? 0,
+            AudioMonitorAuthorityEpoch = appliedMonitor?.MonitorControl?.AuthorityEpoch ?? string.Empty,
+            AudioMonitorRevision = appliedMonitor?.MonitorControl?.Revision ?? 0,
+            AudioMonitorLastResult = appliedMonitor?.MonitorControl?.LastResult?.Status ?? string.Empty,
             ZoomAudioMode = ZoomAudioModePreference.Format(_vm.ZoomAudioMode),
             MasterLimiterOn = _vm.MasterLimiterEnabled,
             MasteringOn = _vm.MasteringEnabled,
