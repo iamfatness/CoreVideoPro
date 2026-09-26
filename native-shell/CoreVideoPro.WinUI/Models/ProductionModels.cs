@@ -906,6 +906,7 @@ public sealed class AutoProductionState
     public required int Confidence { get; init; }
     public required string Reason { get; init; }
     public required string Action { get; init; }
+    public IReadOnlyList<NativeDirectorSlotBinding> SlotBindings { get; init; } = [];
 }
 
 /// <summary>Static production templates and UI defaults — no fabricated meeting or device data.</summary>
@@ -1259,7 +1260,8 @@ public static class ProductionStateHelper
                 Reason = string.IsNullOrWhiteSpace(nativeRecommendation.Rationale)
                     ? "Native AI director recommendation."
                     : nativeRecommendation.Rationale,
-                Action = ResolveNativeRecommendationAction(nativeRecommendation.RuleId)
+                Action = ResolveNativeRecommendationAction(nativeRecommendation.RuleId),
+                SlotBindings = nativeRecommendation.SlotBindings
             };
         }
 

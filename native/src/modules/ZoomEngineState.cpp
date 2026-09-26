@@ -278,7 +278,9 @@ ZoomEngineRuntimeSnapshot ZoomEngineRuntimeState::snapshot() const {
   snapshot.meetingGeneration = meetingGeneration_;
   snapshot.rosterRevision = rosterRevision_;
   for (const auto& [_, participant] : participants_) {
-    snapshot.participants.push_back(participant);
+    auto copy = participant;
+    copy.directorExcluded = speakerDirector_.isExcluded(participant.id);
+    snapshot.participants.push_back(std::move(copy));
   }
   for (const auto& [_, stats] : subscriptionStats_) {
     snapshot.subscriptions.push_back(stats);
@@ -287,6 +289,17 @@ ZoomEngineRuntimeSnapshot ZoomEngineRuntimeState::snapshot() const {
   snapshot.warnings = warnings_;
   snapshot.rawMediaActive = rawMediaActive_;
   return snapshot;
+}
+
+std::vector<ZoomEngineParticipant> ZoomEngineRuntimeState::floorParticipants() const {
+  std::vector<ZoomEngineParticipant> result;
+  result.reserve(participants_.size());
+  for (const auto& [id, participant] : participants_) {
+    auto copy = participant;
+    copy.directorExcluded = speakerDirector_.isExcluded(id);
+    result.push_back(std::move(copy));
+  }
+  return result;
 }
 
 std::vector<AudioFrame> ZoomEngineRuntimeState::pollCompositorAudioFrames(int64_t timestampMs) const {
@@ -334,6 +347,8 @@ rpc::Json::Array ZoomEngineRuntimeState::participantsJson() const {
         {"networkQuality", "good"},
         {"isHost", participant.isHost},
         {"isMe", participant.isMe},
+        {"directorExcluded", speakerDirector_.isExcluded(id)},
+        {"rawTalking", participant.isTalking},
     });
   }
   return result;

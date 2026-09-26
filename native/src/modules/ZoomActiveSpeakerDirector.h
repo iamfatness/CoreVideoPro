@@ -112,6 +112,7 @@ class ZoomActiveSpeakerDirector {
 
   [[nodiscard]] std::uint32_t directedSpeakerId() const { return directedSpeakerId_; }
   [[nodiscard]] std::uint32_t candidateSpeakerId() const { return candidateSpeakerId_; }
+  [[nodiscard]] bool isExcluded(std::uint32_t id) const { return excluded(id); }
 
   void setFrameFresh(std::uint32_t id, bool fresh) {
     if (id == 0) {

@@ -61,6 +61,7 @@ export type DirectorProposal = {
   confidence: number;
   /** Optional free-text rationale; used for telemetry/explainability only. */
   rationale?: string;
+  slotBindings?: Array<{ slotIndex: number; personId: string; sourceId: string }>;
 };
 
 export interface DirectorStrategy {
@@ -108,7 +109,11 @@ export function sanitizeDirectorProposal(value: unknown): DirectorProposal | und
     ruleId: candidate.ruleId as DirectorProposalRuleId,
     recommendedSceneId: candidate.recommendedSceneId as DirectorSceneId,
     confidence: Math.max(0, Math.min(100, candidate.confidence)),
-    rationale: typeof candidate.rationale === "string" ? candidate.rationale : undefined
+    rationale: typeof candidate.rationale === "string" ? candidate.rationale : undefined,
+    slotBindings: Array.isArray(candidate.slotBindings)
+      ? candidate.slotBindings.filter((binding) => Number.isInteger(binding.slotIndex) &&
+          typeof binding.personId === "string" && typeof binding.sourceId === "string")
+      : undefined
   };
 }
 

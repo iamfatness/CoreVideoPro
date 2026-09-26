@@ -1718,7 +1718,9 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
     }
     const bool videoOn = participant.get("videoOn") && participant.get("videoOn")->asBool();
     const bool muted = participant.get("muted") && participant.get("muted")->asBool();
-    const bool talking = participant.get("talking") && participant.get("talking")->asBool();
+    const auto* rawTalking = participant.get("rawTalking");
+    const bool talking = rawTalking ? rawTalking->asBool() :
+        (participant.get("talking") && participant.get("talking")->asBool());
     const bool sharingScreen = participant.get("sharingScreen") && participant.get("sharingScreen")->asBool();
     const double audioLevel = participant.getNumber("audioLevel", 0.0);
     const std::string networkQuality = participant.getString("networkQuality", "good");
@@ -1759,16 +1761,23 @@ DirectorSignals MediaCore::deriveDirectorSignals() const {
 }
 
 DirectorRecommendation MediaCore::recommendAutoProduction() const {
-  return recommendScene(deriveDirectorSignals());
+  const auto nowMs = static_cast<std::uint64_t>(monotonicMs());
+  return recommendScene(deriveDirectorSignals(), speakerFloor_.snapshot(nowMs), nowMs);
 }
 
 rpc::Json MediaCore::autoProductionState() const {
   const auto recommendation = recommendAutoProduction();
+  rpc::Json::Array slotBindings;
+  for (const auto& binding : recommendation.slotBindings) {
+    slotBindings.emplace_back(rpc::Json::Object{
+        {"slotIndex", binding.slotIndex}, {"personId", binding.personId}, {"sourceId", binding.sourceId}});
+  }
   return rpc::Json::Object{
       {"ruleId", recommendation.ruleId},
       {"recommendedSceneId", recommendation.recommendedSceneId},
       {"confidence", recommendation.confidence},
       {"rationale", recommendation.rationale},
+      {"slotBindings", std::move(slotBindings)},
   };
 }
 
@@ -6615,6 +6624,55 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // sources rather than let them linger silently forever.
     core::appendStillSourceVideo(*sourceBus_, {},
         mediaPresentationTime100ns, nowNs, videoFrames);
+  }
+  // Observe the floor on the render tick, after source-bus ingest has proved
+  // which Zoom/capture feeds carry actual content. The recommendation path
+  // reads this ledger only; a query never mutates it or Takes Program.
+  {
+    std::vector<FloorObservation> observations;
+    const auto hasContent = [&videoFrames](const std::string& id) {
+      return std::any_of(videoFrames.begin(), videoFrames.end(),
+          [&id](const modules::VideoFrame& frame) {
+            return frame.participantId == id && (frame.hasI420() || frame.hasPixels());
+          });
+    };
+    if (engineLive) {
+      const auto roster = zoomEngineRuntime_->floorParticipants();
+      observations.reserve(roster.size());
+      for (const auto& participant : roster) {
+        if (participant.id == 0) continue;
+        const auto id = std::to_string(participant.id);
+        observations.push_back({"zoom:" + id, {},
+            participant.isHost || participant.isMe || participant.directorExcluded,
+            hasContent(id), participant.isTalking});
+      }
+    } else {
+      const auto capture = zoomSnapshot();
+      const auto* roster = capture.get("participants");
+      if (roster && roster->isArray()) for (const auto& participant : roster->asArray()) {
+        if (!participant.isObject()) continue;
+        const auto id = participant.getString("userId");
+        if (id.empty()) continue;
+        const auto role = participant.getString("role");
+        observations.push_back({"zoom:" + id, {}, role == "Host" || role == "host",
+            hasContent(id) || (participant.get("videoOn") && participant.get("videoOn")->asBool()),
+            participant.get("talking") && participant.get("talking")->asBool()});
+      }
+    }
+    const auto captureLinked = [&observations, &videoFrames](const std::vector<SceneRouteState>& routes) {
+      for (const auto& route : routes) {
+        if (route.mode != "capture-input" || route.captureDeviceId.empty() || route.personId.empty()) continue;
+        const auto sourceId = "capture:" + route.captureDeviceId;
+        observations.push_back({sourceId, route.personId, false,
+            std::any_of(videoFrames.begin(), videoFrames.end(), [&sourceId](const modules::VideoFrame& frame) {
+              return frame.participantId == sourceId && (frame.hasI420() || frame.hasPixels());
+            }), false});
+      }
+    };
+    captureLinked(sceneRoutes_);
+    captureLinked(previewSceneRoutes_);
+    const auto epoch = engineLive ? zoomEngineRuntime_->speakerEpoch() : zoomStubEpoch_;
+    speakerFloor_.observeFrame(epoch, static_cast<std::uint64_t>(monotonicMs()), observations);
   }
   // ISO-1: snapshot the latest per-source video frame (keyed by canonical source
   // id) so the audio worker's gather can hand each selected ISO writer its own

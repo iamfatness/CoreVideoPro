@@ -1,4 +1,5 @@
 using CoreVideoPro.WinUI.Models;
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.ViewModels.MagicScene;
 using Xunit;
 
@@ -24,7 +25,11 @@ public sealed class MagicSceneCoordinatorTests
         RecommendedSceneId = sceneId,
         Confidence = confidence,
         Reason = "test",
-        Action = "hold"
+        Action = "hold",
+        SlotBindings = sceneId == "interview"
+            ? [new NativeDirectorSlotBinding { SlotIndex = 0, PersonId = "a", SourceId = "zoom:a" },
+               new NativeDirectorSlotBinding { SlotIndex = 1, PersonId = "b", SourceId = "zoom:b" }]
+            : [new NativeDirectorSlotBinding { SlotIndex = 0, PersonId = "a", SourceId = "zoom:a" }]
     };
 
     private static (MagicSceneCoordinator Coordinator, FakeMagicSceneHost Host) Build()
@@ -173,6 +178,23 @@ public sealed class MagicSceneCoordinatorTests
         coordinator.RunMagicSceneCommand.Execute(null);
         Assert.Equal("interview", host.PreviewSceneId);
         Assert.Contains("queued by Magic Scene", host.CommandStatus);
+        Assert.Equal(["a", "b"], host.PreviewBindings.Select(binding => binding.PersonId).ToArray());
+    }
+
+    [Fact]
+    public void MagicSceneWithNoBindingsExplainsWhyPreviewCannotBePopulated()
+    {
+        var (coordinator, host) = Build();
+        coordinator.Recommendation = new AutoProductionState
+        {
+            RecommendedSceneId = "intro", Confidence = 90,
+            Reason = "No guest video or host camera is available.", Action = "hold"
+        };
+        coordinator.RunMagicSceneCommand.Execute(null);
+        Assert.Contains("no source to bind on Preview", coordinator.MagicSceneStatus);
+        Assert.Contains("No guest video", host.CommandStatus);
+        Assert.Empty(host.PreviewBindings);
+        Assert.Equal("intro", host.ActiveSceneId);
     }
 
     [Fact]
@@ -183,6 +205,7 @@ public sealed class MagicSceneCoordinatorTests
         coordinator.RunMagicSceneCommand.Execute(null);
         Assert.Equal("interview", host.PreviewSceneId);
         Assert.Equal("intro", host.ActiveSceneId);
+        Assert.Equal(["a", "b"], host.PreviewBindings.Select(binding => binding.PersonId).ToArray());
         Assert.Equal(0, host.GraphicPolicyCalls);
         Assert.Equal(0, host.TakeAsyncCallCount);
     }
@@ -395,6 +418,7 @@ public sealed class MagicSceneCoordinatorTests
         public bool FailTake { get; set; }
         public bool ThrowTake { get; set; }
         public int GraphicPolicyCalls { get; private set; }
+        public IReadOnlyList<NativeDirectorSlotBinding> PreviewBindings { get; private set; } = [];
 
         string IMagicSceneHost.CommandStatus
         {
@@ -434,6 +458,18 @@ public sealed class MagicSceneCoordinatorTests
         }
 
         public void SchedulePreviewRoutingRefresh() { }
+
+        public bool ApplyPreviewBindings(string sceneId, IReadOnlyList<NativeDirectorSlotBinding> bindings, out string reason)
+        {
+            if (sceneId != PreviewSceneId || bindings.Count == 0)
+            {
+                reason = "No guest video or host camera has a content frame.";
+                return false;
+            }
+            PreviewBindings = bindings;
+            reason = string.Empty;
+            return true;
+        }
 
         public void RefreshSceneItems() { }
 

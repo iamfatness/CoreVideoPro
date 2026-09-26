@@ -1000,6 +1000,12 @@ std::string ZoomEngineRuntime::directedSpeakerId() {
   return state_.directedSpeakerIdString();
 }
 
+std::vector<ZoomEngineParticipant> ZoomEngineRuntime::floorParticipants() {
+  if (!configured()) return {};
+  std::lock_guard<std::mutex> lock(mutex_);
+  return state_.floorParticipants();
+}
+
 void ZoomEngineRuntime::resetSubscriptionChurnLocked() {
   // Every path that resets the subscription set is a meeting-session boundary
   // (join, leave, Engine off, a new engine process): forget speaker history.
@@ -1090,6 +1096,8 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
         {"persistentId", participant.persistentId},
         {"role", participant.isHost ? "Host" : "Guest"},
         {"isMe", participant.isMe},
+        {"directorExcluded", participant.directorExcluded},
+        {"rawTalking", participant.isTalking},
         {"muted", participant.isMuted},
         {"videoOn", participant.hasVideo},
         {"talking", participant.isTalking || participantIdString(participant.id) == snapshot.activeSpeakerId},

@@ -824,6 +824,14 @@ public sealed record NativeMediaCoreAutoProduction
     public string RecommendedSceneId { get; init; } = string.Empty;
     public int Confidence { get; init; }
     public string Rationale { get; init; } = string.Empty;
+    public IReadOnlyList<NativeDirectorSlotBinding> SlotBindings { get; init; } = [];
+}
+
+public sealed record NativeDirectorSlotBinding
+{
+    public int SlotIndex { get; init; }
+    public string PersonId { get; init; } = string.Empty;
+    public string SourceId { get; init; } = string.Empty;
 }
 
 public sealed record NativeMediaCorePreviewScene
