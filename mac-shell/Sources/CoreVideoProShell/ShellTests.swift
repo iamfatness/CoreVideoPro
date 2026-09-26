@@ -31,6 +31,11 @@ enum ShellTests {
         }
         projection.observe(mix(0, false))
         expect(!projection.legacyCoreConfirmed, "new-core snapshot revokes fallback")
+        var alreadyApplied = projection
+        alreadyApplied.edit(.init(enabled: false, volume: 0.5))
+        alreadyApplied.observe(mix(0, false))
+        expect(alreadyApplied.draft == nil, "matching snapshot clears unsent draft")
+        expectEqual(alreadyApplied.notice, "", "matching snapshot clears pending label")
         projection.edit(.init(enabled: true, volume: 0.5))
         projection.observe(mix(1, false))
         let first = projection.nextCommand()
