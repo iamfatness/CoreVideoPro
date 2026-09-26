@@ -706,7 +706,7 @@ public static class TransportStatusFormatter
     }
 
     internal static bool HasNativeOutputCapability(NativeMediaCoreProfile profile, string capability) =>
-        profile.Capabilities.Contains(capability, StringComparer.OrdinalIgnoreCase);
+        profile.HasAvailableCapability(capability);
 
     public static string ResolveProgramResolutionLabel(NativeMediaCoreStateSnapshot snapshot)
     {

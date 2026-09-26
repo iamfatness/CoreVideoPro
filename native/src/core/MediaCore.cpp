@@ -142,67 +142,49 @@ std::vector<modules::OutputDestinationSettings> readOutputDestinationSettings(co
   return result;
 }
 
-rpc::Json::Array capabilityArray(const std::string& renderer, const modules::OutputSession& encoderSession) {
-  rpc::Json::Array result;
-  result.emplace_back("audio-mixer");
-  result.emplace_back("scene-graph-rendering");
-  result.emplace_back("dynamic-overlays");
+struct CapabilityReport {
+  rpc::Json::Array available;
+  rpc::Json::Object states;
+};
 
-  if (renderer != "software") {
-    result.emplace_back("gpu-compositor");
-    result.emplace_back("chroma-key");
-  result.emplace_back("smart-framing");
-  }
+CapabilityReport capabilityReport(const modules::ModuleSet& modules, bool zoomConfigured,
+                                  const modules::OutputSession& encoderSession) {
+  CapabilityReport report;
+  const auto add = [&](const std::string& name, modules::ModuleSet::CapabilityConstruction status) {
+    rpc::Json::Object value{{"state", status.state}, {"detail", status.detail}};
+    if (!status.failureScope.empty()) value.emplace("failureScope", status.failureScope);
+    report.states.emplace(name, std::move(value));
+    if (status.state == "available") report.available.emplace_back(name);
+  };
+  const auto intrinsic = [&](const char* name, bool constructed) {
+    add(name, {constructed ? "available" : "omitted", "", ""});
+  };
+  const auto factory = [&](const char* name) {
+    const auto found = modules.capabilityConstruction.find(name);
+    add(name, found == modules.capabilityConstruction.end()
+        ? modules::ModuleSet::CapabilityConstruction{"omitted", "not-reported-by-factory", ""}
+        : found->second);
+  };
 
-#if COREVIDEO_WITH_WASAPI_CAPTURE || COREVIDEO_WITH_COREAUDIO
-  result.emplace_back("local-audio-capture");
-#endif
-
-#if COREVIDEO_WITH_WASAPI_MONITOR || COREVIDEO_WITH_COREAUDIO
-  result.emplace_back("audio-monitor-output");
-#endif
-
-#if COREVIDEO_WITH_ZOOM
-  result.emplace_back("zoom-raw-video");
-  result.emplace_back("zoom-raw-audio");
-#endif
-
-  if (encoderSession.hardwareAccelerated) {
-    result.emplace_back("program-recording");
-    result.emplace_back("iso-recording");
-  }
-
-#if COREVIDEO_WITH_RTMP_OUTPUT
-  result.emplace_back("rtmp-output");
-#endif
-
-#if COREVIDEO_WITH_NDI_OUTPUT
-  result.emplace_back("ndi-output");
-#endif
-
-#if COREVIDEO_WITH_SRT_OUTPUT
-  result.emplace_back("srt-output");
-#endif
-
-#if COREVIDEO_WITH_SRT_INGEST
-  result.emplace_back("srt-ingest");
-#endif
-
-#if COREVIDEO_WITH_DECKLINK
-  result.emplace_back("decklink-capture");
-#endif
-
-#if COREVIDEO_WITH_AJA
-  result.emplace_back("aja-capture");
-#endif
-
-#if COREVIDEO_WITH_UVC || COREVIDEO_WITH_AVF_CAPTURE
-  // Shared across the Windows MF adapter and the macOS AVFoundation twin —
-  // the string means "native camera capture available" (CoreAudio precedent).
-  result.emplace_back("uvc-capture");
-#endif
-
-  return result;
+  intrinsic("audio-mixer", modules.mixer != nullptr);
+  intrinsic("scene-graph-rendering", modules.compositor != nullptr);
+  intrinsic("dynamic-overlays", modules.compositor != nullptr);
+  factory("gpu-compositor");
+  const bool gpu = modules.compositor && modules.compositor->rendererName() != "software";
+  intrinsic("chroma-key", gpu);
+  intrinsic("smart-framing", gpu);
+  factory("local-audio-capture");
+  factory("audio-monitor-output");
+  const char* zoomState = COREVIDEO_WITH_ZOOM && zoomConfigured ? "available" : "omitted";
+  const char* zoomDetail = COREVIDEO_STUB ? "stub-build" : !COREVIDEO_WITH_ZOOM
+      ? "zoom-sdk-not-built" : !zoomConfigured ? "engine-path-not-configured" : "";
+  add("zoom-raw-video", {zoomState, zoomDetail, ""});
+  add("zoom-raw-audio", {zoomState, zoomDetail, ""});
+  intrinsic("program-recording", encoderSession.hardwareAccelerated);
+  intrinsic("iso-recording", encoderSession.hardwareAccelerated);
+  for (const char* name : {"rtmp-output", "ndi-output", "srt-output", "srt-ingest",
+                           "decklink-capture", "aja-capture", "uvc-capture"}) factory(name);
+  return report;
 }
 
 rpc::Json captureDeviceJson(const modules::CaptureDeviceInfo& device) {
@@ -397,6 +379,7 @@ rpc::Json MediaCore::profile() const {
     std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
     encoderSession = modules_.encoder->session();
   }
+  const auto capabilities = capabilityReport(modules_, zoomEngineConfigured(), encoderSession);
   return rpc::Json::Object{
       {"name", renderer == "software" ? "CoreVideo Pro Native Media Core Stub" : "CoreVideo Pro Native Media Core"},
       {"renderer", renderer},
@@ -405,7 +388,8 @@ rpc::Json MediaCore::profile() const {
       {"maxProgramFps", 60},
       {"maxParticipantFeeds", 10},
       {"maxIsoRecordings", 8},
-      {"capabilities", capabilityArray(renderer, encoderSession)},
+      {"capabilities", capabilities.available},
+      {"capabilityStates", capabilities.states},
   };
 }
 

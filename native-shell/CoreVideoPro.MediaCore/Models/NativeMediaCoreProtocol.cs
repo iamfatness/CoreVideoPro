@@ -21,6 +21,7 @@ public enum NativeMediaCoreCapability
     [JsonStringEnumMemberName("ndi-output")] NdiOutput,
     [JsonStringEnumMemberName("srt-output")] SrtOutput,
     [JsonStringEnumMemberName("srt-ingest")] SrtIngest,
+    [JsonStringEnumMemberName("uvc-capture")] UvcCapture,
     [JsonStringEnumMemberName("webrtc-output")] WebrtcOutput,
     [JsonStringEnumMemberName("virtual-camera")] VirtualCamera,
     [JsonStringEnumMemberName("decklink-capture")] DecklinkCapture,
@@ -36,6 +37,22 @@ public sealed class NativeMediaCoreProfile
     public int MaxParticipantFeeds { get; init; }
     public int MaxIsoRecordings { get; init; }
     public IReadOnlyList<string> Capabilities { get; init; } = [];
+    // Factory-time admission state. A name in an older capabilities list is
+    // insufficient when this record says its adapter/runtime was omitted.
+    public IReadOnlyDictionary<string, NativeMediaCoreCapabilityState> CapabilityStates { get; init; }
+        = new Dictionary<string, NativeMediaCoreCapabilityState>();
+
+    public bool HasAvailableCapability(string capability) => CapabilityStates.Count > 0
+        ? CapabilityStates.TryGetValue(capability, out var status) &&
+          string.Equals(status.State, "available", StringComparison.OrdinalIgnoreCase)
+        : Capabilities.Contains(capability, StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class NativeMediaCoreCapabilityState
+{
+    public string State { get; init; } = "omitted";
+    public string Detail { get; init; } = "";
+    public string? FailureScope { get; init; }
 }
 
 public sealed class NativeMediaCoreCommand
@@ -952,7 +969,7 @@ public static class NativeMediaCoreProfileValidator
     public static NativeMediaCoreValidation Validate(NativeMediaCoreProfile profile)
     {
         var missing = RequiredMvpCapabilities
-            .Where(capability => !profile.Capabilities.Contains(capability, StringComparer.Ordinal))
+            .Where(capability => !profile.HasAvailableCapability(capability))
             .ToList();
         var warnings = new List<string>();
 

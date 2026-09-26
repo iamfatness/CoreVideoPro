@@ -1032,6 +1032,7 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession session() const override { return snapshot(); }
+  bool runtimeAvailableAtConstruction() const override { return runtimeAvailable_; }
 
   // TEST-ONLY (see the declaration on IOutputSender for the structural guard).
   bool wouldRestartForEncodePathForTest(const ProgramFrame& frame) override {

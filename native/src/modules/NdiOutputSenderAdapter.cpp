@@ -424,6 +424,7 @@ class NdiOutputSender final : public IOutputSender {
   }
 
   OutputSenderSession session() const override { return snapshot(); }
+  bool runtimeAvailableAtConstruction() const override { return runtimeAvailable_ && api_.complete(); }
 
  private:
   void ensureSender(double elapsedMs) {
