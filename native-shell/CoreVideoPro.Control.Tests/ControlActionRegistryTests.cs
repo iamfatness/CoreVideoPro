@@ -75,4 +75,25 @@ public sealed class ControlActionRegistryTests
             Assert.True(ControlActionRegistry.Contains(id), $"missing action {id}");
         }
     }
+
+    [Theory]
+    [InlineData("program", "program")]
+    [InlineData("preview", "preview")]
+    [InlineData("program-preview", "program-preview")]
+    [InlineData("programPreview", "program-preview")]
+    [InlineData("multiview", "multiview")]
+    public void ViewMode_AcceptsAdvertisedModesAndLegacyAlias(string requested, string canonical)
+    {
+        Assert.True(ViewModeContract.TryNormalize(requested, out var actual));
+        Assert.Equal(canonical, actual);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("Program")]
+    [InlineData("programPreviewWrong")]
+    public void ViewMode_RejectsUnsupportedValue(string requested)
+    {
+        Assert.False(ViewModeContract.TryNormalize(requested, out _));
+    }
 }

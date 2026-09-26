@@ -91,8 +91,8 @@ public static class ControlActionRegistry
                     new ControlParam("cropRight", d, true), new ControlParam("order", d, true) }),
             new("scene.tiles.override.clear", "Clear tile override", "Return a Preview tile to automatic grid positioning and crop.",
                 new[] { new ControlParam("sourceId", s, true) }),
-            new("view.setMode", "Set view mode", "Set the operator view (program/preview/programPreview/multiview).",
-                new[] { new ControlParam("mode", s, true) }),
+            new("view.setMode", "Set view mode", "Set the operator view (program/preview/program-preview/multiview); programPreview is accepted as a legacy alias.",
+                new[] { new ControlParam("mode", s, true, ViewModeContract.SupportedModes) }),
 
             // ---- Show Inputs ------------------------------------------------------------
             new("input.assign", "Assign input", "Assign a source to a Show Input slot (1-10).",
