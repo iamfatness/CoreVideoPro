@@ -77,7 +77,7 @@ public static class CoreSnapshotObserver
         string redacted;
         try
         {
-            redacted = Redact(snapshot.RawJson!);
+            redacted = CoreObservationModel.Parse(snapshot.RawJson!).QualificationJson();
         }
         catch (JsonException error)
         {
@@ -129,7 +129,7 @@ public static class CoreSnapshotObserver
                 foreach (var property in element.EnumerateObject())
                 {
                     writer.WritePropertyName(property.Name);
-                    if (IsSecretName(property.Name) && property.Value.ValueKind is JsonValueKind.String)
+                    if (IsSecretName(property.Name))
                     {
                         writer.WriteStringValue(SupportBundleLogRedactor.Placeholder);
                     }

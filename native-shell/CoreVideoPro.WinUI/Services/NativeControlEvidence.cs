@@ -1,5 +1,7 @@
 using CoreVideoPro.Control;
 using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.MediaCore.Services;
+using System.Text.Json;
 
 namespace CoreVideoPro.WinUI.Services;
 
@@ -24,8 +26,17 @@ internal static class NativeControlEvidence
             NativePreviewSceneId = snapshot?.PreviewScene?.SceneId,
             NativeProgramFrameCount = snapshot?.ProgramFrameCount,
             NativeProgramBuffer = snapshot?.ProgramBuffer is { ValueKind: System.Text.Json.JsonValueKind.Object } buffer ? buffer.Clone() : null,
+            NativeObservation = Observe(snapshot),
             NativeLowerThirdPhase = lowerThird?.KeyPhase,
             NativeLowerThirdVisible = snapshot is null ? null : lowerThird?.Visible ?? false
         };
+    }
+
+    private static JsonElement? Observe(NativeMediaCoreStateSnapshot? snapshot)
+    {
+        if (string.IsNullOrWhiteSpace(snapshot?.RawJson)) return null;
+        var json = CoreObservationModel.Parse(snapshot.RawJson).ControlJson();
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
     }
 }

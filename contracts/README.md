@@ -196,3 +196,18 @@ shared evidence fixtures run through browser/Node, C++, C#, and Swift validators
 C# and Swift additionally exercise valid DTO round trips. Swift execution still
 requires macOS CI. The existing `Lifecycle` generated filenames are retained so
 this foundational vocabulary adds no runtime/build-system migration.
+# Core observation contract
+
+`observation.schema.json` declares every top-level field published by
+`MediaCore::sessionState()` and an explicit `include`, `omit`, or `redact` choice
+for the typed operator, qualification, and control views. The generator checks
+the native publisher against this list. A new native field fails
+`npm run contract:check` until all three decisions are recorded and the generated
+`CoreObservationModel.g.cs` is updated with `npm run contract:generate`.
+
+The typed parser binds through `CoreObservationModel.TypedJson()`. Qualification
+uses `QualificationJson()`, and `ControlState.nativeObservation` uses
+`ControlJson()`. Both public JSON views recursively apply the support bundle
+redactor, including fields unknown to an older shell. The existing flat
+`ControlState` native fields remain for current HTTP, WebSocket, and OSC
+clients; new core evidence belongs in the generated observation view.
