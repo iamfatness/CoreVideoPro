@@ -41,11 +41,17 @@ inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
     "rtmp-output",
 };
 
-inline constexpr std::array<std::string_view, 25> kNativeMediaCoreCommandTypes = {
+// The live dispatcher in MediaCore::applyCommandMutation handles exactly these
+// names. A production builder that emits anything else is a protocol failure.
+inline constexpr std::array<std::string_view, 45> kNativeMediaCoreCommandTypes = {
     "begin-take-transition",
     "load-scene-graph",
+    "set-preview-scene",
     "set-participant-transform",
     "set-overlay-asset",
+    "set-color-grade",
+    "set-source-policy",
+    "set-output-profile",
     "start-program-output",
     "prepare-encoder-session",
     "start-encoder-session",
@@ -58,6 +64,12 @@ inline constexpr std::array<std::string_view, 25> kNativeMediaCoreCommandTypes =
     "fail-recording-session",
     "recover-recording-session",
     "sync-participant-audio-mix",
+    "sync-virtual-camera",
+    "sync-audio-monitor",
+    "scan-vst-plugins",
+    "open-vst-editor",
+    "set-vst-param",
+    "set-vst-state",
     "sync-audio-routing-matrix",
     "sync-capture-audio-sources",
     "push-caption-cue",
@@ -65,9 +77,26 @@ inline constexpr std::array<std::string_view, 25> kNativeMediaCoreCommandTypes =
     "set-brand-kit",
     "set-media-playback",
     "set-media-transport",
+    "set-multiview-layout",
+    "configure-multiviewer",
+    "configure-srt-ingest-sources",
+    "browser-add",
+    "browser-remove",
+    "browser-reload",
+    "simulate-breakout-room-change",
     "recommend-auto-production",
     "set-verbose-diagnostics",
+    "set-zoom-source-roster",
+    "set-active-speaker",
+    "set-screen-share-source",
 };
+
+inline bool isNativeMediaCoreCommand(std::string_view type) {
+  for (const auto name : kNativeMediaCoreCommandTypes) {
+    if (name == type) return true;
+  }
+  return false;
+}
 
 inline constexpr std::array<std::string_view, 14> kNativeBridgeCommandTypes = {
     "join",

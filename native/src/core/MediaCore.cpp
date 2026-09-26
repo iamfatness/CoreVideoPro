@@ -624,15 +624,12 @@ rpc::Json MediaCore::zoomSnapshot() const {
     };
   }
 
-  return rpc::Json::Object{
-      {"meetingState", "in_meeting"},
-      {"activeSpeakerId", kStubActiveSpeakerId},
-      {"caption", ""},
-      {"readiness", zoomReadinessState()},
-      {"evidence", zoomEvidenceState()},
-      {"tick", zoomSnapshotTick_},
-      {"participants",
-       rpc::Json::Array{
+  const std::string speaker = !shellActiveSpeakerId_.empty()
+      ? shellActiveSpeakerId_
+      : std::string(kStubActiveSpeakerId);
+  rpc::Json::Array participants = !shellZoomRoster_.isNull() && shellZoomRoster_.isArray() && !shellZoomRoster_.asArray().empty()
+      ? shellZoomRoster_.asArray()
+      : rpc::Json::Array{
            rpc::Json::Object{
                {"userId", "operator-1"},
                {"displayName", zoomDisplayName_},
@@ -653,8 +650,30 @@ rpc::Json MediaCore::zoomSnapshot() const {
                {"audioLevel", 22},
                {"networkQuality", "good"},
            },
-       }},
+       };
+  return rpc::Json::Object{
+      {"meetingState", "in_meeting"},
+      {"activeSpeakerId", speaker},
+      {"screenShareParticipantId", shellScreenShareParticipantId_},
+      {"caption", ""},
+      {"readiness", zoomReadinessState()},
+      {"evidence", zoomEvidenceState()},
+      {"tick", zoomSnapshotTick_},
+      {"participants", std::move(participants)},
   };
+}
+
+void MediaCore::setZoomSourceRoster(const rpc::Json& command) {
+  const auto* sources = command.get("sources");
+  shellZoomRoster_ = sources && sources->isArray() ? *sources : rpc::Json::Array{};
+}
+
+void MediaCore::setActiveSpeaker(const rpc::Json& command) {
+  shellActiveSpeakerId_ = command.getString("participantId");
+}
+
+void MediaCore::setScreenShareSource(const rpc::Json& command) {
+  shellScreenShareParticipantId_ = command.getString("participantId");
 }
 
 rpc::Json MediaCore::sessionState() const {
@@ -670,6 +689,7 @@ rpc::Json MediaCore::sessionState() const {
   const auto buffer = modules_.compositor->programBufferDiagnostics();
   rpc::Json::Object state{
       {"sceneId", sceneId_},
+      {"commandProtocolFailures", stringArray(commandProtocolFailures_)},
       {"routeCount", routeCount_},
       {"transformCount", transformCount_},
       {"overlayCount", overlayCount_},
@@ -1306,7 +1326,7 @@ void MediaCore::enqueueProgramSharedTextureEvent() {
   const auto event = modules::programSharedTextureEvent(lastProgramFrame_);
   if (event.isNull()) return;
   lastProgramTextureIdentity_ = identity;
-  pendingProgramFramePreviewEvents_.emplace_back(event);
+  pendingProgramSharedTextureEvents_.emplace_back(event);
 }
 
 void MediaCore::enqueueParticipantSharedTextureEvents() {
@@ -1404,6 +1424,7 @@ void MediaCore::enqueuePreviewSharedTextureEvent() {
 }
 
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elapsedMs) {
+  commandProtocolFailures_.clear();
   const auto frameNumberBefore = lastProgramFrame_.frameNumber;
   const auto tCmd0 = std::chrono::steady_clock::now();
   for (const auto& command : commands) {
@@ -1446,12 +1467,18 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
 }
 
 rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
+  commandProtocolFailures_.clear();
   applyCommandMutation(command);
   return sessionState();
 }
 
 void MediaCore::applyCommandMutation(const rpc::Json& command) {
   const std::string type = command.getString("type");
+  if (!isNativeMediaCoreCommand(type)) {
+    commandProtocolFailures_.push_back(type.empty() ? "(missing type)" : type);
+    ::corevideo::core::nativeLogf("[cmd] rejected unknown command '%s'\n", type.c_str());
+    return;
+  }
   if (type == "begin-take-transition") {
     beginTakeTransition(command);
   } else if (type == "load-scene-graph") {
@@ -1546,6 +1573,12 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     }
   } else if (type == "simulate-breakout-room-change") {
     simulateBreakoutRoomChange(command);
+  } else if (type == "set-zoom-source-roster") {
+    setZoomSourceRoster(command);
+  } else if (type == "set-active-speaker") {
+    setActiveSpeaker(command);
+  } else if (type == "set-screen-share-source") {
+    setScreenShareSource(command);
   } else if (type == "recommend-auto-production") {
     // Pure query: the recommendation is derived from current state and surfaced
     // in the snapshot (see autoProductionState()), so there is nothing to mutate.

@@ -460,6 +460,9 @@ class MediaCore {
   void syncMediaTransportsDesired();
   void configureSrtIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
+  void setZoomSourceRoster(const rpc::Json& command);
+  void setActiveSpeaker(const rpc::Json& command);
+  void setScreenShareSource(const rpc::Json& command);
   void renderSyntheticTick(bool videoOnly = false, int64_t mediaPresentationTime100ns = -1);
   void enqueueProgramFramePreviewEvent();
   void enqueueProgramSharedTextureEvent();
@@ -559,6 +562,10 @@ class MediaCore {
 
   modules::ModuleSet modules_;
   std::string sceneId_ = "unloaded";
+  std::vector<std::string> commandProtocolFailures_;
+  rpc::Json shellZoomRoster_;
+  std::string shellActiveSpeakerId_;
+  std::string shellScreenShareParticipantId_;
   std::vector<SceneRouteState> sceneRoutes_;
   SceneBackgroundState sceneBackground_;
   // T1: the parsed PROGRAM-bus tiles wall layer (present==false when the
