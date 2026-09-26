@@ -48,7 +48,7 @@ inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
 // Contract view of the live MediaCore::applyCommandMutation branches. The
 // dispatcher itself decides admission; ContractParity checks this view and the
 // production builder against every branch in both directions.
-inline constexpr std::array<std::string_view, 45> kNativeMediaCoreCommandTypes = {
+inline constexpr std::array<std::string_view, 46> kNativeMediaCoreCommandTypes = {
     "begin-take-transition",
     "load-scene-graph",
     "set-preview-scene",
@@ -71,6 +71,7 @@ inline constexpr std::array<std::string_view, 45> kNativeMediaCoreCommandTypes =
     "sync-participant-audio-mix",
     "sync-virtual-camera",
     "sync-audio-monitor",
+    "set-audio-monitor-control",
     "scan-vst-plugins",
     "open-vst-editor",
     "set-vst-param",
