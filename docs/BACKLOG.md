@@ -31,6 +31,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 |---|---|---|
 | 1 | [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Execute the approved control-state authority plan in scoped consumer slices. The spec and execution plan are merged; implementation and live acceptance remain. |
 | 2 | [#659](https://github.com/iamfatness/CoreVideoPro/issues/659) | First consumer: versioned Zoom roster into core and shell participant/audio projection, with stale snapshot and reused-ID rejection. |
+| 3 | [#661](https://github.com/iamfatness/CoreVideoPro/issues/661) | First revisioned editor command: one bounded control domain shared by the shell and Control API, with applied result and conflict reconciliation. |
 
 ## Deferred by owner
 
