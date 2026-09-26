@@ -5,6 +5,13 @@ engine, Zoom subprocess, platform GPU adapters and native shells remain the
 architecture. A shared runtime decision is different from matching handwritten
 shell implementations; only the former has one execution owner.
 
+This table names static owners. It does not by itself define event ordering,
+restart reconciliation, or how an observed fact and operator intent compose.
+The 2026-09-26 #608 live mute failure exposed that gap. The proposed
+[control-state contract](control-state-events-spec.md) and
+[execution plan](control-state-events-plan.md) under #657 define those transition
+rules; earlier ownership-review findings do not constitute acceptance for them.
+
 ## Implemented common boundary
 
 `native/src/core/RouteSourcePolicy.h` is the pure route-to-source binding policy

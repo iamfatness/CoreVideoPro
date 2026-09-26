@@ -50,6 +50,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Cross-component control-state authority and event propagation: spec and execution plan define owners, revisions, reconciliation and the first Zoom-to-audio consumer. Owner rank pending. |
 | [#652](https://github.com/iamfatness/CoreVideoPro/issues/652) | Live display versus GoXLR monitor A/V sync: same-run clap measured a large monitor delay despite passing recorded Program. Low-period WASAPI monitor change is in validation; real-human acceptance remains. |
 | [#649](https://github.com/iamfatness/CoreVideoPro/issues/649) | RTMP demuxer test compares `const char*` literal addresses; use content comparison so Debug native gate is deterministic. |
 | [#637](https://github.com/iamfatness/CoreVideoPro/issues/637) | Live Zoom validator requests subscriptions but never starts raw capture after the explicit Engine On gate. Set `startCapture` in the dedicated harness and repeat meeting media validation. |
