@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using CoreVideoPro.Control;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
@@ -4203,12 +4204,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [RelayCommand]
     private void SetViewMode(string mode)
     {
-        ViewMode = mode switch
+        if (!ViewModeContract.TryNormalize(mode, out var canonical))
+        {
+            throw new ArgumentException($"Unsupported view mode. Use {ViewModeContract.SupportedModes}.", nameof(mode));
+        }
+        ViewMode = canonical switch
         {
             "preview" => StudioViewMode.Preview,
             "program-preview" => StudioViewMode.ProgramPreview,
             "multiview" => StudioViewMode.Multiview,
-            _ => StudioViewMode.Program
+            "program" => StudioViewMode.Program,
+            _ => throw new InvalidOperationException("Validated view mode was not mapped.")
         };
     }
 

@@ -263,7 +263,11 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 _vm.ClearTilesOverride(Str(args, 0));
                 return ControlInvokeResult.Success;
             case "view.setMode":
-                _vm.SetViewModeCommand.Execute(Str(args, 0));
+                if (!ViewModeContract.TryNormalize(Str(args, 0), out var viewMode))
+                {
+                    return ControlInvokeResult.Fail($"Unsupported view mode. Use {ViewModeContract.SupportedModes}.");
+                }
+                _vm.SetViewModeCommand.Execute(viewMode);
                 return ControlInvokeResult.Success;
 
             // ---- Show inputs --------------------------------------------------------
