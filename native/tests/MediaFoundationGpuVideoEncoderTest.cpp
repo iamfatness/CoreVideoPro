@@ -61,8 +61,8 @@ int normalizedSystemExitCode(int status) {
   auto encoder = corevideo::modules::createMediaFoundationGpuVideoEncoder();          \
   if (!encoder) {                                                                  \
     std::fprintf(stderr,                                                            \
-                 "[mf-gpu-encode-test] skipping: createMediaFoundationGpuVideoEncoder " \
-                 "returned null\n");                                              \
+                 "MISSING_EVIDENCE: createMediaFoundationGpuVideoEncoder " \
+                 "returned null; GPU encode round-trip did not run\n");           \
     return;                                                                        \
   }
 
@@ -137,7 +137,7 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
       plan.width, plan.height, plan.fps, 6000, 2.0, "cbr", "high"};
   encoderConfig.codec = codec;
   if (!encoder->start(encoderConfig, sink)) {
-    std::fprintf(stderr, "[mf-gpu-encode-test] skipping: encoder start unavailable on this machine\n");
+    std::fprintf(stderr, "MISSING_EVIDENCE: encoder start unavailable; GPU encode round-trip did not run\n");
     return;
   }
 
@@ -176,8 +176,8 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
   std::error_code ec;
   if (!std::filesystem::exists(ffmpegExe, ec) || ec) {
     std::fprintf(stderr,
-                 "[  SKIPPED ] MediaFoundationGpuVideoEncoder round-trip codec=%s "
-                 "(ffmpeg absent at C:\\ffmpeg\\bin) - bitstream produced, pixels unverified\n",
+                 "MISSING_EVIDENCE: MediaFoundationGpuVideoEncoder round-trip codec=%s "
+                 "(ffmpeg absent at C:\\ffmpeg\\bin); bitstream produced, pixels unverified\n",
                  codec);
     return;
   }
@@ -335,7 +335,10 @@ TEST(MediaFoundationGpuVideoEncoder, HevcRepeatedStartStopWithoutProducerIsBound
   config.codec = "hevc";
   for (int cycle = 0; cycle < 20; ++cycle) {
     if (!encoder->start(config, [](const corevideo::modules::GpuEncodedChunk&) {})) {
-      if (cycle == 0) return;  // hardware unavailable
+      if (cycle == 0) {
+        std::fprintf(stderr, "MISSING_EVIDENCE: HEVC hardware encoder unavailable; repeated start/stop did not run\n");
+        return;
+      }
       ASSERT_TRUE(false) << "HEVC restart failed at cycle " << cycle;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(25));

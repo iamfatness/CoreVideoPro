@@ -337,3 +337,71 @@ jobs:
       - name: Publish WinUI shell (build gate)
         run: dotnet publish native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -r win-x64 --self-contained false
 
+  # Compile the production Windows adapters independently of the portable stub
+  # and WinUI shell. The runner has no capture devices, so this is a build gate,
+  # not evidence of hardware operation or sustained frame rate.
+  native-production-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage private Zoom SDK when configured
+        shell: pwsh
+        env:
+          ZOOM_SDK_URL: ${{ secrets.ZOOM_SDK_URL }}
+        run: |
+          if (-not $env:ZOOM_SDK_URL) {
+            Write-Host "MISSING_EVIDENCE: ZOOM_SDK_URL is unset; this run cannot compile the real Zoom adapter or engine."
+            Add-Content $env:GITHUB_STEP_SUMMARY 'MISSING_EVIDENCE: Real Zoom adapter and engine were not compiled because ZOOM_SDK_URL is unset.'
+            exit 0
+          }
+          $archive = Join-Path $env:RUNNER_TEMP 'zoom-sdk.zip'
+          $extractDir = Join-Path $env:RUNNER_TEMP 'zoom-sdk'
+          Invoke-WebRequest -Uri $env:ZOOM_SDK_URL -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $extractDir -Force
+          $header = Get-ChildItem -Path $extractDir -Recurse -Filter zoom_sdk.h |
+            Where-Object { $_.Directory.Name -eq 'h' } | Select-Object -First 1
+          if (-not $header) { throw 'Private Zoom archive has no h/zoom_sdk.h.' }
+          $sdkRoot = $header.Directory.Parent.FullName
+          foreach ($path in @('lib/sdk.lib', 'bin/sdk.dll')) {
+            if (-not (Test-Path (Join-Path $sdkRoot $path))) { throw "Private Zoom archive is missing $path." }
+          }
+          Add-Content $env:GITHUB_ENV "ZOOM_SDK_DIR=$sdkRoot"
+          Add-Content $env:GITHUB_STEP_SUMMARY 'Private Zoom SDK staged; real adapter and engine compile in this run.'
+      - name: Configure production adapters
+        shell: pwsh
+        run: |
+          $withZoom = if ($env:ZOOM_SDK_DIR) { 'ON' } else { 'OFF' }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $version = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+          if (-not $version) { throw 'Windows runner has no Visual Studio C++ toolchain.' }
+          $generator = switch ([int]($version.Split('.')[0])) {
+            17 { 'Visual Studio 17 2022' }
+            18 { 'Visual Studio 18 2026' }
+            default { throw "Unsupported Visual Studio version: $version" }
+          }
+          $args = @(
+            '-S', 'native', '-B', 'native/build-production-ci',
+            '-G', $generator, '-A', 'x64',
+            '-DCOREVIDEO_STUB=OFF', '-DCOREVIDEO_ENABLE_DEV_ADAPTERS=ON',
+            '-DCOREVIDEO_WITH_D3D11=ON', '-DCOREVIDEO_WITH_MF_ENCODER=ON',
+            '-DCOREVIDEO_WITH_WASAPI_MONITOR=ON', '-DCOREVIDEO_WITH_WASAPI_CAPTURE=ON',
+            '-DCOREVIDEO_WITH_RTMP_OUTPUT=ON', '-DCOREVIDEO_WITH_NDI_OUTPUT=ON',
+            '-DCOREVIDEO_WITH_UVC=ON', '-DCOREVIDEO_WITH_WGC=ON',
+            '-DCOREVIDEO_WITH_VIRTUALCAM=ON', '-DCOREVIDEO_WITH_BROWSER_HOST=ON',
+            "-DCOREVIDEO_WITH_ZOOM=$withZoom", "-DCOREVIDEO_BUILD_ZOOM_ENGINE=$withZoom",
+            '-DBUILD_TESTING=ON'
+          )
+          if ($env:ZOOM_SDK_DIR) {
+            $args += "-DCOREVIDEO_ZOOM_SDK_ROOT=$env:ZOOM_SDK_DIR"
+            $args += "-DZOOM_SDK_DIR=$env:ZOOM_SDK_DIR"
+          }
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile production native targets
+        shell: pwsh
+        run: |
+          $targets = @('corevideo-native', 'corevideo-native-tests', 'corevideo-zoom-engine-fake', 'corevideo-plugin-host', 'corevideo-virtualcam', 'corevideo-browser-host')
+          if ($env:ZOOM_SDK_DIR) { $targets += 'corevideo-zoom-engine' }
+          & cmake --build native/build-production-ci --config Release --parallel 4 --target $targets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
