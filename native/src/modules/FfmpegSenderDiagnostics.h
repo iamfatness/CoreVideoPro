@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <string>
 
+#include "modules/SrtFfmpegArgs.h"
+
 namespace corevideo::modules {
 
 // The ONE place FFmpeg's own stderr becomes an operator-readable sentence, in the
@@ -74,14 +76,32 @@ inline void replaceAll(std::string& text, const std::string& needle, const std::
 /// survives: it is the diagnostic, and it is not a secret.
 [[nodiscard]] inline std::string redactFfmpegDiagnostics(std::string text,
                                                          const std::string& streamKey,
-                                                         const std::string& passphrase) {
-  if (detail::isPlausibleSecret(streamKey)) {
-    detail::replaceAll(text, streamKey, "<stream-key>");
-  }
-  if (detail::isPlausibleSecret(passphrase)) {
-    detail::replaceAll(text, passphrase, "<passphrase>");
-  }
+                                                         const std::string& passphrase,
+                                                         const std::string& streamId = "") {
+  const auto scrub = [&text](const std::string& secret, const std::string& replacement) {
+    if (!detail::isPlausibleSecret(secret)) {
+      return;
+    }
+    const auto encoded = percentEncodeSrtValue(secret);
+    detail::replaceAll(text, secret, replacement);
+    if (encoded != secret) {
+      detail::replaceAll(text, encoded, replacement);
+    }
+  };
+  scrub(streamKey, "<stream-key>");
+  scrub(passphrase, "<passphrase>");
+  scrub(streamId, "<stream-id>");
   return text;
+}
+
+// Read enough bytes before the display tail to include a secret that straddles
+// its boundary. SRT URL values can expand to three bytes per input byte when
+// percent-encoded. Redact BEFORE flattenFfmpegStderrTail truncates the text.
+[[nodiscard]] inline std::size_t ffmpegStderrReadBytes(std::size_t maxTailBytes,
+                                                       const std::string& streamKey,
+                                                       const std::string& passphrase,
+                                                       const std::string& streamId) {
+  return maxTailBytes + 3 * (std::max)({streamKey.size(), passphrase.size(), streamId.size()});
 }
 
 /// The last `maxBytes` of an FFmpeg stderr log, flattened to a single bounded line.

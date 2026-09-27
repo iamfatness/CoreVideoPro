@@ -41,6 +41,7 @@ const seconds = Number(argValue("seconds", 30));
 // received stream must actually carry.
 const TARGET_FPS = 60;
 const port = Number(argValue("port", 9020));
+const latencyMs = Number(argValue("latency-ms", 120));
 const passphrase = process.env.COREVIDEO_TEST_SRT_PASSPHRASE || argValue("passphrase", "");
 const streamId = process.env.COREVIDEO_TEST_SRT_STREAM_ID || "";
 const remoteHost = argValue("remote-host", "");
@@ -215,7 +216,7 @@ try {
           host: remoteHost || "127.0.0.1",
           port,
           mode: "caller",
-          latencyMs: 120,
+          latencyMs,
           passphrase,
           keyLength: passphrase ? 16 : 0,
           streamId,
@@ -243,7 +244,10 @@ try {
         remoteSenderFailed = true;
       }
       const evidence = sync.snapshot?.realtimeEvidence ?? {};
-      const warning = redact(senderSnapshot.warning || "none").split(" | ")[0];
+      // Native diagnostics can arrive with a URL clipped in the middle of a
+      // credential. Do not print any remote warning text from an older core.
+      const warning = remote ? (senderSnapshot.warning ? "present" : "none")
+                             : redact(senderSnapshot.warning || "none").split(" | ")[0];
       console.log(`sender        : status=${senderSnapshot.status} health=${senderSnapshot.destinationHealth ?? "?"} ` +
                   `frames=${senderSnapshot.framesSent ?? 0} slots=${evidence.render?.completedSlots ?? "?"} ` +
                   `videoTicks=${evidence.videoOutput?.completedTicks ?? "?"} ` +
