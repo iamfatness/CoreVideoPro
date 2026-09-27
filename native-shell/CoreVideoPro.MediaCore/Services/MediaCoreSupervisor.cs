@@ -81,6 +81,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     public event Action<string>? StatusChanged;
     public event Action<NativeMediaCoreProfile>? ProfileChanged;
     public event Action<RawCaptureSnapshot>? ZoomRecovered;
+    public event Action<RawCaptureSnapshot>? ZoomRosterFactReceived;
     public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
     public event Action<ZoomSourceFormatFact>? ZoomSourceFormatReceived;
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
@@ -1128,6 +1129,13 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
             if (line.Trim().Length == 0)
             {
+                continue;
+            }
+
+            var rosterFact = CoreProtocolParser.TryParseZoomRosterFact(line);
+            if (rosterFact is not null)
+            {
+                try { ZoomRosterFactReceived?.Invoke(rosterFact); } catch { }
                 continue;
             }
 

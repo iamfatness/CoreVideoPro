@@ -230,6 +230,7 @@ class ZoomEngineRuntime {
   // Metadata-only, latest-wins facts for Sources Format cells. Kept separate
   // from the throttled BGRA thumbnail queue so format refresh adds no pixels.
   std::map<std::string, rpc::Json> pendingSourceFormatEvents_;
+  std::optional<rpc::Json> pendingRosterFact_;
 
   struct DecodedFrame {
     // Full-resolution I420 planes (Y + U + V tightly packed). The compositor
@@ -301,6 +302,7 @@ class ZoomEngineRuntime {
   // gated by a header-sequence peek (unchanged frame = 16-byte read).
   struct VideoStreamRef {
     std::uint32_t participantId = 0;
+    std::uint64_t sourceGeneration = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t lastSequence = 0;

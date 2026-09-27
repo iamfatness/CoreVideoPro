@@ -1078,5 +1078,35 @@
     "contract": "ZoomRosterSnapshotRevision",
     "accepted": false,
     "json": "{\"rosterEpoch\":\"1:2:engine-a\",\"rosterRevision\":1.5}"
+  },
+  {
+    "id": "ZoomRosterParticipantFact-valid",
+    "contract": "ZoomRosterParticipantFact",
+    "accepted": true,
+    "json": "{\"userId\":\"42\",\"displayName\":\"Guest\",\"sourceGeneration\":2,\"muted\":false,\"videoOn\":true}"
+  },
+  {
+    "id": "ZoomRosterParticipantFact-additive",
+    "contract": "ZoomRosterParticipantFact",
+    "accepted": true,
+    "json": "{\"userId\":\"42\",\"displayName\":\"Guest\",\"sourceGeneration\":2,\"muted\":false,\"videoOn\":true,\"future\":true}"
+  },
+  {
+    "id": "ZoomRosterParticipantFact-missing-generation",
+    "contract": "ZoomRosterParticipantFact",
+    "accepted": false,
+    "json": "{\"userId\":\"42\",\"displayName\":\"Guest\",\"muted\":false,\"videoOn\":true}"
+  },
+  {
+    "id": "ZoomRosterParticipantFact-zero-generation",
+    "contract": "ZoomRosterParticipantFact",
+    "accepted": false,
+    "json": "{\"userId\":\"42\",\"displayName\":\"Guest\",\"sourceGeneration\":0,\"muted\":false,\"videoOn\":true}"
+  },
+  {
+    "id": "ZoomRosterParticipantFact-wrong-mute-type",
+    "contract": "ZoomRosterParticipantFact",
+    "accepted": false,
+    "json": "{\"userId\":\"42\",\"displayName\":\"Guest\",\"sourceGeneration\":2,\"muted\":\"false\",\"videoOn\":true}"
   }
 ]

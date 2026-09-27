@@ -237,6 +237,30 @@ public static class ZoomRosterSnapshotRevisionContract {
     return true;
   }
 }
+public sealed record ZoomRosterParticipantFact {
+  [JsonPropertyName("userId")] public required string UserId { get; init; }
+  [JsonPropertyName("displayName")] public required string DisplayName { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("sourceGeneration")] public required long SourceGeneration { get; init; }
+  [JsonPropertyName("muted")] public required bool Muted { get; init; }
+  [JsonPropertyName("videoOn")] public required bool VideoOn { get; init; }
+}
+public static class ZoomRosterParticipantFactContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasUserId = value.TryGetProperty("userId", out var userId);
+    if (!hasUserId || !(userId.ValueKind == JsonValueKind.String && userId.GetString()!.Length >= 1)) return false;
+    var hasDisplayName = value.TryGetProperty("displayName", out var displayName);
+    if (!hasDisplayName || !(displayName.ValueKind == JsonValueKind.String && displayName.GetString()!.Length >= 1)) return false;
+    var hasSourceGeneration = value.TryGetProperty("sourceGeneration", out var sourceGeneration);
+    if (!hasSourceGeneration || !(sourceGeneration.ValueKind == JsonValueKind.Number && sourceGeneration.TryGetDouble(out var sourceGenerationNumber) && double.IsFinite(sourceGenerationNumber) && Math.Truncate(sourceGenerationNumber) == sourceGenerationNumber && sourceGenerationNumber >= 1 && sourceGenerationNumber <= 9007199254740991)) return false;
+    var hasMuted = value.TryGetProperty("muted", out var muted);
+    if (!hasMuted || !((muted.ValueKind == JsonValueKind.True || muted.ValueKind == JsonValueKind.False))) return false;
+    var hasVideoOn = value.TryGetProperty("videoOn", out var videoOn);
+    if (!hasVideoOn || !((videoOn.ValueKind == JsonValueKind.True || videoOn.ValueKind == JsonValueKind.False))) return false;
+    return true;
+  }
+}
 public sealed record ControlOperationIdentity {
   [JsonPropertyName("operationId")] public required string OperationId { get; init; }
   [JsonPropertyName("authorityEpoch")] public required string AuthorityEpoch { get; init; }

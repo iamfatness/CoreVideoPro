@@ -272,6 +272,36 @@ inline rpc::Json toJson(const ZoomRosterSnapshotRevision& value) {
   result.emplace("rosterRevision", static_cast<double>(value.rosterRevision));
   return result;
 }
+struct ZoomRosterParticipantFact {
+  std::string userId{};
+  std::string displayName{};
+  std::int64_t sourceGeneration{};
+  bool muted{};
+  bool videoOn{};
+};
+inline bool validateZoomRosterParticipantFact(const rpc::Json& value) {
+  if (!value.isObject()) return false;
+  const auto* userId = value.get("userId");
+  if (!userId || !(userId->isString() && userId->asString().size() >= 1)) return false;
+  const auto* displayName = value.get("displayName");
+  if (!displayName || !(displayName->isString() && displayName->asString().size() >= 1)) return false;
+  const auto* sourceGeneration = value.get("sourceGeneration");
+  if (!sourceGeneration || !(sourceGeneration->isNumber() && std::floor(sourceGeneration->asNumber()) == sourceGeneration->asNumber() && sourceGeneration->asNumber() >= 1 && sourceGeneration->asNumber() <= 9007199254740991)) return false;
+  const auto* muted = value.get("muted");
+  if (!muted || !(muted->isBool())) return false;
+  const auto* videoOn = value.get("videoOn");
+  if (!videoOn || !(videoOn->isBool())) return false;
+  return true;
+}
+inline rpc::Json toJson(const ZoomRosterParticipantFact& value) {
+  rpc::Json::Object result;
+  result.emplace("userId", value.userId);
+  result.emplace("displayName", value.displayName);
+  result.emplace("sourceGeneration", static_cast<double>(value.sourceGeneration));
+  result.emplace("muted", value.muted);
+  result.emplace("videoOn", value.videoOn);
+  return result;
+}
 struct ControlOperationIdentity {
   std::string operationId{};
   std::string authorityEpoch{};

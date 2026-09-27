@@ -8,6 +8,21 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class ZoomCaptureSnapshotMergerTests
 {
     [Fact]
+    public void DirectFactsRejectDuplicateRevisionButFullSnapshotMayRefreshOtherEvidence()
+    {
+        var current = SyntheticMediaCore.SynthesizeSnapshot([], 0, 0) with
+        {
+            RosterEpoch = "1:1:engine-a", RosterRevision = 4,
+            Participants = [new RawParticipantEvent { UserId = "42", DisplayName = "Guest", Muted = false }]
+        };
+        Assert.False(ZoomRosterSnapshotPolicy.AcceptFact(current, "1:1:engine-a", 4));
+        Assert.False(ZoomRosterSnapshotPolicy.AcceptFact(current, "1:1:engine-a", 3));
+        Assert.True(ZoomRosterSnapshotPolicy.AcceptFact(current, "1:1:engine-a", 5));
+        Assert.True(ZoomRosterSnapshotPolicy.AcceptFact(current, "1:2:engine-a", 1));
+        Assert.True(ZoomRosterSnapshotPolicy.Accept(current, "1:1:engine-a", 4));
+    }
+
+    [Fact]
     public void VersionedRosterConvergesMuteWithoutPreviewAndRejectsReusedIdFromOldMeeting()
     {
         // The same generated wire vocabulary validated by all four language

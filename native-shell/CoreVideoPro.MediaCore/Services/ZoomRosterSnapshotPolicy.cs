@@ -8,6 +8,11 @@ namespace CoreVideoPro.MediaCore.Services;
 /// </summary>
 public static class ZoomRosterSnapshotPolicy
 {
+    /// <summary>Direct facts are edge observations: duplicates cannot rewrite an installed barrier.</summary>
+    public static bool AcceptFact(NativeMediaCoreStateSnapshot? current, string? epoch, long revision) =>
+        Accept(current, epoch, revision) &&
+        (current is null || current.RosterEpoch != epoch || revision > current.RosterRevision);
+
     public static bool Accept(NativeMediaCoreStateSnapshot? current, string? epoch, long revision)
     {
         if (current is null || string.IsNullOrEmpty(current.RosterEpoch) || current.RosterRevision <= 0)

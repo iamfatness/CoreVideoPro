@@ -5,6 +5,7 @@ public sealed class ZoomMediaSpineParticipant
     public string SdkUserId { get; init; } = string.Empty;
     public string DisplayName { get; init; } = string.Empty;
     public string? PersistentId { get; init; }
+    public long SourceGeneration { get; init; }
     public string Role { get; init; } = "guest";
     public bool VideoOn { get; init; } = true;
     public bool Muted { get; init; }
@@ -17,6 +18,7 @@ public sealed class ZoomMediaSpineParticipant
 public sealed class ZoomMediaSpineSubscription
 {
     public string ParticipantId { get; init; } = string.Empty;
+    public long SourceGeneration { get; init; }
     public string Kind { get; init; } = string.Empty;
     public string Purpose { get; init; } = string.Empty;
     public int Priority { get; init; }

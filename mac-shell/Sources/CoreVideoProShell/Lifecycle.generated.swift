@@ -261,6 +261,37 @@ func validateZoomRosterSnapshotRevision(_ value: [String: Any]) -> Bool {
   } else { return false }
   return true;
 }
+struct ZoomRosterParticipantFact: Codable {
+  var userId: String
+  var displayName: String
+  var sourceGeneration: Int64
+  var muted: Bool
+  var videoOn: Bool
+}
+func validateZoomRosterParticipantFact(_ value: [String: Any]) -> Bool {
+  if let raw = value["userId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["displayName"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["sourceGeneration"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["muted"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) != CFBooleanGetTypeID() { return false }
+  } else { return false }
+  if let raw = value["videoOn"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) != CFBooleanGetTypeID() { return false }
+  } else { return false }
+  return true;
+}
 struct ControlOperationIdentity: Codable {
   var operationId: String
   var authorityEpoch: String

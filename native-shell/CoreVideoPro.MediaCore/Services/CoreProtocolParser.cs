@@ -8,6 +8,35 @@ namespace CoreVideoPro.MediaCore.Services;
 
 public static class CoreProtocolParser
 {
+    public static RawCaptureSnapshot? TryParseZoomRosterFact(string line)
+    {
+        if (line.Length > 1_048_576 || !line.Contains("\"zoom-roster-fact\"", StringComparison.Ordinal))
+            return null;
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (root.TryGetProperty("id", out _) || ReadString(root, "type") != "zoom-roster-fact" ||
+                !root.TryGetProperty("roster", out var roster) || roster.ValueKind != JsonValueKind.Object)
+                return null;
+            // The generated cross-language revision contract is the admission
+            // gate for both the direct fact and the polling recovery snapshot.
+            if (!ZoomRosterSnapshotRevisionContract.Validate(roster)) return null;
+            if (!roster.TryGetProperty("participants", out var participants) ||
+                participants.ValueKind != JsonValueKind.Array) return null;
+            foreach (var participant in participants.EnumerateArray())
+                if (!ZoomRosterParticipantFactContract.Validate(participant)) return null;
+            var snapshot = JsonSerializer.Deserialize<RawCaptureSnapshot>(roster.GetRawText(), MediaCoreJson.Options);
+            if (snapshot is null || string.IsNullOrWhiteSpace(snapshot.RosterEpoch) || snapshot.RosterRevision <= 0)
+                return null;
+            return snapshot;
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
     public static CoreResponseEnvelope? TryParseResponse(string line)
     {
         var trimmed = line.Trim();
@@ -263,7 +292,8 @@ public static class CoreProtocolParser
             return new ZoomSourceFormatFact
             {
                 ParticipantId = participantId, RosterEpoch = epoch, Width = width,
-                Height = height, Fps = fps, FrameId = ReadInt(format, "frameId"), FrameAtMs = atMs
+                Height = height, Fps = fps, FrameId = ReadInt(format, "frameId"), FrameAtMs = atMs,
+                SourceGeneration = ReadInt(format, "sourceGeneration")
             };
         }
         catch (Exception error) when (error is JsonException or FormatException or InvalidOperationException or OverflowException)

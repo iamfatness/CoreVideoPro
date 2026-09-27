@@ -154,6 +154,23 @@ export function validateZoomRosterSnapshotRevision(value: unknown): value is Zoo
   if (!(typeof v["rosterRevision"] === "number" && Number.isInteger(v["rosterRevision"]) && v["rosterRevision"] as number >= 1 && v["rosterRevision"] as number <= 9007199254740991)) return false;
   return true;
 }
+export type ZoomRosterParticipantFact = {
+  userId: string;
+  displayName: string;
+  sourceGeneration: number;
+  muted: boolean;
+  videoOn: boolean;
+};
+export function validateZoomRosterParticipantFact(value: unknown): value is ZoomRosterParticipantFact {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  if (!(typeof v["userId"] === "string" && (v["userId"] as string).length >= 1)) return false;
+  if (!(typeof v["displayName"] === "string" && (v["displayName"] as string).length >= 1)) return false;
+  if (!(typeof v["sourceGeneration"] === "number" && Number.isInteger(v["sourceGeneration"]) && v["sourceGeneration"] as number >= 1 && v["sourceGeneration"] as number <= 9007199254740991)) return false;
+  if (!(typeof v["muted"] === "boolean")) return false;
+  if (!(typeof v["videoOn"] === "boolean")) return false;
+  return true;
+}
 export type ControlOperationIdentity = {
   operationId: string;
   authorityEpoch: string;

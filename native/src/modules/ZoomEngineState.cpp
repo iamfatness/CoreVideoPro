@@ -86,6 +86,7 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
         if (event.meetingGeneration != meetingGeneration_) {
           subscriptionStats_.clear();
           speakerDirector_.reset();
+          participants_.clear();
         }
         meetingGeneration_ = event.meetingGeneration;
         rosterRevision_ = event.rosterRevision;
@@ -94,9 +95,18 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
         // cannot replace its state. Legacy engines remain accepted initially.
         break;
       }
+      auto previous = std::move(participants_);
       participants_.clear();
       screenShareParticipantId_ = 0;
-      for (const auto& participant : event.participants) {
+      for (auto participant : event.participants) {
+        const auto prior = previous.find(participant.id);
+        if (prior != previous.end() &&
+            (prior->second.persistentId.empty() || participant.persistentId.empty() ||
+             prior->second.persistentId == participant.persistentId)) {
+          participant.sourceGeneration = prior->second.sourceGeneration;
+        } else {
+          participant.sourceGeneration = ++nextSourceGeneration_;
+        }
         participants_.emplace(participant.id, participant);
         if (participant.isSharingScreen) {
           screenShareParticipantId_ = participant.id;
@@ -181,11 +191,17 @@ void ZoomEngineRuntimeState::recordFrameIngestSuccess(const std::string& sourceU
                                                       std::uint32_t width,
                                                       std::uint32_t height,
                                                       std::uint32_t frameId,
-                                                      double observedAtMs) {
+                                                      double observedAtMs,
+                                                      std::uint64_t sourceGeneration) {
   auto& stats = subscriptionStats_[sourceUuid];
+  if (sourceGeneration > 0 && stats.sourceGeneration > 0 &&
+      stats.sourceGeneration != sourceGeneration) stats = {};
   stats.sourceUuid = sourceUuid;
   stats.participantId = participantIdString(participantId);
   stats.kind = "participant-video";
+  if (sourceGeneration > 0) stats.sourceGeneration = sourceGeneration;
+  else if (const auto participant = participants_.find(participantId); participant != participants_.end())
+    stats.sourceGeneration = participant->second.sourceGeneration;
   stats.width = width;
   stats.height = height;
   if (stats.firstFrameAtMs < 0.0) {
@@ -212,6 +228,8 @@ void ZoomEngineRuntimeState::recordFrameIngestFailure(const std::string& sourceU
   stats.sourceUuid = sourceUuid;
   stats.participantId = participantIdString(participantId);
   stats.kind = "participant-video";
+  if (const auto participant = participants_.find(participantId); participant != participants_.end())
+    stats.sourceGeneration = participant->second.sourceGeneration;
   ++stats.malformedFrameCount;
   stats.frameFresh = false;
   refreshSpeakerFrameReadiness();
@@ -338,6 +356,7 @@ rpc::Json::Array ZoomEngineRuntimeState::participantsJson() const {
         {"sdkUserId", participantIdString(id)},
         {"displayName", participant.displayName},
         {"persistentId", participant.persistentId},
+        {"sourceGeneration", static_cast<double>(participant.sourceGeneration)},
         {"role", participant.isHost ? "host" : "guest"},
         {"videoOn", participant.hasVideo},
         {"muted", participant.isMuted},

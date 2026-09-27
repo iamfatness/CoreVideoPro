@@ -42,6 +42,7 @@ public sealed class Participant
     public string Name { get; init; } = string.Empty;
     /// <summary>Zoom SDK persistent id when the engine provided one (#479). Empty for non-Zoom.</summary>
     public string? PersistentId { get; init; }
+    public long SourceGeneration { get; init; }
     public string Title { get; init; } = string.Empty;
     public ParticipantRole Role { get; init; }
     public string BreakoutRoomId { get; init; } = string.Empty;

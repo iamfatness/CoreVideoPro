@@ -22,6 +22,59 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class ShowInputsCoordinatorTests
 {
     [Fact]
+    public void ReusedZoomIdClearsOldFormatAndRejectsOldSourceFactWithoutTake()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using (ShowInputWriteScope.Enter("test"))
+        {
+            host.ShowInputs[0].Kind = ShowInputKind.ZoomParticipant;
+            host.ShowInputs[0].ParticipantId = "42";
+            host.ShowInputs[0].InShow = true;
+        }
+        bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:1:test", RosterRevision = 1,
+            Participants = [new RawParticipantEvent { UserId = "42", DisplayName = "First", VideoOn = true, SourceGeneration = 1 }]
+        });
+        var row = coordinator.MultiviewInputRows.Rows[0];
+        bridge.EmitFormat(new ZoomSourceFormatFact
+        {
+            ParticipantId = "42", RosterEpoch = "1:1:test", SourceGeneration = 1,
+            Width = 1920, Height = 1080, Fps = 30, FrameId = 1, FrameAtMs = 100
+        });
+        Assert.Equal("1920×1080@30", row.FormatLabel);
+        bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:1:test", RosterRevision = 2,
+            Participants = [new RawParticipantEvent { UserId = "42", DisplayName = "Second", VideoOn = true, SourceGeneration = 2 }],
+            ZoomSubscriptions = [new ZoomMediaSpineSubscription
+            {
+                ParticipantId = "42", SourceGeneration = 1, Kind = "participant-video",
+                DeliveredWidth = 1920, DeliveredHeight = 1080, DeliveredFps = 30,
+                LastFrameAtMs = 100, LastFrameAgeMs = 0
+            }]
+        });
+        Assert.Equal("CONNECTING", row.StatusLabel);
+        Assert.Equal("—", row.FormatLabel);
+        Assert.Equal(2, row.LastAppliedSourceInstance?.Generation);
+        bridge.EmitFormat(new ZoomSourceFormatFact
+        {
+            ParticipantId = "42", RosterEpoch = "1:1:test", SourceGeneration = 1,
+            Width = 1920, Height = 1080, Fps = 30, FrameId = 2, FrameAtMs = 200
+        });
+        Assert.Equal("—", row.FormatLabel);
+        bridge.EmitFormat(new ZoomSourceFormatFact
+        {
+            ParticipantId = "42", RosterEpoch = "1:1:test", SourceGeneration = 2,
+            Width = 1280, Height = 720, Fps = 30, FrameId = 1, FrameAtMs = 201
+        });
+        Assert.Equal("1280×720@30", row.FormatLabel);
+        Assert.Equal(0, bridge.SyncCalls);
+    }
+
+    [Fact]
     public void TileCropFillsTheWallPanelBeforeClippingOneTile()
     {
         var crop = SourceFramingLayoutService.ResolveTileCrop(
