@@ -241,8 +241,8 @@ public sealed class MultiviewInputRowsProjection
         row.FormatStale = video.LastFrameAgeMs > 1500;
         row.StatusLabel = row.FormatStale ? "STALLED" : participant.Talking == true ? "TALKING" : "LIVE";
         row.FormatLabel = $"{video.DeliveredWidth}×{video.DeliveredHeight}@{video.DeliveredFps}";
-        row.CapDiffers = video.DeliveredWidth != 1920 || video.DeliveredHeight != 1080 || video.DeliveredFps != 60;
-        row.ConfiguredCapLabel = row.CapDiffers ? "cap 1080p60" : "";
+        row.CapDiffers = video.DeliveredWidth < 1920 || video.DeliveredHeight < 1080;
+        row.ConfiguredCapLabel = row.CapDiffers ? "up to 1080p requested" : "";
         PatchPreview(row);
     }
 }

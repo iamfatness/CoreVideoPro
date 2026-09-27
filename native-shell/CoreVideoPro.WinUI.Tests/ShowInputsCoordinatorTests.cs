@@ -22,6 +22,23 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class ShowInputsCoordinatorTests
 {
     [Fact]
+    public void TileCropFillsTheWallPanelBeforeClippingOneTile()
+    {
+        var crop = SourceFramingLayoutService.ResolveTileCrop(
+            78, 43, new Windows.Foundation.Rect(0.25, 0.5, 0.25, 0.5));
+        var transform = SwapChainPanelTransformPolicy.Resolve(
+            crop.Width, crop.Height, 1920, 1080, fillPanelForTileCrop: true);
+        Assert.Equal(0, transform.OffsetX);
+        Assert.Equal(0, transform.OffsetY);
+        Assert.InRange(transform.ScaleX, 0.1624f, 0.1626f);
+        Assert.InRange(transform.ScaleY, 0.0795f, 0.0797f);
+        var ordinary = SwapChainPanelTransformPolicy.Resolve(
+            crop.Width, crop.Height, 1920, 1080, fillPanelForTileCrop: false);
+        Assert.Equal(ordinary.ScaleX, ordinary.ScaleY);
+        Assert.NotEqual(ordinary.ScaleX, transform.ScaleX);
+    }
+
+    [Fact]
     public void VersionedBridgeVideoOffPatchesFixedRowWithoutSceneSyncOrTake()
     {
         var bridge = new FakeMediaCoreBridge();
@@ -107,9 +124,10 @@ public sealed class ShowInputsCoordinatorTests
             });
         Emit("1:1:test", 7, 1920, 1080, 30, 1, 1000, 100);
         Assert.Equal("1920×1080@30", row.FormatLabel);
-        Assert.Equal("cap 1080p60", row.ConfiguredCapLabel);
+        Assert.Equal("", row.ConfiguredCapLabel);
         Emit("1:1:test", 7, 1280, 720, 15, 2, 1500, 200);
         Assert.Equal("1280×720@15", row.FormatLabel);
+        Assert.Equal("up to 1080p requested", row.ConfiguredCapLabel);
         Assert.Equal("LIVE", row.StatusLabel);
         Emit("1:1:test", 7, 1280, 720, 15, 2, 1500, 1501);
         Assert.Equal("STALLED", row.StatusLabel);
@@ -222,6 +240,36 @@ public sealed class ShowInputsCoordinatorTests
         Assert.InRange(crop.TranslateY, -80.01, -79.99);
         bridge.EmitMultiview(new MultiviewSharedTexture { Tiles = [] });
         Assert.False(row.HasPreviewTile);
+        Assert.Equal("none", row.PreviewTally);
+        Assert.Equal(0, bridge.SyncCalls);
+    }
+
+    [Fact]
+    public void SpeakerOnlyTileFactMovesTheInspectorBorderWithoutSceneSync()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using (ShowInputWriteScope.Enter("test"))
+        {
+            host.ShowInputs[0].Kind = ShowInputKind.ZoomParticipant;
+            host.ShowInputs[0].ParticipantId = "guest";
+            host.ShowInputs[0].InShow = true;
+        }
+        void Emit(bool talking) => bridge.EmitMultiview(new MultiviewSharedTexture
+        {
+            Tiles = [new MultiviewTile
+            {
+                Role = "source", SourceId = "zoom:guest", Slot = 0,
+                X = 0.2, Y = 0.5, W = 0.2, H = 0.25, ActiveSpeaker = talking
+            }]
+        });
+        Emit(false);
+        var row = coordinator.MultiviewInputRows.Rows[0];
+        Assert.Equal("none", row.PreviewTally);
+        Emit(true);
+        Assert.Equal("talking", row.PreviewTally);
+        Emit(false);
         Assert.Equal("none", row.PreviewTally);
         Assert.Equal(0, bridge.SyncCalls);
     }
