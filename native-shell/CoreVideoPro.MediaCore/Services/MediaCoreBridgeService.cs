@@ -46,6 +46,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         _supervisor.ProfileChanged += profile => ProfileChanged?.Invoke(profile);
         _supervisor.ZoomRecovered += PublishCaptureSnapshot;
         _supervisor.ZoomVideoFrameReceived += frame => ZoomVideoFrameReceived?.Invoke(frame);
+        _supervisor.ZoomSourceFormatReceived += fact => ZoomSourceFormatReceived?.Invoke(fact);
         _supervisor.ProgramFramePreviewReceived += preview => ProgramFramePreviewReceived?.Invoke(preview);
         _supervisor.ProgramSharedTextureReceived += texture => ProgramSharedTextureReceived?.Invoke(texture);
         _supervisor.PreviewSharedTextureReceived += texture => PreviewSharedTextureReceived?.Invoke(texture);
@@ -59,6 +60,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     public event Action<NativeMediaCoreStateSnapshot>? SnapshotChanged;
     public event Action<IsoOutputLifecycleFact>? OutputLifecycleChanged;
     public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
+    public event Action<ZoomSourceFormatFact>? ZoomSourceFormatReceived;
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
     public event Action<ProgramSharedTexture>? PreviewSharedTextureReceived;

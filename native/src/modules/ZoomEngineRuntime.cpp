@@ -624,6 +624,8 @@ std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
   std::lock_guard<std::mutex> lock(mutex_);
   auto events = std::move(pendingFrameEvents_);
   pendingFrameEvents_.clear();
+  for (auto& [_, fact] : pendingSourceFormatEvents_) events.push_back(std::move(fact));
+  pendingSourceFormatEvents_.clear();
   return events;
 }
 
@@ -1411,6 +1413,32 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
   state_.recordFrameIngestSuccess(uuid, ref.participantId, ref.width, ref.height, frame.frameId,
                                   runtimeElapsedMs());
 
+  // The inspector needs the negotiated source format when the ingest observes
+  // it, rather than waiting for the next 500 ms spine snapshot. Coalesce to
+  // five small facts/s/source; snapshots still repair dropped facts and stalls.
+  const auto formatAtMs = runtimeElapsedMs();
+  if (ref.lastFormatEmitMs < 0 || formatAtMs - ref.lastFormatEmitMs >= 200) {
+    ref.lastFormatEmitMs = formatAtMs;
+    const auto snapshot = state_.snapshot();
+    const auto stats = std::find_if(snapshot.subscriptions.begin(), snapshot.subscriptions.end(),
+        [&](const auto& item) { return item.sourceUuid == uuid; });
+    if (stats != snapshot.subscriptions.end() && measuredDeliveredFps(*stats) > 0) {
+      pendingSourceFormatEvents_.insert_or_assign(stats->participantId, rpc::Json::Object{
+          {"type", "zoom-source-format"},
+          {"format", rpc::Json::Object{
+              {"participantId", stats->participantId},
+              {"rosterEpoch", std::to_string(processGeneration_) + ":" +
+                                  std::to_string(snapshot.meetingGeneration) + ":" + instanceToken_},
+              {"width", static_cast<int>(stats->width)},
+              {"height", static_cast<int>(stats->height)},
+              {"fps", measuredDeliveredFps(*stats)},
+              {"frameId", static_cast<int>(stats->lastFrameId)},
+              {"frameAtMs", stats->lastFrameAtMs},
+          }},
+      });
+    }
+  }
+
   // Tap the full-resolution I420 planes for the compositor without disturbing
   // the stdout/event queue below that feeds the WinUI multiview tiles.
   if (!frame.participantId.empty() && frame.i420Width > 0 && frame.i420Height > 0 && i420 &&
@@ -1583,6 +1611,7 @@ void ZoomEngineRuntime::drainAudioStreamLocked(const std::string& uuid, AudioStr
 }
 
 void ZoomEngineRuntime::closeVideoStreamsLocked() {
+  pendingSourceFormatEvents_.clear();
   // shared_ptr holders: the deleter destroys each region at last release
   // (possibly after an in-flight unlocked snapshot completes - safe).
   videoStreams_.clear();

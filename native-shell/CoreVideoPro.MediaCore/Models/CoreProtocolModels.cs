@@ -9,6 +9,18 @@ public sealed class ZoomVideoFrame
     public required byte[] Bgra { get; init; }
 }
 
+/// <summary>Metadata-only core ingest fact for the Sources Format cell.</summary>
+public sealed class ZoomSourceFormatFact
+{
+    public required string ParticipantId { get; init; }
+    public required string RosterEpoch { get; init; }
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public int Fps { get; init; }
+    public int FrameId { get; init; }
+    public double FrameAtMs { get; init; }
+}
+
 public sealed class CoreZoomVideoFrameEvent
 {
     public string Type => "zoom-video-frame";

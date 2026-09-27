@@ -45,6 +45,8 @@ public sealed class ShowInputsCoordinator
         MultiviewInputRows = new MultiviewInputRowsProjection(host.ShowInputs, host.CaptureDevices);
         _bridge.SnapshotChanged += snapshot =>
             _host.RunOnUiThread(() => MultiviewInputRows.ApplyRosterFact(snapshot));
+        _bridge.ZoomSourceFormatReceived += fact =>
+            _host.RunOnUiThread(() => MultiviewInputRows.ApplySourceFormatFact(fact));
         _bridge.OutputLifecycleChanged += fact =>
             _host.RunOnUiThread(() => MultiviewInputRows.ApplyOutputLifecycleFact(fact));
         _bridge.MultiviewSharedTextureReceived += texture =>

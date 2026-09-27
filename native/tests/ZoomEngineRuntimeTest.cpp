@@ -835,6 +835,10 @@ struct ZoomEngineRuntimeTestAccess {
     std::lock_guard<std::mutex> lock(runtime.mutex_);
     return runtime.videoStreams_.at("test-camera").lastSequence;
   }
+  static void forceNextFormatFactDue(ZoomEngineRuntime& runtime) {
+    std::lock_guard<std::mutex> lock(runtime.mutex_);
+    runtime.videoStreams_.at("test-camera").lastFormatEmitMs = -1;
+  }
   static std::size_t decodedCount(ZoomEngineRuntime& runtime) {
     std::lock_guard<std::mutex> lock(runtime.mutex_);
     return runtime.latestDecodedFrames_.size();
@@ -966,6 +970,34 @@ TEST(ZoomEngineRuntime, VideoPublicationUsesCopiedSequenceAndRequiresMatchingHea
   EXPECT_EQ(ZoomEngineRuntimeTestAccess::videoSequence(runtime), 6u);
   EXPECT_EQ(ZoomEngineRuntimeTestAccess::decodedCount(runtime), 1u);
   EXPECT_EQ(ZoomEngineRuntimeTestAccess::staleVideoCount(runtime), 1u);
+}
+
+TEST(ZoomEngineRuntime, IngestPublishesMetadataOnlySourceFormatFact) {
+  using namespace corevideo::modules;
+  ZoomEngineRuntime runtime;
+  auto region = std::make_shared<InMemoryVideoRegion>();
+  ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(region));
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime);
+  const auto firstEvents = runtime.drainFrameEvents();
+  EXPECT_TRUE(std::none_of(firstEvents.begin(), firstEvents.end(), [](const auto& event) {
+    return event.getString("type") == "zoom-source-format";
+  }));  // one frame cannot measure fps; an existing thumbnail may still emit
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  region->setHeader(4, 4, 4);
+  ZoomEngineRuntimeTestAccess::forceNextFormatFactDue(runtime);
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime);
+  const auto events = runtime.drainFrameEvents();
+  const auto fact = std::find_if(events.begin(), events.end(), [](const auto& event) {
+    return event.getString("type") == "zoom-source-format";
+  });
+  ASSERT_NE(fact, events.end());
+  const auto* format = fact->get("format");
+  ASSERT_TRUE(format);
+  EXPECT_EQ(format->getString("participantId"), "42");
+  EXPECT_EQ(format->getNumber("width"), 4);
+  EXPECT_EQ(format->getNumber("height"), 4);
+  EXPECT_GT(format->getNumber("fps"), 0);
+  EXPECT_TRUE(fact->stringify().find("bgraBase64") == std::string::npos);
 }
 
 TEST(ZoomEngineRuntime, AuthAndJoinTimeoutsRetireHelperAndRejectLateEvents) {

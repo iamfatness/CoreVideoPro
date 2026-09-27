@@ -80,6 +80,29 @@ public sealed class MultiviewInputRowsProjection
         foreach (var row in Rows) PatchSlot(row.SlotNumber);
     }
 
+    public void ApplySourceFormatFact(ZoomSourceFormatFact fact)
+    {
+        if (_engineStopped || _lastRoster is null ||
+            _lastRoster.MeetingState != "in_meeting" ||
+            _lastRoster.RosterEpoch != fact.RosterEpoch) return;
+        var participant = _lastRoster.Participants.FirstOrDefault(item =>
+            string.Equals(item.UserId, fact.ParticipantId, StringComparison.Ordinal));
+        if (participant is null || participant.VideoOn == false) return;
+        foreach (var row in Rows.Where(item => item.SourceId == $"zoom:{fact.ParticipantId}"))
+        {
+            if (fact.FrameAtMs <= row.LastFrameAtMs) continue;
+            row.LastFrameAtMs = fact.FrameAtMs;
+            row.HighestFrameId = fact.FrameId;
+            row.FrameAgeMs = 0;
+            row.FormatStale = false;
+            row.StatusLabel = participant.Talking == true ? "TALKING" : "LIVE";
+            row.FormatLabel = $"{fact.Width}×{fact.Height}@{fact.Fps}";
+            row.CapDiffers = fact.Width < 1920 || fact.Height < 1080;
+            row.ConfiguredCapLabel = row.CapDiffers ? "up to 1080p requested" : "";
+            PatchPreview(row);
+        }
+    }
+
     public void EngineStopped()
     {
         _retiredEpoch = _lastRoster?.RosterEpoch;
@@ -224,8 +247,11 @@ public sealed class MultiviewInputRowsProjection
             item.LastFrameAtMs >= 0 && item.LastFrameAgeMs >= 0);
         if (video is null)
         {
-            row.StatusLabel = "CONNECTING";
-            ResetFrame(row);
+            if (row.LastFrameAtMs < 0)
+            {
+                row.StatusLabel = "CONNECTING";
+                ResetFrame(row);
+            }
             PatchPreview(row);
             return;
         }
