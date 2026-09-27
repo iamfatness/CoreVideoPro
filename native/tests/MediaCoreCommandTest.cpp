@@ -6726,6 +6726,31 @@ TEST(MediaCoreMultiview, ComposesGridIntoSharedTextureAndEmitsEvent) {
   EXPECT_TRUE(mediaCore.drainMultiviewSharedTextureEvents().empty())
       << "multiview event must only emit on structural change";
 
+  // Speaker changes are metadata changes for the Sources inspector, even when
+  // the shared handle and every tile rectangle stay the same.
+  (void)mediaCore.joinZoom(corevideo::rpc::Json::Object{});
+  const auto speakerEvent = [&](const std::string& speakerId) {
+    (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+        {"type", "set-active-speaker"}, {"participantId", speakerId}});
+    for (int tick = 0; tick < 12; ++tick) {
+      mediaCore.renderDisplayTick();
+      auto changed = mediaCore.drainMultiviewSharedTextureEvents();
+      if (!changed.empty()) return changed.back();
+    }
+    return corevideo::rpc::Json{};
+  };
+  (void)speakerEvent("alice");
+  const auto changedSpeaker = speakerEvent("bob");
+  ASSERT_FALSE(changedSpeaker.isNull())
+      << "changing only the speaker must publish new tile metadata";
+  const auto* changedTiles = changedSpeaker.get("tiles");
+  ASSERT_NE(changedTiles, nullptr);
+  ASSERT_TRUE(changedTiles->isArray());
+  const auto bob = std::find_if(changedTiles->asArray().begin(), changedTiles->asArray().end(),
+      [](const auto& tile) { return tile.getString("participantId") == "bob"; });
+  ASSERT_NE(bob, changedTiles->asArray().end());
+  EXPECT_TRUE(bob->get("activeSpeaker")->asBool());
+
   // The cold-start snapshot must also carry the multiview shared texture.
   const auto snapshot = mediaCore.sessionState();
   const auto* snapshotMultiview = snapshot.get("multiviewSharedTexture");

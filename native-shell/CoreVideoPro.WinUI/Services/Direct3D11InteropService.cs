@@ -227,6 +227,11 @@ public sealed class Direct3D11InteropService : IDisposable
     // heartbeat shows WHICH surface advanced (preview / program / multiview / tile).
     public string? Label { get; set; }
 
+    // A tile-crop host sizes the panel as the entire Multiview wall and clips
+    // a normalized tile rectangle. The wall must fill that panel exactly; a
+    // centered uniform fit shifts the tile under the clip.
+    public bool FillPanelForTileCrop { get; set; }
+
     public bool IsReady => s_sharedDevice is not null && _swapChain is not null && _backBuffer is not null;
 
     public bool IsGpuPresenting => _path == PresentationPath.GpuActive;
@@ -763,16 +768,14 @@ public sealed class Direct3D11InteropService : IDisposable
         try
         {
             using var swapChain2 = _swapChain.QueryInterface<IDXGISwapChain2>();
-            // UNIFORM (aspect-preserving) fit, then center — letterbox/pillarbox. The old
-            // code scaled X and Y independently (panelW/surfaceW, panelH/surfaceH), which
-            // STRETCHED the video whenever the panel aspect != source aspect — that's the
-            // multiviewer distortion (16:9 source in a non-16:9 grid cell). Fit by the
-            // smaller scale and center the remainder so circles stay circles.
-            var scale = (float)Math.Min(panelWidth / _surfaceWidth, panelHeight / _surfaceHeight);
-            var offsetX = (float)((panelWidth - _surfaceWidth * scale) / 2.0);
-            var offsetY = (float)((panelHeight - _surfaceHeight * scale) / 2.0);
-            swapChain2.MatrixTransform = new System.Numerics.Matrix3x2(scale, 0f, 0f, scale, offsetX, offsetY);
-            LaunchLog.Write($"d3d: panel transform panel={panelWidth:F0}x{panelHeight:F0} surface={_surfaceWidth}x{_surfaceHeight} uniformScale={scale:F3} offset={offsetX:F0},{offsetY:F0}");
+            // Ordinary surfaces use an aspect-preserving fit. A tile-crop host
+            // clips an exact normalized region of the wall, so its enlarged
+            // panel needs a full-wall transform with no internal letterbox.
+            var transform = SwapChainPanelTransformPolicy.Resolve(
+                panelWidth, panelHeight, _surfaceWidth, _surfaceHeight, FillPanelForTileCrop);
+            swapChain2.MatrixTransform = new System.Numerics.Matrix3x2(
+                transform.ScaleX, 0f, 0f, transform.ScaleY, transform.OffsetX, transform.OffsetY);
+            LaunchLog.Write($"d3d: panel transform panel={panelWidth:F0}x{panelHeight:F0} surface={_surfaceWidth}x{_surfaceHeight} scale={transform.ScaleX:F3},{transform.ScaleY:F3} offset={transform.OffsetX:F0},{transform.OffsetY:F0}");
         }
         catch (Exception ex)
         {

@@ -1339,9 +1339,8 @@ void MediaCore::enqueueMultiviewSharedTextureEvent() {
   if (event.isNull()) {
     return;
   }
-  // Compute a structural signature over the handle, canvas dims, and per-tile
-  // identity + geometry (label, slot, rects) â€” but NOT the active-speaker flag,
-  // since that border is baked into the texture and must not churn the consumer.
+  // Include the speaker flag: the Sources inspector uses this metadata for its
+  // talking border. The event still emits only when a tile fact changes.
   uint32_t signature = 2166136261u;
   auto mix = [&signature](const std::string& value) {
     for (const unsigned char ch : value) {
@@ -1368,6 +1367,7 @@ void MediaCore::enqueueMultiviewSharedTextureEvent() {
     // Tally is a low-frequency user action (a source taken to program/preview),
     // not frame-rate churn, so include it so the overlay re-renders the tally.
     mix(tile.tally);
+    mixInt(tile.activeSpeaker ? 1 : 0);
     mixInt(tile.slot);
     mixInt(static_cast<int>(std::lround(tile.x * 10000.f)));
     mixInt(static_cast<int>(std::lround(tile.y * 10000.f)));

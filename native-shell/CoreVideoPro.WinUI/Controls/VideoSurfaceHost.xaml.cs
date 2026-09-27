@@ -318,6 +318,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     {
         // Unloaded controls may be loaded again. Never reuse a disposed interop.
         _direct3DInterop = new Direct3D11InteropService();
+        _direct3DInterop.FillPanelForTileCrop = SourceFit == "tile-crop";
         _direct3DInterop.PresentationPathChanged += OnPresentationPathChanged;
         if (_direct3DInterop.TryAttachSwapChainPanel(SwapChainHost))
         {
