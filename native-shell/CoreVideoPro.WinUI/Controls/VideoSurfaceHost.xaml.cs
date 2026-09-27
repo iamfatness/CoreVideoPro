@@ -44,6 +44,10 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             typeof(VideoSurfaceHost),
             new PropertyMetadata(0d, OnSourceFramingChanged));
 
+    public static readonly DependencyProperty SourceCropRectProperty =
+        DependencyProperty.Register(nameof(SourceCropRect), typeof(Rect), typeof(VideoSurfaceHost),
+            new PropertyMetadata(new Rect(0, 0, 1, 1), OnSourceFramingChanged));
+
     private Direct3D11InteropService? _direct3DInterop;
     private readonly VideoSurfacePresentationLifecycle _presentationLifecycle;
     private nint _direct3DDevicePointer;
@@ -56,6 +60,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     // interop is a native fail-fast (CoreMessagingXP stowed exception 0xc000027b),
     // so every present entry point early-returns while disposed.
     private bool _disposed;
+    private long _lastTileCropPresentMs;
     private string? _lastPreviewSurfaceKey;
 
     public VideoSurfaceHost()
@@ -95,6 +100,12 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     {
         get => (double)GetValue(SourceOffsetYProperty);
         set => SetValue(SourceOffsetYProperty, value);
+    }
+
+    public Rect SourceCropRect
+    {
+        get => (Rect)GetValue(SourceCropRectProperty);
+        set => SetValue(SourceCropRectProperty, value);
     }
 
     public string SurfaceKey => SurfaceState?.SurfaceKey ?? "unknown";
@@ -375,6 +386,17 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void TryPresentPendingSharedHandle()
     {
+        // The inspector can show ten crops of one Multiview texture. Keep idle
+        // cells off the D3D path and cap their presentation at 30 Hz; the shared
+        // ingest still acquires a produced frame only once across all hosts.
+        if (SourceFit == "tile-crop")
+        {
+            if (Visibility != Visibility.Visible || ActualWidth <= 0 || ActualHeight <= 0)
+                return;
+            var now = Environment.TickCount64;
+            if (now - _lastTileCropPresentMs < 33) return;
+            _lastTileCropPresentMs = now;
+        }
         if (_disposed || !UsesGpuSharedTexture || SurfaceState?.PendingSharedHandle is not { IsValid: true } handle)
         {
             return;
@@ -460,7 +482,9 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         SourceLayerCanvas.Width = viewportWidth;
         SourceLayerCanvas.Height = viewportHeight;
 
-        var layout = SourceFramingLayoutService.Resolve(
+        var layout = SourceFit == "tile-crop"
+            ? SourceFramingLayoutService.ResolveTileCrop(viewportWidth, viewportHeight, SourceCropRect)
+            : SourceFramingLayoutService.Resolve(
             viewportWidth,
             viewportHeight,
             SurfaceState?.FramingSourceWidth ?? 0,

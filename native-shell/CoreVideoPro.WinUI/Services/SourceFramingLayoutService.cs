@@ -12,6 +12,16 @@ public sealed record SourceFramingOffset(
 
 public static class SourceFramingLayoutService
 {
+    public static SourceFramingLayout ResolveTileCrop(
+        double viewportWidth, double viewportHeight, Windows.Foundation.Rect crop)
+    {
+        if (viewportWidth <= 0 || viewportHeight <= 0 || crop.Width <= 0 || crop.Height <= 0)
+            return new SourceFramingLayout(0, 0, 0, 0);
+        var width = viewportWidth / crop.Width;
+        var height = viewportHeight / crop.Height;
+        return new SourceFramingLayout(width, height, -crop.X * width, -crop.Y * height);
+    }
+
     public static SourceFramingLayout Resolve(
         double viewportWidth,
         double viewportHeight,

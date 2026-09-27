@@ -339,9 +339,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     /// Disabled slots retain their binding quietly so they can reconnect later.</summary>
     public bool ShowSourceUnavailableWarning => InShow && _isSourceMissing;
 
-    /// <summary>Assigned slots that are out of show are visibly passive without disabling
-    /// their picker or Unassign action.</summary>
-    public double RowOpacity => IsAssigned && !InShow ? 0.72 : 1.0;
+    /// <summary>Keep all ten slots visible while dimming idle and out-of-show rows.</summary>
+    public double RowOpacity => !IsAssigned ? 0.55 : !InShow ? 0.72 : 1.0;
 
     public string KindLabel => _slot.KindLabel;
 

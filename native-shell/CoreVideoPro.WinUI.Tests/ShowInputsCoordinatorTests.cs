@@ -58,6 +58,12 @@ public sealed class ShowInputsCoordinatorTests
         Assert.Equal(10, rows.Count);
         Assert.Equal("VIDEO OFF", row.StatusLabel);
         Assert.Equal("—", row.FormatLabel);
+        bridge.EmitMultiview(new MultiviewSharedTexture
+        {
+            Tiles = [new MultiviewTile { Role = "source", Slot = 1, SourceId = "zoom:guest-2",
+                X = 0.2, Y = 0.2, W = 0.2, H = 0.25 }]
+        });
+        Assert.False(row.HasPreviewTile);
         Assert.Equal(8, row.HighestObservationRevision);
         bridge.EmitRoster(new NativeMediaCoreStateSnapshot
         {
@@ -147,6 +153,7 @@ public sealed class ShowInputsCoordinatorTests
         Assert.Equal("ARMED", row.RecLabel);
         bridge.EmitIso(new IsoOutputLifecycleFact("zoom:guest", "session-1", "recording", 2));
         Assert.Equal("RECORDING", row.RecLabel);
+        Assert.Equal("REC", row.RecChipLabel);
         bridge.EmitIso(new IsoOutputLifecycleFact("zoom:guest", "session-1", "armed", 1));
         Assert.Equal("RECORDING", row.RecLabel);
         bridge.EmitIso(new IsoOutputLifecycleFact("zoom:guest", "session-1", "error", 3));
@@ -181,6 +188,126 @@ public sealed class ShowInputsCoordinatorTests
         var observed = IsoOutputLifecyclePolicy.Observe(recording);
         Assert.Equal(expected == "off" ? null : expected,
             observed.GetValueOrDefault("zoom:guest").State);
+    }
+
+    [Fact]
+    public void ExistingMultiviewTileCoordinatesPatchPreviewCropAndTally()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using (ShowInputWriteScope.Enter("test"))
+        {
+            host.ShowInputs[0].Kind = ShowInputKind.ZoomParticipant;
+            host.ShowInputs[0].ParticipantId = "guest";
+            host.ShowInputs[0].InShow = true;
+        }
+        var row = coordinator.MultiviewInputRows.Rows[0];
+        bridge.EmitMultiview(new MultiviewSharedTexture
+        {
+            Tiles = [new MultiviewTile
+            {
+                Role = "source", SourceId = "zoom:guest", Slot = 0,
+                X = 0.2, Y = 0.5, W = 0.2, H = 0.25, Tally = "pvw"
+            }]
+        });
+        Assert.True(row.HasPreviewTile);
+        Assert.InRange(row.PreviewCropRect.X, 0.1999, 0.2001);
+        Assert.Equal(0.25, row.PreviewCropRect.Height);
+        Assert.Equal("pvw", row.PreviewTally);
+        var crop = SourceFramingLayoutService.ResolveTileCrop(72, 40, row.PreviewCropRect);
+        Assert.InRange(crop.Width, 359.99, 360.01);
+        Assert.InRange(crop.Height, 159.99, 160.01);
+        Assert.InRange(crop.TranslateX, -72.01, -71.99);
+        Assert.InRange(crop.TranslateY, -80.01, -79.99);
+        bridge.EmitMultiview(new MultiviewSharedTexture { Tiles = [] });
+        Assert.False(row.HasPreviewTile);
+        Assert.Equal("none", row.PreviewTally);
+        Assert.Equal(0, bridge.SyncCalls);
+    }
+
+    [Theory]
+    [InlineData("pgm", false, false, "pgm")]
+    [InlineData("pvw", false, false, "pvw")]
+    [InlineData("none", true, false, "talking")]
+    [InlineData("pgm", true, true, "hold")]
+    public void PreviewTallyHonorsProgramPreviewTalkingAndStall(
+        string tally, bool talking, bool stalled, string expected)
+    {
+        Assert.Equal(expected, MultiviewTileCropPolicy.Tally(
+            new MultiviewTile { Tally = tally, ActiveSpeaker = talking }, stalled));
+    }
+
+    [Fact]
+    public void InspectorTilePatchSkipsIdenticalFrameRectsButAdmitsTallyChange()
+    {
+        var old = new[] { new MultiviewTile
+        {
+            Role = "source", Slot = 0, SourceId = "zoom:guest", X = 0.2, Y = 0.5,
+            W = 0.2, H = 0.25, Tally = "none"
+        } };
+        var same = new[] { new MultiviewTile
+        {
+            Role = "source", Slot = 0, SourceId = "zoom:guest", X = 0.2, Y = 0.5,
+            W = 0.2, H = 0.25, Tally = "none"
+        } };
+        var changed = new[] { new MultiviewTile
+        {
+            Role = "source", Slot = 0, SourceId = "zoom:guest", X = 0.2, Y = 0.5,
+            W = 0.2, H = 0.25, Tally = "pvw"
+        } };
+        Assert.True(MultiviewTileCropPolicy.SameTiles(old, same));
+        Assert.False(MultiviewTileCropPolicy.SameTiles(old, changed));
+    }
+
+    [Fact]
+    public void ProgramTallyChangesStatusChipWithoutReplacingSourceHealth()
+    {
+        var row = new MultiviewInputRow(6) { StatusLabel = "LIVE", PreviewTally = "pgm" };
+        Assert.Equal("PGM", row.StatusChipLabel);
+        Assert.Equal("LIVE", row.StatusLabel);
+        row.PreviewTally = "none";
+        Assert.Equal("LIVE", row.StatusChipLabel);
+    }
+
+    [Fact]
+    public void CaptureSignalFactPatchesHostUvcFormatWithoutRowClick()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using (ShowInputWriteScope.Enter("test"))
+        {
+            host.ShowInputs[5].Kind = ShowInputKind.UvcWebcam;
+            host.ShowInputs[5].CaptureDeviceId = "cam";
+            host.ShowInputs[5].InShow = true;
+        }
+        var row = coordinator.MultiviewInputRows.Rows[5];
+        var camera = new CaptureDevice
+        {
+            Id = "cam", NativeDeviceId = "cam", Vendor = "test", Name = "Host cam",
+            Inputs = [], SelectedInputId = "cam"
+        };
+        host.CaptureDevices.Add(camera);
+        camera.ObservedFrameWidth = 1920;
+        camera.ObservedFrameHeight = 1080;
+        camera.ObservedFrameRate = 60;
+        camera.ConnectionState = CaptureConnectionState.Connected;
+        camera.SignalPresent = true;
+        Assert.Equal("capture:cam", row.SourceId);
+        Assert.Equal("1920×1080@60", row.FormatLabel);
+        Assert.Equal("LIVE", row.StatusLabel);
+        bridge.EmitMultiview(new MultiviewSharedTexture
+        {
+            Tiles = [new MultiviewTile { Role = "source", Slot = 5, SourceId = "capture:cam",
+                X = 0.5, Y = 0.5, W = 0.2, H = 0.25, Tally = "pgm" }]
+        });
+        Assert.Equal("PGM", row.StatusChipLabel);
+        Assert.Equal("pgm", row.PreviewTally);
+        bridge.EmitHealth(new MediaCoreHealth { Stopped = true });
+        Assert.Equal("—", row.FormatLabel);
+        Assert.Equal("IDLE", row.StatusLabel);
+        Assert.Equal(0, bridge.SyncCalls);
     }
 
     private static (ShowInputsCoordinator Coordinator, FakeShowInputsHost Host) Build()
@@ -618,6 +745,7 @@ public sealed class ShowInputsCoordinatorTests
         public void EmitRoster(NativeMediaCoreStateSnapshot snapshot) => SnapshotChanged?.Invoke(snapshot);
         public void EmitHealth(MediaCoreHealth health) => HealthChanged?.Invoke(health);
         public void EmitIso(IsoOutputLifecycleFact fact) => OutputLifecycleChanged?.Invoke(fact);
+        public void EmitMultiview(MultiviewSharedTexture texture) => MultiviewSharedTextureReceived?.Invoke(texture);
         public bool Running => true;
 
         public NativeMediaCoreProfile? Profile => null;
