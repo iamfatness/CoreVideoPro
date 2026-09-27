@@ -139,6 +139,9 @@ public sealed record MediaCoreAudioMixChannelWire(
     IReadOnlyDictionary<string, Dictionary<string, double>>? InsertSettings = null);
 
 /// <summary>One routed crosspoint in the audio routing gain matrix.</summary>
+public sealed record MediaCoreAudioRouteWire(string SourceId, string BusId, bool Enabled, double GainDb);
+
+/// <summary>One routed crosspoint in the audio routing gain matrix.</summary>
 public sealed record MediaCoreAudioRoutingSendWire(
     string SourceId,
     string BusId,

@@ -360,6 +360,8 @@ MediaCore::MediaCore(modules::ModuleSet modules)
   std::random_device random;
   audioMonitorControlEpoch_ = "monitor-" + std::to_string(monotonicMs()) + "-" +
                               std::to_string(random());
+  audioRouteControl_ = AudioRouteControlState("audio-route-" + std::to_string(monotonicMs()) + "-" +
+                                               std::to_string(random()));
   // #535 slice 0: the source bus. Since slice 1 (Zoom video) and slice 2
   // (capture), the bus carries every live Zoom participant and every
   // connected capture device in production — it is no longer test-only. The
@@ -1531,6 +1533,8 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setVstInsertState(command);
   } else if (type == "sync-audio-routing-matrix") {
     syncAudioRoutingMatrix(command);
+  } else if (type == "set-audio-route-control") {
+    setAudioRouteControl(command);
   } else if (type == "sync-capture-audio-sources") {
     syncCaptureAudioSources(command);
   } else if (type == "push-caption-cue") {
@@ -3477,6 +3481,7 @@ void MediaCore::syncAudioRoutingMatrix(const rpc::Json& command) {
     }
     it = it->second > 30 ? absentRoutingSourceStreaks_.erase(it) : std::next(it);  // adopted: forget
   }
+  applyAudioRouteOverrides();
   previousRoutingSends_ = audioRoutingSends_;
 
   // Bus OUTPUT routing (mixer topology): aux/custom buses can send their mix
@@ -3514,6 +3519,37 @@ void MediaCore::syncAudioRoutingMatrix(const rpc::Json& command) {
   monitorListenBusId_ = isAudioRoutingBus(listenBusId) ? listenBusId : std::string();
 
   audioRoutingWarnings_ = std::move(warnings);
+}
+
+void MediaCore::setAudioRouteControl(const rpc::Json& command) {
+  const auto* enabled = command.get("enabled");
+  const auto* gain = command.get("gainDb");
+  const bool validPayload = !command.getString("sourceId").empty() &&
+      isAudioRoutingBus(command.getString("busId")) && enabled && enabled->isBool() &&
+      gain && gain->isNumber() && std::isfinite(gain->asNumber()) &&
+      gain->asNumber() >= kMinAudioRoutingGainDb && gain->asNumber() <= kMaxAudioRoutingGainDb;
+  if (!audioRouteControl_.submit(command, validPayload)) return;
+  audioRoutingSynced_ = true;
+  applyAudioRouteOverrides();
+  previousRoutingSends_ = audioRoutingSends_;
+}
+
+void MediaCore::applyAudioRouteOverrides() {
+  for (const auto& [key, override] : audioRouteControl_.overrides()) {
+    std::vector<std::string> inserts;
+    for (const auto& send : audioRoutingSends_) {
+      if (send.sourceId == key.first && send.busId == key.second) {
+        inserts = send.busPluginInserts;
+        break;
+      }
+    }
+    std::erase_if(audioRoutingSends_, [&](const AudioRoutingSendInput& send) {
+      return send.sourceId == key.first && send.busId == key.second;
+    });
+    if (override.enabled) {
+      audioRoutingSends_.push_back({key.first, key.second, override.gainDb, std::move(inserts)});
+    }
+  }
 }
 
 void MediaCore::syncCaptureAudioSources(const rpc::Json& command) {
@@ -4776,6 +4812,7 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
     }
     return rpc::Json::Object{
         {"status", audioRoutingWarnings_.empty() ? "idle" : "warning"},
+        {"control", audioRouteControl_.snapshot()},
         {"routedSendCount", 0},
         {"routedSourceCount", 0},
         {"busSourceCounts", busSourceCounts},
@@ -4851,6 +4888,7 @@ rpc::Json MediaCore::audioRoutingMatrixState() const {
 
   return rpc::Json::Object{
       {"status", audioRoutingWarnings_.empty() ? "live" : "warning"},
+      {"control", audioRouteControl_.snapshot()},
       {"routedSendCount", static_cast<int>(audioRoutingSends_.size())},
       {"routedSourceCount", static_cast<int>(routedSources.size())},
       {"busSourceCounts", busSourceCounts},

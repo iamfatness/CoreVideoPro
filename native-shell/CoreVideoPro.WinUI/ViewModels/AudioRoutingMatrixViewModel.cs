@@ -228,9 +228,11 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
     /// idle core hasn't synced yet; clearing the grid then would erase the
     /// operator's staged defaults before the first push).
     /// </summary>
-    public bool ApplyCoreSends(IReadOnlyList<(string SourceId, string BusId, double GainDb)> sends)
+    public bool ApplyCoreSends(IReadOnlyList<(string SourceId, string BusId, double GainDb)> sends,
+        IReadOnlySet<(string SourceId, string BusId)>? preserveDrafts = null, bool acceptEmpty = false,
+        bool preserveSelectedGain = true)
     {
-        if (sends.Count == 0)
+        if (sends.Count == 0 && !acceptEmpty)
         {
             return false;
         }
@@ -242,6 +244,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
         var changed = false;
         foreach (var cell in Rows.SelectMany(row => row.Cells))
         {
+            if (preserveDrafts?.Contains((cell.SourceId, cell.Bus.Id)) == true) continue;
             if (target.TryGetValue((cell.SourceId, cell.Bus.Id), out var gainDb))
             {
                 if (!cell.IsRouted)
@@ -254,7 +257,7 @@ public sealed partial class AudioRoutingMatrixViewModel : ObservableObject
                 {
                     // Skip the selected cell's gain: the operator may be typing
                     // into the gain editor right now.
-                    if (!ReferenceEquals(cell, SelectedCrosspoint))
+                    if (!preserveSelectedGain || !ReferenceEquals(cell, SelectedCrosspoint))
                     {
                         cell.GainDb = gainDb;
                         changed = true;

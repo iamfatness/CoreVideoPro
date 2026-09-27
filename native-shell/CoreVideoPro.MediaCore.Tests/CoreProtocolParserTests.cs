@@ -485,7 +485,7 @@ public sealed class CoreProtocolParserTests
         // The core has always published per-send routing detail in the snapshot;
         // this pins the camelCase wire shape the shell now consumes (phase B1).
         const string json =
-            """{"status":"live","routedSendCount":1,"routedSourceCount":1,"summary":"1 send.","sends":[{"sourceId":"16778240","busId":"stream","gainDb":-3}]}""";
+            """{"status":"live","routedSendCount":1,"routedSourceCount":1,"summary":"1 send.","sends":[{"sourceId":"16778240","busId":"stream","gainDb":-3}],"control":{"authorityEpoch":"route-1","revision":2,"lastResult":{"operationId":"client-a","status":"applied","authorityEpoch":"route-1","revision":2,"expectedRevision":1},"recentResults":[]}}""";
         var options = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -499,6 +499,9 @@ public sealed class CoreProtocolParserTests
         Assert.Equal("16778240", send.SourceId);
         Assert.Equal("stream", send.BusId);
         Assert.Equal(-3.0, send.GainDb, 1);
+        Assert.Equal("route-1", matrix.Control?.AuthorityEpoch);
+        Assert.Equal(2, matrix.Control?.Revision);
+        Assert.Equal("client-a", matrix.Control?.LastResult?.OperationId);
     }
 
     [Fact]

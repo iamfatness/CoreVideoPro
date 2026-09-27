@@ -22,6 +22,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <Border Style="{StaticResource OperatorSectionBorder}" Padding="8" CornerRadius="4">
@@ -162,5 +163,7 @@
                         Visibility="{x:Bind ViewModel.AudioRoutingMatrix.HasSelection, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
             </Grid>
         </Border>
+        <TextBlock Grid.Row="2" Text="{x:Bind ViewModel.AudioRouteControlNotice, Mode=OneWay}"
+                   FontSize="11" Foreground="#D9A34A" TextWrapping="WrapWholeWords" />
     </Grid>
 </UserControl>

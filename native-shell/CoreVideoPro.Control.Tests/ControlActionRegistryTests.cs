@@ -80,6 +80,27 @@ public sealed class ControlActionRegistryTests
     }
 
     [Fact]
+    public void AudioRouteActionRequiresRevisionAndStatePublishesAppliedSends()
+    {
+        Assert.False(ControlActionRegistry.TryBind("audio.route.set",
+            new object?[] { "zoom:42", "mon", true, -6 }, out _, out _));
+        Assert.True(ControlActionRegistry.TryBind("audio.route.set",
+            new object?[] { "zoom:42", "mon", true, -6, "core-1", 2, "client-b" },
+            out var bound, out _));
+        Assert.Equal(2.0, bound[5]);
+        var state = new ControlState
+        {
+            AudioRouteAuthorityEpoch = "core-1", AudioRouteRevision = 3,
+            AudioRoutes = [new ControlAudioRouteState("zoom:42", "mon", -6)]
+        };
+        var json = System.Text.Json.JsonSerializer.Serialize(state);
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        Assert.Equal(3, document.RootElement.GetProperty("AudioRouteRevision").GetInt64());
+        Assert.Equal("zoom:42", document.RootElement.GetProperty("AudioRoutes")[0]
+            .GetProperty("SourceId").GetString());
+    }
+
+    [Fact]
     public void TryBind_RejectsUnknownAction()
     {
         Assert.False(ControlActionRegistry.TryBind("bogus.action", System.Array.Empty<object?>(), out _, out var error));

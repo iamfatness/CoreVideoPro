@@ -7,6 +7,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     private readonly MediaCoreSupervisor _supervisor;
     private readonly MediaCoreSyncScheduler _syncScheduler = new();
     private readonly AudioMonitorControlCoordinator _audioMonitorControl;
+    private readonly AudioRouteControlCoordinator _audioRouteControl;
     private readonly ControlSnapshotRecoveryTracker _controlRecovery = new();
     private readonly object _gate = new();
     private Timer? _pollTimer;
@@ -30,6 +31,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     {
         _supervisor = supervisor ?? new MediaCoreSupervisor();
         _audioMonitorControl = new AudioMonitorControlCoordinator(
+            commands => SyncAsync(commands), () => PollSnapshotAsync());
+        _audioRouteControl = new AudioRouteControlCoordinator(
             commands => SyncAsync(commands), () => PollSnapshotAsync());
         _supervisor.HealthChanged += health =>
         {
@@ -126,6 +129,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             _lastIsoOutputStates = new Dictionary<string, (string, string)>();
             _lastSnapshot = null;
             _audioMonitorControl.Reset();
+            _audioRouteControl.Reset();
             _controlRecovery.ResetProcess();
             _elapsedMs = 0;
             _spinePayloadFactory = null;
@@ -294,6 +298,11 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         MediaCoreAudioMonitorWire draft, string? expectedEpoch = null, long? expectedRevision = null,
         string? operationId = null, CancellationToken cancellationToken = default) =>
         _audioMonitorControl.SubmitAsync(draft, expectedEpoch, expectedRevision, operationId, cancellationToken);
+
+    public Task<AudioRouteControlOutcome> SetAudioRouteControlAsync(
+        MediaCoreAudioRouteWire draft, string? expectedEpoch = null, long? expectedRevision = null,
+        string? operationId = null, CancellationToken cancellationToken = default) =>
+        _audioRouteControl.SubmitAsync(draft, expectedEpoch, expectedRevision, operationId, cancellationToken);
 
     private async Task<NativeMediaCoreStateSnapshot> SyncCoreAsync(
         IReadOnlyList<NativeMediaCoreCommand> commands,
@@ -736,10 +745,12 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             // sync merged in, or the Sources page reads "not-requested" between spine ticks.
             snapshot = ZoomMediaSpineSnapshotMerger.CarrySubscriptions(_lastSnapshot, snapshot);
             snapshot = ControlMonitorSnapshotMerger.CarryNewer(_lastSnapshot, snapshot);
+            snapshot = ControlAudioRouteSnapshotMerger.CarryNewer(_lastSnapshot, snapshot);
             _lastSnapshot = snapshot;
             _controlRecovery.ObserveMonitor(snapshot.AudioMixSession.MonitorControl?.AuthorityEpoch,
                 snapshot.AudioMixSession.MonitorControl?.Revision ?? 0);
             _audioMonitorControl.Observe(snapshot);
+            _audioRouteControl.Observe(snapshot);
             var next = IsoOutputLifecyclePolicy.Observe(snapshot.Recording);
             isoChanges = [];
             foreach (var sourceId in _lastIsoOutputStates.Keys.Union(next.Keys, StringComparer.Ordinal))

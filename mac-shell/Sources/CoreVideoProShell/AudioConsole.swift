@@ -453,6 +453,10 @@ struct AudioRoutingSurface: View {
             Text("Every crosspoint carries a level. Click to route or select; "
                  + "gain edits apply to the selected send.")
                 .font(.grotesk(12)).foregroundStyle(Studio.secondary)
+            if !model.audioRouteControlNotice.isEmpty {
+                Text(model.audioRouteControlNotice)
+                    .font(.grotesk(12)).foregroundStyle(Studio.amber)
+            }
             if sources.isEmpty {
                 Text("Sources appear here once channels carry PCM.")
                     .font(.grotesk(12)).foregroundStyle(Studio.textDim)

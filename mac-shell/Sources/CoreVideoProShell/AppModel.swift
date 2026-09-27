@@ -323,6 +323,8 @@ final class AppModel: ObservableObject {
     @Published var monitorControlNotice = ""
     private var monitorControl = MonitorControlProjection()
     private var monitorControlSending = false
+    @Published var audioRouteControlNotice = ""
+    private var audioRouteControl = AudioRouteControlProjection()
     @Published var warnings: [String] = []
     @Published var programSurfaceId: UInt32 = 0
     @Published var programFrameNumber: Int64 = 0
@@ -584,6 +586,8 @@ final class AppModel: ObservableObject {
                 if case .exited(let code) = status {
                     self?.monitorControl.resetForProcess()
                     self?.monitorControlNotice = "Monitor edit reconciling with restarted core"
+                    self?.audioRouteControl.resetForProcess()
+                    self?.audioRouteControlNotice = "Audio route reconciling with restarted core"
                     self?.recordingCommands.interrupted()
                     self?.recordingDesired = false
                     self?.streamingDesired = false
@@ -626,6 +630,7 @@ final class AppModel: ObservableObject {
 
     private func onConnected() {
         monitorControl.resetForProcess()
+        audioRouteControl.resetForProcess()
         setMonitor(enabled: monitorEnabled, volume: monitorVolume)
         applyMultiviewConfig()
         // Re-assert a restored grade: the core starts neutral every launch, so
@@ -2001,16 +2006,21 @@ final class AppModel: ObservableObject {
         if bus.hasPrefix("iso-") {
             for (otherSource, _) in audioSends where audioSends[otherSource]?[bus] != nil {
                 audioSends[otherSource]?[bus] = nil
+                audioRouteControl.edit(source: otherSource, bus: bus, enabled: false, gainDb: 0)
             }
         }
         busesForSource[bus] = 0
         audioSends[source] = busesForSource
+        audioRouteControl.edit(source: source, bus: bus, enabled: true, gainDb: 0)
+        audioRouteControlNotice = audioRouteControl.notice
         selectedSend = (source, bus)
         syncAudioRouting()
     }
 
     func removeSend(source: String, bus: String) {
         audioSends[source]?[bus] = nil
+        audioRouteControl.edit(source: source, bus: bus, enabled: false, gainDb: 0)
+        audioRouteControlNotice = audioRouteControl.notice
         if selectedSend?.source == source, selectedSend?.bus == bus { selectedSend = nil }
         syncAudioRouting()
     }
@@ -2018,6 +2028,9 @@ final class AppModel: ObservableObject {
     func setSendGain(source: String, bus: String, gainDb: Double) {
         guard audioSends[source]?[bus] != nil else { return }
         audioSends[source]?[bus] = max(-60, min(10, gainDb))
+        audioRouteControl.edit(source: source, bus: bus, enabled: true,
+                               gainDb: max(-60, min(10, gainDb)))
+        audioRouteControlNotice = audioRouteControl.notice
         syncAudioRouting()
     }
 
@@ -2034,6 +2047,36 @@ final class AppModel: ObservableObject {
 
     private func pushAudioRouting() async {
         guard let bridge else { return }
+        if audioRouteControl.authorityEpoch.isEmpty {
+            if let response = try? await bridge.request([
+                "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [],
+            ]), let snapshot = response["snapshot"] as? JSONObject {
+                applySnapshot(snapshot)
+            }
+        }
+        if !audioRouteControl.authorityEpoch.isEmpty {
+            while let command = audioRouteControl.nextCommand() {
+                do {
+                    let response = try await bridge.request([
+                        "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [command],
+                    ])
+                    if let snapshot = response["snapshot"] as? JSONObject { applySnapshot(snapshot) }
+                } catch {
+                    if let response = try? await bridge.request([
+                        "type": "media-core-sync", "elapsedMs": elapsedMs(), "commands": [],
+                    ]), let snapshot = response["snapshot"] as? JSONObject {
+                        applySnapshot(snapshot)
+                    }
+                }
+                if audioRouteControl.pendingOperationId != nil {
+                    audioRouteControl.markUnconfirmed()
+                    audioRouteControlNotice = audioRouteControl.notice
+                    break
+                }
+                if audioRouteControl.notice.contains("conflicted") { break }
+            }
+            return
+        }
         var sends: [JSONObject] = []
         for (source, buses) in audioSends {
             for (bus, gainDb) in buses {
@@ -2063,21 +2106,18 @@ final class AppModel: ObservableObject {
     // Hydrate the grid from the CORE's sends (never from client defaults —
     // the ghost-model lesson in docs/audio-tab-redesign.md).
     private func applyRoutingSnapshot(_ matrix: JSONObject) {
-        guard let sends = matrix["sends"] as? [JSONObject], !sends.isEmpty else { return }
+        audioRouteControl.observe(matrix)
+        audioRouteControlNotice = audioRouteControl.notice
+        guard let sends = matrix["sends"] as? [JSONObject],
+              !sends.isEmpty || !audioRouteControl.authorityEpoch.isEmpty else { return }
         var next: [String: [String: Double]] = [:]
         for entry in sends {
             guard let source = entry["sourceId"] as? String,
                   let bus = entry["busId"] as? String else { continue }
-            // Don't fight the operator mid-edit.
-            if selectedSend?.source == source, selectedSend?.bus == bus,
-               let existing = audioSends[source]?[bus] {
-                next[source, default: [:]][bus] = existing
-                continue
-            }
             next[source, default: [:]][bus] =
                 (entry["gainDb"] as? NSNumber)?.doubleValue ?? 0
         }
-        audioSends = next
+        audioSends = audioRouteControl.overlayDrafts(on: next)
     }
 
     func editMastering(_ apply: (inout MasteringParams) -> Void) {

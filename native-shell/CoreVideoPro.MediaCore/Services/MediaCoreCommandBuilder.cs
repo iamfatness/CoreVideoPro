@@ -23,6 +23,19 @@ public static class MediaCoreCommandBuilder
             ["volume"] = Math.Clamp(monitor.Volume, 0, 1)
         });
 
+    public static NativeMediaCoreCommand BuildAudioRouteControlCommand(
+        MediaCoreAudioRouteWire route, ControlOperationIdentity operation) =>
+        Command("set-audio-route-control", new Dictionary<string, object?>
+        {
+            ["operationId"] = operation.OperationId,
+            ["authorityEpoch"] = operation.AuthorityEpoch,
+            ["expectedRevision"] = operation.ExpectedRevision,
+            ["sourceId"] = route.SourceId,
+            ["busId"] = route.BusId,
+            ["enabled"] = route.Enabled,
+            ["gainDb"] = route.GainDb
+        });
+
     public static IReadOnlyList<NativeMediaCoreCommand> BuildSyncCommands(MediaCoreProductionSyncContext context)
     {
         var commands = new List<NativeMediaCoreCommand>();
