@@ -50,6 +50,9 @@ struct ZoomEngineParticipant {
   bool isHost = false;
   bool isMe = false;
   bool directorExcluded = false;
+  // Core-owned incarnation. Changes when this SDK id leaves and reappears,
+  // including a same-meeting id reuse. Zero is reserved for legacy producers.
+  std::uint64_t sourceGeneration = 0;
 };
 
 enum class ZoomEngineEventKind {

@@ -1,6 +1,7 @@
 #include "modules/ZoomEngineRuntime.h"
 #include "modules/ZoomEngineClient.h"
 #include "modules/ZoomMeetingId.h"
+#include "contracts/Lifecycle.h"
 
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomSubscriptionResolutionPolicy.h"
@@ -808,6 +809,36 @@ TEST(ZoomEngineRuntime, ExplicitLeavePublishesVersionedEmptyRosterBarrier) {
     EXPECT_EQ(left.get("participants")->asArray().size(), 0u);
     EXPECT_EQ(left.getString("rosterEpoch"), before.getString("rosterEpoch"));
     EXPECT_EQ(left.getNumber("rosterRevision"), 4);
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
+TEST(ZoomEngineRuntime, CoalescesVersionedRosterFactsOnExistingEventDrain) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    for (int revision = 1; revision <= 2; ++revision) {
+      const auto event = corevideo::modules::parseZoomEngineEvent(
+          std::string(R"({"cmd":"participants","meeting_generation":1,"roster_revision":)") +
+          std::to_string(revision) +
+          R"(,"participants":[{"id":42,"name":"Guest","is_muted":false}]})");
+      ASSERT_TRUE(event.has_value());
+      runtime.applyEngineEventForTest(*event);
+    }
+    const auto events = runtime.drainFrameEvents();
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events.front().getString("type"), "zoom-roster-fact");
+    const auto* roster = events.front().get("roster");
+    ASSERT_NE(roster, nullptr);
+    EXPECT_TRUE(corevideo::contracts::validateZoomRosterSnapshotRevision(*roster));
+    EXPECT_EQ(roster->getNumber("rosterRevision"), 2);
+    ASSERT_EQ(roster->get("participants")->asArray().size(), 1u);
+    EXPECT_TRUE(corevideo::contracts::validateZoomRosterParticipantFact(
+        roster->get("participants")->asArray().front()));
+    EXPECT_GT(roster->get("participants")->asArray().front().getNumber("sourceGeneration"), 0);
+    EXPECT_TRUE(runtime.drainFrameEvents().empty());
   }
   unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }

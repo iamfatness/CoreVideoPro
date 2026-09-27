@@ -206,6 +206,18 @@
         "rosterRevision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
       }
     },
+    "ZoomRosterParticipantFact": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["userId", "displayName", "sourceGeneration", "muted", "videoOn"],
+      "properties": {
+        "userId": { "type": "string", "minLength": 1 },
+        "displayName": { "type": "string", "minLength": 1 },
+        "sourceGeneration": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "muted": { "type": "boolean" },
+        "videoOn": { "type": "boolean" }
+      }
+    },
     "ControlOperationIdentity": {
       "type": "object",
       "additionalProperties": true,

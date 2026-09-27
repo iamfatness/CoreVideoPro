@@ -83,6 +83,27 @@ TEST(ZoomEngineRuntimeState, VersionedRosterRejectsLateMuteAndOldMeeting) {
   EXPECT_TRUE(state.snapshot().participants.empty());
 }
 
+TEST(ZoomEngineRuntimeState, ReusedSdkIdGetsNewSourceIncarnation) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":1,"roster_revision":1,"participants":[{"id":42,"name":"First","persistent_id":"first","is_muted":true}]})"), 1);
+  const auto first = state.snapshot().participants.at(0).sourceGeneration;
+  ASSERT_GT(first, 0u);
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":1,"roster_revision":2,"participants":[{"id":42,"name":"First","persistent_id":"first","is_muted":false}]})"), 2);
+  EXPECT_EQ(state.snapshot().participants.at(0).sourceGeneration, first);
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":1,"roster_revision":3,"participants":[]})"), 3);
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":1,"roster_revision":4,"participants":[{"id":42,"name":"Second","persistent_id":"second","is_muted":false}]})"), 4);
+  const auto second = state.snapshot().participants.at(0).sourceGeneration;
+  EXPECT_GT(second, first);
+  EXPECT_EQ(state.participantsJson().at(0).getString("displayName"), "Second");
+  state.recordFrameIngestSuccess("old-stream", 42, 640, 360, 1, 5.0, first);
+  EXPECT_EQ(state.snapshot().subscriptions.at(0).sourceGeneration, first);
+  state.recordFrameIngestSuccess("old-stream", 42, 1280, 720, 2, 6.0, second);
+  EXPECT_EQ(state.snapshot().subscriptions.at(0).sourceGeneration, second);
+  EXPECT_EQ(state.snapshot().subscriptions.at(0).framesIngested, 1u);
+  state.apply(eventFrom(R"({"cmd":"participants","meeting_generation":1,"roster_revision":2,"participants":[{"id":42,"name":"First","is_muted":true}]})"), 5);
+  EXPECT_EQ(state.participantsJson().at(0).getString("displayName"), "Second");
+}
+
 TEST(ZoomEngineRuntimeState, DebouncesActiveSpeakerAndHonorsIncumbentHold) {
   corevideo::modules::ZoomEngineRuntimeState state;
   const auto roster = eventFrom(

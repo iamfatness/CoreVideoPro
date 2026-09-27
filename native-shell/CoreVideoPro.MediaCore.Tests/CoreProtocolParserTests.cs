@@ -8,6 +8,29 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class CoreProtocolParserTests
 {
     [Fact]
+    public void DirectRosterFactUsesGeneratedRevisionContractAndUpdatesAudioSourceMute()
+    {
+        const string muted = """
+            {"type":"zoom-roster-fact","roster":{"meetingState":"in_meeting","rosterEpoch":"1:1:engine-a","rosterRevision":1,"participants":[{"userId":"42","displayName":"Guest","sourceGeneration":1,"muted":true,"videoOn":true}]}}
+            """;
+        const string unmuted = """
+            {"type":"zoom-roster-fact","roster":{"meetingState":"in_meeting","rosterEpoch":"1:1:engine-a","rosterRevision":2,"participants":[{"userId":"42","displayName":"Guest","sourceGeneration":1,"muted":false,"videoOn":true}]}}
+            """;
+        var first = CoreProtocolParser.TryParseZoomRosterFact(muted);
+        var second = CoreProtocolParser.TryParseZoomRosterFact(unmuted);
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        var applied = ZoomCaptureSnapshotMerger.Merge(null, first!);
+        applied = ZoomCaptureSnapshotMerger.Merge(applied, second!);
+        var audioSource = Assert.Single(LiveProductionSync.MapSnapshotParticipants(applied)!);
+        Assert.False(audioSource.IsMuted);
+        Assert.Equal(1, audioSource.SourceGeneration);
+        Assert.Same(applied, ZoomCaptureSnapshotMerger.Merge(applied, first!));
+        Assert.Null(CoreProtocolParser.TryParseZoomRosterFact(muted.Replace("\"rosterRevision\":1", "\"rosterRevision\":0")));
+        Assert.Null(CoreProtocolParser.TryParseZoomRosterFact(muted.Replace("\"sourceGeneration\":1", "\"sourceGeneration\":0")));
+    }
+
+    [Fact]
     public void ParsesZoomStopCaptureResponseWithEngineReportedRawMediaState()
     {
         // Pins the capture-off wire contract: the shell sends type

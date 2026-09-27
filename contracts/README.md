@@ -138,6 +138,17 @@ outputs and Swift consume the same fixtures. C++ additionally round-trips the
 maximum revision through the actual JSON serializer; C#/Swift round-trip valid
 DTOs. Swift execution requires macOS CI.
 
+## Zoom roster facts (#659)
+
+The Zoom engine owns meeting and roster revisions. The native core assigns a
+`sourceGeneration` when an SDK user ID first appears or reappears, then emits a
+coalesced `zoom-roster-fact` through the existing metadata event drain. The shell
+validates the generated `ZoomRosterSnapshotRevision` header and every
+`ZoomRosterParticipantFact` before merging it. A 250 ms full snapshot repairs a
+lost fact; older epochs and revisions cannot replace the installed roster.
+Zoom source mute updates the audio strip, while operator mixer mute remains a
+separate setting. No PCM or pixels are in this contract.
+
 ## Stage-specific evidence (Wave 0 PR02)
 
 `evidence.schema.json` is an additive vocabulary, not runtime instrumentation. Its

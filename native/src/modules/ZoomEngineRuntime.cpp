@@ -626,6 +626,10 @@ std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
   pendingFrameEvents_.clear();
   for (auto& [_, fact] : pendingSourceFormatEvents_) events.push_back(std::move(fact));
   pendingSourceFormatEvents_.clear();
+  if (pendingRosterFact_) {
+    events.push_back(std::move(*pendingRosterFact_));
+    pendingRosterFact_.reset();
+  }
   return events;
 }
 
@@ -815,7 +819,18 @@ void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<s
     enqueueEngineSendLocked("leave", buildZoomEngineLeaveCommand());
     return;
   }
+  const bool rosterEvent = event.kind == ZoomEngineEventKind::Participants ||
+                           event.kind == ZoomEngineEventKind::Left;
+  const auto before = rosterEvent ? std::optional(state_.snapshot()) : std::nullopt;
   state_.apply(event);
+  if (rosterEvent) {
+    const auto after = state_.snapshot();
+    if (after.meetingGeneration != before->meetingGeneration ||
+        after.rosterRevision != before->rosterRevision) {
+      pendingRosterFact_ = rpc::Json::Object{
+          {"type", "zoom-roster-fact"}, {"roster", rawCaptureSnapshotLocked()}};
+    }
+  }
   if (event.kind == ZoomEngineEventKind::Joined) {
     // Only auto-start raw media on join if the operator already enabled capture
     // (Engine On). Otherwise wait — syncSpine starts it when startCapture is set.
@@ -1096,6 +1111,7 @@ rpc::Json ZoomEngineRuntime::rawCaptureSnapshotLocked() {
         {"userId", participantIdString(participant.id)},
         {"displayName", participant.displayName.empty() ? "Zoom User " + participantIdString(participant.id) : participant.displayName},
         {"persistentId", participant.persistentId},
+        {"sourceGeneration", static_cast<double>(participant.sourceGeneration)},
         {"role", participant.isHost ? "Host" : "Guest"},
         {"isMe", participant.isMe},
         {"directorExcluded", participant.directorExcluded},
@@ -1143,6 +1159,7 @@ rpc::Json ZoomEngineRuntime::spineSnapshotLocked(const rpc::Json& payload, doubl
       const bool hasStats = found != runtime.subscriptions.end();
       subscriptions.emplace_back(rpc::Json::Object{
           {"participantId", participantId},
+          {"sourceGeneration", hasStats ? static_cast<double>(found->sourceGeneration) : 0.0},
           {"kind", request.getString("kind")},
           {"purpose", request.getString("purpose")},
           {"priority", request.get("priority") ? *request.get("priority") : rpc::Json(0)},
@@ -1224,6 +1241,7 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
     ref.lastSequence = 0;
   }
   ref.participantId = event.participantId;
+  ref.sourceGeneration = state_.sourceGenerationForParticipant(event.participantId);
   ref.width = event.width;
   ref.height = event.height;
   ensureVideoIngestThreadLocked();
@@ -1411,7 +1429,7 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
     std::shared_ptr<const std::vector<std::uint8_t>> i420,
     std::chrono::steady_clock::time_point observedAt) {
   state_.recordFrameIngestSuccess(uuid, ref.participantId, ref.width, ref.height, frame.frameId,
-                                  runtimeElapsedMs());
+                                  runtimeElapsedMs(), ref.sourceGeneration);
 
   // The inspector needs the negotiated source format when the ingest observes
   // it, rather than waiting for the next 500 ms spine snapshot. Coalesce to
@@ -1429,6 +1447,7 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
               {"participantId", stats->participantId},
               {"rosterEpoch", std::to_string(processGeneration_) + ":" +
                                   std::to_string(snapshot.meetingGeneration) + ":" + instanceToken_},
+              {"sourceGeneration", static_cast<double>(stats->sourceGeneration)},
               {"width", static_cast<int>(stats->width)},
               {"height", static_cast<int>(stats->height)},
               {"fps", measuredDeliveredFps(*stats)},

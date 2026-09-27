@@ -16,6 +16,7 @@ namespace corevideo::modules {
 struct ZoomEngineSubscriptionStats {
   std::string sourceUuid;
   std::string participantId;
+  std::uint64_t sourceGeneration = 0;
   std::string kind;
   std::uint32_t width = 0;
   std::uint32_t height = 0;
@@ -95,6 +96,10 @@ class ZoomEngineRuntimeState {
   [[nodiscard]] bool hasParticipant(std::uint32_t participantId) const {
     return participants_.find(participantId) != participants_.end();
   }
+  [[nodiscard]] std::uint64_t sourceGenerationForParticipant(std::uint32_t participantId) const {
+    const auto it = participants_.find(participantId);
+    return it == participants_.end() ? 0 : it->second.sourceGeneration;
+  }
   // Camera state from the engine roster. Tells a video subscription dropped
   // because the camera went off apart from one the operator un-routed.
   [[nodiscard]] bool participantHasVideo(std::uint32_t participantId) const {
@@ -109,7 +114,8 @@ class ZoomEngineRuntimeState {
                                 std::uint32_t width,
                                 std::uint32_t height,
                                 std::uint32_t frameId,
-                                double observedAtMs);
+                                double observedAtMs,
+                                std::uint64_t sourceGeneration = 0);
   void recordFrameIngestFailure(const std::string& sourceUuid,
                                 std::uint32_t participantId,
                                 const std::string& reason);
@@ -125,6 +131,7 @@ class ZoomEngineRuntimeState {
   std::uint32_t activeSpeakerId_ = 0;
   std::uint32_t screenShareParticipantId_ = 0;
   std::map<std::uint32_t, ZoomEngineParticipant> participants_;
+  std::uint64_t nextSourceGeneration_ = 0;
   std::uint64_t meetingGeneration_ = 0;
   std::uint64_t rosterRevision_ = 0;
   std::map<std::string, ZoomEngineSubscriptionStats> subscriptionStats_;

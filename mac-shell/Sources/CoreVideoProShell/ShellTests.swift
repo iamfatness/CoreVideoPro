@@ -237,6 +237,7 @@ enum ShellTests {
                 case "PlanGeneration": validate = validatePlanGeneration
                 case "ControlOperationIdentity": validate = validateControlOperationIdentity
                 case "ZoomRosterSnapshotRevision": validate = validateZoomRosterSnapshotRevision
+                case "ZoomRosterParticipantFact": validate = validateZoomRosterParticipantFact
                 case "AcceptedOperationObservation": validate = validateAcceptedOperationObservation
                 case "AppliedOperationObservation": validate = validateAppliedOperationObservation
                 case "RenderedMediaObservation": validate = validateRenderedMediaObservation
@@ -266,6 +267,7 @@ enum ShellTests {
                     case "PlanGeneration": encoded = try JSONEncoder().encode(JSONDecoder().decode(PlanGeneration.self, from: payloadData))
                     case "ControlOperationIdentity": encoded = try JSONEncoder().encode(JSONDecoder().decode(ControlOperationIdentity.self, from: payloadData))
                     case "ZoomRosterSnapshotRevision": encoded = try JSONEncoder().encode(JSONDecoder().decode(ZoomRosterSnapshotRevision.self, from: payloadData))
+                    case "ZoomRosterParticipantFact": encoded = try JSONEncoder().encode(JSONDecoder().decode(ZoomRosterParticipantFact.self, from: payloadData))
                     case "AcceptedOperationObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(AcceptedOperationObservation.self, from: payloadData))
                     case "AppliedOperationObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(AppliedOperationObservation.self, from: payloadData))
                     case "RenderedMediaObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(RenderedMediaObservation.self, from: payloadData))

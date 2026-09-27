@@ -45,6 +45,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         _supervisor.StatusChanged += status => StatusChanged?.Invoke(status);
         _supervisor.ProfileChanged += profile => ProfileChanged?.Invoke(profile);
         _supervisor.ZoomRecovered += PublishCaptureSnapshot;
+        _supervisor.ZoomRosterFactReceived += PublishRosterFact;
         _supervisor.ZoomVideoFrameReceived += frame => ZoomVideoFrameReceived?.Invoke(frame);
         _supervisor.ZoomSourceFormatReceived += fact => ZoomSourceFormatReceived?.Invoke(fact);
         _supervisor.ProgramFramePreviewReceived += preview => ProgramFramePreviewReceived?.Invoke(preview);
@@ -757,10 +758,22 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     }
 
     private void PublishCaptureSnapshot(RawCaptureSnapshot capture)
+        => PublishCaptureSnapshot(capture, directFact: false);
+
+    private void PublishRosterFact(RawCaptureSnapshot capture)
+        => PublishCaptureSnapshot(capture, directFact: true);
+
+    private void PublishCaptureSnapshot(RawCaptureSnapshot capture, bool directFact)
     {
         NativeMediaCoreStateSnapshot merged;
         lock (_gate)
         {
+            if (directFact && !ZoomRosterSnapshotPolicy.AcceptFact(
+                    _lastSnapshot, capture.RosterEpoch, capture.RosterRevision))
+            {
+                _controlRecovery.ObserveRoster(capture.RosterEpoch, capture.RosterRevision, accepted: false);
+                return;
+            }
             _controlRecovery.ObserveRoster(capture.RosterEpoch, capture.RosterRevision,
                 ZoomRosterSnapshotPolicy.Accept(_lastSnapshot, capture.RosterEpoch, capture.RosterRevision));
             merged = ZoomCaptureSnapshotMerger.Merge(_lastSnapshot, capture);

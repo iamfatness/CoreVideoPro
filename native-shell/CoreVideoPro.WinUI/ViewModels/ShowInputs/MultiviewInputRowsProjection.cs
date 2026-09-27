@@ -88,6 +88,7 @@ public sealed class MultiviewInputRowsProjection
         var participant = _lastRoster.Participants.FirstOrDefault(item =>
             string.Equals(item.UserId, fact.ParticipantId, StringComparison.Ordinal));
         if (participant is null || participant.VideoOn == false) return;
+        if (participant.SourceGeneration > 0 && participant.SourceGeneration != fact.SourceGeneration) return;
         foreach (var row in Rows.Where(item => item.SourceId == $"zoom:{fact.ParticipantId}"))
         {
             if (fact.FrameAtMs <= row.LastFrameAtMs) continue;
@@ -233,6 +234,20 @@ public sealed class MultiviewInputRowsProjection
             PatchPreview(row);
             return;
         }
+        if (participant.SourceGeneration > 0 && _lastRoster.RosterEpoch is { } epoch)
+        {
+            var currentInstance = new CoreVideoPro.MediaCore.Contracts.SourceInstanceIdentity
+            {
+                SourceId = sourceId,
+                InstanceId = $"{epoch}:{participant.SourceGeneration}",
+                ProcessEpoch = epoch,
+                Generation = participant.SourceGeneration
+            };
+            if (row.LastAppliedSourceInstance is { } previousInstance &&
+                previousInstance != currentInstance)
+                ResetFrame(row);
+            row.LastAppliedSourceInstance = currentInstance;
+        }
         row.MeterWidth = Math.Clamp(participant.AudioLevel ?? 0, 0, 100) * 0.8;
         if (participant.VideoOn == false)
         {
@@ -243,6 +258,7 @@ public sealed class MultiviewInputRowsProjection
         }
         var video = _lastRoster.ZoomSubscriptions.FirstOrDefault(item =>
             item.Kind == "participant-video" && item.ParticipantId == slot.ParticipantId &&
+            (participant.SourceGeneration <= 0 || item.SourceGeneration == participant.SourceGeneration) &&
             item.DeliveredWidth > 0 && item.DeliveredHeight > 0 && item.DeliveredFps > 0 &&
             item.LastFrameAtMs >= 0 && item.LastFrameAgeMs >= 0);
         if (video is null)

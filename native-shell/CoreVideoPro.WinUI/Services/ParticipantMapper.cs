@@ -11,6 +11,7 @@ public static class ParticipantMapper
             Id = context.Id,
             Name = context.Name,
             PersistentId = context.PersistentId,
+            SourceGeneration = context.SourceGeneration,
             Title = context.Title,
             Role = ParseRole(context.RoleLabel),
             BreakoutRoomId = context.BreakoutRoomId,
@@ -31,10 +32,14 @@ public static class ParticipantMapper
         IReadOnlyList<Participant> current)
     {
         if (previous.Count != current.Count) return true;
-        var previousMute = previous.ToDictionary(participant => participant.Id, participant => participant.IsMuted,
+        var previousRows = previous.ToDictionary(participant => participant.Id,
+            participant => (participant.IsMuted, participant.SourceGeneration, participant.Name, participant.PersistentId),
             StringComparer.Ordinal);
         return current.Any(participant =>
-            !previousMute.TryGetValue(participant.Id, out var muted) || muted != participant.IsMuted);
+            !previousRows.TryGetValue(participant.Id, out var prior) ||
+            prior.IsMuted != participant.IsMuted ||
+            prior.SourceGeneration != participant.SourceGeneration ||
+            prior.Name != participant.Name || prior.PersistentId != participant.PersistentId);
     }
 
     // All participants in the room (video on OR off). Used for the Sources/Inputs

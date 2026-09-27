@@ -14,6 +14,7 @@ public sealed class ZoomSourceFormatFact
 {
     public required string ParticipantId { get; init; }
     public required string RosterEpoch { get; init; }
+    public long SourceGeneration { get; init; }
     public int Width { get; init; }
     public int Height { get; init; }
     public int Fps { get; init; }
@@ -308,6 +309,7 @@ public sealed class RawParticipantEvent
     public required string UserId { get; init; }
     public required string DisplayName { get; init; }
     public string? PersistentId { get; init; }
+    public long SourceGeneration { get; init; }
     public string? Role { get; init; }
     public string? Title { get; init; }
     public string? BreakoutRoomId { get; init; }

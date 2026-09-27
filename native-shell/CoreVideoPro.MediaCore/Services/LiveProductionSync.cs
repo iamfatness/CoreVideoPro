@@ -22,6 +22,7 @@ public static class LiveProductionSync
         public int AudioLevel { get; init; }
         public string HealthLabel { get; init; } = "live";
         public string? PersistentId { get; init; }
+        public long SourceGeneration { get; init; }
     }
 
     public sealed record LiveProductionSyncContext
@@ -165,7 +166,8 @@ public static class LiveProductionSync
                     HealthLabel = healthLabel,
                     PersistentId = string.IsNullOrWhiteSpace(participant.PersistentId)
                         ? null
-                        : participant.PersistentId.Trim()
+                        : participant.PersistentId.Trim(),
+                    SourceGeneration = participant.SourceGeneration
                 };
             })
             .ToList();

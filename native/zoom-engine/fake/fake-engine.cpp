@@ -189,6 +189,7 @@ struct Participant {
     uint32_t id = 0;
     std::string name;
     bool has_video = true;
+    bool muted = false;
 };
 
 struct Target {
@@ -250,6 +251,8 @@ static uint32_t                   g_active_speaker = 0;
 static std::map<std::string, AudioToneTarget> g_audioTargets;  // Z4a tone streams
 static std::map<std::string, Target> g_targets;   // by source_uuid
 static bool                       g_joined = false;
+static uint64_t                   g_meeting_generation = 0;
+static uint64_t                   g_roster_revision = 0;
 static std::atomic<bool>          g_running{true};
 static bool                       g_autosubscribe = true;
 static uint32_t                   g_auto_res = 2;
@@ -312,7 +315,9 @@ static void retire_auto_targets_locked(uint32_t pid) {
 // Build + send the {"cmd":"participants",...} event — byte-identical shape to
 // the real engine's EngineParticipants::send_roster().
 static void send_participants_locked() {
-    std::string msg = R"({"cmd":"participants","active_speaker_id":)" +
+    std::string msg = R"({"cmd":"participants","meeting_generation":)" +
+        std::to_string(g_meeting_generation) + R"(,"roster_revision":)" +
+        std::to_string(++g_roster_revision) + R"(,"active_speaker_id":)" +
         std::to_string(g_active_speaker) + R"(,"participants":[)";
     for (size_t i = 0; i < g_roster.size(); ++i) {
         const auto& p = g_roster[i];
@@ -322,7 +327,8 @@ static void send_participants_locked() {
                R"(,"name":")" + json_escape(p.name) +
                R"(","has_video":)" + (p.has_video ? "true" : "false") +
                R"(,"is_talking":)" + (talking ? "true" : "false") +
-               R"(,"is_muted":false,"is_sharing_screen":false})";
+               R"(,"is_muted":)" + (p.muted ? "true" : "false") +
+               R"(,"is_sharing_screen":false})";
     }
     msg += "]}";
     EngineIpc::write(msg);
@@ -728,6 +734,16 @@ static void churn_loop() {
 
         ++half_seconds;
 
+        // Optional #659 replay: one source toggles Zoom mute without a scene
+        // action. The fixed 10s leave/rejoin below exercises SDK id reuse.
+        if (std::getenv("COREVIDEO_FAKE_ROSTER_TRANSITIONS") && half_seconds % 8 == 0) {
+            std::lock_guard<std::mutex> lk(g_mtx);
+            if (!g_roster.empty()) {
+                g_roster.front().muted = !g_roster.front().muted;
+                send_participants_locked();
+            }
+        }
+
         // Every ~2s: rotate the active speaker among the current roster.
         if (half_seconds % 4 == 0) {
             std::string speaker_msg;
@@ -863,6 +879,8 @@ int main(int argc, char** argv) {
             {
                 std::lock_guard<std::mutex> lk(g_mtx);
                 g_roster = baseline_roster(baseline);
+                ++g_meeting_generation;
+                g_roster_revision = 0;
                 g_active_speaker = g_roster.empty() ? 0 : g_roster.front().id;
                 g_joined = true;
                 sync_auto_targets_locked();

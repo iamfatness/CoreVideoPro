@@ -6,6 +6,14 @@ namespace CoreVideoPro.WinUI.Tests;
 
 public sealed class ParticipantMuteRefreshTests
 {
+    [Fact]
+    public void ReusedSdkIdRefreshesAudioStripEvenWhenMuteValueIsUnchanged()
+    {
+        var first = new Participant { Id = "42", Name = "First", SourceGeneration = 1, IsMuted = false };
+        var second = new Participant { Id = "42", Name = "Second", SourceGeneration = 2, IsMuted = false };
+        Assert.True(ParticipantMapper.HasMuteChanges([first], [second]));
+    }
+
     [Theory]
     [InlineData(FeedHealth.Live, false)]
     [InlineData(FeedHealth.Live, true)]
