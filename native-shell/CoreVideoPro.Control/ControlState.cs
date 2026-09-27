@@ -13,6 +13,8 @@ public sealed record ControlAudioSourceState(
     bool Muted,
     string Status);
 
+public sealed record ControlAudioRouteState(string SourceId, string BusId, double GainDb);
+
 /// <summary>Flat, serializable feedback snapshot for control-surface button state (Companion
 /// feedbacks, WS clients). Built by the WinUI adapter from ViewModel state + the core snapshot,
 /// and emitted (coalesced) on change. Field names are the stable feedback contract — keep them
@@ -66,6 +68,10 @@ public sealed record ControlState
     public string AudioMonitorAuthorityEpoch { get; init; } = string.Empty;
     public long AudioMonitorRevision { get; init; }
     public string AudioMonitorLastResult { get; init; } = string.Empty;
+    public string AudioRouteAuthorityEpoch { get; init; } = string.Empty;
+    public long AudioRouteRevision { get; init; }
+    public string AudioRouteLastResult { get; init; } = string.Empty;
+    public IReadOnlyList<ControlAudioRouteState> AudioRoutes { get; init; } = [];
     public string ControlRecoverySummary { get; init; } = string.Empty;
     public string ZoomAudioMode { get; init; } = string.Empty;
     public bool MasterLimiterOn { get; init; }

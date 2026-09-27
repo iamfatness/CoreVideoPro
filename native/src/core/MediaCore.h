@@ -12,6 +12,7 @@
 #include "core/RenderedProgramSources.h"
 #include "core/RenderedSceneAttributionPolicy.h"
 #include "core/SourceBus.h"
+#include "core/AudioRouteControlState.h"
 #include "core/MediaTransports.h"
 #include "core/SourceContinuityLedger.h"
 #include "core/SourceRegistry.h"
@@ -418,6 +419,8 @@ class MediaCore {
   [[nodiscard]] VstInsertSelection resolveVstInsertForWorker(const std::string& query);
   [[nodiscard]] rpc::Json pluginHostState() const;
   void syncAudioRoutingMatrix(const rpc::Json& command);
+  void setAudioRouteControl(const rpc::Json& command);
+  void applyAudioRouteOverrides();
   void syncCaptureAudioSources(const rpc::Json& command);
   void pushCaptionCue(const rpc::Json& command);
   void setCaptionEnabled(const rpc::Json& command);
@@ -1167,6 +1170,7 @@ class MediaCore {
     std::vector<std::string> busPluginInserts;
   };
   std::vector<AudioRoutingSendInput> audioRoutingSends_;
+  AudioRouteControlState audioRouteControl_{"route-uninitialized"};
   // Bus OUTPUT routing (mixer topology): an aux/custom bus's mix summed into a
   // fixed destination bus, like a subgroup feeding the master on a real desk.
   // Without these, aux buses were metered dead ends (owner 2026-07-12).

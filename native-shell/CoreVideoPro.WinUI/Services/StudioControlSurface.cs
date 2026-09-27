@@ -58,7 +58,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "scene.select", "scene.dynamicGallery.create", "view.setMode",
         "input.assign", "input.name", "input.inShow.set", "source.dropout.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
-        "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.masterLimiter.set",
+        "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "multiview.layout.set", "multiview.tileCount.set",
         "multiview.showLabels.set", "multiview.showTally.set", "multiview.showMeters.set", "multiview.showClock.set",
@@ -334,6 +334,8 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 return await ApplyAudioMonitorControlAsync(args, enabled: Bool(args, 0));
             case "audio.monitor.volume":
                 return await ApplyAudioMonitorControlAsync(args, volume: Math.Clamp(Double(args, 0), 0.0, 1.0));
+            case "audio.route.set":
+                return await ApplyAudioRouteControlAsync(args);
             case "audio.masterLimiter.set":
                 _vm.MasterLimiterEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
@@ -578,6 +580,11 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             AudioMonitorAuthorityEpoch = appliedMonitor?.MonitorControl?.AuthorityEpoch ?? string.Empty,
             AudioMonitorRevision = appliedMonitor?.MonitorControl?.Revision ?? 0,
             AudioMonitorLastResult = appliedMonitor?.MonitorControl?.LastResult?.Status ?? string.Empty,
+            AudioRouteAuthorityEpoch = _vm.NativeControlSnapshot?.AudioRoutingMatrix.Control?.AuthorityEpoch ?? string.Empty,
+            AudioRouteRevision = _vm.NativeControlSnapshot?.AudioRoutingMatrix.Control?.Revision ?? 0,
+            AudioRouteLastResult = _vm.NativeControlSnapshot?.AudioRoutingMatrix.Control?.LastResult?.Status ?? string.Empty,
+            AudioRoutes = _vm.NativeControlSnapshot?.AudioRoutingMatrix.Sends
+                .Select(send => new ControlAudioRouteState(send.SourceId, send.BusId, send.GainDb)).ToArray() ?? [],
             ControlRecoverySummary = _vm.ControlRecoverySummary,
             ZoomAudioMode = ZoomAudioModePreference.Format(_vm.ZoomAudioMode),
             MasterLimiterOn = _vm.MasterLimiterEnabled,
@@ -904,6 +911,31 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             : ControlInvokeResult.Fail(result.Kind == AudioMonitorControlOutcomeKind.Conflict
                 ? $"Monitor control conflict at revision {result.Control?.Revision}; read state and retry with the current epoch and revision."
                 : $"Monitor control {result.Kind.ToString().ToLowerInvariant()}; application is unconfirmed.");
+    }
+
+    private async Task<ControlInvokeResult> ApplyAudioRouteControlAsync(IReadOnlyList<object?> args)
+    {
+        var sourceId = Str(args, 0).Trim();
+        var busId = Str(args, 1).Trim();
+        var gainDb = Double(args, 3);
+        var epoch = Str(args, 4).Trim();
+        var operationId = Str(args, 6).Trim();
+        if (sourceId.Length == 0 || busId.Length == 0 || epoch.Length == 0 || operationId.Length == 0)
+            return ControlInvokeResult.Fail("sourceId, busId, authorityEpoch and operationId are required.");
+        if (gainDb < -60 || gainDb > 10 || !double.IsFinite(gainDb))
+            return ControlInvokeResult.Fail("gainDb must be between -60 and +10.");
+        if (args[5] is not double revision || !double.IsFinite(revision) || revision < 0 ||
+            revision > 9007199254740991d || revision != Math.Truncate(revision))
+            return ControlInvokeResult.Fail("expectedRevision must be a nonnegative safe integer.");
+        var draft = new CoreVideoPro.MediaCore.Models.MediaCoreAudioRouteWire(
+            sourceId, busId, Bool(args, 2), gainDb);
+        var result = await _vm.RequestAudioRouteControlAsync(
+            draft, epoch, (long)revision, operationId).ConfigureAwait(true);
+        return result.Kind == AudioRouteControlOutcomeKind.Applied
+            ? ControlInvokeResult.Success
+            : ControlInvokeResult.Fail(result.Kind == AudioRouteControlOutcomeKind.Conflict
+                ? $"Audio route conflict at revision {result.Control?.Revision}; read state and retry."
+                : $"Audio route {result.Kind.ToString().ToLowerInvariant()}; application is unconfirmed.");
     }
 
     public void Dispose()

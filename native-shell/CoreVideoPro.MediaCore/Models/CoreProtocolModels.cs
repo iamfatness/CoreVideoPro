@@ -274,6 +274,7 @@ public sealed class NativeMediaCoreAudioRoutingSend
 public sealed class NativeMediaCoreAudioRoutingMatrix
 {
     public required string Status { get; init; }
+    public NativeMediaCoreAudioRouteControl? Control { get; init; }
     public int RoutedSendCount { get; init; }
     public int RoutedSourceCount { get; init; }
     public int ProgramTapFrames { get; init; }
@@ -281,6 +282,23 @@ public sealed class NativeMediaCoreAudioRoutingMatrix
     public IReadOnlyList<NativeMediaCoreAudioBusTap> BusTaps { get; init; } = [];
     public IReadOnlyList<string> Warnings { get; init; } = [];
     public required string Summary { get; init; }
+}
+
+public sealed class NativeMediaCoreAudioRouteControl
+{
+    public string AuthorityEpoch { get; init; } = string.Empty;
+    public long Revision { get; init; }
+    public NativeMediaCoreAudioRouteResult? LastResult { get; init; }
+    public IReadOnlyList<NativeMediaCoreAudioRouteResult> RecentResults { get; init; } = [];
+}
+
+public sealed class NativeMediaCoreAudioRouteResult
+{
+    public string OperationId { get; init; } = string.Empty;
+    public string Status { get; init; } = string.Empty;
+    public string AuthorityEpoch { get; init; } = string.Empty;
+    public long Revision { get; init; }
+    public long ExpectedRevision { get; init; }
 }
 
 public sealed class RawCaptureSnapshot

@@ -125,6 +125,25 @@ public sealed class RoutingMatrixViewModelTests
     }
 
     [Fact]
+    public void AudioRouting_PendingDraftSurvivesSnapshot_ThenAcceptedEmptyClearsIt()
+    {
+        var viewModel = new AudioRoutingMatrixViewModel();
+        viewModel.Build([new RoutingSource("mic-1", "Mic 1")]);
+        var mon = FindAudioCell(viewModel, "mic-1", "mon");
+        mon.GainDb = -9;
+        var draft = new HashSet<(string SourceId, string BusId)> { ("mic-1", "mon") };
+
+        viewModel.ApplyCoreSends([("mic-1", "master", -6)], draft);
+        Assert.True(mon.IsRouted);
+        Assert.Equal(-9, mon.GainDb);
+        Assert.Equal(-6, FindAudioCell(viewModel, "mic-1", "master").GainDb);
+
+        viewModel.ApplyCoreSends([], acceptEmpty: true);
+        Assert.False(mon.IsRouted);
+        Assert.False(FindAudioCell(viewModel, "mic-1", "master").IsRouted);
+    }
+
+    [Fact]
     public void AudioRouting_AddBusExtendsExistingRows()
     {
         var viewModel = new AudioRoutingMatrixViewModel();

@@ -63,6 +63,44 @@ enum ShellTests {
                     "held edit rebases on restarted core")
     }
 
+    private static func testAudioRouteControlProjection() {
+        var projection = AudioRouteControlProjection()
+        func matrix(_ epoch: String, _ revision: Int, _ gain: Double?,
+                    _ result: JSONObject? = nil) -> JSONObject {
+            let sends: [JSONObject] = gain.map { [["sourceId": "zoom:42", "busId": "mon", "gainDb": $0]] } ?? []
+            return ["sends": sends,
+                    "control": ["authorityEpoch": epoch, "revision": revision,
+                                "recentResults": result.map { [$0] } ?? []] as JSONObject]
+        }
+        projection.observe(matrix("core-1", 0, nil))
+        projection.edit(source: "zoom:42", bus: "mon", enabled: true, gainDb: -6)
+        let first = projection.nextCommand()
+        let firstId = first?["operationId"] as? String ?? ""
+        expectEqual(first?["expectedRevision"] as? Int64, 0, "route edit uses observed revision")
+        expect(projection.nextCommand() == nil, "pending route cannot submit twice")
+        // Snapshot repairs a lost acknowledgement without resending.
+        projection.observe(matrix("core-1", 1, -6,
+                                  ["operationId": firstId, "status": "applied"]))
+        expect(projection.drafts.isEmpty, "applied route clears the draft")
+        projection.edit(source: "zoom:42", bus: "mon", enabled: false, gainDb: 0)
+        let second = projection.nextCommand()
+        expectEqual(second?["expectedRevision"] as? Int64, 1, "second edit uses applied revision")
+        projection.observe(matrix("core-1", 2, -3,
+                                  ["operationId": second?["operationId"] as? String ?? "",
+                                   "status": "conflict"]))
+        expect(!projection.drafts.isEmpty, "conflict keeps local draft")
+        expect(projection.notice.contains("conflicted"), "conflict is visible")
+        expect(projection.nextCommand() == nil, "conflicted draft waits for operator revision")
+        projection.observe(matrix("core-1", 1, -6))
+        expectEqual(projection.revision, 2, "stale route snapshot cannot rewind")
+        projection.resetForProcess()
+        projection.observe(matrix("core-2", 0, nil))
+        expect(projection.nextCommand() == nil, "old-epoch draft cannot overwrite restarted core")
+        projection.edit(source: "zoom:42", bus: "mon", enabled: true, gainDb: -6)
+        expectEqual(projection.nextCommand()?["authorityEpoch"] as? String, "core-2",
+                    "reviewed route edit uses restarted epoch")
+    }
+
     private static func expect(_ condition: Bool, _ what: String,
                                _ file: StaticString = #file, _ line: UInt = #line) {
         checks += 1
@@ -708,6 +746,7 @@ enum ShellTests {
 
         let cases: [(String, () -> Void)] = [
             ("monitor/revisioned-projection", testMonitorControlProjection),
+            ("audio-route/revisioned-projection", testAudioRouteControlProjection),
             ("recording/command-retry", testRecordingCommandRetriesAndSupersession),
             ("bridge/generation-lifecycle", testBridgeGenerationRejectsStaleWork),
             ("wire/shared-lifecycle-contracts", testSharedLifecycleContracts),

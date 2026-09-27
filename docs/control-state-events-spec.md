@@ -64,6 +64,17 @@ Audio `SourceMuted` is an observed Zoom fact; mixer `Muted` is an operator
 control. The UI may display their combined effective state, but must preserve
 the two underlying fields and cannot persist the combination.
 
+### Slice B crossing: one audio crosspoint
+
+| Crossing | Producer and meaning | Consumer and trigger | Lifetime and proof |
+| --- | --- | --- | --- |
+| Grid cell edit | Windows/macOS operator draft: source, bus, enabled, gain | Revisioned `set-audio-route-control` on edit; no general full-sync claim of success | Local draft stays visible through pending/conflict; row projection tests |
+| Control API `audio.route.set` | Remote intent with required authority epoch, expected revision and operation ID | Same native command admission as the grid | Client reads epoch/revision and applied sends from `/state`; binding and replay tests |
+| Native admission/result | Core serialized executor owns route epoch/revision and bounded operation-result cache | Shell projections and Control API result | Duplicate ID replays result, stale revision/retired epoch conflicts; native and fake-bridge replay tests |
+| Core route snapshot | Core owns applied sends and result barrier | Grid hydration and `/state` feedback on sync/poll | A late same-epoch snapshot cannot rewind a newer revision; pending draft is preserved |
+| Legacy full-matrix sync | Shell topology/default publisher, not the authority for an accepted crosspoint edit | Core overlays accepted crosspoint values after each full sync | Bus topology stays on the legacy path in this slice; native regression test proves it cannot erase an accepted edit |
+| Source PCM and output | Core mixer and monitor/output adapters | Meters, Program, monitor and recording | No payload crosses into either shell; installed test-meeting counters qualify continuity |
+
 ## Event and command ownership
 
 | Family | Producer / authority | Subscribers | Delivery class |

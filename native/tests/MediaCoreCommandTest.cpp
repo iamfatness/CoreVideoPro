@@ -2596,6 +2596,51 @@ TEST(MediaCoreCommand, RevisionedMonitorControlRejectsStaleClientAndDedupesRetry
   EXPECT_EQ(audio->get("monitorControl")->getNumber("revision"), 2);
 }
 
+TEST(MediaCoreCommand, RevisionedAudioRouteRejectsStaleClientAndLegacySyncCannotOverwrite) {
+  using corevideo::rpc::Json;
+  corevideo::core::MediaCore mediaCore;
+  const auto epoch = mediaCore.sessionState().get("audioRoutingMatrix")
+      ->get("control")->getString("authorityEpoch");
+  ASSERT_FALSE(epoch.empty());
+  auto command = [&](const std::string& id, const std::string& expectedEpoch,
+                     int expectedRevision, bool enabled, double gain) {
+    return Json::Object{{"type", "set-audio-route-control"}, {"operationId", id},
+                        {"authorityEpoch", expectedEpoch}, {"expectedRevision", expectedRevision},
+                        {"sourceId", "zoom:42"}, {"busId", "mon"},
+                        {"enabled", enabled}, {"gainDb", gain}};
+  };
+  const auto first = mediaCore.applyCommand(command("client-a", epoch, 0, true, -6));
+  auto matrix = first.get("audioRoutingMatrix");
+  ASSERT_EQ(matrix->get("control")->getNumber("revision"), 1);
+  ASSERT_EQ(matrix->get("sends")->asArray().size(), 1u);
+  EXPECT_EQ(matrix->get("sends")->asArray().front().getNumber("gainDb"), -6);
+
+  const auto stale = mediaCore.applyCommand(command("client-b", epoch, 0, false, 0));
+  matrix = stale.get("audioRoutingMatrix");
+  EXPECT_EQ(matrix->get("control")->get("lastResult")->getString("status"), "conflict");
+  EXPECT_EQ(matrix->get("sends")->asArray().size(), 1u);
+
+  const auto legacy = mediaCore.applyCommand(Json::Object{{"type", "sync-audio-routing-matrix"},
+      {"sends", Json::Array{Json::Object{{"sourceId", "zoom:42"}, {"busId", "mon"},
+                                            {"gainDb", 0}}}}});
+  EXPECT_EQ(legacy.get("audioRoutingMatrix")->get("sends")->asArray().front().getNumber("gainDb"), -6);
+
+  const auto duplicate = mediaCore.applyCommand(command("client-a", epoch, 0, true, -6));
+  EXPECT_EQ(duplicate.get("audioRoutingMatrix")->get("control")->getNumber("revision"), 1);
+  EXPECT_EQ(duplicate.get("audioRoutingMatrix")->get("control")
+      ->get("lastResult")->getString("status"), "applied");
+
+  const auto off = mediaCore.applyCommand(command("client-b-rebased", epoch, 1, false, 0));
+  EXPECT_TRUE(off.get("audioRoutingMatrix")->get("sends")->asArray().empty());
+  EXPECT_EQ(off.get("audioRoutingMatrix")->get("control")->getNumber("revision"), 2);
+
+  corevideo::core::MediaCore restarted;
+  const auto retired = restarted.applyCommand(command("old-process", epoch, 2, true, 0));
+  EXPECT_EQ(retired.get("audioRoutingMatrix")->get("control")
+      ->get("lastResult")->getString("status"), "conflict");
+  EXPECT_TRUE(retired.get("audioRoutingMatrix")->get("sends")->asArray().empty());
+}
+
 TEST(MediaCoreAudioMonitor, LiveMixPublishesControlAndRevisionedOffStopsOutput) {
   using corevideo::rpc::Json;
   auto modules = corevideo::modules::createStubModules();
