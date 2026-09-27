@@ -14,6 +14,10 @@
  *
  * Usage: node ./scripts/validate-srt-output.mjs [--seconds 30] [--port 9020]
  *                                               [--passphrase <10+ chars>] [--keep]
+ *        COREVIDEO_TEST_SRT_PASSPHRASE=... COREVIDEO_TEST_SRT_STREAM_ID=... \
+ *          node ./scripts/validate-srt-output.mjs --remote-host example.com --port 2010
+ * Remote mode proves sender connection and cadence only. Receiver-side health
+ * must be checked independently; it never prints a delivery PASS.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, rmSync, statSync } from "node:fs";
@@ -22,7 +26,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
-const buildDir = join(repoRoot, "native", "build-dev");
+const buildDir = resolve(process.env.COREVIDEO_TEST_NATIVE_BUILD_DIR || join(repoRoot, "native", "build-dev"));
 const exeSuffix = process.platform === "win32" ? ".exe" : "";
 const nativeCore = join(buildDir, `corevideo-native${exeSuffix}`);
 const fakeEngine = join(buildDir, `corevideo-zoom-engine-fake${exeSuffix}`);
@@ -37,8 +41,17 @@ const seconds = Number(argValue("seconds", 30));
 // received stream must actually carry.
 const TARGET_FPS = 60;
 const port = Number(argValue("port", 9020));
-const passphrase = argValue("passphrase", "");
+const passphrase = process.env.COREVIDEO_TEST_SRT_PASSPHRASE || argValue("passphrase", "");
+const streamId = process.env.COREVIDEO_TEST_SRT_STREAM_ID || "";
+const remoteHost = argValue("remote-host", "");
+const remote = remoteHost.length > 0;
 const keep = args.includes("--keep");
+const redact = (value) => {
+  let text = String(value ?? "");
+  if (passphrase) text = text.replaceAll(passphrase, "[passphrase]");
+  if (streamId) text = text.replaceAll(streamId, "[stream-id]");
+  return text;
+};
 
 const ffBin = (name) => {
   for (const bin of [name, `C:\\ffmpeg\\bin\\${name}.exe`]) {
@@ -73,12 +86,12 @@ const received = join(buildDir, `srt-received-${Date.now()}.ts`);
 const listenerUrl =
   `srt://0.0.0.0:${port}?mode=listener&transtype=live&listen_timeout=30000000` +
   (passphrase ? `&passphrase=${encodeURIComponent(passphrase)}&pbkeylen=16` : "");
-const listener = spawn(ffmpeg,
+const listener = remote ? null : spawn(ffmpeg,
   ["-hide_banner", "-loglevel", "error", "-y", "-i", listenerUrl,
    "-t", String(seconds + 8), "-c", "copy", "-f", "mpegts", received],
   { stdio: ["ignore", "ignore", "pipe"] });
 let listenerStderr = "";
-listener.stderr.on("data", (chunk) => { listenerStderr += chunk.toString(); });
+listener?.stderr.on("data", (chunk) => { listenerStderr += chunk.toString(); });
 
 const child = spawn(nativeCore, [], {
   cwd: buildDir,
@@ -144,6 +157,7 @@ async function awaitListenerHeadStart(listenerProcess, ms = 2500) {
 
 const failures = [];
 let senderSnapshot = null;
+let remoteSenderFailed = false;
 // Sender feed cadence, sampled from its accepted-frame counter (see below).
 const senderFps = [];
 let lastFrameSample = null;
@@ -151,12 +165,12 @@ try {
   for (let i = 0; i < 200 && !handshake; i += 1) await sleep(50);
   if (!handshake) throw new Error("no native-core handshake");
 
-  if (!(await awaitListenerHeadStart(listener))) {
+  if (!remote && !(await awaitListenerHeadStart(listener))) {
     throw new Error(
       `SRT listener exited before the stream started — nothing could have connected` +
       (listenerStderr ? ` (${listenerStderr.trim().split("\n").pop()})` : ""));
   }
-  console.log(`listener      : up on ${port}`);
+  console.log(remote ? `remote target : ${remoteHost}:${port} (receiver proof required)` : `listener      : up on ${port}`);
 
   await send("zoom-join", { payload: { meetingNumber: "1234567890", displayName: "srt-proof" } });
   await sleep(3000);
@@ -198,12 +212,13 @@ try {
           id: "srt",
           label: "validate-srt-output",
           protocol: "srt",
-          host: "127.0.0.1",
+          host: remoteHost || "127.0.0.1",
           port,
           mode: "caller",
           latencyMs: 120,
           passphrase,
           keyLength: passphrase ? 16 : 0,
+          streamId,
           ffmpegBinDirectory: "C:\\ffmpeg\\bin",
           fps: 60,
           targetBitrateMbps: 4,
@@ -213,7 +228,7 @@ try {
       },
     ],
   });
-  console.log(`Streaming     : srt://127.0.0.1:${port} (${passphrase ? "encrypted" : "clear"}) for ${seconds}s...`);
+  console.log(`Streaming     : srt://${remoteHost || "127.0.0.1"}:${port} (${passphrase ? "encrypted" : "clear"}, stream ID ${streamId ? "set" : "absent"}) for ${seconds}s...`);
 
   const deadline = Date.now() + seconds * 1000;
   while (Date.now() < deadline) {
@@ -222,14 +237,20 @@ try {
     const senders = sync.snapshot?.outputSenders?.senders ?? sync.snapshot?.outputSenderSession?.senders ?? [];
     senderSnapshot = senders.find((s) => (s.destination ?? s.senderId ?? "").includes("srt")) ?? senders[0] ?? null;
     if (senderSnapshot) {
+      if (remote && (senderSnapshot.status === "failed" ||
+                     senderSnapshot.destinationHealth === "failed" ||
+                     /(?:reject|error|failed|refused)/i.test(senderSnapshot.warning || ""))) {
+        remoteSenderFailed = true;
+      }
       const evidence = sync.snapshot?.realtimeEvidence ?? {};
+      const warning = redact(senderSnapshot.warning || "none").split(" | ")[0];
       console.log(`sender        : status=${senderSnapshot.status} health=${senderSnapshot.destinationHealth ?? "?"} ` +
                   `frames=${senderSnapshot.framesSent ?? 0} slots=${evidence.render?.completedSlots ?? "?"} ` +
                   `videoTicks=${evidence.videoOutput?.completedTicks ?? "?"} ` +
                   `shed=${evidence.encoderExport?.shedFrames ?? "?"} ` +
                   `bp=${senderSnapshot.backpressure?.divisor ?? 1} ` +
                   `droppedSyncs=${senderSnapshot.asyncWorker?.droppedSyncs ?? "?"} ` +
-                  `stage=${senderSnapshot.asyncWorker?.stage ?? "?"} warning=${senderSnapshot.warning || "none"}`);
+                  `stage=${senderSnapshot.asyncWorker?.stage ?? "?"} warning=${warning}`);
       // Sample the sender's OWN accepted-frame counter. This — not the received
       // container's frame rate — is what reveals the feed cadence: FFmpeg pads
       // duplicates up to its declared -r, so a sender fed at 50fps still emits a
@@ -249,12 +270,13 @@ try {
     commands: [{ type: "stop-program-output", reason: "srt proof complete" }],
   });
 } catch (error) {
-  failures.push(error.message);
+  failures.push(redact(error.message));
 } finally {
   try { child.stdin.end(); } catch {}
   child.kill();
 }
 
+if (!remote) {
 // Give the listener a moment to flush, then judge on RECEIVED BYTES.
 await sleep(3000);
 try { listener.kill(); } catch {}
@@ -322,6 +344,7 @@ if (size < 10000) {
     else if (peak < 500) failures.push(`received audio is silent (peak ${peak}) — the tone never made it out`);
   }
 }
+}
 
 // THE CADENCE GATE. The senders were fed by the ~50Hz audio worker, so the
 // program left this app at 50fps while the compositor produced 60. That is
@@ -346,13 +369,23 @@ if (senderFps.length) {
   }
 } else {
   console.log("sender feed   : not measurable (no frame-counter samples)");
+  if (remote) failures.push("remote sender produced no measurable frame-counter samples");
 }
 
-if (!keep) { try { rmSync(received); } catch {} }
+if (remote && !(Number(senderSnapshot?.framesSent) > 0)) {
+  failures.push("remote sender accepted no Program frames");
+}
+if (remote && remoteSenderFailed) {
+  failures.push("remote SRT connection failed or was rejected during the run");
+}
+
+if (!remote && !keep) { try { rmSync(received); } catch {} }
 
 if (failures.length) {
   console.error("\nSRT DELIVERY VALIDATION FAIL");
   for (const f of failures) console.error(`  - ${f}`);
   process.exit(1);
 }
-console.log("\nSRT DELIVERY VALIDATION PASS");
+console.log(remote
+  ? "\nSRT REMOTE SENDER CHECK PASS; RECEIVER EVIDENCE REQUIRED"
+  : "\nSRT DELIVERY VALIDATION PASS");
