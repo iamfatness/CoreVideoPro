@@ -82,8 +82,13 @@ public sealed class MediaCoreBridgePollTests
             }
             // The fake traces a request when it RECEIVES it, before the bridge applies the reply,
             // so also wait for the applied snapshot to carry the advanced frame count.
+            // A received request can lead the applied state under CI load. Wait for a fresh
+            // applied readback as well, rather than sampling its age at an arbitrary instant.
             while ((polls < 4 || after.Count(line => line == "zoom-snapshot") < 3 ||
-                    (bridge.LastSnapshot?.ProgramFrameCount ?? 0) < 60) && DateTime.UtcNow < deadline);
+                    (bridge.LastSnapshot?.ProgramFrameCount ?? 0) < 60 ||
+                    bridge.LastSnapshot?.RawReceivedUtc is not { } receivedUtc ||
+                    DateTimeOffset.UtcNow - receivedUtc >= TimeSpan.FromSeconds(2)) &&
+                   DateTime.UtcNow < deadline);
 
             Assert.True(polls >= 4, $"expected the core to keep being polled with Engine off, saw {polls} media-core-sync request(s) in 15 s");
             // The roster is still refreshed while capture is off.

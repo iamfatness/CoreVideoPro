@@ -197,3 +197,27 @@ an unrelated UI action. A larger tail must be diagnosed against the existing
 250 ms snapshot poll and bounded queues rather than hidden by a new periodic
 full scene sync. Render deadline misses, audio loss and monitor underruns are
 reported as deltas during qualification; this control path may not add any.
+
+### #663 recovery implementation
+
+The Windows bridge admits contiguous direct Zoom roster facts. A missing
+revision or new meeting epoch puts that roster domain in `reconciling` and
+requests one full `zoom-snapshot`; a fact cannot repaint participants until a
+snapshot reaches its revision. Complete core/spine snapshots can also close the
+barrier. The stdout callback places full roster observations in one latest-value
+slot, with a 33 ms minimum interval between bound-list deliveries. It counts
+replacements and discarded older facts. This queue carries no commands.
+
+Core syncs retain the existing 32-command FIFO and coalesce empty polls. Four
+additional waiting positions admit stop commands when normal command pressure
+fills the queue; they retain FIFO order. Only explicit operator Record/Stream
+stop intent uses those positions. Replaceable Windows production-state changes
+use the existing latest-request retry worker before command admission; Take and
+output start/stop still submit directly. The diagnostic control-recovery line
+reports roster, monitor and audio-route gaps/stale counts, reconciliation,
+command overloads, coalesced polls/state requests and roster fact replacements. A later core
+snapshot resolves a lost monitor or audio-route result by operation ID and
+epoch; the shell keeps an unconfirmed draft until then. macOS roster, monitor
+and route projections reject delayed old revisions and retired epochs before
+painting applied state. Legacy unversioned Zoom snapshots remain accepted only
+until a versioned roster epoch has been observed in that process.

@@ -26,8 +26,10 @@ struct AudioRouteControlProjection {
     private var pendingKey: AudioRouteKey?
     private var expected: [AudioRouteKey: (epoch: String, revision: Int64)] = [:]
     private var blocked: Set<AudioRouteKey> = []
+    private var retiredEpochs: Set<String> = []
 
     mutating func resetForProcess() {
+        if !authorityEpoch.isEmpty { retiredEpochs.insert(authorityEpoch) }
         authorityEpoch = ""
         revision = 0
         pendingOperationId = nil
@@ -45,13 +47,15 @@ struct AudioRouteControlProjection {
         notice = "Audio route edit pending core application"
     }
 
-    mutating func observe(_ matrix: JSONObject) {
+    @discardableResult mutating func observe(_ matrix: JSONObject) -> Bool {
         guard let control = matrix["control"] as? JSONObject,
               let epoch = control["authorityEpoch"] as? String, !epoch.isEmpty,
-              let number = control["revision"] as? NSNumber else { return }
+              let number = control["revision"] as? NSNumber else { return authorityEpoch.isEmpty }
         let nextRevision = number.int64Value
-        if epoch == authorityEpoch && nextRevision < revision { return }
+        if retiredEpochs.contains(epoch) ||
+            (epoch == authorityEpoch && nextRevision < revision) { return false }
         if epoch != authorityEpoch {
+            if !authorityEpoch.isEmpty { retiredEpochs.insert(authorityEpoch) }
             pendingOperationId = nil
             pendingKey = nil
             if !authorityEpoch.isEmpty && !drafts.isEmpty {
@@ -69,13 +73,13 @@ struct AudioRouteControlProjection {
                         Draft(enabled: true, gainDb: (send["gainDb"] as? NSNumber)?.doubleValue ?? 0))
             })
         }
-        guard let operation = pendingOperationId, let key = pendingKey else { return }
+        guard let operation = pendingOperationId, let key = pendingKey else { return true }
         let results = control["recentResults"] as? [JSONObject] ?? []
         let result = results.first { $0["operationId"] as? String == operation }
             ?? ((control["lastResult"] as? JSONObject).flatMap {
                 $0["operationId"] as? String == operation ? $0 : nil
             })
-        guard let status = result?["status"] as? String else { return }
+        guard let status = result?["status"] as? String else { return true }
         pendingOperationId = nil
         pendingKey = nil
         if status == "applied" {
@@ -96,6 +100,7 @@ struct AudioRouteControlProjection {
             notice = status == "conflict" ? "Audio route conflicted; draft retained" :
                 "Audio route rejected; draft retained"
         }
+        return true
     }
 
     mutating func nextCommand() -> JSONObject? {

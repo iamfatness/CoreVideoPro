@@ -5,7 +5,8 @@ namespace CoreVideoPro.WinUI.ViewModels;
 
 public sealed partial class StudioViewModel
 {
-    private sealed record PendingAudioRoute(MediaCoreAudioRouteWire Draft, long Sequence, string AuthorityEpoch);
+    private sealed record PendingAudioRoute(MediaCoreAudioRouteWire Draft, long Sequence,
+        string AuthorityEpoch, string? OperationId = null);
     private readonly Dictionary<(string SourceId, string BusId), PendingAudioRoute> _audioRouteDrafts = [];
     private readonly SemaphoreSlim _audioRouteLocalGate = new(1, 1);
     private long _audioRouteEditSequence;
@@ -76,6 +77,9 @@ public sealed partial class StudioViewModel
             }
             else
             {
+                if (outcome.Kind == AudioRouteControlOutcomeKind.Reconciling &&
+                    !string.IsNullOrWhiteSpace(outcome.OperationId))
+                    _audioRouteDrafts[key] = pending with { OperationId = outcome.OperationId };
                 CommandStatus = outcome.Kind == AudioRouteControlOutcomeKind.Conflict
                     ? $"Audio route conflict at revision {outcome.Control?.Revision}; draft retained"
                     : $"Audio route {outcome.Kind.ToString().ToLowerInvariant()}; draft retained";
@@ -110,8 +114,28 @@ public sealed partial class StudioViewModel
     // draft; other cells follow core immediately, without a time-based blind spot.
     private void HydrateAudioRoutingMatrixFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
+        ReconcilePendingAudioMonitorResult();
         var native = snapshot.AudioRoutingMatrix;
         if (native is null || AudioRoutingMatrix.Rows.Count == 0) return;
+        if (native.Control is { } appliedControl)
+        {
+            foreach (var (key, pending) in _audioRouteDrafts.ToArray())
+            {
+                if (pending.AuthorityEpoch != appliedControl.AuthorityEpoch ||
+                    string.IsNullOrWhiteSpace(pending.OperationId)) continue;
+                var result = ControlOperationResultPolicy.AudioRoute(appliedControl, pending.OperationId);
+                if (result?.Status == "applied")
+                {
+                    _audioRouteDrafts.Remove(key);
+                    _lastOwnAudioRouteEpoch = appliedControl.AuthorityEpoch;
+                    _lastOwnAudioRouteRevision = appliedControl.Revision;
+                    AudioRouteControlNotice = _audioRouteDrafts.Count == 0 ? string.Empty :
+                        "Audio route edits pending core application";
+                }
+                else if (result?.Status == "conflict")
+                    AudioRouteControlNotice = $"Audio route conflict at revision {appliedControl.Revision}; draft retained";
+            }
+        }
         if (native.Control is { } control && _audioRouteDrafts.Values.Any(draft =>
                 draft.AuthorityEpoch != control.AuthorityEpoch))
             AudioRouteControlNotice = "Audio route core restarted; draft retained for review";

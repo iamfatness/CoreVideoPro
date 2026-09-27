@@ -74,7 +74,7 @@ public sealed class AudioMonitorControlCoordinator(
                 // The command might have applied before its reply was lost.
             }
 
-            if (FindResult(response?.AudioMixSession.MonitorControl, operationId) is null)
+            if (ControlOperationResultPolicy.Monitor(response?.AudioMixSession.MonitorControl, operationId) is null)
             {
                 try
                 {
@@ -87,7 +87,7 @@ public sealed class AudioMonitorControlCoordinator(
                 }
             }
 
-            var result = FindResult(response?.AudioMixSession.MonitorControl, operationId);
+            var result = ControlOperationResultPolicy.Monitor(response?.AudioMixSession.MonitorControl, operationId);
             var kind = result is null
                 ? AudioMonitorControlOutcomeKind.Reconciling
                 : result.Status switch
@@ -105,9 +105,4 @@ public sealed class AudioMonitorControlCoordinator(
         }
     }
 
-    private static NativeMediaCoreMonitorControlResult? FindResult(
-        NativeMediaCoreMonitorControl? control, string operationId) =>
-        control?.LastResult?.OperationId == operationId
-            ? control.LastResult
-            : control?.RecentResults.FirstOrDefault(result => result.OperationId == operationId);
 }
