@@ -18,6 +18,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     private readonly SingleFlightTimerWork _spineWork = new();
     private double _elapsedMs;
     private NativeMediaCoreStateSnapshot? _lastSnapshot;
+    private IReadOnlyDictionary<string, (string SessionId, string State)> _lastIsoOutputStates =
+        new Dictionary<string, (string, string)>();
+    private long _isoOutputRevision;
     private Func<CancellationToken, Task<Dictionary<string, object?>>>? _spinePayloadFactory;
     private bool _spineSyncInFlight;
     private long _spineFactoryVersion;
@@ -54,6 +57,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     public event Action<string>? StatusChanged;
     public event Action<NativeMediaCoreProfile>? ProfileChanged;
     public event Action<NativeMediaCoreStateSnapshot>? SnapshotChanged;
+    public event Action<IsoOutputLifecycleFact>? OutputLifecycleChanged;
     public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
     public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
@@ -111,8 +115,12 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         StopPolling();
         ConfigureZoomSpineSync(null);
         stopSupervisor();
+        List<IsoOutputLifecycleFact> isoStopped;
         lock (_gate)
         {
+            isoStopped = _lastIsoOutputStates.Select(item =>
+                new IsoOutputLifecycleFact(item.Key, item.Value.SessionId, "off", ++_isoOutputRevision)).ToList();
+            _lastIsoOutputStates = new Dictionary<string, (string, string)>();
             _lastSnapshot = null;
             _audioMonitorControl.Reset();
             _controlRecovery.ResetProcess();
@@ -120,6 +128,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             _spinePayloadFactory = null;
             _spineFactoryVersion++;
         }
+        foreach (var change in isoStopped) OutputLifecycleChanged?.Invoke(change);
     }
 
     public void ConfigureZoomSpineSync(Func<CancellationToken, Task<Dictionary<string, object?>>>? payloadFactory)
@@ -715,6 +724,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     private void PublishSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
+        List<IsoOutputLifecycleFact> isoChanges;
         lock (_gate)
         {
             _controlRecovery.ObserveRoster(snapshot.RosterEpoch, snapshot.RosterRevision,
@@ -727,9 +737,21 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             _controlRecovery.ObserveMonitor(snapshot.AudioMixSession.MonitorControl?.AuthorityEpoch,
                 snapshot.AudioMixSession.MonitorControl?.Revision ?? 0);
             _audioMonitorControl.Observe(snapshot);
+            var next = IsoOutputLifecyclePolicy.Observe(snapshot.Recording);
+            isoChanges = [];
+            foreach (var sourceId in _lastIsoOutputStates.Keys.Union(next.Keys, StringComparer.Ordinal))
+            {
+                var previous = _lastIsoOutputStates.GetValueOrDefault(sourceId);
+                var current = next.GetValueOrDefault(sourceId);
+                if (previous == current) continue;
+                isoChanges.Add(new IsoOutputLifecycleFact(sourceId, current.SessionId ?? previous.SessionId ?? "",
+                    current.State ?? "off", ++_isoOutputRevision));
+            }
+            _lastIsoOutputStates = next;
         }
 
         SnapshotChanged?.Invoke(snapshot);
+        foreach (var change in isoChanges) OutputLifecycleChanged?.Invoke(change);
     }
 
     private void PublishCaptureSnapshot(RawCaptureSnapshot capture)

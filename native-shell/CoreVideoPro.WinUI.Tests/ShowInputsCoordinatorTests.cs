@@ -129,6 +129,60 @@ public sealed class ShowInputsCoordinatorTests
         Assert.Same(row, coordinator.MultiviewInputRows.Rows[0]);
     }
 
+    [Fact]
+    public void IsoLifecycleFactsPatchRecWithoutSelectingPreviewOrTaking()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using (ShowInputWriteScope.Enter("test"))
+        {
+            host.ShowInputs[0].Kind = ShowInputKind.ZoomParticipant;
+            host.ShowInputs[0].ParticipantId = "guest";
+            host.ShowInputs[0].InShow = true;
+        }
+        var row = coordinator.MultiviewInputRows.Rows[0];
+        Assert.Equal("OFF", row.RecLabel);
+        bridge.EmitIso(new IsoOutputLifecycleFact("zoom:guest", "session-1", "armed", 1));
+        Assert.Equal("ARMED", row.RecLabel);
+        bridge.EmitIso(new IsoOutputLifecycleFact("zoom:guest", "session-1", "recording", 2));
+        Assert.Equal("RECORDING", row.RecLabel);
+        bridge.EmitIso(new IsoOutputLifecycleFact("zoom:guest", "session-1", "armed", 1));
+        Assert.Equal("RECORDING", row.RecLabel);
+        bridge.EmitIso(new IsoOutputLifecycleFact("zoom:guest", "session-1", "error", 3));
+        Assert.Equal("ERROR", row.RecLabel);
+        bridge.EmitIso(new IsoOutputLifecycleFact("zoom:guest", "session-1", "off", 4));
+        Assert.Equal("OFF", row.RecLabel);
+        Assert.Equal(0, bridge.SyncCalls);
+    }
+
+    [Theory]
+    [InlineData("preparing", "healthy", "writing", "armed")]
+    [InlineData("producing", "healthy", "writing", "recording")]
+    [InlineData("producing", "healthy", "warning", "error")]
+    [InlineData("interrupted", "failed", "writing", "error")]
+    [InlineData("completed", "healthy", "writing", "off")]
+    public void IsoChipUsesObservedWriterLifecycle(string state, string health, string streamStatus, string expected)
+    {
+        var recording = new NativeMediaCoreRecordingSession
+        {
+            SessionId = "session", Status = "recording", WriterStatus = "writing",
+            TargetFolder = "temp", FilenamePrefix = "test", Format = "mp4", Quality = "high", ProgramPath = "program.mp4",
+            Lifecycle = new CoreVideoPro.MediaCore.Contracts.OutputLifecycle
+            {
+                SessionId = "session", State = state, Health = health,
+                DesiredActive = true, Finalized = state == "completed"
+            },
+            Streams = [new NativeMediaCoreRecordingStream
+            {
+                Kind = "iso", SourceId = "zoom:guest", Path = "iso.mp4", Status = streamStatus
+            }]
+        };
+        var observed = IsoOutputLifecyclePolicy.Observe(recording);
+        Assert.Equal(expected == "off" ? null : expected,
+            observed.GetValueOrDefault("zoom:guest").State);
+    }
+
     private static (ShowInputsCoordinator Coordinator, FakeShowInputsHost Host) Build()
     {
         var host = new FakeShowInputsHost();
@@ -563,6 +617,7 @@ public sealed class ShowInputsCoordinatorTests
         public int SyncCalls { get; private set; }
         public void EmitRoster(NativeMediaCoreStateSnapshot snapshot) => SnapshotChanged?.Invoke(snapshot);
         public void EmitHealth(MediaCoreHealth health) => HealthChanged?.Invoke(health);
+        public void EmitIso(IsoOutputLifecycleFact fact) => OutputLifecycleChanged?.Invoke(fact);
         public bool Running => true;
 
         public NativeMediaCoreProfile? Profile => null;
@@ -576,6 +631,7 @@ public sealed class ShowInputsCoordinatorTests
         public event Action<string>? StatusChanged;
         public event Action<NativeMediaCoreProfile>? ProfileChanged;
         public event Action<NativeMediaCoreStateSnapshot>? SnapshotChanged;
+        public event Action<IsoOutputLifecycleFact>? OutputLifecycleChanged;
         public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
         public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
         public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;

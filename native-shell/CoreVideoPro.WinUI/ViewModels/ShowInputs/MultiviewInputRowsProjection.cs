@@ -15,6 +15,7 @@ public sealed class MultiviewInputRowsProjection
     private readonly IReadOnlyList<ShowInputSlot> _slots;
     private NativeMediaCoreStateSnapshot? _lastRoster;
     private string? _retiredEpoch;
+    private readonly Dictionary<string, IsoOutputLifecycleFact> _isoFacts = new(StringComparer.Ordinal);
 
     public ObservableCollection<MultiviewInputRow> Rows { get; } = new(
         Enumerable.Range(1, ShowInputRosterService.MaxMultiviewBoxes)
@@ -48,13 +49,24 @@ public sealed class MultiviewInputRowsProjection
     {
         _retiredEpoch = _lastRoster?.RosterEpoch;
         _lastRoster = null;
+        _isoFacts.Clear();
         foreach (var row in Rows)
         {
             ResetFrame(row);
             row.StatusLabel = "IDLE";
+            row.RecLabel = "OFF";
             row.RosterEpoch = null;
             row.HighestObservationRevision = 0;
         }
+    }
+
+    public void ApplyOutputLifecycleFact(IsoOutputLifecycleFact fact)
+    {
+        if (_isoFacts.TryGetValue(fact.SourceId, out var current) && fact.Revision <= current.Revision)
+            return;
+        _isoFacts[fact.SourceId] = fact;
+        foreach (var row in Rows.Where(item => item.SourceId == fact.SourceId))
+            row.RecLabel = fact.State.ToUpperInvariant();
     }
 
     private static void ResetFrame(MultiviewInputRow row)
@@ -80,6 +92,8 @@ public sealed class MultiviewInputRowsProjection
             row.SourceId = sourceId;
             row.LastAppliedSourceInstance = null;
             ResetFrame(row);
+            row.RecLabel = sourceId is not null && _isoFacts.TryGetValue(sourceId, out var iso)
+                ? iso.State.ToUpperInvariant() : "OFF";
         }
         row.RosterEpoch = _lastRoster?.RosterEpoch;
         row.HighestObservationRevision = _lastRoster?.RosterRevision ?? 0;
