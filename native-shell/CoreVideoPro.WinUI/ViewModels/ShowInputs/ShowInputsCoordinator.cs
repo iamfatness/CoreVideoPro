@@ -40,7 +40,14 @@ public sealed class ShowInputsCoordinator
         _bridge = bridge;
         _showInputRosterStore = rosterStore;
         _host = host;
+        MultiviewInputRows = new MultiviewInputRowsProjection(host.ShowInputs);
+        _bridge.SnapshotChanged += snapshot =>
+            _host.RunOnUiThread(() => MultiviewInputRows.ApplyRosterFact(snapshot));
+        if (_bridge.LastSnapshot is { } current)
+            _host.RunOnUiThread(() => MultiviewInputRows.ApplyRosterFact(current));
     }
+
+    public MultiviewInputRowsProjection MultiviewInputRows { get; }
 
     /// <summary>The projected editor rows the Sources tab binds (via a same-named forwarder
     /// property on StudioViewModel, so XAML x:Bind is unchanged). One stable instance for the VM's
@@ -114,7 +121,8 @@ public sealed class ShowInputsCoordinator
                 _host.SetCaptureDeviceAudioSource,
                 _host.ResolveSourceDisplayName,
                 _host.SetSourceDisplayName,
-                OnShowInputIsoToggled));
+                OnShowInputIsoToggled,
+                MultiviewInputRows.Rows[slot.SlotNumber - 1]));
         }
 
         RefreshShowInputEditors(force: true);

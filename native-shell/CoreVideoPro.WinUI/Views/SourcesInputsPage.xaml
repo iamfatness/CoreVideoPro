@@ -437,7 +437,17 @@
                                                  PlaceholderText="Name"
                                                  ToolTipService.ToolTip="Display name for lower-thirds and multiview (defaults to the source name)"
                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                        <ComboBox Grid.Column="4" x:Name="InputMicCombo"
+                                        <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6"
+                                                    VerticalAlignment="Center">
+                                            <TextBlock Text="{x:Bind Inspector.FormatLabel, Mode=OneWay}"
+                                                       MinWidth="105" VerticalAlignment="Center"
+                                                       FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
+                                            <Border Background="#152535" CornerRadius="3" Padding="5,2"
+                                                    VerticalAlignment="Center">
+                                                <TextBlock Text="{x:Bind Inspector.StatusLabel, Mode=OneWay}"
+                                                           FontSize="10" FontWeight="SemiBold" />
+                                            </Border>
+                                        <ComboBox x:Name="InputMicCombo"
                                                   Tag="{x:Bind}"
                                                   MinWidth="200"
                                                   PlaceholderText="Pair a microphone"
@@ -448,6 +458,7 @@
                                                   DisplayMemberPath="Label"
                                                   Visibility="{x:Bind ShowAudioDevicePicker, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                   HorizontalAlignment="Left" VerticalAlignment="Center" />
+                                        </StackPanel>
                                         <!-- ISO-4 (spec §7): per-source ISO recording toggle. Only eligible
                                              video-bearing sources (Zoom guests + capture devices) show it; it
                                              feeds the operator's isoSourceIds selection (armed only when the

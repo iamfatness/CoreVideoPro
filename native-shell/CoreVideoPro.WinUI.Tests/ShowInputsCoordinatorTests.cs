@@ -21,6 +21,59 @@ namespace CoreVideoPro.WinUI.Tests;
 /// </summary>
 public sealed class ShowInputsCoordinatorTests
 {
+    [Fact]
+    public void VersionedBridgeVideoOffPatchesFixedRowWithoutSceneSyncOrTake()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using (ShowInputWriteScope.Enter("test"))
+        {
+            host.ShowInputs[1].Kind = ShowInputKind.ZoomParticipant;
+            host.ShowInputs[1].ParticipantId = "guest-2";
+            host.ShowInputs[1].InShow = true;
+        }
+        coordinator.InitializeShowInputEditors();
+        var rows = coordinator.MultiviewInputRows.Rows;
+        var row = rows[1];
+        bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:1:test", RosterRevision = 7,
+            Participants = [new RawParticipantEvent { UserId = "guest-2", DisplayName = "Guest", VideoOn = true }],
+            ZoomSubscriptions = [new ZoomMediaSpineSubscription
+            {
+                ParticipantId = "guest-2", Kind = "participant-video", DeliveredWidth = 1920,
+                DeliveredHeight = 1080, DeliveredFps = 30
+            }]
+        });
+        Assert.Equal("LIVE", row.StatusLabel);
+        Assert.Equal("1920×1080@30", row.FormatLabel);
+        bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:1:test", RosterRevision = 8,
+            Participants = [new RawParticipantEvent { UserId = "guest-2", DisplayName = "Guest", VideoOn = false }]
+        });
+        Assert.Same(rows, coordinator.MultiviewInputRows.Rows);
+        Assert.Same(row, rows[1]);
+        Assert.Equal(10, rows.Count);
+        Assert.Equal("VIDEO OFF", row.StatusLabel);
+        Assert.Equal("—", row.FormatLabel);
+        Assert.Equal(8, row.HighestObservationRevision);
+        bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:1:test", RosterRevision = 7,
+            Participants = [new RawParticipantEvent { UserId = "guest-2", DisplayName = "Guest", VideoOn = true }],
+            ZoomSubscriptions = [new ZoomMediaSpineSubscription
+            {
+                ParticipantId = "guest-2", Kind = "participant-video", DeliveredWidth = 1920,
+                DeliveredHeight = 1080, DeliveredFps = 30
+            }]
+        });
+        Assert.Equal("VIDEO OFF", row.StatusLabel);
+        Assert.Equal("—", row.FormatLabel);
+        Assert.Equal(0, bridge.SyncCalls);
+    }
+
     private static (ShowInputsCoordinator Coordinator, FakeShowInputsHost Host) Build()
     {
         var host = new FakeShowInputsHost();
@@ -452,6 +505,8 @@ public sealed class ShowInputsCoordinatorTests
 
     private sealed class FakeMediaCoreBridge : IMediaCoreBridge
     {
+        public int SyncCalls { get; private set; }
+        public void EmitRoster(NativeMediaCoreStateSnapshot snapshot) => SnapshotChanged?.Invoke(snapshot);
         public bool Running => true;
 
         public NativeMediaCoreProfile? Profile => null;
@@ -485,7 +540,11 @@ public sealed class ShowInputsCoordinatorTests
 
         public Task<NativeMediaCoreStateSnapshot> SyncAsync(
             IReadOnlyList<NativeMediaCoreCommand> commands, double? elapsedMs = null,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            SyncCalls++;
+            throw new NotSupportedException();
+        }
 
         public Task<RawCaptureSnapshot> StopZoomCaptureAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
