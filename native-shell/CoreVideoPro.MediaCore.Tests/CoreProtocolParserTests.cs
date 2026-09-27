@@ -75,6 +75,21 @@ public sealed class CoreProtocolParserTests
     }
 
     [Fact]
+    public void ParsesMetadataOnlyZoomSourceFormatFact()
+    {
+        const string line = """
+            {"type":"zoom-source-format","format":{"participantId":"42","rosterEpoch":"1:2:test","width":1280,"height":720,"fps":24,"frameId":9,"frameAtMs":550.5}}
+            """;
+        var fact = CoreProtocolParser.TryParseZoomSourceFormatFact(line);
+        Assert.NotNull(fact);
+        Assert.Equal("42", fact.ParticipantId);
+        Assert.Equal("1:2:test", fact.RosterEpoch);
+        Assert.Equal(24, fact.Fps);
+        Assert.Equal(550.5, fact.FrameAtMs);
+        Assert.Null(CoreProtocolParser.TryParseZoomSourceFormatFact("""{"type":"zoom-source-format","format":{"participantId":"42"}}"""));
+    }
+
+    [Fact]
     public void ParsesMultiviewSharedTextureEventWithTiles()
     {
         var line = """

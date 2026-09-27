@@ -237,6 +237,41 @@ public static class CoreProtocolParser
         }
     }
 
+    public static ZoomSourceFormatFact? TryParseZoomSourceFormatFact(string line)
+    {
+        // The same stdout carries large BGRA thumbnails. Reject those before
+        // parsing JSON so a small metadata fact does not double their CPU cost.
+        if (line.Length > 4096 || !line.Contains("\"zoom-source-format\"", StringComparison.Ordinal))
+            return null;
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (root.TryGetProperty("id", out _) || ReadString(root, "type") != "zoom-source-format" ||
+                !root.TryGetProperty("format", out var format) || format.ValueKind != JsonValueKind.Object)
+                return null;
+            var participantId = ReadString(format, "participantId");
+            var epoch = ReadString(format, "rosterEpoch");
+            var width = ReadInt(format, "width");
+            var height = ReadInt(format, "height");
+            var fps = ReadInt(format, "fps");
+            if (!format.TryGetProperty("frameAtMs", out var timestamp) ||
+                timestamp.ValueKind != JsonValueKind.Number) return null;
+            var atMs = ReadDouble(format, "frameAtMs");
+            if (string.IsNullOrWhiteSpace(participantId) || string.IsNullOrWhiteSpace(epoch) ||
+                width <= 0 || height <= 0 || fps <= 0 || atMs < 0) return null;
+            return new ZoomSourceFormatFact
+            {
+                ParticipantId = participantId, RosterEpoch = epoch, Width = width,
+                Height = height, Fps = fps, FrameId = ReadInt(format, "frameId"), FrameAtMs = atMs
+            };
+        }
+        catch (Exception error) when (error is JsonException or FormatException or InvalidOperationException or OverflowException)
+        {
+            return null;
+        }
+    }
+
     public static CoreMultiviewSharedTextureEvent? TryParseMultiviewSharedTextureEvent(string line)
     {
         var trimmed = line.Trim();

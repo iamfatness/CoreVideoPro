@@ -98,6 +98,58 @@ public sealed class ShowInputsCoordinatorTests
     }
 
     [Fact]
+    public void FormatFactPatchesSameRowWithoutSnapshotOrSceneSyncAndRejectsOldEpoch()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using (ShowInputWriteScope.Enter("test"))
+        {
+            host.ShowInputs[0].Kind = ShowInputKind.ZoomParticipant;
+            host.ShowInputs[0].ParticipantId = "guest";
+            host.ShowInputs[0].InShow = true;
+        }
+        bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:1:test", RosterRevision = 1,
+            Participants = [new RawParticipantEvent { UserId = "guest", DisplayName = "Guest", VideoOn = true }]
+        });
+        var rows = coordinator.MultiviewInputRows.Rows;
+        var row = rows[0];
+        Assert.Equal("CONNECTING", row.StatusLabel);
+        bridge.EmitFormat(new ZoomSourceFormatFact
+        {
+            ParticipantId = "guest", RosterEpoch = "1:1:test", Width = 1280,
+            Height = 720, Fps = 24, FrameId = 2, FrameAtMs = 250
+        });
+        Assert.Same(rows, coordinator.MultiviewInputRows.Rows);
+        Assert.Equal("1280×720@24", row.FormatLabel);
+        Assert.Equal("LIVE", row.StatusLabel);
+        Assert.Equal(0, bridge.SyncCalls);
+
+        // The next snapshot cannot erase a newer direct fact or roll it back.
+        bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:1:test", RosterRevision = 2,
+            Participants = [new RawParticipantEvent { UserId = "guest", DisplayName = "Guest", VideoOn = true }],
+            ZoomSubscriptions = [new ZoomMediaSpineSubscription
+            {
+                ParticipantId = "guest", Kind = "participant-video", DeliveredWidth = 640,
+                DeliveredHeight = 360, DeliveredFps = 15, LastFrameAtMs = 100, LastFrameAgeMs = 50
+            }]
+        });
+        Assert.Equal("1280×720@24", row.FormatLabel);
+        bridge.EmitFormat(new ZoomSourceFormatFact
+        {
+            ParticipantId = "guest", RosterEpoch = "old", Width = 1920,
+            Height = 1080, Fps = 60, FrameId = 3, FrameAtMs = 500
+        });
+        Assert.Equal("1280×720@24", row.FormatLabel);
+        bridge.EmitHealth(new MediaCoreHealth { Stopped = true });
+        Assert.Equal("—", row.FormatLabel);
+    }
+
+    [Fact]
     public void DeliveredFormatAndAgePatchWithoutRosterRevisionThenEngineOffWipesOldMeeting()
     {
         var bridge = new FakeMediaCoreBridge();
@@ -791,6 +843,7 @@ public sealed class ShowInputsCoordinatorTests
     {
         public int SyncCalls { get; private set; }
         public void EmitRoster(NativeMediaCoreStateSnapshot snapshot) => SnapshotChanged?.Invoke(snapshot);
+        public void EmitFormat(ZoomSourceFormatFact fact) => ZoomSourceFormatReceived?.Invoke(fact);
         public void EmitHealth(MediaCoreHealth health) => HealthChanged?.Invoke(health);
         public void EmitIso(IsoOutputLifecycleFact fact) => OutputLifecycleChanged?.Invoke(fact);
         public void EmitMultiview(MultiviewSharedTexture texture) => MultiviewSharedTextureReceived?.Invoke(texture);
@@ -809,6 +862,7 @@ public sealed class ShowInputsCoordinatorTests
         public event Action<NativeMediaCoreStateSnapshot>? SnapshotChanged;
         public event Action<IsoOutputLifecycleFact>? OutputLifecycleChanged;
         public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
+        public event Action<ZoomSourceFormatFact>? ZoomSourceFormatReceived;
         public event Action<ProgramFramePreview>? ProgramFramePreviewReceived;
         public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
         public event Action<ProgramSharedTexture>? PreviewSharedTextureReceived;

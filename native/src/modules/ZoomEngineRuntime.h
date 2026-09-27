@@ -227,6 +227,9 @@ class ZoomEngineRuntime {
   int fallbackTick_ = 0;
   std::chrono::steady_clock::time_point startedAt_;
   std::vector<rpc::Json> pendingFrameEvents_;
+  // Metadata-only, latest-wins facts for Sources Format cells. Kept separate
+  // from the throttled BGRA thumbnail queue so format refresh adds no pixels.
+  std::map<std::string, rpc::Json> pendingSourceFormatEvents_;
 
   struct DecodedFrame {
     // Full-resolution I420 planes (Y + U + V tightly packed). The compositor
@@ -308,6 +311,7 @@ class ZoomEngineRuntime {
     // -1 = nothing emitted yet (first frame emits immediately so first-frame
     // validation stays fast); thereafter ~2/s.
     std::int64_t lastThumbnailEmitMs = -1;
+    std::int64_t lastFormatEmitMs = -1;
     // shared_ptr so the UNLOCKED snapshot phase can hold the mapping alive
     // while leave/reset paths release their reference under the lock.
     std::shared_ptr<void> regionOpaque;

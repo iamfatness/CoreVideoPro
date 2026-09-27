@@ -24,7 +24,7 @@ export type TilesLayerWire = {
   style?: TilesStyleWire;
 };
 export const coreRequestTypes = ["sync", "snapshot", "tick", "zoom-join", "zoom-leave", "zoom-stop-capture", "zoom-snapshot", "zoom-media-spine-sync"] as const;
-export const coreEventTypes = ["zoom-video-frame", "program-frame-preview", "program-shared-texture"] as const;
+export const coreEventTypes = ["zoom-video-frame", "zoom-source-format", "program-frame-preview", "program-shared-texture"] as const;
 export const zoomMediaSpineSyncTypeNames = ["ZoomMediaSpineSyncPayload", "ZoomMediaSpineNativeSnapshot"] as const;
 
 export type CoreVideoFrameEvent = {
