@@ -302,7 +302,7 @@ public static class ProductionOutputPreferencesSerializer
         JsonSerializer.Serialize(preferences, Options);
 
     /// <summary>
-    /// Runs the two secret-bearing fields (RTMP stream key, SRT passphrase)
+    /// Runs the secret-bearing fields (RTMP stream key, SRT passphrase and Stream ID)
     /// through <paramref name="protect"/> at the JSON level so the caller's
     /// in-memory preferences object stays plaintext and every other field stays
     /// human-readable on disk (beta spec S4: field-level, not whole-file).
@@ -329,7 +329,8 @@ public static class ProductionOutputPreferencesSerializer
     public static readonly string[] SecretFieldNames =
     [
         nameof(ProductionOutputPreferences.StreamRtmpStreamKey),
-        nameof(ProductionOutputPreferences.StreamSrtPassphrase)
+        nameof(ProductionOutputPreferences.StreamSrtPassphrase),
+        nameof(ProductionOutputPreferences.StreamSrtStreamId)
     ];
 
     public static ProductionOutputPreferences? Deserialize(string? json) =>
@@ -408,7 +409,7 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
     private readonly Func<string, string>? _unprotectSecret;
 
     /// <param name="protectSecret">Optional at-rest encryption for the secret
-    /// fields (RTMP stream key, SRT passphrase); e.g. DPAPI via
+    /// fields (RTMP stream key, SRT passphrase and Stream ID); e.g. DPAPI via
     /// <c>DpapiSecretProtector.Protect</c>. Null keeps plaintext (tests).</param>
     /// <param name="unprotectSecret">Counterpart decryptor; must pass plaintext
     /// (unprefixed) values through unchanged so legacy files keep loading.</param>
@@ -482,6 +483,8 @@ public sealed class FileProductionOutputPreferencesStore : IProductionOutputPref
                 preferences.StreamRtmpStreamKey, ref hadPlaintextSecret);
             preferences.StreamSrtPassphrase = UnprotectField(nameof(preferences.StreamSrtPassphrase),
                 preferences.StreamSrtPassphrase, ref hadPlaintextSecret);
+            preferences.StreamSrtStreamId = UnprotectField(nameof(preferences.StreamSrtStreamId),
+                preferences.StreamSrtStreamId, ref hadPlaintextSecret);
         }
 
         if (result.Status == ProductionPreferencesLoadStatus.Recovered)

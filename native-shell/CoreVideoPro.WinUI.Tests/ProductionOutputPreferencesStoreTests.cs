@@ -511,6 +511,7 @@ public sealed class ProductionOutputPreferencesStoreTests
             StreamRtmpServerUrl = "rtmps://live.example/app",
             StreamRtmpStreamKey = "super-secret-stream-key",
             StreamSrtPassphrase = "srt-passphrase-42",
+            StreamSrtStreamId = "#!::u=secret-youtube-key,copy=0",
             RecordingFilenamePrefix = "alpha-show"
         });
 
@@ -519,6 +520,7 @@ public sealed class ProductionOutputPreferencesStoreTests
         // Secrets are unreadable and carry the recognizable prefix...
         Assert.DoesNotContain("super-secret-stream-key", raw, StringComparison.Ordinal);
         Assert.DoesNotContain("srt-passphrase-42", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-youtube-key", raw, StringComparison.Ordinal);
         Assert.Contains(DpapiSecretProtector.Prefix, raw, StringComparison.Ordinal);
         // ...while everything else stays diffable plaintext (field-level, not whole-file).
         Assert.Contains("rtmps://live.example/app", raw, StringComparison.Ordinal);
@@ -528,7 +530,27 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.NotNull(loaded);
         Assert.Equal("super-secret-stream-key", loaded.StreamRtmpStreamKey);
         Assert.Equal("srt-passphrase-42", loaded.StreamSrtPassphrase);
+        Assert.Equal("#!::u=secret-youtube-key,copy=0", loaded.StreamSrtStreamId);
         Assert.Equal("rtmps://live.example/app", loaded.StreamRtmpServerUrl);
+    }
+
+    [Fact]
+    public void FileStore_WithDpapi_MigratesExistingPlaintextSrtStreamId()
+    {
+        var folder = TempFolder();
+        Directory.CreateDirectory(folder);
+        var path = Path.Combine(folder, FileProductionOutputPreferencesStore.DefaultFileName);
+        File.WriteAllText(path, ProductionOutputPreferencesSerializer.Serialize(new ProductionOutputPreferences
+        {
+            StreamSrtStreamId = "#!::u=previously-plain-key,copy=0"
+        }));
+
+        var loaded = CreateDpapiStore(folder).Load();
+
+        Assert.NotNull(loaded);
+        Assert.Equal("#!::u=previously-plain-key,copy=0", loaded.StreamSrtStreamId);
+        Assert.DoesNotContain("previously-plain-key", File.ReadAllText(path), StringComparison.Ordinal);
+        Assert.Equal(loaded.StreamSrtStreamId, CreateDpapiStore(folder).Load()?.StreamSrtStreamId);
     }
 
     [Fact]

@@ -134,18 +134,20 @@ inline SrtEndpointResult buildSrtUrl(const SrtEndpointConfig& config) {
   return result;
 }
 
-// Never log or snapshot the raw URL: the passphrase rides in the query string.
+// Never log or snapshot the raw URL: both the passphrase and Stream ID can
+// identify the destination stream.
 inline std::string redactedSrtUrl(const std::string& url) {
-  const std::string needle = "passphrase=";
-  const auto start = url.find(needle);
-  if (start == std::string::npos) {
-    return url;
-  }
-  const auto valueStart = start + needle.size();
-  const auto valueEnd = url.find('&', valueStart);
-  std::string redacted = url.substr(0, valueStart) + "***";
-  if (valueEnd != std::string::npos) {
-    redacted += url.substr(valueEnd);
+  std::string redacted = url;
+  for (const std::string needle : {"passphrase=", "streamid="}) {
+    const auto start = redacted.find(needle);
+    if (start == std::string::npos) {
+      continue;
+    }
+    const auto valueStart = start + needle.size();
+    const auto valueEnd = redacted.find('&', valueStart);
+    redacted.replace(valueStart,
+                     valueEnd == std::string::npos ? std::string::npos : valueEnd - valueStart,
+                     "***");
   }
   return redacted;
 }

@@ -190,9 +190,9 @@ TEST(SrtFfmpegArgs, ListenerAndRendezvousModesAreAccepted) {
   EXPECT_NE(buildSrtUrl(config).url.find("mode=rendezvous"), std::string::npos);
 }
 
-// The passphrase rides in the URL and therefore in the FFmpeg command line. It
-// must never reach a log, a snapshot or a support bundle.
-TEST(SrtFfmpegArgs, RedactsThePassphraseButKeepsTheRestReadable) {
+// Both values ride in the URL and can identify the stream. Neither may reach a
+// log, snapshot or support bundle.
+TEST(SrtFfmpegArgs, RedactsCredentialsButKeepsTheEndpointReadable) {
   auto config = baseConfig();
   config.passphrase = "supersecretpassphrase";
   config.streamId = "studio-a";
@@ -203,7 +203,8 @@ TEST(SrtFfmpegArgs, RedactsThePassphraseButKeepsTheRestReadable) {
   EXPECT_NE(redacted.find("passphrase=***"), std::string::npos);
   // Everything an operator needs for diagnosis survives.
   EXPECT_NE(redacted.find("srt://ingest.example.com:9000"), std::string::npos);
-  EXPECT_NE(redacted.find("streamid=studio-a"), std::string::npos);
+  EXPECT_EQ(redacted.find("studio-a"), std::string::npos);
+  EXPECT_NE(redacted.find("streamid=***"), std::string::npos);
   EXPECT_NE(redacted.find("latency=120000"), std::string::npos);
 
   // A URL with no passphrase is returned untouched.

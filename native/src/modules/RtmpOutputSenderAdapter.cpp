@@ -711,6 +711,7 @@ class RtmpOutputSender final : public IOutputSender {
       stopFfmpegProcess();
       configuredEndpoint_.clear();
       configuredStreamKey_.clear();
+      configuredStreamId_.clear();
       sender_.status = "warning";
       sender_.warning = "RTMP sender needs current RTMP destination settings before streaming.";
       sender_.destinationHealth = "warning";
@@ -726,6 +727,7 @@ class RtmpOutputSender final : public IOutputSender {
       stopFfmpegProcess();
       configuredEndpoint_.clear();
       configuredStreamKey_.clear();
+      configuredStreamId_.clear();
       sender_.status = "warning";
       sender_.warning = settingsError;
       sender_.destinationHealth = "warning";
@@ -752,6 +754,7 @@ class RtmpOutputSender final : public IOutputSender {
     }
     configuredEndpoint_ = requestedEndpoint;
     configuredStreamKey_ = settings->streamKey;
+    configuredStreamId_ = settings->streamId;
     // Held ONLY so the stderr tail can be scrubbed of it before it reaches
     // lastError (and from there /snapshot and the support bundle). The SRT
     // endpoint carries the passphrase in its query string, so FFmpeg echoes it.
@@ -1454,12 +1457,15 @@ class RtmpOutputSender final : public IOutputSender {
       return "";
     }
     constexpr std::uintmax_t kMaxTailBytes = 2048;
-    if (size > kMaxTailBytes) {
-      in.seekg(static_cast<std::streamoff>(size - kMaxTailBytes), std::ios::beg);
+    const auto readBytes = ffmpegStderrReadBytes(kMaxTailBytes, configuredStreamKey_,
+                                                 configuredPassphrase_, configuredStreamId_);
+    if (size > readBytes) {
+      in.seekg(static_cast<std::streamoff>(size - readBytes), std::ios::beg);
     }
     std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    return redactFfmpegDiagnostics(flattenFfmpegStderrTail(raw, kMaxTailBytes),
-                                   configuredStreamKey_, configuredPassphrase_);
+    return flattenFfmpegStderrTail(
+        redactFfmpegDiagnostics(raw, configuredStreamKey_, configuredPassphrase_, configuredStreamId_),
+        kMaxTailBytes);
   }
 
   std::string buildFfmpegArguments(int width, int height, const std::string& audioInput, const std::string& videoInputPixelFormat) const {
@@ -2920,6 +2926,7 @@ class RtmpOutputSender final : public IOutputSender {
   bool runtimeAvailable_ = false;
   std::string configuredEndpoint_;
   std::string configuredStreamKey_;
+  std::string configuredStreamId_;
   std::string configuredPassphrase_;
   std::string configuredFfmpegBinDirectory_;
   std::string configuredVideoCodec_ = "h264";

@@ -38,6 +38,25 @@ TEST(FfmpegSenderDiagnostics, AnSrtPassphraseIsRedactedToo) {
   EXPECT_NE(redacted.find("<passphrase>"), std::string::npos);
 }
 
+TEST(FfmpegSenderDiagnostics, EncodedStreamIdAndPassphraseNeverSurviveTheTailBoundary) {
+  const std::string passphrase = "pp-test-secret-tail-1234";
+  const std::string streamId = "#!::u=test-user-code,copy=0";
+  const std::string raw = std::string(4096, 'x') +
+      "\nConnection to srt://a.srt.youtube.com:2010?passphrase=" +
+      percentEncodeSrtValue(passphrase) + "&streamid=" + percentEncodeSrtValue(streamId) +
+      " failed: I/O error";
+  constexpr std::size_t kTailBytes = 64;
+  const auto readBytes = ffmpegStderrReadBytes(kTailBytes, "", passphrase, streamId);
+  const auto excerpt = raw.substr(raw.size() - readBytes);
+  const auto tail = flattenFfmpegStderrTail(
+      redactFfmpegDiagnostics(excerpt, "", passphrase, streamId), kTailBytes);
+
+  EXPECT_EQ(tail.find(passphrase), std::string::npos);
+  EXPECT_EQ(tail.find(percentEncodeSrtValue(streamId)), std::string::npos);
+  EXPECT_EQ(tail.find("-1234"), std::string::npos);
+  EXPECT_NE(tail.find("I/O error"), std::string::npos);
+}
+
 // A short key would otherwise match inside ordinary words and shred the message.
 TEST(FfmpegSenderDiagnostics, AnImplausiblyShortSecretIsNotUsedAsAPattern) {
   const auto redacted = redactFfmpegDiagnostics("Error opening output: I/O error", "or", "");
