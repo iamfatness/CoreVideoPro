@@ -34,21 +34,35 @@ public sealed class ShowInputsCoordinator
 
     private bool _showInputRosterLoaded;
     private string _showInputEditorsSignature = "";
+    private readonly object _multiviewTileGate = new();
+    private IReadOnlyList<CoreVideoPro.MediaCore.Models.MultiviewTile>? _lastMultiviewTileRects;
 
     public ShowInputsCoordinator(IMediaCoreBridge bridge, IShowInputRosterStore rosterStore, IShowInputsHost host)
     {
         _bridge = bridge;
         _showInputRosterStore = rosterStore;
         _host = host;
-        MultiviewInputRows = new MultiviewInputRowsProjection(host.ShowInputs);
+        MultiviewInputRows = new MultiviewInputRowsProjection(host.ShowInputs, host.CaptureDevices);
         _bridge.SnapshotChanged += snapshot =>
             _host.RunOnUiThread(() => MultiviewInputRows.ApplyRosterFact(snapshot));
         _bridge.OutputLifecycleChanged += fact =>
             _host.RunOnUiThread(() => MultiviewInputRows.ApplyOutputLifecycleFact(fact));
+        _bridge.MultiviewSharedTextureReceived += texture =>
+        {
+            lock (_multiviewTileGate)
+            {
+                if (MultiviewTileCropPolicy.SameTiles(_lastMultiviewTileRects, texture.Tiles)) return;
+                _lastMultiviewTileRects = texture.Tiles;
+            }
+            _host.RunOnUiThread(() => MultiviewInputRows.ApplyMultiviewFact(texture));
+        };
         _bridge.HealthChanged += health =>
         {
             if (health.Stopped)
+            {
+                lock (_multiviewTileGate) _lastMultiviewTileRects = null;
                 _host.RunOnUiThread(MultiviewInputRows.EngineStopped);
+            }
         };
         if (_bridge.LastSnapshot is { } current)
             _host.RunOnUiThread(() => MultiviewInputRows.ApplyRosterFact(current));
