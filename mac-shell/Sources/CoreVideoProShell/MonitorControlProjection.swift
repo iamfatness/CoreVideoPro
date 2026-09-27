@@ -17,8 +17,10 @@ struct MonitorControlProjection {
     private(set) var legacyCoreConfirmed = false
     private var draftExpectedEpoch = ""
     private var draftExpectedRevision: Int64 = 0
+    private var retiredEpochs: Set<String> = []
 
     mutating func resetForProcess() {
+        if !authorityEpoch.isEmpty { retiredEpochs.insert(authorityEpoch) }
         authorityEpoch = ""
         revision = 0
         pendingOperationId = nil
@@ -37,14 +39,18 @@ struct MonitorControlProjection {
         notice = "Monitor edit pending core application"
     }
 
-    mutating func observe(_ mix: JSONObject) {
+    @discardableResult mutating func observe(_ mix: JSONObject) -> Bool {
         legacyCoreConfirmed = mix["monitorControl"] == nil
         guard let control = mix["monitorControl"] as? JSONObject,
               let epoch = control["authorityEpoch"] as? String, !epoch.isEmpty,
-              let number = control["revision"] as? NSNumber else { return }
+              let number = control["revision"] as? NSNumber else { return authorityEpoch.isEmpty }
         let nextRevision = number.int64Value
-        if epoch == authorityEpoch && nextRevision < revision { return }
-        if epoch != authorityEpoch { pendingOperationId = nil }
+        if retiredEpochs.contains(epoch) ||
+            (epoch == authorityEpoch && nextRevision < revision) { return false }
+        if epoch != authorityEpoch {
+            if !authorityEpoch.isEmpty { retiredEpochs.insert(authorityEpoch) }
+            pendingOperationId = nil
+        }
         authorityEpoch = epoch
         revision = nextRevision
         applied = Draft(enabled: mix["monitorEnabled"] as? Bool ?? applied.enabled,
@@ -52,15 +58,15 @@ struct MonitorControlProjection {
         if pendingOperationId == nil, draft == applied {
             draft = nil
             notice = ""
-            return
+            return true
         }
-        guard let operation = pendingOperationId else { return }
+        guard let operation = pendingOperationId else { return true }
         let results = (control["recentResults"] as? [JSONObject] ?? [])
         let result = results.first { $0["operationId"] as? String == operation }
             ?? ((control["lastResult"] as? JSONObject).flatMap {
                 $0["operationId"] as? String == operation ? $0 : nil
             })
-        guard let status = result?["status"] as? String else { return }
+        guard let status = result?["status"] as? String else { return true }
         pendingOperationId = nil
         switch status {
         case "applied":
@@ -68,6 +74,7 @@ struct MonitorControlProjection {
         case "conflict": notice = "Monitor edit conflicted; draft retained"
         default: notice = "Monitor edit was rejected; draft retained"
         }
+        return true
     }
 
     mutating func nextCommand() -> JSONObject? {

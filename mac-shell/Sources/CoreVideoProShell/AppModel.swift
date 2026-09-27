@@ -325,6 +325,8 @@ final class AppModel: ObservableObject {
     private var monitorControlSending = false
     @Published var audioRouteControlNotice = ""
     private var audioRouteControl = AudioRouteControlProjection()
+    @Published var rosterRecoveryNotice = ""
+    private var rosterProjection = ZoomRosterProjection()
     @Published var warnings: [String] = []
     @Published var programSurfaceId: UInt32 = 0
     @Published var programFrameNumber: Int64 = 0
@@ -588,6 +590,8 @@ final class AppModel: ObservableObject {
                     self?.monitorControlNotice = "Monitor edit reconciling with restarted core"
                     self?.audioRouteControl.resetForProcess()
                     self?.audioRouteControlNotice = "Audio route reconciling with restarted core"
+                    self?.rosterProjection.resetForProcess()
+                    self?.rosterRecoveryNotice = "Zoom roster reconciling with restarted core"
                     self?.recordingCommands.interrupted()
                     self?.recordingDesired = false
                     self?.streamingDesired = false
@@ -631,6 +635,8 @@ final class AppModel: ObservableObject {
     private func onConnected() {
         monitorControl.resetForProcess()
         audioRouteControl.resetForProcess()
+        rosterProjection.resetForProcess()
+        rosterRecoveryNotice = rosterProjection.notice
         setMonitor(enabled: monitorEnabled, volume: monitorVolume)
         applyMultiviewConfig()
         // Re-assert a restored grade: the core starts neutral every launch, so
@@ -756,12 +762,14 @@ final class AppModel: ObservableObject {
             recordingWarning = warning
         }
         if let mix = snapshot["audioMixSession"] as? JSONObject {
-            monitorControl.observe(mix)
+            let monitorAccepted = monitorControl.observe(mix)
             monitorControlNotice = monitorControl.notice
             masterLevel = mix["masterLevel"] as? Int ?? masterLevel
             limiterActive = mix["limiterActive"] as? Bool ?? limiterActive
-            monitorStatus = mix["monitorStatus"] as? String ?? monitorStatus
-            monitorFeedbackRisk = mix["monitorFeedbackRisk"] as? Bool ?? monitorFeedbackRisk
+            if monitorAccepted {
+                monitorStatus = mix["monitorStatus"] as? String ?? monitorStatus
+                monitorFeedbackRisk = mix["monitorFeedbackRisk"] as? Bool ?? monitorFeedbackRisk
+            }
             if let meter = mix["masterMeter"] as? JSONObject {
                 shortTermLufs = (meter["shortTermLufs"] as? NSNumber)?.doubleValue ?? shortTermLufs
                 truePeakDbfs = (meter["truePeakDbfs"] as? NSNumber)?.doubleValue ?? truePeakDbfs
@@ -826,13 +834,19 @@ final class AppModel: ObservableObject {
     }
 
     private func applyZoom(_ snapshot: JSONObject) {
+        if rosterProjection.isRetiredOrOlder(snapshot) {
+            _ = rosterProjection.observe(snapshot)
+            return
+        }
         if !snapshot.isEmpty { lastZoomSnapshot = snapshot }
-        meetingState = snapshot["meetingState"] as? String ?? meetingState
         rawMediaActive = snapshot["rawMediaActive"] as? Bool ?? rawMediaActive
         if let error = snapshot["lastError"] as? String, !error.isEmpty {
             pushWarning("zoom: \(error)")
         }
-        if let participants = snapshot["participants"] as? [JSONObject] {
+        let acceptRoster = rosterProjection.observe(snapshot)
+        rosterRecoveryNotice = rosterProjection.notice
+        if acceptRoster { meetingState = snapshot["meetingState"] as? String ?? meetingState }
+        if acceptRoster, let participants = snapshot["participants"] as? [JSONObject] {
             // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
             // the WinUI shell consumes): userId/displayName/videoOn/muted/talking.
             roster = RosterParticipant.parse(participants, assignedIds: assignedIds)
@@ -2106,7 +2120,7 @@ final class AppModel: ObservableObject {
     // Hydrate the grid from the CORE's sends (never from client defaults —
     // the ghost-model lesson in docs/audio-tab-redesign.md).
     private func applyRoutingSnapshot(_ matrix: JSONObject) {
-        audioRouteControl.observe(matrix)
+        guard audioRouteControl.observe(matrix) else { return }
         audioRouteControlNotice = audioRouteControl.notice
         guard let sends = matrix["sends"] as? [JSONObject],
               !sends.isEmpty || !audioRouteControl.authorityEpoch.isEmpty else { return }

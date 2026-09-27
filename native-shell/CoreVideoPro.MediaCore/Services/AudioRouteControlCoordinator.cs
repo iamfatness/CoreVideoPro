@@ -68,7 +68,7 @@ public sealed class AudioRouteControlCoordinator(
             {
                 // Native may have applied the edit before its reply was lost.
             }
-            if (FindResult(response?.AudioRoutingMatrix.Control, operationId) is null)
+            if (ControlOperationResultPolicy.AudioRoute(response?.AudioRoutingMatrix.Control, operationId) is null)
             {
                 try
                 {
@@ -77,7 +77,7 @@ public sealed class AudioRouteControlCoordinator(
                 }
                 catch (Exception) when (!cancellationToken.IsCancellationRequested) { }
             }
-            var result = FindResult(response?.AudioRoutingMatrix.Control, operationId);
+            var result = ControlOperationResultPolicy.AudioRoute(response?.AudioRoutingMatrix.Control, operationId);
             var kind = result is null ? AudioRouteControlOutcomeKind.Reconciling : result.Status switch
             {
                 "applied" => AudioRouteControlOutcomeKind.Applied,
@@ -93,9 +93,4 @@ public sealed class AudioRouteControlCoordinator(
         }
     }
 
-    private static NativeMediaCoreAudioRouteResult? FindResult(
-        NativeMediaCoreAudioRouteControl? control, string operationId) =>
-        control?.LastResult?.OperationId == operationId
-            ? control.LastResult
-            : control?.RecentResults.FirstOrDefault(result => result.OperationId == operationId);
 }

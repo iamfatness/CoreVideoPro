@@ -6455,25 +6455,17 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        try
-        {
-            await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false);
-            await SyncActiveSceneAsync().ConfigureAwait(false);
-        }
-        catch (MediaCoreSyncInFlightException)
-        {
-            QueueProductionSyncRetry("sync-in-flight");
-        }
-        catch (Exception ex)
-        {
-            RunOnUiThread(() => CommandStatus = ex.Message);
-            LaunchLog.WriteException("media-core sync", ex);
-        }
+        try { await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false); }
+        catch (Exception ex) { RunOnUiThread(() => CommandStatus = ex.Message); return; }
+        // Replaceable full-state assertions use one latest-request worker.
+        QueueProductionSyncRetry("replaceable-state");
     }
 
     private void QueueProductionSyncRetry(string reason)
     {
         if (_shutdownPrepared) return;
+        if (Volatile.Read(ref _productionSyncRetryWorkerRunning) != 0)
+            Interlocked.Increment(ref _productionSyncCoalescedRequests);
         var version = Interlocked.Increment(ref _productionSyncRetryVersion);
         LaunchLog.WriteVerbose($"media-core sync deferred reason={reason}; request={version}");
         EnsureProductionSyncRetryWorker();
@@ -6565,7 +6557,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 await syncAttempt().ConfigureAwait(false);
                 return true;
             }
-            catch (MediaCoreSyncInFlightException)
+            catch (Exception ex) when (ex is MediaCoreSyncInFlightException or MediaCoreCommandOverloadedException)
             {
                 await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
             }
@@ -9050,7 +9042,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var commands = MediaCoreCommandBuilder.BuildSyncCommands(context);
             if (!string.IsNullOrWhiteSpace(reason))
                 LaunchLog.WriteVerbose($"media-core sync batch reason={reason} request={version} recording={context.Recording} streaming={context.Streaming} commands={string.Join(",", commands.Select(command => command.Type))}");
-            return (Version: version, SceneId: scene.Id, SceneName: scene.Name, LowerThirdRevision: _lowerThirdFreshness.Revision, Response: _bridge.SyncAsync(commands));
+            return (Version: version, SceneId: scene.Id, SceneName: scene.Name, LowerThirdRevision: _lowerThirdFreshness.Revision, Response: _bridge.SyncWithStopIntentAsync(commands, reason is "record-stop" or "stream-stop"));
         }).ConfigureAwait(false);
 
         var snapshot = await pending.Response.ConfigureAwait(false);
@@ -10226,7 +10218,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        await TrySyncMediaCoreAsync().ConfigureAwait(false);
+        await SyncActiveSceneAsync().ConfigureAwait(false);
     }
 
     private async void OnStreamOutputOptionChanged()

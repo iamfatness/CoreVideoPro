@@ -9,6 +9,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     private readonly AudioMonitorControlCoordinator _audioMonitorControl;
     private readonly AudioRouteControlCoordinator _audioRouteControl;
     private readonly ControlSnapshotRecoveryTracker _controlRecovery = new();
+    private readonly LatestRosterFactMailbox _rosterFacts;
+    private bool _rosterRecoveryInFlight;
+    private long _rosterRecoveryGeneration;
     private readonly object _gate = new();
     private Timer? _pollTimer;
     private long _pollTimerGeneration;
@@ -30,6 +33,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     public MediaCoreBridgeService(MediaCoreSupervisor? supervisor = null)
     {
         _supervisor = supervisor ?? new MediaCoreSupervisor();
+        _rosterFacts = new LatestRosterFactMailbox(PublishRosterFact);
         _audioMonitorControl = new AudioMonitorControlCoordinator(
             commands => SyncAsync(commands), () => PollSnapshotAsync());
         _audioRouteControl = new AudioRouteControlCoordinator(
@@ -48,7 +52,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         _supervisor.StatusChanged += status => StatusChanged?.Invoke(status);
         _supervisor.ProfileChanged += profile => ProfileChanged?.Invoke(profile);
         _supervisor.ZoomRecovered += PublishCaptureSnapshot;
-        _supervisor.ZoomRosterFactReceived += PublishRosterFact;
+        _supervisor.ZoomRosterFactReceived += QueueRosterFact;
         _supervisor.ZoomVideoFrameReceived += frame => ZoomVideoFrameReceived?.Invoke(frame);
         _supervisor.ZoomSourceFormatReceived += fact => ZoomSourceFormatReceived?.Invoke(fact);
         _supervisor.ProgramFramePreviewReceived += preview => ProgramFramePreviewReceived?.Invoke(preview);
@@ -92,7 +96,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     public ControlSnapshotRecoveryTelemetry ControlRecovery
     {
-        get { lock (_gate) return _controlRecovery.Snapshot(_syncScheduler); }
+        get { lock (_gate) return _controlRecovery.Snapshot(_syncScheduler,
+            _rosterFacts.Coalesced, _rosterFacts.DiscardedOlder); }
     }
 
     public void ConfigureProgramBufferFrames(int frames) => _supervisor.ConfigureProgramBufferFrames(frames);
@@ -131,6 +136,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             _audioMonitorControl.Reset();
             _audioRouteControl.Reset();
             _controlRecovery.ResetProcess();
+            _rosterRecoveryGeneration++;
+            _rosterRecoveryInFlight = false;
+            _rosterFacts.Reset();
             _elapsedMs = 0;
             _spinePayloadFactory = null;
             _spineFactoryVersion++;
@@ -276,13 +284,22 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
 
     public async Task<RawCaptureSnapshot> GetZoomSnapshotAsync(CancellationToken cancellationToken = default)
     {
+        long generation;
+        lock (_gate) generation = _rosterRecoveryGeneration;
         var capture = await _supervisor.GetZoomSnapshotAsync(cancellationToken).ConfigureAwait(false);
-        PublishCaptureSnapshot(capture);
+        PublishCaptureSnapshot(capture, directFact: false, expectedGeneration: generation);
         return capture;
     }
 
     public Task<NativeMediaCoreStateSnapshot> SyncAsync(
         IReadOnlyList<NativeMediaCoreCommand> commands,
+        double? elapsedMs = null,
+        CancellationToken cancellationToken = default) =>
+        SyncWithStopIntentAsync(commands, false, elapsedMs, cancellationToken);
+
+    public Task<NativeMediaCoreStateSnapshot> SyncWithStopIntentAsync(
+        IReadOnlyList<NativeMediaCoreCommand> commands,
+        bool stopIntent,
         double? elapsedMs = null,
         CancellationToken cancellationToken = default)
     {
@@ -291,7 +308,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         var submittedCommands = commands.ToArray();
         return _syncScheduler.RunCommandAsync(
             () => SyncCoreAsync(submittedCommands, elapsedMs, cancellationToken),
-            cancellationToken);
+            cancellationToken, stopCommand: stopIntent);
     }
 
     public Task<AudioMonitorControlOutcome> SetAudioMonitorControlAsync(
@@ -741,14 +758,26 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         {
             _controlRecovery.ObserveRoster(snapshot.RosterEpoch, snapshot.RosterRevision,
                 ZoomRosterSnapshotPolicy.Accept(_lastSnapshot, snapshot.RosterEpoch, snapshot.RosterRevision));
+            _controlRecovery.ObserveMonitor(snapshot.AudioMixSession.MonitorControl?.AuthorityEpoch,
+                snapshot.AudioMixSession.MonitorControl?.Revision ?? 0);
+            _controlRecovery.ObserveAudioRoute(snapshot.AudioRoutingMatrix.Control?.AuthorityEpoch,
+                snapshot.AudioRoutingMatrix.Control?.Revision ?? 0);
             // The sync snapshot carries no per-subscription evidence; keep what the spine
             // sync merged in, or the Sources page reads "not-requested" between spine ticks.
             snapshot = ZoomMediaSpineSnapshotMerger.CarrySubscriptions(_lastSnapshot, snapshot);
+            if (_controlRecovery.RosterReconciling && _lastSnapshot is { } priorRoster)
+                snapshot = snapshot with
+                {
+                    MeetingState = priorRoster.MeetingState,
+                    RosterEpoch = priorRoster.RosterEpoch,
+                    RosterRevision = priorRoster.RosterRevision,
+                    ActiveSpeakerId = priorRoster.ActiveSpeakerId,
+                    Participants = priorRoster.Participants,
+                    ZoomSubscriptions = priorRoster.ZoomSubscriptions
+                };
             snapshot = ControlMonitorSnapshotMerger.CarryNewer(_lastSnapshot, snapshot);
             snapshot = ControlAudioRouteSnapshotMerger.CarryNewer(_lastSnapshot, snapshot);
             _lastSnapshot = snapshot;
-            _controlRecovery.ObserveMonitor(snapshot.AudioMixSession.MonitorControl?.AuthorityEpoch,
-                snapshot.AudioMixSession.MonitorControl?.Revision ?? 0);
             _audioMonitorControl.Observe(snapshot);
             _audioRouteControl.Observe(snapshot);
             var next = IsoOutputLifecyclePolicy.Observe(snapshot.Recording);
@@ -771,25 +800,58 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     private void PublishCaptureSnapshot(RawCaptureSnapshot capture)
         => PublishCaptureSnapshot(capture, directFact: false);
 
-    private void PublishRosterFact(RawCaptureSnapshot capture)
-        => PublishCaptureSnapshot(capture, directFact: true);
+    private void QueueRosterFact(RawCaptureSnapshot capture)
+    {
+        long generation;
+        lock (_gate) generation = _rosterRecoveryGeneration;
+        _rosterFacts.Post(capture, generation);
+    }
 
-    private void PublishCaptureSnapshot(RawCaptureSnapshot capture, bool directFact)
+    private void PublishRosterFact(RawCaptureSnapshot capture, long generation)
+        => PublishCaptureSnapshot(capture, directFact: true, expectedGeneration: generation);
+
+    private void PublishCaptureSnapshot(RawCaptureSnapshot capture, bool directFact,
+        long? expectedGeneration = null)
     {
         NativeMediaCoreStateSnapshot merged;
+        var requestRecovery = false;
+        long recoveryGeneration = 0;
         lock (_gate)
         {
-            if (directFact && !ZoomRosterSnapshotPolicy.AcceptFact(
-                    _lastSnapshot, capture.RosterEpoch, capture.RosterRevision))
+            if (expectedGeneration is not null && expectedGeneration != _rosterRecoveryGeneration) return;
+            if (directFact)
             {
-                _controlRecovery.ObserveRoster(capture.RosterEpoch, capture.RosterRevision, accepted: false);
-                return;
+                var admission = _controlRecovery.ObserveRosterFact(capture.RosterEpoch,
+                    capture.RosterRevision, ZoomRosterSnapshotPolicy.AcceptFact(
+                        _lastSnapshot, capture.RosterEpoch, capture.RosterRevision));
+                if (admission == RosterFactAdmission.Ignore) return;
+                if (admission == RosterFactAdmission.Recover)
+                {
+                    if (!_rosterRecoveryInFlight)
+                    {
+                        _rosterRecoveryInFlight = true;
+                        recoveryGeneration = _rosterRecoveryGeneration;
+                        requestRecovery = true;
+                    }
+                }
             }
-            _controlRecovery.ObserveRoster(capture.RosterEpoch, capture.RosterRevision,
-                ZoomRosterSnapshotPolicy.Accept(_lastSnapshot, capture.RosterEpoch, capture.RosterRevision));
-            merged = ZoomCaptureSnapshotMerger.Merge(_lastSnapshot, capture);
-            _lastSnapshot = merged;
+            else
+                _controlRecovery.ObserveRoster(capture.RosterEpoch, capture.RosterRevision,
+                    ZoomRosterSnapshotPolicy.Accept(_lastSnapshot, capture.RosterEpoch, capture.RosterRevision));
+            if ((directFact || !string.IsNullOrWhiteSpace(capture.RosterEpoch)) &&
+                _controlRecovery.RosterReconciling)
+            {
+                merged = null!;
+            }
+            else
+            {
+                merged = ZoomCaptureSnapshotMerger.Merge(_lastSnapshot, capture);
+                _lastSnapshot = merged;
+            }
         }
+
+        if (requestRecovery) _ = Task.Run(() => RecoverRosterAsync(recoveryGeneration));
+        if (merged is null) return;
 
         SnapshotChanged?.Invoke(merged);
         if (merged.MeetingState?.Equals("in_meeting", StringComparison.Ordinal) == true)
@@ -802,6 +864,40 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         }
     }
 
+    private async Task RecoverRosterAsync(long generation)
+    {
+        try
+        {
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                lock (_gate) { if (generation != _rosterRecoveryGeneration) return; }
+                try
+                {
+                    var barrier = await _supervisor.GetZoomSnapshotAsync().ConfigureAwait(false);
+                    PublishCaptureSnapshot(barrier, directFact: false, expectedGeneration: generation);
+                    lock (_gate)
+                    {
+                        if (generation != _rosterRecoveryGeneration || !_controlRecovery.RosterReconciling)
+                            return;
+                    }
+                }
+                catch (Exception error)
+                {
+                    if (attempt == 4)
+                        DiagnosticLog.WriteException("media-core.log", "roster recovery failed", error);
+                }
+                await Task.Delay(100 * (attempt + 1)).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                if (generation == _rosterRecoveryGeneration) _rosterRecoveryInFlight = false;
+            }
+        }
+    }
+
     private void PublishSpineSnapshot(ZoomMediaSpineNativeSnapshot spine)
     {
         NativeMediaCoreStateSnapshot merged;
@@ -809,6 +905,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         {
             _controlRecovery.ObserveRoster(spine.RosterEpoch, spine.RosterRevision,
                 ZoomRosterSnapshotPolicy.Accept(_lastSnapshot, spine.RosterEpoch, spine.RosterRevision));
+            if (_controlRecovery.RosterReconciling) return;
             merged = ZoomMediaSpineSnapshotMerger.Merge(_lastSnapshot, spine);
             _lastSnapshot = merged;
         }

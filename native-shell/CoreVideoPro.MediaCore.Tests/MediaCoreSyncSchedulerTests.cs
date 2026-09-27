@@ -100,4 +100,40 @@ public sealed class MediaCoreSyncSchedulerTests
         Assert.Equal(1, await first);
         Assert.False(sent);
     }
+
+    [Fact]
+    public async Task StopRetainsReservedAdmissionUnderNormalCommandPressure()
+    {
+        var scheduler = new MediaCoreSyncScheduler();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = scheduler.RunCommandAsync(async () =>
+        {
+            entered.SetResult();
+            await release.Task;
+            return 0;
+        }, CancellationToken.None);
+        await entered.Task;
+        var order = new List<string>();
+        var normal = Enumerable.Range(0, MediaCoreSyncScheduler.MaxWaitingCommands)
+            .Select(index => scheduler.RunCommandAsync(() =>
+            {
+                order.Add($"normal-{index}");
+                return Task.FromResult(index);
+            }, CancellationToken.None)).ToArray();
+        await Assert.ThrowsAsync<MediaCoreCommandOverloadedException>(() =>
+            scheduler.RunCommandAsync(() => Task.FromResult(-1), CancellationToken.None));
+        var stop = scheduler.RunCommandAsync(() =>
+        {
+            order.Add("stop");
+            return Task.FromResult(1);
+        }, CancellationToken.None, stopCommand: true);
+        Assert.Equal(MediaCoreSyncScheduler.MaxWaitingCommands + 1, scheduler.WaitingCommands);
+        release.SetResult();
+        await first;
+        await Task.WhenAll(normal);
+        await stop;
+        Assert.Equal("stop", order[^1]);
+        Assert.Equal(0, scheduler.WaitingCommands);
+    }
 }

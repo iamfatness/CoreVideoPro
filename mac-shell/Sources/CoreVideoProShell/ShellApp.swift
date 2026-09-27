@@ -1602,6 +1602,10 @@ struct SourcesPane: View {
                     .font(.grotesk(12)).foregroundStyle(Studio.secondary)
                 Text("\(inShowCount) in show · \(assignedCount) assigned")
                     .font(.grotesk(12, .medium)).foregroundStyle(Studio.accent)
+                if !model.rosterRecoveryNotice.isEmpty {
+                    Text(model.rosterRecoveryNotice)
+                        .font(.plexMono(10)).foregroundStyle(Studio.amber)
+                }
                 HStack(spacing: 8) {
                     StepCard(number: "1", title: "Assign inputs",
                              detail: "Bind Zoom guests, media, or cameras to stable slots.",

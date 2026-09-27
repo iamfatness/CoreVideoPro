@@ -320,7 +320,7 @@ public sealed class TransportCoordinator
         try
         {
             await _host.EnsureMediaCoreRunningAsync(starting ? "Starting media core for recording..." : "Updating media core...").ConfigureAwait(false);
-            var snapshot = await _host.SyncActiveSceneAsync().ConfigureAwait(false);
+            var snapshot = await _host.SyncActiveSceneAsync(starting ? "record-start" : "record-stop").ConfigureAwait(false);
             if (starting && TransportStatusFormatter.TryFormatRecordingStartHealthFailure(snapshot, out var healthFailureStatus))
             {
                 _dispatcher.RunOnUiThread(() =>

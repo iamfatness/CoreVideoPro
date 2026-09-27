@@ -2830,6 +2830,20 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(0, syncAttempts);
     }
 
+    [Fact]
+    public async Task RetryDeferredProductionSyncAsync_RetriesFullStateAfterBoundedQueuePressure()
+    {
+        var attempts = 0;
+        var synced = await StudioViewModel.RetryDeferredProductionSyncAsync(
+            () => true, () => false,
+            () => ++attempts == 1
+                ? Task.FromException(new MediaCoreCommandOverloadedException())
+                : Task.CompletedTask,
+            CancellationToken.None, retryDelayMs: 1);
+        Assert.True(synced);
+        Assert.Equal(2, attempts);
+    }
+
     [Theory]
     [InlineData(false, false, "Audition")]
     [InlineData(false, true, "Pause audition")]

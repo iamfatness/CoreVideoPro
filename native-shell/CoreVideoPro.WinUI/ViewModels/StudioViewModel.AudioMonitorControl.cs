@@ -5,6 +5,7 @@ namespace CoreVideoPro.WinUI.ViewModels;
 
 public sealed partial class StudioViewModel
 {
+    private long _productionSyncCoalescedRequests;
     public NativeMediaCoreAudioMixSession? AppliedAudioMonitorSession => _bridge.LastSnapshot?.AudioMixSession;
 
     public string ControlRecoverySummary
@@ -13,15 +14,23 @@ public sealed partial class StudioViewModel
         {
             var state = _bridge.ControlRecovery;
             return $"barriers={state.SnapshotBarriers} rosterGaps={state.RosterMissingRevisions} " +
-                   $"rosterStale={state.RosterStaleSnapshots} monitorGaps={state.MonitorMissingRevisions} " +
-                   $"monitorStale={state.MonitorStaleSnapshots} queue={state.WaitingCommands} " +
+                   $"rosterStale={state.RosterStaleSnapshots} rosterReconciling={state.RosterReconciling} " +
+                   $"monitorGaps={state.MonitorMissingRevisions} monitorStale={state.MonitorStaleSnapshots} " +
+                   $"monitorReconciling={state.MonitorReconciling} routeGaps={state.AudioRouteMissingRevisions} " +
+                   $"routeStale={state.AudioRouteStaleSnapshots} routeReconciling={state.AudioRouteReconciling} " +
+                   $"queue={state.WaitingCommands} " +
                    $"overloads={state.CommandOverloads} coalescedPolls={state.CoalescedPolls} " +
+                   $"coalescedState={Interlocked.Read(ref _productionSyncCoalescedRequests)} " +
+                   $"rosterCoalesced={state.RosterCoalescedFacts} " +
+                   $"rosterDiscarded={state.RosterDiscardedOlderFacts} " +
                    $"coreResets={state.ProcessResets}";
         }
     }
     private bool _suppressAudioMonitorControlSubmission;
     private string _audioMonitorControlNotice = string.Empty;
     private MediaCoreAudioMonitorWire? _audioMonitorPendingDraft;
+    private string? _audioMonitorPendingOperationId;
+    private string? _audioMonitorPendingEpoch;
     private long _audioMonitorRequestVersion;
     private CancellationTokenSource? _audioMonitorEditDebounce;
 
@@ -37,6 +46,8 @@ public sealed partial class StudioViewModel
         var editEpoch = observed?.AuthorityEpoch;
         var editRevision = observed?.Revision;
         _audioMonitorPendingDraft = draft;
+        _audioMonitorPendingOperationId = null;
+        _audioMonitorPendingEpoch = editEpoch;
         _audioMonitorControlNotice = "Monitor edit pending core application";
         OnPropertyChanged(nameof(AudioMonitorStatus));
         try
@@ -78,6 +89,9 @@ public sealed partial class StudioViewModel
         }
 
         if (requestVersion != Volatile.Read(ref _audioMonitorRequestVersion)) return outcome;
+        _audioMonitorPendingOperationId = outcome.Kind == AudioMonitorControlOutcomeKind.Reconciling
+            ? outcome.OperationId : null;
+        _audioMonitorPendingEpoch = expectedEpoch ?? outcome.Control?.AuthorityEpoch;
         _audioMonitorControlNotice = outcome.Kind switch
         {
             AudioMonitorControlOutcomeKind.Applied => string.Empty,
@@ -93,6 +107,31 @@ public sealed partial class StudioViewModel
         }
         OnPropertyChanged(nameof(AudioMonitorStatus));
         return outcome;
+    }
+
+    private void ReconcilePendingAudioMonitorResult()
+    {
+        if (string.IsNullOrWhiteSpace(_audioMonitorPendingOperationId) ||
+            _bridge.LastSnapshot?.AudioMixSession.MonitorControl is not { } control) return;
+        if (_audioMonitorPendingEpoch is { } epoch && epoch != control.AuthorityEpoch)
+        {
+            _audioMonitorPendingOperationId = null;
+            _audioMonitorControlNotice = "Monitor core restarted; draft retained for review";
+            return;
+        }
+        var result = ControlOperationResultPolicy.Monitor(control, _audioMonitorPendingOperationId);
+        if (result is null) return;
+        _audioMonitorPendingOperationId = null;
+        if (result.Status == "applied")
+        {
+            _audioMonitorPendingDraft = null;
+            _audioMonitorControlNotice = string.Empty;
+            SaveProductionOutputPreferences();
+        }
+        else
+            _audioMonitorControlNotice = result.Status == "conflict"
+                ? $"Monitor edit conflicted with core revision {control.Revision}; draft retained"
+                : "Monitor edit was rejected; draft retained";
     }
 
     /// <summary>Control API and local property edits share native admission.</summary>

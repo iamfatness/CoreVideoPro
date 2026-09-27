@@ -58,6 +58,8 @@ enum ShellTests {
         expect(!projection.legacyCoreConfirmed, "restart revokes old-core fallback")
         projection.observe(["monitorEnabled": true, "monitorVolume": 0.5,
                             "monitorControl": ["authorityEpoch": "core-2", "revision": 0]])
+        expect(!projection.observe(mix(8, false)),
+               "retired monitor epoch cannot overwrite restarted core")
         let afterRestart = projection.nextCommand()
         expectEqual(afterRestart?["authorityEpoch"] as? String, "core-2",
                     "held edit rebases on restarted core")
@@ -93,12 +95,36 @@ enum ShellTests {
         expect(projection.nextCommand() == nil, "conflicted draft waits for operator revision")
         projection.observe(matrix("core-1", 1, -6))
         expectEqual(projection.revision, 2, "stale route snapshot cannot rewind")
+        expect(!projection.observe(matrix("core-1", 1, -6)),
+               "stale route snapshot cannot hydrate the visible grid")
         projection.resetForProcess()
         projection.observe(matrix("core-2", 0, nil))
+        expect(!projection.observe(matrix("core-1", 9, -12)),
+               "retired route epoch cannot overwrite restarted core")
         expect(projection.nextCommand() == nil, "old-epoch draft cannot overwrite restarted core")
         projection.edit(source: "zoom:42", bus: "mon", enabled: true, gainDb: -6)
         expectEqual(projection.nextCommand()?["authorityEpoch"] as? String, "core-2",
                     "reviewed route edit uses restarted epoch")
+    }
+
+    private static func testZoomRosterProjection() {
+        var projection = ZoomRosterProjection()
+        func roster(_ epoch: String, _ revision: Int) -> JSONObject {
+            ["rosterEpoch": epoch, "rosterRevision": revision,
+             "participants": [["userId": "42", "displayName": "Guest"]]]
+        }
+        expect(projection.observe(roster("1:1:engine", 1)), "first roster barrier applies")
+        expect(projection.observe(roster("1:1:engine", 3)), "gap is repaired by full snapshot")
+        expectEqual(projection.gaps, 1, "missing roster revision counted")
+        expect(projection.isRetiredOrOlder(roster("1:1:engine", 2)),
+               "late roster cannot repaint other Zoom status")
+        expect(!projection.observe(roster("1:1:engine", 2)), "old roster cannot repaint shell")
+        expect(projection.observe(roster("1:2:engine", 1)), "new meeting epoch applies")
+        expect(!projection.observe(roster("1:1:engine", 4)), "retired meeting rejected")
+        projection.resetForProcess()
+        expect(!projection.observe(roster("1:2:engine", 5)), "retired process response rejected")
+        expect(projection.observe(roster("2:1:engine", 1)), "new process barrier applies")
+        expect(projection.notice.isEmpty, "fresh roster clears reconciliation notice")
     }
 
     private static func expect(_ condition: Bool, _ what: String,
@@ -747,6 +773,7 @@ enum ShellTests {
         let cases: [(String, () -> Void)] = [
             ("monitor/revisioned-projection", testMonitorControlProjection),
             ("audio-route/revisioned-projection", testAudioRouteControlProjection),
+            ("zoom-roster/recovery-projection", testZoomRosterProjection),
             ("recording/command-retry", testRecordingCommandRetriesAndSupersession),
             ("bridge/generation-lifecycle", testBridgeGenerationRejectsStaleWork),
             ("wire/shared-lifecycle-contracts", testSharedLifecycleContracts),
