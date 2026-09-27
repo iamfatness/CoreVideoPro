@@ -1,150 +1,129 @@
-# macOS parity plan (2026-08-06)
+# macOS parity — audit of 2026-09-27
 
-Derived from a **visual** audit — the Windows reference screenshots in
-`docs/design-reference/` compared against the real macOS UI rendered through the
-`COREVIDEO_SHELL_SNAPSHOT` harness — not from matching control labels between
-XAML and Swift.
+Replaces the 2026-08-07 version, which predated ~786 commits and described a
+product that no longer exists.
 
-## Why the earlier audit was wrong
-
-The first parity pass grepped WinUI control labels and looked for matching Swift
-symbols. It produced a plausible list that was wrong in both directions:
-
-* it reported "Live keyer" as a missing **chroma keyer**. It is the downstream
-  lower-third keyer, and the core implements no chroma keying at all.
-* it reported **SRT** and **VST3** as macOS shell gaps. Both were missing CORE
-  features — SRT's sender returned `nullptr` on every platform, and the plug-in
-  host is Windows-only past `--scan`.
-* it ranked **brand kit** as "P2 polish". Seen side by side, the entire Overlays
-  tab is a stub.
-
-A label diff cannot see depth, workflow, or information density — which is
-exactly what "it doesn't feel like the Windows app" describes.
-
-**And a visual audit has its own trap**: the two builds were not in comparable
-states (Windows had live inputs, assigned sources and a meeting; macOS had
-none). Empty rows look identical to missing controls. Two suspected gaps —
-per-source Grade/Unassign/ISO on Sources, and the half-empty multiview canvas —
-turned out to be state differences, confirmed by reading the code. **Every gap
-below was verified in source, not just in pixels.**
+**Scope of this audit:** every non-OHG `fix` on the Windows shell between
+2026-09-05 and 2026-09-27, sorted by whether macOS already gets it, will never
+need it, or genuinely lacks it.
 
 ---
 
-## P0 — the operator cannot do the job on macOS
+## 1. The headline
 
-### 1. Overlays is a stub (~15% of the Windows tab)
+**The Mac is not rotting, and it is not a subsystem behind.** The commit counts
+say otherwise and they are misleading.
 
-macOS has ONE card: lower-third Name, Title, Position, Show — plus a sentence
-telling the operator to use the Media tab for a logo bug. Windows has four
-sections. Missing:
+786 commits in the window. Of the 161 on `native-shell/`: **38 are OHG**,
+**3 are non-OHG features**, ~20 are non-OHG fixes, and the remainder are
+refactors, tests and docs.
 
-* **Live keyer**: LT in / Rebuild, source-behaviour explainer, lower-third
-  position, style, **build-in / build-out ms**, motion-timing preset, and
-  **Lower third / Bug / Image** graphic buttons with a configured-graphics list.
-* **Brand kit**: kit name, logo text, logo asset, default-overlay behaviour, and
-  Primary / Accent / Background colours with pickers.
-* **Browser overlays (DSK)**: graphics URL + canvas size + Add overlay.
-* **Captions**.
+So the entire Windows-only *feature* lead is three items (§4), and the real
+divergence risk is not features at all — it is **behaviour rulings made once,
+on Windows, that nobody checked against the Mac** (§5).
 
-This is shell work: the core already accepts `set-overlay-asset`
-(text/imageUri/position/title/org/keyPosition/keyer/**buildInMs**/**buildOutMs**,
-clamped 50–2000ms), `set-brand-kit`
-(name/logoText/brandColor/accentColor/backgroundColor/fontFamily/lowerThirdStyle/
-captionStyle/defaultOverlayBehavior), `push-caption-cue` and
-`set-caption-enabled`, and publishes `brandKit` in the snapshot.
+## 2. What is already healthy — do not re-litigate this
 
-Exception: **Browser overlays need core work** — the browser host is a WebView2
-process, so macOS needs a WKWebView equivalent. Ship the rest without it.
+- **The shared core is gated on macOS.** `mac-show-drill` (`ci.yml`, `macos-14`)
+  builds Metal + AVF + CoreAudio and runs a headless show rehearsal against the
+  real core. The 237 `native/` commits in this window are proven on Mac
+  continuously, not assumed.
+- **`mac-shell` builds and is tested.** `mac-shell-tests` does a release build
+  plus `COREVIDEO_SHELL_TESTS` and `COREVIDEO_SHELL_SELFCHECK`;
+  `mac-shell-design-lint` guards the brand tokens. Verified building clean in
+  7.8 s on 2026-09-27.
+- **`mac-shell` is moving again.** 16 commits in the week to 2026-09-27, after a
+  quiet spell. The Sept 5–9 batch was recording-lifecycle correctness — Stop
+  intent surviving delayed snapshots, bridge-generation guards, destinations no
+  longer claiming completion before they finished.
 
-### 2. Per-source microphone pairing is missing
+## 3. OHG is a deliberate non-port, not a gap
 
-Windows has a "Pair a microphone" dropdown on every assigned input row; macOS
-has none (`audioDeviceId` appears zero times in the mac shell). This is not
-cosmetic: it is how a capture card's audio is attached to its video, and
-`MediaCore::isoSourceHasAudio` uses exactly that pairing to decide whether a
-capture ISO carries an audio track. Without it, capture sources are silent and
-their ISOs are video-only.
+Owner ruling, 2026-09-20: *"a lot of logic but very little value so far."*
 
----
+The Windows side gained a whole OHG vertical in this window (Plans 7a/7b, 38
+commits): a `CoreVideoPro.ShowEngine` project, `ShowEngineBridge`,
+`OhgHostAdapter`, a supervisor with restart policy, and an OHG Show tab with
+status strip, panelist board, program/gallery/GFX panels, settings with adapter
+hot-swap, and a legacy Isadora importer. `mac-shell` has zero references to any
+of it.
 
-## P1 — the operator flies blind
+**That absence is a position, not a backlog item.** If OHG stays low-value, not
+porting it is correct and the Mac port is cheaper for it. Record it here so it
+stops reading as "behind" in future audits.
 
-### 3. Status-strip telemetry — MOSTLY A FALSE GAP (corrected 2026-08-07)
+Note the engine itself is portable TypeScript (`show-engine/`). What is
+Windows-specific is the *host*. If OHG ever earns its keep, a Mac host is real
+work but not a re-port of the engine.
 
-I claimed macOS showed none of FRAME DROPS, the LIVE timer, or the master meter
-with LUFS and peak. Reading the code rather than the screenshot: the status row
-**already renders** MASTER, LUFS, a meter bar, peak dBFS and a LIVE timer. They
-appeared as "—" in my capture because there was no audio and no recording — the
-THIRD time a state difference impersonated a missing feature in this audit.
+## 4. Windows-only features the Mac lacks
 
-Genuinely missing, and now fixed: **FRAME DROPS**. `recording.totalDroppedFrames`
-was published by the core and parsed nowhere in the shell, so a recording could
-lose frames with no sign of it in the operator's view.
+Three, all small:
 
-NOT a gap: Windows draws separate **L / R** meter bars, but the core's
-`masterMeterState()` publishes only `momentaryLufs / shortTermLufs /
-integratedLufs / truePeakDbfs / windowMs` — no per-channel levels. A single
-meter on macOS is correct until the core publishes stereo.
+1. **Per-source "On dropout" policy** — hold last frame vs black, persisted,
+   shipped as `set-source-policy` (#535 slice 4a). **Verified absent** from
+   `mac-shell` (no `dropout` reference anywhere in `mac-shell/Sources/`). The
+   core half of this landed in `native/` and so already reaches Mac; what is
+   missing is the operator surface and the persistence.
+2. **ISOs armed with Zoom capture off are loud** (T3.7 / #470).
+3. **Tiles colour pickers** — background, border, glow (T3.5 / #476).
 
-### 4. SuperSource background
+## 5. The real risk: behaviour rulings that live only in WinUI
 
-Windows' Studio rail has a background picker plus "Import background media".
-macOS has nothing (`SuperSource` appears zero times).
+Of the non-OHG fixes, **8 touched `native/` as well as the shell** — for those,
+the core half reaches Mac free and is exercised by the show drill. Named, so
+nobody re-does them: the two #535 dropout fixes, both `stream` fixes (warming is
+not failing; a failing stream names its own reason), the Zoom join-prompt fix,
+#481 (stop muting guests), lower-thirds binding, and live scene routing
+startup/shutdown.
 
----
+The rest are `native-shell`-only. Most of those are WinUI plumbing with no Mac
+analogue — discarded scene-canvas element handlers, late-bound page commands as
+OneWay, plate tones, D3D device-loss recovery. **Two are not:**
 
-## P2 — core work, not shell
+### 5.1 The 8 concurrent Zoom-source ceiling — VERIFIED GAP
 
-5. **Browser sources / DSK overlays** — needs a WKWebView host process.
-6. **Chroma key** — the core implements none. `setParticipantTransform` takes an
-   unnamed parameter and discards its payload; there are no key fields on the
-   render-plan layer and no shader math. The `chroma-key` capability string is
-   advertised (and listed as REQUIRED) while nothing implements it — either
-   implement it or stop claiming it.
-7. **SRT ingest** — delivery now works; ingest is a scaffold that discards
-   packets.
+`fix(capacity): enforce the 8 concurrent Zoom-source ceiling (owner bandwidth
+ruling)` lives entirely in `native-shell`'s `ZoomMediaSpinePayloadBuilder`.
 
-## P3 — finish the audit
+**`mac-shell` has no such ceiling** — verified by search on 2026-09-27. (The
+`CEILING` hits in `AudioConsole.swift` are the mastering limiter; the `8` in
+`EncoderCapacityProbe.cpp` is an encoder-session cap, a different thing.)
 
-### Media — compared 2026-08-07. Mostly UI-over-nothing on Windows.
+This is an **owner bandwidth ruling**, not a UI nicety: it exists because the
+Zoom raw-data downlink budget is finite. A Mac operator can currently exceed it
+with no guard, and the failure mode is degraded video rather than a refusal.
 
-Windows shows four sections against macOS's one card, but three of the missing
-pieces are Windows UI for things the CORE DOES NOT IMPLEMENT:
+### 5.2 Recording folder resolution — LIKELY GAP, unverified
 
-* **LUT preset** — the core has NO LUT support. A case-insensitive grep for
-  "lut" returns 27 hits which are all the middle of "reso-LUT-ion"; a
-  case-sensitive search for `LUT`/`lutPreset`/`.cube` returns nothing. Building
-  a LUT picker on macOS would be a control that cannot do anything.
-* **Chapter markers** — zero references anywhere in `native/src/`.
-* **Cue in Preview / Still image playout buttons** — no matching core concept.
+`fix(record): resolve the recording folder to an absolute user path` (T2.8 /
+#469) is `native-shell`-only. Whether `mac-shell` resolves its recording path
+the same way was **not checked** in this audit. Given the Sept 5–9 mac-shell
+work was recording-lifecycle correctness, it may already be handled.
 
-Genuinely worth considering: per-ASSET exposure/contrast/saturation. The core
-does support per-ROUTE `colorGrade` (`route.get("colorGrade")` →
-`layer.hasColorGrade`), so a media asset composited as a route could carry its
-own grade — but Windows stores it per asset, which is a different model. Needs a
-decision before it is built, not a port.
+## 6. How much of this is verified, and how much inferred
 
-macOS's Media bin is otherwise equivalent (import, refresh, per-asset select /
-still / remove) — it looked emptier only because the bin had no assets.
+Honesty about method, because the last two plans in this repo were written
+against assumed shapes that turned out wrong:
 
-### Still un-compared
+- **Verified directly:** the CI job scopes; that `mac-shell` builds; the
+  OHG absence; the dropout-policy absence; the absence of a Zoom-source ceiling;
+  the per-commit tree classification (via `--name-only`, after `--stat`'s path
+  truncation produced a wrong first cut).
+- **Inferred from commit subjects and touched paths:** which of the
+  `native-shell`-only fixes are WinUI plumbing versus operator-visible
+  behaviour. §5.2 is explicitly unverified.
+- **Not attempted:** any assessment of the 3 features' Mac cost, and any
+  audit of the 258 commits from the week of 2026-09-20 (16 of which touched
+  `mac-shell`).
 
-**Zoom, Routing, Audio, Automation, Health.** These need sources assigned and a
-meeting joined, or state differences will manufacture false gaps as they did
-three times in this audit. Automation is already covered separately by a
-per-feature source audit (core-backed vs shell-policy vs not-supported).
-Audio looked thin only because macOS had no PCM channels.
+## 7. Suggested order, if this gets picked up
 
-## Blocked on hardware / account
+1. **The 8-source ceiling** (§5.1). It is a product rule with a real failure
+   mode, it is small, and it is the only verified behaviour divergence.
+2. **Verify §5.2**, then act or close it.
+3. **Per-source dropout policy** (§4.1) — the core half is already there, so
+   this is surface plus persistence.
+4. The remaining two features, on demand.
 
-* Capture-card verification (owner's 8–10 card shows) — no cards on hand.
-* Virtual camera + notarised packaging — needs an Apple Developer ID.
-
----
-
-## Goal 1 — bring Overlays to parity (minus browser DSK)
-
-Build the Live keyer controls, the Brand kit, and Captions against the commands
-the core already exposes. Browser overlays are explicitly out of scope until a
-macOS browser host exists, and must be shown as unavailable rather than omitted
-silently.
+OHG stays unported until it earns it.
