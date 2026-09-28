@@ -1,8 +1,8 @@
 // COM entry points + self-registration for corevideo-virtualcam.dll
 // (docs/virtual-camera-spec.md V2b). A user-mode in-proc COM server exposing the
 // virtual-camera media source under CLSID_CoreVideoVirtualCameraSource. NO kernel
-// driver, NO signing: DllRegisterServer writes a per-machine InprocServer32 key
-// (the installer runs regsvr32; a per-user variant can target HKCU). Modeled on
+// driver, NO signing: DllRegisterServer writes a per-user InprocServer32 key
+// (the installer runs regsvr32 without elevation). Modeled on
 // smourier/VCamSample.
 
 #include <windows.h>
@@ -125,6 +125,16 @@ STDAPI DllUnregisterServer() {
   std::wstring inproc = L"Software\\Classes\\CLSID\\";
   inproc += clsidText;
   const std::wstring server = inproc + L"\\InprocServer32";
+  // Old beta uninstallers can run after a newer beta registered its own DLL.
+  // Unregister only the path this DLL owns; removing the newer key strands the
+  // camera at IMFVirtualCamera::Start with ERROR_MOD_NOT_FOUND.
+  wchar_t registeredPath[32768] = {};
+  DWORD registeredBytes = sizeof(registeredPath);
+  if (RegGetValueW(HKEY_CURRENT_USER, server.c_str(), nullptr, RRF_RT_REG_SZ,
+                   nullptr, registeredPath, &registeredBytes) != ERROR_SUCCESS ||
+      _wcsicmp(registeredPath, ModulePath().c_str()) != 0) {
+    return S_OK;
+  }
   RegDeleteKeyW(HKEY_CURRENT_USER, server.c_str());
   RegDeleteKeyW(HKEY_CURRENT_USER, inproc.c_str());
   return S_OK;

@@ -635,6 +635,7 @@ if(BUILD_TESTING)
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp
+    tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
     tests/VirtualCameraSlateTest.cpp
     tests/VirtualCameraComposeTest.cpp
@@ -725,6 +726,11 @@ if(BUILD_TESTING)
     tests/ZoomEngineStateTest.cpp
   )
   target_link_libraries(corevideo-native-tests PRIVATE corevideo_native)
+  if(WIN32 AND COREVIDEO_WITH_VIRTUALCAM)
+    target_compile_definitions(corevideo-native-tests PRIVATE
+      COREVIDEO_VCAM_DLL_PATH="$<TARGET_FILE:corevideo-virtualcam>")
+    add_dependencies(corevideo-native-tests corevideo-virtualcam)
+  endif()
   if(WIN32)
     target_compile_definitions(corevideo-native-tests PRIVATE
       COREVIDEO_STUBBORN_FFMPEG_PATH="$<TARGET_FILE:corevideo-stubborn-ffmpeg>")

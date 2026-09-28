@@ -93,7 +93,12 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     if (FAILED(startHr)) {
       ::corevideo::core::nativeLogf("[virtualcam] IMFVirtualCamera::Start failed hr=0x%08lx\n",
                    static_cast<unsigned long>(startHr));
-      fail("The virtual camera was created but could not be started.");
+      if (startHr == HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND)) {
+        fail("Windows could not load the registered camera DLL or a dependency. "
+             "Run Register-VirtualCamera.cmd from this installation, then retry.");
+      } else {
+        fail("The virtual camera was created but could not be started.");
+      }
       camera_->Remove();
       camera_.Reset();
       return false;
