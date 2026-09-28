@@ -1487,6 +1487,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // roster load/projection so the same-named forwarders route through it.
         _showInputsCoordinator = new global::CoreVideoPro.WinUI.ViewModels.ShowInputs.ShowInputsCoordinator(
             _bridge, CreateShowInputRosterStore(), this);
+        _rtmpIngestCoordinator = new global::CoreVideoPro.WinUI.ViewModels.ShowInputs.RtmpIngestSourcesCoordinator(CreateRtmpIngestSourceStore());
+        _rtmpIngestCoordinator.Changed += OnRtmpIngestSourcesChanged;
         LoadShowInputRoster();
         InitializeShowInputEditors();
         RefreshMultiviewGridTiles();
@@ -6817,6 +6819,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        if (await TryConnectRtmpIngestAsync(device).ConfigureAwait(false)) return;
+
         if (IsVirtualSrtIngestDevice(device))
         {
             device.ConnectionState = CaptureConnectionState.Connected;
@@ -6827,7 +6831,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             RefreshShowInputEditors();
             RefreshPreviewRoutingState();
             RefreshMultiviewGridTiles();
-            CommandStatus = "SRT source routed. Waiting for video.";
+            CommandStatus = $"{device.Vendor.ToUpperInvariant()} source routed. Waiting for video.";
             return;
         }
 
@@ -7434,20 +7438,31 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         var priorById = CaptureDevices.ToDictionary(device => device.Id, device => device);
         CaptureDevices.Clear();
-        foreach (var device in discovered.Concat(CreateVirtualSrtIngestDevices()))
+        foreach (var device in discovered.Concat(CreateVirtualSrtIngestDevices()).Concat(
+            CreateVirtualRtmpIngestDevices().Where(virtualDevice => discovered.All(found => found.Id != virtualDevice.Id))))
         {
             if (priorById.TryGetValue(device.Id, out var prior))
             {
-                device.ConnectionState = prior.ConnectionState;
-                device.SignalPresent = prior.SignalPresent;
+                if (!device.Vendor.Equals("rtmp", StringComparison.OrdinalIgnoreCase) ||
+                    device.ConnectionState != CaptureConnectionState.Error)
+                {
+                    device.ConnectionState = prior.ConnectionState;
+                }
+                if (!device.Vendor.Equals("rtmp", StringComparison.OrdinalIgnoreCase))
+                {
+                    device.SignalPresent = prior.SignalPresent;
+                }
                 device.SelectedInputId = prior.SelectedInputId;
                 device.AudioSyncOffsetMs = prior.AudioSyncOffsetMs;
                 device.AssignedAudioDeviceId = prior.AssignedAudioDeviceId;
                 device.AssignedAudioDeviceName = prior.AssignedAudioDeviceName;
-                device.ApplyFormatTelemetry(
-                    prior.Width > 0 ? prior.Width : prior.ObservedFrameWidth,
-                    prior.Height > 0 ? prior.Height : prior.ObservedFrameHeight,
-                    prior.FrameRate > 0 ? prior.FrameRate : prior.ObservedFrameRate);
+                if (!device.Vendor.Equals("rtmp", StringComparison.OrdinalIgnoreCase))
+                {
+                    device.ApplyFormatTelemetry(
+                        prior.Width > 0 ? prior.Width : prior.ObservedFrameWidth,
+                        prior.Height > 0 ? prior.Height : prior.ObservedFrameHeight,
+                        prior.FrameRate > 0 ? prior.FrameRate : prior.ObservedFrameRate);
+                }
                 device.ApplyObservedFrameTelemetry(prior.ObservedFrameWidth, prior.ObservedFrameHeight, prior.ObservedFrameRate);
             }
 
@@ -7486,7 +7501,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .Where(device => IsVirtualSrtIngestDevice(device) && !activeIds.Contains(device.Id))
             .ToList())
         {
-            RemoveVirtualSrtIngestDevice(staleDevice.Id);
+            RemoveVirtualNetworkIngestDevice(staleDevice.Id);
         }
     }
 
@@ -7533,7 +7548,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(HasCaptureDevices));
     }
 
-    private void RemoveVirtualSrtIngestDevice(string deviceId)
+    private void RemoveVirtualNetworkIngestDevice(string deviceId)
     {
         var device = CaptureDevices.FirstOrDefault(item => string.Equals(item.Id, deviceId, StringComparison.Ordinal));
         if (device is not null)
@@ -7541,10 +7556,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             CaptureDevices.Remove(device);
         }
 
-        using (ShowInputWriteScope.Enter("srt-device-removed"))
+        using (ShowInputWriteScope.Enter("network-ingest-device-removed"))
         {
             foreach (var slot in ShowInputs.Where(slot =>
-                slot.Kind == ShowInputKind.SrtIngest &&
+                slot.Kind is ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest &&
                 string.Equals(slot.CaptureDeviceId, deviceId, StringComparison.Ordinal)))
             {
                 slot.Kind = ShowInputKind.Unassigned;
@@ -7572,14 +7587,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private IReadOnlyList<CaptureDevice> CreateVirtualSrtIngestDevices() =>
         SrtIngestSources.Select(CreateVirtualSrtIngestDevice).ToList();
-
-    private static SrtIngestSource CreateSrtIngestSource(int number) =>
-        new()
-        {
-            Id = $"srt-source-{number:00}",
-            Number = number,
-            Port = (10000 + number - 1).ToString()
-        };
 
     private static CaptureDevice CreateVirtualSrtIngestDevice(SrtIngestSource source) =>
         new()
@@ -9267,6 +9274,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamDestinations = BuildSelectedStreamDestinations(validatedOnly: true),
             StreamDestinationSettings = BuildStreamDestinationSettings(),
             SrtIngestSources = BuildSrtIngestSourceSettings(),
+            RtmpIngestSources = _rtmpIngestCoordinator.BuildWire(),
             CanvasOutputProfile = canvasProfile,
             StreamOutputProfile = BuildRequestedOutputProfile(
                 "stream",
@@ -9745,20 +9753,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public static bool IsConcreteAudioMixSourceId(string sourceId) =>
         !string.Equals(sourceId, "active-speaker", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(sourceId, "screen-share", StringComparison.OrdinalIgnoreCase);
-
-    private IReadOnlyList<MediaCoreSrtIngestSourceWire> BuildSrtIngestSourceSettings() =>
-        SrtIngestSources
-            .Select(source => new MediaCoreSrtIngestSourceWire(
-                source.Id,
-                source.DeviceId,
-                source.Name,
-                NormalizeOutputText(source.Mode, "listener"),
-                NormalizeOutputText(source.Host, "0.0.0.0"),
-                ParsePositiveInt(source.Port) ?? 10000,
-                ParsePositiveInt(source.LatencyMs) ?? 120,
-                NormalizeOptionalOutputText(source.StreamId),
-                string.IsNullOrWhiteSpace(source.Passphrase) ? null : source.Passphrase))
-            .ToList();
 
     private static string FormatStreamDestinationTelemetry(IReadOnlyList<string> destinations) =>
         destinations.Count == 0 ? "none" : string.Join(",", destinations);
@@ -10414,6 +10408,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         // The compositor is always on, so surfaces always accept the latest program frame.
         _surfaces.OnMediaCoreSnapshot(snapshot);
+        ApplyRtmpIngestSnapshot(snapshot);
         Tm("surfaces");
 
         // Screen sources come from the CORE enumeration; the startup device
@@ -11493,7 +11488,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return sourceId;
         }
 
-        return input.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi
+        return input.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.RtmpIngest
             ? $"capture:{captureDeviceId}"
             : captureDeviceId;
     }
@@ -12360,7 +12355,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var deviceId in ShowInputs
                      .Where(slot => slot.InShow &&
-                         (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi) &&
+                         (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.RtmpIngest) &&
                          !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
                      .Select(slot => slot.CaptureDeviceId!)
                      .Distinct(StringComparer.Ordinal))

@@ -482,7 +482,7 @@ public sealed class ShowInputsCoordinator
         }
 
         _host.SrtIngestSources.Remove(source);
-        _host.RemoveVirtualSrtIngestDevice(source.DeviceId);
+        _host.RemoveVirtualNetworkIngestDevice(source.DeviceId);
         _host.CommandStatus = $"{source.Name} removed from SRT inputs";
     }
 }

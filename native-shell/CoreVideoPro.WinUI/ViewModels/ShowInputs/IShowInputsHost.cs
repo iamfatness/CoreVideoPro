@@ -45,7 +45,7 @@ public interface IShowInputsHost
 
     SrtIngestSource CreateSrtIngestSource(int number);
 
-    void RemoveVirtualSrtIngestDevice(string deviceId);
+    void RemoveVirtualNetworkIngestDevice(string deviceId);
 
     // --- command status line (write only — mirrors the original bodies) ---
     string CommandStatus { set; }

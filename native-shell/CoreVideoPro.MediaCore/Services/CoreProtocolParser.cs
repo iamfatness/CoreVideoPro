@@ -603,7 +603,14 @@ public static class CoreProtocolParser
             CoreObservationModel.Parse(json).TypedJson(), MediaCoreJson.Options);
         return snapshot is null
             ? null
-            : snapshot with { RawJson = json, RawReceivedUtc = DateTimeOffset.UtcNow };
+            : snapshot with
+            {
+                CaptureDevices = element.TryGetProperty("captureDevices", out var captureDevices) &&
+                    captureDevices.ValueKind == JsonValueKind.Array
+                    ? ParseCaptureDevices(captureDevices) : [],
+                RawJson = json,
+                RawReceivedUtc = DateTimeOffset.UtcNow
+            };
     }
 
     public static NativeMediaCoreWireState? TryParseWireState(JsonDocument response)
@@ -738,6 +745,11 @@ public static class CoreProtocolParser
             return null;
         }
 
+        return ParseCaptureDevices(devicesElement);
+    }
+
+    private static IReadOnlyList<NativeCaptureDeviceStatus> ParseCaptureDevices(JsonElement devicesElement)
+    {
         var devices = new List<NativeCaptureDeviceStatus>();
         foreach (var device in devicesElement.EnumerateArray())
         {

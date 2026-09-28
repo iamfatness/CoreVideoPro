@@ -938,6 +938,26 @@ public sealed class MediaCoreCommandBuilderTests
     }
 
     [Fact]
+    public void SerializesRtmpListenerAndRoutableCaptureSource()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "interview",
+            SceneRoutes = [new("interview-1", "capture-input", "mix", null,
+                CaptureDeviceId: "rtmp-ingest-01")],
+            RtmpIngestSources = [new("rtmp-source-01", "rtmp-ingest-01", "RTMP 1",
+                "rtmp://0.0.0.0:1935/live/test")]
+        });
+        var ingest = commands.Single(command => command.Type == "configure-rtmp-ingest-sources");
+        var source = Assert.Single(GetObjectArray(ingest, "sources"));
+        Assert.Equal("rtmp-ingest-01", source.GetProperty("deviceId").GetString());
+        Assert.Equal("rtmp://0.0.0.0:1935/live/test", source.GetProperty("url").GetString());
+        var route = commands.Single(command => command.Type == "load-scene-graph")
+            .ExtensionData!["routes"].EnumerateArray().Single();
+        Assert.Equal("rtmp-ingest-01", route.GetProperty("captureDeviceId").GetString());
+    }
+
+    [Fact]
     public void BuildConfigureMultiviewerCommand_SerializesLayoutAndToggles()
     {
         var command = MediaCoreCommandBuilder.BuildConfigureMultiviewerCommand(

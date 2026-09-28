@@ -58,7 +58,7 @@ public sealed partial class StudioViewModel : IShowInputsHost
 
     SrtIngestSource IShowInputsHost.CreateSrtIngestSource(int number) => CreateSrtIngestSource(number);
 
-    void IShowInputsHost.RemoveVirtualSrtIngestDevice(string deviceId) => RemoveVirtualSrtIngestDevice(deviceId);
+    void IShowInputsHost.RemoveVirtualNetworkIngestDevice(string deviceId) => RemoveVirtualNetworkIngestDevice(deviceId);
 
     void IShowInputsHost.OnShowInputChanged() => OnShowInputChanged();
 
