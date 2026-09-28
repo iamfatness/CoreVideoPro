@@ -310,7 +310,9 @@ public static class TransportStatusFormatter
             : lowered.Contains("error opening output", StringComparison.Ordinal) ||
               lowered.Contains("i/o error", StringComparison.Ordinal) ||
               lowered.Contains("connection refused", StringComparison.Ordinal)
-            ? "The streaming destination refused the connection. Check the destination is live and accepting (a YouTube/Twitch stream has to be started there first), then the stream key and network."
+            ? lowered.Contains("hls", StringComparison.Ordinal)
+                ? "The HLS origin refused an HTTP PUT. Check that the playlist and segment paths accept uploads."
+                : "The streaming destination refused the connection. Check the destination is live and accepting (a YouTube/Twitch stream has to be started there first), then the stream key and network."
             // "program frame" ALONE is NOT this case: it also matches "FFmpeg
             // process exited before accepting program frames", which sent every
             // FFmpeg exit to "put a valid source on Program". The sender is only
@@ -325,7 +327,7 @@ public static class TransportStatusFormatter
               lowered.Contains("sender state idle", StringComparison.Ordinal)
                 ? "Native output sender did not start. Check Stream settings and open Health for sender diagnostics."
             : lowered.Contains("select at least one stream destination", StringComparison.Ordinal)
-                ? "No stream destination is selected. Enable RTMP, NDI, or SRT before streaming."
+                ? "No stream destination is selected. Enable RTMP, NDI, SRT, or HLS before streaming."
             : lowered.Contains("configure rtmp", StringComparison.Ordinal) ||
               lowered.Contains("rtmp server url", StringComparison.Ordinal) ||
               lowered.Contains("rtmp stream key", StringComparison.Ordinal)
@@ -351,6 +353,14 @@ public static class TransportStatusFormatter
                lowered.Contains("not available in this build", StringComparison.Ordinal) ||
                lowered.Contains("missing srt-output", StringComparison.Ordinal))
                 ? "SRT output is not available in this build. Use RTMP/NDI or install a build with SRT output enabled."
+            : lowered.Contains("hls", StringComparison.Ordinal) &&
+              (lowered.Contains("playlist url", StringComparison.Ordinal) ||
+               lowered.Contains("requires h.264", StringComparison.Ordinal))
+                ? "HLS settings are incomplete. Enter an HTTP PUT playlist URL and choose H.264."
+            : lowered.Contains("hls", StringComparison.Ordinal) &&
+              (lowered.Contains("output-unavailable", StringComparison.Ordinal) ||
+               lowered.Contains("missing hls-output", StringComparison.Ordinal))
+                ? "HLS output is not available in this native core build."
             : lowered.Contains("ffmpeg", StringComparison.Ordinal) && ffmpegRuntimeMissing
                 ? "FFmpeg is not ready. Choose the FFmpeg bin folder in Settings > FFmpeg."
                 : rtmpContext ||
@@ -680,7 +690,8 @@ public static class TransportStatusFormatter
         bool streamRtmpEnabled,
         bool streamNdiEnabled,
         bool streamSrtEnabled,
-        NativeMediaCoreProfile? profile)
+        NativeMediaCoreProfile? profile,
+        bool hlsEnabled = false)
     {
         if (profile is null)
         {
@@ -700,6 +711,11 @@ public static class TransportStatusFormatter
         if (streamSrtEnabled && !HasNativeOutputCapability(profile, "srt-output"))
         {
             return "SRT output is selected, but the native media core profile is missing srt-output.";
+        }
+
+        if (hlsEnabled && !HasNativeOutputCapability(profile, "hls-output"))
+        {
+            return "HLS output is selected, but the native media core profile is missing hls-output.";
         }
 
         return null;

@@ -21,6 +21,36 @@ RtmpFfmpegArgsConfig baseConfig() {
 }
 }  // namespace
 
+TEST(HlsOutputPolicy, RequiresPlainHttpPlaylistUrl) {
+  EXPECT_TRUE(validateHlsPlaylistUrl("https://origin.example/live/program.m3u8").empty());
+  EXPECT_FALSE(validateHlsPlaylistUrl("rtmp://origin.example/live/program.m3u8").empty());
+  EXPECT_FALSE(validateHlsPlaylistUrl("https://user:secret@origin.example/live/program.m3u8").empty());
+  EXPECT_FALSE(validateHlsPlaylistUrl("https://origin.example/live/program.m3u8?token=secret").empty());
+  EXPECT_FALSE(validateHlsPlaylistUrl("https://origin.example/live/program.ts").empty());
+  EXPECT_EQ(hlsSegmentUrl("https://origin.example/live/program.m3u8"),
+            "https://origin.example/live/program_segment_%020d.ts");
+  EXPECT_EQ(redactedHlsUrl("https://origin.example/live/opaque-token/program.m3u8"),
+            "https://origin.example/<hls-playlist>");
+}
+
+TEST(HlsFfmpegArgs, SendsPlaylistAndSegmentsByHttpPutWithBoundedLiveWindow) {
+  auto config = baseConfig();
+  config.container = "hls";
+  config.endpoint = "https://origin.example/live/program.m3u8";
+  config.videoBitstreamInput = true;
+  config.hasAudio = true;
+  const auto args = buildRtmpFfmpegArguments(config);
+  EXPECT_NE(args.find("-c:v copy"), std::string::npos);
+  EXPECT_NE(args.find("-c:a aac"), std::string::npos);
+  EXPECT_NE(args.find("-hls_time 2 -hls_list_size 6"), std::string::npos);
+  EXPECT_NE(args.find("-hls_flags delete_segments+omit_endlist"), std::string::npos);
+  EXPECT_NE(args.find("-hls_start_number_source epoch_us"), std::string::npos);
+  EXPECT_NE(args.find("-hls_segment_filename \"https://origin.example/live/program_segment_%020d.ts\""),
+            std::string::npos);
+  EXPECT_NE(args.find("-method PUT -f hls \"https://origin.example/live/program.m3u8\""),
+            std::string::npos);
+}
+
 TEST(RtmpFfmpegArgs, NoAudioEmitsAnullsrcSilenceSource) {
   const auto args = buildRtmpFfmpegArguments(baseConfig());
   EXPECT_NE(args.find("anullsrc"), std::string::npos);

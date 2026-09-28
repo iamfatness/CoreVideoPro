@@ -313,10 +313,28 @@ struct FfmpegSenderProtocol {
   std::string destination = "rtmp";  // the destination name the operator toggles
   std::string container = "flv";     // FLV for RTMP, MPEG-TS for SRT
   bool isSrt = false;
+  bool isHls = false;
 };
 
-inline FfmpegSenderProtocol rtmpProtocol() { return {"rtmp", "flv", false}; }
-inline FfmpegSenderProtocol srtProtocol() { return {"srt", "mpegts", true}; }
+inline FfmpegSenderProtocol rtmpProtocol() { return {"rtmp", "flv", false, false}; }
+inline FfmpegSenderProtocol srtProtocol() { return {"srt", "mpegts", true, false}; }
+inline FfmpegSenderProtocol hlsProtocol() { return {"hls", "hls", false, true}; }
+
+const OutputDestinationSettings* findHlsSettings(const std::vector<OutputDestinationSettings>& destinationSettings) {
+  for (const auto& settings : destinationSettings) {
+    if (settings.id == "hls" || lowercaseAscii(settings.protocol) == "hls") return &settings;
+  }
+  return nullptr;
+}
+
+std::string validateHlsSettings(const OutputDestinationSettings& settings) {
+  const auto urlError = validateHlsPlaylistUrl(settings.url);
+  if (!urlError.empty()) return urlError;
+  if (normalizeRtmpVideoCodec(settings.videoCodec) != "h264") {
+    return "HLS output currently requires H.264 video and AAC audio. Choose H.264 in Stream settings.";
+  }
+  return {};
+}
 
 // SRT settings carry host/port/mode/latency/passphrase rather than a URL and a
 // stream key, so they get their own matcher and validator.
@@ -707,23 +725,25 @@ class RtmpOutputSender final : public IOutputSender {
 
     ensureSender(elapsedMs);
     const auto* settings = protocol_.isSrt ? findSrtSettings(destinationSettings)
-                                           : findRtmpSettings(destinationSettings);
+                           : protocol_.isHls ? findHlsSettings(destinationSettings)
+                                             : findRtmpSettings(destinationSettings);
     if (!settings) {
       stopFfmpegProcess();
       configuredEndpoint_.clear();
       configuredStreamKey_.clear();
       configuredStreamId_.clear();
       sender_.status = "warning";
-      sender_.warning = "RTMP sender needs current RTMP destination settings before streaming.";
+      sender_.warning = protocol_.destination + " sender needs current destination settings before streaming.";
       sender_.destinationHealth = "warning";
-      sender_.lastResultCode = "rtmp-settings-missing";
+      sender_.lastResultCode = protocol_.isHls ? "hls-settings-missing" : "rtmp-settings-missing";
       sender_.lastError = sender_.warning;
-      appendSendProof(frame, "rtmp-settings-missing");
+      appendSendProof(frame, sender_.lastResultCode);
       return snapshot();
     }
 
     const auto settingsError = protocol_.isSrt ? validateSrtSettings(*settings)
-                                               : validateRtmpSettings(*settings);
+                               : protocol_.isHls ? validateHlsSettings(*settings)
+                                                 : validateRtmpSettings(*settings);
     if (!settingsError.empty()) {
       stopFfmpegProcess();
       configuredEndpoint_.clear();
@@ -732,16 +752,16 @@ class RtmpOutputSender final : public IOutputSender {
       sender_.status = "warning";
       sender_.warning = settingsError;
       sender_.destinationHealth = "warning";
-      sender_.lastResultCode = "rtmp-settings-invalid";
+      sender_.lastResultCode = protocol_.isHls ? "hls-settings-invalid" : "rtmp-settings-invalid";
       sender_.lastError = sender_.warning;
-      appendSendProof(frame, "rtmp-settings-invalid");
+      appendSendProof(frame, sender_.lastResultCode);
       return snapshot();
     }
 
     const bool ffmpegBinDirectoryChanged = configuredFfmpegBinDirectory_ != settings->ffmpegBinDirectory;
     const std::string requestedEndpoint = protocol_.isSrt
                                               ? buildSrtUrl(srtEndpointConfigFrom(*settings)).url
-                                              : buildRtmpEndpoint(*settings);
+                                              : protocol_.isHls ? settings->url : buildRtmpEndpoint(*settings);
     // THE ONE RE-EVALUATION TRIGGER for a latched configuration refusal. This
     // block re-applies desired state on EVERY tick (the repeating sync channel),
     // so the latch is cleared only when an input the verdict actually depends on
@@ -754,17 +774,21 @@ class RtmpOutputSender final : public IOutputSender {
       startRefusedInadmissible_ = false;
     }
     configuredEndpoint_ = requestedEndpoint;
-    configuredStreamKey_ = settings->streamKey;
+    // The HLS path can be an opaque origin credential. Use the existing
+    // stderr scrubber's sensitive-string slot to remove it from FFmpeg errors.
+    configuredStreamKey_ = protocol_.isHls ? requestedEndpoint : settings->streamKey;
     configuredStreamId_ = settings->streamId;
-    // Held ONLY so the stderr tail can be scrubbed of it before it reaches
-    // lastError (and from there /snapshot and the support bundle). The SRT
-    // endpoint carries the passphrase in its query string, so FFmpeg echoes it.
-    configuredPassphrase_ = settings->passphrase;
+    // Held ONLY so the stderr tail can be scrubbed before it reaches lastError.
+    // HLS segment PUT errors echo numbered URLs, not the playlist URL above.
+    // Scrub their shared path/stem prefix while preserving the origin host.
+    configuredPassphrase_ = protocol_.isHls ? hlsSegmentPathPrefix(requestedEndpoint)
+                                            : settings->passphrase;
     configuredFfmpegBinDirectory_ = settings->ffmpegBinDirectory;
     configuredFps_ = (std::max)(1, settings->fps);
     configuredVideoCodec_ = normalizeVideoCodec(settings->videoCodec);
     configuredEncoderMode_ = normalizeEncoderMode(settings->encoderMode);
-    configuredKeyframeIntervalSeconds_ = (std::max)(0.5, (std::min)(10.0, settings->keyframeIntervalSeconds));
+    configuredKeyframeIntervalSeconds_ = (std::max)(0.5, (std::min)(protocol_.isHls ? 2.0 : 10.0,
+                                                                            settings->keyframeIntervalSeconds));
     configuredRateControl_ = normalizeRateControl(settings->rateControl);
     configuredH264Profile_ = normalizeH264Profile(settings->h264Profile);
     configuredBFrames_ = (std::max)(0, (std::min)(4, settings->bFrames));
@@ -795,7 +819,7 @@ class RtmpOutputSender final : public IOutputSender {
     openSendProofIfNeeded();
     if (configuredEndpoint_.empty()) {
       sender_.status = "warning";
-      sender_.warning = "RTMP sender needs a configured RTMP/RTMPS server URL and stream key.";
+      sender_.warning = protocol_.destination + " sender needs a configured endpoint.";
       sender_.destinationHealth = "warning";
       sender_.lastResultCode = "endpoint-missing";
       sender_.lastError = sender_.warning;
@@ -804,7 +828,7 @@ class RtmpOutputSender final : public IOutputSender {
     }
     if (!runtimeAvailable_) {
       sender_.status = "warning";
-      sender_.warning = "RTMP sender requires FFmpeg runtime on this machine (" + runtimeDetail_ + ").";
+      sender_.warning = protocol_.destination + " sender requires FFmpeg runtime on this machine (" + runtimeDetail_ + ").";
       sender_.runtimeDetail = runtimeDetail_;
       sender_.destinationHealth = "warning";
       sender_.lastResultCode = "runtime-missing";
@@ -814,7 +838,7 @@ class RtmpOutputSender final : public IOutputSender {
     }
     if (!frame || frame->frameNumber == 0) {
       sender_.status = "starting";
-      sender_.warning = "RTMP sender is waiting for a program frame.";
+      sender_.warning = protocol_.destination + " sender is waiting for a program frame.";
       sender_.destinationHealth = "starting";
       sender_.lastResultCode = "waiting-for-frame";
       appendSendProof(frame, "waiting-for-frame");
@@ -823,7 +847,7 @@ class RtmpOutputSender final : public IOutputSender {
     if (!hasProgramNv12(*frame) && !hasProgramFullBgra(*frame) &&
         (frame->preview.width <= 0 || frame->preview.height <= 0 || frame->preview.bgra.empty())) {
       sender_.status = "warning";
-      sender_.warning = "RTMP sender is waiting for composed BGRA program pixels.";
+      sender_.warning = protocol_.destination + " sender is waiting for composed BGRA program pixels.";
       sender_.destinationHealth = "warning";
       sender_.lastResultCode = "frame-pixels-missing";
       sender_.lastError = sender_.warning;
@@ -1025,7 +1049,7 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.status = runtimeAvailable_ ? "starting" : "warning";
     sender_.startedAtMs = elapsedMs;
     sender_.stoppedAtMs = 0;
-    sender_.warning = reason.empty() ? "RTMP sender recovered." : reason;
+    sender_.warning = reason.empty() ? protocol_.destination + " sender recovered." : reason;
     sender_.runtimeDetail = runtimeDetail_;
     sender_.destinationHealth = runtimeAvailable_ ? "starting" : "warning";
     sender_.lastResultCode = "recovered";
@@ -1434,6 +1458,7 @@ class RtmpOutputSender final : public IOutputSender {
   // carries the passphrase in the query string.
   std::string redactedSenderEndpoint() const {
     return protocol_.isSrt ? redactedSrtUrl(configuredEndpoint_)
+                           : protocol_.isHls ? redactedHlsUrl(configuredEndpoint_)
                            : redactedEndpoint(configuredEndpoint_, configuredStreamKey_);
   }
 
@@ -1542,7 +1567,7 @@ class RtmpOutputSender final : public IOutputSender {
   // The no-hardware-encoder / gpu-encoder-start-failed clauses are likewise
   // untouched for every protocol.
   RtmpCompatibilityResult resolveCompatibility() const {
-    if (protocol_.isSrt) {
+    if (protocol_.isSrt || protocol_.isHls) {
       RtmpCompatibilityResult result;
       result.requestedVideoCodec = normalizeRtmpVideoCodec(configuredVideoCodec_);
       result.videoCodec = result.requestedVideoCodec;
@@ -1800,7 +1825,7 @@ class RtmpOutputSender final : public IOutputSender {
     CloseHandle(processInfo.hThread);
     ffmpegRunning_ = true;
     sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
-    writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":\"rtmp\",\"width\":" + std::to_string(width) +
+    writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":" + jsonString(protocol_.destination) + ",\"width\":" + std::to_string(width) +
               ",\"height\":" + std::to_string(height) +
               ",\"endpoint\":" + jsonString(redactedSenderEndpoint()) +
               ",\"ffmpegExecutable\":" + jsonString(ffmpegExecutable_) +
@@ -1920,7 +1945,7 @@ class RtmpOutputSender final : public IOutputSender {
     ffmpegPid_ = pid;
     ffmpegRunning_ = true;
     sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
-    writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":\"rtmp\",\"width\":" + std::to_string(width) +
+    writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":" + jsonString(protocol_.destination) + ",\"width\":" + std::to_string(width) +
               ",\"height\":" + std::to_string(height) +
               ",\"endpoint\":" + jsonString(redactedSenderEndpoint()) +
               ",\"ffmpegExecutable\":" + jsonString(ffmpegExecutable_) +
@@ -2891,14 +2916,15 @@ class RtmpOutputSender final : public IOutputSender {
       return;
     }
     const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    const auto path = std::filesystem::temp_directory_path() / ("corevideo-rtmp-send-proof-" + std::to_string(now) + ".jsonl");
+    const auto path = std::filesystem::temp_directory_path() / ("corevideo-" + protocol_.destination + "-send-proof-" + std::to_string(now) + ".jsonl");
     sendProof_.open(path, std::ios::out | std::ios::trunc);
     if (!sendProof_) {
-      sender_.warning = "RTMP send proof file could not be opened.";
+      sender_.warning = protocol_.destination + " send proof file could not be opened.";
       return;
     }
     sender_.sendArtifactPath = path.string();
-    writeLine("{\"type\":\"rtmp-send-proof-start\",\"destination\":\"rtmp\",\"endpointConfigured\":" +
+    writeLine("{\"type\":" + jsonString(protocol_.isHls ? "hls-send-proof-start" : "rtmp-send-proof-start") +
+              ",\"destination\":" + jsonString(protocol_.destination) + ",\"endpointConfigured\":" +
               std::string(configuredEndpoint_.empty() ? "false" : "true") +
               ",\"endpoint\":" + jsonString(redactedSenderEndpoint()) +
               ",\"endpointMode\":\"ffmpeg-process\","
@@ -2917,7 +2943,9 @@ class RtmpOutputSender final : public IOutputSender {
     if (!sendProof_.is_open()) {
       return;
     }
-    std::string line = "{\"type\":\"rtmp-send-attempt\",\"destination\":\"rtmp\",\"endpointMode\":\"ffmpeg-process\",\"status\":" + jsonString(status);
+    std::string line = "{\"type\":" + jsonString(protocol_.isHls ? "hls-send-attempt" : "rtmp-send-attempt") +
+                       ",\"destination\":" + jsonString(protocol_.destination) +
+                       ",\"endpointMode\":\"ffmpeg-process\",\"status\":" + jsonString(status);
     if (frame) {
       line += ",\"frameNumber\":" + std::to_string(frame->frameNumber) +
               ",\"width\":" + std::to_string(videoWidth(*frame)) +
@@ -3160,6 +3188,14 @@ std::unique_ptr<IOutputSender> createRtmpOutputSender() {
 std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender() {
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
   return std::make_unique<RtmpOutputSender>(probeFfmpegRuntime(""), srtProtocol());
+#else
+  return nullptr;
+#endif
+}
+
+std::unique_ptr<IOutputSender> createHlsOutputSender() {
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_RTMP_OUTPUT
+  return std::make_unique<RtmpOutputSender>(probeFfmpegRuntime(""), hlsProtocol());
 #else
   return nullptr;
 #endif

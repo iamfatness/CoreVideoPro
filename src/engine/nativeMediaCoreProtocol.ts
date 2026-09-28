@@ -17,6 +17,7 @@ export type NativeMediaCoreCapability =
   | "rtmp-output"
   | "ndi-output"
   | "srt-output"
+  | "hls-output"
   | "srt-ingest"
   | "uvc-capture"
   | "webrtc-output"

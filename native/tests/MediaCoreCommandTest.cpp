@@ -1787,12 +1787,15 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   const auto rtmp = corevideo::modules::createRtmpOutputSender();
   const auto ndi = corevideo::modules::createNdiOutputSender();
   const auto srt = corevideo::modules::createSrtOutputSender();
+  const auto hls = corevideo::modules::createHlsOutputSender();
   EXPECT_EQ(jsonArrayContains(capabilities, "rtmp-output"),
             rtmp && rtmp->runtimeAvailableAtConstruction());
   EXPECT_EQ(jsonArrayContains(capabilities, "ndi-output"),
             ndi && ndi->runtimeAvailableAtConstruction());
   EXPECT_EQ(jsonArrayContains(capabilities, "srt-output"),
             srt && srt->runtimeAvailableAtConstruction());
+  EXPECT_EQ(jsonArrayContains(capabilities, "hls-output"),
+            hls && hls->runtimeAvailableAtConstruction());
   EXPECT_EQ(jsonArrayContains(capabilities, "srt-ingest"),
             !COREVIDEO_STUB && COREVIDEO_WITH_SRT_INGEST &&
                 corevideo::modules::createSrtIngestCaptureDevice() != nullptr);
@@ -4916,6 +4919,42 @@ TEST(OutputSenderAdapter, RtmpRejectsInvalidDestinationSettingsBeforeLaunchingFf
   EXPECT_NE(session.senders[0].warning.find("protocol"), std::string::npos);
 #else
   EXPECT_TRUE(true);
+#endif
+}
+
+TEST(OutputSenderAdapter, HlsRequiresPlaylistUrlAndDoesNotBorrowRtmpSettings) {
+#if COREVIDEO_WITH_RTMP_OUTPUT
+  auto sender = corevideo::modules::createHlsOutputSender();
+  ASSERT_NE(sender, nullptr);
+  corevideo::modules::OutputDestinationSettings rtmp;
+  rtmp.id = "rtmp";
+  rtmp.protocol = "rtmps";
+  rtmp.url = "rtmps://example.test/live";
+  rtmp.streamKey = "test";
+  auto session = sender->sync({"hls"}, nullptr, 0, {rtmp});
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].destination, "hls");
+  EXPECT_EQ(session.senders[0].status, "warning");
+  EXPECT_EQ(session.senders[0].lastResultCode, "hls-settings-missing");
+
+  corevideo::modules::OutputDestinationSettings hls;
+  hls.id = "hls";
+  hls.protocol = "hls";
+  hls.url = "https://origin.example/live/program.m3u8?secret=token";
+  session = sender->sync({"hls"}, nullptr, 33, {hls});
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].status, "warning");
+  EXPECT_EQ(session.senders[0].lastResultCode, "hls-settings-invalid");
+  EXPECT_NE(session.senders[0].warning.find("query"), std::string::npos);
+
+  hls.url = "https://origin.example/live/program.m3u8";
+  hls.videoCodec = "h265";
+  session = sender->sync({"hls"}, nullptr, 66, {hls});
+  ASSERT_FALSE(session.senders.empty());
+  EXPECT_EQ(session.senders[0].status, "warning");
+  EXPECT_NE(session.senders[0].warning.find("H.264"), std::string::npos);
+#else
+  EXPECT_EQ(corevideo::modules::createHlsOutputSender(), nullptr);
 #endif
 }
 

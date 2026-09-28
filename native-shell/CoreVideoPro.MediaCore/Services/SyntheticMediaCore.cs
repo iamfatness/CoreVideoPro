@@ -47,6 +47,7 @@ public static class SyntheticMediaCore
             "rtmp-output",
             "ndi-output",
             "srt-output",
+            "hls-output",
             "srt-ingest",
             "webrtc-output",
             "decklink-capture",

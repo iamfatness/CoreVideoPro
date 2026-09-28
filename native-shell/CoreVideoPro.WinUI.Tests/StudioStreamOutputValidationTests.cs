@@ -1,4 +1,5 @@
 using CoreVideoPro.WinUI.Services;
+using CoreVideoPro.WinUI.ViewModels.Transport;
 using Xunit;
 
 namespace CoreVideoPro.WinUI.Tests;
@@ -297,6 +298,50 @@ public sealed class StudioStreamOutputValidationTests
     {
         Assert.False(StudioStreamOutputValidation.CanSerializeNdiSettings(""));
         Assert.True(StudioStreamOutputValidation.CanSerializeNdiSettings("CoreVideo Pro Program"));
+    }
+
+    [Fact]
+    public void Hls_RequiresPlainHttpPutPlaylistUrl()
+    {
+        Assert.Null(StudioStreamOutputValidation.ValidateHls("https://origin.example/live/program.m3u8"));
+        Assert.NotNull(StudioStreamOutputValidation.ValidateHls("srt://origin.example/live/program.m3u8"));
+        Assert.NotNull(StudioStreamOutputValidation.ValidateHls("https://user:secret@origin.example/live/program.m3u8"));
+        Assert.NotNull(StudioStreamOutputValidation.ValidateHls("https://origin.example/live/program.m3u8?token=secret"));
+        Assert.NotNull(StudioStreamOutputValidation.ValidateHls("https://origin.example/live/program.ts"));
+    }
+
+    [Fact]
+    public void Hls_AloneIsAValidDestinationWithFfmpeg()
+    {
+        var error = StudioStreamOutputValidation.ValidateSelectedDestinations(
+            rtmpEnabled: false,
+            ndiEnabled: false,
+            srtEnabled: false,
+            rtmpProtocol: "rtmps",
+            rtmpServerUrl: "",
+            rtmpStreamKey: "",
+            ndiProgramName: "",
+            srtMode: "caller",
+            srtHost: "",
+            srtPort: "",
+            srtLatencyMs: "",
+            srtStreamId: "",
+            srtKeyLength: "0",
+            srtPassphrase: "",
+            ffmpegBinDirectory: CreateFfmpegBinDirectory(),
+            hlsEnabled: true,
+            hlsPlaylistUrl: "https://origin.example/live/program.m3u8");
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void HlsSupportBundleEndpointHidesOpaquePath()
+    {
+        var settings = new HlsOutputSettingsViewModel
+        {
+            PlaylistUrl = "https://origin.example/live/opaque-token/program.m3u8"
+        };
+        Assert.Equal("https://origin.example/<hls-playlist>", settings.RedactedEndpoint);
     }
 
     private static string CreateFfmpegBinDirectory()

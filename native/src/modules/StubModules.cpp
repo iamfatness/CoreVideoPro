@@ -965,7 +965,7 @@ std::unique_ptr<IOutputSender> createIsolatedOutputSender(
 ModuleSet createStubModules() {
   ModuleSet modules;
   for (const char* name : {"gpu-compositor", "local-audio-capture", "audio-monitor-output",
-                           "rtmp-output", "srt-output", "ndi-output", "ndi-ingest", "srt-ingest",
+                           "rtmp-output", "srt-output", "hls-output", "ndi-output", "ndi-ingest", "srt-ingest",
                            "decklink-capture", "aja-capture", "uvc-capture"}) {
     recordCapability(modules, name, "omitted", "stub-or-unbuilt");
   }
@@ -1066,6 +1066,15 @@ ModuleSet createDefaultModules() {
     supportedOutputDestinations.push_back("srt");
   } else if (COREVIDEO_WITH_RTMP_OUTPUT) {
     recordCapability(modules, "srt-output", "failed-to-construct");
+  }
+  if (auto hlsSender = createHlsOutputSender()) {
+    recordCapability(modules, "hls-output", hlsSender->runtimeAvailableAtConstruction()
+        ? "available" : "omitted", hlsSender->runtimeAvailableAtConstruction()
+        ? "" : "ffmpeg-runtime-missing");
+    outputSenders.push_back(std::move(hlsSender));
+    supportedOutputDestinations.push_back("hls");
+  } else if (COREVIDEO_WITH_RTMP_OUTPUT) {
+    recordCapability(modules, "hls-output", "failed-to-construct");
   }
   if (auto ndiSender = createNdiOutputSender()) {
     recordCapability(modules, "ndi-output", ndiSender->runtimeAvailableAtConstruction()
