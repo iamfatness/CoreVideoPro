@@ -1,4 +1,5 @@
 #include "modules/FfmpegSenderDiagnostics.h"
+#include "modules/HlsOutputPolicy.h"
 
 #include <gtest/gtest.h>
 
@@ -36,6 +37,17 @@ TEST(FfmpegSenderDiagnostics, AnSrtPassphraseIsRedactedToo) {
 
   EXPECT_EQ(redacted.find("hunter2supersecret"), std::string::npos);
   EXPECT_NE(redacted.find("<passphrase>"), std::string::npos);
+}
+
+TEST(FfmpegSenderDiagnostics, AnHlsSegmentPutErrorCannotExposeAnOpaquePath) {
+  const std::string playlist = "https://origin.example/live/opaque-token/program.m3u8";
+  const auto redacted = redactFfmpegDiagnostics(
+      "Error opening output https://origin.example/live/opaque-token/program_segment_0000179.ts: HTTP error 403",
+      playlist, hlsSegmentPathPrefix(playlist));
+
+  EXPECT_EQ(redacted.find("opaque-token"), std::string::npos);
+  EXPECT_NE(redacted.find("origin.example"), std::string::npos);
+  EXPECT_NE(redacted.find("HTTP error 403"), std::string::npos);
 }
 
 TEST(FfmpegSenderDiagnostics, EncodedStreamIdAndPassphraseNeverSurviveTheTailBoundary) {

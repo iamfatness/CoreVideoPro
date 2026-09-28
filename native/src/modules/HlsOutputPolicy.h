@@ -37,6 +37,19 @@ inline std::string hlsSegmentUrl(const std::string& playlistUrl) {
   return playlistUrl.substr(0, slash + 1) + stem + "_segment_%020d.ts";
 }
 
+// FFmpeg reports the numbered segment URL rather than the playlist URL on a
+// failed PUT. Scrub the shared path/stem prefix while retaining the origin host.
+inline std::string hlsSegmentPathPrefix(const std::string& playlistUrl) {
+  const auto schemeEnd = playlistUrl.find("://");
+  if (schemeEnd == std::string::npos) return {};
+  const auto pathStart = playlistUrl.find('/', schemeEnd + 3);
+  if (pathStart == std::string::npos) return {};
+  const auto segmentUrl = hlsSegmentUrl(playlistUrl);
+  const auto sequenceStart = segmentUrl.find("_segment_", pathStart);
+  if (sequenceStart == std::string::npos) return {};
+  return segmentUrl.substr(pathStart, sequenceStart - pathStart);
+}
+
 inline std::string redactedHlsUrl(const std::string& playlistUrl) {
   const auto schemeEnd = playlistUrl.find("://");
   if (schemeEnd == std::string::npos) return "<hls-playlist>";

@@ -778,10 +778,11 @@ class RtmpOutputSender final : public IOutputSender {
     // stderr scrubber's sensitive-string slot to remove it from FFmpeg errors.
     configuredStreamKey_ = protocol_.isHls ? requestedEndpoint : settings->streamKey;
     configuredStreamId_ = settings->streamId;
-    // Held ONLY so the stderr tail can be scrubbed of it before it reaches
-    // lastError (and from there /snapshot and the support bundle). The SRT
-    // endpoint carries the passphrase in its query string, so FFmpeg echoes it.
-    configuredPassphrase_ = settings->passphrase;
+    // Held ONLY so the stderr tail can be scrubbed before it reaches lastError.
+    // HLS segment PUT errors echo numbered URLs, not the playlist URL above.
+    // Scrub their shared path/stem prefix while preserving the origin host.
+    configuredPassphrase_ = protocol_.isHls ? hlsSegmentPathPrefix(requestedEndpoint)
+                                            : settings->passphrase;
     configuredFfmpegBinDirectory_ = settings->ffmpegBinDirectory;
     configuredFps_ = (std::max)(1, settings->fps);
     configuredVideoCodec_ = normalizeVideoCodec(settings->videoCodec);
