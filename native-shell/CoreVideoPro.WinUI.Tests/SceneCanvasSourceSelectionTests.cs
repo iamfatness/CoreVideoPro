@@ -143,6 +143,24 @@ public sealed class SceneCanvasSourceSelectionTests
         Assert.Equal(1, changes);
     }
 
+    [Fact]
+    public void NdiShowInputOptionPinsCaptureRoute()
+    {
+        var slot = new ShowInputSlot
+        {
+            SlotNumber = 2, Kind = ShowInputKind.Ndi,
+            CaptureDeviceId = "ndi-123", InShow = true
+        };
+        var route = new SourceRoute { Id = "ndi-layer", Mode = SourceRouteMode.ActiveSpeaker };
+        var layer = new SceneCanvasLayerViewModel(0, route, Participants, [], [slot], [], _ => { });
+        var option = layer.ParticipantOptions.Single(item => item.Value == "input-02");
+
+        Assert.True(layer.TrySelectSourceOption(option));
+        Assert.Equal(SourceRouteMode.CaptureDevice, route.Mode);
+        Assert.Equal("ndi-123", route.CaptureDeviceId);
+        Assert.Equal(2, route.ShowInputSlotNumber);
+    }
+
     // #480 live case: the source dropdown's list refresh writes a blank as an
     // operator pick (SourcesPage.OnLayerSourceSelectionChanged). Only an
     // operator gesture may change a layer's source.
