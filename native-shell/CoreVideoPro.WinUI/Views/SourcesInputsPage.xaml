@@ -385,6 +385,15 @@
                     <TextBlock Text="Show inputs (multiview)" Style="{StaticResource OperatorSectionTitle}" />
                     <TextBlock Text="Assign up to 10 sources below. Toggle In show to put them on the Studio multiview strip."
                                Style="{StaticResource OperatorSummary}" TextWrapping="WrapWholeWords" />
+                    <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                        <ComboBox Header="Preferred Zoom camera max"
+                                  ItemsSource="{x:Bind ViewModel.ZoomCameraMaxChoices, Mode=OneWay}"
+                                  SelectedItem="{x:Bind ViewModel.ZoomCameraMaxResolution, Mode=TwoWay}"
+                                  MinWidth="150" />
+                        <TextBlock Text="{x:Bind ViewModel.ZoomCameraMaxStatus, Mode=OneWay}"
+                                   VerticalAlignment="Bottom" TextWrapping="WrapWholeWords"
+                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
+                    </StackPanel>
                     <TextBlock Text="{x:Bind ViewModel.ShowInputSummary, Mode=OneWay}"
                                FontSize="11" Foreground="{StaticResource StudioAccentBrush}" TextWrapping="Wrap" />
                     <!-- An in-show input whose source no longer exists (unplugged display,

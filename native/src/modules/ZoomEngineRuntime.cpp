@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <set>
 #include <thread>
@@ -182,6 +183,19 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
         {"tick", ++fallbackTick_},
         {"warnings", rpc::Json::Array{"Zoom join request did not include a numeric meeting id."}},
     };
+  }
+
+  // The preference is latched by a valid join, before subscriptions are built.
+  // Sources edits never enter this path while the current meeting is live.
+  int cameraMax = ZoomSubscriptionResolutionPolicy::k1080P;
+  if (const auto* requested = payload.get("cameraMaxResolution"); requested &&
+      requested->isNumber() && std::isfinite(requested->asNumber())) {
+    cameraMax = ZoomSubscriptionResolutionPolicy::clampCameraMax(
+        static_cast<int>(std::clamp(requested->asNumber(), 0.0, 2.0)));
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    cameraMaxResolution_ = cameraMax;
   }
 
   if (!ensureStarted(cancelled)) {
@@ -399,7 +413,7 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
     // for new or resolution-changed entries (not every tick — see sentSubscriptions_).
     std::map<std::string, int> desired;
     // The 1080P concurrency cap is applied in the payload's (budget) order.
-    ZoomSubscriptionResolutionPolicy::Budget fullResolution;
+    ZoomSubscriptionResolutionPolicy::Budget fullResolution(cameraMaxResolution_);
     for (const auto& request : subscriptions->asArray()) {
       const auto participantId = request.getString("participantId");
       if (participantId.empty()) {
@@ -425,14 +439,10 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
       }
       command.mode = kind == "screen-share" ? "screenshare" : "";
       const auto existing = sentSubscriptions_.find(command.sourceUuid);
-      // Resolution (0=360P, 1=720P, 2=1080P) by a STABLE tier: bus ROUTES and screen
-      // share at 1080P (capped), Tiles / wall / ISO at 720P, no ratchet. See
-      // ZoomSubscriptionResolutionPolicy.h (#478). It used to be 1080P for
-      // purpose=="active-speaker", so every speaker change rebuilt two renderers.
-      // TARGET is still 1080p60 for EVERY participant (product spec); N concurrent
-      // 1080P raw subscriptions overloaded the Zoom SDK (ntdll 0xc000000d), so the
-      // rest stay 720P until that is proven otherwise. The engine downgrades further
-      // on per-feed failure.
+      // One join-scoped camera ceiling across Program, Preview, tiles, wall,
+      // multiview and ISO. A cue never changes the requested camera tier;
+      // screen share retains its independent 1080p request. At the default
+      // 1080p ceiling, the existing 8-camera budget still demotes overflow.
       // Audio subscriptions have no resolution concept; key them at -1 so a video
       // and an audio subscription for the same source don't alias.
       const bool isAudioSubscription = kind == "participant-audio" || kind == "meeting-audio";
@@ -1097,6 +1107,7 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
       {"fullResolutionCap",
        static_cast<double>(ZoomSubscriptionResolutionPolicy::kMaxConcurrentFullResolutionCameras)},
       {"fullResolutionDemoted", static_cast<double>(fullResolutionDemoted_)},
+      {"cameraMaxResolution", cameraMaxResolution_},
       {"lastDepartures", static_cast<double>(departures)},
       {"sources", sources},
   };

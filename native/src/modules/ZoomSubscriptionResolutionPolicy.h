@@ -71,8 +71,12 @@ namespace corevideo::modules {
 // Only `participant-video` is tiered: the macOS shell sends kind "video" with
 // purpose "program" for every assigned guest and must not be moved to N x 1080P.
 struct ZoomSubscriptionResolutionPolicy {
+  static constexpr int k360P = 0;
   static constexpr int k720P = 1;
   static constexpr int k1080P = 2;
+  [[nodiscard]] static constexpr int clampCameraMax(int resolution) {
+    return resolution < k360P ? k360P : resolution > k1080P ? k1080P : resolution;
+  }
   // 8, RAISED FROM 4 AND LIVE-SOAK-PROVEN (2026-09-13, owner "whole wall at
   // 1080p"; the reported bug was tiles dropping as the operator cycled preview).
   // The historic 4 came from a 2026-06 CPU-I420-era crash at 6 concurrent 1080p
@@ -112,13 +116,17 @@ struct ZoomSubscriptionResolutionPolicy {
   // Applies the 1080P cap across ONE spine payload, in its order.
   class Budget {
    public:
+    explicit Budget(int cameraMax = k1080P) : cameraMax_(clampCameraMax(cameraMax)) {}
     [[nodiscard]] int resolve(std::string_view kind, std::string_view purpose) {
       if (kind == "screen-share") {
         return k1080P;
       }
       if (!wantsFullResolution(kind, purpose)) {
-        return k720P;
+        // The legacy macOS camera kind has a 720p base tier; it still obeys
+        // an operator's lower session ceiling without promoting to 1080p.
+        return kind == "video" && cameraMax_ < k720P ? cameraMax_ : k720P;
       }
+      if (cameraMax_ < k1080P) return cameraMax_;
       if (granted_ < kMaxConcurrentFullResolutionCameras) {
         ++granted_;
         return k1080P;
@@ -130,6 +138,7 @@ struct ZoomSubscriptionResolutionPolicy {
     [[nodiscard]] int demoted() const { return demoted_; }
 
    private:
+    int cameraMax_ = k1080P;
     int granted_ = 0;
     int demoted_ = 0;
   };

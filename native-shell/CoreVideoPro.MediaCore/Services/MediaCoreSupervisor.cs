@@ -476,7 +476,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         // join only. Defaulted off and never stored: ending their other Zoom
         // session evicts their own client from the meeting, so it may only
         // ever happen because they just asked for it.
-        bool endOtherMeeting = false)
+        bool endOtherMeeting = false,
+        int cameraMaxResolution = 2)
     {
         var joinDetails = ZoomMeetingUrlParser.Parse(meetingUrl);
         var payload = new Dictionary<string, object?>
@@ -485,6 +486,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             ["displayName"] = displayName,
             ["webinar"] = webinar
         };
+        payload["cameraMaxResolution"] = Math.Clamp(cameraMaxResolution, 0, 2);
         if (endOtherMeeting)
         {
             payload["endOtherMeeting"] = true;

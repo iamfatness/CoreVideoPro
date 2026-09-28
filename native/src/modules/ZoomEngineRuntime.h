@@ -191,6 +191,7 @@ class ZoomEngineRuntime {
   // Bus routes the last spine payload asked for at 1080P but the concurrency cap
   // held at 720P (#478 R4). Guarded by mutex_.
   int fullResolutionDemoted_ = 0;
+  int cameraMaxResolution_ = 2;  // captured once from each join payload
   std::atomic<std::uint64_t> speakerEpoch_{0};
   // Operator opted in to raw capture (Studio "Engine On"). Raw recording /
   // recording-rights request only starts once this is set, so it no longer

@@ -262,6 +262,11 @@ public sealed class ShowInputsCoordinatorTests
         Emit("1:1:test", 7, 1280, 720, 15, 2, 1500, 200);
         Assert.Equal("1280×720@15", row.FormatLabel);
         Assert.Equal("up to 1080p requested", row.ConfiguredCapLabel);
+        coordinator.MultiviewInputRows.SetAppliedCameraCap("720p");
+        Assert.Equal("1280×720@15", row.FormatLabel);
+        Assert.Equal("", row.ConfiguredCapLabel);
+        coordinator.MultiviewInputRows.SetAppliedCameraCap("1080p");
+        Assert.Equal("up to 1080p requested", row.ConfiguredCapLabel);
         Assert.Equal("LIVE", row.StatusLabel);
         Emit("1:1:test", 7, 1280, 720, 15, 2, 1500, 1501);
         Assert.Equal("STALLED", row.StatusLabel);

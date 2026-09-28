@@ -1552,7 +1552,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 return Task.CompletedTask;
             },
             zoomStatusChanged: status => RunOnUiThread(() => ZoomStatus = status),
-            onMeetingJoined: () => RunOnUiThread(() => ActiveTab = StudioTab.Studio));
+            onMeetingJoined: cameraMaxTier => RunOnUiThread(() =>
+            {
+                MarkZoomCameraMaxApplied(cameraMaxTier);
+                ActiveTab = StudioTab.Studio;
+            }),
+            cameraMaxResolutionTier: () => ZoomCameraResolutionPreference.ToSdkTier(ZoomCameraMaxResolution));
+        InitializeZoomCameraResolution();
         Settings.ConfigureOutputDestinations(BuildSupportBundleOutputDestinations);
         _zoomOAuthCoordinator.SetStatusChangedHandler(message =>
         {
@@ -11942,6 +11948,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 .ToList(),
             // v9: the Zoom→program audio topology persists across launches.
             ZoomAudioMode = ZoomAudioModePreference.Format(_zoomAudioMode),
+            ZoomCameraMaxResolution = ZoomCameraMaxResolution,
             CustomScenes = _scenes
                 .Where(scene => scene.Id.StartsWith("custom-", StringComparison.Ordinal))
                 .Select(scene => ScenePersistenceService.ToPersisted(
@@ -12106,6 +12113,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // sync-context build, so the mode is continuously re-asserted rather than
         // sent once — a respawned core picks it up on the next sync.
         _zoomAudioMode = ZoomAudioModePreference.Parse(preferences.ZoomAudioMode);
+        _zoomCameraMaxResolution = ZoomCameraResolutionPreference.Normalize(preferences.ZoomCameraMaxResolution);
+        OnPropertyChanged(nameof(ZoomCameraMaxResolution));
+        OnPropertyChanged(nameof(ZoomCameraMaxStatus));
         OnPropertyChanged(nameof(ZoomAudioMode));
         OnPropertyChanged(nameof(IsPerGuestIsoAudio));
         if (_zoomAudioMode == ZoomAudioMode.PerGuestIso)

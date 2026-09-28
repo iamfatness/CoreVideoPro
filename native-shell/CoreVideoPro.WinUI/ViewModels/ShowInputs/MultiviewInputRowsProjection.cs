@@ -20,6 +20,7 @@ public sealed class MultiviewInputRowsProjection
     private string? _retiredEpoch;
     private readonly Dictionary<string, IsoOutputLifecycleFact> _isoFacts = new(StringComparer.Ordinal);
     private IReadOnlyList<MultiviewTile> _tiles = [];
+    private string _cameraCap = ZoomCameraResolutionPreference.Default;
 
     public ObservableCollection<MultiviewInputRow> Rows { get; } = new(
         Enumerable.Range(1, ShowInputRosterService.MaxMultiviewBoxes)
@@ -98,10 +99,27 @@ public sealed class MultiviewInputRowsProjection
             row.FormatStale = false;
             row.StatusLabel = participant.Talking == true ? "TALKING" : "LIVE";
             row.FormatLabel = $"{fact.Width}×{fact.Height}@{fact.Fps}";
-            row.CapDiffers = fact.Width < 1920 || fact.Height < 1080;
-            row.ConfiguredCapLabel = row.CapDiffers ? "up to 1080p requested" : "";
+            ApplyCameraCap(row, fact.Width, fact.Height);
             PatchPreview(row);
         }
+    }
+
+    /// <summary>The ceiling accepted at this meeting's join, never a pending preference.</summary>
+    public void SetAppliedCameraCap(string cap)
+    {
+        _cameraCap = ZoomCameraResolutionPreference.Normalize(cap);
+        foreach (var row in Rows.Where(item => item.SourceId?.StartsWith("zoom:", StringComparison.Ordinal) == true &&
+                                               item.ObservedWidth > 0 && item.ObservedHeight > 0))
+            ApplyCameraCap(row, row.ObservedWidth, row.ObservedHeight);
+    }
+
+    private void ApplyCameraCap(MultiviewInputRow row, int width, int height)
+    {
+        row.ObservedWidth = width;
+        row.ObservedHeight = height;
+        var (capWidth, capHeight) = ZoomCameraResolutionPreference.Dimensions(_cameraCap);
+        row.CapDiffers = width < capWidth || height < capHeight;
+        row.ConfiguredCapLabel = row.CapDiffers ? $"up to {_cameraCap} requested" : "";
     }
 
     public void EngineStopped()
@@ -165,6 +183,8 @@ public sealed class MultiviewInputRowsProjection
         row.FrameAgeMs = -1;
         row.HighestFrameId = 0;
         row.LastFrameAtMs = -1;
+        row.ObservedWidth = 0;
+        row.ObservedHeight = 0;
     }
 
     private void PatchSlot(int slotNumber)
@@ -283,8 +303,7 @@ public sealed class MultiviewInputRowsProjection
         row.FormatStale = video.LastFrameAgeMs > 1500;
         row.StatusLabel = row.FormatStale ? "STALLED" : participant.Talking == true ? "TALKING" : "LIVE";
         row.FormatLabel = $"{video.DeliveredWidth}×{video.DeliveredHeight}@{video.DeliveredFps}";
-        row.CapDiffers = video.DeliveredWidth < 1920 || video.DeliveredHeight < 1080;
-        row.ConfiguredCapLabel = row.CapDiffers ? "up to 1080p requested" : "";
+        ApplyCameraCap(row, video.DeliveredWidth, video.DeliveredHeight);
         PatchPreview(row);
     }
 }
