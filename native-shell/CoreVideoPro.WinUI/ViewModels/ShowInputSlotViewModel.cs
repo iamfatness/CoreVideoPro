@@ -179,7 +179,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     public bool ShowIsoToggle => IsAssigned && Kind switch
     {
         ShowInputKind.ZoomParticipant or ShowInputKind.Blackmagic or ShowInputKind.Aja or
-        ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or
+        ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest or
         ShowInputKind.Browser => true,
         _ => false
     };
@@ -373,7 +373,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             _participants.FirstOrDefault(p => string.Equals(p.Id, pid, StringComparison.Ordinal))?.Name ?? string.Empty,
         ShowInputKind.Media when ShowInputRosterService.TryGetMediaAssetId(ParticipantId, out var assetId) =>
             _mediaAssets.FirstOrDefault(a => string.Equals(a.Id, assetId, StringComparison.Ordinal))?.Name ?? string.Empty,
-        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser
+        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest or ShowInputKind.Browser
             when CaptureDeviceId is { Length: > 0 } deviceId =>
             _captureDevices.FirstOrDefault(d => string.Equals(d.Id, deviceId, StringComparison.Ordinal))?.Name ?? string.Empty,
         _ => string.Empty

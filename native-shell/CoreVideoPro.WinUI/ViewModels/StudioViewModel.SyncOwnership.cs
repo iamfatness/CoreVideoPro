@@ -42,6 +42,8 @@ public sealed partial class StudioViewModel
             {
                 source.PropertyChanged -= OnSrtIngestSourcePropertyChanged;
             }
+            _rtmpIngestCoordinator.Changed -= OnRtmpIngestSourcesChanged;
+            _rtmpIngestCoordinator.Dispose();
         });
     }
 

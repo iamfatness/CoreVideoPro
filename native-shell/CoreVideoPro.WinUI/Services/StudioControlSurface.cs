@@ -481,6 +481,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             "blackmagic" => ShowInputKind.Blackmagic,
             "aja" => ShowInputKind.Aja,
             "srt" => ShowInputKind.SrtIngest,
+            "rtmp" => ShowInputKind.RtmpIngest,
             _ => ShowInputKind.UvcWebcam
         };
     }

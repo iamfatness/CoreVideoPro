@@ -35,6 +35,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
@@ -317,6 +318,60 @@
                     <TextBlock Text="{x:Bind ViewModel.SrtIngestRuntimeSummary, Mode=OneWay}"
                                FontSize="11"
                                Foreground="{StaticResource StudioMutedBrush}"
+                               TextWrapping="WrapWholeWords" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="3" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
+                <StackPanel Spacing="10">
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="RTMP ingest" Style="{StaticResource OperatorSectionTitle}" />
+                            <TextBlock Text="{x:Bind ViewModel.RtmpIngestCountSummary, Mode=OneWay}"
+                                       FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="+" MinWidth="44"
+                                Style="{StaticResource OperatorGhostButton}"
+                                Command="{x:Bind ViewModel.AddRtmpIngestSourceCommand}"
+                                IsEnabled="{x:Bind ViewModel.CanAddRtmpIngestSource, Mode=OneWay}" />
+                    </Grid>
+                    <ItemsRepeater ItemsSource="{x:Bind ViewModel.RtmpIngestSources, Mode=OneWay}">
+                        <ItemsRepeater.Layout>
+                            <StackLayout Orientation="Vertical" Spacing="8" />
+                        </ItemsRepeater.Layout>
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="models:RtmpIngestSource">
+                                <Border Background="#0C1118" BorderBrush="{StaticResource StudioBorderBrush}"
+                                        BorderThickness="1" CornerRadius="6" Padding="10">
+                                    <StackPanel Spacing="8">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Spacing="2">
+                                                <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="13" />
+                                                <TextBlock Text="{x:Bind Summary, Mode=OneWay}" FontSize="11"
+                                                           Foreground="{StaticResource StudioMutedBrush}" />
+                                            </StackPanel>
+                                            <Button Grid.Column="1" Content="Remove"
+                                                    Style="{StaticResource OperatorGhostButton}"
+                                                    Command="{Binding ViewModel.RemoveRtmpIngestSourceCommand, ElementName=SourcesInputsRoot}"
+                                                    CommandParameter="{x:Bind Id}" />
+                                        </Grid>
+                                        <TextBox Header="Listener URL" PlaceholderText="rtmp://0.0.0.0:1935/live/stream"
+                                                 Text="{x:Bind Url, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                    </ItemsRepeater>
+                    <TextBlock Text="{x:Bind ViewModel.RtmpIngestRuntimeSummary, Mode=OneWay}"
+                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
                                TextWrapping="WrapWholeWords" />
                 </StackPanel>
             </Border>

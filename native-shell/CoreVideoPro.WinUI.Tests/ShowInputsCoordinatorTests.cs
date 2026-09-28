@@ -857,7 +857,7 @@ public sealed class ShowInputsCoordinatorTests
         public SrtIngestSource CreateSrtIngestSource(int number) =>
             new() { Id = $"srt-source-{number:00}", Number = number };
 
-        public void RemoveVirtualSrtIngestDevice(string deviceId) { }
+        public void RemoveVirtualNetworkIngestDevice(string deviceId) { }
 
         public string CommandStatus { set => LastCommandStatus = value; }
 

@@ -252,6 +252,12 @@ public sealed record MediaCoreSrtIngestSourceWire(
     string? StreamId = null,
     string? Passphrase = null);
 
+public sealed record MediaCoreRtmpIngestSourceWire(
+    string Id,
+    string DeviceId,
+    string Name,
+    string Url);
+
 public sealed record MediaCoreOutputProfileWire(
     string ProfileId,
     string Resolution,
@@ -315,6 +321,7 @@ public sealed record MediaCoreProductionSyncContext
     public IReadOnlyList<string> StreamDestinations { get; init; } = ["rtmp"];
     public IReadOnlyList<MediaCoreStreamDestinationWire> StreamDestinationSettings { get; init; } = [];
     public IReadOnlyList<MediaCoreSrtIngestSourceWire> SrtIngestSources { get; init; } = [];
+    public IReadOnlyList<MediaCoreRtmpIngestSourceWire> RtmpIngestSources { get; init; } = [];
     public MediaCoreOutputProfileWire CanvasOutputProfile { get; init; } = DefaultCanvasOutputProfile;
     public MediaCoreOutputProfileWire StreamOutputProfile { get; init; } = DefaultStreamOutputProfile;
     public MediaCoreOutputProfileWire RecordingOutputProfile { get; init; } = DefaultRecordingOutputProfile;

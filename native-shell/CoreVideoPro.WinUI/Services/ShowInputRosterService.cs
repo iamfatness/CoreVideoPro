@@ -19,6 +19,7 @@ public static class ShowInputRosterService
         new() { Value = ShowInputKind.UvcWebcam, Label = "UVC webcam" },
         new() { Value = ShowInputKind.Screen, Label = "Screen" },
         new() { Value = ShowInputKind.SrtIngest, Label = "SRT ingest" },
+        new() { Value = ShowInputKind.RtmpIngest, Label = "RTMP ingest" },
         new() { Value = ShowInputKind.Media, Label = "Media asset" },
         new() { Value = ShowInputKind.Browser, Label = "Browser source" }
     ];
@@ -108,6 +109,7 @@ public static class ShowInputRosterService
             "blackmagic" => ShowInputKind.Blackmagic,
             "aja" => ShowInputKind.Aja,
             "srt" => ShowInputKind.SrtIngest,
+            "rtmp" => ShowInputKind.RtmpIngest,
             _ => ShowInputKind.UvcWebcam
         };
     }
@@ -155,6 +157,7 @@ public static class ShowInputRosterService
             {
                 ShowInputKind.Screen => "Screen",
                 ShowInputKind.SrtIngest => "SRT",
+                ShowInputKind.RtmpIngest => "RTMP",
                 ShowInputKind.Browser => "Browser",
                 _ => "Camera"
             };
@@ -264,7 +267,7 @@ public static class ShowInputRosterService
         ShowInputKind.ZoomParticipant when slot.ParticipantId is { Length: > 0 } pid => ZoomSourceId(pid),
         // A Media slot stores its "media:<assetId>" id directly in ParticipantId.
         ShowInputKind.Media when slot.ParticipantId is { Length: > 0 } media => media,
-        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser
+        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest or ShowInputKind.Browser
             when slot.CaptureDeviceId is { Length: > 0 } cap => CaptureSourceId(cap),
         _ => null
     };
@@ -434,6 +437,14 @@ public static class ShowInputRosterService
                     Label = $"{device.Name} - {device.FormatLabel} - {device.ConnectionLabel}"
                 })
                 .ToList(),
+            ShowInputKind.RtmpIngest => captureDevices
+                .Where(device => device.Vendor.Equals("rtmp", StringComparison.OrdinalIgnoreCase))
+                .Select(device => new ShowInputSourceOption
+                {
+                    Value = device.Id,
+                    Label = $"{device.Name} - {device.FormatLabel} - {device.ConnectionLabel}"
+                })
+                .ToList(),
             _ => []
         };
     }
@@ -460,7 +471,7 @@ public static class ShowInputRosterService
             return;
         }
 
-        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser)
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest or ShowInputKind.Browser)
         {
             route.Mode = SourceRouteMode.CaptureDevice;
             route.ParticipantId = null;
@@ -499,13 +510,14 @@ public static class ShowInputRosterService
                     ShowInputKind.Blackmagic => 1,
                     ShowInputKind.Aja => 2,
                     ShowInputKind.SrtIngest => 3,
+                    ShowInputKind.RtmpIngest => 3,
                     _ => 4
                 })
                 .FirstOrDefault(slot => slot.Kind is
                     ShowInputKind.UvcWebcam or
                     ShowInputKind.Blackmagic or
                     ShowInputKind.Aja or
-                    ShowInputKind.SrtIngest);
+                    ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest);
 
         if (fallback is null)
         {
@@ -557,7 +569,7 @@ public static class ShowInputRosterService
         var assignedDeviceIds = new HashSet<string>(
             slots
                 .Where(slot => slot.InShow &&
-                    slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser &&
+                    slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest or ShowInputKind.Browser &&
                     !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
                 .Select(slot => slot.CaptureDeviceId!),
             StringComparer.Ordinal);
@@ -658,7 +670,7 @@ public static class ShowInputRosterService
                 ParticipantId: pid);
         }
 
-        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser &&
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest or ShowInputKind.Browser &&
             slot.CaptureDeviceId is { Length: > 0 } deviceId &&
             devicesById.TryGetValue(deviceId, out var device))
         {
@@ -791,7 +803,7 @@ public static class ShowInputRosterService
         {
             ShowInputKind.ZoomParticipant =>
                 !string.IsNullOrWhiteSpace(slot.ParticipantId) && participantsById.ContainsKey(slot.ParticipantId),
-            ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser =>
+            ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest or ShowInputKind.Browser =>
                 !string.IsNullOrWhiteSpace(slot.CaptureDeviceId) && devicesById.ContainsKey(slot.CaptureDeviceId),
             ShowInputKind.Media =>
                 TryGetMediaAssetId(slot.ParticipantId, out var mediaAssetId) && mediaAssetsById.ContainsKey(mediaAssetId),
@@ -932,6 +944,7 @@ public static class ShowInputRosterService
             "blackmagic" => "Blackmagic SDI/HDMI",
             "aja" => "AJA SDI/HDMI",
             "srt" => "SRT ingest",
+            "rtmp" => "RTMP ingest",
             _ => "UVC webcam"
         };
 }

@@ -845,6 +845,8 @@ public sealed record NativeMediaCorePreviewScene
 
 public sealed record NativeMediaCoreStateSnapshot
 {
+    /// <summary>Core capture status for source-row signal updates; pixels remain native.</summary>
+    public JsonElement? CaptureDevices { get; init; }
     public JsonElement? ProgramBuffer { get; init; }
     public NativeMediaCorePreviewScene? PreviewScene { get; init; }
     public string? SceneId { get; init; }

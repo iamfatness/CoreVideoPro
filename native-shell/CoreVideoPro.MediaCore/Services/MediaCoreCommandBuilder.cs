@@ -67,6 +67,7 @@ public static class MediaCoreCommandBuilder
         commands.AddRange([
             BuildOutputProfileCommand(context.CanvasOutputProfile),
             BuildSrtIngestSourcesCommand(context.SrtIngestSources),
+            BuildRtmpIngestSourcesCommand(context.RtmpIngestSources),
             BuildBrandKitCommand(context.BrandKit),
             BuildAudioMixCommand(context),
             BuildAudioMonitorCommand(context.AudioMonitor),
@@ -463,6 +464,18 @@ public static class MediaCoreCommandBuilder
                 ["latencyMs"] = source.LatencyMs,
                 ["streamId"] = source.StreamId,
                 ["passphrase"] = source.Passphrase
+            }).ToList()
+        });
+
+    private static NativeMediaCoreCommand BuildRtmpIngestSourcesCommand(IReadOnlyList<MediaCoreRtmpIngestSourceWire> sources) =>
+        Command("configure-rtmp-ingest-sources", new Dictionary<string, object?>
+        {
+            ["sources"] = sources.Select(source => new Dictionary<string, object?>
+            {
+                ["id"] = source.Id,
+                ["deviceId"] = source.DeviceId,
+                ["name"] = source.Name,
+                ["url"] = source.Url
             }).ToList()
         });
 
