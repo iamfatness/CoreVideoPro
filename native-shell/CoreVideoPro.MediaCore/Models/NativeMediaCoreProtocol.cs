@@ -844,6 +844,7 @@ public sealed record NativeMediaCorePreviewScene
 
 public sealed record NativeMediaCoreStateSnapshot
 {
+    public IReadOnlyList<NativeCaptureDeviceStatus> CaptureDevices { get; init; } = [];
     public JsonElement? ProgramBuffer { get; init; }
     public NativeMediaCorePreviewScene? PreviewScene { get; init; }
     public string? SceneId { get; init; }

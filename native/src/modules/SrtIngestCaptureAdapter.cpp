@@ -132,6 +132,8 @@ struct ReaderChannel {
   int64_t framesReceived = 0;
   int64_t lastFrameAtMs = 0;
   int64_t decoderFailures = 0;
+  int64_t codecDecodeErrors = 0;
+  int64_t packetDecodeErrors = 0;
   int64_t droppedFrames = 0;
   // Embedded contribution audio, drained by pollAudioFrames each tick. Interleaved
   // 48k stereo float, guarded by `mutex` above.
@@ -142,10 +144,12 @@ struct ReaderChannel {
   std::atomic<HANDLE> process{nullptr};
   std::atomic<HANDLE> readPipe{nullptr};
   std::atomic<HANDLE> audioPipe{nullptr};
+  std::atomic<HANDLE> errorPipe{nullptr};
 #else
   std::atomic<int> pid{-1};
   std::atomic<int> readFd{-1};
   std::atomic<int> audioFd{-1};
+  std::atomic<int> errorFd{-1};
   std::string audioFifoPath;
 #endif
   // DESCRIPTOR OWNERSHIP (production-realtime rule 2: one owner per mutable
@@ -163,6 +167,7 @@ struct ReaderChannel {
   // closes it after its read loop has exited.
   //   * video pipe (readFd / readPipe)   -> owned by `thread`      (readerLoop)
   //   * audio pipe (audioFd / audioPipe) -> owned by `audioThread` (audioLoop)
+  //   * stderr pipe (errorFd / errorPipe) -> owned by `errorThread` (errorLoop)
   //   * decoder process handle           -> owned by whichever thread wins the
   //                                         atomic exchange in killProcess
   // Anything else that needs a reader to stop either kills the decoder (whose
@@ -170,10 +175,12 @@ struct ReaderChannel {
   // invalidates the descriptor under the reader.
   std::mutex ioMutex;  // serialises retirement against cancellation
   std::atomic_bool audioLoopExited{true};
+  std::atomic_bool errorLoopExited{true};
   std::atomic_bool readerLoopExited{true};
 
   std::thread thread;
   std::thread audioThread;
+  std::thread errorThread;
 
   void setStatus(const std::string& state, const std::string& note) {
     std::lock_guard lock(mutex);
@@ -213,6 +220,15 @@ void retireAudioPipe(ReaderChannel& channel) {
 #endif
 }
 
+void retireErrorPipe(ReaderChannel& channel) {
+  std::lock_guard lock(channel.ioMutex);
+#ifdef _WIN32
+  if (HANDLE pipe = channel.errorPipe.exchange(nullptr); pipe != nullptr) ::CloseHandle(pipe);
+#else
+  if (const int fd = channel.errorFd.exchange(-1); fd >= 0) ::close(fd);
+#endif
+}
+
 #ifdef _WIN32
 // Unblock a reader WITHOUT invalidating its handle — the Windows half of the
 // ownership rule. CancelIoEx aborts another thread's pending ReadFile;
@@ -235,6 +251,11 @@ void cancelAudioPipeIo(ReaderChannel& channel) {
     ::CancelIoEx(pipe, nullptr);
     ::DisconnectNamedPipe(pipe);
   }
+}
+
+void cancelErrorPipeIo(ReaderChannel& channel) {
+  std::lock_guard lock(channel.ioMutex);
+  if (HANDLE pipe = channel.errorPipe.load(); pipe != nullptr) ::CancelIoEx(pipe, nullptr);
 }
 #endif
 
@@ -265,6 +286,17 @@ void joinAudioReader(ReaderChannel& channel) {
   }
 #endif
   channel.audioThread.join();
+}
+
+void joinErrorReader(ReaderChannel& channel) {
+  if (!channel.errorThread.joinable()) return;
+#ifdef _WIN32
+  while (!channel.errorLoopExited.load()) {
+    cancelErrorPipeIo(channel);
+    std::this_thread::sleep_for(std::chrono::milliseconds(kIoCancelRetryMs));
+  }
+#endif
+  channel.errorThread.join();
 }
 
 void joinVideoReader(ReaderChannel& channel) {
@@ -556,6 +588,8 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
         device.decodedAudioSamples = channel->audioSamplesReceived;
         device.lastFrameAgeMs = health.lastFrameAgeMs;
         device.decoderFailures = channel->decoderFailures;
+        device.codecDecodeErrors = channel->codecDecodeErrors;
+        device.packetDecodeErrors = channel->packetDecodeErrors;
       }
       const auto offset = audioSyncOffsets_.find(deviceId);
       device.audioSyncOffsetMs = offset == audioSyncOffsets_.end() ? 0 : offset->second;
@@ -587,6 +621,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     // re-issuing the cancel that unblocks them).
     killProcess(*channel);
     joinVideoReader(*channel);
+    joinErrorReader(*channel);
   }
 
   void stopAll() {
@@ -675,6 +710,9 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       joinAudioReader(*channel);  // previous generation, already retired
       channel->audioLoopExited.store(false);
       channel->audioThread = std::thread([channel] { audioLoop(channel); });
+      joinErrorReader(*channel);  // previous generation, already retired
+      channel->errorLoopExited.store(false);
+      channel->errorThread = std::thread([channel] { errorLoop(channel); });
 
       const std::size_t frameBytes = static_cast<std::size_t>(channel->width) *
                                      static_cast<std::size_t>(channel->height) * kBytesPerPixel;
@@ -709,6 +747,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       // descriptor leaks across a reconnect and no live slot is overwritten.
       killProcess(*channel);
       joinAudioReader(*channel);
+      joinErrorReader(*channel);
       retireVideoPipe(*channel);
       if (!channel->running.load()) {
         break;
@@ -720,6 +759,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       backoffMs = std::min(backoffMs * 2, 10000);
     }
     joinAudioReader(*channel);
+    joinErrorReader(*channel);
     retireVideoPipe(*channel);
     channel->setStatus("detected", "");
   }
@@ -727,6 +767,55 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
   // Drain the decoder's second output: the feed's embedded audio as interleaved
   // 48k stereo float. Blocking by design and on its own thread, so a silent or
   // audio-less contributor never holds up video.
+  static void observeDecoderLine(ReaderChannel& channel, const std::string& line) {
+    const auto fault = classifySrtDecoderError(line);
+    if (fault == SrtDecoderFault::None) return;
+    std::lock_guard lock(channel.mutex);
+    if (fault == SrtDecoderFault::Codec) {
+      ++channel.codecDecodeErrors;
+      channel.warning = "SRT codec decode errors observed; see error counters.";
+    } else {
+      ++channel.packetDecodeErrors;
+      channel.warning = "SRT packet decode errors observed; see error counters.";
+    }
+  }
+
+  static void errorLoop(const std::shared_ptr<ReaderChannel> channel) {
+    struct Retire {
+      ReaderChannel& channel;
+      ~Retire() {
+        retireErrorPipe(channel);
+        channel.errorLoopExited.store(true);
+      }
+    } retire{*channel};
+    std::string line;
+    line.reserve(256);
+    char buffer[2048];
+    while (channel->running.load()) {
+#ifdef _WIN32
+      HANDLE pipe = channel->errorPipe.load();
+      DWORD read = 0;
+      if (pipe == nullptr || !::ReadFile(pipe, buffer, sizeof(buffer), &read, nullptr) || read == 0) break;
+      const std::size_t count = read;
+#else
+      const int fd = channel->errorFd.load();
+      if (fd < 0) break;
+      const auto read = ::read(fd, buffer, sizeof(buffer));
+      if (read <= 0) break;
+      const std::size_t count = static_cast<std::size_t>(read);
+#endif
+      for (std::size_t i = 0; i < count; ++i) {
+        if (buffer[i] == '\n') {
+          observeDecoderLine(*channel, line);
+          line.clear();
+        } else if (buffer[i] != '\r' && line.size() < 4096) {
+          line.push_back(buffer[i]);
+        }
+      }
+    }
+    if (!line.empty()) observeDecoderLine(*channel, line);
+  }
+
   static void audioLoop(const std::shared_ptr<ReaderChannel> channel) {
     // This thread OWNS the audio descriptor for this decoder generation: it is the
     // only thread that closes it, and it closes it on EVERY exit path below (hence
@@ -874,12 +963,21 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     }
     // The child must not inherit our read end, or the pipe never reports EOF.
     ::SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+    HANDLE errorRead = nullptr;
+    HANDLE errorWrite = nullptr;
+    if (!::CreatePipe(&errorRead, &errorWrite, &security, 65536)) {
+      ::CloseHandle(readPipe);
+      ::CloseHandle(writePipe);
+      if (audioServer != nullptr) ::CloseHandle(audioServer);
+      return false;
+    }
+    ::SetHandleInformation(errorRead, HANDLE_FLAG_INHERIT, 0);
 
     STARTUPINFOA startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES;
     startup.hStdOutput = writePipe;
-    startup.hStdError = ::GetStdHandle(STD_ERROR_HANDLE);
+    startup.hStdError = errorWrite;
     startup.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION process{};
     std::string commandLine;
@@ -895,8 +993,10 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
                                           nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
                                           &startup, &process);
     ::CloseHandle(writePipe);  // our copy; the child holds its own
+    ::CloseHandle(errorWrite);
     if (!created) {
       ::CloseHandle(readPipe);
+      ::CloseHandle(errorRead);
       if (audioServer != nullptr) {
         ::CloseHandle(audioServer);
       }
@@ -908,6 +1008,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     }
     channel.process.store(process.hProcess);
     channel.readPipe.store(readPipe);
+    channel.errorPipe.store(errorRead);
     channel.audioPipe.store(audioServer);
     return true;
 #else
@@ -919,8 +1020,8 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       }
       return false;
     }
-    const pid_t pid = ::fork();
-    if (pid < 0) {
+    int errorFds[2] = {-1, -1};
+    if (!makeCloexecPipe(errorFds)) {
       ::close(fds[0]);
       ::close(fds[1]);
       if (audioReady) {
@@ -929,8 +1030,23 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       }
       return false;
     }
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+      ::close(fds[0]);
+      ::close(fds[1]);
+      ::close(errorFds[0]);
+      ::close(errorFds[1]);
+      if (audioReady) {
+        ::close(audioFds[0]);
+        ::close(audioFds[1]);
+      }
+      return false;
+    }
     if (pid == 0) {
       ::dup2(fds[1], STDOUT_FILENO);
+      ::dup2(errorFds[1], STDERR_FILENO);
+      ::close(errorFds[0]);
+      ::close(errorFds[1]);
       if (audioReady) {
         // The child writes audio to fd 3; dup2 clears FD_CLOEXEC on the target.
         ::dup2(audioFds[1], kAudioChildFd);
@@ -945,6 +1061,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       // POSIX makes it a no-op and the flag survives. Clear it explicitly so the
       // pipes we deliberately made close-on-exec still reach ffmpeg.
       ::fcntl(STDOUT_FILENO, F_SETFD, 0);
+      ::fcntl(STDERR_FILENO, F_SETFD, 0);
       if (audioReady) {
         ::fcntl(kAudioChildFd, F_SETFD, 0);
       }
@@ -960,12 +1077,14 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       ::_exit(127);
     }
     ::close(fds[1]);
+    ::close(errorFds[1]);
     if (audioReady) {
       ::close(audioFds[1]);  // our copy of the write end; the child holds its own
       channel.audioFd.store(audioFds[0]);
     }
     channel.pid.store(pid);
     channel.readFd.store(fds[0]);
+    channel.errorFd.store(errorFds[0]);
     return true;
 #endif
   }

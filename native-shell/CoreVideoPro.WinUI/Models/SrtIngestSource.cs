@@ -1,7 +1,20 @@
+using CoreVideoPro.MediaCore.Models;
+using CoreVideoPro.WinUI.Services;
+
 namespace CoreVideoPro.WinUI.Models;
 
 public sealed class SrtIngestSource : CommunityToolkit.Mvvm.ComponentModel.ObservableObject
 {
+    private string _runtimeHealthLabel = SrtIngestStatusPolicy.Label(null);
+    public string RuntimeHealthLabel
+    {
+        get => _runtimeHealthLabel;
+        private set => SetProperty(ref _runtimeHealthLabel, value);
+    }
+
+    public void ApplyRuntimeStatus(NativeCaptureDeviceStatus? status) =>
+        RuntimeHealthLabel = SrtIngestStatusPolicy.Label(status);
+
     public required string Id { get; init; }
     public required int Number { get; init; }
 

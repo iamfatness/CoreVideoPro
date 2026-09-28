@@ -245,6 +245,8 @@ rpc::Json captureDeviceJson(const modules::CaptureDeviceInfo& device) {
   if (device.decodedAudioSamples) result.emplace("decodedAudioSamples", static_cast<double>(*device.decodedAudioSamples));
   if (device.lastFrameAgeMs) result.emplace("lastFrameAgeMs", static_cast<double>(*device.lastFrameAgeMs));
   if (device.decoderFailures) result.emplace("decoderFailures", static_cast<double>(*device.decoderFailures));
+  if (device.codecDecodeErrors) result.emplace("codecDecodeErrors", static_cast<double>(*device.codecDecodeErrors));
+  if (device.packetDecodeErrors) result.emplace("packetDecodeErrors", static_cast<double>(*device.packetDecodeErrors));
   if (device.vendor == "srt") {
     result.emplace("rttMs", device.rttMs ? rpc::Json(*device.rttMs) : rpc::Json(nullptr));
     result.emplace("rttStatus", device.rttMs ? "measured" : "unavailable: FFmpeg owns SRT socket");

@@ -112,7 +112,7 @@ public sealed class CoreObservationModel
         "browserSources" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         "captionTrack" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "captureAudioSources" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
-        "captureDevices" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
+        "captureDevices" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "codec" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         "commandProtocolFailures" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         "compositor" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },

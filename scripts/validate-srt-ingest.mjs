@@ -218,6 +218,7 @@ try {
       console.log(`source        : state=${device.connectionState} signal=${device.signalPresent} ` +
                   `decoded=${device.decodedFrames ?? "missing"} audio=${device.decodedAudioSamples ?? "missing"} ` +
                   `age=${device.lastFrameAgeMs ?? "missing"}ms failures=${device.decoderFailures ?? "missing"} ` +
+                  `codecErrors=${device.codecDecodeErrors ?? "missing"} packetErrors=${device.packetDecodeErrors ?? "missing"} ` +
                   `rtt=${device.rttMs ?? device.rttStatus ?? "missing"} warning=${device.warning || "none"}`);
       if (device.signalPresent) healthySamples += 1;
       else unhealthySamples += 1;
@@ -248,6 +249,11 @@ try {
     failures.push("SRT health did not count decoded video and audio");
   }
   if (device?.decoderFailures !== 0) failures.push(`SRT decoder startup failed ${device?.decoderFailures ?? "unknown"} times`);
+  if (device?.codecDecodeErrors !== 0) failures.push(`SRT codec decode errors: ${device?.codecDecodeErrors ?? "missing"}`);
+  if (device?.packetDecodeErrors !== 0) failures.push(`SRT packet decode errors: ${device?.packetDecodeErrors ?? "missing"}`);
+  if (device?.rttMs !== null || !device?.rttStatus?.includes("FFmpeg owns SRT socket")) {
+    failures.push("SRT RTT must remain explicitly unavailable while FFmpeg owns the socket");
+  }
   if (seconds >= 300 && unhealthySamples > Math.max(1, healthySamples * 0.01)) {
     failures.push(`SRT ingest was unhealthy at ${unhealthySamples}/${healthySamples + unhealthySamples} soak samples`);
   }

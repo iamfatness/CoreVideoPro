@@ -148,6 +148,23 @@ public sealed class NativeUvcCapturePolicyTests
         Assert.False(deckLink.SignalPresent);
     }
 
+    [Fact]
+    public void TryParseCaptureDevices_KeepsSrtErrorCountsAndUnknownRtt()
+    {
+        using var response = JsonDocument.Parse("""
+            {"type":"capture-devices","ok":true,"devices":[
+              {"id":"srt-ingest-01","vendor":"srt","connectionState":"receiving",
+               "codecDecodeErrors":2,"packetDecodeErrors":1,"decoderFailures":0,
+               "lastFrameAgeMs":83,"rttMs":null,"rttStatus":"unavailable: FFmpeg owns SRT socket"}]}
+            """);
+        var status = Assert.Single(CoreProtocolParser.TryParseCaptureDevices(response)!);
+        Assert.Equal(2, status.CodecDecodeErrors);
+        Assert.Equal(1, status.PacketDecodeErrors);
+        Assert.Equal(0, status.DecoderFailures);
+        Assert.Equal(83, status.LastFrameAgeMs);
+        Assert.Null(status.RttMs);
+    }
+
     [Theory]
     [InlineData("""{ "type": "ping", "id": "x", "ok": true }""")]
     [InlineData("""{ "type": "capture-devices", "id": "x", "ok": false, "devices": [] }""")]

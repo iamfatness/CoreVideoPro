@@ -174,6 +174,12 @@ public sealed class NativeCaptureDeviceStatus
     public int Height { get; init; }
     public int FrameRate { get; init; }
     public string? Warning { get; init; }
+    public long? DecoderFailures { get; init; }
+    public long? CodecDecodeErrors { get; init; }
+    public long? PacketDecodeErrors { get; init; }
+    public long? LastFrameAgeMs { get; init; }
+    public double? RttMs { get; init; }
+    public string? RttStatus { get; init; }
 
     /// <summary>
     /// OS-level device identity (the Windows device-interface symbolic link for
