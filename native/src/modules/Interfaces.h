@@ -899,6 +899,8 @@ struct CaptureDeviceInfo {
   std::optional<int64_t> decodedAudioSamples;
   std::optional<int64_t> lastFrameAgeMs;
   std::optional<int64_t> decoderFailures;
+  std::optional<int64_t> codecDecodeErrors;
+  std::optional<int64_t> packetDecodeErrors;
   std::optional<double> rttMs;
 };
 
@@ -1653,6 +1655,7 @@ std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender();
 std::unique_ptr<IOutputSender> createHlsOutputSender();
 std::unique_ptr<IOutputSender> createNdiOutputSender();
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice();
+std::unique_ptr<ICaptureDevice> createNdiReceiveCaptureDevice();
 std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();
 std::unique_ptr<ICaptureDevice> createAjaCaptureDevice();
 // Native UVC webcam/capture-card ingest via Media Foundation (dev-gated behind

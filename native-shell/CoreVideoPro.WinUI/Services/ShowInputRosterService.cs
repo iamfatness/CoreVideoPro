@@ -19,6 +19,7 @@ public static class ShowInputRosterService
         new() { Value = ShowInputKind.UvcWebcam, Label = "UVC webcam" },
         new() { Value = ShowInputKind.Screen, Label = "Screen" },
         new() { Value = ShowInputKind.SrtIngest, Label = "SRT ingest" },
+        new() { Value = ShowInputKind.Ndi, Label = "NDI input" },
         new() { Value = ShowInputKind.Media, Label = "Media asset" },
         new() { Value = ShowInputKind.Browser, Label = "Browser source" }
     ];
@@ -108,7 +109,50 @@ public static class ShowInputRosterService
             "blackmagic" => ShowInputKind.Blackmagic,
             "aja" => ShowInputKind.Aja,
             "srt" => ShowInputKind.SrtIngest,
+            "ndi" => ShowInputKind.Ndi,
             _ => ShowInputKind.UvcWebcam
+        };
+    }
+
+    public static bool UsesNativeCaptureSession(CaptureDevice device) =>
+        device.Id.StartsWith("screen:", StringComparison.Ordinal) ||
+        device.Id.StartsWith("window:", StringComparison.Ordinal) ||
+        InferCaptureDeviceKind(device) == ShowInputKind.Ndi;
+
+    public static bool NativeCaptureSessionStarted(CaptureDevice device, string? state) =>
+        string.Equals(state, "connected", StringComparison.OrdinalIgnoreCase) ||
+        (InferCaptureDeviceKind(device) == ShowInputKind.Ndi &&
+         string.Equals(state, "connecting", StringComparison.OrdinalIgnoreCase));
+
+    public static CaptureDevice? MapCoreOwnedCaptureDevice(NativeCaptureDeviceStatus native)
+    {
+        var isScreen = native.Id.StartsWith("screen:", StringComparison.Ordinal);
+        var isWindow = native.Id.StartsWith("window:", StringComparison.Ordinal);
+        var isBrowser = native.Id.StartsWith("browser:", StringComparison.Ordinal);
+        var isNdi = string.Equals(native.Vendor, "ndi", StringComparison.OrdinalIgnoreCase);
+        if (!isScreen && !isWindow && !isBrowser && !isNdi) return null;
+
+        var inputId = isBrowser ? "browser" : isWindow ? "window" : isNdi ? "ndi" : "screen";
+        var inputLabel = isBrowser ? "Web page (WebView2)" : isWindow ? "Application window" :
+            isNdi ? "NDI network source" : "Entire display";
+        return new CaptureDevice
+        {
+            Id = native.Id,
+            NativeDeviceId = native.Id,
+            Vendor = isBrowser ? "browser" : isNdi ? "ndi" : "Screen capture",
+            Name = native.Name,
+            Inputs = [new CaptureDeviceInput { Id = inputId, Label = inputLabel }],
+            SelectedInputId = inputId,
+            Width = native.Width,
+            Height = native.Height,
+            FrameRate = native.FrameRate,
+            ConnectionState = native.ConnectionState == "connected" ||
+                (isNdi && (native.ConnectionState is "connecting" or "stalled"))
+                ? CaptureConnectionState.Connected
+                : native.ConnectionState == "failed"
+                    ? CaptureConnectionState.Error
+                    : CaptureConnectionState.Detected,
+            SignalPresent = native.SignalPresent
         };
     }
 
@@ -155,6 +199,7 @@ public static class ShowInputRosterService
             {
                 ShowInputKind.Screen => "Screen",
                 ShowInputKind.SrtIngest => "SRT",
+                ShowInputKind.Ndi => "NDI",
                 ShowInputKind.Browser => "Browser",
                 _ => "Camera"
             };
@@ -235,7 +280,7 @@ public static class ShowInputRosterService
     }
 
     /// <summary>Fixed submenu order for the source-picker menu.</summary>
-    public static readonly IReadOnlyList<string> UnifiedSourceGroups = ["Zoom", "Camera", "Screen", "Browser", "Media", "SRT"];
+    public static readonly IReadOnlyList<string> UnifiedSourceGroups = ["Zoom", "Camera", "Screen", "Browser", "Media", "SRT", "NDI"];
 
     /// <summary>The label shown on a slot's picker button: "Camera · Elgato HD60" for a bound
     /// source (group carries the type, so no separate type chip is needed), the bare label for
@@ -264,7 +309,7 @@ public static class ShowInputRosterService
         ShowInputKind.ZoomParticipant when slot.ParticipantId is { Length: > 0 } pid => ZoomSourceId(pid),
         // A Media slot stores its "media:<assetId>" id directly in ParticipantId.
         ShowInputKind.Media when slot.ParticipantId is { Length: > 0 } media => media,
-        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser
+        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.Browser
             when slot.CaptureDeviceId is { Length: > 0 } cap => CaptureSourceId(cap),
         _ => null
     };
@@ -434,6 +479,14 @@ public static class ShowInputRosterService
                     Label = $"{device.Name} - {device.FormatLabel} - {device.ConnectionLabel}"
                 })
                 .ToList(),
+            ShowInputKind.Ndi => captureDevices
+                .Where(device => device.Vendor.Equals("ndi", StringComparison.OrdinalIgnoreCase))
+                .Select(device => new ShowInputSourceOption
+                {
+                    Value = device.Id,
+                    Label = $"{device.Name} - {device.FormatLabel} - {device.ConnectionLabel}"
+                })
+                .ToList(),
             _ => []
         };
     }
@@ -460,7 +513,7 @@ public static class ShowInputRosterService
             return;
         }
 
-        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser)
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.Browser)
         {
             route.Mode = SourceRouteMode.CaptureDevice;
             route.ParticipantId = null;
@@ -557,7 +610,7 @@ public static class ShowInputRosterService
         var assignedDeviceIds = new HashSet<string>(
             slots
                 .Where(slot => slot.InShow &&
-                    slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser &&
+                    slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.Browser &&
                     !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
                 .Select(slot => slot.CaptureDeviceId!),
             StringComparer.Ordinal);
@@ -658,7 +711,7 @@ public static class ShowInputRosterService
                 ParticipantId: pid);
         }
 
-        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser &&
+        if (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.Browser &&
             slot.CaptureDeviceId is { Length: > 0 } deviceId &&
             devicesById.TryGetValue(deviceId, out var device))
         {
@@ -791,7 +844,7 @@ public static class ShowInputRosterService
         {
             ShowInputKind.ZoomParticipant =>
                 !string.IsNullOrWhiteSpace(slot.ParticipantId) && participantsById.ContainsKey(slot.ParticipantId),
-            ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Browser =>
+            ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.Browser =>
                 !string.IsNullOrWhiteSpace(slot.CaptureDeviceId) && devicesById.ContainsKey(slot.CaptureDeviceId),
             ShowInputKind.Media =>
                 TryGetMediaAssetId(slot.ParticipantId, out var mediaAssetId) && mediaAssetsById.ContainsKey(mediaAssetId),

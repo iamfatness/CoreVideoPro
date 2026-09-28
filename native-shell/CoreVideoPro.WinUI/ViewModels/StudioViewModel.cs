@@ -6845,7 +6845,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         // Screen sources connect CORE-SIDE: connect-capture-device starts the
         // WGC session and frames enter the compositor as "capture:screen:<n>".
-        if (device.Id.StartsWith("screen:", StringComparison.Ordinal) || device.Id.StartsWith("window:", StringComparison.Ordinal))
+        if (ShowInputRosterService.UsesNativeCaptureSession(device))
         {
             try
             {
@@ -6856,7 +6856,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 LaunchLog.Write(string.Format("capture: screen connect response {0}: statuses={1} match={2}", device.Id, statuses.Count, match?.ConnectionState ?? "none"));
                 RunOnUiThread(() =>
                 {
-                    device.ConnectionState = match?.ConnectionState == "connected"
+                    device.ConnectionState = ShowInputRosterService.NativeCaptureSessionStarted(device, match?.ConnectionState)
                         ? CaptureConnectionState.Connected
                         : CaptureConnectionState.Detected;
                     device.SignalPresent = match?.SignalPresent ?? false;
@@ -7413,36 +7413,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var nativeDevices = await _bridge.ListNativeCaptureDevicesAsync().ConfigureAwait(false);
             foreach (var native in nativeDevices)
             {
-                var isScreen = native.Id.StartsWith("screen:", StringComparison.Ordinal);
-                var isWindow = native.Id.StartsWith("window:", StringComparison.Ordinal);
-                // Browser sources (BR-1) are core-owned WebView2 host processes; they
-                // enumerate as "browser:<n>" and merge in like screens do.
-                var isBrowser = native.Id.StartsWith("browser:", StringComparison.Ordinal);
-                if (!isScreen && !isWindow && !isBrowser)
-                {
-                    continue;
-                }
-                var inputLabel = isBrowser ? "Web page (WebView2)" : isWindow ? "Application window" : "Entire display";
-                var inputId = isBrowser ? "browser" : isWindow ? "window" : "screen";
-                screens.Add(new CaptureDevice
-                {
-                    Id = native.Id,
-                    NativeDeviceId = native.Id,
-                    Vendor = isBrowser ? "browser" : "Screen capture",
-                    Name = native.Name,
-                    Inputs = [new CaptureDeviceInput { Id = inputId, Label = inputLabel }],
-                    SelectedInputId = inputId,
-                    Width = native.Width,
-                    Height = native.Height,
-                    FrameRate = native.FrameRate,
-                    ConnectionState = native.ConnectionState == "connected"
-                        ? CaptureConnectionState.Connected
-                        : isBrowser && native.ConnectionState == "failed"
-                            ? CaptureConnectionState.Error
-                            : CaptureConnectionState.Detected,
-                    SignalPresent = native.SignalPresent,
-                    AudioSyncOffsetMs = 0
-                });
+                if (ShowInputRosterService.MapCoreOwnedCaptureDevice(native) is { } mapped)
+                    screens.Add(mapped);
             }
         }
         catch
@@ -11521,7 +11493,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return sourceId;
         }
 
-        return input.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest
+        return input.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi
             ? $"capture:{captureDeviceId}"
             : captureDeviceId;
     }
@@ -12388,7 +12360,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var deviceId in ShowInputs
                      .Where(slot => slot.InShow &&
-                         (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest) &&
+                         (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi) &&
                          !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
                      .Select(slot => slot.CaptureDeviceId!)
                      .Distinct(StringComparer.Ordinal))
@@ -12636,7 +12608,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var device in CaptureDevices)
         {
-            if ((!device.Id.StartsWith("screen:", StringComparison.Ordinal) && !device.Id.StartsWith("window:", StringComparison.Ordinal)) ||
+            if (!ShowInputRosterService.UsesNativeCaptureSession(device) ||
                 device.ConnectionState == CaptureConnectionState.Connected ||
                 _screenConnectsInFlight.Contains(device.Id))
             {
@@ -12799,15 +12771,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     private static ShowInputKind ResolveShowInputKind(CaptureDevice device) =>
-        device.Vendor.ToLowerInvariant() switch
-        {
-            "blackmagic" => ShowInputKind.Blackmagic,
-            "aja" => ShowInputKind.Aja,
-            "srt" => ShowInputKind.SrtIngest,
-            "uvc" or "windows" => ShowInputKind.UvcWebcam,
-            "screen capture" => ShowInputKind.Screen,
-            _ => ShowInputKind.UvcWebcam
-        };
+        ShowInputRosterService.InferCaptureDeviceKind(device);
 
     private static bool IsVirtualSrtIngestDevice(CaptureDevice device) =>
         string.Equals(device.Vendor, "srt", StringComparison.OrdinalIgnoreCase);

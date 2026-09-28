@@ -476,13 +476,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
     private ShowInputKind ResolveCaptureKind(string deviceId)
     {
         var device = _vm.CaptureDevices.FirstOrDefault(d => string.Equals(d.Id, deviceId, StringComparison.Ordinal));
-        return device?.Vendor?.ToLowerInvariant() switch
-        {
-            "blackmagic" => ShowInputKind.Blackmagic,
-            "aja" => ShowInputKind.Aja,
-            "srt" => ShowInputKind.SrtIngest,
-            _ => ShowInputKind.UvcWebcam
-        };
+        return device is null ? ShowInputKind.UvcWebcam : ShowInputRosterService.InferCaptureDeviceKind(device);
     }
 
     private ControlInvokeResult NameInput(int slot, string? name)
