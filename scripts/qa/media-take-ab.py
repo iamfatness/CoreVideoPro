@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""media-take-ab: does a clip CUED in Preview roll from its FIRST FRAME the
-instant it is Taken to Program, with no placeholder / slate frame in between?
+"""media-take-ab: does a clip, cued or cold, roll from its FIRST FRAME when
+it is Taken to Program, with no placeholder / slate frame in between?
 
 The media twin of `scripts/qa/zoom-gap-hold-ab.py`, and for the same reason:
 nothing on the wire carries per-layer pixels (`RenderedProgramSources` publishes
@@ -15,7 +15,8 @@ cold-start when it is taken. This script is the oracle for that promise.
 
 Flow (phases, all logged into <label>.jsonl):
   configure  101 on Program (fake engine), the clip CUED on Preview as one
-             fixed full-canvas media route -> `mediaSources` expects `cued`
+             fixed full-canvas media route -> `mediaSources` expects `cued`.
+             With --skip-cue, Preview holds 102 and the clip is never cued.
   recording  start-program-output + set-recording-targets + start-recording-session
   take       begin-take-transition (cut, 0ms) + load-scene-graph <clip> +
              set-preview-scene <101> -> `mediaSources` expects `live`
@@ -34,9 +35,9 @@ The judge (every threshold is separated from every other on purpose):
   * dropout black (`kDropoutBlackRgba`) ............... YAVG ~16
     (CLAUDE.md quotes the slates' FULL-range lumas, 30 and 23; a limited-range
      recording carries them as 16 + 219/255*Y - see CONFUSERS below)
-A cold start (the #449 flash the slice-3b hand-off exists to stop) lands the
-take frame on a slate/black, which is ~70+ YAVG away from the clip's colour: it
-CANNOT pass. A take frame that was never found is a FAIL, never a quiet pass.
+Before #449, a cold start landed the take frame on a slate/black, ~70+ YAVG
+away from the clip's colour. The bounded outgoing hold must make both cued
+and cold runs pass. A take frame never found is a FAIL, never a quiet pass.
 
 Usage:
   python scripts/qa/media-take-ab.py --core native/build-dev/corevideo-native.exe \
@@ -243,10 +244,8 @@ def main():
     ap.add_argument("--min-separation", type=float, default=25.0,
                     help="required YAVG distance between the clip colour and every confounder (default 25)")
     ap.add_argument("--skip-cue", action="store_true",
-                    help="THE FALSIFICATION CONTROL (the --force-raw of validate-gpu-encode.mjs): cue 102 "
-                         "instead of the clip, so the clip is cut to Program with NO warm decoder. The cue "
-                         "hand-off cannot apply, the clip cold-starts, and this oracle MUST fail - a run "
-                         "that passes with --skip-cue is judging nothing.")
+                    help="Take a never-cued clip to Program. The outgoing scene must stay on air "
+                         "until its first decoded picture is ready; no warming slate may appear.")
     ap.add_argument("--baseline-seconds", type=float, default=0.5,
                     help="how much of the recording's head is the pre-take Program baseline (default 0.5s)")
     ap.add_argument("--post-take-frames", type=int, default=15)
@@ -318,7 +317,7 @@ def main():
         {"type": "set-preview-scene", "sceneId": "pvw",
          "routes": [fixed("pvw-0", "102")] if a.skip_cue else [media_route("pvw-0", "clip", clip)]}], el()))
     if a.skip_cue:
-        print("[%s] --skip-cue: the clip is NOT cued; this run is the falsification control and must FAIL" % a.label)
+        print("[%s] --skip-cue: testing a never-cued clip entering Program" % a.label)
     cued_seen = False
     for _ in range(40):
         core.spine([("101", "program"), ("102", "preview")], el())
@@ -395,6 +394,19 @@ def main():
         fails.append("mediaSources never reported the clip `cued` while it was only on Preview")
     if not live_seen:
         fails.append("mediaSources never reported the clip `live` after the Take")
+    take_rows = [r for r in rows if r["phase"] == "take"]
+    clip_rows = [r for r in rows if r["phase"] == "after" and
+                 any((s.get("participantId") or s.get("sourceId")) == "media:clip"
+                     for s in (r["pgmSources"] or []))]
+    if a.skip_cue and take_rows:
+        if not clip_rows:
+            fails.append("the cold clip never reached Program in the snapshot")
+        else:
+            hold_ms = (clip_rows[0]["t"] - take_rows[0]["t"]) * 1000
+            print("cold-Take outgoing hold: %.0f ms (snapshot bound: 900 ms)" % hold_ms)
+            if hold_ms > 900:
+                fails.append("cold Take held the outgoing scene for %.0f ms, over the 900 ms observation bound"
+                             % hold_ms)
 
     prog = sorted(glob.glob(os.path.join(folder, "*", "Program.mp4")))
     if not prog:
@@ -485,8 +497,8 @@ def main():
 def verdict(a, fails, program):
     dest = os.path.abspath(os.path.join("artifacts", "qa", "slice3b"))
     os.makedirs(dest, exist_ok=True)
-    # Every archived name carries the label: two runs (a real one and a
-    # --skip-cue control) must not overwrite each other's evidence.
+    # Every archived name carries the label: cued and cold runs must not
+    # overwrite each other's evidence.
     for f in ["%s.jsonl" % a.label, "%s.stderr.log" % a.label, "%s.yavg.txt" % a.label,
               "%s.clip.yavg.txt" % a.label, "%s-clip.mp4" % a.label, program]:
         if f and os.path.isfile(f):
@@ -503,7 +515,7 @@ def verdict(a, fails, program):
         for f in fails:
             print("  - %s" % f)
         sys.exit(1)
-    print("\nPASS: the cued clip was on air from its first frame, with no placeholder or slate in between.")
+    print("\nPASS: the clip was on air from its first frame, with no placeholder or slate in between.")
     sys.exit(0)
 
 if __name__ == "__main__":

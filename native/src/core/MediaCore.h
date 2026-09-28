@@ -712,6 +712,13 @@ class MediaCore {
     bool outgoingCaptionEnabled = false;
     std::string outgoingCaptionText;
     std::string outgoingCaptionSpeaker;
+    bool pendingSceneLoad = false;
+    bool outgoingWasHeld = false;
+    // A cold video clip is cued on its existing transport while the outgoing
+    // Program scene stays on air. The first decoded frame releases the cut.
+    bool waitingForColdMedia = false;
+    int64_t coldMediaStartedNs = 0;
+    std::vector<std::string> coldMediaSourceIds;
   };
 
   void beginTakeTransition(const rpc::Json& command);

@@ -32,6 +32,7 @@
 #include <set>
 #include <string>
 #include <chrono>
+#include <atomic>
 #include <thread>
 #include <vector>
 
@@ -167,6 +168,30 @@ class ColdStartClipDecoder final : public corevideo::modules::IMediaDecoder {
   std::int64_t frameId_ = 0;
 };
 
+class GatedColdClipDecoder final : public corevideo::modules::IMediaDecoder {
+ public:
+  explicit GatedColdClipDecoder(std::shared_ptr<std::atomic_bool> release)
+      : release_(std::move(release)) {}
+  std::vector<corevideo::modules::VideoFrame> pollMediaFrames(
+      const corevideo::modules::MediaDecodeRequest& request, int64_t timestampMs) override {
+    if (!release_->load() || request.assetId.empty()) return {};
+    corevideo::modules::VideoFrame frame;
+    frame.participantId = request.sourceId.empty() ? "media:" + request.assetId : request.sourceId;
+    frame.width = frame.pixelWidth = frame.naturalWidth = 64;
+    frame.height = frame.pixelHeight = frame.naturalHeight = 36;
+    frame.pixelStride = 64 * 4;
+    frame.timestampMs = timestampMs;
+    frame.frameId = ++frameId_;
+    auto pixels = std::make_shared<std::vector<std::uint8_t>>(64u * 36u * 4u, 0x10);
+    for (std::size_t i = 3; i < pixels->size(); i += 4) (*pixels)[i] = 0xff;
+    frame.pixels = std::move(pixels);
+    return {frame};
+  }
+ private:
+  std::shared_ptr<std::atomic_bool> release_;
+  int64_t frameId_ = 0;
+};
+
 // A scene whose only layer is a clip ROUTE. Since #535 slice 3b the wire
 // carries NO playback key and NO play flag for the transport decision: which
 // BUS the route is on is the whole of it (Cued on Preview, Live on Program),
@@ -280,4 +305,112 @@ TEST(ProgramPixelContinuity, ACuedClipTakenToProgramNeverShowsThePlaceholder) {
         << "tick " << tick << " after the take: the clip cold-started on Program";
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
+}
+
+TEST(ProgramPixelContinuity, NeverCuedClipHoldsOutgoingProgramUntilItsFirstPicture) {
+  auto release = std::make_shared<std::atomic_bool>(false);
+  auto modules = corevideo::modules::createStubModules();
+  modules.mediaDecoderFactory = [release] {
+    return std::make_unique<GatedColdClipDecoder>(release);
+  };
+  modules.captureDevice = std::make_unique<NoCaptureDevice>();
+  MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({});
+  core.enableAudioOutputWorker();
+  (void)core.applyCommand(sceneWithNoBackground("outgoing", "load-scene-graph"));
+  core.renderDisplayTick();
+  const auto before = core.lastProgramFrameForTest();
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "begin-take-transition"}, {"operationId", "cold-clip"},
+          {"revision", 1}, {"mode", "cut"}, {"durationMs", 0}},
+      sceneWithClipRoute("incoming", "load-scene-graph"),
+      sceneWithNoBackground("outgoing", "set-preview-scene")});
+  for (int tick = 0; tick < 3; ++tick) {
+    core.renderDisplayTick();
+    const auto held = core.lastProgramFrameForTest();
+    EXPECT_EQ(held.renderPlanId, before.renderPlanId)
+        << "cold Take painted an incoming warming slate before the decoder's first picture";
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+
+  release->store(true);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  bool cutReachedProgram = false;
+  while (std::chrono::steady_clock::now() < deadline) {
+    core.renderDisplayTick();
+    const auto frame = core.lastProgramFrameForTest();
+    if (frame.renderPlanId != before.renderPlanId) {
+      EXPECT_NEAR(meanLuma(frame), 16.0, 2.0)
+          << "the first incoming Program frame must be decoded clip pixels";
+      cutReachedProgram = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_TRUE(cutReachedProgram) << "cold decoder never released the deferred cut";
+}
+
+TEST(ProgramPixelContinuity, FailedColdClipCannotHoldOutgoingProgramForever) {
+  auto release = std::make_shared<std::atomic_bool>(false);
+  auto modules = corevideo::modules::createStubModules();
+  modules.mediaDecoderFactory = [release] {
+    return std::make_unique<GatedColdClipDecoder>(release);
+  };
+  modules.captureDevice = std::make_unique<NoCaptureDevice>();
+  MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({});
+  core.enableAudioOutputWorker();
+  (void)core.applyCommand(sceneWithNoBackground("outgoing", "load-scene-graph"));
+  core.renderDisplayTick();
+  const auto beforeId = core.lastProgramFrameForTest().renderPlanId;
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "begin-take-transition"}, {"operationId", "failed-clip"},
+          {"revision", 2}, {"mode", "cut"}, {"durationMs", 0}},
+      sceneWithClipRoute("incoming", "load-scene-graph")});
+  core.renderDisplayTick();
+  EXPECT_EQ(core.lastProgramFrameForTest().renderPlanId, beforeId);
+  EXPECT_EQ(core.sessionState().get("takeTransition")->getString("status"), "warming");
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(800));
+  core.renderDisplayTick();
+  EXPECT_NE(core.lastProgramFrameForTest().renderPlanId, beforeId)
+      << "an asset that never decodes must not pin the prior Program forever";
+  EXPECT_EQ(core.sessionState().get("takeTransition")->getString("status"), "completed");
+}
+
+TEST(ProgramPixelContinuity, SecondTakeDuringWarmupStartsFromTheSceneStillOnAir) {
+  auto release = std::make_shared<std::atomic_bool>(false);
+  auto modules = corevideo::modules::createStubModules();
+  modules.mediaDecoderFactory = [release] {
+    return std::make_unique<GatedColdClipDecoder>(release);
+  };
+  modules.captureDevice = std::make_unique<NoCaptureDevice>();
+  MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({});
+  core.enableAudioOutputWorker();
+  (void)core.applyCommand(sceneWithNoBackground("outgoing", "load-scene-graph"));
+  core.renderDisplayTick();
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "begin-take-transition"}, {"operationId", "first"},
+          {"revision", 1}, {"mode", "cut"}, {"durationMs", 0}},
+      sceneWithClipRoute("cold", "load-scene-graph")});
+  core.renderDisplayTick();
+  EXPECT_EQ(core.lastProgramFrameForTest().renderPlanId, "outgoing:0:0");
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "begin-take-transition"}, {"operationId", "second"},
+          {"revision", 2}, {"mode", "cut"}, {"durationMs", 0}},
+      sceneWithNoBackground("second", "load-scene-graph")});
+  core.renderDisplayTick();
+  EXPECT_EQ(core.lastProgramFrameForTest().renderPlanId, "second:0:0");
+  const auto state = core.sessionState();
+  const auto* records = state.get("takeRecords")->get("records");
+  ASSERT_NE(records, nullptr);
+  ASSERT_FALSE(records->asArray().empty());
+  EXPECT_EQ(records->asArray().back().getString("fromSceneId"), "outgoing");
 }
