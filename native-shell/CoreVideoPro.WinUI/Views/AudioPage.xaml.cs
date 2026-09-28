@@ -13,6 +13,39 @@ public sealed partial class AudioPage : UserControl
         InitializeComponent();
     }
 
+    private void OnGuestSyncFlyoutOpening(object sender, object e)
+    {
+        GuestSyncOffsetInput.Value = ViewModel?.GuestAvSync.OffsetMs ?? 0;
+    }
+
+    private async void OnGuestSyncApplyClicked(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel?.GuestAvSync is not { } control || !double.IsFinite(GuestSyncOffsetInput.Value)) return;
+        await control.SetAsync((int)Math.Round(GuestSyncOffsetInput.Value));
+        GuestSyncOffsetInput.Value = control.OffsetMs;
+    }
+
+    private async void OnGuestSyncEarlierClicked(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel?.GuestAvSync is not { } control) return;
+        await control.NudgeEarlierAsync();
+        GuestSyncOffsetInput.Value = control.OffsetMs;
+    }
+
+    private async void OnGuestSyncLaterClicked(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel?.GuestAvSync is not { } control) return;
+        await control.NudgeLaterAsync();
+        GuestSyncOffsetInput.Value = control.OffsetMs;
+    }
+
+    private async void OnGuestSyncResetClicked(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel?.GuestAvSync is not { } control) return;
+        await control.ResetAsync();
+        GuestSyncOffsetInput.Value = control.OffsetMs;
+    }
+
     public StudioViewModel? ViewModel
     {
         get => (StudioViewModel?)GetValue(ViewModelProperty);

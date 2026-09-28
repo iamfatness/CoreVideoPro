@@ -404,6 +404,32 @@ TEST(JsonRpcServer, HandlesCaptureDeviceBridgeRequests) {
   EXPECT_EQ(connected.get("devices")->asArray()[1].getString("connectionState"), "connected");
 }
 
+TEST(JsonRpcServer, ZoomGuestSyncCommandClampsAndPublishesAppliedFact) {
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  corevideo::rpc::JsonRpcServer server(core);
+  const auto bad = server.handle(corevideo::rpc::Json::Object{
+      {"id", "bad-sync"}, {"type", "set-zoom-guest-av-sync-offset"},
+      {"payload", corevideo::rpc::Json::Object{{"participantId", "capture:1"}, {"offsetMs", 30}}}});
+  EXPECT_FALSE(bad.get("ok")->asBool());
+
+  const auto changed = server.handle(corevideo::rpc::Json::Object{
+      {"id", "sync"}, {"type", "set-zoom-guest-av-sync-offset"},
+      {"payload", corevideo::rpc::Json::Object{{"participantId", "101"}, {"offsetMs", -300}}}});
+  ASSERT_TRUE(changed.get("ok")->asBool());
+  EXPECT_EQ(changed.get("setting")->getNumber("offsetMs"), -200);
+  EXPECT_GT(changed.get("setting")->getNumber("revision"), 0);
+  const auto state = core.sessionState();
+  ASSERT_EQ(state.get("zoomGuestAvSync")->asArray().size(), 1u);
+  EXPECT_EQ(state.get("zoomGuestAvSync")->asArray()[0].getString("participantId"), "101");
+  EXPECT_EQ(state.getNumber("zoomGuestAvSyncRevision"),
+            changed.get("setting")->getNumber("revision"));
+
+  // Meeting ids are session-local. A later join must never inherit this trim.
+  (void)core.joinZoom(corevideo::rpc::Json::Object{{"displayName", "test"}});
+  core.renderDisplayTick();
+  EXPECT_TRUE(core.sessionState().get("zoomGuestAvSync")->asArray().empty());
+}
+
 // A1 regression (owner-reported "Open controls never shows a plugin UI"): the
 // shell sends open-vst-editor as a TOP-LEVEL request. handle() used to reject
 // it with "Unsupported native media-core command" — and the shell discarded the
