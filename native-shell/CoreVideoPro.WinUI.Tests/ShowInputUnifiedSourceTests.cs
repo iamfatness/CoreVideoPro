@@ -1,3 +1,4 @@
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
@@ -66,6 +67,7 @@ public sealed class ShowInputUnifiedSourceTests
     [InlineData("dev-1", "blackmagic", ShowInputKind.Blackmagic)]
     [InlineData("dev-2", "aja", ShowInputKind.Aja)]
     [InlineData("dev-3", "srt", ShowInputKind.SrtIngest)]
+    [InlineData("ndi-123", "ndi", ShowInputKind.Ndi)]
     [InlineData("dev-4", "uvc", ShowInputKind.UvcWebcam)]
     [InlineData("dev-5", "windows", ShowInputKind.UvcWebcam)]
     [InlineData("browser:1", "browser", ShowInputKind.Browser)]
@@ -115,6 +117,67 @@ public sealed class ShowInputUnifiedSourceTests
     }
 
     private static CaptureDevice Browser(string id, string name) => Device(id, name, "browser");
+
+    [Fact]
+    public void NdiSource_GroupsRoutesAndWiresAsCaptureWithEmbeddedAudio()
+    {
+        var ndi = Device("ndi-123", "Test Patterns", "ndi");
+        var options = ShowInputRosterService.BuildUnifiedSourceOptions([], [ndi], []);
+        Assert.Contains(options, o => o.Value == "capture:ndi-123" && o.Group == "NDI");
+        Assert.Contains("NDI", ShowInputRosterService.UnifiedSourceGroups);
+
+        var editor = Editor(out var slot);
+        editor.RefreshSourceOptions([], [ndi], mediaAssets: []);
+        editor.SelectedUnifiedSourceId = "capture:ndi-123";
+        Assert.Equal(ShowInputKind.Ndi, slot.Kind);
+        Assert.Equal("ndi-123", slot.CaptureDeviceId);
+        Assert.Null(slot.AudioDeviceId);
+        Assert.True(slot.IsAssigned);
+        Assert.True(ShowInputRosterService.UsesNativeCaptureSession(ndi));
+        Assert.True(ShowInputRosterService.NativeCaptureSessionStarted(ndi, "connecting"));
+        Assert.False(ShowInputRosterService.NativeCaptureSessionStarted(ndi, "failed"));
+        Assert.False(ShowInputRosterService.UsesNativeCaptureSession(Camera("cam-1", "UVC")));
+
+        slot.InShow = true;
+        var route = new SourceRoute { Id = "route-ndi" };
+        ShowInputRosterService.ApplySlotRoute(route, slot);
+        Assert.Equal(SourceRouteMode.CaptureDevice, route.Mode);
+        Assert.Equal("ndi-123", route.CaptureDeviceId);
+
+        var wire = Assert.Single(ShowInputRosterService.BuildMultiviewLayoutSources([slot], [], [ndi]));
+        Assert.Equal("capture:ndi-123", wire.SourceId);
+        Assert.Equal("ndi-123", wire.CaptureDeviceId);
+    }
+
+    [Fact]
+    public void NdiDiscovery_MapsNativeStatusAndKeepsConnectingReceiverSelectable()
+    {
+        var device = ShowInputRosterService.MapCoreOwnedCaptureDevice(new NativeCaptureDeviceStatus
+        {
+            Id = "ndi-123", Name = "Test Patterns", Vendor = "ndi",
+            ConnectionState = "connecting", Width = 1920, Height = 1080, FrameRate = 30
+        });
+        Assert.NotNull(device);
+        Assert.Equal(ShowInputKind.Ndi, ShowInputRosterService.InferCaptureDeviceKind(device));
+        Assert.Equal(CaptureConnectionState.Connected, device.ConnectionState);
+        Assert.False(device.SignalPresent);
+        Assert.Equal("ndi", device.SelectedInputId);
+        var stalled = ShowInputRosterService.MapCoreOwnedCaptureDevice(new NativeCaptureDeviceStatus
+        {
+            Id = "ndi-123", Name = "Test Patterns", Vendor = "ndi", ConnectionState = "stalled"
+        });
+        Assert.Equal(CaptureConnectionState.Connected, stalled?.ConnectionState);
+        Assert.False(stalled!.SignalPresent);
+        var failed = ShowInputRosterService.MapCoreOwnedCaptureDevice(new NativeCaptureDeviceStatus
+        {
+            Id = "ndi-123", Name = "Test Patterns", Vendor = "ndi", ConnectionState = "failed"
+        });
+        Assert.Equal(CaptureConnectionState.Error, failed?.ConnectionState);
+        Assert.Null(ShowInputRosterService.MapCoreOwnedCaptureDevice(new NativeCaptureDeviceStatus
+        {
+            Id = "uvc-1", Vendor = "uvc"
+        }));
+    }
 
     [Fact]
     public void SelectedUnifiedSourceId_SetInfersKindAndAssignsIdsTogether()
