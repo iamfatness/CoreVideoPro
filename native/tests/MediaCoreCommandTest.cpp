@@ -1794,7 +1794,8 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
   EXPECT_EQ(jsonArrayContains(capabilities, "srt-output"),
             srt && srt->runtimeAvailableAtConstruction());
   EXPECT_EQ(jsonArrayContains(capabilities, "srt-ingest"),
-            corevideo::modules::createSrtIngestCaptureDevice() != nullptr);
+            !COREVIDEO_STUB && COREVIDEO_WITH_SRT_INGEST &&
+                corevideo::modules::createSrtIngestCaptureDevice() != nullptr);
   EXPECT_EQ(jsonArrayContains(capabilities, "ndi-ingest"),
             corevideo::modules::createNdiReceiveCaptureDevice() != nullptr);
   EXPECT_FALSE(jsonArrayContains(capabilities, "decklink-capture"));
