@@ -796,7 +796,9 @@ rpc::Json MediaCore::sessionState() const {
           {"progress", takeTransition_.durationMs > 0.0
               ? (std::min)(1.0, takeTransition_.elapsedMs / takeTransition_.durationMs)
               : 1.0},
-          {"status", takeTransition_.operationId.empty() ? "idle" : takeTransition_.active ? "active" : "completed"},
+          {"status", takeTransition_.operationId.empty() ? "idle" :
+              takeTransition_.waitingForColdMedia ? "warming" :
+              takeTransition_.active ? "active" : "completed"},
       }},
       {"meetingState", resolveMeetingStateForSession()},
       {"breakoutRoomId", breakoutRoomId_},
@@ -1683,15 +1685,31 @@ void MediaCore::beginTakeTransition(const rpc::Json& command) {
   next.durationMs = (std::max)(0.0, (std::min)(5000.0, command.getNumber("durationMs", 300.0)));
   next.direction = command.getString("direction", "left-to-right");
   next.dipColor = command.getString("dipColor", "#000000");
-  next.outgoingSceneId = sceneId_;
-  next.outgoingRoutes = sceneRoutes_;
-  next.outgoingBackground = sceneBackground_;
-  next.outgoingTiles = tilesLayer_;
-  next.outgoingColorGrade = colorGrade_;
-  next.outgoingOverlays = overlayAssets_;
-  next.outgoingCaptionEnabled = captionEnabled_;
-  next.outgoingCaptionText = captionText_;
-  next.outgoingCaptionSpeaker = captionSpeaker_;
+  if (takeTransition_.waitingForColdMedia) {
+    // A second Take during warmup starts from what is still on air, not the
+    // first incoming scene that has never reached Program.
+    next.outgoingSceneId = takeTransition_.outgoingSceneId;
+    next.outgoingRoutes = takeTransition_.outgoingRoutes;
+    next.outgoingBackground = takeTransition_.outgoingBackground;
+    next.outgoingTiles = takeTransition_.outgoingTiles;
+    next.outgoingColorGrade = takeTransition_.outgoingColorGrade;
+    next.outgoingOverlays = takeTransition_.outgoingOverlays;
+    next.outgoingCaptionEnabled = takeTransition_.outgoingCaptionEnabled;
+    next.outgoingCaptionText = takeTransition_.outgoingCaptionText;
+    next.outgoingCaptionSpeaker = takeTransition_.outgoingCaptionSpeaker;
+    next.outgoingWasHeld = true;
+  } else {
+    next.outgoingSceneId = sceneId_;
+    next.outgoingRoutes = sceneRoutes_;
+    next.outgoingBackground = sceneBackground_;
+    next.outgoingTiles = tilesLayer_;
+    next.outgoingColorGrade = colorGrade_;
+    next.outgoingOverlays = overlayAssets_;
+    next.outgoingCaptionEnabled = captionEnabled_;
+    next.outgoingCaptionText = captionText_;
+    next.outgoingCaptionSpeaker = captionSpeaker_;
+  }
+  next.pendingSceneLoad = true;
   next.active = next.mode != "cut" && next.durationMs > 0.0;
   takeTransition_ = std::move(next);
 }
@@ -2266,11 +2284,21 @@ void MediaCore::armTakeRecord(const std::string& toSceneId) {
   // Per operator action. The outgoing plan is built ONCE here, on the command
   // thread, so the render tick pays nothing for the "before" half.
   TakeRecord record;
-  record.fromSceneId = sceneId_;
+  const bool heldOutgoing = takeTransition_.outgoingWasHeld;
+  record.fromSceneId = heldOutgoing ? takeTransition_.outgoingSceneId : sceneId_;
   record.toSceneId = toSceneId;
-  record.hadWallBefore = tilesLayer_.present;
-  record.fromWallKey = tilesLayer_.present ? sceneId_ + ":" + tilesLayer_.layerId : std::string();
-  const auto outgoing = buildCompositorRenderPlan({});
+  const auto& onAirWall = heldOutgoing ? takeTransition_.outgoingTiles : tilesLayer_;
+  record.hadWallBefore = onAirWall.present;
+  record.fromWallKey = onAirWall.present ? record.fromSceneId + ":" + onAirWall.layerId : std::string();
+  const auto outgoing = heldOutgoing ? buildRenderPlanForScene(
+      takeTransition_.outgoingSceneId,
+      static_cast<int>(takeTransition_.outgoingRoutes.size()),
+      static_cast<int>(takeTransition_.outgoingOverlays.size()),
+      takeTransition_.outgoingBackground, takeTransition_.outgoingRoutes,
+      takeTransition_.outgoingColorGrade, takeTransition_.outgoingOverlays,
+      takeTransition_.outgoingCaptionEnabled, takeTransition_.outgoingCaptionText,
+      takeTransition_.outgoingCaptionSpeaker, {}, takeTransition_.outgoingTiles)
+      : buildCompositorRenderPlan({});
   record.fromRenderPlanId = outgoing.renderPlanId;
   record.fromLayerIds = renderPlanLayerIds(outgoing);
   // The sources "before" the take are Program's AND Preview's: a Take promotes
@@ -2394,15 +2422,19 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
 }
 
 void MediaCore::loadSceneGraph(const rpc::Json& command) {
+  const bool isTakeSceneLoad = takeTransition_.pendingSceneLoad;
+  takeTransition_.pendingSceneLoad = false;
   // Arm the take record BEFORE any scene state moves — the "before" half only
   // exists here. Take is a client-side scene swap that sends ONE sync, so a
   // scene id that actually changed IS the operator's Take on this wire.
   {
     const auto incomingSceneId = command.getString("sceneId", "unloaded");
-    if (!incomingSceneId.empty() && incomingSceneId != "unloaded" && incomingSceneId != sceneId_) {
+    const auto& onAirSceneId = takeTransition_.outgoingWasHeld ? takeTransition_.outgoingSceneId : sceneId_;
+    if (!incomingSceneId.empty() && incomingSceneId != "unloaded" && incomingSceneId != onAirSceneId) {
       armTakeRecord(incomingSceneId);
     }
   }
+  takeTransition_.outgoingWasHeld = false;
   sceneId_ = command.getString("sceneId", "unloaded");
   sceneValidationWarnings_.clear();
   if (sceneId_.empty() || sceneId_ == "unloaded") {
@@ -2515,6 +2547,25 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
     tilesLayer_ = parseTilesLayer(*tiles, &sceneValidationWarnings_);
   }
   warnIfRoutesAndWallCollide(tilesLayer_.present, sceneRoutes_.size(), "program", sceneValidationWarnings_);
+  // #449: a never-cued clip has no first picture on the Take command. Keep the
+  // outgoing Program scene on air while its one existing media transport cues
+  // asynchronously. A cued clip releases on the very next render tick.
+  takeTransition_.coldMediaSourceIds.clear();
+  if (isTakeSceneLoad && takeTransition_.mode == "cut" && takeTransition_.outgoingSceneId != "unloaded" &&
+      takeTransition_.outgoingSceneId != sceneId_) {
+    for (const auto& route : sceneRoutes_) {
+      if (!route.mediaAssetId.empty() && !route.mediaAssetPath.empty() &&
+          !modules::isStillImageMediaAsset(route.mediaAssetKind, route.mediaAssetPath)) {
+        takeTransition_.coldMediaSourceIds.push_back("media:" + route.mediaAssetId);
+      }
+    }
+    if (sceneBackground_.enabled &&
+        !modules::isStillImageMediaAsset(sceneBackground_.mediaAssetKind, sceneBackground_.mediaAssetPath)) {
+      takeTransition_.coldMediaSourceIds.push_back("background:" + sceneBackground_.mediaAssetId);
+    }
+  }
+  takeTransition_.waitingForColdMedia = !takeTransition_.coldMediaSourceIds.empty();
+  takeTransition_.coldMediaStartedNs = takeTransition_.waitingForColdMedia ? steadyNowNs() : 0;
   syncStillMediaDesired();
   syncMediaTransportsDesired();
 }
@@ -2542,6 +2593,9 @@ void MediaCore::syncStillMediaDesired() {
   // cache keeps the first request per key, so a still on both buses is ONE entry.
   addRoutes(sceneRoutes_, "media:");
   addRoutes(previewSceneRoutes_, "media:");
+  if (takeTransition_.waitingForColdMedia) {
+    addRoutes(takeTransition_.outgoingRoutes, "media:");
+  }
   stillMediaCache_->setDesired(std::move(desired));
 }
 
@@ -2584,8 +2638,17 @@ void MediaCore::syncMediaTransportsDesired() {
     d.loop = true;
     (program ? d.onProgram : d.onPreview) = true;
   };
-  addRoutes(sceneRoutes_, true);
-  addBackground(sceneBackground_, true);
+  if (takeTransition_.waitingForColdMedia) {
+    // A Cued decoder prepares its first frame without feeding Program audio.
+    // Keep outgoing media Live until the visual cut is actually released.
+    addRoutes(sceneRoutes_, false);
+    addBackground(sceneBackground_, false);
+    addRoutes(takeTransition_.outgoingRoutes, true);
+    addBackground(takeTransition_.outgoingBackground, true);
+  } else {
+    addRoutes(sceneRoutes_, true);
+    addBackground(sceneBackground_, true);
+  }
   if (previewSceneActive_) {
     addRoutes(previewSceneRoutes_, false);
     addBackground(previewSceneBackground_, false);
@@ -5818,6 +5881,16 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
 modules::CompositorRenderPlan MediaCore::applyTakeTransition(
     modules::CompositorRenderPlan incoming,
     const std::vector<modules::VideoFrame>& videoFrames) const {
+  if (takeTransition_.waitingForColdMedia) {
+    return buildRenderPlanForScene(
+        takeTransition_.outgoingSceneId,
+        static_cast<int>(takeTransition_.outgoingRoutes.size()),
+        static_cast<int>(takeTransition_.outgoingOverlays.size()),
+        takeTransition_.outgoingBackground, takeTransition_.outgoingRoutes,
+        takeTransition_.outgoingColorGrade, takeTransition_.outgoingOverlays,
+        takeTransition_.outgoingCaptionEnabled, takeTransition_.outgoingCaptionText,
+        takeTransition_.outgoingCaptionSpeaker, videoFrames, takeTransition_.outgoingTiles);
+  }
   if (!takeTransition_.active || takeTransition_.mode == "cut") {
     return incoming;
   }
@@ -6675,6 +6748,23 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     core::appendStillSourceVideo(*sourceBus_, {},
         mediaPresentationTime100ns, nowNs, videoFrames);
   }
+  if (takeTransition_.waitingForColdMedia) {
+    const bool ready = std::all_of(
+        takeTransition_.coldMediaSourceIds.begin(), takeTransition_.coldMediaSourceIds.end(),
+        [&videoFrames](const std::string& sourceId) {
+          return std::any_of(videoFrames.begin(), videoFrames.end(),
+              [&sourceId](const modules::VideoFrame& frame) {
+                return frame.participantId == sourceId && (frame.hasPixels() || frame.hasI420());
+              });
+        });
+    constexpr int64_t kMaxColdMediaHoldNs = 750'000'000;
+    if (ready || nowNs - takeTransition_.coldMediaStartedNs >= kMaxColdMediaHoldNs) {
+      takeTransition_.waitingForColdMedia = false;
+      takeTransition_.coldMediaSourceIds.clear();
+      syncStillMediaDesired();
+      syncMediaTransportsDesired();
+    }
+  }
   // Observe the floor on the render tick, after source-bus ingest has proved
   // which Zoom/capture feeds carry actual content. The recommendation path
   // reads this ledger only; a query never mutates it or Takes Program.
@@ -7214,7 +7304,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // (a scene's background and foreground) only join the gather after the plan
   // is built, and judging continuity or "had a frame" before they arrive would
   // call every media source missing and read the previous tick's generations.
-  if (pendingTakeRecord_) {
+  if (pendingTakeRecord_ && !takeTransition_.waitingForColdMedia) {
     completeTakeRecord(renderPlan, wallContinuous, videoFrames);
   }
   markStage(s_stagePlanUs, 1);
