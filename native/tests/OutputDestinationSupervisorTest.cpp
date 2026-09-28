@@ -471,6 +471,8 @@ TEST(OutputDestinationSupervisorPolicy, AnUnknownFailureCodeIsRetryableNotTermin
   EXPECT_FALSE(isTerminalResultCode("something-we-have-never-seen"));
   EXPECT_TRUE(isTerminalResultCode("endpoint-missing"));
   EXPECT_TRUE(isTerminalResultCode("rtmp-settings-invalid"));
+  EXPECT_TRUE(isTerminalResultCode("hls-settings-missing"));
+  EXPECT_TRUE(isTerminalResultCode("hls-settings-invalid"));
   EXPECT_TRUE(isTerminalResultCode("source-name-invalid"));
   EXPECT_TRUE(isTerminalResultCode("runtime-missing"));
   EXPECT_TRUE(isTerminalResultCode("ndi-output-unavailable"));

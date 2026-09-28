@@ -57,7 +57,7 @@
       "control": "include"
     },
     "captureDevices": {
-      "typed": "omit",
+      "typed": "include",
       "qualification": "include",
       "control": "include"
     },

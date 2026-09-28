@@ -972,7 +972,8 @@ std::unique_ptr<IOutputSender> createIsolatedOutputSender(
 ModuleSet createStubModules() {
   ModuleSet modules;
   for (const char* name : {"gpu-compositor", "local-audio-capture", "audio-monitor-output",
-                           "rtmp-output", "srt-output", "ndi-output", "srt-ingest", "rtmp-ingest",
+                           "rtmp-output", "srt-output", "hls-output", "ndi-output", "ndi-ingest",
+                           "srt-ingest", "rtmp-ingest",
                            "decklink-capture", "aja-capture", "uvc-capture"}) {
     recordCapability(modules, name, "omitted", "stub-or-unbuilt");
   }
@@ -1074,6 +1075,15 @@ ModuleSet createDefaultModules() {
   } else if (COREVIDEO_WITH_RTMP_OUTPUT) {
     recordCapability(modules, "srt-output", "failed-to-construct");
   }
+  if (auto hlsSender = createHlsOutputSender()) {
+    recordCapability(modules, "hls-output", hlsSender->runtimeAvailableAtConstruction()
+        ? "available" : "omitted", hlsSender->runtimeAvailableAtConstruction()
+        ? "" : "ffmpeg-runtime-missing");
+    outputSenders.push_back(std::move(hlsSender));
+    supportedOutputDestinations.push_back("hls");
+  } else if (COREVIDEO_WITH_RTMP_OUTPUT) {
+    recordCapability(modules, "hls-output", "failed-to-construct");
+  }
   if (auto ndiSender = createNdiOutputSender()) {
     recordCapability(modules, "ndi-output", ndiSender->runtimeAvailableAtConstruction()
         ? "available" : "omitted", ndiSender->runtimeAvailableAtConstruction()
@@ -1110,6 +1120,16 @@ ModuleSet createDefaultModules() {
           : rtmpIngestConstructed ? "available" : "failed-to-construct",
       COREVIDEO_STUB ? "stub-build" : !COREVIDEO_WITH_RTMP_INGEST ? "build-gate-off"
           : rtmpIngestConstructed ? "ffmpeg-decoder" : "");
+  bool ndiIngestConstructed = false;
+  if (auto ndiIngest = createNdiReceiveCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(ndiIngest));
+    ndiIngestConstructed = true;
+  }
+  recordCapability(modules, "ndi-ingest",
+      COREVIDEO_STUB || !COREVIDEO_WITH_NDI_INGEST ? "omitted"
+          : ndiIngestConstructed ? "available" : "failed-to-construct",
+      COREVIDEO_STUB ? "stub-build" : !COREVIDEO_WITH_NDI_INGEST ? "build-gate-off"
+          : ndiIngestConstructed ? "ndi-runtime" : "ndi-runtime-missing", "process");
   if (auto deckLink = createDeckLinkCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(deckLink));
   }

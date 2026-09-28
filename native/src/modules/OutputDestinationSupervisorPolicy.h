@@ -111,6 +111,8 @@ enum class DestinationFailureClass {
   return code == "endpoint-missing" ||            // nothing to connect to
          code == "rtmp-settings-missing" ||       // no configuration at all
          code == "rtmp-settings-invalid" ||       // configuration the sender rejects
+         code == "hls-settings-missing" ||        // no HLS playlist destination
+         code == "hls-settings-invalid" ||        // URL/codec rejected before launch
          code == "source-name-invalid" ||         // NDI name the SDK will reject again
          code == "runtime-missing" ||             // FFmpeg / libNDI is not installed
          code == "ffmpeg-missing" ||              // the executable is not there

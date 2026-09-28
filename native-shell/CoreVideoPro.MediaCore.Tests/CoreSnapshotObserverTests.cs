@@ -15,6 +15,23 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class CoreSnapshotObserverTests
 {
     [Fact]
+    public void SrtCaptureHealthSurvivesTheTypedSnapshotProjection()
+    {
+        var snapshot = Parse("""
+            {"captureDevices":[{"id":"srt-ingest-01","vendor":"srt","connectionState":"receiving",
+              "lastFrameAgeMs":83,"decoderFailures":0,"codecDecodeErrors":2,
+              "packetDecodeErrors":1,"rttMs":null,"rttStatus":"unavailable: FFmpeg owns SRT socket"}]}
+            """);
+        var status = Assert.Single(snapshot.CaptureDevices);
+        Assert.Equal("srt-ingest-01", status.Id);
+        Assert.Equal(83, status.LastFrameAgeMs);
+        Assert.Equal(2, status.CodecDecodeErrors);
+        Assert.Equal(1, status.PacketDecodeErrors);
+        Assert.Null(status.RttMs);
+        Assert.Contains("unavailable", status.RttStatus);
+    }
+
+    [Fact]
     public void GeneratedViewsKeepTypedEvidenceAndRedactPublicEvidence()
     {
         const string json = """{"sceneId":"program","autoProduction":{"ruleId":"r1"},"programBuffer":{"underruns":2},"browserSources":{"sources":[{"url":"https://example.com/?access_token=secret123"}]}}""";

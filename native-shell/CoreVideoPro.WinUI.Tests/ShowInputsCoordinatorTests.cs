@@ -22,6 +22,35 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class ShowInputsCoordinatorTests
 {
     [Fact]
+    public void SrtHealthFactUpdatesSourceWithoutSceneSyncOrTake()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var source = new SrtIngestSource { Id = "srt-source-01", Number = 1 };
+        host.SrtIngestSources.Add(source);
+        _ = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+
+        bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        {
+            CaptureDevices = [new NativeCaptureDeviceStatus
+            {
+                Id = source.DeviceId, Vendor = "srt", ConnectionState = "receiving",
+                LastFrameAgeMs = 83, CodecDecodeErrors = 2, PacketDecodeErrors = 1,
+                DecoderFailures = 0, RttMs = null
+            }]
+        });
+        Assert.Contains("receiving", source.RuntimeHealthLabel);
+        Assert.Contains("last frame 83 ms", source.RuntimeHealthLabel);
+        Assert.Contains("codec errors 2", source.RuntimeHealthLabel);
+        Assert.Contains("packet errors 1", source.RuntimeHealthLabel);
+        Assert.Contains("RTT unavailable", source.RuntimeHealthLabel);
+        Assert.Equal(0, bridge.SyncCalls);
+
+        bridge.EmitRoster(new NativeMediaCoreStateSnapshot());
+        Assert.Contains("Engine off", source.RuntimeHealthLabel);
+    }
+
+    [Fact]
     public void ReusedZoomIdClearsOldFormatAndRejectsOldSourceFactWithoutTake()
     {
         var bridge = new FakeMediaCoreBridge();

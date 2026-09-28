@@ -620,7 +620,7 @@ public sealed class StudioViewModelAudioStatusTests
             new InvalidOperationException("Select at least one stream destination."));
 
         Assert.StartsWith(
-            "Streaming start failed: No stream destination is selected. Enable RTMP, NDI, or SRT before streaming.",
+            "Streaming start failed: No stream destination is selected. Enable RTMP, NDI, SRT, or HLS before streaming.",
             status);
         Assert.Equal("No stream destination", TransportStatusFormatter.FormatOutputStatusBrief(status));
     }
@@ -685,6 +685,9 @@ public sealed class StudioViewModelAudioStatusTests
         Assert.Equal(
             "SRT output is selected, but the native media core profile is missing srt-output.",
             TransportStatusFormatter.ValidateStreamDestinationCapabilities(false, false, true, profile));
+        Assert.Equal(
+            "HLS output is selected, but the native media core profile is missing hls-output.",
+            TransportStatusFormatter.ValidateStreamDestinationCapabilities(false, false, false, profile, hlsEnabled: true));
     }
 
     [Fact]
@@ -698,6 +701,14 @@ public sealed class StudioViewModelAudioStatusTests
             "Streaming start failed: Native output sender did not start. Check Stream settings and open Health for sender diagnostics.",
             status);
         Assert.Equal("Stream sender not armed", TransportStatusFormatter.FormatOutputStatusBrief(status));
+    }
+
+    [Fact]
+    public void FormatStreamingFailureStatus_ExplainsHlsOriginPutRejection()
+    {
+        var status = TransportStatusFormatter.FormatStreamingFailureStatus(
+            "start", new InvalidOperationException("HLS output Error opening output: I/O error"));
+        Assert.Contains("HLS origin refused an HTTP PUT", status);
     }
 
     [Fact]

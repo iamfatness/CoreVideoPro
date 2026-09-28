@@ -44,7 +44,12 @@ public sealed class ShowInputsCoordinator
         _host = host;
         MultiviewInputRows = new MultiviewInputRowsProjection(host.ShowInputs, host.CaptureDevices);
         _bridge.SnapshotChanged += snapshot =>
-            _host.RunOnUiThread(() => MultiviewInputRows.ApplyRosterFact(snapshot));
+            _host.RunOnUiThread(() =>
+            {
+                MultiviewInputRows.ApplyRosterFact(snapshot);
+                foreach (var source in _host.SrtIngestSources)
+                    source.ApplyRuntimeStatus(snapshot.CaptureDevices.FirstOrDefault(device => device.Id == source.DeviceId));
+            });
         _bridge.ZoomSourceFormatReceived += fact =>
             _host.RunOnUiThread(() => MultiviewInputRows.ApplySourceFormatFact(fact));
         _bridge.OutputLifecycleChanged += fact =>

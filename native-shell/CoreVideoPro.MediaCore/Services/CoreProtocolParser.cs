@@ -400,6 +400,16 @@ public static class CoreProtocolParser
             ? value.GetDouble()
             : 0;
 
+    private static long? ReadNullableLong(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+            ? (long)value.GetDouble()
+            : null;
+
+    private static double? ReadNullableDouble(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+            ? value.GetDouble()
+            : null;
+
     public static NativeMediaCoreProgramFramePreview? TryParseProgramFramePreview(JsonElement previewElement)
     {
         if (previewElement.ValueKind != JsonValueKind.Object ||
@@ -593,7 +603,14 @@ public static class CoreProtocolParser
             CoreObservationModel.Parse(json).TypedJson(), MediaCoreJson.Options);
         return snapshot is null
             ? null
-            : snapshot with { RawJson = json, RawReceivedUtc = DateTimeOffset.UtcNow };
+            : snapshot with
+            {
+                CaptureDevices = element.TryGetProperty("captureDevices", out var captureDevices) &&
+                    captureDevices.ValueKind == JsonValueKind.Array
+                    ? ParseCaptureDevices(captureDevices) : [],
+                RawJson = json,
+                RawReceivedUtc = DateTimeOffset.UtcNow
+            };
     }
 
     public static NativeMediaCoreWireState? TryParseWireState(JsonDocument response)
@@ -728,6 +745,11 @@ public static class CoreProtocolParser
             return null;
         }
 
+        return ParseCaptureDevices(devicesElement);
+    }
+
+    private static IReadOnlyList<NativeCaptureDeviceStatus> ParseCaptureDevices(JsonElement devicesElement)
+    {
         var devices = new List<NativeCaptureDeviceStatus>();
         foreach (var device in devicesElement.EnumerateArray())
         {
@@ -765,6 +787,12 @@ public static class CoreProtocolParser
                 Height = height,
                 FrameRate = ReadInt(device, "frameRate"),
                 Warning = warning.Length > 0 ? warning : null,
+                DecoderFailures = ReadNullableLong(device, "decoderFailures"),
+                CodecDecodeErrors = ReadNullableLong(device, "codecDecodeErrors"),
+                PacketDecodeErrors = ReadNullableLong(device, "packetDecodeErrors"),
+                LastFrameAgeMs = ReadNullableLong(device, "lastFrameAgeMs"),
+                RttMs = ReadNullableDouble(device, "rttMs"),
+                RttStatus = ReadString(device, "rttStatus"),
                 NativeDeviceId = nativeDeviceId.Length > 0 ? nativeDeviceId : null
             });
         }

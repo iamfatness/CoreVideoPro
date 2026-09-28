@@ -1,4 +1,4 @@
-using System.Text.Json;
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Models;
 
 namespace CoreVideoPro.WinUI.Services;
@@ -9,31 +9,13 @@ public static class RtmpIngestCaptureFacts
     public sealed record Fact(string DeviceId, string ConnectionState, bool SignalPresent,
         int Width, int Height, int FrameRate);
 
-    public static IReadOnlyList<Fact> Read(JsonElement? devices)
+    public static IReadOnlyList<Fact> Read(IReadOnlyList<NativeCaptureDeviceStatus> devices)
     {
-        if (devices is not { ValueKind: JsonValueKind.Array } array) return [];
-        var result = new List<Fact>();
-        foreach (var item in array.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object ||
-                !item.TryGetProperty("id", out var id) ||
-                id.ValueKind != JsonValueKind.String ||
-                id.GetString() is not { } deviceId ||
-                !deviceId.StartsWith("rtmp-ingest-", StringComparison.Ordinal)) continue;
-            var state = item.TryGetProperty("connectionState", out var connection) &&
-                connection.ValueKind == JsonValueKind.String ? connection.GetString() ?? "" : "";
-            var signal = item.TryGetProperty("signalPresent", out var present) &&
-                present.ValueKind == JsonValueKind.True;
-            var width = 0;
-            var height = 0;
-            if (item.TryGetProperty("resolution", out var resolution) && resolution.ValueKind == JsonValueKind.Object)
-            {
-                width = ReadInt(resolution, "width");
-                height = ReadInt(resolution, "height");
-            }
-            result.Add(new Fact(deviceId, state, signal, width, height, ReadInt(item, "frameRate")));
-        }
-        return result;
+        return devices
+            .Where(device => device.Id.StartsWith("rtmp-ingest-", StringComparison.Ordinal))
+            .Select(device => new Fact(device.Id, device.ConnectionState, device.SignalPresent,
+                device.Width, device.Height, device.FrameRate))
+            .ToList();
     }
 
     public static bool Apply(CaptureDevice device, Fact fact)
@@ -59,8 +41,4 @@ public static class RtmpIngestCaptureFacts
         }
         return true;
     }
-
-    private static int ReadInt(JsonElement item, string property) =>
-        item.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number &&
-        value.TryGetInt32(out var number) ? number : 0;
 }

@@ -486,6 +486,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private bool _streamSrtEnabled;
 
+    public HlsOutputSettingsViewModel Hls { get; } = new();
+
     [ObservableProperty]
     private string _streamRtmpProtocol = "rtmps";
 
@@ -1457,6 +1459,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _startupBootstrap = startup;
         _bridge = startup.Bridge;
         _outputPreferencesStore = startup.Store;
+        Hls.PropertyChanged += (_, change) =>
+        {
+            if (change.PropertyName is nameof(HlsOutputSettingsViewModel.Enabled) or
+                nameof(HlsOutputSettingsViewModel.PlaylistUrl)) OnStreamOutputOptionChanged();
+        };
         _startupProgramBufferFrames = _programBufferFrames = startup.ProgramBufferFrames;
         ExternalUriLauncher.BindDispatcher(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
         AudioRoutingMatrix.RouteChanged += OnAudioRoutingMatrixChanged;
@@ -6842,7 +6849,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         // Screen sources connect CORE-SIDE: connect-capture-device starts the
         // WGC session and frames enter the compositor as "capture:screen:<n>".
-        if (device.Id.StartsWith("screen:", StringComparison.Ordinal) || device.Id.StartsWith("window:", StringComparison.Ordinal))
+        if (ShowInputRosterService.UsesNativeCaptureSession(device))
         {
             try
             {
@@ -6853,7 +6860,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 LaunchLog.Write(string.Format("capture: screen connect response {0}: statuses={1} match={2}", device.Id, statuses.Count, match?.ConnectionState ?? "none"));
                 RunOnUiThread(() =>
                 {
-                    device.ConnectionState = match?.ConnectionState == "connected"
+                    device.ConnectionState = ShowInputRosterService.NativeCaptureSessionStarted(device, match?.ConnectionState)
                         ? CaptureConnectionState.Connected
                         : CaptureConnectionState.Detected;
                     device.SignalPresent = match?.SignalPresent ?? false;
@@ -7410,38 +7417,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             var nativeDevices = await _bridge.ListNativeCaptureDevicesAsync().ConfigureAwait(false);
             foreach (var native in nativeDevices)
             {
-                var isScreen = native.Id.StartsWith("screen:", StringComparison.Ordinal);
-                var isWindow = native.Id.StartsWith("window:", StringComparison.Ordinal);
-                // Browser sources (BR-1) are core-owned WebView2 host processes; they
-                // enumerate as "browser:<n>" and merge in like screens do.
-                var isBrowser = native.Id.StartsWith("browser:", StringComparison.Ordinal);
-                var isRtmpIngest = native.Id.StartsWith("rtmp-ingest-", StringComparison.Ordinal);
-                if (!isScreen && !isWindow && !isBrowser && !isRtmpIngest)
-                {
-                    continue;
-                }
-                var inputLabel = isRtmpIngest ? "Embedded video and audio" : isBrowser ? "Web page (WebView2)" : isWindow ? "Application window" : "Entire display";
-                var inputId = isRtmpIngest ? native.Id.Replace("rtmp-ingest-", "rtmp-source-", StringComparison.Ordinal)
-                    : isBrowser ? "browser" : isWindow ? "window" : "screen";
-                screens.Add(new CaptureDevice
-                {
-                    Id = native.Id,
-                    NativeDeviceId = native.Id,
-                    Vendor = isRtmpIngest ? "rtmp" : isBrowser ? "browser" : "Screen capture",
-                    Name = native.Name,
-                    Inputs = [new CaptureDeviceInput { Id = inputId, Label = inputLabel }],
-                    SelectedInputId = inputId,
-                    Width = native.Width,
-                    Height = native.Height,
-                    FrameRate = native.FrameRate,
-                    ConnectionState = native.ConnectionState == "connected"
-                        ? CaptureConnectionState.Connected
-                        : isBrowser && native.ConnectionState == "failed"
-                            ? CaptureConnectionState.Error
-                            : CaptureConnectionState.Detected,
-                    SignalPresent = native.SignalPresent,
-                    AudioSyncOffsetMs = 0
-                });
+                if (ShowInputRosterService.MapCoreOwnedCaptureDevice(native) is { } mapped)
+                    screens.Add(mapped);
             }
         }
         catch
@@ -9777,128 +9754,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         !string.Equals(sourceId, "active-speaker", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(sourceId, "screen-share", StringComparison.OrdinalIgnoreCase);
 
-    private IReadOnlyList<string> BuildSelectedStreamDestinations(bool validatedOnly = false)
-    {
-        var destinations = new List<string>(3);
-        if (StreamRtmpEnabled &&
-            (!validatedOnly || StudioStreamOutputValidation.CanSerializeRtmpSettings(
-                StreamRtmpProtocol,
-                StreamRtmpServerUrl,
-                StreamRtmpStreamKey)))
-        {
-            destinations.Add("rtmp");
-        }
-
-        if (StreamNdiEnabled &&
-            (!validatedOnly || StudioStreamOutputValidation.CanSerializeNdiSettings(StreamNdiProgramName)))
-        {
-            destinations.Add("ndi");
-        }
-
-        if (StreamSrtEnabled &&
-            (!validatedOnly || StudioStreamOutputValidation.CanSerializeSrtSettings(
-                StreamSrtMode,
-                StreamSrtHost,
-                StreamSrtPort,
-                StreamSrtLatencyMs,
-                StreamSrtStreamId,
-                StreamSrtKeyLength,
-                StreamSrtPassphrase)))
-        {
-            destinations.Add("srt");
-        }
-
-        return destinations;
-    }
-
-    private IReadOnlyList<MediaCoreStreamDestinationWire> BuildStreamDestinationSettings()
-    {
-        var destinations = new List<MediaCoreStreamDestinationWire>(3);
-        var streamProfile = BuildRequestedOutputProfile(
-            "stream",
-            StreamRenderResolution,
-            StreamRenderFps,
-            StreamVideoCodec,
-            NormalizeStreamTargetBitrateMbps(StreamTargetBitrateMbps),
-            NormalizeAudioBitrateKbps(StreamAudioBitrateKbps));
-        if (StreamRtmpEnabled &&
-            StudioStreamOutputValidation.CanSerializeRtmpSettings(
-                StreamRtmpProtocol,
-                StreamRtmpServerUrl,
-                StreamRtmpStreamKey))
-        {
-            destinations.Add(new MediaCoreStreamDestinationWire(
-                Id: "rtmp",
-                Label: "RTMP",
-                Protocol: StudioStreamOutputValidation.NormalizeRtmpProtocol(StreamRtmpProtocol),
-                Url: StudioStreamOutputValidation.BuildRtmpUrl(StreamRtmpProtocol, StreamRtmpServerUrl),
-                StreamKey: NormalizeOutputText(StreamRtmpStreamKey, string.Empty),
-                FfmpegBinDirectory: NormalizeOptionalOutputText(FfmpegBinDirectory),
-                Fps: streamProfile.Fps,
-                TargetBitrateMbps: streamProfile.TargetBitrateMbps,
-                AudioBitrateKbps: streamProfile.AudioBitrateKbps,
-                VideoCodec: streamProfile.Codec,
-                EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode),
-                KeyframeIntervalSeconds: Math.Clamp(StreamKeyframeIntervalSeconds, 0.5, 10),
-                RateControl: NormalizeStreamRateControl(StreamRateControl),
-                H264Profile: NormalizeStreamH264Profile(StreamH264Profile),
-                BFrames: (int)Math.Clamp(Math.Round(StreamBFrames), 0, 4),
-                AllowEnhancedRtmp: StreamAllowEnhancedRtmp));
-        }
-
-        if (StreamNdiEnabled &&
-            StudioStreamOutputValidation.CanSerializeNdiSettings(StreamNdiProgramName))
-        {
-            destinations.Add(new MediaCoreStreamDestinationWire(
-                Id: "ndi",
-                Label: "NDI",
-                NdiName: NormalizeOutputText(StreamNdiProgramName, "CoreVideo Pro Program"),
-                NdiGroup: NormalizeOutputText(StreamNdiGroupName, "public"),
-                Fps: streamProfile.Fps,
-                TargetBitrateMbps: streamProfile.TargetBitrateMbps,
-                AudioBitrateKbps: streamProfile.AudioBitrateKbps,
-                VideoCodec: streamProfile.Codec,
-                EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode)));
-        }
-
-        if (StreamSrtEnabled &&
-            StudioStreamOutputValidation.CanSerializeSrtSettings(
-                StreamSrtMode,
-                StreamSrtHost,
-                StreamSrtPort,
-                StreamSrtLatencyMs,
-                StreamSrtStreamId,
-                StreamSrtKeyLength,
-                StreamSrtPassphrase))
-        {
-            var latencyMs = ParsePositiveInt(StreamSrtLatencyMs);
-            var keyLength = StudioStreamOutputValidation.ParseSrtKeyLength(StreamSrtKeyLength);
-            destinations.Add(new MediaCoreStreamDestinationWire(
-                Id: "srt",
-                Label: "SRT",
-                Mode: StudioStreamOutputValidation.NormalizeSrtMode(StreamSrtMode),
-                Host: NormalizeOutputText(StreamSrtHost, string.Empty),
-                Port: ParsePositiveInt(StreamSrtPort),
-                LatencyMs: latencyMs,
-                LatencyUs: latencyMs is null ? null : latencyMs * 1000,
-                Passphrase: NormalizeOutputText(StreamSrtPassphrase, string.Empty),
-                KeyLength: keyLength,
-                StreamId: NormalizeOptionalOutputText(StreamSrtStreamId),
-                Fps: streamProfile.Fps,
-                TargetBitrateMbps: streamProfile.TargetBitrateMbps,
-                VideoCodec: streamProfile.Codec,
-                EncoderMode: NormalizeStreamEncoderMode(StreamEncoderMode)));
-        }
-
-        return destinations;
-    }
-
     private static string FormatStreamDestinationTelemetry(IReadOnlyList<string> destinations) =>
         destinations.Count == 0 ? "none" : string.Join(",", destinations);
 
     private IReadOnlyList<string> BuildConfiguredStreamDestinationLabels()
     {
-        var destinations = new List<string>(3);
+        var destinations = new List<string>(4);
         if (StreamRtmpEnabled)
         {
             destinations.Add(IsRtmpConfigured() ? "RTMP configured" : "RTMP missing");
@@ -9912,6 +9773,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (StreamSrtEnabled)
         {
             destinations.Add(ValidateSrtSettings() is null ? "SRT configured" : "SRT missing");
+        }
+
+        if (Hls.Enabled)
+        {
+            destinations.Add(StudioStreamOutputValidation.ValidateHls(Hls.PlaylistUrl) is null
+                ? "HLS configured" : "HLS missing");
         }
 
         return destinations;
@@ -9934,16 +9801,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamSrtStreamId,
             StreamSrtKeyLength,
             StreamSrtPassphrase,
-            FfmpegBinDirectory);
+            FfmpegBinDirectory,
+            Hls.Enabled,
+            Hls.PlaylistUrl);
+        if (settingsError is null && Hls.Enabled &&
+            !string.Equals(StreamVideoCodec, "h264", StringComparison.OrdinalIgnoreCase))
+        {
+            return "HLS output currently requires H.264 video. Choose H.264 in Stream settings.";
+        }
         return settingsError ?? ValidateStreamDestinationCapabilities(
             StreamRtmpEnabled,
             StreamNdiEnabled,
             StreamSrtEnabled,
-            _bridge.Profile);
+            _bridge.Profile,
+            Hls.Enabled);
     }
 
-    private static string? ValidateStreamDestinationCapabilities(bool streamRtmpEnabled, bool streamNdiEnabled, bool streamSrtEnabled, NativeMediaCoreProfile? profile) =>
-        TransportStatusFormatter.ValidateStreamDestinationCapabilities(streamRtmpEnabled, streamNdiEnabled, streamSrtEnabled, profile);
+    private static string? ValidateStreamDestinationCapabilities(bool streamRtmpEnabled, bool streamNdiEnabled, bool streamSrtEnabled, NativeMediaCoreProfile? profile, bool hlsEnabled = false) =>
+        TransportStatusFormatter.ValidateStreamDestinationCapabilities(streamRtmpEnabled, streamNdiEnabled, streamSrtEnabled, profile, hlsEnabled);
 
     private static bool HasNativeOutputCapability(NativeMediaCoreProfile profile, string capability) =>
         TransportStatusFormatter.HasNativeOutputCapability(profile, capability);
@@ -10224,6 +10099,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(StreamRtmpSummary));
         OnPropertyChanged(nameof(StreamNdiSummary));
         OnPropertyChanged(nameof(StreamSrtSummary));
+        OnPropertyChanged(nameof(Hls));
         SaveProductionOutputPreferences();
 
         if (!StreamingRequested || !_bridge.Running)
@@ -10458,6 +10334,24 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 TargetBitrateMbps = streamProfile.TargetBitrateMbps,
                 Endpoint = StreamNdiProgramName,
                 StreamKey = null
+            });
+        }
+
+        if (Hls.Enabled || !string.IsNullOrWhiteSpace(Hls.PlaylistUrl))
+        {
+            destinations.Add(new SupportBundleOutputDestination
+            {
+                Id = "hls",
+                Name = "HLS",
+                Protocol = "hls",
+                Enabled = Hls.Enabled,
+                Active = Streaming && Hls.Enabled,
+                Resolution = streamProfile.Resolution,
+                Fps = streamProfile.Fps.ToString(CultureInfo.InvariantCulture),
+                Codec = streamProfile.Codec,
+                EncoderMode = NormalizeStreamEncoderMode(StreamEncoderMode),
+                TargetBitrateMbps = streamProfile.TargetBitrateMbps,
+                Endpoint = Hls.RedactedEndpoint
             });
         }
 
@@ -11594,7 +11488,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return sourceId;
         }
 
-        return input.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest
+        return input.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.RtmpIngest
             ? $"capture:{captureDeviceId}"
             : captureDeviceId;
     }
@@ -11960,6 +11854,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             StreamRtmpEnabled = StreamRtmpEnabled,
             StreamNdiEnabled = StreamNdiEnabled,
             StreamSrtEnabled = StreamSrtEnabled,
+            StreamHlsEnabled = Hls.Enabled,
+            StreamHlsPlaylistUrl = Hls.PlaylistUrl,
             StreamRtmpProtocol = StreamRtmpProtocol,
             StreamRtmpServerUrl = StreamRtmpServerUrl,
             StreamRtmpStreamKey = StreamRtmpStreamKey,
@@ -12068,6 +11964,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         StreamRtmpEnabled = preferences.StreamRtmpEnabled;
         StreamNdiEnabled = preferences.StreamNdiEnabled;
         StreamSrtEnabled = preferences.StreamSrtEnabled;
+        Hls.Enabled = preferences.StreamHlsEnabled;
+        Hls.PlaylistUrl = preferences.StreamHlsPlaylistUrl ?? string.Empty;
         StreamRtmpProtocol = preferences.StreamRtmpProtocol ?? StreamRtmpProtocol;
         StreamRtmpServerUrl = preferences.StreamRtmpServerUrl ?? StreamRtmpServerUrl;
         StreamRtmpStreamKey = preferences.StreamRtmpStreamKey ?? StreamRtmpStreamKey;
@@ -12457,7 +12355,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var deviceId in ShowInputs
                      .Where(slot => slot.InShow &&
-                         (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest) &&
+                         (slot.Kind is ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.RtmpIngest) &&
                          !string.IsNullOrWhiteSpace(slot.CaptureDeviceId))
                      .Select(slot => slot.CaptureDeviceId!)
                      .Distinct(StringComparer.Ordinal))
@@ -12705,7 +12603,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var device in CaptureDevices)
         {
-            if ((!device.Id.StartsWith("screen:", StringComparison.Ordinal) && !device.Id.StartsWith("window:", StringComparison.Ordinal)) ||
+            if (!ShowInputRosterService.UsesNativeCaptureSession(device) ||
                 device.ConnectionState == CaptureConnectionState.Connected ||
                 _screenConnectsInFlight.Contains(device.Id))
             {
@@ -12868,16 +12766,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     private static ShowInputKind ResolveShowInputKind(CaptureDevice device) =>
-        device.Vendor.ToLowerInvariant() switch
-        {
-            "blackmagic" => ShowInputKind.Blackmagic,
-            "aja" => ShowInputKind.Aja,
-            "srt" => ShowInputKind.SrtIngest,
-            "rtmp" => ShowInputKind.RtmpIngest,
-            "uvc" or "windows" => ShowInputKind.UvcWebcam,
-            "screen capture" => ShowInputKind.Screen,
-            _ => ShowInputKind.UvcWebcam
-        };
+        ShowInputRosterService.InferCaptureDeviceKind(device);
 
     private static bool IsVirtualSrtIngestDevice(CaptureDevice device) =>
         string.Equals(device.Vendor, "srt", StringComparison.OrdinalIgnoreCase);

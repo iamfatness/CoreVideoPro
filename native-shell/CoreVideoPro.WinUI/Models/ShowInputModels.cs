@@ -11,6 +11,7 @@ public enum ShowInputKind
     SrtIngest,
     Media,
     Browser,
+    Ndi,
     RtmpIngest
 }
 
@@ -105,6 +106,7 @@ public sealed partial class ShowInputSlot : CommunityToolkit.Mvvm.ComponentModel
         ShowInputKind.Screen => "Screen",
         ShowInputKind.SrtIngest => "SRT ingest",
         ShowInputKind.RtmpIngest => "RTMP ingest",
+        ShowInputKind.Ndi => "NDI input",
         ShowInputKind.Media => "Media",
         ShowInputKind.Browser => "Browser",
         _ => "Unassigned"
@@ -113,12 +115,12 @@ public sealed partial class ShowInputSlot : CommunityToolkit.Mvvm.ComponentModel
     public bool IsAssigned => Kind switch
     {
         ShowInputKind.ZoomParticipant or ShowInputKind.Media => !string.IsNullOrWhiteSpace(ParticipantId),
-        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest or ShowInputKind.Browser => !string.IsNullOrWhiteSpace(CaptureDeviceId),
+        ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.RtmpIngest or ShowInputKind.Browser => !string.IsNullOrWhiteSpace(CaptureDeviceId),
         _ => false
     };
 
     public bool IsSourcePickerEnabled =>
-        Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest or ShowInputKind.Media or ShowInputKind.Browser;
+        Kind is ShowInputKind.ZoomParticipant or ShowInputKind.Blackmagic or ShowInputKind.Aja or ShowInputKind.UvcWebcam or ShowInputKind.Screen or ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.RtmpIngest or ShowInputKind.Media or ShowInputKind.Browser;
 
     public bool IsAudioPickerEnabled =>
         Kind is ShowInputKind.UvcWebcam or ShowInputKind.Blackmagic or ShowInputKind.Aja;
@@ -140,7 +142,7 @@ public sealed partial class ShowInputSlot : CommunityToolkit.Mvvm.ComponentModel
         else
         {
             ParticipantId = null;
-            if (value is ShowInputKind.SrtIngest or ShowInputKind.RtmpIngest or ShowInputKind.Browser)
+            if (value is ShowInputKind.SrtIngest or ShowInputKind.Ndi or ShowInputKind.RtmpIngest or ShowInputKind.Browser)
             {
                 AudioDeviceId = null;  // no paired-audio concept (browser audio is BR-3)
             }

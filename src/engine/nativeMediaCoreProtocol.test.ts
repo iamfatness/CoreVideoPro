@@ -18,6 +18,7 @@ describe("native media core protocol", () => {
       ...requiredMvpMediaCoreCapabilities,
       "ndi-output",
       "srt-output",
+      "hls-output",
       "webrtc-output"
     ]
   };

@@ -283,6 +283,10 @@
                                                        FontSize="11"
                                                        Foreground="{StaticResource StudioMutedBrush}"
                                                        TextWrapping="WrapWholeWords" />
+                                            <TextBlock Text="{x:Bind RuntimeHealthLabel, Mode=OneWay}"
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource StudioMutedBrush}"
+                                                       TextWrapping="WrapWholeWords" />
                                         </StackPanel>
                                         <Button Grid.Column="4"
                                                 Content="Remove"
