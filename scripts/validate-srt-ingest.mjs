@@ -13,7 +13,7 @@
  *
  * Usage: node ./scripts/validate-srt-ingest.mjs [--seconds 18] [--port 9040]
  *        [--source-size 1920x1080] [--source-fps 30]
- *        [--mode listener|caller] [--keep]
+ *        [--mode listener|caller] [--restart-publisher] [--keep]
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, rmSync, statSync } from "node:fs";
@@ -42,6 +42,11 @@ if (!/^\d+x\d+$/.test(sourceSize) || !Number.isInteger(sourceFps) || sourceFps <
   process.exit(1);
 }
 const keep = args.includes("--keep");
+const restartPublisher = args.includes("--restart-publisher");
+if (restartPublisher && seconds < 18) {
+  console.error("Publisher restart proof needs at least 18 seconds.");
+  process.exit(1);
+}
 const deviceId = "srt-ingest-1";
 
 const ffBin = (name) => {
@@ -152,16 +157,20 @@ try {
   // Push a known pattern AND tone in over real SRT. A contribution feed carries
   // the guest's audio embedded in the same stream, so proving only video would
   // prove half a feed.
-  publisher = spawn(ffmpeg,
-    ["-hide_banner", "-loglevel", "error", "-re",
-     "-f", "lavfi", "-i", `testsrc=size=${sourceSize}:rate=${sourceFps}`,
-     "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
-     "-t", String(seconds + 6), "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
-     "-c:a", "aac", "-ac", "2",
-     "-f", "mpegts", `srt://127.0.0.1:${port}?mode=${mode === "listener" ? "caller" : "listener"}&transtype=live`],
-    { stdio: ["ignore", "ignore", "pipe"] });
   let publisherErr = "";
-  publisher.stderr.on("data", (c) => { publisherErr += c.toString(); });
+  const startPublisher = () => {
+    const process = spawn(ffmpeg,
+      ["-hide_banner", "-loglevel", "error", "-re",
+       "-f", "lavfi", "-i", `testsrc=size=${sourceSize}:rate=${sourceFps}`,
+       "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+       "-t", String(seconds + 6), "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
+       "-c:a", "aac", "-ac", "2",
+       "-f", "mpegts", `srt://127.0.0.1:${port}?mode=${mode === "listener" ? "caller" : "listener"}&transtype=live`],
+      { stdio: ["ignore", "ignore", "pipe"] });
+    process.stderr.on("data", (c) => { publisherErr += c.toString(); });
+    return process;
+  };
+  publisher = startPublisher();
   console.log(`publisher     : ${mode === "listener" ? "caller" : "listener"} pushing ` +
               `testsrc into srt://127.0.0.1:${port} ...`);
 
@@ -209,6 +218,8 @@ try {
   let renderEnd = null;
   let maxRenderAgeMs = 0;
   const deadline = Date.now() + seconds * 1000;
+  const restartAt = restartPublisher ? Date.now() + Math.floor(seconds * 1000 / 3) : Infinity;
+  let restartCompleted = false;
   while (Date.now() < deadline) {
     await sleep(seconds >= 300 ? 10000 : 3000);
     const sync = await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] });
@@ -227,6 +238,62 @@ try {
       lastDecodedFrames = device.decodedFrames ?? 0;
       lastDecodedAudioSamples = device.decodedAudioSamples ?? 0;
     }
+    if (!restartCompleted && Date.now() >= restartAt && device?.signalPresent) {
+      const beforeVideo = device.decodedFrames;
+      const beforeAudio = device.decodedAudioSamples;
+      const publisherExited = new Promise((resolve) => {
+        if (publisher.exitCode !== null) resolve(true);
+        else publisher.once("exit", () => resolve(true));
+      });
+      publisher.kill();
+      const exited = await Promise.race([publisherExited, sleep(5000).then(() => false)]);
+      if (!exited) failures.push("SRT test publisher did not exit after interruption");
+      let stale = false;
+      for (let attempt = 0; attempt < 12 && !stale; attempt += 1) {
+        await sleep(500);
+        const check = await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] });
+        const current = check.snapshot?.captureDevices?.find((d) => d.id === deviceId);
+        stale = current?.signalPresent === false;
+      }
+      if (!stale) failures.push("SRT signal stayed live after publisher interruption");
+      let recovered = false;
+      let attemptsUsed = 0;
+      // FFmpeg's caller is one-shot. A real contribution encoder retries when
+      // it reaches the receiver before the new listener has bound its socket.
+      for (let retry = 0; retry < 3 && !recovered; retry += 1) {
+        attemptsUsed = retry + 1;
+        await sleep(1200);
+        publisher = startPublisher();
+        let lastVideo = beforeVideo;
+        let lastAudio = beforeAudio;
+        let growingSamples = 0;
+        for (let attempt = 0; attempt < 24 && !recovered; attempt += 1) {
+          await sleep(500);
+          if (publisher.exitCode !== null || publisher.signalCode !== null) break;
+          const check = await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] });
+          const current = check.snapshot?.captureDevices?.find((d) => d.id === deviceId);
+          if (current?.signalPresent === true &&
+              current.decodedFrames > lastVideo && current.decodedAudioSamples > lastAudio) {
+            growingSamples += 1;
+          } else {
+            growingSamples = 0;
+          }
+          lastVideo = current?.decodedFrames ?? lastVideo;
+          lastAudio = current?.decodedAudioSamples ?? lastAudio;
+          if (growingSamples >= 2 && lastVideo > beforeVideo && lastAudio > beforeAudio) {
+            recovered = true;
+            device = current;
+          }
+        }
+        if (!recovered && publisher.exitCode === null && publisher.signalCode === null) publisher.kill();
+      }
+      if (!recovered) failures.push("SRT publisher restarted but video/audio did not recover on the same source");
+      console.log(`restart proof : stale=${stale} recovered=${recovered} attempts=${attemptsUsed} ` +
+                  `video=${device?.decodedFrames ?? "missing"} audio=${device?.decodedAudioSamples ?? "missing"} ` +
+                  `codecErrors=${device?.codecDecodeErrors ?? "missing"} ` +
+                  `packetErrors=${device?.packetDecodeErrors ?? "missing"}`);
+      restartCompleted = true;
+    }
     // Master true-peak splits "the recording is silent" from "the bus is silent"
     // without re-deriving it from the artifact.
     const master = sync.snapshot?.audioMixSession?.masterMeter ?? null;
@@ -239,6 +306,7 @@ try {
     }
   }
 
+  if (restartPublisher && !restartCompleted) failures.push("SRT publisher restart proof never ran");
   if (!device) failures.push("the SRT ingest device never appeared in captureDevices");
   else if (!device.signalPresent) {
     failures.push(`SRT source never reported signal (state=${device.connectionState}, ` +
@@ -249,8 +317,10 @@ try {
     failures.push("SRT health did not count decoded video and audio");
   }
   if (device?.decoderFailures !== 0) failures.push(`SRT decoder startup failed ${device?.decoderFailures ?? "unknown"} times`);
-  if (device?.codecDecodeErrors !== 0) failures.push(`SRT codec decode errors: ${device?.codecDecodeErrors ?? "missing"}`);
-  if (device?.packetDecodeErrors !== 0) failures.push(`SRT packet decode errors: ${device?.packetDecodeErrors ?? "missing"}`);
+  if (!restartPublisher && device?.codecDecodeErrors !== 0)
+    failures.push(`SRT codec decode errors: ${device?.codecDecodeErrors ?? "missing"}`);
+  if (!restartPublisher && device?.packetDecodeErrors !== 0)
+    failures.push(`SRT packet decode errors: ${device?.packetDecodeErrors ?? "missing"}`);
   if (device?.rttMs !== null || !device?.rttStatus?.includes("FFmpeg owns SRT socket")) {
     failures.push("SRT RTT must remain explicitly unavailable while FFmpeg owns the socket");
   }
