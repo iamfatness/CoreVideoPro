@@ -1,5 +1,9 @@
 # Control-state crossing inventory
 
+> Inventory captured before the #659/#661/#663 implementation. Its "current"
+> trigger/gap cells describe that baseline, not the 2026-09-27 shipping state.
+> Consult [BACKLOG](BACKLOG.md) and the linked issues for current acceptance.
+
 Linked issue: [#661](https://github.com/iamfatness/CoreVideoPro/issues/661).
 This inventory records the current Windows path for the first revisioned
 command. The owner and recovery rules are in

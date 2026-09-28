@@ -39,7 +39,7 @@ spikes, and soaks in the designated test meeting remains in effect.
 The owner explicitly authorized closing/restarting CoreVideo and repeating tests
 in test meetings without renewed approval (2026-09-22).
 
-## What to work on: `docs/BACKLOG.md` (owner-approved 2026-09-10)
+## What to work on: `docs/BACKLOG.md`
 
 The single ranked list. Pick the top unblocked item there, not the latest incident; a new
 defect found mid-task gets a GitHub issue (label `backlog`) and a row in its tier, and the

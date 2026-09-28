@@ -6,6 +6,12 @@ This is a dependency plan, not a ranked work queue; [BACKLOG](BACKLOG.md) owns
 priority. Each implementation slice needs an issue row before work begins. No
 foundation-only PR lands on `main` without a shipping consumer.
 
+Execution snapshot (2026-09-27): Slices A–C merged as #660/#683,
+#662/#684, and #664/#685. The child issues #659/#661/#663 are closed.
+Parent #657 remains open for installed transition, audible monitor, and recovery
+qualification described below. The slice text is the implementation record;
+the remaining gate and current rank are on the issue and [BACKLOG](BACKLOG.md).
+
 ## Preparation: enumerate state crossings
 
 Trace every place that copies a Zoom/core observation into a shell control

@@ -1,5 +1,11 @@
 # CoreVideo Pro — Native Production Completion: Plan & Spec
 
+> Historical 2026-06-21 baseline. The status matrix and F1/F2 foundation claims
+> below predate the source-bus, SRT ingest, NDI send, and YouTube SRT work merged
+> through 2026-09-27. Use [BACKLOG](BACKLOG.md) and linked issues #535/#536/#538
+> for current status and priority; retain this document for its original design
+> rationale and acceptance criteria.
+
 _Status snapshot: 2026-06-21. Owner: production / native media-core. This is the
 plan and per-feature spec for closing the gap between the **typed contract surface**
 (which is broad and well-tested) and the **real native media pipeline**._

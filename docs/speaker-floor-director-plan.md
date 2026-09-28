@@ -4,7 +4,9 @@ Linked issue: [#668](https://github.com/iamfatness/CoreVideoPro/issues/668).
 Requirements: [speaker-floor-director-spec.md](speaker-floor-director-spec.md).
 This is a dependency plan, not a ranked work queue. [BACKLOG](BACKLOG.md) owns
 priority. No foundation-only PR lands on `main` without a shipping consumer.
-Do not start this ahead of the current Now items unless the owner promotes #668.
+Slices A–D merged as #670–#673. Issue #668 remains open for the installed
+host-plus-three-guests, interview, solo, and share-priority acceptance below.
+Current rank lives only in [BACKLOG](BACKLOG.md).
 
 ## Why this order
 

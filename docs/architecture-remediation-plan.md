@@ -1,5 +1,11 @@
 # CoreVideo Pro architecture remediation plan
 
+> Historical architecture plan from the `660f6266` review. Its branch status,
+> delivery order and "next review step" below are preserved as planning context,
+> not current work status. [BACKLOG](BACKLOG.md) is the only ranked queue;
+> [control-state-events-plan.md](control-state-events-plan.md) records the later
+> transition-contract slices. Check each linked issue for acceptance evidence.
+
 Status: implementation and validation in progress on `codex/architecture-reliability`.
 
 Implemented: Windows test gate, atomic production preference saves and recovery,

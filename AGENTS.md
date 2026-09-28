@@ -73,12 +73,13 @@ Shell owns no real-time media. Zoom SDK stays in `corevideo-zoom-engine`.
 Spine features (ISO, NDI, SRT, browser, later MXL) are **core adapters** behind
 typed commands.
 
-## 7. Parking lot vs Now
+## 7. Parking lot vs Now (historical decision)
 
-Owner 2026-09-17: **Now is show survival** (#529/#533, #518, #516, then #526, #513).
-**Next is F1 (#535) then SRT/NDI send (#538) then SRT ingest (#536).**
-**MXL / ZoomISO Cloud / K8s (#539) stay Later.** Do not design a fifth private
-pipe until F1 exists.
+The 2026-09-17 owner order was show survival (#529/#533, #518, #516, then
+#526/#513), F1 (#535), SRT/NDI (#538), then SRT ingest (#536). Most of that
+sequence has since merged. The current order is only in `docs/BACKLOG.md`.
+MXL / ZoomISO Cloud / K8s (#539) remain parked; do not design a fifth private
+pipe.
 
 Architecture that does not save tonight's show does not jump Now.
 
