@@ -630,6 +630,7 @@ if(BUILD_TESTING)
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp
+    tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
     tests/VirtualCameraSlateTest.cpp
     tests/VirtualCameraComposeTest.cpp
@@ -720,6 +721,11 @@ if(BUILD_TESTING)
     tests/ZoomEngineStateTest.cpp
   )
   target_link_libraries(corevideo-native-tests PRIVATE corevideo_native)
+  if(WIN32 AND COREVIDEO_WITH_VIRTUALCAM)
+    target_compile_definitions(corevideo-native-tests PRIVATE
+      COREVIDEO_VCAM_DLL_PATH="$<TARGET_FILE:corevideo-virtualcam>")
+    add_dependencies(corevideo-native-tests corevideo-virtualcam)
+  endif()
   target_compile_definitions(corevideo-native-tests PRIVATE
     COREVIDEO_REPO_ROOT="${CMAKE_SOURCE_DIR}/.."
     COREVIDEO_STUB=$<BOOL:${COREVIDEO_STUB}>
