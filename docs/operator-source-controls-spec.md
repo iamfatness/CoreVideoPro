@@ -124,7 +124,8 @@ installed meeting showing current versus pending and actual versus requested.
 
 The selected media asset gets a compact **Clip range** group below its
 existing preview and transport controls. This is the UI design for owner
-review before code, as required by #456:
+review before code, as required by #456. See the
+[visual mockup](mockups/media-clip-range.png):
 
 ```text
 Selected clip                         duration 00:02:14.080
