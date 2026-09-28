@@ -1323,6 +1323,8 @@
                                                           IsChecked="{x:Bind ViewModel.StreamNdiEnabled, Mode=TwoWay}" />
                                                 <CheckBox Content="SRT"
                                                           IsChecked="{x:Bind ViewModel.StreamSrtEnabled, Mode=TwoWay}" />
+                                                <CheckBox Content="HLS"
+                                                          IsChecked="{x:Bind ViewModel.Hls.Enabled, Mode=TwoWay}" />
                                             </StackPanel>
                                         </StackPanel>
                                     </Grid>

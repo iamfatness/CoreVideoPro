@@ -15,6 +15,8 @@ public sealed class ProductionOutputPreferencesStoreTests
             StreamRtmpEnabled = true,
             StreamNdiEnabled = true,
             StreamSrtEnabled = false,
+            StreamHlsEnabled = true,
+            StreamHlsPlaylistUrl = "https://origin.example/live/program.m3u8",
             StreamRtmpProtocol = "rtmps",
             StreamRtmpServerUrl = "rtmps://live.example/app",
             StreamRtmpStreamKey = "secret",
@@ -76,6 +78,8 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.NotNull(roundTripped);
         Assert.Equal("C:\\ffmpeg\\bin", roundTripped.FfmpegBinDirectory);
         Assert.True(roundTripped.StreamNdiEnabled);
+        Assert.True(roundTripped.StreamHlsEnabled);
+        Assert.Equal("https://origin.example/live/program.m3u8", roundTripped.StreamHlsPlaylistUrl);
         Assert.Equal(9.5, roundTripped.StreamTargetBitrateMbps);
         Assert.Equal("nvenc", roundTripped.StreamEncoderMode);
         Assert.Equal("youtube-1080p60", roundTripped.StreamPlatformProfileId);

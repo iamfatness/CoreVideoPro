@@ -210,7 +210,7 @@ CapabilityReport capabilityReport(const modules::ModuleSet& modules, bool zoomCo
   add("zoom-raw-audio", {zoomState, zoomDetail, ""});
   intrinsic("program-recording", encoderSession.hardwareAccelerated);
   intrinsic("iso-recording", encoderSession.hardwareAccelerated);
-  for (const char* name : {"rtmp-output", "ndi-output", "srt-output", "srt-ingest",
+  for (const char* name : {"rtmp-output", "ndi-output", "srt-output", "hls-output", "srt-ingest",
                            "decklink-capture", "aja-capture", "uvc-capture"}) factory(name);
   return report;
 }

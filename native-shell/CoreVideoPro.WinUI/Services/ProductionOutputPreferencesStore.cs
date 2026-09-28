@@ -71,6 +71,8 @@ public sealed class ProductionOutputPreferences
     public bool StreamRtmpEnabled { get; set; } = true;
     public bool StreamNdiEnabled { get; set; }
     public bool StreamSrtEnabled { get; set; }
+    public bool StreamHlsEnabled { get; set; }
+    public string? StreamHlsPlaylistUrl { get; set; }
     public string? StreamRtmpProtocol { get; set; }
     public string? StreamRtmpServerUrl { get; set; }
     public string? StreamRtmpStreamKey { get; set; }

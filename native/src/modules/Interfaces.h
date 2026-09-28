@@ -1650,6 +1650,7 @@ std::unique_ptr<IOutputSender> createSrtOutputSender();
 // SRT delivery over the shared FFmpeg sender (same pipeline as RTMP, MPEG-TS
 // container, srt:// endpoint). Defined in RtmpOutputSenderAdapter.cpp.
 std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender();
+std::unique_ptr<IOutputSender> createHlsOutputSender();
 std::unique_ptr<IOutputSender> createNdiOutputSender();
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice();
 std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();
