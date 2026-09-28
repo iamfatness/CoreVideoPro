@@ -11,7 +11,9 @@
  * then asserts the core's capture source reports a connected feed AND that the
  * program it composites from that source is not blank.
  *
- * Usage: node ./scripts/validate-srt-ingest.mjs [--seconds 18] [--port 9040] [--keep]
+ * Usage: node ./scripts/validate-srt-ingest.mjs [--seconds 18] [--port 9040]
+ *        [--source-size 1920x1080] [--source-fps 30]
+ *        [--mode listener|caller] [--keep]
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, rmSync, statSync } from "node:fs";
@@ -31,6 +33,14 @@ const argValue = (name, fallback) => {
 };
 const seconds = Number(argValue("seconds", 18));
 const port = Number(argValue("port", 9040));
+const sourceSize = argValue("source-size", "1920x1080");
+const sourceFps = Number(argValue("source-fps", 30));
+const mode = argValue("mode", "listener");
+if (!/^\d+x\d+$/.test(sourceSize) || !Number.isInteger(sourceFps) || sourceFps < 1 || seconds < 1 ||
+    !["listener", "caller"].includes(mode)) {
+  console.error("Invalid SRT ingest test source size, fps, or duration.");
+  process.exit(1);
+}
 const keep = args.includes("--keep");
 const deviceId = "srt-ingest-1";
 
@@ -63,6 +73,14 @@ let nextId = 1;
 let stdoutBuffer = "";
 let handshake;
 const pending = new Map();
+let coreStderrTail = "";
+child.on("exit", (code, signal) => {
+  for (const [id, item] of pending) {
+    clearTimeout(item.timer);
+    item.reject(new Error(`native core exited (${code ?? signal}) during ${id}: ${coreStderrTail.slice(-1000)}`));
+  }
+  pending.clear();
+});
 
 child.stdout.on("data", (chunk) => {
   stdoutBuffer += chunk.toString();
@@ -83,6 +101,7 @@ child.stdout.on("data", (chunk) => {
   }
 });
 child.stderr.on("data", (chunk) => {
+  coreStderrTail = (coreStderrTail + chunk.toString()).slice(-4000);
   // Surface only the ingest adapter's own lines; the core is chatty otherwise.
   for (const line of chunk.toString().split("\n")) {
     if (line.includes("[srt-ingest]") || line.includes("[recording]") || line.includes("[encoder]")) {
@@ -110,15 +129,19 @@ let artifact = null;
 try {
   for (let i = 0; i < 200 && !handshake; i += 1) await sleep(50);
   if (!handshake) throw new Error("no native-core handshake");
+  const ingestCapability = handshake.profile?.capabilityStates?.["srt-ingest"];
+  if (ingestCapability?.state !== "available") {
+    throw new Error(`SRT ingest capability is ${ingestCapability?.state ?? "missing"}; build with COREVIDEO_WITH_SRT_INGEST=ON`);
+  }
 
-  // Arm the SRT source as a LISTENER so the publisher can connect into it.
+  // The publisher uses the opposite SRT role, exercising both ingest modes.
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
     commands: [{
       type: "configure-srt-ingest-sources",
       sources: [{
         id: "input-1", deviceId, name: "SRT Ingest 1",
-        mode: "listener", host: "0.0.0.0", port, latencyMs: 120,
+        mode, host: mode === "listener" ? "0.0.0.0" : "127.0.0.1", port, latencyMs: 120,
       }],
     }],
   });
@@ -131,15 +154,16 @@ try {
   // prove half a feed.
   publisher = spawn(ffmpeg,
     ["-hide_banner", "-loglevel", "error", "-re",
-     "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30",
+     "-f", "lavfi", "-i", `testsrc=size=${sourceSize}:rate=${sourceFps}`,
      "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
      "-t", String(seconds + 6), "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
      "-c:a", "aac", "-ac", "2",
-     "-f", "mpegts", `srt://127.0.0.1:${port}?mode=caller&transtype=live`],
+     "-f", "mpegts", `srt://127.0.0.1:${port}?mode=${mode === "listener" ? "caller" : "listener"}&transtype=live`],
     { stdio: ["ignore", "ignore", "pipe"] });
   let publisherErr = "";
   publisher.stderr.on("data", (c) => { publisherErr += c.toString(); });
-  console.log(`publisher     : pushing testsrc into srt://127.0.0.1:${port} ...`);
+  console.log(`publisher     : ${mode === "listener" ? "caller" : "listener"} pushing ` +
+              `testsrc into srt://127.0.0.1:${port} ...`);
 
   // Put the SRT source on program and record, so the proof is that decoded
   // pixels reach the compositor â€” not merely that a status flipped.
@@ -177,20 +201,41 @@ try {
   });
 
   let device = null;
+  let lastDecodedFrames = 0;
+  let lastDecodedAudioSamples = 0;
+  let unhealthySamples = 0;
+  let healthySamples = 0;
+  let renderStart = null;
+  let renderEnd = null;
+  let maxRenderAgeMs = 0;
   const deadline = Date.now() + seconds * 1000;
   while (Date.now() < deadline) {
-    await sleep(3000);
+    await sleep(seconds >= 300 ? 10000 : 3000);
     const sync = await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] });
     const devices = sync.snapshot?.captureDevices ?? [];
     device = devices.find((d) => d.id === deviceId) ?? null;
     if (device) {
       console.log(`source        : state=${device.connectionState} signal=${device.signalPresent} ` +
-                  `warning=${device.warning || "none"}`);
+                  `decoded=${device.decodedFrames ?? "missing"} audio=${device.decodedAudioSamples ?? "missing"} ` +
+                  `age=${device.lastFrameAgeMs ?? "missing"}ms failures=${device.decoderFailures ?? "missing"} ` +
+                  `rtt=${device.rttMs ?? device.rttStatus ?? "missing"} warning=${device.warning || "none"}`);
+      if (device.signalPresent) healthySamples += 1;
+      else unhealthySamples += 1;
+      if (device.decodedFrames < lastDecodedFrames) failures.push("decoded frame counter regressed");
+      if (device.decodedAudioSamples < lastDecodedAudioSamples) failures.push("decoded audio counter regressed");
+      lastDecodedFrames = device.decodedFrames ?? 0;
+      lastDecodedAudioSamples = device.decodedAudioSamples ?? 0;
     }
     // Master true-peak splits "the recording is silent" from "the bus is silent"
     // without re-deriving it from the artifact.
     const master = sync.snapshot?.audioMixSession?.masterMeter ?? null;
     if (master) console.log(`master bus    : truePeak ${master.truePeakDbfs} dBFS`);
+    const render = sync.snapshot?.realtimeEvidence?.render;
+    if (render?.observed) {
+      renderStart ??= render;
+      renderEnd = render;
+      maxRenderAgeMs = Math.max(maxRenderAgeMs, render.progressAgeMs ?? 0);
+    }
   }
 
   if (!device) failures.push("the SRT ingest device never appeared in captureDevices");
@@ -198,6 +243,27 @@ try {
     failures.push(`SRT source never reported signal (state=${device.connectionState}, ` +
                   `warning=${device.warning || "none"})` +
                   (publisherErr ? ` | publisher: ${publisherErr.trim().split("\n").pop()}` : ""));
+  }
+  if (!(device?.decodedFrames > 0) || !(device?.decodedAudioSamples > 0)) {
+    failures.push("SRT health did not count decoded video and audio");
+  }
+  if (device?.decoderFailures !== 0) failures.push(`SRT decoder startup failed ${device?.decoderFailures ?? "unknown"} times`);
+  if (seconds >= 300 && unhealthySamples > Math.max(1, healthySamples * 0.01)) {
+    failures.push(`SRT ingest was unhealthy at ${unhealthySamples}/${healthySamples + unhealthySamples} soak samples`);
+  }
+  if (seconds >= 300) {
+    if (!renderStart || !renderEnd) failures.push("missing render-worker evidence during SRT soak");
+    else {
+      const completed = renderEnd.completedSlots - renderStart.completedSlots;
+      const skipped = renderEnd.skippedSlots - renderStart.skippedSlots;
+      const missed = renderEnd.deadlineMisses - renderStart.deadlineMisses;
+      console.log(`render worker : completed=${completed} skipped=${skipped} deadlineMisses=${missed} ` +
+                  `maxSampledProgressAge=${maxRenderAgeMs.toFixed(1)}ms gpuVerified=${renderEnd.gpuCompletionVerified}`);
+      if (completed < (seconds - 20) * 60 * 0.9 || skipped > completed * 0.01 || maxRenderAgeMs > 500) {
+        failures.push(`Program render worker starved (completed=${completed}, skipped=${skipped}, ` +
+                      `max sampled progress age=${maxRenderAgeMs.toFixed(1)}ms)`);
+      }
+    }
   }
 
   const stop = await send("media-core-sync", {
@@ -211,10 +277,22 @@ try {
               `audio ${proof.audioSampleCount ?? 0} samples (present=${proof.audioPresent ?? false})`);
   if (!(proof.programFrameCount > 0)) failures.push("the encoder muxed no program video");
   if (!(proof.audioSampleCount > 0)) failures.push("the encoder muxed no program audio");
+  const programStream = stop.snapshot?.recording?.streams?.find((stream) => stream.kind === "program");
+  if (programStream) {
+    console.log(`recording     : missingFrames=${programStream.missingFrames ?? "missing"} ` +
+                `droppedFrames=${programStream.droppedFrames ?? "missing"}`);
+    if (seconds >= 300 && programStream.missingFrames > proof.programFrameCount * 0.01) {
+      failures.push(`Program recording lost ${programStream.missingFrames} frames`);
+    }
+  }
+  if (seconds >= 300 && proof.programFrameCount < seconds * 60 * 0.9) {
+    failures.push(`Program starved: ${proof.programFrameCount} frames over ${seconds}s, expected at least 90% of 60 fps`);
+  }
 
   const path = stop.snapshot?.recording?.artifactPath ?? null;
   if (path) {
     artifact = resolve(buildDir, path);
+    console.log(`artifact      : ${artifact}`);
     // Wait for the MP4 to FINALIZE, with the core still alive. The stop response
     // returns before the async encoder sink writes the moov atom, and an MP4 read
     // before its moov decodes as ZERO frames — indistinguishable from a dead feed
@@ -230,6 +308,17 @@ try {
     }
     if (!finalized) failures.push("the recording never finalized (no moov atom) — the writer did not close");
   }
+  // A retained compositor frame must not keep the capture device green after
+  // the publisher has gone away. This catches the old framesReceived > 0 test.
+  publisher.kill();
+  let clearedSignal = false;
+  for (let attempt = 0; attempt < 20 && !clearedSignal; attempt += 1) {
+    await sleep(500);
+    const sync = await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] });
+    const current = sync.snapshot?.captureDevices?.find((d) => d.id === deviceId);
+    clearedSignal = current?.signalPresent === false && current?.decodedFrames > 0;
+  }
+  if (!clearedSignal) failures.push("held SRT frame still reports live signal after publisher exit");
 } catch (error) {
   failures.push(error.message);
 } finally {
@@ -242,8 +331,11 @@ await sleep(1500);
 
 // The decisive check: did the ingested feed actually become PIXELS on program?
 if (artifact && existsSync(artifact)) {
+  // Long MP4s are checked near the end; decoding 30 minutes into a Node buffer
+  // would make the validation itself a memory/performance test.
+  const sampleWindow = seconds >= 300 ? ["-sseof", "-10", "-t", "8"] : [];
   const out = spawnSync(ffmpeg,
-    ["-v", "error", "-i", artifact, "-vf", "scale=8:8", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+    ["-v", "error", ...sampleWindow, "-i", artifact, "-vf", "scale=8:8", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
     { encoding: "buffer", maxBuffer: 1 << 28, timeout: 120000 });
   const cells = 64;
   const frames = Math.floor((out.stdout?.length ?? 0) / cells);
@@ -258,7 +350,7 @@ if (artifact && existsSync(artifact)) {
   else if (best < 12) failures.push(`program stayed black (peak luma ${best.toFixed(1)}) â€” the ingested SRT feed never became pixels`);
   // AUDIO: the guest's embedded tone must reach the mixer, not just the video.
   const pcm = spawnSync(ffmpeg,
-    ["-v", "error", "-i", artifact, "-f", "s16le", "-ac", "1", "-ar", "48000", "-"],
+    ["-v", "error", ...sampleWindow, "-i", artifact, "-f", "s16le", "-ac", "1", "-ar", "48000", "-"],
     { encoding: "buffer", maxBuffer: 1 << 28, timeout: 120000 });
   let peakAudio = 0;
   const samples = (pcm.stdout?.length ?? 0) >> 1;

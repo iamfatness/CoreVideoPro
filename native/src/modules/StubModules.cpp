@@ -1081,13 +1081,18 @@ ModuleSet createDefaultModules() {
   }
   std::vector<std::unique_ptr<ICaptureDevice>> hardwareCaptureDevices;
   hardwareCaptureDevices.push_back(std::move(modules.captureDevice));
+  bool srtIngestConstructed = false;
   if (auto srtIngest = createSrtIngestCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(srtIngest));
+    srtIngestConstructed = true;
   }
-  // This scaffold has no decoded pixels/PCM yet (#536), even if it constructs.
-  // Missing libsrt is separately visible in the state detail.
-  recordCapability(modules, "srt-ingest", "omitted",
-      COREVIDEO_STUB ? "stub-build" : COREVIDEO_HAS_LIBSRT ? "decoder-not-implemented" : "libsrt-missing");
+  // Ingest uses the staged FFmpeg decoder, which already carries libsrt. A
+  // missing runtime is reported by the source when it attempts to connect.
+  recordCapability(modules, "srt-ingest",
+      COREVIDEO_STUB || !COREVIDEO_WITH_SRT_INGEST ? "omitted"
+          : srtIngestConstructed ? "available" : "failed-to-construct",
+      COREVIDEO_STUB ? "stub-build" : !COREVIDEO_WITH_SRT_INGEST ? "build-gate-off"
+          : srtIngestConstructed ? "ffmpeg-decoder" : "");
   if (auto deckLink = createDeckLinkCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(deckLink));
   }

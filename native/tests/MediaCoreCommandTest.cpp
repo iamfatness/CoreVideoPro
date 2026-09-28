@@ -4642,6 +4642,15 @@ TEST(MediaCoreCommand, CaptureAudioSourcesProducePcmIntoNativeMixer) {
 
 TEST(MediaCoreCommand, ConfiguresSrtIngestSourcesAsCaptureInputs) {
   corevideo::core::MediaCore mediaCore;
+#if !COREVIDEO_STUB && COREVIDEO_WITH_SRT_INGEST
+  const auto profile = mediaCore.profile();
+  ASSERT_NE(profile.get("capabilityStates"), nullptr);
+  ASSERT_NE(profile.get("capabilityStates")->get("srt-ingest"), nullptr);
+  EXPECT_EQ(profile.get("capabilityStates")->get("srt-ingest")->getString("state"), "available");
+#elif !COREVIDEO_STUB
+  const auto profile = mediaCore.profile();
+  EXPECT_EQ(profile.get("capabilityStates")->get("srt-ingest")->getString("state"), "omitted");
+#endif
 
   const auto snapshot = mediaCore.applyCommands(corevideo::rpc::Json::Array{
       corevideo::rpc::Json::Object{
@@ -4679,6 +4688,10 @@ TEST(MediaCoreCommand, ConfiguresSrtIngestSourcesAsCaptureInputs) {
   const auto srtDevice = std::find_if(devices.begin(), devices.end(), [](const corevideo::rpc::Json& device) {
     return device.getString("id") == "srt-ingest-01";
   });
+#if !COREVIDEO_STUB && !COREVIDEO_WITH_SRT_INGEST
+  EXPECT_EQ(srtDevice, devices.end());
+  return;
+#endif
   ASSERT_NE(srtDevice, devices.end());
   EXPECT_EQ(srtDevice->getString("vendor"), "srt");
   EXPECT_EQ(srtDevice->get("resolution")->get("width")->asNumber(), 1920);
