@@ -1,4 +1,5 @@
 #include "modules/SrtFfmpegArgs.h"
+#include "modules/RtmpIngestPolicy.h"
 #include "modules/SrtIngestHealthPolicy.h"
 #include <gtest/gtest.h>
 
@@ -253,6 +254,57 @@ TEST(SrtFfmpegArgs, RedactsCredentialsButKeepsTheEndpointReadable) {
 // publishes to (both readers parked), and one caller pointed at a closed port,
 // which fails fast and keeps the reader churning through reconnect generations,
 // so the stop can also land mid-retirement.
+TEST(RtmpIngestPolicy, RefusesMalformedListenerUrlsAndRedactsTheStreamPath) {
+  using namespace corevideo::modules;
+  EXPECT_TRUE(validateRtmpIngestUrl("rtmp://127.0.0.1:1935/live/guest").empty());
+  EXPECT_FALSE(validateRtmpIngestUrl("rtmp://127.0.0.1:1935/live").empty());
+  EXPECT_FALSE(validateRtmpIngestUrl("rtmp://:1935/live/guest").empty());
+  EXPECT_FALSE(validateRtmpIngestUrl("rtmp://user@127.0.0.1/live/guest").empty());
+  EXPECT_FALSE(validateRtmpIngestUrl("rtmp://127.0.0.1/live/guest?key=secret").empty());
+  EXPECT_EQ(redactedRtmpIngestUrl("rtmp://127.0.0.1:1935/live/secret-guest"),
+            "rtmp://127.0.0.1:1935/<rtmp-source>");
+}
+
+TEST(RtmpIngestPolicy, DecoderListensBeforeOpeningTheInputAndNeverLogsTheStreamPath) {
+  using namespace corevideo::modules;
+  const auto args = buildRtmpIngestArgv("ffmpeg", "rtmp://127.0.0.1:1935/live/guest", 1920, 1080, 30,
+                                        "pipe:3");
+  const auto listen = std::find(args.begin(), args.end(), "-listen");
+  const auto input = std::find(args.begin(), args.end(), "-i");
+  ASSERT_NE(listen, args.end());
+  ASSERT_NE(input, args.end());
+  EXPECT_LT(listen, input);
+  EXPECT_EQ(*(listen + 1), "1");
+  EXPECT_EQ(args[3], "quiet");
+  EXPECT_NE(std::find(args.begin(), args.end(), "pipe:3"), args.end());
+}
+
+TEST(RtmpIngestChannel, AnRtmpSourceDoesNotReplaceSrtSources) {
+  auto srt = corevideo::modules::createSrtIngestCaptureDevice();
+  auto rtmp = corevideo::modules::createRtmpIngestCaptureDevice();
+#if !COREVIDEO_STUB && (!COREVIDEO_WITH_SRT_INGEST || !COREVIDEO_WITH_RTMP_INGEST)
+  if (!srt || !rtmp) return;
+#endif
+  ASSERT_NE(srt, nullptr);
+  ASSERT_NE(rtmp, nullptr);
+  corevideo::modules::SrtIngestSourceConfig srtSource;
+  srtSource.id = "srt-1";
+  srtSource.deviceId = "srt-device";
+  srtSource.name = "SRT source";
+  corevideo::modules::RtmpIngestSourceConfig rtmpSource;
+  rtmpSource.id = "rtmp-1";
+  rtmpSource.deviceId = "rtmp-device";
+  rtmpSource.name = "RTMP source";
+  rtmpSource.url = "rtmp://127.0.0.1:1935/live/guest";
+  srt->configureSrtIngestSources({srtSource});
+  rtmp->configureRtmpIngestSources({rtmpSource});
+  EXPECT_EQ(srt->enumerate().size(), 1u);
+  ASSERT_EQ(rtmp->enumerate().size(), 1u);
+  EXPECT_EQ(rtmp->enumerate()[0].vendor, "rtmp");
+  EXPECT_EQ(rtmp->enumerate()[0].inputHasEmbeddedAudio, std::vector<bool>{true});
+  EXPECT_EQ(rtmp->enumerate()[0].name.find("guest"), std::string::npos);
+}
+
 TEST(SrtIngestChannel, RetiringWedgedChannelsIsBounded) {
   auto device = corevideo::modules::createSrtIngestCaptureDevice();
 #if !COREVIDEO_STUB && !COREVIDEO_WITH_SRT_INGEST

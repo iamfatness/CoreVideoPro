@@ -1793,7 +1793,10 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
             ndi && ndi->runtimeAvailableAtConstruction());
   EXPECT_EQ(jsonArrayContains(capabilities, "srt-output"),
             srt && srt->runtimeAvailableAtConstruction());
-  EXPECT_FALSE(jsonArrayContains(capabilities, "srt-ingest"));
+  EXPECT_EQ(jsonArrayContains(capabilities, "srt-ingest"),
+            !COREVIDEO_STUB && COREVIDEO_WITH_SRT_INGEST);
+  EXPECT_EQ(jsonArrayContains(capabilities, "rtmp-ingest"),
+            !COREVIDEO_STUB && COREVIDEO_WITH_RTMP_INGEST);
   EXPECT_FALSE(jsonArrayContains(capabilities, "decklink-capture"));
   EXPECT_FALSE(jsonArrayContains(capabilities, "aja-capture"));
   const auto* states = profile.get("capabilityStates");

@@ -903,6 +903,13 @@ class CompositeCaptureDevice final : public ICaptureDevice {
     return enumerate();
   }
 
+  std::vector<CaptureDeviceInfo> configureRtmpIngestSources(const std::vector<RtmpIngestSourceConfig>& sources) override {
+    for (const auto& device : devices_) {
+      (void)device->configureRtmpIngestSources(sources);
+    }
+    return enumerate();
+  }
+
   void registerCaptureBuffer(const std::string& deviceId, const std::string& shmName, int width, int height) override {
     for (const auto& device : devices_) {
       device->registerCaptureBuffer(deviceId, shmName, width, height);
@@ -965,7 +972,7 @@ std::unique_ptr<IOutputSender> createIsolatedOutputSender(
 ModuleSet createStubModules() {
   ModuleSet modules;
   for (const char* name : {"gpu-compositor", "local-audio-capture", "audio-monitor-output",
-                           "rtmp-output", "srt-output", "ndi-output", "srt-ingest",
+                           "rtmp-output", "srt-output", "ndi-output", "srt-ingest", "rtmp-ingest",
                            "decklink-capture", "aja-capture", "uvc-capture"}) {
     recordCapability(modules, name, "omitted", "stub-or-unbuilt");
   }
@@ -1093,6 +1100,16 @@ ModuleSet createDefaultModules() {
           : srtIngestConstructed ? "available" : "failed-to-construct",
       COREVIDEO_STUB ? "stub-build" : !COREVIDEO_WITH_SRT_INGEST ? "build-gate-off"
           : srtIngestConstructed ? "ffmpeg-decoder" : "");
+  bool rtmpIngestConstructed = false;
+  if (auto rtmpIngest = createRtmpIngestCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(rtmpIngest));
+    rtmpIngestConstructed = true;
+  }
+  recordCapability(modules, "rtmp-ingest",
+      COREVIDEO_STUB || !COREVIDEO_WITH_RTMP_INGEST ? "omitted"
+          : rtmpIngestConstructed ? "available" : "failed-to-construct",
+      COREVIDEO_STUB ? "stub-build" : !COREVIDEO_WITH_RTMP_INGEST ? "build-gate-off"
+          : rtmpIngestConstructed ? "ffmpeg-decoder" : "");
   if (auto deckLink = createDeckLinkCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(deckLink));
   }

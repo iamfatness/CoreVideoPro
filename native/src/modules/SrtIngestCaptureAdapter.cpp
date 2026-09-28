@@ -1,6 +1,7 @@
 #include "modules/Interfaces.h"
 #include "modules/SrtFfmpegArgs.h"
 #include "modules/SrtIngestHealthPolicy.h"
+#include "modules/RtmpIngestPolicy.h"
 
 #include <algorithm>
 #include <atomic>
@@ -38,7 +39,7 @@
 namespace corevideo::modules {
 namespace {
 
-// SRT INGEST — remote contribution feeds arriving over SRT.
+// NETWORK INGEST — contribution feeds arriving over SRT or RTMP.
 //
 // WHAT THIS REPLACED: the previous implementation opened a libsrt socket and
 // then THREW THE PACKETS AWAY — `pumpSource` read into a 1316-byte buffer and
@@ -52,7 +53,8 @@ namespace {
 // the staged binary is built with libsrt, and SRT DELIVERY already goes out the
 // same way, so ingest and egress share one dependency and one mental model. One
 // FFmpeg per source decodes into raw BGRA on stdout; this adapter reads fixed
-// size frames and publishes them as ordinary capture pixels.
+// size frames and publishes them as ordinary capture pixels. RTMP uses the same
+// worker in listener mode, with a separate device instance and source map.
 //
 // DECODE ACCEPTS H.264 AND HEVC deliberately, even though this product does not
 // ENCODE HEVC (see EncoderPolicy.h). Field encoders commonly send HEVC, and
@@ -70,7 +72,7 @@ int64_t monotonicMs() {
 #ifdef _WIN32
 // NO ORPHANS. A decoder spawned by the core must not outlive it: if the core is
 // killed rather than shut down cleanly, its destructors never run and every
-// FFmpeg child is left holding a bound SRT port forever (observed exactly that
+// FFmpeg child is left holding a bound ingest port forever (observed exactly that
 // while building this). A job object with KILL_ON_JOB_CLOSE makes the OS do the
 // cleanup unconditionally — the same "no orphan hosts" rule the browser-source
 // host already follows.
@@ -116,10 +118,24 @@ std::string resolveFfmpegExecutable() {
   return kExeName;  // rely on PATH
 }
 
+struct NetworkIngestSourceConfig {
+  std::string id;
+  std::string deviceId;
+  std::string name;
+  std::string mode = "listener";
+  std::string host = "0.0.0.0";
+  int port = 10000;
+  int latencyMs = 120;
+  std::string streamId;
+  std::string passphrase;
+  std::string url;  // RTMP listener only
+};
+
 // One decoder process per source. Held by shared_ptr so the reader thread keeps
 // it alive even if the source is reconfigured out of the map mid-read.
 struct ReaderChannel {
-  SrtIngestSourceConfig config;
+  NetworkIngestSourceConfig config;
+  bool rtmpListen = false;
   int width = 1920;
   int height = 1080;
   int frameRate = 60;
@@ -357,9 +373,10 @@ inline std::string quoteWindowsArgument(const std::string& argument) {
 }
 #endif
 
-class SrtIngestCaptureDevice final : public ICaptureDevice {
+class NetworkIngestCaptureDevice final : public ICaptureDevice {
  public:
-  ~SrtIngestCaptureDevice() override { stopAll(); }
+  explicit NetworkIngestCaptureDevice(bool rtmpListen = false) : rtmpListen_(rtmpListen) {}
+  ~NetworkIngestCaptureDevice() override { stopAll(); }
 
   std::vector<std::string> audioSourceIds() const override {
     std::lock_guard lock(mutex_);
@@ -404,6 +421,43 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
 
   std::vector<CaptureDeviceInfo> configureSrtIngestSources(
       const std::vector<SrtIngestSourceConfig>& configs) override {
+    if (rtmpListen_) return enumerate();
+    std::vector<NetworkIngestSourceConfig> converted;
+    converted.reserve(configs.size());
+    for (const auto& config : configs) {
+      NetworkIngestSourceConfig source;
+      source.id = config.id;
+      source.deviceId = config.deviceId;
+      source.name = config.name;
+      source.mode = config.mode;
+      source.host = config.host;
+      source.port = config.port;
+      source.latencyMs = config.latencyMs;
+      source.streamId = config.streamId;
+      source.passphrase = config.passphrase;
+      converted.push_back(std::move(source));
+    }
+    return configureSources(converted);
+  }
+
+  std::vector<CaptureDeviceInfo> configureRtmpIngestSources(
+      const std::vector<RtmpIngestSourceConfig>& configs) override {
+    if (!rtmpListen_) return enumerate();
+    std::vector<NetworkIngestSourceConfig> converted;
+    converted.reserve(configs.size());
+    for (const auto& config : configs) {
+      NetworkIngestSourceConfig source;
+      source.id = config.id;
+      source.deviceId = config.deviceId;
+      source.name = config.name;
+      source.url = config.url;
+      converted.push_back(std::move(source));
+    }
+    return configureSources(converted);
+  }
+
+ private:
+  std::vector<CaptureDeviceInfo> configureSources(const std::vector<NetworkIngestSourceConfig>& configs) {
     std::map<std::string, std::shared_ptr<ReaderChannel>> next;
     std::vector<std::shared_ptr<ReaderChannel>> retired;
     {
@@ -423,6 +477,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
         }
         auto channel = std::make_shared<ReaderChannel>();
         channel->config = config;
+        channel->rtmpListen = rtmpListen_;
         next.emplace(config.deviceId, std::move(channel));
       }
       // Whatever is left in channels_ is no longer configured.
@@ -436,6 +491,8 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     }
     return enumerate();
   }
+
+ public:
 
   // The feed's embedded audio, keyed "capture:<deviceId>" — the SAME id as its
   // video — so it lands in the existing routing, metering and ISO paths with no
@@ -518,9 +575,10 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
   }
 
  private:
-  static bool sameEndpoint(const SrtIngestSourceConfig& a, const SrtIngestSourceConfig& b) {
+  static bool sameEndpoint(const NetworkIngestSourceConfig& a, const NetworkIngestSourceConfig& b) {
     return a.host == b.host && a.port == b.port && a.mode == b.mode &&
-           a.passphrase == b.passphrase && a.streamId == b.streamId && a.latencyMs == b.latencyMs;
+           a.passphrase == b.passphrase && a.streamId == b.streamId && a.latencyMs == b.latencyMs &&
+           a.url == b.url;
   }
 
   std::vector<CaptureDeviceInfo> enumerateUnlocked() const {
@@ -529,10 +587,12 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     for (const auto& [deviceId, channel] : channels_) {
       CaptureDeviceInfo device;
       device.id = channel->config.deviceId;
-      device.name = channel->config.name + " - " + channel->config.mode + " " +
-                    channel->config.host + ":" + std::to_string(channel->config.port);
+      device.name = channel->rtmpListen
+          ? channel->config.name + " - " + redactedRtmpIngestUrl(channel->config.url)
+          : channel->config.name + " - " + channel->config.mode + " " +
+                channel->config.host + ":" + std::to_string(channel->config.port);
       device.kind = "video";
-      device.vendor = "srt";
+      device.vendor = channel->rtmpListen ? "rtmp" : "srt";
       device.inputIds = {channel->config.id};
       device.inputLabels = {channel->config.name};
       // The transport carries the guest's audio inline; it is decoded and emitted
@@ -547,7 +607,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
         std::lock_guard lock(channel->mutex);
         const auto health = projectSrtIngestHealth(channel->connectionState, channel->warning,
                                                    channel->framesReceived, channel->lastFrameAtMs,
-                                                   monotonicMs());
+                                                   monotonicMs(), channel->rtmpListen ? "RTMP" : "SRT");
         device.connectionState = health.connectionState;
         device.signalPresent = health.signalPresent;
         device.droppedFrames = channel->droppedFrames;
@@ -640,6 +700,15 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     const std::string executable = resolveFfmpegExecutable();
     int backoffMs = 500;
     while (channel->running.load()) {
+      if (channel->rtmpListen) {
+        const auto error = validateRtmpIngestUrl(channel->config.url);
+        if (!error.empty()) {
+          channel->setStatus("failed", error);
+          sleepUnlessStopped(*channel, 2000);
+          continue;
+        }
+        channel->setStatus("connecting", "Waiting for an RTMP publisher.");
+      }
       SrtEndpointConfig endpoint;
       endpoint.host = channel->config.host.empty() ? std::string("0.0.0.0") : channel->config.host;
       endpoint.port = channel->config.port;
@@ -648,22 +717,27 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       endpoint.passphrase = channel->config.passphrase;
       endpoint.streamId = channel->config.streamId;
       const auto url = buildSrtUrl(endpoint);
-      if (!url.valid) {
+      if (!channel->rtmpListen && !url.valid) {
         // A configuration error will not fix itself by retrying in a tight loop.
         channel->setStatus("failed", url.error);
         sleepUnlessStopped(*channel, 2000);
         continue;
       }
 
-      channel->setStatus("connecting",
-                         "Waiting for an SRT publisher on " + endpoint.host + ":" +
-                             std::to_string(endpoint.port) + ".");
-      if (!spawnDecoder(*channel, executable, url.url)) {
+      if (!channel->rtmpListen) {
+        channel->setStatus("connecting",
+                           "Waiting for an SRT publisher on " + endpoint.host + ":" +
+                               std::to_string(endpoint.port) + ".");
+      }
+      if (!spawnDecoder(*channel, executable,
+                        channel->rtmpListen ? channel->config.url : url.url)) {
         {
           std::lock_guard lock(channel->mutex);
           ++channel->decoderFailures;
         }
-        channel->setStatus("failed", "Could not start the FFmpeg decoder for this SRT source.");
+        channel->setStatus("failed", channel->rtmpListen
+            ? "Could not start the FFmpeg decoder for this RTMP source."
+            : "Could not start the FFmpeg decoder for this SRT source.");
         sleepUnlessStopped(*channel, backoffMs);
         backoffMs = std::min(backoffMs * 2, 10000);
         continue;
@@ -713,9 +787,11 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       if (!channel->running.load()) {
         break;
       }
-      channel->setStatus(sawFrame ? "connecting" : "connecting",
-                         sawFrame ? "SRT publisher disconnected; waiting for it to return."
-                                  : "No SRT publisher yet.");
+      channel->setStatus("connecting", channel->rtmpListen
+          ? (sawFrame ? "RTMP publisher disconnected; waiting for it to return."
+                      : "No RTMP publisher yet.")
+          : (sawFrame ? "SRT publisher disconnected; waiting for it to return."
+                      : "No SRT publisher yet."));
       sleepUnlessStopped(*channel, backoffMs);
       backoffMs = std::min(backoffMs * 2, 10000);
     }
@@ -845,9 +921,11 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     if (audioServer == INVALID_HANDLE_VALUE) {
       audioServer = nullptr;
     }
-    const std::vector<std::string> args =
-        buildSrtIngestArgv(executable, url, channel.width, channel.height, channel.frameRate,
-                           audioServer != nullptr ? audioSink : std::string());
+    const std::vector<std::string> args = channel.rtmpListen
+        ? buildRtmpIngestArgv(executable, url, channel.width, channel.height, channel.frameRate,
+                              audioServer != nullptr ? audioSink : std::string())
+        : buildSrtIngestArgv(executable, url, channel.width, channel.height, channel.frameRate,
+                             audioServer != nullptr ? audioSink : std::string());
 #else
     // POSIX: hand the child an inherited fd and let ffmpeg write to "pipe:3".
     // No FIFO file to create, name, or clean up. NOT verified on hardware from
@@ -855,10 +933,11 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
     constexpr int kAudioChildFd = 3;
     int audioFds[2] = {-1, -1};
     const bool audioReady = makeCloexecPipe(audioFds);
-    const std::vector<std::string> args =
-        buildSrtIngestArgv(executable, url, channel.width, channel.height, channel.frameRate,
-                           audioReady ? std::string("pipe:") + std::to_string(kAudioChildFd)
-                                      : std::string());
+    const std::string audioSink = audioReady ? std::string("pipe:") + std::to_string(kAudioChildFd)
+                                             : std::string();
+    const std::vector<std::string> args = channel.rtmpListen
+        ? buildRtmpIngestArgv(executable, url, channel.width, channel.height, channel.frameRate, audioSink)
+        : buildSrtIngestArgv(executable, url, channel.width, channel.height, channel.frameRate, audioSink);
 #endif
 #ifdef _WIN32
     SECURITY_ATTRIBUTES security{};
@@ -974,6 +1053,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
   std::map<std::string, std::shared_ptr<ReaderChannel>> channels_;
   std::map<std::string, std::string> selectedInputs_;
   std::map<std::string, int> audioSyncOffsets_;
+  bool rtmpListen_ = false;
 };
 
 }  // namespace
@@ -982,7 +1062,15 @@ std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice() {
 #if !COREVIDEO_STUB && !COREVIDEO_WITH_SRT_INGEST
   return nullptr;
 #else
-  return std::make_unique<SrtIngestCaptureDevice>();
+  return std::make_unique<NetworkIngestCaptureDevice>();
+#endif
+}
+
+std::unique_ptr<ICaptureDevice> createRtmpIngestCaptureDevice() {
+#if !COREVIDEO_STUB && !COREVIDEO_WITH_RTMP_INGEST
+  return nullptr;
+#else
+  return std::make_unique<NetworkIngestCaptureDevice>(true);
 #endif
 }
 

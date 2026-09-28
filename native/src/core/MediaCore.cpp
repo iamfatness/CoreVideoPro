@@ -210,7 +210,7 @@ CapabilityReport capabilityReport(const modules::ModuleSet& modules, bool zoomCo
   add("zoom-raw-audio", {zoomState, zoomDetail, ""});
   intrinsic("program-recording", encoderSession.hardwareAccelerated);
   intrinsic("iso-recording", encoderSession.hardwareAccelerated);
-  for (const char* name : {"rtmp-output", "ndi-output", "srt-output", "srt-ingest",
+  for (const char* name : {"rtmp-output", "ndi-output", "srt-output", "srt-ingest", "rtmp-ingest",
                            "decklink-capture", "aja-capture", "uvc-capture"}) factory(name);
   return report;
 }
@@ -1565,6 +1565,8 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     configureMultiviewer(command);
   } else if (type == "configure-srt-ingest-sources") {
     configureSrtIngestSources(command);
+  } else if (type == "configure-rtmp-ingest-sources") {
+    configureRtmpIngestSources(command);
   } else if (type == "browser-add") {
     std::string error;
     (void)addBrowserSource(command, error);
@@ -4428,6 +4430,25 @@ void MediaCore::configureSrtIngestSources(const rpc::Json& command) {
     configs.push_back(std::move(config));
   }
   (void)modules_.captureDevice->configureSrtIngestSources(configs);
+}
+
+void MediaCore::configureRtmpIngestSources(const rpc::Json& command) {
+  std::vector<modules::RtmpIngestSourceConfig> configs;
+  const auto* sources = command.get("sources");
+  if (sources && sources->isArray()) {
+    configs.reserve(sources->asArray().size());
+    for (const auto& source : sources->asArray()) {
+      modules::RtmpIngestSourceConfig config;
+      config.id = source.getString("id");
+      config.deviceId = source.getString("deviceId");
+      config.name = source.getString("name");
+      config.url = source.getString("url");
+      if (config.deviceId.empty()) config.deviceId = config.id;
+      if (config.name.empty()) config.name = config.deviceId;
+      configs.push_back(std::move(config));
+    }
+  }
+  (void)modules_.captureDevice->configureRtmpIngestSources(configs);
 }
 
 namespace {

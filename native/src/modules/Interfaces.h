@@ -949,6 +949,13 @@ struct SrtIngestSourceConfig {
   std::string passphrase;
 };
 
+struct RtmpIngestSourceConfig {
+  std::string id;
+  std::string deviceId;
+  std::string name;
+  std::string url;
+};
+
 class IAudioCaptureSource {
  public:
   virtual ~IAudioCaptureSource() = default;
@@ -1482,6 +1489,7 @@ class ICaptureDeviceLifecycle {
   // adapters without live sessions.
   virtual std::vector<CaptureDeviceInfo> disconnect(const std::string&) { return enumerate(); }
   virtual std::vector<CaptureDeviceInfo> configureSrtIngestSources(const std::vector<SrtIngestSourceConfig>&) { return enumerate(); }
+  virtual std::vector<CaptureDeviceInfo> configureRtmpIngestSources(const std::vector<RtmpIngestSourceConfig>&) { return enumerate(); }
   // Shell-announced shared-memory session. Default no-op: only the WinUI bridge
   // maps a buffer. Callers must not cast to that adapter.
   virtual void registerCaptureBuffer(const std::string&, const std::string&, int, int) {}
@@ -1652,6 +1660,7 @@ std::unique_ptr<IOutputSender> createSrtOutputSender();
 std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender();
 std::unique_ptr<IOutputSender> createNdiOutputSender();
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice();
+std::unique_ptr<ICaptureDevice> createRtmpIngestCaptureDevice();
 std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();
 std::unique_ptr<ICaptureDevice> createAjaCaptureDevice();
 // Native UVC webcam/capture-card ingest via Media Foundation (dev-gated behind
