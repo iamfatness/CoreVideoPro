@@ -12,6 +12,7 @@
 #include "modules/OutputDestinationSupervisorPolicy.h"
 #include "modules/BitstreamQueueOverflow.h"
 #include "modules/FfmpegSenderDiagnostics.h"
+#include "modules/FfmpegChildRetirement.h"
 #include "modules/SrtFfmpegArgs.h"
 
 #include <algorithm>
@@ -1567,6 +1568,22 @@ class RtmpOutputSender final : public IOutputSender {
 
   bool startFfmpegProcess(int width, int height, const std::string& videoInputPixelFormat) {
     startRefusedInadmissible_ = false;
+#if defined(_WIN32)
+    // A failed OS termination must never permit a replacement transport to
+    // overlap the old publisher. Keep its handle until it is signalled.
+    if (ffmpegStopUnconfirmed_) {
+      if (WaitForSingleObject(ffmpegStopUnconfirmed_, 0) != WAIT_OBJECT_0) {
+        sender_.status = "failed";
+        sender_.warning = "Previous FFmpeg output process has not stopped.";
+        sender_.destinationHealth = "failed";
+        sender_.lastResultCode = "ffmpeg-stop-pending";
+        sender_.lastError = sender_.warning;
+        return false;
+      }
+      CloseHandle(ffmpegStopUnconfirmed_);
+      ffmpegStopUnconfirmed_ = nullptr;
+    }
+#endif
     if (ffmpegExecutable_.empty()) {
       sender_.status = "warning";
       sender_.warning = "FFmpeg executable was not found.";
@@ -2802,6 +2819,10 @@ class RtmpOutputSender final : public IOutputSender {
     activeUseGpuDirect_ = false;
     hasWrittenVideo_ = false;
 #if defined(_WIN32)
+    if (ffmpegStopUnconfirmed_ && retireFfmpegChild(ffmpegStopUnconfirmed_)) {
+      CloseHandle(ffmpegStopUnconfirmed_);
+      ffmpegStopUnconfirmed_ = nullptr;
+    }
     if (ffmpegStdin_) {
       CloseHandle(ffmpegStdin_);
       ffmpegStdin_ = nullptr;
@@ -2814,11 +2835,13 @@ class RtmpOutputSender final : public IOutputSender {
       ffmpegProcess_ = nullptr;
     }
     if (process) {
-      DWORD exitCode = 0;
-      if (GetExitCodeProcess(process, &exitCode) && exitCode == STILL_ACTIVE) {
-        WaitForSingleObject(process, 500);
+      if (!retireFfmpegChild(process)) {
+        ::corevideo::core::nativeLogf("[%s] output FFmpeg child could not be confirmed stopped\n",
+                                     protocol_.destination.c_str());
+        ffmpegStopUnconfirmed_ = process;
+      } else {
+        CloseHandle(process);
       }
-      CloseHandle(process);
     }
 #else
     if (ffmpegStdinFd_ >= 0) {
@@ -2831,18 +2854,31 @@ class RtmpOutputSender final : public IOutputSender {
     }
     if (ffmpegPid_ > 0) {
       // Closing the pipes signals EOF; give FFmpeg a brief chance to flush, then
-      // reap so we don't leak a zombie.
+      // terminate and reap. A second child cannot start while the old one lives.
       int status = 0;
+      bool reaped = false;
       for (int attempt = 0; attempt < 50; ++attempt) {
         const pid_t result = ::waitpid(ffmpegPid_, &status, WNOHANG);
         if (result == ffmpegPid_ || result < 0) {
+          reaped = true;
           break;
         }
         ::usleep(10000);
       }
-      if (::waitpid(ffmpegPid_, &status, WNOHANG) == 0) {
+      if (!reaped) {
         ::kill(ffmpegPid_, SIGTERM);
-        ::waitpid(ffmpegPid_, &status, 0);
+        for (int attempt = 0; attempt < 50; ++attempt) {
+          const pid_t result = ::waitpid(ffmpegPid_, &status, WNOHANG);
+          if (result == ffmpegPid_ || result < 0) {
+            reaped = true;
+            break;
+          }
+          ::usleep(10000);
+        }
+        if (!reaped) {
+          ::kill(ffmpegPid_, SIGKILL);
+          while (::waitpid(ffmpegPid_, &status, 0) < 0 && errno == EINTR) {}
+        }
       }
       ffmpegPid_ = 0;
     }
@@ -2985,6 +3021,7 @@ class RtmpOutputSender final : public IOutputSender {
 #if defined(_WIN32)
   mutable std::mutex ffmpegProcessMutex_;
   HANDLE ffmpegProcess_ = nullptr;
+  HANDLE ffmpegStopUnconfirmed_ = nullptr;
   HANDLE ffmpegStdin_ = nullptr;
   HANDLE audioPipeServer_ = nullptr;
   bool audioPipeConnected_ = false;
