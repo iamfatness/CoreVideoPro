@@ -1279,6 +1279,65 @@ TEST(ZoomSubscriptionResolutionPolicyRules, FullResolutionIsCappedInPayloadOrder
   EXPECT_EQ(budget.demoted(), 2);
 }
 
+TEST(ZoomSubscriptionResolutionPolicyRules, SessionCameraCeilingIsUniformAcrossPurposes) {
+  using Policy = corevideo::modules::ZoomSubscriptionResolutionPolicy;
+  for (const int requested : {Policy::k360P, Policy::k720P, Policy::k1080P}) {
+    Policy::Budget budget(requested);
+    for (const auto purpose : {"program", "preview", "multiview", "iso", "active-speaker"}) {
+      EXPECT_EQ(budget.resolve("participant-video", purpose), requested);
+    }
+    EXPECT_EQ(budget.resolve("screen-share", "program"), Policy::k1080P);
+    EXPECT_EQ(budget.resolve("video", "program"), (std::min)(requested, Policy::k720P));
+  }
+  EXPECT_EQ(Policy::clampCameraMax(-1), Policy::k360P);
+  EXPECT_EQ(Policy::clampCameraMax(3), Policy::k1080P);
+}
+
+TEST(ZoomEngineRuntime, JoinCameraCeilingControlsTheSubscriptionKeyWithoutCueChurn) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
+  setEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS", "1000");
+  auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+  {
+    corevideo::modules::ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(fake);
+    runtime.applyEngineEventForTest({corevideo::modules::ZoomEngineEventKind::AuthOk});
+    std::atomic<bool> cancelled{false};
+    corevideo::rpc::Json joined;
+    std::thread joinThread([&] {
+      joined = runtime.join(corevideo::rpc::Json::Object{
+          {"meetingNumber", "123456789"}, {"cameraMaxResolution", 0}},
+          [&] { return cancelled.load(); });
+    });
+    const bool joinSent = fake->waitForSentLines(1, std::chrono::seconds(2));
+    if (joinSent) runtime.applyEngineEventForTest({corevideo::modules::ZoomEngineEventKind::Joined});
+    if (!joinSent) cancelled.store(true);
+    joinThread.join();
+    ASSERT_TRUE(joinSent);
+    ASSERT_EQ(joined.getString("meetingState"), "in_meeting");
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+        subscriptionRequest("401", "participant-video", "multiview"),
+        subscriptionRequest("402", "screen-share", "program"),
+    }), 10.0);
+    ASSERT_TRUE(fake->waitForSentLines(3, std::chrono::milliseconds(5000)));
+    auto churn = runtime.subscriptionChurnState();
+    EXPECT_EQ(churn.getNumber("cameraMaxResolution"), 0);
+    const auto* camera = findChurnSource(churn, "participant-video-401-camera");
+    const auto* share = findChurnSource(churn, "screen-share-402-share");
+    ASSERT_NE(camera, nullptr);
+    ASSERT_NE(share, nullptr);
+    EXPECT_EQ(camera->getNumber("resolution"), 0);
+    EXPECT_EQ(share->getNumber("resolution"), 2);
+    (void)runtime.syncSpine(spinePayload(corevideo::rpc::Json::Array{
+        subscriptionRequest("401", "participant-video", "program"),
+        subscriptionRequest("402", "screen-share", "program"),
+    }), 20.0);
+    EXPECT_EQ(runtime.subscriptionChurnState().getNumber("lastResolutionChanges"), 0);
+    EXPECT_EQ(fake->sentLines().size(), 3u);
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+  unsetEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS");
+}
+
 TEST(EngineResolutionPolicy, ALowerRequestRebuildsOnlyWhenNoOtherTargetNeedsTheHigherOne) {
   // Raising always rebuilt. Lowering used to be a no-op forever (the ratchet that put
   // every rotated guest at 1080P); now it rebuilds when this is the renderer's only target.

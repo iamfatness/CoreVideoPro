@@ -20,7 +20,8 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly Func<Task>? _onBeforeLeaveMeeting;
     private readonly Action<string>? _zoomStatusChanged;
     private readonly Action? _drainOAuthCallback;
-    private readonly Action? _onMeetingJoined;
+    private readonly Action<int>? _onMeetingJoined;
+    private readonly Func<int> _cameraMaxResolutionTier;
     private readonly IRecentZoomMeetingStore _recentMeetingStore;
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
 
@@ -105,8 +106,9 @@ public sealed partial class SettingsViewModel : ObservableObject
         Action? onMeetingPresenceChanged = null,
         Func<Task>? onBeforeLeaveMeeting = null,
         Action<string>? zoomStatusChanged = null,
-        Action? onMeetingJoined = null,
-        IRecentZoomMeetingStore? recentMeetingStore = null)
+        Action<int>? onMeetingJoined = null,
+        IRecentZoomMeetingStore? recentMeetingStore = null,
+        Func<int>? cameraMaxResolutionTier = null)
     {
         _bridge = bridge;
         _oauth = oauth;
@@ -116,6 +118,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         _onBeforeLeaveMeeting = onBeforeLeaveMeeting;
         _zoomStatusChanged = zoomStatusChanged;
         _onMeetingJoined = onMeetingJoined;
+        _cameraMaxResolutionTier = cameraMaxResolutionTier ?? (() => 2);
         _recentMeetingStore = recentMeetingStore ?? new FileRecentZoomMeetingStore(FileRecentZoomMeetingStore.DefaultStorePath());
         DiagnosticLog.VerboseEnabled = false;
 
@@ -902,13 +905,15 @@ public sealed partial class SettingsViewModel : ObservableObject
             }
 
             SetJoinProgress(ZoomMeetingState.Joining, "Joining meeting… (up to 60s)");
+            var cameraMaxTier = Math.Clamp(_cameraMaxResolutionTier(), 0, 2);
             var snapshot = await _bridge.JoinZoomAsync(
                 joinDetails.MeetingUrl,
                 string.IsNullOrWhiteSpace(DisplayName) ? "CoreVideo Producer" : DisplayName.Trim(),
                 IsWebinar,
                 sdkJwt,
                 userZak,
-                endOtherMeeting: endOtherMeeting).ConfigureAwait(false);
+                endOtherMeeting: endOtherMeeting,
+                cameraMaxResolution: cameraMaxTier).ConfigureAwait(false);
 
             snapshot = await ZoomJoinReconciliation.ObserveLateJoinAsync(
                 snapshot, token => _bridge.GetZoomSnapshotAsync(token)).ConfigureAwait(false);
@@ -941,7 +946,7 @@ public sealed partial class SettingsViewModel : ObservableObject
                 JoinStatus = "Connected to Zoom.";
                 LaunchLog.Write($"zoom-join: {JoinStatus}");
                 _zoomStatusChanged?.Invoke("Zoom Live");
-                _onMeetingJoined?.Invoke();
+                _onMeetingJoined?.Invoke(cameraMaxTier);
             });
             await RememberRecentMeetingAsync(JoinMeetingUrl, DisplayName, IsWebinar).ConfigureAwait(false);
         }

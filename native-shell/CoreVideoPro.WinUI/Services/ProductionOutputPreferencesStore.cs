@@ -57,7 +57,9 @@ public sealed class ProductionOutputPreferences
     // capture:<id>), value "hold" | "black". Absent key = default "hold", so
     // older files migrate with an empty map (byte-identical behavior). Not
     // secret-bearing.
-    public const int CurrentVersion = 13;
+    // v14 (#681): a global Zoom camera request ceiling. Absent/unknown means
+    // 1080p, preserving the shipped behavior for existing installs.
+    public const int CurrentVersion = 14;
 
     private int _programBufferFrames = ProgramBufferPreference.DefaultFrames;
     public int ProgramBufferFrames
@@ -170,6 +172,8 @@ public sealed class ProductionOutputPreferences
     // "perGuestIso". Read and written ONLY through ZoomAudioModePreference so the
     // wire strings are spelled in exactly one place.
     public string? ZoomAudioMode { get; set; } = ZoomAudioModePreference.PerGuestIsoValue;
+
+    public string? ZoomCameraMaxResolution { get; set; } = ZoomCameraResolutionPreference.Default;
 
     // Custom scenes (scenes redesign S2): previously scenes lived only in
     // process memory and died with the app. Persisted on scene lifecycle ops

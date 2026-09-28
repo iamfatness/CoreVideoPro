@@ -229,7 +229,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         string? userZak = null,
         CancellationToken cancellationToken = default,
         // #475: this join only. See MediaCoreSupervisor.JoinZoomAsync.
-        bool endOtherMeeting = false)
+        bool endOtherMeeting = false,
+        int cameraMaxResolution = 2)
     {
         if (!Running)
         {
@@ -243,7 +244,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
                 sdkJwt,
                 userZak,
                 cancellationToken,
-                endOtherMeeting)
+                endOtherMeeting,
+                cameraMaxResolution)
             .ConfigureAwait(false);
         PublishCaptureSnapshot(capture);
         return capture;
