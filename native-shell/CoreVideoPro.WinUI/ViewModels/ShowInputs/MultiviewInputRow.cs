@@ -19,6 +19,7 @@ public sealed partial class MultiviewInputRow : ObservableObject
     public double LastFrameAtMs { get; internal set; } = -1;
     public int ObservedWidth { get; internal set; }
     public int ObservedHeight { get; internal set; }
+    public int ObservedFps { get; internal set; }
 
     [ObservableProperty] private string? _sourceId;
     [ObservableProperty] private string _statusLabel = "IDLE";

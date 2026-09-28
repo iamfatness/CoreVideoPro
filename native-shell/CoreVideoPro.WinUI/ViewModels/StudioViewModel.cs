@@ -1552,12 +1552,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 return Task.CompletedTask;
             },
             zoomStatusChanged: status => RunOnUiThread(() => ZoomStatus = status),
-            onMeetingJoined: cameraMaxTier => RunOnUiThread(() =>
-            {
-                MarkZoomCameraMaxApplied(cameraMaxTier);
-                ActiveTab = StudioTab.Studio;
-            }),
-            cameraMaxResolutionTier: () => ZoomCameraResolutionPreference.ToSdkTier(ZoomCameraMaxResolution));
+            onMeetingJoined: (tier, fps) => RunOnUiThread(() => OnZoomCameraMeetingJoined(tier, fps)),
+            cameraMaxResolutionTier: () => ZoomCameraResolutionPreference.ToSdkTier(ZoomCameraMaxResolution),
+            cameraMaxFps: () => ZoomCameraMaxFps);
         InitializeZoomCameraResolution();
         Settings.ConfigureOutputDestinations(BuildSupportBundleOutputDestinations);
         _zoomOAuthCoordinator.SetStatusChangedHandler(message =>
@@ -11949,6 +11946,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // v9: the Zoom→program audio topology persists across launches.
             ZoomAudioMode = ZoomAudioModePreference.Format(_zoomAudioMode),
             ZoomCameraMaxResolution = ZoomCameraMaxResolution,
+            ZoomCameraMaxFps = ZoomCameraMaxFps,
             CustomScenes = _scenes
                 .Where(scene => scene.Id.StartsWith("custom-", StringComparison.Ordinal))
                 .Select(scene => ScenePersistenceService.ToPersisted(
@@ -12113,9 +12111,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // sync-context build, so the mode is continuously re-asserted rather than
         // sent once — a respawned core picks it up on the next sync.
         _zoomAudioMode = ZoomAudioModePreference.Parse(preferences.ZoomAudioMode);
-        _zoomCameraMaxResolution = ZoomCameraResolutionPreference.Normalize(preferences.ZoomCameraMaxResolution);
-        OnPropertyChanged(nameof(ZoomCameraMaxResolution));
-        OnPropertyChanged(nameof(ZoomCameraMaxStatus));
+        LoadZoomCameraPreferences(preferences);
         OnPropertyChanged(nameof(ZoomAudioMode));
         OnPropertyChanged(nameof(IsPerGuestIsoAudio));
         if (_zoomAudioMode == ZoomAudioMode.PerGuestIso)

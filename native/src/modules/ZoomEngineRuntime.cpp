@@ -193,9 +193,15 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
     cameraMax = ZoomSubscriptionResolutionPolicy::clampCameraMax(
         static_cast<int>(std::clamp(requested->asNumber(), 0.0, 2.0)));
   }
+  int cameraMaxFps = 60;
+  if (const auto* requested = payload.get("cameraMaxFps"); requested &&
+      requested->isNumber() && std::isfinite(requested->asNumber())) {
+    cameraMaxFps = ZoomCameraFrameRatePolicy::clamp(static_cast<int>(requested->asNumber()));
+  }
   {
     std::lock_guard<std::mutex> lock(mutex_);
     cameraMaxResolution_ = cameraMax;
+    cameraMaxFps_ = cameraMaxFps;
   }
 
   if (!ensureStarted(cancelled)) {
@@ -1108,6 +1114,7 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
        static_cast<double>(ZoomSubscriptionResolutionPolicy::kMaxConcurrentFullResolutionCameras)},
       {"fullResolutionDemoted", static_cast<double>(fullResolutionDemoted_)},
       {"cameraMaxResolution", cameraMaxResolution_},
+      {"cameraMaxFps", cameraMaxFps_},
       {"lastDepartures", static_cast<double>(departures)},
       {"sources", sources},
   };
@@ -1247,12 +1254,15 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
   // under the core lock were the measured queue-drowning source
   // (zoom-media-spine-sync queueWait 3.7s in soak run 10).
   auto& ref = videoStreams_[event.sourceUuid];
-  if (ref.width != event.width || ref.height != event.height) {
+  const auto sourceGeneration = state_.sourceGenerationForParticipant(event.participantId);
+  if (ref.width != event.width || ref.height != event.height ||
+      ref.sourceGeneration != sourceGeneration || ref.participantId != event.participantId) {
     ref.regionOpaque.reset();  // shared_ptr deleter closes the mapping
     ref.lastSequence = 0;
+    ref.frameRateBudget = {};
   }
   ref.participantId = event.participantId;
-  ref.sourceGeneration = state_.sourceGenerationForParticipant(event.participantId);
+  ref.sourceGeneration = sourceGeneration;
   ref.width = event.width;
   ref.height = event.height;
   ensureVideoIngestThreadLocked();
@@ -1468,6 +1478,13 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
       });
     }
   }
+
+  // The Format fact above tracks frames delivered by Zoom. The optional
+  // operator ceiling applies only to local camera playout; it cannot change
+  // Zoom transport or decoder cadence. Screen share is independent.
+  if (uuid.rfind("participant-video-", 0) == 0 &&
+      !ref.frameRateBudget.accept(static_cast<double>(formatAtMs), cameraMaxFps_))
+    return;
 
   // Tap the full-resolution I420 planes for the compositor without disturbing
   // the stdout/event queue below that feeds the WinUI multiview tiles.

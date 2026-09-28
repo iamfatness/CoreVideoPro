@@ -174,6 +174,7 @@ public sealed class ProductionOutputPreferences
     public string? ZoomAudioMode { get; set; } = ZoomAudioModePreference.PerGuestIsoValue;
 
     public string? ZoomCameraMaxResolution { get; set; } = ZoomCameraResolutionPreference.Default;
+    public int ZoomCameraMaxFps { get; set; } = ZoomCameraFrameRatePreference.Default;
 
     // Custom scenes (scenes redesign S2): previously scenes lived only in
     // process memory and died with the app. Persisted on scene lifecycle ops
