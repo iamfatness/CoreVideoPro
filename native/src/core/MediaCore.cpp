@@ -498,6 +498,27 @@ rpc::Json MediaCore::setCaptureAudioSyncOffset(const std::string& deviceId, int 
   return captureDeviceArray(lifecycle.setAudioSyncOffset(deviceId, offsetMs));
 }
 
+void MediaCore::observeZoomGuestAvEpoch() {
+  const auto epoch = zoomEngineRuntime_ && zoomEngineRuntime_->configured()
+      ? zoomEngineRuntime_->speakerEpoch() : zoomStubEpoch_;
+  if (epoch == zoomGuestAvEpoch_) return;
+  zoomGuestAvOffsets_.clear();
+  zoomGuestAvVideo_.observeEpoch(epoch);
+  zoomGuestAvEpoch_ = epoch;
+  ++zoomGuestAvRevision_;
+}
+
+rpc::Json MediaCore::setZoomGuestAvSyncOffset(const std::string& participantId, int offsetMs) {
+  observeZoomGuestAvEpoch();
+  const int applied = clampGuestAvOffsetMs(offsetMs);
+  if (applied == 0) zoomGuestAvOffsets_.erase(participantId);
+  else zoomGuestAvOffsets_[participantId] = applied;
+  ++zoomGuestAvRevision_;
+  return rpc::Json::Object{{"participantId", participantId}, {"offsetMs", applied},
+                           {"speakerEpoch", static_cast<double>(zoomGuestAvEpoch_)},
+                           {"revision", static_cast<double>(zoomGuestAvRevision_)}};
+}
+
 rpc::Json MediaCore::connectCaptureDevice(const std::string& deviceId,
                                           const std::string& outputSourceId) {
   modules::ICaptureDeviceLifecycle& lifecycle = *modules_.captureDevice;
@@ -715,6 +736,11 @@ rpc::Json MediaCore::sessionState() const {
     session = modules_.encoder->session();
   }
   const auto buffer = modules_.compositor->programBufferDiagnostics();
+  rpc::Json::Array zoomGuestAvSync;
+  for (const auto& [participantId, offsetMs] : zoomGuestAvOffsets_) {
+    zoomGuestAvSync.emplace_back(rpc::Json::Object{
+        {"participantId", participantId}, {"offsetMs", offsetMs}});
+  }
   rpc::Json::Object state{
       {"sceneId", sceneId_},
       {"commandProtocolFailures", stringArray(commandProtocolFailures_)},
@@ -727,6 +753,8 @@ rpc::Json MediaCore::sessionState() const {
       // `capture:<id>`) alongside the legacy bare list, so the shell reads back
       // exactly the ids it can pass to isoSourceIds.
       {"isoSourceIds", stringArray(canonicalIsoSourceIds())},
+      {"zoomGuestAvSync", std::move(zoomGuestAvSync)},
+      {"zoomGuestAvSyncRevision", static_cast<double>(zoomGuestAvRevision_)},
       {"outputProfile", outputProfileJson(outputProfileId_, outputResolution_, outputWidth_, outputHeight_, outputFps_, outputTargetBitrateMbps_)},
       {"encoder", session.encoderName},
       {"codec", session.codec},
@@ -6755,6 +6783,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       std::chrono::steady_clock::now().time_since_epoch()).count();
   auto videoFrames = core::gatherSourceVideo(*sourceBus_, mediaTransports_.get(),
       engineFrames, browserFrames, engineLive, mediaPresentationTime100ns, nowNs);
+  // Manual Zoom guest video trim runs once on the source collection before
+  // Preview, Program, multiview and ISO branch. No pixels cross into the shell.
+  observeZoomGuestAvEpoch();
+  zoomGuestAvVideo_.apply(videoFrames, zoomGuestAvOffsets_, nowNs / 1'000'000);
   markStage(s_subMergeUs, 0);
   // Still-image media routes (logos/bugs): inject the persistent decoded frames
   // (keyed "media:<assetId>") so program, preview bus and multiview all match
@@ -6802,6 +6834,22 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     };
     if (engineLive) {
       const auto roster = zoomEngineRuntime_->floorParticipants();
+      // A manual trim belongs to this participant incarnation, not to a
+      // numeric SDK id that a later join could reuse inside the same meeting.
+      if (!zoomGuestAvOffsets_.empty()) {
+        std::unordered_set<std::string> presentIds;
+        presentIds.reserve(roster.size());
+        for (const auto& participant : roster) {
+          if (participant.id != 0) presentIds.insert(std::to_string(participant.id));
+        }
+        for (auto it = zoomGuestAvOffsets_.begin(); it != zoomGuestAvOffsets_.end();) {
+          if (!presentIds.count(it->first)) {
+            it = zoomGuestAvOffsets_.erase(it);
+            ++zoomGuestAvRevision_;
+          }
+          else ++it;
+        }
+      }
       observations.reserve(roster.size());
       for (const auto& participant : roster) {
         if (participant.id == 0) continue;
@@ -7773,6 +7821,9 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   // One contiguous PCM frame per source per tick: multiple 10ms packets drained
   // in one tick must CONCATENATE, not overlap-sum in the bus mixers (spec R3).
   work.audioFrames = modules::coalescePcmAudioFramesBySource(std::move(audioFrames));
+  observeZoomGuestAvEpoch();
+  work.zoomGuestAvOffsets = zoomGuestAvOffsets_;
+  work.zoomGuestAvEpoch = zoomGuestAvEpoch_;
   work.channels = audioChannels_;
   work.routingSends = audioRoutingSends_;
   work.busSends = audioBusSends_;
@@ -7873,6 +7924,11 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       }
     }
   }
+
+  // Source-specific PCM trim precedes every consumer, including the raw ISO
+  // tap below. Its history belongs to the audio worker and resets by epoch.
+  zoomGuestAvAudio_.observeEpoch(work.zoomGuestAvEpoch);
+  zoomGuestAvAudio_.apply(work.audioFrames, work.zoomGuestAvOffsets);
 
   // DEBUG TAP (env-gated): dump the mic PCM entering the mix and the MON bus
   // leaving it as raw float32 - the decisive click-hunt instrument. Set

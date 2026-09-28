@@ -286,6 +286,16 @@
       "qualification": "include",
       "control": "include"
     },
+    "zoomGuestAvSync": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "zoomGuestAvSyncRevision": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
     "zoomSubscriptionChurn": {
       "typed": "omit",
       "qualification": "include",

@@ -844,6 +844,18 @@ public sealed record NativeMediaCorePreviewScene
     public bool Composite { get; init; }
 }
 
+public sealed record NativeZoomGuestAvSyncSetting
+{
+    public string ParticipantId { get; init; } = string.Empty;
+    public int OffsetMs { get; init; }
+}
+
+public sealed record NativeZoomGuestAvSyncAck
+{
+    public int OffsetMs { get; init; }
+    public long Revision { get; init; }
+}
+
 public sealed record NativeMediaCoreStateSnapshot
 {
     public IReadOnlyList<NativeCaptureDeviceStatus> CaptureDevices { get; init; } = [];
@@ -868,6 +880,8 @@ public sealed record NativeMediaCoreStateSnapshot
     public int OverlayCount { get; init; }
     public IReadOnlyList<string> Outputs { get; init; } = [];
     public IReadOnlyList<string> IsoParticipantIds { get; init; } = [];
+    public IReadOnlyList<NativeZoomGuestAvSyncSetting> ZoomGuestAvSync { get; init; } = [];
+    public long ZoomGuestAvSyncRevision { get; init; }
     public NativeMediaCoreOutputProfile OutputProfile { get; init; } = new()
     {
         ProfileId = "1080p60",

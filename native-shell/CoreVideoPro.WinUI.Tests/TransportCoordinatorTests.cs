@@ -1219,6 +1219,9 @@ public sealed class TransportCoordinatorTests
         public Task SetCaptureAudioSyncOffsetAsync(string deviceId, int offsetMs,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
+        public Task<NativeZoomGuestAvSyncAck> SetZoomGuestAvSyncOffsetAsync(string participantId, int offsetMs,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         public Task RegisterCaptureShmAsync(string deviceId, string shmName, int width, int height,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 

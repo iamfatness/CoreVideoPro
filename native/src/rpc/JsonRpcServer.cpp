@@ -8,7 +8,9 @@
 #include "contracts/Lifecycle.h"
 #include <random>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -179,6 +181,20 @@ Json JsonRpcServer::handle(const Json& request) {
     }
     const Json* offset = payload->get("offsetMs");
     return success(id, Json::Object{{"type", "capture-devices"}, {"devices", mediaCore_.setCaptureAudioSyncOffset(payload->getString("deviceId"), offset ? static_cast<int>(offset->asNumber()) : 0)}});
+  }
+
+  if (hasType(request, "set-zoom-guest-av-sync-offset")) {
+    const Json* payload = request.get("payload");
+    const auto participantId = payload ? payload->getString("participantId") : std::string();
+    const Json* offset = payload ? payload->get("offsetMs") : nullptr;
+    if (!payload || !payload->isObject() || participantId.empty() || participantId == "zoom-mix" ||
+        participantId.find(':') != std::string::npos || !offset || !offset->isNumber() ||
+        !std::isfinite(offset->asNumber())) {
+      return failure(id, "protocol-error", "set-zoom-guest-av-sync-offset requires a bare Zoom participantId and numeric offsetMs.");
+    }
+    const int requested = static_cast<int>(std::clamp(offset->asNumber(), -200.0, 200.0));
+    return success(id, Json::Object{{"type", "zoom-guest-av-sync-offset"},
+        {"setting", mediaCore_.setZoomGuestAvSyncOffset(participantId, requested)}});
   }
 
   if (hasType(request, "connect-capture-device")) {

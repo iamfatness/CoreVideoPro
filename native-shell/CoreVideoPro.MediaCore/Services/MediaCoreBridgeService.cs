@@ -179,6 +179,10 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         CancellationToken cancellationToken = default) =>
         _supervisor.SetCaptureAudioSyncOffsetAsync(deviceId, offsetMs, cancellationToken);
 
+    public Task<NativeZoomGuestAvSyncAck> SetZoomGuestAvSyncOffsetAsync(
+        string participantId, int offsetMs, CancellationToken cancellationToken = default) =>
+        _supervisor.SetZoomGuestAvSyncOffsetAsync(participantId, offsetMs, cancellationToken);
+
     public Task RegisterCaptureShmAsync(
         string deviceId,
         string shmName,

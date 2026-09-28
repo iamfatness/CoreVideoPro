@@ -1002,6 +1002,37 @@
                             <TextBlock Text="{x:Bind ViewModel.SelectedChannelDisplayName, Mode=OneWay}"
                                        FontSize="14" FontWeight="Bold" Foreground="#A7E8F2"
                                        TextTrimming="CharacterEllipsis" />
+                            <Button Content="{x:Bind ViewModel.GuestAvSync.Label, Mode=OneWay}"
+                                    IsEnabled="{x:Bind ViewModel.GuestAvSync.CanAdjust, Mode=OneWay}"
+                                    ToolTipService.ToolTip="{x:Bind ViewModel.GuestAvSync.Explanation, Mode=OneWay}"
+                                    FontSize="9" Padding="6,3" Margin="0,4,0,0"
+                                    HorizontalAlignment="Stretch"
+                                    Style="{StaticResource OperatorGhostButton}">
+                                <Button.Flyout>
+                                    <Flyout Opening="OnGuestSyncFlyoutOpening">
+                                        <StackPanel Width="290" Spacing="8">
+                                            <TextBlock Text="GUEST LIP SYNC" FontSize="11" FontWeight="Bold" />
+                                            <TextBlock Text="{x:Bind ViewModel.GuestAvSync.Explanation, Mode=OneWay}"
+                                                       TextWrapping="Wrap" FontSize="11" />
+                                            <NumberBox x:Name="GuestSyncOffsetInput" Header="Offset (ms)"
+                                                       Minimum="-200" Maximum="200" SmallChange="10"
+                                                       SpinButtonPlacementMode="Inline" />
+                                            <Button Content="Apply offset" Click="OnGuestSyncApplyClicked"
+                                                    Style="{StaticResource OperatorGhostButton}" />
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <Button Content="−10" Click="OnGuestSyncEarlierClicked"
+                                                        Style="{StaticResource OperatorGhostButton}" />
+                                                <Button Content="+10" Click="OnGuestSyncLaterClicked"
+                                                        Style="{StaticResource OperatorGhostButton}" />
+                                                <Button Content="Reset to 0" Click="OnGuestSyncResetClicked"
+                                                        Style="{StaticResource OperatorGhostButton}" />
+                                            </StackPanel>
+                                            <TextBlock Text="{x:Bind ViewModel.GuestAvSync.Status, Mode=OneWay}"
+                                                       TextWrapping="Wrap" FontSize="10" />
+                                        </StackPanel>
+                                    </Flyout>
+                                </Button.Flyout>
+                            </Button>
                         </StackPanel>
                         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                             <ItemsRepeater ItemsSource="{x:Bind ViewModel.SelectedChannelInsertSlots, Mode=OneWay}">

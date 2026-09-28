@@ -176,6 +176,8 @@ public static class NativeMediaCoreStateMapper
             OverlayCount = wire.OverlayCount ?? baseSnapshot.OverlayCount,
             Outputs = outputs,
             IsoParticipantIds = wire.IsoParticipantIds ?? baseSnapshot.IsoParticipantIds,
+            ZoomGuestAvSync = wire.ZoomGuestAvSync ?? baseSnapshot.ZoomGuestAvSync,
+            ZoomGuestAvSyncRevision = wire.ZoomGuestAvSyncRevision ?? baseSnapshot.ZoomGuestAvSyncRevision,
             ProgramFrame = programFrame,
             ProgramFramePreview = programFramePreview,
             ProgramFrameCount = programFrameCount,

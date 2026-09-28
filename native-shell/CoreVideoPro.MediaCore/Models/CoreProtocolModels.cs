@@ -357,6 +357,8 @@ public sealed class NativeMediaCoreWireState
     public int? OverlayCount { get; init; }
     public IReadOnlyList<string>? Outputs { get; init; }
     public IReadOnlyList<string>? IsoParticipantIds { get; init; }
+    public IReadOnlyList<NativeZoomGuestAvSyncSetting>? ZoomGuestAvSync { get; init; }
+    public long? ZoomGuestAvSyncRevision { get; init; }
     public int? ProgramFrameCount { get; init; }
     public string? RenderPlanId { get; init; }
     public string? CompositorRenderer { get; init; }

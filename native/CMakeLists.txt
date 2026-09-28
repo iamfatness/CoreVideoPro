@@ -696,6 +696,7 @@ if(BUILD_TESTING)
     tests/MultiviewLayoutTest.cpp
     tests/AnchoredFrameDeadlineTrackerTest.cpp
     tests/ProgramAudioDelayTest.cpp
+    tests/GuestAvSyncTest.cpp
     tests/ProgramPlayoutTimelineTest.cpp
     tests/TilesDecorationTest.cpp
     tests/D3DProgramBufferTest.cpp
