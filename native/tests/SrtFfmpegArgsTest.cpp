@@ -2,6 +2,15 @@
 #include "modules/SrtIngestHealthPolicy.h"
 #include <gtest/gtest.h>
 
+TEST(SrtIngestHealth, ClassifiesCodecAndPacketErrorsWithoutTreatingTransportAsDecode) {
+  using corevideo::modules::SrtDecoderFault;
+  using corevideo::modules::classifySrtDecoderError;
+  EXPECT_EQ(classifySrtDecoderError("[h264] error while decoding MB 12 7"), SrtDecoderFault::Codec);
+  EXPECT_EQ(classifySrtDecoderError("[h264] Invalid NAL unit size (12 > 4)"), SrtDecoderFault::Codec);
+  EXPECT_EQ(classifySrtDecoderError("[mpegts] Packet corrupt (stream = 0)"), SrtDecoderFault::Packet);
+  EXPECT_EQ(classifySrtDecoderError("corrupt input packet in stream 0"), SrtDecoderFault::Packet);
+  EXPECT_EQ(classifySrtDecoderError("srt://host?passphrase=secret: Input/output error"), SrtDecoderFault::None);
+}
 TEST(SrtIngestHealth, HeldFrameDoesNotMasqueradeAsLiveSignal) {
   using corevideo::modules::projectSrtIngestHealth;
   const auto live = projectSrtIngestHealth("receiving", "", 10, 1000, 1200);
@@ -31,10 +40,16 @@ TEST(SrtIngestHealth, HeldFrameDoesNotMasqueradeAsLiveSignal) {
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 using corevideo::modules::SrtEndpointConfig;
 using corevideo::modules::buildSrtIngestArgv;
@@ -294,4 +309,66 @@ TEST(SrtIngestChannel, RetiringWedgedChannelsIsBounded) {
   // Generous: the point is a BOUND, not a benchmark. The old code could sit out a
   // whole reconnect backoff rung (up to 10s) before the reader noticed the stop.
   EXPECT_LT(elapsed, 5000);
+}
+
+TEST(SrtIngestChannel, FfmpegStderrReportsCodecAndPacketErrorsWithoutLeakingUrl) {
+#if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_WITH_SRT_INGEST
+  struct EnvironmentGuard {
+    std::string name;
+    std::string prior;
+    bool existed = false;
+    EnvironmentGuard(const char* key, const std::string& value) : name(key) {
+      if (const char* old = std::getenv(key)) {
+        existed = true;
+        prior = old;
+      }
+      _putenv_s(key, value.c_str());
+    }
+    ~EnvironmentGuard() { _putenv_s(name.c_str(), existed ? prior.c_str() : ""); }
+  };
+
+  const auto folder = std::filesystem::temp_directory_path() /
+      ("cvp-srt-fault-" + std::to_string(::GetCurrentProcessId()));
+  std::filesystem::create_directories(folder);
+  const auto ffmpeg = folder / "ffmpeg.exe";
+  std::error_code copyError;
+  std::filesystem::copy_file(COREVIDEO_STUBBORN_FFMPEG_PATH, ffmpeg,
+                             std::filesystem::copy_options::overwrite_existing, copyError);
+  ASSERT_FALSE(copyError);
+  {
+    EnvironmentGuard ffmpegDir("COREVIDEO_FFMPEG_DIR", folder.string());
+    EnvironmentGuard fault("COREVIDEO_TEST_SRT_FAULT", "1");
+    auto device = corevideo::modules::createSrtIngestCaptureDevice();
+    ASSERT_NE(device, nullptr);
+    corevideo::modules::SrtIngestSourceConfig config;
+    config.id = "fault-input";
+    config.deviceId = "srt-fault";
+    config.name = "Fault source";
+    config.mode = "caller";
+    config.host = "127.0.0.1";
+    config.port = 39998;
+    config.passphrase = "test-secret-123";
+    device->configureSrtIngestSources({config});
+    device->connect(config.deviceId);
+
+    corevideo::modules::CaptureDeviceInfo status;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      status = device->enumerate().front();
+      // The helper exits after each pair. A second pair proves the adapter
+      // restarted its decoder and kept the counters across generations.
+      if (status.codecDecodeErrors.value_or(0) >= 2 && status.packetDecodeErrors.value_or(0) >= 2) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    EXPECT_GE(status.codecDecodeErrors.value_or(0), 2);
+    EXPECT_GE(status.packetDecodeErrors.value_or(0), 2);
+    EXPECT_EQ(status.decoderFailures.value_or(-1), 0);
+    EXPECT_FALSE(status.rttMs.has_value());
+    EXPECT_EQ(status.warning.find("test-secret-123"), std::string::npos);
+    device.reset();
+  }
+  std::error_code removeError;
+  std::filesystem::remove(ffmpeg, removeError);
+  std::filesystem::remove(folder, removeError);
+#endif
 }

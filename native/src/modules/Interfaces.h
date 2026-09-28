@@ -899,6 +899,8 @@ struct CaptureDeviceInfo {
   std::optional<int64_t> decodedAudioSamples;
   std::optional<int64_t> lastFrameAgeMs;
   std::optional<int64_t> decoderFailures;
+  std::optional<int64_t> codecDecodeErrors;
+  std::optional<int64_t> packetDecodeErrors;
   std::optional<double> rttMs;
 };
 
