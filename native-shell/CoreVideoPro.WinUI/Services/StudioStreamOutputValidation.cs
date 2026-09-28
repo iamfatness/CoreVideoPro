@@ -47,9 +47,11 @@ public static class StudioStreamOutputValidation
         string? srtStreamId,
         string? srtKeyLength,
         string? srtPassphrase,
-        string? ffmpegBinDirectory = null)
+        string? ffmpegBinDirectory = null,
+        bool hlsEnabled = false,
+        string? hlsPlaylistUrl = null)
     {
-        if (!rtmpEnabled && !ndiEnabled && !srtEnabled)
+        if (!rtmpEnabled && !ndiEnabled && !srtEnabled && !hlsEnabled)
         {
             return "Select at least one stream destination.";
         }
@@ -73,6 +75,16 @@ public static class StudioStreamOutputValidation
             ValidateSrt(srtMode, srtHost, srtPort, srtLatencyMs, srtStreamId, srtKeyLength, srtPassphrase) is { Length: > 0 } srtError)
         {
             return srtError;
+        }
+
+        if (hlsEnabled && ValidateHls(hlsPlaylistUrl) is { Length: > 0 } hlsError)
+        {
+            return hlsError;
+        }
+
+        if (hlsEnabled && ValidateFfmpegRuntime(ffmpegBinDirectory) is { Length: > 0 } hlsFfmpegError)
+        {
+            return hlsFfmpegError;
         }
 
         return null;
@@ -131,6 +143,25 @@ public static class StudioStreamOutputValidation
 
     public static bool CanSerializeRtmpSettings(string? protocol, string? serverUrl, string? streamKey) =>
         ValidateRtmp(protocol, serverUrl, streamKey) is null;
+
+    public static string? ValidateHls(string? playlistUrl)
+    {
+        var value = playlistUrl?.Trim() ?? string.Empty;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            uri.Scheme is not ("http" or "https") || string.IsNullOrWhiteSpace(uri.Host))
+        {
+            return "Configure an http:// or https:// HLS playlist URL before streaming.";
+        }
+
+        if (uri.UserInfo.Length > 0 || uri.Query.Length > 0 || uri.Fragment.Length > 0 ||
+            value.Any(char.IsWhiteSpace) || value.Contains('\\') || value.Contains('"') ||
+            !uri.AbsolutePath.EndsWith(".m3u8", StringComparison.Ordinal))
+        {
+            return "HLS playlist URL must end in .m3u8 and contain no credentials, query, fragment, or whitespace.";
+        }
+
+        return null;
+    }
 
     public static string? ValidateFfmpegRuntime(string? ffmpegBinDirectory, string? appDirectory = null)
     {

@@ -15,6 +15,8 @@
 #include <string>
 #include <string_view>
 
+#include "modules/HlsOutputPolicy.h"
+
 namespace corevideo::modules {
 
 // The media-core output worker runs at the audio block cadence (normally 50 Hz),
@@ -119,6 +121,19 @@ inline const char* rawDemuxerForBitstreamCodec(std::string_view codec) {
   return "h264";
 }
 
+inline void appendFfmpegMuxerOutput(std::ostringstream& args, const RtmpFfmpegArgsConfig& config) {
+  if (config.container == "hls") {
+    args << " -hls_time 2 -hls_list_size 6"
+         << " -hls_flags delete_segments+omit_endlist"
+         << " -hls_start_number_source epoch_us"
+         << " -hls_segment_filename " << quoteRtmpArgument(hlsSegmentUrl(config.endpoint))
+         << " -method PUT -f hls " << quoteRtmpArgument(config.endpoint);
+    return;
+  }
+  args << " -f " << (config.container.empty() ? std::string("flv") : config.container) << " "
+       << quoteRtmpArgument(config.endpoint);
+}
+
 inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) {
   const int fps = (std::max)(1, config.fps);
   const int bitrateKbps = (std::max)(1, config.bitrateKbps);
@@ -168,8 +183,7 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
       // blocking the encoder event thread. This option does not apply to SRT.
       args << " -tcp_nodelay 0";
     }
-    args << " -f " << (config.container.empty() ? std::string("flv") : config.container) << " "
-         << quoteRtmpArgument(config.endpoint);
+    appendFfmpegMuxerOutput(args, config);
     return args.str();
   }
   args << " -hide_banner -loglevel warning -stats -stats_period 1"
@@ -224,9 +238,8 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
        << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
        // Keep the audio clock tied to wallclock-paced video so A/V stays in sync
        // when the PCM pipe briefly under/overruns relative to the frame pipe.
-       << " -af aresample=async=1:first_pts=0"
-       << " -f " << (config.container.empty() ? std::string("flv") : config.container) << " "
-       << quoteRtmpArgument(config.endpoint);
+       << " -af aresample=async=1:first_pts=0";
+  appendFfmpegMuxerOutput(args, config);
   return args.str();
 }
 

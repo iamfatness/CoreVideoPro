@@ -2,11 +2,23 @@
 #include <windows.h>
 
 #include <fstream>
+#include <cstdio>
 #include <string>
 
 // The sender's encoder probe must finish, while its real transport child
 // deliberately ignores stdin EOF so the stop path has to terminate it.
 int main(int argc, char** argv) {
+  if (::GetEnvironmentVariableA("COREVIDEO_TEST_SRT_FAULT", nullptr, 0) > 0) {
+    const char* input = "";
+    for (int i = 1; i + 1 < argc; ++i) {
+      if (std::string(argv[i]) == "-i") input = argv[i + 1];
+    }
+    std::fprintf(stderr, "[h264] error while decoding MB 12 7 %s\n", input);
+    std::fprintf(stderr, "[mpegts] Packet corrupt (stream = 0)\n");
+    std::fflush(stderr);
+    ::Sleep(250);
+    return 1;
+  }
   for (int i = 1; i < argc; ++i) {
     if (std::string(argv[i]) == "-frames:v") return 0;
   }

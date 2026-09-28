@@ -312,6 +312,8 @@
                                           IsChecked="{x:Bind ViewModel.StreamNdiEnabled, Mode=TwoWay}" />
                                 <CheckBox Content="SRT transport"
                                           IsChecked="{x:Bind ViewModel.StreamSrtEnabled, Mode=TwoWay}" />
+                                <CheckBox Content="HLS push"
+                                          IsChecked="{x:Bind ViewModel.Hls.Enabled, Mode=TwoWay}" />
                             </StackPanel>
                             <TextBlock Text="{x:Bind ViewModel.StreamConfigurationSummary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
@@ -507,6 +509,19 @@
                                          Text="{x:Bind ViewModel.StreamSrtPassphrase, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                             </Grid>
                             <TextBlock Text="{x:Bind ViewModel.StreamSrtSummary, Mode=OneWay}"
+                                       Style="{StaticResource OperatorSummary}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource OperatorSectionBorder}">
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="HLS push" Style="{StaticResource SettingsLabel}" />
+                            <TextBox Header="HTTP PUT playlist URL"
+                                     PlaceholderText="https://origin.example.com/live/program.m3u8"
+                                     Text="{x:Bind ViewModel.Hls.PlaylistUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBlock Text="The origin must accept PUT for the playlist and MPEG-TS segments. H.264 + AAC."
+                                       TextWrapping="Wrap" />
+                            <TextBlock Text="{x:Bind ViewModel.Hls.Summary, Mode=OneWay}"
                                        Style="{StaticResource OperatorSummary}" />
                         </StackPanel>
                     </Border>

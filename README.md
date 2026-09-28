@@ -86,8 +86,9 @@ Status legend: **Real** = implemented and exercised in the portable/CI build · 
 | | WASAPI monitor output · ASIO capture · VST3 insert host | Dev-gated / In progress |
 | **Recording** | Program + ISO mux with real program audio, profile-driven resolution/fps | Implemented: Media Foundation on Windows, AVFoundation on macOS; candidate verification required |
 | **Streaming** | RTMP with real program-audio feed + H.264/AAC compatibility matrix | Dev-gated (`COREVIDEO_WITH_RTMP_OUTPUT`, FFmpeg) |
-| | NDI sender · SRT ingest decode | Dev-gated / In progress |
-| | SRT **output** sender | In progress (not yet implemented) |
+| | NDI send/receive · SRT ingest decode | Dev-gated; NDI receive routes BGRA + PCM through the capture source bus. Installed operator check pending. |
+| | SRT **output** sender | Dev-gated; YouTube caller send verified ([#669](https://github.com/iamfatness/CoreVideoPro/issues/669)). |
+| | HLS Program push (H.264/AAC playlist and segments by HTTP PUT) | Dev-gated (`COREVIDEO_WITH_RTMP_OUTPUT`, FFmpeg); requires an HTTP PUT origin that serves uploaded files |
 | | **Virtual camera** — the program feed appears as a "CoreVideo Pro Camera" webcam in Zoom / Teams / OBS / the Windows Camera app, at native **1080p60** | Implemented on Windows; candidate verification required |
 | **Production** | Magic Scene, Set & Forget auto-director, presets, brand kit, media playback | Real (heuristic, no ML) |
 | **Diagnostics** | Support bundle with redacted secrets, output/recording health, crash events | Real |

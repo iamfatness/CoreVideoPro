@@ -38,6 +38,7 @@ option(COREVIDEO_WITH_WASAPI_CAPTURE "Build the Windows WASAPI audio capture ada
 option(COREVIDEO_WITH_RTMP_OUTPUT "Build the RTMP output sender adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a libavformat runtime on the dev machine." OFF)
 option(COREVIDEO_WITH_SRT_OUTPUT "Build the SRT output sender adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and Haivision libsrt on the dev machine." OFF)
 option(COREVIDEO_WITH_NDI_OUTPUT "Build the NDI output sender adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a libNDI runtime on the dev machine (runtime-probed)." OFF)
+option(COREVIDEO_WITH_NDI_INGEST "Build the Windows NDI receive capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a runtime-probed libNDI." OFF)
 option(COREVIDEO_WITH_SRT_INGEST "Build the SRT ingest capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and staged FFmpeg with SRT support." OFF)
 option(COREVIDEO_WITH_RTMP_INGEST "Build the RTMP listener capture adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and staged FFmpeg." OFF)
 option(COREVIDEO_WITH_DECKLINK "Build the Blackmagic DeckLink capture-device adapter. Requires COREVIDEO_ENABLE_DEV_ADAPTERS and a dev-machine runtime." OFF)
@@ -90,6 +91,7 @@ add_library(corevideo_native
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
   src/modules/NdiOutputSenderAdapter.cpp
+  src/modules/NdiReceiveCaptureAdapter.cpp
   src/modules/OverlayTileRaster.cpp
   src/modules/ProgramFramePreview.cpp
   src/modules/RealZoomCaptureSource.cpp
@@ -162,6 +164,7 @@ target_compile_definitions(corevideo_native
     COREVIDEO_WITH_RTMP_OUTPUT=$<BOOL:${COREVIDEO_WITH_RTMP_OUTPUT}>
     COREVIDEO_WITH_SRT_OUTPUT=$<BOOL:${COREVIDEO_WITH_SRT_OUTPUT}>
     COREVIDEO_WITH_NDI_OUTPUT=$<BOOL:${COREVIDEO_WITH_NDI_OUTPUT}>
+    COREVIDEO_WITH_NDI_INGEST=$<BOOL:${COREVIDEO_WITH_NDI_INGEST}>
     COREVIDEO_WITH_SRT_INGEST=$<BOOL:${COREVIDEO_WITH_SRT_INGEST}>
     COREVIDEO_WITH_RTMP_INGEST=$<BOOL:${COREVIDEO_WITH_RTMP_INGEST}>
     COREVIDEO_WITH_DECKLINK=$<BOOL:${COREVIDEO_WITH_DECKLINK}>
@@ -402,6 +405,9 @@ if(COREVIDEO_WITH_NDI_OUTPUT)
   if(UNIX AND NOT APPLE)
     target_link_libraries(corevideo_native PUBLIC dl)
   endif()
+endif()
+if(COREVIDEO_WITH_NDI_INGEST AND NOT COREVIDEO_ENABLE_DEV_ADAPTERS)
+  message(FATAL_ERROR "COREVIDEO_WITH_NDI_INGEST requires COREVIDEO_ENABLE_DEV_ADAPTERS=ON.")
 endif()
 
 if(COREVIDEO_WITH_SRT_OUTPUT OR COREVIDEO_WITH_SRT_INGEST OR COREVIDEO_WITH_RTMP_INGEST)
@@ -700,6 +706,8 @@ if(BUILD_TESTING)
     tests/OverlayTileRasterTest.cpp
     tests/PluginHostRespawnPolicyTest.cpp
     tests/NdiPixelConvertTest.cpp
+    tests/NdiReceiveFramePolicyTest.cpp
+    tests/NdiReceiveCaptureIntegrationTest.cpp
     tests/NdiSourceNameTest.cpp
     tests/RtmpCompatibilityTest.cpp
     tests/EncoderPolicyTest.cpp
@@ -754,6 +762,7 @@ if(BUILD_TESTING)
     COREVIDEO_WITH_RTMP_OUTPUT=$<BOOL:${COREVIDEO_WITH_RTMP_OUTPUT}>
     COREVIDEO_WITH_SRT_OUTPUT=$<BOOL:${COREVIDEO_WITH_SRT_OUTPUT}>
     COREVIDEO_WITH_NDI_OUTPUT=$<BOOL:${COREVIDEO_WITH_NDI_OUTPUT}>
+    COREVIDEO_WITH_NDI_INGEST=$<BOOL:${COREVIDEO_WITH_NDI_INGEST}>
     COREVIDEO_WITH_SRT_INGEST=$<BOOL:${COREVIDEO_WITH_SRT_INGEST}>
     COREVIDEO_WITH_RTMP_INGEST=$<BOOL:${COREVIDEO_WITH_RTMP_INGEST}>
     COREVIDEO_WITH_DECKLINK=$<BOOL:${COREVIDEO_WITH_DECKLINK}>
