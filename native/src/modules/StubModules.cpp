@@ -965,7 +965,7 @@ std::unique_ptr<IOutputSender> createIsolatedOutputSender(
 ModuleSet createStubModules() {
   ModuleSet modules;
   for (const char* name : {"gpu-compositor", "local-audio-capture", "audio-monitor-output",
-                           "rtmp-output", "srt-output", "ndi-output", "srt-ingest",
+                           "rtmp-output", "srt-output", "ndi-output", "ndi-ingest", "srt-ingest",
                            "decklink-capture", "aja-capture", "uvc-capture"}) {
     recordCapability(modules, name, "omitted", "stub-or-unbuilt");
   }
@@ -1093,6 +1093,16 @@ ModuleSet createDefaultModules() {
           : srtIngestConstructed ? "available" : "failed-to-construct",
       COREVIDEO_STUB ? "stub-build" : !COREVIDEO_WITH_SRT_INGEST ? "build-gate-off"
           : srtIngestConstructed ? "ffmpeg-decoder" : "");
+  bool ndiIngestConstructed = false;
+  if (auto ndiIngest = createNdiReceiveCaptureDevice()) {
+    hardwareCaptureDevices.push_back(std::move(ndiIngest));
+    ndiIngestConstructed = true;
+  }
+  recordCapability(modules, "ndi-ingest",
+      COREVIDEO_STUB || !COREVIDEO_WITH_NDI_INGEST ? "omitted"
+          : ndiIngestConstructed ? "available" : "failed-to-construct",
+      COREVIDEO_STUB ? "stub-build" : !COREVIDEO_WITH_NDI_INGEST ? "build-gate-off"
+          : ndiIngestConstructed ? "ndi-runtime" : "ndi-runtime-missing", "process");
   if (auto deckLink = createDeckLinkCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(deckLink));
   }
