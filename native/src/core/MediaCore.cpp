@@ -241,6 +241,14 @@ rpc::Json captureDeviceJson(const modules::CaptureDeviceInfo& device) {
   if (!device.warning.empty()) {
     result.emplace("warning", device.warning);
   }
+  if (device.decodedFrames) result.emplace("decodedFrames", static_cast<double>(*device.decodedFrames));
+  if (device.decodedAudioSamples) result.emplace("decodedAudioSamples", static_cast<double>(*device.decodedAudioSamples));
+  if (device.lastFrameAgeMs) result.emplace("lastFrameAgeMs", static_cast<double>(*device.lastFrameAgeMs));
+  if (device.decoderFailures) result.emplace("decoderFailures", static_cast<double>(*device.decoderFailures));
+  if (device.vendor == "srt") {
+    result.emplace("rttMs", device.rttMs ? rpc::Json(*device.rttMs) : rpc::Json(nullptr));
+    result.emplace("rttStatus", device.rttMs ? "measured" : "unavailable: FFmpeg owns SRT socket");
+  }
   // OS-level device identity (UVC symbolic link) so the shell can correlate a
   // core-enumerated device with its own WinRT enumeration.
   if (!device.nativeDeviceId.empty()) {

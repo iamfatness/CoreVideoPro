@@ -895,6 +895,11 @@ struct CaptureDeviceInfo {
   // (e.g. symbolic-link casing differences). Empty for devices that have no
   // OS-level identity (stub/virtual devices).
   std::string nativeDeviceId;
+  std::optional<int64_t> decodedFrames;
+  std::optional<int64_t> decodedAudioSamples;
+  std::optional<int64_t> lastFrameAgeMs;
+  std::optional<int64_t> decoderFailures;
+  std::optional<double> rttMs;
 };
 
 struct CaptureAudioSourceConfig {

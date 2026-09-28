@@ -1,5 +1,6 @@
 #include "modules/Interfaces.h"
 #include "modules/SrtFfmpegArgs.h"
+#include "modules/SrtIngestHealthPolicy.h"
 
 #include <algorithm>
 #include <atomic>
@@ -59,6 +60,12 @@ namespace {
 // a far lighter question than distribution.
 
 constexpr int kBytesPerPixel = 4;  // BGRA
+
+int64_t monotonicMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 
 #ifdef _WIN32
 // NO ORPHANS. A decoder spawned by the core must not outlive it: if the core is
@@ -123,6 +130,8 @@ struct ReaderChannel {
   std::string connectionState = "connecting";
   std::string warning;
   int64_t framesReceived = 0;
+  int64_t lastFrameAtMs = 0;
+  int64_t decoderFailures = 0;
   int64_t droppedFrames = 0;
   // Embedded contribution audio, drained by pollAudioFrames each tick. Interleaved
   // 48k stereo float, guarded by `mutex` above.
@@ -536,10 +545,17 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
       device.frameRate = channel->frameRate;
       {
         std::lock_guard lock(channel->mutex);
-        device.connectionState = channel->connectionState;
-        device.signalPresent = channel->framesReceived > 0;
+        const auto health = projectSrtIngestHealth(channel->connectionState, channel->warning,
+                                                   channel->framesReceived, channel->lastFrameAtMs,
+                                                   monotonicMs());
+        device.connectionState = health.connectionState;
+        device.signalPresent = health.signalPresent;
         device.droppedFrames = channel->droppedFrames;
-        device.warning = channel->warning;
+        device.warning = health.warning;
+        device.decodedFrames = channel->framesReceived;
+        device.decodedAudioSamples = channel->audioSamplesReceived;
+        device.lastFrameAgeMs = health.lastFrameAgeMs;
+        device.decoderFailures = channel->decoderFailures;
       }
       const auto offset = audioSyncOffsets_.find(deviceId);
       device.audioSyncOffsetMs = offset == audioSyncOffsets_.end() ? 0 : offset->second;
@@ -643,6 +659,10 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
                          "Waiting for an SRT publisher on " + endpoint.host + ":" +
                              std::to_string(endpoint.port) + ".");
       if (!spawnDecoder(*channel, executable, url.url)) {
+        {
+          std::lock_guard lock(channel->mutex);
+          ++channel->decoderFailures;
+        }
         channel->setStatus("failed", "Could not start the FFmpeg decoder for this SRT source.");
         sleepUnlessStopped(*channel, backoffMs);
         backoffMs = std::min(backoffMs * 2, 10000);
@@ -669,6 +689,7 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
           std::lock_guard lock(channel->mutex);
           channel->latest = std::move(published);
           ++channel->framesReceived;
+          channel->lastFrameAtMs = monotonicMs();
           channel->connectionState = "receiving";
           channel->warning.clear();
         }
@@ -958,7 +979,11 @@ class SrtIngestCaptureDevice final : public ICaptureDevice {
 }  // namespace
 
 std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice() {
+#if !COREVIDEO_STUB && !COREVIDEO_WITH_SRT_INGEST
+  return nullptr;
+#else
   return std::make_unique<SrtIngestCaptureDevice>();
+#endif
 }
 
 }  // namespace corevideo::modules

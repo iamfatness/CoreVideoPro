@@ -1,4 +1,29 @@
 #include "modules/SrtFfmpegArgs.h"
+#include "modules/SrtIngestHealthPolicy.h"
+#include <gtest/gtest.h>
+
+TEST(SrtIngestHealth, HeldFrameDoesNotMasqueradeAsLiveSignal) {
+  using corevideo::modules::projectSrtIngestHealth;
+  const auto live = projectSrtIngestHealth("receiving", "", 10, 1000, 1200);
+  EXPECT_EQ(live.connectionState, "receiving");
+  EXPECT_TRUE(live.signalPresent);
+  EXPECT_EQ(live.lastFrameAgeMs, 200);
+
+  const auto stalled = projectSrtIngestHealth("receiving", "", 10, 1000, 2601);
+  EXPECT_EQ(stalled.connectionState, "stalled");
+  EXPECT_FALSE(stalled.signalPresent);
+  EXPECT_EQ(stalled.lastFrameAgeMs, 1601);
+  EXPECT_FALSE(stalled.warning.empty());
+
+  const auto disconnected = projectSrtIngestHealth("connecting", "publisher disconnected", 10, 1000, 1200);
+  EXPECT_EQ(disconnected.connectionState, "connecting");
+  EXPECT_FALSE(disconnected.signalPresent);
+  EXPECT_EQ(disconnected.warning, "publisher disconnected");
+
+  const auto neverReceived = projectSrtIngestHealth("connecting", "", 0, 0, 2601);
+  EXPECT_FALSE(neverReceived.signalPresent);
+  EXPECT_EQ(neverReceived.lastFrameAgeMs, -1);
+}
 
 #include "modules/Interfaces.h"
 
