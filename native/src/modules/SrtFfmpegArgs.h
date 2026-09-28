@@ -152,7 +152,7 @@ inline std::string redactedSrtUrl(const std::string& url) {
   return redacted;
 }
 
-// Build the FFmpeg ARGV that decodes one SRT source into raw BGRA on stdout.
+// Build the FFmpeg ARGV that decodes one network source into raw BGRA on stdout.
 // Output is forced to a fixed size so the reader can consume whole frames without
 // negotiating format mid-stream; whatever resolution the contributor sends is
 // scaled to the source's configured geometry.
@@ -167,17 +167,21 @@ inline std::string redactedSrtUrl(const std::string& url) {
 // would have run as the operator. Nothing validated metacharacters. Passing
 // argv straight to execvp removes the shell from the path entirely, so a url
 // can only ever be one ffmpeg argument no matter what it contains.
-// `audioSink`, when set, adds a SECOND output carrying the feed's embedded audio
+// `inputOptions` precedes -i so the RTMP listener can share this exact decode
+// worker and pipe layout. `audioSink`, when set, adds a SECOND output carrying
+// the feed's embedded audio
 // as f32le 48k stereo. A contribution feed carries its guest's audio inside the
 // same transport with no OS device to pair it with, so it cannot ride the WASAPI
 // capture-audio path; the caller passes a pipe/FIFO it is already reading.
 inline std::vector<std::string> buildSrtIngestArgv(const std::string& executable,
                                                    const std::string& url,
                                                    int width, int height, int frameRate,
-                                                   const std::string& audioSink = std::string()) {
+                                                   const std::string& audioSink = std::string(),
+                                                   const std::vector<std::string>& inputOptions = {},
+                                                   const std::string& logLevel = "error") {
   std::vector<std::string> argv{
       executable,
-      "-hide_banner", "-loglevel", "error",
+      "-hide_banner", "-loglevel", logLevel,
       // Contribution feeds are live: do not buffer ahead of real time.
       "-fflags", "nobuffer", "-flags", "low_delay",
   };
@@ -189,6 +193,7 @@ inline std::vector<std::string> buildSrtIngestArgv(const std::string& executable
     argv.push_back("-y");
     argv.push_back("-nostdin");
   }
+  argv.insert(argv.end(), inputOptions.begin(), inputOptions.end());
   argv.push_back("-i");
   argv.push_back(url);
   if (!audioSink.empty()) {

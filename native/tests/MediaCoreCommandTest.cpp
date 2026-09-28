@@ -1801,6 +1801,9 @@ TEST(MediaCoreCommand, ProfileMirrorsNativeMediaCoreShape) {
                 corevideo::modules::createSrtIngestCaptureDevice() != nullptr);
   EXPECT_EQ(jsonArrayContains(capabilities, "ndi-ingest"),
             corevideo::modules::createNdiReceiveCaptureDevice() != nullptr);
+  EXPECT_EQ(jsonArrayContains(capabilities, "rtmp-ingest"),
+            !COREVIDEO_STUB && COREVIDEO_WITH_RTMP_INGEST &&
+                corevideo::modules::createRtmpIngestCaptureDevice() != nullptr);
   EXPECT_FALSE(jsonArrayContains(capabilities, "decklink-capture"));
   EXPECT_FALSE(jsonArrayContains(capabilities, "aja-capture"));
   const auto* states = profile.get("capabilityStates");

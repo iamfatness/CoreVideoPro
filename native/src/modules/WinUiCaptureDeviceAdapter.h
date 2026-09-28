@@ -55,6 +55,9 @@ class WinUiCaptureDeviceAdapter final : public ICaptureDevice {
   std::vector<CaptureDeviceInfo> configureSrtIngestSources(const std::vector<SrtIngestSourceConfig>& sources) override {
     return inner_->configureSrtIngestSources(sources);
   }
+  std::vector<CaptureDeviceInfo> configureRtmpIngestSources(const std::vector<RtmpIngestSourceConfig>& sources) override {
+    return inner_->configureRtmpIngestSources(sources);
+  }
 
   // Real capture frames from the WinUI shared-memory buffers, merged with whatever
   // the inner device produces (e.g. dev test patterns for hardware adapters).

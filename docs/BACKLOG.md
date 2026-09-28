@@ -35,7 +35,7 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 | Order | Issue | Remaining work |
 |---|---|---|
 | 1 | [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Qualify the merged control-state slices in an installed live meeting: Zoom mute/unmute converges in shell strip and PCM without Preview, GoXLR monitor control is audible, and gap/restart recovery stays within refresh budgets. If real guest transitions are unavailable, record `MISSING_EVIDENCE` and work the next unblocked row. |
-| 2 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | YouTube SRT send and NDI same-host send proof are complete (#669/#686). Next bounded edge slice: NDI receive publishes pixels/PCM to the existing source bus, with an independent source test. NDI remains in process this cycle; wider HLS/RTMP work stays in this issue. |
+| 2 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | YouTube SRT send and NDI same-host send proof are complete (#669/#686). NDI receive (#693) and HLS Program push (#695) await owner review. This slice adds native RTMP listener receive with decoded video/PCM on the existing capture source bus; its WinUI URL editor and HLS receive remain. NDI stays in process this cycle. |
 | 3 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | Listener/caller SRT ingest and a 30-minute 1080p30 contribution soak passed in #687. Finish honest RTT and codec/packet decode-error health, then validate failure/recovery; the issue remains open. |
 
 ## Deferred by owner

@@ -462,6 +462,7 @@ class MediaCore {
   // render or audio tick.
   void syncMediaTransportsDesired();
   void configureSrtIngestSources(const rpc::Json& command);
+  void configureRtmpIngestSources(const rpc::Json& command);
   void simulateBreakoutRoomChange(const rpc::Json& command);
   void setZoomSourceRoster(const rpc::Json& command);
   void setActiveSpeaker(const rpc::Json& command);

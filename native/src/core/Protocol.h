@@ -5,7 +5,7 @@
 
 namespace corevideo::core {
 
-inline constexpr std::array<std::string_view, 22> kNativeMediaCoreCapabilities = {
+inline constexpr std::array<std::string_view, 24> kNativeMediaCoreCapabilities = {
     "zoom-raw-video",
     "zoom-raw-audio",
     "gpu-compositor",
@@ -24,6 +24,8 @@ inline constexpr std::array<std::string_view, 22> kNativeMediaCoreCapabilities =
     "srt-output",
     "hls-output",
     "srt-ingest",
+    "rtmp-ingest",
+    "ndi-ingest",
     "decklink-capture",
     "aja-capture",
     "uvc-capture",
@@ -49,7 +51,7 @@ inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
 // Contract view of the live MediaCore::applyCommandMutation branches. The
 // dispatcher itself decides admission; ContractParity checks this view and the
 // production builder against every branch in both directions.
-inline constexpr std::array<std::string_view, 47> kNativeMediaCoreCommandTypes = {
+inline constexpr std::array<std::string_view, 48> kNativeMediaCoreCommandTypes = {
     "begin-take-transition",
     "load-scene-graph",
     "set-preview-scene",
@@ -88,6 +90,7 @@ inline constexpr std::array<std::string_view, 47> kNativeMediaCoreCommandTypes =
     "set-multiview-layout",
     "configure-multiviewer",
     "configure-srt-ingest-sources",
+    "configure-rtmp-ingest-sources",
     "browser-add",
     "browser-remove",
     "browser-reload",

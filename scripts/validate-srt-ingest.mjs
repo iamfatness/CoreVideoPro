@@ -1,5 +1,5 @@
 ﻿/**
- * Headless SRT INGEST proof.
+ * Headless SRT / RTMP INGEST proof.
  *
  * The previous ingest adapter opened a libsrt socket and threw the packets away
  * â€” it counted bytes and emitted frames with NO PIXELS. It would have passed any
@@ -7,11 +7,12 @@
  * this harness judges on DECODED PIXELS reaching the compositor, not on status
  * strings.
  *
- * Pushes a known test pattern into the core over real SRT (ffmpeg publisher),
+ * Pushes a known test pattern into the core over real SRT or RTMP (FFmpeg publisher),
  * then asserts the core's capture source reports a connected feed AND that the
  * program it composites from that source is not blank.
  *
- * Usage: node ./scripts/validate-srt-ingest.mjs [--seconds 18] [--port 9040]
+ * Usage: node ./scripts/validate-srt-ingest.mjs [--transport srt|rtmp]
+ *        [--seconds 18] [--port 9040]
  *        [--source-size 1920x1080] [--source-fps 30]
  *        [--mode listener|caller] [--restart-publisher] [--keep]
  */
@@ -32,22 +33,27 @@ const argValue = (name, fallback) => {
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 };
 const seconds = Number(argValue("seconds", 18));
-const port = Number(argValue("port", 9040));
+const transport = argValue("transport", "srt");
+const port = Number(argValue("port", transport === "rtmp" ? 19350 : 9040));
 const sourceSize = argValue("source-size", "1920x1080");
 const sourceFps = Number(argValue("source-fps", 30));
 const mode = argValue("mode", "listener");
-if (!/^\d+x\d+$/.test(sourceSize) || !Number.isInteger(sourceFps) || sourceFps < 1 || seconds < 1 ||
-    !["listener", "caller"].includes(mode)) {
-  console.error("Invalid SRT ingest test source size, fps, or duration.");
+if (!/^(srt|rtmp)$/.test(transport) || !/^\d+x\d+$/.test(sourceSize) ||
+    !Number.isInteger(sourceFps) || sourceFps < 1 || seconds < 1 ||
+    !["listener", "caller"].includes(mode) || (transport === "rtmp" && mode !== "listener")) {
+  console.error("Invalid ingest test transport, source size, fps, or duration.");
   process.exit(1);
 }
 const keep = args.includes("--keep");
 const restartPublisher = args.includes("--restart-publisher");
-if (restartPublisher && seconds < 18) {
-  console.error("Publisher restart proof needs at least 18 seconds.");
+if (restartPublisher && (seconds < 18 || transport !== "srt")) {
+  console.error("SRT publisher restart proof needs at least 18 seconds.");
   process.exit(1);
 }
-const deviceId = "srt-ingest-1";
+const deviceId = `${transport}-ingest-1`;
+const label = transport.toUpperCase();
+const recordDir = `Recordings/CoreVideoPro/validate-${transport}-ingest`;
+const recordingName = `${transport}-ingest`;
 
 const ffBin = (name) => {
   for (const bin of [name, `C:\\ffmpeg\\bin\\${name}.exe`]) {
@@ -59,7 +65,7 @@ const ffBin = (name) => {
 const ffmpeg = ffBin("ffmpeg");
 const ffprobe = ffBin("ffprobe");
 if (!ffmpeg || !ffprobe) {
-  console.error("ffmpeg/ffprobe are required for the SRT ingest proof.");
+  console.error(`ffmpeg/ffprobe are required for the ${label} ingest proof.`);
   process.exit(1);
 }
 if (!existsSync(nativeCore)) {
@@ -134,47 +140,49 @@ let artifact = null;
 try {
   for (let i = 0; i < 200 && !handshake; i += 1) await sleep(50);
   if (!handshake) throw new Error("no native-core handshake");
-  const ingestCapability = handshake.profile?.capabilityStates?.["srt-ingest"];
+  const ingestCapability = handshake.profile?.capabilityStates?.[`${transport}-ingest`];
   if (ingestCapability?.state !== "available") {
-    throw new Error(`SRT ingest capability is ${ingestCapability?.state ?? "missing"}; build with COREVIDEO_WITH_SRT_INGEST=ON`);
+    throw new Error(`${label} ingest capability is ${ingestCapability?.state ?? "missing"}; build with COREVIDEO_WITH_${label}_INGEST=ON`);
   }
 
-  // The publisher uses the opposite SRT role, exercising both ingest modes.
+  // SRT uses the opposite publisher role; RTMP publishes to a listener URL.
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
     commands: [{
-      type: "configure-srt-ingest-sources",
-      sources: [{
-        id: "input-1", deviceId, name: "SRT Ingest 1",
-        mode, host: mode === "listener" ? "0.0.0.0" : "127.0.0.1", port, latencyMs: 120,
-      }],
+      type: `configure-${transport}-ingest-sources`,
+      sources: [transport === "rtmp"
+        ? { id: "input-1", deviceId, name: "RTMP Ingest 1", url: `rtmp://0.0.0.0:${port}/live/test` }
+        : { id: "input-1", deviceId, name: "SRT Ingest 1",
+            mode, host: mode === "listener" ? "0.0.0.0" : "127.0.0.1", port, latencyMs: 120 }],
     }],
   });
   // connect-capture-device is a TOP-LEVEL rpc, not a media-core-sync command.
   await send("connect-capture-device", { payload: { deviceId, outputSourceId: deviceId } });
   await sleep(2000);
 
-  // Push a known pattern AND tone in over real SRT. A contribution feed carries
+  // Push a known pattern AND tone. A contribution feed carries
   // the guest's audio embedded in the same stream, so proving only video would
   // prove half a feed.
+  const publisherArgs =
+    ["-hide_banner", "-loglevel", "error", "-re",
+     "-f", "lavfi", "-i", `testsrc=size=${sourceSize}:rate=${sourceFps}`,
+     "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+     "-t", String(seconds + 6), "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
+     "-c:a", "aac", "-ac", "2",
+     "-f", transport === "rtmp" ? "flv" : "mpegts",
+     transport === "rtmp" ? `rtmp://127.0.0.1:${port}/live/test`
+       : `srt://127.0.0.1:${port}?mode=${mode === "listener" ? "caller" : "listener"}&transtype=live`];
   let publisherErr = "";
   const startPublisher = () => {
-    const process = spawn(ffmpeg,
-      ["-hide_banner", "-loglevel", "error", "-re",
-       "-f", "lavfi", "-i", `testsrc=size=${sourceSize}:rate=${sourceFps}`,
-       "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
-       "-t", String(seconds + 6), "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p",
-       "-c:a", "aac", "-ac", "2",
-       "-f", "mpegts", `srt://127.0.0.1:${port}?mode=${mode === "listener" ? "caller" : "listener"}&transtype=live`],
-      { stdio: ["ignore", "ignore", "pipe"] });
+    publisherErr = "";
+    const process = spawn(ffmpeg, publisherArgs, { stdio: ["ignore", "ignore", "pipe"] });
     process.stderr.on("data", (c) => { publisherErr += c.toString(); });
     return process;
   };
   publisher = startPublisher();
-  console.log(`publisher     : ${mode === "listener" ? "caller" : "listener"} pushing ` +
-              `testsrc into srt://127.0.0.1:${port} ...`);
+  console.log(`publisher     : pushing testsrc into ${label} ${mode === "listener" ? "listener" : "caller"} on 127.0.0.1:${port} ...`);
 
-  // Put the SRT source on program and record, so the proof is that decoded
+  // Put the ingest source on Program and record, so the proof is that decoded
   // pixels reach the compositor â€” not merely that a status flipped.
   await sleep(4000);
   await send("media-core-sync", {
@@ -182,7 +190,7 @@ try {
     commands: [
       {
         type: "load-scene-graph",
-        sceneId: "srt-ingest",
+        sceneId: recordingName,
         routes: [{ routeId: "program", mode: "capture-input", audioRole: "mix", captureDeviceId: deviceId }],
       },
       {
@@ -191,21 +199,21 @@ try {
         sends: [{ sourceId: `capture:${deviceId}`, busId: "master", gainDb: 0 },
                 { sourceId: `capture:${deviceId}`, busId: "stream", gainDb: 0 }],
       },
-      { type: "sync-virtual-camera", on: true, mirror: false, deviceName: "srt-ingest-proof" },
+      { type: "sync-virtual-camera", on: true, mirror: false, deviceName: `${recordingName}-proof` },
       { type: "start-program-output", destinations: ["recording"], isoParticipantIds: [] },
       {
         type: "set-recording-targets",
-        targetFolder: "Recordings/CoreVideoPro/validate-srt-ingest",
-        filenamePrefix: "srt-ingest", format: "mp4", quality: "high", isoParticipantIds: [],
+        targetFolder: recordDir,
+        filenamePrefix: recordingName, format: "mp4", quality: "high", isoParticipantIds: [],
       },
     ],
   });
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
     commands: [{
-      type: "start-recording-session", sessionId: "srt-ingest", startedAtMs: Date.now(),
-      targetFolder: "Recordings/CoreVideoPro/validate-srt-ingest",
-      filenamePrefix: "srt-ingest", format: "mp4", quality: "high", isoParticipantIds: [],
+      type: "start-recording-session", sessionId: recordingName, startedAtMs: Date.now(),
+      targetFolder: recordDir,
+      filenamePrefix: recordingName, format: "mp4", quality: "high", isoParticipantIds: [],
     }],
   });
 
@@ -307,25 +315,25 @@ try {
   }
 
   if (restartPublisher && !restartCompleted) failures.push("SRT publisher restart proof never ran");
-  if (!device) failures.push("the SRT ingest device never appeared in captureDevices");
+  if (!device) failures.push(`the ${label} ingest device never appeared in captureDevices`);
   else if (!device.signalPresent) {
-    failures.push(`SRT source never reported signal (state=${device.connectionState}, ` +
+    failures.push(`${label} source never reported signal (state=${device.connectionState}, ` +
                   `warning=${device.warning || "none"})` +
                   (publisherErr ? ` | publisher: ${publisherErr.trim().split("\n").pop()}` : ""));
   }
   if (!(device?.decodedFrames > 0) || !(device?.decodedAudioSamples > 0)) {
-    failures.push("SRT health did not count decoded video and audio");
+    failures.push(`${label} health did not count decoded video and audio`);
   }
-  if (device?.decoderFailures !== 0) failures.push(`SRT decoder startup failed ${device?.decoderFailures ?? "unknown"} times`);
-  if (!restartPublisher && device?.codecDecodeErrors !== 0)
+  if (device?.decoderFailures !== 0) failures.push(`${label} decoder startup failed ${device?.decoderFailures ?? "unknown"} times`);
+  if (transport === "srt" && !restartPublisher && device?.codecDecodeErrors !== 0)
     failures.push(`SRT codec decode errors: ${device?.codecDecodeErrors ?? "missing"}`);
-  if (!restartPublisher && device?.packetDecodeErrors !== 0)
+  if (transport === "srt" && !restartPublisher && device?.packetDecodeErrors !== 0)
     failures.push(`SRT packet decode errors: ${device?.packetDecodeErrors ?? "missing"}`);
-  if (device?.rttMs !== null || !device?.rttStatus?.includes("FFmpeg owns SRT socket")) {
+  if (transport === "srt" && (device?.rttMs !== null || !device?.rttStatus?.includes("FFmpeg owns SRT socket"))) {
     failures.push("SRT RTT must remain explicitly unavailable while FFmpeg owns the socket");
   }
   if (seconds >= 300 && unhealthySamples > Math.max(1, healthySamples * 0.01)) {
-    failures.push(`SRT ingest was unhealthy at ${unhealthySamples}/${healthySamples + unhealthySamples} soak samples`);
+    failures.push(`${label} ingest was unhealthy at ${unhealthySamples}/${healthySamples + unhealthySamples} soak samples`);
   }
   if (seconds >= 300) {
     if (!renderStart || !renderEnd) failures.push("missing render-worker evidence during SRT soak");
@@ -344,7 +352,7 @@ try {
 
   const stop = await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
-    commands: [{ type: "stop-recording-session", reason: "srt ingest proof complete" }],
+    commands: [{ type: "stop-recording-session", reason: `${recordingName} proof complete` }],
   });
   // The core's own muxer proof, asserted BEFORE the file is opened: it separates
   // "the feed never reached the encoder" from "the artifact was read too early".
@@ -357,6 +365,14 @@ try {
   if (programStream) {
     console.log(`recording     : missingFrames=${programStream.missingFrames ?? "missing"} ` +
                 `droppedFrames=${programStream.droppedFrames ?? "missing"}`);
+    if (transport === "rtmp") {
+      if (typeof programStream.missingFrames !== "number" || typeof programStream.droppedFrames !== "number") {
+        failures.push("RTMP Program recording frame-loss counters are missing");
+      } else if (programStream.missingFrames > 0 || programStream.droppedFrames > 0) {
+        failures.push(`RTMP Program recording lost frames (missing=${programStream.missingFrames}, ` +
+                      `dropped=${programStream.droppedFrames})`);
+      }
+    }
     if (seconds >= 300 && programStream.missingFrames > proof.programFrameCount * 0.01) {
       failures.push(`Program recording lost ${programStream.missingFrames} frames`);
     }
@@ -394,7 +410,35 @@ try {
     const current = sync.snapshot?.captureDevices?.find((d) => d.id === deviceId);
     clearedSignal = current?.signalPresent === false && current?.decodedFrames > 0;
   }
-  if (!clearedSignal) failures.push("held SRT frame still reports live signal after publisher exit");
+  if (!clearedSignal) failures.push(`held ${label} frame still reports live signal after publisher exit`);
+  if (transport === "rtmp" && clearedSignal) {
+    // A real publisher may be restarted while the same source is on Program.
+    // The channel must rebind without requiring another scene or source click.
+    const framesBefore = device?.decodedFrames ?? 0;
+    const audioBefore = device?.decodedAudioSamples ?? 0;
+    let recovered = false;
+    for (let attempt = 0; attempt < 3 && !recovered; attempt += 1) {
+      launchPublisher();
+      let lastState = "missing";
+      for (let sample = 0; sample < 20 && !recovered; sample += 1) {
+        await sleep(500);
+        const sync = await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] });
+        const current = sync.snapshot?.captureDevices?.find((d) => d.id === deviceId);
+        lastState = `${current?.connectionState ?? "missing"}/frames=${current?.decodedFrames ?? 0}/audio=${current?.decodedAudioSamples ?? 0}`;
+        recovered = current?.signalPresent === true && current?.decodedFrames > framesBefore &&
+                    current?.decodedAudioSamples > audioBefore;
+        if (publisher.exitCode !== null) break;
+      }
+      if (!recovered) {
+        console.log(`publisher     : retry ${attempt + 1} state=${lastState} exit=${publisher.exitCode ?? "running"} ` +
+                    `error=${publisherErr.trim().split("\n").pop() || "none"}`);
+        publisher.kill();
+        await sleep(700);
+      }
+    }
+    console.log(`publisher     : reconnect ${recovered ? "restored video and audio" : "failed"}`);
+    if (!recovered) failures.push("RTMP publisher reconnect did not resume decoded video and audio");
+  }
 } catch (error) {
   failures.push(error.message);
 } finally {
@@ -423,7 +467,7 @@ if (artifact && existsSync(artifact)) {
   }
   console.log(`program luma  : peak ${best.toFixed(1)} over ${frames} frames`);
   if (frames === 0) failures.push("program recording produced no frames");
-  else if (best < 12) failures.push(`program stayed black (peak luma ${best.toFixed(1)}) â€” the ingested SRT feed never became pixels`);
+  else if (best < 12) failures.push(`program stayed black (peak luma ${best.toFixed(1)}) — the ingested ${label} feed never became pixels`);
   // AUDIO: the guest's embedded tone must reach the mixer, not just the video.
   const pcm = spawnSync(ffmpeg,
     ["-v", "error", ...sampleWindow, "-i", artifact, "-f", "s16le", "-ac", "1", "-ar", "48000", "-"],
@@ -446,9 +490,9 @@ if (artifact && existsSync(artifact)) {
 }
 
 if (failures.length) {
-  console.error("\nSRT INGEST VALIDATION FAIL");
+  console.error(`\n${label} INGEST VALIDATION FAIL`);
   for (const f of failures) console.error(`  - ${f}`);
   process.exit(1);
 }
-console.log("\nSRT INGEST VALIDATION PASS");
+console.log(`\n${label} INGEST VALIDATION PASS`);
 

@@ -40,7 +40,8 @@ inline SrtIngestHealth projectSrtIngestHealth(const std::string& transportState,
                                              const std::string& transportWarning,
                                              int64_t framesReceived,
                                              int64_t lastFrameAtMs,
-                                             int64_t nowMs) {
+                                             int64_t nowMs,
+                                             const std::string& transport = "SRT") {
   SrtIngestHealth health;
   health.connectionState = transportState;
   health.warning = transportWarning;
@@ -52,7 +53,7 @@ inline SrtIngestHealth projectSrtIngestHealth(const std::string& transportState,
       health.signalPresent = true;
     } else {
       health.connectionState = "stalled";
-      health.warning = "SRT decoder has not produced a frame for over 1500 ms.";
+      health.warning = transport + " decoder has not produced a frame for over 1500 ms.";
     }
   }
   return health;
