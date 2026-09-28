@@ -47,6 +47,8 @@ flowchart LR
 
 ## #627 — manual Zoom guest lip-sync trim
 
+Owner decision 2026-09-28: the proposed ±200 ms range is accepted.
+
 This is an operator adjustment for a particular guest, not an attempt to
 correct Zoom's changing network delivery automatically. Default is zero. A
 single pipeline skew measured in a Zoom mailbox clap must not become every
@@ -121,6 +123,10 @@ policy and budget tests, no subscription churn on Preview/Take, and an
 installed meeting showing current versus pending and actual versus requested.
 
 ## #456 — per-asset clip In/Out
+
+Owner decision 2026-09-28: the
+[visual mockup](mockups/media-clip-range.png) and next-cue behavior below are
+approved for implementation.
 
 The selected media asset gets a compact **Clip range** group below its
 existing preview and transport controls. This is the UI design for owner

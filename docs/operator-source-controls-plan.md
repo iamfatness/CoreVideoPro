@@ -12,8 +12,8 @@ no shared foundation PR without the first shipping consumer.
 
 ## Design gates before implementation
 
-1. Review the [#456 Clip range layout and on-air staging rule](operator-source-controls-spec.md#456--per-asset-clip-inout) with the owner. #456 explicitly requires UI design approval before code. Confirm whether the compact timecode group is the desired operator control.
-2. Confirm the [#627 sign convention and bounds](operator-source-controls-spec.md#627--manual-zoom-guest-lip-sync-trim): positive delays guest audio; negative delays that guest's video. The user has already rejected automatic Zoom delivery correction; no further decision is needed on that point. The range is a proposed engineering bound until queue/latency tests support it.
+1. #456 explicitly requires UI design approval before code. The owner approved the [Clip range mockup and next-cue staging rule](operator-source-controls-spec.md#456--per-asset-clip-inout) on 2026-09-28.
+2. The owner approved the [#627 ±200 ms bound](operator-source-controls-spec.md#627--manual-zoom-guest-lip-sync-trim) on 2026-09-28. Positive delays guest audio; negative delays that guest's video. The user has rejected automatic Zoom delivery correction. Queue and latency tests must still qualify the accepted bound.
 3. Reconcile #668's previous unconditional-host sentence with the owner’s new per-source choice. Preserve the default for saved scenes. Do not implement a global host toggle.
 4. Pin a Release SHA and an installed beta SHA for each hardware comparison. Record device, Zoom meeting epoch, enabled outputs, Program buffer already in effect, and audio routing. A file-only clap is insufficient evidence for live monitor sync.
 
