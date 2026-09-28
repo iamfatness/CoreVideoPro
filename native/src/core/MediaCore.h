@@ -18,6 +18,7 @@
 #include "core/SourceRegistry.h"
 #include "core/TakeRecordPolicy.h"
 #include "core/ProgramAudioDelay.h"
+#include "core/GuestAvSync.h"
 #include "core/PluginHostScan.h"
 #include "modules/BrowserSourceHostAdapter.h"
 #include "modules/PluginHostClient.h"
@@ -101,6 +102,7 @@ class MediaCore {
   [[nodiscard]] rpc::Json captureDevices() const;
   [[nodiscard]] rpc::Json selectCaptureInput(const std::string& deviceId, const std::string& inputId);
   [[nodiscard]] rpc::Json setCaptureAudioSyncOffset(const std::string& deviceId, int offsetMs);
+  [[nodiscard]] rpc::Json setZoomGuestAvSyncOffset(const std::string& participantId, int offsetMs);
   [[nodiscard]] rpc::Json connectCaptureDevice(const std::string& deviceId,
                                                const std::string& outputSourceId = std::string());
   [[nodiscard]] rpc::Json disconnectCaptureDevice(const std::string& deviceId);
@@ -1064,6 +1066,13 @@ class MediaCore {
   // (#478 N2). Written only from plan builds, which run under coreMutex.
   mutable FollowSpeakerHold followSpeakerHold_;
   SpeakerFloor speakerFloor_;
+  // Command/render/gather state under coreMutex. A changed speaker epoch drops
+  // every manual setting so a recycled Zoom user id cannot inherit it.
+  std::map<std::string, int> zoomGuestAvOffsets_;
+  std::uint64_t zoomGuestAvEpoch_ = 0;
+  std::uint64_t zoomGuestAvRevision_ = 0;
+  GuestAvSyncVideo zoomGuestAvVideo_;
+  void observeZoomGuestAvEpoch();
   // Moves on every stub join/leave, standing in for the engine's speaker epoch.
   std::uint64_t zoomStubEpoch_ = 0;
   std::string zoomDisplayName_ = "Guest Producer";
@@ -1224,12 +1233,16 @@ class MediaCore {
   // audio frames + a copy of the current program frame for the encoder/output).
   ProgramAudioDelay programOutputAudioDelay_;
   ProgramAudioDelay streamOutputAudioDelay_;
+  // Audio-worker state, owned only under audioOutputMutex_.
+  GuestAvSyncAudio zoomGuestAvAudio_;
   struct AudioOutputWorkItem {
     bool valid = false;
     int64_t outputTimestamp100ns = 0;
     int programBufferFrames = 0;
     int64_t frameIntervalMs = 16;
     std::vector<modules::AudioFrame> audioFrames;
+    std::map<std::string, int> zoomGuestAvOffsets;
+    std::uint64_t zoomGuestAvEpoch = 0;
     std::vector<ParticipantAudioChannelInput> channels;
     std::vector<AudioRoutingSendInput> routingSends;
     std::vector<AudioBusSendInput> busSends;  // bus -> bus outputs (aux/subgroup routing)

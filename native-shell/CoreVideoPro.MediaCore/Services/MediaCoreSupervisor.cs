@@ -762,6 +762,38 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    public async Task<NativeZoomGuestAvSyncAck> SetZoomGuestAvSyncOffsetAsync(
+        string participantId, int offsetMs, CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "set-zoom-guest-av-sync-offset",
+                ["payload"] = new Dictionary<string, object?>
+                {
+                    ["participantId"] = participantId,
+                    ["offsetMs"] = offsetMs
+                }
+            }, cancellationToken).ConfigureAwait(false);
+        using (response)
+        {
+            if (response.RootElement.TryGetProperty("ok", out var ok) && ok.GetBoolean() &&
+                response.RootElement.TryGetProperty("setting", out var setting) &&
+                setting.TryGetProperty("offsetMs", out var applied) &&
+                setting.TryGetProperty("revision", out var revision))
+            {
+                return new NativeZoomGuestAvSyncAck
+                {
+                    OffsetMs = applied.GetInt32(),
+                    Revision = revision.GetInt64()
+                };
+            }
+            throw new InvalidOperationException(
+                $"Zoom guest sync failed: {CoreProtocolParser.TryParseErrorMessage(response)}");
+        }
+    }
+
     // Lists the capture devices the core itself enumerates (native UVC via
     // Media Foundation, DeckLink/AJA probes, stub devices). Returns [] when the
     // response is not a capture-devices payload.

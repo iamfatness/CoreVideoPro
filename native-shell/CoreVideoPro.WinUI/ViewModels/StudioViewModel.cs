@@ -1458,6 +1458,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         _startupBootstrap = startup;
         _bridge = startup.Bridge;
+        InitializeGuestAvSync();
         _outputPreferencesStore = startup.Store;
         Hls.PropertyChanged += (_, change) =>
         {
@@ -10435,6 +10436,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // early-return so meeting status keeps updating even when capture is unsubscribed.
         ApplyMeetingFieldsFromSnapshot(snapshot);
         Tm("meetingFields");
+        // A final core fact can arrive after the Zoom-off transition. Keep a
+        // departed meeting's numeric participant settings out of the UI.
+        if (ZoomOnline)
+            GuestAvSync.ApplySnapshot(snapshot.ZoomGuestAvSyncRevision, snapshot.ZoomGuestAvSync);
         var programResolutionLabel = ResolveProgramResolutionLabel(snapshot);
         ProgramResolutionLabel = programResolutionLabel;
         Transport.ApplySnapshot(

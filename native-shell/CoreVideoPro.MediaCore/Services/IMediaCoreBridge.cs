@@ -72,6 +72,9 @@ public interface IMediaCoreBridge : IAsyncDisposable
     Task SetCaptureAudioSyncOffsetAsync(string deviceId, int offsetMs,
         CancellationToken cancellationToken = default);
 
+    Task<NativeZoomGuestAvSyncAck> SetZoomGuestAvSyncOffsetAsync(string participantId, int offsetMs,
+        CancellationToken cancellationToken = default);
+
     Task RegisterCaptureShmAsync(string deviceId, string shmName, int width, int height,
         CancellationToken cancellationToken = default);
 

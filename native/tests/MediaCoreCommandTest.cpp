@@ -1144,6 +1144,83 @@ TEST(MediaCoreCommand, AudioMonitorRendersRoutedMonBusWhenPresent) {
   EXPECT_TRUE(state.get("audioMixSession")->get("monitorFramesPlayed")->asNumber() > 0);
 }
 
+TEST(MediaCoreCommand, GuestAudioTrimReachesTheMonitorBus) {
+  auto modules = corevideo::modules::createStubModules();
+  auto monitor = std::make_unique<RecordingMonitorOutput>();
+  auto* monitorPtr = monitor.get();
+  modules.monitorOutput = std::move(monitor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
+  const auto setting = mediaCore.setZoomGuestAvSyncOffset("pcm-speaker", 200);
+  EXPECT_EQ(setting.getNumber("offsetMs"), 200);
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{{"type", "sync-audio-monitor"}, {"enabled", true},
+          {"deviceId", "render-device"}, {"deviceName", "Render Device"}, {"volume", 1.0}},
+      corevideo::rpc::Json::Object{{"type", "sync-audio-routing-matrix"},
+          {"sends", corevideo::rpc::Json::Array{
+              corevideo::rpc::Json::Object{{"sourceId", "pcm-speaker"}, {"busId", "mon"},
+                  {"gainDb", 0.0}}}}}});
+  ASSERT_GT(monitorPtr->renderCalls, 0);
+  EXPECT_NEAR(monitorPtr->lastFirstSample, 0.f, 0.001f);
+}
+
+TEST(MediaCoreCommand, GuestVideoTrimHoldsOnlyThatSourceBeforeCompositorFanout) {
+  class ChangingZoomSource final : public corevideo::core::ISource {
+   public:
+    ChangingZoomSource() {
+      descriptor_.sourceId = "101";
+      descriptor_.kind = "zoom-slate";
+      descriptor_.width = 2;
+      descriptor_.height = 2;
+      descriptor_.hasVideo = true;
+    }
+    const corevideo::core::SourceDescriptor& descriptor() const override { return descriptor_; }
+    corevideo::core::SourceTick poll(int64_t) override {
+      corevideo::modules::VideoFrame frame;
+      frame.participantId = "101";
+      frame.frameId = ++sequence_;
+      frame.width = frame.naturalWidth = frame.pixelWidth = 2;
+      frame.height = frame.naturalHeight = frame.pixelHeight = 2;
+      frame.pixelStride = 8;
+      frame.pixels = std::make_shared<const std::vector<uint8_t>>(16, 128);
+      corevideo::core::SourceTick tick;
+      tick.video.push_back(std::move(frame));
+      tick.health = corevideo::core::SourceHealth::Producing;
+      return tick;
+    }
+    corevideo::core::SourceIngestCounters counters() const override { return {}; }
+   private:
+    corevideo::core::SourceDescriptor descriptor_;
+    int64_t sequence_ = 0;
+  };
+  class ProbingCompositor final : public corevideo::modules::ICompositor {
+   public:
+    explicit ProbingCompositor(std::unique_ptr<corevideo::modules::ICompositor> inner)
+        : inner_(std::move(inner)) {}
+    std::string rendererName() const override { return inner_->rendererName(); }
+    corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+        const std::vector<corevideo::modules::VideoFrame>& frames) override {
+      for (const auto& frame : frames) if (frame.participantId == "101") seen.push_back(frame.frameId);
+      return inner_->render(plan, frames);
+    }
+    std::vector<int64_t> seen;
+   private:
+    std::unique_ptr<corevideo::modules::ICompositor> inner_;
+  };
+  auto modules = corevideo::modules::createStubModules();
+  auto compositor = std::make_unique<ProbingCompositor>(std::move(modules.compositor));
+  auto* probe = compositor.get();
+  modules.compositor = std::move(compositor);
+  corevideo::core::MediaCore core(std::move(modules));
+  core.useZoomSourcesForTest({std::make_shared<ChangingZoomSource>()});
+  (void)core.setZoomGuestAvSyncOffset("101", -200);
+  core.renderDisplayTick();
+  core.renderDisplayTick();
+  ASSERT_GE(probe->seen.size(), 2u);
+  EXPECT_EQ(probe->seen[0], 1);
+  EXPECT_EQ(probe->seen[1], 1) << "second fresh frame reached Program before its 200 ms hold";
+}
+
 TEST(MediaCoreCommand, DefaultFallbackDoesNotFabricateAudioSignal) {
   corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
 
