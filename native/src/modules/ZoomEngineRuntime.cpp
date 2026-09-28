@@ -196,7 +196,8 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   int cameraMaxFps = 60;
   if (const auto* requested = payload.get("cameraMaxFps"); requested &&
       requested->isNumber() && std::isfinite(requested->asNumber())) {
-    cameraMaxFps = ZoomCameraFrameRatePolicy::clamp(static_cast<int>(requested->asNumber()));
+    cameraMaxFps = ZoomCameraFrameRatePolicy::clamp(
+        static_cast<int>(std::clamp(requested->asNumber(), 0.0, 60.0)));
   }
   {
     std::lock_guard<std::mutex> lock(mutex_);
