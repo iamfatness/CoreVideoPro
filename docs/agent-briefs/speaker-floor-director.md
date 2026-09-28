@@ -1,5 +1,11 @@
 # Agent brief — speaker-floor director (#668)
 
+Historical dispatch for Slices A–D, which have merged. Do not reuse this
+prompt for the 2026-09-28 host-selectable Active Speaker change. The current
+contract is [operator-source-controls-spec.md](../operator-source-controls-spec.md#668--host-selectable-active-speaker)
+and its [execution plan](../operator-source-controls-plan.md). The owner now
+permits host participation in a new opt-in directed source.
+
 Read first: `AGENTS.md`, `CLAUDE.md`, `docs/speaker-floor-director-spec.md`,
 `docs/speaker-floor-director-plan.md`, `docs/BACKLOG.md`.
 

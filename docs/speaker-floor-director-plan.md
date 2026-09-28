@@ -1,5 +1,10 @@
 # Speaker-floor director execution plan
 
+The owner-approved 2026-09-28 per-source include-host Active Speaker choice is
+specified in [operator-source-controls-spec.md](operator-source-controls-spec.md#668--host-selectable-active-speaker).
+The guest-only Slice B below describes the shipped default; it is not a global
+ban on an opt-in directed source.
+
 Linked issue: [#668](https://github.com/iamfatness/CoreVideoPro/issues/668).
 Requirements: [speaker-floor-director-spec.md](speaker-floor-director-spec.md).
 This is a dependency plan, not a ranked work queue. [BACKLOG](BACKLOG.md) owns

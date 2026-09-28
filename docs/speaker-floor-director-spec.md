@@ -11,6 +11,13 @@ how long they spoke, and when they last spoke; build dynamic galleries from
 that floor; active-speaker follow must not include the host; the same person
 must not appear twice in a two-up.
 
+Owner amendment 2026-09-28: The guest-only rule still governs Magic Scene's
+talker slots and the existing Active Speaker route, but a new **per-source**
+Active Speaker choice may include host. See
+[operator-source-controls-spec.md](operator-source-controls-spec.md#668--host-selectable-active-speaker).
+That section supersedes unconditional host-exclusion language below only for
+the new opt-in directed source. It does not change interview qualification.
+
 ## Problem
 
 `native/src/core/Director.h` and `src/engine/localDirectorProvider.ts` pick a
@@ -34,8 +41,9 @@ does not exclude the host and does not collapse two sources that are one person.
 
 1. Guests earn boxes by talking. Quiet cameras do not keep a two-up or a wall
    seat forever.
-2. The host is never an active-speaker / follow-speaker / talker-slot bind
-   while any guest has video.
+2. The host is never a Magic Scene talker-slot or guest-only Active Speaker
+   bind while any guest has video. An explicit include-host Active Speaker
+   source may select the host under its separate eligibility policy.
 3. One person occupies at most one visible slot on a recommendation.
 4. Count of live cameras is not the input. Distinct guest identities with a
    talk ledger are the input.
@@ -76,9 +84,9 @@ Host may appear as:
 - gallery membership only if a future setting "include host in gallery" is on
   (default **off**)
 
-Host must not appear as:
+Under the original guest-only policy, host must not appear as:
 
-- the follow-speaker bind
+- the follow-speaker bind (the new include-host source is an opt-in exception)
 - either seat of an `interview` two-up when a guest exists
 - a second copy of themselves next to their Zoom tile
 
