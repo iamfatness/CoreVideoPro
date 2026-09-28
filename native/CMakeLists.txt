@@ -612,6 +612,10 @@ include(CTest)
 if(BUILD_TESTING)
   find_package(GTest QUIET)
 
+  if(WIN32)
+    add_executable(corevideo-stubborn-ffmpeg tests/StubbornFfmpegChild.cpp)
+  endif()
+
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
     tests/AsyncEncoderSinkTest.cpp
@@ -621,6 +625,7 @@ if(BUILD_TESTING)
     tests/AsyncOutputSenderTest.cpp
     tests/IsolatedOutputSenderTest.cpp
     tests/OutputDestinationSupervisorTest.cpp
+    tests/FfmpegChildRetirementTest.cpp
     tests/AudioDspTest.cpp
     tests/GpuVideoEncoderPolicyTest.cpp
     tests/EncoderCapacityProbePolicyTest.cpp
@@ -725,6 +730,11 @@ if(BUILD_TESTING)
     target_compile_definitions(corevideo-native-tests PRIVATE
       COREVIDEO_VCAM_DLL_PATH="$<TARGET_FILE:corevideo-virtualcam>")
     add_dependencies(corevideo-native-tests corevideo-virtualcam)
+  endif()
+  if(WIN32)
+    target_compile_definitions(corevideo-native-tests PRIVATE
+      COREVIDEO_STUBBORN_FFMPEG_PATH="$<TARGET_FILE:corevideo-stubborn-ffmpeg>")
+    add_dependencies(corevideo-native-tests corevideo-stubborn-ffmpeg)
   endif()
   target_compile_definitions(corevideo-native-tests PRIVATE
     COREVIDEO_REPO_ROOT="${CMAKE_SOURCE_DIR}/.."
