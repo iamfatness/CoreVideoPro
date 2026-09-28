@@ -255,6 +255,10 @@ TEST(SrtFfmpegArgs, RedactsCredentialsButKeepsTheEndpointReadable) {
 // so the stop can also land mid-retirement.
 TEST(SrtIngestChannel, RetiringWedgedChannelsIsBounded) {
   auto device = corevideo::modules::createSrtIngestCaptureDevice();
+#if !COREVIDEO_STUB && !COREVIDEO_WITH_SRT_INGEST
+  EXPECT_EQ(device, nullptr);
+  return;
+#endif
   ASSERT_NE(device, nullptr);
 
   corevideo::modules::SrtIngestSourceConfig parked;
