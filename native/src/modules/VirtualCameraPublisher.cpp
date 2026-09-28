@@ -5,6 +5,7 @@
 #include "modules/ImageResize.h"
 #include "modules/VirtualCameraFrame.h"
 #include "modules/VirtualCameraShm.h"
+#include "modules/VirtualCameraRegistration.h"
 
 #include <cstdio>
 #include <cstring>
@@ -73,6 +74,15 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     header_->magic = kVirtualCameraMagic;
     header_->seq = (header_->seq | 1u) + 1u;  // even = complete
     ensureVirtualCameraServeLogFile();  // serving processes can append diagnostics
+
+    const auto registration = ensureVirtualCameraRegistration();
+    if (!registration.ready) {
+      fail(registration.warning);
+      return false;
+    }
+    if (registration.repaired) {
+      ::corevideo::core::nativeLogf("[virtualcam] repaired missing or stale per-user camera registration\n");
+    }
 
     // 2) Register the OS virtual camera (Win11 MFCreateVirtualCamera). The DLL
     //    named by kMediaSourceClsid serves NV12 samples read from the slot.

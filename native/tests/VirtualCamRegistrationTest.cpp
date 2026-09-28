@@ -74,6 +74,47 @@ TEST(VirtualCamRegistration, OldUninstallerPreservesNewerDllButOwnUninstallerRem
   ::FreeLibrary(dll);
 }
 
+TEST(VirtualCamRegistration, CameraStartRepairsRegistrationRemovedByAnOldUninstaller) {
+  wchar_t exePath[MAX_PATH]{};
+  ASSERT_GT(::GetModuleFileNameW(nullptr, exePath, MAX_PATH), 0u);
+  std::wstring expected(exePath);
+  expected.resize(expected.find_last_of(L"\\/") + 1);
+  expected += L"corevideo-virtualcam.dll";
+
+  const std::wstring sandboxPath = L"Software\\CoreVideoProRepairTests-" +
+                                   std::to_wstring(::GetCurrentProcessId());
+  HKEY sandbox = nullptr;
+  ASSERT_EQ(::RegCreateKeyExW(HKEY_CURRENT_USER, sandboxPath.c_str(), 0, nullptr,
+                             REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, nullptr, &sandbox, nullptr),
+            ERROR_SUCCESS);
+  const auto original = readRegistration(HKEY_CURRENT_USER);
+  const LONG overrideResult = ::RegOverridePredefKey(HKEY_CURRENT_USER, sandbox);
+  EXPECT_EQ(overrideResult, ERROR_SUCCESS);
+  if (overrideResult == ERROR_SUCCESS) {
+    // The Frame Server is a separate process and still sees the real key; the
+    // publisher worker sees this isolated process key and must repair it.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      if (attempt == 1) {
+        EXPECT_EQ(writeRegistration(sandbox, L"C:\\removed-beta\\corevideo-virtualcam.dll"), ERROR_SUCCESS);
+      }
+      auto publisher = corevideo::modules::createVirtualCameraPublisher();
+      EXPECT_TRUE(publisher->start(1280, 720, 30));
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (readRegistration(sandbox) != expected && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+      EXPECT_EQ(readRegistration(sandbox), expected)
+          << "camera Start did not repair the missing/stale COM path";
+      publisher->stop();
+    }
+    EXPECT_EQ(::RegOverridePredefKey(HKEY_CURRENT_USER, nullptr), ERROR_SUCCESS);
+  }
+  ::RegCloseKey(sandbox);
+  ::RegDeleteTreeW(HKEY_CURRENT_USER, sandboxPath.c_str());
+  EXPECT_EQ(readRegistration(HKEY_CURRENT_USER), original)
+      << "registration repair test changed the installed beta camera";
+}
+
 // Run explicitly with COREVIDEO_REQUIRE_VCAM_START=1 against each intended
 // registration path. The default native suite has no camera/OS prerequisite;
 // an omitted hardware gate is missing evidence, not proof of startup.
