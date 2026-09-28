@@ -7,10 +7,11 @@ shell implementations; only the former has one execution owner.
 
 This table names static owners. It does not by itself define event ordering,
 restart reconciliation, or how an observed fact and operator intent compose.
-The 2026-09-26 #608 live mute failure exposed that gap. The proposed
+The 2026-09-26 #608 live mute failure exposed that gap. The implemented
 [control-state contract](control-state-events-spec.md) and
 [execution plan](control-state-events-plan.md) under #657 define those transition
-rules; earlier ownership-review findings do not constitute acceptance for them.
+rules. Slices #659/#661/#663 are merged; combined installed acceptance remains
+open on #657. Earlier ownership-review findings do not constitute that proof.
 
 ## Implemented common boundary
 

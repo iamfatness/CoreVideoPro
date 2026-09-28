@@ -4,9 +4,11 @@ Linked issue: [#674](https://github.com/iamfatness/CoreVideoPro/issues/674).
 Requirements: [multiview-input-inspector-spec.md](multiview-input-inspector-spec.md).
 This is a dependency plan, not a ranked work queue. [BACKLOG](BACKLOG.md) owns
 priority. No foundation-only PR lands on `main` without a shipping consumer.
-Do not start this ahead of [#659](https://github.com/iamfatness/CoreVideoPro/issues/659)
-unless the owner promotes #674. The inspector consumes the versioned roster
-projection; it must not invent a fourth snapshot.
+Slices A–F merged as #675–#680. The inspector consumes the versioned roster
+projection; it must not invent a fourth snapshot. Issue #674 remains open for
+installed no-click video-off, ISO arm, and Engine-off transitions and ten-row
+GPU load evidence. The preferred Zoom resolution choice is #681; Sources
+layout cleanup is #590. Current rank lives only in [BACKLOG](BACKLOG.md).
 
 ## Why this order
 

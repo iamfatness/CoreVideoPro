@@ -1,6 +1,7 @@
 # Control-state authority and event propagation
 
-Status: proposed contract for [#657](https://github.com/iamfatness/CoreVideoPro/issues/657).
+Status: contract implemented in the #659/#661/#663 slices; installed qualification
+for parent [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) remains open.
 Baseline: `main` `7d0d363735fc972bcdc3b3dbd4e7c1975677cc99` (2026-09-26).
 The issue owns acceptance and owner decisions; [BACKLOG](BACKLOG.md) alone owns work order.
 The [execution plan](control-state-events-plan.md) describes the implementation slices.
