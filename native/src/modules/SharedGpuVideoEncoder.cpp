@@ -141,7 +141,7 @@ class SharedGpuVideoEncoderPool::Client final : public GpuVideoEncoder {
   bool submit(const GpuVideoEncoderFrame& frame) override {
     std::lock_guard<std::mutex> lock(state_->mutex);
     if (!session_ || !session_->encoder) return false;
-    if (session_->hasSubmittedFrame && session_->lastSubmittedFrame == frame.frameNumber)
+    if (session_->hasSubmittedFrame && frame.frameNumber <= session_->lastSubmittedFrame)
       return session_->encoder->healthy();
     if (!session_->encoder->submit(frame)) return false;
     session_->lastSubmittedFrame = frame.frameNumber;

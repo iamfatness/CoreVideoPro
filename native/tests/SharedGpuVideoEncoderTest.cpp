@@ -61,6 +61,9 @@ TEST(SharedGpuVideoEncoder, TwoMatchingDestinationsShareOneEncodeAndStopIndepend
   ASSERT_TRUE(rtmp->submit(frame));
   ASSERT_TRUE(srt->submit(frame));
   EXPECT_EQ(counts.submits, 1) << "the same Program frame was encoded twice";
+  frame.frameNumber = 9;
+  ASSERT_TRUE(srt->submit(frame));
+  EXPECT_EQ(counts.submits, 1) << "a late destination re-encoded an older Program frame";
   EXPECT_EQ(rtmpFrames, 1);
   EXPECT_EQ(srtFrames, 1);
 
