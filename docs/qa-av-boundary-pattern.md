@@ -38,10 +38,28 @@ node scripts/qa/program-buffer-recorded-av.mjs --native-core native/build-dev/co
 The media harness now uses the same generated file and records mixer evidence.
 Its result must stay red if media PCM or identifiable audio cues are absent.
 
+For a sender plus recording run, pass the RTMP server without the stream key in
+the command line. Set `COREVIDEO_QA_RTMP_KEY` in the process environment from
+the app's saved test destination, then run:
+
+```powershell
+node scripts/qa/program-buffer-recorded-av.mjs --native-core native/build-dev/corevideo-native.exe --output-dir artifacts/issue-703-youtube-pattern --rtmp-server rtmp://a.rtmp.youtube.com/live2 --duration-seconds 24 --depth 2
+```
+
+The report refuses an RTMP sender that has video but no audio frames or bytes.
+It records sender health and the matching Program file; this is a **send**
+measurement. It does not measure what YouTube received or played. The fixture
+does not loop in this longer run, so each of its eight cue IDs appears once.
+`--depth` isolates one startup buffer; omit it to compare both next-launch
+depths in separate core processes. Redact the key from shared artifacts.
+
 For the external leg, play the pattern from a dedicated source in the test
 meeting, record a matching Program file while streaming, and obtain the
 same-run YouTube playback. Decode the *same cue ids* in each artifact. Local
 RTMP reception and a prior YouTube replay cannot establish the YouTube leg.
+The YouTube watch URL for a new test is created only after the owner starts
+the live event; record that URL with the send run before claiming a received
+measurement.
 Do not apply a global delay from a single destination's offset.
 
 Analyze captured files with:
@@ -53,3 +71,10 @@ node scripts/qa/measure-av-pattern.mjs --source artifacts/issue-703-pattern/flas
 `--require-all` exits unsuccessfully when a leg or identifiable cue is absent.
 All legs report the sign, spread, frames at 60 fps, and offset corrected for
 the source file's own tiny skew.
+
+FLV carries millisecond timestamps. For the RTMP leg only, the decoder permits
+equal video PTS and up to 24 samples (0.5 ms) of AAC PTS quantization against
+the decoded sample count; it still rejects backward video PTS and larger audio
+gaps. The report retains `duplicateVideoPts` and `audioPtsJitterSamples`.
+Recording and source files keep the strict timestamp checks. This allowance
+helps measure A/V content; it is not a frame-delivery pass.

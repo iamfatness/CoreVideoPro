@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto';
 import { detectFlashPulses, detectBeepPulses, alignIdentifiedPulses, validateAudioTimeline, summarizePacketTiming } from './av-content-analysis.mjs';
 const exec = promisify(execFile);
 
-export async function decodeRecordedAvFile(path, { ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', runTool, allowAnyVideoSize = false } = {}) {
+export async function decodeRecordedAvFile(path, { ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', runTool,
+  allowAnyVideoSize = false, transportTimestampPrecisionMs = 0 } = {}) {
   const tool = runTool ?? ((command, args, extra = {}) => exec(command, args, { windowsHide: true, timeout: 60000, maxBuffer: 16 * 1024 * 1024, ...extra }));
   const result = { artifact: path, errors: [], coverageErrors: [], decodeCompleted: false, analysisValid: false, framePerformancePassed: false };
   const error = (stage, failure) => result.errors.push({ stage, message: failure.message.slice(0, 4000) });
@@ -41,6 +42,7 @@ export async function decodeRecordedAvFile(path, { ffmpeg = 'ffmpeg', ffprobe = 
     result.firstVideoPts = timestamps[0] ?? null; result.lastVideoPts = timestamps.at(-1) ?? null;
     if (timestamps.length > 1) {
       const intervals = timestamps.slice(1).map((pts, index) => pts - timestamps[index]);
+      result.duplicateVideoPts = intervals.filter(interval => interval === 0).length;
       result.worstVideoPtsIntervalMs = Math.max(...intervals) * 1000;
       result.averageVideoFps = (timestamps.length - 1) / (timestamps.at(-1) - timestamps[0]);
     }
@@ -62,11 +64,13 @@ export async function decodeRecordedAvFile(path, { ffmpeg = 'ffmpeg', ffprobe = 
   } catch (failure) { error('audio-decode', failure); }
   result.decodeCompleted = !!gray?.length && !!samples?.length;
   if (gray && timestamps) {
-    try { result.flashes = detectFlashPulses(gray, timestamps); } catch (failure) { error('flash-detection', failure); }
+    try { result.flashes = detectFlashPulses(gray, timestamps,
+      { allowDuplicatePts: transportTimestampPrecisionMs > 0 }); } catch (failure) { error('flash-detection', failure); }
   }
   if (samples && audioLog) {
     try {
-      result.audioTimeline = validateAudioTimeline(audioLog, samples.length);
+      result.audioTimeline = validateAudioTimeline(audioLog, samples.length,
+        { allowedPtsJitterSamples: Math.round(transportTimestampPrecisionMs * 48 / 2) });
       result.firstAudioPts = result.audioTimeline.firstPts;
       result.beeps = detectBeepPulses(samples, result.firstAudioPts);
     } catch (failure) { error('audio-timeline-or-beeps', failure); }

@@ -4,17 +4,24 @@ import { promisify } from 'node:util';
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { resolve, dirname, join, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { sourceCorrectedAlignment, assessRecordingVideoEvidence } from './av-content-analysis.mjs';
+import { sourceCorrectedAlignment, assessRecordingVideoEvidence, assessRtmpSenderEvidence } from './av-content-analysis.mjs';
 import { decodeRecordedAvFile } from './av-content-decode.mjs';
 import { generateAvPattern } from './generate-av-pattern.mjs';
 
 const exec = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const args = process.argv.slice(2), options = {};
 for (let i = 0; i < args.length; i += 2) {
-  if (!['--native-core', '--output-dir', '--ffmpeg', '--ffprobe', '--fixture'].includes(args[i]) || !args[i + 1]) throw new Error('Usage: node scripts/qa/program-buffer-recorded-av.mjs --native-core EXE --output-dir DIRECTORY [--fixture MEDIA] [--ffmpeg EXE] [--ffprobe EXE]');
+  if (!['--native-core', '--output-dir', '--ffmpeg', '--ffprobe', '--fixture', '--rtmp-server', '--duration-seconds', '--depth'].includes(args[i]) || !args[i + 1]) throw new Error('Usage: node scripts/qa/program-buffer-recorded-av.mjs --native-core EXE --output-dir DIRECTORY [--fixture MEDIA] [--rtmp-server URL --duration-seconds N] [--depth 2|3] [--ffmpeg EXE] [--ffprobe EXE]');
   options[args[i]] = args[i + 1];
 }
 if (!options['--native-core'] || !options['--output-dir']) throw new Error('Explicit native core and output directory required.');
+const rtmpServer = options['--rtmp-server'];
+const rtmpKey = process.env.COREVIDEO_QA_RTMP_KEY;
+if (rtmpServer && (!/^rtmps?:\/\//.test(rtmpServer) || !rtmpKey)) throw new Error('RTMP requires a server URL and COREVIDEO_QA_RTMP_KEY.');
+const durationSeconds = Number(options['--duration-seconds'] ?? (rtmpServer ? 24 : 7.5));
+if (!Number.isFinite(durationSeconds) || durationSeconds < 7.5 || durationSeconds > 120) throw new Error('Duration must be 7.5–120 seconds.');
+const depths = options['--depth'] === undefined ? [2, 3] : [Number(options['--depth'])];
+if (depths.some(depth => depth !== 2 && depth !== 3)) throw new Error('Depth must be 2 or 3.');
 const core = resolve(options['--native-core']), outputRoot = resolve(options['--output-dir']);
 const ffmpeg = options['--ffmpeg'] ?? 'ffmpeg', ffprobe = options['--ffprobe'] ?? 'ffprobe';
 await stat(core);
@@ -25,6 +32,8 @@ const report = { scope: 'synthetic-source/real-recording-destination', core, dir
   coreSha256: createHash('sha256').update(await readFile(core)).digest('hex'), framePerformancePassed: false,
   physicalPresentationMeasured: false, networkDestinationsMeasured: false, runs: [], errors: [],
   limitation: 'Finalized file decode proves a recording artifact and measures content A/V offset. It does not prove physical display timing or per-slot completion at any external output.' };
+report.rtmpConfigured = Boolean(rtmpServer);
+report.durationSeconds = durationSeconds;
 const tool = (command, args, extra = {}) => exec(command, args, { windowsHide: true, timeout: 60000, maxBuffer: 16 * 1024 * 1024, ...extra });
 
 const decode = path => decodeRecordedAvFile(path, { ffmpeg, ffprobe });
@@ -94,11 +103,14 @@ async function record(frames, fixture) {
       { type: 'set-output-profile', width: 1920, height: 1080, fps: 60, targetBitrateMbps: 8 },
       { type: 'load-scene-graph', sceneId: 'flash-beep-proof', routes: [{ routeId: 'program', mode: 'fixed', audioRole: 'mix',
         mediaAssetId: 'flash-beep', mediaAssetName: 'Generated flash and beep', mediaAssetKind: 'video', mediaAssetPath: fixture,
-        mediaAssetLoop: true, rect: { x: 0, y: 0, width: 1, height: 1 } }] },
+        mediaAssetLoop: !rtmpServer, rect: { x: 0, y: 0, width: 1, height: 1 } }] },
       { type: 'sync-participant-audio-mix', limiterEnabled: true, channels: [{ participantId: 'media', inputLevel: 0,
         muted: false, noiseSuppression: false, manualGainDb: 0, pan: 0, solo: false, pluginInserts: [], insertSettings: {} }] },
-      { type: 'sync-audio-routing-matrix', sends: [{ sourceId: 'media', busId: 'master', gainDb: 0 }] },
-      { type: 'start-program-output', destinations: ['recording'], isoParticipantIds: [] },
+      { type: 'sync-audio-routing-matrix', sends: [{ sourceId: 'media', busId: 'master', gainDb: 0 },
+        { sourceId: 'media', busId: 'stream', gainDb: 0 }] },
+      { type: 'start-program-output', destinations: rtmpServer ? ['recording', 'rtmp'] : ['recording'], isoParticipantIds: [],
+        ...(rtmpServer ? { destinationSettings: [{ id: 'rtmp', label: 'av-pattern-youtube', protocol: 'rtmp',
+          url: rtmpServer, streamKey: rtmpKey, fps: 60, targetBitrateMbps: 8 }] } : {}) },
       { type: 'set-recording-targets', targetFolder: runDirectory, filenamePrefix: 'flash-beep', format: 'mp4', quality: 'high', isoParticipantIds: [] },
       { type: 'start-recording-session', sessionId: `flash-beep-${frames}`, targetFolder: runDirectory, filenamePrefix: 'flash-beep', format: 'mp4', quality: 'high', isoParticipantIds: [] }
     ]);
@@ -107,9 +119,15 @@ async function record(frames, fixture) {
     if (snapshot.recording?.lifecycle?.state !== 'producing') throw new Error('Recording did not become producing.');
     const sessionId = snapshot.recording.lifecycle.sessionId;
     run.startBuffer = snapshot.programBuffer;
-    const end = Date.now() + 7500;
+    const end = Date.now() + durationSeconds * 1000;
     while (Date.now() < end) { await sleep(500); await poll(); }
     run.liveRecording = snapshot.recording;
+    run.liveRtmp = snapshot.outputSenderSession?.senders?.filter(sender => sender.destination === 'rtmp')
+      .map(({ destination, status, framesSent, audioFramesSent, bytesSent, audioBytesSent, audioChannels, audioSampleRate,
+        destinationHealth, retryCount, warning, lastError }) =>
+        ({ destination, status, framesSent, audioFramesSent, bytesSent, audioBytesSent, audioChannels, audioSampleRate,
+          destinationHealth, retryCount, warning, lastError }));
+    if (rtmpServer) run.rtmpSenderEvidence = assessRtmpSenderEvidence(snapshot.outputSenderSession?.senders);
     run.liveMediaSources = snapshot.mediaSources;
     run.liveAudioMix = snapshot.audioMixSession;
     run.liveWarnings = snapshot.warnings;
@@ -127,7 +145,7 @@ async function record(frames, fixture) {
     child.stdin.end(); if (!closed) await Promise.race([close, sleep(3000)]);
     if (!closed) { run.errors.push('Owned child required forced shutdown.'); child.kill(); await Promise.race([close, sleep(1000)]); }
     if (!closed || run.exitCode !== 0) run.errors.push('Owned child did not exit cleanly.');
-    await writeFile(join(runDirectory, 'stderr-tail.log'), stderr);
+    await writeFile(join(runDirectory, 'stderr-tail.log'), rtmpKey?.length >= 12 ? stderr.replaceAll(rtmpKey, '[redacted]') : stderr);
   }
   return run;
 }
@@ -137,7 +155,7 @@ try {
   if (!options['--fixture']) await generateAvPattern(fixture, { ffmpeg, ffprobe });
   report.fixture = { path: fixture, decode: await decode(fixture) };
   if (report.fixture.decode.alignmentError) throw new Error('Fixture: ' + report.fixture.decode.alignmentError);
-  for (const frames of [2, 3]) {
+  for (const frames of depths) {
     const run = await record(frames, fixture); report.runs.push(run);
     if (run.artifact) {
       try {
@@ -157,13 +175,16 @@ try {
   }
 } catch (error) { report.errors.push(error.message); }
 finally {
-  report.measurementCompleted = report.errors.length === 0 && report.runs.length === 2 && report.runs.every(run => !run.errors.length && run.recordingDestinationDecoded && run.analysisValid);
+  report.measurementCompleted = report.errors.length === 0 && report.runs.length === depths.length && report.runs.every(run => !run.errors.length && run.recordingDestinationDecoded && run.analysisValid);
   report.avAlignmentWithinOneVideoFrame = report.measurementCompleted && report.runs.every(run => run.alignmentWithinOneVideoFrame === true);
-  report.recordingArtifactAccepted = report.runs.length === 2 && report.runs.every(run => run.videoArtifactAcceptance?.passed === true);
-  report.validationPassed = report.measurementCompleted && report.avAlignmentWithinOneVideoFrame && report.recordingArtifactAccepted;
-  await writeFile(join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n');
+  report.recordingArtifactAccepted = report.runs.length === depths.length && report.runs.every(run => run.videoArtifactAcceptance?.passed === true);
+  report.rtmpSenderAccepted = !rtmpServer || report.runs.every(run => run.rtmpSenderEvidence?.passed === true);
+  report.validationPassed = report.measurementCompleted && report.avAlignmentWithinOneVideoFrame && report.recordingArtifactAccepted && report.rtmpSenderAccepted;
+  const reportJson = JSON.stringify(report, null, 2);
+  await writeFile(join(directory, 'report.json'), (rtmpKey?.length >= 12 ? reportJson.replaceAll(rtmpKey, '[redacted]') : reportJson) + '\n');
   console.log(JSON.stringify({ report: join(directory, 'report.json'), measurementCompleted: report.measurementCompleted,
     avAlignmentWithinOneVideoFrame: report.avAlignmentWithinOneVideoFrame, recordingArtifactAccepted: report.recordingArtifactAccepted,
+    rtmpSenderAccepted: report.rtmpSenderAccepted,
     validationPassed: report.validationPassed, framePerformancePassed: false }));
   process.exitCode = report.validationPassed ? 0 : 1;
 }

@@ -25,7 +25,8 @@ for (const role of roles) {
   const input = options[`--${role}`];
   if (!input) { if (role !== 'source') report.missingLegs.push(role); continue; }
   const file = resolve(input);
-  const decode = await decodeRecordedAvFile(file, { ffmpeg, ffprobe, allowAnyVideoSize: role !== 'source' });
+  const decode = await decodeRecordedAvFile(file, { ffmpeg, ffprobe, allowAnyVideoSize: role !== 'source',
+    transportTimestampPrecisionMs: role === 'rtmp' ? 1 : 0 });
   const alignment = decode.alignment;
   const valid = decode.analysisValid && alignment?.sufficientPairs && alignment.interiorCoverageComplete;
   const videoMinusAudioMs = valid ? -alignment.medianAudioMinusVideoMs : null;
@@ -35,6 +36,8 @@ for (const role of roles) {
     video: decode.streams?.find(stream => stream.codec_type === 'video')?.codec_name ?? null,
     audio: decode.streams?.find(stream => stream.codec_type === 'audio')?.codec_name ?? null,
     pairedCueIds: alignment?.pairs?.map(pair => pair.pulseId) ?? [],
+    duplicateVideoPts: decode.duplicateVideoPts ?? null,
+    audioPtsJitterSamples: decode.audioTimeline?.maxPtsJitterSamples ?? null,
     videoMinusAudioMs,
     framesAt60: videoMinusAudioMs === null ? null : videoMinusAudioMs * 60 / 1000,
     spreadMs: valid ? alignment.maxAudioMinusVideoMs - alignment.minAudioMinusVideoMs : null,
