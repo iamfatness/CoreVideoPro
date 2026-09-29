@@ -6211,6 +6211,9 @@ TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
   ASSERT_NE(sender, nullptr);
 
   corevideo::modules::ProgramFrame frame{1920, 1080, 2, 7, "rtmp-proof-plan", "d3d11"};
+  frame.encoderSharedTexture.frameNumber = 6;
+  frame.encoderSharedTexture.publishedFrameNumber =
+      std::make_shared<std::atomic<int64_t>>(5);
   corevideo::modules::OutputDestinationSettings settings;
   settings.id = "rtmp";
   settings.label = "RTMP";
@@ -6234,6 +6237,8 @@ TEST(OutputSenderAdapter, RtmpWritesSendProofArtifactWhenArmed) {
   EXPECT_NE(content.find("endpointMode"), std::string::npos);
   EXPECT_NE(content.find("packagingSignal"), std::string::npos);
   EXPECT_NE(content.find("rtmp-send-attempt"), std::string::npos);
+  EXPECT_NE(content.find("\"encoderSubmittedFrameNumber\":6"), std::string::npos);
+  EXPECT_NE(content.find("\"encoderPublishedFrameNumber\":5"), std::string::npos);
   input.close();
   const auto artifactPath = session.senders[0].sendArtifactPath;
   sender.reset();

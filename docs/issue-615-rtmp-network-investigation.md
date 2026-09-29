@@ -157,6 +157,78 @@ remains unproven. Do not label the incident resolved from the lower-packet-rate
 background-only runs. The saved meeting number alone timed out. The full link was subsequently recovered
 from prior tasks and successfully rejoined; there is no missing-user-input blocker.
 
+## 2026-09-29: YouTube low-bandwidth report with a concurrent game
+
+The 2026-09-28 show on `6625abb35b6eb0348eec69c654527aa141ec9961`
+sent 1920x1080@60 HEVC at a 10 Mbps target. FFmpeg held roughly 60 fps for
+the first 28 minutes, then fell to roughly 30 fps and eventually below 10 fps.
+The first drop was about 21:38 EDT. Locally saved Overwatch highlight files
+were modified at 21:36:38, 21:48:26, 21:59:39, and 22:12:27. Those timestamps
+support the owner's recollection that the game was active during the drop;
+they do not prove when it launched or how much GPU time it used. The separate
+July 2 adversarial soak already documented 30–44 fps compositor output with
+Overwatch fullscreen and GPU saturated.
+
+On September 29, a 40-minute Release run on the same SHA, with the real test
+meeting, eight live Zoom videos, the saved gallery scene, and the configured
+YouTube RTMP destination but without a game, completed at 144,003 FFmpeg
+frames in 40:00.38 media time over 39:59.91 wall time, about 60 fps and
+10.07 Mbps muxed. There was no sender backpressure or encoder shedding. The
+whole-adapter upload averaged 11.05 Mbps. This is a clean-rig capacity result,
+not receiver-decoded proof or a claim that the show report was wrong.
+
+A second run on the same meeting and destination used a reproducible D3D11
+compute workload (`scripts/qa/gpu-contention`) and two independent 4K60
+HEVC/NVENC encodes to simulate simultaneous graphics and encoder demand. GPU
+SM utilization reached 98–99%; NVENC reached about 30–60%. Before overload,
+Program, accepted sender frames, and FFmpeg all held about 60 fps for more
+than 27 minutes. Under combined load Program buffer overflows rose from 28
+to 526 within 38 seconds; Program preparation ages reached 20–70 ms against
+the 16.67 ms frame period. Program/sender rate fell below 45 fps and FFmpeg
+followed. The output watchdog stopped the owned stream at 29:04. Network
+samples just before the collapse still showed about 11 Mbps upload and a
+successful 0 ms gateway response. This reproduces a local render/output
+capacity failure, not an observed uplink cap.
+
+An experimental DXGI relative GPU priority of +2 on the compositor and
+encoder was tested with the same combined load. The app still fell to
+38.6 and then 35.5 Program fps in successive nine-second windows; the
+watchdog stopped the stream. The priority experiment was reverted. No
+priority adjustment is proposed as a fix.
+
+The show trace is not identical to this synthetic reproduction: during the
+show, Program accepted about 56–58 frames/s while FFmpeg's completed output
+fell, so the first bottleneck there may have been encoder, transport, or GPU
+work after Program. `framesSent` counts accepted frames, not delivered frames.
+The September 29 diagnostic adds encoder texture submitted/published frame
+numbers to each sender proof and records Program/sender/FFmpeg progress in
+one guarded test. A repeat with the actual game would distinguish the precise
+stage. Until that is measured, operating the live show and an uncapped game
+on the same GPU has failed the tested 1080p60 capacity gate. The immediate
+operator mitigation is to keep the game closed during a show or cap its frame
+rate and graphics demand enough to leave measured GPU headroom; a software
+change cannot restore frames after the shared GPU misses their deadlines.
+
+Reproduction commands (the stream destination remains operator-configured;
+no stream credential is supplied by these commands):
+
+```powershell
+cmake -S scripts/qa/gpu-contention -B artifacts/issue-615-20260929/gpu-contention-build -A x64
+cmake --build artifacts/issue-615-20260929/gpu-contention-build --config Release
+powershell -NoProfile -File scripts/qa/measure-stream-network.ps1 -Seconds 2400 -StartStream -StopOnOutputStall -OutputDirectory artifacts/issue-615-20260929
+# In a separate PowerShell session after the stream settles:
+1..4 | ForEach-Object { Start-Process -FilePath 'artifacts/issue-615-20260929/gpu-contention-build/Release/corevideo-gpu-contention.exe' -ArgumentList '120' -WindowStyle Hidden }
+ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=3840x2160:r=60 -vf hwupload_cuda,scale_cuda=3840:2160 -c:v hevc_nvenc -preset p1 -b:v 20000k -t 100 -f null NUL
+# Run the same FFmpeg command concurrently in a second session.
+```
+
+Local evidence: `artifacts/issue-615-20260929/20260929-110019-114-*`
+(clean 40-minute run), `20260929-115235-451-*` (combined-load failure),
+`priority-ab/20260929-122846-145-*` (reverted priority experiment), plus
+the corresponding `%TEMP%/corevideo-ffmpeg-rtmp-*.log` files. Artifacts are
+ignored by Git and contain connection metadata; summarize selected counters
+in the PR rather than uploading unredacted logs.
+
 
 ## Full meeting recovered and exercised (2026-09-24, 10:19-10:23 EDT)
 
