@@ -71,7 +71,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 | [#599](https://github.com/iamfatness/CoreVideoPro/issues/599) | After the #597 stream stall, Zoom Meeting panel stayed hidden on display 2. Targeted restore worked; need a reliable operator path. Causality with #597 unproven. |
 | [#610](https://github.com/iamfatness/CoreVideoPro/issues/610) | Operator-facing degraded-stream readout. Consume the generated observation model; do not hand-write a fourth snapshot. |
 | [#590](https://github.com/iamfatness/CoreVideoPro/issues/590) | Simplify and prune Sources for live operation. Coordinate with #505 and #588. |
-| [#681](https://github.com/iamfatness/CoreVideoPro/issues/681) | Global preferred Zoom camera maximum (360p/720p/1080p); preserve actual negotiated Format and verify churn/persistence in a real meeting. |
+| [#681](https://github.com/iamfatness/CoreVideoPro/issues/681) | Global Zoom camera resolution request and selectable local maximum frame rate (15/24/25/30/60 fps); preserve actual input Format and verify both choices, churn, and persistence in a real meeting. |
 | [#682](https://github.com/iamfatness/CoreVideoPro/issues/682) | Local Windows `test:gate` App integration worker intermittently stalls; PR #683 CI integration passed, so reproduce and bound before calling this a CI blocker. |
 | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Rework starter Scenes and scene creation; owner sees the same source repeated in defaults. |
 | [#592](https://github.com/iamfatness/CoreVideoPro/issues/592) | Lower-third second line refreshes as “Guest” / brief lowercase “g”. |

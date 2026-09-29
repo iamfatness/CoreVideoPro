@@ -259,6 +259,11 @@ public sealed class ShowInputsCoordinatorTests
         Emit("1:1:test", 7, 1920, 1080, 30, 1, 1000, 100);
         Assert.Equal("1920×1080@30", row.FormatLabel);
         Assert.Equal("", row.ConfiguredCapLabel);
+        coordinator.MultiviewInputRows.SetAppliedCameraFps(15);
+        Assert.Equal("1920×1080@30", row.FormatLabel);
+        Assert.Equal("local max 15 fps", row.ConfiguredCapLabel);
+        coordinator.MultiviewInputRows.SetAppliedCameraFps(60);
+        Assert.Equal("", row.ConfiguredCapLabel);
         Emit("1:1:test", 7, 1280, 720, 15, 2, 1500, 200);
         Assert.Equal("1280×720@15", row.FormatLabel);
         Assert.Equal("up to 1080p requested", row.ConfiguredCapLabel);

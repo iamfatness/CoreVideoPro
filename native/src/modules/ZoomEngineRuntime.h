@@ -2,6 +2,7 @@
 
 #include "modules/Interfaces.h"
 #include "modules/ZoomEngineClient.h"
+#include "modules/ZoomCameraFrameRatePolicy.h"
 #include "modules/ZoomPlayoutTiming.h"
 #include "modules/ZoomEngineProcess.h"
 #include "modules/ZoomEngineState.h"
@@ -192,6 +193,7 @@ class ZoomEngineRuntime {
   // held at 720P (#478 R4). Guarded by mutex_.
   int fullResolutionDemoted_ = 0;
   int cameraMaxResolution_ = 2;  // captured once from each join payload
+  int cameraMaxFps_ = 60;  // local camera playout ceiling, captured on join
   std::atomic<std::uint64_t> speakerEpoch_{0};
   // Operator opted in to raw capture (Studio "Engine On"). Raw recording /
   // recording-rights request only starts once this is set, so it no longer
@@ -315,6 +317,7 @@ class ZoomEngineRuntime {
     // validation stays fast); thereafter ~2/s.
     std::int64_t lastThumbnailEmitMs = -1;
     std::int64_t lastFormatEmitMs = -1;
+    ZoomCameraFrameRatePolicy::Budget frameRateBudget;
     // shared_ptr so the UNLOCKED snapshot phase can hold the mapping alive
     // while leave/reset paths release their reference under the lock.
     std::shared_ptr<void> regionOpaque;

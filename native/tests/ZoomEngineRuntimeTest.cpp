@@ -1293,6 +1293,24 @@ TEST(ZoomSubscriptionResolutionPolicyRules, SessionCameraCeilingIsUniformAcrossP
   EXPECT_EQ(Policy::clampCameraMax(3), Policy::k1080P);
 }
 
+TEST(ZoomCameraFrameRatePolicy, LocalCeilingPreservesThirtyAndCapsSixty) {
+  using Policy = corevideo::modules::ZoomCameraFrameRatePolicy;
+  EXPECT_EQ(Policy::clamp(30), 30);
+  EXPECT_EQ(Policy::clamp(31), 60);
+  Policy::Budget thirty;
+  int passedSixty = 0;
+  for (int frame = 0; frame < 120; ++frame)
+    if (thirty.accept(frame * (1000.0 / 60.0), 30)) ++passedSixty;
+  EXPECT_GE(passedSixty, 59);
+  EXPECT_LE(passedSixty, 62);
+  Policy::Budget nativeThirty;
+  for (int frame = 0; frame < 60; ++frame)
+    EXPECT_TRUE(nativeThirty.accept(frame * (1000.0 / 30.0), 30));
+  Policy::Budget defaultSixty;
+  for (int frame = 0; frame < 120; ++frame)
+    EXPECT_TRUE(defaultSixty.accept(frame * (1000.0 / 60.0), 60));
+}
+
 TEST(ZoomEngineRuntime, JoinCameraCeilingControlsTheSubscriptionKeyWithoutCueChurn) {
   setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");
   setEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS", "1000");
@@ -1305,7 +1323,8 @@ TEST(ZoomEngineRuntime, JoinCameraCeilingControlsTheSubscriptionKeyWithoutCueChu
     corevideo::rpc::Json joined;
     std::thread joinThread([&] {
       joined = runtime.join(corevideo::rpc::Json::Object{
-          {"meetingNumber", "123456789"}, {"cameraMaxResolution", 0}},
+          {"meetingNumber", "123456789"}, {"cameraMaxResolution", 0},
+          {"cameraMaxFps", 30}},
           [&] { return cancelled.load(); });
     });
     const bool joinSent = fake->waitForSentLines(1, std::chrono::seconds(2));
@@ -1321,6 +1340,7 @@ TEST(ZoomEngineRuntime, JoinCameraCeilingControlsTheSubscriptionKeyWithoutCueChu
     ASSERT_TRUE(fake->waitForSentLines(3, std::chrono::milliseconds(5000)));
     auto churn = runtime.subscriptionChurnState();
     EXPECT_EQ(churn.getNumber("cameraMaxResolution"), 0);
+    EXPECT_EQ(churn.getNumber("cameraMaxFps"), 30);
     const auto* camera = findChurnSource(churn, "participant-video-401-camera");
     const auto* share = findChurnSource(churn, "screen-share-402-share");
     ASSERT_NE(camera, nullptr);

@@ -394,6 +394,15 @@
                                    VerticalAlignment="Bottom" TextWrapping="WrapWholeWords"
                                    FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
                     </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                        <ComboBox Header="Max Zoom guest fps (local)"
+                                  ItemsSource="{x:Bind ViewModel.ZoomCameraMaxFpsChoices, Mode=OneWay}"
+                                  SelectedItem="{x:Bind ViewModel.ZoomCameraMaxFps, Mode=TwoWay}"
+                                  MinWidth="170" />
+                        <TextBlock Text="{x:Bind ViewModel.ZoomCameraMaxFpsStatus, Mode=OneWay}"
+                                   VerticalAlignment="Bottom" TextWrapping="WrapWholeWords"
+                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
+                    </StackPanel>
                     <TextBlock Text="{x:Bind ViewModel.ShowInputSummary, Mode=OneWay}"
                                FontSize="11" Foreground="{StaticResource StudioAccentBrush}" TextWrapping="Wrap" />
                     <!-- An in-show input whose source no longer exists (unplugged display,

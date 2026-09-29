@@ -52,4 +52,21 @@ public sealed class ZoomCameraResolutionPreferenceTests
     {
         Assert.Equal((width, height), ZoomCameraResolutionPreference.Dimensions(choice));
     }
+
+    [Fact]
+    public void GuestFrameRateCeilingPersistsAndLabelsLocalBehavior()
+    {
+        var old = ProductionOutputPreferencesSerializer.Deserialize("{\"Version\":13}");
+        Assert.NotNull(old);
+        Assert.Equal(60, ZoomCameraFrameRatePreference.Normalize(old.ZoomCameraMaxFps));
+        old.ZoomCameraMaxFps = 30;
+        var restored = ProductionOutputPreferencesSerializer.Deserialize(
+            ProductionOutputPreferencesSerializer.Serialize(old));
+        Assert.NotNull(restored);
+        Assert.Equal(30, restored.ZoomCameraMaxFps);
+        Assert.Contains("Zoom may deliver more",
+            ZoomCameraFrameRatePreference.Status(30, 30, true));
+        Assert.Contains("pending for next Zoom join",
+            ZoomCameraFrameRatePreference.Status(24, 30, true));
+    }
 }

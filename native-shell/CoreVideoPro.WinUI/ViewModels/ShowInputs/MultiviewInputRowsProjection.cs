@@ -21,6 +21,7 @@ public sealed class MultiviewInputRowsProjection
     private readonly Dictionary<string, IsoOutputLifecycleFact> _isoFacts = new(StringComparer.Ordinal);
     private IReadOnlyList<MultiviewTile> _tiles = [];
     private string _cameraCap = ZoomCameraResolutionPreference.Default;
+    private int _cameraFpsCap = ZoomCameraFrameRatePreference.Default;
 
     public ObservableCollection<MultiviewInputRow> Rows { get; } = new(
         Enumerable.Range(1, ShowInputRosterService.MaxMultiviewBoxes)
@@ -99,7 +100,7 @@ public sealed class MultiviewInputRowsProjection
             row.FormatStale = false;
             row.StatusLabel = participant.Talking == true ? "TALKING" : "LIVE";
             row.FormatLabel = $"{fact.Width}×{fact.Height}@{fact.Fps}";
-            ApplyCameraCap(row, fact.Width, fact.Height);
+            ApplyCameraCap(row, fact.Width, fact.Height, fact.Fps);
             PatchPreview(row);
         }
     }
@@ -110,16 +111,31 @@ public sealed class MultiviewInputRowsProjection
         _cameraCap = ZoomCameraResolutionPreference.Normalize(cap);
         foreach (var row in Rows.Where(item => item.SourceId?.StartsWith("zoom:", StringComparison.Ordinal) == true &&
                                                item.ObservedWidth > 0 && item.ObservedHeight > 0))
-            ApplyCameraCap(row, row.ObservedWidth, row.ObservedHeight);
+            ApplyCameraCap(row, row.ObservedWidth, row.ObservedHeight, row.ObservedFps);
     }
 
-    private void ApplyCameraCap(MultiviewInputRow row, int width, int height)
+    public void SetAppliedCameraFps(int fps)
+    {
+        _cameraFpsCap = ZoomCameraFrameRatePreference.Normalize(fps);
+        foreach (var row in Rows.Where(item => item.SourceId?.StartsWith("zoom:", StringComparison.Ordinal) == true &&
+                                               item.ObservedWidth > 0 && item.ObservedHeight > 0))
+            ApplyCameraCap(row, row.ObservedWidth, row.ObservedHeight, row.ObservedFps);
+    }
+
+    private void ApplyCameraCap(MultiviewInputRow row, int width, int height, int fps)
     {
         row.ObservedWidth = width;
         row.ObservedHeight = height;
+        row.ObservedFps = fps;
         var (capWidth, capHeight) = ZoomCameraResolutionPreference.Dimensions(_cameraCap);
-        row.CapDiffers = width < capWidth || height < capHeight;
-        row.ConfiguredCapLabel = row.CapDiffers ? $"up to {_cameraCap} requested" : "";
+        var resolutionDiffers = width < capWidth || height < capHeight;
+        var localFpsLimit = _cameraFpsCap < 60 && fps > _cameraFpsCap;
+        row.ConfiguredCapLabel = string.Join(" · ", new[]
+        {
+            resolutionDiffers ? $"up to {_cameraCap} requested" : "",
+            localFpsLimit ? $"local max {_cameraFpsCap} fps" : ""
+        }.Where(text => text.Length > 0));
+        row.CapDiffers = resolutionDiffers || localFpsLimit;
     }
 
     public void EngineStopped()
@@ -185,6 +201,7 @@ public sealed class MultiviewInputRowsProjection
         row.LastFrameAtMs = -1;
         row.ObservedWidth = 0;
         row.ObservedHeight = 0;
+        row.ObservedFps = 0;
     }
 
     private void PatchSlot(int slotNumber)
@@ -303,7 +320,7 @@ public sealed class MultiviewInputRowsProjection
         row.FormatStale = video.LastFrameAgeMs > 1500;
         row.StatusLabel = row.FormatStale ? "STALLED" : participant.Talking == true ? "TALKING" : "LIVE";
         row.FormatLabel = $"{video.DeliveredWidth}×{video.DeliveredHeight}@{video.DeliveredFps}";
-        ApplyCameraCap(row, video.DeliveredWidth, video.DeliveredHeight);
+        ApplyCameraCap(row, video.DeliveredWidth, video.DeliveredHeight, video.DeliveredFps);
         PatchPreview(row);
     }
 }
