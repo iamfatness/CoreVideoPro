@@ -158,6 +158,8 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     }
     config_ = config;
     sink_ = std::move(sink);
+    forceKeyframeRequested_.store(false);
+    forceKeyframeSupported_.store(true);
     if (config_.width <= 0 || config_.height <= 0 || config_.fps <= 0 || !sink_) {
       return fail("invalid-config");
     }
@@ -201,6 +203,12 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
       haveHandle_ = true;
     }
     queueCv_.notify_one();
+    return true;
+  }
+
+  bool requestKeyframe() override {
+    if (!running_.load() || !healthy_.load() || !forceKeyframeSupported_.load()) return false;
+    forceKeyframeRequested_.store(true);
     return true;
   }
 
@@ -409,6 +417,29 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     // mode or bound the HRD buffer. Success is verified on emitted bytes in
     // the hardware tests, not by reading these settings back.
     if (!applyRateControl()) return false;
+
+    // A driver default GOP can run far beyond the operator's two-second
+    // interval. SRT joins, HLS segments and the sender's queue cut all need a
+    // bounded clean point. Configure the hardware MFT before type negotiation;
+    // a refused value must not masquerade as an applied stream setting.
+    {
+      ComPtr<ICodecAPI> codecApi;
+      if (FAILED(encoder_.As(&codecApi)) || !codecApi) return fail("no-codec-api");
+      VARIANT gop;
+      VariantInit(&gop);
+      gop.vt = VT_UI4;
+      gop.ulVal = configuredGopFrames(config_.fps, config_.keyframeIntervalSeconds);
+      const HRESULT hr = codecApi->SetValue(&CODECAPI_AVEncMPVGOPSize, &gop);
+      if (FAILED(hr)) {
+        ::corevideo::core::nativeLogf(
+            "[gpu-encode] %s MFT refused GOP=%lu hr=0x%08lX\n",
+            config_.codec.c_str(), static_cast<unsigned long>(gop.ulVal),
+            static_cast<unsigned long>(hr));
+        return fail("set-gop-size");
+      }
+      ::corevideo::core::nativeLogf("[gpu-encode] %s GOP=%lu input frames\n",
+          config_.codec.c_str(), static_cast<unsigned long>(gop.ulVal));
+    }
 
     // Output type FIRST (encoders require it), then input.
     ComPtr<IMFMediaType> outType;
@@ -654,6 +685,20 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
     const LONGLONG hns = static_cast<LONGLONG>(frameNumber) * 10000000LL / (std::max)(1, config_.fps);
     sample->SetSampleTime(hns);
     sample->SetSampleDuration(10000000LL / (std::max)(1, config_.fps));
+    if (forceKeyframeRequested_.exchange(false)) {
+      ComPtr<ICodecAPI> codecApi;
+      VARIANT force;
+      VariantInit(&force);
+      force.vt = VT_UI4;
+      force.ulVal = 1;
+      const HRESULT hr = SUCCEEDED(encoder_.As(&codecApi)) && codecApi
+          ? codecApi->SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &force) : E_NOINTERFACE;
+      if (FAILED(hr)) {
+        forceKeyframeSupported_.store(false);
+        ::corevideo::core::nativeLogf("[gpu-encode] %s IDR request refused hr=0x%08lX\n",
+            config_.codec.c_str(), static_cast<unsigned long>(hr));
+      }
+    }
     return SUCCEEDED(encoder_->ProcessInput(0, sample.Get(), 0));
   }
 
@@ -860,6 +905,8 @@ class MediaFoundationGpuVideoEncoderImpl final : public GpuVideoEncoder {
   std::shared_ptr<std::atomic<int64_t>> latestPublishedFrameNumber_;
   std::atomic<bool> running_{false};
   std::atomic<bool> healthy_{false};
+  std::atomic<bool> forceKeyframeRequested_{false};
+  std::atomic<bool> forceKeyframeSupported_{true};
   bool mfStarted_ = false;
   std::string lastFailure_;
   bool capacityLeaseActive_ = false;

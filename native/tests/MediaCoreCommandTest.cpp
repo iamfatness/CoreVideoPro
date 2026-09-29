@@ -5984,12 +5984,10 @@ TEST(RtmpOutputSenderBackpressure, AKeyframeArrivingAtAFullAllReferenceQueueRepl
 #endif
 }
 
-// #597 Task 8b, the other half: a bounded queue is NOT optional. With NO
-// keyframe queued there is nothing safe to drop - dropping an arbitrary chunk
-// corrupts every frame until the next keyframe - so the overflow must still
-// fail the sender. Without this the fix above would read as "never bound the
-// queue", which is unbounded latency: the defect this sub-project removes.
-TEST(RtmpOutputSenderBackpressure, AFullQueueWithNoKeyframeStillFailsTheSender) {
+// #605: an all-reference queue has no safe cut. Clear this destination's
+// backlog and await a fresh keyframe; the encoder must not be rebuilt to
+// recover from one blocked network socket.
+TEST(RtmpOutputSenderBackpressure, AFullQueueWithoutKeyframeWaitsForFreshIdr) {
 #if COREVIDEO_WITH_RTMP_OUTPUT && defined(_WIN32)
   auto sender = corevideo::modules::createRtmpOutputSender();
   ASSERT_NE(sender, nullptr);
@@ -6005,13 +6003,19 @@ TEST(RtmpOutputSenderBackpressure, AFullQueueWithNoKeyframeStillFailsTheSender) 
   sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
 
   const auto after = sender->bitstreamQueueSnapshotForTest();
-  EXPECT_TRUE(after.overflowFailed)
-      << "with no keyframe queued the discard frees nothing, and an unbounded queue is "
-         "unbounded latency - the bound must still bite";
-  EXPECT_EQ(after.depth, kCap) << "nothing may be dropped, and nothing may be accepted";
+  EXPECT_FALSE(after.overflowFailed) << "destination congestion rebuilt the shared encoder";
+  EXPECT_EQ(after.depth, 0u) << "the undecodable GOP must leave the bounded queue";
+  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/false);
+  EXPECT_EQ(sender->bitstreamQueueSnapshotForTest().depth, 0u)
+      << "P-frames before a new IDR would corrupt the receiver";
+  sender->offerBitstreamChunkForTest(1000, /*keyframe=*/true);
+  const auto recovered = sender->bitstreamQueueSnapshotForTest();
+  EXPECT_FALSE(recovered.overflowFailed);
+  EXPECT_EQ(recovered.depth, 1u);
+  EXPECT_TRUE(recovered.hasKeyframe);
 #else
   // The local gtest shim has no GTEST_SKIP; say so loudly rather than pass silently.
-  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AFullQueueWithNoKeyframeStillFailsTheSender"
+  std::fprintf(stderr, "[  SKIPPED ] RtmpOutputSenderBackpressure.AFullQueueWithoutKeyframeWaitsForFreshIdr"
                        " (Needs the Windows RTMP sender's bitstream queue) - this test did NOT run\n");
   return;
 #endif

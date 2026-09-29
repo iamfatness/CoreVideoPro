@@ -77,7 +77,8 @@ int normalizedSystemExitCode(int status) {
 // bitstream as-is - for HEVC that means the MFT honoured B-frames OFF.
 // Self-skips where the hardware encoder or ffmpeg is absent, so CI stays green
 // on machines without either.
-static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMuxToFlv) {
+static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMuxToFlv,
+                         bool requestIdr = false) {
   MAKE_MEDIA_FOUNDATION_GPU_ENCODER_OR_SKIP();
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_TRUE(compositor != nullptr);
@@ -136,7 +137,7 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
   };
 
   corevideo::modules::GpuVideoEncoderConfig encoderConfig{
-      plan.width, plan.height, plan.fps, 6000, 2.0, "cbr", "high"};
+      plan.width, plan.height, plan.fps, 6000, requestIdr ? 10.0 : 2.0, "cbr", "high"};
   encoderConfig.codec = codec;
   if (!encoder->start(encoderConfig, sink)) {
     std::fprintf(stderr, "MISSING_EVIDENCE: encoder start unavailable; GPU encode round-trip did not run\n");
@@ -149,6 +150,7 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
   // discarded until the hardware encoder has no outstanding credits left.
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
   for (int64_t i = 0; i < kFrames; ++i) {
+    if (requestIdr && i == 5) ASSERT_TRUE(encoder->requestKeyframe());
     const auto frame = compositor->render(
         plan, {makeEncoderSourceFrame(start.time_since_epoch().count() + i, kGray)});
     EXPECT_FALSE(frame.encoderSharedTexture.sharedHandleHex.empty())
@@ -167,6 +169,8 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
     encodedCv.wait_for(lock, std::chrono::seconds(8), [&] { return chunksReceived > 0; });
     EXPECT_GE(chunksReceived, 1);
     EXPECT_GE(keyframes, 1) << "no keyframe emitted";
+    if (requestIdr) EXPECT_GE(keyframes, 2)
+        << "an explicit IDR request did not produce a second keyframe inside a 10-second GOP";
     EXPECT_GE(encodedBytes.size(), static_cast<size_t>(64));
   }
   encoder->stop();
@@ -328,6 +332,9 @@ TEST(MediaFoundationGpuVideoEncoder, RejectsUnrepresentableBitrateBeforeHardware
 }
 
 TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureH264RoundTrip) { runRoundTrip("h264", "h264", false); }
+TEST(MediaFoundationGpuVideoEncoder, RequestIdrProducesAnotherDecodableH264Frame) {
+  runRoundTrip("h264", "h264", false, true);
+}
 TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureHevcRoundTripMuxesWithoutBFrames) { runRoundTrip("hevc", "hevc", true); }
 TEST(MediaFoundationGpuVideoEncoder, DirectSharedTextureAv1RoundTrip) { runRoundTrip("av1", "obu", true); }
 

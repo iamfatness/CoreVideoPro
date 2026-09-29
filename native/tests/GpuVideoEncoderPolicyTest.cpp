@@ -99,4 +99,12 @@ TEST(GpuVideoEncoderConfig, CodecDefaultsToH264) {
   corevideo::modules::GpuVideoEncoderConfig cfg;
   EXPECT_EQ(cfg.codec, "h264");
 }
+
+TEST(GpuVideoEncoderConfig, KeyframeSecondsBecomeInputFrameCount) {
+  using corevideo::modules::configuredGopFrames;
+  EXPECT_EQ(configuredGopFrames(30, 2.0), 60u);
+  EXPECT_EQ(configuredGopFrames(60, 2.0), 120u);
+  EXPECT_EQ(configuredGopFrames(60, 0.1), 30u);
+  EXPECT_EQ(configuredGopFrames(60, 99.0), 600u);
+}
 }  // namespace
