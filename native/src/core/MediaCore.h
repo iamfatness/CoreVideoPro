@@ -176,7 +176,6 @@ class MediaCore {
   // throttled by a struggling one. That is a real limitation of this slice,
   // named rather than hidden; Lever B (the GOP-tail queue discard) stays
   // genuinely per destination, and that is where the constraint still binds.
-  void applyEncoderExportDivisor(const modules::OutputSenderSession& senderSession);
   // Wake the video-out tick after a render. MUST be called with coreMutex
   // RELEASED — notifying under it wakes a thread that instantly blocks on it.
   void notifyProgramFramePublished() { videoOutCv_.notify_one(); }
@@ -992,17 +991,6 @@ class MediaCore {
   // Destinations the tick last synced. A change must reach the senders even on a
   // tick with no new frame — that is how they get STOPPED.
   std::vector<std::string> lastVideoOutDestinations_;
-  // #597 Lever A. The encoder-export divisor last pushed to the compositor.
-  // setEncoderExportDivisor is a CONTROL-PLANE call made only when this
-  // changes - never once per frame.
-  //
-  // ATOMIC because it is written from BOTH output paths: the dedicated
-  // video-output thread (renderVideoOutputTick) and the audio worker's
-  // synchronous fallback in runAudioOutputWork. Those are mutually exclusive
-  // only by the runtime flag videoOutputTickRunning_, which JsonRpcServer sets
-  // at run time - a runtime invariant, not a structural one - so a plain int
-  // here is a formal data race across a flip.
-  std::atomic<int> lastEncoderExportDivisor_{1};
   struct ProgramOutputConfiguration {
     std::vector<std::string> destinations;
     std::vector<modules::OutputDestinationSettings> settings;

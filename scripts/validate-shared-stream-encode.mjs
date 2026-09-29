@@ -2,6 +2,7 @@
 // A destination failure must not tear down the shared encoder or the survivor.
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
+import { createServer as createTcpServer, connect } from "node:net";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,7 @@ const ffmpeg = existsSync("C:/ffmpeg/bin/ffmpeg.exe") ? "C:/ffmpeg/bin/ffmpeg.ex
 const ffprobe = existsSync("C:/ffmpeg/bin/ffprobe.exe") ? "C:/ffmpeg/bin/ffprobe.exe" : "ffprobe";
 const port = Number(process.env.COREVIDEO_SHARED_STREAM_PORT || 19091);
 const seconds = Number(process.argv.find((x) => x.startsWith("--seconds="))?.split("=")[1] || 30);
+const blockRtmp = process.argv.includes("--block-rtmp");
 const output = join(build, `shared-stream-${Date.now()}`);
 mkdirSync(output, { recursive: true });
 const hlsReceived = new Map();
@@ -40,8 +42,23 @@ const receiver = (kind, args, file) => {
 };
 const rtmpFile = join(output, "rtmp.flv");
 const srtFile = join(output, "srt.ts");
-const rtmp = receiver("flv", ["-listen", "1", "-i", `rtmp://127.0.0.1:${port}/live/gate`], rtmpFile);
+const rtmp = receiver("flv", ["-listen", "1", "-i",
+  `rtmp://127.0.0.1:${blockRtmp ? port + 3 : port}/live/gate`], rtmpFile);
 const srt = receiver("mpegts", ["-i", `srt://0.0.0.0:${port + 1}?mode=listener&transtype=live&listen_timeout=45000000`], srtFile);
+const proxyClients = new Set();
+let rtmpProxy;
+if (blockRtmp) {
+  rtmpProxy = createTcpServer((client) => {
+    const upstream = connect(port + 3, "127.0.0.1");
+    proxyClients.add(client);
+    client.pipe(upstream);
+    upstream.pipe(client);
+    const close = () => { proxyClients.delete(client); client.destroy(); upstream.destroy(); };
+    client.on("error", close); upstream.on("error", close);
+    client.on("close", close); upstream.on("close", close);
+  });
+  await new Promise((resolve) => rtmpProxy.listen(port, "127.0.0.1", resolve));
+}
 const core = spawn(join(build, "corevideo-native.exe"), [], {
   cwd: build, stdio: ["pipe", "pipe", "pipe"], env: {
     ...process.env,
@@ -82,6 +99,8 @@ const failures = [];
 let firstSrtFrames = 0, lastSrtFrames = 0, firstRtmpFrames = 0;
 let firstHlsFrames = 0, lastHlsFrames = 0;
 let firstSrtBytes = 0, firstHlsBytes = 0, firstSenderStates = {}, lastSenderStates = {};
+let firstRenderSlots = 0, lastRenderSlots = 0, firstAt = 0, lastAt = 0;
+let firstExportDivisor = -1, lastExportDivisor = -1, proxyConnections = 0;
 const bytes = (path) => existsSync(path) ? statSync(path).size : 0;
 const hlsBytes = () => [...hlsReceived.values()].reduce((sum, size) => sum + size, 0);
 const senderState = (snapshot, id) => {
@@ -122,20 +141,36 @@ try {
   firstSenderStates = Object.fromEntries(["rtmp", "srt", "hls"].map((id) => [id, senderState(midpoint, id)]));
   firstSrtBytes = bytes(srtFile);
   firstHlsBytes = hlsBytes();
-  rtmp.p.kill();
+  firstRenderSlots = Number(midpoint?.realtimeEvidence?.render?.completedSlots || 0);
+  firstExportDivisor = Number(midpoint?.realtimeEvidence?.encoderExport?.divisor ?? -1);
+  firstAt = Date.now();
+  if (blockRtmp) {
+    proxyConnections = proxyClients.size;
+    for (const client of proxyClients) client.pause();
+  } else {
+    rtmp.p.kill();
+  }
   await sleep(seconds * 500);
   const end = (await send("media-core-sync", { elapsedMs: Date.now() - start, commands: [] })).snapshot;
+  lastAt = Date.now();
   lastSrtFrames = Number(sender(end, "srt")?.framesSent || 0);
   lastHlsFrames = Number(sender(end, "hls")?.framesSent || 0);
+  lastRenderSlots = Number(end?.realtimeEvidence?.render?.completedSlots || 0);
+  lastExportDivisor = Number(end?.realtimeEvidence?.encoderExport?.divisor ?? -1);
   lastSenderStates = Object.fromEntries(["rtmp", "srt", "hls"].map((id) => [id, senderState(end, id)]));
   await send("media-core-sync", { elapsedMs: Date.now() - start,
     commands: [{ type: "start-program-output", destinations: [], destinationSettings: [],
       isoParticipantIds: [] }] });
 } catch (error) { failures.push(error.message); }
-finally { core.stdin.end(); core.kill(); rtmp.p.kill(); srt.p.kill(); hlsOrigin.close(); }
+finally {
+  core.stdin.end(); core.kill(); rtmp.p.kill(); srt.p.kill(); hlsOrigin.close();
+  for (const client of proxyClients) client.destroy();
+  rtmpProxy?.close();
+}
 await sleep(2000);
 const starts = stderr.match(/\[gpu-encode\] started[^\n]*/g) || [];
 const paths = stderr.match(/\[gpu-encode\] path=[^\n]*/g) || [];
+const pressureLines = stderr.match(/\[stream-backpressure\] (?:enter|overflow-discard)[^\n]*/g) || [];
 const probe = (path) => {
   if (!bytes(path)) return "empty";
   const result = spawnSync(ffprobe, ["-v", "error", "-select_streams", "v:0",
@@ -152,9 +187,17 @@ if (lastSrtFrames - firstSrtFrames < seconds * 15)
 if (lastHlsFrames - firstHlsFrames < seconds * 15)
   failures.push("HLS did not continue at >=30 fps after RTMP was killed");
 if (bytes(srtFile) - firstSrtBytes < 500_000)
-  failures.push("SRT receiver bytes did not advance after RTMP was killed");
+  failures.push("SRT receiver bytes did not advance after RTMP fault");
 if (hlsBytes() - firstHlsBytes < 500_000)
-  failures.push("HLS origin bytes did not advance after RTMP was killed");
+  failures.push("HLS origin bytes did not advance after RTMP fault");
+if (blockRtmp) {
+  if (!proxyConnections) failures.push("RTMP blocker had no live connection; no stall was tested");
+  if (!pressureLines.length) failures.push("RTMP queue never entered pressure; no blocked-socket path was tested");
+  if (firstExportDivisor !== 1 || lastExportDivisor !== 1)
+    failures.push("RTMP pressure changed the global compositor export divisor");
+  if ((lastRenderSlots - firstRenderSlots) / ((lastAt - firstAt) / 1000) < 58)
+    failures.push("Program render cadence fell below 58 fps during RTMP block");
+}
 if (![...hlsReceived.keys()].some((item) => item.endsWith(".m3u8")) ||
     ![...hlsReceived.keys()].some((item) => item.endsWith(".ts")))
   failures.push("HLS origin did not receive playlist and segments");
@@ -163,9 +206,11 @@ if (hlsSegment && !probe(join(output, hlsSegment)).startsWith("h264"))
   failures.push("received HLS segment was not decodable H.264");
 if (!probe(srtFile).startsWith("h264") || !probe(rtmpFile).startsWith("h264"))
   failures.push("received output was not decodable H.264");
-const report = { output, starts: starts.length, paths, firstRtmpFrames,
+const report = { output, blockRtmp, proxyConnections, pressureLines, starts: starts.length,
+  paths, firstRtmpFrames,
   firstSrtFrames, lastSrtFrames, firstHlsFrames, lastHlsFrames,
   firstSenderStates, lastSenderStates, firstSrtBytes, firstHlsBytes,
+  firstRenderSlots, lastRenderSlots, firstAt, lastAt, firstExportDivisor, lastExportDivisor,
   hlsFiles: [...hlsReceived.entries()], rtmpBytes: bytes(rtmpFile), srtBytes: bytes(srtFile),
   rtmpProbe: probe(rtmpFile), srtProbe: probe(srtFile),
   hlsProbe: hlsSegment ? probe(join(output, hlsSegment)) : "missing", failures };

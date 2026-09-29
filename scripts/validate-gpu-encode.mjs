@@ -45,9 +45,10 @@
  * real congested endpoint rather than against unit tests:
  *   - the stream never fails,
  *   - the encoder is NEVER rebuilt (exactly one `[gpu-encode] started`),
- *   - Lever A's divisor steps UP under congestion and comes back DOWN,
- *   - buffered latency returns below kRecoverBelowBufferedMs (100ms) rather
- *     than sitting pinned at the bound,
+ *   - queue pressure is observed while the shared compositor divisor stays 1,
+ *   - only this destination discards stale GOP packets,
+ *   - the destination queue repeatedly discards to a GOP boundary and stays
+ *     within its live latency budget under sustained narrowing,
  *   - Program holds 60fps, measured from the core's OWN render slot counter
  *     against wall time (never a container's declared rate - FFmpeg pads
  *     duplicates up to `-r` and a container fps cannot prove cadence),
@@ -913,7 +914,6 @@ if (senderFps.length) {
 // the policy's constants move, this block must move with them.
 // ---------------------------------------------------------------------------
 const kThrottleAboveBufferedMs = 250;
-const kRecoverBelowBufferedMs = 100;
 const startedCount = gpuEncodeStartedCount();
 console.log(`encoder builds: ${startedCount} ([gpu-encode] started lines, this run's stderr only)`);
 
@@ -1044,7 +1044,7 @@ if (slowSink) {
                   "the encoder was rebuilt under congestion, which is the #597 storm");
   }
 
-  // --- (3) Lever A steps up, and comes back down ---------------------------
+  // --- (3) Pressure is local; the compositor never sheds for a socket -----
   const divisors = bpRows.map((r) => r.bp.divisor);
   const peakDivisor = divisors.length ? Math.max(...divisors) : 1;
   const finalDivisor = divisors.length ? divisors[divisors.length - 1] : 1;
@@ -1052,42 +1052,32 @@ if (slowSink) {
   const shed = samples.length ? samples[samples.length - 1].shedFrames : 0;
   const enters = backpressureLines().filter((l) => l.includes(" enter ")).length;
   const exits = backpressureLines().filter((l) => l.includes(" exit ")).length;
-  console.log(`lever A       : divisor peak ${peakDivisor} (compositor applied peak ${peakExportDivisor}), ` +
+  console.log(`queue pressure: recommendation peak ${peakDivisor} (compositor applied peak ${peakExportDivisor}), ` +
               `final ${finalDivisor}, frames shed ${shed}, ${enters} enter / ${exits} exit cycle(s)`);
   if (peakDivisor < 2) {
-    failures.push("Lever A never engaged: the divisor stayed at 1 for the whole congested run");
+    failures.push("queue pressure ladder never engaged despite the slow sink");
   }
-  if (peakExportDivisor < 2) {
-    failures.push("the compositor never applied a divisor above 1 - the sender's decision did not reach " +
-                  "realtimeEvidence.encoderExport, so nothing was actually shed");
+  if (peakExportDivisor !== 1 || shed !== 0) {
+    failures.push(`destination congestion changed the shared compositor export ` +
+                  `(divisor peak ${peakExportDivisor}, shed ${shed})`);
   }
-  // RECOVERY IS "IT CAME BACK DOWN", NOT "IT ENDED DOWN". The first cut of this
-  // assertion compared the FINAL divisor to the peak, and it failed a run that
-  // had recovered to 1 twice and merely happened to be mid-degrade when the
-  // window closed. Congestion here is a CYCLE - degrade, drain, recover,
-  // re-enter - so where the run's last poll lands in that cycle is an accident
-  // of the clock, not a property of the lever. What the lever must show is that
-  // a step DOWN follows a step UP at all; the "did it get back to real time"
-  // half is assertion (4) below, on bufferedMs, which is the number an operator
-  // actually feels.
-  const steppedDown = divisors.some((d, i) => i > 0 && d < divisors[i - 1]);
-  if (peakDivisor >= 2 && !steppedDown) {
-    failures.push(`the divisor reached ${peakDivisor} and never stepped back down at any point in the run - ` +
-                  "recovery is half the property; a stream that only degrades is not a working lever");
-  }
+  // The historical recommendation may remain high while a link stays narrow.
+  // Recovery is judged below by actual queue age, not that advisory value.
 
-  // --- (4) Buffered latency RETURNS, rather than sitting at the bound -------
-  // The failure this catches is the one named in StreamBackpressurePolicy.h's
-  // own header: a stream that stabilises a full second behind and STAYS there,
-  // looking healthy the whole time.
+  // --- (4) Destination queue remains bounded under a permanently narrow link
+  // The shared encoder cannot lower its rate for one socket. That destination
+  // must repeatedly cut its own GOP backlog while Program stays at full rate.
   const tailRows = bpRows.slice(-Math.max(3, Math.ceil(bpRows.length * 0.1)));
   const tailBuffered = tailRows.length ? Math.min(...tailRows.map((r) => r.bp.bufferedMs)) : -1;
-  console.log(`recovery      : best bufferedMs over the last ${tailRows.length} polls = ${Math.round(tailBuffered)}ms ` +
-              `(must fall below ${kRecoverBelowBufferedMs}ms)`);
-  if (tailBuffered < 0 || tailBuffered >= kRecoverBelowBufferedMs) {
-    failures.push(`buffered latency never returned below kRecoverBelowBufferedMs (${kRecoverBelowBufferedMs}ms) - ` +
-                  `best over the run's tail was ${Math.round(tailBuffered)}ms, i.e. the stream stabilised behind ` +
-                  "live and stayed there");
+  const discardEvents = bpRows.length ? Math.max(...bpRows.map((r) => r.bp.discardEvents ?? 0)) : 0;
+  console.log(`queue bound   : peak ${Math.round(maxBuffered)}ms, best tail ${Math.round(tailBuffered)}ms, ` +
+              `${discardEvents} policy discard event(s)`);
+  if (discardEvents === 0) {
+    failures.push("the permanently narrow destination never discarded a GOP backlog");
+  }
+  if (maxBuffered >= 1500 || tailBuffered < 0 || tailBuffered >= 750) {
+    failures.push(`destination queue did not stay within the live budget: peak ${Math.round(maxBuffered)}ms, ` +
+                  `best tail ${Math.round(tailBuffered)}ms (limits 1500ms peak and 750ms tail)`);
   }
 
   // --- (5) Program holds 60fps, measured from the core's OWN counter --------

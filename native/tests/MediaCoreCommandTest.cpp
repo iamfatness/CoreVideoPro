@@ -1026,11 +1026,8 @@ class FullBackpressureFieldsSender : public corevideo::modules::IOutputSender {
     sender.backpressure = bp;
     out.senders.push_back(sender);
 
-    // FINAL-REVIEW FINDING 3: A HEALTHY SIBLING. Lever A is per-ENCODER - one
-    // encoder texture feeds every GPU-direct destination - so this destination
-    // asks for divisor 1 and is nonetheless FED at the max across senders (3).
-    // Its node used to report a textbook-healthy `divisor: 1` and nothing else,
-    // which is what an operator readout binds to.
+    // A healthy sibling must see actual compositor cadence even when another
+    // destination reports pressure. One shared encoder texture feeds both.
     corevideo::modules::OutputSender sibling;
     sibling.senderId = sibling.destination = "rtmp-sibling";
     sibling.status = "live";
@@ -1086,33 +1083,18 @@ TEST(MediaCoreCommand, OutputSenderSessionPublishesEveryBackpressureField) {
   EXPECT_EQ(bp->getNumber("runId"), 4);
   EXPECT_EQ(bp->getNumber("observedAtMs"), 12345.0);
 
-  // FINAL-REVIEW FINDING 3, THE HEALTHY SIBLING - the node lied for it.
-  //
-  // Lever A is per-ENCODER: one encoder texture feeds every GPU-direct sender,
-  // so MediaCore applies the MAX divisor across the active ones. With two
-  // GPU-direct destinations the healthy one's node reported `divisor: 1` while
-  // it was actually being fed at the maximum - a textbook-healthy reading for a
-  // source running at a quarter rate. The lever's per-encoder limitation was
-  // named in three comments; the NODE's was not, and the node is what an
-  // operator readout binds to.
-  //
-  // `appliedDivisor` is the rate the compositor is actually exporting at,
-  // written by MediaCore where that fact exists. Sourcing it from `bp.divisor`
-  // instead - the obvious wrong fix - passes for the throttled sender above and
-  // fails here, which is the whole point of asserting it on the SIBLING.
+  // Each node distinguishes its own legacy pressure recommendation from the
+  // compositor's actual full-rate export. Sourcing appliedDivisor from the
+  // pressured sender's request makes this test go red.
   ASSERT_GT(senders->asArray().size(), 1u)
       << "this test needs the healthy sibling to say anything about finding 3";
   const auto* siblingBp = senders->asArray()[1].get("backpressure");
   ASSERT_NE(siblingBp, nullptr);
-  EXPECT_EQ(siblingBp->getNumber("divisor"), 1)
-      << "the sibling's own REQUEST is unthrottled - that part was always true";
-  EXPECT_EQ(siblingBp->getNumber("appliedDivisor"), 3)
-      << "the sibling is fed at the MAX across senders; its node must say so instead of "
-         "publishing a healthy-looking rate it is not running at";
-  // And the throttled sender's own node carries it too, so a reader never has
-  // to know which destination is the worst one to learn the applied rate.
+  EXPECT_EQ(siblingBp->getNumber("divisor"), 1);
+  EXPECT_EQ(siblingBp->getNumber("appliedDivisor"), 1)
+      << "a pressured sibling must not reduce the healthy destination's input rate";
   ASSERT_NE(bp->get("appliedDivisor"), nullptr);
-  EXPECT_EQ(bp->getNumber("appliedDivisor"), 3);
+  EXPECT_EQ(bp->getNumber("appliedDivisor"), 1);
 }
 
 TEST(MediaCoreCommand, AudioMonitorRendersRoutedMonBusWhenPresent) {
@@ -5454,9 +5436,9 @@ TEST(RtmpOutputSenderBackpressure, EncoderExportShedFramesCountsExactlyWhatItSki
 #endif
 }
 
-// #597: a backed-up sender must PUBLISH a divisor, and MediaCore must carry the
-// max across senders to the compositor. Deleting either half fails this.
-TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
+// A sender may report pressure, but must not reduce the shared encoder's input
+// cadence. Restoring the old max-divisor plumbing makes this test go red.
+TEST(RtmpOutputSenderBackpressure, DestinationPressureNeverThrottlesSharedCompositor) {
   // --- Half one: the SENDER observes its own bitstream queue and publishes. ---
 #if COREVIDEO_WITH_RTMP_OUTPUT
   if (senderAdmissionFfmpegPresent("TheSendersDivisorReachesTheCompositor")) {
@@ -5467,11 +5449,7 @@ TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
     // launched, so this drives the real sync() path with no child process.
     const auto settings = rtmpAdmissionSettings("h265", false);
 
-    // ABSENT IS NOT HEALTHY. With no injection and no GPU-direct path (this
-    // H.265 start is refused, so the sender stays on the raw CPU path) the
-    // sender has no bitstream queue to observe and must publish NOTHING -
-    // which is what makes applyEncoderExportDivisor's "skip senders with no
-    // backpressure" rule meaningful rather than decorative.
+    // A refused GPU path has no bitstream queue and publishes no pressure.
     for (int i = 0; i < 3; ++i) {
       (void)sender->sync({"rtmp"}, &frame, 33.0 * i, {settings});
     }
@@ -5540,8 +5518,8 @@ TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
   }
 #endif
 
-  // --- Half two: MediaCore carries the MAX across senders to the compositor,
-  // once on the transition and never per tick. ---
+  // --- Half two: the compositor never receives a destination's requested
+  // divisor, even when one or every destination is congested. ---
   auto modules = corevideo::modules::createStubModules();
   auto compositor = std::make_unique<DivisorRecordingCompositor>(std::move(modules.compositor));
   auto* compositorPtr = compositor.get();
@@ -5560,49 +5538,29 @@ TEST(RtmpOutputSenderBackpressure, TheSendersDivisorReachesTheCompositor) {
   sendersPtr->rtmpDivisor = 3;
   sendersPtr->srtDivisor = 1;
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
-  ASSERT_EQ(compositorPtr->divisors.size(), 1u)
-      << "the struggling destination's divisor never reached the compositor";
-  EXPECT_EQ(compositorPtr->divisors.back(), 3) << "MediaCore must carry the MAX across senders";
+  EXPECT_TRUE(compositorPtr->divisors.empty())
+      << "a struggling destination reduced every output's Program input cadence";
 
-  // Steady state at the same divisor is a control-plane no-op, never per tick.
+  // Repeated observations do not turn the local queue fault into a global one.
   for (int i = 0; i < 5; ++i) {
     (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
   }
-  EXPECT_EQ(compositorPtr->divisors.size(), 1u)
-      << "setEncoderExportDivisor must be called only when the value CHANGES";
+  EXPECT_TRUE(compositorPtr->divisors.empty());
 
-  // The max is taken across ALL senders, not the first one: move the backlog
-  // onto the SECOND destination and the compositor must follow it there.
+  // Pressure on the second destination is equally isolated.
   sendersPtr->rtmpDivisor = 1;
   sendersPtr->srtDivisor = 4;
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
-  ASSERT_EQ(compositorPtr->divisors.size(), 2u);
-  EXPECT_EQ(compositorPtr->divisors.back(), 4)
-      << "the MAX must be taken across every sender, not just the first";
+  EXPECT_TRUE(compositorPtr->divisors.empty());
 
-  // Recovery travels the same way.
+  // Recovery is local too.
   sendersPtr->srtDivisor = 1;
   (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{startOutputs});
-  ASSERT_EQ(compositorPtr->divisors.size(), 3u);
-  EXPECT_EQ(compositorPtr->divisors.back(), 1);
+  EXPECT_TRUE(compositorPtr->divisors.empty());
 }
 
-// #597 fix round 2, item 4: THE FALSE-DEGRADED HALF, and the one the reviewers
-// kept having to re-judge. Task 4 left the stop path alone because nothing read
-// the divisor, so a latched value was inert. Task 6 published it, and the same
-// residual became a node that reads "throttled" with nothing streaming at all -
-// worse than no node, because `encoderExport.exporting` is fullProgramReadback
-// (vcam OR output OR recording), so it is TRUE between shows whenever the
-// virtual camera is on. Together they make an idle machine look degraded.
-//
-// The fix cannot come from asking the sender: `AsyncOutputSender::sync()`
-// returns a CACHED pre-stop snapshot, so on the tick the last destination goes
-// away the sender still reports the divisor it had while live. MediaCore's own
-// `senderDestinations` list is the authoritative, synchronous answer. The fake
-// sender below models the cache exactly - it keeps reporting divisor 4 forever,
-// destinations or not - so this test fails if anyone ever "simplifies"
-// renderVideoOutputTick back to trusting the sender's snapshot.
-TEST(RtmpOutputSenderBackpressure, TheDivisorReturnsToOneWhenNothingIsStreaming) {
+// A stale sender snapshot after Stop cannot reintroduce a global divisor.
+TEST(RtmpOutputSenderBackpressure, CachedPressureNeverChangesExportAfterStop) {
   auto modules = corevideo::modules::createStubModules();
   auto compositor = std::make_unique<DivisorRecordingCompositor>(std::move(modules.compositor));
   auto* compositorPtr = compositor.get();
@@ -5614,30 +5572,22 @@ TEST(RtmpOutputSenderBackpressure, TheDivisorReturnsToOneWhenNothingIsStreaming)
   corevideo::core::MediaCore mediaCore(std::move(modules));
   std::mutex coreMutex;
 
-  // A struggling destination, live: the compositor is throttled to 1-in-4.
+  // A struggling destination, live: the compositor still exports every frame.
   sendersPtr->rtmpDivisor = 4;
   (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "start-program-output"},
       {"destinations", corevideo::rpc::Json::Array{"rtmp"}},
   });
   mediaCore.renderVideoOutputTick(coreMutex);
-  ASSERT_FALSE(compositorPtr->divisors.empty())
-      << "the live divisor never reached the compositor, so this test proves nothing";
-  EXPECT_EQ(compositorPtr->divisors.back(), 4);
+  EXPECT_TRUE(compositorPtr->divisors.empty());
 
-  // The operator stops the stream. The sender STILL reports divisor 4 - that is
-  // the cached snapshot, not a bug in the fake - but nothing is streaming, so
-  // the compositor must be released back to every frame.
+  // The operator stops the stream. The sender still reports cached pressure.
   (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
       {"type", "start-program-output"},
       {"destinations", corevideo::rpc::Json::Array{}},
   });
   mediaCore.renderVideoOutputTick(coreMutex);
-  ASSERT_GE(compositorPtr->divisors.size(), 2u)
-      << "nothing was pushed to the compositor when the last destination went away";
-  EXPECT_EQ(compositorPtr->divisors.back(), 1)
-      << "with no destination streaming, the published divisor must be 1 - a "
-         "latched 2-4 reads as a live throttle on an idle machine";
+  EXPECT_TRUE(compositorPtr->divisors.empty());
 }
 
 // #597 fix round 2, finding 1: the real red/green, no seam, no injection, no

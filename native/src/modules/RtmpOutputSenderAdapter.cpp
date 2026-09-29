@@ -2166,10 +2166,9 @@ class RtmpOutputSender final : public IOutputSender {
   // after ANY fault and reopen the destination republished, say, divisor 4
   // against an EMPTY queue, and `kRecoverAfterHealthyTicks = 600` meant about
   // ten seconds per step and roughly thirty seconds of healthy streaming
-  // before 60 fps returned - while the compositor visibly snapped 4 -> 1 (the
-  // node goes absent, so applyEncoderExportDivisor correctly pops to 1) -> 4
-  // across the outage, with `lastReason` still reading
-  // `buffered-above-threshold` from before the fault. Task 7 owned the restart
+  // before the old global export divisor returned to 1. That global linkage
+  // is now removed, but the stale pressure state is still wrong telemetry.
+  // Task 7 owned the restart
   // and Tasks 4/6 owned the policy lifetime, which is exactly the seam it fell
   // through.
   //
@@ -2190,12 +2189,10 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.backpressure.reset();
   }
 
-  // #597 Lever A. Observe this destination's own outgoing queue once per sync
-  // and publish the input divisor the policy asks for. MediaCore reads
-  // OutputSender::backpressure and drives ICompositor::setEncoderExportDivisor
-  // with the MAX across active GPU-direct senders - one encoder texture feeds
-  // them all, so the divisor cannot be per destination here (Lever B, the
-  // GOP-tail discard, is).
+  // Observe this destination's own outgoing queue once per sync. The policy's
+  // historical divisor remains diagnostic; MediaCore no longer applies it to
+  // the shared encoder texture. GOP-tail discard and IDR recovery happen in
+  // this destination's queue without reducing healthy siblings' frame rate.
   //
   // A NEGATIVE bufferedMs is "no evidence" and the policy ignores the tick
   // entirely: the bitstream queue only exists on the GPU-direct path, and the
