@@ -43,3 +43,13 @@ meeting, record a matching Program file while streaming, and obtain the
 same-run YouTube playback. Decode the *same cue ids* in each artifact. Local
 RTMP reception and a prior YouTube replay cannot establish the YouTube leg.
 Do not apply a global delay from a single destination's offset.
+
+Analyze captured files with:
+
+```powershell
+node scripts/qa/measure-av-pattern.mjs --source artifacts/issue-703-pattern/flash-beep.mp4 --recording PATH_TO_PROGRAM_MP4 --rtmp PATH_TO_RECEIVED_FLV --youtube PATH_TO_SAME_RUN_YOUTUBE_CAPTURE --require-all --output artifacts/issue-703-pattern/end-to-end.json
+```
+
+`--require-all` exits unsuccessfully when a leg or identifiable cue is absent.
+All legs report the sign, spread, frames at 60 fps, and offset corrected for
+the source file's own tiny skew.

@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { detectFlashPulses, detectBeepPulses, alignIdentifiedPulses, validateAudioTimeline, summarizePacketTiming } from './av-content-analysis.mjs';
 const exec = promisify(execFile);
 
-export async function decodeRecordedAvFile(path, { ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', runTool } = {}) {
+export async function decodeRecordedAvFile(path, { ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', runTool, allowAnyVideoSize = false } = {}) {
   const tool = runTool ?? ((command, args, extra = {}) => exec(command, args, { windowsHide: true, timeout: 60000, maxBuffer: 16 * 1024 * 1024, ...extra }));
   const result = { artifact: path, errors: [], coverageErrors: [], decodeCompleted: false, analysisValid: false, framePerformancePassed: false };
   const error = (stage, failure) => result.errors.push({ stage, message: failure.message.slice(0, 4000) });
@@ -20,7 +20,8 @@ export async function decodeRecordedAvFile(path, { ffmpeg = 'ffmpeg', ffprobe = 
     const count = value => value !== undefined && Number.isSafeInteger(Number(value)) && Number(value) >= 0 ? Number(value) : null;
     result.videoPacketCount = count(video?.nb_read_packets); result.audioPacketCount = count(audio?.nb_read_packets);
     result.probedDecodedVideoFrames = count(video?.nb_read_frames); result.probedDecodedAudioFrames = count(audio?.nb_read_frames);
-    if (!video || !audio || video.width !== 1920 || video.height !== 1080) throw new Error('Expected 1080p video and audio streams.');
+    if (!video || !audio || (!allowAnyVideoSize && (video.width !== 1920 || video.height !== 1080)))
+      throw new Error('Expected video and audio streams' + (allowAnyVideoSize ? '.' : ' at 1080p.'));
   } catch (failure) { error('stream-probe', failure); }
   try {
     const { stdout } = await tool(ffprobe, ['-v', 'error', '-show_packets', '-show_entries', 'packet=stream_index,pts_time,dts_time,duration_time,flags,size', '-of', 'json', path]);
