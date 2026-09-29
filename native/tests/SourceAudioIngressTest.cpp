@@ -37,9 +37,9 @@ class ClockSensitiveMediaDecoder final : public modules::IMediaDecoder {
   std::vector<modules::VideoFrame> pollMediaFrames(const modules::MediaDecodeRequest&, int64_t) override { return {}; }
   std::vector<modules::AudioFrame> pollMediaAudioFrames(const modules::MediaDecodeRequest& request,
                                                        int64_t timestampMs) override {
-    // The decoder worker must receive steady-clock demand time, not a render
-    // frame count. A relative 20/40/60 ms demand is deliberately refused.
-    if (timestampMs < 1'000'000) return {};
+    // Use a sentinel render timestamp in the test so this remains independent
+    // of the CI machine's uptime. Decoder demand must use monotonic time.
+    if (timestampMs < 0) return {};
     auto frame = pcm(request.sourceId, timestampMs, .5f);
     frame.sampleCount = 960; frame.pcm.assign(1920, .5f);
     return {std::move(frame)};
@@ -154,7 +154,7 @@ TEST(SourceAudioIngress, ShellCaptureWrapperForwardsTransportMembershipAndPcm) {
   EXPECT_TRUE(bus.contains("capture:srt-1"));
 }
 
-TEST(SourceAudioIngress, MediaDemandUsesSteadyClockWhileCaptureKeepsRenderTimestamp) {
+TEST(SourceAudioIngress, MediaDemandUsesSteadyClockInsteadOfRenderTimestamp) {
   core::SourceBus bus;
   bus.add(std::make_shared<core::MediaAssetSource>("media:clock", "media", 640, 360));
   core::MediaTransports media([] { return std::make_unique<ClockSensitiveMediaDecoder>(); });
@@ -168,7 +168,7 @@ TEST(SourceAudioIngress, MediaDemandUsesSteadyClockWhileCaptureKeepsRenderTimest
     const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     const auto frames = core::ingestSourceAudio(bus, {}, nullptr, nullptr, &media, {},
-                                                20, nowNs / 100, nowNs);
+                                                -1000, nowNs / 100, nowNs);
     for (const auto& frame : frames) {
       if (frame.participantId == "media:clock" && !frame.pcm.empty() && frame.pcm[0] == .5f)
         delivered = true;
