@@ -87,6 +87,7 @@ add_library(corevideo_native
   src/modules/D3D11CompositorAdapter.cpp
   src/modules/EncoderCapacityProbe.cpp
   src/modules/MediaFoundationGpuVideoEncoder.cpp
+  src/modules/SharedGpuVideoEncoder.cpp
   src/modules/HardwareCaptureDeviceAdapters.cpp
   src/modules/MediaFoundationEncoderAdapter.cpp
   src/modules/MediaFoundationMediaFrameSourceAdapter.cpp
@@ -636,6 +637,7 @@ if(BUILD_TESTING)
     tests/FfmpegChildRetirementTest.cpp
     tests/AudioDspTest.cpp
     tests/GpuVideoEncoderPolicyTest.cpp
+    tests/SharedGpuVideoEncoderTest.cpp
     tests/EncoderCapacityProbePolicyTest.cpp
     tests/StreamStartAdmissionTest.cpp
     tests/BrowserHostExitMessageTest.cpp
