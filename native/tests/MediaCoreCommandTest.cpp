@@ -294,7 +294,11 @@ class SolidMediaFrameSource final : public corevideo::modules::IMediaDecoder {
       frame.sampleRate = 48000;
       frame.channels = 2;
       frame.timestampMs = timestampMs;
-      frame.sampleCount = 480;
+      // One fake poll must cover the audio window while a sanitizer stretches
+      // the next media/video tick. A 10 ms packet left both clips audible on
+      // different ticks, so the two-source sum test could never observe them
+      // together even though each source reached the mixer.
+      frame.sampleCount = 1920;
       frame.voiceActive = true;
       frame.pcm.resize(static_cast<size_t>(frame.sampleCount) * static_cast<size_t>(frame.channels));
       const int64_t baseSample = audioPollCount * frame.sampleCount;
