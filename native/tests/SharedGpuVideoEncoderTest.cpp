@@ -10,6 +10,7 @@ struct Counts {
   int starts = 0;
   int stops = 0;
   int submits = 0;
+  int keyframeRequests = 0;
 };
 
 class FakeEncoder final : public GpuVideoEncoder {
@@ -31,6 +32,11 @@ class FakeEncoder final : public GpuVideoEncoder {
     chunk.keyframe = true;
     chunk.frameNumber = frame.frameNumber;
     sink_(chunk);
+    return true;
+  }
+  bool requestKeyframe() override {
+    if (!running_) return false;
+    ++counts_.keyframeRequests;
     return true;
   }
   void stop() override {
@@ -66,15 +72,20 @@ TEST(SharedGpuVideoEncoder, TwoMatchingDestinationsShareOneEncodeAndStopIndepend
   EXPECT_EQ(counts.submits, 1) << "a late destination re-encoded an older Program frame";
   EXPECT_EQ(rtmpFrames, 1);
   EXPECT_EQ(srtFrames, 1);
+  ASSERT_TRUE(srt->requestKeyframe());
+  EXPECT_EQ(counts.keyframeRequests, 1) << "the destination's resync request never reached the shared encoder";
 
   rtmp->stop();
   EXPECT_EQ(counts.stops, 0) << "stopping RTMP tore down SRT's encoder";
+  ASSERT_TRUE(srt->requestKeyframe());
+  EXPECT_EQ(counts.keyframeRequests, 2);
   frame.frameNumber = 11;
   ASSERT_TRUE(srt->submit(frame));
   EXPECT_EQ(rtmpFrames, 1);
   EXPECT_EQ(srtFrames, 2);
   srt->stop();
   EXPECT_EQ(counts.stops, 1);
+  EXPECT_FALSE(srt->requestKeyframe());
 }
 
 TEST(SharedGpuVideoEncoder, IncompatibleProfilesUseSeparateEncoders) {
@@ -91,4 +102,21 @@ TEST(SharedGpuVideoEncoder, IncompatibleProfilesUseSeparateEncoders) {
   rtmp->stop();
   srt->stop();
   EXPECT_EQ(counts.stops, 2);
+}
+
+TEST(SharedGpuVideoEncoder, ASubscriberCanRequestIdrFromAnEncoderCallback) {
+  Counts counts;
+  SharedGpuVideoEncoderPool pool([&] { return std::make_unique<FakeEncoder>(counts); });
+  auto client = pool.createClient();
+  bool requested = false;
+  GpuVideoEncoderConfig profile;
+  ASSERT_TRUE(client->start(profile, [&](const GpuEncodedChunk&) {
+    requested = client->requestKeyframe();
+  }));
+  GpuVideoEncoderFrame frame;
+  frame.frameNumber = 1;
+  ASSERT_TRUE(client->submit(frame));
+  EXPECT_TRUE(requested);
+  EXPECT_EQ(counts.keyframeRequests, 1);
+  client->stop();
 }
