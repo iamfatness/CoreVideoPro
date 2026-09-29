@@ -193,6 +193,8 @@ if (hlsBytes() - firstHlsBytes < 500_000)
 if (blockRtmp) {
   if (!proxyConnections) failures.push("RTMP blocker had no live connection; no stall was tested");
   if (!pressureLines.length) failures.push("RTMP queue never entered pressure; no blocked-socket path was tested");
+  if (!pressureLines.some((line) => line.includes("overflow-discard resync") && line.includes("idrRequested=1")))
+    failures.push("blocked RTMP never requested a fresh IDR through the shared encoder");
   if (firstExportDivisor !== 1 || lastExportDivisor !== 1)
     failures.push("RTMP pressure changed the global compositor export divisor");
   if ((lastRenderSlots - firstRenderSlots) / ((lastAt - firstAt) / 1000) < 58)
