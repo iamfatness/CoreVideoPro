@@ -2947,7 +2947,13 @@ class RtmpOutputSender final : public IOutputSender {
                        ",\"destination\":" + jsonString(protocol_.destination) +
                        ",\"endpointMode\":\"ffmpeg-process\",\"status\":" + jsonString(status);
     if (frame) {
+      const auto publishedFrameNumber = frame->encoderSharedTexture.publishedFrameNumber
+          ? frame->encoderSharedTexture.publishedFrameNumber->load(std::memory_order_acquire)
+          : -1;
       line += ",\"frameNumber\":" + std::to_string(frame->frameNumber) +
+              ",\"encoderSubmittedFrameNumber\":" +
+                  std::to_string(frame->encoderSharedTexture.frameNumber) +
+              ",\"encoderPublishedFrameNumber\":" + std::to_string(publishedFrameNumber) +
               ",\"width\":" + std::to_string(videoWidth(*frame)) +
               ",\"height\":" + std::to_string(videoHeight(*frame)) +
               ",\"videoInputPixelFormat\":" + jsonString(videoPixelFormat(*frame)) +

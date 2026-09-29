@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.21)
+project(corevideo_gpu_contention LANGUAGES CXX)
+add_executable(corevideo-gpu-contention main.cpp)
+target_compile_features(corevideo-gpu-contention PRIVATE cxx_std_17)
+target_link_libraries(corevideo-gpu-contention PRIVATE d3d11 d3dcompiler)
