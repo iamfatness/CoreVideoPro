@@ -145,7 +145,7 @@ async function record(frames, fixture) {
     child.stdin.end(); if (!closed) await Promise.race([close, sleep(3000)]);
     if (!closed) { run.errors.push('Owned child required forced shutdown.'); child.kill(); await Promise.race([close, sleep(1000)]); }
     if (!closed || run.exitCode !== 0) run.errors.push('Owned child did not exit cleanly.');
-    await writeFile(join(runDirectory, 'stderr-tail.log'), rtmpKey?.length >= 12 ? stderr.replaceAll(rtmpKey, '[redacted]') : stderr);
+    await writeFile(join(runDirectory, 'stderr-tail.log'), rtmpKey ? stderr.replaceAll(rtmpKey, '[redacted]') : stderr);
   }
   return run;
 }
@@ -181,7 +181,7 @@ finally {
   report.rtmpSenderAccepted = !rtmpServer || report.runs.every(run => run.rtmpSenderEvidence?.passed === true);
   report.validationPassed = report.measurementCompleted && report.avAlignmentWithinOneVideoFrame && report.recordingArtifactAccepted && report.rtmpSenderAccepted;
   const reportJson = JSON.stringify(report, null, 2);
-  await writeFile(join(directory, 'report.json'), (rtmpKey?.length >= 12 ? reportJson.replaceAll(rtmpKey, '[redacted]') : reportJson) + '\n');
+  await writeFile(join(directory, 'report.json'), (rtmpKey ? reportJson.replaceAll(rtmpKey, '[redacted]') : reportJson) + '\n');
   console.log(JSON.stringify({ report: join(directory, 'report.json'), measurementCompleted: report.measurementCompleted,
     avAlignmentWithinOneVideoFrame: report.avAlignmentWithinOneVideoFrame, recordingArtifactAccepted: report.recordingArtifactAccepted,
     rtmpSenderAccepted: report.rtmpSenderAccepted,
