@@ -112,6 +112,7 @@ struct LegResult {
   double measuredSeconds = 0.0;
   bool ran = false;
   bool unavailable = false;
+  std::vector<int64_t> keyframePts100ns;
 };
 
 int probeBitrateKbps() {
@@ -166,8 +167,10 @@ LegResult runLeg(const char* label, bool halfInputRate, int bitrateKbps = -1,
   std::atomic<bool> counting{false};
   int64_t countedBytes = 0;
   int64_t countedChunks = 0;
+  std::vector<int64_t> keyframePts;
   auto sink = [&](const corevideo::modules::GpuEncodedChunk& chunk) {
     std::lock_guard<std::mutex> lock(sinkMutex);
+    if (chunk.keyframe && chunk.timingValid) keyframePts.push_back(chunk.pts100ns);
     if (!counting.load(std::memory_order_relaxed)) return;
     countedBytes += static_cast<int64_t>(chunk.size);
     ++countedChunks;
@@ -243,6 +246,7 @@ LegResult runLeg(const char* label, bool halfInputRate, int bitrateKbps = -1,
     std::lock_guard<std::mutex> lock(sinkMutex);
     result.bytes = countedBytes;
     result.chunks = countedChunks;
+    result.keyframePts100ns = keyframePts;
   }
   result.measuredSeconds =
       std::chrono::duration<double>(countingEnd - countingStart).count();
@@ -326,6 +330,21 @@ static void verifyConfiguredBitrate(const char* codec) {
 }
 
 TEST(StreamBackpressureRateProbe, ConfiguredBitrateIsHonoured) { verifyConfiguredBitrate("h264"); }
+TEST(StreamBackpressureRateProbe, HardwareH264IdrCadenceStaysWithinTwoSeconds) {
+  const auto leg = runLeg("h264 2s GOP", false, 6000, 1000, 5500, true);
+  if (leg.unavailable) {
+    std::fprintf(stderr, "MISSING_EVIDENCE: H.264 hardware GOP cadence did not run\n");
+    return;
+  }
+  ASSERT_TRUE(leg.ran);
+  ASSERT_GE(leg.keyframePts100ns.size(), 3u)
+      << "hardware emitted too few IDRs for a two-second GOP";
+  for (size_t i = 1; i < leg.keyframePts100ns.size(); ++i) {
+    const auto gap = leg.keyframePts100ns[i] - leg.keyframePts100ns[i - 1];
+    EXPECT_GT(gap, 0);
+    EXPECT_LE(gap, 22'500'000LL) << "hardware GOP exceeded 2.25 s at 60 fps";
+  }
+}
 TEST(StreamBackpressureRateProbe, HevcConfiguredBitrateIsHonoured) { verifyConfiguredBitrate("hevc"); }
 
 TEST(StreamBackpressureRateProbe, VbrRespectsItsConfiguredPeakWithoutSheddingFrames) {

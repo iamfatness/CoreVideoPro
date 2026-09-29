@@ -2084,6 +2084,7 @@ class RtmpOutputSender final : public IOutputSender {
     std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
     bitstreamQueue_.clear();
     bitstreamQueuedBytes_ = 0;
+    awaitingFreshKeyframe_ = false;
     republishQueueTelemetryLocked();
     writeTraceNext_ = 0;
     lastWriteTraceLog_ = {};
@@ -2357,6 +2358,13 @@ class RtmpOutputSender final : public IOutputSender {
     if (!chunk.data || !chunk.size || bitstreamWriterStop_.load() || bitstreamFailure_.failed()) return;
     {
       std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+      if (awaitingFreshKeyframe_) {
+        if (!chunk.keyframe) {
+          overflowDiscardedChunks_.fetch_add(1, std::memory_order_relaxed);
+          return;
+        }
+        awaitingFreshKeyframe_ = false;
+      }
       constexpr size_t maxBytes = kMaxQueuedBytes;
       // A single chunk larger than the whole byte budget can never fit, no
       // matter what is dropped - discarding a GOP tail for it would cost a
@@ -2407,16 +2415,26 @@ class RtmpOutputSender final : public IOutputSender {
           }
         }
         if (full()) {
-          bitstreamFailure_.record(BitstreamFailure::QueueOverflow);
-          // Composed in modules/BitstreamQueueOverflow.h. Fix round 2 reworded
-          // this message in the same commit that tightened the gate's grep for
-          // it, which disarmed that assertion silently; both branches are now
-          // pinned by BitstreamQueueOverflowTest.cpp - see the header.
+          // There is no safe P-frame cut in a full GOP. Keep the encoder and
+          // transport alive, ask for a fresh IDR, and drop this destination's
+          // stale GOP. The writer owns any packet already popped; the next
+          // queued packet will be a decodable keyframe. This queue is local to
+          // one destination and cannot hold another output hostage.
+          const auto discarded = bitstreamQueue_.size();
+          bitstreamQueue_.clear();
+          bitstreamQueuedBytes_ = 0;
+          overflowDiscardedChunks_.fetch_add(static_cast<std::int64_t>(discarded),
+                                             std::memory_order_relaxed);
+          republishQueueTelemetryLocked();
+          const bool requested = gpuEncoder_ && gpuEncoder_->requestKeyframe();
+          awaitingFreshKeyframe_ = !chunk.keyframe;
           ::corevideo::core::nativeLogf(
-              "%s", corevideo::modules::describeQueueOverflowFailure(
-                        dropped, bitstreamQueuedBytes_, bitstreamQueue_.size(), chunk.size,
-                        kMaxQueuedChunks, kMaxQueuedBytes).c_str());
-          return;
+              "[stream-backpressure] overflow-discard resync dropped=%zu idrRequested=%d awaitingKeyframe=%d\n",
+              discarded, requested ? 1 : 0, awaitingFreshKeyframe_ ? 1 : 0);
+          if (awaitingFreshKeyframe_) {
+            overflowDiscardedChunks_.fetch_add(1, std::memory_order_relaxed);
+            return;
+          }
         }
       }
       bitstreamQueue_.push_back({std::vector<uint8_t>(chunk.data, chunk.data + chunk.size), chunk,
@@ -3118,6 +3136,7 @@ class RtmpOutputSender final : public IOutputSender {
   // thread; atomic so the two never race. Summed into the published
   // discardedChunks - see observeStreamBackpressure().
   std::atomic<std::int64_t> overflowDiscardedChunks_{0};
+  bool awaitingFreshKeyframe_ = false;  // bitstreamQueueMutex_ protects this
   static constexpr std::int64_t kBackpressureDiscardedChunksCeiling = INT64_C(1) << 62;
   // #597 Task 6 fix round 1, finding 11: bumped every time backpressure_ is
   // RECONSTRUCTED (the `!wantsRtmp` stop path), i.e. every time the per-run

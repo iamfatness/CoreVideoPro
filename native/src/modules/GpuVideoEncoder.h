@@ -4,6 +4,9 @@
 #include <cstdint>
 #include <functional>
 #include <atomic>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -41,6 +44,15 @@ struct GpuVideoEncoderConfig {
   // HEVC, disables B-frames — the FLV muxer refuses reordered raw HEVC.
   std::string codec = "h264";
 };
+
+// Media Foundation's GOP property is measured in input pictures, while the
+// operator setting is seconds. Keep the conversion independent of the MFT.
+[[nodiscard]] inline unsigned int configuredGopFrames(int fps, double seconds) {
+  const double bounded = std::clamp(std::isfinite(seconds) ? seconds : 2.0, 0.5, 10.0);
+  return static_cast<unsigned int>(std::min<long long>(
+      (std::numeric_limits<unsigned int>::max)(),
+      std::max(1LL, static_cast<long long>(std::llround(std::max(1, fps) * bounded)))));
+}
 
 // The GPU frame to encode — an OPAQUE platform handle, never a D3D11/Metal type.
 // Mirrors ProgramFrameSharedTexture: exactly one of the two identifiers is set.
@@ -86,6 +98,10 @@ class GpuVideoEncoder {
   // Submit one GPU frame for encoding. Returns false when the encoder is
   // unhealthy (e.g. device loss) so the caller can let its supervisor restart.
   [[nodiscard]] virtual bool submit(const GpuVideoEncoderFrame& frame) = 0;
+
+  // Ask for an IDR on the next input picture after a destination loses its
+  // decodable GOP. The implementation must only signal its encode thread here.
+  [[nodiscard]] virtual bool requestKeyframe() { return false; }
 
   // Stop encoding, join the encoder thread, release all GPU/encoder resources.
   virtual void stop() = 0;
