@@ -1,5 +1,5 @@
 #include "modules/RtmpFfmpegArgs.h"
-#include "modules/HevcTransportStream.h"
+#include "modules/EncodedVideoTransportStream.h"
 
 #include <gtest/gtest.h>
 
@@ -270,7 +270,7 @@ TEST(RtmpFfmpegArgs, LiveBitstreamAudioDoesNotAddASecondPacingClock) {
   config.videoBitstreamInput = true;
   for (const auto* codec : {"h264", "hevc", "av1"}) {
     config.videoBitstreamCodec = codec;
-    config.timestampedHevcInput = std::string(codec) == "hevc";
+    config.timestampedVideoInput = std::string(codec) == "hevc";
     config.hasAudio = true;
     config.audioInput = "pipe:3";
     const auto live = buildRtmpFfmpegArguments(config);
@@ -283,16 +283,40 @@ TEST(RtmpFfmpegArgs, LiveBitstreamAudioDoesNotAddASecondPacingClock) {
   }
 }
 
+TEST(RtmpFfmpegArgs, QaTapReceivesTheSameMuxedPacketsAsRtmp) {
+  auto config = baseConfig();
+  config.videoBitstreamInput = true;
+  config.localFlvTapPath = "C:/qa/received.flv";
+  const auto args = buildRtmpFfmpegArguments(config);
+  EXPECT_NE(args.find(" -map 0:v:0 -map 1:a:0 -c:v copy"), std::string::npos);
+  EXPECT_NE(args.find(" -f tee \"[f=flv:onfail=abort]C:/qa/received.flv|[f=flv:onfail=abort]"), std::string::npos);
+  config.localFlvTapPath.clear();
+  const auto normal = buildRtmpFfmpegArguments(config);
+  EXPECT_EQ(normal.find(" -f tee "), std::string::npos);
+  EXPECT_NE(normal.find(" -f flv "), std::string::npos);
+}
+
 TEST(RtmpFfmpegArgs, TimestampedHevcUsesContainerClockWithoutRewritingTimestamps) {
   auto config = baseConfig();
   config.videoBitstreamInput = true;
   config.videoBitstreamCodec = "hevc";
-  config.timestampedHevcInput = true;
+  config.timestampedVideoInput = true;
   const auto args = buildRtmpFfmpegArguments(config);
   EXPECT_NE(args.find("-f mpegts -probesize"), std::string::npos);
   EXPECT_EQ(args.find("use_wallclock_as_timestamps"), std::string::npos);
   EXPECT_EQ(args.find("setts="), std::string::npos);
   EXPECT_NE(args.find("-c:v copy"), std::string::npos);
+}
+
+TEST(RtmpFfmpegArgs, TimestampedH264UsesEncoderClockInsteadOfPipeArrival) {
+  auto config = baseConfig();
+  config.videoBitstreamInput = true;
+  config.videoBitstreamCodec = "h264";
+  config.timestampedVideoInput = true;
+  const auto args = buildRtmpFfmpegArguments(config);
+  EXPECT_NE(args.find("-f mpegts -probesize"), std::string::npos);
+  EXPECT_EQ(args.find("use_wallclock_as_timestamps"), std::string::npos);
+  EXPECT_EQ(args.find("setts="), std::string::npos);
 }
 
 namespace {
@@ -313,8 +337,8 @@ uint64_t pesPts(const std::vector<uint8_t>& pes, size_t start = 9) {
 }
 }
 
-TEST(HevcTransportStream, PreservesGapsAndReorderingAcrossBurstDelivery) {
-  HevcTransportStream stream;
+TEST(EncodedVideoTransportStream, PreservesGapsAndReorderingAcrossBurstDelivery) {
+  EncodedVideoTransportStream stream;
   std::vector<uint8_t> payload{0, 0, 0, 1, 0x46, 1, 0x50};
   GpuEncodedChunk chunk;
   chunk.data = payload.data(); chunk.size = payload.size(); chunk.timingValid = true;
@@ -332,9 +356,9 @@ TEST(HevcTransportStream, PreservesGapsAndReorderingAcrossBurstDelivery) {
   EXPECT_TRUE(wire.empty());
 }
 
-TEST(HevcTransportStream, PacketBoundariesPreservePayloadBytes) {
+TEST(EncodedVideoTransportStream, PacketBoundariesPreservePayloadBytes) {
   for (size_t size : {size_t{7}, size_t{161}, size_t{162}, size_t{163}, size_t{184}, size_t{65537}}) {
-    HevcTransportStream stream;
+    EncodedVideoTransportStream stream;
     std::vector<uint8_t> payload(size, 0x55);
     const uint8_t aud[] = {0, 0, 0, 1, 0x46, 1, 0x50};
     std::copy(std::begin(aud), std::end(aud), payload.begin());
@@ -349,8 +373,8 @@ TEST(HevcTransportStream, PacketBoundariesPreservePayloadBytes) {
   }
 }
 
-TEST(HevcTransportStream, MissingTimingDoesNotInventAClock) {
-  HevcTransportStream stream;
+TEST(EncodedVideoTransportStream, MissingTimingDoesNotInventAClock) {
+  EncodedVideoTransportStream stream;
   uint8_t payload[] = {0, 0, 1, 0x26, 1, 0};
   GpuEncodedChunk chunk;
   chunk.data = payload; chunk.size = sizeof(payload);
@@ -359,4 +383,22 @@ TEST(HevcTransportStream, MissingTimingDoesNotInventAClock) {
   chunk.timingValid = true;
   ASSERT_TRUE(stream.packetize(chunk, wire));
   EXPECT_EQ(pesPts(videoPes(wire)), uint64_t{0});
+}
+
+TEST(EncodedVideoTransportStream, H264EnvelopePreservesFrameGapsAndDeclaresAvc) {
+  EncodedVideoTransportStream stream(EncodedVideoTransportStream::Codec::H264);
+  std::vector<uint8_t> payload{0, 0, 0, 1, 0x65, 0x88, 0x84, 0x21};
+  GpuEncodedChunk chunk;
+  chunk.data = payload.data(); chunk.size = payload.size(); chunk.timingValid = true;
+  chunk.keyframe = true;
+  chunk.pts100ns = chunk.dts100ns = 100000000;
+  std::vector<uint8_t> wire;
+  ASSERT_TRUE(stream.packetize(chunk, wire));
+  EXPECT_EQ(wire[188 + 5 + 11], uint8_t{0x1b}); // PMT stream_type: AVC/H.264
+  EXPECT_EQ(pesPts(videoPes(wire)), uint64_t{0});
+  chunk.keyframe = false;
+  chunk.pts100ns += 1000000;
+  chunk.dts100ns += 1000000;
+  ASSERT_TRUE(stream.packetize(chunk, wire));
+  EXPECT_EQ(pesPts(videoPes(wire)), uint64_t{9000});
 }

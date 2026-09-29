@@ -52,6 +52,8 @@ const frameSyncOff = args.includes("--no-frame-sync");
 const verbose = args.includes("--verbose");
 const livePaths = args.includes("--live-paths");
 const rtmpLocal = args.includes("--rtmp-local");
+const rtmpTapPath = process.env.COREVIDEO_QA_RTMP_TAP_PATH;
+if (rtmpTapPath && !rtmpLocal) throw new Error('COREVIDEO_QA_RTMP_TAP_PATH requires --rtmp-local');
 const monitorDevice = argValue("monitor-device", "Game (TC-HELICON GoXLR)");
 const monitorId = argValue("monitor-id", "");
 const programBufferFrames = Number(argValue("program-buffer", "2"));
@@ -515,6 +517,34 @@ try {
     }, null, 2));
     if (Math.abs(receivedSummary.medianMs) > budgetMs) {
       failures.push(`decoded RTMP skew ${receivedSummary.medianMs.toFixed(1)}ms exceeds the ${budgetMs}ms budget`);
+    }
+    if (rtmpTapPath) {
+      if (!existsSync(rtmpTapPath) || statSync(rtmpTapPath).size < 1024) {
+        failures.push('same-run muxed RTMP tap is missing');
+      } else {
+        const tapProbe = spawnSync(ffprobe,
+          ["-v", "error", "-print_format", "json", "-show_streams", rtmpTapPath],
+          { encoding: "utf8", timeout: 20000 });
+        if (tapProbe.status !== 0) throw new Error(`muxed tap probe failed: ${tapProbe.stderr}`);
+        const tapStreams = JSON.parse(tapProbe.stdout).streams ?? [];
+        const tapVideo = tapStreams.find(stream => stream.codec_type === 'video');
+        const tapAudio = tapStreams.find(stream => stream.codec_type === 'audio');
+        if (!tapVideo || !tapAudio) throw new Error('muxed tap is missing video or audio');
+        const [tapNum, tapDen] = String(tapVideo.avg_frame_rate ?? '60/1').split('/').map(Number);
+        const tapFps = tapDen ? tapNum / tapDen : 60;
+        const tapVideoTimes = videoFlashTimes(rtmpTapPath, tapFps);
+        const tapAudioTimes = audioBurstTimes(rtmpTapPath);
+        const tapPairs = pairEvents(tapVideoTimes, tapAudioTimes);
+        if (tapPairs.length < 2) throw new Error(`muxed tap has only ${tapPairs.length} paired claps`);
+        const tapSummary = describePairs('Muxed v-a', tapPairs);
+        writeFileSync(join(liveCaptureDir, 'rtmp-tap-evidence.json'), JSON.stringify({
+          muxedArtifact: rtmpTapPath, receivedArtifact: rtmpReceived,
+          tapVideoTimes, tapAudioTimes, tapSummary, receivedSummary,
+          receiverMinusMuxerMs: receivedSummary.medianMs - tapSummary.medianMs,
+        }, null, 2));
+        if (Math.abs(receivedSummary.medianMs - tapSummary.medianMs) > 1000 / 60)
+          failures.push('local RTMP receiver differs from the same-run muxed tap by over one frame');
+      }
     }
   }
   if (audioTimes.length >= 2 && videoTimes.length === 0) {

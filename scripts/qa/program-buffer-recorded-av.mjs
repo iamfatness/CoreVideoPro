@@ -11,13 +11,15 @@ import { generateAvPattern } from './generate-av-pattern.mjs';
 const exec = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const args = process.argv.slice(2), options = {};
 for (let i = 0; i < args.length; i += 2) {
-  if (!['--native-core', '--output-dir', '--ffmpeg', '--ffprobe', '--fixture', '--rtmp-server', '--duration-seconds', '--depth'].includes(args[i]) || !args[i + 1]) throw new Error('Usage: node scripts/qa/program-buffer-recorded-av.mjs --native-core EXE --output-dir DIRECTORY [--fixture MEDIA] [--rtmp-server URL --duration-seconds N] [--depth 2|3] [--ffmpeg EXE] [--ffprobe EXE]');
+  if (!['--native-core', '--output-dir', '--ffmpeg', '--ffprobe', '--fixture', '--rtmp-server', '--rtmp-tap', '--duration-seconds', '--depth'].includes(args[i]) || !args[i + 1]) throw new Error('Usage: node scripts/qa/program-buffer-recorded-av.mjs --native-core EXE --output-dir DIRECTORY [--fixture MEDIA] [--rtmp-server URL --rtmp-tap 1 --duration-seconds N] [--depth 2|3] [--ffmpeg EXE] [--ffprobe EXE]');
   options[args[i]] = args[i + 1];
 }
 if (!options['--native-core'] || !options['--output-dir']) throw new Error('Explicit native core and output directory required.');
 const rtmpServer = options['--rtmp-server'];
 const rtmpKey = process.env.COREVIDEO_QA_RTMP_KEY;
 if (rtmpServer && (!/^rtmps?:\/\//.test(rtmpServer) || !rtmpKey)) throw new Error('RTMP requires a server URL and COREVIDEO_QA_RTMP_KEY.');
+const rtmpTap = options['--rtmp-tap'] === '1';
+if (options['--rtmp-tap'] !== undefined && (!rtmpTap || !rtmpServer)) throw new Error('--rtmp-tap 1 requires an RTMP server.');
 const durationSeconds = Number(options['--duration-seconds'] ?? (rtmpServer ? 24 : 7.5));
 if (!Number.isFinite(durationSeconds) || durationSeconds < 7.5 || durationSeconds > 120) throw new Error('Duration must be 7.5–120 seconds.');
 const depths = options['--depth'] === undefined ? [2, 3] : [Number(options['--depth'])];
@@ -36,13 +38,16 @@ report.rtmpConfigured = Boolean(rtmpServer);
 report.durationSeconds = durationSeconds;
 const tool = (command, args, extra = {}) => exec(command, args, { windowsHide: true, timeout: 60000, maxBuffer: 16 * 1024 * 1024, ...extra });
 
-const decode = path => decodeRecordedAvFile(path, { ffmpeg, ffprobe });
+const decode = (path, extra = {}) => decodeRecordedAvFile(path, { ffmpeg, ffprobe, ...extra });
 
 async function record(frames, fixture) {
   const runDirectory = join(directory, `depth-${frames}`); await mkdir(runDirectory);
   const run = { frames, runDirectory, states: [], errors: [], framePerformancePassed: false };
+  const tapPath = rtmpTap ? join(runDirectory, 'muxed-before-youtube.flv') : null;
+  if (tapPath) run.rtmpTapPath = tapPath;
   const child = spawn(core, [], { cwd: dirname(core), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: {
     ...process.env, COREVIDEO_PROGRAM_BUFFER_FRAMES: String(frames), COREVIDEO_ZOOM_ENGINE_PATH: '',
+    ...(tapPath ? { COREVIDEO_QA_RTMP_TAP_PATH: tapPath } : {}),
     COREVIDEO_ZOOM_SDK_JWT: '', COREVIDEO_ZOOM_USER_ZAK: '', COREVIDEO_ZOOM_ON_BEHALF_TOKEN: '', COREVIDEO_ZOOM_APP_PRIVILEGE_TOKEN: ''
   } });
   let buffer = '', stderr = '', nextId = 0, closed = false, failure, snapshot;
@@ -124,9 +129,9 @@ async function record(frames, fixture) {
     run.liveRecording = snapshot.recording;
     run.liveRtmp = snapshot.outputSenderSession?.senders?.filter(sender => sender.destination === 'rtmp')
       .map(({ destination, status, framesSent, audioFramesSent, bytesSent, audioBytesSent, audioChannels, audioSampleRate,
-        destinationHealth, retryCount, warning, lastError }) =>
+        destinationHealth, retryCount, warning, lastError, supervisor }) =>
         ({ destination, status, framesSent, audioFramesSent, bytesSent, audioBytesSent, audioChannels, audioSampleRate,
-          destinationHealth, retryCount, warning, lastError }));
+          destinationHealth, retryCount, warning, lastError, supervisor }));
     if (rtmpServer) run.rtmpSenderEvidence = assessRtmpSenderEvidence(snapshot.outputSenderSession?.senders);
     run.liveMediaSources = snapshot.mediaSources;
     run.liveAudioMix = snapshot.audioMixSession;
@@ -172,6 +177,15 @@ try {
         run.alignmentWithinOneVideoFrame = run.analysisValid && run.sourceCorrectedAlignment?.alignmentWithinOneVideoFrame === true;
       } catch (error) { run.errors.push(error.message); }
     }
+    if (rtmpTap) {
+      try {
+        if ((await stat(run.rtmpTapPath)).size < 1024) throw new Error('Muxed RTMP tap is empty.');
+        run.rtmpTapDecode = await decode(run.rtmpTapPath, { allowAnyVideoSize: true, transportTimestampPrecisionMs: 1 });
+        if (!run.rtmpTapDecode.analysisValid || !run.rtmpTapDecode.alignment?.sufficientPairs)
+          throw new Error(`Muxed RTMP tap has no valid matching cues: ${run.rtmpTapDecode.alignmentError}`);
+        run.rtmpTapAlignment = sourceCorrectedAlignment(run.rtmpTapDecode.alignment, report.fixture.decode.alignment);
+      } catch (error) { run.errors.push(error.message); }
+    }
   }
 } catch (error) { report.errors.push(error.message); }
 finally {
@@ -179,7 +193,8 @@ finally {
   report.avAlignmentWithinOneVideoFrame = report.measurementCompleted && report.runs.every(run => run.alignmentWithinOneVideoFrame === true);
   report.recordingArtifactAccepted = report.runs.length === depths.length && report.runs.every(run => run.videoArtifactAcceptance?.passed === true);
   report.rtmpSenderAccepted = !rtmpServer || report.runs.every(run => run.rtmpSenderEvidence?.passed === true);
-  report.validationPassed = report.measurementCompleted && report.avAlignmentWithinOneVideoFrame && report.recordingArtifactAccepted && report.rtmpSenderAccepted;
+  report.validationPassed = report.measurementCompleted && report.avAlignmentWithinOneVideoFrame && report.recordingArtifactAccepted && report.rtmpSenderAccepted &&
+    (!rtmpTap || report.runs.every(run => run.rtmpTapAlignment?.alignmentWithinOneVideoFrame === true));
   const reportJson = JSON.stringify(report, null, 2);
   await writeFile(join(directory, 'report.json'), (rtmpKey ? reportJson.replaceAll(rtmpKey, '[redacted]') : reportJson) + '\n');
   console.log(JSON.stringify({ report: join(directory, 'report.json'), measurementCompleted: report.measurementCompleted,

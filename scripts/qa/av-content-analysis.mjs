@@ -11,6 +11,12 @@ export function assessRtmpSenderEvidence(senders) {
   if (!Number.isSafeInteger(sender?.audioFramesSent) || sender.audioFramesSent <= 0) errors.push('RTMP audio frame count is absent.');
   if (!Number.isSafeInteger(sender?.audioBytesSent) || sender.audioBytesSent <= 0) errors.push('RTMP audio byte count is absent.');
   if (sender?.retryCount !== 0) errors.push('RTMP sender retried.');
+  const supervisor = sender?.supervisor;
+  if (!supervisor || supervisor.healthy !== true || !Number.isSafeInteger(supervisor.acceptedUnits) ||
+      supervisor.acceptedUnits <= 0 || supervisor.lastProgressAgeMs < 0)
+    errors.push('RTMP destination has no fresh accepted-output proof.');
+  if (supervisor?.restarts !== 0 || supervisor?.gaveUp === true)
+    errors.push('RTMP destination restarted or gave up.');
   return { passed: errors.length === 0, errors };
 }
 

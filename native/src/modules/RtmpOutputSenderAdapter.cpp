@@ -5,7 +5,7 @@
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
 #include "modules/GpuVideoEncoder.h"
-#include "modules/HevcTransportStream.h"
+#include "modules/EncodedVideoTransportStream.h"
 #include "modules/MediaFoundationGpuVideoEncoder.h"
 #include "modules/EncoderCapacityProbe.h"
 #include "modules/EncoderPolicy.h"
@@ -1519,6 +1519,15 @@ class RtmpOutputSender final : public IOutputSender {
     config.h264Profile = compatibility.videoCodec == "h264" ? configuredH264Profile_ : "auto";
     config.bFrames = configuredBFrames_;
     config.endpoint = configuredEndpoint_;
+    if (protocol_.container == "flv") {
+      if (const char* tap = std::getenv("COREVIDEO_QA_RTMP_TAP_PATH")) {
+        const std::string path(tap);
+        if (!path.empty() && path.find_first_of("|]\r\n") == std::string::npos &&
+            std::filesystem::path(path).is_absolute()) {
+          config.localFlvTapPath = path;
+        }
+      }
+    }
     // When the program-audio tap delivered real PCM this tick, feed it over the
     // second input as raw f32le PCM; otherwise fall back to silent anullsrc.
     config.hasAudio = realAudioEnabledForProcess();
@@ -1528,11 +1537,12 @@ class RtmpOutputSender final : public IOutputSender {
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     config.container = protocol_.container;
-    // GPU-direct HEVC carries encoder timestamps in an internal TS envelope;
-    // other codecs retain their elementary input. FFmpeg copies the video.
+    // GPU-direct H.264 and HEVC carry encoder timestamps in an internal TS
+    // envelope; AV1 retains its elementary input. FFmpeg copies the video.
     config.videoBitstreamInput = useGpuDirect_;
     config.videoBitstreamCodec = gpuEncodeSentCodec_;
-    config.timestampedHevcInput = useGpuDirect_ && gpuEncodeSentCodec_ == "hevc";
+    config.timestampedVideoInput = useGpuDirect_ &&
+        (gpuEncodeSentCodec_ == "hevc" || gpuEncodeSentCodec_ == "h264");
     return buildRtmpFfmpegArguments(config);
   }
 
@@ -2418,7 +2428,8 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   void bitstreamWriterLoop() {
-    HevcTransportStream transport;
+    const bool timestampH264 = gpuEncodeSentCodec_ == "h264";
+    EncodedVideoTransportStream transport(timestampH264 ? EncodedVideoTransportStream::Codec::H264 : EncodedVideoTransportStream::Codec::Hevc);
     std::vector<uint8_t> wire;
     while (!bitstreamWriterStop_.load() && !bitstreamFailure_.failed()) {
       QueuedBitstream packet;
@@ -2432,7 +2443,7 @@ class RtmpOutputSender final : public IOutputSender {
         republishQueueTelemetryLocked();
       }
       packet.metadata.data = packet.bytes.data();
-      if (gpuEncodeSentCodec_ == "hevc") {
+      if (gpuEncodeSentCodec_ == "hevc" || timestampH264) {
         if (!transport.packetize(packet.metadata, wire)) {
           bitstreamFailure_.record(BitstreamFailure::InvalidTiming);
           ::corevideo::core::nativeLogf("[gpu-encode] invalid encoder packet timing pts=%lld dts=%lld valid=%d\n",

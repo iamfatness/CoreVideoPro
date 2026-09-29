@@ -4,7 +4,7 @@
 #include "modules/Interfaces.h"
 #include "modules/MediaFoundationGpuVideoEncoder.h"
 #include "modules/RtmpFfmpegArgs.h"
-#include "modules/HevcTransportStream.h"
+#include "modules/EncodedVideoTransportStream.h"
 
 #include <codecapi.h>
 #include <d3d11.h>
@@ -107,7 +107,9 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
   std::vector<uint8_t> encodedBytes;
   std::vector<uint8_t> transportBytes;
   std::vector<double> expectedTimes;
-  corevideo::modules::HevcTransportStream transport;
+  corevideo::modules::EncodedVideoTransportStream transport(std::string(codec) == "h264"
+      ? corevideo::modules::EncodedVideoTransportStream::Codec::H264
+      : corevideo::modules::EncodedVideoTransportStream::Codec::Hevc);
   int64_t firstDts = -1;
   int invalidTimestamps = 0;
   int chunksReceived = 0;
@@ -117,7 +119,7 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
   auto sink = [&](const corevideo::modules::GpuEncodedChunk& chunk) {
     std::lock_guard<std::mutex> lock(encodedMutex);
     encodedBytes.insert(encodedBytes.end(), chunk.data, chunk.data + chunk.size);
-    if (std::string(codec) == "hevc") {
+    if (std::string(codec) == "hevc" || std::string(codec) == "h264") {
       std::vector<uint8_t> wire;
       if (!transport.packetize(chunk, wire)) {
         ++invalidTimestamps;
@@ -237,12 +239,12 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
     muxConfig.videoBitstreamInput = true;
     muxConfig.videoBitstreamCodec = codec;
     muxConfig.fps = plan.fps;
-    muxConfig.timestampedHevcInput = std::string(codec) == "hevc";
+    muxConfig.timestampedVideoInput = std::string(codec) == "hevc" || std::string(codec) == "h264";
     muxConfig.endpoint = flvPath.string();
     auto muxArgs = corevideo::modules::buildRtmpFfmpegArguments(muxConfig);
     auto muxInput = rawPath;
-    if (muxConfig.timestampedHevcInput) {
-      muxInput = work / "timed-hevc.ts";
+    if (muxConfig.timestampedVideoInput) {
+      muxInput = work / (std::string("timed-") + codec + ".ts");
       std::ofstream ts(muxInput, std::ios::binary);
       ts.write(reinterpret_cast<const char*>(transportBytes.data()), transportBytes.size());
     }
@@ -251,7 +253,7 @@ static void runRoundTrip(const char* codec, const char* rawDemuxer, bool alsoMux
     const std::string muxInner = "\"" + ffmpegExe.string() + "\" -y" + muxArgs;
     const int muxStatus = normalizedSystemExitCode(std::system(("\"" + muxInner + "\"").c_str()));
     EXPECT_EQ(muxStatus, 0) << codec << " raw bitstream did not copy-mux into FLV: " << rawPath.string();
-    if (std::string(codec) == "hevc") {
+    if (std::string(codec) == "hevc" || std::string(codec) == "h264") {
       const auto probePath = work / "color.txt";
       const auto ffprobeExe = ffmpegDir / "ffprobe.exe";
       const std::string probeInner = "\"" + ffprobeExe.string() +

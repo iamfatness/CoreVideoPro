@@ -4,10 +4,13 @@ import { FLASH_BEEP_PULSES, detectFlashes, detectBeeps, alignEvents, alignIdenti
 
 test('RTMP sender evidence refuses a video-only live stream', () => {
   const sender = { destination: 'rtmp', status: 'live', destinationHealth: 'ok',
-    framesSent: 1450, audioFramesSent: 1154240, audioBytesSent: 9233920, retryCount: 0 };
+    framesSent: 1450, audioFramesSent: 1154240, audioBytesSent: 9233920, retryCount: 0,
+    supervisor: { healthy: true, acceptedUnits: 1200, lastProgressAgeMs: 10, restarts: 0, gaveUp: false } };
   assert.equal(assessRtmpSenderEvidence([sender]).passed, true);
   assert.equal(assessRtmpSenderEvidence([{ ...sender, audioFramesSent: 0, audioBytesSent: 0 }]).passed, false);
   assert.equal(assessRtmpSenderEvidence([{ ...sender, retryCount: 1 }]).passed, false);
+  assert.equal(assessRtmpSenderEvidence([{ ...sender, supervisor: { ...sender.supervisor, healthy: false, acceptedUnits: 0 } }]).passed, false);
+  assert.equal(assessRtmpSenderEvidence([{ ...sender, supervisor: { ...sender.supervisor, restarts: 2 } }]).passed, false);
   assert.equal(assessRtmpSenderEvidence([]).passed, false);
 });
 

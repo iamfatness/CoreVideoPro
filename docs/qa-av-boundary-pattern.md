@@ -46,12 +46,41 @@ the app's saved test destination, then run:
 node scripts/qa/program-buffer-recorded-av.mjs --native-core native/build-dev/corevideo-native.exe --output-dir artifacts/issue-703-youtube-pattern --rtmp-server rtmp://a.rtmp.youtube.com/live2 --duration-seconds 24 --depth 2
 ```
 
-The report refuses an RTMP sender that has video but no audio frames or bytes.
-It records sender health and the matching Program file; this is a **send**
+The report refuses an RTMP sender that has video but no audio frames or bytes,
+or whose destination supervisor has no fresh accepted-output proof. It records
+sender health and the matching Program file; this is a **send**
 measurement. It does not measure what YouTube received or played. The fixture
 does not loop in this longer run, so each of its eight cue IDs appears once.
 `--depth` isolates one startup buffer; omit it to compare both next-launch
 depths in separate core processes. Redact the key from shared artifacts.
+
+To separate FFmpeg's muxed timeline from YouTube ingest on the **same** send,
+add `--rtmp-tap 1`. The harness writes `muxed-before-youtube.flv` in its run
+folder and fails if the file is empty or lacks identifiable cues. The QA-only
+FFmpeg tee sends the same encoded packets to the local FLV and RTMP. A receiver
+that never accepts the stream can block the tee before the tap gets packets;
+an empty tap is missing evidence. Analyze the tap as `--rtmp` with
+`measure-av-pattern.mjs`, alongside the matching Program and YouTube files.
+
+The 2026-09-29 H.264 clock A/B used `validate-av-clap.mjs --seconds 24
+--rtmp-local --program-buffer 2 --keep-artifact`. The old elementary stream
+got timestamps from FFmpeg pipe reads: decoded RTMP moved from −22.6 ms
+(no tap) to +47.1 ms (with tap), video minus audio. The timestamped H.264
+envelope kept the encoder frame clock: +13.4 ms without the tap and +12.5 ms
+with it. The local tap and receiver agreed. A subsequent default-path solo
+run measured RTMP +13.2 ms and recording −11.5 ms. A live-path run measured
+RTMP +2.1 ms, recording −8.3 ms, and Program texture publish minus GoXLR
+monitor −34.4 ms, with zero monitor underruns and zero audio lost samples.
+These synthetic local measurements do not close the YouTube playback or
+real-human gates.
+
+The timestamped H.264 path also passed the 55 s GPU-direct slow-sink gate with
+`--codec h264 --slow-sink --burst-sink --sink-rate 0.5`: the stream stayed live,
+one encoder was built, Program averaged 60.0 fps, and the stream export divisor
+recovered to 1 before the next burst. The proxy reached 1379 ms buffered and
+the overflow path discarded one GOP tail without failing the sender. A prior
+0.85x run was missing congestion evidence because its link did not actually
+throttle the encoded stream.
 
 For the external leg, play the pattern from a dedicated source in the test
 meeting, record a matching Program file while streaming, and obtain the

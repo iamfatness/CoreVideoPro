@@ -60,7 +60,7 @@ class RtmpVideoFramePacer {
 };
 
 struct RtmpFfmpegArgsConfig {
-  bool timestampedHevcInput = false;
+  bool timestampedVideoInput = false;
   int width = 0;
   int height = 0;
   int fps = 30;
@@ -73,6 +73,9 @@ struct RtmpFfmpegArgsConfig {
   std::string h264Profile = "high";
   int bFrames = 2;
   std::string endpoint;                         // already-quoted by caller? no -> quoted here
+  // QA only: duplicate the exact muxed packets to a local FLV during an RTMP
+  // send. This isolates our muxer timeline from receiver/transcode timing.
+  std::string localFlvTapPath;
   // Real program audio over a second FFmpeg input. When `hasAudio` is false the
   // builder falls back to the silent `anullsrc` source so the FLV mux still
   // carries a valid AAC track.
@@ -122,6 +125,16 @@ inline const char* rawDemuxerForBitstreamCodec(std::string_view codec) {
 }
 
 inline void appendFfmpegMuxerOutput(std::ostringstream& args, const RtmpFfmpegArgsConfig& config) {
+  if (config.container == "flv" && !config.localFlvTapPath.empty()) {
+    // FFmpeg's tee parser treats backslash as an escape, even inside a quoted
+    // Windows command-line argument. Use forward slashes for the local path.
+    std::string tapPath = config.localFlvTapPath;
+    std::replace(tapPath.begin(), tapPath.end(), '\\', '/');
+    args << " -f tee " << quoteRtmpArgument(
+        "[f=flv:onfail=abort]" + tapPath +
+        "|[f=flv:onfail=abort]" + config.endpoint);
+    return;
+  }
   if (config.container == "hls") {
     args << " -hls_time 2 -hls_list_size 6"
          << " -hls_flags delete_segments+omit_endlist"
@@ -155,9 +168,9 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     // intentional: zero selects FFmpeg's automatic/default analysis duration.
     args << " -hide_banner -loglevel warning -stats -stats_period 1";
     // Only legacy raw inputs need arrival timing for the two-input scheduler.
-    // Never override the timestamps carried by the HEVC transport envelope.
-    if (!config.timestampedHevcInput) args << " -use_wallclock_as_timestamps 1 -r " << fps;
-    args << " -f " << (config.timestampedHevcInput ? "mpegts" : rawDemuxerForBitstreamCodec(config.videoBitstreamCodec))
+    // Never override timestamps carried by the H.264/HEVC transport envelope.
+    if (!config.timestampedVideoInput) args << " -use_wallclock_as_timestamps 1 -r " << fps;
+    args << " -f " << (config.timestampedVideoInput ? "mpegts" : rawDemuxerForBitstreamCodec(config.videoBitstreamCodec))
          << " -probesize 65536 -analyzeduration 1"
          << " -thread_queue_size 512 -i pipe:0";
     if (config.hasAudio) {
@@ -172,7 +185,7 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
       args << " -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";
     }
     args << " -map 0:v:0 -map 1:a:0 -c:v copy";
-    if (hevc && !config.timestampedHevcInput) args << " -bsf:v setts=ts=N/(" << fps << "*TB)";
+    if (hevc && !config.timestampedVideoInput) args << " -bsf:v setts=ts=N/(" << fps << "*TB)";
     args << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
          << " -af aresample=async=1:first_pts=0";
     if (config.endpoint.rfind("rtmp://", 0) == 0 || config.endpoint.rfind("rtmps://", 0) == 0) {
