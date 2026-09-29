@@ -2821,6 +2821,7 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
   outputDestinations_ = command.getStringArray("destinations");
   outputDestinationSettings_ = readOutputDestinationSettings(command);
   for (auto& destination : outputDestinationSettings_) {
+    destination.programBufferFrames = modules_.compositor->programBufferFrames();
     if (destination.id == "rtmp" || destination.protocol == "rtmp" || destination.protocol == "rtmps") {
       destination.fps = outputFps_;
       destination.targetBitrateMbps = outputTargetBitrateMbps_;

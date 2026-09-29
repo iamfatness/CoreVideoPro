@@ -1,5 +1,6 @@
 #include "core/BoundedAsyncLog.h"
 #include "core/StreamBackpressurePolicy.h"
+#include "core/StreamAudioAlignmentPolicy.h"
 #include "modules/Interfaces.h"
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
@@ -785,6 +786,7 @@ class RtmpOutputSender final : public IOutputSender {
                                             : settings->passphrase;
     configuredFfmpegBinDirectory_ = settings->ffmpegBinDirectory;
     configuredFps_ = (std::max)(1, settings->fps);
+    configuredProgramBufferFrames_ = settings->programBufferFrames;
     configuredVideoCodec_ = normalizeVideoCodec(settings->videoCodec);
     configuredEncoderMode_ = normalizeEncoderMode(settings->encoderMode);
     configuredKeyframeIntervalSeconds_ = (std::max)(0.5, (std::min)(protocol_.isHls ? 2.0 : 10.0,
@@ -1593,6 +1595,7 @@ class RtmpOutputSender final : public IOutputSender {
 
   bool startFfmpegProcess(int width, int height, const std::string& videoInputPixelFormat) {
     startRefusedInadmissible_ = false;
+    firstBitstreamToFfmpeg_.store(false, std::memory_order_release);
 #if defined(_WIN32)
     // A failed OS termination must never permit a replacement transport to
     // overlap the old publisher. Keep its handle until it is signalled.
@@ -1683,6 +1686,8 @@ class RtmpOutputSender final : public IOutputSender {
         return refuseStreamStart(verdict, compatibility.requestedVideoCodec);
       }
     }
+    audioStartupSamplesToSkip_ = corevideo::core::gpuStreamAudioStartupSkipSamples(
+        useGpuDirect_, configuredProgramBufferFrames_, activeAudioSampleRate_, activeAudioChannels_);
 #if defined(_WIN32)
     SECURITY_ATTRIBUTES securityAttributes{};
     securityAttributes.nLength = sizeof(securityAttributes);
@@ -2530,6 +2535,7 @@ class RtmpOutputSender final : public IOutputSender {
       firstBitstreamLogged_ = true;
       ::corevideo::core::nativeLogf("[gpu-encode] first bitstream write to ffmpeg size=%zu\n", size);
     }
+    firstBitstreamToFfmpeg_.store(true, std::memory_order_release);
 #else
     if (!ffmpegRunning_ || ffmpegStdinFd_ < 0) return;
     size_t remaining = size;
@@ -2542,6 +2548,7 @@ class RtmpOutputSender final : public IOutputSender {
       data += static_cast<size_t>(written);
       remaining -= static_cast<size_t>(written);
     }
+    firstBitstreamToFfmpeg_.store(true, std::memory_order_release);
 #endif
     hasWrittenVideo_ = true;
   }
@@ -2665,16 +2672,26 @@ class RtmpOutputSender final : public IOutputSender {
     if (!activeAudioPresent_ || !pendingAudioPcm_ || pendingAudioPcm_->empty()) {
       return;
     }
-    const auto* bytes = reinterpret_cast<const char*>(pendingAudioPcm_->data());
-    size_t remaining = pendingAudioPcm_->size() * sizeof(float);
+    // FFmpeg starts its two input clocks independently. The GPU encoder can
+    // take hundreds of milliseconds to deliver its first packet; queuing PCM
+    // during that wait made audio content 0.4-0.9 s late in decoded RTMP.
+    if (corevideo::core::holdGpuStreamAudio(
+            useGpuDirect_, firstBitstreamToFfmpeg_.load(std::memory_order_acquire))) return;
+#if defined(_WIN32)
+    if (!audioPipeServer_) return;
+#else
+    if (ffmpegAudioFd_ < 0) return;
+#endif
+    const size_t skip = (std::min)(audioStartupSamplesToSkip_, pendingAudioPcm_->size());
+    audioStartupSamplesToSkip_ -= skip;
+    if (skip == pendingAudioPcm_->size()) return;
+    const auto* bytes = reinterpret_cast<const char*>(pendingAudioPcm_->data() + skip);
+    size_t remaining = (pendingAudioPcm_->size() - skip) * sizeof(float);
     size_t accepted = 0;
 #if defined(_WIN32)
-    if (!audioPipeServer_) {
-      return;
-    }
     {
       std::lock_guard<std::mutex> lock(audioQueueMutex_);
-      audioQueue_.insert(audioQueue_.end(), pendingAudioPcm_->begin(), pendingAudioPcm_->end());
+      audioQueue_.insert(audioQueue_.end(), pendingAudioPcm_->begin() + skip, pendingAudioPcm_->end());
       const size_t maxSamples = static_cast<size_t>((std::max)(1, activeAudioSampleRate_)) *
                                 static_cast<size_t>((std::max)(1, activeAudioChannels_)) * 5;
       while (audioQueue_.size() > maxSamples) {
@@ -2687,9 +2704,6 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.audioFramesSent = sender_.audioBytesSent / bytesPerFrame;
     return;
 #else
-    if (ffmpegAudioFd_ < 0) {
-      return;
-    }
     while (remaining > 0) {
       const ssize_t written = ::write(ffmpegAudioFd_, bytes, remaining);
       if (written <= 0) {
@@ -3029,6 +3043,7 @@ class RtmpOutputSender final : public IOutputSender {
   int ffmpegFrameHeight_ = 0;
   std::string ffmpegPixelFormat_ = "bgra";
   int configuredFps_ = 30;
+  int configuredProgramBufferFrames_ = 0;
   int configuredAudioBitrateKbps_ = 160;
   int activeFps_ = 0;
   double activeBitrateMbps_ = 0;
@@ -3052,6 +3067,8 @@ class RtmpOutputSender final : public IOutputSender {
   bool activeAudioPresent_ = false;
   int activeAudioChannels_ = 0;
   int activeAudioSampleRate_ = 0;
+  std::atomic<bool> firstBitstreamToFfmpeg_{false};
+  size_t audioStartupSamplesToSkip_ = 0;
 #if defined(_WIN32)
   mutable std::mutex ffmpegProcessMutex_;
   HANDLE ffmpegProcess_ = nullptr;
