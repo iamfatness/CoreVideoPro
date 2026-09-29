@@ -3,6 +3,23 @@ const median = values => {
   return sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
 };
 
+export function assessRtmpSenderEvidence(senders) {
+  const sender = senders?.find(item => item.destination === 'rtmp');
+  const errors = [];
+  if (!sender || sender.status !== 'live' || sender.destinationHealth !== 'ok') errors.push('RTMP sender is not live and healthy.');
+  if (!Number.isSafeInteger(sender?.framesSent) || sender.framesSent <= 0) errors.push('RTMP video frame count is absent.');
+  if (!Number.isSafeInteger(sender?.audioFramesSent) || sender.audioFramesSent <= 0) errors.push('RTMP audio frame count is absent.');
+  if (!Number.isSafeInteger(sender?.audioBytesSent) || sender.audioBytesSent <= 0) errors.push('RTMP audio byte count is absent.');
+  if (sender?.retryCount !== 0) errors.push('RTMP sender retried.');
+  const supervisor = sender?.supervisor;
+  if (!supervisor || supervisor.healthy !== true || !Number.isSafeInteger(supervisor.acceptedUnits) ||
+      supervisor.acceptedUnits <= 0 || supervisor.lastProgressAgeMs < 0)
+    errors.push('RTMP destination has no fresh accepted-output proof.');
+  if (supervisor?.restarts !== 0 || supervisor?.gaveUp === true)
+    errors.push('RTMP destination restarted or gave up.');
+  return { passed: errors.length === 0, errors };
+}
+
 export function summarizePacketTiming(packets) {
   const timestamp = value => value === undefined || value === 'N/A' ? null : Number(value);
   const values = packets.map(packet => ({ pts: timestamp(packet.pts_time), dts: timestamp(packet.dts_time),
@@ -64,26 +81,30 @@ export function assessRecordingVideoEvidence(decoded, proof) {
 export const FLASH_BEEP_PULSES = [60, 90, 132, 180, 234, 294, 360, 432].map((startFrame, index) =>
   ({ id: `pulse-${index}`, startFrame, durationFrames: (index + 1) * 6 }));
 
-export function validateAudioTimeline(log, decodedSamples) {
+export function validateAudioTimeline(log, decodedSamples, { allowedPtsJitterSamples = 0 } = {}) {
   const frames = [...log.matchAll(/\bn:(\d+)\s+pts:(-?\d+)\s+pts_time:([^\s]+).*?rate:(\d+)\s+nb_samples:(\d+)/g)]
     .map(match => ({ index: Number(match[1]), pts: Number(match[2]), ptsTime: Number(match[3]), rate: Number(match[4]), samples: Number(match[5]) }));
   if (!frames.length) throw new Error('Missing decoded audio frame timestamps.');
-  let total = 0;
+  let total = 0, maxPtsJitterSamples = 0;
   for (let index = 0; index < frames.length; ++index) {
     const frame = frames[index], previous = frames[index - 1];
     if (frame.index !== index || frame.rate !== 48000 || !Number.isSafeInteger(frame.pts) ||
         !Number.isSafeInteger(frame.samples) || frame.samples <= 0 || !Number.isFinite(frame.ptsTime) ||
         Math.abs(frame.ptsTime - frame.pts / 48000) > 0.00002)
       throw new Error('Invalid decoded audio timeline metadata.');
-    if (previous && frame.pts !== previous.pts + previous.samples) throw new Error('Decoded audio PTS discontinuity; contiguous sample-index timing would be false.');
+    const jitter = Math.abs(frame.pts - (frames[0].pts + total));
+    maxPtsJitterSamples = Math.max(maxPtsJitterSamples, jitter);
+    if (previous && (frame.pts <= previous.pts || jitter > allowedPtsJitterSamples))
+      throw new Error('Decoded audio PTS discontinuity exceeds container timestamp precision.');
     total += frame.samples;
   }
   if (total !== decodedSamples) throw new Error('Audio timestamp coverage does not match decoded sample count.');
-  return { firstPts: frames[0].pts / 48000, frames: frames.length, samples: total, contiguous: true };
+  return { firstPts: frames[0].pts / 48000, frames: frames.length, samples: total, contiguous: true,
+    ...(allowedPtsJitterSamples > 0 ? { maxPtsJitterSamples, allowedPtsJitterSamples } : {}) };
 }
 
-export function detectFlashPulses(grayFrames, timestamps) {
-  detectFlashes(grayFrames, timestamps); // validates every timestamp and sample count
+export function detectFlashPulses(grayFrames, timestamps, { allowDuplicatePts = false } = {}) {
+  detectFlashes(grayFrames, timestamps, { allowDuplicatePts }); // validates every timestamp and sample count
   const pulses = [];
   let start = grayFrames[0] >= 180 ? 0 : -1;
   for (let index = 1; index < grayFrames.length; ++index) {
@@ -138,12 +159,13 @@ export function alignIdentifiedPulses(flashes, beeps) {
     limitation: 'Decoded content timing, not physical presentation. Incomplete leading/trailing pulses are excluded; missing interior pulses prevent alignment acceptance.' };
 }
 
-export function detectFlashes(grayFrames, timestamps) {
+export function detectFlashes(grayFrames, timestamps, { allowDuplicatePts = false } = {}) {
   if (grayFrames.length !== timestamps.length || !timestamps.length) throw new Error('Decoded video and frame PTS counts differ or are empty.');
   if (!Number.isFinite(timestamps[0])) throw new Error('First video frame PTS is invalid.');
   const flashes = [];
   for (let index = 1; index < grayFrames.length; ++index) {
-    if (!Number.isFinite(timestamps[index]) || timestamps[index] <= timestamps[index - 1]) throw new Error('Video frame PTS is invalid or non-increasing.');
+    if (!Number.isFinite(timestamps[index]) || (allowDuplicatePts ? timestamps[index] < timestamps[index - 1] : timestamps[index] <= timestamps[index - 1]))
+      throw new Error('Video frame PTS is invalid or non-increasing.');
     if (grayFrames[index] >= 180 && grayFrames[index - 1] < 180) flashes.push(timestamps[index]);
   }
   return flashes;

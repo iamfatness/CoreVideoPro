@@ -715,6 +715,7 @@ if(BUILD_TESTING)
     tests/IsoEncoderPlacementTest.cpp
     tests/IsoEncoderAdmissionTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
+    tests/StreamAudioAlignmentPolicyTest.cpp
     tests/SrtFfmpegArgsTest.cpp
     tests/FfmpegSenderDiagnosticsTest.cpp
     tests/RealZoomCaptureSourceTest.cpp

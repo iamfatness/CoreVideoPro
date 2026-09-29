@@ -2821,6 +2821,7 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
   outputDestinations_ = command.getStringArray("destinations");
   outputDestinationSettings_ = readOutputDestinationSettings(command);
   for (auto& destination : outputDestinationSettings_) {
+    destination.programBufferFrames = modules_.compositor->programBufferFrames();
     if (destination.id == "rtmp" || destination.protocol == "rtmp" || destination.protocol == "rtmps") {
       destination.fps = outputFps_;
       destination.targetBitrateMbps = outputTargetBitrateMbps_;
@@ -6737,6 +6738,15 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       // zero-copy I420 shared_ptr or BGRA payload, dims, frameId,
       // timestampMs) exactly as RealZoomCaptureSource used to store it.
       if (frame.hasI420() || frame.hasPixels()) {
+        if (avSyncTraceEnabled() && isWhiteClapFrame(frame, "101")) {
+          const int64_t now100ns = avSyncQpc100ns();
+          if (now100ns - avSyncLastSourceVideoClap100ns_ > 10'000'000) {
+            avSyncLastSourceVideoClap100ns_ = now100ns;
+            ::corevideo::core::nativeLogf(
+                "[av-sync] source-video qpc100ns=%lld frame=%lld\n",
+                static_cast<long long>(now100ns), static_cast<long long>(frame.frameId));
+          }
+        }
         zoomFrames.push_back(frame);
       }
     }
@@ -7796,6 +7806,22 @@ std::vector<modules::AudioFrame> MediaCore::pollZoomAudioUnlocked() {
     const auto frameNumber = lastProgramFrameNumberAtomic_.load(std::memory_order_relaxed);
     auto engineAudioFrames = zoomEngineRuntime_->pollCompositorAudioFrames((frameNumber + 1) * 20);
     if (!engineAudioFrames.empty()) {
+      if (avSyncTraceEnabled()) {
+        for (const auto& frame : engineAudioFrames) {
+          // The fake meeting-audio subscription carries participant id 0;
+          // per-guest ISO can carry 101. Only the synthetic full-scale burst
+          // qualifies, regardless of which subscribed channel delivered it.
+          const bool burst = std::any_of(frame.pcm.begin(), frame.pcm.end(),
+                                         [](float sample) { return std::abs(sample) > 0.7f; });
+          if (!burst) continue;
+          const int64_t now100ns = avSyncQpc100ns();
+          if (now100ns - avSyncLastSourceAudioClap100ns_ > 10'000'000) {
+            avSyncLastSourceAudioClap100ns_ = now100ns;
+            ::corevideo::core::nativeLogf("[av-sync] source-audio qpc100ns=%lld\n",
+                                          static_cast<long long>(now100ns));
+          }
+        }
+      }
       audioFrames = std::move(engineAudioFrames);
     }
   }

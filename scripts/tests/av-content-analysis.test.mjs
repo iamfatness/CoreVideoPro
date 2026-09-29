@@ -1,6 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FLASH_BEEP_PULSES, detectFlashes, detectBeeps, alignEvents, alignIdentifiedPulses, validateAudioTimeline, sourceCorrectedAlignment, summarizePacketTiming, assessRecordingVideoEvidence } from '../qa/av-content-analysis.mjs';
+import { FLASH_BEEP_PULSES, detectFlashes, detectBeeps, alignEvents, alignIdentifiedPulses, validateAudioTimeline, sourceCorrectedAlignment, summarizePacketTiming, assessRecordingVideoEvidence, assessRtmpSenderEvidence } from '../qa/av-content-analysis.mjs';
+
+test('RTMP sender evidence refuses a video-only live stream', () => {
+  const sender = { destination: 'rtmp', status: 'live', destinationHealth: 'ok',
+    framesSent: 1450, audioFramesSent: 1154240, audioBytesSent: 9233920, retryCount: 0,
+    supervisor: { healthy: true, acceptedUnits: 1200, lastProgressAgeMs: 10, restarts: 0, gaveUp: false } };
+  assert.equal(assessRtmpSenderEvidence([sender]).passed, true);
+  assert.equal(assessRtmpSenderEvidence([{ ...sender, audioFramesSent: 0, audioBytesSent: 0 }]).passed, false);
+  assert.equal(assessRtmpSenderEvidence([{ ...sender, retryCount: 1 }]).passed, false);
+  assert.equal(assessRtmpSenderEvidence([{ ...sender, supervisor: { ...sender.supervisor, healthy: false, acceptedUnits: 0 } }]).passed, false);
+  assert.equal(assessRtmpSenderEvidence([{ ...sender, supervisor: { ...sender.supervisor, restarts: 2 } }]).passed, false);
+  assert.equal(assessRtmpSenderEvidence([]).passed, false);
+});
+
+test('FLV millisecond timestamps permit bounded quantization without hiding a gap', () => {
+  const log = [0, 1, 2].map((index, i) =>
+    `n:${index} pts:${[0, 1024, 2040][i]} pts_time:${[0, 1024, 2040][i] / 48000} rate:48000 nb_samples:1024`).join('\n');
+  assert.throws(() => validateAudioTimeline(log, 3072), /discontinuity/);
+  assert.equal(validateAudioTimeline(log, 3072, { allowedPtsJitterSamples: 24 }).maxPtsJitterSamples, 8);
+  const gap = log.replace('pts:2040 pts_time:0.0425', `pts:1980 pts_time:${1980 / 48000}`);
+  assert.throws(() => validateAudioTimeline(gap, 3072,
+    { allowedPtsJitterSamples: 24 }), /discontinuity/);
+  assert.throws(() => detectFlashes([0, 0, 255], [0, 0, 0.02]), /non-increasing/);
+  assert.deepEqual(detectFlashes([0, 0, 255], [0, 0, 0.02], { allowDuplicatePts: true }), [0.02]);
+  assert.throws(() => detectFlashes([0, 0], [0.02, 0.01], { allowDuplicatePts: true }), /non-increasing/);
+});
 
 test('flash detection uses decoded PTS and ignores an already-white first frame', () => {
   assert.deepEqual(detectFlashes([255, 0, 255, 255, 0, 255], [0, 1, 2, 3, 4, 5]), [2, 5]);

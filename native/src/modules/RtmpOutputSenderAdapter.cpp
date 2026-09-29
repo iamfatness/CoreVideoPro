@@ -1,10 +1,11 @@
 #include "core/BoundedAsyncLog.h"
 #include "core/StreamBackpressurePolicy.h"
+#include "core/StreamAudioAlignmentPolicy.h"
 #include "modules/Interfaces.h"
 #include "modules/RtmpCompatibility.h"
 #include "modules/RtmpFfmpegArgs.h"
 #include "modules/GpuVideoEncoder.h"
-#include "modules/HevcTransportStream.h"
+#include "modules/EncodedVideoTransportStream.h"
 #include "modules/MediaFoundationGpuVideoEncoder.h"
 #include "modules/EncoderCapacityProbe.h"
 #include "modules/EncoderPolicy.h"
@@ -785,6 +786,7 @@ class RtmpOutputSender final : public IOutputSender {
                                             : settings->passphrase;
     configuredFfmpegBinDirectory_ = settings->ffmpegBinDirectory;
     configuredFps_ = (std::max)(1, settings->fps);
+    configuredProgramBufferFrames_ = settings->programBufferFrames;
     configuredVideoCodec_ = normalizeVideoCodec(settings->videoCodec);
     configuredEncoderMode_ = normalizeEncoderMode(settings->encoderMode);
     configuredKeyframeIntervalSeconds_ = (std::max)(0.5, (std::min)(protocol_.isHls ? 2.0 : 10.0,
@@ -1517,6 +1519,15 @@ class RtmpOutputSender final : public IOutputSender {
     config.h264Profile = compatibility.videoCodec == "h264" ? configuredH264Profile_ : "auto";
     config.bFrames = configuredBFrames_;
     config.endpoint = configuredEndpoint_;
+    if (protocol_.container == "flv") {
+      if (const char* tap = std::getenv("COREVIDEO_QA_RTMP_TAP_PATH")) {
+        const std::string path(tap);
+        if (!path.empty() && path.find_first_of("|]\r\n") == std::string::npos &&
+            std::filesystem::path(path).is_absolute()) {
+          config.localFlvTapPath = path;
+        }
+      }
+    }
     // When the program-audio tap delivered real PCM this tick, feed it over the
     // second input as raw f32le PCM; otherwise fall back to silent anullsrc.
     config.hasAudio = realAudioEnabledForProcess();
@@ -1526,11 +1537,12 @@ class RtmpOutputSender final : public IOutputSender {
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     config.container = protocol_.container;
-    // GPU-direct HEVC carries encoder timestamps in an internal TS envelope;
-    // other codecs retain their elementary input. FFmpeg copies the video.
+    // GPU-direct H.264 and HEVC carry encoder timestamps in an internal TS
+    // envelope; AV1 retains its elementary input. FFmpeg copies the video.
     config.videoBitstreamInput = useGpuDirect_;
     config.videoBitstreamCodec = gpuEncodeSentCodec_;
-    config.timestampedHevcInput = useGpuDirect_ && gpuEncodeSentCodec_ == "hevc";
+    config.timestampedVideoInput = useGpuDirect_ &&
+        (gpuEncodeSentCodec_ == "hevc" || gpuEncodeSentCodec_ == "h264");
     return buildRtmpFfmpegArguments(config);
   }
 
@@ -1593,6 +1605,7 @@ class RtmpOutputSender final : public IOutputSender {
 
   bool startFfmpegProcess(int width, int height, const std::string& videoInputPixelFormat) {
     startRefusedInadmissible_ = false;
+    firstBitstreamToFfmpeg_.store(false, std::memory_order_release);
 #if defined(_WIN32)
     // A failed OS termination must never permit a replacement transport to
     // overlap the old publisher. Keep its handle until it is signalled.
@@ -1683,6 +1696,8 @@ class RtmpOutputSender final : public IOutputSender {
         return refuseStreamStart(verdict, compatibility.requestedVideoCodec);
       }
     }
+    audioStartupSamplesToSkip_ = corevideo::core::gpuStreamAudioStartupSkipSamples(
+        useGpuDirect_, configuredProgramBufferFrames_, activeAudioSampleRate_, activeAudioChannels_);
 #if defined(_WIN32)
     SECURITY_ATTRIBUTES securityAttributes{};
     securityAttributes.nLength = sizeof(securityAttributes);
@@ -2413,7 +2428,8 @@ class RtmpOutputSender final : public IOutputSender {
   }
 
   void bitstreamWriterLoop() {
-    HevcTransportStream transport;
+    const bool timestampH264 = gpuEncodeSentCodec_ == "h264";
+    EncodedVideoTransportStream transport(timestampH264 ? EncodedVideoTransportStream::Codec::H264 : EncodedVideoTransportStream::Codec::Hevc);
     std::vector<uint8_t> wire;
     while (!bitstreamWriterStop_.load() && !bitstreamFailure_.failed()) {
       QueuedBitstream packet;
@@ -2427,7 +2443,7 @@ class RtmpOutputSender final : public IOutputSender {
         republishQueueTelemetryLocked();
       }
       packet.metadata.data = packet.bytes.data();
-      if (gpuEncodeSentCodec_ == "hevc") {
+      if (gpuEncodeSentCodec_ == "hevc" || timestampH264) {
         if (!transport.packetize(packet.metadata, wire)) {
           bitstreamFailure_.record(BitstreamFailure::InvalidTiming);
           ::corevideo::core::nativeLogf("[gpu-encode] invalid encoder packet timing pts=%lld dts=%lld valid=%d\n",
@@ -2530,6 +2546,7 @@ class RtmpOutputSender final : public IOutputSender {
       firstBitstreamLogged_ = true;
       ::corevideo::core::nativeLogf("[gpu-encode] first bitstream write to ffmpeg size=%zu\n", size);
     }
+    firstBitstreamToFfmpeg_.store(true, std::memory_order_release);
 #else
     if (!ffmpegRunning_ || ffmpegStdinFd_ < 0) return;
     size_t remaining = size;
@@ -2542,6 +2559,7 @@ class RtmpOutputSender final : public IOutputSender {
       data += static_cast<size_t>(written);
       remaining -= static_cast<size_t>(written);
     }
+    firstBitstreamToFfmpeg_.store(true, std::memory_order_release);
 #endif
     hasWrittenVideo_ = true;
   }
@@ -2665,16 +2683,26 @@ class RtmpOutputSender final : public IOutputSender {
     if (!activeAudioPresent_ || !pendingAudioPcm_ || pendingAudioPcm_->empty()) {
       return;
     }
-    const auto* bytes = reinterpret_cast<const char*>(pendingAudioPcm_->data());
-    size_t remaining = pendingAudioPcm_->size() * sizeof(float);
+    // FFmpeg starts its two input clocks independently. The GPU encoder can
+    // take hundreds of milliseconds to deliver its first packet; queuing PCM
+    // during that wait made audio content 0.4-0.9 s late in decoded RTMP.
+    if (corevideo::core::holdGpuStreamAudio(
+            useGpuDirect_, firstBitstreamToFfmpeg_.load(std::memory_order_acquire))) return;
+#if defined(_WIN32)
+    if (!audioPipeServer_) return;
+#else
+    if (ffmpegAudioFd_ < 0) return;
+#endif
+    const size_t skip = (std::min)(audioStartupSamplesToSkip_, pendingAudioPcm_->size());
+    audioStartupSamplesToSkip_ -= skip;
+    if (skip == pendingAudioPcm_->size()) return;
+    const auto* bytes = reinterpret_cast<const char*>(pendingAudioPcm_->data() + skip);
+    size_t remaining = (pendingAudioPcm_->size() - skip) * sizeof(float);
     size_t accepted = 0;
 #if defined(_WIN32)
-    if (!audioPipeServer_) {
-      return;
-    }
     {
       std::lock_guard<std::mutex> lock(audioQueueMutex_);
-      audioQueue_.insert(audioQueue_.end(), pendingAudioPcm_->begin(), pendingAudioPcm_->end());
+      audioQueue_.insert(audioQueue_.end(), pendingAudioPcm_->begin() + skip, pendingAudioPcm_->end());
       const size_t maxSamples = static_cast<size_t>((std::max)(1, activeAudioSampleRate_)) *
                                 static_cast<size_t>((std::max)(1, activeAudioChannels_)) * 5;
       while (audioQueue_.size() > maxSamples) {
@@ -2687,9 +2715,6 @@ class RtmpOutputSender final : public IOutputSender {
     sender_.audioFramesSent = sender_.audioBytesSent / bytesPerFrame;
     return;
 #else
-    if (ffmpegAudioFd_ < 0) {
-      return;
-    }
     while (remaining > 0) {
       const ssize_t written = ::write(ffmpegAudioFd_, bytes, remaining);
       if (written <= 0) {
@@ -3029,6 +3054,7 @@ class RtmpOutputSender final : public IOutputSender {
   int ffmpegFrameHeight_ = 0;
   std::string ffmpegPixelFormat_ = "bgra";
   int configuredFps_ = 30;
+  int configuredProgramBufferFrames_ = 0;
   int configuredAudioBitrateKbps_ = 160;
   int activeFps_ = 0;
   double activeBitrateMbps_ = 0;
@@ -3052,6 +3078,8 @@ class RtmpOutputSender final : public IOutputSender {
   bool activeAudioPresent_ = false;
   int activeAudioChannels_ = 0;
   int activeAudioSampleRate_ = 0;
+  std::atomic<bool> firstBitstreamToFfmpeg_{false};
+  size_t audioStartupSamplesToSkip_ = 0;
 #if defined(_WIN32)
   mutable std::mutex ffmpegProcessMutex_;
   HANDLE ffmpegProcess_ = nullptr;

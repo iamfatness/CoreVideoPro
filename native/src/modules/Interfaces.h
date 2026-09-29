@@ -858,6 +858,9 @@ struct OutputDestinationSettings {
   std::string ndiName;
   std::string ndiGroup;
   int fps = 30;
+  // Active Program buffer depth. The GPU-direct stream taps live pixels while
+  // its audio tap is delayed for the buffered recording path.
+  int programBufferFrames = 0;
   double targetBitrateMbps = 6.0;
   int audioBitrateKbps = 160;
   std::string videoCodec = "h264";

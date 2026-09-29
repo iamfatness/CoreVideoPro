@@ -24,6 +24,7 @@
  *                                            [--live-paths --monitor-device "Game"
  *                                             --monitor-id <WASAPI endpoint id>
  *                                             --program-buffer 2]
+ *                                            [--rtmp-local] (decoded local RTMP receiver)
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -50,6 +51,9 @@ const keepArtifact = args.includes("--keep-artifact");
 const frameSyncOff = args.includes("--no-frame-sync");
 const verbose = args.includes("--verbose");
 const livePaths = args.includes("--live-paths");
+const rtmpLocal = args.includes("--rtmp-local");
+const rtmpTapPath = process.env.COREVIDEO_QA_RTMP_TAP_PATH;
+if (rtmpTapPath && !rtmpLocal) throw new Error('COREVIDEO_QA_RTMP_TAP_PATH requires --rtmp-local');
 const monitorDevice = argValue("monitor-device", "Game (TC-HELICON GoXLR)");
 const monitorId = argValue("monitor-id", "");
 const programBufferFrames = Number(argValue("program-buffer", "2"));
@@ -89,7 +93,7 @@ const env = {
   COREVIDEO_FAKE_NO_CHURN: "1",
   COREVIDEO_FAKE_CLAP_MS: String(clapIntervalMs),
 };
-if (livePaths) {
+if (livePaths || rtmpLocal) {
   env.COREVIDEO_AV_SYNC_TRACE = "1";
   // This is a process-start setting. Both sides of the A/B run use the same
   // depth; the live operator reported active depth 2, so that is our default.
@@ -105,6 +109,8 @@ let stdoutBuffer = "";
 let handshake;
 const pending = new Map();
 const displayClaps = [];
+const sourceVideoClaps = [];
+const sourceAudioClaps = [];
 let stderrBuffer = "";
 
 child.stdout.on("data", (chunk) => {
@@ -136,6 +142,10 @@ child.stderr.on("data", (c) => {
     stderrBuffer = stderrBuffer.slice(idx + 1);
     const match = line.match(/\[av-sync\] program-publish qpc100ns=(\d+) frame=(\d+)/);
     if (match) displayClaps.push({ qpc100ns: Number(match[1]), frame: Number(match[2]) });
+    const sourceVideo = line.match(/\[av-sync\] source-video qpc100ns=(\d+) frame=(\d+)/);
+    if (sourceVideo) sourceVideoClaps.push({ qpc100ns: Number(sourceVideo[1]), frame: Number(sourceVideo[2]) });
+    const sourceAudio = line.match(/\[av-sync\] source-audio qpc100ns=(\d+)/);
+    if (sourceAudio) sourceAudioClaps.push({ qpc100ns: Number(sourceAudio[1]) });
   }
   if (stderrBuffer.length > 8192) stderrBuffer = stderrBuffer.slice(-8192);
 });
@@ -163,11 +173,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Per-frame mean luma, downscaled to 8x8 so this is cheap and robust. */
 function videoFlashTimes(artifact, fps) {
   const out = spawnSync(ffmpeg,
-    ["-v", "error", "-i", artifact, "-vf", "scale=8:8", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+    ["-v", "error", "-i", artifact, "-vf", "scale=8:8", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
     { encoding: "buffer", maxBuffer: 1 << 28, timeout: 120000 });
   if (out.status !== 0 || !out.stdout?.length) return [];
   const px = 64;
   const frames = Math.floor(out.stdout.length / px);
+  const ptsProbe = spawnSync(ffprobe,
+    ["-v", "error", "-select_streams", "v:0", "-show_frames",
+      "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", artifact],
+    { encoding: "utf8", maxBuffer: 1 << 24, timeout: 120000 });
+  const framePts = ptsProbe.status === 0
+    ? ptsProbe.stdout.trim().split(/\r?\n/).map(Number) : [];
+  if (framePts.length !== frames || !framePts.every(Number.isFinite)) {
+    throw new Error(`video frame timestamps missing: decoded=${frames}, timestamps=${framePts.length}`);
+  }
   const means = new Array(frames);
   for (let f = 0; f < frames; f += 1) {
     let sum = 0;
@@ -184,7 +203,7 @@ function videoFlashTimes(artifact, fps) {
   let prevHot = false;
   for (let f = 0; f < frames; f += 1) {
     const hot = means[f] >= threshold;
-    if (hot && !prevHot) times.push(f / fps);
+    if (hot && !prevHot) times.push(framePts[f]);
     prevHot = hot;
   }
   return times;
@@ -285,17 +304,30 @@ let artifactAbsolute = null;
 let loopback = null;
 let loopbackDone = null;
 let loopbackStderr = "";
+let rtmpReceiver = null;
+let rtmpReceiverDone = null;
+let rtmpReceiverStderr = "";
 const liveCaptureDir = join(buildDir, "Recordings", "CoreVideoPro", "validate-av-clap", `live-paths-${Date.now()}`);
+const rtmpReceived = join(liveCaptureDir, "received-rtmp.flv");
+const rtmpUrl = "rtmp://127.0.0.1:19357/live/clap";
 const loopbackRaw = join(liveCaptureDir, "monitor.f32");
 const loopbackPackets = join(liveCaptureDir, "monitor-packets.csv");
 let startCounters = null;
 let endCounters = null;
 let recordSummary = null;
+let receivedSummary = null;
+let monitorSummary = null;
+let monitorTimes = null;
+let monitorUnderruns = null;
+let lostSamples = null;
+let sourceSummary = null;
+let videoToPublish = null;
+let audioToMonitor = null;
 try {
   for (let i = 0; i < 200 && !handshake; i += 1) await sleep(50);
   if (!handshake) throw new Error("no native-core handshake");
   console.log(`Frame sync    : ${frameSyncOff ? "OFF (control)" : "ON (default)"}`);
-  if (livePaths) console.log(`Program depth : ${programBufferFrames} frames (set before core launch)`);
+  if (livePaths || rtmpLocal) console.log(`Program depth : ${programBufferFrames} frames (set before core launch)`);
 
   await send("zoom-join", { payload: { meetingNumber: "1234567890", displayName: "av-clap" } });
   await sleep(3000);
@@ -316,6 +348,22 @@ try {
     },
   });
   await sleep(2000);
+
+  if (rtmpLocal) {
+    mkdirSync(liveCaptureDir, { recursive: true });
+    rtmpReceiver = spawn(ffmpeg,
+      ["-hide_banner", "-loglevel", "warning", "-y", "-listen", "1", "-i", rtmpUrl,
+        "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", rtmpReceived],
+      { cwd: buildDir, stdio: ["ignore", "ignore", "pipe"] });
+    rtmpReceiver.stderr.on("data", (chunk) => { rtmpReceiverStderr += chunk.toString(); });
+    rtmpReceiverDone = new Promise((resolvePromise, reject) => {
+      rtmpReceiver.once("error", reject);
+      rtmpReceiver.once("exit", (code) => code === 0 ? resolvePromise() : reject(new Error(`RTMP receiver exited ${code}: ${rtmpReceiverStderr}`)));
+    });
+    rtmpReceiverDone.catch(() => {});
+    await sleep(500);
+    if (rtmpReceiver.exitCode !== null) throw new Error(`RTMP receiver exited before stream start: ${rtmpReceiverStderr}`);
+  }
 
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
@@ -346,7 +394,14 @@ try {
         deviceId: monitorId, deviceName: monitorDevice, volume: 1.0,
       }] : []),
       { type: "prepare-encoder-session", preparedAtMs: Date.now() - startedAt, reason: "av-clap warmup" },
-      { type: "start-program-output", destinations: ["recording"], isoParticipantIds: [] },
+      {
+        type: "start-program-output", destinations: rtmpLocal ? ["recording", "rtmp"] : ["recording"],
+        isoParticipantIds: [],
+        ...(rtmpLocal ? { destinationSettings: [{
+          id: "rtmp", label: "av-clap-local", protocol: "rtmp", url: "rtmp://127.0.0.1:19357/live",
+          streamKey: "clap", fps: 60, targetBitrateMbps: 6,
+        }] } : {}),
+      },
       {
         type: "set-recording-targets",
         targetFolder: "Recordings/CoreVideoPro/validate-av-clap",
@@ -394,6 +449,16 @@ try {
     elapsedMs: Date.now() - startedAt,
     commands: [{ type: "stop-recording-session", reason: "av-clap complete" }],
   });
+  if (rtmpLocal) {
+    await send("media-core-sync", {
+      elapsedMs: Date.now() - startedAt,
+      commands: [{ type: "start-program-output", destinations: ["recording"], isoParticipantIds: [] }],
+    });
+    await Promise.race([rtmpReceiverDone, sleep(15000).then(() => { throw new Error(`RTMP receiver did not finalize: ${rtmpReceiverStderr}`); })]);
+    if (!existsSync(rtmpReceived) || statSync(rtmpReceived).size < 1024) {
+      throw new Error(`RTMP receiver captured no stream: ${rtmpReceiverStderr}`);
+    }
+  }
   endCounters = stopResp.snapshot ?? endCounters;
   const artifact = stopResp.snapshot?.recording?.artifactPath ?? last?.artifactPath ?? null;
   if (!artifact) throw new Error("no recording artifact");
@@ -416,7 +481,7 @@ try {
   const streams = JSON.parse(probe.stdout).streams ?? [];
   const vStream = streams.find((s) => s.codec_type === "video");
   if (!vStream) throw new Error("recording has no video stream");
-  const [num, den] = String(vStream.r_frame_rate ?? "60/1").split("/").map(Number);
+  const [num, den] = String(vStream.avg_frame_rate ?? "60/1").split("/").map(Number);
   const fps = den ? num / den : 60;
 
   const videoTimes = videoFlashTimes(artifactAbsolute, fps);
@@ -424,6 +489,64 @@ try {
   console.log(`Events        : ${videoTimes.length} video flashes, ${audioTimes.length} audio bursts @ ${fps.toFixed(2)}fps`);
 
   const pairs = pairEvents(videoTimes, audioTimes);
+  if (pairs.length >= 2) recordSummary = describePairs("Record v-a", pairs);
+  if (rtmpLocal) {
+    const receivedProbe = spawnSync(ffprobe,
+      ["-v", "error", "-print_format", "json", "-show_streams", rtmpReceived],
+      { encoding: "utf8", timeout: 20000 });
+    if (receivedProbe.status !== 0) throw new Error(`decoded RTMP probe failed: ${receivedProbe.stderr}`);
+    const receivedStreams = JSON.parse(receivedProbe.stdout).streams ?? [];
+    const receivedVideo = receivedStreams.find((stream) => stream.codec_type === "video");
+    const receivedAudio = receivedStreams.find((stream) => stream.codec_type === "audio");
+    if (!receivedVideo || !receivedAudio) throw new Error("decoded RTMP receiver is missing video or audio");
+    const [receivedNum, receivedDen] = String(receivedVideo.avg_frame_rate ?? "60/1").split("/").map(Number);
+    const receivedFps = receivedDen ? receivedNum / receivedDen : 60;
+    const receivedVideoTimes = videoFlashTimes(rtmpReceived, receivedFps);
+    const receivedAudioTimes = audioBurstTimes(rtmpReceived);
+    const receivedPairs = pairEvents(receivedVideoTimes, receivedAudioTimes);
+    if (receivedPairs.length < 2) throw new Error(`decoded RTMP has only ${receivedPairs.length} paired claps (video=${receivedVideoTimes.length}, audio=${receivedAudioTimes.length})`);
+    receivedSummary = describePairs("RTMP v-a", receivedPairs);
+    writeFileSync(join(liveCaptureDir, "rtmp-evidence.json"), JSON.stringify({
+      source: "fake-engine timed clap; local decoded RTMP receiver and recorded Program from one run",
+      buildSha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).stdout.trim(),
+      buildDir, seconds: recordSeconds, programBufferFrames,
+      receivedArtifact: rtmpReceived, recordingArtifact: artifactAbsolute,
+      receivedVideoTimes, receivedAudioTimes, receivedSummary,
+      recordVideoTimes: videoTimes, recordAudioTimes: audioTimes, recordSummary,
+      receiverLog: rtmpReceiverStderr,
+    }, null, 2));
+    if (Math.abs(receivedSummary.medianMs) > budgetMs) {
+      failures.push(`decoded RTMP skew ${receivedSummary.medianMs.toFixed(1)}ms exceeds the ${budgetMs}ms budget`);
+    }
+    if (rtmpTapPath) {
+      if (!existsSync(rtmpTapPath) || statSync(rtmpTapPath).size < 1024) {
+        failures.push('same-run muxed RTMP tap is missing');
+      } else {
+        const tapProbe = spawnSync(ffprobe,
+          ["-v", "error", "-print_format", "json", "-show_streams", rtmpTapPath],
+          { encoding: "utf8", timeout: 20000 });
+        if (tapProbe.status !== 0) throw new Error(`muxed tap probe failed: ${tapProbe.stderr}`);
+        const tapStreams = JSON.parse(tapProbe.stdout).streams ?? [];
+        const tapVideo = tapStreams.find(stream => stream.codec_type === 'video');
+        const tapAudio = tapStreams.find(stream => stream.codec_type === 'audio');
+        if (!tapVideo || !tapAudio) throw new Error('muxed tap is missing video or audio');
+        const [tapNum, tapDen] = String(tapVideo.avg_frame_rate ?? '60/1').split('/').map(Number);
+        const tapFps = tapDen ? tapNum / tapDen : 60;
+        const tapVideoTimes = videoFlashTimes(rtmpTapPath, tapFps);
+        const tapAudioTimes = audioBurstTimes(rtmpTapPath);
+        const tapPairs = pairEvents(tapVideoTimes, tapAudioTimes);
+        if (tapPairs.length < 2) throw new Error(`muxed tap has only ${tapPairs.length} paired claps`);
+        const tapSummary = describePairs('Muxed v-a', tapPairs);
+        writeFileSync(join(liveCaptureDir, 'rtmp-tap-evidence.json'), JSON.stringify({
+          muxedArtifact: rtmpTapPath, receivedArtifact: rtmpReceived,
+          tapVideoTimes, tapAudioTimes, tapSummary, receivedSummary,
+          receiverMinusMuxerMs: receivedSummary.medianMs - tapSummary.medianMs,
+        }, null, 2));
+        if (Math.abs(receivedSummary.medianMs - tapSummary.medianMs) > 1000 / 60)
+          failures.push('local RTMP receiver differs from the same-run muxed tap by over one frame');
+      }
+    }
+  }
   if (audioTimes.length >= 2 && videoTimes.length === 0) {
     // KNOWN LIMITATION of the headless rig, not a bug in the clap. With no shell
     // attached there is no GPU readback, so `lastProgramFrame_.preview.bgra` is
@@ -443,7 +566,6 @@ try {
     const mean = pairs.reduce((a, b) => a + b, 0) / pairs.length;
     const median = pairs[Math.floor(pairs.length / 2)];
     const spread = pairs[pairs.length - 1] - pairs[0];
-    if (livePaths) recordSummary = describePairs("Record v-a", pairs);
     console.log(`Skew (v-a)    : ${pairs.map((p) => p.toFixed(1)).join(", ")} ms`);
     console.log(`              : median ${median.toFixed(1)}ms, mean ${mean.toFixed(1)}ms, spread ${spread.toFixed(1)}ms`);
     console.log(median > 0
@@ -458,9 +580,14 @@ try {
     await loopbackDone;
     const format = loopbackStderr.match(/format: (\d+)Hz (\d+)ch 32-bit/);
     if (!format) throw new Error(`loopback format missing: ${loopbackStderr}`);
-    const monitorTimes = loopbackBurstTimes(loopbackRaw, loopbackPackets, Number(format[1]), Number(format[2]));
+    monitorTimes = loopbackBurstTimes(loopbackRaw, loopbackPackets, Number(format[1]), Number(format[2]));
     const displayTimes = displayClaps.map((clap) => clap.qpc100ns / 1e7);
-    const monitorSummary = describePairs("Display-MON", pairEvents(displayTimes, monitorTimes));
+    monitorSummary = describePairs("Display-MON", pairEvents(displayTimes, monitorTimes));
+    const sourceVideoTimes = sourceVideoClaps.map((clap) => clap.qpc100ns / 1e7);
+    const sourceAudioTimes = sourceAudioClaps.map((clap) => clap.qpc100ns / 1e7);
+    sourceSummary = describePairs("Source v-a", pairEvents(sourceVideoTimes, sourceAudioTimes));
+    videoToPublish = describePairs("Ingress→DXGI", pairEvents(displayTimes, sourceVideoTimes));
+    audioToMonitor = describePairs("Ingress→MON", pairEvents(monitorTimes, sourceAudioTimes));
     if (!recordSummary) throw new Error("recording clap result missing while live paths were requested");
     if (endCounters?.audioMixSession?.monitorStatus !== "playing") {
       throw new Error(`monitor did not stay playing: ${endCounters?.audioMixSession?.monitorStatus ?? "missing"}`);
@@ -472,8 +599,8 @@ try {
     if (![monitorBefore, monitorAfter, lostBefore, lostAfter].every(Number.isFinite)) {
       throw new Error("monitor underrun or lost-sample counters missing from the same run");
     }
-    const monitorUnderruns = monitorAfter - monitorBefore;
-    const lostSamples = lostAfter - lostBefore;
+    monitorUnderruns = monitorAfter - monitorBefore;
+    lostSamples = lostAfter - lostBefore;
     console.log(`Continuity    : monitor underruns +${monitorUnderruns}, audio lost samples +${lostSamples}`);
     if (monitorUnderruns !== 0 || lostSamples !== 0) {
       failures.push(`continuity failed: monitor underruns +${monitorUnderruns}, audio lost samples +${lostSamples}`);
@@ -483,7 +610,8 @@ try {
       source: "fake-engine timed clap; Program texture publish, endpoint WASAPI loopback, and recorded Program from one run",
       buildDir, monitorDevice, monitorId, programBufferFrames, seconds: recordSeconds,
       displayMarker: "delivered Program source frame at DXGI shared-texture publish; actual monitor vsync is not measured",
-      displayClaps, monitorTimes, recordSummary, monitorSummary,
+      sourceVideoClaps, sourceAudioClaps, sourceSummary, videoToPublish, audioToMonitor,
+      displayClaps, monitorTimes, recordSummary, receivedSummary, monitorSummary,
       monitorUnderruns, lostSamples, recordingArtifact: artifactAbsolute,
       loopbackRaw, loopbackPackets, loopbackCaptureLog: loopbackStderr,
     }, null, 2));
@@ -492,13 +620,37 @@ try {
       failures.push(`live display/monitor skew ${monitorSummary.medianMs.toFixed(1)}ms exceeds the ${budgetMs}ms budget`);
     }
   }
+  if (livePaths && rtmpLocal) {
+    const reportPath = join(liveCaptureDir, "boundary-report.json");
+    writeFileSync(reportPath, JSON.stringify({
+      source: "one fake-engine flash/click run; all requested local outputs captured concurrently",
+      buildSha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).stdout.trim(),
+      buildDir, seconds: recordSeconds, programBufferFrames,
+      boundaries: {
+        sourceIngress: "first decoded Zoom frame and PCM returned to core pollers; QPC, not Zoom sender time",
+        program: "DXGI Program shared-texture publish; physical display vsync unmeasured",
+        monitor: `WASAPI loopback from ${monitorDevice}; QPC`,
+        recording: "finalized Program MP4 decoded content PTS",
+        rtmp: "local receiver FLV decoded content PTS",
+        youtube: "MISSING_EVIDENCE: no same-run YouTube ingest/playback capture",
+      },
+      sourceVideoClaps, sourceAudioClaps, displayClaps, monitorTimes,
+      sourceIngressVideoMinusAudio: sourceSummary, sourceVideoIngressToProgramPublish: videoToPublish,
+      sourceAudioIngressToMonitorLoopback: audioToMonitor,
+      programMinusMonitor: monitorSummary, recordingVideoMinusAudio: recordSummary,
+      rtmpVideoMinusAudio: receivedSummary, monitorUnderruns, lostSamples,
+      artifacts: { recording: artifactAbsolute, receivedRtmp: rtmpReceived, loopbackRaw, loopbackPackets },
+    }, null, 2));
+    console.log(`Boundary report: ${reportPath}`);
+  }
 } catch (error) {
   failures.push(error.message);
 } finally {
   if (loopback && loopback.exitCode === null) loopback.kill();
+  if (rtmpReceiver && rtmpReceiver.exitCode === null) rtmpReceiver.kill();
   try { child.stdin.end(); } catch {}
   child.kill();
-  if (!keepArtifact && !livePaths && artifactAbsolute && existsSync(artifactAbsolute)) {
+  if (!keepArtifact && !livePaths && !rtmpLocal && artifactAbsolute && existsSync(artifactAbsolute)) {
     try { rmSync(artifactAbsolute); } catch {}
   } else if (artifactAbsolute) {
     console.log(`Artifact      : ${artifactAbsolute}`);

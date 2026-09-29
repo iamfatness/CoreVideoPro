@@ -9,13 +9,16 @@
 
 namespace corevideo::modules {
 
-// Single-program, single HEVC stream for the existing encoder -> FFmpeg pipe.
+// Single-program, single HEVC or H.264 stream for the encoder -> FFmpeg pipe.
 // This is an internal timestamp envelope, not the network muxer. FFmpeg still
 // owns AAC encoding and enhanced FLV/RTMP. No decode, re-encode or frame padding.
 // PES carries the encoder's PTS/DTS; PAT/PMT and PCR permit ordinary TS demuxers
 // to consume it. One session-local epoch is subtracted, preserving all gaps.
-class HevcTransportStream {
+class EncodedVideoTransportStream {
  public:
+  enum class Codec { Hevc, H264 };
+  explicit EncodedVideoTransportStream(Codec codec = Codec::Hevc) : codec_(codec) {}
+
   bool packetize(const GpuEncodedChunk& chunk, std::vector<uint8_t>& output) {
     output.clear();
     if (!chunk.data || chunk.size < 6 || !chunk.timingValid || chunk.dts100ns < 0 ||
@@ -41,8 +44,13 @@ class HevcTransportStream {
     // An AUD makes the access-unit boundary explicit even for MFTs which omit
     // AUD NALs. Duplicate AUDs are avoided by inspecting the first start code.
     const size_t prefix = chunk.size >= 4 && chunk.data[2] == 0 ? 4 : 3;
-    const bool aud = chunk.size > prefix && ((chunk.data[prefix] >> 1) & 63) == 35;
-    if (!aud) pes.insert(pes.end(), {0, 0, 0, 1, 0x46, 1, 0x50});
+    const bool aud = chunk.size > prefix && (codec_ == Codec::Hevc
+        ? ((chunk.data[prefix] >> 1) & 63) == 35
+        : (chunk.data[prefix] & 31) == 9);
+    if (!aud) {
+      if (codec_ == Codec::Hevc) pes.insert(pes.end(), {0, 0, 0, 1, 0x46, 1, 0x50});
+      else pes.insert(pes.end(), {0, 0, 0, 1, 0x09, 0xf0});
+    }
     pes.insert(pes.end(), chunk.data, chunk.data + chunk.size);
 
     size_t offset = 0;
@@ -115,9 +123,11 @@ class HevcTransportStream {
   void tables(std::vector<uint8_t>& output) {
     section(output, 0, patCounter_, {0, 0xb0, 13, 0, 1, 0xc1, 0, 0, 0, 1, 0xf0, 0});
     section(output, 0x1000, pmtCounter_,
-            {2, 0xb0, 18, 0, 1, 0xc1, 0, 0, 0xe1, 0, 0xf0, 0, 0x24, 0xe1, 0, 0xf0, 0});
+            {2, 0xb0, 18, 0, 1, 0xc1, 0, 0, 0xe1, 0, 0xf0,
+             static_cast<uint8_t>(codec_ == Codec::Hevc ? 0x24 : 0x1b), 0xe1, 0, 0xf0, 0});
   }
 
+  Codec codec_;
   bool started_ = false;
   int64_t epoch_ = 0, lastDts_ = 0;
   uint64_t tableDts_ = 0;

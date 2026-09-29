@@ -3626,9 +3626,12 @@ TEST(MediaCoreCommand, TwoMediaClipsBothSumThroughTheOneMediaStrip) {
 
   // The fake emits the same 0.2-peak in-phase sine per clip: one clip alone
   // peaks at ~0.2, both summed at ~0.4.
-  EXPECT_TRUE(corevideo::testing::applyUntil(mediaCore, [](corevideo::core::MediaCore& core) {
-    return peakOfSamples(core.programAudioTapPcm()) > 0.3f;
-  }));
+  float strongestCombinedPeak = 0.f;
+  EXPECT_TRUE(corevideo::testing::applyUntil(mediaCore, [&](corevideo::core::MediaCore& core) {
+    strongestCombinedPeak = std::max(strongestCombinedPeak, peakOfSamples(core.programAudioTapPcm()));
+    return strongestCombinedPeak > 0.3f;
+  }, 10000)) << "strongest combined peak=" << strongestCombinedPeak
+             << " media audio polls=" << SolidMediaFrameSource::audioPollCount.load();
 }
 
 // An explicit per-clip strip or send (exact `media:<assetId>`) wins over the alias.
