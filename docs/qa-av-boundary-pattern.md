@@ -72,9 +72,12 @@ node scripts/qa/measure-av-pattern.mjs --source artifacts/issue-703-pattern/flas
 All legs report the sign, spread, frames at 60 fps, and offset corrected for
 the source file's own tiny skew.
 
-FLV carries millisecond timestamps. For the RTMP leg only, the decoder permits
-equal video PTS and up to 24 samples (0.5 ms) of AAC PTS quantization against
-the decoded sample count; it still rejects backward video PTS and larger audio
-gaps. The report retains `duplicateVideoPts` and `audioPtsJitterSamples`.
-Recording and source files keep the strict timestamp checks. This allowance
-helps measure A/V content; it is not a frame-delivery pass.
+FLV and YouTube HLS captures can quantize AAC timestamps. For those received
+legs, the decoder permits equal video PTS and up to 24 samples (0.5 ms) of AAC
+PTS jitter against the decoded sample count; it still rejects backward video
+PTS and larger audio gaps. The report retains `duplicateVideoPts`,
+`audioPtsJitterSamples`, and the applied tolerance. Recording and source files
+keep the strict timestamp checks. Trim a YouTube capture around the same cue
+interval if stream reconnects elsewhere in the file introduce a discontinuity;
+retain the original capture as evidence. This allowance helps measure A/V
+content; it is not a frame-delivery pass.

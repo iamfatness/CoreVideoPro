@@ -25,8 +25,12 @@ for (const role of roles) {
   const input = options[`--${role}`];
   if (!input) { if (role !== 'source') report.missingLegs.push(role); continue; }
   const file = resolve(input);
+  // RTMP/FLV and YouTube HLS both quantize AAC timestamps. Keep source and
+  // finalized Program strict; permit only the decoder's bounded 24-sample
+  // (0.5 ms) transport jitter for received streams.
+  const transportTimestampPrecisionMs = role === 'rtmp' || role === 'youtube' ? 1 : 0;
   const decode = await decodeRecordedAvFile(file, { ffmpeg, ffprobe, allowAnyVideoSize: role !== 'source',
-    transportTimestampPrecisionMs: role === 'rtmp' ? 1 : 0 });
+    transportTimestampPrecisionMs });
   const alignment = decode.alignment;
   const valid = decode.analysisValid && alignment?.sufficientPairs && alignment.interiorCoverageComplete;
   const videoMinusAudioMs = valid ? -alignment.medianAudioMinusVideoMs : null;
@@ -38,6 +42,7 @@ for (const role of roles) {
     pairedCueIds: alignment?.pairs?.map(pair => pair.pulseId) ?? [],
     duplicateVideoPts: decode.duplicateVideoPts ?? null,
     audioPtsJitterSamples: decode.audioTimeline?.maxPtsJitterSamples ?? null,
+    transportTimestampPrecisionMs,
     videoMinusAudioMs,
     framesAt60: videoMinusAudioMs === null ? null : videoMinusAudioMs * 60 / 1000,
     spreadMs: valid ? alignment.maxAudioMinusVideoMs - alignment.minAudioMinusVideoMs : null,
