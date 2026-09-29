@@ -107,6 +107,8 @@ let stdoutBuffer = "";
 let handshake;
 const pending = new Map();
 const displayClaps = [];
+const sourceVideoClaps = [];
+const sourceAudioClaps = [];
 let stderrBuffer = "";
 
 child.stdout.on("data", (chunk) => {
@@ -138,6 +140,10 @@ child.stderr.on("data", (c) => {
     stderrBuffer = stderrBuffer.slice(idx + 1);
     const match = line.match(/\[av-sync\] program-publish qpc100ns=(\d+) frame=(\d+)/);
     if (match) displayClaps.push({ qpc100ns: Number(match[1]), frame: Number(match[2]) });
+    const sourceVideo = line.match(/\[av-sync\] source-video qpc100ns=(\d+) frame=(\d+)/);
+    if (sourceVideo) sourceVideoClaps.push({ qpc100ns: Number(sourceVideo[1]), frame: Number(sourceVideo[2]) });
+    const sourceAudio = line.match(/\[av-sync\] source-audio qpc100ns=(\d+)/);
+    if (sourceAudio) sourceAudioClaps.push({ qpc100ns: Number(sourceAudio[1]) });
   }
   if (stderrBuffer.length > 8192) stderrBuffer = stderrBuffer.slice(-8192);
 });
@@ -307,6 +313,14 @@ const loopbackPackets = join(liveCaptureDir, "monitor-packets.csv");
 let startCounters = null;
 let endCounters = null;
 let recordSummary = null;
+let receivedSummary = null;
+let monitorSummary = null;
+let monitorTimes = null;
+let monitorUnderruns = null;
+let lostSamples = null;
+let sourceSummary = null;
+let videoToPublish = null;
+let audioToMonitor = null;
 try {
   for (let i = 0; i < 200 && !handshake; i += 1) await sleep(50);
   if (!handshake) throw new Error("no native-core handshake");
@@ -489,7 +503,7 @@ try {
     const receivedAudioTimes = audioBurstTimes(rtmpReceived);
     const receivedPairs = pairEvents(receivedVideoTimes, receivedAudioTimes);
     if (receivedPairs.length < 2) throw new Error(`decoded RTMP has only ${receivedPairs.length} paired claps (video=${receivedVideoTimes.length}, audio=${receivedAudioTimes.length})`);
-    const receivedSummary = describePairs("RTMP v-a", receivedPairs);
+    receivedSummary = describePairs("RTMP v-a", receivedPairs);
     writeFileSync(join(liveCaptureDir, "rtmp-evidence.json"), JSON.stringify({
       source: "fake-engine timed clap; local decoded RTMP receiver and recorded Program from one run",
       buildSha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).stdout.trim(),
@@ -536,9 +550,14 @@ try {
     await loopbackDone;
     const format = loopbackStderr.match(/format: (\d+)Hz (\d+)ch 32-bit/);
     if (!format) throw new Error(`loopback format missing: ${loopbackStderr}`);
-    const monitorTimes = loopbackBurstTimes(loopbackRaw, loopbackPackets, Number(format[1]), Number(format[2]));
+    monitorTimes = loopbackBurstTimes(loopbackRaw, loopbackPackets, Number(format[1]), Number(format[2]));
     const displayTimes = displayClaps.map((clap) => clap.qpc100ns / 1e7);
-    const monitorSummary = describePairs("Display-MON", pairEvents(displayTimes, monitorTimes));
+    monitorSummary = describePairs("Display-MON", pairEvents(displayTimes, monitorTimes));
+    const sourceVideoTimes = sourceVideoClaps.map((clap) => clap.qpc100ns / 1e7);
+    const sourceAudioTimes = sourceAudioClaps.map((clap) => clap.qpc100ns / 1e7);
+    sourceSummary = describePairs("Source v-a", pairEvents(sourceVideoTimes, sourceAudioTimes));
+    videoToPublish = describePairs("Ingress→DXGI", pairEvents(displayTimes, sourceVideoTimes));
+    audioToMonitor = describePairs("Ingress→MON", pairEvents(monitorTimes, sourceAudioTimes));
     if (!recordSummary) throw new Error("recording clap result missing while live paths were requested");
     if (endCounters?.audioMixSession?.monitorStatus !== "playing") {
       throw new Error(`monitor did not stay playing: ${endCounters?.audioMixSession?.monitorStatus ?? "missing"}`);
@@ -550,8 +569,8 @@ try {
     if (![monitorBefore, monitorAfter, lostBefore, lostAfter].every(Number.isFinite)) {
       throw new Error("monitor underrun or lost-sample counters missing from the same run");
     }
-    const monitorUnderruns = monitorAfter - monitorBefore;
-    const lostSamples = lostAfter - lostBefore;
+    monitorUnderruns = monitorAfter - monitorBefore;
+    lostSamples = lostAfter - lostBefore;
     console.log(`Continuity    : monitor underruns +${monitorUnderruns}, audio lost samples +${lostSamples}`);
     if (monitorUnderruns !== 0 || lostSamples !== 0) {
       failures.push(`continuity failed: monitor underruns +${monitorUnderruns}, audio lost samples +${lostSamples}`);
@@ -561,7 +580,8 @@ try {
       source: "fake-engine timed clap; Program texture publish, endpoint WASAPI loopback, and recorded Program from one run",
       buildDir, monitorDevice, monitorId, programBufferFrames, seconds: recordSeconds,
       displayMarker: "delivered Program source frame at DXGI shared-texture publish; actual monitor vsync is not measured",
-      displayClaps, monitorTimes, recordSummary, monitorSummary,
+      sourceVideoClaps, sourceAudioClaps, sourceSummary, videoToPublish, audioToMonitor,
+      displayClaps, monitorTimes, recordSummary, receivedSummary, monitorSummary,
       monitorUnderruns, lostSamples, recordingArtifact: artifactAbsolute,
       loopbackRaw, loopbackPackets, loopbackCaptureLog: loopbackStderr,
     }, null, 2));
@@ -569,6 +589,29 @@ try {
     if (Math.abs(monitorSummary.medianMs) > budgetMs) {
       failures.push(`live display/monitor skew ${monitorSummary.medianMs.toFixed(1)}ms exceeds the ${budgetMs}ms budget`);
     }
+  }
+  if (livePaths && rtmpLocal) {
+    const reportPath = join(liveCaptureDir, "boundary-report.json");
+    writeFileSync(reportPath, JSON.stringify({
+      source: "one fake-engine flash/click run; all requested local outputs captured concurrently",
+      buildSha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).stdout.trim(),
+      buildDir, seconds: recordSeconds, programBufferFrames,
+      boundaries: {
+        sourceIngress: "first decoded Zoom frame and PCM returned to core pollers; QPC, not Zoom sender time",
+        program: "DXGI Program shared-texture publish; physical display vsync unmeasured",
+        monitor: `WASAPI loopback from ${monitorDevice}; QPC`,
+        recording: "finalized Program MP4 decoded content PTS",
+        rtmp: "local receiver FLV decoded content PTS",
+        youtube: "MISSING_EVIDENCE: no same-run YouTube ingest/playback capture",
+      },
+      sourceVideoClaps, sourceAudioClaps, displayClaps, monitorTimes,
+      sourceIngressVideoMinusAudio: sourceSummary, sourceVideoIngressToProgramPublish: videoToPublish,
+      sourceAudioIngressToMonitorLoopback: audioToMonitor,
+      programMinusMonitor: monitorSummary, recordingVideoMinusAudio: recordSummary,
+      rtmpVideoMinusAudio: receivedSummary, monitorUnderruns, lostSamples,
+      artifacts: { recording: artifactAbsolute, receivedRtmp: rtmpReceived, loopbackRaw, loopbackPackets },
+    }, null, 2));
+    console.log(`Boundary report: ${reportPath}`);
   }
 } catch (error) {
   failures.push(error.message);

@@ -4,13 +4,14 @@ import { promisify } from 'node:util';
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { resolve, dirname, join, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { FLASH_BEEP_PULSES, sourceCorrectedAlignment, assessRecordingVideoEvidence } from './av-content-analysis.mjs';
+import { sourceCorrectedAlignment, assessRecordingVideoEvidence } from './av-content-analysis.mjs';
 import { decodeRecordedAvFile } from './av-content-decode.mjs';
+import { generateAvPattern } from './generate-av-pattern.mjs';
 
 const exec = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const args = process.argv.slice(2), options = {};
 for (let i = 0; i < args.length; i += 2) {
-  if (!['--native-core', '--output-dir', '--ffmpeg', '--ffprobe'].includes(args[i]) || !args[i + 1]) throw new Error('Usage: node scripts/qa/program-buffer-recorded-av.mjs --native-core EXE --output-dir DIRECTORY [--ffmpeg EXE] [--ffprobe EXE]');
+  if (!['--native-core', '--output-dir', '--ffmpeg', '--ffprobe', '--fixture'].includes(args[i]) || !args[i + 1]) throw new Error('Usage: node scripts/qa/program-buffer-recorded-av.mjs --native-core EXE --output-dir DIRECTORY [--fixture MEDIA] [--ffmpeg EXE] [--ffprobe EXE]');
   options[args[i]] = args[i + 1];
 }
 if (!options['--native-core'] || !options['--output-dir']) throw new Error('Explicit native core and output directory required.');
@@ -62,6 +63,12 @@ async function record(frames, fixture) {
   });
   const observe = value => {
     snapshot = value; const state = snapshot?.recording?.lifecycle;
+    for (const participant of snapshot?.audioMixSession?.participants ?? []) {
+      if (participant.participantId === 'media' || participant.participantId === 'media:flash-beep') {
+        run.mediaPeakDbfs = Math.max(run.mediaPeakDbfs ?? -120, participant.peakDbfs ?? -120);
+        run.mediaInputPeakDbfs = Math.max(run.mediaInputPeakDbfs ?? -120, participant.inputPeakDbfs ?? -120);
+      }
+    }
     if (state && run.states.at(-1)?.state !== state.state) run.states.push({ at: Date.now(), ...state });
     if (state?.state === 'failed' || state?.state === 'interrupted') throw new Error(`Recording ${state.state}.`);
     if (snapshot?.programBuffer?.activeFrames !== frames || snapshot?.programBuffer?.status === 'failed') throw new Error('Requested buffer is not active.');
@@ -87,8 +94,10 @@ async function record(frames, fixture) {
       { type: 'set-output-profile', width: 1920, height: 1080, fps: 60, targetBitrateMbps: 8 },
       { type: 'load-scene-graph', sceneId: 'flash-beep-proof', routes: [{ routeId: 'program', mode: 'fixed', audioRole: 'mix',
         mediaAssetId: 'flash-beep', mediaAssetName: 'Generated flash and beep', mediaAssetKind: 'video', mediaAssetPath: fixture,
-        mediaAssetPlaying: true, mediaPlaybackKey: `depth-${frames}`, rect: { x: 0, y: 0, width: 1, height: 1 } }] },
-      { type: 'sync-audio-routing-matrix', sends: [{ sourceId: 'media:flash-beep', busId: 'master', gainDb: 0 }] },
+        mediaAssetLoop: true, rect: { x: 0, y: 0, width: 1, height: 1 } }] },
+      { type: 'sync-participant-audio-mix', limiterEnabled: true, channels: [{ participantId: 'media', inputLevel: 0,
+        muted: false, noiseSuppression: false, manualGainDb: 0, pan: 0, solo: false, pluginInserts: [], insertSettings: {} }] },
+      { type: 'sync-audio-routing-matrix', sends: [{ sourceId: 'media', busId: 'master', gainDb: 0 }] },
       { type: 'start-program-output', destinations: ['recording'], isoParticipantIds: [] },
       { type: 'set-recording-targets', targetFolder: runDirectory, filenamePrefix: 'flash-beep', format: 'mp4', quality: 'high', isoParticipantIds: [] },
       { type: 'start-recording-session', sessionId: `flash-beep-${frames}`, targetFolder: runDirectory, filenamePrefix: 'flash-beep', format: 'mp4', quality: 'high', isoParticipantIds: [] }
@@ -101,6 +110,9 @@ async function record(frames, fixture) {
     const end = Date.now() + 7500;
     while (Date.now() < end) { await sleep(500); await poll(); }
     run.liveRecording = snapshot.recording;
+    run.liveMediaSources = snapshot.mediaSources;
+    run.liveAudioMix = snapshot.audioMixSession;
+    run.liveWarnings = snapshot.warnings;
     await sync([{ type: 'stop-recording-session', reason: 'Bounded flash/beep measurement complete' }]);
     const finalDeadline = Date.now() + 20000;
     while (snapshot.recording?.lifecycle?.state !== 'completed' && Date.now() < finalDeadline) { await sleep(200); await poll(); }
@@ -121,13 +133,8 @@ async function record(frames, fixture) {
 }
 
 try {
-  const fixture = join(directory, 'flash-beep.mp4');
-  const videoPulseExpression = FLASH_BEEP_PULSES.map(p => `gte(n,${p.startFrame})*lt(n,${p.startFrame + p.durationFrames})`).join('+');
-  const audioPulseExpression = FLASH_BEEP_PULSES.map(p => `gte(t,${p.startFrame / 60})*lt(t,${(p.startFrame + p.durationFrames) / 60})`).join('+');
-  await tool(ffmpeg, ['-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=black:s=1920x1080:r=60:d=14',
-    '-f', 'lavfi', '-i', `aevalsrc='if(${audioPulseExpression},0.7*sin(2*PI*1000*t),0)':s=48000:d=14`,
-    '-vf', `drawbox=color=white:t=fill:enable='${videoPulseExpression}'`, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', fixture]);
+  const fixture = options['--fixture'] ? resolve(options['--fixture']) : join(directory, 'flash-beep.mp4');
+  if (!options['--fixture']) await generateAvPattern(fixture, { ffmpeg, ffprobe });
   report.fixture = { path: fixture, decode: await decode(fixture) };
   if (report.fixture.decode.alignmentError) throw new Error('Fixture: ' + report.fixture.decode.alignmentError);
   for (const frames of [2, 3]) {

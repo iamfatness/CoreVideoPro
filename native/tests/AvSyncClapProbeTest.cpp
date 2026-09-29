@@ -16,6 +16,7 @@ corevideo::modules::VideoFrame whiteFrame() {
 TEST(AvSyncClapProbe, WhiteClapRequiresTheRoutedSourceAndFullLuma) {
   auto frame = whiteFrame();
   EXPECT_TRUE(corevideo::core::hasWhiteClapSource({frame}, "101"));
+  EXPECT_TRUE(corevideo::core::isWhiteClapFrame(frame, "101"));
   EXPECT_FALSE(corevideo::core::hasWhiteClapSource({frame}, "102"));
 
   auto dark = std::vector<uint8_t>(24, 235);

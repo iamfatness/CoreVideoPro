@@ -1414,6 +1414,8 @@ class MediaCore {
   // #652 test trace: match the fake engine's white source frame to the exact
   // buffered Program frame that reaches the shared-texture publish path.
   std::deque<int64_t> avSyncWhiteProducedFrames_;
+  int64_t avSyncLastSourceVideoClap100ns_ = 0;
+  int64_t avSyncLastSourceAudioClap100ns_ = 0;
   int64_t avSyncLastDisplayClap100ns_ = 0;
   // Throttles base64 program-preview/shared-texture stdout events so they don't
   // flood the RPC channel and starve command responses (see JsonRpcServer::run).
