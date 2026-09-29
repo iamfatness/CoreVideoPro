@@ -73,7 +73,10 @@ inline std::vector<modules::AudioFrame> ingestSourceAudio(
     for (auto& frame : delivered.frames) frames.push_back(std::move(frame));
   }
   stageCaptureAudioSources(bus, std::move(frames), configured);
-  stageMediaAudioSources(bus, media ? media->popAudio(timestampMs) : std::vector<modules::AudioFrame>{});
+  // MediaTransports demand slots use steady_clock wall time, the same clock
+  // its decoder worker uses. `timestampMs` is the render-frame timeline and
+  // starts near zero; using it here strands the media PCM behind that clock.
+  stageMediaAudioSources(bus, media ? media->popAudio(nowNs / 1'000'000) : std::vector<modules::AudioFrame>{});
   return bus.ingestAudio(programTime100ns, nowNs);
 }
 } // namespace corevideo::core

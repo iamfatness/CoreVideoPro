@@ -58,6 +58,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#705](https://github.com/iamfatness/CoreVideoPro/issues/705) | Headless media A/V pattern reaches Program video but not audio. The media transport demand clock mismatches the render timeline; fix and verify PCM in a real Release recording. Owner has not assigned a rank. |
 | [#668](https://github.com/iamfatness/CoreVideoPro/issues/668) | Slices A–D merged (#670–#673): unique guest bindings, host exclusion, talk ledger and Set & Forget holds. Installed host-plus-three-guests, interview, solo and share-priority acceptance remains. |
 | [#674](https://github.com/iamfatness/CoreVideoPro/issues/674) | Slices A–F merged (#675–#680), including direct negotiated-format facts and existing Multiview texture crop. Installed no-click video-off, ISO arm, Engine-off transitions and ten-row GPU load remain acceptance; reopened after an early close. |
 | [#651](https://github.com/iamfatness/CoreVideoPro/issues/651) | Virtual-camera DLL registration pointed to a removed beta. Re-registering restored the live camera; durable install-path registration, an actionable error and installed-beta proof remain. |
