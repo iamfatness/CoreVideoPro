@@ -135,7 +135,7 @@ class SharedGpuVideoEncoderPool::Client final : public GpuVideoEncoder {
       sinkId_ = session_->nextSinkId++;
       session_->sinks.push_back(std::make_shared<Session::Subscriber>(sinkId_, std::move(sink)));
     }
-    keyframeSession_.store(session_);
+    std::atomic_store(&keyframeSession_, session_);
     lastFailure_.clear();
     return true;
   }
@@ -155,7 +155,7 @@ class SharedGpuVideoEncoderPool::Client final : public GpuVideoEncoder {
     // The encoder callback may ask for an IDR while holding one destination's
     // queue lock. Do not hold the pool lock across the encoder call: a submit
     // can synchronously publish to that queue.
-    const auto session = keyframeSession_.load();
+    const auto session = std::atomic_load(&keyframeSession_);
     return session && session->encoder && session->encoder->requestKeyframe();
   }
 
@@ -177,7 +177,7 @@ class SharedGpuVideoEncoderPool::Client final : public GpuVideoEncoder {
                              state_->sessions.end());
       state_->stoppingProfiles.push_back(retiring->profile);
     }
-    keyframeSession_.store(nullptr);
+    std::atomic_store(&keyframeSession_, std::shared_ptr<Session>{});
     session_.reset();
     sinkId_ = 0;
     lock.unlock();
@@ -206,7 +206,9 @@ class SharedGpuVideoEncoderPool::Client final : public GpuVideoEncoder {
  private:
   std::shared_ptr<State> state_;
   std::shared_ptr<Session> session_;
-  std::atomic<std::shared_ptr<Session>> keyframeSession_;
+  // Use the atomic shared_ptr free functions: macOS CI's libc++ does not yet
+  // provide std::atomic<std::shared_ptr<T>> on every supported runner.
+  std::shared_ptr<Session> keyframeSession_;
   uint64_t sinkId_ = 0;
   std::string lastFailure_;
 };
