@@ -3,6 +3,8 @@
 #include "core/MediaCore.h"
 #include "modules/WinUiCaptureDeviceAdapter.h"
 #include <gtest/gtest.h>
+#include <chrono>
+#include <thread>
 
 using namespace corevideo;
 namespace {
@@ -29,6 +31,20 @@ class Transport final : public modules::ICaptureDevice {
   std::vector<modules::CaptureDeviceInfo> connect(const std::string&) override { return {}; }
   std::vector<std::string> audioSourceIds() const override { return {"capture:srt-1"}; }
   void captureAudioTick(int64_t stamp) override { postAudio(pcm("capture:srt-1", stamp, .75f)); }
+};
+class ClockSensitiveMediaDecoder final : public modules::IMediaDecoder {
+ public:
+  std::vector<modules::VideoFrame> pollMediaFrames(const modules::MediaDecodeRequest&, int64_t) override { return {}; }
+  std::vector<modules::AudioFrame> pollMediaAudioFrames(const modules::MediaDecodeRequest& request,
+                                                       int64_t timestampMs) override {
+    // The decoder worker must receive steady-clock demand time, not a render
+    // frame count. A relative 20/40/60 ms demand is deliberately refused.
+    if (timestampMs < 1'000'000) return {};
+    auto frame = pcm(request.sourceId, timestampMs, .5f);
+    frame.sampleCount = 960; frame.pcm.assign(1920, .5f);
+    return {std::move(frame)};
+  }
+  std::vector<std::string> warnings() const override { return {}; }
 };
 }
 
@@ -136,6 +152,30 @@ TEST(SourceAudioIngress, ShellCaptureWrapperForwardsTransportMembershipAndPcm) {
   ASSERT_EQ(out.size(), 1u); EXPECT_EQ(out[0].timestampMs, 456);
   EXPECT_EQ(out[0].pcm, std::vector<float>(960, .75f));
   EXPECT_TRUE(bus.contains("capture:srt-1"));
+}
+
+TEST(SourceAudioIngress, MediaDemandUsesSteadyClockWhileCaptureKeepsRenderTimestamp) {
+  core::SourceBus bus;
+  bus.add(std::make_shared<core::MediaAssetSource>("media:clock", "media", 640, 360));
+  core::MediaTransports media([] { return std::make_unique<ClockSensitiveMediaDecoder>(); });
+  core::MediaTransportDesired desired;
+  desired.sourceId = "media:clock"; desired.assetId = "clock";
+  desired.kind = "video"; desired.path = "clock.wav"; desired.onProgram = true;
+  ASSERT_EQ(media.apply({desired}, 0).size(), 1u);
+  bool delivered = false;
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!delivered && std::chrono::steady_clock::now() < until) {
+    const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto frames = core::ingestSourceAudio(bus, {}, nullptr, nullptr, &media, {},
+                                                20, nowNs / 100, nowNs);
+    for (const auto& frame : frames) {
+      if (frame.participantId == "media:clock" && !frame.pcm.empty() && frame.pcm[0] == .5f)
+        delivered = true;
+    }
+    if (!delivered) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  EXPECT_TRUE(delivered) << "media PCM demand must use steady time, not the synthetic render timestamp";
 }
 
 TEST(SourceAudioIngress, MediaCoreMixerGatherPublishesCapturePcmCounters) {
