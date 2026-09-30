@@ -2606,6 +2606,14 @@ already-backed-up pipe. **The core was starving; the UI was never blocked.** Two
 plus a restart floor now absorb a destination that cannot carry the configured bitrate.
 Spec + full evidence: `docs/superpowers/specs/2026-09-23-stream-backpressure-design.md`.
 
+**#538 update (2026-09-29):** The Lever A compositor export divisor described
+below is historical behavior. It reduced every output's frame rate when one
+destination was congested. The shared Program encoder now keeps full export
+cadence; each destination's queue performs its own GOP discard and IDR recovery.
+The sender's `divisor` remains a pressure recommendation for compatibility,
+while `appliedDivisor` reports the compositor's actual rate. Validate blocked
+RTMP against received SRT/HLS media and Program render slots.
+
 - **THE DIAGNOSTIC TECHNIQUE, worth more than the fix: compare `perf.log` gaps against
   the sample COUNTER, not wall time.** The incident's one 21.01 s gap
   (21:09:12.06 → 21:09:33.07) carried a NORMAL counter delta (10860 → 10890, the usual

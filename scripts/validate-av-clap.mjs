@@ -25,6 +25,7 @@
  *                                             --monitor-id <WASAPI endpoint id>
  *                                             --program-buffer 2]
  *                                            [--rtmp-local] (decoded local RTMP receiver)
+ *                                            [--drift-gate] (requires 15 minutes + RTMP)
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -41,6 +42,7 @@ const argValue = (name, fallback) => {
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 };
 const buildDir = resolve(argValue("build-dir", join(repoRoot, "native", "build-dev")));
+const binarySourceRoot = resolve(buildDir, "..", "..");
 const nativeCore = join(buildDir, `corevideo-native${exeSuffix}`);
 const fakeEngine = join(buildDir, `corevideo-zoom-engine-fake${exeSuffix}`);
 const recordSeconds = Number(argValue("seconds", 24));
@@ -52,6 +54,10 @@ const frameSyncOff = args.includes("--no-frame-sync");
 const verbose = args.includes("--verbose");
 const livePaths = args.includes("--live-paths");
 const rtmpLocal = args.includes("--rtmp-local");
+const driftGate = args.includes("--drift-gate");
+if (driftGate && (!rtmpLocal || recordSeconds < 900))
+  throw new Error("--drift-gate requires --rtmp-local and --seconds >= 900");
+const decodeTimeoutMs = driftGate ? 900000 : 120000;
 const rtmpTapPath = process.env.COREVIDEO_QA_RTMP_TAP_PATH;
 if (rtmpTapPath && !rtmpLocal) throw new Error('COREVIDEO_QA_RTMP_TAP_PATH requires --rtmp-local');
 const monitorDevice = argValue("monitor-device", "Game (TC-HELICON GoXLR)");
@@ -174,14 +180,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function videoFlashTimes(artifact, fps) {
   const out = spawnSync(ffmpeg,
     ["-v", "error", "-i", artifact, "-vf", "scale=8:8", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
-    { encoding: "buffer", maxBuffer: 1 << 28, timeout: 120000 });
+    { encoding: "buffer", maxBuffer: 1 << 28, timeout: decodeTimeoutMs });
   if (out.status !== 0 || !out.stdout?.length) return [];
   const px = 64;
   const frames = Math.floor(out.stdout.length / px);
   const ptsProbe = spawnSync(ffprobe,
     ["-v", "error", "-select_streams", "v:0", "-show_frames",
       "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", artifact],
-    { encoding: "utf8", maxBuffer: 1 << 24, timeout: 120000 });
+    { encoding: "utf8", maxBuffer: 1 << 24, timeout: decodeTimeoutMs });
   const framePts = ptsProbe.status === 0
     ? ptsProbe.stdout.trim().split(/\r?\n/).map(Number) : [];
   if (framePts.length !== frames || !framePts.every(Number.isFinite)) {
@@ -213,7 +219,7 @@ function videoFlashTimes(artifact, fps) {
 function audioBurstTimes(artifact) {
   const out = spawnSync(ffmpeg,
     ["-v", "error", "-i", artifact, "-f", "s16le", "-ac", "1", "-ar", "48000", "-"],
-    { encoding: "buffer", maxBuffer: 1 << 28, timeout: 120000 });
+    { encoding: "buffer", maxBuffer: 1 << 28, timeout: decodeTimeoutMs });
   if (out.status !== 0 || !out.stdout?.length) return [];
   const samples = out.stdout.length >> 1;
   // The clap is the loudest thing in the file, but NOT at full scale by the time
@@ -297,6 +303,30 @@ function describePairs(label, pairs) {
   const spread = sorted.at(-1) - sorted[0];
   console.log(`${label.padEnd(14)}: median ${median.toFixed(1)} ms (${(median / (1000 / 60)).toFixed(2)} frames), spread ${spread.toFixed(1)} ms; video-audio ${median < 0 ? "audio late" : "audio early"}`);
   return { pairsMs: pairs, medianMs: median, spreadMs: spread, framesAt60: median / (1000 / 60) };
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function assessLongDrift(recordPairs, streamPairs, seconds) {
+  const expected = Math.floor(seconds * 1000 / clapIntervalMs) - 1;
+  const minimum = Math.ceil(expected * 0.9);
+  if (recordPairs.length < minimum || streamPairs.length < minimum) {
+    throw new Error(`long drift evidence missing cues: record=${recordPairs.length}, RTMP=${streamPairs.length}, expected >=${minimum}`);
+  }
+  const window = 10;
+  const earlyRecordMs = median(recordPairs.slice(0, window));
+  const lateRecordMs = median(recordPairs.slice(-window));
+  const earlyStreamMs = median(streamPairs.slice(0, window));
+  const lateStreamMs = median(streamPairs.slice(-window));
+  const earlyRelativeMs = earlyStreamMs - earlyRecordMs;
+  const lateRelativeMs = lateStreamMs - lateRecordMs;
+  const driftMs = lateRelativeMs - earlyRelativeMs;
+  return { expected, recordCues: recordPairs.length, streamCues: streamPairs.length,
+    window, earlyRecordMs, lateRecordMs, earlyStreamMs, lateStreamMs,
+    earlyRelativeMs, lateRelativeMs, driftMs };
 }
 
 const failures = [];
@@ -508,13 +538,29 @@ try {
     receivedSummary = describePairs("RTMP v-a", receivedPairs);
     writeFileSync(join(liveCaptureDir, "rtmp-evidence.json"), JSON.stringify({
       source: "fake-engine timed clap; local decoded RTMP receiver and recorded Program from one run",
-      buildSha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).stdout.trim(),
+      buildSha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: binarySourceRoot, encoding: "utf8" }).stdout.trim(),
       buildDir, seconds: recordSeconds, programBufferFrames,
       receivedArtifact: rtmpReceived, recordingArtifact: artifactAbsolute,
       receivedVideoTimes, receivedAudioTimes, receivedSummary,
       recordVideoTimes: videoTimes, recordAudioTimes: audioTimes, recordSummary,
       receiverLog: rtmpReceiverStderr,
     }, null, 2));
+    if (driftGate) {
+      if (!recordSummary) throw new Error("long drift gate is missing paired Program claps");
+      const drift = assessLongDrift(recordSummary.pairsMs, receivedSummary.pairsMs, recordSeconds);
+      console.log(`Long drift    : first RTMP−record ${drift.earlyRelativeMs.toFixed(1)} ms, ` +
+                  `last ${drift.lateRelativeMs.toFixed(1)} ms, change ${drift.driftMs.toFixed(1)} ms ` +
+                  `(${drift.recordCues}/${drift.streamCues} paired cues)`);
+      writeFileSync(join(liveCaptureDir, "long-drift-evidence.json"), JSON.stringify({
+        source: "same-run recorded Program and decoded local RTMP timed claps",
+        buildSha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: binarySourceRoot, encoding: "utf8" }).stdout.trim(),
+        recordingArtifact: artifactAbsolute, receivedArtifact: rtmpReceived, drift,
+      }, null, 2));
+      if (Math.abs(drift.driftMs) > 1000 / 60)
+        failures.push(`RTMP−record drift ${drift.driftMs.toFixed(1)}ms exceeds one 60fps frame`);
+      if (Math.abs(drift.earlyRelativeMs) > budgetMs || Math.abs(drift.lateRelativeMs) > budgetMs)
+        failures.push("RTMP−record skew exceeded the configured budget in an early or late window");
+    }
     if (Math.abs(receivedSummary.medianMs) > budgetMs) {
       failures.push(`decoded RTMP skew ${receivedSummary.medianMs.toFixed(1)}ms exceeds the ${budgetMs}ms budget`);
     }
@@ -624,7 +670,7 @@ try {
     const reportPath = join(liveCaptureDir, "boundary-report.json");
     writeFileSync(reportPath, JSON.stringify({
       source: "one fake-engine flash/click run; all requested local outputs captured concurrently",
-      buildSha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).stdout.trim(),
+      buildSha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: binarySourceRoot, encoding: "utf8" }).stdout.trim(),
       buildDir, seconds: recordSeconds, programBufferFrames,
       boundaries: {
         sourceIngress: "first decoded Zoom frame and PCM returned to core pollers; QPC, not Zoom sender time",

@@ -5,41 +5,33 @@
 
 namespace corevideo::core {
 
-// STREAM BACKPRESSURE: degrade the OUTGOING BITRATE, never thrash the ENCODER.
+// STREAM BACKPRESSURE: recover one destination without rebuilding or
+// throttling the shared Program encoder.
 //
 // Incident #597: a 10 Mbps H.264 stream to YouTube ran healthy at 60fps/1x for
 // 96 seconds, then the network softened, the outgoing queue filled, and the
 // core rebuilt the hardware encoder EIGHT TIMES in twenty seconds — each
 // rebuild itself costing frames and a keyframe, digging the hole deeper. This
-// policy exists to replace that reflex with two deliberate, bounded levers.
+// policy replaced that reflex with a pressure ladder and GOP discard. Under
+// #538 the ladder's historical `divisor()` is no longer applied to the
+// compositor: one encoder texture feeds every destination, and a slow socket
+// must not reduce all streams' input cadence. The divisor remains pressure
+// telemetry; queue discard and #605 IDR recovery act on the destination.
 //
 // THE SIGNAL is the wall-clock AGE of the oldest chunk still sitting in the
 // outgoing queue (`bufferedMs`), never a frame count converted to milliseconds
 // via the configured frame rate. That conversion is wrong at exactly the
-// moment it matters: while Lever A below is changing the effective frame rate
-// underneath it, a frame-count signal drifts against wall clock and either
-// under- or over-reacts to the very throttling it is supposed to observe. Age
-// of the oldest chunk is ground truth regardless of what rate is feeding the
-// queue.
+// moment it matters: a frame-count signal drifts against wall clock under
+// congestion. Age of the oldest chunk is ground truth regardless of rate.
 //
-// TWO LEVERS, because one cannot do both jobs:
+// The historical policy still represents two decisions:
 //
-//   Lever A (the divisor, `divisor()`) — an input frame divisor from 1 up to
-//   kMaxDivisor. At divisor d the caller submits roughly 1/d of its frames,
-//   which stops the queue from GROWING further. It does nothing to what is
-//   already queued: if the queue is already a full second deep, dropping the
-//   input rate in half still drains it at the same wall-clock rate the
-//   network allows, so a stream can stabilise a full second behind and STAY
-//   there indefinitely. That is the exact shape of "still behind, still
-//   healthy-looking" that let #597's operator not notice until the encoder
-//   was already thrashing.
+//   Lever A (`divisor()`) is now only a pressure rung. It does not skip shared
+//   encoder input. A congested destination drops only its own packets.
 //
 //   Lever B (`discardBacklog`) — a one-shot signal telling the caller to
 //   discard everything in the queue up to (not including) the next keyframe:
-//   a GOP-tail discard. This is the only thing that can actually shrink an
-//   already-bloated queue, and it is why it exists as a separate lever from
-//   the divisor: Lever A prevents growth, Lever B clears backlog. Neither
-//   substitutes for the other.
+//   a GOP-tail discard. This shrinks an already-bloated destination queue.
 //
 // WHY THE DISCARD IS A GOP TAIL, NOT AN ARBITRARY FRAME: our HEVC/AV1
 // encoders run with B-frames disabled (the low-latency work elsewhere in this
@@ -57,11 +49,9 @@ namespace corevideo::core {
 // at 1080p60 / 10 Mbps (the #597 profile), the outgoing queue holds roughly
 // one second of video before it visibly falls behind live. kThrottleAboveBufferedMs
 // (250ms) is a quarter of that budget — sustained growth past it means the
-// network cannot currently carry the configured rate, and it is cheaper to
-// shed frames now than to let the deficit compound. kDiscardAboveBufferedMs
-// (750ms) is three-quarters of the budget — the point where Lever A alone
-// has manifestly not been enough and clearing backlog outright is the only
-// way back to real time.
+// network cannot currently carry the configured rate. The pressure rung
+// records sustained congestion. kDiscardAboveBufferedMs (750ms) is three
+// quarters of the budget, when the destination must cut its own backlog.
 //
 // Pure value-in/value-out state machine: no clock, no I/O, no allocation —
 // integer comparisons only. Deliberately mirrors `MonitorShedPolicy.h`, the
@@ -82,10 +72,10 @@ struct StreamBackpressureObservation {
 
 enum class StreamBackpressureTransition {
   None,
-  Enter,     // 1 -> 2: throttling engaged
+  Enter,     // 1 -> 2: sustained destination pressure
   StepUp,    // divisor increases further
-  StepDown,  // divisor decreases, still throttled
-  Exit,      // -> 1: back to every frame
+  StepDown,  // pressure rung decreases
+  Exit,      // -> 1: pressure cleared
 };
 
 struct StreamBackpressureDecision {
@@ -98,39 +88,30 @@ struct StreamBackpressureDecision {
 
 class StreamBackpressurePolicy {
  public:
-  // 4 = the input divisor floor. Past this a stream is submitting a quarter
-  // of its configured frame rate; further throttling starves the output
-  // below anything a viewer would call live video, and the honest answer at
-  // that point is a discard (Lever B), not a deeper divisor.
+  // Historical divisor ceiling, now the maximum pressure rung. It does not
+  // reduce the shared encoder's input rate.
   static constexpr int kMaxDivisor = 4;
   // 250ms = a quarter of the ~1s latency budget (see header comment above).
   // Sustained growth past this is the network failing to carry the
-  // configured rate; enter throttling before the deficit compounds.
+  // configured rate; mark sustained pressure before the deficit compounds.
   static constexpr std::int64_t kThrottleAboveBufferedMs = 250;
-  // 750ms = three-quarters of the ~1s budget. Past this, Lever A alone has
-  // manifestly not kept up and a GOP-tail discard is the only way back to
-  // real time. Comfortably above kThrottleAboveBufferedMs so the discard
-  // never fires before throttling has had a chance to work.
+  // 750ms = three-quarters of the ~1s budget. A GOP-tail discard is needed
+  // to return this destination toward live. The lower threshold establishes
+  // sustained pressure before the lossy discard can fire.
   static constexpr std::int64_t kDiscardAboveBufferedMs = 750;
   // 100ms = the recovery threshold. The 100-250ms gap below
-  // kThrottleAboveBufferedMs is the anti-flap HYSTERESIS BAND: throttling
-  // itself drains the queue, so recovering at the same threshold that
-  // triggered entry would let the queue immediately regrow and flap the
-  // divisor every cycle. A stream must show real headroom, not just
-  // "no longer over the enter line", before Lever A backs off.
+  // kThrottleAboveBufferedMs is an anti-flap hysteresis band. The queue must
+  // show real headroom before its pressure recommendation backs off.
   static constexpr std::int64_t kRecoverBelowBufferedMs = 100;
   // 30 consecutive over-threshold ticks before stepping the divisor up. A
   // keyframe or a momentary scene-cut spikes the queue for a tick or two;
   // only SUSTAINED growth is evidence the network genuinely cannot keep up,
-  // and reacting to a one-off spike would throttle a stream that was about
-  // to recover on its own.
+  // and reacting to a one-off spike would misreport congestion.
   static constexpr std::int64_t kEnterAfterOverWaterTicks = 30;
   // 600 consecutive healthy ticks (20x kEnterAfterOverWaterTicks) before
   // stepping down. Recovery is deliberately far slower than entry — the same
-  // enter-fast/recover-slowly asymmetry MonitorShedPolicy uses, and for the
-  // same reason: a wrongly-early recovery immediately regrows the backlog
-  // that just took real effort to shed, while a late recovery only costs a
-  // few more ticks at a divisor the stream was already tolerating.
+  // enter-fast/recover-slowly asymmetry MonitorShedPolicy uses. This changes
+  // only the pressure signal; packet discard has its own cooldown.
   static constexpr std::int64_t kRecoverAfterHealthyTicks = 600;
   // 60 ticks of cooldown between discard events. A discard is a visible,
   // lossy event (real playback interruption at the viewer) — firing it every
@@ -143,8 +124,8 @@ class StreamBackpressurePolicy {
     if (o.bufferedMs < 0) return decision;  // no evidence either way
     if (discardCooldown_ > 0) --discardCooldown_;
 
-    // Lever B is independent of the divisor ladder, but never precedes it: the
-    // throttle is invisible, a discard is a visible skip.
+    // Do not discard on a transient spike: the pressure rung must have entered
+    // first, and a decodable keyframe must be available in this queue.
     if (o.bufferedMs >= kDiscardAboveBufferedMs && divisor_ > 1 && o.keyframeInQueue &&
         discardCooldown_ == 0) {
       decision.discardBacklog = true;
@@ -188,11 +169,11 @@ class StreamBackpressurePolicy {
     return decision;
   }
 
-  // 1 = every frame; up to kMaxDivisor.
+  // 1 = no sustained pressure; up to kMaxDivisor. Advisory only.
   [[nodiscard]] int divisor() const { return divisor_; }
-  // 0 = not throttled; kMaxDivisor - 1 at the floor.
+  // 0 = no sustained pressure; kMaxDivisor - 1 at the highest rung.
   [[nodiscard]] int level() const { return divisor_ - 1; }
-  // Times throttling was ENGAGED (1 -> 2). Steps within a throttle do not count.
+  // Times sustained pressure was entered (1 -> 2).
   [[nodiscard]] std::int64_t enteredCount() const { return enteredCount_; }
   // Cumulative GOP-tail discard events fired.
   [[nodiscard]] std::int64_t discardEvents() const { return discardEvents_; }

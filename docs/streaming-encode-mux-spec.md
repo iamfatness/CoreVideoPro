@@ -17,12 +17,16 @@ FFmpeg process per active destination. Thus the brief's raw-BGRA default
 diagnosis is historical, while duplicate encoders and separate audio/video
 clocks are current.
 
-Each sender has a bounded compressed-video queue. The compositor takes the
-largest requested export divisor from all senders, so a blocked destination
-can reduce the video frame rate fed to healthy destinations. This violates
-destination independence. Configured bitrate is not delivered bitrate; a
-simple still picture can consume far less than a CBR target. The existing
-changing-content hardware probe is the meaningful rate-control gate.
+Each sender has a bounded compressed-video queue. Before Slice 2, the
+compositor took the largest requested export divisor from all senders, so a
+blocked destination reduced the frame rate fed to healthy destinations.
+Slice 2 leaves the shared encoder texture at full Program cadence and lets
+each sender discard to a decodable GOP boundary in its own queue. The legacy
+per-sender `divisor` remains a pressure recommendation; `appliedDivisor` is
+the actual compositor rate and must remain 1 under stream congestion.
+Configured bitrate is not delivered bitrate; a simple still picture can
+consume far less than a CBR target. The changing-content hardware probe is
+the meaningful rate-control gate.
 
 ## Ownership and clock
 
@@ -109,6 +113,8 @@ same-run YouTube playback using identical cue IDs.
 
 Shipping code moves in vertical slices with a real consuming destination in
 each PR. The first slice proves profile-matched RTMP and SRT share one
-hardware encode. The next moves AAC into the shared stream and puts both
-access-unit clocks on one timeline. HLS joins the same publisher, then the
-per-destination fault and 15-minute acceptance drills establish isolation.
+hardware encode; the same sender path also covers HLS. Slice 2 pins full
+Program cadence while an RTMP socket blocks and requires SRT receiver bytes
+and HLS PUT segments to keep advancing. The next slice moves AAC into the
+shared stream and puts both access-unit clocks on one timeline. The longer
+bitrate, gap, reconnect, and 15-minute sync drills remain acceptance work.

@@ -648,37 +648,15 @@ struct OutputSupervisorState {
 // bitstream queue to observe, which is NOT the same as "healthy" - never read
 // an absent value as divisor 1 evidence.
 //
-// `divisor` (1 = every frame at the product's rate, 2 = half, 3 = a third,
-// 4 = a quarter) is Lever A's input throttle. NO shedFrames HERE: the
-// compositor sheds once for every destination (one encoder texture serves
-// them all), so a per-sender count would claim this destination shed frames
-// on its own. The real, global count is published once, at
-// realtimeEvidence.encoderExport.shedFrames.
+// `divisor` is the destination's historical pressure recommendation (1-4).
+// It is not applied to the shared encoder texture. Queued-packet drops and
+// recovery are local to this destination; actual compositor export cadence
+// and any shed frames are published at realtimeEvidence.encoderExport.
 struct OutputBackpressureState {
-  // THIS DESTINATION'S REQUEST, NOT THE RATE IT IS FED AT.
-  //
-  // FINAL-REVIEW FINDING 3. Lever A is per-ENCODER, not per destination: ONE
-  // encoder texture feeds every GPU-direct sender, so MediaCore takes the MAX
-  // divisor across the active ones and drives
-  // ICompositor::setEncoderExportDivisor with that. The lever's limitation is
-  // named in three places (MediaCore.h, the spec Outcome, CLAUDE.md) - but the
-  // NODE's was not, and the node is what an operator readout binds to. With two
-  // GPU-direct destinations the healthy sibling's node reported `divisor: 1`
-  // while it was actually being fed at the maximum across senders, and a
-  // destination added mid-show beside a throttled sibling published a
-  // textbook-healthy reading at 15 fps.
-  //
-  // The snapshot therefore publishes BOTH: `divisor` (this value - what this
-  // destination is asking for, which is what its own hysteresis and counters
-  // are keyed on) and `appliedDivisor` (what the compositor is actually
-  // exporting at, written by MediaCore where that fact exists - see
-  // MediaCore::applyEncoderExportDivisor). Read `appliedDivisor` for the rate;
-  // read `divisor` for this destination's own state. They differ exactly when a
-  // sibling is worse off.
+  // This destination's pressure state, not the rate the compositor exports.
+  // The snapshot publishes the actual `appliedDivisor` separately.
   int divisor = 1;
-  // 0 = not throttled; StreamBackpressurePolicy::kMaxDivisor - 1 at the floor.
-  // Always divisor - 1; published separately because a consumer should not
-  // have to re-derive it.
+  // 0 = no sustained pressure; up to kMaxDivisor - 1. Always divisor - 1.
   int level = 0;
   // Wall-clock age (ms) of the oldest chunk still queued for send, AS OF THE
   // OBSERVATION THAT DROVE THIS TICK'S DECISION - not necessarily the queue's
@@ -1108,18 +1086,14 @@ class ICompositor {
   // The encoder's DECLARED frame rate never changes, so bits-per-frame - and
   // with it per-frame quality - is untouched.
   //
-  // Control plane, not a per-frame call: MediaCore calls this only when the
-  // value CHANGES. Defaulted to a no-op so the Metal and stub compositors are
-  // unaffected; only the D3D11 adapter, which owns the encoder export,
-  // implements it.
+  // Legacy/test control. Production stream congestion must not call this:
+  // the encoder texture serves all destinations and stays at full cadence.
+  // Defaulted to a no-op for Metal and stub compositors.
   virtual void setEncoderExportDivisor(int /*divisor*/) {}
 
-  // #597 Task 6: the ONE effective divisor this compositor is applying, and
-  // the frames it has actually held back because of it - published together
-  // at realtimeEvidence.encoderExport, unconditionally, like the multiviewer
-  // node. Defaulted to 1/0 (the healthy reading) so Metal and the stub
-  // compositor are unaffected; only the D3D11 adapter, which owns the encoder
-  // export, tracks a real shed count.
+  // The actual compositor export divisor and cumulative shed frames. Stream
+  // congestion leaves these at 1/0; per-destination packet drops are reported
+  // on each sender. D3D11 retains a test seam for explicit divisor drills.
   //
   // encoderExportShedFrames() is CUMULATIVE FOR THE LIFE OF THE PROCESS - it is
   // never reset when a stream stops, unlike the per-sender counters beside it
@@ -1129,21 +1103,15 @@ class ICompositor {
   // previous run's sheds.
   [[nodiscard]] virtual int encoderExportDivisor() const { return 1; }
   [[nodiscard]] virtual std::int64_t encoderExportShedFrames() const { return 0; }
-  // #597 Task 6 fix round 1, finding 9 (fix round 2, item 2: corrected claim):
-  // was this compositor exporting the dedicated encoder texture on its last
-  // render tick (the last tick's `renderPlan.fullProgramReadback`)? THIS IS
-  // NOT "a stream is live" - `fullProgramReadback` is
+  // Was this compositor exporting the dedicated encoder texture on its last
+  // render tick (the last tick's `renderPlan.fullProgramReadback`)? This is not
+  // "a stream is live" - `fullProgramReadback` is
   // `virtualCameraEnabled_ || outputActive || recording` (see MediaCore.cpp),
   // so `exporting` reads true with only the virtual camera on, or only a
   // recording running, and NO stream at all. It answers exactly one question:
   // "is SOMETHING consuming the encoder texture right now" - which is enough
-  // to tell a genuinely fresh divisor of 1 (nothing consuming it, texture
-  // export idle) from a stale non-1 divisor that could still be latched from
-  // a stream that already ended (see `encoderExportDivisor()`'s doc and
-  // MediaCore::applyEncoderExportDivisor's stop-path residual) - it does NOT
-  // by itself prove a live STREAM is throttled; `divisor > 1` while `exporting`
-  // is equally consistent with "the vcam or a recording is on and a throttled
-  // stream ended minutes ago". Defaulted false so Metal/stub read as not
+  // tell whether the encoder texture is currently in use, independently of
+  // destination queue pressure. Defaulted false so Metal/stub read as not
   // exporting, which is the honest answer for a compositor that never does.
   [[nodiscard]] virtual bool encoderExporting() const { return false; }
 };
