@@ -723,6 +723,7 @@ if(BUILD_TESTING)
     tests/IsoEncoderAdmissionTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
     tests/ProgramAacEncoderTest.cpp
+    tests/ProgramStreamClockTest.cpp
     tests/StreamAudioAlignmentPolicyTest.cpp
     tests/SrtFfmpegArgsTest.cpp
     tests/FfmpegSenderDiagnosticsTest.cpp

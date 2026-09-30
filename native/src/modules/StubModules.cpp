@@ -3,6 +3,7 @@
 #include "modules/AudioDsp.h"
 #include "core/TestPattern.h"
 #include "modules/Interfaces.h"
+#include "modules/ProgramStreamClock.h"
 #include "modules/IsolatedOutputSender.h"
 #include "modules/OutputDestinationSupervisor.h"
 #include "modules/ProgramFramePreview.h"
@@ -593,6 +594,14 @@ class CompositeOutputSender final : public IOutputSender {
       const std::vector<float>* programAudioPcm = nullptr,
       int audioChannels = 0,
       int audioSampleRate = 0) override {
+    if (sharedAacEnabled_) {
+      const bool streamSession = std::any_of(destinations.begin(), destinations.end(),
+          [](const std::string& destination) {
+            return destination == "rtmp" || destination == "srt" || destination == "hls";
+          });
+      streamClock_.observeProgramFrame(frame ? frame->frameNumber : 0,
+                                       frame ? frame->timelineTimestamp100ns : 0, streamSession);
+    }
     OutputSenderSession combined;
     for (const auto& sender : senders_) {
       mergeInto(combined, sender->sync(destinations, frame, elapsedMs, destinationSettings, programAudioPcm, audioChannels, audioSampleRate));
@@ -606,10 +615,25 @@ class CompositeOutputSender final : public IOutputSender {
   // Fan out on the AUDIO cadence. Senders that carry no audio inherit the
   // no-op default, so this is safe for every member.
   void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override {
+    submitAudioAt(pcm, channels, sampleRate, 0);
+  }
+
+  void submitAudioAt(const std::vector<float>& pcm, int channels, int sampleRate,
+                     int64_t timelineTimestamp100ns) override {
     if (sharedAacEnabled_ && !sharedAacFailed_) {
       std::vector<ProgramAacPacket> packets;
+      streamClock_.beginAudioBlock(sharedAac_.acceptedSamples(), timelineTimestamp100ns);
+      ProgramStreamClock::AnchorEvidence anchor{};
+      if (streamClock_.takeAnchorEvidence(anchor)) {
+        ::corevideo::core::nativeLogf(
+            "[stream-clock] session anchor frame=%lld sample=%lld offset100ns=%lld frameTimeline100ns=%lld audioTimeline100ns=%lld\n",
+            static_cast<long long>(anchor.frame), static_cast<long long>(anchor.sample),
+            static_cast<long long>(anchor.offset100ns), static_cast<long long>(anchor.frameTimeline100ns),
+            static_cast<long long>(anchor.audioTimeline100ns));
+      }
       if (sharedAac_.encode(pcm, channels, sampleRate, packets)) {
-        for (const auto& packet : packets) {
+        for (auto& packet : packets) {
+          streamClock_.stamp(packet);
           for (size_t index = 0; index < senders_.size(); ++index) {
             if (sharedAacConsumers_[index]) senders_[index]->submitEncodedAudio(packet);
           }
@@ -752,6 +776,7 @@ class CompositeOutputSender final : public IOutputSender {
 
   std::vector<std::unique_ptr<IOutputSender>> senders_;
   ProgramAacEncoder sharedAac_;
+  ProgramStreamClock streamClock_;
   bool sharedAacEnabled_ = false;
   bool sharedAacFailed_ = false;
   std::vector<bool> sharedAacConsumers_;

@@ -6,16 +6,24 @@ The [#538 issue](https://github.com/iamfatness/CoreVideoPro/issues/538) owns
 the edge-output integration; #703 owns the current YouTube sync incident and
 #605 owns hardware GOP and on-demand IDR. This document does not rank work.
 
-## Current path and defects
+## Shipped path (Windows)
 
-On Windows, the normal stream path exports a D3D11 Program texture to a Media
-Foundation hardware encoder. The RTMP/SRT/HLS sender copies its compressed
-video into a separate FFmpeg process. A raw-video FFmpeg encoder is a
-start-time fallback. The Program PCM tap is a second FFmpeg input, encoded to
-AAC there. The same sender class constructs one hardware encoder and one
-FFmpeg process per active destination. Thus the brief's raw-BGRA default
-diagnosis is historical, while duplicate encoders and separate audio/video
-clocks are current.
+The normal stream path exports a D3D11 Program texture to one Media Foundation
+hardware H.264 encoder shared by every profile-matched RTMP/SRT/HLS
+destination (Slice 1). One native Media Foundation AAC encoder (48 kHz stereo,
+160 kbps, ADTS) encodes the Program stream tap once for the same destinations
+(Slice 6); PCM-to-FFmpeg AAC is a fallback only. Each destination owns one
+FFmpeg process that remuxes (`-c copy`) and never encodes. A raw-video FFmpeg
+encoder remains a start-time fallback. Explicit Program mute writes exact
+silent samples; source-video dropout recovery and SEI-padded CBR keep a still
+Program near the configured receiver rate (Slice 7).
+
+Since Slice 8, H.264 and AAC reach each FFmpeg as **one** core-timestamped
+MPEG-TS on stdin (see "Ownership and clock"). Before it, video arrived in a TS
+envelope while AAC was bare ADTS on a second pipe, so FFmpeg derived the two
+input timelines independently and aligned them by arrival (plus a fixed
+three-packet startup trim). The PCM fallback and AV1 elementary input keep
+their two-input layout; macOS keeps its PCM fallback and has no shared AAC.
 
 Each sender has a bounded compressed-video queue. Before Slice 2, the
 compositor took the largest requested export divisor from all senders, so a
@@ -37,11 +45,25 @@ publishes a numbered, timestamped GPU Program frame. One profile-matched
 using the *existing Program PCM tap*. Its session clock is monotonic:
 
 - Video PTS and DTS are the encoder's timestamps derived from the published
-  compositor frame number. Burst callback arrival and pipe read time never
-  become media timestamps.
+  compositor frame number (`frame x 10^7 / fps` in 100 ns). Burst callback
+  arrival and pipe read time never become media timestamps.
 - AAC timestamps advance by samples at 48 kHz from a single session origin.
   Missing audio is filled with exactly the absent sample count. A mute emits
   silence, preserving the sample clock.
+- `ProgramStreamClock` (owned by the composite sender that owns the shared AAC
+  encoder) fixes the origin once per stream session, the way the recording
+  aligns its tracks. The Program frame the video tick hands the encoder carries
+  its steady-clock timeline time (the program buffer's delivery deadline); the
+  first PCM block of the session carries the audio worker's SCHEDULED tick
+  time (its absolute 20 ms deadline grid, not `now()`, which adds up to a tick
+  of scheduling lateness exactly when a stream is starting). Every AAC packet
+  is stamped `anchorFrame / fps + (T_audio - T_frame) + (sample - anchorSample)
+  / 48000`. Measured on the Windows rig: frame number and timeline slip 0.00 ms
+  over a run, so the frame clock is exact. A frame-number-only anchor quantized
+  the relation to a whole frame per session. A destination reconnect or a fresh
+  IDR does not touch the anchor. The session ends only when no RTMP/SRT/HLS
+  destination is requested, because the sample counter then stops while frames
+  continue.
 - A missed video deadline is observable. The encoded stream either repeats
   the prior content frame with the missing timestamp or inserts a black frame
   with a fresh IDR after a discontinuity. Synthetic frames are counted
@@ -51,10 +73,20 @@ using the *existing Program PCM tap*. Its session clock is monotonic:
   A reconnect starts at a new IDR without rebuilding the encoder.
 
 The common output is H.264 Annex-B plus AAC access units with PTS/DTS and
-codec configuration. An aligned MPEG-TS envelope may carry both through one
-process pipe if it preserves these timestamps. No live input gets `-re` or
-`-use_wallclock_as_timestamps`. FFmpeg may copy/remux but does not encode
-raw Program video on the normal path.
+codec configuration. **Chosen mux input (Slice 8): one aligned MPEG-TS
+program per destination** - H.264 on PID 0x100 (PCR) and ADTS AAC (stream
+type 0x0f) on PID 0x101 - written by the destination's single writer thread
+into FFmpeg's stdin. It is smaller than two timestamped pipes (one pipe, one
+writer, one demuxer) and FFmpeg's one input offset applies to both streams,
+so FFmpeg cannot invent a relation between them. The only per-process value is
+the TS epoch, the first written IDR's DTS, subtracted from both PIDs: a
+container offset that never changes A/V relation. Startup fences audio to the
+first IDR (earlier audio is dropped) and writes the first AAC PES before the
+IDR so FFmpeg's bounded probe sees both streams. The live command line is
+`-f mpegts ... -i pipe:0 -map 0:v:0 -map 0:a:0 -c:v copy -c:a copy`; no live
+input gets `-re`, `-use_wallclock_as_timestamps`, `-async` or an `aresample`
+clock. FFmpeg may copy/remux but does not encode raw Program video on the
+normal path.
 
 ## Profile sharing and admission
 
@@ -115,6 +147,23 @@ Shipping code moves in vertical slices with a real consuming destination in
 each PR. The first slice proves profile-matched RTMP and SRT share one
 hardware encode; the same sender path also covers HLS. Slice 2 pins full
 Program cadence while an RTMP socket blocks and requires SRT receiver bytes
-and HLS PUT segments to keep advancing. The next slice moves AAC into the
-shared stream and puts both access-unit clocks on one timeline. The longer
-bitrate, gap, reconnect, and 15-minute sync drills remain acceptance work.
+and HLS PUT segments to keep advancing. Shared AAC is shipped (Slice 6), and
+Slice 7 holds receiver bitrate near CBR. Slice 8 stamps compositor/sample PTS
+on the shared H.264 and AAC in the core and muxes both through one TS input.
+
+Evidence for Slice 8 is in the snapshot, not the process log (the log is a
+bounded best-effort queue that drops startup lines): each sender publishes
+`streamClock {muxInput, firstVideoPts100ns, firstAudioPts100ns, audioUnits,
+audioRefused, audioUnanchored}`, and `validate-shared-stream-encode.mjs`
+requires `muxInput: unified-ts` with fenced audio on RTMP, SRT and HLS. The
+clap gate reads decoded audio on the container timeline (it adds the audio
+stream's `start_time`). Before this slice both FFmpeg inputs started at zero,
+so the gate never saw that it ignored the start; a fenced TS legitimately
+starts AAC up to one AAC unit after the first IDR.
+
+Still open after Slice 8: #708 FFmpeg stop/teardown cleanup; #703 same-run
+YouTube watch-URL evidence on the Slice 8 head; #615 operator readout; macOS
+native AAC (macOS keeps the PCM fallback and does not claim Slice 6 or 8).
+Found, not fixed here: with shared AAC enabled but no audio layout (or
+`COREVIDEO_RTMP_DISABLE_REAL_AUDIO=1`), the builder still copies the `anullsrc`
+PCM input (`-c:a copy`), which FLV refuses; the same condition exists on main.

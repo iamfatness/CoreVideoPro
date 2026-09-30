@@ -124,6 +124,10 @@ void ProgramAacEncoder::stop() {
 
 bool ProgramAacEncoder::running() const { return impl_->started; }
 
+int64_t ProgramAacEncoder::acceptedSamples() const {
+  return impl_->nextSample + static_cast<int64_t>(impl_->pending.size() / 2);
+}
+
 bool ProgramAacEncoder::encode(const std::vector<float>& pcm, int channels, int sampleRate,
                                std::vector<ProgramAacPacket>& packets) {
   packets.clear();

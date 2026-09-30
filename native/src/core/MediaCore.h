@@ -224,6 +224,12 @@ class MediaCore {
   void reportAudioWorkerStarted();
   void reportAudioWorkerProgress(int64_t workNs);
   void reportAudioWorkerReanchor(int64_t discardedTimelineNs);
+  // The audio worker's SCHEDULED start of the tick about to run (its absolute
+  // 20 ms deadline grid, steady_clock in 100 ns). Unlike now() at gather, it
+  // carries no scheduling lateness, so the stream clock anchors on it (#538 S8).
+  void setAudioTickScheduled100ns(int64_t scheduled100ns) {
+    audioTickScheduled100ns_.store(scheduled100ns, std::memory_order_relaxed);
+  }
   void reportVideoOutputWorkerStarted();
   void reportVideoOutputWorkerProgress(int64_t workNs);
   void setVideoOutputTickRunning(bool running) {
@@ -949,6 +955,7 @@ class MediaCore {
   // time after outputs clear, so the stop-carrying sync() is actually delivered.
   std::atomic<bool> senderSyncActive_{false};
   std::atomic<int64_t> renderDeadlineMisses_{0};
+  std::atomic<int64_t> audioTickScheduled100ns_{0};
   std::atomic<int64_t> renderWorkerGeneration_{0};
   std::atomic<int64_t> renderWorkerCompletedSlots_{0};
   std::atomic<int64_t> renderWorkerSkippedSlots_{0};
@@ -1226,6 +1233,9 @@ class MediaCore {
   struct AudioOutputWorkItem {
     bool valid = false;
     int64_t outputTimestamp100ns = 0;
+    // Grid time of this block for the shared stream clock; outputTimestamp100ns
+    // when no paced worker drives the tick (direct/unit-test callers).
+    int64_t outputScheduled100ns = 0;
     int programBufferFrames = 0;
     int64_t frameIntervalMs = 16;
     std::vector<modules::AudioFrame> audioFrames;

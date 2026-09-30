@@ -218,6 +218,31 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeCopiesVideoAndSkipsRawEncode) {
             std::string::npos);
 }
 
+// #538 Slice 8: the live path is ONE timestamped TS input carrying H.264 and
+// the shared AAC. FFmpeg only remuxes; nothing on the line may assign time.
+TEST(RtmpFfmpegArgs, UnifiedTransportIsOneInputRemuxWithNoInputClock) {
+  auto config = baseConfig();
+  config.videoBitstreamInput = true;
+  config.timestampedVideoInput = true;
+  config.hasAudio = true;
+  config.audioBitstreamInput = true;
+  config.audioInTransportStream = true;
+  for (const char* container : {"flv", "mpegts", "hls"}) {
+    config.container = container;
+    config.endpoint = std::string(container) == "hls" ? "https://origin.example/live/program.m3u8"
+                                                      : "rtmp://ingest.example/live/streamkey";
+    const auto args = buildRtmpFfmpegArguments(config);
+    EXPECT_NE(args.find("-f mpegts -probesize 65536 -analyzeduration 1 -thread_queue_size 512 -i pipe:0"),
+              std::string::npos) << args;
+    EXPECT_NE(args.find("-map 0:v:0 -map 0:a:0 -c:v copy -c:a copy"), std::string::npos) << args;
+    EXPECT_EQ(args.find(" -i ", args.find("-i pipe:0") + 1), std::string::npos) << "exactly one input";
+    for (const char* forbidden : {" -re ", "use_wallclock_as_timestamps", "-async", "aresample",
+                                  "pipe:3", "-f aac", "setts=", "anullsrc"}) {
+      EXPECT_EQ(args.find(forbidden), std::string::npos) << forbidden << " in " << args;
+    }
+  }
+}
+
 TEST(RtmpFfmpegArgs, SharedAacIsCopiedWithoutPcmResampleClock) {
   auto config = baseConfig();
   config.videoBitstreamInput = true;
@@ -408,7 +433,9 @@ TEST(EncodedVideoTransportStream, H264EnvelopePreservesFrameGapsAndDeclaresAvc) 
   chunk.pts100ns = chunk.dts100ns = 100000000;
   std::vector<uint8_t> wire;
   ASSERT_TRUE(stream.packetize(chunk, wire));
-  EXPECT_EQ(wire[188 + 5 + 11], uint8_t{0x1b}); // PMT stream_type: AVC/H.264
+  // PMT stream_type: AVC/H.264. Byte 12, after the two-byte program_info_length
+  // (#538 S8 fixed a PMT that omitted its low byte; FFmpeg had been probing PES).
+  EXPECT_EQ(wire[188 + 5 + 12], uint8_t{0x1b});
   EXPECT_EQ(pesPts(videoPes(wire)), uint64_t{0});
   chunk.keyframe = false;
   chunk.pts100ns += 1000000;

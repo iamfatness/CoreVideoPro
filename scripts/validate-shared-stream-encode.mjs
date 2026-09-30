@@ -112,7 +112,7 @@ const senderState = (snapshot, id) => {
   const item = sender(snapshot, id);
   return { status: item?.status || "absent", health: item?.destinationHealth || "unknown",
     result: item?.lastResultCode || "", warning: item?.warning || "",
-    muxInputVideo: item?.muxInputVideo ?? null };
+    muxInputVideo: item?.muxInputVideo ?? null, streamClock: item?.streamClock ?? null };
 };
 try {
   for (let i = 0; i < 200 && !handshake; i++) await sleep(50);
@@ -214,6 +214,19 @@ const receiverRate = (path) => {
   const duration = pts.at(-1) - pts[0] + 1 / 60;
   return { frames: pts.length, duration, kbps: bytes(path) * 8 / duration / 1000 };
 };
+// #538 Slice 8: each destination's FFmpeg reads ONE core-stamped TS carrying
+// both streams, and audio is fenced to the first IDR. Read from the snapshot:
+// the process log is a bounded best-effort queue that drops startup lines.
+const clockOpens = stderr.match(/\[stream-clock\] destination=\S+ epochDts100ns=[^\n]*/g) || [];
+if (process.platform === "win32") {
+  for (const id of ["rtmp", "srt", "hls"]) {
+    const clock = firstSenderStates[id]?.streamClock;
+    if (clock?.muxInput !== "unified-ts")
+      failures.push(`${id} mux input was ${clock?.muxInput ?? "unreported"}, expected unified-ts`);
+    else if (!(clock.audioUnits > 0) || !(clock.firstAudioPts100ns >= clock.firstVideoPts100ns))
+      failures.push(`${id} unified TS carried no fenced audio: ${JSON.stringify(clock)}`);
+  }
+}
 if (starts.length !== 1) failures.push(`expected one hardware encoder start, got ${starts.length}`);
 if (process.platform === "win32" && aacStarts.length !== 1)
   failures.push(`expected one shared Program AAC encoder start, got ${aacStarts.length}`);
@@ -288,7 +301,7 @@ if (bitrateGate) {
   }
 }
 const report = { output, blockRtmp, reconnectRtmp, proxyConnections, pressureLines, starts: starts.length,
-  aacStarts: aacStarts.length, bitrateGate, rtmpRate, srtRate,
+  aacStarts: aacStarts.length, streamClockOpens: clockOpens, bitrateGate, rtmpRate, srtRate,
   paths, firstRtmpFrames,
   firstSrtFrames, lastSrtFrames, firstHlsFrames, lastHlsFrames,
   firstSenderStates, lastSenderStates, firstSrtBytes, firstHlsBytes,
