@@ -26,6 +26,7 @@
  *                                             --program-buffer 2]
  *                                            [--rtmp-local] (decoded local RTMP receiver)
  *                                            [--drift-gate] (requires 15 minutes + RTMP)
+ *                                            [--gap-gate] (5 s routed Program audio mute)
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -55,8 +56,11 @@ const verbose = args.includes("--verbose");
 const livePaths = args.includes("--live-paths");
 const rtmpLocal = args.includes("--rtmp-local");
 const driftGate = args.includes("--drift-gate");
+const gapGate = args.includes("--gap-gate");
 if (driftGate && (!rtmpLocal || recordSeconds < 900))
   throw new Error("--drift-gate requires --rtmp-local and --seconds >= 900");
+if (gapGate && (!rtmpLocal || recordSeconds < 24))
+  throw new Error("--gap-gate requires --rtmp-local and --seconds >= 24");
 const decodeTimeoutMs = driftGate ? 900000 : 120000;
 const rtmpTapPath = process.env.COREVIDEO_QA_RTMP_TAP_PATH;
 if (rtmpTapPath && !rtmpLocal) throw new Error('COREVIDEO_QA_RTMP_TAP_PATH requires --rtmp-local');
@@ -113,6 +117,7 @@ const startedAt = Date.now();
 let nextId = 1;
 let stdoutBuffer = "";
 let handshake;
+let rtmpProcessStarts = null;
 const pending = new Map();
 const displayClaps = [];
 const sourceVideoClaps = [];
@@ -247,6 +252,11 @@ function audioBurstTimes(artifact) {
 
 /** Pair each video flash with its nearest audio burst; skew = video - audio. */
 function pairEvents(videoTimes, audioTimes) {
+  return pairTimedEvents(videoTimes, audioTimes)
+    .filter((pair) => pair.skewMs !== null).map((pair) => pair.skewMs);
+}
+
+function pairTimedEvents(videoTimes, audioTimes) {
   const pairs = [];
   for (const v of videoTimes) {
     let best = null;
@@ -255,9 +265,36 @@ function pairEvents(videoTimes, audioTimes) {
       if (best === null || Math.abs(d) < Math.abs(best)) best = d;
     }
     // Anything beyond half a clap interval is a mis-pair, not a measurement.
-    if (best !== null && Math.abs(best) < clapIntervalMs / 2000) pairs.push(best * 1000);
+    pairs.push({ videoTime: v,
+      skewMs: best !== null && Math.abs(best) < clapIntervalMs / 2000 ? best * 1000 : null });
   }
   return pairs;
+}
+
+function assessGapSync(label, videoTimes, audioTimes) {
+  const cues = pairTimedEvents(videoTimes, audioTimes);
+  const gapIndex = cues.findIndex((cue, index) => index >= 2 && index < cues.length - 2 && cue.skewMs === null);
+  if (cues.length < 6 || gapIndex < 0) {
+    failures.push(`${label}: five-second mute did not remove a middle audio cue while video continued`);
+    return null;
+  }
+  // RTMP can miss its first clap while FFmpeg connects. Compare two actual
+  // pairs immediately around the mute, not the first two video flashes.
+  const before = cues.slice(0, gapIndex).filter((cue) => cue.skewMs !== null)
+    .slice(-2).map((cue) => cue.skewMs);
+  const after = cues.slice(gapIndex + 1).filter((cue) => cue.skewMs !== null)
+    .slice(0, 2).map((cue) => cue.skewMs);
+  if (before.length < 2 || after.length < 2) {
+    failures.push(`${label}: missing A/V cue before or after audio resumed`);
+    return null;
+  }
+  const beforeMs = median(before);
+  const afterMs = median(after);
+  const changeMs = afterMs - beforeMs;
+  console.log(`${label.padEnd(14)}: before ${beforeMs.toFixed(1)} ms, after ${afterMs.toFixed(1)} ms, change ${changeMs.toFixed(1)} ms`);
+  if (Math.abs(changeMs) > 1000 / 60)
+    failures.push(`${label}: sync changed ${changeMs.toFixed(1)} ms across audio gap (>1 frame)`);
+  return { beforeMs, afterMs, changeMs, unpairedMiddleCues: cues.slice(2, -2).filter((cue) => cue.skewMs === null).length };
 }
 
 /** Map each endpoint loopback burst to the packet's WASAPI QPC clock. */
@@ -467,9 +504,44 @@ try {
   console.log(`Recording     : ${recordSeconds}s (clap every ${clapIntervalMs}ms)...`);
 
   let last = null;
-  const deadline = Date.now() + recordSeconds * 1000;
+  const recordingStartedAt = Date.now();
+  const deadline = recordingStartedAt + recordSeconds * 1000;
+  let muted = false;
+  let unmuted = false;
+  let audioMutedAt = null;
+  let audioResumedAt = null;
+  const routeControl = startResp.snapshot?.audioRoutingMatrix?.control;
+  let routeRevision = routeControl?.revision;
+  const routeEpoch = routeControl?.authorityEpoch;
+  if (gapGate && (!routeEpoch || !Number.isInteger(routeRevision)))
+    throw new Error("audio gap gate requires revisioned route control evidence");
+  const setProgramAudioEnabled = async (enabled) => {
+    for (const busId of ["master", "stream"]) {
+      const response = await send("media-core-sync", {
+        elapsedMs: Date.now() - startedAt,
+        commands: [{ type: "set-audio-route-control",
+          operationId: `gap-${enabled ? "resume" : "mute"}-${busId}`,
+          authorityEpoch: routeEpoch, expectedRevision: routeRevision,
+          sourceId: "zoom-mix", busId, enabled, gainDb: 0 }],
+      });
+      const control = response.snapshot?.audioRoutingMatrix?.control;
+      if (control?.lastResult?.status !== "applied" || control.revision !== routeRevision + 1)
+        throw new Error(`audio gap ${enabled ? "resume" : "mute"} ${busId} was not applied`);
+      routeRevision = control.revision;
+    }
+  };
   while (Date.now() < deadline) {
-    await sleep(Math.min(5000, Math.max(1000, deadline - Date.now())));
+    await sleep(Math.min(gapGate ? 500 : 5000, Math.max(100, deadline - Date.now())));
+    if (gapGate && !muted && Date.now() - recordingStartedAt >= 8000) {
+      await setProgramAudioEnabled(false);
+      audioMutedAt = Date.now();
+      muted = true;
+    }
+    if (gapGate && muted && !unmuted && Date.now() - recordingStartedAt >= 13000) {
+      await setProgramAudioEnabled(true);
+      audioResumedAt = Date.now();
+      unmuted = true;
+    }
     const syncResp = await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] });
     last = syncResp.snapshot?.recording ?? {};
     endCounters = syncResp.snapshot;
@@ -479,6 +551,19 @@ try {
     elapsedMs: Date.now() - startedAt,
     commands: [{ type: "stop-recording-session", reason: "av-clap complete" }],
   });
+  const audioGapDurationMs = audioResumedAt - audioMutedAt;
+  if (gapGate && (!unmuted || audioGapDurationMs < 4500 || audioGapDurationMs > 6000))
+    failures.push(`audio route was muted for ${audioGapDurationMs} ms, expected about 5000 ms`);
+  if (gapGate) {
+    const proofPath = stopResp.snapshot?.outputSenderSession?.senders
+      ?.find((sender) => sender.destination === "rtmp")?.sendArtifactPath;
+    if (!proofPath || !existsSync(proofPath)) {
+      failures.push("audio gap has no RTMP process proof artifact");
+    } else {
+      rtmpProcessStarts = readFileSync(proofPath, "utf8").split(/\r?\n/)
+        .filter((line) => line.includes('"type":"ffmpeg-process-start"')).length;
+    }
+  }
   if (rtmpLocal) {
     await send("media-core-sync", {
       elapsedMs: Date.now() - startedAt,
@@ -520,6 +605,7 @@ try {
 
   const pairs = pairEvents(videoTimes, audioTimes);
   if (pairs.length >= 2) recordSummary = describePairs("Record v-a", pairs);
+  const recordGap = gapGate ? assessGapSync("Record gap", videoTimes, audioTimes) : null;
   if (rtmpLocal) {
     const receivedProbe = spawnSync(ffprobe,
       ["-v", "error", "-print_format", "json", "-show_streams", rtmpReceived],
@@ -536,13 +622,20 @@ try {
     const receivedPairs = pairEvents(receivedVideoTimes, receivedAudioTimes);
     if (receivedPairs.length < 2) throw new Error(`decoded RTMP has only ${receivedPairs.length} paired claps (video=${receivedVideoTimes.length}, audio=${receivedAudioTimes.length})`);
     receivedSummary = describePairs("RTMP v-a", receivedPairs);
+    const streamGap = gapGate ? assessGapSync("RTMP gap", receivedVideoTimes, receivedAudioTimes) : null;
+    if (gapGate && rtmpProcessStarts !== 1)
+      failures.push(`audio gap restarted RTMP FFmpeg ${rtmpProcessStarts} times (expected one launch)`);
+    if (gapGate && recordGap && streamGap &&
+        Math.abs(streamGap.changeMs - recordGap.changeMs) > 1000 / 60)
+      failures.push("RTMP gained more than one frame of drift relative to recording across audio gap");
     writeFileSync(join(liveCaptureDir, "rtmp-evidence.json"), JSON.stringify({
       source: "fake-engine timed clap; local decoded RTMP receiver and recorded Program from one run",
       buildSha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: binarySourceRoot, encoding: "utf8" }).stdout.trim(),
       buildDir, seconds: recordSeconds, programBufferFrames,
       receivedArtifact: rtmpReceived, recordingArtifact: artifactAbsolute,
-      receivedVideoTimes, receivedAudioTimes, receivedSummary,
-      recordVideoTimes: videoTimes, recordAudioTimes: audioTimes, recordSummary,
+      receivedVideoTimes, receivedAudioTimes, receivedSummary, streamGap,
+      recordVideoTimes: videoTimes, recordAudioTimes: audioTimes, recordSummary, recordGap,
+      rtmpProcessStarts, audioGapDurationMs,
       receiverLog: rtmpReceiverStderr,
     }, null, 2));
     if (driftGate) {

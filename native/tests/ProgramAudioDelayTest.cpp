@@ -39,6 +39,13 @@ TEST(ProgramAudioDelay, EmptyMutedBlocksAdvanceRatherThanReplayStaleSamplesLater
   EXPECT_EQ(output.size(), 960U);
   for (float sample : output) EXPECT_EQ(sample, 0.f);
 }
+
+TEST(ProgramAudioDelay, UnbufferedMutedBlockStillAdvancesThePcmClock) {
+  ProgramAudioDelay delay;
+  const auto& silence = delay.process({}, 2, 48000, 0, 960);
+  ASSERT_EQ(silence.size(), 1920u);
+  for (const float sample : silence) EXPECT_EQ(sample, 0.f);
+}
 TEST(ProgramAudioDelay, UnsupportedBackendBypassesAndReactivationResetsHistory) {
   ProgramAudioDelay delay;
   const std::vector<float> signal{1.f, -1.f};
