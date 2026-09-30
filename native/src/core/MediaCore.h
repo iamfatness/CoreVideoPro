@@ -1233,6 +1233,7 @@ class MediaCore {
     std::uint64_t zoomGuestAvEpoch = 0;
     std::vector<ParticipantAudioChannelInput> channels;
     std::vector<AudioRoutingSendInput> routingSends;
+    bool routingSynced = false;  // An explicit all-muted matrix still owns the buses.
     std::vector<AudioBusSendInput> busSends;  // bus -> bus outputs (aux/subgroup routing)
     std::string monitorListenBusId;           // PFL: monitor auditions this bus (else "mon")
     bool limiterEnabled = true;  // spec 4.4: toggle now controls the bus limiter

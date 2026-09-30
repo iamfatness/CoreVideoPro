@@ -342,6 +342,7 @@ class CapturingOutputSender final : public corevideo::modules::IOutputSender {
       const std::vector<float>* programAudioPcm = nullptr,
       int audioChannels = 0,
       int audioSampleRate = 0) override {
+    ++syncCalls_;
     destinations_ = destinations;
     destinationSettings_ = destinationSettings;
     audioFramesSent_ = programAudioPcm && audioChannels > 0
@@ -375,6 +376,7 @@ class CapturingOutputSender final : public corevideo::modules::IOutputSender {
   }
 
   std::vector<std::string> destinations_;
+  int syncCalls_ = 0;
   std::vector<corevideo::modules::OutputDestinationSettings> destinationSettings_;
   int audioFramesSent_ = 0;
   int audioChannels_ = 0;
@@ -3353,6 +3355,58 @@ TEST(MediaCoreCommand, StreamOutputPrefersRoutedStreamBusAudio) {
   ASSERT_NE(captureSources, nullptr);
   EXPECT_TRUE(captureSources->get("routedMasterFrames")->asNumber() > 0);
   EXPECT_TRUE(captureSources->get("routedStreamFrames")->asNumber() > 0);
+}
+
+TEST(MediaCoreCommand, DisablingEveryRoutedProgramSendWritesSilenceNotLegacyMix) {
+  using corevideo::rpc::Json;
+  auto modules = corevideo::modules::createStubModules();
+  auto* outputSender = new CapturingOutputSender();
+  modules.outputSender.reset(outputSender);
+  auto* monitor = new RecordingMonitorOutput();
+  modules.monitorOutput.reset(monitor);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  mediaCore.useZoomSourcesForTest({std::make_shared<PcmTestZoomSource>()});
+
+  const auto started = mediaCore.applyCommands(Json::Array{
+      Json::Object{{"type", "sync-audio-routing-matrix"},
+                   {"sends", Json::Array{
+                       Json::Object{{"sourceId", "pcm-speaker"}, {"busId", "master"}, {"gainDb", 0}},
+                       Json::Object{{"sourceId", "pcm-speaker"}, {"busId", "stream"}, {"gainDb", 0}},
+                       Json::Object{{"sourceId", "pcm-speaker"}, {"busId", "mon"}, {"gainDb", 0}},
+                   }}},
+      Json::Object{{"type", "sync-audio-monitor"}, {"enabled", true},
+                   {"deviceId", "stub-render"}, {"volume", 1.0}},
+      Json::Object{{"type", "start-program-output"}, {"destinations", Json::Array{"rtmp"}}},
+  });
+  ASSERT_GT(outputSender->maxAudioSample_, 0.f);
+  ASSERT_GT(monitor->framesRendered, 0);
+  const int64_t monitorFramesBeforeMute = monitor->framesRendered;
+  const int beforeMuteSyncCalls = outputSender->syncCalls_;
+  const auto* control = started.get("audioRoutingMatrix")->get("control");
+  ASSERT_NE(control, nullptr);
+  const auto epoch = control->getString("authorityEpoch");
+  int revision = static_cast<int>(control->getNumber("revision"));
+  for (const auto& bus : {"master", "stream", "mon"}) {
+    const auto muted = mediaCore.applyCommand(Json::Object{
+        {"type", "set-audio-route-control"}, {"operationId", std::string("mute-") + bus},
+        {"authorityEpoch", epoch}, {"expectedRevision", revision++},
+        {"sourceId", "pcm-speaker"}, {"busId", bus}, {"enabled", false}, {"gainDb", 0},
+    });
+    EXPECT_EQ(muted.get("audioRoutingMatrix")->get("control")->get("lastResult")->getString("status"), "applied");
+  }
+  std::mutex coreMutex;
+  for (int tick = 0; tick < 6; ++tick) {
+    mediaCore.renderDisplayTick();
+    mediaCore.renderAudioOutputTick(coreMutex);
+  }
+  EXPECT_EQ(outputSender->destinations_, std::vector<std::string>{"rtmp"});
+  EXPECT_GT(outputSender->syncCalls_, beforeMuteSyncCalls);
+  EXPECT_EQ(mediaCore.sessionState().get("audioRoutingMatrix")->get("sends")->asArray().size(), 0u);
+  EXPECT_EQ(mediaCore.programAudioTapPcm().size(), 0u);
+  EXPECT_EQ(mediaCore.audioBusTapPcm("stream").size(), 0u);
+  EXPECT_GT(outputSender->audioFramesSent_, 0) << "stream PCM must keep its sample clock through a mute";
+  EXPECT_EQ(outputSender->maxAudioSample_, 0.f) << "legacy mixer must not bypass an explicitly empty route matrix";
+  EXPECT_EQ(monitor->framesRendered, monitorFramesBeforeMute) << "all-muted monitor must not replay legacy PCM";
 }
 
 TEST(MediaCoreCommand, SceneMediaAudioRoutesToStreamOutput) {

@@ -7843,6 +7843,7 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   work.zoomGuestAvEpoch = zoomGuestAvEpoch_;
   work.channels = audioChannels_;
   work.routingSends = audioRoutingSends_;
+  work.routingSynced = audioRoutingSynced_;
   work.busSends = audioBusSends_;
   work.monitorListenBusId = monitorListenBusId_;
   work.limiterEnabled = audioLimiterEnabled_;
@@ -8426,7 +8427,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
       // played the raw unmuted mix the moment every strip was muted (live
       // meeting, 2026-08-09 — "muted all sources and still hear the output").
       // Silence is the correct sound of an all-muted console.
-      const bool consoleRouted = !work.routingSends.empty();
+      const bool consoleRouted = work.routingSynced;
       const auto& monitorBus = hasRoutedMonitorBus ? routedMonitorBus
                                : consoleRouted     ? kEmptyTap
                                                    : modules_.mixer->monitorBusPcm();
@@ -8485,7 +8486,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
     // Routed console -> never meter the legacy unmuted sum (see the monitor
     // fallback note above). All-muted must read as silence on the master meter.
     static const std::vector<float> kEmptyLoudnessTap;
-    const bool loudnessConsoleRouted = !work.routingSends.empty();
+    const bool loudnessConsoleRouted = work.routingSynced;
     const std::vector<float>& programAudio =
         !localProgramTap.empty() ? localProgramTap
         : loudnessConsoleRouted  ? kEmptyLoudnessTap
@@ -8561,7 +8562,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   const std::vector<float>& streamBusAudio = localBusTap("stream");
   // Routed console -> silence, never the legacy unmuted sum (monitor note above).
   static const std::vector<float> kEmptyStreamTap;
-  const bool streamConsoleRouted = !work.routingSends.empty();
+  const bool streamConsoleRouted = work.routingSynced;
   const std::vector<float>& undelayedStreamAudio =
       !streamBusAudio.empty()    ? streamBusAudio
       : !localProgramTap.empty() ? localProgramTap
@@ -8576,7 +8577,7 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   // output begins with the same delayed content as the already buffered video.
   static const std::vector<float> kEmptyProgramOutput;
   const auto& undelayedProgramAudio = !localProgramTap.empty() ? localProgramTap
-      : !work.routingSends.empty() ? kEmptyProgramOutput : modules_.mixer->monitorBusPcm();
+      : work.routingSynced ? kEmptyProgramOutput : modules_.mixer->monitorBusPcm();
   const int programOutputChannels = !localProgramTap.empty() ? 2 : modules_.mixer->monitorBusChannels();
   const auto& delayedProgramAudio = programOutputAudioDelay_.process(undelayedProgramAudio,
       programOutputChannels, outputSampleRate, work.programBufferFrames, outputSampleRate / 50);
@@ -8848,9 +8849,9 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
     lastVideoOutDestinations_ = outputDestinations_;
     senderDestinations = outputDestinations_;
     senderSettings = outputDestinationSettings_;
-    // Has the operator routed ANY audio? If so the senders must be configured
-    // with a real PCM input from their first frame (see the sync call below).
-    senderExpectsAudio = !audioRoutingSends_.empty();
+    // An explicit matrix owns the stream audio clock even when every send is
+    // muted. Keep the PCM track alive with silence instead of reopening FFmpeg.
+    senderExpectsAudio = audioRoutingSynced_;
     // Carries preview/dims/frameNumber/warnings, so a compositor with no NV12
     // tap still submits exactly what the old path submitted.
     frame = lastProgramFrame_;

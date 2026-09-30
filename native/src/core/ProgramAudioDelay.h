@@ -14,6 +14,10 @@ class ProgramAudioDelay {
         ? sampleRate * videoBufferFrames / 60 : 0;
     if (channels <= 0 || delayFrames == 0) {
       ring_.clear(); cursor_ = 0; channels_ = 0; rate_ = 0;
+      if (channels > 0 && input.empty() && silentFrameCount > 0) {
+        output_.assign(static_cast<size_t>(silentFrameCount) * static_cast<size_t>(channels), 0.f);
+        return output_;
+      }
       return input;
     }
     const auto size = static_cast<size_t>(delayFrames) * static_cast<size_t>(channels);
