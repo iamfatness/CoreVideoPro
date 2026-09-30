@@ -200,7 +200,9 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     }
     args << " -map 0:v:0 -map " << (unifiedInput ? "0" : "1") << ":a:0 -c:v copy";
     if (hevc && !config.timestampedVideoInput) args << " -bsf:v setts=ts=N/(" << fps << "*TB)";
-    if (config.audioBitstreamInput) args << " -c:a copy";
+    // Only REAL shared AAC is copied. The silent fallback input is anullsrc
+    // PCM, which FLV refuses to carry raw; it is encoded like any PCM.
+    if (config.hasAudio && config.audioBitstreamInput) args << " -c:a copy";
     else args << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
               << " -af aresample=async=1:first_pts=0";
     if (config.endpoint.rfind("rtmp://", 0) == 0 || config.endpoint.rfind("rtmps://", 0) == 0) {

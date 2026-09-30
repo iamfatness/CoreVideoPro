@@ -243,6 +243,26 @@ TEST(RtmpFfmpegArgs, UnifiedTransportIsOneInputRemuxWithNoInputClock) {
   }
 }
 
+// Shared AAC being available is not audio being present. With no real audio
+// the second input is lavfi anullsrc PCM, which must be ENCODED: copying raw
+// PCM into FLV is refused ("FLV does not support sample rate 48000").
+TEST(RtmpFfmpegArgs, SilentFallbackEncodesAnullsrcEvenWhenSharedAacIsAvailable) {
+  auto config = baseConfig();
+  config.videoBitstreamInput = true;
+  config.timestampedVideoInput = true;
+  config.hasAudio = false;
+  config.audioBitstreamInput = true;
+  config.audioInTransportStream = true;
+  for (const char* container : {"flv", "mpegts"}) {
+    config.container = container;
+    const auto args = buildRtmpFfmpegArguments(config);
+    EXPECT_NE(args.find("-re -f lavfi -i anullsrc"), std::string::npos) << args;
+    EXPECT_NE(args.find("-map 0:v:0 -map 1:a:0 -c:v copy"), std::string::npos) << args;
+    EXPECT_NE(args.find("-c:a aac -b:a 160k -ar 48000"), std::string::npos) << args;
+    EXPECT_EQ(args.find("-c:a copy"), std::string::npos) << args;
+  }
+}
+
 TEST(RtmpFfmpegArgs, SharedAacIsCopiedWithoutPcmResampleClock) {
   auto config = baseConfig();
   config.videoBitstreamInput = true;
