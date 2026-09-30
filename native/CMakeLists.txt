@@ -255,7 +255,9 @@ endif()
 # which is _WIN32-gated rather than option-gated so stills work in every Windows build.
 if(WIN32)
   # The RPC audio worker uses MMCSS even in the stub configuration.
-  target_link_libraries(corevideo_native PUBLIC winmm windowscodecs ole32 avrt)
+  # ProgramAacEncoder is compiled in the Windows stub too, where its focused
+  # native test exercises the real OS AAC MFT without enabling media adapters.
+  target_link_libraries(corevideo_native PUBLIC winmm windowscodecs ole32 avrt mfplat mf mfuuid wmcodecdspuuid)
 endif()
 
 if(COREVIDEO_WITH_MF_ENCODER)
