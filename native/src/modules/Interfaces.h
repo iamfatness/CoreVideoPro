@@ -1,6 +1,7 @@
 #pragma once
 
 #include "contracts/Lifecycle.h"
+#include "modules/ProgramAacEncoder.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -782,6 +783,7 @@ struct OutputSender {
   std::optional<MuxInputVideo> muxInputVideo;
   int64_t audioFramesSent = 0;
   int64_t audioBytesSent = 0;
+  uint64_t droppedAudioPackets = 0;  // destination-local AAC queue shed
   int audioChannels = 0;
   int audioSampleRate = 0;
   std::string sendArtifactPath;
@@ -1343,6 +1345,11 @@ class IOutputSender {
   // here, not as "this sync() call happened to carry PCM" — otherwise a video-only
   // sync looks like audio disappearing and restarts the encoder process.
   virtual void submitAudio(const std::vector<float>& /*pcm*/, int /*channels*/, int /*sampleRate*/) {}
+  // Optional compressed Program audio. The composite encodes once and each
+  // destination copies these same access units into its independent muxer.
+  virtual void setSharedAacEnabled(bool /*enabled*/) {}
+  virtual bool acceptsSharedAac() const { return false; }
+  virtual void submitEncodedAudio(const ProgramAacPacket& /*packet*/) {}
   virtual OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) = 0;
   virtual OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) = 0;
   // The destination's OWN SUPERVISOR restarting it automatically, as opposed to

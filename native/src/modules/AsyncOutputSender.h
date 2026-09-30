@@ -36,6 +36,7 @@ class AsyncOutputSender final : public IOutputSender {
       int audioChannels = 0,
       int audioSampleRate = 0) override;
   void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override;
+  void submitEncodedAudio(const ProgramAacPacket& packet) override;
   OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override;
   OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override;
   OutputSenderSession restartForSupervisor(const std::string& destination, double elapsedMs,
@@ -44,10 +45,11 @@ class AsyncOutputSender final : public IOutputSender {
   void interrupt(const std::string& destination) override;
 
   [[nodiscard]] uint64_t droppedSyncs() const;
+  [[nodiscard]] uint64_t droppedEncodedAudioPackets() const;
   bool drainForTest(std::chrono::milliseconds timeout);
 
  private:
-  enum class Kind { Sync, Fail, Recover, Audio };
+  enum class Kind { Sync, Fail, Recover, Audio, EncodedAudio };
   struct Item {
     Kind kind = Kind::Sync;
     uint64_t seq = 0;
@@ -56,6 +58,7 @@ class AsyncOutputSender final : public IOutputSender {
     double elapsedMs = 0;
     std::vector<OutputDestinationSettings> destinationSettings;
     std::vector<float> audioPcm;
+    ProgramAacPacket encodedAudio;
     int audioChannels = 0;
     int audioSampleRate = 0;
     std::string destination;
@@ -77,6 +80,7 @@ class AsyncOutputSender final : public IOutputSender {
     bool stop = false;
     bool writerDone = false;
     std::atomic<uint64_t> dropped{0};
+    std::atomic<uint64_t> droppedEncodedAudio{0};
     bool workerBusy = false;
     Kind workerKind = Kind::Sync;
     std::chrono::steady_clock::time_point workerStarted{};

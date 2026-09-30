@@ -28,6 +28,7 @@
  *                                            [--drift-gate] (requires 15 minutes + RTMP)
  *                                            [--gap-gate] (5 s routed Program audio mute)
  *                                            [--video-gap-gate] (5 s fake Zoom source dropout)
+ *                                            [--shared-aac-gate] (RTMP vs Program within one 60 fps frame)
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -59,12 +60,15 @@ const rtmpLocal = args.includes("--rtmp-local");
 const driftGate = args.includes("--drift-gate");
 const gapGate = args.includes("--gap-gate");
 const videoGapGate = args.includes("--video-gap-gate");
+const sharedAacGate = args.includes("--shared-aac-gate");
 if (driftGate && (!rtmpLocal || recordSeconds < 900))
   throw new Error("--drift-gate requires --rtmp-local and --seconds >= 900");
 if (gapGate && (!rtmpLocal || recordSeconds < 24))
   throw new Error("--gap-gate requires --rtmp-local and --seconds >= 24");
 if (videoGapGate && (!rtmpLocal || recordSeconds < 30))
   throw new Error("--video-gap-gate requires --rtmp-local and --seconds >= 30");
+if (sharedAacGate && (!rtmpLocal || recordSeconds < 24))
+  throw new Error("--shared-aac-gate requires --rtmp-local and --seconds >= 24");
 if (gapGate && videoGapGate) throw new Error("choose one gap gate per run");
 const decodeTimeoutMs = driftGate ? 900000 : 120000;
 const rtmpTapPath = process.env.COREVIDEO_QA_RTMP_TAP_PATH;
@@ -669,6 +673,13 @@ try {
     const receivedPairs = pairEvents(receivedVideoTimes, receivedAudioTimes);
     if (receivedPairs.length < 2) throw new Error(`decoded RTMP has only ${receivedPairs.length} paired claps (video=${receivedVideoTimes.length}, audio=${receivedAudioTimes.length})`);
     receivedSummary = describePairs("RTMP v-a", receivedPairs);
+    const relativeSkewMs = recordSummary
+      ? receivedSummary.medianMs - recordSummary.medianMs : null;
+    if (sharedAacGate) {
+      if (relativeSkewMs === null || Math.abs(relativeSkewMs) > 1000 / 60)
+        failures.push(`shared AAC RTMP−Program skew ${relativeSkewMs?.toFixed(1) ?? "missing"}ms exceeds one frame`);
+      console.log(`RTMP−Record   : ${relativeSkewMs?.toFixed(1) ?? "missing"} ms (one-frame limit)`);
+    }
     const streamGap = gapGate ? assessGapSync("RTMP gap", receivedVideoTimes, receivedAudioTimes) : null;
     const streamVideoGap = videoGapGate
       ? assessVideoGapSync("RTMP video", receivedVideoTimes, receivedAudioTimes) : null;
@@ -699,6 +710,7 @@ try {
       buildDir, seconds: recordSeconds, programBufferFrames,
       receivedArtifact: rtmpReceived, recordingArtifact: artifactAbsolute,
       receivedVideoTimes, receivedAudioTimes, receivedSummary, streamGap, streamVideoGap,
+      relativeSkewMs,
       receivedVideoFrameCount: receivedVideoPts?.length ?? null, worstVideoPtsGapMs,
       recordVideoTimes: videoTimes, recordAudioTimes: audioTimes, recordSummary, recordGap, recordVideoGap,
       rtmpProcessStarts, audioGapDurationMs,

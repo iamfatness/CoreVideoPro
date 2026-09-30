@@ -275,3 +275,23 @@ TEST(AsyncOutputSender, CoalescingVideoPreservesAudioTimelineInOrder) {
   EXPECT_EQ(raw->lastAudio(), (std::vector<float>{2.0f, 2.5f, 3.0f, 3.5f, 4.0f, 4.5f, 5.0f, 5.5f}));
   sender.interrupt("rtmp");
 }
+
+TEST(AsyncOutputSender, BlockedDestinationRetainsOnlyCompleteRecentAacPackets) {
+  auto inner = std::make_unique<AudioCapturingOutputSender>();
+  auto* raw = inner.get();
+  AsyncOutputSender sender(std::move(inner));
+  sender.sync({"rtmp"}, nullptr, 0);
+  ASSERT_TRUE(raw->waitForCalls(1));
+  ProgramAacPacket packet;
+  packet.adts = {0xff, 0xf1, 0x50, 0x80, 0, 0x1f, 0xfc};
+  for (int i = 0; i < 300; ++i) {
+    packet.sampleIndex = static_cast<int64_t>(i) * 1024;
+    sender.submitEncodedAudio(packet);
+  }
+  EXPECT_GE(sender.droppedEncodedAudioPackets(), 65u);
+  EXPECT_EQ(sender.droppedSyncs(), 0u);
+  const auto session = sender.session();
+  ASSERT_TRUE(session.senders.empty() || session.senders.front().asyncWorker.has_value());
+  sender.interrupt("rtmp");
+  EXPECT_TRUE(sender.drainForTest(std::chrono::seconds(2)));
+}

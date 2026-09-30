@@ -5533,6 +5533,7 @@ rpc::Json MediaCore::outputSenderSessionState() const {
         {"bytesSent", static_cast<double>(sender.bytesSent)},
         {"audioFramesSent", static_cast<double>(sender.audioFramesSent)},
         {"audioBytesSent", static_cast<double>(sender.audioBytesSent)},
+        {"droppedAudioPackets", static_cast<double>(sender.droppedAudioPackets)},
         {"audioChannels", sender.audioChannels},
         {"audioSampleRate", sender.audioSampleRate},
     };

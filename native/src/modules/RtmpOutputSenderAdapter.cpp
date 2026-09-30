@@ -634,9 +634,51 @@ class RtmpOutputSender final : public IOutputSender {
 
   ~RtmpOutputSender() override { stopFfmpegProcess(); }
 
-  // Program audio on the AUDIO cadence. Writes straight into the same queue the
-  // per-tick path uses; the borrow ends inside writeAudioToFfmpeg (it copies into
-  // audioQueue_), so holding a caller-owned reference here is safe.
+  void setSharedAacEnabled(bool enabled) override { useSharedAac_ = enabled; }
+  bool acceptsSharedAac() const override { return true; }
+
+  void submitEncodedAudio(const ProgramAacPacket& packet) override {
+    if (!useSharedAac_ || !useGpuDirect_ || packet.adts.empty() ||
+        !firstBitstreamToFfmpeg_.load(std::memory_order_acquire)) return;
+    // The independent audio worker reaches the stream mux about three 1024-
+    // sample AAC units behind the first exported Program video frame. Trim
+    // that startup lead-in once per mux session; the encoder's sample clock
+    // then runs untouched for the rest of the stream.
+    if (audioStartupPacketsToDrop_ > 0) {
+      --audioStartupPacketsToDrop_;
+      return;
+    }
+#if defined(_WIN32)
+    if (!audioPipeServer_) return;
+    {
+      std::lock_guard<std::mutex> lock(audioQueueMutex_);
+      audioQueue_.push_back(packet.adts);
+      audioQueuedBytes_ += packet.adts.size();
+      const size_t maxBytes = 5u * 20000u;
+      while (audioQueuedBytes_ > maxBytes && !audioQueue_.empty()) {
+        audioQueuedBytes_ -= audioQueue_.front().size();
+        audioQueue_.pop_front();
+      }
+    }
+    audioQueueCv_.notify_one();
+    sender_.audioFramesSent = audioFramesWritten_.load();
+    sender_.audioBytesSent = audioBytesWritten_.load();
+#else
+    if (ffmpegAudioFd_ < 0) return;
+    const uint8_t* cursor = packet.adts.data();
+    size_t remaining = packet.adts.size();
+    while (remaining) {
+      const ssize_t written = ::write(ffmpegAudioFd_, cursor, remaining);
+      if (written < 0 && errno == EINTR) continue;
+      if (written <= 0) break;
+      cursor += written;
+      remaining -= static_cast<size_t>(written);
+    }
+#endif
+  }
+
+  // Program PCM on the AUDIO cadence. The shared AAC path receives compressed
+  // packets separately; PCM remains the fallback and a layout declaration.
   void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override {
     ActiveStageScope stageScope(activeStage_, "audio-enqueue");
     if (pcm.empty() || channels <= 0 || sampleRate <= 0) {
@@ -1536,6 +1578,7 @@ class RtmpOutputSender final : public IOutputSender {
     config.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 2;
     config.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 48000;
     config.audioBitrateKbps = configuredAudioBitrateKbps_;
+    config.audioBitstreamInput = useGpuDirect_ && useSharedAac_;
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     config.container = protocol_.container;
@@ -2747,6 +2790,7 @@ class RtmpOutputSender final : public IOutputSender {
   // Push this tick's interleaved float PCM down the audio pipe. Non-fatal on
   // error: audio drop should not tear down the live video stream.
   void writeAudioToFfmpeg() {
+    if (useGpuDirect_ && useSharedAac_) return;
     if (!activeAudioPresent_ || !pendingAudioPcm_ || pendingAudioPcm_->empty()) {
       return;
     }
@@ -2769,10 +2813,14 @@ class RtmpOutputSender final : public IOutputSender {
 #if defined(_WIN32)
     {
       std::lock_guard<std::mutex> lock(audioQueueMutex_);
-      audioQueue_.insert(audioQueue_.end(), pendingAudioPcm_->begin() + skip, pendingAudioPcm_->end());
-      const size_t maxSamples = static_cast<size_t>((std::max)(1, activeAudioSampleRate_)) *
-                                static_cast<size_t>((std::max)(1, activeAudioChannels_)) * 5;
-      while (audioQueue_.size() > maxSamples) {
+      const auto* begin = reinterpret_cast<const uint8_t*>(pendingAudioPcm_->data() + skip);
+      const auto* end = reinterpret_cast<const uint8_t*>(pendingAudioPcm_->data() + pendingAudioPcm_->size());
+      audioQueue_.emplace_back(begin, end);
+      audioQueuedBytes_ += static_cast<size_t>(end - begin);
+      const size_t maxBytes = static_cast<size_t>((std::max)(1, activeAudioSampleRate_)) *
+                              static_cast<size_t>((std::max)(1, activeAudioChannels_)) * sizeof(float) * 5;
+      while (audioQueuedBytes_ > maxBytes && !audioQueue_.empty()) {
+        audioQueuedBytes_ -= audioQueue_.front().size();
         audioQueue_.pop_front();
       }
     }
@@ -2808,8 +2856,10 @@ class RtmpOutputSender final : public IOutputSender {
       std::lock_guard<std::mutex> lock(audioQueueMutex_);
       audioWriterStop_ = false;
       audioQueue_.clear();
+      audioQueuedBytes_ = 0;
     }
     audioBytesWritten_.store(0);
+    audioFramesWritten_.store(0);
     audioWriterThread_ = std::thread([this] { audioWriterLoop(); });
   }
 
@@ -2836,7 +2886,7 @@ class RtmpOutputSender final : public IOutputSender {
         }
       }
 
-      std::vector<float> samples;
+      std::vector<uint8_t> samples;
       {
         std::unique_lock<std::mutex> lock(audioQueueMutex_);
         audioQueueCv_.wait_for(lock, std::chrono::milliseconds(5), [&] {
@@ -2845,10 +2895,9 @@ class RtmpOutputSender final : public IOutputSender {
         if (audioWriterStop_) {
           return;
         }
-        const size_t chunkSamples = (std::min)(audioQueue_.size(), static_cast<size_t>(4096));
-        samples.reserve(chunkSamples);
-        for (size_t index = 0; index < chunkSamples; ++index) {
-          samples.push_back(audioQueue_.front());
+        if (!audioQueue_.empty()) {
+          samples = std::move(audioQueue_.front());
+          audioQueuedBytes_ -= samples.size();
           audioQueue_.pop_front();
         }
       }
@@ -2857,7 +2906,7 @@ class RtmpOutputSender final : public IOutputSender {
       }
 
       const auto* data = reinterpret_cast<const char*>(samples.data());
-      size_t bytesRemaining = samples.size() * sizeof(float);
+      size_t bytesRemaining = samples.size();
       while (bytesRemaining > 0) {
         DWORD written = 0;
         const DWORD chunk = static_cast<DWORD>((std::min)(bytesRemaining, static_cast<size_t>(1) << 20));
@@ -2901,6 +2950,7 @@ class RtmpOutputSender final : public IOutputSender {
         bytesRemaining -= written;
         audioBytesWritten_.fetch_add(written);
       }
+      if (useSharedAac_ && useGpuDirect_) audioFramesWritten_.fetch_add(1024);
     }
   }
 
@@ -2909,6 +2959,7 @@ class RtmpOutputSender final : public IOutputSender {
       std::lock_guard<std::mutex> lock(audioQueueMutex_);
       audioWriterStop_ = true;
       audioQueue_.clear();
+      audioQueuedBytes_ = 0;
     }
     audioQueueCv_.notify_all();
     if (audioWriterThread_.joinable()) {
@@ -2930,6 +2981,7 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
 
   void stopFfmpegProcess() {
+    audioStartupPacketsToDrop_ = 3;
     // Stop the GPU encoder FIRST: its sink writes FFmpeg's stdin on the encoder
     // thread, so joining it here guarantees no write-after-close on the pipe.
     stopGpuEncoder();
@@ -3154,6 +3206,8 @@ class RtmpOutputSender final : public IOutputSender {
   // cleared by a video-only sync. The FFmpeg arg list bakes in the audio input,
   // so treating a video-only call as audio-absent would restart the encoder.
   bool haveRealAudio_ = false;
+  bool useSharedAac_ = false;
+  int audioStartupPacketsToDrop_ = 3;
   bool activeAudioPresent_ = false;
   int activeAudioChannels_ = 0;
   int activeAudioSampleRate_ = 0;
@@ -3172,10 +3226,12 @@ class RtmpOutputSender final : public IOutputSender {
   bool audioPipeConnected_ = false;
   std::mutex audioQueueMutex_;
   std::condition_variable audioQueueCv_;
-  std::deque<float> audioQueue_;
+  std::deque<std::vector<uint8_t>> audioQueue_;
+  size_t audioQueuedBytes_ = 0;
   std::thread audioWriterThread_;
   bool audioWriterStop_ = true;
   std::atomic<int64_t> audioBytesWritten_{0};
+  std::atomic<int64_t> audioFramesWritten_{0};
 #else
   int ffmpegStdinFd_ = -1;
   int ffmpegAudioFd_ = -1;

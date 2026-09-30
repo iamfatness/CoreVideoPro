@@ -186,6 +186,7 @@ finally {
 }
 await sleep(2000);
 const starts = stderr.match(/\[gpu-encode\] started[^\n]*/g) || [];
+const aacStarts = stderr.match(/\[program-aac\] started[^\n]*/g) || [];
 const paths = stderr.match(/\[gpu-encode\] path=[^\n]*/g) || [];
 const pressureLines = stderr.match(/\[stream-backpressure\] (?:enter|overflow-discard)[^\n]*/g) || [];
 const probe = (path) => {
@@ -201,6 +202,8 @@ const probeCodecs = (path) => {
   return result.status === 0 ? result.stdout.trim() : result.stderr.trim();
 };
 if (starts.length !== 1) failures.push(`expected one hardware encoder start, got ${starts.length}`);
+if (process.platform === "win32" && aacStarts.length !== 1)
+  failures.push(`expected one shared Program AAC encoder start, got ${aacStarts.length}`);
 if (!paths.length || paths.some((line) => !line.includes("gpu-direct")))
   failures.push(`expected GPU-direct paths, got ${paths.join(" | ")}`);
 if (firstRtmpFrames < 30 || firstSrtFrames < 30 || firstHlsFrames < 30)
@@ -255,9 +258,14 @@ if (![...hlsReceived.keys()].some((item) => item.endsWith(".m3u8")) ||
 const hlsSegment = [...hlsReceived.keys()].find((item) => item.endsWith(".ts"));
 if (hlsSegment && !probe(join(output, hlsSegment)).startsWith("h264"))
   failures.push("received HLS segment was not decodable H.264");
+if (hlsSegment && !probeCodecs(join(output, hlsSegment)).includes("aac"))
+  failures.push("received HLS segment was missing shared AAC");
 if (!probe(srtFile).startsWith("h264") || !probe(rtmpFile).startsWith("h264"))
   failures.push("received output was not decodable H.264");
+if (!probeCodecs(srtFile).includes("aac") || !probeCodecs(rtmpFile).includes("aac"))
+  failures.push("SRT or RTMP receiver was missing shared AAC");
 const report = { output, blockRtmp, reconnectRtmp, proxyConnections, pressureLines, starts: starts.length,
+  aacStarts: aacStarts.length,
   paths, firstRtmpFrames,
   firstSrtFrames, lastSrtFrames, firstHlsFrames, lastHlsFrames,
   firstSenderStates, lastSenderStates, firstSrtBytes, firstHlsBytes,

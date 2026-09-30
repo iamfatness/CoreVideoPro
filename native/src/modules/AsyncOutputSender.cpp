@@ -132,6 +132,24 @@ uint64_t AsyncOutputSender::enqueue(Item&& item) {
     if (!merged) {
       state_->queue.push_back(std::move(item));
     }
+    if (!merged && state_->queue.back().kind == Kind::EncodedAudio) {
+      // A blocked destination may retain five seconds of complete AAC access
+      // units. Evict whole packets, never bytes inside an ADTS frame. Other
+      // destinations have their own queues and continue at encoder cadence.
+      size_t pendingPackets = 0;
+      for (const auto& queued : state_->queue) {
+        if (queued.kind == Kind::EncodedAudio) ++pendingPackets;
+      }
+      for (auto it = state_->queue.begin(); pendingPackets > 235 && it != state_->queue.end();) {
+        if (it->kind == Kind::EncodedAudio) {
+          it = state_->queue.erase(it);
+          --pendingPackets;
+          state_->droppedEncodedAudio.fetch_add(1);
+        } else {
+          ++it;
+        }
+      }
+    }
   }
   state_->queueCv.notify_one();
   return seq;
@@ -186,6 +204,13 @@ void AsyncOutputSender::submitAudio(const std::vector<float>& pcm, int channels,
   enqueue(std::move(item));
 }
 
+void AsyncOutputSender::submitEncodedAudio(const ProgramAacPacket& packet) {
+  Item item;
+  item.kind = Kind::EncodedAudio;
+  item.encodedAudio = packet;
+  enqueue(std::move(item));
+}
+
 OutputSenderSession AsyncOutputSender::fail(const std::string& destination, const std::string& message, double elapsedMs) {
   interrupt(destination);
   Item item;
@@ -237,6 +262,7 @@ OutputSenderSession AsyncOutputSender::session() const {
       switch (state_->workerKind) {
         case Kind::Sync: worker.operation = "sync"; break;
         case Kind::Audio: worker.operation = "audio"; break;
+        case Kind::EncodedAudio: worker.operation = "encoded-audio"; break;
         case Kind::Fail: worker.operation = "fail"; break;
         case Kind::Recover: worker.operation = "recover"; break;
       }
@@ -246,7 +272,10 @@ OutputSenderSession AsyncOutputSender::session() const {
     }
   }
   worker.droppedSyncs = static_cast<std::int64_t>(state_->dropped.load());
-  for (auto& sender : result.senders) sender.asyncWorker = worker;
+  for (auto& sender : result.senders) {
+    sender.asyncWorker = worker;
+    sender.droppedAudioPackets = state_->droppedEncodedAudio.load();
+  }
   return result;
 }
 
@@ -271,6 +300,9 @@ void AsyncOutputSender::interrupt(const std::string& destination) {
 }
 
 uint64_t AsyncOutputSender::droppedSyncs() const { return state_->dropped.load(); }
+uint64_t AsyncOutputSender::droppedEncodedAudioPackets() const {
+  return state_->droppedEncodedAudio.load();
+}
 
 bool AsyncOutputSender::drainForTest(std::chrono::milliseconds timeout) {
   uint64_t target = 0;
@@ -318,6 +350,9 @@ void AsyncOutputSender::writerLoop(std::shared_ptr<State> state) {
       } else if (item.kind == Kind::Audio) {
         state->inner->submitAudio(item.audioPcm, item.audioChannels, item.audioSampleRate);
         updatesSnapshot = false;  // audio carries no session state to publish
+      } else if (item.kind == Kind::EncodedAudio) {
+        state->inner->submitEncodedAudio(item.encodedAudio);
+        updatesSnapshot = false;
       } else if (item.supervisedRestart) {
         fresh = state->inner->restartForSupervisor(item.destination, item.elapsedMs, item.message);
       } else {

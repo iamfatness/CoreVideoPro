@@ -10,8 +10,9 @@
 namespace corevideo::modules {
 
 // Single-program, single HEVC or H.264 stream for the encoder -> FFmpeg pipe.
-// This is an internal timestamp envelope, not the network muxer. FFmpeg still
-// owns AAC encoding and enhanced FLV/RTMP. No decode, re-encode or frame padding.
+// This is an internal video timestamp envelope, not the network muxer. FFmpeg
+// owns enhanced FLV/RTMP wrapping; the shared AAC path enters its second pipe.
+// No decode, re-encode or frame padding.
 // PES carries the encoder's PTS/DTS; PAT/PMT and PCR permit ordinary TS demuxers
 // to consume it. One session-local epoch is subtracted, preserving all gaps.
 class EncodedVideoTransportStream {

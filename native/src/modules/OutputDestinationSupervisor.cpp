@@ -110,6 +110,10 @@ void SupervisedOutputSender::submitAudio(const std::vector<float>& pcm, int chan
   if (child_) child_->submitAudio(pcm, channels, sampleRate);
 }
 
+void SupervisedOutputSender::submitEncodedAudio(const ProgramAacPacket& packet) {
+  if (child_) child_->submitEncodedAudio(packet);
+}
+
 OutputSenderSession SupervisedOutputSender::fail(const std::string& destination, const std::string& message, double elapsedMs) {
   auto session = child_ ? child_->fail(destination, message, elapsedMs) : OutputSenderSession{};
   applyReportsTo(session);

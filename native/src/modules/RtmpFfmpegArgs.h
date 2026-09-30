@@ -3,11 +3,10 @@
 // Pure FFmpeg command-line builder for the RTMP program sender.
 //
 // Kept free of FFmpeg/dev-gate dependencies so the argument layout is
-// unit-testable in the default stub build. The adapter feeds the program video
-// over pipe:0 (rawvideo BGRA) and, when real program audio is available, the F2
-// program-audio PCM tap over a second input (pipe:3 / a named pipe) instead of
-// the `anullsrc` silence source. The video encoder is resolved upstream from the
-// RTMP codec/container compatibility matrix (see RtmpCompatibility.h).
+// unit-testable in the default stub build. The GPU path copies timestamped
+// hardware video from pipe:0 and shared in-process AAC from the second input;
+// the raw-video/PCM path remains a compatibility fallback. Encoder choice is
+// resolved upstream from RtmpCompatibility.h.
 
 #include <algorithm>
 #include <cmath>
@@ -80,6 +79,7 @@ struct RtmpFfmpegArgsConfig {
   // builder falls back to the silent `anullsrc` source so the FLV mux still
   // carries a valid AAC track.
   bool hasAudio = false;
+  bool audioBitstreamInput = false;  // shared AAC ADTS on the second pipe
   int audioChannels = 2;
   int audioSampleRate = 48000;
   int audioBitrateKbps = 160;
@@ -95,7 +95,7 @@ struct RtmpFfmpegArgsConfig {
   std::string container = "flv";
   // #521 slice 1: when true the video input is a pre-encoded H.264 elementary
   // stream (GPU-direct hardware encode), so ffmpeg COPIES video instead of
-  // re-encoding a 186 MB/s raw pipe. Audio is unchanged.
+  // re-encoding a 186 MB/s raw pipe. Shared AAC can also be copied.
   bool videoBitstreamInput = false;
   // 2026-09-20: which raw elementary stream arrives on pipe:0 in bitstream mode.
   // "h264" (Annex-B), "hevc" (Annex-B, B-frames OFF — the FLV muxer refuses
@@ -179,15 +179,20 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
       // Live PCM is already paced by the mixer. A second read-rate clock can
       // prolong video pipe blocking after an output stall while audio catches
       // up (#615). Only the synthetic, unbounded silence source needs -re.
-      args << " -thread_queue_size 512 -probesize 32 -analyzeduration 1 -f " << config.audioSampleFormat << " -ar " << sampleRate
-           << " -ac " << channels << " -i " << config.audioInput;
+      if (config.audioBitstreamInput) {
+        args << " -thread_queue_size 512 -probesize 65536 -analyzeduration 1 -f aac -i " << config.audioInput;
+      } else {
+        args << " -thread_queue_size 512 -probesize 32 -analyzeduration 1 -f " << config.audioSampleFormat << " -ar " << sampleRate
+             << " -ac " << channels << " -i " << config.audioInput;
+      }
     } else {
       args << " -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";
     }
     args << " -map 0:v:0 -map 1:a:0 -c:v copy";
     if (hevc && !config.timestampedVideoInput) args << " -bsf:v setts=ts=N/(" << fps << "*TB)";
-    args << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
-         << " -af aresample=async=1:first_pts=0";
+    if (config.audioBitstreamInput) args << " -c:a copy";
+    else args << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
+              << " -af aresample=async=1:first_pts=0";
     if (config.endpoint.rfind("rtmp://", 0) == 0 || config.endpoint.rfind("rtmps://", 0) == 0) {
       // FFmpeg emits RTMP chunk headers and payloads as small socket writes.
       // Disabling coalescing amplified a 10 Mbps stream to ~12k packets/s on

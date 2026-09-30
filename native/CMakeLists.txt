@@ -94,6 +94,7 @@ add_library(corevideo_native
   src/modules/NdiOutputSenderAdapter.cpp
   src/modules/NdiReceiveCaptureAdapter.cpp
   src/modules/OverlayTileRaster.cpp
+  src/modules/ProgramAacEncoder.cpp
   src/modules/ProgramFramePreview.cpp
   src/modules/RealZoomCaptureSource.cpp
   src/modules/RtmpOutputSenderAdapter.cpp
@@ -254,7 +255,9 @@ endif()
 # which is _WIN32-gated rather than option-gated so stills work in every Windows build.
 if(WIN32)
   # The RPC audio worker uses MMCSS even in the stub configuration.
-  target_link_libraries(corevideo_native PUBLIC winmm windowscodecs ole32 avrt)
+  # ProgramAacEncoder is compiled in the Windows stub too, where its focused
+  # native test exercises the real OS AAC MFT without enabling media adapters.
+  target_link_libraries(corevideo_native PUBLIC winmm windowscodecs ole32 avrt mfplat mf mfuuid wmcodecdspuuid)
 endif()
 
 if(COREVIDEO_WITH_MF_ENCODER)
@@ -266,7 +269,7 @@ if(COREVIDEO_WITH_MF_ENCODER)
   endif()
 
   # ISO conformance uses a D3D11 compute filter even without the compositor.
-  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid ole32 windowscodecs dxgi d3d11 d3dcompiler)
+  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid wmcodecdspuuid ole32 windowscodecs dxgi d3d11 d3dcompiler)
 endif()
 
 if(COREVIDEO_WITH_UVC)
@@ -279,7 +282,7 @@ if(COREVIDEO_WITH_UVC)
 
   # mf provides MFEnumDeviceSources/MFCreateDeviceSource; mfreadwrite the source
   # reader; mfplat/mfuuid the core MF runtime + GUIDs; ole32 COM init.
-  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid ole32)
+  target_link_libraries(corevideo_native PUBLIC mfplat mf mfreadwrite mfuuid wmcodecdspuuid ole32)
 endif()
 
 if(COREVIDEO_WITH_VIRTUALCAM)
@@ -718,6 +721,7 @@ if(BUILD_TESTING)
     tests/IsoEncoderPlacementTest.cpp
     tests/IsoEncoderAdmissionTest.cpp
     tests/RtmpFfmpegArgsTest.cpp
+    tests/ProgramAacEncoderTest.cpp
     tests/StreamAudioAlignmentPolicyTest.cpp
     tests/SrtFfmpegArgsTest.cpp
     tests/FfmpegSenderDiagnosticsTest.cpp
