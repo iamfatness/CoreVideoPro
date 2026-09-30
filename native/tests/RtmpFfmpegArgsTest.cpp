@@ -263,6 +263,30 @@ TEST(RtmpFfmpegArgs, SilentFallbackEncodesAnullsrcEvenWhenSharedAacIsAvailable) 
   }
 }
 
+// #703 QA tap: tee passes the TS PMT codec tags (27/15) straight through and
+// the FLV slaves refuse the header. The tee branch must hand FLV its own ids.
+TEST(RtmpFfmpegArgs, UnifiedTransportTeeTapGivesFlvItsOwnCodecTags) {
+  auto config = baseConfig();
+  config.videoBitstreamInput = true;
+  config.timestampedVideoInput = true;
+  config.hasAudio = true;
+  config.audioBitstreamInput = true;
+  config.audioInTransportStream = true;
+  config.localFlvTapPath = R"(C:\tap\muxed.flv)";
+  auto args = buildRtmpFfmpegArguments(config);
+  EXPECT_NE(args.find("-c:v copy -c:a copy -tcp_nodelay 0 -tag:v 7 -tag:a 10 -f tee"), std::string::npos) << args;
+  EXPECT_NE(args.find("[f=flv:onfail=abort:bsfs/v=extract_extradata:bsfs/a=aac_adtstoasc]C:/tap/muxed.flv|"
+                      "[f=flv:onfail=abort:bsfs/v=extract_extradata:bsfs/a=aac_adtstoasc]rtmp://"),
+            std::string::npos) << args;
+  config.localFlvTapPath.clear();
+  args = buildRtmpFfmpegArguments(config);
+  EXPECT_EQ(args.find("-tag:"), std::string::npos) << "direct FLV re-tags on its own: " << args;
+  config.localFlvTapPath = "C:/tap/muxed.flv";
+  config.videoBitstreamCodec = "hevc";
+  args = buildRtmpFfmpegArguments(config);
+  EXPECT_EQ(args.find("-tag:"), std::string::npos) << "HEVC keeps enhanced-FLV fourccs: " << args;
+}
+
 TEST(RtmpFfmpegArgs, SharedAacIsCopiedWithoutPcmResampleClock) {
   auto config = baseConfig();
   config.videoBitstreamInput = true;

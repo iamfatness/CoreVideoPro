@@ -180,7 +180,13 @@ try {
     if (rtmpTap) {
       try {
         if ((await stat(run.rtmpTapPath)).size < 1024) throw new Error('Muxed RTMP tap is empty.');
-        run.rtmpTapDecode = await decode(run.rtmpTapPath, { allowAnyVideoSize: true, transportTimestampPrecisionMs: 1 });
+        // The tap FFmpeg is stopped without draining (#708): its final FLV tag is
+        // truncated and -xerror rejects the whole file. Drop only packets the
+        // demuxer flags corrupt; both paths stay in the report.
+        run.rtmpTapTrimmedPath = run.rtmpTapPath.replace(/[.]flv$/, '.stop-trimmed.flv');
+        await tool(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-fflags', '+discardcorrupt',
+          '-i', run.rtmpTapPath, '-map', '0', '-c', 'copy', run.rtmpTapTrimmedPath]);
+        run.rtmpTapDecode = await decode(run.rtmpTapTrimmedPath, { allowAnyVideoSize: true, transportTimestampPrecisionMs: 1 });
         if (!run.rtmpTapDecode.analysisValid || !run.rtmpTapDecode.alignment?.sufficientPairs)
           throw new Error(`Muxed RTMP tap has no valid matching cues: ${run.rtmpTapDecode.alignmentError}`);
         run.rtmpTapAlignment = sourceCorrectedAlignment(run.rtmpTapDecode.alignment, report.fixture.decode.alignment);

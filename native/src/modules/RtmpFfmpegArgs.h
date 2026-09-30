@@ -135,9 +135,23 @@ inline void appendFfmpegMuxerOutput(std::ostringstream& args, const RtmpFfmpegAr
     // Windows command-line argument. Use forward slashes for the local path.
     std::string tapPath = config.localFlvTapPath;
     std::replace(tapPath.begin(), tapPath.end(), '\\', '/');
-    args << " -f tee " << quoteRtmpArgument(
-        "[f=flv:onfail=abort]" + tapPath +
-        "|[f=flv:onfail=abort]" + config.endpoint);
+    // A timestamped TS input carries its PMT stream types as codec tags (H.264
+    // 27, ADTS AAC 15). A direct FLV output re-tags them itself; tee passes them
+    // through and each FLV slave refuses the header ("Tag [27] incompatible").
+    // Give tee the FLV ids explicitly. H.264 only: HEVC uses enhanced-FLV fourccs.
+    // Tee also skips the automatic bitstream filters a direct FLV output adds:
+    // the core's TS opens with audio and a bounded probe, so the slaves start
+    // with no H.264 extradata and would write Annex-B units as AVC NALs.
+    const bool timestampedH264 = config.videoBitstreamInput && config.timestampedVideoInput &&
+        std::string_view(rawDemuxerForBitstreamCodec(config.videoBitstreamCodec)) == "h264";
+    std::string slave = "[f=flv:onfail=abort]";
+    if (timestampedH264) {
+      args << " -tag:v 7";
+      if (config.hasAudio) args << " -tag:a 10";
+      slave = "[f=flv:onfail=abort:bsfs/v=extract_extradata" +
+              std::string(config.hasAudio ? ":bsfs/a=aac_adtstoasc" : "") + "]";
+    }
+    args << " -f tee " << quoteRtmpArgument(slave + tapPath + "|" + slave + config.endpoint);
     return;
   }
   if (config.container == "hls") {
