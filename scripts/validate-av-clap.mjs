@@ -34,6 +34,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseFfprobeFramePts } from "./qa/ffprobe-frame-pts.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
@@ -206,8 +207,7 @@ function videoFlashTimes(artifact, fps) {
     ["-v", "error", "-select_streams", "v:0", "-show_frames",
       "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", artifact],
     { encoding: "utf8", maxBuffer: 1 << 24, timeout: decodeTimeoutMs });
-  const framePts = ptsProbe.status === 0
-    ? ptsProbe.stdout.trim().split(/\r?\n/).map((line) => Number.parseFloat(line.trim())) : [];
+  const framePts = ptsProbe.status === 0 ? parseFfprobeFramePts(ptsProbe.stdout) : [];
   if (framePts.length !== frames || !framePts.every(Number.isFinite)) {
     throw new Error(`video frame timestamps missing: decoded=${frames}, timestamps=${framePts.length}`);
   }
@@ -344,7 +344,7 @@ function decodedVideoPts(path) {
     "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", path],
   { encoding: "utf8", timeout: decodeTimeoutMs, maxBuffer: 1 << 22 });
   if (probe.status !== 0) throw new Error(`video PTS probe failed: ${probe.stderr}`);
-  return probe.stdout.trim().split(/\r?\n/).map(Number).filter(Number.isFinite);
+  return parseFfprobeFramePts(probe.stdout);
 }
 
 /** Map each endpoint loopback burst to the packet's WASAPI QPC clock. */
