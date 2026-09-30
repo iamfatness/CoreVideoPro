@@ -83,6 +83,8 @@ bool SupervisedOutputSender::recordIsWellFormed(const OutputSender& record) {
   if (record.destination.empty()) return false;
   if (record.framesSent < 0 || record.audioFramesSent < 0) return false;
   if (record.bytesSent < 0 || record.audioBytesSent < 0) return false;
+  if (record.muxInputVideo &&
+      (record.muxInputVideo->payloadBytes < 0 || record.muxInputVideo->packets < 0)) return false;
   return true;
 }
 
@@ -308,7 +310,7 @@ void SupervisedOutputSender::evaluate() {
       record.destinationHealth = sender.destinationHealth;
       record.lastResultCode = sender.lastResultCode;
       record.lastError = sender.lastError;
-      record.acceptedUnits = sender.framesSent + sender.audioFramesSent;
+      record.acceptedUnits = outputSenderProgressUnits(sender);
     }
 
     for (auto& [name, record] : destinations_) {

@@ -5456,7 +5456,7 @@ contracts::OutputLifecycle MediaCore::evaluateSenderLifecycle(
     const modules::OutputSender& sender, bool desiredActive, int64_t nowMs) const {
   const std::string key = sender.senderId.empty() ? sender.destination : sender.senderId;
   auto& evidence = senderLifecycles_[key];
-  const int64_t sent = sender.framesSent + sender.audioFramesSent;
+  const int64_t sent = modules::outputSenderProgressUnits(sender);
   if (sent > evidence.lastFramesSent) {
     evidence.lastFramesSent = sent;
     evidence.lastProgressMs = nowMs;
@@ -5544,6 +5544,17 @@ rpc::Json MediaCore::outputSenderSessionState() const {
     }
     if (sender.lastFrameNumber > 0) {
       senderJson.emplace("lastFrameNumber", static_cast<double>(sender.lastFrameNumber));
+    }
+    if (sender.muxInputVideo) {
+      const auto& mux = *sender.muxInputVideo;
+      senderJson.emplace("muxInputVideo", rpc::Json::Object{
+          {"payloadBytes", static_cast<double>(mux.payloadBytes)},
+          {"packets", static_cast<double>(mux.packets)},
+          {"mbps", mux.mbps},
+          {"fps", mux.fps},
+          {"lastWriteAgeMs", static_cast<double>(mux.lastWriteAgeMs)},
+          {"boundary", "compressed video written to local FFmpeg input; remote delivery unverified"},
+      });
     }
     if (!sender.warning.empty()) {
       senderJson.emplace("warning", sender.warning);

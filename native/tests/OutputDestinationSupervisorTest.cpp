@@ -106,6 +106,12 @@ class FakeDestinationChild final : public IOutputSender {
     record_.destinationHealth = "ok";
     record_.lastResultCode = "encoder-input-accepted";
   }
+  void writeCompressedVideo(int64_t bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!record_.muxInputVideo) record_.muxInputVideo.emplace();
+    record_.muxInputVideo->payloadBytes += bytes;
+    ++record_.muxInputVideo->packets;
+  }
   // A crashed FFmpeg child: the adapter notices the exit and reports it.
   void crash(std::string code, std::string error) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -543,6 +549,27 @@ TEST(OutputDestinationSupervisor, AnIpcDisconnectDecaysHealthAndIsRestarted) {
   fixture.sender->pumpForTest();
   EXPECT_EQ(fixture.child->recovers(), 1);
   EXPECT_EQ(fixture.reportFor("rtmp").generation, 2u);
+}
+
+TEST(OutputDestinationSupervisor, InputFramesCannotMaskABlockedVideoMux) {
+  SupervisorFixture fixture;
+  ProgramFrame frame;
+  frame.frameNumber = 1;
+  fixture.sender->sync({"rtmp"}, &frame, 0);
+  fixture.child->produce(30);
+  fixture.child->writeCompressedVideo(125000);
+  fixture.now = 100;
+  fixture.sender->pumpForTest();
+  ASSERT_TRUE(fixture.reportFor("rtmp").healthy);
+  EXPECT_EQ(fixture.reportFor("rtmp").acceptedUnits, 125000);
+
+  // Input and PCM continue to be accepted by the sender, but FFmpeg's video
+  // pipe stops taking complete compressed packets.
+  fixture.child->produce(300);
+  fixture.now = 1500;
+  fixture.sender->pumpForTest();
+  EXPECT_FALSE(fixture.reportFor("rtmp").healthy);
+  EXPECT_EQ(fixture.reportFor("rtmp").acceptedUnits, 125000);
 }
 
 TEST(OutputDestinationSupervisor, AMalformedReplyNeverEstablishesHealthAndIsCounted) {
