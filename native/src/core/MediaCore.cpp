@@ -5566,6 +5566,8 @@ rpc::Json MediaCore::outputSenderSessionState() const {
           {"audioUnits", static_cast<double>(clock.audioUnits)},
           {"audioRefused", static_cast<double>(clock.audioRefused)},
           {"audioUnanchored", static_cast<double>(clock.audioUnanchored)},
+          {"videoSlotShift", static_cast<double>(clock.videoSlotShift)},
+          {"videoSlotShifts", static_cast<double>(clock.videoSlotShifts)},
       });
     }
     if (!sender.warning.empty()) {

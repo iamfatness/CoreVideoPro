@@ -64,6 +64,20 @@ using the *existing Program PCM tap*. Its session clock is monotonic:
   IDR does not touch the anchor. The session ends only when no RTMP/SRT/HLS
   destination is requested, because the sample counter then stops while frames
   continue.
+- **Frame number is not the slot (2026-09-30).** Compositor frame numbers count
+  RENDERED frames; the program buffer delivers on a fixed slot grid. A render
+  stall (a take opening media, a GPU hiccup) leaves slots with no new frame, and
+  every later frame is delivered that many slots later than its number says.
+  Frame-number PTS silently absorbed the stall, so the stream's video sat N
+  frames early against sample-counted audio for the rest of the session (measured:
+  4–6 slot startup stalls, RTMP−record −63 to −99 ms in about half of all sessions
+  that started streaming at core launch; the recording, stamped by delivery time,
+  was unaffected). Each sender now tracks `K = timeline − frame/fps` from the
+  buffered frames it receives (`ProgramSlotClock`), and the writer shifts every
+  encoded frame by the whole slots K moved since the audio anchor, so a stall is a
+  video PTS gap, not an A/V offset. The shift never decreases. Evidence:
+  `streamClock.videoSlotShift` / `videoSlotShifts`, and a `[stream-clock] delivery
+  grid moved N slot(s)` log line.
 - A missed video deadline is observable. The encoded stream either repeats
   the prior content frame with the missing timestamp or inserts a black frame
   with a fresh IDR after a discontinuity. Synthetic frames are counted

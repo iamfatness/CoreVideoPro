@@ -246,3 +246,56 @@ TEST(ProgramStreamClock, ReconnectKeepsTheSessionRelationBetweenAudioAndVideo) {
   EXPECT_EQ(relation(900), 0);
   EXPECT_EQ(relation(54'000), 0) << "15 minutes later, a fresh process: same relation";
 }
+
+// Frame numbers count rendered frames; the delivery grid counts slots. A render
+// stall moves K = timeline - frame/fps by whole slots, and only then.
+TEST(ProgramSlotClock, RecordsOnlyWholeSlotStepsInTheDeliveryGrid) {
+  ProgramSlotClock clock;
+  EXPECT_FALSE(clock.kFor(10).has_value());
+  const int64_t slot = 10'000'000LL / kFps;
+  const int64_t base = 50'000'000;
+  for (int64_t f = 1; f <= 26; ++f) clock.observe(f, base + f * slot, kFps);
+  // Frame 27 is delivered 6 slots late (slots 27..32 carried no new frame).
+  for (int64_t f = 27; f <= 40; ++f) clock.observe(f, base + (f + 6) * slot + (f % 3) * 1000, kFps);
+  EXPECT_EQ(*clock.kFor(20), base);
+  EXPECT_EQ(slotsSinceAnchor(*clock.kFor(30), base, kFps), 6);
+  EXPECT_EQ(slotsSinceAnchor(*clock.kFor(26), base, kFps), 0);
+  // A frame encoded (live) before it is delivered uses the newest known step.
+  EXPECT_EQ(slotsSinceAnchor(*clock.kFor(45), base, kFps), 6);
+}
+
+// The measured defect (2026-09-30): the audio anchor was taken at frame 18, a
+// 6-slot render stall followed, and the stream's video sat 100 ms early against
+// its audio for the rest of the session. With the slot correction the frame
+// delivered at wall time T and the audio sample for T get the same PTS.
+TEST(ProgramSlotClock, ARenderStallAfterTheAnchorBecomesAVideoGapNotAnAvOffset) {
+  ProgramStreamClock streamClock;
+  ProgramSlotClock slots;
+  const int64_t slot = 10'000'000LL / kFps;
+  const int64_t base = 90'000'000;
+  auto timelineOf = [&](int64_t frame) { return base + (frame + (frame >= 27 ? 6 : 0)) * slot; };
+  for (int64_t f = 1; f <= 18; ++f) {
+    streamClock.observeProgramFrame(f, timelineOf(f), true);
+    slots.observe(f, timelineOf(f), kFps);
+  }
+  streamClock.beginAudioBlock(0, timelineOf(18));  // anchor: sample 0 at frame 18's time
+  ProgramAacPacket anchorProbe;
+  streamClock.stamp(anchorProbe);
+  const auto k0 = anchorK100ns(anchorProbe, kFps);
+  ASSERT_TRUE(k0.has_value());
+  for (int64_t f = 19; f <= 200; ++f) slots.observe(f, timelineOf(f), kFps);
+
+  // Frame 120 is delivered at timelineOf(120); the audio sample at that instant
+  // is (timelineOf(120) - timelineOf(18)) * 48 kHz after the anchor.
+  const int64_t frame = 120;
+  const int64_t videoPts = frame * 10'000'000LL / kFps;
+  const int64_t corrected = (frame + slotsSinceAnchor(*slots.kFor(frame), *k0, kFps)) * 10'000'000LL / kFps;
+  ProgramAacPacket packet;
+  streamClock.stamp(packet);
+  packet.sampleIndex = (timelineOf(frame) - timelineOf(18)) * 48'000 / 10'000'000LL;
+  int64_t audioPts = 0;
+  ASSERT_TRUE(programAudioPts100ns(packet, kFps, audioPts));
+  // One audio sample (~208 hns) of truncation from the sample index.
+  EXPECT_GE(std::llabs(videoPts - audioPts), 6 * slot - 250) << "uncorrected: the measured 100 ms offset";
+  EXPECT_LE(std::llabs(corrected - audioPts), 250) << "corrected: same instant, same PTS";
+}

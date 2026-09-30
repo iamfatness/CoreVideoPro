@@ -1,7 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
+#include <deque>
 #include <mutex>
+#include <optional>
+#include <utility>
 
 #include "modules/ProgramAacEncoder.h"
 
@@ -100,6 +104,7 @@ class ProgramStreamClock {
     packet.anchorFrameNumber = anchored_ ? anchorFrame_ : -1;
     packet.anchorSampleIndex = anchorSample_;
     packet.anchorOffset100ns = anchorOffset100ns_;
+    packet.anchorFrameTimeline100ns = anchorFrameTimeline100ns_;
   }
 
   [[nodiscard]] bool anchored() const { return anchored_; }
@@ -120,6 +125,66 @@ class ProgramStreamClock {
   int64_t anchorFrameTimeline100ns_ = 0;
   int64_t anchorAudioTimeline100ns_ = 0;
 };
+
+// Frame numbers count RENDERED frames; the program buffer's delivery grid
+// counts SLOTS. A render stall (a take opening media, a GPU hiccup) leaves slots
+// with no new frame, so every later frame is delivered N slots later than its
+// number says: K = timeline - frame/fps steps up by N slot durations. Measured
+// 2026-09-30: a 6-slot startup stall shifted a stream's video 100 ms against its
+// sample-counted audio for the rest of the session; the recording (stamped by
+// delivery time) was unaffected. Muxers add the slots K moved since the audio
+// anchor to the encoder's frame-number PTS, so a stall becomes a PTS gap in the
+// video instead of a permanent A/V offset.
+//
+// Observe only BUFFERED frames: their timeline is the exact delivery deadline.
+// An unbuffered frame's timeline is tick arrival and carries jitter, not slots.
+class ProgramSlotClock {
+ public:
+  void observe(int64_t frame, int64_t timeline100ns, int fps) {
+    if (frame <= 0 || timeline100ns <= 0 || fps <= 0) return;
+    const int64_t k = timeline100ns - frame * 10'000'000LL / fps;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!steps_.empty()) {
+      if (frame <= steps_.back().first) return;
+      if (std::llabs(k - steps_.back().second) * 2 * fps < 10'000'000LL) return;  // same slot
+    }
+    steps_.push_back({frame, k});
+    while (steps_.size() > 64) steps_.pop_front();
+  }
+
+  // K in effect for `frame`: the latest step at or before it (the newest known
+  // step when `frame` has not been delivered yet). nullopt before any frame.
+  [[nodiscard]] std::optional<int64_t> kFor(int64_t frame) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (steps_.empty()) return std::nullopt;
+    for (auto it = steps_.rbegin(); it != steps_.rend(); ++it)
+      if (it->first <= frame) return it->second;
+    return steps_.front().second;
+  }
+
+  void reset() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    steps_.clear();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::deque<std::pair<int64_t, int64_t>> steps_;  // (first frame, K)
+};
+
+// Whole slots the delivery grid has moved for a frame whose K is `k100ns`,
+// relative to the K the audio anchored on (`anchorK100ns`).
+[[nodiscard]] inline int64_t slotsSinceAnchor(int64_t k100ns, int64_t anchorK100ns, int fps) {
+  if (fps <= 0) return 0;
+  const int64_t delta = (k100ns - anchorK100ns) * fps;
+  return (delta >= 0 ? delta + 5'000'000LL : delta - 5'000'000LL) / 10'000'000LL;
+}
+
+// The anchor's own K, from a stamped AAC packet (nullopt if unanchored).
+[[nodiscard]] inline std::optional<int64_t> anchorK100ns(const ProgramAacPacket& packet, int fps) {
+  if (packet.anchorFrameNumber < 0 || packet.anchorFrameTimeline100ns <= 0 || fps <= 0) return std::nullopt;
+  return packet.anchorFrameTimeline100ns - packet.anchorFrameNumber * 10'000'000LL / fps;
+}
 
 // Program-clock presentation time of an anchored AAC packet, in the same
 // 100 ns units and frame-number origin as the hardware video encoder's PTS.

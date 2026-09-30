@@ -790,6 +790,8 @@ struct OutputSender {
     int64_t audioUnits = 0;            // AAC access units written into the TS
     int64_t audioRefused = 0;          // out of order / before the epoch
     int64_t audioUnanchored = 0;       // no session anchor yet: dropped, never re-timed
+    int64_t videoSlotShift = 0;        // slots video PTS follows the delivery grid by
+    int64_t videoSlotShifts = 0;       // times the grid moved (render stalls) this process
   };
   std::optional<StreamClock> streamClock;
   int64_t audioFramesSent = 0;
