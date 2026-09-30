@@ -619,6 +619,19 @@ static void producer_loop() {
             ? (std::max)(static_cast<uint64_t>(1),
                          static_cast<uint64_t>(fps) * static_cast<uint64_t>(clapIntervalMs) / 1000u)
             : 0;
+    const auto gapTicksFromMs = [fps](const char* name) -> uint64_t {
+        const char* raw = std::getenv(name);
+        if (!raw) return 0;
+        try {
+            const int ms = std::stoi(raw);
+            return ms > 0 ? static_cast<uint64_t>(fps) * static_cast<uint64_t>(ms) / 1000u : 0;
+        } catch (...) { return 0; }
+    };
+    const uint64_t videoGapStartTick = gapTicksFromMs("COREVIDEO_FAKE_VIDEO_GAP_START_MS");
+    const uint64_t videoGapDurationTicks = gapTicksFromMs("COREVIDEO_FAKE_VIDEO_GAP_DURATION_MS");
+    if (videoGapStartTick > 0 && videoGapDurationTicks > 0)
+        diag("video gap start_ms=" + std::to_string(videoGapStartTick * 1000u / fps) +
+             " duration_ms=" + std::to_string(videoGapDurationTicks * 1000u / fps));
     if (clapEveryTicks > 0)
         diag("clap interval_ms=" + std::to_string(clapIntervalMs) +
              " every_ticks=" + std::to_string(clapEveryTicks));
@@ -650,7 +663,14 @@ static void producer_loop() {
                     const char* env = std::getenv("COREVIDEO_FAKE_NO_VIDEO");
                     return env != nullptr && env[0] == 0x31;
                 }();
-                if (!s_noVideo) {
+                const bool videoGap = videoGapDurationTicks > 0 &&
+                    tick >= videoGapStartTick && tick < videoGapStartTick + videoGapDurationTicks;
+                if (videoGap) {
+                    // A transient created during the missing source frames must
+                    // not reappear as a stale flash when the feed resumes.
+                    for (auto& [uuid, t] : g_targets) t.clapPending = false;
+                }
+                if (!s_noVideo && !videoGap) {
                     for (auto& [uuid, t] : g_targets) {
                         if (roster_has(t.participant_id))
                             produce_frame_locked(t, tick);

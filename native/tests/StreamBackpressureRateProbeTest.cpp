@@ -113,6 +113,9 @@ struct LegResult {
   bool ran = false;
   bool unavailable = false;
   std::vector<int64_t> keyframePts100ns;
+  std::vector<int64_t> framePts100ns;
+  int64_t missedProductionSlots = 0;
+  double worstProductionLatenessMs = 0.0;
 };
 
 int probeBitrateKbps() {
@@ -129,7 +132,8 @@ int probeBitrateKbps() {
 // program frame (and submits it) every second 60 Hz slot instead of every slot.
 LegResult runLeg(const char* label, bool halfInputRate, int bitrateKbps = -1,
                  int settleMs = 2500, int measureMs = 10000, bool rateControlFixture = false,
-                 const char* codec = "h264", const char* rateControl = "cbr") {
+                 const char* codec = "h264", const char* rateControl = "cbr",
+                 int declaredFps = kProbeFps) {
   using clock = std::chrono::steady_clock;
   LegResult result;
 
@@ -149,7 +153,7 @@ LegResult runLeg(const char* label, bool halfInputRate, int bitrateKbps = -1,
   plan.renderPlanId = "rate-probe";
   plan.width = kProbeWidth;
   plan.height = kProbeHeight;
-  plan.fps = kProbeFps;
+  plan.fps = declaredFps;
   plan.skipCpuReadback = true;
   plan.fullProgramReadback = true;
   corevideo::modules::CompositorRenderPlanLayer layer;
@@ -168,16 +172,18 @@ LegResult runLeg(const char* label, bool halfInputRate, int bitrateKbps = -1,
   int64_t countedBytes = 0;
   int64_t countedChunks = 0;
   std::vector<int64_t> keyframePts;
+  std::vector<int64_t> framePts;
   auto sink = [&](const corevideo::modules::GpuEncodedChunk& chunk) {
     std::lock_guard<std::mutex> lock(sinkMutex);
     if (chunk.keyframe && chunk.timingValid) keyframePts.push_back(chunk.pts100ns);
     if (!counting.load(std::memory_order_relaxed)) return;
     countedBytes += static_cast<int64_t>(chunk.size);
     ++countedChunks;
+    if (chunk.timingValid) framePts.push_back(chunk.pts100ns);
   };
 
   corevideo::modules::GpuVideoEncoderConfig config{
-      kProbeWidth, kProbeHeight, kProbeFps,
+      kProbeWidth, kProbeHeight, declaredFps,
       bitrateKbps > 0 ? bitrateKbps : probeBitrateKbps(), 2.0, rateControl, "high"};
   config.codec = codec;
   if (!encoder->start(config, sink)) {
@@ -193,7 +199,7 @@ LegResult runLeg(const char* label, bool halfInputRate, int bitrateKbps = -1,
   const auto kSettle = std::chrono::milliseconds(settleMs);
   const auto kMeasure = std::chrono::milliseconds(measureMs);
   const auto kTail = std::chrono::milliseconds(300);
-  const auto slotInterval = std::chrono::nanoseconds(1000000000LL / kProbeFps);
+  const auto slotInterval = std::chrono::nanoseconds(1000000000LL / declaredFps);
   const auto legStart = clock::now();
   const auto legEnd = legStart + kSettle + kMeasure + kTail;
   clock::time_point countingStart{};
@@ -220,6 +226,13 @@ LegResult runLeg(const char* label, bool halfInputRate, int bitrateKbps = -1,
     const auto frame = compositor->render(
         plan, {makeNoiseSourceFrame(slot + 1, bank[static_cast<size_t>(slot % kNoiseFrames)])});
     ++result.renders;
+    if (inWindow) {
+      const auto slotDeadline = legStart + slotInterval * (slot + 1);
+      const double lateMs = std::chrono::duration<double, std::milli>(clock::now() - slotDeadline).count();
+      result.worstProductionLatenessMs = (std::max)(result.worstProductionLatenessMs, lateMs);
+      if (lateMs > 0.0)
+        ++result.missedProductionSlots;
+    }
     if (!frame.encoderSharedTexture.sharedHandleHex.empty()) {
       corevideo::modules::GpuVideoEncoderFrame encodeFrame;
       encodeFrame.publishedFrameNumber = frame.encoderSharedTexture.publishedFrameNumber;
@@ -247,20 +260,22 @@ LegResult runLeg(const char* label, bool halfInputRate, int bitrateKbps = -1,
     result.bytes = countedBytes;
     result.chunks = countedChunks;
     result.keyframePts100ns = keyframePts;
+    result.framePts100ns = framePts;
   }
   result.measuredSeconds =
       std::chrono::duration<double>(countingEnd - countingStart).count();
   result.ran = result.bytes > 0;
   std::fprintf(stderr,
                "[rate-probe] %s: bytes=%lld chunks=%lld submits(window)=%lld renders=%lld "
-               "window=%.2fs -> %.0f kbps, %.1f submits/s\n",
+               "window=%.2fs -> %.0f kbps, %.1f submits/s missed-slots=%lld worst-late=%.2fms\n",
                label, static_cast<long long>(result.bytes),
                static_cast<long long>(result.chunks), static_cast<long long>(result.submits),
                static_cast<long long>(result.renders), result.measuredSeconds,
                result.measuredSeconds > 0
                    ? static_cast<double>(result.bytes) * 8.0 / result.measuredSeconds / 1000.0
                    : 0.0,
-               result.measuredSeconds > 0 ? result.submits / result.measuredSeconds : 0.0);
+               result.measuredSeconds > 0 ? result.submits / result.measuredSeconds : 0.0,
+               static_cast<long long>(result.missedProductionSlots), result.worstProductionLatenessMs);
   return result;
 }
 
@@ -357,6 +372,42 @@ TEST(StreamBackpressureRateProbe, VbrRespectsItsConfiguredPeakWithoutSheddingFra
     const double kbps = leg.bytes * 8.0 / leg.measuredSeconds / 1000;
     EXPECT_GT(kbps, 6000 * 0.70);
     EXPECT_LT(kbps, 9000 * 1.10);
+  }
+}
+
+TEST(StreamBackpressureRateProbe, NoDestinationSustainsThirtyAndSixtyFps) {
+  // CI runs a short smoke; qualification sets 600 s per rate. A short CI pass
+  // is not the ten-minute hardware evidence requested for #538.
+  int seconds = 10;
+  if (const char* configured = std::getenv("COREVIDEO_NO_DESTINATION_PROBE_SECONDS")) {
+    seconds = std::atoi(configured);
+  }
+  ASSERT_GE(seconds, 10);
+  ASSERT_LE(seconds, 900);
+  if (seconds < 600)
+    std::fprintf(stderr, "MISSING_EVIDENCE: no-destination encoder ran %d s per rate, not 600 s\n", seconds);
+  for (const int fps : {30, 60}) {
+    const auto leg = runLeg(fps == 30 ? "no-destination 1080p30" : "no-destination 1080p60",
+                            false, fps == 30 ? 6000 : 9000, 2500, seconds * 1000,
+                            true, "h264", "cbr", fps);
+    if (leg.unavailable) {
+      std::fprintf(stderr, "MISSING_EVIDENCE: no hardware H.264 encoder at %d fps\n", fps);
+      return;
+    }
+    ASSERT_TRUE(leg.ran);
+    EXPECT_GE(leg.measuredSeconds, seconds - 0.1);
+    EXPECT_GE(leg.submits / leg.measuredSeconds, fps * 0.99);
+    EXPECT_GE(leg.chunks / leg.measuredSeconds, fps * 0.99);
+    EXPECT_EQ(leg.missedProductionSlots, 0)
+        << fps << " fps compositor missed scheduled production slots";
+    ASSERT_GE(leg.framePts100ns.size(), static_cast<size_t>(fps * (seconds - 1)));
+    const int64_t expectedStep = 10'000'000LL / fps;
+    int64_t ptsGaps = 0;
+    for (size_t i = 1; i < leg.framePts100ns.size(); ++i) {
+      const auto step = leg.framePts100ns[i] - leg.framePts100ns[i - 1];
+      if (step <= 0 || step > expectedStep * 3 / 2) ++ptsGaps;
+    }
+    EXPECT_EQ(ptsGaps, 0) << fps << " fps encoder skipped or duplicated frame PTS";
   }
 }
 #endif
