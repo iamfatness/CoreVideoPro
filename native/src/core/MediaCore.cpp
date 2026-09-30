@@ -5557,6 +5557,17 @@ rpc::Json MediaCore::outputSenderSessionState() const {
           {"boundary", "compressed video written to local FFmpeg input; remote delivery unverified"},
       });
     }
+    if (sender.streamClock) {
+      const auto& clock = *sender.streamClock;
+      senderJson.emplace("streamClock", rpc::Json::Object{
+          {"muxInput", clock.muxInput},
+          {"firstVideoPts100ns", static_cast<double>(clock.firstVideoPts100ns)},
+          {"firstAudioPts100ns", static_cast<double>(clock.firstAudioPts100ns)},
+          {"audioUnits", static_cast<double>(clock.audioUnits)},
+          {"audioRefused", static_cast<double>(clock.audioRefused)},
+          {"audioUnanchored", static_cast<double>(clock.audioUnanchored)},
+      });
+    }
     if (!sender.warning.empty()) {
       senderJson.emplace("warning", sender.warning);
     }
@@ -7826,6 +7837,8 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   work.valid = true;
   work.outputTimestamp100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+  const auto scheduled100ns = audioTickScheduled100ns_.load(std::memory_order_relaxed);
+  work.outputScheduled100ns = scheduled100ns > 0 ? scheduled100ns : work.outputTimestamp100ns;
   work.programBufferFrames = modules_.compositor->programBufferFrames();
   work.frameIntervalMs = static_cast<int64_t>(std::max(1.0, std::round(1000.0 / std::max(1, outputFps_))));
   const auto frameTimestampMs = static_cast<int64_t>(lastProducedFrameNumber_ + 1) * work.frameIntervalMs;
@@ -8590,8 +8603,9 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   if (videoOutputTickRunning_.load(std::memory_order_acquire)) {
     if (!outputDestinations.empty() && !outputProgramAudio.empty()) {
       try {
-        modules_.outputSender->submitAudio(outputProgramAudio, outputAudioChannels,
-                                           modules_.mixer->monitorBusSampleRate());
+        modules_.outputSender->submitAudioAt(outputProgramAudio, outputAudioChannels,
+                                             modules_.mixer->monitorBusSampleRate(),
+                                             work.outputScheduled100ns);
       } catch (...) {
         // Sender health is reported by the video tick's sync; never let an audio
         // push take down the audio worker.

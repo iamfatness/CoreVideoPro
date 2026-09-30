@@ -251,12 +251,22 @@ function audioBurstTimes(artifact) {
   }
   const threshold = peak * 0.6;
   if (peak < 4000) return [];  // nothing loud enough to be a clap
+  // Decoded samples count from the FIRST AUDIO SAMPLE, while video flashes
+  // are read at their PTS. Put audio on the same container timeline: a muxer
+  // that fences audio to the first IDR (#538 S8) legitimately starts AAC a few
+  // ms after video, and ignoring that start read as A/V skew.
+  const startProbe = spawnSync(ffprobe,
+    ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=start_time",
+      "-of", "csv=p=0", artifact], { encoding: "utf8", timeout: decodeTimeoutMs });
+  const audioStart = Number.parseFloat(startProbe.stdout?.trim() ?? "");
+  if (startProbe.status !== 0 || !Number.isFinite(audioStart))
+    throw new Error(`audio start_time missing for ${artifact}: ${startProbe.stderr ?? ""}`);
   const times = [];
   let lastHit = -Infinity;
   for (let s = 0; s < samples; s += 1) {
     const v = out.stdout.readInt16LE(s * 2);
     if (Math.abs(v) < threshold) continue;
-    const t = s / 48000;
+    const t = audioStart + s / 48000;
     if (t - lastHit > 0.5) times.push(t);   // one onset per burst
     lastHit = t;
   }

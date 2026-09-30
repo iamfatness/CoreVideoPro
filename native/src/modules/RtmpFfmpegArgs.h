@@ -3,9 +3,10 @@
 // Pure FFmpeg command-line builder for the RTMP program sender.
 //
 // Kept free of FFmpeg/dev-gate dependencies so the argument layout is
-// unit-testable in the default stub build. The GPU path copies timestamped
-// hardware video from pipe:0 and shared in-process AAC from the second input;
-// the raw-video/PCM path remains a compatibility fallback. Encoder choice is
+// unit-testable in the default stub build. The GPU path copies one core-
+// timestamped MPEG-TS from pipe:0 carrying hardware video and the shared
+// in-process AAC (#538 Slice 8); the raw-video/PCM path remains a compatibility
+// fallback. Encoder choice is
 // resolved upstream from RtmpCompatibility.h.
 
 #include <algorithm>
@@ -80,6 +81,10 @@ struct RtmpFfmpegArgsConfig {
   // carries a valid AAC track.
   bool hasAudio = false;
   bool audioBitstreamInput = false;  // shared AAC ADTS on the second pipe
+  // #538 Slice 8: the shared AAC rides pipe:0's timestamped TS envelope with
+  // the video (both PTS written by the core). Requires timestampedVideoInput
+  // and audioBitstreamInput; there is then no second input at all.
+  bool audioInTransportStream = false;
   int audioChannels = 2;
   int audioSampleRate = 48000;
   int audioBitrateKbps = 160;
@@ -173,7 +178,12 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     args << " -f " << (config.timestampedVideoInput ? "mpegts" : rawDemuxerForBitstreamCodec(config.videoBitstreamCodec))
          << " -probesize 65536 -analyzeduration 1"
          << " -thread_queue_size 512 -i pipe:0";
-    if (config.hasAudio) {
+    const bool unifiedInput = config.timestampedVideoInput && config.hasAudio &&
+                              config.audioBitstreamInput && config.audioInTransportStream;
+    if (unifiedInput) {
+      // One input, one clock: FFmpeg reads both PTS streams from the core's TS
+      // and only remuxes. No -re, no wallclock, no resample clock (#538 S8).
+    } else if (config.hasAudio) {
       const int channels = (std::max)(1, config.audioChannels);
       const int sampleRate = (std::max)(8000, config.audioSampleRate);
       // Live PCM is already paced by the mixer. A second read-rate clock can
@@ -188,7 +198,7 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     } else {
       args << " -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";
     }
-    args << " -map 0:v:0 -map 1:a:0 -c:v copy";
+    args << " -map 0:v:0 -map " << (unifiedInput ? "0" : "1") << ":a:0 -c:v copy";
     if (hevc && !config.timestampedVideoInput) args << " -bsf:v setts=ts=N/(" << fps << "*TB)";
     if (config.audioBitstreamInput) args << " -c:a copy";
     else args << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"

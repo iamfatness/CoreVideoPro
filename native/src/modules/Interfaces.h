@@ -781,6 +781,17 @@ struct OutputSender {
     int64_t lastWriteAgeMs = -1;
   };
   std::optional<MuxInputVideo> muxInputVideo;
+  // #538 Slice 8: how this destination's FFmpeg is fed, and the core-stamped
+  // clock it carries. Snapshot evidence, because the process log is lossy.
+  struct StreamClock {
+    std::string muxInput;              // unified-ts | two-input | silent-anullsrc | raw-fallback
+    int64_t firstVideoPts100ns = -1;   // TS epoch: the first written IDR
+    int64_t firstAudioPts100ns = -1;   // first AAC unit at/after that IDR
+    int64_t audioUnits = 0;            // AAC access units written into the TS
+    int64_t audioRefused = 0;          // out of order / before the epoch
+    int64_t audioUnanchored = 0;       // no session anchor yet: dropped, never re-timed
+  };
+  std::optional<StreamClock> streamClock;
   int64_t audioFramesSent = 0;
   int64_t audioBytesSent = 0;
   uint64_t droppedAudioPackets = 0;  // destination-local AAC queue shed
@@ -1345,6 +1356,15 @@ class IOutputSender {
   // here, not as "this sync() call happened to carry PCM" — otherwise a video-only
   // sync looks like audio disappearing and restarts the encoder process.
   virtual void submitAudio(const std::vector<float>& /*pcm*/, int /*channels*/, int /*sampleRate*/) {}
+  // The same block with the audio worker's steady-clock timeline time, which
+  // the shared stream clock pairs with ProgramFrame::timelineTimestamp100ns to
+  // anchor AAC to the compositor frame clock (#538 Slice 8). Legacy senders
+  // keep their behavior through this default forwarding seam.
+  virtual void submitAudioAt(const std::vector<float>& pcm, int channels, int sampleRate,
+                             int64_t timelineTimestamp100ns) {
+    (void)timelineTimestamp100ns;
+    submitAudio(pcm, channels, sampleRate);
+  }
   // Optional compressed Program audio. The composite encodes once and each
   // destination copies these same access units into its independent muxer.
   virtual void setSharedAacEnabled(bool /*enabled*/) {}

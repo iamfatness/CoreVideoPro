@@ -788,6 +788,8 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       if (!collectDiagnostics) { ticks = 0; workUs = 0; }
       if (collectDiagnostics && ticks == 0) rateStamp = std::chrono::steady_clock::now();
       const auto t0 = std::chrono::steady_clock::now();
+      mediaCore_.setAudioTickScheduled100ns(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(deadline.time_since_epoch()).count() / 100);
       mediaCore_.renderAudioOutputTick(coreMutex);
       const auto audioWorkNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - t0).count();

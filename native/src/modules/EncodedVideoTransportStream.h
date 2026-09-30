@@ -9,16 +9,54 @@
 
 namespace corevideo::modules {
 
-// Single-program, single HEVC or H.264 stream for the encoder -> FFmpeg pipe.
-// This is an internal video timestamp envelope, not the network muxer. FFmpeg
-// owns enhanced FLV/RTMP wrapping; the shared AAC path enters its second pipe.
+// Single-program MPEG-TS for the encoder -> FFmpeg pipe: one HEVC or H.264
+// stream and, when constructed with audio, the shared Program AAC (ADTS) on a
+// second PID. This is an internal timestamp envelope, not the network muxer:
+// FFmpeg copies both streams into FLV/SRT/HLS and never assigns time itself.
 // No decode, re-encode or frame padding.
-// PES carries the encoder's PTS/DTS; PAT/PMT and PCR permit ordinary TS demuxers
-// to consume it. One session-local epoch is subtracted, preserving all gaps.
+// PES carries the core's PTS/DTS (video: compositor frame clock; audio: the
+// ProgramStreamClock sample clock); PAT/PMT and PCR permit ordinary TS demuxers
+// to consume it. One per-process epoch - the first written video DTS - is
+// subtracted from BOTH PIDs, so it is a container offset only: it preserves
+// every gap and cannot change the A/V relation.
 class EncodedVideoTransportStream {
  public:
   enum class Codec { Hevc, H264 };
-  explicit EncodedVideoTransportStream(Codec codec = Codec::Hevc) : codec_(codec) {}
+  explicit EncodedVideoTransportStream(Codec codec = Codec::Hevc, bool withAudio = false)
+      : codec_(codec), withAudio_(withAudio) {}
+
+  // Fix the epoch before the first video access unit so audio can precede it
+  // in the byte stream (FFmpeg then probes both streams before the large IDR).
+  void begin(int64_t epochDts100ns, std::vector<uint8_t>& output) {
+    output.clear();
+    if (started_) return;
+    epoch_ = epochDts100ns;
+    lastDts_ = epochDts100ns - 1;
+    started_ = true;
+    tables(output);
+    tableDts_ = 0;
+  }
+
+  [[nodiscard]] bool started() const { return started_; }
+
+  // One ADTS access unit at a Program-clock PTS. Refused (caller drops) before
+  // begin(), before the epoch, or out of order - never re-timed.
+  bool packetizeAudio(const uint8_t* adts, size_t size, int64_t pts100ns, std::vector<uint8_t>& output) {
+    output.clear();
+    if (!withAudio_ || !started_ || !adts || size < 7 || adts[0] != 0xff || (adts[1] & 0xf0) != 0xf0 ||
+        pts100ns < epoch_ || (audioStarted_ && pts100ns <= lastAudioPts_)) return false;
+    audioStarted_ = true;
+    lastAudioPts_ = pts100ns;
+    const uint64_t pts = ticks(pts100ns - epoch_);
+    const size_t pesLength = 3 + 5 + size;
+    if (pesLength > 0xffff) return false;
+    std::vector<uint8_t> pes{0, 0, 1, 0xc0, static_cast<uint8_t>(pesLength >> 8),
+                             static_cast<uint8_t>(pesLength), 0x80, 0x80, 5};
+    timestamp(pes, 2, pts);
+    pes.insert(pes.end(), adts, adts + size);
+    emit(output, pes, kAudioPid, audioCounter_, nullptr, true);
+    return true;
+  }
 
   bool packetize(const GpuEncodedChunk& chunk, std::vector<uint8_t>& output) {
     output.clear();
@@ -53,29 +91,40 @@ class EncodedVideoTransportStream {
       else pes.insert(pes.end(), {0, 0, 0, 1, 0x09, 0xf0});
     }
     pes.insert(pes.end(), chunk.data, chunk.data + chunk.size);
+    emit(output, pes, kVideoPid, videoCounter_, &dts, chunk.keyframe);
+    return true;
+  }
 
+ private:
+  static constexpr uint16_t kVideoPid = 0x100;
+  static constexpr uint16_t kAudioPid = 0x101;
+
+  // Split one PES into 188-byte packets. `pcr` (video only) rides the first
+  // packet's adaptation field; the last packet is padded with stuffing.
+  static void emit(std::vector<uint8_t>& output, const std::vector<uint8_t>& pes, uint16_t pid,
+                   uint8_t& counter, const uint64_t* pcr, bool randomAccess) {
     size_t offset = 0;
     while (offset < pes.size()) {
       std::array<uint8_t, 188> packet;
       packet.fill(0xff);
       const bool first = offset == 0;
       packet[0] = 0x47;
-      packet[1] = static_cast<uint8_t>(0x01 | (first ? 0x40 : 0)); // PID 0x100
-      packet[2] = 0;
-      packet[3] = 0x10 | (videoCounter_++ & 15);
-      const size_t count = (std::min)(pes.size() - offset, first ? size_t{176} : size_t{184});
+      packet[1] = static_cast<uint8_t>((pid >> 8) | (first ? 0x40 : 0));
+      packet[2] = static_cast<uint8_t>(pid);
+      packet[3] = 0x10 | (counter++ & 15);
+      const size_t count = (std::min)(pes.size() - offset, first && pcr ? size_t{176} : size_t{184});
       const size_t adaptation = 184 - count;
       if (adaptation) {
         packet[3] |= 0x20;
         packet[4] = static_cast<uint8_t>(adaptation - 1);
-        if (adaptation > 1) packet[5] = first ? (0x10 | (chunk.keyframe ? 0x40 : 0)) : 0;
-        if (first) {
-          const uint64_t pcr = dts & ((uint64_t{1} << 33) - 1);
-          packet[6] = static_cast<uint8_t>(pcr >> 25);
-          packet[7] = static_cast<uint8_t>(pcr >> 17);
-          packet[8] = static_cast<uint8_t>(pcr >> 9);
-          packet[9] = static_cast<uint8_t>(pcr >> 1);
-          packet[10] = static_cast<uint8_t>((pcr << 7) | 0x7e);
+        if (adaptation > 1) packet[5] = first ? ((pcr ? 0x10 : 0) | (randomAccess ? 0x40 : 0)) : 0;
+        if (first && pcr) {
+          const uint64_t value = *pcr & ((uint64_t{1} << 33) - 1);
+          packet[6] = static_cast<uint8_t>(value >> 25);
+          packet[7] = static_cast<uint8_t>(value >> 17);
+          packet[8] = static_cast<uint8_t>(value >> 9);
+          packet[9] = static_cast<uint8_t>(value >> 1);
+          packet[10] = static_cast<uint8_t>((value << 7) | 0x7e);
           packet[11] = 0;
         }
       }
@@ -83,10 +132,8 @@ class EncodedVideoTransportStream {
       output.insert(output.end(), packet.begin(), packet.end());
       offset += count;
     }
-    return true;
   }
 
- private:
   static uint64_t ticks(int64_t hns) {
     // Quotient/remainder avoids overflowing on a long-running program clock.
     return static_cast<uint64_t>(hns / 1000) * 9 +
@@ -123,16 +170,19 @@ class EncodedVideoTransportStream {
 
   void tables(std::vector<uint8_t>& output) {
     section(output, 0, patCounter_, {0, 0xb0, 13, 0, 1, 0xc1, 0, 0, 0, 1, 0xf0, 0});
-    section(output, 0x1000, pmtCounter_,
-            {2, 0xb0, 18, 0, 1, 0xc1, 0, 0, 0xe1, 0, 0xf0,
-             static_cast<uint8_t>(codec_ == Codec::Hevc ? 0x24 : 0x1b), 0xe1, 0, 0xf0, 0});
+    std::vector<uint8_t> pmt{2, 0xb0, static_cast<uint8_t>(withAudio_ ? 23 : 18), 0, 1, 0xc1, 0, 0, 0xe1, 0, 0xf0, 0,
+                             static_cast<uint8_t>(codec_ == Codec::Hevc ? 0x24 : 0x1b), 0xe1, 0, 0xf0, 0};
+    // Stream type 0x0f: ISO/IEC 13818-7 AAC with ADTS framing.
+    if (withAudio_) pmt.insert(pmt.end(), {0x0f, 0xe1, 0x01, 0xf0, 0});
+    section(output, 0x1000, pmtCounter_, std::move(pmt));
   }
 
   Codec codec_;
-  bool started_ = false;
-  int64_t epoch_ = 0, lastDts_ = 0;
+  bool withAudio_ = false;
+  bool started_ = false, audioStarted_ = false;
+  int64_t epoch_ = 0, lastDts_ = 0, lastAudioPts_ = 0;
   uint64_t tableDts_ = 0;
-  uint8_t patCounter_ = 0, pmtCounter_ = 0, videoCounter_ = 0;
+  uint8_t patCounter_ = 0, pmtCounter_ = 0, videoCounter_ = 0, audioCounter_ = 0;
 };
 
 } // namespace corevideo::modules

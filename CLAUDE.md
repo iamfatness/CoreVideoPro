@@ -2614,6 +2614,26 @@ The sender's `divisor` remains a pressure recommendation for compatibility,
 while `appliedDivisor` reports the compositor's actual rate. Validate blocked
 RTMP against received SRT/HLS media and Program render slots.
 
+**#538 Slice 8 (2026-09-30): one clock at the mux.** Shared H.264 and shared AAC
+reach each FFmpeg as ONE core-stamped MPEG-TS on stdin (`EncodedVideoTransportStream`
+with an ADTS PID; `-f mpegts -i pipe:0 -map 0:v:0 -map 0:a:0 -c copy`, no second
+pipe, no wallclock). `ProgramStreamClock` (in `CompositeOutputSender`) anchors AAC
+once per stream session to the frame clock, using the frame's
+`timelineTimestamp100ns` and the audio worker's SCHEDULED tick time. Do not use
+`now()` at gather: that carries up to a tick of lateness exactly at stream start.
+Three lessons, all measured:
+- **Frame number is exact.** Frame number vs timeline slipped 0.00 ms over a run.
+  An anchor on frame number alone still quantizes to a whole frame per session.
+- **The clap gate was misreading audio.** It read audio from the first decoded
+  sample and video at PTS. A fenced TS starts AAC up to one AAC unit after the
+  IDR, which read as 2-19 ms of per-session "skew". It now adds the audio
+  `start_time`. After that fix RTMP−Record measured 0.3-1.7 ms over five sessions.
+- **The process log is lossy.** `nativeLogf` is a 128-slot best-effort queue that
+  drops startup lines. Gate evidence lives in each sender's snapshot
+  `streamClock {muxInput, firstVideoPts100ns, firstAudioPts100ns, audioUnits, …}`.
+  The TS PMT also used to omit the low byte of `program_info_length`, and FFmpeg
+  had been finding streams by probing PES; it is now well-formed.
+
 - **THE DIAGNOSTIC TECHNIQUE, worth more than the fix: compare `perf.log` gaps against
   the sample COUNTER, not wall time.** The incident's one 21.01 s gap
   (21:09:12.06 → 21:09:33.07) carried a NORMAL counter delta (10860 → 10890, the usual

@@ -6,6 +6,7 @@
 #include "modules/RtmpFfmpegArgs.h"
 #include "modules/GpuVideoEncoder.h"
 #include "modules/EncodedVideoTransportStream.h"
+#include "modules/ProgramStreamClock.h"
 #include "modules/MediaFoundationGpuVideoEncoder.h"
 #include "modules/MuxInputRatePolicy.h"
 #include "modules/SharedGpuVideoEncoder.h"
@@ -638,8 +639,16 @@ class RtmpOutputSender final : public IOutputSender {
   bool acceptsSharedAac() const override { return true; }
 
   void submitEncodedAudio(const ProgramAacPacket& packet) override {
-    if (!useSharedAac_ || !useGpuDirect_ || packet.adts.empty() ||
-        !firstBitstreamToFfmpeg_.load(std::memory_order_acquire)) return;
+    if (!useSharedAac_ || !useGpuDirect_ || packet.adts.empty()) return;
+#if defined(_WIN32)
+    if (unifiedTsInput_) {
+      enqueueTransportAudio(packet);
+      sender_.audioFramesSent = audioFramesWritten_.load();
+      sender_.audioBytesSent = audioBytesWritten_.load();
+      return;
+    }
+#endif
+    if (!firstBitstreamToFfmpeg_.load(std::memory_order_acquire)) return;
     // The independent audio worker reaches the stream mux about three 1024-
     // sample AAC units behind the first exported Program video frame. Trim
     // that startup lead-in once per mux session; the encoder's sample clock
@@ -1579,6 +1588,9 @@ class RtmpOutputSender final : public IOutputSender {
     config.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 48000;
     config.audioBitrateKbps = configuredAudioBitrateKbps_;
     config.audioBitstreamInput = useGpuDirect_ && useSharedAac_;
+#if defined(_WIN32)
+    config.audioInTransportStream = unifiedTsInput_;
+#endif
     config.audioSampleFormat = "f32le";
     config.audioInput = audioInput;
     config.container = protocol_.container;
@@ -1750,6 +1762,20 @@ class RtmpOutputSender final : public IOutputSender {
     audioStartupSamplesToSkip_ = corevideo::core::gpuStreamAudioStartupSkipSamples(
         useGpuDirect_, configuredProgramBufferFrames_, activeAudioSampleRate_, activeAudioChannels_);
 #if defined(_WIN32)
+    // #538 Slice 8: shared H.264/HEVC + shared AAC travel as one core-stamped
+    // TS on stdin. No second pipe, so FFmpeg has exactly one input clock.
+    unifiedTsInput_ = useGpuDirect_ && useSharedAac_ && realAudioEnabledForProcess() &&
+                      (gpuEncodeSentCodec_ == "h264" || gpuEncodeSentCodec_ == "hevc");
+    muxInputMode_ = unifiedTsInput_ ? "unified-ts"
+        : !realAudioEnabledForProcess() ? "silent-anullsrc"
+        : useGpuDirect_ ? "two-input" : "raw-fallback";
+    streamClockFirstVideoPts_.store(-1, std::memory_order_relaxed);
+    streamClockFirstAudioPts_.store(-1, std::memory_order_relaxed);
+    transportAudioUnits_.store(0, std::memory_order_relaxed);
+    transportAudioRefused_.store(0, std::memory_order_relaxed);
+    transportAudioUnanchored_.store(0, std::memory_order_relaxed);
+    ::corevideo::core::nativeLogf("[stream-clock] destination=%s mux-input=%s\n", protocol_.destination.c_str(),
+                                 muxInputMode_.c_str());
     SECURITY_ATTRIBUTES securityAttributes{};
     securityAttributes.nLength = sizeof(securityAttributes);
     securityAttributes.bInheritHandle = TRUE;
@@ -1776,7 +1802,7 @@ class RtmpOutputSender final : public IOutputSender {
     // mux a real AAC track instead of `anullsrc` silence.
     std::string audioPipeName;
     std::string audioInputArg = "pipe:0";  // unused when no audio
-    if (realAudioEnabledForProcess()) {
+    if (realAudioEnabledForProcess() && !unifiedTsInput_) {
       const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
       audioPipeName = "\\\\.\\pipe\\corevideo-rtmp-audio-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(now);
       audioPipeServer_ = CreateNamedPipeA(
@@ -2128,6 +2154,7 @@ class RtmpOutputSender final : public IOutputSender {
       std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
       bitstreamQueue_.clear();
       bitstreamQueuedBytes_ = 0;
+      transportAudioQueue_.clear();
       awaitingFreshKeyframe_ = true;
       republishQueueTelemetryLocked();
     }
@@ -2167,6 +2194,7 @@ class RtmpOutputSender final : public IOutputSender {
     std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
     bitstreamQueue_.clear();
     bitstreamQueuedBytes_ = 0;
+    transportAudioQueue_.clear();
     awaitingFreshKeyframe_ = false;
     republishQueueTelemetryLocked();
     writeTraceNext_ = 0;
@@ -2503,6 +2531,8 @@ class RtmpOutputSender final : public IOutputSender {
           const auto discarded = bitstreamQueue_.size();
           bitstreamQueue_.clear();
           bitstreamQueuedBytes_ = 0;
+          // Audio queued behind a discarded GOP is as stale as the video.
+          transportAudioQueue_.clear();
           overflowDiscardedChunks_.fetch_add(static_cast<std::int64_t>(discarded),
                                              std::memory_order_relaxed);
           republishQueueTelemetryLocked();
@@ -2525,20 +2555,134 @@ class RtmpOutputSender final : public IOutputSender {
     bitstreamQueueCv_.notify_one();
   }
 
+  // #538 Slice 8: queue one stamped AAC unit for this destination's TS. An
+  // unanchored packet (no session anchor yet) is dropped, never re-timed. The
+  // bound (~1 s of AAC) only matters while the transport waits for its IDR.
+  void enqueueTransportAudio(const ProgramAacPacket& packet) {
+    int64_t pts100ns = 0;
+    if (!programAudioPts100ns(packet, (std::max)(1, configuredFps_), pts100ns)) {
+      transportAudioUnanchored_.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+      if (bitstreamWriterStop_.load()) return;
+      transportAudioQueue_.push_back({packet.adts, pts100ns});
+      while (transportAudioQueue_.size() > 48) transportAudioQueue_.pop_front();
+    }
+    bitstreamQueueCv_.notify_one();
+  }
+
+  // Write TS bytes carrying `adtsBytes` of AAC payload (0 for tables only).
+  // Audio shares the video pipe, so it is excluded from mux video telemetry.
+  void writeTransportAudioToFfmpeg(const uint8_t* data, size_t size, size_t adtsBytes) {
+    while (size > 0 && ffmpegRunning_ && ffmpegStdin_) {
+      if (bitstreamWriterStop_.load()) return;
+      DWORD written = 0;
+      const DWORD chunk = static_cast<DWORD>((std::min)(size, static_cast<size_t>(1) << 20));
+      if (!WriteFile(ffmpegStdin_, data, chunk, &written, nullptr) || written == 0) {
+        if (bitstreamWriterStop_.load()) return;
+        bitstreamFailure_.record(BitstreamFailure::PipeWrite);
+        ::corevideo::core::nativeLogf("[gpu-encode] transport audio WriteFile failed err=%lu\n",
+                                     static_cast<unsigned long>(GetLastError()));
+        return;
+      }
+      data += written;
+      size -= written;
+    }
+    if (adtsBytes) {
+      audioBytesWritten_.fetch_add(static_cast<std::int64_t>(adtsBytes));
+      audioFramesWritten_.fetch_add(1024);
+      transportAudioUnits_.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
   void bitstreamWriterLoop() {
     const bool timestampH264 = gpuEncodeSentCodec_ == "h264";
-    EncodedVideoTransportStream transport(timestampH264 ? EncodedVideoTransportStream::Codec::H264 : EncodedVideoTransportStream::Codec::Hevc);
+    const bool unified = unifiedTsInput_;
+    EncodedVideoTransportStream transport(
+        timestampH264 ? EncodedVideoTransportStream::Codec::H264 : EncodedVideoTransportStream::Codec::Hevc,
+        unified);
     std::vector<uint8_t> wire;
+    std::vector<uint8_t> audioWire;
     while (!bitstreamWriterStop_.load() && !bitstreamFailure_.failed()) {
       QueuedBitstream packet;
+      TransportAudio audio;
+      bool haveVideo = false;
+      bool haveAudio = false;
+      bool beginTransport = false;
       {
         std::unique_lock<std::mutex> lock(bitstreamQueueMutex_);
-        bitstreamQueueCv_.wait(lock, [this] { return bitstreamWriterStop_.load() || !bitstreamQueue_.empty(); });
+        bitstreamQueueCv_.wait(lock, [&] {
+          return bitstreamWriterStop_.load() || !bitstreamQueue_.empty() ||
+                 (unified && transport.started() && !transportAudioQueue_.empty());
+        });
         if (bitstreamWriterStop_.load()) break;
-        packet = std::move(bitstreamQueue_.front());
-        bitstreamQueue_.pop_front();
-        bitstreamQueuedBytes_ -= packet.bytes.size();
-        republishQueueTelemetryLocked();
+        if (unified && !transport.started()) {
+          // Startup fence: the first decodable picture opens the stream and
+          // audio stamped before it is dropped. Wait briefly for audio at or
+          // after that picture so its PES precedes the (large) IDR in the byte
+          // stream and FFmpeg's bounded probe sees both streams.
+          const auto& head = bitstreamQueue_.front();
+          while (!transportAudioQueue_.empty() &&
+                 transportAudioQueue_.front().pts100ns < head.metadata.pts100ns) {
+            transportAudioQueue_.pop_front();
+          }
+          if (transportAudioQueue_.empty() &&
+              std::chrono::steady_clock::now() - head.enqueuedAt < std::chrono::milliseconds(250)) {
+            bitstreamQueueCv_.wait_for(lock, std::chrono::milliseconds(5));
+            continue;
+          }
+          beginTransport = true;
+          haveVideo = true;
+          if (!transportAudioQueue_.empty()) {
+            haveAudio = true;
+            audio = std::move(transportAudioQueue_.front());
+            transportAudioQueue_.pop_front();
+          }
+        } else if (!bitstreamQueue_.empty() &&
+                   (!unified || transportAudioQueue_.empty() ||
+                    bitstreamQueue_.front().metadata.dts100ns <= transportAudioQueue_.front().pts100ns)) {
+          // Interleave by the core's timestamps when both are queued.
+          haveVideo = true;
+        } else {
+          haveAudio = true;
+          audio = std::move(transportAudioQueue_.front());
+          transportAudioQueue_.pop_front();
+        }
+        if (haveVideo) {
+          packet = std::move(bitstreamQueue_.front());
+          bitstreamQueue_.pop_front();
+          bitstreamQueuedBytes_ -= packet.bytes.size();
+          republishQueueTelemetryLocked();
+        }
+      }
+      if (beginTransport) {
+        transport.begin(packet.metadata.dts100ns, wire);
+        size_t adtsBytes = 0;
+        if (haveAudio && transport.packetizeAudio(audio.adts.data(), audio.adts.size(), audio.pts100ns, audioWire)) {
+          wire.insert(wire.end(), audioWire.begin(), audioWire.end());
+          adtsBytes = audio.adts.size();
+        }
+        writeTransportAudioToFfmpeg(wire.data(), wire.size(), adtsBytes);
+        streamClockFirstVideoPts_.store(packet.metadata.pts100ns, std::memory_order_relaxed);
+        if (adtsBytes) streamClockFirstAudioPts_.store(audio.pts100ns, std::memory_order_relaxed);
+        ::corevideo::core::nativeLogf(
+            "[stream-clock] destination=%s epochDts100ns=%lld firstVideoPts100ns=%lld firstAudioPts100ns=%lld\n",
+            protocol_.destination.c_str(), static_cast<long long>(packet.metadata.dts100ns),
+            static_cast<long long>(packet.metadata.pts100ns),
+            static_cast<long long>(adtsBytes ? audio.pts100ns : -1));
+        haveAudio = false;
+      }
+      if (haveAudio) {
+        if (transport.packetizeAudio(audio.adts.data(), audio.adts.size(), audio.pts100ns, audioWire)) {
+          if (streamClockFirstAudioPts_.load(std::memory_order_relaxed) < 0)
+            streamClockFirstAudioPts_.store(audio.pts100ns, std::memory_order_relaxed);
+          writeTransportAudioToFfmpeg(audioWire.data(), audioWire.size(), audio.adts.size());
+        } else {
+          transportAudioRefused_.fetch_add(1, std::memory_order_relaxed);
+        }
+        continue;
       }
       packet.metadata.data = packet.bytes.data();
       if (gpuEncodeSentCodec_ == "hevc" || timestampH264) {
@@ -3131,6 +3275,15 @@ class RtmpOutputSender final : public IOutputSender {
             currentMuxInputRate(muxVideoMbps_.load(std::memory_order_relaxed), nowMs, lastWriteMs),
             currentMuxInputRate(muxVideoFps_.load(std::memory_order_relaxed), nowMs, lastWriteMs),
             lastWriteMs > 0 ? (std::max)(int64_t{0}, nowMs - lastWriteMs) : -1};
+#if defined(_WIN32)
+        sender.streamClock = OutputSender::StreamClock{
+            muxInputMode_,
+            streamClockFirstVideoPts_.load(std::memory_order_relaxed),
+            streamClockFirstAudioPts_.load(std::memory_order_relaxed),
+            transportAudioUnits_.load(std::memory_order_relaxed),
+            transportAudioRefused_.load(std::memory_order_relaxed),
+            transportAudioUnanchored_.load(std::memory_order_relaxed)};
+#endif
       }
       session.senders.push_back(std::move(sender));
       if (sender_.status == "live" || sender_.status == "warning" || sender_.status == "starting") {
@@ -3315,6 +3468,20 @@ class RtmpOutputSender final : public IOutputSender {
   };
   std::deque<QueuedBitstream> bitstreamQueue_;
   size_t bitstreamQueuedBytes_ = 0;
+  // #538 Slice 8: shared AAC stamped on the Program clock, drained by the same
+  // writer as the video into one TS. Guarded by bitstreamQueueMutex_.
+  struct TransportAudio {
+    std::vector<uint8_t> adts;
+    int64_t pts100ns = 0;
+  };
+  std::deque<TransportAudio> transportAudioQueue_;
+  bool unifiedTsInput_ = false;
+  std::string muxInputMode_;
+  std::atomic<std::int64_t> streamClockFirstVideoPts_{-1};
+  std::atomic<std::int64_t> streamClockFirstAudioPts_{-1};
+  std::atomic<std::int64_t> transportAudioUnits_{0};
+  std::atomic<std::int64_t> transportAudioRefused_{0};
+  std::atomic<std::int64_t> transportAudioUnanchored_{0};
   std::thread bitstreamWriterThread_;
   std::atomic<bool> bitstreamWriterStop_{true};
   BitstreamFailureState bitstreamFailure_;
