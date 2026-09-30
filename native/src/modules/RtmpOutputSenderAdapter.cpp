@@ -7,6 +7,8 @@
 #include "modules/GpuVideoEncoder.h"
 #include "modules/EncodedVideoTransportStream.h"
 #include "modules/ProgramStreamClock.h"
+
+#include <limits>
 #include "modules/MediaFoundationGpuVideoEncoder.h"
 #include "modules/MuxInputRatePolicy.h"
 #include "modules/SharedGpuVideoEncoder.h"
@@ -985,6 +987,10 @@ class RtmpOutputSender final : public IOutputSender {
     // GPU-direct: hand the compositor's encoder texture to the hardware encoder,
     // whose sink writes the bitstream to FFmpeg. Raw path writes NV12/BGRA itself.
     activeStage_.store(useGpuDirect_ ? "encoder-submit" : "raw-video-write", std::memory_order_relaxed);
+    // Buffered frames carry their exact delivery deadline; record where the
+    // delivery grid sits relative to frame numbers (#538 slot clock).
+    if (frame->deliverySequence > 0)
+      slotClock_.observe(frame->frameNumber, frame->timelineTimestamp100ns, (std::max)(1, configuredFps_));
     const bool videoWriteOk =
         useGpuDirect_ ? submitFrameToGpuEncoder(*frame) : writeFrameToFfmpeg(*frame);
     if (!videoWriteOk) {
@@ -1774,6 +1780,10 @@ class RtmpOutputSender final : public IOutputSender {
     transportAudioUnits_.store(0, std::memory_order_relaxed);
     transportAudioRefused_.store(0, std::memory_order_relaxed);
     transportAudioUnanchored_.store(0, std::memory_order_relaxed);
+    appliedSlots_ = 0;
+    slotRegressionLogged_ = false;
+    appliedSlotsPublished_.store(0, std::memory_order_relaxed);
+    slotShiftCount_.store(0, std::memory_order_relaxed);
     ::corevideo::core::nativeLogf("[stream-clock] destination=%s mux-input=%s\n", protocol_.destination.c_str(),
                                  muxInputMode_.c_str());
     SECURITY_ATTRIBUTES securityAttributes{};
@@ -2547,7 +2557,9 @@ class RtmpOutputSender final : public IOutputSender {
           }
         }
       }
-      bitstreamQueue_.push_back({std::vector<uint8_t>(chunk.data, chunk.data + chunk.size), chunk,
+      GpuEncodedChunk stamped = chunk;
+      if (unifiedTsInput_) applySlotCorrection(stamped);
+      bitstreamQueue_.push_back({std::vector<uint8_t>(chunk.data, chunk.data + chunk.size), stamped,
                                  std::chrono::steady_clock::now()});
       bitstreamQueuedBytes_ += chunk.size;
       republishQueueTelemetryLocked();
@@ -2558,7 +2570,38 @@ class RtmpOutputSender final : public IOutputSender {
   // #538 Slice 8: queue one stamped AAC unit for this destination's TS. An
   // unanchored packet (no session anchor yet) is dropped, never re-timed. The
   // bound (~1 s of AAC) only matters while the transport waits for its IDR.
+  // #538 slot clock: move an encoded frame from its frame-number PTS to its
+  // delivery slot, relative to the slot the audio anchored on. Monotonic: the
+  // shift never decreases, so a stall becomes a video PTS gap. Called on the
+  // encoder sink thread with bitstreamQueueMutex_ held.
+  void applySlotCorrection(GpuEncodedChunk& chunk) {
+    const int fps = (std::max)(1, configuredFps_);
+    const int64_t anchorK = anchorK100ns_.load(std::memory_order_acquire);
+    const auto k = slotClock_.kFor(chunk.frameNumber);
+    if (anchorK == kNoAnchorK || !k || !chunk.timingValid) return;
+    const int64_t slots = slotsSinceAnchor(*k, anchorK, fps);
+    if (slots > appliedSlots_) {
+      ::corevideo::core::nativeLogf("[stream-clock] destination=%s delivery grid moved %lld slot(s) at frame %lld; video PTS follows\n",
+                                   protocol_.destination.c_str(), static_cast<long long>(slots - appliedSlots_),
+                                   static_cast<long long>(chunk.frameNumber));
+      appliedSlots_ = slots;
+      slotShiftCount_.fetch_add(1, std::memory_order_relaxed);
+    } else if (slots < appliedSlots_ && !slotRegressionLogged_) {
+      slotRegressionLogged_ = true;
+      ::corevideo::core::nativeLogf("[stream-clock] destination=%s delivery grid moved back %lld slot(s); held (PTS stays monotonic)\n",
+                                   protocol_.destination.c_str(), static_cast<long long>(appliedSlots_ - slots));
+    }
+    if (appliedSlots_ == 0) return;
+    const int64_t shift = (chunk.frameNumber + appliedSlots_) * 10'000'000LL / fps -
+                          chunk.frameNumber * 10'000'000LL / fps;
+    chunk.pts100ns += shift;
+    chunk.dts100ns += shift;
+    appliedSlotsPublished_.store(appliedSlots_, std::memory_order_relaxed);
+  }
+
   void enqueueTransportAudio(const ProgramAacPacket& packet) {
+    if (const auto k = anchorK100ns(packet, (std::max)(1, configuredFps_)))
+      anchorK100ns_.store(*k, std::memory_order_release);
     int64_t pts100ns = 0;
     if (!programAudioPts100ns(packet, (std::max)(1, configuredFps_), pts100ns)) {
       transportAudioUnanchored_.fetch_add(1, std::memory_order_relaxed);
@@ -3282,7 +3325,9 @@ class RtmpOutputSender final : public IOutputSender {
             streamClockFirstAudioPts_.load(std::memory_order_relaxed),
             transportAudioUnits_.load(std::memory_order_relaxed),
             transportAudioRefused_.load(std::memory_order_relaxed),
-            transportAudioUnanchored_.load(std::memory_order_relaxed)};
+            transportAudioUnanchored_.load(std::memory_order_relaxed),
+            appliedSlotsPublished_.load(std::memory_order_relaxed),
+            slotShiftCount_.load(std::memory_order_relaxed)};
 #endif
       }
       session.senders.push_back(std::move(sender));
@@ -3476,6 +3521,15 @@ class RtmpOutputSender final : public IOutputSender {
   };
   std::deque<TransportAudio> transportAudioQueue_;
   bool unifiedTsInput_ = false;
+  // #538 slot clock (see ProgramSlotClock). anchorK100ns_ is the session's
+  // audio-anchor K; appliedSlots_ is owned by the encoder sink thread.
+  static constexpr int64_t kNoAnchorK = (std::numeric_limits<int64_t>::min)();
+  ProgramSlotClock slotClock_;
+  std::atomic<int64_t> anchorK100ns_{kNoAnchorK};
+  int64_t appliedSlots_ = 0;
+  bool slotRegressionLogged_ = false;
+  std::atomic<int64_t> appliedSlotsPublished_{0};
+  std::atomic<int64_t> slotShiftCount_{0};
   std::string muxInputMode_;
   std::atomic<std::int64_t> streamClockFirstVideoPts_{-1};
   std::atomic<std::int64_t> streamClockFirstAudioPts_{-1};

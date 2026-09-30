@@ -16,6 +16,9 @@ struct ProgramAacPacket {
   int64_t anchorSampleIndex = 0;
   // Sub-frame steady-clock offset of that sample from that frame's timeline.
   int64_t anchorOffset100ns = 0;
+  // The anchor frame's own timeline time: muxers derive the slot offset K0 the
+  // session anchored on (timeline - frame/fps) to keep video on the same grid.
+  int64_t anchorFrameTimeline100ns = 0;
 };
 
 // One 48 kHz stereo AAC-LC program encoder. Packet time is the exact count of

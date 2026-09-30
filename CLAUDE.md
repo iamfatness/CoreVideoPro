@@ -2633,6 +2633,18 @@ Three lessons, all measured:
   `streamClock {muxInput, firstVideoPts100ns, firstAudioPts100ns, audioUnits, …}`.
   The TS PMT also used to omit the low byte of `program_info_length`, and FFmpeg
   had been finding streams by probing PES; it is now well-formed.
+- **Frame number is not the delivery slot.** A render stall moves the program
+  buffer's grid relative to frame numbers. `K = timeline - frame/fps` steps by
+  whole slots. Frame-number video PTS then sat 4-6 frames early against audio for
+  the whole session. It bit about half of all streams started right at core launch
+  (a take opening media stalls ~100 ms). The recording was immune; the clap gates
+  anchor after startup and missed it. Senders now shift video PTS by the slots K
+  moved since the audio anchor (`ProgramSlotClock`).
+  - **How it was found:** a temporary frame-number label drawn into Program pixels
+    plus a per-frame K trace. Labels proved pixels matched their PTS, so the error
+    was the clock, not the encoder.
+  - **Rule:** re-run an A/V gate many times before calling it green. This defect
+    was a per-session coin flip.
 
 - **THE DIAGNOSTIC TECHNIQUE, worth more than the fix: compare `perf.log` gaps against
   the sample COUNTER, not wall time.** The incident's one 21.01 s gap
