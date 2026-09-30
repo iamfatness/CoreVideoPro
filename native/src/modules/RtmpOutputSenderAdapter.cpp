@@ -1587,7 +1587,7 @@ class RtmpOutputSender final : public IOutputSender {
     config.audioChannels = activeAudioPresent_ ? activeAudioChannels_ : 2;
     config.audioSampleRate = activeAudioPresent_ ? activeAudioSampleRate_ : 48000;
     config.audioBitrateKbps = configuredAudioBitrateKbps_;
-    config.audioBitstreamInput = useGpuDirect_ && useSharedAac_;
+    config.audioBitstreamInput = useGpuDirect_ && useSharedAac_ && config.hasAudio;
 #if defined(_WIN32)
     config.audioInTransportStream = unifiedTsInput_;
 #endif

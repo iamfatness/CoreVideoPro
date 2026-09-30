@@ -164,6 +164,8 @@ starts AAC up to one AAC unit after the first IDR.
 Still open after Slice 8: #708 FFmpeg stop/teardown cleanup; #703 same-run
 YouTube watch-URL evidence on the Slice 8 head; #615 operator readout; macOS
 native AAC (macOS keeps the PCM fallback and does not claim Slice 6 or 8).
-Found, not fixed here: with shared AAC enabled but no audio layout (or
-`COREVIDEO_RTMP_DISABLE_REAL_AUDIO=1`), the builder still copies the `anullsrc`
-PCM input (`-c:a copy`), which FLV refuses; the same condition exists on main.
+With shared AAC enabled but no audio layout (or
+`COREVIDEO_RTMP_DISABLE_REAL_AUDIO=1`), the silent `anullsrc` fallback is
+encoded to AAC. It used to be `-c:a copy`d as raw PCM, which FLV refused
+("FLV does not support sample rate 48000"), so the whole destination failed.
+Only real shared AAC is copied.
