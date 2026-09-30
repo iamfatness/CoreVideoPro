@@ -295,3 +295,51 @@ TEST(AsyncOutputSender, BlockedDestinationRetainsOnlyCompleteRecentAacPackets) {
   sender.interrupt("rtmp");
   EXPECT_TRUE(sender.drainForTest(std::chrono::seconds(2)));
 }
+
+namespace {
+class InterruptRecordingSender final : public IOutputSender {
+ public:
+  OutputSenderSession sync(const std::vector<std::string>&, const ProgramFrame*, double,
+                           const std::vector<OutputDestinationSettings>&, const std::vector<float>*, int,
+                           int) override {
+    return {};
+  }
+  OutputSenderSession fail(const std::string&, const std::string&, double) override { return {}; }
+  OutputSenderSession recover(const std::string&, double, const std::string&) override { return {}; }
+  OutputSenderSession session() const override { return {}; }
+  void interrupt(const std::string& destination) override {
+    std::lock_guard<std::mutex> lock(mutex);
+    interrupted.push_back(destination);
+  }
+  std::mutex mutex;
+  std::vector<std::string> interrupted;
+};
+}  // namespace
+
+// #708: Stop must release a blocked FFmpeg child for EVERY network destination it
+// removes. HLS (an FFmpeg PUT muxer) was missing from the set, so a stopped HLS
+// destination whose origin stalled was never interrupted.
+TEST(AsyncOutputSender, StopInterruptsEveryRemovedNetworkDestinationIncludingHls) {
+  auto inner = std::make_unique<InterruptRecordingSender>();
+  auto* raw = inner.get();
+  AsyncOutputSender sender(std::move(inner));
+  sender.sync({}, nullptr, 0.0);
+  ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(1)));
+  std::lock_guard<std::mutex> lock(raw->mutex);
+  for (const char* destination : {"rtmp", "srt", "hls", "ndi"}) {
+    EXPECT_NE(std::find(raw->interrupted.begin(), raw->interrupted.end(), destination), raw->interrupted.end())
+        << destination;
+  }
+}
+
+TEST(AsyncOutputSender, StopNeverInterruptsADestinationStillRequested) {
+  auto inner = std::make_unique<InterruptRecordingSender>();
+  auto* raw = inner.get();
+  AsyncOutputSender sender(std::move(inner));
+  sender.sync({"hls", "srt"}, nullptr, 0.0);
+  ASSERT_TRUE(sender.drainForTest(std::chrono::seconds(1)));
+  std::lock_guard<std::mutex> lock(raw->mutex);
+  EXPECT_EQ(std::find(raw->interrupted.begin(), raw->interrupted.end(), "hls"), raw->interrupted.end());
+  EXPECT_EQ(std::find(raw->interrupted.begin(), raw->interrupted.end(), "srt"), raw->interrupted.end());
+  EXPECT_NE(std::find(raw->interrupted.begin(), raw->interrupted.end(), "rtmp"), raw->interrupted.end());
+}

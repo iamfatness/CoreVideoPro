@@ -271,7 +271,8 @@ try {
 
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
-    commands: [{ type: "stop-program-output", reason: "srt proof complete" }],
+    // No 'stop-program-output' exists in the core (#708): stop as the shell does.
+    commands: [{ type: "start-program-output", destinations: [], destinationSettings: [], isoParticipantIds: [] }],
   });
 } catch (error) {
   failures.push(redact(error.message));

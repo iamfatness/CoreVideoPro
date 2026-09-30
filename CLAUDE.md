@@ -2838,11 +2838,20 @@ Three lessons, all measured:
   now **FIXED AND CLOSED** — see "A DESTINATION SERVING ITS OWN RESTART BACKOFF IS
   WAITING, NOT FAILING" above; it is recorded here because the REASONING for un-deferring
   it is the transferable part.
-  [#604](https://github.com/iamfatness/CoreVideoPro/issues/604): `stopFfmpegProcess()`
-  waits 500 ms and never terminates, so a stopped destination on a congested link keeps
-  being published to (measured alive at the 22.6 s bound) and a restart can spawn a
-  second child beside a live one — the restart floor assumes stopping a child stops it,
-  which makes the SRT caller-slot release a bounded best-effort claim, not a guarantee.
+  [#604](https://github.com/iamfatness/CoreVideoPro/issues/604) is FIXED (#689:
+  `retireFfmpegChild` waits 500 ms, then TerminateProcess and waits for the process
+  object, and a start refuses while an unconfirmed child lives). **#708 (2026-09-30):
+  the "child still alive 20 s after Stop" that outlived #689 was the HARNESS.**
+  `validate-gpu-encode`, `validate-hls-output` and `validate-srt-output` sent
+  `stop-program-output`, a command the core does not implement: `[cmd] rejected unknown
+  command`, the destination stayed requested, FFmpeg kept publishing, and only the job
+  object at core exit ended it. Stop is the desired-state `start-program-output` without
+  the destination, exactly what the shell sends. With the real stop, the congested
+  child is gone inside the gate's now-ASSERTED 5 s bound. One real product gap rode
+  along: `AsyncOutputSender` interrupted removed `rtmp`/`srt`/`ndi` but never `hls`, so
+  a stopped HLS FFmpeg blocked on a stalled origin was not released by the removing
+  sync. **Rule: a harness that stops something must check the command was ACCEPTED** —
+  an unknown command is loud only in a log nobody reads.
   [#605](https://github.com/iamfatness/CoreVideoPro/issues/605):
   `keyframeIntervalSeconds` is NEVER applied (there is no GOP codec-API call in
   `MediaFoundationGpuVideoEncoder`) and nothing can request an IDR on demand, so the MFT

@@ -142,8 +142,11 @@ try {
     console.log(`hls sender: ${sender?.status || "absent"}, frames=${sender?.framesSent || 0}, ` +
                 `playlist PUT=${received.has("/live/program.m3u8")}, segments=${[...received.keys()].filter((key) => key.endsWith(".ts")).length}`);
   }
+  // Stop the way the shell does: re-assert the desired output set without
+  // this destination. The core has no 'stop-program-output' command; it was
+  // rejected as unknown and the stream silently kept publishing (#708).
   await send("media-core-sync", { elapsedMs: Date.now() - startedAt,
-    commands: [{ type: "stop-program-output", reason: "HLS proof complete" }] });
+    commands: [{ type: "start-program-output", destinations: [], destinationSettings: [], isoParticipantIds: [] }] });
 } catch (error) {
   failures.push(error.message);
 } finally {
