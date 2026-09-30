@@ -27,6 +27,7 @@
  *                                            [--rtmp-local] (decoded local RTMP receiver)
  *                                            [--drift-gate] (requires 15 minutes + RTMP)
  *                                            [--gap-gate] (5 s routed Program audio mute)
+ *                                            [--video-gap-gate] (5 s fake Zoom source dropout)
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -57,10 +58,14 @@ const livePaths = args.includes("--live-paths");
 const rtmpLocal = args.includes("--rtmp-local");
 const driftGate = args.includes("--drift-gate");
 const gapGate = args.includes("--gap-gate");
+const videoGapGate = args.includes("--video-gap-gate");
 if (driftGate && (!rtmpLocal || recordSeconds < 900))
   throw new Error("--drift-gate requires --rtmp-local and --seconds >= 900");
 if (gapGate && (!rtmpLocal || recordSeconds < 24))
   throw new Error("--gap-gate requires --rtmp-local and --seconds >= 24");
+if (videoGapGate && (!rtmpLocal || recordSeconds < 30))
+  throw new Error("--video-gap-gate requires --rtmp-local and --seconds >= 30");
+if (gapGate && videoGapGate) throw new Error("choose one gap gate per run");
 const decodeTimeoutMs = driftGate ? 900000 : 120000;
 const rtmpTapPath = process.env.COREVIDEO_QA_RTMP_TAP_PATH;
 if (rtmpTapPath && !rtmpLocal) throw new Error('COREVIDEO_QA_RTMP_TAP_PATH requires --rtmp-local');
@@ -103,6 +108,10 @@ const env = {
   COREVIDEO_FAKE_NO_CHURN: "1",
   COREVIDEO_FAKE_CLAP_MS: String(clapIntervalMs),
 };
+if (videoGapGate) {
+  env.COREVIDEO_FAKE_VIDEO_GAP_START_MS = "18000";
+  env.COREVIDEO_FAKE_VIDEO_GAP_DURATION_MS = "5000";
+}
 if (livePaths || rtmpLocal) {
   env.COREVIDEO_AV_SYNC_TRACE = "1";
   // This is a process-start setting. Both sides of the A/B run use the same
@@ -295,6 +304,43 @@ function assessGapSync(label, videoTimes, audioTimes) {
   if (Math.abs(changeMs) > 1000 / 60)
     failures.push(`${label}: sync changed ${changeMs.toFixed(1)} ms across audio gap (>1 frame)`);
   return { beforeMs, afterMs, changeMs, unpairedMiddleCues: cues.slice(2, -2).filter((cue) => cue.skewMs === null).length };
+}
+
+function assessVideoGapSync(label, videoTimes, audioTimes) {
+  const gapIndex = videoTimes.findIndex((time, index) =>
+    index >= 2 && time - videoTimes[index - 1] > clapIntervalMs / 1000 * 1.5);
+  const audioContinued = gapIndex >= 0 && audioTimes.some((time) =>
+    time > videoTimes[gapIndex - 1] + clapIntervalMs / 2000 &&
+    time < videoTimes[gapIndex] - clapIntervalMs / 2000);
+  if (gapIndex < 0 || !audioContinued) {
+    failures.push(`${label}: source-video dropout did not remove flashes while audio kept arriving`);
+    return null;
+  }
+  const cues = pairTimedEvents(videoTimes, audioTimes);
+  const before = cues.slice(0, gapIndex).filter((cue) => cue.skewMs !== null)
+    .slice(-2).map((cue) => cue.skewMs);
+  const after = cues.slice(gapIndex).filter((cue) => cue.skewMs !== null)
+    .slice(0, 2).map((cue) => cue.skewMs);
+  if (before.length < 2 || after.length < 2) {
+    failures.push(`${label}: missing paired A/V cues around video recovery`);
+    return null;
+  }
+  const beforeMs = median(before);
+  const afterMs = median(after);
+  const changeMs = afterMs - beforeMs;
+  const sourceGapMs = (videoTimes[gapIndex] - videoTimes[gapIndex - 1]) * 1000;
+  console.log(`${label.padEnd(14)}: flash gap ${sourceGapMs.toFixed(0)} ms, before ${beforeMs.toFixed(1)} ms, after ${afterMs.toFixed(1)} ms`);
+  if (Math.abs(changeMs) > 1000 / 60)
+    failures.push(`${label}: sync changed ${changeMs.toFixed(1)} ms after video source recovery (>1 frame)`);
+  return { sourceGapMs, beforeMs, afterMs, changeMs };
+}
+
+function decodedVideoPts(path) {
+  const probe = spawnSync(ffprobe, ["-v", "error", "-select_streams", "v:0",
+    "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", path],
+  { encoding: "utf8", timeout: decodeTimeoutMs, maxBuffer: 1 << 22 });
+  if (probe.status !== 0) throw new Error(`video PTS probe failed: ${probe.stderr}`);
+  return probe.stdout.trim().split(/\r?\n/).map(Number).filter(Number.isFinite);
 }
 
 /** Map each endpoint loopback burst to the packet's WASAPI QPC clock. */
@@ -551,10 +597,10 @@ try {
     elapsedMs: Date.now() - startedAt,
     commands: [{ type: "stop-recording-session", reason: "av-clap complete" }],
   });
-  const audioGapDurationMs = audioResumedAt - audioMutedAt;
+  const audioGapDurationMs = gapGate ? audioResumedAt - audioMutedAt : null;
   if (gapGate && (!unmuted || audioGapDurationMs < 4500 || audioGapDurationMs > 6000))
     failures.push(`audio route was muted for ${audioGapDurationMs} ms, expected about 5000 ms`);
-  if (gapGate) {
+  if (gapGate || videoGapGate) {
     const proofPath = stopResp.snapshot?.outputSenderSession?.senders
       ?.find((sender) => sender.destination === "rtmp")?.sendArtifactPath;
     if (!proofPath || !existsSync(proofPath)) {
@@ -606,6 +652,7 @@ try {
   const pairs = pairEvents(videoTimes, audioTimes);
   if (pairs.length >= 2) recordSummary = describePairs("Record v-a", pairs);
   const recordGap = gapGate ? assessGapSync("Record gap", videoTimes, audioTimes) : null;
+  const recordVideoGap = videoGapGate ? assessVideoGapSync("Record video", videoTimes, audioTimes) : null;
   if (rtmpLocal) {
     const receivedProbe = spawnSync(ffprobe,
       ["-v", "error", "-print_format", "json", "-show_streams", rtmpReceived],
@@ -623,18 +670,37 @@ try {
     if (receivedPairs.length < 2) throw new Error(`decoded RTMP has only ${receivedPairs.length} paired claps (video=${receivedVideoTimes.length}, audio=${receivedAudioTimes.length})`);
     receivedSummary = describePairs("RTMP v-a", receivedPairs);
     const streamGap = gapGate ? assessGapSync("RTMP gap", receivedVideoTimes, receivedAudioTimes) : null;
-    if (gapGate && rtmpProcessStarts !== 1)
-      failures.push(`audio gap restarted RTMP FFmpeg ${rtmpProcessStarts} times (expected one launch)`);
+    const streamVideoGap = videoGapGate
+      ? assessVideoGapSync("RTMP video", receivedVideoTimes, receivedAudioTimes) : null;
+    if ((gapGate || videoGapGate) && rtmpProcessStarts !== 1)
+      failures.push(`gap restarted RTMP FFmpeg ${rtmpProcessStarts} times (expected one launch)`);
     if (gapGate && recordGap && streamGap &&
         Math.abs(streamGap.changeMs - recordGap.changeMs) > 1000 / 60)
       failures.push("RTMP gained more than one frame of drift relative to recording across audio gap");
+    if (videoGapGate && recordVideoGap && streamVideoGap &&
+        Math.abs(streamVideoGap.changeMs - recordVideoGap.changeMs) > 1000 / 60)
+      failures.push("RTMP gained more than one frame of drift relative to recording after video recovery");
+    let receivedVideoPts = null;
+    let worstVideoPtsGapMs = null;
+    if (videoGapGate) {
+      receivedVideoPts = decodedVideoPts(rtmpReceived);
+      if (receivedVideoPts.length < recordSeconds * 50)
+        failures.push(`RTMP carried only ${receivedVideoPts.length} video frames through source dropout`);
+      worstVideoPtsGapMs = 0;
+      for (let index = 1; index < receivedVideoPts.length; index += 1)
+        worstVideoPtsGapMs = Math.max(worstVideoPtsGapMs,
+          (receivedVideoPts[index] - receivedVideoPts[index - 1]) * 1000);
+      if (worstVideoPtsGapMs > 1000 / 30)
+        failures.push(`RTMP video PTS has a ${worstVideoPtsGapMs.toFixed(1)} ms gap during source dropout`);
+    }
     writeFileSync(join(liveCaptureDir, "rtmp-evidence.json"), JSON.stringify({
       source: "fake-engine timed clap; local decoded RTMP receiver and recorded Program from one run",
       buildSha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: binarySourceRoot, encoding: "utf8" }).stdout.trim(),
       buildDir, seconds: recordSeconds, programBufferFrames,
       receivedArtifact: rtmpReceived, recordingArtifact: artifactAbsolute,
-      receivedVideoTimes, receivedAudioTimes, receivedSummary, streamGap,
-      recordVideoTimes: videoTimes, recordAudioTimes: audioTimes, recordSummary, recordGap,
+      receivedVideoTimes, receivedAudioTimes, receivedSummary, streamGap, streamVideoGap,
+      receivedVideoFrameCount: receivedVideoPts?.length ?? null, worstVideoPtsGapMs,
+      recordVideoTimes: videoTimes, recordAudioTimes: audioTimes, recordSummary, recordGap, recordVideoGap,
       rtmpProcessStarts, audioGapDurationMs,
       receiverLog: rtmpReceiverStderr,
     }, null, 2));
