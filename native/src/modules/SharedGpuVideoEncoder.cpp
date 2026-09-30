@@ -1,6 +1,7 @@
 #include "modules/SharedGpuVideoEncoder.h"
 
 #include "modules/MediaFoundationGpuVideoEncoder.h"
+#include "modules/H264CbrFiller.h"
 
 #include <algorithm>
 #include <array>
@@ -24,7 +25,8 @@ bool sameProfile(const GpuVideoEncoderConfig& a, const GpuVideoEncoderConfig& b)
 
 struct Session {
   static constexpr size_t kMaxSubscribers = 16;
-  explicit Session(GpuVideoEncoderConfig profile) : profile(std::move(profile)) {}
+  explicit Session(GpuVideoEncoderConfig profile)
+      : profile(std::move(profile)), filler(this->profile.bitrateKbps, this->profile.fps) {}
   struct Subscriber {
     Subscriber(uint64_t value, GpuEncodedChunkSink callback)
         : id(value), sink(std::move(callback)) {}
@@ -55,6 +57,8 @@ struct Session {
     }
   };
   GpuVideoEncoderConfig profile;
+  H264CbrFiller filler;
+  std::mutex fillerMutex;
   std::unique_ptr<GpuVideoEncoder> encoder;
   std::mutex sinksMutex;
   std::vector<std::shared_ptr<Subscriber>> sinks;
@@ -65,13 +69,22 @@ struct Session {
   // Borrow subscribers without holding the list lock through sender callbacks.
   // A subscriber's retire() fences any callback already in flight.
   void publish(const GpuEncodedChunk& chunk) {
+    std::vector<uint8_t> paddedBytes;
+    GpuEncodedChunk published = chunk;
+    if (profile.rateControl == "cbr" && profile.codec == "h264") {
+      std::lock_guard<std::mutex> lock(fillerMutex);
+      if (filler.pad(chunk, paddedBytes)) {
+        published.data = paddedBytes.data();
+        published.size = paddedBytes.size();
+      }
+    }
     std::array<std::shared_ptr<Subscriber>, kMaxSubscribers> targets{};
     size_t count = 0;
     {
       std::lock_guard<std::mutex> lock(sinksMutex);
       for (const auto& sink : sinks) targets[count++] = sink;
     }
-    for (size_t i = 0; i < count; ++i) targets[i]->publish(chunk);
+    for (size_t i = 0; i < count; ++i) targets[i]->publish(published);
   }
 };
 
