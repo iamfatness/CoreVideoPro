@@ -769,6 +769,17 @@ struct OutputSender {
   std::string lastResultCode = "waiting-for-frame";
   std::string lastError;
   int64_t bytesSent = 0;
+  // Compressed video accepted by this destination's FFmpeg input pipe. Unlike
+  // bytesSent (legacy configured-rate estimate), these are measured writes;
+  // remote receipt still requires ingest/receiver evidence.
+  struct MuxInputVideo {
+    int64_t payloadBytes = 0;
+    int64_t packets = 0;
+    double mbps = 0;
+    double fps = 0;
+    int64_t lastWriteAgeMs = -1;
+  };
+  std::optional<MuxInputVideo> muxInputVideo;
   int64_t audioFramesSent = 0;
   int64_t audioBytesSent = 0;
   int audioChannels = 0;
@@ -817,6 +828,14 @@ struct OutputSenderSession {
   std::vector<OutputSender> senders;
   std::vector<std::string> warnings;
 };
+
+// GPU-direct input-frame acceptance can run ahead of a blocked mux pipe. Once
+// measured compressed writes exist, those writes are the progress clock for
+// lifecycle and supervision. Other adapters retain their existing counters.
+[[nodiscard]] inline int64_t outputSenderProgressUnits(const OutputSender& sender) {
+  return sender.muxInputVideo ? sender.muxInputVideo->payloadBytes
+                              : sender.framesSent + sender.audioFramesSent;
+}
 
 struct OutputDestinationSettings {
   std::string id;

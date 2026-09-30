@@ -31,12 +31,14 @@
 //
 //     ACCEPTED UNITS ADVANCING, RE-EVALUATED AT READ TIME.
 //
-// `acceptedUnits` is the adapter's cumulative accepted video frames plus
-// accepted audio frames — the only number in the system that can only move when
-// the transport actually took a byte from us. A launched FFmpeg child, an
+// `acceptedUnits` is compressed video bytes written to the local FFmpeg input
+// when a GPU sender reports them. Input-frame and PCM counters can advance
+// while a blocked muxer takes no video. Other adapters use their accepted video
+// plus audio frames until they can report a stronger local boundary. A launched FFmpeg child, an
 // NDIlib_send_create that returned non-null, or a status string reading "live"
 // are all *launches*, and each of them has already been observed to persist
-// after the destination stopped working. The counter cannot.
+// after the destination stopped working. This counter detects a blocked local
+// mux input; it cannot prove remote receipt.
 //
 // It is deliberately NOT destination receipt: nothing local can prove an RTMP
 // ingest is still accepting. It is local acceptance, which is the strongest

@@ -7,6 +7,7 @@
 #include "modules/GpuVideoEncoder.h"
 #include "modules/EncodedVideoTransportStream.h"
 #include "modules/MediaFoundationGpuVideoEncoder.h"
+#include "modules/MuxInputRatePolicy.h"
 #include "modules/SharedGpuVideoEncoder.h"
 #include "modules/EncoderCapacityProbe.h"
 #include "modules/EncoderPolicy.h"
@@ -1607,6 +1608,12 @@ class RtmpOutputSender final : public IOutputSender {
   bool startFfmpegProcess(int width, int height, const std::string& videoInputPixelFormat) {
     startRefusedInadmissible_ = false;
     firstBitstreamToFfmpeg_.store(false, std::memory_order_release);
+    muxVideoPayloadBytes_.store(0, std::memory_order_relaxed);
+    muxVideoPackets_.store(0, std::memory_order_relaxed);
+    muxVideoMbps_.store(0, std::memory_order_relaxed);
+    muxVideoFps_.store(0, std::memory_order_relaxed);
+    muxVideoLastWriteMs_.store(0, std::memory_order_relaxed);
+    muxRateWindow_ = {};
 #if defined(_WIN32)
     // A failed OS termination must never permit a replacement transport to
     // overlap the old publisher. Keep its handle until it is signalled.
@@ -1840,6 +1847,7 @@ class RtmpOutputSender final : public IOutputSender {
     }
     CloseHandle(processInfo.hThread);
     ffmpegRunning_ = true;
+    if (useGpuDirect_) activateGpuVideoMuxInput();
     sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
     writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":" + jsonString(protocol_.destination) + ",\"width\":" + std::to_string(width) +
               ",\"height\":" + std::to_string(height) +
@@ -1960,6 +1968,7 @@ class RtmpOutputSender final : public IOutputSender {
     ffmpegAudioFd_ = activeAudioPresent_ ? audioPipe[1] : -1;
     ffmpegPid_ = pid;
     ffmpegRunning_ = true;
+    if (useGpuDirect_) activateGpuVideoMuxInput();
     sender_.runtimeDetail = "ffmpeg:" + ffmpegExecutable_;
     writeLine("{\"type\":\"ffmpeg-process-start\",\"destination\":" + jsonString(protocol_.destination) + ",\"width\":" + std::to_string(width) +
               ",\"height\":" + std::to_string(height) +
@@ -2046,7 +2055,12 @@ class RtmpOutputSender final : public IOutputSender {
 #if defined(_WIN32)
       enqueueBitstream(chunk);
 #else
-      writeBitstreamToFfmpeg(chunk.data, chunk.size);
+      if (!posixMuxVideoReady_.load(std::memory_order_acquire)) return;
+      if (posixAwaitingFreshKeyframe_.load(std::memory_order_relaxed)) {
+        if (!chunk.keyframe) return;
+        posixAwaitingFreshKeyframe_.store(false, std::memory_order_relaxed);
+      }
+      writeBitstreamToFfmpeg(chunk.data, chunk.size, &chunk);
 #endif
     });
     if (!ok) {
@@ -2057,16 +2071,41 @@ class RtmpOutputSender final : public IOutputSender {
       gpuEncoderStartFailed_ = true;
       return false;  // startFfmpegProcess refuses, or logs the cpu-fallback line
     }
-#if defined(_WIN32)
-    bitstreamWriterExited_.store(false);
-    bitstreamWriterThread_ = std::thread([this] { bitstreamWriterLoop(); });
-#endif
     ::corevideo::core::nativeLogf("[gpu-encode] path=gpu-direct codec=%s %dx%d@%d bitrate=%.1fMbps\n",
                                  cfg.codec.c_str(), width, height, cfg.fps, sender_.bitrateMbps);
     return true;
   }
 
+  void activateGpuVideoMuxInput() {
+#if defined(_WIN32)
+    // Discard anything the shared encoder emitted while FFmpeg was opening.
+    // The new process must see an IDR with parameter sets as its FIRST video
+    // access unit, not a P-frame from another destination's live GOP.
+    {
+      std::lock_guard<std::mutex> lock(bitstreamQueueMutex_);
+      bitstreamQueue_.clear();
+      bitstreamQueuedBytes_ = 0;
+      awaitingFreshKeyframe_ = true;
+      republishQueueTelemetryLocked();
+    }
+#else
+    posixAwaitingFreshKeyframe_.store(true, std::memory_order_relaxed);
+#endif
+    const bool requested = gpuEncoder_ && gpuEncoder_->requestKeyframe();
+#if defined(_WIN32)
+    bitstreamWriterExited_.store(false);
+    bitstreamWriterThread_ = std::thread([this] { bitstreamWriterLoop(); });
+#else
+    posixMuxVideoReady_.store(true, std::memory_order_release);
+#endif
+    ::corevideo::core::nativeLogf("[stream-join] destination=%s fresh-idr requested=%d\n",
+                                 protocol_.destination.c_str(), requested ? 1 : 0);
+  }
+
   void stopGpuEncoder() {
+#if !defined(_WIN32)
+    posixMuxVideoReady_.store(false, std::memory_order_release);
+#endif
     if (gpuEncoder_) {
       gpuEncoder_->stop();  // joins the encoder thread before we close FFmpeg's stdin
       gpuEncoder_.reset();
@@ -2577,6 +2616,18 @@ class RtmpOutputSender final : public IOutputSender {
     }
     firstBitstreamToFfmpeg_.store(true, std::memory_order_release);
 #endif
+    // Count only a complete compressed access unit accepted by this muxer's
+    // input pipe. The TS wrapper is excluded from video bitrate; network
+    // delivery is a separate receiver-side measurement.
+    const auto payloadBytes = static_cast<std::int64_t>(metadata ? metadata->size : size);
+    const auto writtenAtMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    muxRateWindow_ = observeMuxInputWrite(muxRateWindow_, writtenAtMs, payloadBytes);
+    muxVideoPayloadBytes_.fetch_add(payloadBytes, std::memory_order_relaxed);
+    muxVideoPackets_.fetch_add(1, std::memory_order_relaxed);
+    muxVideoMbps_.store(muxRateWindow_.videoMbps, std::memory_order_relaxed);
+    muxVideoFps_.store(muxRateWindow_.videoFps, std::memory_order_relaxed);
+    muxVideoLastWriteMs_.store(writtenAtMs, std::memory_order_release);
     hasWrittenVideo_ = true;
   }
 
@@ -3017,7 +3068,19 @@ class RtmpOutputSender final : public IOutputSender {
     activeStage_.store("session-snapshot", std::memory_order_relaxed);
     OutputSenderSession session;
     if (!sender_.senderId.empty()) {
-      session.senders.push_back(sender_);
+      auto sender = sender_;
+      if (activeUseGpuDirect_ && ffmpegRunning_) {
+        const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const auto lastWriteMs = muxVideoLastWriteMs_.load(std::memory_order_acquire);
+        sender.muxInputVideo = OutputSender::MuxInputVideo{
+            muxVideoPayloadBytes_.load(std::memory_order_relaxed),
+            muxVideoPackets_.load(std::memory_order_relaxed),
+            currentMuxInputRate(muxVideoMbps_.load(std::memory_order_relaxed), nowMs, lastWriteMs),
+            currentMuxInputRate(muxVideoFps_.load(std::memory_order_relaxed), nowMs, lastWriteMs),
+            lastWriteMs > 0 ? (std::max)(int64_t{0}, nowMs - lastWriteMs) : -1};
+      }
+      session.senders.push_back(std::move(sender));
       if (sender_.status == "live" || sender_.status == "warning" || sender_.status == "starting") {
         session.activeSenderCount = 1;
       }
@@ -3095,6 +3158,10 @@ class RtmpOutputSender final : public IOutputSender {
   int activeAudioChannels_ = 0;
   int activeAudioSampleRate_ = 0;
   std::atomic<bool> firstBitstreamToFfmpeg_{false};
+#if !defined(_WIN32)
+  std::atomic<bool> posixMuxVideoReady_{false};
+  std::atomic<bool> posixAwaitingFreshKeyframe_{true};
+#endif
   size_t audioStartupSamplesToSkip_ = 0;
 #if defined(_WIN32)
   mutable std::mutex ffmpegProcessMutex_;
@@ -3212,6 +3279,14 @@ class RtmpOutputSender final : public IOutputSender {
 #endif
 
   OutputSender sender_;
+  // Written by the destination's bitstream writer; sampled by its async sender
+  // worker. These counters never run on the compositor or audio worker.
+  MuxInputRateWindow muxRateWindow_;
+  std::atomic<std::int64_t> muxVideoPayloadBytes_{0};
+  std::atomic<std::int64_t> muxVideoPackets_{0};
+  std::atomic<double> muxVideoMbps_{0};
+  std::atomic<double> muxVideoFps_{0};
+  std::atomic<std::int64_t> muxVideoLastWriteMs_{0};
   RtmpVideoFramePacer videoFramePacer_;
   std::atomic<bool> hasWrittenVideo_{false};
   std::ofstream sendProof_;

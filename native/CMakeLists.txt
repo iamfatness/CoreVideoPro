@@ -677,6 +677,7 @@ if(BUILD_TESTING)
     tests/MonitorLatencyPolicyTest.cpp
     tests/BitstreamQueueOverflowTest.cpp
     tests/StreamBackpressurePolicyTest.cpp
+    tests/MuxInputRatePolicyTest.cpp
     tests/RenderedSceneAttributionTest.cpp
     tests/ProgramPixelContinuityTest.cpp
     tests/SourceContinuityLedgerTest.cpp
