@@ -569,7 +569,15 @@ class CompositeOutputSender final : public IOutputSender {
   // non-blocking queue rather than on a wedged FFmpeg pipe or libNDI send. See
   // the header comment in OutputDestinationSupervisor.h.
   void enableIndependentWriters(bool supervised = true) {
+    const bool hasNetworkMux = std::any_of(supportedDestinations_.begin(), supportedDestinations_.end(),
+        [](const std::string& destination) {
+          return destination == "rtmp" || destination == "srt" || destination == "hls";
+        });
+    sharedAacEnabled_ = hasNetworkMux && sharedAac_.start();
+    sharedAacConsumers_.clear();
     for (auto& sender : senders_) {
+      sharedAacConsumers_.push_back(sender->acceptsSharedAac());
+      sender->setSharedAacEnabled(sharedAacEnabled_);
       sender = std::make_unique<AsyncOutputSender>(std::move(sender));
       if (supervised) {
         sender = std::make_unique<SupervisedOutputSender>(std::move(sender));
@@ -598,8 +606,26 @@ class CompositeOutputSender final : public IOutputSender {
   // Fan out on the AUDIO cadence. Senders that carry no audio inherit the
   // no-op default, so this is safe for every member.
   void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override {
-    for (const auto& sender : senders_) {
-      sender->submitAudio(pcm, channels, sampleRate);
+    if (sharedAacEnabled_ && !sharedAacFailed_) {
+      std::vector<ProgramAacPacket> packets;
+      if (sharedAac_.encode(pcm, channels, sampleRate, packets)) {
+        for (const auto& packet : packets) {
+          for (size_t index = 0; index < senders_.size(); ++index) {
+            if (sharedAacConsumers_[index]) senders_[index]->submitEncodedAudio(packet);
+          }
+        }
+      } else if (!sharedAacFailed_) {
+        sharedAacFailed_ = true;
+        for (size_t index = 0; index < senders_.size(); ++index) {
+          if (sharedAacConsumers_[index])
+            senders_[index]->fail(supportedDestinations_[index],
+                "shared AAC encode failed; expected 48 kHz stereo Program PCM", 0);
+        }
+      }
+    }
+    for (size_t index = 0; index < senders_.size(); ++index) {
+      if (!sharedAacEnabled_ || !sharedAacConsumers_[index])
+        senders_[index]->submitAudio(pcm, channels, sampleRate);
     }
   }
 
@@ -725,6 +751,10 @@ class CompositeOutputSender final : public IOutputSender {
   }
 
   std::vector<std::unique_ptr<IOutputSender>> senders_;
+  ProgramAacEncoder sharedAac_;
+  bool sharedAacEnabled_ = false;
+  bool sharedAacFailed_ = false;
+  std::vector<bool> sharedAacConsumers_;
   std::vector<std::string> supportedDestinations_;
   mutable std::mutex sessionMutex_;
   OutputSenderSession lastSession_;

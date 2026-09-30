@@ -176,6 +176,7 @@ class SupervisedOutputSender final : public IOutputSender {
       int audioChannels = 0,
       int audioSampleRate = 0) override;
   void submitAudio(const std::vector<float>& pcm, int channels, int sampleRate) override;
+  void submitEncodedAudio(const ProgramAacPacket& packet) override;
   OutputSenderSession fail(const std::string& destination, const std::string& message, double elapsedMs) override;
   OutputSenderSession recover(const std::string& destination, double elapsedMs, const std::string& reason) override;
   // Forwarded for the WRAPPER LAW: a supervisor stacked above another one must

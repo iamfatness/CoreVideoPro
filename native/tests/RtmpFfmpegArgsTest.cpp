@@ -218,6 +218,20 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeCopiesVideoAndSkipsRawEncode) {
             std::string::npos);
 }
 
+TEST(RtmpFfmpegArgs, SharedAacIsCopiedWithoutPcmResampleClock) {
+  auto config = baseConfig();
+  config.videoBitstreamInput = true;
+  config.timestampedVideoInput = true;
+  config.hasAudio = true;
+  config.audioBitstreamInput = true;
+  const auto args = corevideo::modules::buildRtmpFfmpegArguments(config);
+  EXPECT_NE(args.find("-f aac -i pipe:3"), std::string::npos);
+  EXPECT_NE(args.find("-c:v copy -c:a copy"), std::string::npos);
+  EXPECT_EQ(args.find("-c:a aac"), std::string::npos);
+  EXPECT_EQ(args.find("aresample"), std::string::npos);
+  EXPECT_EQ(args.find("-f f32le"), std::string::npos);
+}
+
 // 2026-09-20: GPU-direct HEVC/AV1. The raw elementary stream on pipe:0 needs the
 // matching raw demuxer; -c:v copy into FLV is unchanged and this FFmpeg writes
 // the enhanced-RTMP fourcc itself (no -tag:v).
