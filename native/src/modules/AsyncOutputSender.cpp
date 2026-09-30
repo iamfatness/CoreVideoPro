@@ -24,6 +24,7 @@ AsyncOutputSender::~AsyncOutputSender() {
   // Break a sender blocked in pipe/network I/O before asking its worker to exit.
   interrupt("rtmp");
   interrupt("srt");
+  interrupt("hls");
   interrupt("ndi");
   {
     std::lock_guard<std::mutex> lock(state_->queueMutex);
@@ -166,7 +167,9 @@ OutputSenderSession AsyncOutputSender::sync(
   // Stop must be able to release a currently blocked worker immediately. The
   // inner sender's interrupt contract is non-blocking and may only cancel I/O;
   // normal state cleanup remains serialized on the writer below.
-  for (const char* destination : {"rtmp", "srt", "ndi"}) {
+  // Every network destination, HLS included (#708): an HLS FFmpeg whose origin
+  // stalls blocks exactly like RTMP/SRT and must be released the same way.
+  for (const char* destination : {"rtmp", "srt", "hls", "ndi"}) {
     if (std::find(destinations.begin(), destinations.end(), destination) == destinations.end()) {
       interrupt(destination);
     }

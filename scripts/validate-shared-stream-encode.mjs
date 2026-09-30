@@ -103,6 +103,14 @@ const sender = (snapshot, id) => (snapshot?.outputSenderSession?.senders || [])
 const failures = [];
 let firstSrtFrames = 0, lastSrtFrames = 0, firstRtmpFrames = 0;
 let firstHlsFrames = 0, lastHlsFrames = 0;
+let ffmpegChildrenAfterStop = -1, stopReapMs = -1;
+const ffmpegChildCount = (parentPid) => {
+  const out = spawnSync("powershell", ["-NoProfile", "-Command",
+    `@(Get-CimInstance Win32_Process -Filter "Name='ffmpeg.exe' AND ParentProcessId=${parentPid}").Count`],
+    { encoding: "utf8", timeout: 20000 });
+  const n = Number((out.stdout ?? "").trim());
+  return Number.isFinite(n) ? n : -1;
+};
 let firstSrtBytes = 0, firstHlsBytes = 0, firstSenderStates = {}, lastSenderStates = {};
 let firstRenderSlots = 0, lastRenderSlots = 0, firstAt = 0, lastAt = 0;
 let firstExportDivisor = -1, lastExportDivisor = -1, proxyConnections = 0;
@@ -180,6 +188,19 @@ try {
   await send("media-core-sync", { elapsedMs: Date.now() - start,
     commands: [{ type: "start-program-output", destinations: [], destinationSettings: [],
       isoParticipantIds: [] }] });
+  // #708: Stop must reap every destination's FFmpeg while the core is still
+  // alive. The job object at core exit is not a stop.
+  if (process.platform === "win32") {
+    const stopAt = Date.now();
+    for (;;) {
+      ffmpegChildrenAfterStop = ffmpegChildCount(core.pid);
+      if (ffmpegChildrenAfterStop === 0 || Date.now() - stopAt >= 5000) break;
+      await sleep(250);
+    }
+    stopReapMs = Date.now() - stopAt;
+    if (ffmpegChildrenAfterStop !== 0)
+      failures.push(`${ffmpegChildrenAfterStop} FFmpeg child(ren) of the core still alive ${stopReapMs}ms after Stop`);
+  }
 } catch (error) { failures.push(error.message); }
 finally {
   core.stdin.end(); core.kill(); rtmp.p.kill(); srt.p.kill(); hlsOrigin.close();
@@ -301,7 +322,7 @@ if (bitrateGate) {
   }
 }
 const report = { output, blockRtmp, reconnectRtmp, proxyConnections, pressureLines, starts: starts.length,
-  aacStarts: aacStarts.length, streamClockOpens: clockOpens, bitrateGate, rtmpRate, srtRate,
+  aacStarts: aacStarts.length, ffmpegChildrenAfterStop, stopReapMs, streamClockOpens: clockOpens, bitrateGate, rtmpRate, srtRate,
   paths, firstRtmpFrames,
   firstSrtFrames, lastSrtFrames, firstHlsFrames, lastHlsFrames,
   firstSenderStates, lastSenderStates, firstSrtBytes, firstHlsBytes,

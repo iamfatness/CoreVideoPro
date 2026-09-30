@@ -161,7 +161,11 @@ stream's `start_time`). Before this slice both FFmpeg inputs started at zero,
 so the gate never saw that it ignored the start; a fenced TS legitimately
 starts AAC up to one AAC unit after the first IDR.
 
-Still open after Slice 8: #708 FFmpeg stop/teardown cleanup; #703 same-run
+#708 is closed: its lingering child was harness-caused (the gates sent the
+unimplemented `stop-program-output`); the real stop reaps within 5 s under
+congestion and removed HLS destinations are now interrupted too.
+
+Still open after Slice 8: #703 same-run
 YouTube watch-URL evidence on the Slice 8 head; #615 operator readout; macOS
 native AAC (macOS keeps the PCM fallback and does not claim Slice 6 or 8).
 With shared AAC enabled but no audio layout (or

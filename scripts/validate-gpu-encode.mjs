@@ -495,6 +495,9 @@ function backpressureLines() {
 // while the sink listener carries srt://0.0.0.0:<port>, so the two never collide.
 // More than one egress child alive at once IS the lingering-child defect; one
 // left alive after stop is the same defect at teardown.
+// #708: a stopped destination's FFmpeg child must be gone within this bound.
+const kStopReapBoundSeconds = 5;
+
 function egressFfmpegChildCount() {
   if (process.platform !== "win32") return -1;  // not measurable here; reported, never asserted
   const out = spawnSync("powershell", ["-NoProfile", "-Command",
@@ -704,21 +707,21 @@ try {
 
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
-    commands: [{ type: "stop-program-output", reason: "gpu-encode proof complete" }],
+    // Stop the way the shell does. There is no 'stop-program-output' command in
+    // the core: it was rejected as unknown, the stream kept publishing, and that
+    // is what #708 measured as "Stop does not reap the child".
+    commands: [{ type: "start-program-output", destinations: [], destinationSettings: [], isoParticipantIds: [] }],
   });
   if (slowSink) {
-    // AsyncOutputSender is enqueue-and-return and its stop carries a 2 s grace,
-    // and stopFfmpegProcess() closes stdin and WAITS for exit - which on a
-    // deliberately narrow link is exactly the case where FFmpeg cannot drain
-    // quickly. So this MEASURES the reap instead of guessing a single deadline:
-    // poll until the child is gone, up to the 20 s bound, and report how long
-    // it took. Only a child still alive at the bound is a leak.
+    // A removed destination is interrupted (TerminateProcess) on the sync that
+    // removes it, and stopFfmpegProcess() reaps it after a 500 ms grace, so the
+    // child must be gone well inside this bound even on a congested link.
     const stopAt = Date.now();
     for (;;) {
       egressChildrenAfterStop = egressFfmpegChildCount();
       egressChildStopSeconds = (Date.now() - stopAt) / 1000;
-      if (egressChildrenAfterStop <= 0 || egressChildStopSeconds >= 20) break;
-      await sleep(2000);
+      if (egressChildrenAfterStop <= 0 || egressChildStopSeconds >= kStopReapBoundSeconds) break;
+      await sleep(250);
     }
   }
 } catch (error) {
@@ -1147,41 +1150,27 @@ if (slowSink) {
   // --- (7) The deferred Task-7 item: no lingering FFmpeg child -------------
   console.log(`ffmpeg child  : peak ${maxEgressChildren} egress child(ren) concurrent; ` +
               `${egressChildrenAfterStop} still alive ${egressChildStopSeconds.toFixed(1)}s after ` +
-              `stop-program-output; ${egressChildrenAfterCoreExit} after the core exited`);
+              `Stop; ${egressChildrenAfterCoreExit} after the core exited`);
   if (maxEgressChildren > 1) {
     failures.push(`${maxEgressChildren} egress FFmpeg children were alive at once - a refused rebuild left a child ` +
                   "behind, which on SRT would hold the single caller slot and refuse the reconnect");
-  }
-  // REPORTED, NOT ASSERTED - and this is a finding, not a softened threshold.
-  //
-  // Measured here every congested run: the egress child is STILL ALIVE 20 s
-  // after stop-program-output, and only the output job object reaps it when the
-  // core exits. The cause is in the product, not the harness:
-  // RtmpOutputSenderAdapter::stopFfmpegProcess() closes stdin and then waits
-  // `WaitForSingleObject(process, 500)` - 500 ms - and NEVER terminates. On a
-  // healthy link FFmpeg flushes and exits inside that window; on a link too
-  // narrow to drain into, it cannot, so it keeps publishing to a live
-  // destination after the operator stopped the stream, and a supervisor restart
-  // (interrupt()/recover() both route through this same function) spawns a
-  // second child alongside it.
-  //
-  // It is not asserted because it is a PRE-EXISTING teardown defect, unrelated
-  // to the backpressure property this gate exists to hold, and failing the gate
-  // on it would leave the gate permanently red and therefore useless for the
-  // property it was built to protect. It needs its own issue and its own fix -
-  // NOT a wider timeout here. What IS asserted is the half that would actually
-  // corrupt a show: two egress children alive at once (above).
-  if (egressChildrenAfterStop > 0) {
-    console.log(`                FINDING (reported, not asserted): the child was still alive at the ` +
-                `${egressChildStopSeconds.toFixed(1)}s bound. stopFfmpegProcess() waits 500ms and never ` +
-                `terminates, so a congested destination keeps being published to after Stop; only the ` +
-                `job object at core exit ends it. Needs its own issue.`);
   }
   if (maxEgressChildren === 0) {
     console.log("                (census never saw a child - reported, not asserted: it samples every ~10s)");
   }
 }
 
+// ASSERTED since #708. The earlier "still alive 20 s after stop" finding was
+// the HARNESS: it sent 'stop-program-output', which the core rejects as an
+// unknown command, so the stream never stopped. Stopped the way the shell does,
+// the removed destination is interrupted on the removing sync and reaped by
+// stopFfmpegProcess() (500 ms grace, then TerminateProcess), congested or not.
+// A child alive at the bound keeps publishing after Stop; only the job object
+// at core exit would end it, which is not a stop.
+if (slowSink && process.platform === "win32" && egressChildrenAfterStop !== 0) {
+  failures.push(`egress FFmpeg child still alive ${egressChildStopSeconds.toFixed(1)}s after Stop ` +
+                `(bound ${kStopReapBoundSeconds}s, census=${egressChildrenAfterStop})`);
+}
 if (!keep) { try { rmSync(received); } catch {} }
 
 if (failures.length) {
