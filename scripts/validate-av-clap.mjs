@@ -207,7 +207,7 @@ function videoFlashTimes(artifact, fps) {
       "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", artifact],
     { encoding: "utf8", maxBuffer: 1 << 24, timeout: decodeTimeoutMs });
   const framePts = ptsProbe.status === 0
-    ? ptsProbe.stdout.trim().split(/\r?\n/).map(Number) : [];
+    ? ptsProbe.stdout.trim().split(/\r?\n/).map((line) => Number.parseFloat(line.trim())) : [];
   if (framePts.length !== frames || !framePts.every(Number.isFinite)) {
     throw new Error(`video frame timestamps missing: decoded=${frames}, timestamps=${framePts.length}`);
   }
