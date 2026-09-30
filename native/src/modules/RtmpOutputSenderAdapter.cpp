@@ -7,6 +7,7 @@
 #include "modules/GpuVideoEncoder.h"
 #include "modules/EncodedVideoTransportStream.h"
 #include "modules/MediaFoundationGpuVideoEncoder.h"
+#include "modules/SharedGpuVideoEncoder.h"
 #include "modules/EncoderCapacityProbe.h"
 #include "modules/EncoderPolicy.h"
 #include "modules/StreamStartAdmission.h"
@@ -628,7 +629,7 @@ class RtmpOutputSender final : public IOutputSender {
         runtimeProbe_(std::move(runtimeProbe)),
         runtimeDetail_(runtimeProbe_.detail),
         runtimeAvailable_(runtimeProbe_.available),
-        gpuEncoderFactory_(&createMediaFoundationGpuVideoEncoder) {}
+        gpuEncoderFactory_(&createSharedProgramGpuVideoEncoder) {}
 
   ~RtmpOutputSender() override { stopFfmpegProcess(); }
 

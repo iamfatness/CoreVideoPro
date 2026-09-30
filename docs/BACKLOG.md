@@ -34,8 +34,8 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 | Order | Issue | Remaining work |
 |---|---|---|
-| 1 | [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Qualify the merged control-state slices in an installed live meeting: Zoom mute/unmute converges in shell strip and PCM without Preview, GoXLR monitor control is audible, and gap/restart recovery stays within refresh budgets. If real guest transitions are unavailable, record `MISSING_EVIDENCE` and work the next unblocked row. |
-| 2 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | YouTube SRT send and NDI same-host send proof are complete (#669/#686). NDI receive (#693), HLS Program push (#695), and native RTMP receive (#696) await owner review. This stacked slice adds the RTMP Sources URL editor and encrypted persistence; installed operator acceptance and HLS receive remain. NDI stays in process this cycle. |
+| 1 | [#538](https://github.com/iamfatness/CoreVideoPro/issues/538) | Owner made streaming encode/mux the top priority on 2026-09-29: one shared hardware Program encode for compatible RTMP/SRT/HLS destinations, compositor-clock video and sample-counted audio, independent bounded mux/transport queues, decoded sync and bitrate evidence. Existing edge I/O slices remain; #703 owns the current YouTube A/V incident and #605 owns hardware GOP/IDR. |
+| 2 | [#657](https://github.com/iamfatness/CoreVideoPro/issues/657) | Qualify the merged control-state slices in an installed live meeting: Zoom mute/unmute converges in shell strip and PCM without Preview, GoXLR monitor control is audible, and gap/restart recovery stays within refresh budgets. If real guest transitions are unavailable, record `MISSING_EVIDENCE` and work the next unblocked row. |
 | 3 | [#536](https://github.com/iamfatness/CoreVideoPro/issues/536) | Listener/caller SRT ingest and a 30-minute 1080p30 contribution soak passed in #687. Finish honest RTT and codec/packet decode-error health, then validate failure/recovery; the issue remains open. |
 
 ## Deferred by owner
