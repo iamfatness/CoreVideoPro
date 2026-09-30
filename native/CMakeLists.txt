@@ -641,6 +641,7 @@ if(BUILD_TESTING)
     tests/AudioDspTest.cpp
     tests/GpuVideoEncoderPolicyTest.cpp
     tests/SharedGpuVideoEncoderTest.cpp
+    tests/H264CbrFillerTest.cpp
     tests/EncoderCapacityProbePolicyTest.cpp
     tests/StreamStartAdmissionTest.cpp
     tests/BrowserHostExitMessageTest.cpp

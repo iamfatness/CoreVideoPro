@@ -15,7 +15,9 @@ const port = Number(process.env.COREVIDEO_SHARED_STREAM_PORT || 19091);
 const seconds = Number(process.argv.find((x) => x.startsWith("--seconds="))?.split("=")[1] || 30);
 const blockRtmp = process.argv.includes("--block-rtmp");
 const reconnectRtmp = process.argv.includes("--reconnect-rtmp");
-if (blockRtmp && reconnectRtmp) throw new Error("choose one RTMP fault mode");
+const bitrateGate = process.argv.includes("--bitrate-gate");
+if ([blockRtmp, reconnectRtmp, bitrateGate].filter(Boolean).length > 1)
+  throw new Error("choose one RTMP fault/bitrate mode");
 const output = join(build, `shared-stream-${Date.now()}`);
 mkdirSync(output, { recursive: true });
 const hlsReceived = new Map();
@@ -164,7 +166,7 @@ try {
       reconnectedRtmpFile);
     await sleep(500);
     if (rtmp.p.exitCode !== null) throw new Error(`replacement RTMP receiver exited: ${rtmp.stderr}`);
-  } else {
+  } else if (!bitrateGate) {
     rtmp.p.kill();
   }
   await sleep(seconds * 500);
@@ -200,6 +202,17 @@ const probeCodecs = (path) => {
   const result = spawnSync(ffprobe, ["-v", "error", "-show_entries", "stream=codec_name",
     "-of", "csv=p=0", path], { encoding: "utf8" });
   return result.status === 0 ? result.stdout.trim() : result.stderr.trim();
+};
+const receiverRate = (path) => {
+  if (!bytes(path)) return null;
+  const result = spawnSync(ffprobe, ["-v", "error", "-select_streams", "v:0",
+    "-show_entries", "packet=pts_time", "-of", "csv=p=0", path], { encoding: "utf8" });
+  if (result.status !== 0) return null;
+  const pts = result.stdout.split(/\r?\n/).map((line) => Number.parseFloat(line.trim()))
+    .filter(Number.isFinite);
+  if (pts.length < 2) return null;
+  const duration = pts.at(-1) - pts[0] + 1 / 60;
+  return { frames: pts.length, duration, kbps: bytes(path) * 8 / duration / 1000 };
 };
 if (starts.length !== 1) failures.push(`expected one hardware encoder start, got ${starts.length}`);
 if (process.platform === "win32" && aacStarts.length !== 1)
@@ -264,8 +277,18 @@ if (!probe(srtFile).startsWith("h264") || !probe(rtmpFile).startsWith("h264"))
   failures.push("received output was not decodable H.264");
 if (!probeCodecs(srtFile).includes("aac") || !probeCodecs(rtmpFile).includes("aac"))
   failures.push("SRT or RTMP receiver was missing shared AAC");
+const rtmpRate = bitrateGate ? receiverRate(rtmpFile) : null;
+const srtRate = bitrateGate ? receiverRate(srtFile) : null;
+if (bitrateGate) {
+  for (const [name, rate] of [["RTMP", rtmpRate], ["SRT", srtRate]]) {
+    if (!rate || rate.frames < seconds * 45)
+      failures.push(`${name} receiver did not capture the full bitrate window`);
+    else if (rate.kbps < 6160 * 0.9 || rate.kbps > 6160 * 1.1)
+      failures.push(`${name} receiver measured ${rate.kbps.toFixed(0)} kbps, outside 6 Mbps video + 160 kbps AAC ±10%`);
+  }
+}
 const report = { output, blockRtmp, reconnectRtmp, proxyConnections, pressureLines, starts: starts.length,
-  aacStarts: aacStarts.length,
+  aacStarts: aacStarts.length, bitrateGate, rtmpRate, srtRate,
   paths, firstRtmpFrames,
   firstSrtFrames, lastSrtFrames, firstHlsFrames, lastHlsFrames,
   firstSenderStates, lastSenderStates, firstSrtBytes, firstHlsBytes,
