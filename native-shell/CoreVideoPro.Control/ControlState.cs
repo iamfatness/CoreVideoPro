@@ -73,6 +73,12 @@ public sealed record ControlState
     public string AudioRouteLastResult { get; init; } = string.Empty;
     public IReadOnlyList<ControlAudioRouteState> AudioRoutes { get; init; } = [];
     public string ControlRecoverySummary { get; init; } = string.Empty;
+    // The Zoom roster as the SHELL holds it, next to /snapshot's core JSON. #725: after a
+    // core restart the two disagreed for the rest of the session and nothing exposed it.
+    // The core-restart drill compares these against the core's own rosterEpoch/participants.
+    public string ZoomRosterEpoch { get; init; } = string.Empty;
+    public long ZoomRosterRevision { get; init; }
+    public IReadOnlyList<string> ZoomParticipantIds { get; init; } = [];
     public string ZoomAudioMode { get; init; } = string.Empty;
     public bool MasterLimiterOn { get; init; }
     public bool MasteringOn { get; init; }

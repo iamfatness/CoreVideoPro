@@ -3847,6 +3847,30 @@ and `ffmpeg STOPPED DELIVERING exit=... ffmpeg: moov atom not found`.
 **The original ProRes defect is NOT fixed and #473 stays open.** It did not
 reproduce on the current install. The next occurrence will name itself in one
 line; until then there is nothing honest to fix.
+## The core-restart drill (2026-10-01)
+
+`python scripts/qa/core-restart-drill.py [--takes N] [--record] [--record-seconds S]` kills the
+media core under a running app that is in a meeting with Engine on, and judges the recovery.
+Control API plus one process kill; no keyboard or mouse input.
+
+- **Gated:** the core restarts and rejoins; the SHELL's roster equals the new core's (`/state`
+  now carries `zoomRosterEpoch`, `zoomRosterRevision` and `zoomParticipantIds`, next to
+  `/snapshot`'s core JSON); the multiviewer config survived; Program delivers frames; Takes after
+  the restart log no roster dip; once the dead engine's old participant has left, no show slot
+  names someone absent; no new Program underruns.
+- **Reported, not gated:** which slots the app's own user holds before and after, and what
+  happened to a recording.
+- **What it measured on `43b33b9` (three runs, test meeting):** recovery in about 9 s. A
+  25.7 s recording was 26.0 s playable after the kill, so the file survives to within its last
+  fragment. **Recording does not resume:** after the restart the core reports
+  `recording.status: stopping` / "Recording disabled in production state.", the shell reads
+  Recording off, and nothing is logged for the operator.
+- **Not measured:** a stream across a restart. The shell's stream destination is the saved
+  real one, and the drill does not publish to it.
+- **Two things to know when reading a run:** the rejoined app user has a NEW Zoom id and the
+  old instance stays in the meeting for about 50 s; and `recording.totalFramesWritten` sums
+  Program and every ISO, so it is not a duration.
+
 ## Creating a shared-texture export costs a D3D device: never on the render thread (#724, 2026-10-01)
 
 Program lost two delivery slots whenever something new was first exported: a clip taken to
