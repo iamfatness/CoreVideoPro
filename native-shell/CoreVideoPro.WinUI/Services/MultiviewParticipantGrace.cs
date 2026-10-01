@@ -67,7 +67,8 @@ internal sealed class MultiviewParticipantGrace
             var ageMs = seen ? now - last.SeenAtMs : -1;
             var holding = seen && ageMs <= (long)Grace.TotalMilliseconds;
             var key = $"{slot.SlotNumber}:{pid}:{(holding ? "hold" : "drop")}";
-            if (_reportedMisses.Add(key))
+            // An empty roster is "not in a meeting", not a dip: persisted slots name nobody yet.
+            if (current.Count > 0 && _reportedMisses.Add(key))
             {
                 var core = coreRosterHas is null ? "unknown" : coreRosterHas(pid) ? "yes" : "no";
                 _log($"mv-roster-miss: slot{slot.SlotNumber} pid={pid} missing from {caller} list " +

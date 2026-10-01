@@ -50,7 +50,11 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             HealthChanged?.Invoke(health);
         };
         _supervisor.StatusChanged += status => StatusChanged?.Invoke(status);
-        _supervisor.ProfileChanged += profile => ProfileChanged?.Invoke(profile);
+        _supervisor.ProfileChanged += profile =>
+        {
+            ReleaseRosterBarrierForRespawnedCore();
+            ProfileChanged?.Invoke(profile);
+        };
         _supervisor.ZoomRecovered += PublishCaptureSnapshot;
         _supervisor.ZoomRosterFactReceived += QueueRosterFact;
         _supervisor.ZoomVideoFrameReceived += frame => ZoomVideoFrameReceived?.Invoke(frame);
@@ -144,6 +148,33 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             _spineFactoryVersion++;
         }
         foreach (var change in isoStopped) OutputLifecycleChanged?.Invoke(change);
+    }
+
+    private int _rosterBarrierRestartCount;
+
+    /// <summary>
+    /// #725: a core the supervisor respawned is a new roster authority. Its epoch restarts at the
+    /// dead core's process and meeting numbers (only the diagnostic token differs), so
+    /// <see cref="ZoomRosterSnapshotPolicy"/> cannot order it after the installed barrier and
+    /// rejected its roster for the rest of the session. That policy relies on a core restart
+    /// clearing the barrier; <see cref="StopCore"/> did, the supervisor's own respawn did not.
+    /// Runs at the new core's handshake, before it has reported any roster. The participants are
+    /// kept until the rejoin replaces them, so slots are not freed during the gap.
+    /// </summary>
+    private void ReleaseRosterBarrierForRespawnedCore()
+    {
+        var restarts = _supervisor.Health.RestartCount;
+        lock (_gate)
+        {
+            if (restarts == _rosterBarrierRestartCount) return;
+            _rosterBarrierRestartCount = restarts;
+            if (_lastSnapshot is not null)
+                _lastSnapshot = _lastSnapshot with { RosterEpoch = null, RosterRevision = 0 };
+            _controlRecovery.ResetProcess();
+            _rosterRecoveryGeneration++;
+            _rosterRecoveryInFlight = false;
+            _rosterFacts.Reset();
+        }
     }
 
     public void ConfigureZoomSpineSync(Func<CancellationToken, Task<Dictionary<string, object?>>>? payloadFactory)

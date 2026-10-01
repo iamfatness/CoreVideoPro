@@ -9044,6 +9044,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             if (pending.SceneId == ActiveSceneId)
                 _lowerThirdFreshness.Acknowledge(pending.LowerThirdRevision, snapshot.ProgramFrame?.FrameNumber ?? 0);
             if (pending.Version != _productionSyncCaptureVersion || pending.SceneId != ActiveSceneId) return false;
+            NoteParticipantApply($"sync-response:{reason ?? "none"}", snapshot);
             ApplyLiveProductionPatch(LiveProductionSync.MapSnapshotToStudioPatch(snapshot, BuildLiveProductionContext()));
             CommandStatus = $"{pending.SceneName} synced to media core";
             return true;
@@ -10494,6 +10495,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
         var patch = LiveProductionSync.MapSnapshotToStudioPatch(snapshot, liveProductionContext);
         Tm("mapPatch");
+        NoteParticipantApply("snapshot-changed:patch", snapshot);
         ApplyLiveProductionPatch(patch);
         Tm("applyPatch");
         ApplyGraphicsAndCaptionStateFromSnapshot(snapshot);
@@ -10692,6 +10694,41 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private string _liveStructureSignature = "";
 
+    // #725: a participant leaving the shell's roster logs once, naming the apply path that
+    // delivered the shorter list and the roster epoch it read next to the bridge's. That pair is
+    // what found the cause: a sync response on the respawned core's epoch alternating with a
+    // bridge snapshot still on the dead core's. A real leave shows the same epoch on both.
+    private string _participantApplyOrigin = "unknown";
+    private NativeMediaCoreStateSnapshot? _participantApplySnapshot;
+
+    private void NoteParticipantApply(string origin, NativeMediaCoreStateSnapshot? snapshot)
+    {
+        _participantApplyOrigin = origin;
+        _participantApplySnapshot = snapshot;
+    }
+
+    private void LogRosterDrops(IReadOnlyList<Participant> mapped, IReadOnlyList<Participant> roomParticipants)
+    {
+        var previous = RoomParticipantsForInputs;
+        if (previous.Count == 0)
+        {
+            return;
+        }
+
+        var present = roomParticipants.Select(participant => participant.Id).ToHashSet(StringComparer.Ordinal);
+        var snapshot = _participantApplySnapshot;
+        var bridge = _bridge.LastSnapshot;
+        foreach (var gone in previous.Where(participant => !present.Contains(participant.Id)))
+        {
+            var inMapped = mapped.FirstOrDefault(participant => participant.Id == gone.Id);
+            LaunchLog.Write(
+                $"roster-drop: pid={gone.Id} origin={_participantApplyOrigin} prevN={previous.Count} newN={roomParticipants.Count} " +
+                $"mappedN={mapped.Count} mappedRoom={(inMapped is null ? "absent" : $"'{inMapped.BreakoutRoomId}'")} currentRoom='{_currentRoomId}' " +
+                $"snap(epoch={snapshot?.RosterEpoch ?? "null"} rev={snapshot?.RosterRevision ?? -1} n={snapshot?.Participants.Count ?? -1} state={snapshot?.MeetingState ?? "null"}) " +
+                $"bridge(epoch={bridge?.RosterEpoch ?? "null"} rev={bridge?.RosterRevision ?? -1} n={bridge?.Participants.Count ?? -1} same={ReferenceEquals(bridge, snapshot)})");
+        }
+    }
+
     private void ApplyLiveParticipants(IReadOnlyList<LiveProductionSync.LiveProductionParticipantContext> participants)
     {
         var mapped = ParticipantMapper.ToParticipants(participants);
@@ -10700,6 +10737,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // expensive bound-list rebuild. Audio mixing and its Zoom mute indicator
         // read these room snapshots, including guests whose cameras are off.
         var roomParticipants = ParticipantMapper.ParticipantsInRoom(mapped, _currentRoomId);
+        LogRosterDrops(mapped, roomParticipants);
         var muteChanged = ParticipantMapper.HasMuteChanges(RoomParticipantsForInputs, roomParticipants);
         RoomParticipantsForInputs = roomParticipants;
         RoomVideoParticipants = ParticipantMapper.VideoParticipantsInRoom(mapped, _currentRoomId);
@@ -10920,6 +10958,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Settings.ApplyMeetingStateLabel(meetingState, participants?.Count ?? snapshot.Participants.Count);
             if (participants is { } && (participants.Count > 0 || snapshot.RosterRevision > 0))
             {
+                NoteParticipantApply("meeting-fields", snapshot);
                 ApplyLiveParticipants(participants);
                 MfT("applyParticipants");
                 SyncShowInputsFromMeeting(participants);

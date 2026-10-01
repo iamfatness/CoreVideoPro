@@ -35,6 +35,18 @@ public sealed class MultiviewParticipantGraceTests
         Assert.Empty(log);
     }
 
+    // Before a join the roster is empty and the persisted slots name nobody present. That is
+    // not a dip: every launch logged ten "dropped from the multiview" lines (2026-10-01).
+    [Fact]
+    public void AnEmptyRosterBeforeAMeetingLogsNothing()
+    {
+        var (slots, _) = Show();
+        var log = new List<string>();
+        var grace = new MultiviewParticipantGrace(() => 1000, log.Add);
+        Assert.Empty(grace.Resolve(slots, [], "production-sync", _ => false));
+        Assert.Empty(log);
+    }
+
     // The measured case: slot 9's participant (the producer) is missing from one apply.
     [Fact]
     public void AOneApplyDipKeepsTheWallAtNineTiles()
