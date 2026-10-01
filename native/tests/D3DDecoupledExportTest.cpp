@@ -308,9 +308,6 @@ TEST(D3DDecoupledExport, BusyConsumerDoesNotDiscardTheNewestFrame) {
   EXPECT_TRUE(matched) << "pixel=" << pixel << " frame=" << frameNumber;
 }
 
-#endif  // _WIN32 && dev adapters
-
-
 // #724: the first export for a source used to create its D3D device on the
 // caller's thread - the render thread - costing about 20 ms and two missed
 // Program slots every time a clip, a guest or a capture device first appeared.
@@ -384,3 +381,5 @@ TEST(D3DDecoupledExport, ADeferredExportCanBeDestroyedBeforeItIsReady) {
   }
   EXPECT_TRUE(device.get() != nullptr);
 }
+
+#endif  // _WIN32 && dev adapters
