@@ -3940,11 +3940,31 @@ BGRA frame, about 8.3 MB) -> `std::bad_alloc` -> no handler on that thread -> `t
   cannot be decoded for lack of memory is a failed decode (placeholder stays).
 - **Not guarded:** small allocations (strings, JSON, queue nodes, shared_ptr control blocks)
   anywhere; reused scratch buffers on the output side (NDI send convert); `src/zoom/`
-  (`ShmFrameReader`, `I420Convert`); every macOS `.mm` path. The FFmpeg clip reader still
-  allocates a fresh 8.3 MB buffer per frame instead of recycling.
-- **None of it has run under real memory pressure.** The helpers are unit-tested; each call
-  site was changed by reading it. The show drill, multiview and ISO-record checks pass the
-  same as before on the changed core.
+  (`ShmFrameReader`, `I420Convert`); every macOS `.mm` path; thread creation (see below).
+- **Run under a REAL commit limit (2026-10-01):**
+  `python scripts/qa/run-with-memory-limit.py --process-mb N -- <command>` starts the command
+  suspended in a job object with a per-process committed-memory cap, so allocations really
+  fail. Measured with `program-buffer-recorded-av.mjs --fixture <clip>` (core peak with no
+  cap: 727 MB):
+  - **600 MB and 300 MB: survived.** `[frame-alloc] OUT OF MEMORY at media-decoder-mf` /
+    `program-buffer-nv12`, frames dropped, clean exit 0.
+  - **500 MB and 400 MB: the core died, exit `0xC00000FD` (stack overflow).** The dump shows a
+    NEW THREAD in `ntdll!LdrpInitializeThread`: its stack could not be committed. That is
+    inside the Windows loader; no handler in the core runs. **Dropping frames is not a
+    guarantee of survival, only of surviving the failures that reach our code.**
+  - Assigning the launcher itself to the job did not carry to its children on this machine;
+    the child has to be assigned explicitly (create suspended, assign, resume).
+- **So the machine's memory is watched and said out loud.** `core/SystemMemoryPolicy.h`
+  samples available commit once a second from `sessionState()`: `low` under 4 GB, `critical`
+  under 1 GB, with a 512 MB margin to leave a level. Snapshot node `systemMemory {measured,
+  level, commitAvailableMb, commitLimitMb}` (published unconditionally) and one
+  `[system-memory] low|critical|ok: N MB of M MB ...` line per transition.
+  **Not wired to any operator surface yet**, and a job-object cap is NOT reflected in the
+  sample, so the capped runs above could not exercise it; it read `ok` at 103 GB available on
+  the live app.
+- **The FFmpeg clip reader recycles its frame buffers** (`MediaFrameRecycler`): a retired
+  frame is reused only when the reader is its sole owner, so a frame the compositor still
+  holds is never overwritten. It used to allocate 8.3 MB per frame.
 - **The show drill's source->render gate fails on main, before and after this change**
   (p50 65 to 67 ms measured on both cores, 2026-10-01; every other drill line passes). Do not
   read that line as a regression from whatever you just changed without an A/B.

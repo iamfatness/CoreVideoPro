@@ -729,6 +729,7 @@ if(BUILD_TESTING)
     tests/FfmpegSenderDiagnosticsTest.cpp
     tests/MediaFrameReadStepTest.cpp
     tests/FrameAllocationTest.cpp
+    tests/SystemMemoryPolicyTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
     tests/StillMediaFrameCacheTest.cpp
     tests/TilesLayoutTest.cpp
