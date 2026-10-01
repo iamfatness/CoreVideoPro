@@ -1,6 +1,7 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 #include "modules/StillMediaFrameCache.h"
+#include "modules/MediaFrameReadStep.h"
 #include "modules/MediaPlaybackTimeline.h"
 #include "modules/MediaVideoPresentation.h"
 
@@ -403,20 +404,31 @@ class FfmpegVideoDecoder {
   void readLoop() {
     constexpr std::size_t frameBytes =
         static_cast<std::size_t>(kOutputWidth) * kOutputHeight * 4u;
+    const auto readPipe = [this](std::uint8_t* destination, std::size_t wanted) -> std::size_t {
+      if (stopRequested_.load(std::memory_order_acquire)) return 0;
+      DWORD read = 0;
+      return ReadFile(outputRead_, destination, static_cast<DWORD>(wanted), &read, nullptr) ? read : 0;
+    };
+    std::uint64_t droppedFrames = 0;
+    auto lastDropLog = std::chrono::steady_clock::time_point{};
     while (!stopRequested_.load(std::memory_order_acquire)) {
-      auto frame = std::make_shared<std::vector<std::uint8_t>>(frameBytes);
-      std::size_t offset = 0;
-      while (offset < frameBytes && !stopRequested_.load(std::memory_order_acquire)) {
-        DWORD read = 0;
-        const DWORD chunk = static_cast<DWORD>((std::min)(frameBytes - offset,
-                                                          static_cast<std::size_t>(1u << 20)));
-        if (!ReadFile(outputRead_, frame->data() + offset, chunk, &read, nullptr) || read == 0) {
-          offset = 0;
-          break;
+      MediaFrameBuffer frame;
+      const auto result = readMediaFrame(frameBytes, readPipe, tryAllocateMediaFrame, frame);
+      if (result == MediaFrameReadResult::Dropped) {
+        // #728. The machine could not give us one frame buffer. The clip holds its
+        // last picture and the core stays up; this used to terminate the process.
+        ++droppedFrames;
+        const auto now = std::chrono::steady_clock::now();
+        if (droppedFrames == 1 || now - lastDropLog >= std::chrono::seconds(5)) {
+          lastDropLog = now;
+          ::corevideo::core::nativeLogf(
+              "[media-decoder] OUT OF MEMORY: could not allocate a %zu-byte frame for %s; "
+              "holding the last frame (dropped=%llu)\n",
+              frameBytes, mediaPath_.c_str(), static_cast<unsigned long long>(droppedFrames));
         }
-        offset += read;
+        continue;
       }
-      if (offset != frameBytes) {
+      if (result == MediaFrameReadResult::Ended) {
         // #473. The silent-placeholder path. FFmpeg was spawned successfully and
         // then stopped producing — a bad argument, an unreadable file, a missing
         // DLL. Before, launch() had already returned true and NOTHING was ever

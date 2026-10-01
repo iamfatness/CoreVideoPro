@@ -727,6 +727,7 @@ if(BUILD_TESTING)
     tests/StreamAudioAlignmentPolicyTest.cpp
     tests/SrtFfmpegArgsTest.cpp
     tests/FfmpegSenderDiagnosticsTest.cpp
+    tests/MediaFrameReadStepTest.cpp
     tests/RealZoomCaptureSourceTest.cpp
     tests/StillMediaFrameCacheTest.cpp
     tests/TilesLayoutTest.cpp

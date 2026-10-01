@@ -3847,6 +3847,28 @@ and `ffmpeg STOPPED DELIVERING exit=... ffmpeg: moov atom not found`.
 **The original ProRes defect is NOT fixed and #473 stays open.** It did not
 reproduce on the current install. The next occurrence will name itself in one
 line; until then there is nothing honest to fix.
+## A frame that cannot be allocated is DROPPED, not fatal (#728, 2026-10-01)
+
+The core died three times in 2.5 minutes in an owner session. All three dumps had one
+stack: `FfmpegVideoDecoder::readLoop` -> `make_shared<vector<uint8_t>>` (one 1920x1080
+BGRA frame, about 8.3 MB) -> `std::bad_alloc` -> no handler on that thread -> `terminate`.
+
+- **The process was not out of memory; Windows was.** The core held about 1 GB. System
+  event 2004 ("low virtual memory condition") was logged in the same second Program froze.
+- **What changed:** `modules/MediaFrameReadStep.h` reads one frame per call with a
+  non-throwing allocator. A failed allocation still reads that frame's bytes off the pipe
+  (into a 64 KB stack buffer, because the pipe has no framing) and returns `Dropped`. The
+  clip holds its last picture and logs `[media-decoder] OUT OF MEMORY ... dropped=N`
+  (first drop, then at most every 5 s).
+- **Not done:** the same per-frame `make_shared` pattern exists in the SRT ingest, WinUI
+  capture bridge, UVC, NDI receive, browser SHM and still-cache paths. None is guarded.
+  The decoder also allocates a fresh 8.3 MB buffer for every frame instead of recycling.
+- **Rules:** an exception escaping a worker thread is a process kill, so anything a worker
+  allocates per frame needs a non-throwing path. When the core restarts unexpectedly, read
+  the dump and the System event log before the app logs.
+- **Tests:** `MediaFrameReadStepTest.cpp` (pure; an allocator that fails on demand). The
+  dropped-frame case fails if the drain is removed.
+
 ## Recordings land somewhere findable (#469 / T2.8, 2026-09-12)
 
 `RecordingFolderPolicy.Resolve` (MediaCore, pure) decides the recording folder,
