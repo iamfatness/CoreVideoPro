@@ -3865,6 +3865,21 @@ Control API plus one process kill; no keyboard or mouse input.
   fragment. **Recording does not resume:** after the restart the core reports
   `recording.status: stopping` / "Recording disabled in production state.", the shell reads
   Recording off, and nothing is logged for the operator.
+- **It found a second recovery defect on its first day: a core that restarts and never rejoins
+  Zoom (2 of 6 runs).** `MediaCoreSupervisor.OnChildExited` raises `HealthChanged` with its
+  lock released, between marking the dead core and respawning it. `StartAsync` spawns a core
+  whenever it finds no live process, so any shell call that "ensures the core is running" in
+  that window spawned the replacement itself, and the crash handler then saw a child it did
+  not spawn and returned WITHOUT running `RecoverChildAsync`. The core was up, the meeting and
+  the capture connections were gone, and nothing was logged. Fix: `_crashRecoveryOwed` is set
+  at the crash and cleared only by a deliberate Stop; the handler adopts a child someone else
+  started and still runs the recovery. Test: `CoreRecoveryRejoinTests` (a `StartAsync` fired
+  from inside `HealthChanged`; fails without the fix). After the fix, 4 of 4 live runs
+  rejoined, which is not enough runs to prove a one-in-three race gone; the unit test is the
+  proof.
+- **Its roster checks were watched failing:** with `ReleaseRosterBarrierForRespawnedCore`
+  disabled the drill reports the shell on the dead core's epoch and a slot naming someone not
+  in the meeting. Its "Takes do not dip" check passed in that run and is the weaker one.
 - **Not measured:** a stream across a restart. The shell's stream destination is the saved
   real one, and the drill does not publish to it.
 - **Two things to know when reading a run:** the rejoined app user has a NEW Zoom id and the
