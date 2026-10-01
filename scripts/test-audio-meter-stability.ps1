@@ -26,7 +26,19 @@ while (-not $probe.WaitForExit(1000)) {
         throw "Meter probe timed out (PID $($probe.Id))."
     }
 }
-if ($probe.ExitCode -ne 0) { throw "Meter probe failed or crashed: exit=$($probe.ExitCode), PID=$($probe.Id)." }
+if ($probe.ExitCode -ne 0) {
+    # SAY WHY. This used to throw the exit code alone, before ever reading the report, so a
+    # probe that failed with a reason in hand looked identical to one that crashed. It failed
+    # three CI runs on 2026-10-01 (and passed on re-run each time) and nobody could tell which.
+    # A report means the probe ran to its own verdict; no report means it died first.
+    $reason = 'no report was written, so the probe crashed or was killed before its verdict'
+    if (Test-Path -LiteralPath $Report) {
+        $raw = Get-Content -LiteralPath $Report -Raw
+        Write-Output "Meter probe report: $raw"
+        try { $reason = "probe verdict: $((ConvertFrom-Json $raw).error)" } catch { $reason = 'the report could not be parsed' }
+    }
+    throw "Meter probe failed or crashed: exit=$($probe.ExitCode), PID=$($probe.Id). $reason"
+}
 if (-not (Test-Path -LiteralPath $Report)) { throw 'Probe exited without writing its report.' }
 $result = Get-Content -LiteralPath $Report -Raw | ConvertFrom-Json
 if (-not $result.passed) { throw "Meter probe failed: $($result.error)" }
