@@ -108,7 +108,7 @@ visible in `npx wrangler tail` (each tick logs the checked/down/changed counts).
 Pure unit tests (vitest, node env, injected fetch/KV/clock — no live network):
 
 ```powershell
-npx vitest run --config vite.config.ts services/ops-monitor
+npx vitest run services/ops-monitor
 ```
 
 Coverage: the flap-dampener (alerts only on state change, silent while a target

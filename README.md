@@ -26,8 +26,6 @@ Virtual camera (out-of-process)       native/virtualcam-dll/  → corevideo-virt
   and presents "CoreVideo Pro Camera" to Zoom / Teams / OBS at 1080p60
 
 Shared generated lifecycle models    contracts/   (schema + cross-language wire fixtures)
-React + Vite dev/contract UI          src/         (mock-first development client)
-Node media-core mirror               native-core/ (deterministic protocol test runtime)
 ```
 
 The native core owns real-time media. Shells send production intent over child-process
@@ -35,7 +33,7 @@ stdin/stdout and consume snapshots; GPU surfaces and shared-memory media use sep
 transports. Windows uses D3D11 and Media Foundation; macOS uses Metal and AVFoundation.
 
 The additive [lifecycle schema](contracts/lifecycle.schema.json) generates C++, C#,
-TypeScript, and Swift models and runtime validators. Golden wire fixtures run across
+and Swift models and runtime validators. Golden wire fixtures run across
 language suites. Legacy scene/audio/capture **and production command/capability**
 protocols still have handwritten mirrors; see the [coverage inventory](contracts/README.md)
 and [ownership map](docs/architecture-ownership.md). The native hello profile now
@@ -127,12 +125,11 @@ Shipped on main since 2026-09-24, still waiting on a fleet show for [#601](https
 
 | Path | Role |
 |---|---|
-| `src/` | React + Vite operator console, immutable production state, engine contracts |
+| `src/config/` | Embedded Zoom Meeting SDK / OAuth public-client manifests read by the shell and scripts |
 | `mac-shell/` | SwiftUI desktop shell and macOS presentation |
 | `native-shell/` | **WinUI 3 (.NET 9)** desktop shell — primary product path and packaging |
 | `studio/` | Native C++ Win32 test shell for fast desktop validation |
 | `native/` | C++20 media core (compositor, audio, encoder, output adapters) + vendored Zoom engine |
-| `native-core/` | Node.js mirror of the media-core protocol/runtime for in-container tests |
 | `services/` | Backend services (caption broker, license) |
 | `scripts/` | PowerShell build / package / sign / validation scripts (Windows) |
 | `docs/` | Ranked work order ([BACKLOG.md](docs/BACKLOG.md)), alpha plan, native completion plan, reference specs |
@@ -154,23 +151,20 @@ launches and prints which tier you got. Force a rebuild with `npm run app -- -Re
 Other commands:
 
 ```powershell
-npm run dev                 # operator UI against mock engines (any platform)
-npm run dev:native-core     # Node media-core service (in-container parity)
-npm run typecheck
-npm run test                # vitest unit + integration
-npm run test:native-core    # Node media-core tests
-npm run build               # tsc + vite production bundle
+npm run test:unit           # vitest: services + Companion module tests
+npm run test:show-engine    # show-engine workspace tests
+npm run test:scripts        # node:test suites under scripts/
 npm run build:studio        # C++ media core + native Studio shell (Windows)
 npm run run:studio          # launch the native Studio shell (Windows)
 npm run pack:native         # stage the WinUI shell + native core for distribution
 ```
 
-Full Windows gate (typecheck + all renderer/native/shell suites): `npm run test:gate`.
+Full Windows gate (contracts + show-engine/native/shell suites): `npm run test:gate`.
 Offline readiness report: `npm run alpha:preflight`.
 
 On macOS, build the Swift shell with `cd mac-shell && swift build -c release`.
 Run its deterministic suite with `COREVIDEO_SHELL_TESTS=1 .build/release/CoreVideoProShell`.
-The [macOS launch script](scripts/run-mac-shell.sh) documents the native-core and SDK
+The [macOS launch script](scripts/run-mac-shell.sh) documents the native core and SDK
 configuration. A successful shell build does not validate the real media adapters.
 
 ## MVP North Star

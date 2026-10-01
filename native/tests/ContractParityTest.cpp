@@ -156,57 +156,17 @@ TEST(ContractParity, ResponseLaneDropsOldestWhenFull) {
   EXPECT_EQ(lane.popFront().first, "3");
 }
 
-TEST(ContractParity, CapabilityStringsMatchTypeScriptProtocol) {
-  const std::string source = readRepoFile("src/engine/nativeMediaCoreProtocol.ts");
-  ASSERT_FALSE(source.empty());
-  expectAllStringsPresent(source, corevideo::core::kNativeMediaCoreCapabilities);
-  expectAllStringsPresent(source, corevideo::core::kRequiredMvpCapabilities);
-}
+// The TypeScript-mirror parity tests (capability strings, bridge envelope
+// types, Zoom media-spine names, core event/request types) were retired with
+// the React prototype and Node core simulator they compared against (#738).
+// The manifests in core/Protocol.h are still checked against the shipping
+// dispatcher and C# builder above.
 
-TEST(ContractParity, BridgeEnvelopeTypesMatchTypeScriptProtocol) {
-  const std::string source = readRepoFile("src/engine/nativeBridgeProtocol.ts");
-  ASSERT_FALSE(source.empty());
-  expectAllStringsPresent(source, corevideo::core::kNativeBridgeCommandTypes);
-  EXPECT_NE(source.find("id: string"), std::string::npos);
-  EXPECT_NE(source.find("ok: true"), std::string::npos);
-  EXPECT_NE(source.find("ok: false"), std::string::npos);
-}
-
-TEST(ContractParity, ZoomMediaSpineSyncMirrorsTypeScriptProtocolNames) {
-  const std::string payloadSource = readRepoFile("src/engine/zoomMediaSpineSync.ts");
-  const std::string snapshotSource = readRepoFile("src/engine/zoomMediaSpineNativeSync.ts");
-  ASSERT_FALSE(payloadSource.empty());
-  ASSERT_FALSE(snapshotSource.empty());
-  EXPECT_NE(payloadSource.find("ZoomMediaSpineSyncPayload"), std::string::npos);
-  EXPECT_NE(snapshotSource.find("ZoomMediaSpineNativeSnapshot"), std::string::npos);
-  expectAllStringsPresent(payloadSource + snapshotSource, corevideo::core::kZoomMediaSpineSyncTypeNames);
-}
-
-TEST(ContractParity, CoreEventTypesMatchNativeProtocolMirror) {
-  const std::string nodeProtocol = readRepoFile("native-core/src/protocol.ts");
-  ASSERT_FALSE(nodeProtocol.empty());
-  expectAllStringsPresent(nodeProtocol, corevideo::core::kCoreEventTypes);
-  EXPECT_NE(nodeProtocol.find("participantId"), std::string::npos);
-  EXPECT_NE(nodeProtocol.find("frameId"), std::string::npos);
-}
-
-TEST(ContractParity, ZoomMediaSpineSyncRequestTypeIsMirrored) {
-  const std::string nodeProtocol = readRepoFile("native-core/src/protocol.ts");
-  ASSERT_FALSE(nodeProtocol.empty());
-
-  expectAllStringsPresent(nodeProtocol, corevideo::core::kCoreRequestTypes);
-  EXPECT_NE(nodeProtocol.find("zoom-media-spine-sync"), std::string::npos);
-}
-
-TEST(ContractParity, ZoomMeetingSdkAdapterGateMatchesReadinessAndPackageContracts) {
+TEST(ContractParity, ZoomMeetingSdkAdapterGateIsDeclaredInTheBuild) {
   const std::string cmakeSource = readRepoFile("native/CMakeLists.txt");
   const std::string adapterHeader = readRepoFile("native/src/modules/ZoomMeetingSdkAdapter.h");
-  const std::string readinessSource = readRepoFile("src/engine/zoomSdkReadiness.ts");
-  const std::string packageSource = readRepoFile("src/engine/zoomWindowsSdkPackage.ts");
   ASSERT_FALSE(cmakeSource.empty());
   ASSERT_FALSE(adapterHeader.empty());
-  ASSERT_FALSE(readinessSource.empty());
-  ASSERT_FALSE(packageSource.empty());
 
   EXPECT_NE(cmakeSource.find("COREVIDEO_WITH_ZOOM"), std::string::npos);
   EXPECT_NE(cmakeSource.find("COREVIDEO_WITH_D3D11"), std::string::npos);
@@ -221,25 +181,10 @@ TEST(ContractParity, ZoomMeetingSdkAdapterGateMatchesReadinessAndPackageContract
   EXPECT_NE(adapterHeader.find("IZoomMeetingSdkCaptureSource"), std::string::npos);
   EXPECT_NE(adapterHeader.find("takeVideoFrames"), std::string::npos);
 
-  const std::array<std::string_view, 7> requiredPackageFiles = {
+  // The SDK package files the build itself links and stages.
+  const std::array<std::string_view, 2> requiredPackageFiles = {
       "bin/sdk.dll",
       "lib/sdk.lib",
-      "h/zoom_sdk.h",
-      "h/meeting_service_interface.h",
-      "h/rawdata/zoom_rawdata_api.h",
-      "h/rawdata/rawdata_renderer_interface.h",
-      "h/rawdata/rawdata_audio_helper_interface.h",
   };
-  expectAllStringsPresent(cmakeSource + packageSource, requiredPackageFiles);
-
-  const std::array<std::string_view, 7> readinessChecks = {
-      "sdk-runtime",
-      "app-key",
-      "oauth",
-      "jwt-broker",
-      "raw-video",
-      "raw-audio",
-      "raw-share",
-  };
-  expectAllStringsPresent(readinessSource, readinessChecks);
+  expectAllStringsPresent(cmakeSource, requiredPackageFiles);
 }
