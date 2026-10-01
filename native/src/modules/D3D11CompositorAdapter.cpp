@@ -248,6 +248,7 @@ class D3D11Compositor final : public ICompositor {
     // of 1 from a stale non-1 divisor while something is still consuming the
     // texture).
     encoderExporting_.store(renderPlan.fullProgramReadback, std::memory_order_relaxed);
+    prewarmEncoderExport();
     if (renderPlan.fullProgramReadback) {
       const int encoderExportDivisor = encoderExportDivisor_.load(std::memory_order_relaxed);
       const bool submitPixels =
@@ -1744,9 +1745,31 @@ class D3D11Compositor final : public ICompositor {
     if (!renderTarget_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
       return;
     }
+    prewarmEncoderExport();
+    // A stream's encode path is chosen from the handle on its STARTING frame, so
+    // this caller cannot skip a frame the way a tile can. The export is normally
+    // ready long before (prewarmEncoderExport runs every render); if a stream
+    // starts within the ~20 ms it takes to create, wait for it here, bounded.
+    // That is the cost this path always paid, now only in that one case.
+    if (!encoderExport_ || !encoderExport_->waitUntilReady(std::chrono::milliseconds(250))) {
+      if (encoderExport_ && !encoderExport_->valid()) encoderExport_.reset();
+      return;
+    }
+    submitEncoderExport(frame, submitPixels);
+  }
+
+  // #724: creating the encoder export creates a D3D device, about 20 ms. Doing
+  // that on the render thread at the moment a stream, a recording or the virtual
+  // camera started cost Program two slots. It is created off this thread as soon
+  // as there is a render target, and kept: one idle device and five Program-sized
+  // textures while nothing consumes it.
+  void prewarmEncoderExport() {
+    if (!renderTarget_ || !device_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
+      return;
+    }
     if (!encoderExport_ || !encoderExport_->dimensions(targetWidth_, targetHeight_)) {
-      encoderExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), targetWidth_, targetHeight_, "encoder");
-      if (!encoderExport_->valid()) { encoderExport_.reset(); return; }
+      encoderExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), targetWidth_, targetHeight_, "encoder",
+                                                            D3DDecoupledExport::Creation::Deferred);
       // Task 6 residual (carried from Task 4's re-review): a dimension change
       // recreates encoderExport_ with a fresh internal frame counter, but
       // lastSubmittedEncoderFrameNumber_ is this render thread's own field and
@@ -1757,6 +1780,9 @@ class D3D11Compositor final : public ICompositor {
       // when one is added.
       lastSubmittedEncoderFrameNumber_ = -1;
     }
+  }
+
+  void submitEncoderExport(ProgramFrame& frame, bool submitPixels) {
     if (submitPixels && encoderExport_->submit(context_.get(), renderTarget_.get(), frame.frameNumber)) {
       lastSubmittedEncoderFrameNumber_ = frame.frameNumber;
     } else if (!submitPixels) {
@@ -1853,7 +1879,9 @@ class D3D11Compositor final : public ICompositor {
           participantTextures_.erase(f.participantId);
           continue;
         }
-        if (!pt.exporter) pt.exporter = std::make_unique<D3DDecoupledExport>(device_.get(), width, height, "participant");
+        // #724: a source's first export is created off the render thread.
+        if (!pt.exporter) pt.exporter = std::make_unique<D3DDecoupledExport>(
+            device_.get(), width, height, "participant", D3DDecoupledExport::Creation::Deferred);
         if (!pt.exporter->resize(device_.get(), width, height)) {
           participantTextures_.erase(f.participantId);
           continue;
@@ -1864,6 +1892,15 @@ class D3D11Compositor final : public ICompositor {
             f.participantId.c_str(), oldWidth, oldHeight, width, height,
             static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - createStart).count()));
+      }
+      if (!pt.exporter->valid()) {
+        participantTextures_.erase(f.participantId);  // creation failed: try again next frame
+        continue;
+      }
+      if (!pt.exporter->ready()) {
+        // Still being created (a couple of frames). No tile handle yet and nothing
+        // uploaded; lastFrameId is untouched, so the first ready frame uploads.
+        continue;
       }
       // Only re-upload when the frame OR the effective grade changed. Capture frames
       // are now HELD and re-emitted every render tick (so the program composite never

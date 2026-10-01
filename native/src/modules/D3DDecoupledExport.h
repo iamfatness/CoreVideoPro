@@ -4,6 +4,7 @@
 
 // Windows-only, included by the D3D adapter after the SDK headers.
 #include "compositor/ComPtrLite.h"
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -35,13 +36,42 @@ class D3DDecoupledExport {
   friend struct D3DDecoupledExportTestAccess;
 
  public:
-  D3DDecoupledExport(ID3D11Device* producer, int width, int height, const char* label)
+  // #724. Creating an exporter means creating a D3D device: about 20 ms, measured.
+  // Immediate does that on the caller's thread, as before. Deferred does it on the
+  // exporter's own worker thread, so a render thread that meets a new source (a
+  // clip taken to Program, a guest joining, a capture device connecting) does not
+  // lose a frame to it. Until a deferred exporter is ready() it accepts no frame
+  // and has no handle; its caller skips that export for a couple of frames.
+  enum class Creation { Immediate, Deferred };
+
+  D3DDecoupledExport(ID3D11Device* producer, int width, int height, const char* label,
+                     Creation creation = Creation::Immediate)
       : width_(width), height_(height), label_(label) {
-    if (!initialize(producer)) { initialized_ = false; return; }
+    if (creation == Creation::Immediate) {
+      if (!initialize(producer)) { state_.store(kFailed, std::memory_order_release); return; }
+      state_.store(kReady, std::memory_order_release);
+      try {
+        worker_ = std::thread([this] { try { exportLoop(); } catch (...) {} });
+      } catch (...) {
+        state_.store(kFailed, std::memory_order_release);
+      }
+      return;
+    }
+    // The device is free-threaded for resource creation; only the immediate context
+    // belongs to the render thread, and initialize() never touches it. Hold a
+    // reference for the worker: the caller's pointer is only promised for this call.
+    producer->AddRef();
     try {
-      worker_ = std::thread([this] { try { exportLoop(); } catch (...) {} });
+      worker_ = std::thread([this, producer] {
+        bool created = false;
+        try { created = initialize(producer); } catch (...) {}
+        producer->Release();
+        state_.store(created ? kReady : kFailed, std::memory_order_release);
+        if (created) { try { exportLoop(); } catch (...) {} }
+      });
     } catch (...) {
-      initialized_ = false;
+      producer->Release();
+      state_.store(kFailed, std::memory_order_release);
     }
   }
   ~D3DDecoupledExport() {
@@ -50,7 +80,20 @@ class D3DDecoupledExport {
     if (worker_.joinable()) worker_.join();
   }
 
-  bool valid() const { return initialized_; }
+  // Not failed. A deferred exporter still being created is valid, so a caller that
+  // discards an invalid exporter does not discard one that is about to work.
+  bool valid() const { return state_.load(std::memory_order_acquire) != kFailed; }
+  // Created: submit() takes frames and handle() names the shared output.
+  bool ready() const { return state_.load(std::memory_order_acquire) == kReady; }
+  // For a caller that must have the export before it can continue. Bounded.
+  bool waitUntilReady(std::chrono::milliseconds limit) const {
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (state_.load(std::memory_order_acquire) == kPending) {
+      if (std::chrono::steady_clock::now() >= deadline) return false;
+      std::this_thread::sleep_for(std::chrono::microseconds(500));
+    }
+    return ready();
+  }
   // Resolution changes must not recreate the D3D device on the render thread.
   // Retire the worker before replacing resources; reuse its device/context.
   bool resize(ID3D11Device* producer, int width, int height) {
@@ -64,15 +107,17 @@ class D3DDecoupledExport {
     outputHandle_ = nullptr;
     publishedFrameNumber_ = std::make_shared<std::atomic<int64_t>>(-1);
     width_ = width; height_ = height;
-    stopped_ = false; initialized_ = false;
-    if (!initialize(producer)) return false;
+    stopped_ = false;
+    state_.store(kPending, std::memory_order_release);
+    if (!initialize(producer)) { state_.store(kFailed, std::memory_order_release); return false; }
+    state_.store(kReady, std::memory_order_release);
     try {
       worker_ = std::thread([this] { try { exportLoop(); } catch (...) {} });
-    } catch (...) { initialized_ = false; }
-    return initialized_;
+    } catch (...) { state_.store(kFailed, std::memory_order_release); }
+    return ready();
   }
   bool dimensions(int width, int height) const { return width == width_ && height == height_; }
-  HANDLE handle() const { return outputHandle_; }
+  HANDLE handle() const { return ready() ? outputHandle_ : nullptr; }
   int width() const { return width_; }
   int height() const { return height_; }
   std::shared_ptr<std::atomic<int64_t>> publishedFrameNumber() const { return publishedFrameNumber_; }
@@ -83,7 +128,7 @@ class D3DDecoupledExport {
   // Flush submits the copy, exactly as D3DProgramBuffer::submit relies on. Drops
   // the frame (bounded, non-blocking) when every slot is still in flight.
   bool submit(ID3D11DeviceContext* producer, ID3D11Texture2D* src, int64_t frameNumber = 0) {
-    if (!initialized_ || !src) return false;
+    if (!ready() || !src) return false;
     Slot* slot = nullptr;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -179,7 +224,7 @@ class D3DDecoupledExport {
       return false;
     }
     outputHandle_ = outHandle;
-    initialized_ = true;
+    creationThread_ = std::this_thread::get_id();
     return true;
   }
 
@@ -261,7 +306,12 @@ class D3DDecoupledExport {
 
   int width_, height_;
   const char* label_;
-  bool initialized_ = false, stopped_ = false;
+  // Written by whichever thread runs initialize(). Everything initialize() fills is
+  // read by the caller only after this reads kReady.
+  static constexpr int kPending = 0, kReady = 1, kFailed = 2;
+  std::atomic<int> state_{kPending};
+  std::thread::id creationThread_;
+  bool stopped_ = false;
   mutable std::mutex mutex_;
   std::condition_variable changed_;
   std::vector<std::unique_ptr<Slot>> slots_;
