@@ -1,3 +1,4 @@
+#include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 
@@ -2468,7 +2469,12 @@ class D3D11Compositor final : public ICompositor {
       // Read back the two small stagings into the publish buffer: Y plane rows,
       // then interleaved UV rows (NV12 layout), honoring each RowPitch. The Map
       // blocks until the draws/copies above complete.
-      auto nv12 = std::make_shared<std::vector<uint8_t>>(nv12FrameSize(w, h));
+      static core::FrameAllocationFailures allocationFailures("vcam-tap");
+      auto nv12 = core::tryMakeFrameBuffer(nv12FrameSize(w, h));
+      if (!nv12) {
+        allocationFailures.note(nv12FrameSize(w, h));
+        continue;  // #728: this tap frame is skipped; the CV wait still paces the loop
+      }
       bool ok = false;
       D3D11_MAPPED_SUBRESOURCE mapY{};
       if (SUCCEEDED(ctx->Map(vcamStagY2_.get(), 0, D3D11_MAP_READ, 0, &mapY))) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/FrameAllocation.h"
 #include "modules/IsoFrameConform.h"
 #include <d3d11.h>
 #include <d3dcompiler.h>
@@ -59,7 +60,11 @@ class D3DIsoFrameConformer {
     if (FAILED(context_->Map(readback_.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
       error = "map ISO GPU readback"; return false;
     }
-    output.resize(outputBytes);
+    if (!core::tryResizeFrameBuffer(output, outputBytes)) {
+      // #728: this ISO frame is not written; the writer reports the error.
+      context_->Unmap(readback_.Get(), 0);
+      error = "out of memory for the ISO GPU readback"; return false;
+    }
     std::memcpy(output.data(), mapped.pData, outputBytes);
     context_->Unmap(readback_.Get(), 0);
     return true;

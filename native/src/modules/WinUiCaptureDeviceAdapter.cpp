@@ -1,3 +1,4 @@
+#include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
 #include "WinUiCaptureDeviceAdapter.h"
 
@@ -133,9 +134,11 @@ void WinUiCaptureDeviceAdapter::captureVideoTick(int64_t timestampMs) {
       const uint32_t h = loadU32(base, 8);
       const std::size_t bgraBytes = static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4;
       if (w != 0 && h != 0 && kHeaderBytes + bgraBytes <= buffer.mappedBytes) {
-        auto pixels = std::make_shared<std::vector<uint8_t>>(base + kHeaderBytes, base + kHeaderBytes + bgraBytes);
+        static core::FrameAllocationFailures allocationFailures("capture-shm");
+        auto pixels = core::tryMakeFrameBuffer(base + kHeaderBytes, base + kHeaderBytes + bgraBytes);
+        if (!pixels) allocationFailures.note(bgraBytes);  // #728: re-emit the held frame below
         const uint32_t s2 = loadSeq(base);
-        if (s2 == s1) {  // not torn
+        if (pixels && s2 == s1) {  // copied, and not torn
           buffer.lastSequence = s1;
           if (buffer.frameId == 0) {
             ::corevideo::core::nativeLogf("[capture-shm] first frame '%s' %ux%u (core now compositing real capture pixels)\n",

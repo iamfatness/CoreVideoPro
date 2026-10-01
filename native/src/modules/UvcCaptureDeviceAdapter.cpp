@@ -1,3 +1,4 @@
+#include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 #include "modules/PeriodicDeviceDiscovery.h"
@@ -469,6 +470,17 @@ class UvcCaptureSession {
         isNv12 = outputIsNv12_;
       }
 
+      // #728: reserve the I420 frame up front without throwing. The converters
+      // below resize into this capacity, so they cannot hit std::bad_alloc on
+      // this thread; a frame that cannot be allocated is dropped.
+      static core::FrameAllocationFailures allocationFailures("uvc-capture");
+      const size_t i420Bytes = width > 0 && height > 0
+          ? static_cast<size_t>(width) * static_cast<size_t>(height) * 3 / 2 : 0;
+      if (!core::tryResizeFrameBuffer(converted, i420Bytes)) {
+        buffer->Unlock();
+        allocationFailures.note(i420Bytes);
+        continue;
+      }
       converted.clear();
       if (isNv12) {
         // Contiguous NV12: packed Y plane then interleaved UV, stride = width.

@@ -1,3 +1,4 @@
+#include "core/FrameAllocation.h"
 #include "modules/Interfaces.h"
 #include "modules/SrtFfmpegArgs.h"
 #include "modules/SrtIngestHealthPolicy.h"
@@ -790,13 +791,23 @@ class NetworkIngestCaptureDevice final : public ICaptureDevice {
 
       const std::size_t frameBytes = static_cast<std::size_t>(channel->width) *
                                      static_cast<std::size_t>(channel->height) * kBytesPerPixel;
-      std::vector<uint8_t> buffer(frameBytes);
+      // #728: frame-sized allocations here drop a frame instead of throwing on
+      // this thread, which would terminate the core. With no read buffer at all
+      // the generation is retired below and retried after the usual backoff.
+      static core::FrameAllocationFailures allocationFailures("srt-ingest");
+      std::vector<uint8_t> buffer;
+      const bool haveBuffer = core::tryResizeFrameBuffer(buffer, frameBytes);
+      if (!haveBuffer) allocationFailures.note(frameBytes);
       bool sawFrame = false;
-      while (channel->running.load()) {
+      while (haveBuffer && channel->running.load()) {
         if (!readExactly(*channel, buffer.data(), frameBytes)) {
           break;  // decoder exited or the publisher went away
         }
-        auto published = std::make_shared<std::vector<uint8_t>>(buffer);
+        auto published = core::tryMakeFrameBuffer(buffer);
+        if (!published) {
+          allocationFailures.note(frameBytes);
+          continue;  // the bytes are consumed; the last published frame is held
+        }
         {
           std::lock_guard lock(channel->mutex);
           channel->latest = std::move(published);

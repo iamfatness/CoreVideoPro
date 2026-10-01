@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/FrameAllocation.h"
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -15,8 +16,13 @@ inline std::shared_ptr<const std::vector<uint8_t>> copyNdiBgra(
       stride < width * 4 || stride > 65536) {
     return {};
   }
-  auto pixels = std::make_shared<std::vector<uint8_t>>(
-      static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+  static core::FrameAllocationFailures allocationFailures("ndi-receive");
+  const size_t bgraBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+  auto pixels = core::tryMakeFrameBuffer(bgraBytes);
+  if (!pixels) {
+    allocationFailures.note(bgraBytes);  // #728: dropped, same as an invalid frame
+    return {};
+  }
   for (int y = 0; y < height; ++y) {
     auto* out = pixels->data() + static_cast<size_t>(y) * width * 4;
     std::memcpy(out, data + static_cast<size_t>(y) * stride,

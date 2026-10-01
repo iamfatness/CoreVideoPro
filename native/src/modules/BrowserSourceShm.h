@@ -14,6 +14,7 @@
 // Pure header (no Win32 includes) so the read/write helpers are unit-testable
 // against a plain byte buffer.
 
+#include "core/FrameAllocation.h"
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -131,8 +132,12 @@ inline ReadResult readNewFrame(const uint8_t* base,
   if (kHeaderBytes + payload > mappedBytes) {
     return result;  // header claims more pixels than the mapping holds
   }
-  auto pixels = std::make_shared<std::vector<uint8_t>>(base + kHeaderBytes,
-                                                       base + kHeaderBytes + payload);
+  static core::FrameAllocationFailures allocationFailures("browser-shm");
+  auto pixels = core::tryMakeFrameBuffer(base + kHeaderBytes, base + kHeaderBytes + payload);
+  if (!pixels) {
+    allocationFailures.note(payload);  // #728: nothing new this tick; the held frame is re-served
+    return result;
+  }
   const uint32_t s2 = loadSeq(base);
   if (s2 != s1) {
     return result;  // torn: writer published mid-copy

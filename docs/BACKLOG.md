@@ -58,7 +58,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
-| [#728](https://github.com/iamfatness/CoreVideoPro/issues/728) | The FFmpeg media decoder now drops a frame it cannot allocate instead of terminating the core (three crashes on 2026-10-01 while Windows was low on virtual memory). Remaining: the same unguarded per-frame allocation in SRT ingest, capture bridge, UVC, NDI receive, browser and still paths; what exhausted system memory is unknown. Owner has not assigned a rank. |
+| [#728](https://github.com/iamfatness/CoreVideoPro/issues/728) | Frame-sized allocations in the ingest, capture, decode and tap paths now drop one frame instead of terminating the core (three crashes on 2026-10-01 while Windows was low on virtual memory). Remaining: nothing has run under real memory pressure; small allocations, macOS paths and `src/zoom/` are not guarded; what exhausted system memory is unknown. Owner has not assigned a rank. |
 | [#725](https://github.com/iamfatness/CoreVideoPro/issues/725) | Root cause fixed in #727: the shell rejected a respawned core's roster. Owner acceptance on an installed beta remains. |
 | [#705](https://github.com/iamfatness/CoreVideoPro/issues/705) | Headless media A/V pattern reaches Program video but not audio. The media transport demand clock mismatches the render timeline; fix and verify PCM in a real Release recording. Owner has not assigned a rank. |
 | [#668](https://github.com/iamfatness/CoreVideoPro/issues/668) | Slices A–D merged (#670–#673): unique guest bindings, host exclusion, talk ledger and Set & Forget holds. Installed host-plus-three-guests, interview, solo and share-priority acceptance remains. |
