@@ -412,9 +412,11 @@ class FfmpegVideoDecoder {
     };
     std::uint64_t droppedFrames = 0;
     auto lastDropLog = std::chrono::steady_clock::time_point{};
+    MediaFrameRecycler recycler;
     while (!stopRequested_.load(std::memory_order_acquire)) {
       MediaFrameBuffer frame;
-      const auto result = readMediaFrame(frameBytes, readPipe, tryAllocateMediaFrame, frame);
+      const auto result = readMediaFrame(
+          frameBytes, readPipe, [&recycler](std::size_t bytes) { return recycler.take(bytes); }, frame);
       if (result == MediaFrameReadResult::Dropped) {
         // #728. The machine could not give us one frame buffer. The clip holds its
         // last picture and the core stays up; this used to terminate the process.
@@ -440,9 +442,16 @@ class FfmpegVideoDecoder {
         reportEarlyExit();
         break;
       }
-      std::lock_guard<std::mutex> lock(mutex_);
-      latestPixels_ = std::move(frame);
-      ++latestFrameId_;
+      MediaFrameBuffer retired;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        retired = std::move(latestPixels_);
+        latestPixels_ = std::move(frame);
+        ++latestFrameId_;
+      }
+      // Nobody can newly take `retired` now (readers copy latestPixels_ under mutex_), so
+      // once the holders it already has let go, the recycler is its only owner.
+      recycler.offer(std::move(retired));
     }
     std::lock_guard<std::mutex> lock(mutex_);
     ended_ = !stopRequested_.load(std::memory_order_acquire);

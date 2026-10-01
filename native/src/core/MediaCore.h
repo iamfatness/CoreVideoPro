@@ -1057,6 +1057,14 @@ class MediaCore {
   int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;
   mutable int zoomSnapshotTick_ = 0;
+  // #728: machine-wide available commit, sampled at most once a second from sessionState()
+  // (core/SystemMemoryPolicy.h). Level is a SystemMemoryLevel stored as int so this header
+  // does not pull <windows.h> into every translation unit.
+  mutable std::int64_t systemMemorySampledAtNs_ = 0;
+  mutable std::uint64_t systemMemoryAvailableBytes_ = 0;
+  mutable std::uint64_t systemMemoryLimitBytes_ = 0;
+  mutable int systemMemoryLevel_ = 0;
+  mutable bool systemMemoryMeasured_ = false;
   // Recently directed speakers for follow-speaker routes, scoped to one meeting
   // (#478 N2). Written only from plan builds, which run under coreMutex.
   mutable FollowSpeakerHold followSpeakerHold_;
