@@ -580,6 +580,9 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             AudioRoutes = _vm.NativeControlSnapshot?.AudioRoutingMatrix.Sends
                 .Select(send => new ControlAudioRouteState(send.SourceId, send.BusId, send.GainDb)).ToArray() ?? [],
             ControlRecoverySummary = _vm.ControlRecoverySummary,
+            ZoomRosterEpoch = _vm.NativeControlSnapshot?.RosterEpoch ?? string.Empty,
+            ZoomRosterRevision = _vm.NativeControlSnapshot?.RosterRevision ?? 0,
+            ZoomParticipantIds = _vm.RoomParticipantsForInputs.Select(participant => participant.Id).ToArray(),
             ZoomAudioMode = ZoomAudioModePreference.Format(_vm.ZoomAudioMode),
             MasterLimiterOn = _vm.MasterLimiterEnabled,
             MasteringOn = _vm.MasteringEnabled,

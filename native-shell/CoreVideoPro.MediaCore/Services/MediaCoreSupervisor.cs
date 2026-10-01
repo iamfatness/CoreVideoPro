@@ -71,6 +71,9 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     private string? _handshakeFailure;
     private Dictionary<string, object?>? _zoomJoinRecoveryPayload;
     private bool _zoomRawCapturePaused;
+    // A crash was observed and its recovery (respawn if still needed, then the Zoom rejoin)
+    // has not started yet. Cleared by a deliberate Stop. See OnChildExited.
+    private bool _crashRecoveryOwed;
 
     public MediaCoreSupervisor(MediaCoreSupervisorOptions? options = null)
     {
@@ -187,6 +190,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         {
             _stopped = true;
             _recovering = false;
+            _crashRecoveryOwed = false;
             _zoomJoinRecoveryPayload = null;
             _zoomRawCapturePaused = false;
             StopFrameDrain();
@@ -1387,6 +1391,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             health = Health;
             exhausted = _restarts > _options.MaxRestarts;
             if (exhausted) _process = null;
+            _crashRecoveryOwed = !exhausted;
         }
 
         // Bridge health subscribers stop their periodic sync under the bridge
@@ -1395,8 +1400,8 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         HealthChanged?.Invoke(health);
         lock (_gate)
         {
-            if (_stopped || _restarts != health.RestartCount ||
-                (!exhausted && !ReferenceEquals(_process, sender))) return;
+            if (_stopped || _restarts != health.RestartCount) return;
+            if (!exhausted && !ReferenceEquals(_process, sender) && !_crashRecoveryOwed) return;
         }
         StatusChanged?.Invoke($"Media core recovering (restart {health.RestartCount})");
         if (exhausted)
@@ -1409,8 +1414,22 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         {
             // A subscriber or operator can Stop/replace the child while events
             // are delivered. Never restart the retired generation afterward.
-            if (_stopped || !ReferenceEquals(_process, sender)) return;
-            SpawnChild();
+            if (_stopped || !_crashRecoveryOwed) return;
+            _crashRecoveryOwed = false;
+            if (ReferenceEquals(_process, sender))
+            {
+                SpawnChild();
+            }
+            else if (_process is null || !_processAlive)
+            {
+                return;
+            }
+            // Otherwise a StartAsync landed while the events above were delivered (HealthChanged
+            // runs with the lock released, and StartAsync spawns when it finds no live process).
+            // That child is the replacement, but only this path rejoins Zoom: returning here left
+            // the core running with the meeting gone (2 of 6 live core-restart drills,
+            // 2026-10-01). A deliberate Stop clears _crashRecoveryOwed, so an operator's
+            // stop-then-start is still not "recovered" behind their back.
         }
         _ = RecoverChildAsync();
     }
