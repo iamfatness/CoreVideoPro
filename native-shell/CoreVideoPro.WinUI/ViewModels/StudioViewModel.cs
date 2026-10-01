@@ -9194,7 +9194,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var multiviewSources = MultiviewGpuEnabled
             ? ShowInputRosterService.BuildMultiviewLayoutSources(
                 ShowInputs,
-                RoomParticipantsForInputs,
+                MultiviewParticipants("production-sync"),
                 CaptureDevices,
                 VisualMediaAssets,
                 _sourceDisplayNames)
@@ -14732,6 +14732,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // JSON \uXXXX parse fix lets it reach the core) on a debounced, signature-gated trigger: fires
     // only when the source set/slots/grid change (NOT on active-speaker churn — that's baked into
     // the texture in-core), so it neither loops nor floods.
+    // #725: one participant dip (seen on every Take in a long session) must not reflow the
+    // multiview wall. Resolve layouts against the roster plus in-show participants seen within
+    // the grace, and log every miss with whether the core's own roster still has them.
+    private readonly MultiviewParticipantGrace _multiviewParticipantGrace = new();
+
+    private IReadOnlyList<Participant> MultiviewParticipants(string caller) =>
+        _multiviewParticipantGrace.Resolve(
+            ShowInputs,
+            RoomParticipantsForInputs,
+            caller,
+            pid => _bridge.LastSnapshot?.Participants.Any(participant =>
+                string.Equals(participant.UserId?.Trim(), pid, StringComparison.Ordinal)) == true);
+
     private void SyncMultiviewLayoutIfChanged()
     {
         if (!MultiviewGpuEnabled || !_bridge.Running || _bridge.Profile is null)
@@ -14740,7 +14753,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         var sources = ShowInputRosterService.BuildMultiviewLayoutSources(
-            ShowInputs, RoomParticipantsForInputs, CaptureDevices, VisualMediaAssets, _sourceDisplayNames);
+            ShowInputs, MultiviewParticipants("multiview-layout"), CaptureDevices, VisualMediaAssets, _sourceDisplayNames);
         var grid = ShowInputRosterService.ResolveGridShape(sources.Count);
         var signature = string.Join("|", sources.Select(s => $"{s.Slot}:{s.Kind}:{s.SourceId}:{s.Label}")) +
             $"#{grid.Columns}x{grid.Rows}";

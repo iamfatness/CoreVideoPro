@@ -844,6 +844,16 @@ comment at the code site; this is the index.
 
 ## Other gotchas
 
+- **A one-apply roster dip must not reflow the multiview (#725, 2026-09-30).**
+  - **What happened:** in a long live session, every Take resolved Show Input slots against a
+    participant list missing the producer (the app's own camera-off user) for one apply. The
+    multiview layout lost a tile and the wall reflowed 5+4 to 4+4 and back on every cut. It
+    did not reproduce after a restart, and the source of the short list is still unknown.
+  - **What changed:** `MultiviewParticipantGrace` keeps an in-show slot's participant on the
+    layout for 1 s through such a dip. A real leave is still dropped after the grace.
+  - **Log line:** every miss logs `mv-roster-miss: slotN pid=... missing from <caller> list ...
+    coreRosterHasIt=yes|no` regardless of verbose. If it recurs, that line says whether the
+    shell or the core produced the short list.
 - **AN EMPTY RENDER PLAN IS NOT "DRAW NOTHING" (2026-08-15, CoreVideo Tiles T1).**
   All THREE compositors — `D3D11CompositorAdapter::resolveLayers`,
   `ProgramFramePreview`'s `buildProgramFramePreview`, and
