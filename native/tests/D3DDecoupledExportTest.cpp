@@ -18,6 +18,7 @@ struct D3DDecoupledExportTestAccess {
   static ID3D11Device* device(const D3DDecoupledExport& e) { return e.exportDevice_.get(); }
   static std::uint64_t published(const D3DDecoupledExport& e) { return e.published_; }
   static std::uint64_t dropped(const D3DDecoupledExport& e) { return e.dropped_; }
+  static std::thread::id creationThread(const D3DDecoupledExport& e) { return e.creationThread_; }
 };
 }  // namespace corevideo::modules
 
@@ -193,6 +194,13 @@ TEST(D3DDecoupledExport, ParticipantBgraExportCopiesCachedPixelsAcrossDevices) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     while (std::chrono::steady_clock::now() < deadline) {
       const auto frame = compositor->render(plan, {input});
+      // #724: a source's first export is created off the render thread, so the
+      // first frame or two carry no tile handle. The deadline still fails the
+      // test if one never appears.
+      if (frame.participantSharedTextures.empty()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        continue;
+      }
       ASSERT_EQ(frame.participantSharedTextures.size(), size_t{1});
       const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
           std::stoull(frame.participantSharedTextures[0].sharedHandleHex, nullptr, 0)));
@@ -301,3 +309,78 @@ TEST(D3DDecoupledExport, BusyConsumerDoesNotDiscardTheNewestFrame) {
 }
 
 #endif  // _WIN32 && dev adapters
+
+
+// #724: the first export for a source used to create its D3D device on the
+// caller's thread - the render thread - costing about 20 ms and two missed
+// Program slots every time a clip, a guest or a capture device first appeared.
+TEST(D3DDecoupledExport, ADeferredExportIsCreatedOffTheCallersThreadAndThenPublishes) {
+  ComPtrLite<ID3D11Device> device; ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(makeDevice(device, context));
+
+  D3DDecoupledExport exporter(device.get(), kW, kH, "deferred-test", D3DDecoupledExport::Creation::Deferred);
+  // Pending is not failed: a caller that resets an invalid exporter would otherwise
+  // recreate it every frame and never let one finish.
+  EXPECT_TRUE(exporter.valid());
+
+  constexpr std::uint32_t kColor = 0xFF445566u;
+  ComPtrLite<ID3D11Texture2D> src;
+  ASSERT_TRUE(makeUniformSource(device.get(), context.get(), kColor, src));
+  if (!exporter.ready()) {
+    // Not ready means no handle to publish and no frame accepted: never a crash,
+    // never a wait.
+    EXPECT_EQ(exporter.handle(), nullptr);
+    EXPECT_FALSE(exporter.submit(context.get(), src.get()));
+  }
+
+  ASSERT_TRUE(exporter.waitUntilReady(std::chrono::seconds(5)));
+  EXPECT_TRUE(exporter.valid());
+  ASSERT_NE(exporter.handle(), nullptr);
+  EXPECT_NE(D3DDecoupledExportTestAccess::creationThread(exporter), std::this_thread::get_id());
+
+  ComPtrLite<ID3D11Device> consumer; ComPtrLite<ID3D11DeviceContext> consumerCtx;
+  ASSERT_TRUE(makeDevice(consumer, consumerCtx));
+  std::uint32_t got = 0;
+  bool matched = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (std::chrono::steady_clock::now() < deadline) {
+    exporter.submit(context.get(), src.get());
+    context->Flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    if (readOutputPixel(consumer.get(), consumerCtx.get(), exporter.handle(), got) && got == kColor) {
+      matched = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(matched) << "output pixel 0x" << std::hex << got << " never matched 0x" << kColor;
+}
+
+TEST(D3DDecoupledExport, AnImmediateExportIsStillCreatedOnTheCallersThread) {
+  ComPtrLite<ID3D11Device> device; ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(makeDevice(device, context));
+  D3DDecoupledExport exporter(device.get(), kW, kH, "immediate-test");
+  EXPECT_TRUE(exporter.ready());
+  EXPECT_EQ(D3DDecoupledExportTestAccess::creationThread(exporter), std::this_thread::get_id());
+}
+
+// A resolution change arriving while the deferred creation is still in flight must
+// end with a working exporter at the NEW size.
+TEST(D3DDecoupledExport, ADeferredExportResizedBeforeItIsReadyEndsReadyAtTheNewSize) {
+  ComPtrLite<ID3D11Device> device; ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(makeDevice(device, context));
+  D3DDecoupledExport exporter(device.get(), kW, kH, "deferred-resize", D3DDecoupledExport::Creation::Deferred);
+  ASSERT_TRUE(exporter.resize(device.get(), kW * 2, kH * 2));
+  EXPECT_TRUE(exporter.ready());
+  EXPECT_TRUE(exporter.dimensions(kW * 2, kH * 2));
+  EXPECT_NE(exporter.handle(), nullptr);
+}
+
+// Destroying a deferred exporter before its creation finished must not hang or crash.
+TEST(D3DDecoupledExport, ADeferredExportCanBeDestroyedBeforeItIsReady) {
+  ComPtrLite<ID3D11Device> device; ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(makeDevice(device, context));
+  for (int i = 0; i < 4; ++i) {
+    D3DDecoupledExport exporter(device.get(), kW, kH, "deferred-destroy", D3DDecoupledExport::Creation::Deferred);
+  }
+  EXPECT_TRUE(device.get() != nullptr);
+}

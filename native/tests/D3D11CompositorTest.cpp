@@ -3,6 +3,7 @@
 #include "core/ZoomBusRoster.h"
 #include "modules/Interfaces.h"
 
+#include <chrono>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -1027,7 +1028,6 @@ TEST(D3D11Compositor, SourceTextureCacheDedupsUploadsAcrossPasses) {
   auto stats = compositor->sourceTexStats();
   EXPECT_EQ(stats.cachedUploads, 1u);
   EXPECT_EQ(stats.scratchUploads, 0u);
-  EXPECT_GE(stats.cacheHits, 1u);  // the export convert samples the cache
 
   // Neutral-chroma I420 at luma 128 must come out mid-gray — proves the draw
   // sampled the CACHED planes, not stale or empty textures.
@@ -1042,6 +1042,20 @@ TEST(D3D11Compositor, SourceTextureCacheDedupsUploadsAcrossPasses) {
   stats = compositor->sourceTexStats();
   EXPECT_EQ(stats.cachedUploads, 1u) << "extra passes of an unchanged frame must not re-upload";
   EXPECT_EQ(first.preview.bgra, second.preview.bgra);
+
+  // The participant export also samples the cache instead of uploading again.
+  // #724: that export is created off the render thread, so it joins a frame or
+  // two after the source first appears; render the same frame until it has.
+  const auto exportDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  bool exported = !second.participantSharedTextures.empty();
+  while (!exported && std::chrono::steady_clock::now() < exportDeadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    exported = !compositor->render(plan, {frame}).participantSharedTextures.empty();
+  }
+  ASSERT_TRUE(exported);
+  stats = compositor->sourceTexStats();
+  EXPECT_GE(stats.cacheHits, 1u);
+  EXPECT_EQ(stats.cachedUploads, 1u);
 
   // New content (new frameId) re-uploads once and changes the pixels.
   const auto brighter = makeI420SolidFrame("cam", 320, 180, 220, 2);
