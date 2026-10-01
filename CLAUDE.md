@@ -848,12 +848,30 @@ comment at the code site; this is the index.
   - **What happened:** in a long live session, every Take resolved Show Input slots against a
     participant list missing the producer (the app's own camera-off user) for one apply. The
     multiview layout lost a tile and the wall reflowed 5+4 to 4+4 and back on every cut. It
-    did not reproduce after a restart, and the source of the short list is still unknown.
-  - **What changed:** `MultiviewParticipantGrace` keeps an in-show slot's participant on the
-    layout for 1 s through such a dip. A real leave is still dropped after the grace.
-  - **Log line:** every miss logs `mv-roster-miss: slotN pid=... missing from <caller> list ...
-    coreRosterHasIt=yes|no` regardless of verbose. If it recurs, that line says whether the
-    shell or the core produced the short list.
+    did not reproduce after an app restart.
+  - **Root cause (found 2026-10-01): a core the supervisor RESPAWNED is a new roster authority,
+    and the shell rejected it.** The roster epoch is `process:meeting:token`. A new core process
+    starts again at `1:1`, and only the diagnostic token differs, so
+    `ZoomRosterSnapshotPolicy.Accept` could not order it after the dead core's barrier. That
+    policy relies on "a core restart clears the bridge snapshot". `StopCore` did; the
+    supervisor's own crash respawn did not. Consequences, for the rest of the app session:
+    - The bridge snapshot kept the DEAD core's roster. Joins, leaves and the producer's new
+      Zoom id never reached the shell, and slots kept pointing at ids no longer in the meeting.
+    - A Take applies its own raw sync response, which carried the true roster, and the next
+      bridge snapshot put the stale one back. That alternation was the dip.
+    - Measured live: bridge `1:1:18772-0 rev 38 n=8` against core `1:1:23540-0 rev 11 n=9`.
+  - **Fix:** `MediaCoreBridgeService.ReleaseRosterBarrierForRespawnedCore` drops the barrier
+    (epoch and revision only, participants kept) at the respawned core's handshake, keyed on the
+    supervisor restart count. Test: `RosterAfterCoreRespawnTests` (a fake core that dies and
+    comes back on a same-numbered epoch at a lower revision).
+  - **Still in place:** `MultiviewParticipantGrace` holds an in-show slot's participant for 1 s
+    through a dip; a real leave is dropped after the grace.
+  - **Log lines:** `mv-roster-miss: slotN pid=... missing from <caller> list ...
+    coreRosterHasIt=yes|no` (not for an empty pre-join roster), and `roster-drop: pid=...
+    origin=<apply path> ... snap(epoch= rev=) bridge(epoch= rev=)` whenever someone leaves the
+    shell's roster. Two different epochs on that line is this defect; one epoch is a real leave.
+  - **Rule:** "it only happens in a long session" usually means "after an event the session
+    eventually has". Read `media-core.log` for a respawn before theorising about accumulation.
 - **AN EMPTY RENDER PLAN IS NOT "DRAW NOTHING" (2026-08-15, CoreVideo Tiles T1).**
   All THREE compositors — `D3D11CompositorAdapter::resolveLayers`,
   `ProgramFramePreview`'s `buildProgramFramePreview`, and
