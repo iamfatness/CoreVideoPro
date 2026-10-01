@@ -81,9 +81,11 @@ TEST(MediaFrameReadStep, APipeThatClosesWhileDroppingEnds) {
 }
 
 TEST(MediaFrameReadStep, TheProductionAllocatorReturnsNullInsteadOfThrowing) {
-  // No machine can commit this. The point is that it comes back as a null
-  // buffer on the calling thread, not as an exception nothing catches.
-  EXPECT_FALSE(tryAllocateMediaFrame(static_cast<std::size_t>(1) << 62));
+  // A size no vector can hold. The point is that it comes back as a null buffer on
+  // the calling thread, not as an exception nothing catches. Deliberately not a
+  // merely huge size: that reaches operator new, and a sanitizer build aborts on an
+  // oversized request instead of throwing (the native-stub-tsan job did).
+  EXPECT_FALSE(tryAllocateMediaFrame(static_cast<std::size_t>(-1)));
   const auto small = tryAllocateMediaFrame(64);
   ASSERT_TRUE(small);
   EXPECT_EQ(small->size(), 64u);
