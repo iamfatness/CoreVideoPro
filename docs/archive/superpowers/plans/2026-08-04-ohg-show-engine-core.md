@@ -9,7 +9,7 @@
 **Tech Stack:** TypeScript 5.9 (strict, ES2022, NodeNext), vitest 4, Node 24.
 
 **Source documents:**
-- Spec: `docs/superpowers/specs/2026-08-04-ohg-show-engine-design.md`
+- Spec: `docs/archive/superpowers/specs/2026-08-04-ohg-show-engine-design.md`
 - Algorithm reference: `docs/superpowers/specs/2026-08-04-ohg-isadora-actor-reference.md`
 
 **Plan series (this is Plan 1 of 6):**

@@ -8,7 +8,7 @@
 
 **Tech Stack:** C++17, MediaCore (`native/`), GoogleTest via the repo's shim (ONE wildcard per `--gtest_filter`), slice 0–2 `SourceBus` (`native/src/core/SourceBus.h`), CMake multi-config dev core.
 
-**Spec:** `docs/superpowers/specs/2026-09-18-source-bus-design.md` (§4 Media row, §5 slice 3) and `docs/superpowers/specs/2026-09-10-persistent-sources-design.md` (§2 model, §3 tier 2 "one decoder per asset"). Slice 2's record (`docs/superpowers/plans/2026-09-19-source-bus-slice2-capture.md`, the CLAUDE.md slice-2 paragraph) is the template; read the #554 paragraph before Task 3.
+**Spec:** `docs/superpowers/specs/2026-09-18-source-bus-design.md` (§4 Media row, §5 slice 3) and `docs/superpowers/specs/2026-09-10-persistent-sources-design.md` (§2 model, §3 tier 2 "one decoder per asset"). Slice 2's record (`docs/archive/superpowers/plans/2026-09-19-source-bus-slice2-capture.md`, the CLAUDE.md slice-2 paragraph) is the template; read the #554 paragraph before Task 3.
 
 ## Global Constraints
 

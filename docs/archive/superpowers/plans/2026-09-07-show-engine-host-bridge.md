@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 5.9 strict / NodeNext / vitest 4 / Node 24 (engine); C# .NET 9, `System.Text.Json`, xUnit 2.9 (shell). No new NuGet or npm runtime dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-09-07-show-engine-host-bridge-design.md` (this plan cites it as "spec §n"). Parent: `docs/superpowers/specs/2026-08-04-ohg-show-engine-design.md`. Read `docs/superpowers/plan-authoring-rules.md` before Task 1.
+**Spec:** `docs/archive/superpowers/specs/2026-09-07-show-engine-host-bridge-design.md` (this plan cites it as "spec §n"). Parent: `docs/archive/superpowers/specs/2026-08-04-ohg-show-engine-design.md`. Read `docs/superpowers/plan-authoring-rules.md` before Task 1.
 
 ## Global Constraints
 
@@ -1151,7 +1151,7 @@ public StudioControlSurface(StudioViewModel vm, DispatcherQueue dispatcher, Show
 
 ### Task 15: CLAUDE.md, outcomes doc, and the branch review
 
-**Files:** Modify `CLAUDE.md` (add an "OHG show engine host" section: how to configure, where logs are, the env vars `COREVIDEO_NODE_EXE`, `COREVIDEO_SHOW_ENGINE_DIR`, `COREVIDEO_OSC_OHG_LAN`, exit codes 64/70/78, shadow mode); create `docs/superpowers/plans/2026-09-07-show-engine-host-bridge-outcomes.md`.
+**Files:** Modify `CLAUDE.md` (add an "OHG show engine host" section: how to configure, where logs are, the env vars `COREVIDEO_NODE_EXE`, `COREVIDEO_SHOW_ENGINE_DIR`, `COREVIDEO_OSC_OHG_LAN`, exit codes 64/70/78, shadow mode); create `docs/archive/superpowers/plans/2026-09-07-show-engine-host-bridge-outcomes.md`.
 
 **Steps:**
 - [ ] Update `CLAUDE.md` in the same branch (owner standing rule: docs-updated is part of done).

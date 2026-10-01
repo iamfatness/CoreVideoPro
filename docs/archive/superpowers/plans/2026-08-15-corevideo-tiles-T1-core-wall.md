@@ -8,7 +8,7 @@
 
 **Tech Stack:** C++20 (core, gtest), C# / .NET 9 (WinUI shell, xUnit), Node (headless oracle), D3D11/HLSL (compositor, from T2 on).
 
-**Spec:** `docs/superpowers/specs/2026-08-15-corevideo-tiles-parity-design.md`
+**Spec:** `docs/archive/superpowers/specs/2026-08-15-corevideo-tiles-parity-design.md`
 **Charter:** `docs/obs-plugin-parity-charter.md` (group T)
 **Contract:** `docs/obs-plugin-tiles-behavioral-contract.md`
 

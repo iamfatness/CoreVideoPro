@@ -8,7 +8,7 @@
 
 **Tech Stack:** C# .NET 9 / WinUI 3 (CommunityToolkit.Mvvm `[ObservableProperty]`/`[RelayCommand]`), `System.Text.Json`, xUnit 2.9. No new NuGet packages.
 
-**Spec:** `docs/superpowers/specs/2026-09-07-show-engine-host-bridge-design.md` §10 (workspace), §9 (config editor + importer), §11 row "workspace". Parent: `docs/superpowers/specs/2026-08-04-ohg-show-engine-design.md` §4.4. Read `docs/superpowers/plan-authoring-rules.md` (rules 1–10, and the candidate rule 11 in the Plan 7a outcomes) before Task 1. Plan 7a's outcomes: `docs/superpowers/plans/2026-09-07-show-engine-host-bridge-outcomes.md`.
+**Spec:** `docs/archive/superpowers/specs/2026-09-07-show-engine-host-bridge-design.md` §10 (workspace), §9 (config editor + importer), §11 row "workspace". Parent: `docs/archive/superpowers/specs/2026-08-04-ohg-show-engine-design.md` §4.4. Read `docs/superpowers/plan-authoring-rules.md` (rules 1–10, and the candidate rule 11 in the Plan 7a outcomes) before Task 1. Plan 7a's outcomes: `docs/archive/superpowers/plans/2026-09-07-show-engine-host-bridge-outcomes.md`.
 
 ## Global Constraints
 
