@@ -3,6 +3,7 @@
 
 #include "modules/ImageResize.h"
 
+#include <new>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -452,6 +453,9 @@ void StillMediaFrameCache::workerLoop() {
         }
       }
       if (!cacheHit) {
+        // #728: a still can be tens of megabytes. Out of memory here is a failed
+        // decode (loud, placeholder stays), not an exception that ends the core.
+        try {
         decodeOk = decoder_ && decoder_->decode(workPath, decoded, decodeError);
         if (decodeOk && decoded.bgra &&
             (decoded.width > kMaxStillWidth || decoded.height > kMaxStillHeight)) {
@@ -469,6 +473,11 @@ void StillMediaFrameCache::workerLoop() {
             decoded.height = scaledHeight;
             decoded.bgra = std::move(scaled);
           }
+        }
+        } catch (const std::bad_alloc&) {
+          decodeOk = false;
+          decoded = StillImagePixels{};
+          decodeError = "out of memory decoding the image";
         }
       }
     }

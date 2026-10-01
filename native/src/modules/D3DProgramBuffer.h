@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
 
 // Windows-only implementation, included by the D3D adapter after the SDK headers.
@@ -261,7 +262,13 @@ class D3DProgramBuffer {
     ID3D11ShaderResourceView* none[] = {nullptr}; context->PSSetShaderResources(0, 1, none);
     context->CopyResource(yRead_.get(), y_.get()); context->CopyResource(uvRead_.get(), uv_.get());
     context->Flush(); // Submit once; the nonblocking Map polls never flush implicitly.
-    auto pixels = std::make_shared<std::vector<uint8_t>>(1920u * 1080u * 3u / 2u);
+    static core::FrameAllocationFailures allocationFailures("program-buffer-nv12");
+    auto pixels = core::tryMakeFrameBuffer(1920u * 1080u * 3u / 2u);
+    if (!pixels) {
+      // #728: no NV12 tap for this frame; the same outcome as a failed readback.
+      allocationFailures.note(1920u * 1080u * 3u / 2u);
+      return false;
+    }
     auto copy = [&](ID3D11Texture2D* texture, int rows, size_t offset) {
       D3D11_MAPPED_SUBRESOURCE mapped{};
       const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);

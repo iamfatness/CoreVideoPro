@@ -1,3 +1,4 @@
+#include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineClient.h"
 
@@ -313,7 +314,12 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
   // every frame (video appears frozen / very slow). Copy-then-convert keeps the
   // tear window down to the memcpy only.
   const std::size_t planeBytes = yLength + (yLength / 4) * 2;
-  std::vector<std::uint8_t> planes(planeBytes);
+  static core::FrameAllocationFailures allocationFailures("zoom-shm-read");
+  std::vector<std::uint8_t> planes;
+  if (!core::tryResizeFrameBuffer(planes, planeBytes)) {
+    allocationFailures.note(planeBytes);
+    return std::nullopt;  // #728: dropped like a torn read; the caller retries next tick
+  }
   std::memcpy(planes.data(), bytes + sizeof(ShmFrameHeader), planeBytes);
 
   ShmFrameHeader afterCopy{};

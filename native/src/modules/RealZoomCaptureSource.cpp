@@ -1,3 +1,4 @@
+#include "core/FrameAllocation.h"
 #include "modules/RealZoomCaptureSource.h"
 
 #include "modules/ProgramFramePreview.h"
@@ -5,6 +6,13 @@
 #include <utility>
 
 namespace corevideo::modules {
+
+namespace {
+core::FrameAllocationFailures& zoomFrameAllocationFailures() {
+  static core::FrameAllocationFailures failures("zoom-ingest");
+  return failures;
+}
+}  // namespace
 
 RealZoomCaptureSource::RealZoomCaptureSource(std::unique_ptr<ZoomVideoFallback> fallback)
     : fallback_(std::move(fallback)) {}
@@ -19,8 +27,12 @@ void RealZoomCaptureSource::ingestFrame(const std::string& participantId,
     return;
   }
   const int stride = width * 4;
-  auto buffer = std::make_shared<std::vector<uint8_t>>(
-      bgra, bgra + static_cast<size_t>(stride) * static_cast<size_t>(height));
+  const size_t bgraBytes = static_cast<size_t>(stride) * static_cast<size_t>(height);
+  auto buffer = core::tryMakeFrameBuffer(bgra, bgra + bgraBytes);
+  if (!buffer) {
+    zoomFrameAllocationFailures().note(bgraBytes);  // #728: keep the stored frame
+    return;
+  }
 
   std::lock_guard<std::mutex> lock(mutex_);
   StoredFrame& stored = frames_[participantId];
@@ -47,7 +59,11 @@ void RealZoomCaptureSource::ingestI420Frame(const std::string& participantId,
   }
   const size_t yLength = static_cast<size_t>(width) * static_cast<size_t>(height);
   const size_t total = yLength + (yLength / 4) * 2;
-  auto buffer = std::make_shared<std::vector<uint8_t>>(i420, i420 + total);
+  auto buffer = core::tryMakeFrameBuffer(i420, i420 + total);
+  if (!buffer) {
+    zoomFrameAllocationFailures().note(total);  // #728: keep the stored frame
+    return;
+  }
 
   std::lock_guard<std::mutex> lock(mutex_);
   StoredFrame& stored = frames_[participantId];

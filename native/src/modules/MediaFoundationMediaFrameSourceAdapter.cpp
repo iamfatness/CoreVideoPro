@@ -1,3 +1,4 @@
+#include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
 #include "modules/StillMediaFrameCache.h"
@@ -536,7 +537,13 @@ bool copyWicImageToFrame(IWICImagingFactory* factory, const std::string& path, V
     return false;
   }
   const int stride = static_cast<int>(width) * 4;
-  auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(stride) * static_cast<size_t>(height));
+  static core::FrameAllocationFailures allocationFailures("media-still-wic");
+  const size_t imageBytes = static_cast<size_t>(stride) * static_cast<size_t>(height);
+  auto pixels = core::tryMakeFrameBuffer(imageBytes);
+  if (!pixels) {
+    allocationFailures.note(imageBytes);  // #728: a failed decode, not a dead core
+    return false;
+  }
   if (FAILED(converter->CopyPixels(nullptr, static_cast<UINT>(stride), static_cast<UINT>(pixels->size()), pixels->data()))) {
     return false;
   }
@@ -1163,7 +1170,15 @@ class MediaFoundationMediaFrameSource final : public IMediaDecoder, public IMedi
       return false;
     }
     const int stride = static_cast<int>(width) * 4;
-    auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(stride) * static_cast<size_t>(height));
+    static core::FrameAllocationFailures allocationFailures("media-decoder-mf");
+    const size_t frameBytes = static_cast<size_t>(stride) * static_cast<size_t>(height);
+    auto pixels = core::tryMakeFrameBuffer(frameBytes);
+    if (!pixels) {
+      // #728: the sample is consumed and dropped; the clip holds its last frame.
+      buffer->Unlock();
+      allocationFailures.note(frameBytes);
+      return state.lastFrame.hasPixels();
+    }
     std::memcpy(pixels->data(), data, pixels->size());
     buffer->Unlock();
 

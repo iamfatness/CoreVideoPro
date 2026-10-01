@@ -6,6 +6,7 @@
 // under a small mutex). Dev-gated behind COREVIDEO_WITH_WGC, same pattern as
 // the UVC adapter; returns nullptr when the flag is off.
 
+#include "core/FrameAllocation.h"
 #include "modules/Interfaces.h"
 
 #if defined(COREVIDEO_WITH_WGC) && COREVIDEO_WITH_WGC
@@ -268,7 +269,16 @@ class WgcSession {
     if (FAILED(context_->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
       return;
     }
-    std::vector<std::uint8_t> bgra(static_cast<size_t>(stagingWidth_) * stagingHeight_ * 4);
+    // #728: a frame that cannot be allocated is dropped; this is an OS callback
+    // thread, so an escaping std::bad_alloc would terminate the core.
+    static core::FrameAllocationFailures allocationFailures("screen-capture");
+    const size_t bgraBytes = static_cast<size_t>(stagingWidth_) * stagingHeight_ * 4;
+    std::vector<std::uint8_t> bgra;
+    if (!core::tryResizeFrameBuffer(bgra, bgraBytes)) {
+      context_->Unmap(staging_.Get(), 0);
+      allocationFailures.note(bgraBytes);
+      return;
+    }
     const auto* src = static_cast<const std::uint8_t*>(mapped.pData);
     for (int row = 0; row < stagingHeight_; ++row) {
       std::memcpy(bgra.data() + static_cast<size_t>(row) * stagingWidth_ * 4,
