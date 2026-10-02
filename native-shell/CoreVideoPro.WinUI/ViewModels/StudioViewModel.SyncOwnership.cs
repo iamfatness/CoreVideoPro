@@ -26,6 +26,7 @@ public sealed partial class StudioViewModel
         Prepare("event subscriptions", () =>
         {
             _bridge.HealthChanged -= OnBridgeHealthChanged;
+            _bridge.RecoveryCompleted -= OnBridgeRecoveryCompleted;
             _bridge.StatusChanged -= OnBridgeStatusChanged;
             _bridge.ProfileChanged -= OnBridgeProfileChanged;
             _bridge.SnapshotChanged -= OnSnapshotChanged;

@@ -56,6 +56,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             ProfileChanged?.Invoke(profile);
         };
         _supervisor.ZoomRecovered += PublishCaptureSnapshot;
+        _supervisor.RecoveryCompleted += outcome => RecoveryCompleted?.Invoke(outcome);
         _supervisor.ZoomRosterFactReceived += QueueRosterFact;
         _supervisor.ZoomVideoFrameReceived += frame => ZoomVideoFrameReceived?.Invoke(frame);
         _supervisor.ZoomSourceFormatReceived += fact => ZoomSourceFormatReceived?.Invoke(fact);
@@ -67,6 +68,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     }
 
     public event Action<MediaCoreHealth>? HealthChanged;
+    /// <summary>#732: the supervisor's crash recovery finished. Raised after the rejoin's
+    /// roster has been published, so a subscriber sees the meeting it is about to act on.</summary>
+    public event Action<MediaCoreRecoveryOutcome>? RecoveryCompleted;
     public event Action<string>? StatusChanged;
     public event Action<NativeMediaCoreProfile>? ProfileChanged;
     public event Action<NativeMediaCoreStateSnapshot>? SnapshotChanged;

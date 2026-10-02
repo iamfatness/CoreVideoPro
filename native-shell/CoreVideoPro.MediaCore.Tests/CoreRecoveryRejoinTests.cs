@@ -52,9 +52,14 @@ public sealed class CoreRecoveryRejoinTests
                 FrameDrainIntervalMs = 100000, ZoomRecoveryRetryDelayMs = 50
             });
             await using var bridge = new MediaCoreBridgeService(supervisor);
+            // #732: the shell resumes a recording on this signal, so it must arrive, once, and
+            // only after the rejoin's roster has been published.
+            var outcomes = new System.Collections.Concurrent.ConcurrentQueue<(MediaCoreRecoveryOutcome Outcome, string? Epoch)>();
+            bridge.RecoveryCompleted += outcome => outcomes.Enqueue((outcome, bridge.LastSnapshot?.RosterEpoch));
             Assert.NotNull(await bridge.StartAsync());
             await bridge.JoinZoomAsync("https://example.zoom.us/j/123456789", "Producer", webinar: false);
             Assert.Single(JoinLines(directory));
+            var epochBeforeTheCrash = bridge.LastSnapshot!.RosterEpoch;
 
             // The race, made deterministic: the moment the supervisor reports the crash (lock
             // released, before its own respawn) a caller ensures the core is running.
@@ -77,6 +82,11 @@ public sealed class CoreRecoveryRejoinTests
             Assert.Equal(2, joins.Length);
             Assert.NotEqual(joins[0], joins[1]);
             await UntilAsync(() => !supervisor.Health.Recovering);
+
+            await UntilAsync(() => !outcomes.IsEmpty);
+            var reported = Assert.Single(outcomes);
+            Assert.Equal(MediaCoreRecoveryOutcome.ZoomRejoined, reported.Outcome);
+            Assert.NotEqual(epochBeforeTheCrash, reported.Epoch);
         }
         finally
         {

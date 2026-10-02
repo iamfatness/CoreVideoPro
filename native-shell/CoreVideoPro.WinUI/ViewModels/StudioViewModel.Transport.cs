@@ -37,8 +37,18 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
 
     internal Task<TakeResult> TakeForControlAsync() => _transportCoordinator.TakeAsync();
 
-    internal Task SetRecordingAsync(bool requested) => _transportCoordinator.SetRecordingAsync(requested);
-    internal Task SetStreamingAsync(bool requested) => _transportCoordinator.SetStreamingAsync(requested);
+    internal Task SetRecordingAsync(bool requested)
+    {
+        // #732: an explicit record request (operator, control API, close guard) is a decision;
+        // a resume owed from a core restart must not start anything behind it.
+        _recordingResume.OperatorChose();
+        return _transportCoordinator.SetRecordingAsync(requested);
+    }
+    internal Task SetStreamingAsync(bool requested)
+    {
+        _streamResume.OperatorChose();
+        return _transportCoordinator.SetStreamingAsync(requested);
+    }
     // T1.8: while "Stop and close" finishes the outputs, a START is refused (a stop is still allowed).
     internal bool CanSetRecording(bool requested) => !_transportCoordinator.RecordingToggleInFlight && (!requested || (Settings.IsInMeeting && !_outputsClosing));
     internal bool CanSetStreaming(bool requested) => !_transportCoordinator.StreamToggleInFlight && (!requested || !_outputsClosing);
@@ -82,7 +92,7 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
         Streaming = false;
         if (interrupted)
         {
-            OutputStatus = "Outputs interrupted — recording continuity was lost. Start a new session after recovery.";
+            OutputStatus = "Outputs interrupted by a media core restart. They start again when it is back.";
             OutputSessionStatus = OutputStatus;
         }
     }

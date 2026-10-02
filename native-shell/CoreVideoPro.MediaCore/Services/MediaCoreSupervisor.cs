@@ -84,6 +84,9 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     public event Action<string>? StatusChanged;
     public event Action<NativeMediaCoreProfile>? ProfileChanged;
     public event Action<RawCaptureSnapshot>? ZoomRecovered;
+    /// <summary>#732: the crash recovery finished, and how. Raised once per recovery, after
+    /// <see cref="ZoomRecovered"/> when Zoom was rejoined.</summary>
+    public event Action<MediaCoreRecoveryOutcome>? RecoveryCompleted;
     public event Action<RawCaptureSnapshot>? ZoomRosterFactReceived;
     public event Action<ZoomVideoFrame>? ZoomVideoFrameReceived;
     public event Action<ZoomSourceFormatFact>? ZoomSourceFormatReceived;
@@ -1453,6 +1456,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             if (joinPayload is null)
             {
                 StatusChanged?.Invoke("Media core recovered");
+                RecoveryCompleted?.Invoke(MediaCoreRecoveryOutcome.CoreOnly);
                 return;
             }
 
@@ -1522,11 +1526,13 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             StatusChanged?.Invoke(rawCapturePaused
                 ? "Media core and Zoom recovered — capture remains paused"
                 : "Media core and Zoom recovered");
+            RecoveryCompleted?.Invoke(MediaCoreRecoveryOutcome.ZoomRejoined);
         }
         catch (Exception ex)
         {
             DiagnosticLog.WriteException("media-core.log", "[bridge] recovery failed", ex);
             StatusChanged?.Invoke($"Media core recovered, but Zoom rejoin failed: {ex.Message}");
+            RecoveryCompleted?.Invoke(MediaCoreRecoveryOutcome.ZoomRejoinFailed);
         }
     }
 
