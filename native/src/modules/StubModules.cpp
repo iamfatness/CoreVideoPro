@@ -912,6 +912,17 @@ class FakeCaptureDevice final : public ICaptureDevice {
   };
 };
 
+// What a non-stub core holds when no capture adapter constructed: nothing to
+// enumerate, nothing to connect. MediaCore dereferences captureDevice without a
+// null check, so "no devices" must be an object, not a null pointer.
+class NoCaptureDevice final : public ICaptureDevice {
+ public:
+  std::vector<CaptureDeviceInfo> enumerate() const override { return {}; }
+  std::vector<CaptureDeviceInfo> selectInput(const std::string&, const std::string&) override { return {}; }
+  std::vector<CaptureDeviceInfo> setAudioSyncOffset(const std::string&, int) override { return {}; }
+  std::vector<CaptureDeviceInfo> connect(const std::string&) override { return {}; }
+};
+
 class CompositeCaptureDevice final : public ICaptureDevice {
  public:
   explicit CompositeCaptureDevice(std::vector<std::unique_ptr<ICaptureDevice>> devices) : devices_(std::move(devices)) {}
@@ -1162,7 +1173,17 @@ ModuleSet createDefaultModules() {
     modules.outputSender = std::make_unique<CompositeOutputSender>(std::move(outputSenders), std::move(supportedOutputDestinations));
   }
   std::vector<std::unique_ptr<ICaptureDevice>> hardwareCaptureDevices;
+#if COREVIDEO_STUB
+  // The stub tier has no hardware adapters: its fake DeckLink/AJA pair IS its
+  // capture surface, and the stub round-trip tests drive it.
   hardwareCaptureDevices.push_back(std::move(modules.captureDevice));
+#else
+  // A real core lists real devices only (#739). The fake pair used to ride along
+  // as the first member of the composite: a "connected" DeckLink that does not
+  // exist, generating a 640x360 test pattern on every capture tick, kept off the
+  // operator's screen only by an id-prefix filter in the WinUI shell.
+  modules.captureDevice = std::make_unique<NoCaptureDevice>();
+#endif
   bool srtIngestConstructed = false;
   if (auto srtIngest = createSrtIngestCaptureDevice()) {
     hardwareCaptureDevices.push_back(std::move(srtIngest));

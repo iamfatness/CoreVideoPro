@@ -4230,8 +4230,28 @@ TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositi
 }
 #endif
 
-TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {
+// #739: the fake DeckLink/AJA pair belongs to the stub tier. A real core used to
+// list it too — a "connected" DeckLink that does not exist, emitting a test
+// pattern every capture tick — hidden from the operator only by a shell filter.
+TEST(MediaCoreCommand, ARealCoreListsNoFakeCaptureDevices) {
   corevideo::core::MediaCore mediaCore;
+  // Named, not iterated as a temporary: a range-for over captureDevices().asArray()
+  // walks an array whose owner is already destroyed.
+  const auto devices = mediaCore.captureDevices();
+  bool fakeListed = false;
+  for (const auto& device : devices.asArray()) {
+    const auto id = device.getString("id");
+    fakeListed = fakeListed || id == "decklink-1" || id == "aja-io-1";
+  }
+#if COREVIDEO_STUB
+  EXPECT_TRUE(fakeListed) << "the stub tier's capture surface is the fake pair";
+#else
+  EXPECT_FALSE(fakeListed) << "a non-stub core must enumerate real devices only";
+#endif
+}
+
+TEST(MediaCoreCommand, ReportsCaptureDevicesAndAppliesCaptureControls) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   const auto devices = mediaCore.captureDevices();
   ASSERT_TRUE(devices.asArray().size() >= 2);
   EXPECT_EQ(devices.asArray()[0].getString("vendor"), "blackmagic");
