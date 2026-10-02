@@ -3,8 +3,7 @@ using CoreVideoPro.MediaCore.Models;
 namespace CoreVideoPro.MediaCore.Services;
 
 /// <summary>
-/// Maps native render-plan overlay layers and caption track cues into studio graphics state.
-/// Mirrors React overlay + caption transcript wiring from media-core snapshots.
+/// Maps caption track cues from media-core snapshots into the studio transcript.
 /// </summary>
 public static class GraphicsOverlaySync
 {
@@ -17,43 +16,6 @@ public static class GraphicsOverlaySync
         public required string Role { get; init; }
         public required string Text { get; init; }
         public required int Confidence { get; init; }
-    }
-
-    /// <summary>
-    /// Overlay ids present in the active render plan. Empty when no overlay layers are published.
-    /// </summary>
-    public static IReadOnlySet<string> ResolveActiveOverlayIds(NativeMediaCoreStateSnapshot snapshot) =>
-        snapshot.RenderPlan.Layers
-            .Where(layer => layer.Kind.Equals("overlay", StringComparison.OrdinalIgnoreCase))
-            .Select(layer => layer.OverlayId)
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Select(id => id!.Trim())
-            .ToHashSet(StringComparer.Ordinal);
-
-    /// <summary>
-    /// When the engine is running, map graphic ids to enabled flags from the render plan.
-    /// Returns null when the engine is off so local toggles are preserved.
-    /// </summary>
-    public static IReadOnlyDictionary<string, bool>? ResolveOverlayEnabledFlags(
-        NativeMediaCoreStateSnapshot snapshot,
-        IEnumerable<string> graphicIds,
-        bool engineRunning)
-    {
-        if (!engineRunning)
-        {
-            return null;
-        }
-
-        var activeOverlayIds = ResolveActiveOverlayIds(snapshot);
-        if (activeOverlayIds.Count == 0 && snapshot.OverlayCount == 0)
-        {
-            return null;
-        }
-
-        return graphicIds.ToDictionary(
-            id => id,
-            id => activeOverlayIds.Contains(id),
-            StringComparer.Ordinal);
     }
 
     /// <summary>

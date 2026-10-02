@@ -11174,7 +11174,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyGraphicsAndCaptionStateFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
-        ApplyOverlayStateFromSnapshot(snapshot);
+        // A graphic's Enabled flag is the OPERATOR's desired state. It is never written
+        // from a snapshot (#757): the old write-back read the active overlays from a
+        // render-plan layer list a real core does not publish, so any overlay on air
+        // switched every graphic off again within a snapshot or two.
         ApplyProductionReadoutsFromSnapshot(snapshot);
         ApplyCaptionTranscriptFromSnapshot(snapshot);
     }
@@ -11214,28 +11217,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             };
             Overlays.NotifyBrandKitChanged();
         }
-    }
-
-    private void ApplyOverlayStateFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
-    {
-        var enabledFlags = GraphicsOverlaySync.ResolveOverlayEnabledFlags(
-            snapshot,
-            Graphics.Select(graphic => graphic.Id),
-            ZoomCaptureSubscribed);
-        if (enabledFlags is null)
-        {
-            return;
-        }
-
-        foreach (var graphic in Graphics)
-        {
-            if (enabledFlags.TryGetValue(graphic.Id, out var enabled))
-            {
-                graphic.Enabled = enabled;
-            }
-        }
-
-        OnPropertyChanged(nameof(EnabledGraphics));
     }
 
     private void ApplyCaptionTranscriptFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
