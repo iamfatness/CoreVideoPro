@@ -47,6 +47,36 @@ inline MediaFrameBuffer tryAllocateMediaFrame(std::size_t bytes) noexcept {
   }
 }
 
+// Reuses a frame buffer once nobody else holds it.
+//
+// The clip reader used to allocate a fresh frame for EVERY frame: 8.3 MB sixty times a
+// second, about 500 MB/s of allocate-and-free, each one a chance to fail on a machine that
+// is short of memory (#728). A published frame is shared with the compositor, which may hold
+// it for a tick or for as long as the clip is paused, so a buffer is only taken back when
+// this recycler is its sole owner. Not thread-safe: it lives on the reader thread.
+class MediaFrameRecycler {
+ public:
+  // The frame that was just replaced as "latest". It is reused later if every other holder
+  // has let go of it by then.
+  void offer(MediaFrameBuffer retired) noexcept { retired_ = std::move(retired); }
+
+  // A buffer of exactly `bytes`: the retired one when this is its only owner, else a new one,
+  // else null.
+  MediaFrameBuffer take(std::size_t bytes) noexcept {
+    if (retired_ && retired_.use_count() == 1 && retired_->size() == bytes) {
+      ++reused_;
+      return std::move(retired_);
+    }
+    return tryAllocateMediaFrame(bytes);
+  }
+
+  std::uint64_t reused() const noexcept { return reused_; }
+
+ private:
+  MediaFrameBuffer retired_;
+  std::uint64_t reused_ = 0;
+};
+
 // `read(destination, wanted)` returns the bytes read, 0 when the pipe is closed.
 // `allocate(bytes)` returns a buffer of that size, or null.
 template <typename Read, typename Allocate>

@@ -91,4 +91,41 @@ TEST(MediaFrameReadStep, TheProductionAllocatorReturnsNullInsteadOfThrowing) {
   EXPECT_EQ(small->size(), 64u);
 }
 
+// #728: the clip reader allocated 8.3 MB per frame, about 500 MB a second.
+TEST(MediaFrameReadStep, ARetiredFrameNobodyElseHoldsIsReused) {
+  MediaFrameRecycler recycler;
+  auto first = recycler.take(1000);
+  ASSERT_TRUE(first);
+  const auto* storage = first->data();
+  recycler.offer(std::move(first));
+
+  const auto second = recycler.take(1000);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(second->data(), storage);
+  EXPECT_EQ(recycler.reused(), 1u);
+}
+
+// The compositor may still be drawing (or holding, for a paused clip) the retired frame.
+// Writing the next picture into it would tear what is on air.
+TEST(MediaFrameReadStep, ARetiredFrameSomeoneStillHoldsIsNeverReused) {
+  MediaFrameRecycler recycler;
+  auto first = recycler.take(1000);
+  const MediaFrameBuffer heldByTheCompositor = first;
+  recycler.offer(std::move(first));
+
+  const auto second = recycler.take(1000);
+  ASSERT_TRUE(second);
+  EXPECT_NE(second->data(), heldByTheCompositor->data());
+  EXPECT_EQ(recycler.reused(), 0u);
+}
+
+TEST(MediaFrameReadStep, ARetiredFrameOfAnotherSizeIsNotReused) {
+  MediaFrameRecycler recycler;
+  recycler.offer(recycler.take(500));
+  const auto next = recycler.take(1000);
+  ASSERT_TRUE(next);
+  EXPECT_EQ(next->size(), 1000u);
+  EXPECT_EQ(recycler.reused(), 0u);
+}
+
 }  // namespace

@@ -1,5 +1,6 @@
 #include "core/BoundedAsyncLog.h"
 #include "core/MediaCore.h"
+#include "core/SystemMemoryPolicy.h"
 
 #include "compositor/CompositorLayout.h"
 #include "compositor/TilesLayout.h"
@@ -942,6 +943,38 @@ rpc::Json MediaCore::sessionState() const {
   const auto renderLastProgressNs = renderWorkerLastProgressNs_.load(std::memory_order_relaxed);
   const auto audioLastProgressNs = audioWorkerLastProgressNs_.load(std::memory_order_relaxed);
   const auto videoOutputLastProgressNs = videoOutputWorkerLastProgressNs_.load(std::memory_order_relaxed);
+  // #728: say when the MACHINE is close to refusing memory. Published unconditionally
+  // (level "unknown" where it cannot be measured, never a healthy-looking absence), and
+  // logged once per transition so the bounded log is not flooded by a starved machine.
+  {
+    const auto memoryNowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (systemMemorySampledAtNs_ == 0 || memoryNowNs - systemMemorySampledAtNs_ >= 1'000'000'000) {
+      systemMemorySampledAtNs_ = memoryNowNs;
+      const auto sample = sampleSystemMemory();
+      const auto previous = static_cast<SystemMemoryLevel>(systemMemoryLevel_);
+      const auto level = classifySystemMemory(sample, previous);
+      systemMemoryMeasured_ = sample.measured;
+      systemMemoryAvailableBytes_ = sample.commitAvailableBytes;
+      systemMemoryLimitBytes_ = sample.commitLimitBytes;
+      if (level != previous && !(previous == SystemMemoryLevel::Unknown && level == SystemMemoryLevel::Ok)) {
+        ::corevideo::core::nativeLogf(
+            "[system-memory] %s: %llu MB of %llu MB committable memory is left on this machine%s\n",
+            systemMemoryLevelName(level),
+            static_cast<unsigned long long>(sample.commitAvailableBytes / (1024 * 1024)),
+            static_cast<unsigned long long>(sample.commitLimitBytes / (1024 * 1024)),
+            level == SystemMemoryLevel::Critical
+                ? "; new sources, streams or recordings may fail and the core may stop - close other applications now"
+                : level == SystemMemoryLevel::Low ? "; close other applications before starting more outputs" : "");
+      }
+      systemMemoryLevel_ = static_cast<int>(level);
+    }
+    state.emplace("systemMemory", rpc::Json::Object{
+        {"measured", systemMemoryMeasured_},
+        {"level", systemMemoryLevelName(static_cast<SystemMemoryLevel>(systemMemoryLevel_))},
+        {"commitAvailableMb", static_cast<double>(systemMemoryAvailableBytes_ / (1024 * 1024))},
+        {"commitLimitMb", static_cast<double>(systemMemoryLimitBytes_ / (1024 * 1024))}});
+  }
   state.emplace("realtimeEvidence", rpc::Json::Object{
       {"metricVersion", "realtime-worker-evidence-v1"},
       {"render", rpc::Json::Object{

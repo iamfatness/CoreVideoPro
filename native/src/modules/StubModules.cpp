@@ -647,9 +647,19 @@ class CompositeOutputSender final : public IOutputSender {
         }
       }
     }
+    // PCM GOES TO EVERY SENDER, shared-AAC consumers included (#735).
+    // "Accepts shared AAC" is a capability; whether a sender USES it is decided per
+    // stream, when it picks its encode path. A consumer on the CPU fallback path
+    // (no usable hardware encoder, a capacity refusal, COREVIDEO_GPU_ENCODE=0)
+    // ignores the encoded packets and has an FFmpeg waiting on a PCM input. Slice 6
+    // withheld PCM from every consumer by capability, so that FFmpeg never got audio,
+    // stopped reading video after 12 frames, and the stream delivered nothing
+    // (measured: 0 bytes at the sink on every build from 2026-09-30).
+    // A consumer that IS on the shared path drops this PCM itself
+    // (RtmpOutputSenderAdapter::writeAudioToFfmpeg returns first), so sending it
+    // costs one small queued copy per tick and cannot double the audio.
     for (size_t index = 0; index < senders_.size(); ++index) {
-      if (!sharedAacEnabled_ || !sharedAacConsumers_[index])
-        senders_[index]->submitAudio(pcm, channels, sampleRate);
+      senders_[index]->submitAudio(pcm, channels, sampleRate);
     }
   }
 

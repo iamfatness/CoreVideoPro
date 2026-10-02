@@ -296,6 +296,11 @@
       "qualification": "include",
       "control": "include"
     },
+    "systemMemory": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
     "zoomSubscriptionChurn": {
       "typed": "omit",
       "qualification": "include",

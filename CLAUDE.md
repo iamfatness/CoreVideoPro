@@ -3911,11 +3911,51 @@ Program, a guest joining, a capture device connecting, a stream or recording sta
 - **Not covered:** the real app with a real meeting; the ~100 ms / 4-6 slot stall the issue
   first reported (this harness showed two slots per event); other first-use costs on the
   render thread (the MF recording open is on its own thread already).
-- **`validate-gpu-encode.mjs` is flaky on main:** it greps the lossy process log for
-  `[gpu-encode] path=` and failed 2 of 5 runs on both the `cdd2e87` core and this change,
-  with the stream itself healthy each time. Read the sender snapshot before believing it.
 - **Tests:** `D3DDecoupledExportTest.cpp` (deferred creation is off the caller's thread, then
   publishes; resize and destroy while pending).
+
+## Three gates that could not be trusted, and what each was hiding (2026-10-01)
+
+A check that is red for a reason nobody acts on teaches everyone to stop reading it. Each of
+these was failing or flaking on `main`, and each was hiding something.
+
+- **Show drill, `source->render` latency: failing on every build since 2026-09-21.** The #579
+  lip-sync fix holds Zoom video for `kZoomVideoReserve` (60 ms = 3.6 frames at 60 fps,
+  `ZoomPlayoutTiming.h`) so it plays out with its primed audio. The drill kept a 33/50 ms
+  budget from before the hold. The budget is now DERIVED from that header (hold + 20 ms p50,
+  hold + 33.3 ms p99), so it gates latency above the deliberate hold and cannot go stale the
+  same way. Measured 68.6 / 73.9 ms against 80.0 / 93.3. **The 60 ms itself is an owner
+  decision (kept 2026-10-01); cutting it means shrinking the Zoom audio reserve.**
+- **`validate-gpu-encode.mjs`: failed 2 runs in 5 with a healthy stream.** It grepped the
+  lossy process log for `[gpu-encode] path=`. It now reads the path from the sender snapshot
+  (`muxInputVideo` is published only on the GPU-direct path); a log line that says
+  `cpu-fallback` still overrules, only its absence no longer fails. 5 of 5 after.
+  **Its own control, `--force-raw`, was the real finding (#735, fixed in the same PR): the
+  CPU-fallback stream path delivered NOTHING on every build from 2026-09-30.** #538 Slice 6
+  (`afc32ebc`, shared AAC) made `CompositeOutputSender` withhold PCM from every sender that
+  ACCEPTS shared AAC. Accepting is a capability; a sender on the CPU fallback path (no usable
+  hardware encoder, a capacity refusal, `COREVIDEO_GPU_ENCODE=0`) ignores the encoded packets
+  and has an FFmpeg waiting on a PCM input that never arrived, so it stopped reading video
+  after 12 frames. PCM now goes to every sender; one on the shared path already drops it
+  (`writeAudioToFfmpeg` returns first). After: raw path 3 of 3 at 60 fps, GPU path 3 of 3,
+  and the same-run A/V harness still within one frame.
+  - **The sender's `lastError` was a red herring:** "waiting for composed BGRA program
+    pixels" is the sticky first-tick message, not the cause. Read `framesSent` and
+    `supervisor.lastProgressAgeMs`.
+  - **The first bisect of this was WRONG.** It trusted one 6 s run per step and never checked
+    the build had produced a new binary; its first verdict tested a stale exe and it blamed
+    an unrelated commit. The second deleted the exe before each build and required two
+    agreeing runs. Confirm a bisect boundary with repeated runs on both sides before
+    believing it.
+  - Run `--force-raw` whenever the sender, the composite or the Program export changes.
+- **Windows CI meter probe: failed three runs in a day and passed each re-run.**
+  `test-audio-meter-stability.ps1` threw the probe's exit code BEFORE reading its report, so a
+  probe that failed with a reason looked the same as one that crashed. It now prints the
+  report and says which. The cause of the flake is still unknown; the next one names itself.
+- **Rule:** when a gate is red on `main`, A/B it against an older build before reading it as
+  noise or as your regression. Copy an installed beta's `corevideo-native.exe` over
+  `native/build-dev` for one run (and restore it), or point `COREVIDEO_BUILD_DIR` at a scratch
+  folder holding it and the fake engine.
 
 ## A frame that cannot be allocated is DROPPED, not fatal (#728, 2026-10-01)
 
@@ -3940,14 +3980,31 @@ BGRA frame, about 8.3 MB) -> `std::bad_alloc` -> no handler on that thread -> `t
   cannot be decoded for lack of memory is a failed decode (placeholder stays).
 - **Not guarded:** small allocations (strings, JSON, queue nodes, shared_ptr control blocks)
   anywhere; reused scratch buffers on the output side (NDI send convert); `src/zoom/`
-  (`ShmFrameReader`, `I420Convert`); every macOS `.mm` path. The FFmpeg clip reader still
-  allocates a fresh 8.3 MB buffer per frame instead of recycling.
-- **None of it has run under real memory pressure.** The helpers are unit-tested; each call
-  site was changed by reading it. The show drill, multiview and ISO-record checks pass the
-  same as before on the changed core.
-- **The show drill's source->render gate fails on main, before and after this change**
-  (p50 65 to 67 ms measured on both cores, 2026-10-01; every other drill line passes). Do not
-  read that line as a regression from whatever you just changed without an A/B.
+  (`ShmFrameReader`, `I420Convert`); every macOS `.mm` path; thread creation (see below).
+- **Run under a REAL commit limit (2026-10-01):**
+  `python scripts/qa/run-with-memory-limit.py --process-mb N -- <command>` starts the command
+  suspended in a job object with a per-process committed-memory cap, so allocations really
+  fail. Measured with `program-buffer-recorded-av.mjs --fixture <clip>` (core peak with no
+  cap: 727 MB):
+  - **600 MB and 300 MB: survived.** `[frame-alloc] OUT OF MEMORY at media-decoder-mf` /
+    `program-buffer-nv12`, frames dropped, clean exit 0.
+  - **500 MB and 400 MB: the core died, exit `0xC00000FD` (stack overflow).** The dump shows a
+    NEW THREAD in `ntdll!LdrpInitializeThread`: its stack could not be committed. That is
+    inside the Windows loader; no handler in the core runs. **Dropping frames is not a
+    guarantee of survival, only of surviving the failures that reach our code.**
+  - Assigning the launcher itself to the job did not carry to its children on this machine;
+    the child has to be assigned explicitly (create suspended, assign, resume).
+- **So the machine's memory is watched and said out loud.** `core/SystemMemoryPolicy.h`
+  samples available commit once a second from `sessionState()`: `low` under 4 GB, `critical`
+  under 1 GB, with a 512 MB margin to leave a level. Snapshot node `systemMemory {measured,
+  level, commitAvailableMb, commitLimitMb}` (published unconditionally) and one
+  `[system-memory] low|critical|ok: N MB of M MB ...` line per transition.
+  **Not wired to any operator surface yet**, and a job-object cap is NOT reflected in the
+  sample, so the capped runs above could not exercise it; it read `ok` at 103 GB available on
+  the live app.
+- **The FFmpeg clip reader recycles its frame buffers** (`MediaFrameRecycler`): a retired
+  frame is reused only when the reader is its sole owner, so a frame the compositor still
+  holds is never overwritten. It used to allocate 8.3 MB per frame.
 - **Rules:** an exception escaping a worker thread is a process kill, so anything a worker
   allocates per frame needs a non-throwing path. When the core restarts unexpectedly, read
   the dump and the System event log before the app logs.
