@@ -94,6 +94,20 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 | [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | H.265 streaming needs repeatable installed receiver acceptance. |
 | [#575](https://github.com/iamfatness/CoreVideoPro/issues/575) | Scheduled staging smoke blocked on missing Actions secrets. Not #618. |
 
+## Unranked — mock code in the shipping path and repo cleanup (2026-10-01 audit)
+
+Found by the 2026-10-01 cleanup audit. Order within this table is a suggestion; the owner ranks.
+
+| Issue | Remaining work |
+|---|---|
+| [#740](https://github.com/iamfatness/CoreVideoPro/issues/740) | **Suggested first.** `SyntheticMediaCore` is the base of every real snapshot, so a field the core omits shows an invented healthy value (`Health = "live"`, `HardwareAccelerated = true`). Surface omitted fields as unknown; delete dead `SyntheticProfile`. |
+| [#739](https://github.com/iamfatness/CoreVideoPro/issues/739) | The production core registers `FakeCaptureDevice` (fake DeckLink / AJA); only a WinUI id-prefix filter hides it. Register it in the stub tier only; check mac-shell. |
+| [#741](https://github.com/iamfatness/CoreVideoPro/issues/741) | The core serves a fake two-person Zoom roster whenever `COREVIDEO_ZOOM_ENGINE_PATH` is unset, at runtime. Report Zoom unavailable instead; make `simulate-breakout-room-change` stub-only. |
+| [#747](https://github.com/iamfatness/CoreVideoPro/issues/747) | After #738 nothing cross-checks the `Protocol.h` manifests against the C# protocol. Add a C++↔C# parity test for the five manifests. |
+| [#738](https://github.com/iamfatness/CoreVideoPro/issues/738) | Remove the orphaned React prototype (`src/`) and Node simulator (`native-core/`): PR #745. Follow-ups: move the two Zoom config JSONs out of `src/`; remove `studio/` once `scripts/app.ps1` no longer builds the core through `build-studio.ps1`. |
+| [#742](https://github.com/iamfatness/CoreVideoPro/issues/742) | `StubModules.cpp` holds the production module composition. Split production wiring from stubs; no behaviour change. |
+| [#743](https://github.com/iamfatness/CoreVideoPro/issues/743) | `caption-broker` and `licensing-api` are stub services with no native client. Owner ruling: build for real or remove, including deployed workers. |
+
 ## Unranked — open issue inventory restored in this audit
 
 These linked issues already existed with the `backlog` label but had no row in
