@@ -62,3 +62,45 @@ guarantee or used to waive that failure. PR #523 has not been merged by this wor
 
 References: [asynchronous MFT event contract](https://learn.microsoft.com/en-us/windows/win32/medfound/asynchronous-mfts),
 [FFmpeg RTMP protocol options](https://ffmpeg.org/ffmpeg-protocols.html#rtmp).
+
+## Follow-up: release attempt, 2026-09-14 UTC
+
+Encoder fixes were committed and pushed to PR #523 as `d8844e7e`. A Windows CI
+concurrency test depended on a shared thread-pool worker starting within two seconds;
+its process disposal order also masked callback failures during teardown. Commit
+`8e925368` uses a dedicated worker for that lock-acquisition check and disposes the
+supervisor before its process. The focused tests and all 2,224 MediaCore tests pass
+locally. Hosted checks are being rerun on that commit.
+
+Failure-only Program-buffer diagnostics were added locally to distinguish missing
+source slots, late GPU copies, and publication overruns. No failure occurred to
+trigger them. One process delivered 31,394 frames with zero buffer underruns or
+deadline misses; a subsequent process delivered 45,659 with zero of either.
+View changes, the complete 946-test native suite, and a concurrent eight-source
+40-second show drill did not reproduce the failure. The drill itself passed.
+An attempted restart was rejected by the shell's live-output close guard; it was
+not counted as a new process. Later cold starts were verified by process identity.
+
+A clean detached worktree at `d8844e7e` was built separately. Its self-contained
+shell passes the runtime probe (PRI 2,361,896 bytes). The 850-file archive passes
+package validation. The installer passes real silent install, startup, duplicate
+rejection, uninstall, user-file preservation, runtime cleanup, and manifest path
+escape checks. The clean candidate's own native suite passes all 946 tests.
+
+Candidate files are local and UNPUBLISHED under
+`C:/Users/walla/CoreVideoPro-ship-d8844e7/artifacts/releases/beta-2026-09-14-d8844e7/`.
+ZIP SHA-256: `e774fc8409a8230089fd609c5e4ffc7c58f4abf86482206db93b14deb25c0d16`.
+The candidate contains the encoder fix; the later commit changes only its test
+harness. It does not include the temporary Program-buffer diagnostic code.
+
+The packaged app was joined to the same meeting and left transmitting the saved
+eight-source scene at 1920x1080/60, 6 Mbps. All six live source/audio checks passed
+over 60 seconds. A 154.16-second encoded-frame sample advanced 9,198 frames
+(59.67 fps; FFmpeg log samples are quantized). At that reading the process had
+delivered 15,945 Program frames with zero buffer underruns or deadline misses.
+Evidence: `artifacts/buffer-fix-2026-09-14/`; build/package/installer evidence is in
+the detached worktree.
+
+**Release remains held.** These finite clean runs do not identify or fix the
+earlier intermittent buffer failure. Its root cause is still unresolved, so
+neither the PR nor a public beta has been shipped by this work.

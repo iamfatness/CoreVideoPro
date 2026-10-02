@@ -313,7 +313,13 @@ class D3DProgramBuffer {
       });
       if (stopped_) break;
       if (delivery_.empty() || delivery_.front()->state != State::Ready || delivery_.front()->productionSlot != targetSlot) {
-        if (const auto due = timeline_->takeDue(now100ns() * 100)) diagnostics_.underruns += due->skippedSlots + 1;
+        if (const auto due = timeline_->takeDue(now100ns() * 100)) {
+          diagnostics_.underruns += due->skippedSlots + 1;
+          ::corevideo::core::nativeLogf("[program-buffer-miss] stage=source target=%lld front=%lld state=%d skipped=%lld late_ns=%lld\n",
+              static_cast<long long>(targetSlot), delivery_.empty() ? -1LL : static_cast<long long>(delivery_.front()->productionSlot),
+              delivery_.empty() ? -1 : static_cast<int>(delivery_.front()->state), static_cast<long long>(due->skippedSlots),
+              static_cast<long long>(now100ns() * 100 - due->deadlineNs));
+        }
         continue;
       }
       // Prepare a private GPU image early. Stable monitor exports remain readable
@@ -348,7 +354,12 @@ class D3DProgramBuffer {
       maximumCopyNs_ = (std::max)(maximumCopyNs_, static_cast<int64_t>(copyNs));
       minimumPreparationLeadNs_ = (std::min)(minimumPreparationLeadNs_, static_cast<int64_t>(preparationLeadNs));
       maximumCompletionLateNs_ = (std::max)(maximumCompletionLateNs_, static_cast<int64_t>(completionLateNs));
-      if (completed > deadline) ++diagnostics_.deadlineMisses;
+      if (completed > deadline) {
+        ++diagnostics_.deadlineMisses;
+        ::corevideo::core::nativeLogf("[program-buffer-miss] stage=gpu-copy slot=%lld lead_ns=%lld copy_ns=%lld late_ns=%lld\n",
+            static_cast<long long>(slot->productionSlot), static_cast<long long>(preparationLeadNs),
+            static_cast<long long>(copyNs), static_cast<long long>(completionLateNs));
+      }
       if (!stopped_) changed_.wait_until(lock, deadline, [&] { return stopped_; });
       const auto due = timeline_->takeDue(now100ns() * 100);
       const bool current = due && due->slot == slot->productionSlot;
@@ -395,6 +406,10 @@ class D3DProgramBuffer {
         diagnostics_.underruns += missed->skippedSlots + 1;
       const bool deliveryExpired = exportExpired || now100ns() * 100 >= expiresAtNs;
       if (!current || deliveryExpired) {
+        ::corevideo::core::nativeLogf("[program-buffer-miss] stage=publish slot=%lld current=%d expired=%d export_ns=%lld late_ns=%lld\n",
+            static_cast<long long>(slot->productionSlot), current, deliveryExpired,
+            static_cast<long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(exportEnd - exportBegin).count()),
+            static_cast<long long>(now100ns() * 100 - timeline_->deadlineNs(slot->productionSlot)));
         if (current) ++diagnostics_.underruns;
         else if (due) ++diagnostics_.underruns; // The selected due slot had no delivered packet.
         if (shellCopied || multiviewCopied) latest_.reset(); // Export contents no longer prove the old snapshot.

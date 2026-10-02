@@ -1,5 +1,11 @@
 # CoreVideo Pro — ranked backlog
 
+## New release blocker — awaiting tier placement
+
+| Issue | Item | Status |
+|---|---|---|
+| [#526](https://github.com/iamfatness/CoreVideoPro/issues/526) | Intermittent Program-buffer delivery failures during GPU streaming | Owner requested fix-before-ship on 2026-09-14 UTC. Encoder fixes are on PR #523; the earlier underrun remains unexplained despite clean repeat runs. Release held. |
+
 **Refined 2026-09-11 (after the first real meeting; see Tier 1 order).** Earlier today (owner: "Your rank makes sense"): #449 up to T1.11; new T1.12 #475, T1.13 #473; T2.7-T2.10 (#474, #469, #466, #468); T3.5-T3.7 (#476, #465, #470).
 
 **Batch of 2026-09-12 recorded (T1.12, T1.13, T2.6-T2.10, T3.2, T3.7, T3.8 done; T2.1 and T3.5
