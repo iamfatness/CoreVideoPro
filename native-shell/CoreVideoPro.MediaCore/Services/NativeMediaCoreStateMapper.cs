@@ -318,7 +318,11 @@ public static class NativeMediaCoreStateMapper
                 {
                     "failed" => "failed",
                     "warning" => "warning",
-                    "live" or "starting" => "live",
+                    "live" => "live",
+                    // #759: connecting is not on air. Folding "starting" into "live" made
+                    // every output readout claim live before any media was accepted and
+                    // left the bridge's "Starting:" branch unreachable.
+                    "starting" => "starting",
                     _ => "idle"
                 },
                 Message = FormatOutputSenderHealthMessage(destination, sender),
