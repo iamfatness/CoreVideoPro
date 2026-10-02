@@ -13,7 +13,8 @@ What it judges, and why each exists:
   * the multiviewer config survived                       (a one-shot command lost on respawn)
   * Program is delivering frames again, with no new underruns after it settles
   * Takes after the restart do not dip the roster         (launch.log: mv-roster-miss / roster-drop)
-  * with --record: what happened to the recording          (reported; see RECORDING below)
+  * with --record: the file from before the kill is playable, and a NEW recording is running
+    in a different folder afterwards                     (#732: it used to stay stopped)
 
 Exit code 0 only when every gated check passes. INFO lines are measurements, not gates.
 """
@@ -237,23 +238,40 @@ def main():
     if buffer_a is not None and buffer_b is not None:
         check("no Program underruns once settled", buffer_b == buffer_a, f"underruns {buffer_a} -> {buffer_b} over 5s")
 
-    # RECORDING: reported, not gated. A core that dies cannot finalize its own file; what this
-    # says is whether the operator still has a recording running, and whether the old file opens.
+    # RECORDING (#732). A core that dies cannot finalize its own file, so the old file is judged
+    # by whether it opens. The rest of the show must still be recorded: a new session, in a new
+    # folder, without the operator touching anything.
     if options.record:
-        recording = core().get("recording") or {}
-        info("recording after restart", {k: recording.get(k) for k in ("status", "active", "sessionId", "programPath", "warning")})
-        info("shell believes it is recording", get("/state").get("recording"))
+        def resumed():
+            recording = core().get("recording") or {}
+            path = recording.get("programPath")
+            return recording if recording.get("active") and path and path != recording_path and                 (recording.get("totalFramesWritten") or 0) > 30 else None
+
+        again = wait_for(resumed, 40, 1)
+        recording = again or (core().get("recording") or {})
+        check("recording resumed in a new folder after the restart", bool(again),
+              {k: recording.get(k) for k in ("status", "active", "programPath", "warning")})
+        check("the shell knows it is recording again", bool(get("/state").get("recording")),
+              f"/state.recording={get('/state').get('recording')}")
+        resume_lines = [line.split("recording:", 1)[1].strip()[:150] for line in log_since(mark) if "recording:" in line]
+        info("recording lines in launch.log", resume_lines)
         if recording_path and os.path.exists(recording_path):
             probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
                                     recording_path], capture_output=True, text=True)
             duration = probe.stdout.strip()
-            info("file from before the kill", {"path": recording_path, "bytes": os.path.getsize(recording_path),
-                                              "playable seconds": duration or f"UNREADABLE ({probe.stderr.strip()[:120]})",
-                                              "recorded seconds at the kill": round(recorded_seconds, 1),
-                                              "lost seconds": round(recorded_seconds - float(duration), 1) if duration else "all"})
+            lost = round(recorded_seconds - float(duration), 1) if duration else None
+            check("the file from before the kill is playable to within 3 s of the kill",
+                  lost is not None and lost <= 3.0,
+                  {"path": recording_path, "playable seconds": duration or f"UNREADABLE ({probe.stderr.strip()[:120]})",
+                   "recorded seconds at the kill": round(recorded_seconds, 1), "lost seconds": lost})
         else:
-            info("file from before the kill", f"path not found: {recording_path}")
+            check("the file from before the kill is playable to within 3 s of the kill", False,
+                  f"path not found: {recording_path}")
         invoke("transport.record.set", False)
+        # Leave the app as it was found: wait for the stop to finalize, or a close request
+        # right after this script lands on the "Stop outputs and close?" dialog.
+        wait_for(lambda: not (core().get("recording") or {}).get("active") and
+                 (core().get("recording") or {}).get("status") not in ("stopping", "finalizing"), 30, 1)
 
     return finish(results, report, options)
 

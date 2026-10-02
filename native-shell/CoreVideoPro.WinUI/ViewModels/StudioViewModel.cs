@@ -1577,6 +1577,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshTransportState();
 
         _bridge.HealthChanged += OnBridgeHealthChanged;
+        _bridge.RecoveryCompleted += OnBridgeRecoveryCompleted;
         _bridge.StatusChanged += OnBridgeStatusChanged;
         _bridge.ProfileChanged += OnBridgeProfileChanged;
         _bridge.SnapshotChanged += OnSnapshotChanged;
@@ -4206,7 +4207,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // lives in TransportCoordinator.ToggleRecordingAsync (PR2 strangler). This stays the
     // generated [RelayCommand] so XAML + external NotifyCanExecuteChanged pokes are unchanged.
     [RelayCommand(CanExecute = nameof(CanToggleRecording))]
-    private Task ToggleRecordingAsync() => _transportCoordinator.ToggleRecordingAsync();
+    private Task ToggleRecordingAsync()
+    {
+        _recordingResume.OperatorChose();
+        return _transportCoordinator.ToggleRecordingAsync();
+    }
 
     private bool CanToggleStreaming() => !_transportCoordinator.StreamToggleInFlight && !_outputsClosing;
 
@@ -4214,7 +4219,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // retry) lives in TransportCoordinator.ToggleStreamingAsync (PR2 strangler). This stays the
     // generated [RelayCommand] so XAML + external NotifyCanExecuteChanged pokes are unchanged.
     [RelayCommand(CanExecute = nameof(CanToggleStreaming))]
-    private Task ToggleStreamingAsync() => _transportCoordinator.ToggleStreamingAsync();
+    private Task ToggleStreamingAsync()
+    {
+        _streamResume.OperatorChose();
+        return _transportCoordinator.ToggleStreamingAsync();
+    }
 
     [RelayCommand]
     private void SetViewMode(string mode)
@@ -10243,15 +10252,111 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void OnBridgeHealthChanged(MediaCoreHealth health) =>
         RunOnUiThread(() => ApplyBridgeHealthChanged(health));
 
+    // #732: a core crash mid-show must not cost the rest of the show's recording or stream.
+    private readonly OutputResumeAfterCoreRestart _recordingResume = new(requiresMeeting: true);
+    private readonly OutputResumeAfterCoreRestart _streamResume = new(requiresMeeting: false);
+
+    private void OnBridgeRecoveryCompleted(MediaCoreRecoveryOutcome outcome) =>
+        RunOnUiThread(() =>
+        {
+            switch (_recordingResume.RecoveryCompleted(outcome))
+            {
+                case OutputResumeDecision.Resume:
+                    _ = ResumeOutputAfterCoreRestartAsync(
+                        "recording", "Record",
+                        "Recording resumed in a new folder after the media core restarted. The earlier files are kept.",
+                        () => RecordingRequested, () => CanSetRecording(true), () => _transportCoordinator.SetRecordingAsync(true));
+                    break;
+                case OutputResumeDecision.NotResumed:
+                    var reason = OutputResumeAfterCoreRestart.DescribeRecordingNotResumed(outcome);
+                    LaunchLog.Write($"recording: {reason}");
+                    OutputStatus = reason;
+                    OutputSessionStatus = reason;
+                    break;
+            }
+
+            if (_streamResume.RecoveryCompleted(outcome) == OutputResumeDecision.Resume)
+            {
+                _ = ResumeOutputAfterCoreRestartAsync(
+                    "stream", "Stream",
+                    "Stream reconnected after the media core restarted.",
+                    () => StreamingRequested, () => CanSetStreaming(true), () => _transportCoordinator.SetStreamingAsync(true));
+            }
+        });
+
+    /// <summary>
+    /// Starts the output again through the ordinary operator path (pre-flight, start proof,
+    /// rollback, backpressure retry), so a resumed recording is exactly a recording and a
+    /// reconnected stream is exactly a stream. A start can be refused until the shell has
+    /// applied the recovered core's state, so it is retried briefly.
+    /// </summary>
+    private async Task ResumeOutputAfterCoreRestartAsync(
+        string logName, string button, string resumedStatus,
+        Func<bool> requested, Func<bool> canStart, Func<Task> start)
+    {
+        const int attempts = 20;
+        var title = char.ToUpperInvariant(logName[0]) + logName[1..];
+        void Report(string status) => RunOnUiThread(() =>
+        {
+            LaunchLog.Write($"{logName}: {status}");
+            OutputStatus = status;
+            OutputSessionStatus = status;
+        });
+        try
+        {
+            for (var attempt = 1; attempt <= attempts; attempt++)
+            {
+                if (await CaptureUiOwnedAsync(() => !requested() && canStart()).ConfigureAwait(false))
+                {
+                    LaunchLog.Write($"{logName}: starting again after the media core restarted");
+                    await start().ConfigureAwait(false);
+                    Report(await CaptureUiOwnedAsync(requested).ConfigureAwait(false)
+                        ? resumedStatus
+                        : $"{title} stopped when the media core restarted and could NOT be started again. Press {button}.");
+                    return;
+                }
+
+                if (await CaptureUiOwnedAsync(requested).ConfigureAwait(false))
+                {
+                    return;  // the operator started it themselves
+                }
+
+                await Task.Delay(500).ConfigureAwait(false);
+            }
+
+            Report($"{title} stopped when the media core restarted and could NOT be started again: the app was not ready within 10 s. Press {button}.");
+        }
+        catch (Exception error)
+        {
+            LaunchLog.Write($"{logName}: start after media core restart failed: {error.Message}");
+        }
+    }
+
     private void ApplyBridgeHealthChanged(MediaCoreHealth health)
     {
         if (health.Stopped)
         {
+            _recordingResume.CoreStoppedDeliberately();
+            _streamResume.CoreStoppedDeliberately();
             StopMediaCoreSession("Media core stopped");
             RefreshSurfaceBindings();
         }
         else if (health.Recovering)
         {
+            // #732: remember what was running BEFORE the interrupt clears the intents.
+            var recordingWasOn = RecordingRequested || Recording;
+            var streamWasOn = StreamingRequested || Streaming;
+            _recordingResume.CoreCrashed(recordingWasOn);
+            _streamResume.CoreCrashed(streamWasOn);
+            if (recordingWasOn)
+            {
+                LaunchLog.Write($"recording: interrupted by a media core restart (restart {health.RestartCount}); " +
+                                "the files written so far are kept, and recording resumes in a new folder once Zoom is back");
+            }
+            if (streamWasOn)
+            {
+                LaunchLog.Write($"stream: interrupted by a media core restart (restart {health.RestartCount}); it reconnects once the core is back");
+            }
             InterruptOutputSessions();
             EngineStatus = $"Media core recovering (restart {health.RestartCount})";
         }
