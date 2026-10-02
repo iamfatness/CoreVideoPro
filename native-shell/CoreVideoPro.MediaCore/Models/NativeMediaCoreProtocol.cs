@@ -3,33 +3,6 @@ using System.Text.Json.Serialization;
 
 namespace CoreVideoPro.MediaCore.Models;
 
-public enum NativeMediaCoreCapability
-{
-    [JsonStringEnumMemberName("zoom-raw-video")] ZoomRawVideo,
-    [JsonStringEnumMemberName("zoom-raw-audio")] ZoomRawAudio,
-    [JsonStringEnumMemberName("gpu-compositor")] GpuCompositor,
-    [JsonStringEnumMemberName("scene-graph-rendering")] SceneGraphRendering,
-    [JsonStringEnumMemberName("dynamic-overlays")] DynamicOverlays,
-    [JsonStringEnumMemberName("chroma-key")] ChromaKey,
-    [JsonStringEnumMemberName("smart-framing")] SmartFraming,
-    [JsonStringEnumMemberName("audio-mixer")] AudioMixer,
-    [JsonStringEnumMemberName("local-audio-capture")] LocalAudioCapture,
-    [JsonStringEnumMemberName("audio-monitor-output")] AudioMonitorOutput,
-    [JsonStringEnumMemberName("program-recording")] ProgramRecording,
-    [JsonStringEnumMemberName("iso-recording")] IsoRecording,
-    [JsonStringEnumMemberName("rtmp-output")] RtmpOutput,
-    [JsonStringEnumMemberName("ndi-output")] NdiOutput,
-    [JsonStringEnumMemberName("srt-output")] SrtOutput,
-    [JsonStringEnumMemberName("hls-output")] HlsOutput,
-    [JsonStringEnumMemberName("srt-ingest")] SrtIngest,
-    [JsonStringEnumMemberName("rtmp-ingest")] RtmpIngest,
-    [JsonStringEnumMemberName("uvc-capture")] UvcCapture,
-    [JsonStringEnumMemberName("webrtc-output")] WebrtcOutput,
-    [JsonStringEnumMemberName("virtual-camera")] VirtualCamera,
-    [JsonStringEnumMemberName("decklink-capture")] DecklinkCapture,
-    [JsonStringEnumMemberName("aja-capture")] AjaCapture
-}
-
 public sealed class NativeMediaCoreProfile
 {
     public required string Name { get; init; }
