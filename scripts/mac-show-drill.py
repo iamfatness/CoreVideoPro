@@ -19,6 +19,7 @@ Exit 0 = the rehearsal passed.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -72,8 +73,33 @@ MAX_ENGINE_TAP_MS = 2.0
 # and finalisation edges, not a whole 10fps of missing pictures.
 MIN_RECORDED_FPS_RATIO = 0.95
 MAX_COMMAND_P99_MS = 100.0
-MAX_LATENCY_P50_MS = 33.3   # 2 frames at 60p (1 of them is the frame-sync cushion)
-MAX_LATENCY_P99_MS = 50.0   # 3 frames at 60p
+#
+# RAISED AGAIN on 2026-10-01, for the same kind of reason, and this time the budget is
+# DERIVED so it cannot go stale the same way. Since the #579 lip-sync fix (0c91afd0,
+# 2026-09-21) Zoom video is deliberately held for kZoomVideoReserve (20 ms x
+# kZoomAudioPrimeTicks = 60 ms, native/src/modules/ZoomPlayoutTiming.h) so it plays out
+# with its primed audio. That hold replaced the one-frame cushion above. The drill kept
+# its 33.3/50 ms budget and FAILED on every build for ten days (p50 65-73 ms measured on
+# the 09-26, 09-28, 09-30 and 10-01 betas), which taught everyone to read the line as
+# noise. What is gated now is the latency ABOVE the deliberate hold: a frame waits out the
+# reserve and then the next render tick, so p50 should sit about half a frame over the
+# reserve and p99 about one frame over. One extra frame of real latency fails both.
+def _zoom_video_reserve_ms():
+    header = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "native", "src",
+                          "modules", "ZoomPlayoutTiming.h")
+    try:
+        with open(header, "r", encoding="utf-8") as handle:
+            match = re.search(r"kZoomAudioPrimeTicks\s*=\s*(\d+)", handle.read())
+        if match:
+            return 20.0 * int(match.group(1))
+    except OSError:
+        pass
+    return 60.0  # the value when this was written; the header is the source of truth
+
+
+ZOOM_VIDEO_RESERVE_MS = _zoom_video_reserve_ms()
+MAX_LATENCY_P50_MS = ZOOM_VIDEO_RESERVE_MS + 20.0   # reserve + ~1 frame at 60p
+MAX_LATENCY_P99_MS = ZOOM_VIDEO_RESERVE_MS + 33.3   # reserve + 2 frames at 60p
 # Fraction of DECODED frames that must actually reach the compositor.
 # CAVEAT, learned the hard way: this counts distinct frameIds the render thread
 # fetched, so it CANNOT see the judder the frame synchronizer exists to prevent.
@@ -680,16 +706,19 @@ def main():
             ok = (worst_p50 <= MAX_LATENCY_P50_MS and worst_p99 <= MAX_LATENCY_P99_MS
                   and delivery >= MIN_FRAME_DELIVERY)
             print(f"{'PASS' if ok else 'FAIL'} source->render p50 {worst_p50:.1f}ms / "
-                  f"p99 {worst_p99:.1f}ms, {delivery:.0%} of decoded frames delivered "
+                  f"p99 {worst_p99:.1f}ms (budget {MAX_LATENCY_P50_MS:.1f}/{MAX_LATENCY_P99_MS:.1f}, "
+                  f"of which {ZOOM_VIDEO_RESERVE_MS:.0f} is the lip-sync hold), "
+                  f"{delivery:.0%} of decoded frames delivered "
                   f"(worst window {worst_delivery:.0%}, {len(steady)} steady windows)")
             if worst_p50 > MAX_LATENCY_P50_MS:
                 failures.append(
-                    f"source->render p50 {worst_p50:.1f}ms exceeds two frames "
-                    f"(one is the deliberate frame-sync cushion) — the internal "
-                    f"path is no longer hardware-competitive")
+                    f"source->render p50 {worst_p50:.1f}ms exceeds {MAX_LATENCY_P50_MS:.1f}ms "
+                    f"(the deliberate {ZOOM_VIDEO_RESERVE_MS:.0f}ms lip-sync hold plus one frame) — "
+                    f"the path above the hold has gained latency")
             if worst_p99 > MAX_LATENCY_P99_MS:
                 failures.append(
-                    f"source->render p99 {worst_p99:.1f}ms exceeds three frames")
+                    f"source->render p99 {worst_p99:.1f}ms exceeds {MAX_LATENCY_P99_MS:.1f}ms "
+                    f"(the {ZOOM_VIDEO_RESERVE_MS:.0f}ms lip-sync hold plus two frames)")
             if delivery < MIN_FRAME_DELIVERY:
                 # Still a FAILURE either way — this run proved nothing and must
                 # not read green. Only the attribution changes.

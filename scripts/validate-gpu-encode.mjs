@@ -515,6 +515,7 @@ let lastFrameSample = null;
 let senderSnapshot = null;
 // One row per poll: everything the slow-sink assertions are decided from.
 const samples = [];
+let maxMuxInputPackets = 0;
 let maxEgressChildren = 0;
 let egressChildrenAfterStop = -1;
 let egressChildStopSeconds = -1;
@@ -681,6 +682,9 @@ try {
     samples.push(row);
 
     if (senderSnapshot) {
+      // The sender publishes muxInputVideo ONLY while it is on the GPU-direct path
+      // with its muxer running, so packets here are snapshot evidence of the path.
+      maxMuxInputPackets = Math.max(maxMuxInputPackets, Number(senderSnapshot.muxInputVideo?.packets ?? 0));
       const frames = row.framesSent;
       if (lastFrameSample && frames > lastFrameSample.frames) {
         senderFps.push((frames - lastFrameSample.frames) / ((receivedAt - lastFrameSample.at) / 1000));
@@ -754,7 +758,17 @@ console.log(`encode path   : ${pathLine || "UNKNOWN (no [gpu-encode] path= line 
 const startedLine = gpuEncodeStartedLine();
 console.log(`encoder start : ${startedLine || "UNKNOWN (no [gpu-encode] started line found)"}`);
 const expectedPathCodec = codec === "h265" ? "hevc" : codec;
-const tookGpuDirect = !!pathLine && pathLine.includes("path=gpu-direct") && pathLine.includes(`codec=${expectedPathCodec}`);
+// THE PATH IS JUDGED FROM THE SNAPSHOT FIRST. The `[gpu-encode] path=` line rides
+// nativeLogf, a bounded best-effort queue that drops startup lines (CLAUDE.md: "never
+// gate on log lines"). Gating on it alone failed 2 runs in 5 on a healthy core,
+// 2026-10-01, on both the shipped core and a change under test. The log line is still
+// printed, still names the codec when present, and a line that says cpu-fallback still
+// overrules: only its ABSENCE is no longer a failure.
+const logSaysGpuDirect = !!pathLine && pathLine.includes("path=gpu-direct") && pathLine.includes(`codec=${expectedPathCodec}`);
+const logSaysOtherwise = !!pathLine && !logSaysGpuDirect;
+const snapshotSaysGpuDirect = maxMuxInputPackets > 0;
+console.log(`encode path   : snapshot ${snapshotSaysGpuDirect ? `gpu-direct (muxInputVideo packets=${maxMuxInputPackets})` : "no GPU-direct mux input seen"}`);
+const tookGpuDirect = logSaysGpuDirect || (snapshotSaysGpuDirect && !logSaysOtherwise);
 
 // ---------------------------------------------------------------------------
 // AV1: PASS BY REFUSAL. Nothing about this leg reads a stream — there is no
