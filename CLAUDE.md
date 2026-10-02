@@ -3930,10 +3930,24 @@ these was failing or flaking on `main`, and each was hiding something.
   lossy process log for `[gpu-encode] path=`. It now reads the path from the sender snapshot
   (`muxInputVideo` is published only on the GPU-direct path); a log line that says
   `cpu-fallback` still overrules, only its absence no longer fails. 5 of 5 after.
-  **Its own control, `--force-raw`, was the real finding: the CPU-fallback stream path has
-  delivered NOTHING since the #538 shared-encode work** (works on the 09-28 betas, 0 bytes on
-  09-30 and later; the raw sender is fed 12 frames and then waits for Program pixels forever).
-  Filed as #735, not fixed. Run `--force-raw` whenever the sender or Program export changes.
+  **Its own control, `--force-raw`, was the real finding (#735, fixed in the same PR): the
+  CPU-fallback stream path delivered NOTHING on every build from 2026-09-30.** #538 Slice 6
+  (`afc32ebc`, shared AAC) made `CompositeOutputSender` withhold PCM from every sender that
+  ACCEPTS shared AAC. Accepting is a capability; a sender on the CPU fallback path (no usable
+  hardware encoder, a capacity refusal, `COREVIDEO_GPU_ENCODE=0`) ignores the encoded packets
+  and has an FFmpeg waiting on a PCM input that never arrived, so it stopped reading video
+  after 12 frames. PCM now goes to every sender; one on the shared path already drops it
+  (`writeAudioToFfmpeg` returns first). After: raw path 3 of 3 at 60 fps, GPU path 3 of 3,
+  and the same-run A/V harness still within one frame.
+  - **The sender's `lastError` was a red herring:** "waiting for composed BGRA program
+    pixels" is the sticky first-tick message, not the cause. Read `framesSent` and
+    `supervisor.lastProgressAgeMs`.
+  - **The first bisect of this was WRONG.** It trusted one 6 s run per step and never checked
+    the build had produced a new binary; its first verdict tested a stale exe and it blamed
+    an unrelated commit. The second deleted the exe before each build and required two
+    agreeing runs. Confirm a bisect boundary with repeated runs on both sides before
+    believing it.
+  - Run `--force-raw` whenever the sender, the composite or the Program export changes.
 - **Windows CI meter probe: failed three runs in a day and passed each re-run.**
   `test-audio-meter-stability.ps1` threw the probe's exit code BEFORE reading its report, so a
   probe that failed with a reason looked the same as one that crashed. It now prints the
