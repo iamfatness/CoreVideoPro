@@ -4235,8 +4235,11 @@ TEST(MediaFoundationMediaFrameSource, AFailedFfmpegResumeRetriesAtTheClockPositi
 // pattern every capture tick — hidden from the operator only by a shell filter.
 TEST(MediaCoreCommand, ARealCoreListsNoFakeCaptureDevices) {
   corevideo::core::MediaCore mediaCore;
+  // Named, not iterated as a temporary: a range-for over captureDevices().asArray()
+  // walks an array whose owner is already destroyed.
+  const auto devices = mediaCore.captureDevices();
   bool fakeListed = false;
-  for (const auto& device : mediaCore.captureDevices().asArray()) {
+  for (const auto& device : devices.asArray()) {
     const auto id = device.getString("id");
     fakeListed = fakeListed || id == "decklink-1" || id == "aja-io-1";
   }
