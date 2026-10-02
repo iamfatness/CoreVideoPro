@@ -95,6 +95,24 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 | [#569](https://github.com/iamfatness/CoreVideoPro/issues/569) | H.265 streaming needs repeatable installed receiver acceptance. |
 | [#575](https://github.com/iamfatness/CoreVideoPro/issues/575) | Scheduled staging smoke blocked on missing Actions secrets. Not #618. |
 
+## Unranked — half-wired features (2026-10-02 audit)
+
+Found by reading code on main; none reproduced in the running app unless its issue says so. Order is a suggestion (most likely to hit a normal show first); the owner ranks.
+
+| Issue | Remaining work |
+|---|---|
+| [#758](https://github.com/iamfatness/CoreVideoPro/issues/758) | A disconnected bridged capture device stays on Program as a frozen frame: the shell never sends `unregister-capture-shm` and the adapter re-emits its last frame. Blackmagic-named UVC devices are forced onto this path. |
+| [#759](https://github.com/iamfatness/CoreVideoPro/issues/759) | Output status reads "Live" while the sender is still `starting`. Stream-only sessions on a current core run the shell's "legacy core" branches because the core omits `recording.lifecycle`. |
+| [#760](https://github.com/iamfatness/CoreVideoPro/issues/760) | SRT and RTMP ingest status never reaches the UI on a real core: `captureDevices` is not bound on the wire path, so a working feed reads as not connected. |
+| [#762](https://github.com/iamfatness/CoreVideoPro/issues/762) | The shell accepts any core. A stub encoder (Record shows live, no file written) or no-op compositor in a real build is silent; `NativeMediaCoreProfileValidator` has no caller. Pair with #741. |
+| [#763](https://github.com/iamfatness/CoreVideoPro/issues/763) | NDI group is accepted and discarded; Program is advertised to every receiver on the LAN. |
+| [#761](https://github.com/iamfatness/CoreVideoPro/issues/761) | Set & Forget and Magic Scene never act on a real core: `autoProduction` is not bound. |
+| [#764](https://github.com/iamfatness/CoreVideoPro/issues/764) | Operator settings the core drops: colour-grade LUT presets, brand-kit styles, and other payload fields. |
+| [#765](https://github.com/iamfatness/CoreVideoPro/issues/765) | Invented values shown as measurements: guest network quality always "good", the LIVE clock, caption latency/confidence, per-participant meters. |
+| [#766](https://github.com/iamfatness/CoreVideoPro/issues/766) | Diagnostics that over-claim or are empty: first-frame evidence, support-bundle sections, the stale-roster counter (roster epoch/revision unbound). |
+| [#767](https://github.com/iamfatness/CoreVideoPro/issues/767) | Mock UI: licensing panel and caption controls with nothing behind them. Depends on the #743 ruling. |
+| [#768](https://github.com/iamfatness/CoreVideoPro/issues/768) | Dead code: test-only fail/recover/simulate commands in the production protocol, breakout detection wired only to its simulator, an unused 935-line Zoom SDK adapter, unreferenced C# types. |
+
 ## Unranked — mock code in the shipping path and repo cleanup (2026-10-01 audit)
 
 Found by the 2026-10-01 cleanup audit. Order within this table is a suggestion; the owner ranks.
