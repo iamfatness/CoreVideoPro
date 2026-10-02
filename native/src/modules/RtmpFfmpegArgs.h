@@ -145,7 +145,10 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     if (config.hasAudio) {
       const int channels = (std::max)(1, config.audioChannels);
       const int sampleRate = (std::max)(8000, config.audioSampleRate);
-      args << " -re -thread_queue_size 512 -probesize 32 -analyzeduration 1 -f " << config.audioSampleFormat << " -ar " << sampleRate
+      // Live PCM is already paced by the mixer. A second read-rate clock can
+      // prolong video pipe blocking after an output stall while audio catches
+      // up (#615). Only the synthetic, unbounded silence source needs -re.
+      args << " -thread_queue_size 512 -probesize 32 -analyzeduration 1 -f " << config.audioSampleFormat << " -ar " << sampleRate
            << " -ac " << channels << " -i " << config.audioInput;
     } else {
       args << " -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000";
@@ -155,10 +158,12 @@ inline std::string buildRtmpFfmpegArguments(const RtmpFfmpegArgsConfig& config) 
     args << " -c:a aac -b:a " << audioBitrateKbps << "k -ar 48000"
          << " -af aresample=async=1:first_pts=0";
     if (config.endpoint.rfind("rtmp://", 0) == 0 || config.endpoint.rfind("rtmps://", 0) == 0) {
-      // RTMP emits small protocol writes. Nagle/delayed-ACK backpressure can
-      // block the bitstream pipe and therefore the hardware encoder's event
-      // thread. Disable it at the RTMP transport, without changing SRT options.
-      args << " -tcp_nodelay 1";
+      // FFmpeg emits RTMP chunk headers and payloads as small socket writes.
+      // Disabling coalescing amplified a 10 Mbps stream to ~12k packets/s on
+      // the Windows live rig (#615). Keep TCP coalescing enabled; the bounded
+      // asynchronous bitstream writer handles transport backpressure without
+      // blocking the encoder event thread. This option does not apply to SRT.
+      args << " -tcp_nodelay 0";
     }
     args << " -f " << (config.container.empty() ? std::string("flv") : config.container) << " "
          << quoteRtmpArgument(config.endpoint);

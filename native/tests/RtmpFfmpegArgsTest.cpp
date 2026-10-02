@@ -209,13 +209,13 @@ TEST(RtmpFfmpegArgs, BitstreamInputModeNamesTheRawDemuxerPerCodec) {
   }
 }
 
-TEST(RtmpFfmpegArgs, BitstreamRtmpDisablesTcpDelayWithoutChangingSrt) {
+TEST(RtmpFfmpegArgs, BitstreamRtmpCoalescesSmallWritesWithoutChangingSrt) {
   auto config = baseConfig();
   config.videoBitstreamInput = true;
   for (const auto* endpoint : {"rtmp://live.example/app/test", "rtmps://live.example/app/test"}) {
     config.endpoint = endpoint;
     const auto args = buildRtmpFfmpegArguments(config);
-    EXPECT_NE(args.find(" -tcp_nodelay 1 -f flv "), std::string::npos);
+    EXPECT_NE(args.find(" -tcp_nodelay 0 -f flv "), std::string::npos);
     EXPECT_NE(args.find(" -c:v copy"), std::string::npos);
   }
   config.endpoint = "srt://127.0.0.1:9021?mode=caller";
@@ -223,6 +223,24 @@ TEST(RtmpFfmpegArgs, BitstreamRtmpDisablesTcpDelayWithoutChangingSrt) {
   const auto args = buildRtmpFfmpegArguments(config);
   EXPECT_EQ(args.find("tcp_nodelay"), std::string::npos);
   EXPECT_NE(args.find(" -f mpegts "), std::string::npos);
+}
+
+TEST(RtmpFfmpegArgs, LiveBitstreamAudioDoesNotAddASecondPacingClock) {
+  auto config = baseConfig();
+  config.videoBitstreamInput = true;
+  for (const auto* codec : {"h264", "hevc", "av1"}) {
+    config.videoBitstreamCodec = codec;
+    config.timestampedHevcInput = std::string(codec) == "hevc";
+    config.hasAudio = true;
+    config.audioInput = "pipe:3";
+    const auto live = buildRtmpFfmpegArguments(config);
+    EXPECT_EQ(live.find(" -re "), std::string::npos);
+    EXPECT_NE(live.find(" -i pipe:3"), std::string::npos);
+    EXPECT_NE(live.find(" -af aresample=async=1:first_pts=0"), std::string::npos);
+    config.hasAudio = false;
+    const auto silence = buildRtmpFfmpegArguments(config);
+    EXPECT_NE(silence.find(" -re -f lavfi -i anullsrc="), std::string::npos);
+  }
 }
 
 TEST(RtmpFfmpegArgs, TimestampedHevcUsesContainerClockWithoutRewritingTimestamps) {
