@@ -1,5 +1,7 @@
+#include "core/MediaCore.h"
 #include "core/Protocol.h"
 #include "contracts/Lifecycle.h"
+#include "modules/Interfaces.h"
 #include "rpc/BoundedResponseLane.h"
 
 #include <gtest/gtest.h>
@@ -29,6 +31,51 @@ void expectAllStringsPresent(const std::string& source, const Strings& strings) 
   for (auto value : strings) {
     EXPECT_NE(source.find(std::string(value)), std::string::npos) << "Missing protocol string: " << value;
   }
+}
+
+template <typename Strings>
+std::set<std::string> toSet(const Strings& strings) {
+  std::set<std::string> result;
+  for (const auto value : strings) {
+    result.insert(std::string(value));
+  }
+  return result;
+}
+
+std::set<std::string> matches(const std::string& source, const std::string& pattern) {
+  const std::regex expression(pattern);
+  std::set<std::string> result;
+  for (auto it = std::sregex_iterator(source.begin(), source.end(), expression);
+       it != std::sregex_iterator(); ++it) {
+    result.insert((*it)[1].str());
+  }
+  return result;
+}
+
+// Concatenates every file with the given extension under a repo directory,
+// skipping build output and, optionally, one file name.
+std::string readRepoTree(const std::string& relativeDirectory, const std::string& extension,
+                         const std::string& skipFileName = {}) {
+  const std::filesystem::path root = std::filesystem::path(COREVIDEO_REPO_ROOT) / relativeDirectory;
+  std::string result;
+  std::error_code error;
+  for (auto it = std::filesystem::recursive_directory_iterator(root, error);
+       !error && it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
+    const auto name = it->path().filename().string();
+    if (it->is_directory() && (name == "bin" || name == "obj" || name == ".build")) {
+      it.disable_recursion_pending();
+      continue;
+    }
+    if (!it->is_regular_file() || it->path().extension() != extension || name == skipFileName) {
+      continue;
+    }
+    std::ifstream input(it->path());
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    result += buffer.str();
+    result += '\n';
+  }
+  return result;
 }
 
 }  // namespace
@@ -156,11 +203,96 @@ TEST(ContractParity, ResponseLaneDropsOldestWhenFull) {
   EXPECT_EQ(lane.popFront().first, "3");
 }
 
-// The TypeScript-mirror parity tests (capability strings, bridge envelope
-// types, Zoom media-spine names, core event/request types) were retired with
-// the React prototype and Node core simulator they compared against (#738).
-// The manifests in core/Protocol.h are still checked against the shipping
-// dispatcher and C# builder above.
+// Cross-language parity for the manifests in core/Protocol.h (#747). The
+// TypeScript mirrors these used to be compared against are gone (#738); the
+// comparisons below are against what the core actually does and what the C#
+// and Swift shells actually send and parse.
+
+TEST(ContractParity, CapabilityManifestIsExactlyWhatTheCoreReports) {
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  const auto profile = core.profile();
+  const auto* states = profile.get("capabilityStates");
+  ASSERT_NE(states, nullptr);
+  ASSERT_TRUE(states->isObject());
+  std::set<std::string> reported;
+  for (const auto& entry : states->asObject()) {
+    reported.insert(entry.first);
+  }
+  const auto manifest = toSet(corevideo::core::kNativeMediaCoreCapabilities);
+  EXPECT_EQ(manifest.size(), corevideo::core::kNativeMediaCoreCapabilities.size()) << "duplicate capability";
+  EXPECT_EQ(reported, manifest);
+}
+
+TEST(ContractParity, RequiredCapabilitiesMatchTheShellValidator) {
+  const std::string source = readRepoFile("native-shell/CoreVideoPro.MediaCore/Models/NativeMediaCoreProtocol.cs");
+  ASSERT_FALSE(source.empty());
+  // The C# validator is what actually gates readiness on these names.
+  const auto listStart = source.find("RequiredMvpCapabilities =");
+  ASSERT_NE(listStart, std::string::npos);
+  const auto listEnd = source.find("];", listStart);
+  ASSERT_NE(listEnd, std::string::npos);
+  const auto shellRequired = matches(source.substr(listStart, listEnd - listStart), "\"([^\"]+)\"");
+  ASSERT_FALSE(shellRequired.empty());
+  const auto required = toSet(corevideo::core::kRequiredMvpCapabilities);
+  EXPECT_EQ(shellRequired, required);
+  const auto capabilities = toSet(corevideo::core::kNativeMediaCoreCapabilities);
+  for (const auto& name : required) {
+    EXPECT_TRUE(capabilities.contains(name)) << "required capability the core never reports: " << name;
+  }
+}
+
+TEST(ContractParity, RequestManifestMatchesTheRpcDispatcher) {
+  const std::string dispatcher = readRepoFile("native/src/rpc/JsonRpcServer.cpp");
+  ASSERT_FALSE(dispatcher.empty());
+  const auto handled = matches(dispatcher, "hasType\\(request,\\s*\"([^\"]+)\"\\)");
+  ASSERT_FALSE(handled.empty());
+  const auto manifest = toSet(corevideo::core::kCoreRequestTypes);
+  EXPECT_EQ(manifest.size(), corevideo::core::kCoreRequestTypes.size()) << "duplicate request type";
+  EXPECT_EQ(handled, manifest);
+}
+
+TEST(ContractParity, EveryRequestTheShellsSendIsHandledByTheCore) {
+  const auto requests = toSet(corevideo::core::kCoreRequestTypes);
+  const auto commands = toSet(corevideo::core::kNativeMediaCoreCommandTypes);
+
+  // C#: requests are built as dictionaries with ["type"] = "<request>".
+  std::set<std::string> csharpRequests;
+  for (const char* directory : {"native-shell/CoreVideoPro.MediaCore", "native-shell/CoreVideoPro.WinUI",
+                                "native-shell/CoreVideoPro.Control"}) {
+    const auto found = matches(readRepoTree(directory, ".cs"), "\\[\"type\"\\]\\s*=\\s*\"([a-z0-9-]+)\"");
+    csharpRequests.insert(found.begin(), found.end());
+  }
+  ASSERT_FALSE(csharpRequests.empty());
+  for (const auto& name : csharpRequests) {
+    EXPECT_TRUE(requests.contains(name)) << "C# shell sends a request the core does not handle: " << name;
+  }
+
+  // Swift: "type": "<name>" appears on requests and on the commands inside a
+  // media-core-sync batch, so either manifest satisfies it.
+  const auto swiftTypes = matches(
+      readRepoTree("mac-shell/Sources/CoreVideoProShell", ".swift", "ShellTests.swift"),
+      "\"type\":\\s*\"([a-z0-9-]+)\"");
+  ASSERT_FALSE(swiftTypes.empty());
+  for (const auto& name : swiftTypes) {
+    EXPECT_TRUE(requests.contains(name) || commands.contains(name))
+        << "Swift shell sends a type the core does not handle: " << name;
+  }
+}
+
+TEST(ContractParity, EveryCoreEventIsEmittedByTheCoreAndParsedByTheShell) {
+  const std::string coreSource = readRepoTree("native/src", ".cpp");
+  const std::string shellParser =
+      readRepoFile("native-shell/CoreVideoPro.MediaCore/Services/CoreProtocolParser.cs") +
+      readRepoFile("native-shell/CoreVideoPro.MediaCore/Models/CoreProtocolModels.cs");
+  ASSERT_FALSE(coreSource.empty());
+  ASSERT_FALSE(shellParser.empty());
+  for (const auto name : corevideo::core::kCoreEventTypes) {
+    const std::string emit = "{\"type\", \"" + std::string(name) + "\"}";
+    EXPECT_NE(coreSource.find(emit), std::string::npos) << "manifest event the core never emits: " << name;
+    const std::string quoted = "\"" + std::string(name) + "\"";
+    EXPECT_NE(shellParser.find(quoted), std::string::npos) << "core event the C# shell does not parse: " << name;
+  }
+}
 
 TEST(ContractParity, ZoomMeetingSdkAdapterGateIsDeclaredInTheBuild) {
   const std::string cmakeSource = readRepoFile("native/CMakeLists.txt");
