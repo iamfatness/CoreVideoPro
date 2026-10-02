@@ -101,10 +101,9 @@ Found by the 2026-10-01 cleanup audit. Order within this table is a suggestion; 
 
 | Issue | Remaining work |
 |---|---|
-| [#739](https://github.com/iamfatness/CoreVideoPro/issues/739) | The production core registers `FakeCaptureDevice` (fake DeckLink / AJA); only a WinUI id-prefix filter hides it. Register it in the stub tier only; check mac-shell. |
 | [#741](https://github.com/iamfatness/CoreVideoPro/issues/741) | The core serves a fake two-person Zoom roster whenever `COREVIDEO_ZOOM_ENGINE_PATH` is unset, at runtime. Report Zoom unavailable instead; make `simulate-breakout-room-change` stub-only. |
 | [#738](https://github.com/iamfatness/CoreVideoPro/issues/738) | Remove the orphaned React prototype (`src/`) and Node simulator (`native-core/`): PR #745. Follow-ups: move the two Zoom config JSONs out of `src/`; remove `studio/` once `scripts/app.ps1` no longer builds the core through `build-studio.ps1`. |
-| [#742](https://github.com/iamfatness/CoreVideoPro/issues/742) | `StubModules.cpp` holds the production module composition. Split production wiring from stubs; no behaviour change. |
+| [#754](https://github.com/iamfatness/CoreVideoPro/issues/754) | Two timing-based shell tests each failed CI once and passed on rerun (`IncompatibleRequestOnlyChildIsTerminallyRejected`, `AStartDuringCrashRecoveryStillRejoinsZoom`). The second is in the crash-recovery rejoin path: rule out a real double-rejoin. |
 | [#743](https://github.com/iamfatness/CoreVideoPro/issues/743) | `caption-broker` and `licensing-api` are stub services with no native client. Owner ruling: build for real or remove, including deployed workers. |
 
 ## Unranked — open issue inventory restored in this audit

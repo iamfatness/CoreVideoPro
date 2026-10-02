@@ -32,7 +32,7 @@ vcam NV12 tap (rides the camera-extension work), no CoreText overlay raster
   programPixelSignature, preview}`. `preview` is tightly packed top-down BGRA
   capped 320x180 — if left empty, MediaCore back-fills with the CPU
   synthetic path and every consumer degrades.
-- Factory seam: `createDefaultModules` (StubModules.cpp) upgrades
+- Factory seam: `createDefaultModules` (ModuleComposition.cpp) upgrades
   `ModuleSet::compositor` when the GPU factory returns non-null. A
   `createMetalCompositor()` mirrors `createD3D11Compositor()`.
 - Fully portable, reuse as-is: `compositor/CompositorLayout.h` (framing UV

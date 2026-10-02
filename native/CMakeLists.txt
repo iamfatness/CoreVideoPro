@@ -102,6 +102,7 @@ add_library(corevideo_native
   src/modules/SrtOutputSenderAdapter.cpp
   src/modules/StillMediaFrameCache.cpp
   src/modules/StubRecordingEncoder.cpp
+  src/modules/ModuleComposition.cpp
   src/modules/StubModules.cpp
   src/modules/UvcCaptureDeviceAdapter.cpp
   src/modules/WgcScreenCaptureAdapter.cpp
