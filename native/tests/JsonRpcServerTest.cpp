@@ -364,7 +364,9 @@ TEST(JsonRpcServer, HandlesZoomLifecycleRequests) {
 }
 
 TEST(JsonRpcServer, HandlesCaptureDeviceBridgeRequests) {
-  corevideo::core::MediaCore mediaCore;
+  // The stub module set: its fake DeckLink/AJA pair is the device list this
+  // exercises. A real core no longer carries that pair (#739).
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   corevideo::rpc::JsonRpcServer server(mediaCore);
 
   const auto listed = server.handle(corevideo::rpc::Json::Object{
