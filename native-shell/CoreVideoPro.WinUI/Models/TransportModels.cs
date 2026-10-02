@@ -47,7 +47,8 @@ public static class TransportFormatting
 
         return status.ToLowerInvariant() switch
         {
-            "warning" => OutputHealthKind.Warning,
+            // A failed output is not idle: the pill must not go quiet when a stream dies.
+            "warning" or "failed" => OutputHealthKind.Warning,
             "live" or "good" or "excellent" => OutputHealthKind.Good,
             _ => OutputHealthKind.Idle
         };

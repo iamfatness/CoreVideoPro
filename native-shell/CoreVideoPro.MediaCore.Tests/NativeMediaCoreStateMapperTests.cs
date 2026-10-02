@@ -842,4 +842,15 @@ public sealed class NativeMediaCoreStateMapperTests
 
         Assert.Empty(snapshot.CaptureDevices);
     }
+
+    // #759: a sender that is still connecting is "starting", not "live".
+    [Fact]
+    public void AStartingSenderIsNotReportedLive()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"outputs":["rtmp"],"outputSenderSession":{"status":"starting","activeSenderCount":0,"senders":[{"senderId":"rtmp:program","destination":"rtmp","status":"starting","framesSent":0,"retryCount":0,"latencyMs":0,"bitrateMbps":0}],"warnings":[]}}""");
+
+        Assert.Equal("starting", snapshot.OutputHealth.Single(health => health.Destination == "rtmp").Status);
+        Assert.False(LiveProductionSync.IsStreamingLive(snapshot));
+        Assert.DoesNotContain("Live", MediaCoreBridgeService.SummarizeOutputs(snapshot), StringComparison.Ordinal);
+    }
 }
