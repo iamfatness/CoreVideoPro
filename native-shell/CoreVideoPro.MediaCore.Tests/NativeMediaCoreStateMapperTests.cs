@@ -814,4 +814,32 @@ public sealed class NativeMediaCoreStateMapperTests
 
         Assert.DoesNotContain(snapshot.Warnings, warning => warning.StartsWith("Recording artifact", StringComparison.Ordinal));
     }
+
+    // #760: SRT/RTMP ingest status reads the snapshot's CaptureDevices. A real core's state
+    // takes the wire path, which used to drop the node.
+    [Fact]
+    public void CaptureDevicesFromARealCoreStateReachTheSnapshot()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"captureDevices":[{"id":"srt:feed-1","vendor":"srt","name":"Remote feed","inputs":[],"selectedInputId":"","resolution":{"width":1920,"height":1080},"frameRate":30,"connectionState":"connected","signalPresent":true,"droppedFrames":0,"audioSyncOffsetMs":0,"lastFrameAgeMs":16,"decoderFailures":2,"rttMs":41.5,"rttStatus":"measured"},{"id":"screen:0","vendor":"Windows Graphics Capture","name":"DISPLAY1","inputs":[],"selectedInputId":"","resolution":{"width":2560,"height":1440},"frameRate":60,"connectionState":"detected","signalPresent":false,"droppedFrames":0,"audioSyncOffsetMs":0}]}""");
+
+        Assert.Equal(2, snapshot.CaptureDevices.Count);
+        var srt = snapshot.CaptureDevices.Single(device => device.Id == "srt:feed-1");
+        Assert.Equal("srt", srt.Vendor);
+        Assert.Equal("connected", srt.ConnectionState);
+        Assert.True(srt.SignalPresent);
+        Assert.Equal(1920, srt.Width);
+        Assert.Equal(1080, srt.Height);
+        Assert.Equal(16, srt.LastFrameAgeMs);
+        Assert.Equal(2, srt.DecoderFailures);
+        Assert.Equal(41.5, srt.RttMs);
+        Assert.Equal("measured", srt.RttStatus);
+    }
+
+    [Fact]
+    public void AStateWithNoCaptureDeviceNodeYieldsAnEmptyList()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null}""");
+
+        Assert.Empty(snapshot.CaptureDevices);
+    }
 }

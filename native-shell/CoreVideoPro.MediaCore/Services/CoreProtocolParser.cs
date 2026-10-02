@@ -635,8 +635,19 @@ public static class CoreProtocolParser
             return null;
         }
 
-        return JsonSerializer.Deserialize<NativeMediaCoreWireState>(
+        var wire = JsonSerializer.Deserialize<NativeMediaCoreWireState>(
             CoreObservationModel.Parse(ValidatedRecordingLifecycleJson(wireElement)).TypedJson(), MediaCoreJson.Options);
+        // #760: this is the path every real core takes. The device list used to be parsed
+        // only on the typed (stub/test) branch, so SRT and RTMP ingest facts never reached
+        // the shell and a working feed read as not connected.
+        if (wire is not null &&
+            wireElement.TryGetProperty("captureDevices", out var captureDevices) &&
+            captureDevices.ValueKind == JsonValueKind.Array)
+        {
+            wire.CaptureDevices = ParseCaptureDevices(captureDevices);
+        }
+
+        return wire;
     }
 
     private static string ValidatedRecordingLifecycleJson(JsonElement snapshot)

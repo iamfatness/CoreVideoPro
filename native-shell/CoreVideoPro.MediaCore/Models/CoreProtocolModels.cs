@@ -389,4 +389,12 @@ public sealed class NativeMediaCoreWireState
     public string? BreakoutRoomName { get; init; }
     public string? ActiveSpeakerId { get; init; }
     public IReadOnlyList<RawParticipantEvent>? Participants { get; init; }
+
+    /// <summary>The core's capture-device list (snapshot node "captureDevices": UVC, screens,
+    /// SRT/RTMP/NDI ingest, with per-device connection, signal, decode and RTT facts). Not bound
+    /// by the serializer — the node nests resolution and needs
+    /// <c>CoreProtocolParser.ParseCaptureDevices</c> — so the parser sets it. Null means the
+    /// state carried no such node.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public IReadOnlyList<NativeCaptureDeviceStatus>? CaptureDevices { get; set; }
 }
