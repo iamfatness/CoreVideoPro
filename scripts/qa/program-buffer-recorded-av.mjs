@@ -40,6 +40,8 @@ const tool = (command, args, extra = {}) => exec(command, args, { windowsHide: t
 
 const decode = (path, extra = {}) => decodeRecordedAvFile(path, { ffmpeg, ffprobe, ...extra });
 
+const frameFaultCounters = ['underruns', 'overflows', 'gpuNotReady', 'deadlineMisses', 'outputSequenceGaps'];
+
 async function record(frames, fixture) {
   const runDirectory = join(directory, `depth-${frames}`); await mkdir(runDirectory);
   const run = { frames, runDirectory, states: [], errors: [], framePerformancePassed: false };
@@ -142,6 +144,10 @@ async function record(frames, fixture) {
     const state = snapshot.recording?.lifecycle;
     if (state?.state !== 'completed' || !state.finalized || state.sessionId !== sessionId) throw new Error('Matching recording finalization not confirmed.');
     run.finalRecording = snapshot.recording; run.endBuffer = snapshot.programBuffer;
+    // #724: Program delivery is a per-slot requirement. The counters are cumulative since core launch,
+    // so they cover the media Take at the start of the run, which is where the stall was reported.
+    run.frameDeliveryFaults = Object.fromEntries(frameFaultCounters.map(key => [key, run.endBuffer?.[key]]));
+    run.framePerformancePassed = frameFaultCounters.every(key => run.endBuffer?.[key] === 0) && run.endBuffer?.delivered > run.startBuffer?.delivered;
     const artifact = resolve(dirname(core), snapshot.recording.artifactPath ?? '');
     if (!artifact.startsWith(runDirectory + sep) || (await stat(artifact)).size < 1024) throw new Error('Missing recording artifact inside isolated run directory.');
     run.artifact = artifact;
@@ -199,13 +205,16 @@ finally {
   report.avAlignmentWithinOneVideoFrame = report.measurementCompleted && report.runs.every(run => run.alignmentWithinOneVideoFrame === true);
   report.recordingArtifactAccepted = report.runs.length === depths.length && report.runs.every(run => run.videoArtifactAcceptance?.passed === true);
   report.rtmpSenderAccepted = !rtmpServer || report.runs.every(run => run.rtmpSenderEvidence?.passed === true);
+  report.framePerformancePassed = report.runs.length === depths.length && report.runs.every(run => run.framePerformancePassed === true);
   report.validationPassed = report.measurementCompleted && report.avAlignmentWithinOneVideoFrame && report.recordingArtifactAccepted && report.rtmpSenderAccepted &&
+    report.framePerformancePassed &&
     (!rtmpTap || report.runs.every(run => run.rtmpTapAlignment?.alignmentWithinOneVideoFrame === true));
   const reportJson = JSON.stringify(report, null, 2);
   await writeFile(join(directory, 'report.json'), (rtmpKey ? reportJson.replaceAll(rtmpKey, '[redacted]') : reportJson) + '\n');
   console.log(JSON.stringify({ report: join(directory, 'report.json'), measurementCompleted: report.measurementCompleted,
     avAlignmentWithinOneVideoFrame: report.avAlignmentWithinOneVideoFrame, recordingArtifactAccepted: report.recordingArtifactAccepted,
     rtmpSenderAccepted: report.rtmpSenderAccepted,
-    validationPassed: report.validationPassed, framePerformancePassed: false }));
+    validationPassed: report.validationPassed, framePerformancePassed: report.framePerformancePassed,
+    frameDeliveryFaults: report.runs.map(run => run.frameDeliveryFaults ?? null) }));
   process.exitCode = report.validationPassed ? 0 : 1;
 }
