@@ -184,6 +184,7 @@ phrase they quote.
 | [`docs/reference/take-tracing.md`](docs/reference/take-tracing.md) | Take, Program/Preview routing, "what did Program render" |
 | [`docs/reference/the-law-slots.md`](docs/reference/the-law-slots.md) | slot/participant assignment writes (THE LAW) |
 | [`docs/reference/tiles-composed-source.md`](docs/reference/tiles-composed-source.md) | Tiles, composed sources, source erase vs tombstone |
+| [`docs/reference/trustworthy-gates.md`](docs/reference/trustworthy-gates.md) | QA gates you rely on: drill latency budget, GPU-encode path evidence, the meter gate |
 | [`docs/reference/virtual-camera.md`](docs/reference/virtual-camera.md) | the virtual camera DLL, vcam SHM, Frame Server |
 | [`docs/reference/winui-crash-class-0xc000027b.md`](docs/reference/winui-crash-class-0xc000027b.md) | **any WinUI/XAML change** — bound collections, selectors, UI-thread callbacks |
 | [`docs/reference/zoom-capture-on-off.md`](docs/reference/zoom-capture-on-off.md) | Zoom raw-media start/stop |

@@ -25,8 +25,5 @@ Program, a guest joining, a capture device connecting, a stream or recording sta
 - **Not covered:** the real app with a real meeting; the ~100 ms / 4-6 slot stall the issue
   first reported (this harness showed two slots per event); other first-use costs on the
   render thread (the MF recording open is on its own thread already).
-- **`validate-gpu-encode.mjs` is flaky on main:** it greps the lossy process log for
-  `[gpu-encode] path=` and failed 2 of 5 runs on both the `cdd2e87` core and this change,
-  with the stream itself healthy each time. Read the sender snapshot before believing it.
 - **Tests:** `D3DDecoupledExportTest.cpp` (deferred creation is off the caller's thread, then
   publishes; resize and destroy while pending).
