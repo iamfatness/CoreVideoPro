@@ -43,7 +43,7 @@ Actions:
   - slow-encoder/drop accounting reconciliation;
   - repeated Zoom resolution promotion/demotion policy;
   - support-bundle counters reconciled against sink/file counters.
-- Demote the existing “crash-safe fragmented MP4 — Proven” claim in `docs/obs-real-meeting-parity-audit-2026-08-13.md` until the forced-kill rig gate passes.
+- Demote the existing “crash-safe fragmented MP4 — Proven” claim in `docs/archive/obs-real-meeting-parity-audit-2026-08-13.md` until the forced-kill rig gate passes.
 - Remove the double-start assumption from `docs/iso-record-spec.md`; it currently documents the behavior that caused the shard failure.
 
 **Exit:** each launch blocker has a deterministic failing test or rig script and the successful ISO-audio/color tests remain green.
@@ -207,7 +207,7 @@ Acceptance:
 
 Update these contracts to match the fixed architecture and measured evidence:
 
-- `docs/obs-real-meeting-parity-audit-2026-08-13.md`
+- `docs/archive/obs-real-meeting-parity-audit-2026-08-13.md`
 - `docs/iso-record-spec.md`
 - `docs/audio-overhaul-spec.md`
 - `docs/corevideo-tiles-iso-scaling-plan.md`

@@ -34,7 +34,7 @@ The automated regression suite, a 10-minute real Zoom recording with eight parti
 - WinUI build: **0 errors**.
 - Zoom engine and browser host: build successfully.
 - `git diff --check`: pass; only repository line-ending notices were emitted.
-- Real Zoom repair gate: Program plus all eight ISOs finalized playable with video and AAC audio over approximately 88 seconds. See `docs/corevideo-pro-live-iso-validation-2026-08-14.md`.
+- Real Zoom repair gate: Program plus all eight ISOs finalized playable with video and AAC audio over approximately 88 seconds. See `docs/archive/corevideo-pro-live-iso-validation-2026-08-14.md`.
 - Forced recovery gate: the app relaunched the core/helper, retried Zoom SDK initialization, rejoined automatically, resumed live Program/source meters, and finalized Program plus eight playable H.264/AAC ISO files.
 
 ## Remaining launch gates

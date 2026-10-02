@@ -8,7 +8,7 @@
 
 **Tech Stack:** C++17, Direct3D 11, Media Foundation (hardware H.264 MFT, `IMFDXGIDeviceManager`, `IMFTransform`), the existing `RtmpOutputSenderAdapter` + `RtmpFfmpegArgs`, `EncoderCapacityProbe`, `DeviceLossPolicy`, `OutputDestinationSupervisor`, GoogleTest.
 
-**Spec:** `docs/superpowers/specs/2026-09-13-gpu-direct-encode-design.md`
+**Spec:** `docs/archive/superpowers/specs/2026-09-13-gpu-direct-encode-design.md`
 
 ## Global Constraints
 

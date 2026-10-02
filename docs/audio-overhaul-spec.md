@@ -78,7 +78,7 @@ recordable.
   93% idle (pacing defect, not overload).
 - `audio.gather` coreMutex holds 2–9 ms against a 1 ms budget (recurring guardrail warnings).
 - Historical: the Phase 2 §6 audio soak FAILED under GPU co-load (worker collapse 47→0.6 ticks/s,
-  14,473 capture underruns, `docs/alpha-evidence-2026-07-02.md:120-128`); the ears-on clean-rig
+  14,473 capture underruns, `docs/archive/alpha-evidence-2026-07-02.md:120-128`); the ears-on clean-rig
   soak has never been run.
 
 ## 3. Root causes, ranked

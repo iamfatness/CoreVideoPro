@@ -9,9 +9,9 @@
 **Tech Stack:** TypeScript 5.9 (strict, ES2022, NodeNext), vitest 4, Node 24.
 
 **Source documents:**
-- Spec: `docs/superpowers/specs/2026-08-05-show-engine-capabilities-design.md`
-- Parent spec: `docs/superpowers/specs/2026-08-04-ohg-show-engine-design.md`
-- **Read first:** `docs/superpowers/plans/2026-08-05-ohg-show-engine-outputs-outcomes.md`
+- Spec: `docs/archive/superpowers/specs/2026-08-05-show-engine-capabilities-design.md`
+- Parent spec: `docs/archive/superpowers/specs/2026-08-04-ohg-show-engine-design.md`
+- **Read first:** `docs/archive/superpowers/plans/2026-08-05-ohg-show-engine-outputs-outcomes.md`
 
 **Plan series (this is Plan 4 of 9):**
 1. Core identity & roster — shipped (PR #363)
@@ -1312,7 +1312,7 @@ git commit -m "test(show-engine): degradation equivalence and outage survival"
 
 ## Spec amendments this plan requires
 
-Documentation edits to `docs/superpowers/specs/2026-08-04-ohg-show-engine-design.md`, per
+Documentation edits to `docs/archive/superpowers/specs/2026-08-04-ohg-show-engine-design.md`, per
 §7 of the capabilities spec. Fold them into the final task's commit — Plan 3 skipped its
 equivalent section and needed a fix round for it.
 

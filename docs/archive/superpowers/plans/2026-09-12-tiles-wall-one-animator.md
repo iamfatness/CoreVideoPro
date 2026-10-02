@@ -8,7 +8,7 @@
 
 **Tech Stack:** C++20, MSVC; GoogleTest (`native/tests`); CMake target `corevideo-native-tests`.
 
-**Spec:** `docs/superpowers/specs/2026-09-12-tiles-wall-persistent-source-design.md`
+**Spec:** `docs/archive/superpowers/specs/2026-09-12-tiles-wall-persistent-source-design.md`
 
 ## Global Constraints
 
