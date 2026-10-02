@@ -101,7 +101,6 @@ Found by the 2026-10-01 cleanup audit. Order within this table is a suggestion; 
 
 | Issue | Remaining work |
 |---|---|
-| [#740](https://github.com/iamfatness/CoreVideoPro/issues/740) | **Suggested first.** `SyntheticMediaCore` is the base of every real snapshot, so a field the core omits shows an invented healthy value (`Health = "live"`, `HardwareAccelerated = true`). Surface omitted fields as unknown; delete dead `SyntheticProfile`. |
 | [#739](https://github.com/iamfatness/CoreVideoPro/issues/739) | The production core registers `FakeCaptureDevice` (fake DeckLink / AJA); only a WinUI id-prefix filter hides it. Register it in the stub tier only; check mac-shell. |
 | [#741](https://github.com/iamfatness/CoreVideoPro/issues/741) | The core serves a fake two-person Zoom roster whenever `COREVIDEO_ZOOM_ENGINE_PATH` is unset, at runtime. Report Zoom unavailable instead; make `simulate-breakout-room-change` stub-only. |
 | [#747](https://github.com/iamfatness/CoreVideoPro/issues/747) | After #738 nothing cross-checks the `Protocol.h` manifests against the C# protocol. Add a C++↔C# parity test for the five manifests. |

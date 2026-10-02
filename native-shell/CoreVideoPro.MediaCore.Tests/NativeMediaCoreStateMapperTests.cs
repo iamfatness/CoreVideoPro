@@ -19,7 +19,7 @@ public sealed class NativeMediaCoreStateMapperTests
         var wire = CoreProtocolParser.TryParseWireState(response);
         Assert.NotNull(wire);
         var commands = new[] { MediaCoreCommandBuilder.BuildPreviewSceneCommand("desired-preview", []) };
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(commands, 100, 3, wire);
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(100, 3, wire);
         Assert.Equal("native-program", snapshot.SceneId);
         Assert.NotNull(snapshot.PreviewScene);
         Assert.Equal("native-preview", snapshot.PreviewScene.SceneId);
@@ -35,7 +35,7 @@ public sealed class NativeMediaCoreStateMapperTests
         var wire = CoreProtocolParser.TryParseWireState(response);
         Assert.NotNull(wire);
         var commands = new[] { MediaCoreCommandBuilder.BuildPreviewSceneCommand("desired-preview", []) };
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(commands, 100, 3, wire);
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(100, 3, wire);
         Assert.Null(snapshot.PreviewScene);
     }
 
@@ -48,7 +48,7 @@ public sealed class NativeMediaCoreStateMapperTests
             "videoSources":[{"layerId":"speaker","sourceId":"zoom:jamal","participantId":"jamal","kind":"participant-video"}]}}}
             """);
         var wire = CoreProtocolParser.TryParseWireState(response)!;
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot([], 0, 0, wire);
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(0, 0, wire);
         Assert.Equal("new-scene", snapshot.SceneId);
         Assert.Equal("old-scene", snapshot.ProgramFrame?.SceneId);
         Assert.Equal(9, snapshot.ProgramFrame?.FrameNumber);
@@ -60,53 +60,15 @@ public sealed class NativeMediaCoreStateMapperTests
     {
         using var response = JsonDocument.Parse("""{"ok":true,"snapshot":{"health":null,"profile":null,"sceneId":"desired","programFrameCount":10,"renderPlanId":"desired:2:0"}}""");
         var wire = CoreProtocolParser.TryParseWireState(response)!;
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot([], 0, 0, wire);
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(0, 0, wire);
         Assert.Null(snapshot.ProgramFrame?.SceneId);
         Assert.Null(snapshot.ProgramFrame?.VideoSources);
     }
 
-    private static readonly IReadOnlyList<NativeMediaCoreCommand> Commands =
-    [
-        new()
-        {
-            Type = "load-scene-graph",
-            ExtensionData = new Dictionary<string, JsonElement>
-            {
-                ["sceneId"] = JsonSerializer.SerializeToElement("interview"),
-                ["routes"] = JsonSerializer.SerializeToElement(new[]
-                {
-                    new { routeId = "a", mode = "active-speaker", audioRole = "mix" }
-                })
-            }
-        },
-        new()
-        {
-            Type = "start-program-output",
-            ExtensionData = new Dictionary<string, JsonElement>
-            {
-                ["destinations"] = JsonSerializer.SerializeToElement(new[] { "recording", "rtmp" }),
-                ["isoParticipantIds"] = JsonSerializer.SerializeToElement(new[] { "p1" })
-            }
-        },
-        new()
-        {
-            Type = "start-recording-session",
-            ExtensionData = new Dictionary<string, JsonElement>
-            {
-                ["sessionId"] = JsonSerializer.SerializeToElement("show-1"),
-                ["targetFolder"] = JsonSerializer.SerializeToElement("Recordings"),
-                ["filenamePrefix"] = JsonSerializer.SerializeToElement("program"),
-                ["format"] = JsonSerializer.SerializeToElement("mp4"),
-                ["quality"] = JsonSerializer.SerializeToElement("high"),
-                ["isoParticipantIds"] = JsonSerializer.SerializeToElement(new[] { "p1" })
-            }
-        }
-    ];
-
     [Fact]
     public void MergesNativeEncoderRecordingAndSenderStateIntoSnapshot()
     {
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(3000, 12, new NativeMediaCoreWireState
         {
             SceneId = "interview",
             RouteCount = 1,
@@ -193,6 +155,7 @@ public sealed class NativeMediaCoreStateMapperTests
             Health = new NativeMediaCoreWireHealth
             {
                 Status = "live",
+                ProgramFrameHealth = "live",
                 Renderer = "d3d11",
                 Encoder = "media-foundation",
                 Codec = "h264",
@@ -232,7 +195,7 @@ public sealed class NativeMediaCoreStateMapperTests
     [Fact]
     public void MapsOutputSenderLastErrorIntoOutputHealthWhenWarningIsMissing()
     {
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(3000, 12, new NativeMediaCoreWireState
         {
             Outputs = ["rtmp"],
             OutputSenderSession = new NativeMediaCoreOutputSenderSession
@@ -264,7 +227,7 @@ public sealed class NativeMediaCoreStateMapperTests
     [Fact]
     public void MapsOutputSenderResultAndRuntimeDetailIntoOutputHealthWhenWarningIsMissing()
     {
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(3000, 12, new NativeMediaCoreWireState
         {
             Outputs = ["ndi"],
             OutputSenderSession = new NativeMediaCoreOutputSenderSession
@@ -298,7 +261,7 @@ public sealed class NativeMediaCoreStateMapperTests
     [Fact]
     public void MergesNativeAudioMixAndCaptionTrackStateFromWirePayload()
     {
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(3000, 12, new NativeMediaCoreWireState
         {
             SceneId = "interview",
             RouteCount = 1,
@@ -502,7 +465,7 @@ public sealed class NativeMediaCoreStateMapperTests
     [Fact]
     public void OptionalCaptureAudioWarningsStayScopedToTheCaptureSource()
     {
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(3000, 12, new NativeMediaCoreWireState
         {
             AudioMixSession = new NativeMediaCoreAudioMixSession
             {
@@ -576,7 +539,7 @@ public sealed class NativeMediaCoreStateMapperTests
     [Fact]
     public void MapsBreakoutRoomAndMeetingStateFromWirePayload()
     {
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(3000, 12, new NativeMediaCoreWireState
         {
             SceneId = "interview",
             RouteCount = 1,
@@ -593,7 +556,7 @@ public sealed class NativeMediaCoreStateMapperTests
     [Fact]
     public void NativeWireStateWithoutNativeFramesWaitsForFirstCompositorFrame()
     {
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(3000, 12, new NativeMediaCoreWireState
         {
             SceneId = "interview",
             RouteCount = 1,
@@ -626,7 +589,7 @@ public sealed class NativeMediaCoreStateMapperTests
     [Fact]
     public void NativeWireStateCarriesDegradedProgramFrameHealthToCompositor()
     {
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(3000, 12, new NativeMediaCoreWireState
         {
             SceneId = "interview",
             RouteCount = 1,
@@ -654,7 +617,7 @@ public sealed class NativeMediaCoreStateMapperTests
         // Regression: the wire-state mapper synthesizes a fresh base (virtual
         // camera off), so it must read the camera status from the wire - else the
         // shell shows the camera off even when the core reports it live.
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(Commands, 3000, 12, new NativeMediaCoreWireState
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(3000, 12, new NativeMediaCoreWireState
         {
             VirtualCamera = new NativeMediaCoreVirtualCamera
             {
@@ -673,9 +636,7 @@ public sealed class NativeMediaCoreStateMapperTests
     [Fact]
     public void CarriesNativeRenderDropsIntoTransportAndSupportTelemetry()
     {
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(
-            Commands,
-            3000,
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(3000,
             12,
             new NativeMediaCoreWireState
             {
@@ -708,7 +669,7 @@ public sealed class NativeMediaCoreStateMapperTests
             """);
         var wire = CoreProtocolParser.TryParseWireState(response);
         Assert.NotNull(wire);
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot([], 0, 0, wire);
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(0, 0, wire);
 
         Assert.Equal(2, snapshot.MediaSources.Count);
         var clip = snapshot.MediaSources[0];
@@ -734,7 +695,123 @@ public sealed class NativeMediaCoreStateMapperTests
     {
         using var response = JsonDocument.Parse("""{"ok":true,"snapshot":{"health":null,"profile":null,"sceneId":"s"}}""");
         var wire = CoreProtocolParser.TryParseWireState(response)!;
-        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot([], 0, 0, wire);
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(0, 0, wire);
         Assert.Empty(snapshot.MediaSources);
+    }
+
+    // #740: the mapper's base used to be synthesized from the commands the shell sent, so a
+    // node the core omitted read as the healthy outcome the shell had asked for. These pin
+    // the rule that only the core's own JSON can make a snapshot say something is happening.
+
+    private static NativeMediaCoreStateSnapshot MapJson(string snapshotJson)
+    {
+        using var response = JsonDocument.Parse("{\"ok\":true,\"snapshot\":" + snapshotJson + "}");
+        return NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(
+            3000, 12, CoreProtocolParser.TryParseWireState(response)!);
+    }
+
+    [Fact]
+    public void ACoreThatPublishesNoRecordingNodeReportsNoRecording()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"outputs":["recording","rtmp"],"programFrameCount":12}""");
+
+        Assert.Null(snapshot.Recording);
+        Assert.Null(snapshot.Diagnostics.Recording);
+        Assert.Equal("idle", snapshot.OutputHealth.Single(health => health.Destination == "recording").Status);
+    }
+
+    [Fact]
+    public void ACoreThatPublishesNoSendersReportsNoLiveStream()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"outputs":["rtmp"],"programFrameCount":12}""");
+
+        Assert.Empty(snapshot.OutputSenderSession.Senders);
+        Assert.Equal("idle", snapshot.OutputSenderSession.Status);
+        Assert.Equal("idle", snapshot.EncoderSession.Status);
+        Assert.Equal("idle", snapshot.OutputHealth.Single(health => health.Destination == "rtmp").Status);
+    }
+
+    [Fact]
+    public void ACoreThatPublishesNoPreviewPixelsHasNoProgramPreview()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"outputs":["rtmp"],"programFrameCount":12}""");
+
+        Assert.Null(snapshot.ProgramFramePreview);
+        Assert.Null(snapshot.Diagnostics.ProgramFramePreview);
+    }
+
+    [Fact]
+    public void AnUndecodablePreviewIsDroppedNotReplaced()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"programFrameCount":12,"programFramePreview":{"frameNumber":12,"width":320,"height":180,"renderPlanId":"p","renderer":"d3d11","health":"live","pixelFormat":"bgra","bgraBase64":"AAAA"}}""");
+
+        Assert.Null(snapshot.ProgramFramePreview);
+    }
+
+    [Fact]
+    public void TheOutputProfileIsTheCoresNotAHardCodedDefault()
+    {
+        var snapshot = MapJson("""{"health":{},"profile":null,"outputProfile":{"profileId":"720p30","resolution":"1280x720","width":1280,"height":720,"fps":30,"targetBitrateMbps":4.5}}""");
+
+        Assert.Equal("720p30", snapshot.OutputProfile.ProfileId);
+        Assert.Equal(1280, snapshot.OutputProfile.Width);
+        Assert.Equal(30, snapshot.OutputProfile.Fps);
+        Assert.Equal(4.5, snapshot.OutputProfile.TargetBitrateMbps);
+        Assert.Equal("720p30", snapshot.Diagnostics.OutputProfile.ProfileId);
+    }
+
+    [Theory]
+    [InlineData("""{"frameCount":12}""")]
+    [InlineData("""{"frameCount":12,"programFrameHealth":"sparkling"}""")]
+    public void AMissingOrUnrecognisedFrameHealthIsNotReportedLive(string health)
+    {
+        var snapshot = MapJson("{\"health\":" + health + ",\"profile\":null,\"programFrameCount\":12}");
+
+        Assert.Equal("unknown", snapshot.Compositor.Status);
+    }
+
+    [Fact]
+    public void LiveFrameHealthIsStillReportedLive()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12,"programFrameHealth":"live"},"profile":null,"programFrameCount":12}""");
+
+        Assert.Equal("live", snapshot.Compositor.Status);
+    }
+
+    [Fact]
+    public void TheSourceSnapshotClaimsNoSubscriptionsOrFramesTheCoreDidNotReport()
+    {
+        var snapshot = MapJson("""{"health":{"frameCount":12},"profile":null,"outputs":["rtmp"],"programFrameCount":12}""");
+
+        Assert.Equal("idle", snapshot.SourceSnapshot.Status);
+        Assert.Equal(0, snapshot.SourceSnapshot.SubscribedSourceCount);
+        Assert.Equal(0, snapshot.SourceSnapshot.LiveFrameCount);
+        Assert.Null(snapshot.MeetingState);
+        Assert.Null(snapshot.BreakoutRoomId);
+    }
+
+    [Fact]
+    public void AnEmptyRecordingArtifactPathAddsNoWarning()
+    {
+        var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(3000, 12, new NativeMediaCoreWireState
+        {
+            Health = new NativeMediaCoreWireHealth { RecordingArtifactPath = "" },
+            Recording = new NativeMediaCoreRecordingSession
+            {
+                SessionId = "show-1",
+                Active = true,
+                Status = "recording",
+                TargetFolder = "Recordings",
+                WriterStatus = "writing",
+                ProgramPath = "Recordings/program.mp4",
+                FilenamePrefix = "program",
+                Format = "mp4",
+                Quality = "high",
+                Encoder = new NativeMediaCoreRecordingEncoder { Codec = "h264" },
+                Streams = []
+            }
+        });
+
+        Assert.DoesNotContain(snapshot.Warnings, warning => warning.StartsWith("Recording artifact", StringComparison.Ordinal));
     }
 }
