@@ -8,7 +8,7 @@
 
 **Tech Stack:** C++17, MediaCore (`native/`), GoogleTest via the repo's gtest shim, the slice-0/1 `SourceBus` (`native/src/core/SourceBus.h`), CMake multi-config dev core (`cmake --build native/build-dev --config Release --target corevideo-native corevideo-native-tests`).
 
-**Spec:** `docs/superpowers/specs/2026-09-18-source-bus-design.md` (§4 "Capture" row: "one `ISource` per device; `poll()` serves the reader's latest BGRA; `droppedFrames` from the reader's own counter"; §5 slice 2). Slice 1 shipped Zoom (`docs/superpowers/plans/2026-09-18-source-bus-slice1-zoom.md`) and its live regression + fix are recorded in `CLAUDE.md` ("Slice 1 shipped a live regression the drill could not see (#554…)") — read that paragraph before Task 3.
+**Spec:** `docs/superpowers/specs/2026-09-18-source-bus-design.md` (§4 "Capture" row: "one `ISource` per device; `poll()` serves the reader's latest BGRA; `droppedFrames` from the reader's own counter"; §5 slice 2). Slice 1 shipped Zoom (`docs/archive/superpowers/plans/2026-09-18-source-bus-slice1-zoom.md`) and its live regression + fix are recorded in `CLAUDE.md` ("Slice 1 shipped a live regression the drill could not see (#554…)") — read that paragraph before Task 3.
 
 ## Global Constraints
 

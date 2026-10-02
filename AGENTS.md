@@ -29,6 +29,8 @@ architecture decks, overnight handoffs, and completion-plan matrices are
 | `native-production-completion-plan.md`, compositor/GPU plans | How to build a thing, linked from an issue | A queue of work |
 | `README.md` | As-built capabilities | A to-do list |
 | `CLAUDE.md` | How to build, run, and not break it | New epics |
+| `docs/reference/*.md` | One topic each: how a subsystem works and its traps | Work queues |
+| `docs/archive/` | History, moved unchanged | Anything current — do not read unless asked |
 
 If you add a checkbox list to a plan, delete it or move each box to an issue +
 BACKLOG row.
@@ -95,7 +97,10 @@ Do not context-switch the repo onto the newest incident.
 
 ## 9. Commands (Windows)
 
-See `CLAUDE.md` for the full runbook. Defaults:
+See `CLAUDE.md` for the runbook and the index of `docs/reference/` topic files.
+`CLAUDE.md` is loaded into every agent session, so it stays short: new lessons go
+in the matching `docs/reference/` file (or a new one plus an index row), never
+as a new section in `CLAUDE.md`. Defaults:
 
 ```powershell
 npm run app                 # best-available core + WinUI

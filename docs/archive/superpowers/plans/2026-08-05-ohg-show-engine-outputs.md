@@ -9,9 +9,9 @@
 **Tech Stack:** TypeScript 5.9 (strict, ES2022, NodeNext), vitest 4, Node 24.
 
 **Source documents:**
-- Spec: `docs/superpowers/specs/2026-08-04-ohg-show-engine-design.md`
+- Spec: `docs/archive/superpowers/specs/2026-08-04-ohg-show-engine-design.md`
 - Algorithm reference: `docs/superpowers/specs/2026-08-04-ohg-isadora-actor-reference.md`
-- **Read first:** `docs/superpowers/plans/2026-08-04-ohg-show-engine-direction-outcomes.md`
+- **Read first:** `docs/archive/superpowers/plans/2026-08-04-ohg-show-engine-direction-outcomes.md`
 
 **Plan series (this is Plan 3 of 8):**
 1. Core identity & roster — shipped (PR #363)
