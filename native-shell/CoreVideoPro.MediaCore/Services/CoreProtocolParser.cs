@@ -579,7 +579,7 @@ public static class CoreProtocolParser
     /// <summary>The core's own session-state JSON from a sync response, if present. Used to tag a
     /// snapshot with <see cref="NativeMediaCoreStateSnapshot.RawJson"/> on the paths that do NOT
     /// bind it directly — the real native core answers with a WIRE state, which is mapped onto a
-    /// synthesized base and would otherwise carry no record of what the core actually said.
+    /// neutral base and would otherwise carry no record of what the core actually said.
     /// </summary>
     public static string? TryGetStateJson(JsonDocument response)
     {

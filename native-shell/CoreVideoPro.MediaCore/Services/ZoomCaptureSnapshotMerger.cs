@@ -14,7 +14,7 @@ public static class ZoomCaptureSnapshotMerger
     {
         if (!ZoomRosterSnapshotPolicy.Accept(existing, capture.RosterEpoch, capture.RosterRevision))
             return existing!;
-        var baseSnapshot = existing ?? SyntheticMediaCore.SynthesizeSnapshot([], 0, 0);
+        var baseSnapshot = existing ?? new NativeMediaCoreStateSnapshot();
         var meetingState = ZoomMediaSpineSnapshotMerger.NormalizeMeetingState(capture.MeetingState);
         var inMeeting = meetingState.Equals("in_meeting", StringComparison.Ordinal);
         var participantCount = capture.Participants.Count;

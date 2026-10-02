@@ -10,7 +10,7 @@ public sealed class ZoomCaptureSnapshotMergerTests
     [Fact]
     public void DirectFactsRejectDuplicateRevisionButFullSnapshotMayRefreshOtherEvidence()
     {
-        var current = SyntheticMediaCore.SynthesizeSnapshot([], 0, 0) with
+        var current = new NativeMediaCoreStateSnapshot() with
         {
             RosterEpoch = "1:1:engine-a", RosterRevision = 4,
             Participants = [new RawParticipantEvent { UserId = "42", DisplayName = "Guest", Muted = false }]
@@ -56,7 +56,7 @@ public sealed class ZoomCaptureSnapshotMergerTests
         Assert.Empty(LiveProductionSync.MapSnapshotParticipants(left)!);
         Assert.Same(left, ZoomCaptureSnapshotMerger.Merge(left, Capture("1:2:engine-a", 1, "New guest", false)));
 
-        var newerProgram = SyntheticMediaCore.SynthesizeSnapshot([], 5000, 8) with
+        var newerProgram = new NativeMediaCoreStateSnapshot() with
         {
             ProgramFrameCount = 8,
             MeetingState = "in_meeting",
@@ -77,7 +77,7 @@ public sealed class ZoomCaptureSnapshotMergerTests
     [Fact]
     public void MergeInMeetingCaptureSnapshotUpdatesRosterAndMeetingState()
     {
-        var existing = SyntheticMediaCore.SynthesizeSnapshot([], 1000, 3);
+        var existing = new NativeMediaCoreStateSnapshot();
         var capture = new RawCaptureSnapshot
         {
             MeetingState = "in_meeting",
@@ -141,7 +141,7 @@ public sealed class ZoomCaptureSnapshotMergerTests
     public void MergeIdleCaptureSnapshotClearsRosterAndMarksSourceIdle()
     {
         var existing = ZoomCaptureSnapshotMerger.Merge(
-            SyntheticMediaCore.SynthesizeSnapshot([], 0, 0),
+            new NativeMediaCoreStateSnapshot(),
             new RawCaptureSnapshot
             {
                 MeetingState = "in_meeting",
@@ -175,19 +175,7 @@ public sealed class ZoomCaptureSnapshotMergerTests
     [Fact]
     public void MergePreservesExistingCompositorStateWhileUpdatingZoomFields()
     {
-        var existing = SyntheticMediaCore.SynthesizeSnapshot(
-        [
-            new NativeMediaCoreCommand
-            {
-                Type = "start-program-output",
-                ExtensionData = new Dictionary<string, System.Text.Json.JsonElement>
-                {
-                    ["destinations"] = System.Text.Json.JsonSerializer.SerializeToElement(new[] { "rtmp" })
-                }
-            }
-        ],
-        2000,
-        5);
+        var existing = new NativeMediaCoreStateSnapshot { Outputs = ["rtmp"], ProgramFrameCount = 5 };
 
         var merged = ZoomCaptureSnapshotMerger.Merge(
             existing,

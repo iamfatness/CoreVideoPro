@@ -100,7 +100,7 @@ public sealed class FirstFrameValidationEvidenceBuilderTests
     [Fact]
     public void DerivesEvidenceFromNativeSnapshotWithoutLiveZoom()
     {
-        var snapshot = SyntheticMediaCore.SynthesizeSnapshot([], 1500, 5) with
+        var snapshot = new NativeMediaCoreStateSnapshot() with
         {
             MeetingState = "in_meeting",
             Participants =

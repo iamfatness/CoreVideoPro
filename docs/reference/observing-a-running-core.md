@@ -11,7 +11,7 @@ judge can now watch the core the operator is actually running instead of spawnin
 
 - **How it flows.** `CoreProtocolParser` / `MediaCoreSupervisor` tag every parsed snapshot with
   `RawJson` + `RawReceivedUtc` (`[JsonIgnore]`, in-process only). **Both** sync paths must tag:
-  a real core answers with a WIRE state that is mapped onto a *synthesized* base
+  a real core answers with a WIRE state that is mapped onto a neutral base
   (`NativeMediaCoreStateMapper`), so tagging only `TryParseSyncSnapshot` leaves the live path
   with no raw at all — that is exactly the bug this endpoint was first caught by.
   `StudioControlSurface` (an `INativeSnapshotObserver`) reads the reference the bridge already
@@ -36,3 +36,19 @@ judge can now watch the core the operator is actually running instead of spawnin
   `CompositorRenderPlanLayer` inside the core and are never serialized. `ControlProgramVideoSource`
   adds `order` (the index in the core's already-sorted publish order). Only the `tiles` node
   carries a rect per member. Adding real geometry is a **core** change.
+- **The mapped snapshot says only what the core said (#740).** `NativeMediaCoreStateMapper`
+  starts from `new NativeMediaCoreStateSnapshot()` (idle, no recording, no senders, no preview,
+  no meeting) and overlays the core's JSON. It used to start from `SyntheticMediaCore`, a
+  snapshot derived from the COMMANDS the shell had just sent, so a node the core omitted read
+  as the outcome the shell had asked for: a `start-recording-session` in the batch produced
+  `Active/recording/writing/HardwareAccelerated`, a `start-program-output` produced a live
+  RTMP sender at 6 Mbps and a generated gradient as the Program preview. The mapper no longer
+  takes the commands at all — do not add them back. Against a current core only `recording`
+  (omitted until the first session) and `programFramePreview` (omitted whenever the buffered
+  GPU path skips the CPU readback) are ever absent; both now map to null. A missing or
+  unrecognised `health.programFrameHealth` maps to `unknown`, not `live`. `outputProfile` is
+  bound from the core; it used to be a hard-coded 1080p60 / 8 Mbps.
+  Still not from the core: `SourceSnapshot` (idle from the mapper; the Zoom capture and spine
+  mergers fill it from the roster, and count participants as live frames), `RenderPlan`
+  (layers and routes always empty), `OperatorActions`, `EventLog`, `Frames`. Read those nodes
+  from `RawJson` (`sources`, `zoom`, `tiles`) if you need the truth.

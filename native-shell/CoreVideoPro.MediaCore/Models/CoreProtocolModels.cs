@@ -360,6 +360,8 @@ public sealed class NativeMediaCoreWireState
     public IReadOnlyList<NativeZoomGuestAvSyncSetting>? ZoomGuestAvSync { get; init; }
     public long? ZoomGuestAvSyncRevision { get; init; }
     public int? ProgramFrameCount { get; init; }
+    /// <summary>The core's actual program output profile (snapshot node "outputProfile").</summary>
+    public NativeMediaCoreOutputProfile? OutputProfile { get; init; }
     public string? RenderPlanId { get; init; }
     public string? CompositorRenderer { get; init; }
     public NativeMediaCoreEncoderSession? EncoderSession { get; init; }

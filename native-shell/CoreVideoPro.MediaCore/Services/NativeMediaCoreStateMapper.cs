@@ -13,13 +13,20 @@ public static class NativeMediaCoreStateMapper
                !value.TryGetProperty("diagnostics", out _);
     }
 
+    /// <summary>
+    /// Maps the core's own state onto the shell's snapshot record. The base is a NEUTRAL
+    /// snapshot (idle, no recording, no senders, no preview), never one derived from the
+    /// commands the shell sent: a node the core did not publish must read as absent, not as
+    /// the healthy outcome the shell asked for (#740). The commands are deliberately not a
+    /// parameter, so nothing here can turn desired state into observed state.
+    /// </summary>
     public static NativeMediaCoreStateSnapshot MapNativeWireStateToSnapshot(
-        IReadOnlyList<NativeMediaCoreCommand> commands,
         double elapsedMs,
         int frameNumber,
         NativeMediaCoreWireState wire)
     {
-        var baseSnapshot = SyntheticMediaCore.SynthesizeSnapshot(commands, elapsedMs, frameNumber);
+        var baseSnapshot = new NativeMediaCoreStateSnapshot();
+        var outputProfile = wire.OutputProfile ?? baseSnapshot.OutputProfile;
         var outputs = (wire.Outputs ?? baseSnapshot.Outputs)
             .Select(AsDestination)
             .Where(destination => destination is not null)
@@ -41,30 +48,22 @@ public static class NativeMediaCoreStateMapper
                     wire.Recording.TotalBytesWritten,
                     wire.Health?.RecordingBytesWritten ?? 0)
             }
-            : wire.Health?.RecordingArtifactPath is not null && baseSnapshot.Recording is not null
-                ? baseSnapshot.Recording with
-                {
-                    TotalBytesWritten = Math.Max(
-                        baseSnapshot.Recording.TotalBytesWritten,
-                        wire.Health?.RecordingBytesWritten ?? 0)
-                }
-                : baseSnapshot.Recording;
+            // The core omits the node until its first recording session. No node, no
+            // recording: a start-recording-session command is a request, not evidence.
+            : null;
 
         var compositorRenderer = wire.CompositorRenderer ??
                                  wire.Health?.Renderer ??
                                  wire.Profile?.Renderer ??
                                  "software";
         var programFrameHealth = NormalizeProgramFrameHealth(wire.Health?.ProgramFrameHealth);
-        var compositorStatus = programFrameCount > 0
-            ? programFrameHealth
-            : compositorRenderer.Equals("software", StringComparison.Ordinal)
-                ? "idle"
-                : "idle";
+        var compositorStatus = programFrameCount > 0 ? programFrameHealth : "idle";
 
         var warnings = baseSnapshot.Warnings.ToList();
-        if (wire.Health?.RecordingArtifactPath is not null && recording?.Active == true)
+        // The core always sends the key; it is an empty string until a file exists.
+        if (!string.IsNullOrWhiteSpace(wire.Health?.RecordingArtifactPath) && recording?.Active == true)
         {
-            warnings.Insert(0, $"Recording artifact: {wire.Health.RecordingArtifactPath}");
+            warnings.Insert(0, $"Recording artifact: {wire.Health!.RecordingArtifactPath}");
         }
 
         if (wire.Health?.Messages is not null)
@@ -79,9 +78,11 @@ public static class NativeMediaCoreStateMapper
         }
 
         var outputHealth = BuildOutputHealth(outputs, outputSenderSession, recording, encoderSession.Warnings);
+        // Absent on most live ticks (the buffered GPU path skips the CPU readback). Absent
+        // or undecodable means no preview pixels, never generated ones.
         var programFramePreview = wire.ProgramFramePreview is not null
-            ? DecodeProgramFramePreview(wire.ProgramFramePreview) ?? baseSnapshot.ProgramFramePreview
-            : baseSnapshot.ProgramFramePreview;
+            ? DecodeProgramFramePreview(wire.ProgramFramePreview)
+            : null;
 
         var programFrame = wire.ProgramFrame ?? (programFrameCount > 0
             ? new NativeMediaCoreProgramFrame
@@ -92,9 +93,9 @@ public static class NativeMediaCoreStateMapper
                 // Legacy cores do not provide rendered attribution. Never turn
                 // acknowledged scene state into proof of the last rendered scene.
                 SceneId = null,
-                Width = baseSnapshot.OutputProfile.Width,
-                Height = baseSnapshot.OutputProfile.Height,
-                Fps = baseSnapshot.OutputProfile.Fps,
+                Width = outputProfile.Width,
+                Height = outputProfile.Height,
+                Fps = outputProfile.Fps,
                 LayerCount = baseSnapshot.RenderPlan.Layers.Count,
                 ColorGrade = baseSnapshot.RenderPlan.ColorGrade,
                 Health = programFrameHealth
@@ -148,6 +149,7 @@ public static class NativeMediaCoreStateMapper
             FrameCount = baseSnapshot.FrameCount,
             ProgramFrameCount = programFrameCount,
             Outputs = outputs,
+            OutputProfile = outputProfile,
             OutputHealth = outputHealth,
             OutputSenderSession = outputSenderSession,
             Compositor = compositor,
@@ -175,6 +177,7 @@ public static class NativeMediaCoreStateMapper
             ParticipantTransformCount = wire.TransformCount ?? baseSnapshot.ParticipantTransformCount,
             OverlayCount = wire.OverlayCount ?? baseSnapshot.OverlayCount,
             Outputs = outputs,
+            OutputProfile = outputProfile,
             IsoParticipantIds = wire.IsoParticipantIds ?? baseSnapshot.IsoParticipantIds,
             ZoomGuestAvSync = wire.ZoomGuestAvSync ?? baseSnapshot.ZoomGuestAvSync,
             ZoomGuestAvSyncRevision = wire.ZoomGuestAvSyncRevision ?? baseSnapshot.ZoomGuestAvSyncRevision,
@@ -218,7 +221,9 @@ public static class NativeMediaCoreStateMapper
             "dropped" => "failed",
             "failed" => "failed",
             "error" => "failed",
-            _ => "live"
+            "live" => "live",
+            // A missing or unrecognised health string is not evidence of a healthy frame.
+            _ => "unknown"
         };
 
     private static NativeMediaCoreAudioMixSession CopyAudioMixSession(
