@@ -114,15 +114,24 @@ public static class CaptureDeviceSharedMemoryWriter
         }
     }
 
-    public static void Remove(string deviceId)
+    /// <summary>
+    /// Drops a device's buffer when its bridge reader is stopped. Returns true when a
+    /// buffer existed, so the caller knows to tell the core (unregister-capture-shm):
+    /// the core holds its own view of the mapping and keeps re-emitting the last frame
+    /// from it until told to let go (#758).
+    /// </summary>
+    public static bool Remove(string deviceId)
     {
         lock (Gate)
         {
-            if (Maps.TryGetValue(deviceId, out var map))
+            if (!Maps.TryGetValue(deviceId, out var map))
             {
-                DisposeMap(map);
-                Maps.Remove(deviceId);
+                return false;
             }
+
+            DisposeMap(map);
+            Maps.Remove(deviceId);
+            return true;
         }
     }
 

@@ -7006,6 +7006,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // against one device (the bridge reader would otherwise keep restarting — see
             // the OutputFormatNotSupported storm on 2026-07-10). No-op if none is running.
             await _captureFrameReader.StopAsync(device.Id).ConfigureAwait(false);
+            // The stopped bridge session's shared-memory buffer must go with it. The core
+            // re-emits a registered buffer's last frame on every tick and lets it
+            // supersede any other frame for "capture:<id>", so a buffer left behind by an
+            // earlier bridge session froze this camera on its old frame while the native
+            // capture that just connected ran underneath it (#758).
+            ReleaseCaptureBridgeBuffer(device.Id);
 
             LaunchLog.Write(
                 $"capture: native uvc connected {device.Id} ({match.Width}x{match.Height}@{match.FrameRate}, core id {match.Id})");
@@ -10233,6 +10239,19 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // memory the fresh core had no record of, and those cameras sat on the placeholder
     // tile forever. Core-side captures (screen/WGC) recovered on their own because the
     // new core re-enumerates them, which is why only SOME tiles stayed blank.
+    private void ReleaseCaptureBridgeBuffer(string deviceId)
+    {
+        if (!CaptureDeviceSharedMemoryWriter.Remove(deviceId))
+        {
+            return;
+        }
+
+        // Fire-and-forget, like the registration: a failure here must not block the
+        // connect path. A respawned core never learns of the buffer at all, because
+        // ReannounceCaptureShmToNewCore only announces mappings that still exist.
+        _ = _bridge.UnregisterCaptureShmAsync(deviceId);
+    }
+
     private void ReannounceCaptureShmToNewCore()
     {
         foreach (var mapping in CaptureDeviceSharedMemoryWriter.LiveMappings())

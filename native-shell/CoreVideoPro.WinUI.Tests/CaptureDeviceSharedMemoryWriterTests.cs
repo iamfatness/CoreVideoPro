@@ -86,4 +86,63 @@ public class CaptureDeviceSharedMemoryWriterTests
         Assert.Equal(96, live.Width);
         Assert.Equal(54, live.Height);
     }
+
+    // #758: a stopped bridge session must take its buffer with it. The core re-emits a
+    // registered buffer's last frame forever and lets it override a live native frame for
+    // the same capture id, and a respawned core is re-told about every mapping that still
+    // exists.
+    [Fact]
+    public void Remove_DropsTheBufferSoItIsNeverReAnnounced()
+    {
+        var deviceId = DeviceId();
+        CaptureDeviceSharedMemoryWriter.Write(deviceId, Frame(64, 36), 64, 36);
+        Assert.Contains(CaptureDeviceSharedMemoryWriter.LiveMappings(), mapping => mapping.DeviceId == deviceId);
+
+        Assert.True(CaptureDeviceSharedMemoryWriter.Remove(deviceId), "a buffer existed, so the caller must unregister it with the core");
+
+        Assert.DoesNotContain(CaptureDeviceSharedMemoryWriter.LiveMappings(), mapping => mapping.DeviceId == deviceId);
+        Assert.False(CaptureDeviceSharedMemoryWriter.Remove(deviceId), "nothing left to unregister");
+    }
+
+    [Fact]
+    public void Write_AfterRemove_AnnouncesAFreshBuffer()
+    {
+        var deviceId = DeviceId();
+        CaptureDeviceSharedMemoryWriter.Write(deviceId, Frame(64, 36), 64, 36);
+        CaptureDeviceSharedMemoryWriter.Remove(deviceId);
+
+        // A later bridge session for the same device must register again, or the core
+        // (which was told to let go) would never see its frames.
+        var restarted = CaptureDeviceSharedMemoryWriter.Write(deviceId, Frame(64, 36), 64, 36);
+        Assert.True(restarted.MappingChanged);
+        CaptureDeviceSharedMemoryWriter.Remove(deviceId);
+    }
+
+    [Fact]
+    public void TheReaderStopPathReleasesTheBridgeBuffer()
+    {
+        var code = ReadViewModel("StudioViewModel.cs");
+        var stop = code.IndexOf("await _captureFrameReader.StopAsync(device.Id)", StringComparison.Ordinal);
+        Assert.True(stop >= 0, "the bridge reader stop call moved; update this test");
+        var after = code.Substring(stop, 900);
+        Assert.Contains("ReleaseCaptureBridgeBuffer(device.Id);", after, StringComparison.Ordinal);
+        Assert.Contains("_bridge.UnregisterCaptureShmAsync(deviceId)", code, StringComparison.Ordinal);
+    }
+
+    private static string ReadViewModel(string fileName)
+    {
+        for (var directory = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+             directory is not null;
+             directory = directory.Parent)
+        {
+            var candidate = System.IO.Path.Combine(
+                directory.FullName, "native-shell", "CoreVideoPro.WinUI", "ViewModels", fileName);
+            if (System.IO.File.Exists(candidate))
+            {
+                return System.IO.File.ReadAllText(candidate);
+            }
+        }
+
+        throw new System.IO.FileNotFoundException(fileName);
+    }
 }

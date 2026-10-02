@@ -981,6 +981,28 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         response.Dispose();
     }
 
+    // The counterpart of RegisterCaptureShmAsync: tells the core to release its view of a
+    // device's bridge buffer. Without it the core keeps re-emitting that buffer's last
+    // frame as "capture:<deviceId>", which also overrides a live native frame for the
+    // same id (#758). Best-effort.
+    public async Task UnregisterCaptureShmAsync(
+        string deviceId,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync(
+            new Dictionary<string, object?>
+            {
+                ["id"] = NextId(),
+                ["type"] = "unregister-capture-shm",
+                ["payload"] = new Dictionary<string, object?>
+                {
+                    ["deviceId"] = deviceId
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+        response.Dispose();
+    }
+
     private static bool IsWireSnapshotResponse(JsonDocument response)
     {
         var root = response.RootElement;

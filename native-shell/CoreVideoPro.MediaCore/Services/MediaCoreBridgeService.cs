@@ -226,6 +226,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         CancellationToken cancellationToken = default) =>
         _supervisor.RegisterCaptureShmAsync(deviceId, shmName, width, height, cancellationToken);
 
+    public Task UnregisterCaptureShmAsync(string deviceId, CancellationToken cancellationToken = default) =>
+        _supervisor.UnregisterCaptureShmAsync(deviceId, cancellationToken);
+
     /// <summary>
     /// Asks the core to open a capture device with its native (Media Foundation
     /// UVC) adapter. Returns the core's device states after the attempt; the

@@ -78,6 +78,8 @@ public interface IMediaCoreBridge : IAsyncDisposable
     Task RegisterCaptureShmAsync(string deviceId, string shmName, int width, int height,
         CancellationToken cancellationToken = default);
 
+    Task UnregisterCaptureShmAsync(string deviceId, CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<NativeCaptureDeviceStatus>> ConnectNativeCaptureDeviceAsync(
         string deviceId,
         CancellationToken cancellationToken = default,

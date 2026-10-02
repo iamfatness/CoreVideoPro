@@ -1007,6 +1007,9 @@ public sealed class ShowInputsCoordinatorTests
         public Task RegisterCaptureShmAsync(string deviceId, string shmName, int width, int height,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
+        public Task UnregisterCaptureShmAsync(string deviceId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<IReadOnlyList<NativeCaptureDeviceStatus>> ConnectNativeCaptureDeviceAsync(
             string deviceId, CancellationToken cancellationToken = default, string? outputSourceId = null) =>
             throw new NotSupportedException();
