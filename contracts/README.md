@@ -2,10 +2,10 @@
 
 `lifecycle.schema.json` is the source of truth for protocol version, output
 lifecycle, asynchronous operation status and structured protocol failure objects.
-`npm run contract:generate` emits checked-in C++, C#, browser TypeScript, Node
-TypeScript and Swift models plus validators. `npm run contract:check` and CI
-reject stale generated output. The two TypeScript outputs are generated identically
-so the Node package preserves its `rootDir: src` build boundary.
+`npm run contract:generate` emits checked-in C++, C#
+and Swift models plus validators. `npm run contract:check` and CI
+reject stale generated output. The TypeScript outputs were removed with their
+only consumers, the React prototype and Node core simulator (#738).
 
 The schema is deliberately a small first slice. It does **not** generate the entire
 legacy protocol or replace its envelope/dispatch adapters. `lifecycle.fixtures.json`
@@ -77,9 +77,9 @@ healthy.
 
 | Family | Current handwritten owners | Next coverage boundary |
 | --- | --- | --- |
-| RPC envelopes, hello/capabilities, command acknowledgements | `native/src/rpc/JsonRpcServer.cpp`, `src/engine/nativeBridgeProtocol.ts`, C# client, Swift bridge | Envelope IDs, required fields, response/error unions |
-| Scene graphs, preview, tiles, overlays, backgrounds, media playback | `MediaCore.h/.cpp`, `nativeMediaCoreProtocol.ts`, C#/Swift scene builders | Route modes, coordinate fields, nullability, atomic scene batch |
-| Show inputs, participant roster, Zoom source/subscription/spine | `ZoomEngineRuntime`, `zoomMediaSpineSync.ts`, C#/Swift Zoom models | Durable identity vs session ID, partial roster updates, subscription limits |
+| RPC envelopes, hello/capabilities, command acknowledgements | `native/src/rpc/JsonRpcServer.cpp`, C# client, Swift bridge | Envelope IDs, required fields, response/error unions |
+| Scene graphs, preview, tiles, overlays, backgrounds, media playback | `MediaCore.h/.cpp`, C#/Swift scene builders | Route modes, coordinate fields, nullability, atomic scene batch |
+| Show inputs, participant roster, Zoom source/subscription/spine | `ZoomEngineRuntime`, C#/Swift Zoom models | Durable identity vs session ID, partial roster updates, subscription limits |
 | Recording/streaming configuration and full output telemetry | Encoder/sender interfaces, core snapshots, shell snapshot DTOs | Per-destination identity, writer stats, artifact/finalization proof |
 | Audio buses, mixer, DSP/VST, device routing | Native audio module DTOs and shell builders | Numeric units/ranges, topology, plugin state |
 | Capture and frame transport | Native capture/shared-texture messages and platform bridges | Handle ownership, dimensions/strides, timestamps, process epoch |
@@ -133,8 +133,8 @@ newer document by round-tripping these DTOs: unknown fields are not preserved.
 
 `identity.fixtures.json` exercises all entity kinds, missing/null/wrong-type
 fields, additive fields, unknown kinds, generation zero, fractions and boolean
-numbers, the Int32 boundary and maximum safe integer. C++, C#, both TypeScript
-outputs and Swift consume the same fixtures. C++ additionally round-trips the
+numbers, the Int32 boundary and maximum safe integer. C++, C# and Swift
+consume the same fixtures. C++ additionally round-trips the
 maximum revision through the actual JSON serializer; C#/Swift round-trip valid
 DTOs. Swift execution requires macOS CI.
 
@@ -203,7 +203,7 @@ validation alone never makes it a successful recording. Artifact identity must
 change or revision must advance whenever its bytes change.
 
 All types accept additive unknown fields and reject unknown enum values. The
-shared evidence fixtures run through browser/Node, C++, C#, and Swift validators;
+shared evidence fixtures run through C++, C#, and Swift validators;
 C# and Swift additionally exercise valid DTO round trips. Swift execution still
 requires macOS CI. The existing `Lifecycle` generated filenames are retained so
 this foundational vocabulary adds no runtime/build-system migration.

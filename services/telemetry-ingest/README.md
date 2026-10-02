@@ -120,5 +120,5 @@ Then the normal flow — `scripts/deploy-staging-workers.ps1` sets the
 Vitest (repo root tooling), pure unit tests with in-memory KV/R2 fakes:
 
 ```powershell
-npx vitest run --config vite.config.ts services/telemetry-ingest
+npx vitest run services/telemetry-ingest
 ```

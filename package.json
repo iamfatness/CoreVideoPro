@@ -4,23 +4,15 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "native-core",
     "show-engine"
   ],
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
     "app": "powershell -ExecutionPolicy Bypass -File scripts/app.ps1",
-    "build": "tsc -b && vite build",
-    "build:native-core": "npm run build --workspace native-core",
     "build:native-dev": "powershell -ExecutionPolicy Bypass -File scripts/build-native-dev.ps1",
     "build:studio": "powershell -ExecutionPolicy Bypass -File scripts/build-studio.ps1",
-    "dev:native-core": "npm run dev --workspace native-core",
-    "preview": "vite preview --host 127.0.0.1",
-    "test": "npm run test:unit && npm run test:integration",
-    "test:unit": "vitest run --config vite.config.ts",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:gate": "npm run contract:check && npm run typecheck && npm run typecheck:show-engine && npm run test && npm run test:native-core && npm run test:show-engine && npm run verify:barrel:show-engine && npm run smoke:show-engine-host && npm run test:native-media-core && npm run test:native-shell && npm run test:native-shell-smoke && npm run test:scripts",
-    "test:native-core": "npm run test --workspace native-core",
+    "test": "npm run test:unit",
+    "test:unit": "vitest run",
+    "test:gate": "npm run contract:check && npm run typecheck:show-engine && npm run test:unit && npm run test:show-engine && npm run verify:barrel:show-engine && npm run smoke:show-engine-host && npm run test:native-media-core && npm run test:native-shell && npm run test:native-shell-smoke && npm run test:scripts",
     "test:show-engine": "npm run test --workspace show-engine",
     "typecheck:show-engine": "npm run typecheck --workspace show-engine && npm run typecheck:tests --workspace show-engine",
     "build:show-engine": "npm run build --workspace show-engine",
@@ -34,7 +26,6 @@
     "test:native-shell-dev-readiness": "powershell -ExecutionPolicy Bypass -File scripts/test-native-shell-dev-readiness.ps1",
     "test:studio-workflow": "powershell -ExecutionPolicy Bypass -File scripts/test-studio-workflow.ps1",
     "alpha:preflight": "powershell -ExecutionPolicy Bypass -File scripts/alpha-preflight.ps1",
-    "typecheck": "tsc --noEmit",
     "launch:native": "powershell -ExecutionPolicy Bypass -File scripts/launch-native.ps1",
     "run:studio": "powershell -ExecutionPolicy Bypass -File scripts/run-studio.ps1",
     "run:studio:dev": "powershell -ExecutionPolicy Bypass -File scripts/run-studio.ps1 -UseDevNativeCore",
@@ -62,21 +53,7 @@
     "contract:generate": "node contracts/generate.mjs",
     "contract:check": "node contracts/generate.mjs --check"
   },
-  "dependencies": {
-    "@vitejs/plugin-react": "^5.1.1",
-    "lucide-react": "^0.561.0",
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3",
-    "typescript": "^5.9.3",
-    "vite": "^8.2.2"
-  },
   "devDependencies": {
-    "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.1",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
-    "jsdom": "^29.1.1",
     "vitest": "^5.0.0"
   },
   "optionalDependencies": {

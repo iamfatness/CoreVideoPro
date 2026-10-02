@@ -120,20 +120,10 @@ jobs:
       - name: Redaction + prefs self-check
         run: COREVIDEO_SHELL_SELFCHECK=1 mac-shell/.build/release/CoreVideoProShell
 
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-
+  # Root unit run (services + Companion module tests) and the node:test
+  # suites under scripts/.
   test-unit:
     runs-on: ubuntu-latest
-    needs: typecheck
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -144,33 +134,8 @@ jobs:
       - run: npm run test:unit
       - run: npm run test:scripts
 
-  test-integration:
-    runs-on: ubuntu-latest
-    needs: typecheck
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run test:integration
-
-  test-native-core:
-    runs-on: ubuntu-latest
-    needs: typecheck
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run test:native-core
-
-  # The show-engine workspace had no CI coverage of any kind: the root
-  # typecheck's `include` is the Vite app only, and no workflow ran
-  # `test:show-engine`. Its tests ran solely when someone typed the command
+  # The show-engine workspace once had no CI coverage of any kind: no workflow
+  # typechecked it or ran `test:show-engine`. Its tests ran solely when someone typed the command
   # locally, and its test files were never typechecked at all (the package
   # tsconfig excludes them so they stay out of dist, and vitest strips types
   # with esbuild rather than checking them). That let seven fixtures drift out
@@ -210,7 +175,6 @@ jobs:
 
   native-stub:
     runs-on: ubuntu-latest
-    needs: typecheck
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools
@@ -230,7 +194,6 @@ jobs:
   # dedicated fixes/tests that only exercise on this runner).
   native-stub-macos:
     runs-on: macos-latest
-    needs: typecheck
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools
@@ -250,7 +213,6 @@ jobs:
   # on a GPU-less runner they self-skip (loudly) instead of failing.
   native-metal-macos:
     runs-on: macos-latest
-    needs: typecheck
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools
@@ -283,7 +245,6 @@ jobs:
   # report fails the job.
   native-stub-tsan:
     runs-on: ubuntu-latest
-    needs: typecheck
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools
@@ -301,7 +262,6 @@ jobs:
 
   native-shell-windows:
     runs-on: windows-latest
-    needs: typecheck
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
