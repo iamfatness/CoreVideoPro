@@ -361,7 +361,7 @@ Each item lists: **Current**, **Spec (done = )**, **Plan**, **Gate/tests**, **Fl
     output-sender factory; real frames-sent/bytes/latency/retransmit counters.
 - **Plan.** (1) Add FFmpeg `libavcodec` decode behind the F1 decoder seam for
   ingest. (2) Implement `SrtOutputSender : IOutputSender` (encode → TS mux → libsrt
-  `srt_sendmsg2`), register in `createDefaultModules()` (`StubModules.cpp:591`),
+  `srt_sendmsg2`), register in `createDefaultModules()` (`ModuleComposition.cpp`),
   and route through `outputSender->sync()` (`MediaCore.cpp:2117`). (3) Audio frame
   polling on the ingest device.
 - **Gate/tests.** Ingest: decode a known SRT stream to non-empty frames on a dev
