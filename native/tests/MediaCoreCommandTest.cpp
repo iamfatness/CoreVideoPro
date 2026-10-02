@@ -6857,6 +6857,19 @@ TEST(MediaCoreCommand, MediaRouteAppearsOnTheSourceBusAndLeavesWhenUnrouted) {
 // shared-texture handle and emit exactly one multiview-shared-texture event
 // carrying the canvas dims + one tile per layout source. Skips when no D3D11
 // device is available (e.g. the portable stub build / no GPU).
+// #724: the multiview export's D3D device is created off the render thread, so its
+// handle (and the event that carries it) arrives a pass or two after the first tick.
+// Ticks until the event is there; bounded, so a core that never emits still fails.
+static std::vector<corevideo::rpc::Json> renderUntilMultiviewEvent(corevideo::core::MediaCore& mediaCore) {
+  for (int tick = 0; tick < 400; ++tick) {
+    mediaCore.renderDisplayTick();
+    auto events = mediaCore.drainMultiviewSharedTextureEvents();
+    if (!events.empty()) return events;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return {};
+}
+
 TEST(MediaCoreMultiview, ComposesGridIntoSharedTextureAndEmitsEvent) {
   auto gpuCompositor = corevideo::modules::createD3D11Compositor();
   if (!gpuCompositor) {
@@ -6888,9 +6901,7 @@ TEST(MediaCoreMultiview, ComposesGridIntoSharedTextureAndEmitsEvent) {
   });
 
   // One light video-only render tick drives the second (multiview) GPU composite.
-  mediaCore.renderDisplayTick();
-
-  const auto events = mediaCore.drainMultiviewSharedTextureEvents();
+  const auto events = renderUntilMultiviewEvent(mediaCore);
   ASSERT_FALSE(events.empty()) << "expected a cold-start multiview-shared-texture event";
   const auto& event = events.back();
   EXPECT_TRUE(event.getString("type") == "multiview-shared-texture");
@@ -7044,9 +7055,7 @@ TEST(MediaCoreMultiview, PgmPvwPreviewCellIsNotPinnedToARosterSourceWithoutAPrev
   });
   // NOTE: deliberately no set-preview-scene â€” nothing is cued in preview.
 
-  mediaCore.renderDisplayTick();
-
-  const auto events = mediaCore.drainMultiviewSharedTextureEvents();
+  const auto events = renderUntilMultiviewEvent(mediaCore);
   ASSERT_FALSE(events.empty());
   const auto* tiles = events.back().get("tiles");
   ASSERT_NE(tiles, nullptr);
@@ -7098,8 +7107,7 @@ TEST(MediaCoreMultiview, TheBusCellsCarryTheShellsSubscriptionLimitNotice) {
   // One drain per layout change: the tiles event is emitted on STRUCTURAL change only.
   const auto busLabels = [&]() {
     std::map<std::string, std::string> labels;
-    mediaCore.renderDisplayTick();
-    const auto events = mediaCore.drainMultiviewSharedTextureEvents();
+    const auto events = renderUntilMultiviewEvent(mediaCore);
     EXPECT_FALSE(events.empty());
     if (events.empty()) return labels;
     const auto* tiles = events.back().get("tiles");

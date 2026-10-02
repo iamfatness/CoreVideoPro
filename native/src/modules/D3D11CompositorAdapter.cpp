@@ -2126,10 +2126,16 @@ class D3D11Compositor final : public ICompositor {
     if (!multiviewRenderTarget_ || !context_ || multiviewWidth_ <= 0 || multiviewHeight_ <= 0) {
       return;
     }
-    if (!multiviewExport_ || !multiviewExport_->dimensions(multiviewWidth_, multiviewHeight_)) {
-      multiviewExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), multiviewWidth_, multiviewHeight_, "multiview");
-      if (!multiviewExport_->valid()) { multiviewExport_.reset(); return; }
+    // #724: the exporter owns a D3D device, and creating one costs 13 to 21 ms. First
+    // creation runs on the exporter's own thread; a resize reuses that device.
+    if (!multiviewExport_) {
+      multiviewExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), multiviewWidth_, multiviewHeight_, "multiview",
+                                                     D3DDecoupledExport::Creation::Deferred);
+    } else if (!multiviewExport_->dimensions(multiviewWidth_, multiviewHeight_)) {
+      multiviewExport_->resize(device_.get(), multiviewWidth_, multiviewHeight_);
     }
+    if (!multiviewExport_->valid()) { multiviewExport_.reset(); return; }  // creation failed: try again next pass
+    if (!multiviewExport_->ready()) return;  // still being created: no handle for a pass or two
     multiviewExport_->submit(context_.get(), multiviewRenderTarget_.get());
     out.sharedHandleHex = handleToHex(multiviewExport_->handle());
     out.width = multiviewWidth_;
@@ -2173,10 +2179,16 @@ class D3D11Compositor final : public ICompositor {
     if (!previewRenderTarget_ || !context_ || previewWidth_ <= 0 || previewHeight_ <= 0) {
       return;
     }
-    if (!previewExport_ || !previewExport_->dimensions(previewWidth_, previewHeight_)) {
-      previewExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), previewWidth_, previewHeight_, "preview");
-      if (!previewExport_->valid()) { previewExport_.reset(); return; }
+    // #724: the exporter owns a D3D device, and creating one costs 13 to 21 ms. First
+    // creation runs on the exporter's own thread; a resize reuses that device.
+    if (!previewExport_) {
+      previewExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), previewWidth_, previewHeight_, "preview",
+                                                     D3DDecoupledExport::Creation::Deferred);
+    } else if (!previewExport_->dimensions(previewWidth_, previewHeight_)) {
+      previewExport_->resize(device_.get(), previewWidth_, previewHeight_);
     }
+    if (!previewExport_->valid()) { previewExport_.reset(); return; }  // creation failed: try again next pass
+    if (!previewExport_->ready()) return;  // still being created: no handle for a pass or two
     previewExport_->submit(context_.get(), previewRenderTarget_.get());
     out.sharedHandleHex = handleToHex(previewExport_->handle());
     out.width = previewWidth_;
