@@ -52,3 +52,13 @@ judge can now watch the core the operator is actually running instead of spawnin
   mergers fill it from the roster, and count participants as live frames), `RenderPlan`
   (layers and routes always empty), `OperatorActions`, `EventLog`, `Frames`. Read those nodes
   from `RawJson` (`sources`, `zoom`, `tiles`) if you need the truth.
+- **Media frame-delivery trace (#701, 2026-10-03).** Each `mediaSources[]` row carries
+  `decodedVideoFrames` / `lastDecodedAgeMs` (the transport worker pushed a decoded frame),
+  `presentedVideoFrames` / `lastPresentedAgeMs` (the render tick put a NEW frame on air),
+  `videoQueued` (prepared frames waiting) and `decoderRestarts`. A frozen clip is one of
+  three things, and the row says which: decoder stalled (decode age grows, queue drains),
+  presentation stalled (frames decoded or queued, presented age grows), or Program itself
+  (read `programBuffer.deadlineMisses`/`underruns` for the same window). A paused clip holds
+  its on-air frame, so its presented count stops by design. `python
+  scripts/qa/media-delivery-trace.py` samples the control API and names the seam when a live,
+  on-Program source's frame has not changed for `--stall-ms` (default 1000).

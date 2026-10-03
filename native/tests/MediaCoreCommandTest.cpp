@@ -8409,6 +8409,49 @@ TEST(MediaCoreCommand, MediaSourcesNodeIsPublishedEmptyAndThenPerSource) {
   EXPECT_TRUE(live->get("onProgram")->asBool());
 }
 
+// #701: the per-media-source frame-delivery trace. A frozen clip is either a
+// decoder that stopped producing or a presentation that stopped advancing; the
+// two counters tell them apart from the snapshot alone, on a live show.
+TEST(MediaCoreCommand, MediaSourceRowCarriesTheFrameDeliveryTrace) {
+  auto modules = corevideo::modules::createStubModules();
+  SolidMediaFrameSource::reset();
+  modules.mediaDecoderFactory = corevideo::testing::mediaFactoryOf<SolidMediaFrameSource>();
+  corevideo::core::MediaCore core(std::move(modules));
+
+  (void)core.applyCommands(corevideo::rpc::Json::Array{slice3bClipScene("b", "load-scene-graph")});
+  corevideo::rpc::Json state;
+  const bool delivered = corevideo::testing::applyUntil(core, [&](corevideo::core::MediaCore& c) {
+    // Named: slice3bMediaSource returns a pointer INTO the state it is handed.
+    const auto current = c.sessionState();
+    const auto* row = slice3bMediaSource(current, "media:clip");
+    return row != nullptr && row->get("presentedVideoFrames") != nullptr &&
+           row->get("presentedVideoFrames")->asNumber() >= 2;
+  }, 30000, &state);  // a bound for a loaded CI runner, not a budget (#754)
+  const auto last = core.sessionState();
+  const auto* lastRow = slice3bMediaSource(last, "media:clip");
+  ASSERT_TRUE(delivered) << "no decoded media frame reached Program within the budget: "
+                         << (lastRow ? lastRow->stringify() : std::string("no row"));
+
+  const auto* row = slice3bMediaSource(state, "media:clip");
+  ASSERT_NE(row, nullptr);
+  EXPECT_GE(row->get("decodedVideoFrames")->asNumber(), row->get("presentedVideoFrames")->asNumber());
+  EXPECT_GE(row->get("lastDecodedAgeMs")->asNumber(), 0.0);
+  EXPECT_GE(row->get("lastPresentedAgeMs")->asNumber(), 0.0);
+  EXPECT_GE(row->get("videoQueued")->asNumber(), 0.0);
+  EXPECT_EQ(row->get("decoderRestarts")->asNumber(), 0.0);
+
+  // Paused: the on-air frame is HELD, so the presented count stops advancing
+  // while the decoder may still be preparing frames behind it.
+  state = core.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "set-media-transport"}, {"mediaAssetId", "clip"}, {"action", "pause"}});
+  const double presentedAtPause = slice3bMediaSource(state, "media:clip")->get("presentedVideoFrames")->asNumber();
+  for (int tick = 0; tick < 10; ++tick) {
+    state = core.applyCommands(corevideo::rpc::Json::Array{});
+  }
+  EXPECT_EQ(slice3bMediaSource(state, "media:clip")->get("presentedVideoFrames")->asNumber(), presentedAtPause)
+      << "a paused clip must not count presented frames";
+}
+
 TEST(MediaCoreCommand, SetMediaTransportPausesAndPlaysTheProgramClipOnly) {
   auto modules = corevideo::modules::createStubModules();
   SolidMediaFrameSource::reset();

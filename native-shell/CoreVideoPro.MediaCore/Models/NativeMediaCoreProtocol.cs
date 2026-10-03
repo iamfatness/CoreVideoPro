@@ -681,6 +681,15 @@ public sealed record NativeMediaCoreMediaSource
     public bool OnPreview { get; init; }
     public double PositionMs { get; init; }
     public double DurationMs { get; init; } = -1;
+
+    // #701 frame-delivery trace. Null on a core older than 2026-10-03. Ages are
+    // milliseconds at the core's snapshot time; -1 means never.
+    public double? DecodedVideoFrames { get; init; }
+    public double? LastDecodedAgeMs { get; init; }
+    public double? PresentedVideoFrames { get; init; }
+    public double? LastPresentedAgeMs { get; init; }
+    public double? VideoQueued { get; init; }
+    public double? DecoderRestarts { get; init; }
 }
 
 public sealed class NativeMediaCoreMediaPlaybackState
