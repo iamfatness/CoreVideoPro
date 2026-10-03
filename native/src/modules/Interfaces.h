@@ -1630,6 +1630,10 @@ struct ModuleSet {
   // Recorded by the factory that actually attempted each adapter. The hello
   // profile consumes this, rather than guessing availability from build flags.
   std::map<std::string, CapabilityConstruction> capabilityConstruction;
+  // False in a non-stub module set (#741): MediaCore then refuses zoom-join when no
+  // Zoom engine is configured instead of serving its two-person stub meeting. The
+  // stub set keeps it true, so tests and the CI stub tier still have a roster.
+  bool permitStubZoomSession = true;
 
   std::unique_ptr<ICompositor> compositor;
   // #535 slice 3b: the module set carries a DECODER FACTORY, not one

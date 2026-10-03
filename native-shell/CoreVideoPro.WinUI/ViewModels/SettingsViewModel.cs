@@ -846,6 +846,17 @@ public sealed partial class SettingsViewModel : ObservableObject
             return;
         }
 
+        // #741/#762: the SDK files can be present while the core has no engine (the
+        // executable missing or quarantined). That core used to "join" a two-person
+        // stub meeting. The core refuses the join now; this names the reason first.
+        if (MediaCoreOnAirPolicy.JoinBlockReason(_bridge.Profile) is { } coreBlock)
+        {
+            SdkDiagnosticsExpanded = true;
+            SetJoinFailure(coreBlock);
+            LaunchLog.Write($"zoom-join: blocked ({coreBlock})");
+            return;
+        }
+
         if (ShowZoomOAuthControls && !ZoomOAuthSignedIn)
         {
             SetJoinFailure("Sign in with Zoom before joining a meeting.");

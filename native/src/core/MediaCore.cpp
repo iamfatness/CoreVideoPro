@@ -595,6 +595,19 @@ bool MediaCore::zoomEngineConfigured() const {
   return zoomEngineRuntime_ && zoomEngineRuntime_->configured();
 }
 
+bool MediaCore::zoomJoinRequiresMissingEngine() const {
+  return !modules_.permitStubZoomSession && !zoomEngineConfigured();
+}
+
+std::string MediaCore::recordingEncoderUnavailableReason() const {
+  const auto it = modules_.capabilityConstruction.find("program-recording");
+  if (it == modules_.capabilityConstruction.end() || it->second.state != "failed-to-construct") {
+    return {};
+  }
+  return "No recording encoder: the Media Foundation encoder did not start on this machine (" +
+         it->second.detail + "). Record would report a recording and write no file.";
+}
+
 rpc::Json MediaCore::joinZoom(const rpc::Json& payload, const std::function<bool()>& cancelled) {
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
     return zoomEngineRuntime_->join(payload, cancelled);
@@ -1634,8 +1647,10 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     if (!error.empty()) {
       ::corevideo::core::nativeLogf("[browser] browser-reload REJECTED: %s\n", error.c_str());
     }
+#if COREVIDEO_STUB
   } else if (type == "simulate-breakout-room-change") {
     simulateBreakoutRoomChange(command);
+#endif
   } else if (type == "set-zoom-source-roster") {
     setZoomSourceRoster(command);
   } else if (type == "set-active-speaker") {
@@ -1880,6 +1895,21 @@ rpc::Json MediaCore::zoomReadinessState() const {
         {"checks",
          rpc::Json::Array{
              rpc::Json::Object{{"id", "zoom-engine-runtime"}, {"status", "ready"}, {"label", "Zoom engine runtime configured"}},
+         }},
+    };
+  }
+
+  if (zoomJoinRequiresMissingEngine()) {
+    return rpc::Json::Object{
+        {"status", "blocked"},
+        {"mode", "no-engine"},
+        {"sdkAvailable", false},
+        {"sdkVersion", ""},
+        {"meetingState", "idle"},
+        {"checks",
+         rpc::Json::Array{
+             rpc::Json::Object{{"id", "zoom-engine-runtime"}, {"status", "blocked"},
+                               {"label", "COREVIDEO_ZOOM_ENGINE_PATH is not set: no Zoom engine, so Join is refused"}},
          }},
     };
   }
@@ -2957,6 +2987,16 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
   // drop it. A stop (or a different sessionId) still restarts normally —
   // matching the dedup-by-signature law every other repeated command follows.
   const auto incomingSessionId = command.getString("sessionId", "");
+  if (const auto reason = recordingEncoderUnavailableReason(); !reason.empty()) {
+    // #762: a stub encoder in a real build must not look like a recording.
+    recordingSessionId_ = incomingSessionId;
+    recordingStatus_ = "failed";
+    recordingWriterStatus_ = "failed";
+    recordingError_ = reason;
+    recordingLastFailure_ = reason;
+    ++recordingFailureCount_;
+    return;
+  }
   if (recordingStatus_ == "recording" && !incomingSessionId.empty() &&
       incomingSessionId == recordingSessionId_) {
     static std::map<std::string, std::int64_t> s_dedupLogCount;
