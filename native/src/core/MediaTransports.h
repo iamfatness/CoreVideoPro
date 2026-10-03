@@ -38,6 +38,11 @@ namespace corevideo::core {
 // Playback-identity collisions are impossible by construction for the same
 // reason — one id, one entry — so their warnings are gone too.
 class MediaTransports final {
+  static int64_t steadyNowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+
  public:
   using DecoderFactory = std::function<std::unique_ptr<modules::IMediaDecoder>()>;
 
@@ -66,6 +71,18 @@ class MediaTransports final {
     // — which is what they START as, because a transport that has not yet run
     // a worker iteration has measured nothing and must not report 0.
     int64_t durationMs = -1, positionMs = -1;
+    // #701 frame-delivery trace, published in mediaSources[]. Written under
+    // `mutex` at the two seams a stall can hide behind: the worker's push of a
+    // decoded frame, and the render tick's selection of the frame due now.
+    // Together with Program's own delivery counters they say whether a frozen
+    // clip was a decoder that stopped producing or a presentation that stopped
+    // advancing. Ages are steady-clock nanoseconds; -1 means "never".
+    int64_t decodedVideoFrames = 0;
+    int64_t lastDecodedAtNs = -1;
+    int64_t presentedVideoFrames = 0;   // distinct frames that went on air
+    int64_t lastPresentedFrameId = 0;
+    int64_t lastPresentedAtNs = -1;     // when the on-air frame last CHANGED
+    int64_t decoderRestarts = 0;        // factory_() calls after the first
     std::atomic<bool> stop{false}, finished{false}, wantsVideo{false}, wantsAudio{false};
     std::thread thread;
   };
@@ -77,6 +94,10 @@ class MediaTransports final {
     MediaTransportState state = MediaTransportState::Cued;
     bool loop = false, onProgram = false, onPreview = false;
     int64_t positionMs = 0, durationMs = 0;
+    // #701 trace (see Entry). Ages are milliseconds at snapshot time; -1 = never.
+    int64_t decodedVideoFrames = 0, lastDecodedAgeMs = -1;
+    int64_t presentedVideoFrames = 0, lastPresentedAgeMs = -1;
+    int64_t videoQueued = 0, decoderRestarts = 0;
   };
 
   explicit MediaTransports(DecoderFactory factory)
@@ -368,6 +389,11 @@ class MediaTransports final {
     entry.wake = true;
     entry.changed.notify_all();
     if (!selected.hasPixels()) return std::nullopt;
+    if (selected.frameId != entry.lastPresentedFrameId) {
+      entry.lastPresentedFrameId = selected.frameId;
+      entry.presentedVideoFrames += 1;
+      entry.lastPresentedAtNs = steadyNowNs();
+    }
     auto frame = selected;
     frame.timestampMs = timestamp100ns / 10000;
     // THE OWNER NAMES THE SOURCE, NOT THE DECODER. The decoder stamps
@@ -467,10 +493,18 @@ class MediaTransports final {
       // `decideMediaTransport`, which reads `Entry::desired`.
       const bool inGrace = releasePendingNs_.count(id) > 0;
       std::lock_guard<std::mutex> entryLock(entry->mutex);
-      result.push_back(Status{id, entry->desired.assetId, entry->state, entry->desired.loop,
-                              inGrace ? false : entry->desired.onProgram,
-                              inGrace ? false : entry->desired.onPreview,
-                              entry->positionMs, entry->durationMs});
+      Status row{id, entry->desired.assetId, entry->state, entry->desired.loop,
+                 inGrace ? false : entry->desired.onProgram,
+                 inGrace ? false : entry->desired.onPreview,
+                 entry->positionMs, entry->durationMs};
+      const int64_t nowNs = steadyNowNs();
+      row.decodedVideoFrames = entry->decodedVideoFrames;
+      row.lastDecodedAgeMs = entry->lastDecodedAtNs < 0 ? -1 : (nowNs - entry->lastDecodedAtNs) / 1000000;
+      row.presentedVideoFrames = entry->presentedVideoFrames;
+      row.lastPresentedAgeMs = entry->lastPresentedAtNs < 0 ? -1 : (nowNs - entry->lastPresentedAtNs) / 1000000;
+      row.videoQueued = static_cast<int64_t>(entry->video.queued());
+      row.decoderRestarts = entry->decoderRestarts;
+      result.push_back(std::move(row));
     }
     return result;
   }
@@ -601,6 +635,7 @@ class MediaTransports final {
           // frame) survives; the queue was scheduled on the old clock and can
           // never come due on the new one.
           decoder = factory_();
+          { std::lock_guard<std::mutex> lock(entry->mutex); entry->decoderRestarts += 1; }
           if (!decoder) throw std::runtime_error("Media decoder unavailable.");
           prefetchDecoder = dynamic_cast<modules::IMediaVideoPrefetch*>(decoder.get());
           attachWake();
@@ -690,6 +725,10 @@ class MediaTransports final {
         {
           std::lock_guard<std::mutex> lock(entry->mutex);
           if (!entry->stop.load()) {
+            if (!video.empty()) {
+              entry->decodedVideoFrames += static_cast<int64_t>(video.size());
+              entry->lastDecodedAtNs = steadyNowNs();
+            }
             for (auto& frame : video) entry->video.push(std::move(frame));
             if (!audio.empty() && entry->audio.size() < 2 && audioTarget >= entry->audioNextTime) {
               entry->audioEverProduced = true;

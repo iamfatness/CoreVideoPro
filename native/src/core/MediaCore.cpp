@@ -1180,6 +1180,16 @@ rpc::Json MediaCore::sessionState() const {
             {"onPreview", row.onPreview},
             {"positionMs", static_cast<double>(row.positionMs)},
             {"durationMs", static_cast<double>(row.durationMs)},
+            // #701 frame-delivery trace: a frozen clip is either a decoder that
+            // stopped producing (lastDecodedAgeMs grows, videoQueued drains) or a
+            // presentation that stopped advancing (frames decoded, presented age
+            // grows). Read with programBuffer's delivery counters for the same window.
+            {"decodedVideoFrames", static_cast<double>(row.decodedVideoFrames)},
+            {"lastDecodedAgeMs", static_cast<double>(row.lastDecodedAgeMs)},
+            {"presentedVideoFrames", static_cast<double>(row.presentedVideoFrames)},
+            {"lastPresentedAgeMs", static_cast<double>(row.lastPresentedAgeMs)},
+            {"videoQueued", static_cast<double>(row.videoQueued)},
+            {"decoderRestarts", static_cast<double>(row.decoderRestarts)},
         });
       }
     }
