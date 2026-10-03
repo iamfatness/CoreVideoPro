@@ -123,6 +123,12 @@ class MediaCore {
   // joinZoom is a pure runtime passthrough that blocks for seconds (process
   // spawn + SDK auth + join handshake) and must not freeze the render thread.
   [[nodiscard]] bool zoomEngineConfigured() const;
+  // True when zoom-join must be refused: this module set does not permit the stub
+  // meeting and no engine is configured (#741).
+  [[nodiscard]] bool zoomJoinRequiresMissingEngine() const;
+  // Non-empty when this core cannot record for real: the encoder adapter was built
+  // but did not construct, so only the counting stub is present (#762).
+  [[nodiscard]] std::string recordingEncoderUnavailableReason() const;
   [[nodiscard]] rpc::Json leaveZoom();
   // Capture-off (rpc "zoom-stop-capture"): stops Zoom raw media in the engine
   // (StopRawRecording clears the participant-facing recording indicator +

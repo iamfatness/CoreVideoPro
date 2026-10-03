@@ -436,11 +436,25 @@ ModuleSet createDefaultModules() {
   recordCapability(modules, "local-audio-capture", audioCaptureConstructed ? "available"
       : (COREVIDEO_WITH_WASAPI_CAPTURE || COREVIDEO_WITH_COREAUDIO) ? "failed-to-construct" : "omitted",
       COREVIDEO_STUB ? "stub-build" : "");
+  bool encoderConstructed = false;
   if (auto avfEncoder = createAVFoundationEncoderSink()) {
     modules.encoder = std::move(avfEncoder);
+    encoderConstructed = true;
   } else if (auto encoder = createMediaFoundationEncoderSink()) {
     modules.encoder = std::move(encoder);
+    encoderConstructed = true;
   }
+  // A real build whose encoder adapter did not construct keeps the counting stub
+  // encoder, which reports a recording that writes no file (#762). Record the
+  // failure here, at the factory that tried, so MediaCore can refuse Record and
+  // the shell can see why. The stub tier and the stub set leave it "omitted".
+  if (!COREVIDEO_STUB && (COREVIDEO_WITH_MF_ENCODER || COREVIDEO_WITH_AVF_ENCODER) && !encoderConstructed) {
+    recordCapability(modules, "program-recording", "failed-to-construct", "encoder-adapter-did-not-start");
+    recordCapability(modules, "iso-recording", "failed-to-construct", "encoder-adapter-did-not-start");
+  }
+#if !COREVIDEO_STUB
+  modules.permitStubZoomSession = false;
+#endif
   std::vector<std::unique_ptr<IOutputSender>> outputSenders;
   std::vector<std::string> supportedOutputDestinations;
   if (auto outputSender = createRtmpOutputSender()) {

@@ -111,6 +111,12 @@ Json JsonRpcServer::handle(const Json& request) {
     if (!payload || !payload->isObject()) {
       return failure(id, "protocol-error", "zoom-join requires a payload.");
     }
+    if (mediaCore_.zoomJoinRequiresMissingEngine()) {
+      // #741: a real build with no engine used to "join" a two-person stub meeting.
+      return failure(id, "zoom-engine-not-configured",
+                     "No Zoom engine is configured for this media core (COREVIDEO_ZOOM_ENGINE_PATH is unset), "
+                     "so Join is refused. Reinstall or repair the Zoom runtime.");
+    }
     return success(id, Json::Object{
                            {"type", "zoom-join"},
                            {"snapshot", mediaCore_.joinZoom(*payload)},

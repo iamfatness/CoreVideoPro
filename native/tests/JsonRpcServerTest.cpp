@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
+
 #include <optional>
 #include <sstream>
 #include <string>
@@ -156,8 +158,12 @@ TEST(JsonRpcServer, HandlesMediaCoreSyncRequestEnvelope) {
   EXPECT_EQ(response.get("snapshot")->getString("breakoutRoomName"), "Main room");
 }
 
+#if COREVIDEO_STUB
+// The breakout simulator is stub-tier only (#741).
 TEST(JsonRpcServer, SimulatesBreakoutRoomChangeOnSyncCommand) {
-  corevideo::core::MediaCore mediaCore;
+  // Stub module set: these exercise the stub Zoom session, which a real core no
+  // longer offers (#741).
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   corevideo::rpc::JsonRpcServer server(mediaCore);
   const auto response = server.handle(corevideo::rpc::Json::Object{
       {"id", "core-sync-room"},
@@ -182,6 +188,7 @@ TEST(JsonRpcServer, SimulatesBreakoutRoomChangeOnSyncCommand) {
   EXPECT_EQ(response.get("snapshot")->getString("breakoutRoomId"), "customer-panel");
   EXPECT_EQ(response.get("snapshot")->getString("breakoutRoomName"), "Customer panel");
 }
+#endif
 
 TEST(JsonRpcServer, PreservesIdAndAcksStartProgramOutput) {
   corevideo::core::MediaCore mediaCore;
@@ -203,7 +210,9 @@ TEST(JsonRpcServer, PreservesIdAndAcksStartProgramOutput) {
 }
 
 TEST(JsonRpcServer, ParsesLineDelimitedJsonRequests) {
-  corevideo::core::MediaCore mediaCore;
+  // Stub module set: these exercise the stub Zoom session, which a real core no
+  // longer offers (#741).
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   corevideo::rpc::JsonRpcServer server(mediaCore);
   std::istringstream input("{\"id\":\"one\",\"type\":\"get-output-health\"}\n");
   std::ostringstream output;
@@ -304,7 +313,9 @@ TEST(JsonRpcServer, HandlesZoomMediaSpineSyncRequest) {
 }
 
 TEST(JsonRpcServer, HandlesZoomLifecycleRequests) {
-  corevideo::core::MediaCore mediaCore;
+  // Stub module set: these exercise the stub Zoom session, which a real core no
+  // longer offers (#741).
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   corevideo::rpc::JsonRpcServer server(mediaCore);
 
   const auto joined = server.handle(corevideo::rpc::Json::Object{
@@ -686,3 +697,40 @@ TEST(JsonRpcServer, AsyncJoinAcknowledgesOnceAndPublishesIdentifiedCompletion) {
   EXPECT_EQ(acknowledgements, 1);
   EXPECT_EQ(completions, 1);
 }
+
+#if !COREVIDEO_STUB
+// #741: a real core with no Zoom engine refuses Join instead of serving a stub meeting.
+TEST(JsonRpcServer, ARealCoreWithNoZoomEngineRefusesJoin) {
+  corevideo::core::MediaCore mediaCore;
+  if (mediaCore.zoomEngineConfigured()) {
+    std::fprintf(stderr, "[zoom-engine] SKIPPED ARealCoreWithNoZoomEngineRefusesJoin (COREVIDEO_ZOOM_ENGINE_PATH is set)\n");
+    return;
+  }
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+  const auto response = server.handle(corevideo::rpc::Json::Object{
+      {"id", "join-1"},
+      {"type", "zoom-join"},
+      {"payload", corevideo::rpc::Json::Object{{"meetingNumber", "123"}}},
+  });
+  EXPECT_FALSE(response.get("ok")->asBool());
+  EXPECT_EQ(response.get("error")->getString("code"), "zoom-engine-not-configured");
+  const auto state = mediaCore.sessionState();
+  EXPECT_EQ(state.getString("meetingState"), "idle");
+  EXPECT_TRUE(state.get("participants")->asArray().empty());
+  EXPECT_EQ(state.get("zoom")->get("readiness")->getString("status"), "blocked");
+  EXPECT_EQ(state.get("zoom")->get("readiness")->getString("mode"), "no-engine");
+}
+
+TEST(JsonRpcServer, ARealCoreIgnoresTheBreakoutSimulator) {
+  corevideo::core::MediaCore mediaCore;
+  corevideo::rpc::JsonRpcServer server(mediaCore);
+  const auto response = server.handle(corevideo::rpc::Json::Object{
+      {"id", "sync-1"},
+      {"type", "media-core-sync"},
+      {"elapsedMs", 10},
+      {"commands", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+          {"type", "simulate-breakout-room-change"}, {"breakoutRoomId", "room-7"}, {"breakoutRoomName", "Room 7"}}}},
+  });
+  EXPECT_EQ(mediaCore.sessionState().getString("breakoutRoomId"), "main");
+}
+#endif

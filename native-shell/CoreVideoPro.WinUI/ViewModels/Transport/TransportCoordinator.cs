@@ -84,6 +84,15 @@ public sealed class TransportCoordinator
                     return;
                 }
 
+                // #762: a core whose GPU compositor did not construct reports live frames
+                // from a no-op compositor. Nothing used to read that. Refuse, and say why.
+                if (MediaCoreOnAirPolicy.EngineBlockReason(_bridge.Profile) is { } engineBlock)
+                {
+                    LaunchLog.Write($"engine: on BLOCKED by core profile — {engineBlock}");
+                    _host.EngineStatus = engineBlock;
+                    return;
+                }
+
                 _host.EngineStatus = "Engine requesting Zoom media access…";
                 _bridge.ConfigureZoomSpineSync(_host.BuildSpinePayloadAsync);
                 _host.ZoomCaptureSubscribed = true;
@@ -288,6 +297,19 @@ public sealed class TransportCoordinator
         // resets _recordingToggleInFlight on the early return.
         if (starting)
         {
+            // #762: a real build whose encoder adapter did not start keeps the counting
+            // stub encoder, which reports a recording and writes no file. The core
+            // refuses the session too; this is the shell's reason to the operator.
+            if (MediaCoreOnAirPolicy.RecordBlockReason(_bridge.Profile) is { } recordBlock)
+            {
+                LaunchLog.Write($"recording: start BLOCKED by core profile — {recordBlock}");
+                _recordingToggleInFlight = false;
+                _host.NotifyRecordingCommandCanExecuteChanged();
+                _host.OutputStatus = recordBlock;
+                _host.OutputSessionStatus = _host.OutputStatus;
+                return;
+            }
+
             _host.RecordingDiskWarning = null;
             if (_host.TryEvaluateRecordingDiskPreflight(out var preflight))
             {

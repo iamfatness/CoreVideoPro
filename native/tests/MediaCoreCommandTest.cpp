@@ -1943,7 +1943,9 @@ TEST(MediaCoreCommand, PublishesCumulativeRenderDeadlineMissesToCompositorTeleme
 }
 
 TEST(MediaCoreCommand, SessionAndHealthExposeZoomReadinessEvidenceWithoutSdk) {
-  corevideo::core::MediaCore mediaCore;
+  // Stub module set: these exercise the stub Zoom session, which a real core no
+  // longer offers (#741).
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
 
   const auto state = mediaCore.sessionState();
   const auto* zoom = state.get("zoom");

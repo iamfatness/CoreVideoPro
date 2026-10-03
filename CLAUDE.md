@@ -155,6 +155,7 @@ phrase they quote.
 |---|---|
 | [`docs/reference/beta-release-runbook.md`](docs/reference/beta-release-runbook.md) | cutting, tagging or publishing a beta |
 | [`docs/reference/browser-sources.md`](docs/reference/browser-sources.md) | browser (URL) sources, WebView2 host |
+| [`docs/reference/core-on-air-policy.md`](docs/reference/core-on-air-policy.md) | handshake, Engine on, Record or Join gating; a stub adapter left in a real core |
 | [`docs/reference/core-restart-drill.md`](docs/reference/core-restart-drill.md) | core crash recovery, respawn, Zoom rejoin |
 | [`docs/reference/d3d-device-loss.md`](docs/reference/d3d-device-loss.md) | D3D devices, shared textures, device-removed handling |
 | [`docs/reference/destination-lifecycle.md`](docs/reference/destination-lifecycle.md) | destination start/stop state and what the UI may claim |
