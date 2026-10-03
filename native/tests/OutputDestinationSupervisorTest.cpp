@@ -256,6 +256,52 @@ struct SupervisorFixture {
   }
 };
 
+// #602: every supervisor used to create a Destination record for every name in
+// the sync list, so the SRT sender's supervisor also "owned" rtmp, faulted it
+// forever and restarted it against a child that ignored the call. Restart counts
+// doubled and the logs could not say which supervisor issued a restart.
+TEST(OutputDestinationSupervisor, ASupervisorSupervisesOnlyTheDestinationsItsChildServes) {
+  auto owned = std::make_unique<FakeDestinationChild>("srt");
+  auto* srtChild = owned.get();
+  SupervisedOutputSender::Options options;
+  options.startThread = false;
+  std::int64_t now = 0;
+  options.clock = [&] { return now; };
+  options.servedDestinations = {"srt"};
+  SupervisedOutputSender srt(std::move(owned), options);
+
+  // The shared sync list names both protocols; this supervisor serves one.
+  srt.sync({"rtmp", "srt"}, nullptr, 0);
+  const auto reports = srt.report();
+  ASSERT_EQ(reports.size(), 1u);
+  EXPECT_EQ(reports.front().destination, "srt");
+
+  // The RTMP destination never comes up as far as this child can tell (it does
+  // not serve it). Twenty supervisor seconds later: no record, no fault, no
+  // restart issued for rtmp from here.
+  for (int tick = 0; tick < 80; ++tick) {
+    now += 250;
+    srt.sync({"rtmp", "srt"}, nullptr, static_cast<double>(now));
+    srt.pumpForTest();
+  }
+  for (const auto& report : srt.report()) {
+    EXPECT_NE(report.destination, "rtmp") << "the srt supervisor created a record for rtmp";
+  }
+  EXPECT_EQ(srtChild->supervisedRestarts(), 0) << "restarts for a destination this child does not serve";
+}
+
+TEST(OutputDestinationSupervisor, AnUnlabelledSupervisorStillSupervisesEveryDesiredName) {
+  // No servedDestinations: the pre-#602 behaviour, for a supervisor wrapped
+  // around a single-protocol sender without the composite's knowledge.
+  auto owned = std::make_unique<FakeDestinationChild>("rtmp");
+  SupervisedOutputSender::Options options;
+  options.startThread = false;
+  options.clock = [] { return std::int64_t{0}; };
+  SupervisedOutputSender sender(std::move(owned), options);
+  sender.sync({"rtmp", "srt"}, nullptr, 0);
+  EXPECT_EQ(sender.report().size(), 2u);
+}
+
 TEST(OutputDestinationSupervisor, ExplicitRearmRetiresTerminalAsyncObservation) {
   auto owned = std::make_unique<FakeDestinationChild>("rtmp");
   auto* child = owned.get();

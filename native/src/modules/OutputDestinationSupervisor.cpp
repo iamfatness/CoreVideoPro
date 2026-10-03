@@ -58,6 +58,22 @@ SupervisedOutputSender::Destination& SupervisedOutputSender::destinationLocked(c
   return destinations_.emplace(name, std::move(fresh)).first->second;
 }
 
+bool SupervisedOutputSender::serves(const std::string& name) const {
+  return options_.servedDestinations.empty() ||
+         std::find(options_.servedDestinations.begin(), options_.servedDestinations.end(), name) !=
+             options_.servedDestinations.end();
+}
+
+std::string SupervisedOutputSender::label() const {
+  if (options_.servedDestinations.empty()) return "supervisor";
+  std::string joined;
+  for (const auto& name : options_.servedDestinations) {
+    if (!joined.empty()) joined += "+";
+    joined += name;
+  }
+  return joined + "-supervisor";
+}
+
 void SupervisedOutputSender::noteDesired(const std::vector<std::string>& destinations, double elapsedMs) {
   std::vector<std::string> rearmed;
   {
@@ -68,7 +84,7 @@ void SupervisedOutputSender::noteDesired(const std::vector<std::string>& destina
       destination.desiredActive = active;
     }
     for (const auto& name : destinations) {
-      if (name.empty()) continue;
+      if (name.empty() || !serves(name)) continue;
       auto& destination = destinationLocked(name);
       destination.desiredActive = true;
       destination.lastElapsedMs = elapsedMs;
@@ -290,7 +306,7 @@ void SupervisedOutputSender::evaluate() {
       if (!recordIsWellFormed(sender)) {
         // Attribute the malformed reply to the destination it claims when it
         // claims one; otherwise it is unattributable and simply discarded.
-        if (!sender.destination.empty()) {
+        if (!sender.destination.empty() && serves(sender.destination)) {
           destinationLocked(sender.destination).malformedObservations += 1;
         }
         continue;
@@ -356,8 +372,8 @@ void SupervisedOutputSender::evaluate() {
   //    on a caller's stack.
   for (const auto& action : actions) {
     if (action.action == SupervisorAction::Restart) {
-      ::corevideo::core::nativeLogf("[outputSupervisor] restarting %s: %s\n", action.destination.c_str(),
-                                    action.reason.c_str());
+      ::corevideo::core::nativeLogf("[outputSupervisor] %s restarting %s: %s\n", label().c_str(),
+                                    action.destination.c_str(), action.reason.c_str());
       if (child_) {
         // interrupt() first: for RTMP/SRT this ends the FFmpeg child, which also
         // releases a writer blocked in a pipe write so recover() can be applied.
@@ -370,8 +386,8 @@ void SupervisedOutputSender::evaluate() {
                                      "Output supervisor restarted this destination: " + action.reason);
       }
     } else if (action.action == SupervisorAction::GiveUp) {
-      ::corevideo::core::nativeLogf("[outputSupervisor] giving up on %s: %s\n", action.destination.c_str(),
-                                    action.reason.c_str());
+      ::corevideo::core::nativeLogf("[outputSupervisor] %s giving up on %s: %s\n", label().c_str(),
+                                    action.destination.c_str(), action.reason.c_str());
       if (child_) {
         // Stop the transport but leave the destination published as failed with
         // its reason. Silence here would be the papercut, not the protection.
