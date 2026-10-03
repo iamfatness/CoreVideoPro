@@ -104,7 +104,8 @@ public sealed class CoreRecoveryRejoinTests
 
     private static async Task UntilAsync(Func<bool> condition)
     {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+        // #754: a wait bound for a loaded CI runner, not a budget; only this bound fails the test.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(90);
         while (!condition() && DateTime.UtcNow < deadline) await Task.Delay(40);
         Assert.True(condition());
     }

@@ -30,13 +30,17 @@ public sealed class MediaCoreHandshakeTests
             {
                 Command = "node", Args = [script], WorkingDirectory = Path.GetTempPath(),
                 Environment = new Dictionary<string, string> { ["COREVIDEO_HANDSHAKE_TRACE"] = trace },
-                HandshakeRequestTimeoutMs = 1000, RequestTimeoutMs = 3000, FrameDrainIntervalMs = 100000, MaxRestarts = 3
+                // #754: this child never volunteers a handshake, so StartAsync waits out
+                // HandshakeRequestTimeoutMs before asking; keep that short. The explicit request and
+                // the outer waits must outlast node's cold start on a loaded CI runner, so those are
+                // bounds, not budgets (the 5 s outer wait timed out there and failed the assertion).
+                HandshakeRequestTimeoutMs = 1000, RequestTimeoutMs = 60000, FrameDrainIntervalMs = 100000, MaxRestarts = 3
             });
             var startup = supervisor.StartAsync();
             var process = (Process)typeof(MediaCoreSupervisor).GetField("_process", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(supervisor)!;
             using var child = Process.GetProcessById(process.Id);
-            Assert.Contains("incompatible", (await Assert.ThrowsAsync<InvalidOperationException>(() => startup.WaitAsync(TimeSpan.FromSeconds(5)))).Message);
-            await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Contains("incompatible", (await Assert.ThrowsAsync<InvalidOperationException>(() => startup.WaitAsync(TimeSpan.FromSeconds(90)))).Message);
+            await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(90));
             Assert.False(supervisor.Running);
             Assert.True(supervisor.Health.Stopped);
             Assert.False(supervisor.Health.Recovering);

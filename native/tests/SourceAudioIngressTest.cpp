@@ -163,7 +163,10 @@ TEST(SourceAudioIngress, MediaDemandUsesSteadyClockInsteadOfRenderTimestamp) {
   desired.kind = "video"; desired.path = "clock.wav"; desired.onProgram = true;
   ASSERT_EQ(media.apply({desired}, 0).size(), 1u);
   bool delivered = false;
-  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  // #754: a wait bound, not a budget. These tests condition-wait and only this
+  // bound fails them, so it is sized for a loaded shared CI runner, not for the
+  // quiet dev box where 2-3 s always sufficed.
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
   while (!delivered && std::chrono::steady_clock::now() < until) {
     const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();

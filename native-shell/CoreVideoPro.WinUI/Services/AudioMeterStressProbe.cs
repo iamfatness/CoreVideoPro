@@ -52,8 +52,10 @@ internal sealed class AudioMeterStressProbe(int seconds, string reportPath)
             // Show without activation, outside the desktop viewport. XAML still
             // performs real layout/Loaded/Unloaded work on its dispatcher.
             _window.AppWindow.Show(false);
-            await Task.Delay(200);
-            Require(meters.All(m => m.IsLoaded), "Probe meters did not load");
+            // #754: XAML's Loaded is dispatcher work with no fixed latency; on a loaded CI
+            // runner 200 ms was not enough and the probe failed three gates in two days
+            // with "Probe meters did not load". Wait for the state, bounded, not for a time.
+            await RequireEventuallyAsync(() => meters.All(m => m.IsLoaded), "Probe meters did not load");
             var trees = meters.Select(CaptureTree).ToArray();
 
             // Mute semantics and the retained pool are checked on actual controls.
@@ -103,17 +105,19 @@ internal sealed class AudioMeterStressProbe(int seconds, string reportPath)
                 {
                     // Real unload/reload, plus binding updates while detached.
                     _window.Content = new Grid();
-                    await Task.Delay(40);
+                    // IsLoaded flips before the Unloaded event that stops the decay timer runs,
+                    // so wait for the settled state (unloaded AND timer stopped) before asking
+                    // whether a Level change restarts it.
+                    await RequireEventuallyAsync(() => meters.All(m => !m.IsLoaded), "Detached meter stayed loaded");
+                    await RequireEventuallyAsync(() => meters.All(m => !m.AnimationRunning), "Detached meter kept its timer");
                     foreach (var meter in meters)
                     {
-                        Require(!meter.IsLoaded, "Detached meter stayed loaded");
                         meter.Level = 100;
                         meter.Level = 0;
                         Require(!meter.AnimationRunning, "Unloaded meter restarted timer");
                     }
                     _window.Content = root;
-                    await Task.Delay(40);
-                    Require(meters.All(m => m.IsLoaded), "Meter did not reload");
+                    await RequireEventuallyAsync(() => meters.All(m => m.IsLoaded), "Meter did not reload");
                     unloads++;
                 }
                 frames++;
@@ -164,14 +168,13 @@ internal sealed class AudioMeterStressProbe(int seconds, string reportPath)
     {
         var meter = new AudioLevelMeter { Width = 80, Height = 129, IsVertical = true, ShowDbfsScale = true };
         _window!.Content = meter;
-        await Task.Delay(40);
-        Require(meter.IsLoaded, "Destruction-test meter did not load");
+        await RequireEventuallyAsync(() => meter.IsLoaded, "Destruction-test meter did not load");
         meter.Level = 100;
         meter.Level = 0;
         Require(meter.AnimationRunning, "Destruction-test timer did not start");
         _window.Content = null;
-        await Task.Delay(40);
-        Require(!meter.IsLoaded && !meter.AnimationRunning, "Destroyed page retained its meter timer");
+        await RequireEventuallyAsync(() => !meter.IsLoaded, "Destroyed page retained its meter");
+        await RequireEventuallyAsync(() => !meter.AnimationRunning, "Destroyed page retained its meter timer");
         return new WeakReference(meter);
     }
 
@@ -199,5 +202,17 @@ internal sealed class AudioMeterStressProbe(int seconds, string reportPath)
     private static void Require(bool condition, string message)
     {
         if (!condition) throw new InvalidOperationException(message);
+    }
+
+    // Polls a state the dispatcher will reach, with a bound sized for a loaded CI runner.
+    // The bound is the only thing that fails this; a fast machine returns on the first poll.
+    private static async Task RequireEventuallyAsync(Func<bool> condition, string message)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (!condition())
+        {
+            if (deadline.Elapsed > TimeSpan.FromSeconds(30)) throw new InvalidOperationException(message);
+            await Task.Delay(16);
+        }
     }
 }

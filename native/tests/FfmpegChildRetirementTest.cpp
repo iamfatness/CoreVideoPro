@@ -77,7 +77,11 @@ TEST(FfmpegChildRetirement, SenderStopReapsItsActualTransportChild) {
   const auto opened = sender->sync({"rtmp"}, &frame, 0, {settings});
   ASSERT_FALSE(opened.senders.empty());
 
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  // #754: a wait bound, not a budget. These tests condition-wait and only this
+  // bound fails them, so it is sized for a loaded shared CI runner, not for the
+  // quiet dev box where 2-3 s always sufficed.
+  constexpr auto kWaitBound = std::chrono::seconds(60);
+  const auto deadline = std::chrono::steady_clock::now() + kWaitBound;
   while (!fs::exists(marker) && std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
@@ -101,7 +105,7 @@ TEST(FfmpegChildRetirement, SenderStopReapsItsActualTransportChild) {
   }
   fs::remove(marker, error);
   sender->sync({"rtmp"}, &frame, 2, {settings});
-  const auto restartDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  const auto restartDeadline = std::chrono::steady_clock::now() + kWaitBound;
   while (!fs::exists(marker) && std::chrono::steady_clock::now() < restartDeadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
