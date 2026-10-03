@@ -672,7 +672,7 @@ std::string MediaCore::followSpeakerForRoutes(const std::vector<modules::VideoFr
   followSpeakerHold_.observe(epoch, current);
   return followSpeakerHold_.pick([&videoFrames](const std::string& id) {
     return std::any_of(videoFrames.begin(), videoFrames.end(), [&id](const modules::VideoFrame& frame) {
-      return frame.participantId == id && (frame.hasPixels() || frame.hasI420());
+      return frame.participantId == id && frame.hasContent();
     });
   });
 }
@@ -2499,7 +2499,7 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
     // Content only: a metadata-only frame (a Zoom roster entry with no
     // pixels and no I420) puts nothing on air, so it is not "a frame".
     const bool hasFrame = std::any_of(frames.begin(), frames.end(), [&](const auto& frame) {
-      return frame.participantId == id && (frame.hasPixels() || frame.hasI420());
+      return frame.participantId == id && frame.hasContent();
     });
     if (!hasFrame) missing.push_back(id);
   }
@@ -6939,7 +6939,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
         [&videoFrames](const std::string& sourceId) {
           return std::any_of(videoFrames.begin(), videoFrames.end(),
               [&sourceId](const modules::VideoFrame& frame) {
-                return frame.participantId == sourceId && (frame.hasPixels() || frame.hasI420());
+                return frame.participantId == sourceId && frame.hasContent();
               });
         });
     constexpr int64_t kMaxColdMediaHoldNs = 750'000'000;
@@ -6958,7 +6958,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     const auto hasContent = [&videoFrames](const std::string& id) {
       return std::any_of(videoFrames.begin(), videoFrames.end(),
           [&id](const modules::VideoFrame& frame) {
-            return frame.participantId == id && (frame.hasI420() || frame.hasPixels());
+            return frame.participantId == id && frame.hasContent();
           });
     };
     if (engineLive) {
@@ -7006,7 +7006,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
         const auto sourceId = "capture:" + route.captureDeviceId;
         observations.push_back({sourceId, route.personId, false,
             std::any_of(videoFrames.begin(), videoFrames.end(), [&sourceId](const modules::VideoFrame& frame) {
-              return frame.participantId == sourceId && (frame.hasI420() || frame.hasPixels());
+              return frame.participantId == sourceId && frame.hasContent();
             }), false});
       }
     };
@@ -7172,7 +7172,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
           break;
         }
       }
-      if (matched != nullptr && (matched->hasPixels() || matched->hasI420())) {
+      if (matched != nullptr && matched->hasContent()) {
         age.hasFrame = true;
         // Task 4 review fix (I4): every frame producer in this codebase
         // re-stamps VideoFrame::timestampMs with the CURRENT tick's clock even
@@ -7495,7 +7495,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // A metadata-only frame (Zoom roster entry: no pixels, no I420) is not
     // evidence the source is running — observing it would keep a dead
     // source "continuous" and count it as having had a frame.
-    if (!frame.hasPixels() && !frame.hasI420()) continue;
+    if (!frame.hasContent()) continue;
     sourceContinuity_.observe(frame.participantId, frame.frameId, renderTickCounter_);
   }
   sourceContinuity_.endTick(renderTickCounter_);

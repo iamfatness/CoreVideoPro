@@ -64,7 +64,7 @@ std::vector<modules::VideoFrame> gatherSourceVideo(
       const auto withContent = std::find_if(frames.begin(), frames.end(),
           [&](const modules::VideoFrame& candidate) {
             return candidate.participantId == engineFrame.participantId &&
-                   (candidate.hasPixels() || candidate.hasI420());
+                   candidate.hasContent();
           });
       merged.push_back(withContent != frames.end() ? *withContent : std::move(engineFrame));
     }
