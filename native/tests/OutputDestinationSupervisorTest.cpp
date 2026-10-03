@@ -489,8 +489,9 @@ TEST(OutputDestinationSupervisorPolicy, ADestinationServingItsOwnRestartBackoffI
 
   std::int64_t now = 100;
   int restarts = 0;
-  // Ten minutes of solid backoff: far past 5 x the tallest 60 s rung.
-  for (int tick = 0; tick < 2400; ++tick) {
+  // One full tallest rung of backoff (60 s) plus most of the grace: inside the
+  // #612 bound, so the stand-off holds for the whole of it.
+  for (int tick = 0; tick < 280; ++tick) {
     now += 250;  // the supervisor's own observation cadence
     const auto decision = policy.observe(activeObservation(now, 5, "failed", "ffmpeg-retry-backoff"));
     if (decision.action == SupervisorAction::Restart) {
@@ -514,7 +515,70 @@ TEST(OutputDestinationSupervisorPolicy, ADestinationServingItsOwnRestartBackoffI
   now += 250;
   const auto real = policy.observe(activeObservation(now, 5, "failed", "ffmpeg-exited"));
   EXPECT_EQ(real.failureClass, DestinationFailureClass::Retryable);
+  policy.onGenerationStarted(now);
+
+  // #612: AND THE STAND-OFF IS BOUNDED. A latched "ffmpeg-retry-backoff" that
+  // outlives the tallest rung the adapter can serve is stale, not a live retry
+  // (the shape when frames stop reaching the sender mid-rung). It must escalate
+  // through the ordinary ladder rather than hold the supervisor off forever.
+  int faults = 0;
+  std::string reason;
+  for (int tick = 0; tick < 2400 && faults == 0; ++tick) {
+    now += 250;
+    const auto decision = policy.observe(activeObservation(now, 5, "failed", "ffmpeg-retry-backoff"));
+    if (decision.failureClass != DestinationFailureClass::None) {
+      ++faults;
+      reason = decision.reason;
+    }
+  }
+  const std::int64_t standoffMs = now - 100 - 280 * 250 - 250;
+  EXPECT_EQ(faults, 1) << "a stand-off that never refreshed must expire and arm a fault";
+  EXPECT_GT(standoffMs, OutputDestinationSupervisorPolicy::kSelfManagedRetryStandoffMaxMs - 500);
+  // Two observation ticks of slack: the stand-off clock starts on the first
+  // backoff observation and the expiry fires on the tick after the bound.
+  EXPECT_LT(standoffMs, OutputDestinationSupervisorPolicy::kSelfManagedRetryStandoffMaxMs + 2000);
   EXPECT_FALSE(real.reason.empty());
+}
+
+// #612: the stand-off needs THIS cycle's record. A remembered code from a child
+// that has stopped publishing is not evidence that it is still retrying.
+TEST(OutputDestinationSupervisorPolicy, AnUnobservedBackoffCodeDoesNotHoldTheSupervisorOff) {
+  OutputDestinationSupervisorPolicy policy;
+  policy.onGenerationStarted(0);
+  policy.observe(activeObservation(100, 5, "live", "encoder-input-accepted"));
+  std::int64_t now = 100;
+  bool faulted = false;
+  for (int tick = 0; tick < 200 && !faulted; ++tick) {
+    now += 250;
+    auto observation = activeObservation(now, 5, "failed", "ffmpeg-retry-backoff");
+    observation.observed = false;  // no record arrived this cycle; the code is a memory
+    const auto decision = policy.observe(observation);
+    faulted = decision.failureClass != DestinationFailureClass::None || policy.faultPending();
+  }
+  EXPECT_TRUE(faulted) << "an unobserved destination that stopped accepting output must arm a fault";
+}
+
+TEST(OutputDestinationSupervisorPolicy, ProgressEndsAStandoffBeforeItCanExpire) {
+  OutputDestinationSupervisorPolicy policy;
+  policy.onGenerationStarted(0);
+  std::int64_t now = 0;
+  std::int64_t units = 0;
+  // Six minutes alternating 50 s of backoff with a burst of accepted output: a
+  // link that keeps coming back. The bound is per stand-off, so it never trips.
+  for (int cycle = 0; cycle < 6; ++cycle) {
+    for (int tick = 0; tick < 200; ++tick) {
+      now += 250;
+      const auto decision = policy.observe(activeObservation(now, units, "failed", "ffmpeg-retry-backoff"));
+      ASSERT_EQ(decision.failureClass, DestinationFailureClass::None) << "cycle " << cycle << " tick " << tick;
+    }
+    for (int tick = 0; tick < 8; ++tick) {
+      now += 250;
+      units += 10;
+      policy.observe(activeObservation(now, units, "live", "encoder-input-accepted"));
+    }
+  }
+  EXPECT_FALSE(policy.gaveUp());
+  EXPECT_EQ(policy.consecutiveFailures(), 0);
 }
 
 TEST(OutputDestinationSupervisorPolicy, AnUnknownFailureCodeIsRetryableNotTerminal) {

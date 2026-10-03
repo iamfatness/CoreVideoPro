@@ -209,6 +209,11 @@ class OutputDestinationSupervisorPolicy {
   static constexpr std::int64_t kProgressStaleMs = 1000;
   static constexpr std::int64_t kStalledRestartMs = 5000;
   static constexpr std::int64_t kStartGraceMs = 15000;
+  // #612: how long the supervisor will stand off for an adapter's self-managed
+  // retry before treating the latched code as stale. The adapter's own ladder
+  // tops out at kMaxBackoffMs per rung, so one full rung plus the start grace
+  // is the longest a live retry can legitimately go without a fresh result.
+  static constexpr std::int64_t kSelfManagedRetryStandoffMaxMs = kMaxBackoffMs + kStartGraceMs;
 
   // 5s, 10s, 20s, 40s, capped at 60s — identical to the four existing ladders.
   [[nodiscard]] static std::int64_t backoffMsForFailureCount(int consecutiveFailures) {
@@ -250,6 +255,7 @@ class OutputDestinationSupervisorPolicy {
     lastProgressMs_ = 0;
     faultPending_ = false;
     gaveUpAnnounced_ = gaveUp_;
+    standoffSinceMs_ = -1;
   }
 
   // Operator intervention: recover / re-select / re-arm. Always recoverable
@@ -339,7 +345,29 @@ class OutputDestinationSupervisorPolicy {
     // 5 s and the `never accepted output` branch after 15 s - the same walk to
     // give-up by a different door. While the adapter's own bounded retry is
     // pending, NO fault is armed at all.
-    const bool servingSelfManagedRetry = isSelfManagedRetryResultCode(o.lastResultCode);
+    // #612: the stand-off is keyed on a result code the adapter LATCHES, and the
+    // supervisor polls far more often than the adapter refreshes it. Two holes:
+    // give-up for a genuinely dead destination depended on which value the
+    // observer happened to see, and if frames stopped reaching the sender
+    // mid-rung the latched code was never refreshed, so nothing ended the
+    // stand-off. So the stand-off is now (a) FRESH: it needs this cycle's
+    // record, not a remembered one; and (b) BOUNDED: it cannot outlive the
+    // longest rung the adapter's own ladder can serve. Either failing hands the
+    // observation back to the ordinary fault rules, which escalate.
+    bool servingSelfManagedRetry = o.observed && isSelfManagedRetryResultCode(o.lastResultCode);
+    if (servingSelfManagedRetry) {
+      if (standoffSinceMs_ < 0) standoffSinceMs_ = o.nowMs;
+      // Progress ends a stand-off: the adapter is through its rung.
+      if (sinceProgressMs >= 0 && sinceProgressMs <= kProgressStaleMs) standoffSinceMs_ = o.nowMs;
+      if (o.nowMs - standoffSinceMs_ > kSelfManagedRetryStandoffMaxMs) {
+        servingSelfManagedRetry = false;
+        if (decision.failureClass == DestinationFailureClass::None) {
+          decision.failureClass = DestinationFailureClass::Retryable;
+        }
+      }
+    } else if (!isSelfManagedRetryResultCode(o.lastResultCode)) {
+      standoffSinceMs_ = -1;
+    }
     if (servingSelfManagedRetry && !faultPending_) {
       // Say so, so a support bundle shows standing off rather than silence.
       decision.reason = "Destination is serving its own bounded restart backoff (" +
@@ -347,7 +375,11 @@ class OutputDestinationSupervisorPolicy {
     }
     if (!faultPending_ && !servingSelfManagedRetry) {
       std::string faultReason;
-      if (decision.failureClass == DestinationFailureClass::Retryable) {
+      if (standoffSinceMs_ >= 0 && isSelfManagedRetryResultCode(o.lastResultCode)) {
+        faultReason = "Destination reported its own retry backoff (" + o.lastResultCode + ") for " +
+                      std::to_string((o.nowMs - standoffSinceMs_) / 1000) +
+                      "s without producing; the stand-off has expired.";
+      } else if (decision.failureClass == DestinationFailureClass::Retryable) {
         faultReason = o.lastError.empty()
                           ? ("Destination reported a failure (" + o.lastResultCode + ").")
                           : o.lastError;
@@ -427,6 +459,8 @@ class OutputDestinationSupervisorPolicy {
   std::int64_t lastProgressMs_ = 0;
   std::int64_t generationStartedMs_ = 0;
   std::int64_t nextAttemptAtMs_ = 0;
+  // When the current stand-off for a self-managed retry began; -1 when none.
+  std::int64_t standoffSinceMs_ = -1;
   std::string pendingReason_;
   std::string terminalReason_;
 };
