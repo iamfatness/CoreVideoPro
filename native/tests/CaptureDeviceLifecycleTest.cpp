@@ -1,4 +1,5 @@
 #include "modules/Interfaces.h"
+#include "modules/WinUiCaptureDeviceAdapter.h"
 
 #include <string>
 #include <vector>
@@ -34,6 +35,10 @@ class RecordingLifecycle final : public corevideo::modules::ICaptureDevice {
   void unregisterCaptureBuffer(const std::string& deviceId) override { unregistered_ = deviceId; }
 
   void captureVideoTick(int64_t) override { replaceVideo(frames); }
+  void setVideoConsumerDemand(const std::vector<corevideo::modules::SourceVideoDemand>& value) override {
+    demands = value;
+  }
+  std::vector<corevideo::modules::SourceVideoDemand> demands;
 
   std::string lastSelect_, lastOffset_, lastConnect_, registered_, unregistered_;
   std::vector<corevideo::modules::CaptureDeviceInfo> devices_{{"cam-1", "Camera"}};
@@ -41,6 +46,18 @@ class RecordingLifecycle final : public corevideo::modules::ICaptureDevice {
 };
 
 }  // namespace
+
+TEST(CaptureDeviceLifecycle, ShellBridgeForwardsAndReleasesCpuDemand) {
+  using namespace corevideo::modules;
+  auto device = std::make_unique<RecordingLifecycle>();
+  auto* observed = device.get();
+  WinUiCaptureDeviceAdapter bridge(std::move(device));
+  bridge.setVideoConsumerDemand({{"capture:screen", SourceVideoConsumer::Iso,
+      "recording", SourceVideoRepresentation::Cpu}});
+  EXPECT_TRUE(sourceNeedsCpuVideo(observed->demands, "capture:screen"));
+  bridge.setVideoConsumerDemand({});
+  EXPECT_FALSE(sourceNeedsCpuVideo(observed->demands, "capture:screen"));
+}
 
 TEST(CaptureDeviceLifecycle, SessionCommandsDoNotRequireThePollInterface) {
   RecordingLifecycle device;

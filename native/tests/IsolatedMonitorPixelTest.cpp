@@ -275,6 +275,34 @@ TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndPreservesCpuConsu
   std::fprintf(stderr, "[capture-test] real WGC %dx%d GPU view consumed; CPU mirror preserved; uploads=%llu\n",
       consumer.frame.pixelWidth, consumer.frame.pixelHeight,
       static_cast<unsigned long long>(compositor->sourceTexStats().cachedUploads));
+  const auto mirroredId = consumer.frame.frameId;
+  capture->setVideoConsumerDemand({});
+  const auto gpuOnlyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < gpuOnlyDeadline) {
+    capture->deliverVideo(consumer, 0);
+    if (consumer.frame.frameId > mirroredId && consumer.frame.hasGpuPixels() && !consumer.frame.hasPixels()) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_GT(consumer.frame.frameId, mirroredId);
+  ASSERT_TRUE(consumer.frame.hasGpuPixels());
+  ASSERT_FALSE(consumer.frame.hasPixels());
+  const auto gpuOnly = compositor->render(request.programPlan, {consumer.frame});
+  EXPECT_TRUE(gpuOnly.gpuComposed);
+  EXPECT_FALSE(gpuOnly.preview.bgra.empty());
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  const auto gpuOnlyId = consumer.frame.frameId;
+  capture->setVideoConsumerDemand({{consumer.frame.participantId, SourceVideoConsumer::Iso,
+      "recording", SourceVideoRepresentation::Cpu}});
+  const auto isoDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < isoDeadline) {
+    capture->deliverVideo(consumer, 0);
+    if (consumer.frame.frameId > gpuOnlyId && consumer.frame.hasPixels()) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_GT(consumer.frame.frameId, gpuOnlyId);
+  EXPECT_TRUE(consumer.frame.hasPixels());
+  EXPECT_TRUE(consumer.frame.hasGpuPixels());
+  std::fprintf(stderr, "[capture-test] GPU-only demand and subsequent ISO CPU demand both delivered new frames\n");
   capture->disconnect(devices.front().id);
 }
 #endif

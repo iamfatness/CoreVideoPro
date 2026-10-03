@@ -1,4 +1,5 @@
 #pragma once
+#include "modules/SourceVideoDemand.h"
 
 #include "contracts/Lifecycle.h"
 #include "modules/ProgramAacEncoder.h"
@@ -1596,6 +1597,10 @@ class ICaptureAudioConsumer {
 class ICaptureDevice : public ICaptureDeviceLifecycle {
  public:
   ~ICaptureDevice() override = default;
+  // Complete replacement of the native representation demand snapshot. Legacy
+  // adapters keep their existing CPU behavior; GPU capture may avoid readback
+  // only after this explicit snapshot establishes that no CPU consumer exists.
+  virtual void setVideoConsumerDemand(const std::vector<SourceVideoDemand>&) {}
   // Publish what adapters have already pushed. The render tick does not pull
   // a frame vector. Video slots are re-published with this tick's timestamp so
   // a held picture stays on air and a frozen frameId can still age out.

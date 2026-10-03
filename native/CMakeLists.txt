@@ -659,6 +659,7 @@ if(BUILD_TESTING)
     tests/VirtualCameraFrameTest.cpp
     tests/VirtualCameraDeliveryEvidenceTest.cpp
     tests/DeliveryCounterPatternTest.cpp
+    tests/CaptureFrameWorkerTest.cpp
     tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
     tests/VirtualCameraSlateTest.cpp

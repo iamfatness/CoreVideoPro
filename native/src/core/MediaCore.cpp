@@ -6900,6 +6900,13 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // no longer pulls pollVideoFrames. Browser sources are still polled; they
   // are not capture devices.
   core::CaptureVideoToSourceBus captureVideo(*sourceBus_);
+  std::vector<modules::SourceVideoDemand> captureDemands;
+  if (recordingStatus_ == "recording" || recordingStatus_ == "warning") {
+    for (const auto& id : recordingIsoParticipantIds_)
+      captureDemands.push_back({normalizeIsoSourceId(id), modules::SourceVideoConsumer::Iso,
+          "recording", modules::SourceVideoRepresentation::Cpu});
+  }
+  modules_.captureDevice->setVideoConsumerDemand(captureDemands);
   modules_.captureDevice->deliverVideo(captureVideo, frameTimestampMs);
   std::vector<modules::VideoFrame> browserFrames;
   if (!browserSources_->empty()) {

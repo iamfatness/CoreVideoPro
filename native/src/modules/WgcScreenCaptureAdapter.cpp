@@ -22,6 +22,7 @@
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 #include "modules/D3DVideoFrame.h"
+#include "modules/CaptureFrameWorker.h"
 
 #include <atomic>
 #include <chrono>
@@ -170,6 +171,9 @@ class WgcSession {
     height_ = item.Size().Height;
     framePool_ = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
         winrtDevice, wgd::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, item.Size());
+    if (gpuEnabled_)
+      worker_ = std::make_unique<CaptureFrameWorker<CapturedFrame>>(
+          [this](const CapturedFrame& frame) { processFrame(frame); });
     frameArrived_ = framePool_.FrameArrived(
         winrt::auto_revoke, [this](const wgc::Direct3D11CaptureFramePool& pool, const auto&) {
           onFrame(pool);
@@ -197,6 +201,7 @@ class WgcSession {
     // pool / free the D3D members it is using. revoke() unsubscribes future calls but
     // does NOT synchronize with one in flight on the free-threaded pool thread.
     { std::lock_guard<std::mutex> drain(frameMutex_); }
+    if (worker_) worker_->stop();
     if (session_) {
       session_.Close();
       session_ = nullptr;
@@ -215,7 +220,7 @@ class WgcSession {
   bool getLatest(std::shared_ptr<const std::vector<std::uint8_t>>& outBgra, int& outWidth,
                  int& outHeight, std::int64_t& outFrameId, std::shared_ptr<const GpuVideoFrame>& outGpu) {
     std::lock_guard<std::mutex> lock(latestMutex_);
-    if (!latestBgra_ || latestBgra_->empty()) {
+    if ((!latestBgra_ || latestBgra_->empty()) && !latestGpu_) {
       return false;
     }
     outBgra = latestBgra_;
@@ -228,11 +233,20 @@ class WgcSession {
 
   int width() const { return width_; }
   int height() const { return height_; }
+  void requireCpu(bool required) { cpuRequired_.store(required, std::memory_order_release); }
+  uint64_t droppedFrames() const {
+    const auto stats = worker_ ? worker_->stats() : CaptureFrameWorker<CapturedFrame>::Stats{};
+    return stats.superseded + stats.failed + stats.refused + refusedFrames_.load();
+  }
 
  private:
+  struct CapturedFrame {
+    wgc::Direct3D11CaptureFrame frame{nullptr};
+    int64_t sequence = 0;
+  };
   void onFrame(const wgc::Direct3D11CaptureFramePool& pool) {
-    // Held for the whole callback so stop()/~WgcSession cannot free the D3D members
-    // (device_/context_/staging_) mid-frame. Paired with the drain in stop().
+    // Stop drains this callback before stopping the owner worker. The callback
+    // only transfers one OS frame when GPU ingress is enabled.
     std::lock_guard<std::mutex> frameLock(frameMutex_);
     if (!running_.load(std::memory_order_acquire)) {
       return;
@@ -241,7 +255,16 @@ class WgcSession {
     if (!frame) {
       return;
     }
-    auto surface = frame.Surface();
+    try {
+      CapturedFrame captured{std::move(frame), ++captureSequence_};
+      if (worker_) worker_->submit(std::move(captured), cpuRequired_.load(std::memory_order_acquire));
+      else processFrame(captured);
+    } catch (...) { ++refusedFrames_; }
+  }
+
+  void processFrame(const CapturedFrame& captured) {
+    if (!running_.load(std::memory_order_acquire)) return;
+    auto surface = captured.frame.Surface();
     winrt::com_ptr<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess> access;
     if (!surface || FAILED(winrt::get_unknown(surface)->QueryInterface(
                         winrt::guid_of<::Windows::Graphics::DirectX::Direct3D11::
@@ -277,6 +300,24 @@ class WgcSession {
       // Preserve the existing CPU path on resource/allocation failure.
       gpuSlot = -1;
     }
+    // Only the capture owner polls its immediate context. A completed GPU
+    // image does not need a CPU Map as a readiness barrier. The bounded wait
+    // runs on the capture worker, never on Program or WGC's OS callback.
+    std::shared_ptr<const GpuVideoFrame> gpu;
+    if (gpuSlot >= 0 && !cpuRequired_.load(std::memory_order_acquire)) {
+      context_->Flush();
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+      do {
+        gpu = gpuPool_->completed(context_.Get(), gpuSlot);
+        if (gpu || !running_.load(std::memory_order_acquire)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      } while (std::chrono::steady_clock::now() < deadline);
+      if (gpu) {
+        publish(captured.sequence, desc.Width, desc.Height, {}, std::move(gpu), false);
+        return;
+      }
+    }
+    if (!running_.load(std::memory_order_acquire)) return;
     if (staging_ == nullptr || stagingWidth_ != static_cast<int>(desc.Width) ||
         stagingHeight_ != static_cast<int>(desc.Height)) {
       D3D11_TEXTURE2D_DESC stagingDesc = desc;
@@ -293,7 +334,22 @@ class WgcSession {
     }
     context_->CopyResource(staging_.Get(), texture.Get());
     D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (FAILED(context_->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+    HRESULT mappedResult = E_FAIL;
+    if (gpuEnabled_) {
+      context_->Flush();
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+      do {
+        if (!running_.load(std::memory_order_acquire)) return;
+        mappedResult = context_->Map(staging_.Get(), 0, D3D11_MAP_READ,
+                                    D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+        if (mappedResult != DXGI_ERROR_WAS_STILL_DRAWING) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      } while (std::chrono::steady_clock::now() < deadline);
+    } else {
+      mappedResult = context_->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+    }
+    if (FAILED(mappedResult)) {
+      ++refusedFrames_;
       return;
     }
     // #728: a frame that cannot be allocated is dropped; this is an OS callback
@@ -313,22 +369,30 @@ class WgcSession {
                   static_cast<size_t>(stagingWidth_) * 4);
     }
     context_->Unmap(staging_.Get(), 0);
-    // Keep the existing CPU representation for ISO and editor thumbnails. The
+    // Keep the CPU representation for explicit CPU consumers or GPU fallback. The
     // production compositor can now read the pre-imported full-size GPU image
     // directly; it no longer uploads these BGRA bytes to its context.
-    auto gpu = gpuPool_ ? gpuPool_->completed(context_.Get(), gpuSlot) : nullptr;
+    gpu = gpuPool_ ? gpuPool_->completed(context_.Get(), gpuSlot) : nullptr;
+    publish(captured.sequence, stagingWidth_, stagingHeight_,
+        std::make_shared<const std::vector<std::uint8_t>>(std::move(bgra)), std::move(gpu), true);
+  }
+
+  void publish(int64_t sequence, int width, int height,
+      std::shared_ptr<const std::vector<uint8_t>> bgra, std::shared_ptr<const GpuVideoFrame> gpu, bool cpuMirror) {
     if (gpu) ++gpuFrames_;
     else if (gpuEnabled_) ++gpuFallbackFrames_;
+    if (cpuMirror) ++cpuReadbacks_;
     {
       std::lock_guard<std::mutex> lock(latestMutex_);
-      latestBgra_ = std::make_shared<const std::vector<std::uint8_t>>(std::move(bgra));
+      latestBgra_ = std::move(bgra);
       latestGpu_ = std::move(gpu);
-      latestWidth_ = stagingWidth_;
-      latestHeight_ = stagingHeight_;
-      ++latestFrameId_;
+      latestWidth_ = width;
+      latestHeight_ = height;
+      latestFrameId_ = sequence;
       if (gpuEnabled_ && latestFrameId_ % 120 == 0)
-        core::nativeLogf("[wgc-gpu-ingress] ready=%llu cpuFallback=%llu cpuMirror=1 residentBytes=%llu generation=%llu\n",
+        core::nativeLogf("[wgc-gpu-ingress] ready=%llu cpuFallback=%llu cpuMirror=%d cpuReadbacks=%llu residentBytes=%llu generation=%llu\n",
             static_cast<unsigned long long>(gpuFrames_), static_cast<unsigned long long>(gpuFallbackFrames_),
+            cpuMirror ? 1 : 0, static_cast<unsigned long long>(cpuReadbacks_),
             static_cast<unsigned long long>(D3DVideoImage::residentBytes.load()), static_cast<unsigned long long>(gpuGeneration_));
     }
   }
@@ -337,6 +401,11 @@ class WgcSession {
   ComPtr<ID3D11DeviceContext> context_;
   ComPtr<ID3D11Texture2D> staging_;
   bool gpuEnabled_ = false;
+  std::atomic<bool> cpuRequired_{true}; // compatibility until explicit demand arrives
+  std::atomic<uint64_t> refusedFrames_{0};
+  int64_t captureSequence_ = 0;
+  uint64_t cpuReadbacks_ = 0;
+  std::unique_ptr<CaptureFrameWorker<CapturedFrame>> worker_;
   uint64_t gpuGeneration_ = 0, gpuConsumerRevision_ = 0, gpuFrames_ = 0, gpuFallbackFrames_ = 0;
   std::unique_ptr<D3DVideoFramePool> gpuPool_, retiredGpuPool_;
   std::shared_ptr<const GpuVideoFrame> latestGpu_;
@@ -359,6 +428,13 @@ class WgcSession {
 
 class WgcScreenCaptureDevice : public ICaptureDevice {
  public:
+  void setVideoConsumerDemand(const std::vector<SourceVideoDemand>& demands) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    demands_ = demands;
+    demandKnown_ = true;
+    for (auto& [id, session] : sessions_)
+      session->requireCpu(sourceNeedsCpuVideo(demands_, "capture:" + id));
+  }
   std::vector<CaptureDeviceInfo> enumerate() const override {
     std::lock_guard<std::mutex> lock(mutex_);
     return infosLocked();
@@ -401,6 +477,7 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
         sessions_.erase(existing);
       }
       auto session = std::make_unique<WgcSession>();
+      if (demandKnown_) session->requireCpu(sourceNeedsCpuVideo(demands_, "capture:" + deviceId));
       if (session->start(target)) {
         sessions_[deviceId] = std::move(session);
       }
@@ -463,6 +540,7 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
       const bool live = sessions_.count(target.id) != 0;
       info.connectionState = live ? "connected" : "detected";
       info.signalPresent = live;
+      if (live) info.droppedFrames = static_cast<int64_t>(sessions_.at(target.id)->droppedFrames());
       infos.push_back(std::move(info));
     }
     return infos;
@@ -470,6 +548,8 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
 
   mutable std::mutex mutex_;
   std::map<std::string, std::unique_ptr<WgcSession>> sessions_;
+  bool demandKnown_ = false;
+  std::vector<SourceVideoDemand> demands_;
 };
 
 }  // namespace
