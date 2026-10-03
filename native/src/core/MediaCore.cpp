@@ -993,7 +993,18 @@ rpc::Json MediaCore::sessionState() const {
         {"commitAvailableMb", static_cast<double>(systemMemoryAvailableBytes_ / (1024 * 1024))},
         {"commitLimitMb", static_cast<double>(systemMemoryLimitBytes_ / (1024 * 1024))}});
   }
+  const auto monitorWorker = modules_.compositor->monitorDiagnostics();
   state.emplace("realtimeEvidence", rpc::Json::Object{
+      {"monitorWorker", rpc::Json::Object{
+          {"enabled", monitorWorker.enabled},
+          {"submitted", static_cast<double>(monitorWorker.submitted)},
+          {"completed", static_cast<double>(monitorWorker.completed)},
+          {"superseded", static_cast<double>(monitorWorker.superseded)},
+          {"failed", static_cast<double>(monitorWorker.failed)},
+          {"pending", monitorWorker.pending}, {"capacity", 1},
+          {"lastSequence", static_cast<double>(monitorWorker.lastSequence)},
+          {"lastWorkMs", monitorWorker.lastWorkMs},
+          {"displayPresentationVerified", false}}},
       {"metricVersion", "realtime-worker-evidence-v1"},
       {"render", rpc::Json::Object{
           {"generation", static_cast<double>(renderWorkerGeneration_.load(std::memory_order_relaxed))},
@@ -3416,6 +3427,9 @@ rpc::Json MediaCore::virtualCameraState() const {
       {"resolution", rpc::Json::Object{{"width", status.width}, {"height", status.height}}},
       {"fps", status.fps},
       {"framesPublished", static_cast<double>(status.framesPublished)},
+      {"framesAccepted", static_cast<double>(status.framesAccepted)},
+      {"pendingFramesReplaced", static_cast<double>(status.pendingFramesReplaced)},
+      {"publicationExceptions", static_cast<double>(status.publicationExceptions)},
       {"warning", status.warning},
   };
 }
@@ -7582,6 +7596,49 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
   markStage(s_stageProgramUs, 2);
   const auto monitorStartTp = std::chrono::steady_clock::now();
+  if (modules_.compositor->hasIsolatedMonitors()) {
+    modules::MonitorRenderRequest request;
+    request.sequence = lastProducedFrameNumber_;
+    request.programPlan = renderPlan;
+    request.frames = videoFrames;
+    request.multiviewActive = !multiviewSources_.empty() || multiviewLayoutMode_ != "grid";
+    request.previewActive = hasPreviewScene();
+    // WinUI presents Program/Preview/Multiview composites. Its only individual
+    // GPU-source consumer is the legacy Preview fallback before a scene sync;
+    // scene-editor layers consume CPU thumbnails. Keep that compatibility
+    // demand until a composite Preview takes ownership, then stop those exports.
+    if (!request.previewActive) {
+      for (const auto& frame : videoFrames)
+        request.sourceExports.push_back({frame.participantId,
+            modules::SourceMonitorConsumer::PreviewFallback, "preview-fallback"});
+    }
+    if (request.multiviewActive) {
+      request.multiviewPlan = buildMultiviewRenderPlan(videoFrames);
+      request.multiviewPlan.skipCpuReadback = true;
+      request.tiles = buildMultiviewTiles(zoomSnapshot().getString("activeSpeakerId"));
+    }
+    if (request.previewActive) {
+      request.previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
+      if (const auto* wall = tilesWallSources_.find(previewTilesLayer_.layerId))
+        wall->applyLatest(request.previewPlan, previewTilesLayer_.layerId);
+      request.previewPlan.skipCpuReadback = true;
+    }
+    modules_.compositor->submitMonitors(std::move(request));
+    if (const auto result = modules_.compositor->latestMonitors()) {
+      lastProgramFrame_.participantSharedTextures = result->sources;
+      lastProgramFrame_.multiviewSharedTexture = result->multiview;
+      lastProgramFrame_.multiviewTiles = result->tiles;
+      lastProgramFrame_.multiviewWidth = result->multiview.width;
+      lastProgramFrame_.multiviewHeight = result->multiview.height;
+      lastProgramFrame_.previewSharedTexture = result->preview;
+      lastProgramFrame_.previewWidth = result->preview.width;
+      lastProgramFrame_.previewHeight = result->preview.height;
+    }
+    // Worker pressure is measured by its own mailbox counters. Its GPU/CPU
+    // time is not work on this thread and cannot drive Program's shed policy.
+    lastMultiviewPassNs_ = lastPreviewPassNs_ = 0;
+    markStage(s_stageMultiviewUs, 3);
+  } else {
   // Second GPU composite: the whole multiview grid into ONE keyed-mutex shared
   // texture (mirrors the program shared texture). Opt-in â€” only when a layout is
   // set. Reuses the same videoFrames, so Zoom + capture tiles work for free, and
@@ -7742,6 +7799,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       lastProgramFrame_.previewHeight = 0;
       previewStructureEmitted_ = false;
     }
+  }
   }
   const auto monitorEndTp = std::chrono::steady_clock::now();
   markStage(s_stagePreviewUs, 4);

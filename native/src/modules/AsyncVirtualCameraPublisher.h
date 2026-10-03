@@ -27,6 +27,7 @@ class AsyncVirtualCameraPublisher final : public IVirtualCameraPublisher {
   std::condition_variable wake_;
   bool shutdown_ = false, desiredOn_ = false, mirror_ = false;
   uint64_t revision_ = 0;
+  uint64_t framesAccepted_ = 0, pendingFramesReplaced_ = 0, publicationExceptions_ = 0;
   VirtualCameraStatus cached_;
   std::string name_ = "CoreVideo Pro Camera";
   int width_ = 1920, height_ = 1080, fps_ = 60;

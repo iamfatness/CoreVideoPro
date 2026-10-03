@@ -260,18 +260,41 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
   const auto streamHr = value.punkVal->QueryInterface(IID_PPV_ARGS(&stream));
   PropVariantClear(&value);
   ASSERT_TRUE(SUCCEEDED(streamHr));
-  for (int i = 0; i < 61; ++i) {
-    ASSERT_TRUE(SUCCEEDED(stream->RequestSample(nullptr)));
-    // Drain non-sample events (MEStreamStarted) without a blocking event wait.
-    bool gotSample = false;
+  // A receiver of the actual MF samples, including their pixels and PTS. A
+  // queued event or a publication counter alone is not receiver evidence.
+  LONGLONG lastPts = -1;
+  auto receive = [&]() -> int {
+    if (FAILED(stream->RequestSample(nullptr))) return -1;
     for (int eventIndex = 0; eventIndex < 3; ++eventIndex) {
       ComPtr<IMFMediaEvent> event;
-      ASSERT_TRUE(SUCCEEDED(stream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event)));
+      if (FAILED(stream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event))) return -1;
       MediaEventType type{};
-      ASSERT_TRUE(SUCCEEDED(event->GetType(&type)));
-      if (type == MEMediaSample) { gotSample = true; break; }
+      if (FAILED(event->GetType(&type))) return -1;
+      if (type != MEMediaSample) continue;
+      PROPVARIANT payload{};
+      if (FAILED(event->GetValue(&payload))) return -1;
+      ComPtr<IMFSample> sample;
+      const auto hr = payload.punkVal ? payload.punkVal->QueryInterface(IID_PPV_ARGS(&sample)) : E_FAIL;
+      PropVariantClear(&payload);
+      if (FAILED(hr)) return -1;
+      LONGLONG pts = 0;
+      if (FAILED(sample->GetSampleTime(&pts)) || pts <= lastPts) return -1;
+      lastPts = pts;
+      ComPtr<IMFMediaBuffer> buffer;
+      if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) return -1;
+      BYTE* data = nullptr;
+      DWORD length = 0;
+      if (FAILED(buffer->Lock(&data, nullptr, &length))) return -1;
+      const int observed = length == pixels.size() ? data[0] : -1;
+      buffer->Unlock();
+      return observed;
     }
-    ASSERT_TRUE(gotSample);
+    return -1;
+  };
+  for (int i = 0; i < 61; ++i) {
+    const int observed = receive();
+    ASSERT_GE(observed, 0);
+    if (i <= 30) EXPECT_EQ(observed, 42);
   }
   std::ifstream log(logPath, std::ios::binary);
   ASSERT_TRUE(log.good());
@@ -280,6 +303,13 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
   EXPECT_NE(emittedLog.find("emitted=61 fresh=1 held=30 slate=30 failed=0"), std::string::npos);
   EXPECT_NE(emittedLog.find("readFresh=1 unchanged=60 contended=0"), std::string::npos);
   EXPECT_NE(emittedLog.find("programIdentityVerified=0 receiverVerified=0"), std::string::npos);
+  // Resume with a changing synthetic identity. This catches held/duplicated
+  // sample contents despite successful requests and advancing event counters.
+  for (int identity = 60; identity < 180; ++identity) {
+    pixels[0] = static_cast<uint8_t>(identity);
+    writer.write(pixels, 1920, 1080);
+    EXPECT_EQ(receive(), identity);
+  }
 }
 #endif
 

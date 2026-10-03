@@ -688,6 +688,8 @@ if(BUILD_TESTING)
     tests/ProgramPixelContinuityTest.cpp
     tests/SourceContinuityLedgerTest.cpp
     tests/MonitorRenderFaultInjectionTest.cpp
+    tests/MonitorRenderWorkerTest.cpp
+    tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
     tests/EngineIpcShmNameTest.cpp

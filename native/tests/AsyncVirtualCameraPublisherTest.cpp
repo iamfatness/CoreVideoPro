@@ -41,6 +41,46 @@ struct FailedCamera : IVirtualCameraPublisher {
   void publish(const ProgramFrame&) override {}
   VirtualCameraStatus status() const override { VirtualCameraStatus s; s.state="failed"; s.warning="OS rejected camera"; return s; }
 };
+struct QueuedCamera : IVirtualCameraPublisher {
+  std::promise<void> entered, release;
+  std::shared_future<void> gate = release.get_future().share();
+  std::atomic<int> sharedCalls{0}, workerCalls{0}, lastPixel{0};
+  VirtualCameraStatus current;
+  bool start(int,int,int) override { current.enabled = true; current.state = "live"; return true; }
+  void stop() override { current.enabled = false; }
+  void publish(const ProgramFrame&) override {}
+  void publishNv12Shared(std::shared_ptr<const std::vector<uint8_t>>, int, int) override { ++sharedCalls; }
+  void publishNv12OnWorker(std::shared_ptr<const std::vector<uint8_t>> bytes, int, int) override {
+    if (++workerCalls == 1) { entered.set_value(); gate.wait(); }
+    lastPixel.store(bytes->front());
+    ++current.framesPublished;
+  }
+  VirtualCameraStatus status() const override { return current; }
+};
+TEST(AsyncVirtualCameraPublisher, OneLatestSlotCountsReplacementAndUsesDirectWorkerPublication) {
+  auto inner = std::make_unique<QueuedCamera>();
+  auto* backend = inner.get();
+  auto entered = backend->entered.get_future();
+  AsyncVirtualCameraPublisher camera(std::move(inner));
+  camera.start(2, 2, 60);
+  camera.publishNv12Shared(std::make_shared<const std::vector<uint8_t>>(6, 1), 2, 2);
+  const bool blocked = entered.wait_for(2s) == std::future_status::ready;
+  if (!blocked) backend->release.set_value();
+  ASSERT_TRUE(blocked);
+  for (int i = 2; i <= 30; ++i)
+    camera.publishNv12Shared(std::make_shared<const std::vector<uint8_t>>(6, static_cast<uint8_t>(i)), 2, 2);
+  const auto pending = camera.status();
+  EXPECT_EQ(pending.framesAccepted, 30u);
+  EXPECT_EQ(pending.pendingFramesReplaced, 28u);
+  backend->release.set_value();
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (camera.status().framesPublished != 2 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  EXPECT_EQ(camera.status().framesPublished, 2u);
+  EXPECT_EQ(backend->lastPixel.load(), 30);
+  EXPECT_EQ(backend->sharedCalls.load(), 0);
+  EXPECT_EQ(camera.status().publicationExceptions, 0u);
+}
 TEST(AsyncVirtualCameraPublisher, PublishesBackendStartFailure) {
   AsyncVirtualCameraPublisher camera(std::make_unique<FailedCamera>());
   EXPECT_TRUE(camera.start(1920,1080,60));

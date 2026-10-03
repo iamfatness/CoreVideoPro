@@ -191,6 +191,11 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     std::lock_guard<std::mutex> lock(mutex_);
     publishNv12Locked(nv12, width, height);
   }
+  void publishNv12OnWorker(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
+                           int width, int height) override {
+    if (!nv12 || nv12FrameSize(width, height) == 0 || nv12->size() < nv12FrameSize(width, height)) return;
+    publishNv12(nv12->data(), width, height);
+  }
 
   void publishNv12Shared(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
                          int width, int height) override {

@@ -21,10 +21,12 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
+#include "modules/D3DVideoFrame.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -133,6 +135,8 @@ class WgcSession {
   ~WgcSession() { stop(); }
 
   bool start(const MonitorTarget& target) {
+    const char* gpuCapture = std::getenv("COREVIDEO_GPU_CAPTURE");
+    gpuEnabled_ = gpuCapture && std::string(gpuCapture) == "1";
     if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                                  D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
                                  device_.GetAddressOf(), nullptr, context_.GetAddressOf()))) {
@@ -209,7 +213,7 @@ class WgcSession {
   // take-and-clear made the source VANISH on ticks between WGC deliveries
   // (owner-reported flashing in the multiviewer).
   bool getLatest(std::shared_ptr<const std::vector<std::uint8_t>>& outBgra, int& outWidth,
-                 int& outHeight, std::int64_t& outFrameId) {
+                 int& outHeight, std::int64_t& outFrameId, std::shared_ptr<const GpuVideoFrame>& outGpu) {
     std::lock_guard<std::mutex> lock(latestMutex_);
     if (!latestBgra_ || latestBgra_->empty()) {
       return false;
@@ -218,6 +222,7 @@ class WgcSession {
     outWidth = latestWidth_;
     outHeight = latestHeight_;
     outFrameId = latestFrameId_;
+    outGpu = latestGpu_;
     return true;
   }
 
@@ -250,6 +255,28 @@ class WgcSession {
     }
     D3D11_TEXTURE2D_DESC desc{};
     texture->GetDesc(&desc);
+    int gpuSlot = -1;
+    try {
+    if (gpuEnabled_ && desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM) {
+      if (retiredGpuPool_ && retiredGpuPool_->idle(context_.Get())) retiredGpuPool_.reset();
+      const auto revision = D3DVideoConsumers::revision();
+      if ((!gpuPool_ || !gpuPool_->dimensions(desc.Width, desc.Height) || revision != gpuConsumerRevision_) &&
+          !retiredGpuPool_) {
+        auto candidate = std::make_unique<D3DVideoFramePool>();
+        if (candidate->initialize(device_.Get(), desc.Width, desc.Height, ++gpuGeneration_)) {
+          retiredGpuPool_ = std::move(gpuPool_);
+          gpuPool_ = std::move(candidate);
+          gpuConsumerRevision_ = revision;
+        }
+      }
+      if (gpuPool_ && gpuPool_->dimensions(desc.Width, desc.Height))
+        gpuSlot = gpuPool_->beginCopy(context_.Get(), texture.Get());
+    }
+    } catch (...) {
+      // Optional GPU admission must not throw out of the OS capture callback.
+      // Preserve the existing CPU path on resource/allocation failure.
+      gpuSlot = -1;
+    }
     if (staging_ == nullptr || stagingWidth_ != static_cast<int>(desc.Width) ||
         stagingHeight_ != static_cast<int>(desc.Height)) {
       D3D11_TEXTURE2D_DESC stagingDesc = desc;
@@ -286,18 +313,33 @@ class WgcSession {
                   static_cast<size_t>(stagingWidth_) * 4);
     }
     context_->Unmap(staging_.Get(), 0);
+    // Keep the existing CPU representation for ISO and editor thumbnails. The
+    // production compositor can now read the pre-imported full-size GPU image
+    // directly; it no longer uploads these BGRA bytes to its context.
+    auto gpu = gpuPool_ ? gpuPool_->completed(context_.Get(), gpuSlot) : nullptr;
+    if (gpu) ++gpuFrames_;
+    else if (gpuEnabled_) ++gpuFallbackFrames_;
     {
       std::lock_guard<std::mutex> lock(latestMutex_);
       latestBgra_ = std::make_shared<const std::vector<std::uint8_t>>(std::move(bgra));
+      latestGpu_ = std::move(gpu);
       latestWidth_ = stagingWidth_;
       latestHeight_ = stagingHeight_;
       ++latestFrameId_;
+      if (gpuEnabled_ && latestFrameId_ % 120 == 0)
+        core::nativeLogf("[wgc-gpu-ingress] ready=%llu cpuFallback=%llu cpuMirror=1 residentBytes=%llu generation=%llu\n",
+            static_cast<unsigned long long>(gpuFrames_), static_cast<unsigned long long>(gpuFallbackFrames_),
+            static_cast<unsigned long long>(D3DVideoImage::residentBytes.load()), static_cast<unsigned long long>(gpuGeneration_));
     }
   }
 
   ComPtr<ID3D11Device> device_;
   ComPtr<ID3D11DeviceContext> context_;
   ComPtr<ID3D11Texture2D> staging_;
+  bool gpuEnabled_ = false;
+  uint64_t gpuGeneration_ = 0, gpuConsumerRevision_ = 0, gpuFrames_ = 0, gpuFallbackFrames_ = 0;
+  std::unique_ptr<D3DVideoFramePool> gpuPool_, retiredGpuPool_;
+  std::shared_ptr<const GpuVideoFrame> latestGpu_;
   int stagingWidth_ = 0;
   int stagingHeight_ = 0;
   wgc::Direct3D11CaptureFramePool framePool_{nullptr};
@@ -376,7 +418,8 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
       int width = 0;
       int height = 0;
       std::int64_t frameId = 0;
-      if (!session->getLatest(bgra, width, height, frameId)) {
+      std::shared_ptr<const GpuVideoFrame> gpu;
+      if (!session->getLatest(bgra, width, height, frameId, gpu)) {
         continue;
       }
       VideoFrame frame;
@@ -388,6 +431,7 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
       frame.timestampMs = timestampMs;
       frame.frameId = frameId;
       frame.pixels = bgra;
+      frame.gpuPixels = std::move(gpu);
       frame.pixelWidth = width;
       frame.pixelHeight = height;
       frame.pixelStride = width * 4;

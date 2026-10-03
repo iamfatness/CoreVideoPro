@@ -2,6 +2,7 @@
 
 #include "contracts/Lifecycle.h"
 #include "modules/ProgramAacEncoder.h"
+#include "modules/GpuVideoFrame.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -57,6 +58,11 @@ struct VideoFrame {
   // the matrix per frame instead of washing out camera blacks.
   bool i420FullRange = true;
   bool i420Bt601 = false;
+  std::shared_ptr<const GpuVideoFrame> gpuPixels;
+  [[nodiscard]] bool hasGpuPixels() const {
+    return gpuPixels && gpuPixels->width > 0 && gpuPixels->height > 0;
+  }
+  [[nodiscard]] bool hasContent() const { return hasPixels() || hasI420() || hasGpuPixels(); }
   [[nodiscard]] bool hasPixels() const {
     return pixels && pixelWidth > 0 && pixelHeight > 0 && pixelStride >= pixelWidth * 4 &&
            pixels->size() >= static_cast<size_t>(pixelStride) * static_cast<size_t>(pixelHeight);
@@ -998,11 +1004,55 @@ struct CompositorSourceTexStats {
   uint64_t scratchUploads = 0;  // legacy shared-scratch uploads (frames with no stable source id)
 };
 
+// One immutable monitor job. Geometry/tally and pixels travel together; a late
+// result must never be decorated with the next render tick's tile metadata.
+enum class SourceMonitorConsumer { PreviewFallback, Inspector, Popout };
+struct SourceMonitorDemand {
+  std::string sourceId;
+  SourceMonitorConsumer consumer = SourceMonitorConsumer::PreviewFallback;
+  std::string instance;
+};
+struct MonitorRenderRequest {
+  int64_t sequence = 0;
+  CompositorRenderPlan programPlan;
+  CompositorRenderPlan multiviewPlan;
+  CompositorRenderPlan previewPlan;
+  std::vector<VideoFrame> frames;
+  std::vector<MultiviewTileRect> tiles;
+  std::vector<SourceMonitorDemand> sourceExports;
+  bool multiviewActive = false;
+  bool previewActive = false;
+  bool bufferedProgram = false;
+  ProgramFrameSharedTexture deliveredProgram;
+  std::shared_ptr<const void> deliveredProgramOwner;
+};
+
+struct MonitorRenderResult {
+  int64_t sequence = 0;
+  ProgramFrameSharedTexture multiview;
+  ProgramFrameSharedTexture preview;
+  std::vector<MultiviewTileRect> tiles;
+  std::vector<ParticipantSharedTexture> sources;
+  double workMs = 0;
+};
+
+struct MonitorRenderDiagnostics {
+  bool enabled = false;
+  uint64_t submitted = 0, completed = 0, superseded = 0, failed = 0;
+  int pending = 0;
+  int64_t lastSequence = 0;
+  double lastWorkMs = 0;
+};
+
 class ICompositor {
  public:
   virtual ~ICompositor() = default;
   virtual std::string rendererName() const = 0;
   virtual ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) = 0;
+  [[nodiscard]] virtual bool hasIsolatedMonitors() const { return false; }
+  virtual void submitMonitors(MonitorRenderRequest /*request*/) {}
+  [[nodiscard]] virtual std::shared_ptr<const MonitorRenderResult> latestMonitors() const { return {}; }
+  [[nodiscard]] virtual MonitorRenderDiagnostics monitorDiagnostics() const { return {}; }
   // Startup-only configuration. Unsupported compositors report zero active
   // frames, so consumers must not introduce an unmatched audio delay.
   virtual void configureProgramBuffer(int /*frames*/) {}
