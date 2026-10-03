@@ -5,9 +5,11 @@
 #include "modules/ImageResize.h"
 #include "modules/VirtualCameraFrame.h"
 #include "modules/VirtualCameraShm.h"
+#include "modules/VirtualCameraCorrelationMapping.h"
 #include "modules/VirtualCameraRegistration.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <atomic>
 #include <condition_variable>
@@ -60,18 +62,22 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
       return false;
     }
     header_ = static_cast<VirtualCameraShmHeader*>(view_);
+    const char* trace = std::getenv("COREVIDEO_DELIVERY_TRACE");
+    correlation_.start(trace && std::string(trace) == "1", shmFile_);
     // The slot file is REUSED across app runs (never deleted - deleting would
     // orphan any Frame Server reader holding the old file object). It may hold
     // a previous session's frame, or an ODD seq if that session died mid-write.
     // Re-initialize under the seqlock so live readers never see a torn header,
     // and land on an EVEN seq so the odd/even write discipline stays intact.
     header_->seq = header_->seq | 1u;  // odd: writing (from any prior state)
+    ::MemoryBarrier();
     header_->width = width;
     header_->height = height;
     header_->fps = fps;
     header_->byteLen = 0;      // no frame yet - readers hold/slate until we publish
     header_->frameNumber = 0;
     header_->magic = kVirtualCameraMagic;
+    ::MemoryBarrier();
     header_->seq = (header_->seq | 1u) + 1u;  // even = complete
     ensureVirtualCameraServeLogFile();  // serving processes can append diagnostics
 
@@ -173,13 +179,17 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
                                                                         : kVirtualCameraMaxPayload;
 
     // Seqlock write: bump to odd, write, bump to even.
-    header_->seq = header_->seq + 1;  // odd
+    correlation_.begin();
+    header_->seq = header_->seq | 1u;  // odd, including recovery from an interrupted write
+    ::MemoryBarrier();
     std::memcpy(payload, nv12_.data(), bytes);
     header_->width = w;
     header_->height = h;
     header_->byteLen = static_cast<std::uint32_t>(bytes);
     header_->frameNumber = frame.frameNumber;
-    header_->seq = header_->seq + 1;  // even = complete
+    ::MemoryBarrier();
+    header_->seq = (header_->seq | 1u) + 1u;  // even = complete
+    correlation_.finish(header_->seq, header_->frameNumber, frame.frameNumber, frame.deliveredAt100ns);
 
     ++status_.framesPublished;
   }
@@ -195,6 +205,12 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
                            int width, int height) override {
     if (!nv12 || nv12FrameSize(width, height) == 0 || nv12->size() < nv12FrameSize(width, height)) return;
     publishNv12(nv12->data(), width, height);
+  }
+  void publishNv12IdentifiedOnWorker(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
+      int width, int height, int64_t programSequence, int64_t deliveredAt100ns) override {
+    if (!nv12 || nv12FrameSize(width, height) == 0 || nv12->size() < nv12FrameSize(width, height)) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    publishNv12Locked(nv12->data(), width, height, programSequence, deliveredAt100ns);
   }
 
   void publishNv12Shared(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
@@ -295,7 +311,8 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     }
   }
 
-  void publishNv12Locked(const std::uint8_t* nv12, int width, int height) {
+  void publishNv12Locked(const std::uint8_t* nv12, int width, int height,
+                         int64_t programSequence = 0, int64_t deliveredAt100ns = 0) {
     if (!started_ || header_ == nullptr || view_ == nullptr || nv12 == nullptr) return;
     const int w = status_.width & ~1;
     const int h = status_.height & ~1;
@@ -303,7 +320,9 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     const std::size_t bytes = nv12FrameSize(w, h);
     if (bytes == 0 || bytes > kVirtualCameraMaxPayload) return;
     auto* payload = static_cast<std::uint8_t*>(view_) + sizeof(VirtualCameraShmHeader);
-    header_->seq = header_->seq + 1;
+    correlation_.begin();
+    header_->seq = header_->seq | 1u;
+    ::MemoryBarrier();
     if (mirror_) {
       nv12_.assign(nv12, nv12 + bytes);
       mirrorNv12InPlace(nv12_.data(), w, h);
@@ -315,7 +334,9 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     header_->height = h;
     header_->byteLen = static_cast<std::uint32_t>(bytes);
     header_->frameNumber = header_->frameNumber + 1;
-    header_->seq = header_->seq + 1;
+    ::MemoryBarrier();
+    header_->seq = (header_->seq | 1u) + 1u;
+    correlation_.finish(header_->seq, header_->frameNumber, programSequence, deliveredAt100ns);
     ++status_.framesPublished;
   }
 
@@ -326,6 +347,7 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
   }
 
   mutable std::mutex mutex_;
+  VirtualCameraCorrelationMapping correlation_;
   std::atomic<bool> acceptNv12_{false};
   std::mutex publishQueueMutex_;
   std::condition_variable publishQueueCv_;

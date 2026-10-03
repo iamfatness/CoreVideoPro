@@ -4,6 +4,7 @@
 #include <chrono>
 #include <thread>
 #include <cstdlib>
+#include <future>
 
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
 #define NOMINMAX
@@ -183,6 +184,41 @@ TEST(GpuCaptureIngress, IndependentProducerImageComposesWithoutCpuPixelsOrAnUplo
   held.pop_back();
   EXPECT_GE(pool.beginCopy(context.get(), source.get()), 0);
   context->Flush();
+}
+
+TEST(IsolatedMonitorPixels, CameraIdentityBelongsToTheDeliveredNv12Packet) {
+  auto compositor = isolatedCompositor();
+  ASSERT_TRUE(compositor != nullptr);
+  compositor->configureProgramBuffer(2);
+  compositor->prepareProgramBuffer(64, 64);
+  struct Observation {
+    int64_t sequence = 0, deliveredAt = 0;
+    std::shared_ptr<const std::vector<uint8_t>> pixels;
+  } observed;
+  std::promise<void> arrived;
+  auto arrival = arrived.get_future();
+  compositor->setIdentifiedVcamFrameSink([&](auto bytes, int, int, int64_t sequence, int64_t deliveredAt) {
+    observed = {sequence, deliveredAt, std::move(bytes)};
+    arrived.set_value();
+  });
+  auto request = requestAtSize(64);
+  request.programPlan.fullProgramReadback = true;
+  const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+  compositor->setProgramProductionTiming(0,
+      std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count());
+  const auto produced = compositor->render(request.programPlan, request.frames);
+  ProgramFrame delivered;
+  const bool received = compositor->takeDeliveredProgramFrame(delivered, 2000);
+  const bool notified = arrival.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  compositor->setVcamFrameSink({}); // also clears the identified sink; callee teardown barrier
+  ASSERT_TRUE(received);
+  ASSERT_TRUE(notified);
+  EXPECT_EQ(observed.sequence, produced.frameNumber);
+  EXPECT_EQ(observed.sequence, delivered.frameNumber);
+  EXPECT_EQ(observed.deliveredAt, delivered.deliveredAt100ns);
+  EXPECT_GT(observed.deliveredAt, 0);
+  EXPECT_TRUE(observed.pixels != nullptr);
+  EXPECT_TRUE(observed.pixels == delivered.programNv12Shared);
 }
 
 #if COREVIDEO_WITH_WGC

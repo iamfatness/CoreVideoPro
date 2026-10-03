@@ -63,6 +63,7 @@ struct VcamShmTestIsolation {
   ~VcamShmTestIsolation() {
     ::DeleteFileA((dir + "\\vcam-frame.shm").c_str());
     ::DeleteFileA((dir + "\\vcam-serve.log").c_str());
+    ::DeleteFileA((dir + "\\vcam-correlation-v1.shm").c_str());
     ::RemoveDirectoryA(dir.c_str());
     _putenv_s("COREVIDEO_VCAM_SHM_DIR", "");
   }
@@ -86,6 +87,8 @@ struct ShmWriter {
   bool deleteOnClose = true;
 
   bool open() {
+    corevideo::modules::VirtualCameraCorrelationMapping invalidateOldCorrelation;
+    invalidateOldCorrelation.start(false);
     file = openVirtualCameraShmFile(/*writer=*/true);
     if (file == INVALID_HANDLE_VALUE) return false;
     view = mapVirtualCameraShmView(file, /*writer=*/true, &mapping);
@@ -300,16 +303,47 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
   ASSERT_TRUE(log.good());
   log.seekg(logOffset);
   const std::string emittedLog((std::istreambuf_iterator<char>(log)), {});
+  log.close(); // Windows readers can deny the DLL's subsequent append opens.
   EXPECT_NE(emittedLog.find("emitted=61 fresh=1 held=30 slate=30 failed=0"), std::string::npos);
   EXPECT_NE(emittedLog.find("readFresh=1 unchanged=60 contended=0"), std::string::npos);
   EXPECT_NE(emittedLog.find("programIdentityVerified=0 receiverVerified=0"), std::string::npos);
   // Resume with a changing synthetic identity. This catches held/duplicated
   // sample contents despite successful requests and advancing event counters.
+  corevideo::modules::VirtualCameraCorrelationMapping trace;
+  trace.start(true, writer.file);
   for (int identity = 60; identity < 180; ++identity) {
     pixels[0] = static_cast<uint8_t>(identity);
+    trace.begin();
     writer.write(pixels, 1920, 1080);
+    trace.finish(writer.header->seq, writer.header->frameNumber, identity, identity * 166666LL);
     EXPECT_EQ(receive(), identity);
   }
+  std::ifstream correlatedLog(logPath, std::ios::binary);
+  correlatedLog.seekg(logOffset);
+  const std::string correlationText((std::istreambuf_iterator<char>(correlatedLog)), {});
+  correlatedLog.close();
+  EXPECT_NE(correlationText.find("programIdentityVerified=1 receiverVerified=0 correlatedReads=120 uncorrelatedReads=1"), std::string::npos) << correlationText;
+  EXPECT_NE(correlationText.find("lastProgramSequence=179"), std::string::npos) << correlationText;
+  // A correctly correlated read with the wrong negotiated dimensions is NOT
+  // the frame emitted by MF. Hold the prior pixels and their prior identity.
+  for (int identity = 180; identity < 239; ++identity) {
+    pixels[0] = static_cast<uint8_t>(identity);
+    trace.begin(); writer.write(pixels, 1920, 1080);
+    trace.finish(writer.header->seq, writer.header->frameNumber, identity, identity * 166666LL);
+    EXPECT_EQ(receive(), identity);
+  }
+  trace.begin();
+  writer.write(std::vector<uint8_t>(8 * 8 * 3 / 2, 200), 8, 8);
+  trace.finish(writer.header->seq, writer.header->frameNumber, 999, 999 * 166666LL);
+  EXPECT_EQ(receive(), 238);
+  std::ifstream mismatchLog(logPath, std::ios::binary);
+  const std::string mismatchText((std::istreambuf_iterator<char>(mismatchLog)), {});
+  const auto lastRecord = mismatchText.rfind("[vcam-delivery-v2]");
+  ASSERT_NE(lastRecord, std::string::npos);
+  const auto lastLine = mismatchText.substr(lastRecord);
+  EXPECT_NE(lastLine.find("formatMismatch=1"), std::string::npos);
+  EXPECT_NE(lastLine.find("lastProgramSequence=238"), std::string::npos);
+  EXPECT_NE(lastLine.find("lastReadProgramSequence=999"), std::string::npos);
 }
 #endif
 

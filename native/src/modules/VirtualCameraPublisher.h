@@ -56,6 +56,14 @@ class IVirtualCameraPublisher {
                                    int width, int height) {
     publishNv12Shared(std::move(nv12), width, height);
   }
+  virtual void publishNv12Identified(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
+      int width, int height, int64_t /*programSequence*/, int64_t /*deliveredAt100ns*/) {
+    publishNv12Shared(std::move(nv12), width, height);
+  }
+  virtual void publishNv12IdentifiedOnWorker(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
+      int width, int height, int64_t /*programSequence*/, int64_t /*deliveredAt100ns*/) {
+    publishNv12OnWorker(std::move(nv12), width, height);
+  }
   // Remove the OS virtual camera and release the slot. Idempotent.
   virtual void stop() = 0;
   virtual VirtualCameraStatus status() const = 0;

@@ -39,3 +39,22 @@ test('truncated or contradictory records are not accepted as healthy evidence', 
   assert.equal(result.malformedRecords, 3);
   assert.equal(result.available, false);
 });
+
+function correlated(overrides = {}) {
+  return record({ programIdentityVerified: 1, correlatedReads: 55, uncorrelatedReads: 0,
+    unobservedProgramFrames: 0, programEpochChanges: 0, programRegressions: 0,
+    lastProgramSequence: 70, lastReadProgramSequence: 70, epoch: '12345678123456780000000000000001', ...overrides })
+    .replace('[vcam-delivery-v1]', '[vcam-delivery-v2]');
+}
+test('V2 identity correlation does not become receiver presentation proof', () => {
+  const result = summarizeCameraDelivery(correlated());
+  assert.equal(result.programIdentityVerified, true);
+  assert.equal(result.receiverVerified, false);
+  assert.equal(result.streams[0].last.lastProgramSequence, 70);
+});
+test('unknown reads and incomplete V2 records cannot certify Program identity', () => {
+  assert.equal(summarizeCameraDelivery(correlated({correlatedReads: 54, uncorrelatedReads: 1})).programIdentityVerified, false);
+  assert.equal(summarizeCameraDelivery(correlated({epoch: '0'})).malformedRecords, 1);
+  assert.equal(summarizeCameraDelivery(correlated({correlatedReads: 54})).malformedRecords, 1);
+  assert.equal(summarizeCameraDelivery(correlated({programRegressions: 1})).programIdentityVerified, false);
+});

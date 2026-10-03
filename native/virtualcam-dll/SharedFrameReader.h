@@ -16,6 +16,7 @@
 
 #include "modules/VirtualCameraShm.h"
 #include "modules/VirtualCameraDeliveryEvidence.h"
+#include "modules/VirtualCameraCorrelationMapping.h"
 #include "VcamLog.h"
 
 namespace corevideo::virtualcam {
@@ -61,10 +62,18 @@ class SharedFrameReader {
     }
     VcamServeLog("SHM opened OK (file-backed)");
     header_ = static_cast<const VirtualCameraShmHeader*>(view_);
+    BY_HANDLE_FILE_INFORMATION fileInfo{};
+    fileIdentityValid_ = GetFileInformationByHandle(file_, &fileInfo) != FALSE;
+    fileIdentity_ = (uint64_t(fileInfo.nFileIndexHigh) << 32) | fileInfo.nFileIndexLow;
+    volumeIdentity_ = fileInfo.dwVolumeSerialNumber;
+    (void)correlation_.open(false); // optional; an old/uninstrumented publisher stays unknown
     return true;
   }
 
   void close() {
+    correlation_.close();
+    evidence_.programIdentityVerified = false;
+    fileIdentityValid_ = false;
     if (view_ != nullptr) {
       UnmapViewOfFile(view_);
       view_ = nullptr;
@@ -127,6 +136,8 @@ class SharedFrameReader {
     // request (16ms later) - invisible on screen, and it stops the worst-case 24MB of
     // redundant memcpy per request that competed with the OS audio engine for the bus.
     for (int attempt = 0; attempt < 2; ++attempt) {
+      corevideo::modules::VirtualCameraCorrelationRecord before, after;
+      const bool haveBefore = correlation_.read(before);
       const std::uint32_t seq1 = header_->seq;
       if ((seq1 & 1u) != 0u) {
         continue;  // writer mid-update
@@ -151,6 +162,9 @@ class SharedFrameReader {
         height = h;
         lastServedSeq_ = seq1;
         evidence_.recordFresh(publication, seq1);
+        const bool verified = fileIdentityValid_ && haveBefore && correlation_.read(after) &&
+            corevideo::modules::correlatesCameraPixels(before, after, seq1, publication, fileIdentity_, volumeIdentity_);
+        evidence_.recordCorrelation(verified, after.epochHigh, after.epochLow, after.programSequence);
         return true;
       }
     }
@@ -164,6 +178,10 @@ class SharedFrameReader {
 
  private:
   corevideo::modules::VirtualCameraReadEvidence evidence_;
+  corevideo::modules::VirtualCameraCorrelationMapping correlation_;
+  uint64_t fileIdentity_ = 0;
+  uint32_t volumeIdentity_ = 0;
+  bool fileIdentityValid_ = false;
   HANDLE file_ = INVALID_HANDLE_VALUE;
   HANDLE mapping_ = nullptr;
   const void* view_ = nullptr;

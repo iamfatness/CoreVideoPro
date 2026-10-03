@@ -575,6 +575,8 @@ class D3D11Compositor final : public ICompositor {
           if (!delivered.programNv12Shared) return;
           std::lock_guard<std::mutex> lock(vcamSinkMutex_);
           if (vcamSink_) vcamSink_(delivered.programNv12Shared, delivered.programNv12Width, delivered.programNv12Height);
+          if (identifiedVcamSink_) identifiedVcamSink_(delivered.programNv12Shared,
+              delivered.programNv12Width, delivered.programNv12Height, delivered.frameNumber, delivered.deliveredAt100ns);
         });
     std::shared_ptr<D3DProgramBuffer> retired;
     { std::lock_guard<std::mutex> lock(programBufferMutex_); retired = std::exchange(programBuffer_, buffer); }
@@ -2689,6 +2691,7 @@ class D3D11Compositor final : public ICompositor {
           if (vcamSink_) {
             vcamSink_(nv12, w, h);
           }
+          if (identifiedVcamSink_) identifiedVcamSink_(nv12, w, h, 0, 0);
         }
         std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
         vcamLatestW_ = w;
@@ -2774,6 +2777,12 @@ class D3D11Compositor final : public ICompositor {
     // compositor only if the sink is cleared first — see ~MediaCore).
     std::lock_guard<std::mutex> lock(vcamSinkMutex_);
     vcamSink_ = std::move(sink);
+    identifiedVcamSink_ = {};
+  }
+  void setIdentifiedVcamFrameSink(IdentifiedVcamFrameSink sink) override {
+    std::lock_guard<std::mutex> lock(vcamSinkMutex_);
+    vcamSink_ = {};
+    identifiedVcamSink_ = std::move(sink);
   }
 
   [[nodiscard]] bool publishesVcamFrames() const override { return true; }
@@ -2866,6 +2875,7 @@ class D3D11Compositor final : public ICompositor {
   // with vcamNv12Mutex_) so a publish never blocks the polled handoff.
   std::mutex vcamSinkMutex_;
   VcamFrameSink vcamSink_;
+  IdentifiedVcamFrameSink identifiedVcamSink_;
   std::shared_ptr<const std::vector<uint8_t>> vcamLatestNv12_;
   int vcamLatestW_ = 0;
   int vcamLatestH_ = 0;

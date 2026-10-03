@@ -127,6 +127,7 @@ IFACEMETHODIMP MediaStream::RequestSample(IUnknown* token) {
   }
   hr = events_->QueueEventParamUnk(MEMediaSample, GUID_NULL, S_OK, sample.Get());
   delivery_.recordEmission(SUCCEEDED(hr), sampleContent_, MFGetSystemTime());
+  if (SUCCEEDED(hr)) emittedIdentity_ = sampleIdentity_;
   LogDeliveryEvidence();
   return hr;
 }
@@ -139,15 +140,21 @@ void MediaStream::LogDeliveryEvidence() {
   const auto& read = reader_.evidence();
   char b[1024];
   _snprintf_s(b, sizeof(b), _TRUNCATE,
-      "[vcam-delivery-v1] stream=%p run=%llu emitted=%llu fresh=%llu held=%llu slate=%llu failed=%llu "
+      "[vcam-delivery-v2] stream=%p run=%llu emitted=%llu fresh=%llu held=%llu slate=%llu failed=%llu "
       "formatMismatch=%llu readFresh=%llu unchanged=%llu contended=%llu unavailable=%llu uninitialized=%llu "
       "invalidHeader=%llu publicationObserved=%d lastPublication=%llu lastSeq=%lu maxIntervalHns=%llu "
-      "programIdentityVerified=0 receiverVerified=0",
+      "programIdentityVerified=%d receiverVerified=0 correlatedReads=%llu uncorrelatedReads=%llu "
+      "unobservedProgramFrames=%llu programEpochChanges=%llu programRegressions=%llu "
+      "lastProgramSequence=%lld epoch=%016llx%016llx lastReadProgramSequence=%lld",
       static_cast<void*>(this), deliveryRun_, delivery_.emitted, delivery_.fresh, delivery_.held, delivery_.slate,
       delivery_.failed, delivery_.formatMismatches, read.count(Result::Fresh), read.count(Result::Unchanged),
       read.count(Result::Contended), read.count(Result::Unavailable), read.count(Result::Uninitialized),
       read.count(Result::InvalidHeader), read.identityObserved ? 1 : 0, read.lastPublication,
-      static_cast<unsigned long>(read.lastSequence), delivery_.maximumIntervalHns);
+      static_cast<unsigned long>(read.lastSequence), delivery_.maximumIntervalHns,
+      emittedIdentity_.verified ? 1 : 0, read.correlatedReads, read.uncorrelatedReads,
+      read.unobservedProgramFrames, read.programEpochChanges, read.programRegressions,
+      static_cast<long long>(emittedIdentity_.sequence), emittedIdentity_.epochHigh, emittedIdentity_.epochLow,
+      static_cast<long long>(read.lastProgramSequence));
   VcamServeLog(b);
 }
 
@@ -199,6 +206,11 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
     // Keep the current frame for miss recovery without a third 3 MB memcpy.
     // scratch_ receives the previous reusable allocation for the next read.
     lastGood_.swap(scratch_);
+    const auto& evidence = reader_.evidence();
+    lastGoodIdentity_ = {evidence.programIdentityVerified, evidence.lastEpochHigh,
+                         evidence.lastEpochLow, evidence.lastProgramSequence};
+    if (!lastGoodIdentity_.verified) lastGoodIdentity_ = {};
+    sampleIdentity_ = lastGoodIdentity_;
     missStreak_ = 0;
     sampleContent_ = corevideo::modules::VirtualCameraSampleContent::Fresh;
     return S_OK;
@@ -213,10 +225,12 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   if (!lastGood_.empty() && lastGood_.size() == dstLen && missStreak_ <= kHoldFramesBeforeSlate) {
     memcpy(dst, lastGood_.data(), dstLen);
     sampleContent_ = corevideo::modules::VirtualCameraSampleContent::Held;
+    sampleIdentity_ = lastGoodIdentity_;
     return S_OK;
   }
   // Core absent (or never started) -> standby slate (law 2: never a black frame).
   sampleContent_ = corevideo::modules::VirtualCameraSampleContent::Slate;
+  sampleIdentity_ = {};
   std::vector<std::uint8_t> slate;
   corevideo::modules::fillVirtualCameraStandbySlate(static_cast<int>(width_),
                                                     static_cast<int>(height_), slate);

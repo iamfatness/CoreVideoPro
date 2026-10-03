@@ -98,8 +98,8 @@ namespace corevideo::modules {
 // app container) can read what the core publishes; writer=false opens the
 // existing file read-only. Returns INVALID_HANDLE_VALUE on failure. The returned
 // handle must stay open for the lifetime of any view mapped from it.
-inline HANDLE openVirtualCameraShmFile(bool writer) {
-  const std::string path = virtualCameraShmFilePath();
+inline HANDLE openVirtualCameraShmFile(bool writer, const std::string& alternatePath = {}) {
+  const std::string path = alternatePath.empty() ? virtualCameraShmFilePath() : alternatePath;
   if (writer) {
     ::CreateDirectoryA(virtualCameraShmDir().c_str(), nullptr);  // ok if it exists
     // NEVER DeleteFileA here. Readers (the Frame Server's serving instances) hold
@@ -179,14 +179,15 @@ inline void ensureVirtualCameraServeLogFile() {
 // Maps the whole slot over an open backing-file handle. Returns the view (or
 // nullptr) and, on success, the mapping handle via outMapping. The file handle
 // must outlive the view.
-inline void* mapVirtualCameraShmView(HANDLE file, bool writer, HANDLE* outMapping) {
+inline void* mapVirtualCameraShmView(HANDLE file, bool writer, HANDLE* outMapping,
+                                    std::size_t size = virtualCameraShmSize()) {
   if (outMapping != nullptr) *outMapping = nullptr;
   if (file == nullptr || file == INVALID_HANDLE_VALUE) return nullptr;
   HANDLE m = ::CreateFileMappingA(file, nullptr, writer ? PAGE_READWRITE : PAGE_READONLY, 0,
-                                  static_cast<DWORD>(virtualCameraShmSize()), nullptr);
+                                  static_cast<DWORD>(size), nullptr);
   if (m == nullptr) return nullptr;
   void* v = ::MapViewOfFile(m, writer ? FILE_MAP_WRITE : FILE_MAP_READ, 0, 0,
-                            virtualCameraShmSize());
+                            size);
   if (v == nullptr) {
     ::CloseHandle(m);
     return nullptr;

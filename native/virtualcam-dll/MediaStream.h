@@ -61,6 +61,11 @@ class MediaStream
   SharedFrameReader reader_;
   corevideo::modules::VirtualCameraDeliveryEvidence delivery_;
   corevideo::modules::VirtualCameraSampleContent sampleContent_ = corevideo::modules::VirtualCameraSampleContent::Slate;
+  struct ProgramIdentity {
+    bool verified = false;
+    uint64_t epochHigh = 0, epochLow = 0;
+    int64_t sequence = 0;
+  } lastGoodIdentity_, sampleIdentity_, emittedIdentity_;
   std::uint64_t deliveryLogAttempts_ = 0, deliveryRun_ = 0;
   std::mutex mutex_;
   std::vector<std::uint8_t> scratch_;

@@ -1144,7 +1144,15 @@ class ICompositor {
   // a slow Windows Frame Server consumer must never pace streaming/recording.
   using VcamFrameBuffer = std::shared_ptr<const std::vector<std::uint8_t>>;
   using VcamFrameSink = std::function<void(VcamFrameBuffer nv12, int width, int height)>;
+  using IdentifiedVcamFrameSink = std::function<void(VcamFrameBuffer nv12, int width, int height,
+                                                     int64_t programSequence, int64_t deliveredAt100ns)>;
   virtual void setVcamFrameSink(VcamFrameSink /*sink*/) {}
+  virtual void setIdentifiedVcamFrameSink(IdentifiedVcamFrameSink sink) {
+    if (!sink) { setVcamFrameSink({}); return; }
+    setVcamFrameSink([sink = std::move(sink)](VcamFrameBuffer bytes, int width, int height) {
+      sink(std::move(bytes), width, height, 0, 0); // identity unavailable on older adapters
+    });
+  }
   // Does this compositor push frames to that sink? When it does, MediaCore must
   // NOT also publish from the output worker or every frame is published twice.
   [[nodiscard]] virtual bool publishesVcamFrames() const { return false; }

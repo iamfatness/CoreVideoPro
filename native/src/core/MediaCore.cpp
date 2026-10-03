@@ -401,10 +401,11 @@ MediaCore::MediaCore(modules::ModuleSet modules)
   if (modules_.compositor && modules_.compositor->publishesVcamFrames()) {
     compositorPublishesVcam_ = true;
     auto* publisher = virtualCamera_.get();
-    modules_.compositor->setVcamFrameSink(
-        [publisher](modules::ICompositor::VcamFrameBuffer nv12, int width, int height) {
+    modules_.compositor->setIdentifiedVcamFrameSink(
+        [publisher](modules::ICompositor::VcamFrameBuffer nv12, int width, int height,
+                    int64_t programSequence, int64_t deliveredAt100ns) {
           try {
-            publisher->publishNv12Shared(std::move(nv12), width, height);
+            publisher->publishNv12Identified(std::move(nv12), width, height, programSequence, deliveredAt100ns);
           } catch (...) {
           }
         });

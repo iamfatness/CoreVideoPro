@@ -2,8 +2,8 @@
 
 ## Reader delivery evidence
 
-The #517 first evidence slice replaces the old `Fill` sample with a
-`[vcam-delivery-v1]` summary at the same one-per-60-attempts frequency. Counters
+The #517 delivery evidence replaces the old `Fill` sample with a
+`[vcam-delivery-v2]` summary at the same one-per-60-attempts frequency. Counters
 belong to one process/stream instance; `run` changes on Start. `fresh`, `held`,
 and `slate` count only samples whose Media Foundation event enqueue succeeded;
 failed sample creation/enqueue is separate. Read outcomes distinguish unchanged
@@ -14,7 +14,26 @@ invalid header. Format mismatch is separate from a successful SHM read.
 a Program identity and not necessarily the image last emitted (for example when
 dimensions mismatch). The unchanged V1 pixel ABI contains no producer epoch.
 Neither fresh reads nor event enqueue prove receiver display or lip sync.
-`programIdentityVerified=0 receiverVerified=0` is deliberate.
+`receiverVerified=0` is deliberate.
+
+`COREVIDEO_DELIVERY_TRACE=1`, sampled when the publisher starts, enables an
+optional 80-byte `vcam-correlation-v1.shm` sidecar alongside the pixel mapping.
+The shipping 32-byte pixel header and NV12 payload remain unchanged. The sidecar
+uses the existing mapping access policy and its own seqlock, carrying a producer
+epoch, backing-file identity, pixel seqlock/publication, Program sequence, and
+monotonic delivery/publication timestamps. The reader accepts identity only when
+stable records before and after its pixel copy match the actual pixel mapping.
+Publisher start invalidates previous identity even when tracing is disabled.
+Missing, racing, stale or incompatible records produce uncorrelated reads.
+
+Identity travels with the buffered NV12 packet through the publisher's replaceable
+pending slot. `lastReadProgramSequence` describes the last correlated read;
+`lastProgramSequence`, `epoch`, and `programIdentityVerified` describe the last
+successfully enqueued sample. A held sample retains its previous pixel identity,
+including after a fresh read with incompatible dimensions. Slate has no Program
+identity. `unobservedProgramFrames` counts gaps between correlated reads, without
+claiming which upstream boundary lost them. Epoch changes and regressions have
+separate counters. Legacy V1 records never establish Program identity.
 
 Run `node scripts/qa/vcam-delivery-evidence.mjs --log <vcam-serve.log>` on a copied
 serve log. It reports per-instance/run counter deltas, rejects malformed records

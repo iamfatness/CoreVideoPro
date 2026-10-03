@@ -17,6 +17,11 @@ struct VirtualCameraReadEvidence {
   std::uint64_t lastPublication = 0;
   std::uint32_t lastSequence = 0;
   bool identityObserved = false;
+  uint64_t correlatedReads = 0, uncorrelatedReads = 0, unobservedProgramFrames = 0;
+  uint64_t programEpochChanges = 0, programRegressions = 0;
+  uint64_t lastEpochHigh = 0, lastEpochLow = 0;
+  int64_t lastProgramSequence = 0;
+  bool programIdentityVerified = false;
 
   void record(VirtualCameraReadResult result) {
     lastResult = result;
@@ -27,6 +32,20 @@ struct VirtualCameraReadEvidence {
     lastPublication = publication;
     lastSequence = sequence;
     identityObserved = true;
+    programIdentityVerified = false;
+  }
+  void recordCorrelation(bool verified, uint64_t epochHigh = 0, uint64_t epochLow = 0,
+                         int64_t programSequence = 0) {
+    programIdentityVerified = verified;
+    if (!verified) { ++uncorrelatedReads; return; }
+    ++correlatedReads;
+    if (lastProgramSequence > 0) {
+      if (lastEpochHigh != epochHigh || lastEpochLow != epochLow) ++programEpochChanges;
+      else if (programSequence < lastProgramSequence) ++programRegressions;
+      else if (programSequence > lastProgramSequence && programSequence - lastProgramSequence > 1)
+        unobservedProgramFrames += static_cast<uint64_t>(programSequence - lastProgramSequence - 1);
+    }
+    lastEpochHigh = epochHigh; lastEpochLow = epochLow; lastProgramSequence = programSequence;
   }
   std::uint64_t count(VirtualCameraReadResult result) const {
     return counts[static_cast<unsigned>(result)];

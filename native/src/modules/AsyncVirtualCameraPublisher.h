@@ -20,6 +20,8 @@ class AsyncVirtualCameraPublisher final : public IVirtualCameraPublisher {
   void publish(const ProgramFrame& frame) override;
   void publishNv12(const uint8_t* bytes, int width, int height) override;
   void publishNv12Shared(std::shared_ptr<const std::vector<uint8_t>> bytes, int width, int height) override;
+  void publishNv12Identified(std::shared_ptr<const std::vector<uint8_t>> bytes,
+      int width, int height, int64_t programSequence, int64_t deliveredAt100ns) override;
  private:
   void run();
   std::unique_ptr<IVirtualCameraPublisher> backend_;
@@ -34,6 +36,7 @@ class AsyncVirtualCameraPublisher final : public IVirtualCameraPublisher {
   std::optional<ProgramFrame> frame_;
   std::shared_ptr<const std::vector<uint8_t>> nv12_;
   int frameWidth_ = 0, frameHeight_ = 0;
+  int64_t pendingProgramSequence_ = 0, pendingDeliveredAt100ns_ = 0;
   std::thread worker_;
 };
 }
