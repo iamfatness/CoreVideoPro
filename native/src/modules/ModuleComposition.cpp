@@ -49,12 +49,19 @@ class CompositeOutputSender final : public IOutputSender {
         });
     sharedAacEnabled_ = hasNetworkMux && sharedAac_.start();
     sharedAacConsumers_.clear();
-    for (auto& sender : senders_) {
+    for (std::size_t index = 0; index < senders_.size(); ++index) {
+      auto& sender = senders_[index];
       sharedAacConsumers_.push_back(sender->acceptsSharedAac());
       sender->setSharedAacEnabled(sharedAacEnabled_);
       sender = std::make_unique<AsyncOutputSender>(std::move(sender));
       if (supervised) {
-        sender = std::make_unique<SupervisedOutputSender>(std::move(sender));
+        // Each supervisor learns the one destination its sender serves (#602);
+        // supportedDestinations_ is index-aligned with senders_ (see fail()).
+        SupervisedOutputSender::Options options;
+        if (index < supportedDestinations_.size()) {
+          options.servedDestinations = {supportedDestinations_[index]};
+        }
+        sender = std::make_unique<SupervisedOutputSender>(std::move(sender), std::move(options));
       }
     }
   }

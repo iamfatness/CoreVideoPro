@@ -161,6 +161,13 @@ class SupervisedOutputSender final : public IOutputSender {
     std::chrono::milliseconds tickInterval{250};
     // Tests drive evaluation explicitly via pumpForTest().
     bool startThread = true;
+    // The destination names this supervisor's child actually serves (#602). The
+    // composite passes one name per protocol sender. A supervisor creates a
+    // record only for a served name, so the SRT supervisor no longer "owns" rtmp,
+    // faults it forever and restarts it against a child that ignores the call.
+    // Empty means unknown: supervise every desired name (the pre-#602 behaviour,
+    // kept for a supervisor wrapped directly around a single-protocol sender).
+    std::vector<std::string> servedDestinations;
   };
 
   explicit SupervisedOutputSender(std::unique_ptr<IOutputSender> child);
@@ -225,6 +232,8 @@ class SupervisedOutputSender final : public IOutputSender {
   };
 
   Destination& destinationLocked(const std::string& name);
+  [[nodiscard]] bool serves(const std::string& name) const;
+  [[nodiscard]] std::string label() const;
   void noteDesired(const std::vector<std::string>& destinations, double elapsedMs);
   // Harvests the child's published records. Every record is stamped with the
   // generation current at harvest time and admitted only if that stamp is still
