@@ -876,6 +876,11 @@ struct OutputDestinationSettings {
   double targetBitrateMbps = 6.0;
   int audioBitrateKbps = 160;
   std::string videoCodec = "h264";
+  // Set when the destination itself carried the field (#606). startProgramOutput
+  // fills an unset field from streamOutputProfile and never overwrites a set one.
+  bool fpsExplicit = false;
+  bool targetBitrateExplicit = false;
+  bool videoCodecExplicit = false;
   std::string encoderMode = "auto";
   double keyframeIntervalSeconds = 2.0;
   std::string rateControl = "cbr";

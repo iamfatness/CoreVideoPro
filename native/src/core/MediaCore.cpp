@@ -119,6 +119,8 @@ modules::CompositorColorGrade readColorGrade(const rpc::Json& value) {
   };
 }
 
+std::string normalizeVideoCodec(const std::string& codec, const std::string& fallback);
+
 std::vector<modules::OutputDestinationSettings> readOutputDestinationSettings(const rpc::Json& command) {
   std::vector<modules::OutputDestinationSettings> result;
   const auto* settings = command.get("destinationSettings");
@@ -147,11 +149,14 @@ std::vector<modules::OutputDestinationSettings> readOutputDestinationSettings(co
     destination.streamId = value.getString("streamId");
     destination.ndiName = value.getString("ndiName");
     destination.ndiGroup = value.getString("ndiGroup");
+    destination.fpsExplicit = value.get("fps") != nullptr;
     destination.fps = static_cast<int>(value.getNumber("fps", destination.fps));
+    destination.targetBitrateExplicit = value.get("targetBitrateMbps") != nullptr;
     destination.targetBitrateMbps = value.getNumber("targetBitrateMbps", destination.targetBitrateMbps);
     destination.audioBitrateKbps =
         std::max(32, std::min(512, static_cast<int>(value.getNumber("audioBitrateKbps", destination.audioBitrateKbps))));
-    destination.videoCodec = value.getString("videoCodec", destination.videoCodec);
+    destination.videoCodecExplicit = value.get("videoCodec") != nullptr;
+    destination.videoCodec = normalizeVideoCodec(value.getString("videoCodec", destination.videoCodec), destination.videoCodec);
     destination.encoderMode = value.getString("encoderMode", destination.encoderMode);
     destination.keyframeIntervalSeconds =
         std::max(0.5, std::min(10.0, value.getNumber("keyframeIntervalSeconds", destination.keyframeIntervalSeconds)));
@@ -2871,9 +2876,20 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
   for (auto& destination : outputDestinationSettings_) {
     destination.programBufferFrames = modules_.compositor->programBufferFrames();
     if (destination.id == "rtmp" || destination.protocol == "rtmp" || destination.protocol == "rtmps") {
-      destination.fps = outputFps_;
-      destination.targetBitrateMbps = outputTargetBitrateMbps_;
-      destination.videoCodec = streamVideoCodec_;
+      // #606: the destination's own field wins, as it already does for SRT. The stream
+      // profile only fills what the destination left unset. This used to overwrite all
+      // three unconditionally, so a caller asking for H.265 per destination got H.264
+      // with no refusal and no warning: the silent-downgrade path the sender's own
+      // refusal rule never saw, because H.264 is what the sender was asked for.
+      if (!destination.fpsExplicit) destination.fps = outputFps_;
+      if (!destination.targetBitrateExplicit) destination.targetBitrateMbps = outputTargetBitrateMbps_;
+      if (!destination.videoCodecExplicit) {
+        destination.videoCodec = streamVideoCodec_;
+      } else if (destination.videoCodec != streamVideoCodec_) {
+        ::corevideo::core::nativeLogf(
+            "[output] destination %s keeps videoCodec=%s; streamOutputProfile says %s and does not override a destination's own codec\n",
+            destination.id.c_str(), destination.videoCodec.c_str(), streamVideoCodec_.c_str());
+      }
     }
   }
   if (command.get("isoSourceIds") || command.get("isoParticipantIds")) {
