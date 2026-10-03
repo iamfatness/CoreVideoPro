@@ -6,6 +6,7 @@
 #include <thread>
 #include <cstdlib>
 #include <future>
+#include <algorithm>
 
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
 #define NOMINMAX
@@ -185,6 +186,54 @@ TEST(GpuCaptureIngress, IndependentProducerImageComposesWithoutCpuPixelsOrAnUplo
   held.pop_back();
   EXPECT_GE(pool.beginCopy(context.get(), source.get()), 0);
   context->Flush();
+
+  // A separately colored private image proves the monitor actually samples its
+  // branch, while a fake production lease must never survive monitor admission.
+  const auto monitorDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  const auto monitorRegistered = [] {
+    const auto consumers = D3DVideoConsumers::snapshot();
+    return std::any_of(consumers.begin(), consumers.end(), [](const auto& consumer) { return consumer->monitor; });
+  };
+  while (!monitorRegistered() && std::chrono::steady_clock::now() < monitorDeadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(monitorRegistered());
+  D3DVideoFramePool monitorPool;
+  ASSERT_TRUE(monitorPool.initialize(producer.get(), 64, 64, 2, true));
+  const float privateColor[] = {0, 1, 0, 1};
+  context->ClearRenderTargetView(target.get(), privateColor);
+  const int privateSlot = monitorPool.beginCopy(context.get(), source.get());
+  ASSERT_GE(privateSlot, 0);
+  context->Flush();
+  std::shared_ptr<const GpuVideoFrame> privateImage;
+  while (!(privateImage = monitorPool.completed(context.get(), privateSlot)) &&
+      std::chrono::steady_clock::now() < monitorDeadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(privateImage != nullptr);
+  auto productionOnly = std::make_shared<GpuVideoFrame>();
+  productionOnly->width = productionOnly->height = 64;
+  std::weak_ptr<const GpuVideoFrame> productionLease = productionOnly;
+  auto monitorRequest = requestAtSize(64);
+  monitorRequest.frames.front().pixels.reset();
+  monitorRequest.frames.front().gpuPixels = std::move(productionOnly);
+  monitorRequest.frames.front().monitorGpuPixels = privateImage;
+  monitorRequest.sequence = 99;
+  compositor->submitMonitors(std::move(monitorRequest));
+  EXPECT_TRUE(productionLease.expired());
+  std::shared_ptr<const MonitorRenderResult> monitorResult;
+  do {
+    monitorResult = compositor->latestMonitors();
+    if (monitorResult && monitorResult->sequence == 99 && !monitorResult->preview.sharedHandleHex.empty()) break;
+    auto again = requestAtSize(64);
+    again.sequence = 99;
+    again.frames.front().pixels.reset();
+    again.frames.front().gpuPixels = image;
+    again.frames.front().monitorGpuPixels = privateImage;
+    compositor->submitMonitors(std::move(again));
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  } while (std::chrono::steady_clock::now() < monitorDeadline);
+  ASSERT_TRUE(monitorResult != nullptr);
+  ASSERT_FALSE(monitorResult->preview.sharedHandleHex.empty());
+  EXPECT_EQ(consumeCenter(monitorResult->preview), 0xff00ff00u);
 }
 
 TEST(IsolatedMonitorPixels, CameraIdentityBelongsToTheDeliveredNv12Packet) {
@@ -291,6 +340,37 @@ TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndPreservesCpuConsu
   EXPECT_FALSE(gpuOnly.preview.bgra.empty());
   EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
   const auto gpuOnlyId = consumer.frame.frameId;
+  // Exhaust only the optional monitor pool. Production must continue receiving
+  // GPU-only pictures rather than borrowing those slots or falling back to CPU.
+  std::vector<std::shared_ptr<const GpuVideoFrame>> heldMonitors;
+  const auto retainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (heldMonitors.size() < 3 && std::chrono::steady_clock::now() < retainDeadline) {
+    capture->deliverVideo(consumer, 0);
+    const auto& image = consumer.frame.monitorGpuPixels;
+    if (image && std::find(heldMonitors.begin(), heldMonitors.end(), image) == heldMonitors.end())
+      heldMonitors.push_back(image);
+    if (consumer.frame.hasGpuPixels()) compositor->render(request.programPlan, {consumer.frame});
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_EQ(heldMonitors.size(), 3u);
+  auto lastId = consumer.frame.frameId;
+  int advanced = 0;
+  bool allGpuOnly = true;
+  const auto pressureDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (advanced < 20 && std::chrono::steady_clock::now() < pressureDeadline) {
+    capture->deliverVideo(consumer, 0);
+    if (consumer.frame.frameId > lastId) {
+      lastId = consumer.frame.frameId;
+      ++advanced;
+      allGpuOnly = allGpuOnly && consumer.frame.hasGpuPixels() && !consumer.frame.hasPixels();
+      compositor->render(request.programPlan, {consumer.frame});
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  heldMonitors.clear();
+  EXPECT_EQ(advanced, 20);
+  EXPECT_TRUE(allGpuOnly);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
   capture->setVideoConsumerDemand({{consumer.frame.participantId, SourceVideoConsumer::Iso,
       "recording", SourceVideoRepresentation::Cpu}});
   const auto isoDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -302,7 +382,7 @@ TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndPreservesCpuConsu
   EXPECT_GT(consumer.frame.frameId, gpuOnlyId);
   EXPECT_TRUE(consumer.frame.hasPixels());
   EXPECT_TRUE(consumer.frame.hasGpuPixels());
-  std::fprintf(stderr, "[capture-test] GPU-only demand and subsequent ISO CPU demand both delivered new frames\n");
+  std::fprintf(stderr, "[capture-test] GPU-only/ISO transitions passed; %d new production frames with all monitor slots retained\n", advanced);
   capture->disconnect(devices.front().id);
 }
 #endif

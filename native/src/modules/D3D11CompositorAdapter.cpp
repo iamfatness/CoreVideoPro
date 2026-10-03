@@ -34,6 +34,7 @@
 #include "modules/D3DProgramBuffer.h"
 #include "modules/D3DDecoupledExport.h"
 #include "modules/MonitorRenderWorker.h"
+#include "modules/MonitorFrameAdmission.h"
 #include "modules/D3DVideoFrame.h"
 #include "modules/DeliveryCounterPattern.h"
 
@@ -116,7 +117,7 @@ struct CpuStageScope {
 class D3D11Compositor final : public ICompositor {
  public:
   D3D11Compositor(ComPtrLite<ID3D11Device> device, ComPtrLite<ID3D11DeviceContext> context,
-                  bool isolateMonitors = false)
+                  bool isolateMonitors = false, bool monitorBackend = false, bool enableGpuIngress = false)
       : device_(std::move(device)), context_(std::move(context)) {
     initializePipeline();
     const char* counterPattern = std::getenv("COREVIDEO_QA_PROGRAM_COUNTER");
@@ -126,8 +127,8 @@ class D3D11Compositor final : public ICompositor {
       core::nativeLogf("[delivery-counter] QA synthetic pixel markers enabled\n");
     }
     const char* gpuCapture = std::getenv("COREVIDEO_GPU_CAPTURE");
-    if (gpuCapture && std::string(gpuCapture) == "1") {
-      gpuConsumer_ = D3DVideoConsumers::add(device_.get());
+    if (enableGpuIngress || (gpuCapture && std::string(gpuCapture) == "1")) {
+      gpuConsumer_ = D3DVideoConsumers::add(device_.get(), monitorBackend);
       gpuReadLeases_ = std::make_unique<D3DVideoReadLeases>(device_.get(), context_.get());
     }
     if (isolateMonitors) {
@@ -138,18 +139,23 @@ class D3D11Compositor final : public ICompositor {
       // Backend initialization, all immediate-context calls and destruction run
       // on this worker. Never fall back to synchronous monitor work on Program.
       auto backend = std::make_shared<std::unique_ptr<D3D11Compositor>>();
-      monitorWorker_ = std::make_unique<MonitorRenderWorker>(
-          [adapter, backend](const MonitorRenderRequest& request) {
+      MonitorRenderWorker::Render renderMonitor =
+          [adapter, backend, gpuIngress = gpuConsumer_ != nullptr](const MonitorRenderRequest& request) {
             if (!*backend) {
               ComPtrLite<ID3D11Device> device;
               ComPtrLite<ID3D11DeviceContext> context;
               if (FAILED(D3D11CreateDevice(adapter->get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
                   D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
                   device.put(), nullptr, context.put()))) throw std::runtime_error("monitor device unavailable");
-              *backend = std::make_unique<D3D11Compositor>(std::move(device), std::move(context));
+              *backend = std::make_unique<D3D11Compositor>(std::move(device), std::move(context), false, true, gpuIngress);
             }
             return (*backend)->renderMonitorBatch(request);
-          });
+          };
+      // Register the monitor device even before a capture has its first private
+      // monitor copy; otherwise admission and device creation wait on each other.
+      monitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor] {
+        renderMonitor({}); // initialize on the owner without publishing a completed job
+      });
       core::nativeLogf("[monitor-worker] isolation=enabled pending_capacity=1\n");
     }
   }
@@ -165,6 +171,10 @@ class D3D11Compositor final : public ICompositor {
   bool hasIsolatedMonitors() const override { return monitorWorker_ != nullptr; }
   void submitMonitors(MonitorRenderRequest request) override {
     if (!monitorWorker_) return;
+    if (!prepareMonitorFrames(request)) {
+      monitorWorker_->refuse();
+      return; // retain the last completed monitor; never borrow a capture slot
+    }
     request.bufferedProgram = programBufferFrames() > 0;
     if (auto buffer = currentProgramBuffer())
       buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner);

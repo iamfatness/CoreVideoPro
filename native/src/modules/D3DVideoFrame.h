@@ -20,13 +20,15 @@ struct D3DVideoConsumer {
   ComPtr<ID3D11Device> device;
   LUID adapter{};
   uint64_t id = 0;
+  bool monitor = false;
 };
 
 class D3DVideoConsumers {
  public:
-  static std::shared_ptr<D3DVideoConsumer> add(ID3D11Device* device) {
+  static std::shared_ptr<D3DVideoConsumer> add(ID3D11Device* device, bool monitor = false) {
     auto consumer = std::make_shared<D3DVideoConsumer>();
     consumer->device = device;
+    consumer->monitor = monitor;
     ComPtr<IDXGIDevice> dxgi;
     ComPtr<IDXGIAdapter> adapter;
     DXGI_ADAPTER_DESC desc{};
@@ -63,8 +65,10 @@ struct D3DVideoImage final : GpuVideoFrame {
   ComPtr<ID3D11Texture2D> producer;
   std::vector<View> views;
   size_t bytes = 0;
+  bool monitor = false;
   inline static std::atomic<size_t> residentBytes{0};
-  ~D3DVideoImage() override { residentBytes.fetch_sub(bytes); }
+  inline static std::atomic<size_t> monitorResidentBytes{0};
+  ~D3DVideoImage() override { (monitor ? monitorResidentBytes : residentBytes).fetch_sub(bytes); }
   const View* view(uint64_t consumer) const {
     for (const auto& item : views) if (item.consumer == consumer) return &item;
     return nullptr;
@@ -76,7 +80,7 @@ struct D3DVideoImage final : GpuVideoFrame {
 // the capture context's owner. Admission accounts images retained after resize.
 class D3DVideoFramePool {
  public:
-  bool initialize(ID3D11Device* device, int width, int height, uint64_t generation) {
+  bool initialize(ID3D11Device* device, int width, int height, uint64_t generation, bool monitor = false) {
     if (width <= 0 || height <= 0 || width > 7680 || height > 4320) return false;
     const size_t bytes = static_cast<size_t>(width) * height * 4;
     const auto consumers = D3DVideoConsumers::snapshot();
@@ -88,11 +92,14 @@ class D3DVideoFramePool {
         FAILED(adapter->GetDesc(&adapterDesc))) return false;
     for (auto& slot : slots_) {
       auto image = std::make_shared<D3DVideoImage>();
-      auto reserved = D3DVideoImage::residentBytes.load();
+      auto& residency = monitor ? D3DVideoImage::monitorResidentBytes : D3DVideoImage::residentBytes;
+      const size_t limit = (monitor ? 256u : 512u) * 1024u * 1024u;
+      auto reserved = residency.load();
       do {
-        if (reserved + bytes > 512u * 1024u * 1024u) return false;
-      } while (!D3DVideoImage::residentBytes.compare_exchange_weak(reserved, reserved + bytes));
+        if (reserved + bytes > limit) return false;
+      } while (!residency.compare_exchange_weak(reserved, reserved + bytes));
       image->bytes = bytes;
+      image->monitor = monitor;
       image->width = width; image->height = height; image->generation = generation;
       D3D11_TEXTURE2D_DESC desc{};
       desc.Width = width; desc.Height = height; desc.MipLevels = desc.ArraySize = 1;
@@ -104,6 +111,7 @@ class D3DVideoFramePool {
       HANDLE handle = nullptr;
       if (FAILED(image->producer.As(&resource)) || FAILED(resource->GetSharedHandle(&handle))) return false;
       for (const auto& consumer : consumers) {
+        if (consumer->monitor != monitor) continue;
         if (consumer->adapter.LowPart != adapterDesc.AdapterLuid.LowPart ||
             consumer->adapter.HighPart != adapterDesc.AdapterLuid.HighPart) continue;
         D3DVideoImage::View view;

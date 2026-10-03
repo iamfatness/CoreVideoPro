@@ -60,6 +60,9 @@ struct VideoFrame {
   bool i420FullRange = true;
   bool i420Bt601 = false;
   std::shared_ptr<const GpuVideoFrame> gpuPixels;
+  // Same source identity in a separate optional pool. Monitor requests must
+  // never retain the production capture lease while waiting for their worker.
+  std::shared_ptr<const GpuVideoFrame> monitorGpuPixels;
   [[nodiscard]] bool hasGpuPixels() const {
     return gpuPixels && gpuPixels->width > 0 && gpuPixels->height > 0;
   }

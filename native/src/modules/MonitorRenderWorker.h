@@ -16,8 +16,10 @@ namespace corevideo::modules {
 class MonitorRenderWorker {
  public:
   using Render = std::function<MonitorRenderResult(const MonitorRenderRequest&)>;
-  explicit MonitorRenderWorker(Render render)
-      : thread_([this, render = std::move(render)]() mutable { run(render); }) {}
+  explicit MonitorRenderWorker(Render render, std::function<void()> initialize = {})
+      : thread_([this, render = std::move(render), initialize = std::move(initialize)]() mutable {
+          run(render, initialize);
+        }) {}
   ~MonitorRenderWorker() {
     { std::lock_guard<std::mutex> lock(mutex_); stopping_ = true; }
     changed_.notify_one();
@@ -34,6 +36,7 @@ class MonitorRenderWorker {
     }
     changed_.notify_one();
   }
+  void refuse() { std::lock_guard<std::mutex> lock(mutex_); ++failed_; }
   std::shared_ptr<const MonitorRenderResult> latest() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return result_;
@@ -44,9 +47,14 @@ class MonitorRenderWorker {
         result_ ? result_->sequence : 0, result_ ? result_->workMs : 0};
   }
  private:
-  void run(Render& render) {
+  void run(Render& render, std::function<void()>& initialize) {
     core::ComApartmentLifetime apartment;
     struct ReleaseBackend { Render& render; ~ReleaseBackend() { render = {}; } } release{render};
+    if (initialize) {
+      try { initialize(); }
+      catch (...) { std::lock_guard<std::mutex> lock(mutex_); ++failed_; }
+      initialize = {};
+    }
     auto lastLog = std::chrono::steady_clock::now();
     for (;;) {
       std::shared_ptr<const MonitorRenderRequest> job;
@@ -73,16 +81,17 @@ class MonitorRenderWorker {
       }
       const auto now = std::chrono::steady_clock::now();
       if (now - lastLog >= std::chrono::seconds(2)) {
-        uint64_t submitted, superseded, completed;
+        uint64_t submitted, superseded, completed, failed;
         double workMs;
         {
           std::lock_guard<std::mutex> lock(mutex_);
           submitted = submitted_; superseded = superseded_; completed = completed_;
+          failed = failed_;
           workMs = result_ ? result_->workMs : 0;
         }
         core::nativeLogf("[monitor-worker] submitted=%llu completed=%llu superseded=%llu failed=%llu last_work_ms=%.3f capacity=1 presentationVerified=0\n",
             static_cast<unsigned long long>(submitted), static_cast<unsigned long long>(completed),
-            static_cast<unsigned long long>(superseded), static_cast<unsigned long long>(failed_), workMs);
+            static_cast<unsigned long long>(superseded), static_cast<unsigned long long>(failed), workMs);
         lastLog = now;
       }
     }

@@ -1,9 +1,44 @@
 #include "modules/MonitorRenderWorker.h"
+#include "modules/MonitorFrameAdmission.h"
 #include <gtest/gtest.h>
 #include <future>
 #include <atomic>
 
 using namespace corevideo::modules;
+
+TEST(MonitorFrameAdmission, UnusedGpuSourceCannotRefuseAnOtherwiseReadyMonitor) {
+  MonitorRenderRequest request;
+  request.previewActive = true;
+  CompositorRenderPlanLayer layer;
+  layer.participantId = "selected";
+  request.previewPlan.layers.push_back(layer);
+  auto gpu = std::make_shared<GpuVideoFrame>();
+  gpu->width = gpu->height = 64;
+  VideoFrame selected, unused;
+  selected.participantId = "selected";
+  selected.gpuPixels = gpu;
+  selected.monitorGpuPixels = gpu;
+  unused.participantId = "unused";
+  unused.gpuPixels = gpu;
+  request.frames = {selected, unused};
+  EXPECT_TRUE(prepareMonitorFrames(request));
+  ASSERT_EQ(request.frames.size(), 1u);
+  EXPECT_EQ(request.frames.front().participantId, "selected");
+}
+
+TEST(MonitorFrameAdmission, MissingPrivateCopyReleasesProductionLeaseAndRefusesJob) {
+  MonitorRenderRequest request;
+  request.previewActive = true;
+  auto gpu = std::make_shared<GpuVideoFrame>();
+  gpu->width = gpu->height = 64;
+  std::weak_ptr<const GpuVideoFrame> production = gpu;
+  VideoFrame frame;
+  frame.participantId = "selected";
+  frame.gpuPixels = std::move(gpu);
+  request.frames.push_back(std::move(frame));
+  EXPECT_FALSE(prepareMonitorFrames(request));
+  EXPECT_TRUE(production.expired());
+}
 
 TEST(MonitorRenderWorker, ReplacesPendingWorkWithoutWaitingForTheActiveMonitor) {
   std::promise<void> entered, release;
