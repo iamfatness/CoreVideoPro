@@ -39,8 +39,14 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 Three lanes, at most one item in flight per lane. Lane C is the owner's and is the constraint.
 
+Owner direction 2026-10-03 after the show: start #517 under the
+[render isolation and delivery specification](reference/render-delivery-spec.md).
+It is the active Lane A item ahead of #538; the owner is still in the meeting.
+Keep the running installation untouched while developing and testing in isolation.
+
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| 0 | A | [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) | Render isolation and virtual-camera delivery evidence. Start with reader-side fresh/held/slate and read-failure evidence; implement the measured render repair under the linked spec. Installed receiver acceptance remains mandatory. |
 | 1 | C | Acceptance session | Cut a beta from `main` and run [`docs/qa/installed-acceptance-checklist.md`](qa/installed-acceptance-checklist.md) once. Covers [#732](https://github.com/iamfatness/CoreVideoPro/issues/732), [#725](https://github.com/iamfatness/CoreVideoPro/issues/725), [#724](https://github.com/iamfatness/CoreVideoPro/issues/724), [#735](https://github.com/iamfatness/CoreVideoPro/issues/735), [#668](https://github.com/iamfatness/CoreVideoPro/issues/668), [#674](https://github.com/iamfatness/CoreVideoPro/issues/674), [#608](https://github.com/iamfatness/CoreVideoPro/issues/608), [#582](https://github.com/iamfatness/CoreVideoPro/issues/582), [#568](https://github.com/iamfatness/CoreVideoPro/issues/568), [#569](https://github.com/iamfatness/CoreVideoPro/issues/569), [#581](https://github.com/iamfatness/CoreVideoPro/issues/581), [#473](https://github.com/iamfatness/CoreVideoPro/issues/473) and the first live run of the 2026-10-01/02 fixes ([#740](https://github.com/iamfatness/CoreVideoPro/issues/740), [#739](https://github.com/iamfatness/CoreVideoPro/issues/739), [#757](https://github.com/iamfatness/CoreVideoPro/issues/757), [#758](https://github.com/iamfatness/CoreVideoPro/issues/758), [#759](https://github.com/iamfatness/CoreVideoPro/issues/759), [#760](https://github.com/iamfatness/CoreVideoPro/issues/760)). Record PASS, FAIL or `MISSING_EVIDENCE` per row on its issue. |
 | 2 | B | [#762](https://github.com/iamfatness/CoreVideoPro/issues/762), [#741](https://github.com/iamfatness/CoreVideoPro/issues/741) | Merged: the shell refuses Engine on, Record or Join from the core profile with a named reason, and the core refuses Record on a failed encoder and Join with no engine (`docs/reference/core-on-air-policy.md`). Remaining: first installed run. |
 | 3 | B | [#754](https://github.com/iamfatness/CoreVideoPro/issues/754) | Fixed: the seven intermittent CI failures were fixed wall-clock budgets on a shared runner; all are condition waits with wide bounds now, and the meter probe waits for the settled unloaded state. Remaining: watch CI; the one unexplained double `RecoveryCompleted` has no repro. |
@@ -162,7 +168,6 @@ the sole work list. Their order in this table is not a priority assignment.
 | [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | Async ISO writer status still omits live `framesWritten` / `bytesWritten`. |
 | [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points; UI design still needed. |
 | [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct HEVC shipped in #566. AV1 refused pending #565. Raw fallback and recording/ISO on the encoder seam remain. |
-| [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) | Full 16-guest / 1080p-input render-budget acceptance remains. |
 | [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | RTMP `bytesSent` still estimated; `latencyMs` hard-coded to 2100. |
 | [#509](https://github.com/iamfatness/CoreVideoPro/issues/509) | 197 ms participant-rebuild stutter. Command-drop on the same apply graph is #622. |
 | [#537](https://github.com/iamfatness/CoreVideoPro/issues/537) | DeckLink/AJA: live frames on the source bus (not probe-only). Parked for beta. |

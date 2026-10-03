@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "modules/VirtualCameraShm.h"
+#include "modules/VirtualCameraDeliveryEvidence.h"
 #include "VcamLog.h"
 
 namespace corevideo::virtualcam {
@@ -28,6 +29,7 @@ using corevideo::modules::virtualCameraShmSize;
 
 class SharedFrameReader {
  public:
+  const corevideo::modules::VirtualCameraReadEvidence& evidence() const { return evidence_; }
   ~SharedFrameReader() { close(); }
 
   // Opens the region read-only. Safe to call repeatedly; returns true once mapped.
@@ -82,11 +84,13 @@ class SharedFrameReader {
   // width/height on success; false if no complete frame is available (torn every
   // retry, or the core stopped publishing).
   bool readLatest(std::vector<std::uint8_t>& out, int& width, int& height) {
+    using Result = corevideo::modules::VirtualCameraReadResult;
+    const auto miss = [this](Result result) { evidence_.record(result); return false; };
     if (!ensureOpen() || header_ == nullptr) {
-      return false;
+      return miss(Result::Unavailable);
     }
     if (header_->magic != kVirtualCameraMagic) {
-      return false;  // region not initialized by the core
+      return miss(Result::Uninitialized);
     }
     // No NEW frame since the last successful read: skip the 3MB copy entirely and let
     // the caller re-serve its held frame. The DLL asks at the sink's cadence (60/s)
@@ -104,16 +108,14 @@ class SharedFrameReader {
       if (++unchangedStreak_ >= kReopenAfterUnchangedReads) {
         unchangedStreak_ = 0;
         close();
-        if (!ensureOpen() || header_ == nullptr ||
-            header_->magic != kVirtualCameraMagic) {
-          return false;
-        }
+        if (!ensureOpen() || header_ == nullptr) return miss(Result::Unavailable);
+        if (header_->magic != kVirtualCameraMagic) return miss(Result::Uninitialized);
         if (header_->seq == lastServedSeq_ && (lastServedSeq_ & 1u) == 0u) {
-          return false;  // same frozen file - nothing new to serve
+          return miss(Result::Unchanged);
         }
         // else: fall through and read the live file's frame below
       } else {
-        return false;
+        return miss(Result::Unchanged);
       }
     } else {
       unchangedStreak_ = 0;
@@ -129,24 +131,30 @@ class SharedFrameReader {
       if ((seq1 & 1u) != 0u) {
         continue;  // writer mid-update
       }
+      ::MemoryBarrier();
       const std::int32_t w = header_->width;
       const std::int32_t h = header_->height;
       const std::uint32_t bytes = header_->byteLen;
+      const std::uint64_t publication = header_->frameNumber;
       if (w <= 0 || h <= 0 || bytes == 0 ||
           bytes > corevideo::modules::kVirtualCameraMaxPayload) {
-        return false;
+        ::MemoryBarrier();
+        if (header_->seq != seq1) continue;
+        return miss(Result::InvalidHeader);
       }
       out.resize(bytes);
       std::memcpy(out.data(), payload, bytes);
+      ::MemoryBarrier();
       const std::uint32_t seq2 = header_->seq;
       if (seq1 == seq2) {  // stable across the copy -> not torn
         width = w;
         height = h;
         lastServedSeq_ = seq1;
+        evidence_.recordFresh(publication, seq1);
         return true;
       }
     }
-    return false;
+    return miss(Result::Contended);
   }
 
  public:
@@ -155,6 +163,7 @@ class SharedFrameReader {
   static constexpr std::uint32_t kReopenAfterUnchangedReads = 60;
 
  private:
+  corevideo::modules::VirtualCameraReadEvidence evidence_;
   HANDLE file_ = INVALID_HANDLE_VALUE;
   HANDLE mapping_ = nullptr;
   const void* view_ = nullptr;

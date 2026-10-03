@@ -11,6 +11,13 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <fstream>
+#include <iterator>
+#if COREVIDEO_WITH_VIRTUALCAM
+#include <mfapi.h>
+#include <mfidl.h>
+#include <wrl/client.h>
+#endif
 
 #include "SharedFrameReader.h"  // native/virtualcam-dll (on the test include path)
 #include "modules/VirtualCameraPublisher.h"
@@ -156,10 +163,125 @@ TEST(VirtualCameraShmRoundtrip, ReadsBackTheFrameTheWriterPublished) {
   std::vector<std::uint8_t> out;
   int rw = 0, rh = 0;
   ASSERT_TRUE(reader.readLatest(out, rw, rh));
+  EXPECT_EQ(reader.evidence().lastPublication, 1u);
+  EXPECT_EQ(reader.evidence().lastSequence, writer.header->seq);
   EXPECT_EQ(rw, w);
   EXPECT_EQ(rh, h);
   EXPECT_EQ(out, frame);
 }
+
+TEST(VirtualCameraShmRoundtrip, EvidenceSeparatesUnchangedContentFromAnInProgressWrite) {
+  using Result = corevideo::modules::VirtualCameraReadResult;
+  ShmWriter writer;
+  ASSERT_TRUE(writer.open());
+  std::vector<std::uint8_t> frame(64 * 36 * 3 / 2, 42), out;
+  writer.write(frame, 64, 36);
+  SharedFrameReader reader;
+  int w = 0, h = 0;
+  ASSERT_TRUE(reader.readLatest(out, w, h));
+  EXPECT_FALSE(reader.readLatest(out, w, h));
+  EXPECT_EQ(reader.evidence().lastResult, Result::Unchanged);
+  ++writer.header->seq; // odd: a write is in progress; do not invent an identity
+  writer.header->frameNumber = 99;
+  EXPECT_FALSE(reader.readLatest(out, w, h));
+  EXPECT_EQ(reader.evidence().lastResult, Result::Contended);
+  EXPECT_EQ(reader.evidence().lastPublication, 1u);
+  ++writer.header->seq; // complete: the same payload now has publication 99
+  ASSERT_TRUE(reader.readLatest(out, w, h));
+  EXPECT_EQ(reader.evidence().lastPublication, 99u);
+  EXPECT_EQ(reader.evidence().count(Result::Fresh), 2u);
+  EXPECT_EQ(reader.evidence().count(Result::Unchanged), 1u);
+  EXPECT_EQ(reader.evidence().count(Result::Contended), 1u);
+}
+
+TEST(VirtualCameraShmRoundtrip, EvidenceSeparatesInvalidHeaderFromUninitializedMapping) {
+  using Result = corevideo::modules::VirtualCameraReadResult;
+  ShmWriter writer;
+  ASSERT_TRUE(writer.open());
+  SharedFrameReader reader;
+  std::vector<std::uint8_t> out;
+  int w = 0, h = 0;
+  EXPECT_FALSE(reader.readLatest(out, w, h)); // writer has not provided pixels
+  EXPECT_EQ(reader.evidence().lastResult, Result::InvalidHeader);
+  writer.header->magic = 0;
+  EXPECT_FALSE(reader.readLatest(out, w, h));
+  EXPECT_EQ(reader.evidence().lastResult, Result::Uninitialized);
+  EXPECT_FALSE(reader.evidence().identityObserved);
+}
+
+#if COREVIDEO_WITH_VIRTUALCAM
+// Load this build's DLL directly. No camera registration or Frame Server restart;
+// both pixels and diagnostics remain in the isolated per-test-process directory.
+TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
+  using Microsoft::WRL::ComPtr;
+  struct Session {
+    HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    HRESULT mf = MFStartup(MF_VERSION);
+    HMODULE dll = nullptr;
+    ComPtr<IMFMediaSource> source;
+    ~Session() {
+      if (source) { source->Shutdown(); source.Reset(); }
+      if (dll) FreeLibrary(dll);
+      if (SUCCEEDED(mf)) MFShutdown();
+      if (SUCCEEDED(com)) CoUninitialize();
+    }
+  } session;
+  ASSERT_TRUE(SUCCEEDED(session.mf));
+  ShmWriter writer;
+  ASSERT_TRUE(writer.open());
+  std::vector<std::uint8_t> pixels(1920 * 1080 * 3 / 2, 42);
+  writer.write(pixels, 1920, 1080);
+  const auto logPath = corevideo::modules::virtualCameraShmDir() + "\\vcam-serve.log";
+  const auto logOffset = [&] {
+    std::ifstream before(logPath, std::ios::binary | std::ios::ate);
+    return before ? static_cast<std::streamoff>(before.tellg()) : std::streamoff{0};
+  }();
+  session.dll = LoadLibraryA(COREVIDEO_VCAM_DLL_PATH);
+  ASSERT_NE(session.dll, nullptr);
+  using GetFactory = HRESULT(STDAPICALLTYPE*)(REFCLSID, REFIID, void**);
+  const auto getFactory = reinterpret_cast<GetFactory>(GetProcAddress(session.dll, "DllGetClassObject"));
+  ASSERT_NE(getFactory, nullptr);
+  CLSID clsid{};
+  ASSERT_TRUE(SUCCEEDED(CLSIDFromString(L"{8B4B2C9E-2C4A-4E1D-9C7A-CDEF01234567}", &clsid)));
+  ComPtr<IClassFactory> factory;
+  ASSERT_TRUE(SUCCEEDED(getFactory(clsid, IID_PPV_ARGS(&factory))));
+  ComPtr<IMFActivate> activate;
+  ASSERT_TRUE(SUCCEEDED(factory->CreateInstance(nullptr, IID_PPV_ARGS(&activate))));
+  ASSERT_TRUE(SUCCEEDED(activate->ActivateObject(IID_PPV_ARGS(&session.source))));
+  ComPtr<IMFPresentationDescriptor> descriptor;
+  ASSERT_TRUE(SUCCEEDED(session.source->CreatePresentationDescriptor(&descriptor)));
+  PROPVARIANT start{};
+  ASSERT_TRUE(SUCCEEDED(session.source->Start(descriptor.Get(), nullptr, &start)));
+  ComPtr<IMFMediaEvent> announcement;
+  ASSERT_TRUE(SUCCEEDED(session.source->GetEvent(MF_EVENT_FLAG_NO_WAIT, &announcement)));
+  PROPVARIANT value{};
+  ASSERT_TRUE(SUCCEEDED(announcement->GetValue(&value)));
+  ComPtr<IMFMediaStream> stream;
+  const auto streamHr = value.punkVal->QueryInterface(IID_PPV_ARGS(&stream));
+  PropVariantClear(&value);
+  ASSERT_TRUE(SUCCEEDED(streamHr));
+  for (int i = 0; i < 61; ++i) {
+    ASSERT_TRUE(SUCCEEDED(stream->RequestSample(nullptr)));
+    // Drain non-sample events (MEStreamStarted) without a blocking event wait.
+    bool gotSample = false;
+    for (int eventIndex = 0; eventIndex < 3; ++eventIndex) {
+      ComPtr<IMFMediaEvent> event;
+      ASSERT_TRUE(SUCCEEDED(stream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event)));
+      MediaEventType type{};
+      ASSERT_TRUE(SUCCEEDED(event->GetType(&type)));
+      if (type == MEMediaSample) { gotSample = true; break; }
+    }
+    ASSERT_TRUE(gotSample);
+  }
+  std::ifstream log(logPath, std::ios::binary);
+  ASSERT_TRUE(log.good());
+  log.seekg(logOffset);
+  const std::string emittedLog((std::istreambuf_iterator<char>(log)), {});
+  EXPECT_NE(emittedLog.find("emitted=61 fresh=1 held=30 slate=30 failed=0"), std::string::npos);
+  EXPECT_NE(emittedLog.find("readFresh=1 unchanged=60 contended=0"), std::string::npos);
+  EXPECT_NE(emittedLog.find("programIdentityVerified=0 receiverVerified=0"), std::string::npos);
+}
+#endif
 
 TEST(VirtualCameraShmRoundtrip, NoRegionMeansNoFrame) {
   // With no writer mapping alive, the reader reports "no frame" (not a crash).
@@ -168,6 +290,8 @@ TEST(VirtualCameraShmRoundtrip, NoRegionMeansNoFrame) {
   std::vector<std::uint8_t> out;
   int rw = 0, rh = 0;
   EXPECT_FALSE(reader.readLatest(out, rw, rh));
+  EXPECT_EQ(reader.evidence().lastResult, corevideo::modules::VirtualCameraReadResult::Unavailable);
+  EXPECT_FALSE(reader.evidence().identityObserved);
 }
 
 TEST(VirtualCameraShmRoundtrip, LatestWriteWins) {

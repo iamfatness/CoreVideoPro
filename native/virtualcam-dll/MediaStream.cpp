@@ -121,9 +121,34 @@ IFACEMETHODIMP MediaStream::RequestSample(IUnknown* token) {
   ComPtr<IMFSample> sample;
   HRESULT hr = CreateSample(token, &sample);
   if (FAILED(hr)) {
+    delivery_.recordEmission(false, sampleContent_, MFGetSystemTime());
+    LogDeliveryEvidence();
     return hr;
   }
-  return events_->QueueEventParamUnk(MEMediaSample, GUID_NULL, S_OK, sample.Get());
+  hr = events_->QueueEventParamUnk(MEMediaSample, GUID_NULL, S_OK, sample.Get());
+  delivery_.recordEmission(SUCCEEDED(hr), sampleContent_, MFGetSystemTime());
+  LogDeliveryEvidence();
+  return hr;
+}
+
+void MediaStream::LogDeliveryEvidence() {
+  // Replace the old per-60-fills log, rather than add per-frame logging. These
+  // are MF event-queue acknowledgments, not downstream receiver presentation.
+  if ((deliveryLogAttempts_++ % 60) != 0) return;
+  using Result = corevideo::modules::VirtualCameraReadResult;
+  const auto& read = reader_.evidence();
+  char b[1024];
+  _snprintf_s(b, sizeof(b), _TRUNCATE,
+      "[vcam-delivery-v1] stream=%p run=%llu emitted=%llu fresh=%llu held=%llu slate=%llu failed=%llu "
+      "formatMismatch=%llu readFresh=%llu unchanged=%llu contended=%llu unavailable=%llu uninitialized=%llu "
+      "invalidHeader=%llu publicationObserved=%d lastPublication=%llu lastSeq=%lu maxIntervalHns=%llu "
+      "programIdentityVerified=0 receiverVerified=0",
+      static_cast<void*>(this), deliveryRun_, delivery_.emitted, delivery_.fresh, delivery_.held, delivery_.slate,
+      delivery_.failed, delivery_.formatMismatches, read.count(Result::Fresh), read.count(Result::Unchanged),
+      read.count(Result::Contended), read.count(Result::Unavailable), read.count(Result::Uninitialized),
+      read.count(Result::InvalidHeader), read.identityObserved ? 1 : 0, read.lastPublication,
+      static_cast<unsigned long>(read.lastSequence), delivery_.maximumIntervalHns);
+  VcamServeLog(b);
 }
 
 HRESULT MediaStream::CreateSample(IUnknown* token, IMFSample** outSample) {
@@ -168,14 +193,6 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   int w = 0;
   int h = 0;
   const bool got = reader_.readLatest(scratch_, w, h);
-  static int fillCount = 0;
-  if ((fillCount++ % 60) == 0) {
-    char b[128];
-    _snprintf_s(b, sizeof(b), _TRUNCATE, "Fill #%d: readLatest=%d dims=%dx%d want=%ux%u len=%zu/%lu",
-                fillCount, got ? 1 : 0, w, h, width_, height_, scratch_.size(),
-                static_cast<unsigned long>(dstLen));
-    VcamServeLog(b);
-  }
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
       scratch_.size() == dstLen) {
     memcpy(dst, scratch_.data(), dstLen);
@@ -183,8 +200,10 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
     // scratch_ receives the previous reusable allocation for the next read.
     lastGood_.swap(scratch_);
     missStreak_ = 0;
+    sampleContent_ = corevideo::modules::VirtualCameraSampleContent::Fresh;
     return S_OK;
   }
+  if (got) ++delivery_.formatMismatches;
   // Transient miss (seqlock collision, or a tick the core didn't publish): hold
   // the last good frame instead of flashing the slate. A single dropped read is
   // then invisible - the camera just repeats the previous frame. Only after a
@@ -193,9 +212,11 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   ++missStreak_;
   if (!lastGood_.empty() && lastGood_.size() == dstLen && missStreak_ <= kHoldFramesBeforeSlate) {
     memcpy(dst, lastGood_.data(), dstLen);
+    sampleContent_ = corevideo::modules::VirtualCameraSampleContent::Held;
     return S_OK;
   }
   // Core absent (or never started) -> standby slate (law 2: never a black frame).
+  sampleContent_ = corevideo::modules::VirtualCameraSampleContent::Slate;
   std::vector<std::uint8_t> slate;
   corevideo::modules::fillVirtualCameraStandbySlate(static_cast<int>(width_),
                                                     static_cast<int>(height_), slate);
@@ -213,6 +234,8 @@ HRESULT MediaStream::Start() {
   running_ = true;
   nextPts_ = 0;
   nextDueHns_ = 0;  // re-anchor delivery pacing per run
+  ++deliveryRun_;
+  delivery_.restartCadence();
   VcamServeLog("MediaStream::Start - serving begins");
   return events_->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr);
 }

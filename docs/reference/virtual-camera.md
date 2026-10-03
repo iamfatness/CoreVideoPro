@@ -1,5 +1,31 @@
 # Virtual camera (program feed → a webcam for Zoom/Teams/OBS)
 
+## Reader delivery evidence
+
+The #517 first evidence slice replaces the old `Fill` sample with a
+`[vcam-delivery-v1]` summary at the same one-per-60-attempts frequency. Counters
+belong to one process/stream instance; `run` changes on Start. `fresh`, `held`,
+and `slate` count only samples whose Media Foundation event enqueue succeeded;
+failed sample creation/enqueue is separate. Read outcomes distinguish unchanged
+publication, seqlock contention, unavailable mapping, uninitialized mapping and
+invalid header. Format mismatch is separate from a successful SHM read.
+
+`lastPublication` is the last successfully read SHM publication counter, NOT
+a Program identity and not necessarily the image last emitted (for example when
+dimensions mismatch). The unchanged V1 pixel ABI contains no producer epoch.
+Neither fresh reads nor event enqueue prove receiver display or lip sync.
+`programIdentityVerified=0 receiverVerified=0` is deliberate.
+
+Run `node scripts/qa/vcam-delivery-evidence.mjs --log <vcam-serve.log>` on a copied
+serve log. It reports per-instance/run counter deltas, rejects malformed records
+and counter regression, and marks old uninstrumented logs unavailable. Exit 0
+means valid evidence was parsed, never that delivery passed. The emission interval
+maximum is lifetime data; Stop/Start idle time is excluded. Logging is still the
+existing synchronous periodic logger; bounded background tracing, source-to-Program
+identity and end-to-end receiver qualification remain separate spec slices.
+
+Tests redirect both SHM and the serve log using `COREVIDEO_VCAM_SHM_DIR`.
+
 _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
 
 The program appears system-wide as **"CoreVideo Pro Camera"** at native **1080p60**.
@@ -31,7 +57,9 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
   Frame Server + every consumer; Zoom's video process burned 8+ cores and system audio
   glitched whenever the camera was consumed). `MediaStream::RequestSample` now waits
   until the next frame is DUE (high-res waitable timer; plain Sleep quantizes to ~40fps).
-  Verify cadence in `%ProgramData%\CoreVideoPro\vcam-serve.log` (Fill lines ≈ 1/s = 60/s).
+  Inspect `%ProgramData%\CoreVideoPro\vcam-serve.log` for reader delivery evidence.
+  The new `vcam-delivery-v1` counters distinguish emitted fresh, held and slate
+  samples; the older once-per-60 `Fill` lines cannot establish frame continuity.
 - **NEVER delete the SHM file** (`openVirtualCameraShmFile`): readers hold the file
   object via FILE_SHARE_DELETE; delete+recreate orphans them on the unlinked file and
   they degrade to frozen frames / the slate forever (program/slate strobing when a stale
