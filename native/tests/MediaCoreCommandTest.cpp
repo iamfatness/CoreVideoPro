@@ -820,6 +820,69 @@ TEST(MediaCoreCommand, AppliesSceneGraphTransformsOverlaysAndOutput) {
   EXPECT_EQ(state.get("health")->getString("status"), "live");
 }
 
+// #606: a destination's own videoCodec/fps/bitrate are authoritative for RTMP, as
+// they already were for SRT. The stream profile only fills what the destination
+// left unset. This used to overwrite all three for RTMP, so a caller that set
+// H.265 per destination got H.264 with no refusal and no warning.
+TEST(MediaCoreCommand, RtmpDestinationCodecIsNotOverwrittenByTheStreamProfile) {
+  auto modules = corevideo::modules::createStubModules();
+  auto sender = std::make_unique<CapturingOutputSender>();
+  auto* senderPtr = sender.get();
+  modules.outputSender = std::move(sender);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"rtmp", "srt"}},
+          {"streamOutputProfile",
+           corevideo::rpc::Json::Object{{"fps", 30}, {"targetBitrateMbps", 4.5}, {"codec", "h264"}}},
+          {"destinationSettings",
+           corevideo::rpc::Json::Array{
+               corevideo::rpc::Json::Object{
+                   {"id", "rtmp"}, {"protocol", "rtmp"}, {"url", "rtmp://live.example.com/app"},
+                   {"videoCodec", "hevc"}, {"fps", 60}, {"targetBitrateMbps", 12.0}},
+               corevideo::rpc::Json::Object{
+                   {"id", "srt"}, {"mode", "caller"}, {"host", "receiver.example.com"}, {"port", 9000},
+                   {"videoCodec", "h265"}},
+           }},
+      },
+  });
+
+  ASSERT_EQ(senderPtr->destinationSettings_.size(), 2u);
+  const auto& rtmp = senderPtr->destinationSettings_[0];
+  EXPECT_EQ(rtmp.videoCodec, "h265") << "the destination asked for HEVC; the profile's h264 must not replace it";
+  EXPECT_EQ(rtmp.fps, 60);
+  EXPECT_TRUE(std::abs(rtmp.targetBitrateMbps - 12.0) < 0.001);
+  EXPECT_EQ(senderPtr->destinationSettings_[1].videoCodec, "h265");
+}
+
+TEST(MediaCoreCommand, StreamProfileFillsWhatAnRtmpDestinationLeftUnset) {
+  auto modules = corevideo::modules::createStubModules();
+  auto sender = std::make_unique<CapturingOutputSender>();
+  auto* senderPtr = sender.get();
+  modules.outputSender = std::move(sender);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+
+  (void)mediaCore.applyCommands(corevideo::rpc::Json::Array{
+      corevideo::rpc::Json::Object{
+          {"type", "start-program-output"},
+          {"destinations", corevideo::rpc::Json::Array{"rtmp"}},
+          {"streamOutputProfile",
+           corevideo::rpc::Json::Object{{"fps", 50}, {"targetBitrateMbps", 7.5}, {"codec", "h265"}}},
+          {"destinationSettings",
+           corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+               {"id", "rtmp"}, {"protocol", "rtmp"}, {"url", "rtmp://live.example.com/app"}}}},
+      },
+  });
+
+  ASSERT_EQ(senderPtr->destinationSettings_.size(), 1u);
+  const auto& rtmp = senderPtr->destinationSettings_[0];
+  EXPECT_EQ(rtmp.videoCodec, "h265");
+  EXPECT_EQ(rtmp.fps, 50);
+  EXPECT_TRUE(std::abs(rtmp.targetBitrateMbps - 7.5) < 0.001);
+}
+
 TEST(MediaCoreCommand, PreservesStreamDestinationSettingsForNativeSenders) {
   auto modules = corevideo::modules::createStubModules();
   auto sender = std::make_unique<CapturingOutputSender>();
