@@ -92,7 +92,8 @@ class SharedFrameReader {
   // Seqlock read of the latest complete frame into `out`. Returns true and sets
   // width/height on success; false if no complete frame is available (torn every
   // retry, or the core stopped publishing).
-  bool readLatest(std::vector<std::uint8_t>& out, int& width, int& height) {
+  bool readLatest(std::vector<std::uint8_t>& out, int& width, int& height, bool allowReopen = true,
+                  unsigned* copyBudget = nullptr) {
     using Result = corevideo::modules::VirtualCameraReadResult;
     const auto miss = [this](Result result) { evidence_.record(result); return false; };
     if (!ensureOpen() || header_ == nullptr) {
@@ -114,7 +115,7 @@ class SharedFrameReader {
       // new its seq differs and the next read serves it; if it is the same
       // frozen file we stay on the caller's held-frame/slate behavior instead
       // of re-serving a dead frame forever.
-      if (++unchangedStreak_ >= kReopenAfterUnchangedReads) {
+      if (allowReopen && ++unchangedStreak_ >= kReopenAfterUnchangedReads) {
         unchangedStreak_ = 0;
         close();
         if (!ensureOpen() || header_ == nullptr) return miss(Result::Unavailable);
@@ -131,10 +132,8 @@ class SharedFrameReader {
     }
     const auto* payload =
         static_cast<const std::uint8_t*>(view_) + sizeof(VirtualCameraShmHeader);
-    // 2 attempts, not 8: each torn attempt costs a full ~3MB copy on a boosted system
-    // thread. If we tear twice the caller serves its held frame and we try again next
-    // request (16ms later) - invisible on screen, and it stops the worst-case 24MB of
-    // redundant memcpy per request that competed with the OS audio engine for the bus.
+    // At most two payload copies. Publication retries may wait on an odd or
+    // unchanged header but share this budget across the whole sample request.
     for (int attempt = 0; attempt < 2; ++attempt) {
       corevideo::modules::VirtualCameraCorrelationRecord before, after;
       const bool haveBefore = correlation_.read(before);
@@ -153,6 +152,8 @@ class SharedFrameReader {
         if (header_->seq != seq1) continue;
         return miss(Result::InvalidHeader);
       }
+      if (copyBudget && *copyBudget == 0) return miss(Result::Contended);
+      if (copyBudget) --*copyBudget;
       out.resize(bytes);
       std::memcpy(out.data(), payload, bytes);
       ::MemoryBarrier();

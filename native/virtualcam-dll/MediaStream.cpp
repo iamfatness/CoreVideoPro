@@ -5,6 +5,8 @@
 #include "MediaSource.h"
 #include "VcamLog.h"
 #include "modules/VirtualCameraSlate.h"
+#include "modules/VirtualCameraReadRetry.h"
+#include <chrono>
 
 using Microsoft::WRL::ComPtr;
 
@@ -24,6 +26,8 @@ HRESULT MediaStream::RuntimeClassInitialize(MediaSource* source, IMFStreamDescri
   height_ = height;
   fps_ = fps == 0 ? 30 : fps;
   frameDuration_ = 10000000LL / static_cast<LONGLONG>(fps_);
+  wchar_t retryFlag[3]{};
+  retryTransientRead_ = GetEnvironmentVariableW(L"COREVIDEO_CAMERA_READ_RETRY", retryFlag, 3) == 1 && retryFlag[0] == L'1';
   return MFCreateEventQueue(&events_);
 }
 
@@ -156,6 +160,11 @@ void MediaStream::LogDeliveryEvidence() {
       static_cast<long long>(emittedIdentity_.sequence), emittedIdentity_.epochHigh, emittedIdentity_.epochLow,
       static_cast<long long>(read.lastProgramSequence));
   VcamServeLog(b);
+  if (retryTransientRead_) {
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu budgetUs=%lld maxRetries=64 maxPayloadCopies=2",
+        retriedSamples_, recoveredSamples_, frameDuration_ / 10);
+    VcamServeLog(b);
+  }
 }
 
 HRESULT MediaStream::CreateSample(IUnknown* token, IMFSample** outSample) {
@@ -199,7 +208,25 @@ HRESULT MediaStream::CreateSample(IUnknown* token, IMFSample** outSample) {
 HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   int w = 0;
   int h = 0;
-  const bool got = reader_.readLatest(scratch_, w, h);
+  unsigned retries = 0;
+  unsigned copyBudget = 2;
+  const bool got = corevideo::modules::readCameraWithBoundedRetry(
+      [&](bool allowReopen) {
+        reader_.readLatest(scratch_, w, h, allowReopen, &copyBudget);
+        return reader_.evidence().lastResult;
+      }, [] {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+      }, [&] {
+        if (!copyBudget) return false;
+        if (!pacerTimer_) pacerTimer_ = CreateWaitableTimerExW(nullptr, nullptr,
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (!pacerTimer_) return false;
+        LARGE_INTEGER due; due.QuadPart = -2500; // 250 us; never a coarse Sleep(1)
+        return SetWaitableTimer(pacerTimer_, &due, 0, nullptr, nullptr, FALSE) &&
+            WaitForSingleObject(pacerTimer_, 3) == WAIT_OBJECT_0;
+      }, retryTransientRead_, retries, frameDuration_ / 10, 64);
+  if (retries) { ++retriedSamples_; if (got) ++recoveredSamples_; }
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
       scratch_.size() == dstLen) {
     memcpy(dst, scratch_.data(), dstLen);
@@ -217,8 +244,8 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   }
   if (got) ++delivery_.formatMismatches;
   // Transient miss (seqlock collision, or a tick the core didn't publish): hold
-  // the last good frame instead of flashing the slate. A single dropped read is
-  // then invisible - the camera just repeats the previous frame. Only after a
+  // the last good frame instead of flashing the slate. This is an observable
+  // repeated frame, counted as held; it does not pass continuity acceptance. After a
   // sustained absence (~0.5s at 60fps) does the core count as gone -> slate.
   constexpr int kHoldFramesBeforeSlate = 30;
   ++missStreak_;

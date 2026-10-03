@@ -86,6 +86,8 @@ class MediaStream
   HANDLE pacerTimer_ = nullptr;  // high-resolution waitable timer (lazy)
   bool running_ = false;
   bool shutdown_ = false;
+  bool retryTransientRead_ = false;
+  uint64_t retriedSamples_ = 0, recoveredSamples_ = 0;
 };
 
 }  // namespace corevideo::virtualcam

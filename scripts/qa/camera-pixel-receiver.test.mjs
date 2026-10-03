@@ -8,6 +8,13 @@ const fixture = () => [
 ];
 const judge = rows => judgeCameraPixels(rows.map(JSON.stringify).join('\n'), { warmupSeconds: 0, minimumSeconds: 2 });
 test('accepts a complete rational 60/1 identity sequence', () => assert.equal(judge(fixture()).receiverPixelContinuityPassed, true));
+test('direct DLL evidence never certifies the registered OS camera', () => {
+  const rows = fixture(); rows[0].receiverMode = 'direct-dll';
+  assert.equal(judge(rows).receiverPixelContinuityPassed, true);
+  assert.equal(judge(rows).osCameraContinuityVerified, false);
+  rows[0].receiverMode = 'unknown';
+  assert.equal(judge(rows).receiverPixelContinuityPassed, false);
+});
 test('rejects repeated identities even at a perfect 60fps arrival rate', () => {
   const rows = fixture(); rows[50].identity = rows[49].identity;
   assert.equal(judge(rows).receiverPixelContinuityPassed, false); assert.equal(judge(rows).repeated, 1);

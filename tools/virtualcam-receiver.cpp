@@ -20,8 +20,9 @@ static void check(HRESULT hr, const char* operation) {
   if (FAILED(hr)) { char text[160]; std::snprintf(text, sizeof(text), "%s failed: 0x%08lx", operation, static_cast<unsigned long>(hr)); throw std::runtime_error(text); }
 }
 int main(int argc, char** argv) {
-  const int seconds = argc == 2 ? std::atoi(argv[1]) : 0;
-  if (seconds < 1 || seconds > 7200) { std::fprintf(stderr, "Usage: corevideo-vcam-receiver SECONDS (1..7200)\n"); return 2; }
+  const bool direct = argc == 4 && std::string(argv[2]) == "--dll";
+  const int seconds = argc == 2 || direct ? std::atoi(argv[1]) : 0;
+  if (seconds < 1 || seconds > 7200) { std::fprintf(stderr, "Usage: corevideo-vcam-receiver SECONDS (1..7200) [--dll ABSOLUTE_PATH]\n"); return 2; }
   const auto deadline = Clock::now() + std::chrono::seconds(seconds + 30);
   std::jthread watchdog([deadline](std::stop_token stop) {
     while (!stop.stop_requested()) {
@@ -37,12 +38,25 @@ int main(int argc, char** argv) {
     check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "CoInitializeEx");
     check(MFStartup(MF_VERSION), "MFStartup");
     {
+      struct Library { HMODULE handle = nullptr; ~Library() { if (handle) FreeLibrary(handle); } } library;
+      ComPtr<IMFActivate> selected;
+      if (direct) {
+        library.handle = LoadLibraryExA(argv[3], nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!library.handle) throw std::runtime_error("Direct diagnostic DLL load failed; use an absolute path.");
+        using GetFactory = HRESULT(STDAPICALLTYPE*)(REFCLSID, REFIID, void**);
+        const auto factoryFunction = reinterpret_cast<GetFactory>(GetProcAddress(library.handle, "DllGetClassObject"));
+        if (!factoryFunction) throw std::runtime_error("Diagnostic DLL has no COM factory.");
+        CLSID clsid{};
+        check(CLSIDFromString(L"{8B4B2C9E-2C4A-4E1D-9C7A-CDEF01234567}", &clsid), "source CLSID");
+        ComPtr<IClassFactory> factory;
+        check(factoryFunction(clsid, IID_PPV_ARGS(&factory)), "direct DLL factory");
+        check(factory->CreateInstance(nullptr, IID_PPV_ARGS(&selected)), "direct DLL activator");
+      } else {
       ComPtr<IMFAttributes> attributes;
       check(MFCreateAttributes(&attributes, 1), "attributes");
       check(attributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID), "source type");
       IMFActivate** devices = nullptr; UINT32 count = 0;
       check(MFEnumDeviceSources(attributes.Get(), &devices, &count), "enumeration");
-      ComPtr<IMFActivate> selected;
       for (UINT32 i = 0; i < count; ++i) {
         wchar_t* name = nullptr; UINT32 length = 0;
         if (SUCCEEDED(devices[i]->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &name, &length)) && name &&
@@ -51,9 +65,14 @@ int main(int argc, char** argv) {
       }
       CoTaskMemFree(devices);
       if (!selected) throw std::runtime_error("CoreVideo Pro Camera was not enumerated.");
+      }
       ComPtr<IMFMediaSource> source;
       check(selected->ActivateObject(IID_PPV_ARGS(&source)), "camera activation");
       ComPtr<IMFSourceReader> reader;
+      struct CloseSource {
+        ComPtr<IMFSourceReader>& reader; ComPtr<IMFMediaSource>& source;
+        ~CloseSource() { reader.Reset(); if (source) source->Shutdown(); }
+      } closeSource{reader, source};
       check(MFCreateSourceReaderFromMediaSource(source.Get(), nullptr, &reader), "source reader");
       ComPtr<IMFMediaType> wanted;
       check(MFCreateMediaType(&wanted), "media type");
@@ -68,7 +87,7 @@ int main(int argc, char** argv) {
       check(MFGetAttributeSize(actual.Get(), MF_MT_FRAME_SIZE, &width, &height), "actual size");
       check(MFGetAttributeRatio(actual.Get(), MF_MT_FRAME_RATE, &numerator, &denominator), "actual fps");
       if (width != 1920 || height != 1080 || numerator != 60 || denominator != 1) throw std::runtime_error("Negotiated format differs from 1080p60.");
-      std::printf("{\"schema\":\"camera-pixel-receiver-v1\",\"width\":%u,\"height\":%u,\"fpsNumerator\":%u,\"fpsDenominator\":%u}\n", width, height, numerator, denominator);
+      std::printf("{\"schema\":\"camera-pixel-receiver-v1\",\"receiverMode\":\"%s\",\"width\":%u,\"height\":%u,\"fpsNumerator\":%u,\"fpsDenominator\":%u}\n", direct ? "direct-dll" : "os-camera", width, height, numerator, denominator);
       const auto start = Clock::now(); uint64_t samples = 0;
       while (Clock::now() - start < std::chrono::seconds(seconds)) {
         DWORD flags = 0; LONGLONG pts = 0; ComPtr<IMFSample> sample;
@@ -90,7 +109,7 @@ int main(int argc, char** argv) {
         std::printf("}\n");
       }
       std::printf("{\"complete\":true,\"samples\":%llu}\n", samples);
-      reader.Reset(); source->Shutdown(); selected->ShutdownObject();
+      reader.Reset(); source->Shutdown(); source.Reset(); selected->ShutdownObject();
     }
     MFShutdown(); CoUninitialize();
   } catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); result = 2; }

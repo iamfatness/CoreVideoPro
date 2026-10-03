@@ -21,6 +21,8 @@ export function judgeCameraPixels(text, { warmupSeconds = 30, minimumSeconds = 3
   if (header?.schema !== 'camera-pixel-receiver-v1' || header.width !== 1920 || header.height !== 1080 ||
       header.fpsNumerator !== 60 || header.fpsDenominator !== 1) errors.push('Missing negotiated 1080p60 evidence.');
   if (!completion || completion.samples !== rows.length) errors.push('Incomplete capture.');
+  const receiverMode = header?.receiverMode ?? 'os-camera';
+  if (!['os-camera', 'direct-dll'].includes(receiverMode)) errors.push('Unknown receiver mode.');
   let previous;
   for (const row of rows) {
     if (row.sample !== (previous?.sample ?? 0) + 1 || !Number.isSafeInteger(row.arrivalUs) || row.arrivalUs < 0 ||
@@ -57,9 +59,12 @@ export function judgeCameraPixels(text, { warmupSeconds = 30, minimumSeconds = 3
   const maximumIntervalMs = intervals.at(-1) ?? null;
   if (maximumIntervalMs === null || maximumIntervalMs > 33.4) errors.push('Unexplained receiver interval above 33.4 ms or missing timing.');
   return { schema: 'camera-pixel-verdict-v1', receiverPixelContinuityPassed: errors.length === 0,
+    receiverMode, osCameraContinuityVerified: errors.length === 0 && receiverMode === 'os-camera',
     physicalDisplayVerified: false, warmupSeconds, durationSeconds, samples: measured.length,
     invalid, repeated, missing, reordered, p50IntervalMs: percentile(.5), p99IntervalMs: percentile(.99), maximumIntervalMs,
-    errors: [...new Set(errors)], limitation: 'Independent OS receiver pixels. Does not prove Zoom display, audio synchronization, monitor presentation or another hardware workload.' };
+    errors: [...new Set(errors)], limitation: receiverMode === 'direct-dll'
+      ? 'Direct DLL diagnostic pixels. Does not validate OS registration, Frame Server, Zoom display, audio synchronization or installed-camera qualification.'
+      : 'Independent OS receiver pixels. Does not prove Zoom display, audio synchronization, monitor presentation or another hardware workload.' };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

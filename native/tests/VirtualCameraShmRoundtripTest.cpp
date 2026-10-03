@@ -212,6 +212,28 @@ TEST(VirtualCameraShmRoundtrip, EvidenceSeparatesInvalidHeaderFromUninitializedM
   EXPECT_FALSE(reader.evidence().identityObserved);
 }
 
+TEST(VirtualCameraShmRoundtrip, PublicationWaitSharesOnePayloadCopyBudgetAcrossRetries) {
+  ShmWriter writer;
+  ASSERT_TRUE(writer.open());
+  std::vector<std::uint8_t> pixels(64 * 36 * 3 / 2, 42), out;
+  writer.write(pixels, 64, 36);
+  SharedFrameReader reader;
+  int w = 0, h = 0;
+  unsigned budget = 2;
+  ++writer.header->seq; // Header polling during a write consumes no payload budget.
+  EXPECT_FALSE(reader.readLatest(out, w, h, false, &budget));
+  EXPECT_EQ(budget, 2u);
+  ++writer.header->seq;
+  EXPECT_TRUE(reader.readLatest(out, w, h, false, &budget));
+  EXPECT_EQ(budget, 1u);
+  EXPECT_FALSE(reader.readLatest(out, w, h, false, &budget));
+  EXPECT_EQ(budget, 1u);
+  writer.write(pixels, 64, 36);
+  budget = 0;
+  EXPECT_FALSE(reader.readLatest(out, w, h, false, &budget));
+  EXPECT_EQ(reader.evidence().lastResult, corevideo::modules::VirtualCameraReadResult::Contended);
+}
+
 #if COREVIDEO_WITH_VIRTUALCAM
 // Load this build's DLL directly. No camera registration or Frame Server restart;
 // both pixels and diagnostics remain in the isolated per-test-process directory.
