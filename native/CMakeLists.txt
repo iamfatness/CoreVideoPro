@@ -3,6 +3,13 @@
 project(CoreVideoNativeMediaCore LANGUAGES CXX)
 
 if(WIN32)
+  add_executable(corevideo-vcam-receiver ../tools/virtualcam-receiver.cpp)
+  target_compile_features(corevideo-vcam-receiver PRIVATE cxx_std_20)
+  target_include_directories(corevideo-vcam-receiver PRIVATE src)
+  target_link_libraries(corevideo-vcam-receiver PRIVATE mfplat mfreadwrite mfuuid mf ole32)
+  set_target_properties(corevideo-vcam-receiver PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
   # #652: independent endpoint loopback timestamps for the live A/V clap rig.
   add_executable(corevideo-loopback-rec ../tools/audio/loopback-rec.cpp)
   target_link_libraries(corevideo-loopback-rec PRIVATE ole32 uuid)
@@ -651,6 +658,7 @@ if(BUILD_TESTING)
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp
     tests/VirtualCameraDeliveryEvidenceTest.cpp
+    tests/DeliveryCounterPatternTest.cpp
     tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
     tests/VirtualCameraSlateTest.cpp

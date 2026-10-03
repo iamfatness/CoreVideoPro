@@ -35,6 +35,7 @@
 #include "modules/D3DDecoupledExport.h"
 #include "modules/MonitorRenderWorker.h"
 #include "modules/D3DVideoFrame.h"
+#include "modules/DeliveryCounterPattern.h"
 
 #include <algorithm>
 #include <array>
@@ -118,6 +119,12 @@ class D3D11Compositor final : public ICompositor {
                   bool isolateMonitors = false)
       : device_(std::move(device)), context_(std::move(context)) {
     initializePipeline();
+    const char* counterPattern = std::getenv("COREVIDEO_QA_PROGRAM_COUNTER");
+    if (counterPattern && std::string(counterPattern) == "1") {
+      if (FAILED(context_->QueryInterface(IID_PPV_ARGS(qaCounterContext_.put()))))
+        throw std::runtime_error("QA counter requires D3D11.1 ClearView");
+      core::nativeLogf("[delivery-counter] QA synthetic pixel markers enabled\n");
+    }
     const char* gpuCapture = std::getenv("COREVIDEO_GPU_CAPTURE");
     if (gpuCapture && std::string(gpuCapture) == "1") {
       gpuConsumer_ = D3DVideoConsumers::add(device_.get());
@@ -250,6 +257,7 @@ class D3D11Compositor final : public ICompositor {
     for (const auto& layer : layers) {
       drawLayer(layer, deterministicPlan, &uploadUs);
     }
+    if (qaCounterContext_) drawDeliveryCounter();
     const auto drawUs = stageUs();
 
     frame.gpuComposed = true;
@@ -503,6 +511,19 @@ class D3D11Compositor final : public ICompositor {
   [[nodiscard]] CompositorSourceTexStats sourceTexStats() const override { return sourceTexStats_; }
 
  private:
+  void drawDeliveryCounter() {
+    const int cellWidth = (targetWidth_ / kDeliveryCounterCells) & ~1;
+    if (cellWidth < 4 || targetHeight_ < 64) return;
+    for (int cell = 0; cell < kDeliveryCounterCells; ++cell) {
+      const bool bit = deliveryCounterBit(static_cast<uint32_t>(frameNumber_), cell);
+      const float light[4] = {1, 1, 1, 1}, dark[4] = {0, 0, 0, 1};
+      D3D11_RECT top{cell * cellWidth, 0, (cell + 1) * cellWidth, 32};
+      D3D11_RECT bottom{cell * cellWidth, targetHeight_ - 32, (cell + 1) * cellWidth, targetHeight_};
+      qaCounterContext_->ClearView(renderTargetView_.get(), bit ? light : dark, &top, 1);
+      qaCounterContext_->ClearView(renderTargetView_.get(), bit ? dark : light, &bottom, 1);
+    }
+  }
+  ComPtrLite<ID3D11DeviceContext1> qaCounterContext_;
   MonitorRenderResult renderMonitorBatch(const MonitorRenderRequest& request) {
     monitorBatch_ = true;
     monitorBufferedProgram_ = request.bufferedProgram;

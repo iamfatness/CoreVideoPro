@@ -1,4 +1,5 @@
 #include "modules/Interfaces.h"
+#include "modules/DeliveryCounterPattern.h"
 #include "core/ComApartmentLifetime.h"
 #include <gtest/gtest.h>
 #include <chrono>
@@ -187,10 +188,14 @@ TEST(GpuCaptureIngress, IndependentProducerImageComposesWithoutCpuPixelsOrAnUplo
 }
 
 TEST(IsolatedMonitorPixels, CameraIdentityBelongsToTheDeliveredNv12Packet) {
+  const char* counter = std::getenv("COREVIDEO_QA_PROGRAM_COUNTER");
+  const std::string previousCounter = counter ? counter : "";
+  _putenv_s("COREVIDEO_QA_PROGRAM_COUNTER", "1");
   auto compositor = isolatedCompositor();
+  _putenv_s("COREVIDEO_QA_PROGRAM_COUNTER", previousCounter.c_str());
   ASSERT_TRUE(compositor != nullptr);
   compositor->configureProgramBuffer(2);
-  compositor->prepareProgramBuffer(64, 64);
+  compositor->prepareProgramBuffer(1920, 1080);
   struct Observation {
     int64_t sequence = 0, deliveredAt = 0;
     std::shared_ptr<const std::vector<uint8_t>> pixels;
@@ -202,6 +207,8 @@ TEST(IsolatedMonitorPixels, CameraIdentityBelongsToTheDeliveredNv12Packet) {
     arrived.set_value();
   });
   auto request = requestAtSize(64);
+  request.programPlan.width = 1920;
+  request.programPlan.height = 1080;
   request.programPlan.fullProgramReadback = true;
   const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
   compositor->setProgramProductionTiming(0,
@@ -219,6 +226,9 @@ TEST(IsolatedMonitorPixels, CameraIdentityBelongsToTheDeliveredNv12Packet) {
   EXPECT_GT(observed.deliveredAt, 0);
   EXPECT_TRUE(observed.pixels != nullptr);
   EXPECT_TRUE(observed.pixels == delivered.programNv12Shared);
+  const auto decoded = decodeDeliveryCounter(observed.pixels->data(), observed.pixels->size(), 1920, 1080, 1920);
+  ASSERT_TRUE(decoded.has_value());
+  EXPECT_EQ(*decoded, static_cast<uint32_t>(observed.sequence));
 }
 
 #if COREVIDEO_WITH_WGC
