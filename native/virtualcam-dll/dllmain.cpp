@@ -1,8 +1,8 @@
 // COM entry points + self-registration for corevideo-virtualcam.dll
 // (docs/virtual-camera-spec.md V2b). A user-mode in-proc COM server exposing the
 // virtual-camera media source under CLSID_CoreVideoVirtualCameraSource. NO kernel
-// driver, NO signing: DllRegisterServer writes a per-user InprocServer32 key
-// (the installer runs regsvr32 without elevation). Modeled on
+// driver, NO signing. Legacy DllRegisterServer writes a per-user key; packaged
+// setup uses the ownership-aware machine runtime helper. Modeled on
 // smourier/VCamSample.
 
 #include <windows.h>
@@ -10,6 +10,7 @@
 #include <new>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include <wrl/client.h>
 #include <wrl/implements.h>
@@ -27,12 +28,25 @@ namespace {
 HMODULE g_module = nullptr;
 LONG g_lockCount = 0;
 
+std::wstring ModulePath();
+
+void LogServingModule() {
+  const auto path = ModulePath();
+  const int bytes = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
+  if (bytes <= 0) return;
+  std::vector<char> utf8(static_cast<size_t>(bytes));
+  if (WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, utf8.data(), bytes, nullptr, nullptr) <= 0) return;
+  const auto message = std::string("Serving module path=") + utf8.data();
+  corevideo::virtualcam::VcamServeLog(message.c_str());
+}
+
 class ClassFactory
     : public Microsoft::WRL::RuntimeClass<
           Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IClassFactory> {
  public:
   IFACEMETHODIMP CreateInstance(IUnknown* outer, REFIID riid, void** object) override {
     corevideo::virtualcam::VcamServeLog("ClassFactory::CreateInstance (DLL loaded by a consumer)");
+    LogServingModule();  // startup only: identify the executing DLL, not a registry claim
     if (object == nullptr) return E_POINTER;
     *object = nullptr;
     if (outer != nullptr) return CLASS_E_NOAGGREGATION;
@@ -57,9 +71,10 @@ class ClassFactory
 };
 
 std::wstring ModulePath() {
-  wchar_t path[MAX_PATH] = {};
-  GetModuleFileNameW(g_module, path, MAX_PATH);
-  return path;
+  std::vector<wchar_t> path(32768);
+  const DWORD length = GetModuleFileNameW(g_module, path.data(), static_cast<DWORD>(path.size()));
+  if (length == 0 || length >= path.size()) return {};
+  return std::wstring(path.data(), length);
 }
 
 LONG SetKeyValue(HKEY root, const wchar_t* subkey, const wchar_t* name, const wchar_t* value) {
