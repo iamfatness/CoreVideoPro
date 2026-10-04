@@ -718,6 +718,40 @@ TEST(SourceVideoIngress, CaptureDeliveryUsesTheSameBusMembershipAndEndSignal) {
   EXPECT_FALSE(bus.contains("capture:camera"));
 }
 
+TEST(SourceVideoIngress, GpuOnlyCapturePreservesIdentityDimensionsAndLeaseUntilDisconnect) {
+  corevideo::core::SourceBus bus;
+  corevideo::core::CaptureVideoToSourceBus consumer(bus);
+  corevideo::modules::VideoFrame frame;
+  frame.participantId = "capture:gpu";
+  frame.frameId = 91;
+  frame.timestampMs = 1234;
+  auto image = std::make_shared<corevideo::modules::GpuVideoFrame>();
+  image->width = 2560;
+  image->height = 1440;
+  image->generation = 3;
+  std::weak_ptr<const corevideo::modules::GpuVideoFrame> lease = image;
+  frame.gpuPixels = std::move(image);
+  consumer.publish(std::move(frame));
+  {
+    auto frames = corevideo::core::gatherSourceVideo(bus, nullptr, {}, {}, false, 0, 100);
+    ASSERT_EQ(frames.size(), 1u);
+    EXPECT_TRUE(frames[0].hasContent());
+    EXPECT_FALSE(frames[0].hasPixels());
+    EXPECT_FALSE(frames[0].hasI420());
+    EXPECT_EQ(frames[0].frameId, 91);
+    EXPECT_EQ(frames[0].timestampMs, 1234);
+    EXPECT_EQ(frames[0].gpuPixels->generation, 3u);
+    const auto status = bus.snapshot(100).front();
+    EXPECT_EQ(status.descriptor.width, 2560);
+    EXPECT_EQ(status.descriptor.height, 1440);
+    EXPECT_EQ(status.health, corevideo::core::SourceHealth::Producing);
+    consumer.end("capture:gpu");
+    EXPECT_FALSE(bus.contains("capture:gpu"));
+    EXPECT_FALSE(lease.expired()); // the admitted consumer still owns its image
+  }
+  EXPECT_TRUE(lease.expired());
+}
+
 TEST(SourceVideoIngress, SourceHealthIsAlwaysPublishedWithPolicyAndRealCounters) {
   corevideo::core::SourceBus bus;
   auto empty = corevideo::core::sourceHealthState(&bus, 100,

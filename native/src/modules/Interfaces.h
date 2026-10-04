@@ -1,7 +1,9 @@
 #pragma once
+#include "modules/SourceVideoDemand.h"
 
 #include "contracts/Lifecycle.h"
 #include "modules/ProgramAacEncoder.h"
+#include "modules/GpuVideoFrame.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -57,6 +59,14 @@ struct VideoFrame {
   // the matrix per frame instead of washing out camera blacks.
   bool i420FullRange = true;
   bool i420Bt601 = false;
+  std::shared_ptr<const GpuVideoFrame> gpuPixels;
+  // Same source identity in a separate optional pool. Monitor requests must
+  // never retain the production capture lease while waiting for their worker.
+  std::shared_ptr<const GpuVideoFrame> monitorGpuPixels;
+  [[nodiscard]] bool hasGpuPixels() const {
+    return gpuPixels && gpuPixels->width > 0 && gpuPixels->height > 0;
+  }
+  [[nodiscard]] bool hasContent() const { return hasPixels() || hasI420() || hasGpuPixels(); }
   [[nodiscard]] bool hasPixels() const {
     return pixels && pixelWidth > 0 && pixelHeight > 0 && pixelStride >= pixelWidth * 4 &&
            pixels->size() >= static_cast<size_t>(pixelStride) * static_cast<size_t>(pixelHeight);
@@ -998,11 +1008,55 @@ struct CompositorSourceTexStats {
   uint64_t scratchUploads = 0;  // legacy shared-scratch uploads (frames with no stable source id)
 };
 
+// One immutable monitor job. Geometry/tally and pixels travel together; a late
+// result must never be decorated with the next render tick's tile metadata.
+enum class SourceMonitorConsumer { PreviewFallback, Inspector, Popout };
+struct SourceMonitorDemand {
+  std::string sourceId;
+  SourceMonitorConsumer consumer = SourceMonitorConsumer::PreviewFallback;
+  std::string instance;
+};
+struct MonitorRenderRequest {
+  int64_t sequence = 0;
+  CompositorRenderPlan programPlan;
+  CompositorRenderPlan multiviewPlan;
+  CompositorRenderPlan previewPlan;
+  std::vector<VideoFrame> frames;
+  std::vector<MultiviewTileRect> tiles;
+  std::vector<SourceMonitorDemand> sourceExports;
+  bool multiviewActive = false;
+  bool previewActive = false;
+  bool bufferedProgram = false;
+  ProgramFrameSharedTexture deliveredProgram;
+  std::shared_ptr<const void> deliveredProgramOwner;
+};
+
+struct MonitorRenderResult {
+  int64_t sequence = 0;
+  ProgramFrameSharedTexture multiview;
+  ProgramFrameSharedTexture preview;
+  std::vector<MultiviewTileRect> tiles;
+  std::vector<ParticipantSharedTexture> sources;
+  double workMs = 0;
+};
+
+struct MonitorRenderDiagnostics {
+  bool enabled = false;
+  uint64_t submitted = 0, completed = 0, superseded = 0, failed = 0;
+  int pending = 0;
+  int64_t lastSequence = 0;
+  double lastWorkMs = 0;
+};
+
 class ICompositor {
  public:
   virtual ~ICompositor() = default;
   virtual std::string rendererName() const = 0;
   virtual ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) = 0;
+  [[nodiscard]] virtual bool hasIsolatedMonitors() const { return false; }
+  virtual void submitMonitors(MonitorRenderRequest /*request*/) {}
+  [[nodiscard]] virtual std::shared_ptr<const MonitorRenderResult> latestMonitors() const { return {}; }
+  [[nodiscard]] virtual MonitorRenderDiagnostics monitorDiagnostics() const { return {}; }
   // Startup-only configuration. Unsupported compositors report zero active
   // frames, so consumers must not introduce an unmatched audio delay.
   virtual void configureProgramBuffer(int /*frames*/) {}
@@ -1094,7 +1148,15 @@ class ICompositor {
   // a slow Windows Frame Server consumer must never pace streaming/recording.
   using VcamFrameBuffer = std::shared_ptr<const std::vector<std::uint8_t>>;
   using VcamFrameSink = std::function<void(VcamFrameBuffer nv12, int width, int height)>;
+  using IdentifiedVcamFrameSink = std::function<void(VcamFrameBuffer nv12, int width, int height,
+                                                     int64_t programSequence, int64_t deliveredAt100ns)>;
   virtual void setVcamFrameSink(VcamFrameSink /*sink*/) {}
+  virtual void setIdentifiedVcamFrameSink(IdentifiedVcamFrameSink sink) {
+    if (!sink) { setVcamFrameSink({}); return; }
+    setVcamFrameSink([sink = std::move(sink)](VcamFrameBuffer bytes, int width, int height) {
+      sink(std::move(bytes), width, height, 0, 0); // identity unavailable on older adapters
+    });
+  }
   // Does this compositor push frames to that sink? When it does, MediaCore must
   // NOT also publish from the output worker or every frame is published twice.
   [[nodiscard]] virtual bool publishesVcamFrames() const { return false; }
@@ -1538,6 +1600,10 @@ class ICaptureAudioConsumer {
 class ICaptureDevice : public ICaptureDeviceLifecycle {
  public:
   ~ICaptureDevice() override = default;
+  // Complete replacement of the native representation demand snapshot. Legacy
+  // adapters keep their existing CPU behavior; GPU capture may avoid readback
+  // only after this explicit snapshot establishes that no CPU consumer exists.
+  virtual void setVideoConsumerDemand(const std::vector<SourceVideoDemand>&) {}
   // Publish what adapters have already pushed. The render tick does not pull
   // a frame vector. Video slots are re-published with this tick's timestamp so
   // a held picture stays on air and a frozen frameId can still age out.

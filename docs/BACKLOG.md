@@ -39,8 +39,18 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 Three lanes, at most one item in flight per lane. Lane C is the owner's and is the constraint.
 
+Owner direction 2026-10-03 after the show: start #517 under the
+[render isolation and delivery specification](reference/render-delivery-spec.md).
+It is the active Lane A item ahead of #538. The owner subsequently approved
+desktop validation after the meeting and the [completion plan](reference/render-delivery-completion-plan.md).
+Execute camera attribution/repair first, then #781 as the installation prerequisite
+before final #517 qualification, with the remaining render and diagnostics scope
+under #517. #781 gets a separate PR and is the next scoped Lane A item; keep one
+Lane A code item in flight. Preserve installed rollback and failed evidence.
+
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| 0 | A | [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) | Render isolation and virtual-camera delivery evidence. Start with reader-side fresh/held/slate and read-failure evidence; implement the measured render repair under the linked spec. Installed receiver acceptance remains mandatory. |
 | 1 | C | Acceptance session | Cut a beta from `main` and run [`docs/qa/installed-acceptance-checklist.md`](qa/installed-acceptance-checklist.md) once. Covers [#732](https://github.com/iamfatness/CoreVideoPro/issues/732), [#725](https://github.com/iamfatness/CoreVideoPro/issues/725), [#724](https://github.com/iamfatness/CoreVideoPro/issues/724), [#735](https://github.com/iamfatness/CoreVideoPro/issues/735), [#668](https://github.com/iamfatness/CoreVideoPro/issues/668), [#674](https://github.com/iamfatness/CoreVideoPro/issues/674), [#608](https://github.com/iamfatness/CoreVideoPro/issues/608), [#582](https://github.com/iamfatness/CoreVideoPro/issues/582), [#568](https://github.com/iamfatness/CoreVideoPro/issues/568), [#569](https://github.com/iamfatness/CoreVideoPro/issues/569), [#581](https://github.com/iamfatness/CoreVideoPro/issues/581), [#473](https://github.com/iamfatness/CoreVideoPro/issues/473) and the first live run of the 2026-10-01/02 fixes ([#740](https://github.com/iamfatness/CoreVideoPro/issues/740), [#739](https://github.com/iamfatness/CoreVideoPro/issues/739), [#757](https://github.com/iamfatness/CoreVideoPro/issues/757), [#758](https://github.com/iamfatness/CoreVideoPro/issues/758), [#759](https://github.com/iamfatness/CoreVideoPro/issues/759), [#760](https://github.com/iamfatness/CoreVideoPro/issues/760)). Record PASS, FAIL or `MISSING_EVIDENCE` per row on its issue. |
 | 2 | B | [#762](https://github.com/iamfatness/CoreVideoPro/issues/762), [#741](https://github.com/iamfatness/CoreVideoPro/issues/741) | Merged: the shell refuses Engine on, Record or Join from the core profile with a named reason, and the core refuses Record on a failed encoder and Join with no engine (`docs/reference/core-on-air-policy.md`). Remaining: first installed run. |
 | 3 | B | [#754](https://github.com/iamfatness/CoreVideoPro/issues/754) | Fixed: the seven intermittent CI failures were fixed wall-clock budgets on a shared runner; all are condition waits with wide bounds now, and the meter probe waits for the settled unloaded state. Remaining: watch CI; the one unexplained double `RecoveryCompleted` has no repro. |
@@ -74,6 +84,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#782](https://github.com/iamfatness/CoreVideoPro/issues/782) | Windows supervisor disposal queried an already-disposed Process in the crash lock-order CI test. Captured stack and run; attribution and focused fix need owner rank. |
 | [#735](https://github.com/iamfatness/CoreVideoPro/issues/735) | Fixed: the CPU-fallback stream path delivered nothing from 2026-09-30 because shared-AAC routing withheld PCM from a sender that was not on the GPU path. Remaining: RTMP was not tested separately from SRT; owner acceptance on a machine without a hardware encoder. |
 | [#701](https://github.com/iamfatness/CoreVideoPro/issues/701) | Media playout video can stutter or freeze during a live show; identify decoder versus presentation. Had no row until the 2026-10-02 review. |
 | [#732](https://github.com/iamfatness/CoreVideoPro/issues/732) | Recording resumes in a new folder and the stream reconnects after the media core restarts (owner rulings 2026-10-01 and 2026-10-02; PR #746). Remaining: owner acceptance on an installed beta; the stream reconnect was proven against a local SRT sink only, not RTMP or a real platform. |
@@ -162,7 +173,6 @@ the sole work list. Their order in this table is not a priority assignment.
 | [#551](https://github.com/iamfatness/CoreVideoPro/issues/551) | Async ISO writer status still omits live `framesWritten` / `bytesWritten`. |
 | [#456](https://github.com/iamfatness/CoreVideoPro/issues/456) | Media In/Out points; UI design still needed. |
 | [#521](https://github.com/iamfatness/CoreVideoPro/issues/521) | GPU-direct HEVC shipped in #566. AV1 refused pending #565. Raw fallback and recording/ISO on the encoder seam remain. |
-| [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) | Full 16-guest / 1080p-input render-budget acceptance remains. |
 | [#519](https://github.com/iamfatness/CoreVideoPro/issues/519) | RTMP `bytesSent` still estimated; `latencyMs` hard-coded to 2100. |
 | [#509](https://github.com/iamfatness/CoreVideoPro/issues/509) | 197 ms participant-rebuild stutter. Command-drop on the same apply graph is #622. |
 | [#537](https://github.com/iamfatness/CoreVideoPro/issues/537) | DeckLink/AJA: live frames on the source bus (not probe-only). Parked for beta. |
@@ -222,3 +232,4 @@ These rows record specific fixes, not blanket production or fleet reliability.
 | [#574](https://github.com/iamfatness/CoreVideoPro/issues/574) | GPU readiness moved before publication in #566. Hardware pixel tests and 30m16s installed candidate soak passed with zero new CVP delivery failures. Workload limits remain under #517/#569. |
 | [#529](https://github.com/iamfatness/CoreVideoPro/issues/529), [#533](https://github.com/iamfatness/CoreVideoPro/issues/533) | ISO drops/timeline fixes merged and validated in the earlier 24-minute six-ISO recording; shipped September 18. |
 | [#516](https://github.com/iamfatness/CoreVideoPro/issues/516), [#526](https://github.com/iamfatness/CoreVideoPro/issues/526), [#518](https://github.com/iamfatness/CoreVideoPro/issues/518) | Earlier render-stall, Program-buffer startup/busy-loop, and audio-log fixes merged and validated; shipped September 18. Later distinct defects retain their own issues. |
+

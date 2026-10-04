@@ -289,6 +289,9 @@ class NoCaptureDevice final : public ICaptureDevice {
 class CompositeCaptureDevice final : public ICaptureDevice {
  public:
   explicit CompositeCaptureDevice(std::vector<std::unique_ptr<ICaptureDevice>> devices) : devices_(std::move(devices)) {}
+  void setVideoConsumerDemand(const std::vector<SourceVideoDemand>& demands) override {
+    for (const auto& device : devices_) device->setVideoConsumerDemand(demands);
+  }
 
   std::vector<CaptureDeviceInfo> enumerate() const override {
     std::vector<CaptureDeviceInfo> result;

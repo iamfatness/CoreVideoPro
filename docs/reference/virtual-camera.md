@@ -1,5 +1,50 @@
 # Virtual camera (program feed → a webcam for Zoom/Teams/OBS)
 
+## Reader delivery evidence
+
+The #517 delivery evidence replaces the old `Fill` sample with a
+`[vcam-delivery-v2]` summary at the same one-per-60-attempts frequency. Counters
+belong to one process/stream instance; `run` changes on Start. `fresh`, `held`,
+and `slate` count only samples whose Media Foundation event enqueue succeeded;
+failed sample creation/enqueue is separate. Read outcomes distinguish unchanged
+publication, seqlock contention, unavailable mapping, uninitialized mapping and
+invalid header. Format mismatch is separate from a successful SHM read.
+
+`lastPublication` is the last successfully read SHM publication counter, NOT
+a Program identity and not necessarily the image last emitted (for example when
+dimensions mismatch). The unchanged V1 pixel ABI contains no producer epoch.
+Neither fresh reads nor event enqueue prove receiver display or lip sync.
+`receiverVerified=0` is deliberate.
+
+`COREVIDEO_DELIVERY_TRACE=1`, sampled when the publisher starts, enables an
+optional 80-byte `vcam-correlation-v1.shm` sidecar alongside the pixel mapping.
+The shipping 32-byte pixel header and NV12 payload remain unchanged. The sidecar
+uses the existing mapping access policy and its own seqlock, carrying a producer
+epoch, backing-file identity, pixel seqlock/publication, Program sequence, and
+monotonic delivery/publication timestamps. The reader accepts identity only when
+stable records before and after its pixel copy match the actual pixel mapping.
+Publisher start invalidates previous identity even when tracing is disabled.
+Missing, racing, stale or incompatible records produce uncorrelated reads.
+
+Identity travels with the buffered NV12 packet through the publisher's replaceable
+pending slot. `lastReadProgramSequence` describes the last correlated read;
+`lastProgramSequence`, `epoch`, and `programIdentityVerified` describe the last
+successfully enqueued sample. A held sample retains its previous pixel identity,
+including after a fresh read with incompatible dimensions. Slate has no Program
+identity. `unobservedProgramFrames` counts gaps between correlated reads, without
+claiming which upstream boundary lost them. Epoch changes and regressions have
+separate counters. Legacy V1 records never establish Program identity.
+
+Run `node scripts/qa/vcam-delivery-evidence.mjs --log <vcam-serve.log>` on a copied
+serve log. It reports per-instance/run counter deltas, rejects malformed records
+and counter regression, and marks old uninstrumented logs unavailable. Exit 0
+means valid evidence was parsed, never that delivery passed. The emission interval
+maximum is lifetime data; Stop/Start idle time is excluded. Logging is still the
+existing synchronous periodic logger; bounded background tracing, source-to-Program
+identity and end-to-end receiver qualification remain separate spec slices.
+
+Tests redirect both SHM and the serve log using `COREVIDEO_VCAM_SHM_DIR`.
+
 _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
 
 The program appears system-wide as **"CoreVideo Pro Camera"** at native **1080p60**.
@@ -31,7 +76,9 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
   Frame Server + every consumer; Zoom's video process burned 8+ cores and system audio
   glitched whenever the camera was consumed). `MediaStream::RequestSample` now waits
   until the next frame is DUE (high-res waitable timer; plain Sleep quantizes to ~40fps).
-  Verify cadence in `%ProgramData%\CoreVideoPro\vcam-serve.log` (Fill lines ≈ 1/s = 60/s).
+  Inspect `%ProgramData%\CoreVideoPro\vcam-serve.log` for reader delivery evidence.
+  The new `vcam-delivery-v1` counters distinguish emitted fresh, held and slate
+  samples; the older once-per-60 `Fill` lines cannot establish frame continuity.
 - **NEVER delete the SHM file** (`openVirtualCameraShmFile`): readers hold the file
   object via FILE_SHARE_DELETE; delete+recreate orphans them on the unlinked file and
   they degrade to frozen frames / the slate forever (program/slate strobing when a stale
@@ -182,3 +229,53 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
 3. Build target: `cmake --build native\build-dev --config Release --target
    corevideo-virtualcam corevideo-native corevideo-native-tests`.
 4. `native/virtualcam-dll/VcamLog.h` is gated serve-tracing for debugging the DLL side.
+
+## Independent camera pixel receiver
+
+For an explicitly selected synthetic QA run only, `COREVIDEO_QA_PROGRAM_COUNTER=1` adds complementary binary Program-sequence markers at the top and bottom of the Program image. This changes output pixels and must never be enabled for a live show. It defaults off. GPU ClearView writes the markers before the normal Program-buffer/NV12 path; a hardware test decodes the resulting delivered NV12 packet and matches its Program identity.
+
+Build `corevideo-vcam-receiver` and run `corevideo-vcam-receiver 90 > receiver.ndjson` while the candidate camera is enabled. The probe enumerates the OS camera and negotiates 1920x1080 NV12 at 60/1 through Media Foundation. It reads no publisher mapping. Each sample records monotonic arrival, media PTS and decoded pixel identity; malformed/complement-mismatched patterns are null. An independent watchdog ends a stalled receiver with incomplete evidence.
+
+`node scripts/qa/camera-pixel-receiver.mjs receiver.ndjson` excludes the first 30 seconds, requires at least 30 measured seconds, rejects incomplete captures, resets, duplicates, gaps, reordering, invalid markers and unexplained arrival intervals over 33.4 ms. This proves only the tested OS receiver pixels, not another application's presentation, audio alignment or the full-workload qualification.
+
+For boundary isolation, `corevideo-vcam-receiver 90 --dll <absolute-DLL-path>` instantiates that DLL's media source directly through Media Foundation without changing COM registration. Its evidence is marked `receiverMode=direct-dll`; the judge always reports `osCameraContinuityVerified=false` for that mode. This diagnostic distinguishes a candidate reader from an older DLL served by Frame Server. Registered paths alone do not prove the loaded module: a conflicting machine-wide CLSID can select a different DLL from the installer's per-user registration.
+
+`COREVIDEO_CAMERA_READ_RETRY=1`, set in the reader process, enables an experimental bounded publication wait. Unchanged or contended reads may wait for the next publication for at most one nominal frame period, with at most 64 high-resolution waits and two payload-copy attempts across the entire sample request. Missing or invalid mappings do not retry. Retry reads do not accelerate orphaned-mapping reopen cadence. Counters report attempted and recovered samples; held samples still count as held. The switch defaults off pending installed qualification and latency/audio evidence; a producer-process environment variable does not configure a separately hosted Frame Server process.
+
+For controlled Windows Frame Server qualification, explicitly build the excluded
+`corevideo-virtualcam-retry-qa` target in Release. It produces a separately named
+diagnostic DLL with publication retry enabled and logs `[vcam-retry-qa]` when a
+stream initializes. Normal builds and release packaging continue to use the
+unchanged default-off `corevideo-virtualcam` target. This avoids changing the
+Windows service environment to inject a test flag. Record the diagnostic DLL
+hash and actual loaded module path; registering a path alone is not provenance.
+Preserve and restore the installed camera registration after the trial. An OS
+receiver trial with this DLL qualifies that diagnostic combination, not an
+unmodified release package.
+
+The excluded `corevideo-vcam-publication-qa` executable and
+`corevideo-virtualcam-publication-qa-off` / `-on` DLLs provide an isolated
+publication experiment. Build all in Release. Their fixed mapping directory is
+`%ProgramData%\CoreVideoPro\camera-publication-qa`; the production mapping is
+never opened. The publisher refuses to run while CoreVideo's app/core is live
+and uses a single-writer mutex. Invoke it as `SECONDS ODD_US --isolated-test`
+(1–180 seconds of scheduled frames, 0–25000 microseconds held in the writing
+state). Delays beyond one frame intentionally overrun source cadence and may
+lengthen wall-clock runtime. No pixel mapping is deleted on exit.
+
+For OS-hosted trials, preserve the installed camera registration, select the
+exact diagnostic DLL, grant only the serving account's required read/execute
+access, and verify its loaded module before measuring. Start the publisher
+long enough to cover setup, the 30-second warmup and the receiver capture.
+Compare otherwise identical off/on cases, retain every trial, and restore the
+installed registration afterward. The targets are excluded from normal builds
+and the package script copies only the production DLL.
+
+Publisher evidence records actual writing windows and rational 60 Hz deadlines;
+receiver evidence includes a host-monotonic arrival timestamp. Run
+`node scripts/qa/publication-qa-evidence.mjs PUBLISHER.ndjson RECEIVER.ndjson`
+to check source deadline overruns and publication-to-receiver pixel age. This
+summary validates evidence, not continuity; run `camera-pixel-receiver.mjs`
+separately. A lower delivered sample cadence fails even if successive identities
+are consecutive. Compare full content latency and A/V using the final
+qualification harness, rather than treating publication age as display latency.

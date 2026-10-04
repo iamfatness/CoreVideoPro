@@ -11,6 +11,13 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <fstream>
+#include <iterator>
+#if COREVIDEO_WITH_VIRTUALCAM
+#include <mfapi.h>
+#include <mfidl.h>
+#include <wrl/client.h>
+#endif
 
 #include "SharedFrameReader.h"  // native/virtualcam-dll (on the test include path)
 #include "modules/VirtualCameraPublisher.h"
@@ -56,6 +63,7 @@ struct VcamShmTestIsolation {
   ~VcamShmTestIsolation() {
     ::DeleteFileA((dir + "\\vcam-frame.shm").c_str());
     ::DeleteFileA((dir + "\\vcam-serve.log").c_str());
+    ::DeleteFileA((dir + "\\vcam-correlation-v1.shm").c_str());
     ::RemoveDirectoryA(dir.c_str());
     _putenv_s("COREVIDEO_VCAM_SHM_DIR", "");
   }
@@ -79,6 +87,8 @@ struct ShmWriter {
   bool deleteOnClose = true;
 
   bool open() {
+    corevideo::modules::VirtualCameraCorrelationMapping invalidateOldCorrelation;
+    invalidateOldCorrelation.start(false);
     file = openVirtualCameraShmFile(/*writer=*/true);
     if (file == INVALID_HANDLE_VALUE) return false;
     view = mapVirtualCameraShmView(file, /*writer=*/true, &mapping);
@@ -156,10 +166,208 @@ TEST(VirtualCameraShmRoundtrip, ReadsBackTheFrameTheWriterPublished) {
   std::vector<std::uint8_t> out;
   int rw = 0, rh = 0;
   ASSERT_TRUE(reader.readLatest(out, rw, rh));
+  EXPECT_EQ(reader.evidence().lastPublication, 1u);
+  EXPECT_EQ(reader.evidence().lastSequence, writer.header->seq);
   EXPECT_EQ(rw, w);
   EXPECT_EQ(rh, h);
   EXPECT_EQ(out, frame);
 }
+
+TEST(VirtualCameraShmRoundtrip, EvidenceSeparatesUnchangedContentFromAnInProgressWrite) {
+  using Result = corevideo::modules::VirtualCameraReadResult;
+  ShmWriter writer;
+  ASSERT_TRUE(writer.open());
+  std::vector<std::uint8_t> frame(64 * 36 * 3 / 2, 42), out;
+  writer.write(frame, 64, 36);
+  SharedFrameReader reader;
+  int w = 0, h = 0;
+  ASSERT_TRUE(reader.readLatest(out, w, h));
+  EXPECT_FALSE(reader.readLatest(out, w, h));
+  EXPECT_EQ(reader.evidence().lastResult, Result::Unchanged);
+  ++writer.header->seq; // odd: a write is in progress; do not invent an identity
+  writer.header->frameNumber = 99;
+  EXPECT_FALSE(reader.readLatest(out, w, h));
+  EXPECT_EQ(reader.evidence().lastResult, Result::Contended);
+  EXPECT_EQ(reader.evidence().lastPublication, 1u);
+  ++writer.header->seq; // complete: the same payload now has publication 99
+  ASSERT_TRUE(reader.readLatest(out, w, h));
+  EXPECT_EQ(reader.evidence().lastPublication, 99u);
+  EXPECT_EQ(reader.evidence().count(Result::Fresh), 2u);
+  EXPECT_EQ(reader.evidence().count(Result::Unchanged), 1u);
+  EXPECT_EQ(reader.evidence().count(Result::Contended), 1u);
+}
+
+TEST(VirtualCameraShmRoundtrip, EvidenceSeparatesInvalidHeaderFromUninitializedMapping) {
+  using Result = corevideo::modules::VirtualCameraReadResult;
+  ShmWriter writer;
+  ASSERT_TRUE(writer.open());
+  SharedFrameReader reader;
+  std::vector<std::uint8_t> out;
+  int w = 0, h = 0;
+  EXPECT_FALSE(reader.readLatest(out, w, h)); // writer has not provided pixels
+  EXPECT_EQ(reader.evidence().lastResult, Result::InvalidHeader);
+  writer.header->magic = 0;
+  EXPECT_FALSE(reader.readLatest(out, w, h));
+  EXPECT_EQ(reader.evidence().lastResult, Result::Uninitialized);
+  EXPECT_FALSE(reader.evidence().identityObserved);
+}
+
+TEST(VirtualCameraShmRoundtrip, PublicationWaitSharesOnePayloadCopyBudgetAcrossRetries) {
+  ShmWriter writer;
+  ASSERT_TRUE(writer.open());
+  std::vector<std::uint8_t> pixels(64 * 36 * 3 / 2, 42), out;
+  writer.write(pixels, 64, 36);
+  SharedFrameReader reader;
+  int w = 0, h = 0;
+  unsigned budget = 2;
+  ++writer.header->seq; // Header polling during a write consumes no payload budget.
+  EXPECT_FALSE(reader.readLatest(out, w, h, false, &budget));
+  EXPECT_EQ(budget, 2u);
+  ++writer.header->seq;
+  EXPECT_TRUE(reader.readLatest(out, w, h, false, &budget));
+  EXPECT_EQ(budget, 1u);
+  EXPECT_FALSE(reader.readLatest(out, w, h, false, &budget));
+  EXPECT_EQ(budget, 1u);
+  writer.write(pixels, 64, 36);
+  budget = 0;
+  EXPECT_FALSE(reader.readLatest(out, w, h, false, &budget));
+  EXPECT_EQ(reader.evidence().lastResult, corevideo::modules::VirtualCameraReadResult::Contended);
+}
+
+#if COREVIDEO_WITH_VIRTUALCAM
+// Load this build's DLL directly. No camera registration or Frame Server restart;
+// both pixels and diagnostics remain in the isolated per-test-process directory.
+TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
+  using Microsoft::WRL::ComPtr;
+  struct Session {
+    HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    HRESULT mf = MFStartup(MF_VERSION);
+    HMODULE dll = nullptr;
+    ComPtr<IMFMediaSource> source;
+    ~Session() {
+      if (source) { source->Shutdown(); source.Reset(); }
+      if (dll) FreeLibrary(dll);
+      if (SUCCEEDED(mf)) MFShutdown();
+      if (SUCCEEDED(com)) CoUninitialize();
+    }
+  } session;
+  ASSERT_TRUE(SUCCEEDED(session.mf));
+  ShmWriter writer;
+  ASSERT_TRUE(writer.open());
+  std::vector<std::uint8_t> pixels(1920 * 1080 * 3 / 2, 42);
+  writer.write(pixels, 1920, 1080);
+  const auto logPath = corevideo::modules::virtualCameraShmDir() + "\\vcam-serve.log";
+  const auto logOffset = [&] {
+    std::ifstream before(logPath, std::ios::binary | std::ios::ate);
+    return before ? static_cast<std::streamoff>(before.tellg()) : std::streamoff{0};
+  }();
+  session.dll = LoadLibraryA(COREVIDEO_VCAM_DLL_PATH);
+  ASSERT_NE(session.dll, nullptr);
+  using GetFactory = HRESULT(STDAPICALLTYPE*)(REFCLSID, REFIID, void**);
+  const auto getFactory = reinterpret_cast<GetFactory>(GetProcAddress(session.dll, "DllGetClassObject"));
+  ASSERT_NE(getFactory, nullptr);
+  CLSID clsid{};
+  ASSERT_TRUE(SUCCEEDED(CLSIDFromString(L"{8B4B2C9E-2C4A-4E1D-9C7A-CDEF01234567}", &clsid)));
+  ComPtr<IClassFactory> factory;
+  ASSERT_TRUE(SUCCEEDED(getFactory(clsid, IID_PPV_ARGS(&factory))));
+  ComPtr<IMFActivate> activate;
+  ASSERT_TRUE(SUCCEEDED(factory->CreateInstance(nullptr, IID_PPV_ARGS(&activate))));
+  ASSERT_TRUE(SUCCEEDED(activate->ActivateObject(IID_PPV_ARGS(&session.source))));
+  ComPtr<IMFPresentationDescriptor> descriptor;
+  ASSERT_TRUE(SUCCEEDED(session.source->CreatePresentationDescriptor(&descriptor)));
+  PROPVARIANT start{};
+  ASSERT_TRUE(SUCCEEDED(session.source->Start(descriptor.Get(), nullptr, &start)));
+  ComPtr<IMFMediaEvent> announcement;
+  ASSERT_TRUE(SUCCEEDED(session.source->GetEvent(MF_EVENT_FLAG_NO_WAIT, &announcement)));
+  PROPVARIANT value{};
+  ASSERT_TRUE(SUCCEEDED(announcement->GetValue(&value)));
+  ComPtr<IMFMediaStream> stream;
+  const auto streamHr = value.punkVal->QueryInterface(IID_PPV_ARGS(&stream));
+  PropVariantClear(&value);
+  ASSERT_TRUE(SUCCEEDED(streamHr));
+  // A receiver of the actual MF samples, including their pixels and PTS. A
+  // queued event or a publication counter alone is not receiver evidence.
+  LONGLONG lastPts = -1;
+  auto receive = [&]() -> int {
+    if (FAILED(stream->RequestSample(nullptr))) return -1;
+    for (int eventIndex = 0; eventIndex < 3; ++eventIndex) {
+      ComPtr<IMFMediaEvent> event;
+      if (FAILED(stream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event))) return -1;
+      MediaEventType type{};
+      if (FAILED(event->GetType(&type))) return -1;
+      if (type != MEMediaSample) continue;
+      PROPVARIANT payload{};
+      if (FAILED(event->GetValue(&payload))) return -1;
+      ComPtr<IMFSample> sample;
+      const auto hr = payload.punkVal ? payload.punkVal->QueryInterface(IID_PPV_ARGS(&sample)) : E_FAIL;
+      PropVariantClear(&payload);
+      if (FAILED(hr)) return -1;
+      LONGLONG pts = 0;
+      if (FAILED(sample->GetSampleTime(&pts)) || pts <= lastPts) return -1;
+      lastPts = pts;
+      ComPtr<IMFMediaBuffer> buffer;
+      if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) return -1;
+      BYTE* data = nullptr;
+      DWORD length = 0;
+      if (FAILED(buffer->Lock(&data, nullptr, &length))) return -1;
+      const int observed = length == pixels.size() ? data[0] : -1;
+      buffer->Unlock();
+      return observed;
+    }
+    return -1;
+  };
+  for (int i = 0; i < 61; ++i) {
+    const int observed = receive();
+    ASSERT_GE(observed, 0);
+    if (i <= 30) EXPECT_EQ(observed, 42);
+  }
+  std::ifstream log(logPath, std::ios::binary);
+  ASSERT_TRUE(log.good());
+  log.seekg(logOffset);
+  const std::string emittedLog((std::istreambuf_iterator<char>(log)), {});
+  log.close(); // Windows readers can deny the DLL's subsequent append opens.
+  EXPECT_NE(emittedLog.find("emitted=61 fresh=1 held=30 slate=30 failed=0"), std::string::npos);
+  EXPECT_NE(emittedLog.find("readFresh=1 unchanged=60 contended=0"), std::string::npos);
+  EXPECT_NE(emittedLog.find("programIdentityVerified=0 receiverVerified=0"), std::string::npos);
+  // Resume with a changing synthetic identity. This catches held/duplicated
+  // sample contents despite successful requests and advancing event counters.
+  corevideo::modules::VirtualCameraCorrelationMapping trace;
+  trace.start(true, writer.file);
+  for (int identity = 60; identity < 180; ++identity) {
+    pixels[0] = static_cast<uint8_t>(identity);
+    trace.begin();
+    writer.write(pixels, 1920, 1080);
+    trace.finish(writer.header->seq, writer.header->frameNumber, identity, identity * 166666LL);
+    EXPECT_EQ(receive(), identity);
+  }
+  std::ifstream correlatedLog(logPath, std::ios::binary);
+  correlatedLog.seekg(logOffset);
+  const std::string correlationText((std::istreambuf_iterator<char>(correlatedLog)), {});
+  correlatedLog.close();
+  EXPECT_NE(correlationText.find("programIdentityVerified=1 receiverVerified=0 correlatedReads=120 uncorrelatedReads=1"), std::string::npos) << correlationText;
+  EXPECT_NE(correlationText.find("lastProgramSequence=179"), std::string::npos) << correlationText;
+  // A correctly correlated read with the wrong negotiated dimensions is NOT
+  // the frame emitted by MF. Hold the prior pixels and their prior identity.
+  for (int identity = 180; identity < 239; ++identity) {
+    pixels[0] = static_cast<uint8_t>(identity);
+    trace.begin(); writer.write(pixels, 1920, 1080);
+    trace.finish(writer.header->seq, writer.header->frameNumber, identity, identity * 166666LL);
+    EXPECT_EQ(receive(), identity);
+  }
+  trace.begin();
+  writer.write(std::vector<uint8_t>(8 * 8 * 3 / 2, 200), 8, 8);
+  trace.finish(writer.header->seq, writer.header->frameNumber, 999, 999 * 166666LL);
+  EXPECT_EQ(receive(), 238);
+  std::ifstream mismatchLog(logPath, std::ios::binary);
+  const std::string mismatchText((std::istreambuf_iterator<char>(mismatchLog)), {});
+  const auto lastRecord = mismatchText.rfind("[vcam-delivery-v2]");
+  ASSERT_NE(lastRecord, std::string::npos);
+  const auto lastLine = mismatchText.substr(lastRecord);
+  EXPECT_NE(lastLine.find("formatMismatch=1"), std::string::npos);
+  EXPECT_NE(lastLine.find("lastProgramSequence=238"), std::string::npos);
+  EXPECT_NE(lastLine.find("lastReadProgramSequence=999"), std::string::npos);
+}
+#endif
 
 TEST(VirtualCameraShmRoundtrip, NoRegionMeansNoFrame) {
   // With no writer mapping alive, the reader reports "no frame" (not a crash).
@@ -168,6 +376,8 @@ TEST(VirtualCameraShmRoundtrip, NoRegionMeansNoFrame) {
   std::vector<std::uint8_t> out;
   int rw = 0, rh = 0;
   EXPECT_FALSE(reader.readLatest(out, rw, rh));
+  EXPECT_EQ(reader.evidence().lastResult, corevideo::modules::VirtualCameraReadResult::Unavailable);
+  EXPECT_FALSE(reader.evidence().identityObserved);
 }
 
 TEST(VirtualCameraShmRoundtrip, LatestWriteWins) {
