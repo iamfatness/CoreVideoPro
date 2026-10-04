@@ -41,8 +41,12 @@ Three lanes, at most one item in flight per lane. Lane C is the owner's and is t
 
 Owner direction 2026-10-03 after the show: start #517 under the
 [render isolation and delivery specification](reference/render-delivery-spec.md).
-It is the active Lane A item ahead of #538; the owner is still in the meeting.
-Keep the running installation untouched while developing and testing in isolation.
+It is the active Lane A item ahead of #538. The owner subsequently approved
+desktop validation after the meeting and the [completion plan](reference/render-delivery-completion-plan.md).
+Execute camera attribution/repair first, then #781 as the installation prerequisite
+before final #517 qualification, with the remaining render and diagnostics scope
+under #517. #781 gets a separate PR and is the next scoped Lane A item; keep one
+Lane A code item in flight. Preserve installed rollback and failed evidence.
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
@@ -227,3 +231,4 @@ These rows record specific fixes, not blanket production or fleet reliability.
 | [#574](https://github.com/iamfatness/CoreVideoPro/issues/574) | GPU readiness moved before publication in #566. Hardware pixel tests and 30m16s installed candidate soak passed with zero new CVP delivery failures. Workload limits remain under #517/#569. |
 | [#529](https://github.com/iamfatness/CoreVideoPro/issues/529), [#533](https://github.com/iamfatness/CoreVideoPro/issues/533) | ISO drops/timeline fixes merged and validated in the earlier 24-minute six-ISO recording; shipped September 18. |
 | [#516](https://github.com/iamfatness/CoreVideoPro/issues/516), [#526](https://github.com/iamfatness/CoreVideoPro/issues/526), [#518](https://github.com/iamfatness/CoreVideoPro/issues/518) | Earlier render-stall, Program-buffer startup/busy-loop, and audio-log fixes merged and validated; shipped September 18. Later distinct defects retain their own issues. |
+
