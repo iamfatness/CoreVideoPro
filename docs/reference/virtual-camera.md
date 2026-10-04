@@ -221,11 +221,26 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
   delta/sec = the publish fps.
 
 **Rig ops for the DLL (READ before rebuilding it):**
-1. Registration is HKCU (no admin): `scripts/register-virtualcam.ps1`.
-2. **Rebuilding the DLL needs the app stopped AND the Frame Server restarted elevated** — it
-   holds an image-section handle to the registered DLL, so the relink fails with `LNK1104`
-   even though `tasklist /m` shows no holder. `Start-Process powershell -Verb RunAs
-   -ArgumentList 'Restart-Service FrameServer -Force'` (owner approves the UAC).
+1. Setup installs an administrator-owned, hash-versioned copy in
+   `Common Files\CoreVideoProCamera\<sha256>\corevideo-virtualcam.dll`, with
+   read/execute access for LocalService and users. HKLM owns the COM registration;
+   HKCU is an alias to the same runtime. `Register-VirtualCamera.cmd` invokes the
+   ownership-aware helper and requests elevation. Silent setup must already be
+   elevated; failure is reported, rather than silently installing a broken camera.
+   The dev wrapper requires an explicit `-AppDirectory`; it never selects a stale
+   checkout automatically. Startup repairs only a missing/stale alias owned by
+   this app, from an installed machine runtime. Unknown ownership and machine
+   paths fail with named diagnostics.
+2. DLL versions are immutable while installed. Setup never restarts camera
+   services underneath consumers. Close/reopen consumers; if Windows still has
+   the previous DLL cached, restart Windows. `Install-VirtualCamera.ps1 -Action
+   Inspect -AppDirectory <app>` separates registry/hash checks from observed
+   module paths. Access-denied module inspection is **unverified**. Even a matching
+   loaded module is not proof of pixels reaching a particular receiver.
+   Uninstall removes only its owned keys and tries to delete its unreferenced
+   runtime after an exclusive write-open and hash check. Loaded images, rollback
+   references, and uncertain cases are retained; it never forces removal or
+   schedules a reboot delete. No production SHM file is deleted.
 3. Build target: `cmake --build native\build-dev --config Release --target
    corevideo-virtualcam corevideo-native corevideo-native-tests`.
 4. `native/virtualcam-dll/VcamLog.h` is gated serve-tracing for debugging the DLL side.

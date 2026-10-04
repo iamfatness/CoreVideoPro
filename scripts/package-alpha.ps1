@@ -104,6 +104,9 @@ foreach ($required in @('msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.
 Get-ChildItem -LiteralPath $crtDirectory -File -Filter '*.dll' |
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $app -Force }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'alpha/Install-MediaRuntime.ps1') -Destination $app
+foreach ($helper in @('Install-VirtualCamera.ps1','VirtualCameraRegistration.psm1','Remove-OwnedShortcuts.ps1')) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "alpha/$helper") -Destination $app
+}
 $testerGuide = if ($channel -eq 'beta') { 'docs/beta-tester-guide.md' } else { 'docs/alpha-tester-guide.md' }
 Copy-Item -LiteralPath (Join-Path $repoRoot $testerGuide) -Destination (Join-Path $app 'README.md')
 $notices = Join-Path $app 'notices'
@@ -132,13 +135,15 @@ start "" "%~dp0CoreVideoPro.WinUI.exe" %*
 @echo off
 setlocal
 cd /d "%~dp0"
-"%SystemRoot%\System32\regsvr32.exe" "%~dp0corevideo-virtualcam.dll"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-VirtualCamera.ps1" -Action Install -AppDirectory "%~dp0." -AllowElevation
+exit /b %errorlevel%
 '@ | Set-Content -LiteralPath (Join-Path $app 'Register-VirtualCamera.cmd') -Encoding ASCII
 @'
 @echo off
 setlocal
 cd /d "%~dp0"
-"%SystemRoot%\System32\regsvr32.exe" /u "%~dp0corevideo-virtualcam.dll"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-VirtualCamera.ps1" -Action Uninstall -AppDirectory "%~dp0." -AllowElevation
+exit /b %errorlevel%
 '@ | Set-Content -LiteralPath (Join-Path $app 'Unregister-VirtualCamera.cmd') -Encoding ASCII
 $files = @(Get-ChildItem -LiteralPath $app -Recurse -File)
 foreach ($file in $files) {
