@@ -179,6 +179,36 @@ public sealed class ShowInputUnifiedSourceTests
         }));
     }
 
+    [Theory]
+    [InlineData("screen:0")]
+    [InlineData("window:00000000000F176E")]
+    public void NativeCapturePendingStartSurvivesRepeatedDiscoveryRefresh(string id)
+    {
+        var original = Device(id, "Capture", "Screen capture");
+        Assert.True(ShowInputRosterService.NativeCaptureSessionStarted(original, "connecting"));
+        Assert.False(ShowInputRosterService.NativeCaptureSessionStarted(original, "failed"));
+        Assert.False(ShowInputRosterService.NativeCaptureSessionStarted(original, "detected"));
+        for (var refresh = 0; refresh < 100; refresh++)
+        {
+            var pending = ShowInputRosterService.MapCoreOwnedCaptureDevice(new NativeCaptureDeviceStatus
+            {
+                Id = id, Vendor = "Windows Graphics Capture", ConnectionState = "connecting",
+                SignalPresent = false
+            });
+            Assert.NotNull(pending);
+            // Connected means the session request was accepted, not that pixels
+            // exist. The independent signal flag must remain false during startup.
+            Assert.Equal(CaptureConnectionState.Connected, pending.ConnectionState);
+            Assert.False(pending.SignalPresent);
+        }
+        var failed = ShowInputRosterService.MapCoreOwnedCaptureDevice(new NativeCaptureDeviceStatus
+        {
+            Id = id, Vendor = "Windows Graphics Capture", ConnectionState = "failed"
+        });
+        Assert.Equal(CaptureConnectionState.Error, failed?.ConnectionState);
+        Assert.False(ShowInputRosterService.NativeCaptureSessionStarted(Camera("cam-1", "UVC"), "connecting"));
+    }
+
     [Fact]
     public void SelectedUnifiedSourceId_SetInfersKindAndAssignsIdsTogether()
     {

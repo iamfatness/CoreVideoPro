@@ -76,3 +76,38 @@ TEST(CaptureSessionLifecycle, FailedStartIsVisibleAndExplicitRetryCanRecover) {
   fail.store(false); EXPECT_TRUE(lifecycle.connect("a"));
   EXPECT_TRUE(await([&] { return lifecycle.status("a") == "connected"; }));
 }
+
+TEST(CaptureSessionLifecycle, RepeatedConnectPreservesPendingAndRunningSession) {
+  std::promise<void> creating, release;
+  auto started = creating.get_future();
+  const auto gate = release.get_future().share();
+  std::atomic<int> created{0}, retired{0};
+  Lifecycle lifecycle([&](const std::string&) {
+    const int epoch = ++created;
+    if (epoch == 1) { creating.set_value(); gate.wait(); }
+    return std::make_shared<Session>(Session{epoch});
+  }, [&](Session&) { ++retired; });
+  EXPECT_TRUE(lifecycle.connect("screen:0"));
+  const bool began = started.wait_for(std::chrono::seconds(3)) == std::future_status::ready;
+  bool accepted = true;
+  for (int i = 0; i < 100; ++i) accepted &= lifecycle.connect("screen:0");
+  const bool pending = lifecycle.status("screen:0") == "connecting";
+  release.set_value(); // unblock before any fatal assertion
+  EXPECT_TRUE(began); EXPECT_TRUE(accepted); EXPECT_TRUE(pending);
+  ASSERT_TRUE(await([&] { return lifecycle.status("screen:0") == "connected"; }));
+  const auto original = lifecycle.snapshot().at("screen:0");
+  for (int i = 0; i < 100; ++i) {
+    EXPECT_TRUE(lifecycle.connect("screen:0"));
+    EXPECT_EQ(lifecycle.status("screen:0"), "connected");
+    const auto sessions = lifecycle.snapshot();
+    ASSERT_EQ(sessions.size(), 1u);
+    EXPECT_EQ(sessions.at("screen:0"), original);
+  }
+  EXPECT_EQ(created.load(), 1); EXPECT_EQ(retired.load(), 0);
+  EXPECT_TRUE(lifecycle.disconnect("screen:0"));
+  ASSERT_TRUE(await([&] { return lifecycle.status("screen:0") == "detected"; }));
+  EXPECT_TRUE(lifecycle.connect("screen:0"));
+  ASSERT_TRUE(await([&] { return lifecycle.status("screen:0") == "connected"; }));
+  EXPECT_EQ(lifecycle.snapshot().at("screen:0")->epoch, 2);
+  EXPECT_EQ(created.load(), 2); EXPECT_EQ(retired.load(), 1);
+}
