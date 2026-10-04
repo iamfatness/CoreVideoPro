@@ -29,10 +29,11 @@ struct D3DCaptureCpuReservation {
 class D3DCaptureCpuBranch {
  public:
   struct Stats { uint64_t copied = 0, admitted = 0, converted = 0, capacityRefused = 0,
-    queueRefused = 0, failed = 0, outputRefused = 0; size_t ready = 0; };
+    queueRefused = 0, failed = 0, outputRefused = 0, preparationRefused = 0; size_t ready = 0; };
   D3DCaptureCpuBranch(ID3D11Device* producer, std::string sourceId,
-                      std::function<void()> beforeConvert = {})
-      : producer_(producer), sourceId_(std::move(sourceId)), beforeConvert_(std::move(beforeConvert)) {
+                      std::function<void()> beforeConvert = {}, std::function<void()> beforePrepare = {})
+      : producer_(producer), sourceId_(std::move(sourceId)), beforeConvert_(std::move(beforeConvert)),
+        beforePrepare_(std::move(beforePrepare)) {
     ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter;
     if (FAILED(producer->QueryInterface(IID_PPV_ARGS(&dxgi))) || FAILED(dxgi->GetAdapter(&adapter)) ||
         FAILED(D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
@@ -41,25 +42,35 @@ class D3DCaptureCpuBranch {
     worker_ = std::make_unique<CaptureFrameWorker<Work>>(
         [this](const Work& work) { convert(work); },
         [this] { retireReads(); }, [this] { finishReads(); });
+    preparationWorker_ = std::make_unique<CaptureFrameWorker<Preparation>>(
+        [this](const Preparation& work) {
+          // Free unleased/stale generations on the preparation owner before
+          // allocating their replacement. Never admit a third generation.
+          work.retiring->generations.clear();
+          std::unique_ptr<Generation> next;
+          try { if (beforePrepare_) beforePrepare_(); next = initialize(work.desc); } catch (...) { ++failed_; }
+          if (!next) ++capacityRefused_;
+          std::lock_guard<std::mutex> lock(preparationMutex_);
+          prepared_ = std::move(next); preparing_ = false;
+        });
   }
-  ~D3DCaptureCpuBranch() { if (worker_) worker_->stop(); }
-  bool valid() const { return worker_ != nullptr; }
+  ~D3DCaptureCpuBranch() {
+    if (preparationWorker_) preparationWorker_->stop();
+    if (worker_) worker_->stop();
+  }
+  bool valid() const { return worker_ != nullptr && preparationWorker_ != nullptr; }
 
   // Called only by the capture context owner. No wait for readback/conversion.
   void copy(ID3D11DeviceContext* captureContext, ID3D11Texture2D* source,
             int64_t sequence, uint64_t epoch, int64_t capture100ns) {
     if (!worker_) { ++failed_; return; }
     publishReady(captureContext);
-    if (retired_ && idle(*retired_)) retired_.reset();
     D3D11_TEXTURE2D_DESC desc{}; source->GetDesc(&desc);
     if (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM || desc.Width == 0 || desc.Height == 0 ||
         desc.Width > 7680 || desc.Height > 4320 || desc.MipLevels != 1 || desc.ArraySize != 1 ||
         desc.SampleDesc.Count != 1) { ++failed_; return; }
     if (!current_ || current_->width != desc.Width || current_->height != desc.Height) {
-      if (retired_) { ++capacityRefused_; return; }
-      auto next = initialize(desc);
-      if (!next) { ++capacityRefused_; return; }
-      retired_ = std::move(current_); current_ = std::move(next);
+      if (!prepareGeneration(desc)) return;
     }
     for (auto& slot : current_->slots) {
       if (slot.pending || slot.image.use_count() != 1) continue;
@@ -92,6 +103,7 @@ class D3DCaptureCpuBranch {
     }
   }
   void stopOnCaptureOwner(ID3D11DeviceContext* captureContext) {
+    if (preparationWorker_) preparationWorker_->stop();
     if (worker_) worker_->stop();
     captureContext->Flush();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -127,7 +139,7 @@ class D3DCaptureCpuBranch {
     std::lock_guard<std::mutex> lock(outputMutex_);
     const auto work = worker_ ? worker_->stats() : CaptureFrameWorker<Work>::Stats{};
     return {copied_.load(), work.accepted, converted_.load(), capacityRefused_.load(), queueRefused_.load(),
-      failed_.load() + work.failed, outputRefused_.load(), output_.size()};
+      failed_.load() + work.failed, outputRefused_.load(), preparationRefused_.load(), output_.size()};
   }
  private:
   struct Image {
@@ -140,7 +152,30 @@ class D3DCaptureCpuBranch {
   struct Slot { std::shared_ptr<Image> image; ComPtr<ID3D11Query> ready;
     Work work; bool pending = false; };
   struct Generation { UINT width = 0, height = 0; std::array<Slot, 3> slots; };
+  struct Retirement { std::vector<std::shared_ptr<Generation>> generations; };
+  struct Preparation { D3D11_TEXTURE2D_DESC desc{}; std::shared_ptr<Retirement> retiring; };
   struct Reading { std::shared_ptr<Image> image; ComPtr<ID3D11Query> ready; };
+  bool prepareGeneration(const D3D11_TEXTURE2D_DESC& desc) {
+    if (retired_ && !idle(*retired_)) { ++capacityRefused_; return false; }
+    Preparation work; work.desc = desc;
+    {
+      std::lock_guard<std::mutex> lock(preparationMutex_);
+      if (preparing_) { ++preparationRefused_; return false; }
+      if (prepared_ && prepared_->width == desc.Width && prepared_->height == desc.Height) {
+        retired_ = std::move(current_); current_ = std::move(prepared_); return true;
+      }
+      work.retiring = std::make_shared<Retirement>();
+      if (retired_) work.retiring->generations.push_back(std::move(retired_));
+      if (prepared_) work.retiring->generations.push_back(std::move(prepared_));
+      preparing_ = true;
+    }
+    // Only one preparation is ever admitted. Intermediate dimensions may be
+    // refused until it completes; stale resources then retire on that owner.
+    if (!preparationWorker_->submit(std::move(work), true)) {
+      std::lock_guard<std::mutex> lock(preparationMutex_); preparing_ = false; ++failed_;
+    }
+    ++preparationRefused_; return false;
+  }
   std::unique_ptr<Generation> initialize(D3D11_TEXTURE2D_DESC desc) {
     auto generation = std::make_unique<Generation>();
     generation->width = desc.Width; generation->height = desc.Height;
@@ -241,8 +276,11 @@ class D3DCaptureCpuBranch {
   ComPtr<ID3D11DeviceContext> context_;
   std::string sourceId_;
   std::function<void()> beforeConvert_;
+  std::function<void()> beforePrepare_;
   std::unique_ptr<CaptureFrameWorker<Work>> worker_;
-  std::unique_ptr<Generation> current_, retired_;
+  std::unique_ptr<CaptureFrameWorker<Preparation>> preparationWorker_;
+  std::shared_ptr<Generation> current_, retired_, prepared_;
+  std::mutex preparationMutex_; bool preparing_ = false;
   ComPtr<ID3D11Texture2D> staging_;
   std::shared_ptr<D3DCaptureCpuReservation> stagingReservation_;
   UINT stagingWidth_ = 0, stagingHeight_ = 0;
@@ -251,6 +289,6 @@ class D3DCaptureCpuBranch {
   inline static std::vector<Reading> quarantine_;
   mutable std::mutex outputMutex_;
   std::vector<VideoFrame> output_;
-  std::atomic<uint64_t> copied_{0}, converted_{0}, capacityRefused_{0}, queueRefused_{0}, failed_{0}, outputRefused_{0};
+  std::atomic<uint64_t> copied_{0}, converted_{0}, capacityRefused_{0}, queueRefused_{0}, failed_{0}, outputRefused_{0}, preparationRefused_{0};
 };
 }

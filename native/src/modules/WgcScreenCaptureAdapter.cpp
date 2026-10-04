@@ -191,6 +191,15 @@ class WgcSession {
     }
     width_ = item.Size().Width;
     height_ = item.Size().Height;
+    if (gpuEnabled_) {
+      // Device/context creation belongs to the session lifecycle owner. CPU
+      // pool generations are subsequently prepared on their own worker.
+      try {
+        auto cpu = std::make_shared<D3DCaptureCpuBranch>(device_.Get(), sourceId_);
+        if (cpu->valid()) { std::lock_guard<std::mutex> lock(cpuBranchMutex_); cpuBranch_ = std::move(cpu); }
+        else ++cpuAdmissionFailed_;
+      } catch (...) { ++cpuAdmissionFailed_; }
+    }
     framePool_ = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
         winrtDevice, wgd::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, item.Size());
     if (gpuEnabled_)
@@ -285,10 +294,10 @@ class WgcSession {
     if (cpuAdmissionFailed_.load()) return "CPU/ISO branch admission failed: " + std::to_string(cpuAdmissionFailed_.load());
     if (auto cpu = cpuBranch()) {
       const auto stats = cpu->stats();
-      if (stats.capacityRefused || stats.queueRefused || stats.failed || stats.outputRefused)
+      if (stats.capacityRefused || stats.queueRefused || stats.failed || stats.outputRefused || stats.preparationRefused)
         return "CPU/ISO conversion loss: capacity=" + std::to_string(stats.capacityRefused) +
             " queue=" + std::to_string(stats.queueRefused) + " failed=" + std::to_string(stats.failed) +
-            " output=" + std::to_string(stats.outputRefused);
+            " output=" + std::to_string(stats.outputRefused) + " preparation=" + std::to_string(stats.preparationRefused);
     }
     return {};
   }
@@ -415,11 +424,8 @@ class WgcSession {
     try {
     if (gpuEnabled_ && cpuRequired_.load(std::memory_order_acquire)) {
       auto cpu = cpuBranch();
-      if (!cpu) {
-        cpu = std::make_shared<D3DCaptureCpuBranch>(device_.Get(), sourceId_);
-        std::lock_guard<std::mutex> lock(cpuBranchMutex_); cpuBranch_ = cpu;
-      }
-      cpu->copy(context_.Get(), texture.Get(), captured.sequence, sourceEpoch_, captured.capture100ns);
+      if (cpu) cpu->copy(context_.Get(), texture.Get(), captured.sequence, sourceEpoch_, captured.capture100ns);
+      else ++cpuAdmissionFailed_;
     } else if (auto cpu = cpuBranch()) { cpu->publishReady(context_.Get()); }
     } catch (...) { ++cpuAdmissionFailed_; } // CPU allocation/admission cannot discard Program's copy
     if (gpuEnabled_ && gpuSlot < 0 &&

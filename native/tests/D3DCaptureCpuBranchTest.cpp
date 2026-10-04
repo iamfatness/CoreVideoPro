@@ -30,6 +30,17 @@ struct Rig {
     return result;
   }
 };
+bool submitPrepared(D3DCaptureCpuBranch& cpu, ID3D11DeviceContext* context,
+                    ID3D11Texture2D* image, int64_t sequence, uint64_t epoch, int64_t time) {
+  const auto before = cpu.stats().copied;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  do {
+    cpu.copy(context, image, sequence, epoch, time); context->Flush();
+    if (cpu.stats().copied > before) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  } while (std::chrono::steady_clock::now() < deadline);
+  return false;
+}
 }
 
 TEST(D3DCaptureCpuBranch, HeldConversionCannotRetainProductionSlotsOrRelabelPixels) {
@@ -46,7 +57,7 @@ TEST(D3DCaptureCpuBranch, HeldConversionCannotRetainProductionSlotsOrRelabelPixe
   ASSERT_TRUE(cpu.valid());
   std::vector<uint8_t> bytes(32 * 32 * 4, 1);
   rig.capture->UpdateSubresource(source.Get(), 0, nullptr, bytes.data(), 32 * 4, 0);
-  cpu.copy(rig.capture.Get(), source.Get(), 1, 9, 12345); rig.capture->Flush();
+  const bool submitted = submitPrepared(cpu, rig.capture.Get(), source.Get(), 1, 9, 12345);
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   while (started.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready && std::chrono::steady_clock::now() < deadline) {
     cpu.publishReady(rig.capture.Get()); std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -81,7 +92,7 @@ TEST(D3DCaptureCpuBranch, HeldConversionCannotRetainProductionSlotsOrRelabelPixe
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   cpu.stopOnCaptureOwner(rig.capture.Get());
   const auto converted = cpu.take();
-  EXPECT_TRUE(blocked); EXPECT_TRUE(complete); EXPECT_EQ(delivered, 29);
+  EXPECT_TRUE(submitted); EXPECT_TRUE(blocked); EXPECT_TRUE(complete); EXPECT_EQ(delivered, 29);
   EXPECT_GT(pressured.capacityRefused + pressured.queueRefused, 0u);
   ASSERT_FALSE(converted.empty());
   EXPECT_EQ(converted[0].frameId, 1); EXPECT_EQ(converted[0].sourceEpoch, 9u);
@@ -97,6 +108,55 @@ TEST(D3DCaptureCpuBranch, AdmissionCountsAllNewSourceBytesAndReleasesReservation
     EXPECT_EQ(D3DVideoImage::residentBytes.load(), before + 4096);
   }
   EXPECT_EQ(D3DVideoImage::residentBytes.load(), before);
+}
+
+TEST(D3DCaptureCpuBranch, BlockedResourcePreparationLeavesProductionPixelsAdvancing) {
+  Rig rig; ASSERT_TRUE(rig.start());
+  auto consumer = D3DVideoConsumers::add(rig.reader.Get()); ASSERT_NE(consumer, nullptr);
+  D3DVideoFramePool production; ASSERT_TRUE(production.initialize(rig.producer.Get(), 32, 32, 1));
+  auto source = rig.image(32, 32), readback = rig.image(32, 32, true);
+  ASSERT_NE(source, nullptr); ASSERT_NE(readback, nullptr);
+  std::promise<void> entered, release; auto started = entered.get_future();
+  const auto gate = release.get_future().share(); std::atomic<bool> first{true};
+  D3DCaptureCpuBranch cpu(rig.producer.Get(), "capture:prepare", {}, [&] {
+    if (first.exchange(false)) { entered.set_value(); gate.wait(); }
+  });
+  ASSERT_TRUE(cpu.valid());
+  cpu.copy(rig.capture.Get(), source.Get(), 1, 1, 100);
+  const bool blocked = started.wait_for(std::chrono::seconds(3)) == std::future_status::ready;
+  int delivered = 0; bool complete = true;
+  for (int sequence = 2; sequence <= 13 && complete; ++sequence) {
+    std::vector<uint8_t> pixels(32 * 32 * 4, static_cast<uint8_t>(sequence));
+    rig.capture->UpdateSubresource(source.Get(), 0, nullptr, pixels.data(), 128, 0);
+    const auto slot = production.beginCopy(rig.capture.Get(), source.Get());
+    cpu.copy(rig.capture.Get(), source.Get(), sequence, 1, sequence * 100);
+    rig.capture->Flush();
+    std::shared_ptr<const GpuVideoFrame> frame;
+    const auto due = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    do { frame = production.completed(rig.capture.Get(), slot); if (frame) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < due);
+    if (!frame) { complete = false; break; }
+    const auto image = std::dynamic_pointer_cast<const D3DVideoImage>(frame);
+    const auto* view = image->view(consumer->id);
+    if (!view) { complete = false; break; }
+    rig.read->CopyResource(readback.Get(), view->texture.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(rig.read->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &mapped))) { complete = false; break; }
+    complete = static_cast<const uint8_t*>(mapped.pData)[0] == sequence;
+    rig.read->Unmap(readback.Get(), 0); if (complete) ++delivered;
+  }
+  const auto pressured = cpu.stats(); release.set_value();
+  const bool submitted = submitPrepared(cpu, rig.capture.Get(), source.Get(), 13, 1, 1300);
+  const auto due = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (cpu.stats().converted == 0 && std::chrono::steady_clock::now() < due) {
+    cpu.publishReady(rig.capture.Get()); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  cpu.stopOnCaptureOwner(rig.capture.Get()); const auto result = cpu.take();
+  EXPECT_TRUE(blocked); EXPECT_TRUE(complete); EXPECT_EQ(delivered, 12);
+  EXPECT_EQ(pressured.copied, 0u); EXPECT_GT(pressured.preparationRefused, 0u);
+  EXPECT_TRUE(submitted); ASSERT_FALSE(result.empty());
+  EXPECT_EQ(result.front().frameId, 13); EXPECT_EQ((*result.front().pixels)[0], 13u);
 }
 
 TEST(D3DCaptureCpuBranch, ResizeBoundsRetirementAndPreservesAdmittedEpochs) {
@@ -115,12 +175,12 @@ TEST(D3DCaptureCpuBranch, ResizeBoundsRetirementAndPreservesAdmittedEpochs) {
     if (first.exchange(false)) { entered.set_value(); gate.wait(); }
   });
   ASSERT_TRUE(cpu.valid());
-  cpu.copy(rig.capture.Get(), firstImage.Get(), 1, 1, 100); rig.capture->Flush();
+  const bool firstSubmitted = submitPrepared(cpu, rig.capture.Get(), firstImage.Get(), 1, 1, 100);
   const auto firstDue = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   while (started.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready && std::chrono::steady_clock::now() < firstDue) {
     cpu.publishReady(rig.capture.Get()); std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
-  cpu.copy(rig.capture.Get(), secondImage.Get(), 2, 2, 200); rig.capture->Flush();
+  const bool secondSubmitted = submitPrepared(cpu, rig.capture.Get(), secondImage.Get(), 2, 2, 200);
   const auto secondDue = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   while (cpu.stats().admitted < 2 && std::chrono::steady_clock::now() < secondDue) {
     cpu.publishReady(rig.capture.Get()); std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -140,6 +200,7 @@ TEST(D3DCaptureCpuBranch, ResizeBoundsRetirementAndPreservesAdmittedEpochs) {
   }
   cpu.stopOnCaptureOwner(rig.capture.Get());
   const auto result = cpu.take();
+  EXPECT_TRUE(firstSubmitted); EXPECT_TRUE(secondSubmitted);
   EXPECT_EQ(stillBoundedBytes, boundedBytes);
   EXPECT_GT(cpu.stats().capacityRefused, 0u);
   ASSERT_EQ(result.size(), 3u);
