@@ -462,6 +462,28 @@ TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndIndependentCpuCon
   EXPECT_FALSE(consumer.frame.hasPixels());
   EXPECT_TRUE(consumer.frame.hasGpuPixels());
   std::fprintf(stderr, "[capture-test] GPU-only/ISO transitions passed; %d new production frames with all monitor slots retained\n", advanced);
+  for (int cycle = 0; cycle < 3; ++cycle) {
+    const auto priorEpoch = consumer.frame.sourceEpoch;
+    capture->disconnect(devices.front().id);
+    capture->connect(devices.front().id);
+    const auto reconnectBy = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (consumer.frame.sourceEpoch <= priorEpoch && std::chrono::steady_clock::now() < reconnectBy) {
+      capture->deliverVideo(consumer, 0);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_GT(consumer.frame.sourceEpoch, priorEpoch);
+    ASSERT_TRUE(consumer.frame.hasGpuPixels());
+    cpuFrames.clear();
+    while (cpuFrames.empty() && std::chrono::steady_clock::now() < reconnectBy) {
+      capture->deliverVideo(consumer, 0);
+      compositor->render(request.programPlan, {consumer.frame});
+      cpuFrames = capture->takeCpuVideoFrames();
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_FALSE(cpuFrames.empty());
+    EXPECT_EQ(cpuFrames.front().sourceEpoch, consumer.frame.sourceEpoch);
+  }
+  std::fprintf(stderr, "[capture-test] three asynchronous reconnects produced fresh GPU/CPU epochs\n");
   capture->disconnect(devices.front().id);
 }
 #endif

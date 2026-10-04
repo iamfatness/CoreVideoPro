@@ -23,6 +23,7 @@
 #include <wrl/client.h>
 #include "modules/D3DVideoFrame.h"
 #include "modules/CaptureFrameWorker.h"
+#include "modules/CaptureSessionLifecycle.h"
 #include "modules/D3DCaptureCpuBranch.h"
 
 #include <atomic>
@@ -137,7 +138,7 @@ class WgcSession {
   // whole core: WgcSession::onFrame deref'ing a torn-down context_). 2026-07-10.
   ~WgcSession() { stop(); }
 
-  bool start(const MonitorTarget& target) {
+  bool start(const MonitorTarget& target, bool gpuEnabled) {
     sourceId_ = "capture:" + target.id;
     sourceEpoch_ = ++nextSourceEpoch_;
     // WGC supplies the compositor's QPC timestamp in 100 ns units. Calibrate
@@ -154,8 +155,7 @@ class WgcSession {
         captureClockCalibrated_ = true;
       }
     }
-    const char* gpuCapture = std::getenv("COREVIDEO_GPU_CAPTURE");
-    gpuEnabled_ = gpuCapture && std::string(gpuCapture) == "1";
+    gpuEnabled_ = gpuEnabled;
     if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
                                  D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
                                  device_.GetAddressOf(), nullptr, context_.GetAddressOf()))) {
@@ -243,12 +243,14 @@ class WgcSession {
     { std::lock_guard<std::mutex> drain(frameMutex_); }
     if (worker_) worker_->stop();
     if (session_) {
-      session_.Close();
-      session_ = nullptr;
+      auto closing = std::exchange(session_, nullptr);
+      try { closing.Close(); }
+      catch (...) { core::nativeLogf("[wgc-lifecycle] capture session close failed\n"); }
     }
     if (framePool_) {
-      framePool_.Close();
-      framePool_ = nullptr;
+      auto closing = std::exchange(framePool_, nullptr);
+      try { closing.Close(); }
+      catch (...) { core::nativeLogf("[wgc-lifecycle] frame pool close failed\n"); }
     }
   }
 
@@ -584,21 +586,43 @@ class WgcSession {
 
 class WgcScreenCaptureDevice : public ICaptureDevice {
  public:
+  WgcScreenCaptureDevice() : gpuEnabled_([] {
+    const char* value = std::getenv("COREVIDEO_GPU_CAPTURE");
+    return value && std::string(value) == "1";
+  }()), lifecycle_([this](const std::string& id) {
+    auto targets = enumerateMonitors();
+    const auto windows = enumerateWindows();
+    targets.insert(targets.end(), windows.begin(), windows.end());
+    for (const auto& target : targets) if (target.id == id) {
+      auto session = std::make_shared<WgcSession>();
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (demandKnown_) session->requireCpu(sourceNeedsCpuVideo(demands_, "capture:" + id));
+      }
+      if (!session->start(target, gpuEnabled_)) return std::shared_ptr<WgcSession>{};
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (demandKnown_) session->requireCpu(sourceNeedsCpuVideo(demands_, "capture:" + id));
+      }
+      return session;
+    }
+    return std::shared_ptr<WgcSession>{};
+  }, [](WgcSession& session) { session.stop(); }) {}
   std::vector<VideoFrame> takeCpuVideoFrames() override {
     std::vector<VideoFrame> result;
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& [id, session] : sessions_) {
+    for (auto& [id, session] : lifecycle_.snapshot()) {
       auto frames = session->takeCpuFrames();
       result.insert(result.end(), std::make_move_iterator(frames.begin()), std::make_move_iterator(frames.end()));
     }
     return result;
   }
   void setVideoConsumerDemand(const std::vector<SourceVideoDemand>& demands) override {
-    std::lock_guard<std::mutex> lock(mutex_);
-    demands_ = demands;
-    demandKnown_ = true;
-    for (auto& [id, session] : sessions_)
-      session->requireCpu(sourceNeedsCpuVideo(demands_, "capture:" + id));
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      demands_ = demands; demandKnown_ = true;
+    }
+    for (auto& [id, session] : lifecycle_.snapshot())
+      session->requireCpu(sourceNeedsCpuVideo(demands, "capture:" + id));
   }
   std::vector<CaptureDeviceInfo> enumerate() const override {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -618,44 +642,23 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
   }
 
   std::vector<CaptureDeviceInfo> disconnect(const std::string& deviceId) override {
+    lifecycle_.disconnect(deviceId);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto session = sessions_.find(deviceId);
-    if (session != sessions_.end()) {
-      session->second->stop();
-      sessions_.erase(session);
-    }
     return infosLocked();
   }
 
   std::vector<CaptureDeviceInfo> connect(const std::string& deviceId) override {
+    const bool accepted = lifecycle_.connect(deviceId);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto targets = enumerateMonitors();
-    const auto windows = enumerateWindows();
-    targets.insert(targets.end(), windows.begin(), windows.end());
-    for (const auto& target : targets) {
-      if (target.id != deviceId) {
-        continue;
-      }
-      auto existing = sessions_.find(deviceId);
-      if (existing != sessions_.end()) {
-        existing->second->stop();
-        sessions_.erase(existing);
-      }
-      auto session = std::make_unique<WgcSession>();
-      if (demandKnown_) session->requireCpu(sourceNeedsCpuVideo(demands_, "capture:" + deviceId));
-      if (session->start(target)) {
-        sessions_[deviceId] = std::move(session);
-      }
-      break;
-    }
-    return infosLocked();
+    auto result = infosLocked();
+    if (!accepted) for (auto& info : result) if (info.id == deviceId)
+      info.warning = "Windows capture lifecycle capacity reached";
+    return result;
   }
 
   void captureVideoTick(int64_t timestampMs) override {
     std::vector<VideoFrame> frames;
-    {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& [deviceId, session] : sessions_) {
+    for (auto& [deviceId, session] : lifecycle_.snapshot()) {
       std::shared_ptr<const std::vector<std::uint8_t>> bgra;
       int width = 0;
       int height = 0;
@@ -684,13 +687,13 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
       frame.pixelStride = width * 4;
       frames.push_back(std::move(frame));
     }
-    }
     replaceVideo(std::move(frames));
   }
 
  private:
   std::vector<CaptureDeviceInfo> infosLocked() const {
     std::vector<CaptureDeviceInfo> infos;
+    const auto sessions = lifecycle_.snapshot();
     auto targets = enumerateMonitors();
     const auto windows = enumerateWindows();
     targets.insert(targets.end(), windows.begin(), windows.end());
@@ -707,20 +710,22 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
       info.width = target.width;
       info.height = target.height;
       info.frameRate = 60;
-      const bool live = sessions_.count(target.id) != 0;
-      info.connectionState = live ? "connected" : "detected";
+      const bool live = sessions.count(target.id) != 0;
+      info.connectionState = lifecycle_.status(target.id);
       info.signalPresent = live;
-      if (live) info.droppedFrames = static_cast<int64_t>(sessions_.at(target.id)->droppedFrames());
-      if (live) info.warning = sessions_.at(target.id)->cpuWarning();
+      if (live) info.droppedFrames = static_cast<int64_t>(sessions.at(target.id)->droppedFrames());
+      if (live) info.warning = sessions.at(target.id)->cpuWarning();
+      else if (info.connectionState == "failed") info.warning = "Windows capture session could not start";
       infos.push_back(std::move(info));
     }
     return infos;
   }
 
   mutable std::mutex mutex_;
-  std::map<std::string, std::unique_ptr<WgcSession>> sessions_;
   bool demandKnown_ = false;
   std::vector<SourceVideoDemand> demands_;
+  bool gpuEnabled_ = false;
+  CaptureSessionLifecycle<WgcSession> lifecycle_;
 };
 
 }  // namespace

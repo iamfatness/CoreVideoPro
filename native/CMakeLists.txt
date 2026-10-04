@@ -704,6 +704,7 @@ if(BUILD_TESTING)
     tests/VirtualCameraDeliveryEvidenceTest.cpp
     tests/DeliveryCounterPatternTest.cpp
     tests/CaptureFrameWorkerTest.cpp
+    tests/CaptureSessionLifecycleTest.cpp
     tests/D3DCaptureCpuBranchTest.cpp
     tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
