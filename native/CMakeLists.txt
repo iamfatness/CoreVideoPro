@@ -697,12 +697,14 @@ if(BUILD_TESTING)
     tests/StreamStartAdmissionTest.cpp
     tests/BrowserHostExitMessageTest.cpp
     tests/IsoFrameConformTest.cpp
+    tests/IsoVideoIngressTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp
     tests/VirtualCameraDeliveryEvidenceTest.cpp
     tests/DeliveryCounterPatternTest.cpp
     tests/CaptureFrameWorkerTest.cpp
+    tests/D3DCaptureCpuBranchTest.cpp
     tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
     tests/VirtualCameraSlateTest.cpp

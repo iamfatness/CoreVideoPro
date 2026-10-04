@@ -292,6 +292,14 @@ class CompositeCaptureDevice final : public ICaptureDevice {
   void setVideoConsumerDemand(const std::vector<SourceVideoDemand>& demands) override {
     for (const auto& device : devices_) device->setVideoConsumerDemand(demands);
   }
+  std::vector<VideoFrame> takeCpuVideoFrames() override {
+    std::vector<VideoFrame> result;
+    for (const auto& device : devices_) {
+      auto frames = device->takeCpuVideoFrames();
+      result.insert(result.end(), std::make_move_iterator(frames.begin()), std::make_move_iterator(frames.end()));
+    }
+    return result;
+  }
 
   std::vector<CaptureDeviceInfo> enumerate() const override {
     std::vector<CaptureDeviceInfo> result;

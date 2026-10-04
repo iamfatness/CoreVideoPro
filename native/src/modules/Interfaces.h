@@ -63,6 +63,10 @@ struct VideoFrame {
   // Same source identity in a separate optional pool. Monitor requests must
   // never retain the production capture lease while waiting for their worker.
   std::shared_ptr<const GpuVideoFrame> monitorGpuPixels;
+  // Native capture identity/time, retained across independent representations.
+  // Zero means a legacy source whose timeline is stamped at gather.
+  uint64_t sourceEpoch = 0;
+  int64_t captureTimestamp100ns = 0;
   [[nodiscard]] bool hasGpuPixels() const {
     return gpuPixels && gpuPixels->width > 0 && gpuPixels->height > 0;
   }
@@ -1604,6 +1608,9 @@ class ICaptureDevice : public ICaptureDeviceLifecycle {
   // adapters keep their existing CPU behavior; GPU capture may avoid readback
   // only after this explicit snapshot establishes that no CPU consumer exists.
   virtual void setVideoConsumerDemand(const std::vector<SourceVideoDemand>&) {}
+  // CPU recording arrivals are independent of the latest GPU preview/Program
+  // slot. Drain all admitted frames, preserving their own identity and time.
+  virtual std::vector<VideoFrame> takeCpuVideoFrames() { return {}; }
   // Publish what adapters have already pushed. The render tick does not pull
   // a frame vector. Video slots are re-published with this tick's timestamp so
   // a held picture stays on air and a frozen frameId can still age out.

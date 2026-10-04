@@ -35,6 +35,10 @@ class RecordingLifecycle final : public corevideo::modules::ICaptureDevice {
   void unregisterCaptureBuffer(const std::string& deviceId) override { unregistered_ = deviceId; }
 
   void captureVideoTick(int64_t) override { replaceVideo(frames); }
+  std::vector<corevideo::modules::VideoFrame> takeCpuVideoFrames() override {
+    std::vector<corevideo::modules::VideoFrame> result;
+    result.swap(cpuFrames); return result;
+  }
   void setVideoConsumerDemand(const std::vector<corevideo::modules::SourceVideoDemand>& value) override {
     demands = value;
   }
@@ -43,9 +47,25 @@ class RecordingLifecycle final : public corevideo::modules::ICaptureDevice {
   std::string lastSelect_, lastOffset_, lastConnect_, registered_, unregistered_;
   std::vector<corevideo::modules::CaptureDeviceInfo> devices_{{"cam-1", "Camera"}};
   std::vector<corevideo::modules::VideoFrame> frames;
+  std::vector<corevideo::modules::VideoFrame> cpuFrames;
 };
 
 }  // namespace
+
+TEST(CaptureDeviceLifecycle, ShellBridgeDrainsIndependentCpuIdentitiesExactlyOnce) {
+  auto device = std::make_unique<RecordingLifecycle>();
+  corevideo::modules::VideoFrame frame;
+  frame.participantId = "capture:screen"; frame.frameId = 17;
+  frame.sourceEpoch = 3; frame.captureTimestamp100ns = 1234567;
+  device->cpuFrames.push_back(frame);
+  corevideo::modules::WinUiCaptureDeviceAdapter bridge(std::move(device));
+  const auto result = bridge.takeCpuVideoFrames();
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].frameId, 17);
+  EXPECT_EQ(result[0].sourceEpoch, 3u);
+  EXPECT_EQ(result[0].captureTimestamp100ns, 1234567);
+  EXPECT_TRUE(bridge.takeCpuVideoFrames().empty());
+}
 
 TEST(CaptureDeviceLifecycle, ShellBridgeForwardsAndReleasesCpuDemand) {
   using namespace corevideo::modules;

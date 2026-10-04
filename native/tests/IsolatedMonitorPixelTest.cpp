@@ -281,12 +281,59 @@ TEST(IsolatedMonitorPixels, CameraIdentityBelongsToTheDeliveredNv12Packet) {
 }
 
 #if COREVIDEO_WITH_WGC
-TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndPreservesCpuConsumers) {
+namespace {
+// Own a small non-activating moving window: WGC need not produce another frame
+// for a static desktop. This generates changes without operator interaction.
+class WgcTestMotion {
+ public:
+  WgcTestMotion() {
+    std::promise<bool> initialized; auto ready = initialized.get_future();
+    thread_ = std::thread([this, initialized = std::move(initialized)]() mutable {
+      POINT origin{20, 20};
+      EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL {
+        MONITORINFO info{}; info.cbSize = sizeof(info);
+        if (GetMonitorInfo(monitor, &info)) {
+          auto* point = reinterpret_cast<POINT*>(data);
+          point->x = info.rcMonitor.left + 20; point->y = info.rcMonitor.top + 20;
+        }
+        return FALSE;
+      }, reinterpret_cast<LPARAM>(&origin));
+      const auto window = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+          L"STATIC", L"CoreVideo capture validation", WS_POPUP,
+          origin.x, origin.y, 160, 90, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+      if (window) ShowWindow(window, SW_SHOWNOACTIVATE);
+      initialized.set_value(window != nullptr);
+      unsigned sequence = 0;
+      while (window && !stopping_.load()) {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+          TranslateMessage(&message); DispatchMessageW(&message);
+        }
+        const auto dc = GetDC(window);
+        RECT rect{0, 0, 160, 90};
+        const auto brush = CreateSolidBrush(RGB(++sequence % 256, 64, 192));
+        FillRect(dc, &rect, brush); DeleteObject(brush); ReleaseDC(window, dc);
+        GdiFlush(); // flush this thread's batched GDI writes before sleeping
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      }
+      if (window) DestroyWindow(window);
+    });
+    valid_ = ready.get();
+  }
+  ~WgcTestMotion() { stopping_.store(true); if (thread_.joinable()) thread_.join(); }
+  bool valid() const { return valid_; }
+ private:
+  std::atomic<bool> stopping_{false}; bool valid_ = false; std::thread thread_;
+};
+}
+TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndIndependentCpuConsumers) {
   const char* enabled = std::getenv("COREVIDEO_CAPTURE_TESTS");
   if (!enabled || std::string(enabled) != "1") {
     std::fprintf(stderr, "[capture-test] SKIPPED real WGC capture; enable COREVIDEO_CAPTURE_TESTS=1 on an interactive rig\n");
     return;
   }
+  WgcTestMotion motion;
+  ASSERT_TRUE(motion.valid());
   corevideo::core::ComApartmentLifetime apartment;
   const char* raw = std::getenv("COREVIDEO_GPU_CAPTURE");
   const std::string previous = raw ? raw : "";
@@ -310,7 +357,18 @@ TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndPreservesCpuConsu
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   ASSERT_TRUE(consumer.frame.hasGpuPixels());
-  EXPECT_TRUE(consumer.frame.hasPixels());
+  EXPECT_FALSE(consumer.frame.hasPixels());
+  std::vector<VideoFrame> cpuFrames;
+  const auto cpuDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (cpuFrames.empty() && std::chrono::steady_clock::now() < cpuDeadline) {
+    cpuFrames = capture->takeCpuVideoFrames();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_FALSE(cpuFrames.empty());
+  EXPECT_TRUE(cpuFrames.front().hasPixels());
+  EXPECT_EQ(cpuFrames.front().sourceEpoch, consumer.frame.sourceEpoch);
+  EXPECT_GT(cpuFrames.front().captureTimestamp100ns, 0);
+  EXPECT_EQ(cpuFrames.front().participantId, consumer.frame.participantId);
   EXPECT_EQ(consumer.frame.gpuPixels->width, consumer.frame.pixelWidth);
   EXPECT_EQ(consumer.frame.gpuPixels->height, consumer.frame.pixelHeight);
   auto request = requestAtSize(64);
@@ -321,11 +379,12 @@ TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndPreservesCpuConsu
   EXPECT_TRUE(output.gpuComposed);
   EXPECT_FALSE(output.preview.bgra.empty());
   EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
-  std::fprintf(stderr, "[capture-test] real WGC %dx%d GPU view consumed; CPU mirror preserved; uploads=%llu\n",
+  std::fprintf(stderr, "[capture-test] real WGC %dx%d GPU view consumed; separate CPU arrival verified; uploads=%llu\n",
       consumer.frame.pixelWidth, consumer.frame.pixelHeight,
       static_cast<unsigned long long>(compositor->sourceTexStats().cachedUploads));
   const auto mirroredId = consumer.frame.frameId;
   capture->setVideoConsumerDemand({});
+  capture->takeCpuVideoFrames(); // drain work admitted before demand release
   const auto gpuOnlyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (std::chrono::steady_clock::now() < gpuOnlyDeadline) {
     capture->deliverVideo(consumer, 0);
@@ -356,31 +415,51 @@ TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndPreservesCpuConsu
   auto lastId = consumer.frame.frameId;
   int advanced = 0;
   bool allGpuOnly = true;
+  int polls = 0; int64_t renderUs = 0, captureUs = 0;
   const auto pressureDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (advanced < 20 && std::chrono::steady_clock::now() < pressureDeadline) {
+    const auto captureStart = std::chrono::steady_clock::now();
     capture->deliverVideo(consumer, 0);
+    captureUs += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - captureStart).count();
+    ++polls;
     if (consumer.frame.frameId > lastId) {
       lastId = consumer.frame.frameId;
       ++advanced;
       allGpuOnly = allGpuOnly && consumer.frame.hasGpuPixels() && !consumer.frame.hasPixels();
-      compositor->render(request.programPlan, {consumer.frame});
     }
+    // Production keeps rendering held pictures. That also retires completed
+    // GPU reads; only rendering on source changes can strand the test's leases.
+    const auto renderStart = std::chrono::steady_clock::now();
+    if (consumer.frame.hasGpuPixels()) compositor->render(request.programPlan, {consumer.frame});
+    renderUs += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - renderStart).count();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   heldMonitors.clear();
+  std::fprintf(stderr, "[capture-test] pressure advanced=%d latest=%lld allGpuOnly=%d\n",
+      advanced, static_cast<long long>(lastId), allGpuOnly ? 1 : 0);
+  std::fprintf(stderr, "[capture-test] polls=%d captureUs=%lld renderUs=%lld\n", polls,
+      static_cast<long long>(captureUs), static_cast<long long>(renderUs));
   EXPECT_EQ(advanced, 20);
   EXPECT_TRUE(allGpuOnly);
   EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
   capture->setVideoConsumerDemand({{consumer.frame.participantId, SourceVideoConsumer::Iso,
       "recording", SourceVideoRepresentation::Cpu}});
+  cpuFrames.clear();
   const auto isoDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (std::chrono::steady_clock::now() < isoDeadline) {
     capture->deliverVideo(consumer, 0);
-    if (consumer.frame.frameId > gpuOnlyId && consumer.frame.hasPixels()) break;
+    if (consumer.frame.hasGpuPixels()) compositor->render(request.programPlan, {consumer.frame});
+    auto arrived = capture->takeCpuVideoFrames();
+    for (auto& frame : arrived) if (frame.frameId > lastId) cpuFrames.push_back(std::move(frame));
+    if (!cpuFrames.empty()) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   EXPECT_GT(consumer.frame.frameId, gpuOnlyId);
-  EXPECT_TRUE(consumer.frame.hasPixels());
+  ASSERT_FALSE(cpuFrames.empty());
+  EXPECT_TRUE(cpuFrames.front().hasPixels());
+  EXPECT_EQ(cpuFrames.front().sourceEpoch, consumer.frame.sourceEpoch);
+  EXPECT_GT(cpuFrames.front().captureTimestamp100ns, 0);
+  EXPECT_FALSE(consumer.frame.hasPixels());
   EXPECT_TRUE(consumer.frame.hasGpuPixels());
   std::fprintf(stderr, "[capture-test] GPU-only/ISO transitions passed; %d new production frames with all monitor slots retained\n", advanced);
   capture->disconnect(devices.front().id);
