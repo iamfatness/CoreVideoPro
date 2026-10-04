@@ -43,6 +43,10 @@ Three lanes, at most one item in flight per lane. Work the three operator-focus
 rows sequentially, starting with accurate output/health reporting. Lane C acceptance
 can continue alongside that code work; new live failures can still preempt it.
 
+Implementation and acceptance for these three areas are described in the
+[operator reporting and behavior plan](reference/operator-reporting-behavior-plan.md).
+That document explains how; this table remains the only ranked work list.
+
 Owner direction 2026-10-03 after the show: start #517 under the
 [render isolation and delivery specification](reference/render-delivery-spec.md).
 It was the active Lane A item ahead of #538. The owner subsequently approved
