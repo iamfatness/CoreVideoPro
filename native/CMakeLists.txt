@@ -319,6 +319,21 @@ if(COREVIDEO_WITH_VIRTUALCAM)
       mfplat mf mfuuid mfsensorgroup ole32 oleaut32 ksuser strmiids uuid)
   set_target_properties(corevideo-virtualcam PROPERTIES
       LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll/exports.def\"")
+  # Explicit diagnostic target: Frame Server does not inherit the producer's
+  # environment. Keep the retry experiment out of normal builds and packages.
+  add_library(corevideo-virtualcam-retry-qa SHARED EXCLUDE_FROM_ALL
+      virtualcam-dll/dllmain.cpp virtualcam-dll/Guids.cpp
+      virtualcam-dll/MediaSource.cpp virtualcam-dll/MediaStream.cpp)
+  target_compile_features(corevideo-virtualcam-retry-qa PRIVATE cxx_std_17)
+  target_compile_definitions(corevideo-virtualcam-retry-qa PRIVATE
+      WINVER=0x0A00 _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A00000C
+      COREVIDEO_CAMERA_READ_RETRY_QA=1)
+  target_include_directories(corevideo-virtualcam-retry-qa PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll)
+  target_link_libraries(corevideo-virtualcam-retry-qa PRIVATE
+      mfplat mf mfuuid mfsensorgroup ole32 oleaut32 ksuser strmiids uuid)
+  set_target_properties(corevideo-virtualcam-retry-qa PROPERTIES
+      LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll/exports.def\"")
 endif()
 
 # ---------------------------------------------------------------------------
