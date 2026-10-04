@@ -4,6 +4,8 @@
 #include <windows.h>
 
 #include "modules/VirtualCameraPublisher.h"
+#include "modules/VirtualCameraRegistration.h"
+#include <filesystem>
 
 #include <chrono>
 #include <cstdio>
@@ -74,47 +76,64 @@ TEST(VirtualCamRegistration, OldUninstallerPreservesNewerDllButOwnUninstallerRem
   ::FreeLibrary(dll);
 }
 
-TEST(VirtualCamRegistration, CameraStartRepairsRegistrationRemovedByAnOldUninstaller) {
-  wchar_t exePath[MAX_PATH]{};
-  ASSERT_GT(::GetModuleFileNameW(nullptr, exePath, MAX_PATH), 0u);
-  std::wstring expected(exePath);
-  expected.resize(expected.find_last_of(L"\\/") + 1);
-  expected += L"corevideo-virtualcam.dll";
-
-  const std::wstring sandboxPath = L"Software\\CoreVideoProRepairTests-" +
-                                   std::to_wstring(::GetCurrentProcessId());
-  HKEY sandbox = nullptr;
+TEST(VirtualCamRegistration, StartupRepairsOnlyAliasOfOwnedMachineRuntime) {
+  namespace fs = std::filesystem;
+  wchar_t exe[MAX_PATH]{};
+  ASSERT_GT(::GetModuleFileNameW(nullptr, exe, MAX_PATH), 0u);
+  const auto app = fs::path(exe).parent_path().wstring();
+  const auto temporary = fs::temp_directory_path() / (L"CoreVideoCameraOwnership-" + std::to_wstring(::GetCurrentProcessId()));
+  const std::wstring hash(64, L'a');
+  const auto runtime = temporary / L"CoreVideoProCamera" / hash / L"corevideo-virtualcam.dll";
+  fs::create_directories(runtime.parent_path());
+  fs::copy_file(fs::path(COREVIDEO_VCAM_DLL_PATH), runtime, fs::copy_options::overwrite_existing);
+  const std::wstring sandboxPath = L"Software\\CoreVideoProCameraPolicyTests-" + std::to_wstring(::GetCurrentProcessId());
+  HKEY sandbox = nullptr, machine = nullptr, user = nullptr;
   ASSERT_EQ(::RegCreateKeyExW(HKEY_CURRENT_USER, sandboxPath.c_str(), 0, nullptr,
-                             REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, nullptr, &sandbox, nullptr),
-            ERROR_SUCCESS);
-  const auto original = readRegistration(HKEY_CURRENT_USER);
-  const LONG overrideResult = ::RegOverridePredefKey(HKEY_CURRENT_USER, sandbox);
-  EXPECT_EQ(overrideResult, ERROR_SUCCESS);
-  if (overrideResult == ERROR_SUCCESS) {
-    // The Frame Server is a separate process and still sees the real key; the
-    // publisher worker sees this isolated process key and must repair it.
-    for (int attempt = 0; attempt < 2; ++attempt) {
-      if (attempt == 1) {
-        EXPECT_EQ(writeRegistration(sandbox, L"C:\\removed-beta\\corevideo-virtualcam.dll"), ERROR_SUCCESS);
-      }
-      auto publisher = corevideo::modules::createVirtualCameraPublisher();
-      EXPECT_TRUE(publisher->start(1280, 720, 30));
-      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-      while (readRegistration(sandbox) != expected && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-      }
-      EXPECT_EQ(readRegistration(sandbox), expected)
-          << "camera Start did not repair the missing/stale COM path";
-      publisher->stop();
+      REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, nullptr, &sandbox, nullptr), ERROR_SUCCESS);
+  ASSERT_EQ(::RegCreateKeyExW(sandbox, L"machine", 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, nullptr, &machine, nullptr), ERROR_SUCCESS);
+  ASSERT_EQ(::RegCreateKeyExW(sandbox, L"user", 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, nullptr, &user, nullptr), ERROR_SUCCESS);
+  struct Cleanup {
+    HKEY sandbox, machine, user; std::wstring key; fs::path directory;
+    ~Cleanup() {
+      ::RegOverridePredefKey(HKEY_LOCAL_MACHINE, nullptr);
+      ::RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
+      ::RegCloseKey(user); ::RegCloseKey(machine); ::RegCloseKey(sandbox);
+      ::RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str());
+      if (directory.parent_path() == fs::temp_directory_path() &&
+          directory.filename() == (L"CoreVideoCameraOwnership-" + std::to_wstring(::GetCurrentProcessId()))) fs::remove_all(directory);
     }
-    EXPECT_EQ(::RegOverridePredefKey(HKEY_CURRENT_USER, nullptr), ERROR_SUCCESS);
-  }
-  ::RegCloseKey(sandbox);
-  ::RegDeleteTreeW(HKEY_CURRENT_USER, sandboxPath.c_str());
-  EXPECT_EQ(readRegistration(HKEY_CURRENT_USER), original)
-      << "registration repair test changed the installed beta camera";
+  } cleanup{sandbox, machine, user, sandboxPath, temporary};
+  const auto set = [](HKEY root, const wchar_t* path, const wchar_t* name, const std::wstring& value) {
+    HKEY key = nullptr;
+    LONG result = ::RegCreateKeyExW(root, path, 0, nullptr, REG_OPTION_VOLATILE, KEY_ALL_ACCESS, nullptr, &key, nullptr);
+    if (result == ERROR_SUCCESS) {
+      result = ::RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()), static_cast<DWORD>((value.size()+1)*sizeof(wchar_t)));
+      ::RegCloseKey(key);
+    }
+    return result;
+  };
+  ASSERT_EQ(writeRegistration(machine, runtime.c_str()), ERROR_SUCCESS);
+  ASSERT_EQ(set(machine, kServer, L"CoreVideoOwnerRole", L"CoreVideoPro.VirtualCamera.v1"), ERROR_SUCCESS);
+  ASSERT_EQ(set(machine, kServer, L"CoreVideoOwnerAppDirectory", app), ERROR_SUCCESS);
+  ASSERT_EQ(set(machine, kServer, L"CoreVideoSha256", hash), ERROR_SUCCESS);
+  ASSERT_EQ(set(machine, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion", L"CommonFilesDir", temporary.wstring()), ERROR_SUCCESS);
+  ASSERT_EQ(::RegOverridePredefKey(HKEY_LOCAL_MACHINE, machine), ERROR_SUCCESS);
+  ASSERT_EQ(::RegOverridePredefKey(HKEY_CURRENT_USER, user), ERROR_SUCCESS);
+  auto result = corevideo::modules::ensureVirtualCameraRegistration();
+  EXPECT_TRUE(result.ready) << result.warning;
+  EXPECT_TRUE(result.repaired);
+  EXPECT_EQ(readRegistration(user), runtime.wstring());
+  EXPECT_FALSE(corevideo::modules::ensureVirtualCameraRegistration().repaired);
+  ASSERT_EQ(set(user, kServer, L"CoreVideoOwnerRole", L"foreign"), ERROR_SUCCESS);
+  result = corevideo::modules::ensureVirtualCameraRegistration();
+  EXPECT_FALSE(result.ready);
+  EXPECT_EQ(readRegistration(user), runtime.wstring());
+  EXPECT_NE(result.warning.find("CAMERA_USER_REGISTRATION_CONFLICT"), std::string::npos);
+  ASSERT_EQ(::RegDeleteTreeW(machine, kServer), ERROR_SUCCESS);
+  result = corevideo::modules::ensureVirtualCameraRegistration();
+  EXPECT_FALSE(result.ready);
+  EXPECT_NE(result.warning.find("CAMERA_MACHINE_REGISTRATION_MISSING"), std::string::npos);
 }
-
 // Run explicitly with COREVIDEO_REQUIRE_VCAM_START=1 against each intended
 // registration path. The default native suite has no camera/OS prerequisite;
 // an omitted hardware gate is missing evidence, not proof of startup.

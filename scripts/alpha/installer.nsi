@@ -29,7 +29,7 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "CoreVideo Pro"
 ; fix. Beta testers will do exactly the same. The version-named shortcut stays,
 ; but only in the Start menu.
 !define STABLE_SHORTCUT_NAME "CoreVideo Pro"
-!define MUI_WELCOMEPAGE_TEXT "Install this Windows ${CHANNEL} for your account.$\r$\n$\r$\nThe app is unsigned. Use it for rehearsals and testing before an irreplaceable production.$\r$\n$\r$\nSetup may request administrator approval for Microsoft's VC runtime. First app launch downloads its verified media runtime. Close this version before uninstalling."
+!define MUI_WELCOMEPAGE_TEXT "Install this Windows ${CHANNEL} for your account.$\r$\n$\r$\nThe app is unsigned. Use it for rehearsals and testing before an irreplaceable production.$\r$\n$\r$\nSetup requests administrator approval for the virtual camera and, if needed, Microsoft's VC runtime. First app launch downloads its verified media runtime. Close this version before uninstalling."
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_TEXT "CoreVideo Pro is installed. Open its desktop or Start menu shortcut to begin.$\r$\n$\r$\nFirst launch requires internet access to download the verified media runtime. This ${CHANNEL} is for testing and feedback.$\r$\n$\r$\nUninstall removes delivered files and shortcuts, while preserving settings, recordings, and downloaded media."
@@ -39,6 +39,8 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "CoreVideo Pro"
 !insertmacro MUI_LANGUAGE "English"
 Var RuntimeReady
 Var DeleteFailed
+Var CameraChanged
+Var FailureReason
 
 !macro DeleteOwned relative
     ${If} ${FileExists} "$INSTDIR\${relative}"
@@ -106,6 +108,8 @@ Function CompareRuntime
 FunctionEnd
 
 Section "CoreVideo Pro" SEC_APP
+    StrCpy $FailureReason "Check free disk space and folder permissions before trying again."
+    StrCpy $CameraChanged 0
     Call CheckRuntime
     ${If} $RuntimeReady == 0
         IfSilent prerequisite_failed
@@ -132,31 +136,25 @@ Section "CoreVideo Pro" SEC_APP
     FileWrite $0 "${RELEASE_ID}"
     FileClose $0
     IfErrors install_failed
-    CreateDirectory "$SMPROGRAMS\${SHORTCUT_NAME}"
-    CreateShortcut "$SMPROGRAMS\${SHORTCUT_NAME}\CoreVideo Pro.lnk" "$INSTDIR\StartCoreVideo.cmd" "" "$INSTDIR\Assets\AppIcon.ico"
-    CreateShortcut "$SMPROGRAMS\${SHORTCUT_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
-    ; T2.7: the stable pair, repointed at THIS install because it is the newest.
-    CreateShortcut "$DESKTOP\${STABLE_SHORTCUT_NAME}.lnk" "$INSTDIR\StartCoreVideo.cmd" "" "$INSTDIR\Assets\AppIcon.ico"
-    CreateShortcut "$SMPROGRAMS\${STABLE_SHORTCUT_NAME}.lnk" "$INSTDIR\StartCoreVideo.cmd" "" "$INSTDIR\Assets\AppIcon.ico"
-    ; Retire the version-named DESKTOP shortcuts this installer created in the
-    ; past. Matched on our own exact naming ("CoreVideo Pro alpha-*" /
-    ; "CoreVideo Pro beta-*"), never a broad "CoreVideo Pro *" glob, which would
-    ; sweep up a file the operator made and named themselves.
-    Delete "$DESKTOP\CoreVideo Pro alpha-*.lnk"
-    Delete "$DESKTOP\CoreVideo Pro beta-*.lnk"
-    ; T2.1 / #433. Register the virtual camera for this user (HKCU, no admin)
-    ; so "CoreVideo Pro Camera" exists in Zoom/Teams/OBS without a manual step.
-    ; Best effort: a tester whose machine refuses this still gets a working app,
-    ; and Register-VirtualCamera.cmd remains in the install folder to retry.
-    ; regsvr32 WITHOUT /s opens a modal result dialog, and Register-VirtualCamera.cmd
-    ; deliberately omits it so a tester who double-clicks that file gets feedback.
-    ; Calling the .cmd here hung a silent install forever (measured: the 180 s
-    ; Test-AlphaInstaller timeout, two regsvr32 processes waiting on a dialog
-    ; nobody could see). Call regsvr32 directly with /s instead. NEVER run an
-    ; interactive helper from a silent installer.
-    ClearErrors
-    ExecWait '"$SYSDIR\regsvr32.exe" /s "$INSTDIR\corevideo-virtualcam.dll"' $1
-    ClearErrors
+    ; The Windows Frame Server loads the machine runtime as LocalService.
+    ; Silent setup must already be elevated; never prompt from /S.
+    IfSilent camera_silent
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-VirtualCamera.ps1" -Action Install -AppDirectory "$INSTDIR" -AllowElevation'
+    Pop $1
+    Pop $2
+    DetailPrint "$2"
+    Goto camera_result
+    camera_silent:
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-VirtualCamera.ps1" -Action Install -AppDirectory "$INSTDIR"'
+    Pop $1
+    Pop $2
+    DetailPrint "$2"
+    camera_result:
+    IfErrors camera_failed
+    ${If} $1 != 0
+        Goto camera_failed
+    ${EndIf}
+    StrCpy $CameraChanged 1
     ; T2.1: create the recording folder so the first Record has somewhere to go.
     ; Must match RecordingFolderPolicy.Resolve's default (Videos\CoreVideo Pro).
     CreateDirectory "$PROFILE\Videos\${STABLE_SHORTCUT_NAME}"
@@ -172,8 +170,42 @@ Section "CoreVideo Pro" SEC_APP
     WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair" 1
     WriteRegDWORD HKCU "${UNINSTALL_KEY}" "EstimatedSize" ${INSTALL_KB}
     IfErrors install_failed
+    CreateDirectory "$SMPROGRAMS\${SHORTCUT_NAME}"
+    CreateShortcut "$SMPROGRAMS\${SHORTCUT_NAME}\CoreVideo Pro.lnk" "$INSTDIR\StartCoreVideo.cmd" "" "$INSTDIR\Assets\AppIcon.ico"
+    CreateShortcut "$SMPROGRAMS\${SHORTCUT_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
+    ; T2.7: the stable pair, repointed at THIS install because it is the newest.
+    CreateShortcut "$DESKTOP\${STABLE_SHORTCUT_NAME}.lnk" "$INSTDIR\StartCoreVideo.cmd" "" "$INSTDIR\Assets\AppIcon.ico"
+    CreateShortcut "$SMPROGRAMS\${STABLE_SHORTCUT_NAME}.lnk" "$INSTDIR\StartCoreVideo.cmd" "" "$INSTDIR\Assets\AppIcon.ico"
+    ; Retire the version-named DESKTOP shortcuts this installer created in the
+    ; past. Matched on our own exact naming ("CoreVideo Pro alpha-*" /
+    ; "CoreVideo Pro beta-*"), never a broad "CoreVideo Pro *" glob, which would
+    ; sweep up a file the operator made and named themselves.
+    Delete "$DESKTOP\CoreVideo Pro alpha-*.lnk"
+    Delete "$DESKTOP\CoreVideo Pro beta-*.lnk"
     Goto installed
+    camera_failed:
+        StrCpy $FailureReason "Virtual-camera installation failed. Administrator approval is required; unknown camera registrations are preserved. Silent setup must already be elevated."
+        DetailPrint "Virtual-camera installation failed. Administrator approval is required; unknown registrations are preserved."
     install_failed:
+        ${If} $CameraChanged == 1
+            IfSilent rollback_silent
+            nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-VirtualCamera.ps1" -Action Rollback -AppDirectory "$INSTDIR" -AllowElevation'
+            Pop $1
+            Pop $2
+            DetailPrint "$2"
+            Goto rollback_result
+            rollback_silent:
+            nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-VirtualCamera.ps1" -Action Rollback -AppDirectory "$INSTDIR"'
+            Pop $1
+            Pop $2
+            DetailPrint "$2"
+            rollback_result:
+            ${If} $1 != 0
+                MessageBox MB_OK|MB_ICONSTOP "Setup failed and camera rollback could not complete. Files are retained in $INSTDIR. Run Install-VirtualCamera.ps1 -Action Rollback before removing this folder." /SD IDOK
+                SetErrorLevel 1603
+                Abort
+            ${EndIf}
+        ${EndIf}
         ; This was an empty, unregistered destination. Roll back only our exact
         ; payload/metadata, never recursively remove files created by the user.
         !include "uninstall-files.nsh"
@@ -181,13 +213,13 @@ Section "CoreVideo Pro" SEC_APP
         Delete "$SMPROGRAMS\${SHORTCUT_NAME}\Uninstall.lnk"
         RMDir "$SMPROGRAMS\${SHORTCUT_NAME}"
         Delete "$DESKTOP\${SHORTCUT_NAME}.lnk"
-        Delete "$DESKTOP\${STABLE_SHORTCUT_NAME}.lnk"
-        Delete "$SMPROGRAMS\${STABLE_SHORTCUT_NAME}.lnk"
+
         DeleteRegKey HKCU "${UNINSTALL_KEY}"
+        Delete "$INSTDIR\.camera-registration-before.json"
         Delete "$INSTDIR\.corevideo-prerelease-install"
         Delete "$INSTDIR\Uninstall.exe"
         RMDir "$INSTDIR"
-        MessageBox MB_OK|MB_ICONSTOP "Setup could not complete. Check free disk space and folder permissions before trying again. Any files that could not be removed remain in $INSTDIR." /SD IDOK
+        MessageBox MB_OK|MB_ICONSTOP "Setup could not complete. $FailureReason Any files that could not be removed remain in $INSTDIR." /SD IDOK
         SetErrorLevel 1603
         Abort
     prerequisite_failed:
@@ -269,20 +301,36 @@ Function un.RemoveMediaRuntime
 FunctionEnd
 
 Section "Uninstall"
-    ; T2.1 / #474. Install registers the virtual camera, so uninstall MUST
-    ; unregister it - otherwise "CoreVideo Pro Camera" survives as a COM
-    ; registration pointing at a DLL this uninstaller is about to delete, and
-    ; every app that enumerates cameras inherits a broken device. Runs BEFORE
-    ; the payload delete, because regsvr32 needs the DLL it is unregistering.
-    ; /s for the same reason as install: an uninstaller must never wait on a
-    ; dialog. Runs BEFORE the payload delete, because regsvr32 needs the DLL.
+    ; Remove only this installation's keys; an older uninstaller preserves a
+    ; newer owner. If removal fails, retain payload and uninstall metadata.
     ClearErrors
-    ExecWait '"$SYSDIR\regsvr32.exe" /u /s "$INSTDIR\corevideo-virtualcam.dll"' $1
-    ClearErrors
+    IfSilent un.camera_silent
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-VirtualCamera.ps1" -Action Uninstall -AppDirectory "$INSTDIR" -AllowElevation'
+    Pop $1
+    Pop $2
+    DetailPrint "$2"
+    Goto un.camera_result
+    un.camera_silent:
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-VirtualCamera.ps1" -Action Uninstall -AppDirectory "$INSTDIR"'
+    Pop $1
+    Pop $2
+    DetailPrint "$2"
+    un.camera_result:
+    IfErrors un.camera_failed
+    ${If} $1 != 0
+        Goto un.camera_failed
+    ${EndIf}
+    Goto un.camera_removed
+    un.camera_failed:
+        MessageBox MB_OK|MB_ICONSTOP "Camera removal did not complete. Close CoreVideo Pro and retry with administrator approval. This installation's files and registration have been retained." /SD IDOK
+        SetErrorLevel 1603
+        Abort
+    un.camera_removed:
+    ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Remove-OwnedShortcuts.ps1" -AppDirectory "$INSTDIR"' $1
     StrCpy $DeleteFailed 0
     !include "uninstall-files.nsh"
     ${If} $DeleteFailed == 1
-        MessageBox MB_OK|MB_ICONSTOP "Some files are in use. Close CoreVideo Pro and run this uninstaller again. Registration and your files have been retained." /SD IDOK
+        MessageBox MB_OK|MB_ICONSTOP "Some files are in use. Close CoreVideo Pro and run this uninstaller again. Uninstall metadata and remaining files have been retained; camera keys were already removed if this version owned them." /SD IDOK
         SetErrorLevel 1603
         Abort
     ${EndIf}
@@ -291,14 +339,8 @@ Section "Uninstall"
     Delete "$SMPROGRAMS\${SHORTCUT_NAME}\Uninstall.lnk"
     RMDir "$SMPROGRAMS\${SHORTCUT_NAME}"
     Delete "$DESKTOP\${SHORTCUT_NAME}.lnk"
-    ; The stable shortcuts point at the install being removed, so they would
-    ; become dead links. Removed, not repointed: choosing "the newest remaining
-    ; release" means ranking sibling folders, and a wrong guess silently opens
-    ; the wrong build — the exact failure #474 exists to stop. Installing any
-    ; version recreates them.
-    Delete "$DESKTOP\${STABLE_SHORTCUT_NAME}.lnk"
-    Delete "$SMPROGRAMS\${STABLE_SHORTCUT_NAME}.lnk"
     DeleteRegKey HKCU "${UNINSTALL_KEY}"
+    Delete "$INSTDIR\.camera-registration-before.json"
     Delete "$INSTDIR\.corevideo-prerelease-install"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir "$INSTDIR"
