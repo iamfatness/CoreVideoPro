@@ -33,6 +33,10 @@
 #include "modules/VirtualCameraFrame.h"  // nv12FrameSize (vcam tap NV12 buffer layout)
 #include "modules/D3DProgramBuffer.h"
 #include "modules/D3DDecoupledExport.h"
+#include "modules/MonitorRenderWorker.h"
+#include "modules/MonitorFrameAdmission.h"
+#include "modules/D3DVideoFrame.h"
+#include "modules/DeliveryCounterPattern.h"
 
 #include <algorithm>
 #include <array>
@@ -51,6 +55,7 @@
 #include <thread>
 #include <sstream>
 #include <utility>
+#include <stdexcept>
 
 namespace corevideo::modules {
 namespace {
@@ -71,7 +76,7 @@ namespace {
 // A frame is drawable when it carries either decoded BGRA pixels or raw I420
 // planes (the GPU converts the latter in-shader).
 bool frameHasContent(const VideoFrame& frame) {
-  return frame.hasPixels() || frame.hasI420();
+  return frame.hasContent();
 }
 
 // True when a color grade is a no-op (every axis neutral). The per-participant
@@ -111,17 +116,76 @@ struct CpuStageScope {
 
 class D3D11Compositor final : public ICompositor {
  public:
-  D3D11Compositor(ComPtrLite<ID3D11Device> device, ComPtrLite<ID3D11DeviceContext> context)
+  D3D11Compositor(ComPtrLite<ID3D11Device> device, ComPtrLite<ID3D11DeviceContext> context,
+                  bool isolateMonitors = false, bool monitorBackend = false, bool enableGpuIngress = false)
       : device_(std::move(device)), context_(std::move(context)) {
     initializePipeline();
+    const char* counterPattern = std::getenv("COREVIDEO_QA_PROGRAM_COUNTER");
+    if (counterPattern && std::string(counterPattern) == "1") {
+      if (FAILED(context_->QueryInterface(IID_PPV_ARGS(qaCounterContext_.put()))))
+        throw std::runtime_error("QA counter requires D3D11.1 ClearView");
+      core::nativeLogf("[delivery-counter] QA synthetic pixel markers enabled\n");
+    }
+    const char* gpuCapture = std::getenv("COREVIDEO_GPU_CAPTURE");
+    if (enableGpuIngress || (gpuCapture && std::string(gpuCapture) == "1")) {
+      gpuConsumer_ = D3DVideoConsumers::add(device_.get(), monitorBackend);
+      gpuReadLeases_ = std::make_unique<D3DVideoReadLeases>(device_.get(), context_.get());
+    }
+    if (isolateMonitors) {
+      ComPtrLite<IDXGIDevice> dxgi;
+      auto adapter = std::make_shared<ComPtrLite<IDXGIAdapter>>();
+      if (FAILED(device_->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(dxgi.put()))) ||
+          FAILED(dxgi->GetAdapter(adapter->put()))) throw std::runtime_error("monitor adapter unavailable");
+      // Backend initialization, all immediate-context calls and destruction run
+      // on this worker. Never fall back to synchronous monitor work on Program.
+      auto backend = std::make_shared<std::unique_ptr<D3D11Compositor>>();
+      MonitorRenderWorker::Render renderMonitor =
+          [adapter, backend, gpuIngress = gpuConsumer_ != nullptr](const MonitorRenderRequest& request) {
+            if (!*backend) {
+              ComPtrLite<ID3D11Device> device;
+              ComPtrLite<ID3D11DeviceContext> context;
+              if (FAILED(D3D11CreateDevice(adapter->get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+                  D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+                  device.put(), nullptr, context.put()))) throw std::runtime_error("monitor device unavailable");
+              *backend = std::make_unique<D3D11Compositor>(std::move(device), std::move(context), false, true, gpuIngress);
+            }
+            return (*backend)->renderMonitorBatch(request);
+          };
+      // Register the monitor device even before a capture has its first private
+      // monitor copy; otherwise admission and device creation wait on each other.
+      monitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor] {
+        renderMonitor({}); // initialize on the owner without publishing a completed job
+      });
+      core::nativeLogf("[monitor-worker] isolation=enabled pending_capacity=1\n");
+    }
   }
 
   ~D3D11Compositor() override {
+    monitorWorker_.reset();
+    gpuReadLeases_.reset();
     { std::lock_guard<std::mutex> lock(programBufferMutex_); programBuffer_.reset(); }
     stopVcamTap();
   }
 
   std::string rendererName() const override { return "d3d11"; }
+  bool hasIsolatedMonitors() const override { return monitorWorker_ != nullptr; }
+  void submitMonitors(MonitorRenderRequest request) override {
+    if (!monitorWorker_) return;
+    if (!prepareMonitorFrames(request)) {
+      monitorWorker_->refuse();
+      return; // retain the last completed monitor; never borrow a capture slot
+    }
+    request.bufferedProgram = programBufferFrames() > 0;
+    if (auto buffer = currentProgramBuffer())
+      buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner);
+    monitorWorker_->submit(std::move(request));
+  }
+  std::shared_ptr<const MonitorRenderResult> latestMonitors() const override {
+    return monitorWorker_ ? monitorWorker_->latest() : nullptr;
+  }
+  MonitorRenderDiagnostics monitorDiagnostics() const override {
+    return monitorWorker_ ? monitorWorker_->diagnostics() : MonitorRenderDiagnostics{};
+  }
   void configureProgramBuffer(int frames) override { requestedProgramFrames_.store(frames == 2 ? 2 : 3); }
   void prepareProgramBuffer(int width, int height) override {
     // Called before the display worker establishes its cadence anchor. Device,
@@ -203,6 +267,7 @@ class D3D11Compositor final : public ICompositor {
     for (const auto& layer : layers) {
       drawLayer(layer, deterministicPlan, &uploadUs);
     }
+    if (qaCounterContext_) drawDeliveryCounter();
     const auto drawUs = stageUs();
 
     frame.gpuComposed = true;
@@ -258,7 +323,7 @@ class D3D11Compositor final : public ICompositor {
     const auto vcamUs = stageUs();
     if (!buffered) exportSharedTexture(frame);
     const auto sharedUs = stageUs();
-    exportParticipantTextures(deterministicPlan, frames, frame);
+    if (!monitorWorker_) exportParticipantTextures(deterministicPlan, frames, frame);
     const auto participantUs = stageUs();
     // Evict cached source textures no pass has sampled recently (participant
     // left / source unrouted). 300 program frames ≈ 5s at 60fps — long enough
@@ -279,6 +344,7 @@ class D3D11Compositor final : public ICompositor {
       frame.renderPlanEvidence = std::make_shared<const CompositorRenderPlan>(std::move(deterministicPlan));
       buffer->submit(context_.get(), renderTarget_.get(), frame, renderPlan.fullProgramReadback);
     }
+    if (gpuReadLeases_) gpuReadLeases_->finish();
     context_->Flush();
     const auto flushUs = stageUs();
     const auto timingEnd = diagnosticTiming ? std::chrono::steady_clock::now()
@@ -352,7 +418,7 @@ class D3D11Compositor final : public ICompositor {
     context_->RSSetState(rasterizerState_.get());
 
     const auto layers = resolveLayers(deterministicPlan, frames);
-    const bool bufferedProgram = programBufferFrames() > 0;
+    const bool bufferedProgram = monitorBatch_ ? monitorBufferedProgram_ : programBufferFrames() > 0;
     auto* deliveredView = bufferedProgram ? retainedProgramForMultiview() : nullptr;
     bool programPlaced = false;
     const auto drawStart = profileEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -385,6 +451,7 @@ class D3D11Compositor final : public ICompositor {
 
     targetWidth_ = savedWidth;
     targetHeight_ = savedHeight;
+    if (gpuReadLeases_) gpuReadLeases_->finish();
     context_->Flush();
     if (profileEnabled) {
       const auto total = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - profileStart).count();
@@ -446,6 +513,7 @@ class D3D11Compositor final : public ICompositor {
 
     targetWidth_ = savedWidth;
     targetHeight_ = savedHeight;
+    if (gpuReadLeases_) gpuReadLeases_->finish();
     context_->Flush();
     return out;
   }
@@ -453,6 +521,74 @@ class D3D11Compositor final : public ICompositor {
   [[nodiscard]] CompositorSourceTexStats sourceTexStats() const override { return sourceTexStats_; }
 
  private:
+  void drawDeliveryCounter() {
+    const int cellWidth = (targetWidth_ / kDeliveryCounterCells) & ~1;
+    if (cellWidth < 4 || targetHeight_ < 64) return;
+    for (int cell = 0; cell < kDeliveryCounterCells; ++cell) {
+      const bool bit = deliveryCounterBit(static_cast<uint32_t>(frameNumber_), cell);
+      const float light[4] = {1, 1, 1, 1}, dark[4] = {0, 0, 0, 1};
+      D3D11_RECT top{cell * cellWidth, 0, (cell + 1) * cellWidth, 32};
+      D3D11_RECT bottom{cell * cellWidth, targetHeight_ - 32, (cell + 1) * cellWidth, targetHeight_};
+      qaCounterContext_->ClearView(renderTargetView_.get(), bit ? light : dark, &top, 1);
+      qaCounterContext_->ClearView(renderTargetView_.get(), bit ? dark : light, &bottom, 1);
+    }
+  }
+  ComPtrLite<ID3D11DeviceContext1> qaCounterContext_;
+  MonitorRenderResult renderMonitorBatch(const MonitorRenderRequest& request) {
+    monitorBatch_ = true;
+    monitorBufferedProgram_ = request.bufferedProgram;
+    monitorProgram_ = request.deliveredProgram;
+    monitorProgramOwner_ = request.deliveredProgramOwner;
+    frameNumber_ = request.sequence;
+    MonitorRenderResult result;
+    ProgramFrame sources;
+    sources.frameNumber = request.sequence;
+    std::vector<VideoFrame> sourceExports;
+    for (const auto& frame : request.frames) {
+      if (std::any_of(request.sourceExports.begin(), request.sourceExports.end(),
+          [&](const auto& demand) { return demand.sourceId == frame.participantId; }))
+        sourceExports.push_back(frame);
+    }
+    exportParticipantTextures(request.programPlan, sourceExports, sources);
+    result.sources = std::move(sources.participantSharedTextures);
+    if (request.multiviewActive) {
+      monitorTileHistory_[request.sequence] = request.tiles;
+      result.multiview = renderMultiview(request.multiviewPlan, request.frames);
+      const auto match = monitorTileHistory_.find(result.multiview.frameNumber);
+      if (match != monitorTileHistory_.end()) {
+        result.tiles = match->second;
+        lastMonitorTiles_ = result.tiles;
+        lastMonitorTileSequence_ = match->first;
+      } else if (result.multiview.frameNumber == lastMonitorTileSequence_) {
+        result.tiles = lastMonitorTiles_;
+      } else {
+        // No attributable export yet. Never decorate unknown pixels with the
+        // newest scene/tally. A later completed publication will fill the view.
+        result.multiview = {};
+      }
+      while (monitorTileHistory_.size() > 16) monitorTileHistory_.erase(monitorTileHistory_.begin());
+    } else {
+      monitorTileHistory_.clear();
+      lastMonitorTiles_.clear();
+      lastMonitorTileSequence_ = -1;
+    }
+    if (request.previewActive) result.preview = renderPreview(request.previewPlan, request.frames);
+    for (auto it = sourceTextures_.begin(); it != sourceTextures_.end();) {
+      it = (frameNumber_ - it->second.lastUsedFrame > 300) ? sourceTextures_.erase(it) : std::next(it);
+    }
+    if (gpuReadLeases_) gpuReadLeases_->finish();
+    context_->Flush();
+    return result;
+  }
+  std::unique_ptr<MonitorRenderWorker> monitorWorker_;
+  std::shared_ptr<D3DVideoConsumer> gpuConsumer_;
+  std::unique_ptr<D3DVideoReadLeases> gpuReadLeases_;
+  bool monitorBatch_ = false, monitorBufferedProgram_ = false;
+  ProgramFrameSharedTexture monitorProgram_;
+  std::shared_ptr<const void> monitorProgramOwner_;
+  std::map<int64_t, std::vector<MultiviewTileRect>> monitorTileHistory_;
+  std::vector<MultiviewTileRect> lastMonitorTiles_;
+  int64_t lastMonitorTileSequence_ = -1;
   struct ResolvedLayer {
     CompositorRenderPlanLayer plan;
     uint32_t color = 0xff808080;
@@ -470,6 +606,8 @@ class D3D11Compositor final : public ICompositor {
           if (!delivered.programNv12Shared) return;
           std::lock_guard<std::mutex> lock(vcamSinkMutex_);
           if (vcamSink_) vcamSink_(delivered.programNv12Shared, delivered.programNv12Width, delivered.programNv12Height);
+          if (identifiedVcamSink_) identifiedVcamSink_(delivered.programNv12Shared,
+              delivered.programNv12Width, delivered.programNv12Height, delivered.frameNumber, delivered.deliveredAt100ns);
         });
     std::shared_ptr<D3DProgramBuffer> retired;
     { std::lock_guard<std::mutex> lock(programBufferMutex_); retired = std::exchange(programBuffer_, buffer); }
@@ -479,7 +617,11 @@ class D3D11Compositor final : public ICompositor {
     auto buffer = currentProgramBuffer();
     ProgramFrameSharedTexture exported;
     std::shared_ptr<const void> owner;
-    if (!buffer || !buffer->multiview(exported, owner)) return nullptr;
+    if (monitorBatch_) {
+      exported = monitorProgram_;
+      owner = monitorProgramOwner_;
+      if (exported.sharedHandleHex.empty()) return nullptr;
+    } else if (!buffer || !buffer->multiview(exported, owner)) return nullptr;
     if (exported.sharedHandleHex != retainedProgramHandle_) {
       retainedProgramShared_ = {}; retainedProgramKey_ = {}; retainedProgramLocal_ = {}; retainedProgramView_ = {};
       const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::strtoull(exported.sharedHandleHex.c_str(), nullptr, 16)));
@@ -539,6 +681,7 @@ class D3D11Compositor final : public ICompositor {
   // additionally thrashed create/destroy whenever mixed-resolution sources
   // alternated draws.
   struct SourceTex {
+    std::shared_ptr<const GpuVideoFrame> gpuImage;
     ComPtrLite<ID3D11Texture2D> y;
     ComPtrLite<ID3D11ShaderResourceView> ySrv;
     ComPtrLite<ID3D11Texture2D> u;
@@ -1519,6 +1662,24 @@ class D3D11Compositor final : public ICompositor {
   // caller then falls back to the shared scratch upload path.
   SourceTex* acquireSourceTex(const VideoFrame& frame) {
     CpuStageScope timing(profileMvActive_, stageProfileNs_[MvUpload]);
+    if (!frame.participantId.empty() && frame.hasGpuPixels() && gpuConsumer_ && gpuReadLeases_) {
+      const auto image = std::dynamic_pointer_cast<const D3DVideoImage>(frame.gpuPixels);
+      const auto* view = image ? image->view(gpuConsumer_->id) : nullptr;
+      if (view && gpuReadLeases_->hold(image)) {
+        auto& entry = sourceTextures_[frame.participantId];
+        if (entry.gpuImage != image) {
+          entry = SourceTex{};
+          entry.gpuImage = image;
+          view->texture->AddRef(); *entry.bgra.put() = view->texture.Get();
+          view->srv->AddRef(); *entry.bgraSrv.put() = view->srv.Get();
+          entry.width = image->width; entry.height = image->height;
+        }
+        entry.lastFrameId = frame.frameId;
+        entry.lastUsedFrame = frameNumber_;
+        ++sourceTexStats_.cacheHits;
+        return &entry;
+      }
+    }
     const bool isI420 = frame.hasI420();
     if (frame.participantId.empty() || (!isI420 && !frame.hasPixels())) {
       return nullptr;
@@ -1527,7 +1688,7 @@ class D3D11Compositor final : public ICompositor {
     const int height = isI420 ? frame.i420Height : frame.pixelHeight;
     auto& entry = sourceTextures_[frame.participantId];
     const bool haveTextures = isI420 ? static_cast<bool>(entry.y) : static_cast<bool>(entry.bgra);
-    if (!haveTextures || entry.width != width || entry.height != height || entry.isI420 != isI420) {
+    if (entry.gpuImage || !haveTextures || entry.width != width || entry.height != height || entry.isI420 != isI420) {
       entry = SourceTex{};
       bool created = false;
       if (isI420) {
@@ -1945,7 +2106,7 @@ class D3D11Compositor final : public ICompositor {
         }
         if (uploaded) {
           CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantRelease]);
-          if (pt.exporter->submit(context_.get(), exportTexture)) {
+          if (pt.exporter->submit(context_.get(), exportTexture, f.frameId)) {
             pt.lastFrameId = f.frameId;
             pt.lastGrade = grade;
           }
@@ -1958,7 +2119,8 @@ class D3D11Compositor final : public ICompositor {
       info.sharedHandleHex = handleToHex(pt.exporter->handle());
       info.width = pt.width;
       info.height = pt.height;
-      info.frameNumber = outFrame.frameNumber;
+      info.frameNumber = pt.exporter->publishedFrameNumber()->load(std::memory_order_acquire);
+      if (info.frameNumber < 0) continue;
       outFrame.participantSharedTextures.push_back(std::move(info));
     }
     // Drop textures for participants that are no longer delivering content.
@@ -2136,12 +2298,13 @@ class D3D11Compositor final : public ICompositor {
     }
     if (!multiviewExport_->valid()) { multiviewExport_.reset(); return; }  // creation failed: try again next pass
     if (!multiviewExport_->ready()) return;  // still being created: no handle for a pass or two
-    multiviewExport_->submit(context_.get(), multiviewRenderTarget_.get());
+    multiviewExport_->submit(context_.get(), multiviewRenderTarget_.get(), frameNumber_);
     out.sharedHandleHex = handleToHex(multiviewExport_->handle());
     out.width = multiviewWidth_;
     out.height = multiviewHeight_;
     out.format = "B8G8R8A8_UNORM";
-    out.frameNumber = frameNumber_;
+    out.frameNumber = multiviewExport_->publishedFrameNumber()->load(std::memory_order_acquire);
+    if (out.frameNumber < 0) out = {};
   }
 
   // Preview render target: mirrors ensureMultiviewRenderTarget (no CPU staging —
@@ -2189,12 +2352,13 @@ class D3D11Compositor final : public ICompositor {
     }
     if (!previewExport_->valid()) { previewExport_.reset(); return; }  // creation failed: try again next pass
     if (!previewExport_->ready()) return;  // still being created: no handle for a pass or two
-    previewExport_->submit(context_.get(), previewRenderTarget_.get());
+    previewExport_->submit(context_.get(), previewRenderTarget_.get(), frameNumber_);
     out.sharedHandleHex = handleToHex(previewExport_->handle());
     out.width = previewWidth_;
     out.height = previewHeight_;
     out.format = "B8G8R8A8_UNORM";
-    out.frameNumber = frameNumber_;
+    out.frameNumber = previewExport_->publishedFrameNumber()->load(std::memory_order_acquire);
+    if (out.frameNumber < 0) out = {};
   }
 
   ProgramFramePreviewPixels readProgramFramePreview() const {
@@ -2558,6 +2722,7 @@ class D3D11Compositor final : public ICompositor {
           if (vcamSink_) {
             vcamSink_(nv12, w, h);
           }
+          if (identifiedVcamSink_) identifiedVcamSink_(nv12, w, h, 0, 0);
         }
         std::lock_guard<std::mutex> lock(vcamNv12Mutex_);
         vcamLatestW_ = w;
@@ -2643,6 +2808,12 @@ class D3D11Compositor final : public ICompositor {
     // compositor only if the sink is cleared first — see ~MediaCore).
     std::lock_guard<std::mutex> lock(vcamSinkMutex_);
     vcamSink_ = std::move(sink);
+    identifiedVcamSink_ = {};
+  }
+  void setIdentifiedVcamFrameSink(IdentifiedVcamFrameSink sink) override {
+    std::lock_guard<std::mutex> lock(vcamSinkMutex_);
+    vcamSink_ = {};
+    identifiedVcamSink_ = std::move(sink);
   }
 
   [[nodiscard]] bool publishesVcamFrames() const override { return true; }
@@ -2735,6 +2906,7 @@ class D3D11Compositor final : public ICompositor {
   // with vcamNv12Mutex_) so a publish never blocks the polled handoff.
   std::mutex vcamSinkMutex_;
   VcamFrameSink vcamSink_;
+  IdentifiedVcamFrameSink identifiedVcamSink_;
   std::shared_ptr<const std::vector<uint8_t>> vcamLatestNv12_;
   int vcamLatestW_ = 0;
   int vcamLatestH_ = 0;
@@ -2890,7 +3062,9 @@ std::unique_ptr<ICompositor> createD3D11Compositor() {
     return nullptr;
   }
 
-  return std::make_unique<D3D11Compositor>(std::move(device), std::move(context));
+  const char* isolate = std::getenv("COREVIDEO_ISOLATE_MONITORS");
+  return std::make_unique<D3D11Compositor>(std::move(device), std::move(context),
+      isolate && std::string(isolate) == "1");
 }
 
 }  // namespace corevideo::modules

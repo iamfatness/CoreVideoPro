@@ -3,6 +3,22 @@
 project(CoreVideoNativeMediaCore LANGUAGES CXX)
 
 if(WIN32)
+  add_executable(corevideo-vcam-publication-qa EXCLUDE_FROM_ALL ../tools/camera-publication-qa.cpp)
+  target_compile_features(corevideo-vcam-publication-qa PRIVATE cxx_std_20)
+  target_compile_definitions(corevideo-vcam-publication-qa PRIVATE
+    COREVIDEO_VCAM_ISOLATED_PUBLICATION_QA=1 WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+  target_include_directories(corevideo-vcam-publication-qa PRIVATE src)
+  target_link_libraries(corevideo-vcam-publication-qa PRIVATE mfplat mf mfsensorgroup ole32)
+  set_target_properties(corevideo-vcam-publication-qa PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
+  add_executable(corevideo-vcam-receiver ../tools/virtualcam-receiver.cpp)
+  target_compile_features(corevideo-vcam-receiver PRIVATE cxx_std_20)
+  target_include_directories(corevideo-vcam-receiver PRIVATE src)
+  target_link_libraries(corevideo-vcam-receiver PRIVATE mfplat mfreadwrite mfuuid mf ole32)
+  set_target_properties(corevideo-vcam-receiver PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
   # #652: independent endpoint loopback timestamps for the live A/V clap rig.
   add_executable(corevideo-loopback-rec ../tools/audio/loopback-rec.cpp)
   target_link_libraries(corevideo-loopback-rec PRIVATE ole32 uuid)
@@ -312,6 +328,40 @@ if(COREVIDEO_WITH_VIRTUALCAM)
       mfplat mf mfuuid mfsensorgroup ole32 oleaut32 ksuser strmiids uuid)
   set_target_properties(corevideo-virtualcam PROPERTIES
       LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll/exports.def\"")
+  # Explicit diagnostic target: Frame Server does not inherit the producer's
+  # environment. Keep the retry experiment out of normal builds and packages.
+  add_library(corevideo-virtualcam-retry-qa SHARED EXCLUDE_FROM_ALL
+      virtualcam-dll/dllmain.cpp virtualcam-dll/Guids.cpp
+      virtualcam-dll/MediaSource.cpp virtualcam-dll/MediaStream.cpp)
+  target_compile_features(corevideo-virtualcam-retry-qa PRIVATE cxx_std_17)
+  target_compile_definitions(corevideo-virtualcam-retry-qa PRIVATE
+      WINVER=0x0A00 _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A00000C
+      COREVIDEO_CAMERA_READ_RETRY_QA=1)
+  target_include_directories(corevideo-virtualcam-retry-qa PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll)
+  target_link_libraries(corevideo-virtualcam-retry-qa PRIVATE
+      mfplat mf mfuuid mfsensorgroup ole32 oleaut32 ksuser strmiids uuid)
+  set_target_properties(corevideo-virtualcam-retry-qa PROPERTIES
+      LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll/exports.def\"")
+  foreach(mode IN ITEMS off on)
+    set(qa_target corevideo-virtualcam-publication-qa-${mode})
+    add_library(${qa_target} SHARED EXCLUDE_FROM_ALL
+      virtualcam-dll/dllmain.cpp virtualcam-dll/Guids.cpp
+      virtualcam-dll/MediaSource.cpp virtualcam-dll/MediaStream.cpp)
+    target_compile_features(${qa_target} PRIVATE cxx_std_17)
+    target_compile_definitions(${qa_target} PRIVATE
+      WINVER=0x0A00 _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A00000C
+      COREVIDEO_VCAM_ISOLATED_PUBLICATION_QA=1)
+    if(mode STREQUAL "on")
+      target_compile_definitions(${qa_target} PRIVATE COREVIDEO_CAMERA_READ_RETRY_QA=1)
+    endif()
+    target_include_directories(${qa_target} PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll)
+    target_link_libraries(${qa_target} PRIVATE
+      mfplat mf mfuuid mfsensorgroup ole32 oleaut32 ksuser strmiids uuid)
+    set_target_properties(${qa_target} PROPERTIES
+      LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll/exports.def\"")
+  endforeach()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -647,9 +697,15 @@ if(BUILD_TESTING)
     tests/StreamStartAdmissionTest.cpp
     tests/BrowserHostExitMessageTest.cpp
     tests/IsoFrameConformTest.cpp
+    tests/IsoVideoIngressTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp
+    tests/VirtualCameraDeliveryEvidenceTest.cpp
+    tests/DeliveryCounterPatternTest.cpp
+    tests/CaptureFrameWorkerTest.cpp
+    tests/CaptureSessionLifecycleTest.cpp
+    tests/D3DCaptureCpuBranchTest.cpp
     tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
     tests/VirtualCameraSlateTest.cpp
@@ -687,6 +743,8 @@ if(BUILD_TESTING)
     tests/ProgramPixelContinuityTest.cpp
     tests/SourceContinuityLedgerTest.cpp
     tests/MonitorRenderFaultInjectionTest.cpp
+    tests/MonitorRenderWorkerTest.cpp
+    tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
     tests/EngineIpcShmNameTest.cpp

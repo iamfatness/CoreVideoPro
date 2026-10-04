@@ -533,4 +533,60 @@ TEST(MonitorRenderFaultInjection, ASustainedMonitorStallIsShedAndProgramKeepsIts
   // costs Program NOTHING, with or without shedding — not deleted.
 }
 
+namespace {
+std::atomic<bool> isolatedMonitorEntered{false}, isolatedMonitorRelease{false};
+void holdIsolatedMonitor(MonitorPass) {
+  isolatedMonitorEntered.store(true);
+  while (!isolatedMonitorRelease.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+}
+
+TEST(MonitorRenderFaultInjection, IsolatedMonitorCanRemainBlockedWhileProgramComposes) {
+  const char* priorRaw = std::getenv("COREVIDEO_ISOLATE_MONITORS");
+  const std::string prior = priorRaw ? priorRaw : "";
+  _putenv_s("COREVIDEO_ISOLATE_MONITORS", "1");
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  _putenv_s("COREVIDEO_ISOLATE_MONITORS", prior.c_str());
+  ASSERT_TRUE(compositor != nullptr);
+  ASSERT_TRUE(compositor->hasIsolatedMonitors());
+  isolatedMonitorEntered.store(false);
+  isolatedMonitorRelease.store(false);
+  struct ReleaseOnExit {
+    ~ReleaseOnExit() {
+      isolatedMonitorRelease.store(true);
+      corevideo::compositor::setMonitorRenderStallForTest(nullptr);
+    }
+  } release;
+  corevideo::compositor::setMonitorRenderStallForTest(&holdIsolatedMonitor);
+  corevideo::modules::MonitorRenderRequest request;
+  request.sequence = 1;
+  request.previewActive = true;
+  request.previewPlan = monitorPlan("isolated-preview", 64, 64);
+  request.programPlan = monitorPlan("isolated-program", 64, 64);
+  compositor->submitMonitors(request);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!isolatedMonitorEntered.load() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(isolatedMonitorEntered.load());
+  auto program = request.programPlan;
+  program.fullProgramReadback = false;
+  // The monitor cannot return until THIS thread releases it. Program composing
+  // here proves scheduling/context isolation without a machine-speed threshold.
+  for (int i = 1; i <= 20; ++i) {
+    const auto frame = compositor->render(program, {sourceFrame(i)});
+    EXPECT_TRUE(frame.gpuComposed);
+    EXPECT_EQ(frame.frameNumber, i);
+    EXPECT_TRUE(frame.participantSharedTextures.empty());
+    request.sequence = i + 1;
+    compositor->submitMonitors(request);
+  }
+  EXPECT_TRUE(compositor->latestMonitors() == nullptr);
+  isolatedMonitorRelease.store(true);
+  while ((!compositor->latestMonitors() || compositor->latestMonitors()->sequence != 21) &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(compositor->latestMonitors() != nullptr);
+  EXPECT_EQ(compositor->latestMonitors()->sequence, 21);
+}
+
 #endif  // Windows + D3D11 dev adapter

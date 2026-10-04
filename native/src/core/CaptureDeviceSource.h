@@ -27,6 +27,10 @@ class CaptureDeviceSource final : public ISource {
     descriptor_.hasVideo = true;
     descriptor_.width = latest_.pixelWidth > 0 ? latest_.pixelWidth : latest_.i420Width;
     descriptor_.height = latest_.pixelHeight > 0 ? latest_.pixelHeight : latest_.i420Height;
+    if (latest_.hasGpuPixels()) {
+      descriptor_.width = latest_.gpuPixels->width;
+      descriptor_.height = latest_.gpuPixels->height;
+    }
     // diagnostic only: counts setLatest calls, NOT the deduped per-frame
     // count the snapshot publishes (SourceBus::Entry::counters) — the
     // adapter re-emits the same held frame every tick while connected, so

@@ -26,6 +26,7 @@ struct VirtualCameraStatus {
   int fps = 30;
   std::uint64_t framesPublished = 0;
   std::string warning;
+  std::uint64_t framesAccepted = 0, pendingFramesReplaced = 0, publicationExceptions = 0;
 };
 
 class IVirtualCameraPublisher {
@@ -48,6 +49,20 @@ class IVirtualCameraPublisher {
   virtual void publishNv12Shared(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
                                  int width, int height) {
     if (nv12) publishNv12(nv12->data(), width, height);
+  }
+  // Already on the isolated publisher worker. Windows writes directly here
+  // instead of adding a second replaceable queue and another scheduling hop.
+  virtual void publishNv12OnWorker(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
+                                   int width, int height) {
+    publishNv12Shared(std::move(nv12), width, height);
+  }
+  virtual void publishNv12Identified(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
+      int width, int height, int64_t /*programSequence*/, int64_t /*deliveredAt100ns*/) {
+    publishNv12Shared(std::move(nv12), width, height);
+  }
+  virtual void publishNv12IdentifiedOnWorker(std::shared_ptr<const std::vector<std::uint8_t>> nv12,
+      int width, int height, int64_t /*programSequence*/, int64_t /*deliveredAt100ns*/) {
+    publishNv12OnWorker(std::move(nv12), width, height);
   }
   // Remove the OS virtual camera and release the slot. Idempotent.
   virtual void stop() = 0;

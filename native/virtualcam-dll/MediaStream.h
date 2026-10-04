@@ -53,11 +53,20 @@ class MediaStream
  private:
   HRESULT CreateSample(IUnknown* token, IMFSample** sample);
   HRESULT FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen);
+  void LogDeliveryEvidence();
 
   Microsoft::WRL::ComPtr<IMFMediaEventQueue> events_;
   Microsoft::WRL::ComPtr<IMFStreamDescriptor> descriptor_;
   Microsoft::WRL::ComPtr<IMFMediaSource> source_;  // weak-ish: parent owns us
   SharedFrameReader reader_;
+  corevideo::modules::VirtualCameraDeliveryEvidence delivery_;
+  corevideo::modules::VirtualCameraSampleContent sampleContent_ = corevideo::modules::VirtualCameraSampleContent::Slate;
+  struct ProgramIdentity {
+    bool verified = false;
+    uint64_t epochHigh = 0, epochLow = 0;
+    int64_t sequence = 0;
+  } lastGoodIdentity_, sampleIdentity_, emittedIdentity_;
+  std::uint64_t deliveryLogAttempts_ = 0, deliveryRun_ = 0;
   std::mutex mutex_;
   std::vector<std::uint8_t> scratch_;
   // Last complete frame we served, held so a transient read miss (seqlock
@@ -77,6 +86,8 @@ class MediaStream
   HANDLE pacerTimer_ = nullptr;  // high-resolution waitable timer (lazy)
   bool running_ = false;
   bool shutdown_ = false;
+  bool retryTransientRead_ = false;
+  uint64_t retriedSamples_ = 0, recoveredSamples_ = 0;
 };
 
 }  // namespace corevideo::virtualcam

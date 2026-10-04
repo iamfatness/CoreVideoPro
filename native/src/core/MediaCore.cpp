@@ -401,10 +401,11 @@ MediaCore::MediaCore(modules::ModuleSet modules)
   if (modules_.compositor && modules_.compositor->publishesVcamFrames()) {
     compositorPublishesVcam_ = true;
     auto* publisher = virtualCamera_.get();
-    modules_.compositor->setVcamFrameSink(
-        [publisher](modules::ICompositor::VcamFrameBuffer nv12, int width, int height) {
+    modules_.compositor->setIdentifiedVcamFrameSink(
+        [publisher](modules::ICompositor::VcamFrameBuffer nv12, int width, int height,
+                    int64_t programSequence, int64_t deliveredAt100ns) {
           try {
-            publisher->publishNv12Shared(std::move(nv12), width, height);
+            publisher->publishNv12Identified(std::move(nv12), width, height, programSequence, deliveredAt100ns);
           } catch (...) {
           }
         });
@@ -671,7 +672,7 @@ std::string MediaCore::followSpeakerForRoutes(const std::vector<modules::VideoFr
   followSpeakerHold_.observe(epoch, current);
   return followSpeakerHold_.pick([&videoFrames](const std::string& id) {
     return std::any_of(videoFrames.begin(), videoFrames.end(), [&id](const modules::VideoFrame& frame) {
-      return frame.participantId == id && (frame.hasPixels() || frame.hasI420());
+      return frame.participantId == id && frame.hasContent();
     });
   });
 }
@@ -900,8 +901,7 @@ rpc::Json MediaCore::sessionState() const {
     // whole chain from decoded frame to muxed frame.
     std::map<std::string, rpc::Json::Object> isoVideoNodes;
     {
-      std::lock_guard<std::mutex> isoLock(isoVideoQueueMutex_);
-      for (const auto& entry : isoVideoSourceCounters_) {
+      for (const auto& entry : isoVideoIngress_.counters()) {
         auto& node = isoVideoNodes[entry.first];
         node.emplace("queued", static_cast<double>(entry.second.distinctSubmitted));
         node.emplace("heldFrameSuppressed", static_cast<double>(entry.second.duplicateRejected));
@@ -993,7 +993,18 @@ rpc::Json MediaCore::sessionState() const {
         {"commitAvailableMb", static_cast<double>(systemMemoryAvailableBytes_ / (1024 * 1024))},
         {"commitLimitMb", static_cast<double>(systemMemoryLimitBytes_ / (1024 * 1024))}});
   }
+  const auto monitorWorker = modules_.compositor->monitorDiagnostics();
   state.emplace("realtimeEvidence", rpc::Json::Object{
+      {"monitorWorker", rpc::Json::Object{
+          {"enabled", monitorWorker.enabled},
+          {"submitted", static_cast<double>(monitorWorker.submitted)},
+          {"completed", static_cast<double>(monitorWorker.completed)},
+          {"superseded", static_cast<double>(monitorWorker.superseded)},
+          {"failed", static_cast<double>(monitorWorker.failed)},
+          {"pending", monitorWorker.pending}, {"capacity", 1},
+          {"lastSequence", static_cast<double>(monitorWorker.lastSequence)},
+          {"lastWorkMs", monitorWorker.lastWorkMs},
+          {"displayPresentationVerified", false}}},
       {"metricVersion", "realtime-worker-evidence-v1"},
       {"render", rpc::Json::Object{
           {"generation", static_cast<double>(renderWorkerGeneration_.load(std::memory_order_relaxed))},
@@ -2487,7 +2498,7 @@ void MediaCore::completeTakeRecord(const modules::CompositorRenderPlan& programP
     // Content only: a metadata-only frame (a Zoom roster entry with no
     // pixels and no I420) puts nothing on air, so it is not "a frame".
     const bool hasFrame = std::any_of(frames.begin(), frames.end(), [&](const auto& frame) {
-      return frame.participantId == id && (frame.hasPixels() || frame.hasI420());
+      return frame.participantId == id && frame.hasContent();
     });
     if (!hasFrame) missing.push_back(id);
   }
@@ -3416,6 +3427,9 @@ rpc::Json MediaCore::virtualCameraState() const {
       {"resolution", rpc::Json::Object{{"width", status.width}, {"height", status.height}}},
       {"fps", status.fps},
       {"framesPublished", static_cast<double>(status.framesPublished)},
+      {"framesAccepted", static_cast<double>(status.framesAccepted)},
+      {"pendingFramesReplaced", static_cast<double>(status.pendingFramesReplaced)},
+      {"publicationExceptions", static_cast<double>(status.publicationExceptions)},
       {"warning", status.warning},
   };
 }
@@ -6885,6 +6899,13 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // no longer pulls pollVideoFrames. Browser sources are still polled; they
   // are not capture devices.
   core::CaptureVideoToSourceBus captureVideo(*sourceBus_);
+  std::vector<modules::SourceVideoDemand> captureDemands;
+  if (recordingStatus_ == "recording" || recordingStatus_ == "warning") {
+    for (const auto& id : recordingIsoParticipantIds_)
+      captureDemands.push_back({normalizeIsoSourceId(id), modules::SourceVideoConsumer::Iso,
+          "recording", modules::SourceVideoRepresentation::Cpu});
+  }
+  modules_.captureDevice->setVideoConsumerDemand(captureDemands);
   modules_.captureDevice->deliverVideo(captureVideo, frameTimestampMs);
   std::vector<modules::VideoFrame> browserFrames;
   if (!browserSources_->empty()) {
@@ -6924,7 +6945,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
         [&videoFrames](const std::string& sourceId) {
           return std::any_of(videoFrames.begin(), videoFrames.end(),
               [&sourceId](const modules::VideoFrame& frame) {
-                return frame.participantId == sourceId && (frame.hasPixels() || frame.hasI420());
+                return frame.participantId == sourceId && frame.hasContent();
               });
         });
     constexpr int64_t kMaxColdMediaHoldNs = 750'000'000;
@@ -6943,7 +6964,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     const auto hasContent = [&videoFrames](const std::string& id) {
       return std::any_of(videoFrames.begin(), videoFrames.end(),
           [&id](const modules::VideoFrame& frame) {
-            return frame.participantId == id && (frame.hasI420() || frame.hasPixels());
+            return frame.participantId == id && frame.hasContent();
           });
     };
     if (engineLive) {
@@ -6991,7 +7012,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
         const auto sourceId = "capture:" + route.captureDeviceId;
         observations.push_back({sourceId, route.personId, false,
             std::any_of(videoFrames.begin(), videoFrames.end(), [&sourceId](const modules::VideoFrame& frame) {
-              return frame.participantId == sourceId && (frame.hasI420() || frame.hasPixels());
+              return frame.participantId == sourceId && frame.hasContent();
             }), false});
       }
     };
@@ -7000,103 +7021,13 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     const auto epoch = engineLive ? zoomEngineRuntime_->speakerEpoch() : zoomStubEpoch_;
     speakerFloor_.observeFrame(epoch, static_cast<std::uint64_t>(monotonicMs()), observations);
   }
-  // ISO-1: snapshot the latest per-source video frame (keyed by canonical source
-  // id) so the audio worker's gather can hand each selected ISO writer its own
-  // frame. Zero-copy: VideoFrame carries shared_ptr payloads, so this is a cheap
-  // ref copy under coreMutex — NO pixel work under the lock (spec §9 LAW). Only
-  // built while recording ISO, and only for frames with real decoded content.
+  // Conversion has its own bounded arrival stream. Metadata/ref transfers only:
+  // no readback or conversion may run on this gather/Program thread.
+  auto captureCpuFrames = modules_.captureDevice->takeCpuVideoFrames();
   if ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
       !recordingIsoParticipantIds_.empty()) {
-    latestIsoSourceFrames_.clear();
-    for (const auto& frame : videoFrames) {
-      if (!frame.hasI420() && !frame.hasPixels()) {
-        continue;  // metadata-only roster frame — no pixels to ISO-record yet
-      }
-      const std::string& pid = frame.participantId;
-      if (pid.rfind("media:", 0) == 0) {
-        continue;  // media routes are not ISO sources (v1 non-goal)
-      }
-      // capture:/browser: frames already carry their scheme; a bare id is a Zoom
-      // participant → `zoom:<pid>` (matches normalizeIsoSourceId).
-      const std::string key = pid.find(':') != std::string::npos ? pid : "zoom:" + pid;
-      latestIsoSourceFrames_[key] = frame;
-    }
-    // ISO-1 (cadence): APPEND this render's newly-seen ISO frames to the queue
-    // the ISO submit worker drains, and signal it. This is the arrival edge —
-    // ISO is driven from here, NOT from the Program video tick.
-    //
-    // The old code published a latest-value slot that renderVideoOutputTick
-    // sampled on its own, independent 60Hz Program clock. Two free-running 60Hz
-    // clocks beat: 15-22% of publications were never sampled, and the ones that
-    // were arrived as duplicates the sink rejected. It measured NON-MONOTONIC —
-    // a ~240fps source wrote 45.2fps of stem while a ~30fps source wrote 29.0.
-    // That is the same frame-pairing bug the Program video tick documents (and
-    // fixed by becoming signalled rather than paced); the lesson simply had not
-    // been carried across to ISO.
-    //
-    // Still zero-copy and still no pixel work under coreMutex: each entry is a
-    // VideoFrame whose payloads are shared_ptrs. isoVideoQueueMutex_ is a leaf
-    // (see MediaCore.h) held for a handful of vector/map operations.
-    //
-    // STAMP AT GATHER, not at submit. These pixels belong to this render, so
-    // this is the time they belong to — and it is the only stamp that keeps
-    // successive frames spread across the timeline. Stamping at submit would
-    // collapse everything drained in one pass onto one instant, which
-    // RecordingPtsClock would then de-collide into a 100ns clump.
-    const int64_t isoArrivalTimestamp100ns = monotonic100ns();
-    bool appended = false;
-    {
-      std::lock_guard<std::mutex> isoLock(isoVideoQueueMutex_);
-      for (const auto& rawId : recordingIsoParticipantIds_) {
-        const auto it = latestIsoSourceFrames_.find(normalizeIsoSourceId(rawId));
-        if (it == latestIsoSourceFrames_.end()) continue;
-        const std::string& sourceId = it->first;
-        auto& counters = isoVideoSourceCounters_[sourceId];
-        const auto lastId = lastQueuedIsoFrameId_.find(sourceId);
-        if (lastId != lastQueuedIsoFrameId_.end() && lastId->second == it->second.frameId) {
-          // Held frame re-served because this source is slower than the render
-          // rate. Not a loss — but never a distinct picture either.
-          ++counters.duplicateRejected;
-          continue;
-        }
-        lastQueuedIsoFrameId_[sourceId] = it->second.frameId;
-        // Bound the per-source backlog: if the submit worker is behind, shed the
-        // OLDEST pending frame for THIS source only.
-        size_t pendingForSource = 0;
-        for (const auto& queued : pendingIsoVideoQueue_) {
-          if (queued.sourceId == sourceId) ++pendingForSource;
-        }
-        if (pendingForSource >= kMaxPendingIsoFramesPerSource) {
-          for (auto queued = pendingIsoVideoQueue_.begin(); queued != pendingIsoVideoQueue_.end();
-               ++queued) {
-            if (queued->sourceId == sourceId) {
-              pendingIsoVideoQueue_.erase(queued);
-              ++counters.queueOverflowed;
-              break;
-            }
-          }
-        }
-        ++counters.distinctSubmitted;
-        // displayName left empty: the sink maps by sourceId to a writer whose
-        // name/path were resolved at recording start (no roster lookup here).
-        modules::IsoSourceVideoFrame entry{sourceId, std::string(), it->second};
-        entry.timelineTimestamp100ns = isoArrivalTimestamp100ns;
-        pendingIsoVideoQueue_.push_back(std::move(entry));
-        appended = true;
-      }
-    }
-    if (appended) {
-      isoVideoPublishSeq_.fetch_add(1, std::memory_order_release);
-    }
-  } else if (!latestIsoSourceFrames_.empty()) {
-    latestIsoSourceFrames_.clear();
-    // Recording ended: no dedup identity, no counters and no queued frames
-    // survive into the next take (frame ids restart with the meeting/SHM).
-    std::lock_guard<std::mutex> isoLock(isoVideoQueueMutex_);
-    pendingIsoVideoQueue_.clear();
-    lastQueuedIsoFrameId_.clear();
-    isoVideoSourceCounters_.clear();
-  }
+    isoVideoIngress_.observe(recordingIsoParticipantIds_, videoFrames, captureCpuFrames, monotonic100ns());
+  } else { isoVideoIngress_.clear(); }
   markStage(s_stageIngestUs, 0);
 
   // Audio frames are polled in gatherAudioOutputWork() (the audio/output half), not
@@ -7157,7 +7088,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
           break;
         }
       }
-      if (matched != nullptr && (matched->hasPixels() || matched->hasI420())) {
+      if (matched != nullptr && matched->hasContent()) {
         age.hasFrame = true;
         // Task 4 review fix (I4): every frame producer in this codebase
         // re-stamps VideoFrame::timestampMs with the CURRENT tick's clock even
@@ -7480,7 +7411,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // A metadata-only frame (Zoom roster entry: no pixels, no I420) is not
     // evidence the source is running — observing it would keep a dead
     // source "continuous" and count it as having had a frame.
-    if (!frame.hasPixels() && !frame.hasI420()) continue;
+    if (!frame.hasContent()) continue;
     sourceContinuity_.observe(frame.participantId, frame.frameId, renderTickCounter_);
   }
   sourceContinuity_.endTick(renderTickCounter_);
@@ -7582,6 +7513,49 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
   markStage(s_stageProgramUs, 2);
   const auto monitorStartTp = std::chrono::steady_clock::now();
+  if (modules_.compositor->hasIsolatedMonitors()) {
+    modules::MonitorRenderRequest request;
+    request.sequence = lastProducedFrameNumber_;
+    request.programPlan = renderPlan;
+    request.frames = videoFrames;
+    request.multiviewActive = !multiviewSources_.empty() || multiviewLayoutMode_ != "grid";
+    request.previewActive = hasPreviewScene();
+    // WinUI presents Program/Preview/Multiview composites. Its only individual
+    // GPU-source consumer is the legacy Preview fallback before a scene sync;
+    // scene-editor layers consume CPU thumbnails. Keep that compatibility
+    // demand until a composite Preview takes ownership, then stop those exports.
+    if (!request.previewActive) {
+      for (const auto& frame : videoFrames)
+        request.sourceExports.push_back({frame.participantId,
+            modules::SourceMonitorConsumer::PreviewFallback, "preview-fallback"});
+    }
+    if (request.multiviewActive) {
+      request.multiviewPlan = buildMultiviewRenderPlan(videoFrames);
+      request.multiviewPlan.skipCpuReadback = true;
+      request.tiles = buildMultiviewTiles(zoomSnapshot().getString("activeSpeakerId"));
+    }
+    if (request.previewActive) {
+      request.previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
+      if (const auto* wall = tilesWallSources_.find(previewTilesLayer_.layerId))
+        wall->applyLatest(request.previewPlan, previewTilesLayer_.layerId);
+      request.previewPlan.skipCpuReadback = true;
+    }
+    modules_.compositor->submitMonitors(std::move(request));
+    if (const auto result = modules_.compositor->latestMonitors()) {
+      lastProgramFrame_.participantSharedTextures = result->sources;
+      lastProgramFrame_.multiviewSharedTexture = result->multiview;
+      lastProgramFrame_.multiviewTiles = result->tiles;
+      lastProgramFrame_.multiviewWidth = result->multiview.width;
+      lastProgramFrame_.multiviewHeight = result->multiview.height;
+      lastProgramFrame_.previewSharedTexture = result->preview;
+      lastProgramFrame_.previewWidth = result->preview.width;
+      lastProgramFrame_.previewHeight = result->preview.height;
+    }
+    // Worker pressure is measured by its own mailbox counters. Its GPU/CPU
+    // time is not work on this thread and cannot drive Program's shed policy.
+    lastMultiviewPassNs_ = lastPreviewPassNs_ = 0;
+    markStage(s_stageMultiviewUs, 3);
+  } else {
   // Second GPU composite: the whole multiview grid into ONE keyed-mutex shared
   // texture (mirrors the program shared texture). Opt-in â€” only when a layout is
   // set. Reuses the same videoFrames, so Zoom + capture tiles work for free, and
@@ -7742,6 +7716,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       lastProgramFrame_.previewHeight = 0;
       previewStructureEmitted_ = false;
     }
+  }
   }
   const auto monitorEndTp = std::chrono::steady_clock::now();
   markStage(s_stagePreviewUs, 4);
@@ -7987,17 +7962,8 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   // absorb. The two producers are mutually exclusive on this one flag, exactly
   // as the Program submit is.
   if (!videoOutputTickRunning_.load(std::memory_order_acquire) && work.recordingActive &&
-      !recordingIsoParticipantIds_.empty() && !latestIsoSourceFrames_.empty()) {
-    for (const auto& rawId : recordingIsoParticipantIds_) {
-      const std::string sourceId = normalizeIsoSourceId(rawId);
-      const auto it = latestIsoSourceFrames_.find(sourceId);
-      if (it != latestIsoSourceFrames_.end()) {
-        // displayName left empty here: the sink maps by sourceId to a writer
-        // whose name/path were resolved at recording start (avoids a roster
-        // lookup under coreMutex every tick).
-        work.isoSources.push_back({sourceId, std::string(), it->second});
-      }
-    }
+      !recordingIsoParticipantIds_.empty()) {
+    work.isoSources = isoVideoIngress_.latest(recordingIsoParticipantIds_);
   }
   work.outputDestinations = outputDestinations_;
   work.outputDestinationSettings = outputDestinationSettings_;
@@ -9072,28 +9038,14 @@ void MediaCore::renderVideoOutputTick(std::mutex& coreMutex) {
 // one that fixed Program: WAIT on a publication sequence, then DRAIN everything
 // pending. It never samples, so a late wake costs latency and never frames.
 //
-// Locks: isoVideoQueueMutex_ (leaf) only, released before the encoder submit.
+// Locks: IsoVideoIngress's leaf mutex only, released before encoder submit.
 // Never coreMutex, never audioOutputMutex_, so nothing here can delay Program
 // production, Program audio or Program playout. Downstream, the async sink's
 // writer already gives Program items weighted priority over ISO items, so a
 // burst of ISO submissions cannot displace Program work either.
 void MediaCore::renderIsoVideoTick() {
-  std::vector<modules::IsoSourceVideoFrame> submission;
-  {
-    std::unique_lock<std::mutex> lock(isoVideoQueueMutex_);
-    // Bounded wait: a liveness floor, not a cadence. Nothing pending means the
-    // recording is idle or every source is between frames.
-    isoVideoCv_.wait_for(lock, std::chrono::milliseconds(20), [&] {
-      return !pendingIsoVideoQueue_.empty() ||
-             isoVideoPublishSeq_.load(std::memory_order_acquire) != lastIsoVideoDrainSeq_;
-    });
-    lastIsoVideoDrainSeq_ = isoVideoPublishSeq_.load(std::memory_order_acquire);
-    if (pendingIsoVideoQueue_.empty()) return;
-    submission.swap(pendingIsoVideoQueue_);
-  }
-  // Outside the lock. submitIsoVideo splits the batch one item per source, so
-  // the writer can return to Program between individual ISO encodes.
-  modules_.encoder->submitIsoVideo(submission);
+  auto submission = isoVideoIngress_.drain();
+  if (!submission.empty()) modules_.encoder->submitIsoVideo(submission);
 }
 
 void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {

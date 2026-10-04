@@ -31,6 +31,10 @@ class WinUiCaptureDeviceAdapter final : public ICaptureDevice {
   ~WinUiCaptureDeviceAdapter() override;
 
   std::vector<CaptureDeviceInfo> enumerate() const override { return inner_->enumerate(); }
+  void setVideoConsumerDemand(const std::vector<SourceVideoDemand>& demands) override {
+    inner_->setVideoConsumerDemand(demands);
+  }
+  std::vector<VideoFrame> takeCpuVideoFrames() override { return inner_->takeCpuVideoFrames(); }
   std::vector<CaptureDeviceInfo> selectInput(const std::string& deviceId, const std::string& inputId) override {
     return inner_->selectInput(deviceId, inputId);
   }

@@ -15,6 +15,8 @@
 #include <vector>
 
 #include "modules/VirtualCameraShm.h"
+#include "modules/VirtualCameraDeliveryEvidence.h"
+#include "modules/VirtualCameraCorrelationMapping.h"
 #include "VcamLog.h"
 
 namespace corevideo::virtualcam {
@@ -28,6 +30,7 @@ using corevideo::modules::virtualCameraShmSize;
 
 class SharedFrameReader {
  public:
+  const corevideo::modules::VirtualCameraReadEvidence& evidence() const { return evidence_; }
   ~SharedFrameReader() { close(); }
 
   // Opens the region read-only. Safe to call repeatedly; returns true once mapped.
@@ -59,10 +62,18 @@ class SharedFrameReader {
     }
     VcamServeLog("SHM opened OK (file-backed)");
     header_ = static_cast<const VirtualCameraShmHeader*>(view_);
+    BY_HANDLE_FILE_INFORMATION fileInfo{};
+    fileIdentityValid_ = GetFileInformationByHandle(file_, &fileInfo) != FALSE;
+    fileIdentity_ = (uint64_t(fileInfo.nFileIndexHigh) << 32) | fileInfo.nFileIndexLow;
+    volumeIdentity_ = fileInfo.dwVolumeSerialNumber;
+    (void)correlation_.open(false); // optional; an old/uninstrumented publisher stays unknown
     return true;
   }
 
   void close() {
+    correlation_.close();
+    evidence_.programIdentityVerified = false;
+    fileIdentityValid_ = false;
     if (view_ != nullptr) {
       UnmapViewOfFile(view_);
       view_ = nullptr;
@@ -81,12 +92,15 @@ class SharedFrameReader {
   // Seqlock read of the latest complete frame into `out`. Returns true and sets
   // width/height on success; false if no complete frame is available (torn every
   // retry, or the core stopped publishing).
-  bool readLatest(std::vector<std::uint8_t>& out, int& width, int& height) {
+  bool readLatest(std::vector<std::uint8_t>& out, int& width, int& height, bool allowReopen = true,
+                  unsigned* copyBudget = nullptr) {
+    using Result = corevideo::modules::VirtualCameraReadResult;
+    const auto miss = [this](Result result) { evidence_.record(result); return false; };
     if (!ensureOpen() || header_ == nullptr) {
-      return false;
+      return miss(Result::Unavailable);
     }
     if (header_->magic != kVirtualCameraMagic) {
-      return false;  // region not initialized by the core
+      return miss(Result::Uninitialized);
     }
     // No NEW frame since the last successful read: skip the 3MB copy entirely and let
     // the caller re-serve its held frame. The DLL asks at the sink's cadence (60/s)
@@ -101,52 +115,61 @@ class SharedFrameReader {
       // new its seq differs and the next read serves it; if it is the same
       // frozen file we stay on the caller's held-frame/slate behavior instead
       // of re-serving a dead frame forever.
-      if (++unchangedStreak_ >= kReopenAfterUnchangedReads) {
+      if (allowReopen && ++unchangedStreak_ >= kReopenAfterUnchangedReads) {
         unchangedStreak_ = 0;
         close();
-        if (!ensureOpen() || header_ == nullptr ||
-            header_->magic != kVirtualCameraMagic) {
-          return false;
-        }
+        if (!ensureOpen() || header_ == nullptr) return miss(Result::Unavailable);
+        if (header_->magic != kVirtualCameraMagic) return miss(Result::Uninitialized);
         if (header_->seq == lastServedSeq_ && (lastServedSeq_ & 1u) == 0u) {
-          return false;  // same frozen file - nothing new to serve
+          return miss(Result::Unchanged);
         }
         // else: fall through and read the live file's frame below
       } else {
-        return false;
+        return miss(Result::Unchanged);
       }
     } else {
       unchangedStreak_ = 0;
     }
     const auto* payload =
         static_cast<const std::uint8_t*>(view_) + sizeof(VirtualCameraShmHeader);
-    // 2 attempts, not 8: each torn attempt costs a full ~3MB copy on a boosted system
-    // thread. If we tear twice the caller serves its held frame and we try again next
-    // request (16ms later) - invisible on screen, and it stops the worst-case 24MB of
-    // redundant memcpy per request that competed with the OS audio engine for the bus.
+    // At most two payload copies. Publication retries may wait on an odd or
+    // unchanged header but share this budget across the whole sample request.
     for (int attempt = 0; attempt < 2; ++attempt) {
+      corevideo::modules::VirtualCameraCorrelationRecord before, after;
+      const bool haveBefore = correlation_.read(before);
       const std::uint32_t seq1 = header_->seq;
       if ((seq1 & 1u) != 0u) {
         continue;  // writer mid-update
       }
+      ::MemoryBarrier();
       const std::int32_t w = header_->width;
       const std::int32_t h = header_->height;
       const std::uint32_t bytes = header_->byteLen;
+      const std::uint64_t publication = header_->frameNumber;
       if (w <= 0 || h <= 0 || bytes == 0 ||
           bytes > corevideo::modules::kVirtualCameraMaxPayload) {
-        return false;
+        ::MemoryBarrier();
+        if (header_->seq != seq1) continue;
+        return miss(Result::InvalidHeader);
       }
+      if (copyBudget && *copyBudget == 0) return miss(Result::Contended);
+      if (copyBudget) --*copyBudget;
       out.resize(bytes);
       std::memcpy(out.data(), payload, bytes);
+      ::MemoryBarrier();
       const std::uint32_t seq2 = header_->seq;
       if (seq1 == seq2) {  // stable across the copy -> not torn
         width = w;
         height = h;
         lastServedSeq_ = seq1;
+        evidence_.recordFresh(publication, seq1);
+        const bool verified = fileIdentityValid_ && haveBefore && correlation_.read(after) &&
+            corevideo::modules::correlatesCameraPixels(before, after, seq1, publication, fileIdentity_, volumeIdentity_);
+        evidence_.recordCorrelation(verified, after.epochHigh, after.epochLow, after.programSequence);
         return true;
       }
     }
-    return false;
+    return miss(Result::Contended);
   }
 
  public:
@@ -155,6 +178,11 @@ class SharedFrameReader {
   static constexpr std::uint32_t kReopenAfterUnchangedReads = 60;
 
  private:
+  corevideo::modules::VirtualCameraReadEvidence evidence_;
+  corevideo::modules::VirtualCameraCorrelationMapping correlation_;
+  uint64_t fileIdentity_ = 0;
+  uint32_t volumeIdentity_ = 0;
+  bool fileIdentityValid_ = false;
   HANDLE file_ = INVALID_HANDLE_VALUE;
   HANDLE mapping_ = nullptr;
   const void* view_ = nullptr;

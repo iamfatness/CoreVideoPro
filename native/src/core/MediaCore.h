@@ -12,6 +12,7 @@
 #include "core/RenderedProgramSources.h"
 #include "core/RenderedSceneAttributionPolicy.h"
 #include "core/SourceBus.h"
+#include "core/IsoVideoIngress.h"
 #include "core/AudioRouteControlState.h"
 #include "core/MediaTransports.h"
 #include "core/SourceContinuityLedger.h"
@@ -204,14 +205,14 @@ class MediaCore {
   // latency, never frames.
   //
   // Runs on its OWN thread so ISO can never delay Program production, Program
-  // audio or Program playout (rule 6). It takes ONLY isoVideoQueueMutex_ (a
-  // leaf: nothing under it takes coreMutex or audioOutputMutex_) and then the
+  // audio or Program playout (rule 6). It takes only IsoVideoIngress's leaf
+  // mutex (nothing under it takes coreMutex or audioOutputMutex_) and then the
   // async encoder sink's own queue mutex, whose writer already gives Program
   // weighted priority over ISO. Call WITHOUT coreMutex held.
   void renderIsoVideoTick();
   // Wake the ISO video tick after a render published ISO frames. MUST be
   // called with coreMutex RELEASED, for the same reason as the Program notify.
-  void notifyIsoVideoPublished() { isoVideoCv_.notify_one(); }
+  void notifyIsoVideoPublished() { isoVideoIngress_.notify(); }
   // Render pacer telemetry arrives from JsonRpcServer's render thread outside
   // coreMutex. Keep a monotonic atomic total so UI/support evidence cannot lose
   // the 120-frame summaries that are printed and then reset in the log loop.
@@ -925,11 +926,6 @@ class MediaCore {
   // `zoom:<pid>`/`capture:<id>`, back-compat `isoParticipantIds` bare ids). The
   // canonical id + roster display name are resolved at request-build time.
   std::vector<std::string> recordingIsoParticipantIds_;
-  // Latest per-ISO-source video frame snapshotted under coreMutex at the render
-  // gather, keyed by canonical source id (`zoom:<pid>` / `capture:<id>`). Cheap
-  // zero-copy VideoFrame refs (shared_ptr payloads) — NO pixel copy under the
-  // lock. The audio worker's gather picks the selected sources into the ISO work.
-  std::map<std::string, modules::VideoFrame> latestIsoSourceFrames_;
   double recordingStartedAtMs_ = 0;
   int recordingFailureCount_ = 0;
   int recordingRecoveryCount_ = 0;
@@ -1022,33 +1018,7 @@ class MediaCore {
   // latest-value slot read on a second, independent 60Hz clock is exactly the
   // sampling bug this replaced (see renderIsoVideoTick).
   //
-  // isoVideoQueueMutex_ is a LEAF. It MAY be taken while coreMutex is held (the
-  // render gather does exactly that, for a handful of shared_ptr ref copies —
-  // no pixel work, no I/O); nothing taken under it ever reaches back for
-  // coreMutex or audioOutputMutex_, so it cannot participate in a cycle.
-  // mutable: the const snapshot builder reads the fidelity counters under it.
-  mutable std::mutex isoVideoQueueMutex_;
-  std::condition_variable isoVideoCv_;
-  std::vector<modules::IsoSourceVideoFrame> pendingIsoVideoQueue_;
-  // Last frameId APPENDED per source. The render tick re-serves a held frame
-  // whenever a source is slower than the render rate; suppressing the repeat
-  // here (rather than at the sink) keeps the queue, the sink budget and the
-  // fidelity counters honest about distinct pictures.
-  std::map<std::string, int64_t> lastQueuedIsoFrameId_;
-  // Bounded: a stalled drain must not grow memory without limit. Per source, so
-  // one fast participant cannot evict every slower guest's pending frame.
-  static constexpr size_t kMaxPendingIsoFramesPerSource = 4;
-  std::atomic<uint64_t> isoVideoPublishSeq_{0};
-  uint64_t lastIsoVideoDrainSeq_ = 0;
-  // ISO-3 (fidelity): per-source distinct-frame accounting, so an ISO stem's
-  // repeat-freeness is measurable rather than assumed. framesWritten on a
-  // stream is an APPEND count and proves nothing about distinct pictures.
-  struct IsoVideoSourceCounters {
-    uint64_t distinctSubmitted = 0;   // distinct (sourceId, frameId) queued
-    uint64_t duplicateRejected = 0;   // re-served held frames suppressed here
-    uint64_t queueOverflowed = 0;     // dropped by the per-source pending cap
-  };
-  std::map<std::string, IsoVideoSourceCounters> isoVideoSourceCounters_;
+  core::IsoVideoIngress isoVideoIngress_;
   std::atomic<uint64_t> bufferedOutputSequenceGaps_{0};
   int64_t lastBufferedDeliverySequence_ = 0;
   // Program-frame publish signal. The render thread bumps the counter and
@@ -1271,7 +1241,7 @@ class MediaCore {
     bool recordingActive = false;
     std::vector<std::string> recordingIsoParticipantIds;
     // Per-source ISO video for this tick (ISO-1), zero-copy shared_ptr refs
-    // snapshotted from latestIsoSourceFrames_ under coreMutex at gather.
+    // snapshotted from IsoVideoIngress under coreMutex at gather.
     std::vector<modules::IsoSourceVideoFrame> isoSources;
     std::vector<std::string> outputDestinations;
     std::vector<modules::OutputDestinationSettings> outputDestinationSettings;

@@ -11,12 +11,15 @@
 #include <shlobj.h>
 #include <cstdio>
 #include <string>
+#include "modules/VirtualCameraShm.h"
 
 namespace corevideo::virtualcam {
 
 inline void VcamServeLog(const char* msg) {
   FILE* f = nullptr;
-  if (_wfopen_s(&f, L"C:\\ProgramData\\CoreVideoPro\\vcam-serve.log", L"a") == 0 && f != nullptr) {
+  // Honor the same isolated directory as the pixel transport in native tests.
+  const auto path = corevideo::modules::virtualCameraShmDir() + "\\vcam-serve.log";
+  if (fopen_s(&f, path.c_str(), "a") == 0 && f != nullptr) {
     SYSTEMTIME st;
     GetLocalTime(&st);
     DWORD pid = GetCurrentProcessId();
