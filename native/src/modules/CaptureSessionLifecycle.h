@@ -54,6 +54,12 @@ template<class Session> class CaptureSessionLifecycle {
       std::lock_guard<std::mutex> lock(mutex_);
       if (stopping_) return false;
       if (!live && !requests_.count(id)) return true;
+      const auto existing = requests_.find(id);
+      // Refreshes may repeat an accepted request while creation is still in
+      // flight. Preserve that revision and its session; only a state change
+      // or a retry after a completed failure should schedule lifecycle work.
+      if (existing != requests_.end() && existing->second.live == live &&
+          !(live && failed_.count(id))) return true;
       if (!requests_.count(id) && requests_.size() >= capacity_) return false;
       requests_[id] = {++revision_, live}; pending_.insert(id); failed_.erase(id);
     }

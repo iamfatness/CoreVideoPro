@@ -121,9 +121,11 @@ public static class ShowInputRosterService
         device.Id.StartsWith("window:", StringComparison.Ordinal) ||
         InferCaptureDeviceKind(device) == ShowInputKind.Ndi;
 
+    // Connected in the shell means the request is accepted. SignalPresent
+    // remains independent; pending native startup must not trigger auto-retry.
     public static bool NativeCaptureSessionStarted(CaptureDevice device, string? state) =>
         string.Equals(state, "connected", StringComparison.OrdinalIgnoreCase) ||
-        (InferCaptureDeviceKind(device) == ShowInputKind.Ndi &&
+        (UsesNativeCaptureSession(device) &&
          string.Equals(state, "connecting", StringComparison.OrdinalIgnoreCase));
 
     public static CaptureDevice? MapCoreOwnedCaptureDevice(NativeCaptureDeviceStatus native)
@@ -150,6 +152,7 @@ public static class ShowInputRosterService
             Height = native.Height,
             FrameRate = native.FrameRate,
             ConnectionState = native.ConnectionState == "connected" ||
+                ((isScreen || isWindow) && native.ConnectionState == "connecting") ||
                 (isNdi && (native.ConnectionState is "connecting" or "stalled"))
                 ? CaptureConnectionState.Connected
                 : native.ConnectionState == "failed"
