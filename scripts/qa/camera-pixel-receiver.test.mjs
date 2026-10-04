@@ -30,3 +30,8 @@ test('does not certify another negotiated rate or a short run', () => {
   const rows = fixture(); rows[0].fpsDenominator = 1001; assert.equal(judge(rows).receiverPixelContinuityPassed, false);
   assert.equal(judgeCameraPixels(fixture().map(JSON.stringify).join('\n')).receiverPixelContinuityPassed, false);
 });
+test('rejects continuous identities delivered at 50fps despite a declared 60/1 type', () => {
+  const rows = fixture();
+  for (let index = 1; index < rows.length - 1; ++index) rows[index].arrivalUs = (index - 1) * 20000;
+  assert.equal(judge(rows).receiverPixelContinuityPassed, false);
+});

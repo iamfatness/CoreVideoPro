@@ -71,6 +71,9 @@ inline std::string virtualCameraShmDir() {
   }
   const char* pd = std::getenv("ProgramData");
   std::string root = (pd != nullptr && *pd != '\0') ? std::string(pd) : std::string("C:\\ProgramData");
+#if defined(COREVIDEO_VCAM_ISOLATED_PUBLICATION_QA) && COREVIDEO_VCAM_ISOLATED_PUBLICATION_QA
+  return root + "\\CoreVideoPro\\camera-publication-qa";
+#endif
   return root + "\\CoreVideoPro";
 }
 inline std::string virtualCameraShmFilePath() {

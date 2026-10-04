@@ -252,3 +252,30 @@ hash and actual loaded module path; registering a path alone is not provenance.
 Preserve and restore the installed camera registration after the trial. An OS
 receiver trial with this DLL qualifies that diagnostic combination, not an
 unmodified release package.
+
+The excluded `corevideo-vcam-publication-qa` executable and
+`corevideo-virtualcam-publication-qa-off` / `-on` DLLs provide an isolated
+publication experiment. Build all in Release. Their fixed mapping directory is
+`%ProgramData%\CoreVideoPro\camera-publication-qa`; the production mapping is
+never opened. The publisher refuses to run while CoreVideo's app/core is live
+and uses a single-writer mutex. Invoke it as `SECONDS ODD_US --isolated-test`
+(1–180 seconds of scheduled frames, 0–25000 microseconds held in the writing
+state). Delays beyond one frame intentionally overrun source cadence and may
+lengthen wall-clock runtime. No pixel mapping is deleted on exit.
+
+For OS-hosted trials, preserve the installed camera registration, select the
+exact diagnostic DLL, grant only the serving account's required read/execute
+access, and verify its loaded module before measuring. Start the publisher
+long enough to cover setup, the 30-second warmup and the receiver capture.
+Compare otherwise identical off/on cases, retain every trial, and restore the
+installed registration afterward. The targets are excluded from normal builds
+and the package script copies only the production DLL.
+
+Publisher evidence records actual writing windows and rational 60 Hz deadlines;
+receiver evidence includes a host-monotonic arrival timestamp. Run
+`node scripts/qa/publication-qa-evidence.mjs PUBLISHER.ndjson RECEIVER.ndjson`
+to check source deadline overruns and publication-to-receiver pixel age. This
+summary validates evidence, not continuity; run `camera-pixel-receiver.mjs`
+separately. A lower delivered sample cadence fails even if successive identities
+are consecutive. Compare full content latency and A/V using the final
+qualification harness, rather than treating publication age as display latency.

@@ -94,7 +94,9 @@ int main(int argc, char** argv) {
         check(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &pts, &sample), "ReadSample");
         if (flags & (MF_SOURCE_READERF_ERROR | MF_SOURCE_READERF_ENDOFSTREAM | MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED)) throw std::runtime_error("Receiver stream error, end or format change.");
         if (!sample) continue;
-        const auto arrival = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count();
+        const auto arrived = Clock::now();
+        const auto arrival = std::chrono::duration_cast<std::chrono::microseconds>(arrived - start).count();
+        const auto arrivalHost = std::chrono::duration_cast<std::chrono::microseconds>(arrived.time_since_epoch()).count();
         ComPtr<IMFMediaBuffer> buffer;
         check(sample->ConvertToContiguousBuffer(&buffer), "sample buffer");
         BYTE* bytes = nullptr; DWORD length = 0;
@@ -104,7 +106,7 @@ int main(int argc, char** argv) {
         UINT32 rawStride = width; (void)actual->GetUINT32(MF_MT_DEFAULT_STRIDE, &rawStride);
         const auto identity = corevideo::modules::decodeDeliveryCounter(bytes, length, width, height, static_cast<LONG>(rawStride));
         check(buffer->Unlock(), "buffer unlock");
-        std::printf("{\"sample\":%llu,\"arrivalUs\":%lld,\"pts100ns\":%lld,\"identity\":", ++samples, arrival, pts);
+        std::printf("{\"sample\":%llu,\"arrivalUs\":%lld,\"arrivalHostUs\":%lld,\"pts100ns\":%lld,\"identity\":", ++samples, arrival, arrivalHost, pts);
         if (identity) std::printf("%u", *identity); else std::printf("null");
         std::printf("}\n");
       }

@@ -84,6 +84,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#782](https://github.com/iamfatness/CoreVideoPro/issues/782) | Windows supervisor disposal queried an already-disposed Process in the crash lock-order CI test. Captured stack and run; attribution and focused fix need owner rank. |
 | [#735](https://github.com/iamfatness/CoreVideoPro/issues/735) | Fixed: the CPU-fallback stream path delivered nothing from 2026-09-30 because shared-AAC routing withheld PCM from a sender that was not on the GPU path. Remaining: RTMP was not tested separately from SRT; owner acceptance on a machine without a hardware encoder. |
 | [#701](https://github.com/iamfatness/CoreVideoPro/issues/701) | Media playout video can stutter or freeze during a live show; identify decoder versus presentation. Had no row until the 2026-10-02 review. |
 | [#732](https://github.com/iamfatness/CoreVideoPro/issues/732) | Recording resumes in a new folder and the stream reconnects after the media core restarts (owner rulings 2026-10-01 and 2026-10-02; PR #746). Remaining: owner acceptance on an installed beta; the stream reconnect was proven against a local SRT sink only, not RTMP or a real platform. |

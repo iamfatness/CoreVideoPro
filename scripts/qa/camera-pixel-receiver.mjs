@@ -54,6 +54,11 @@ export function judgeCameraPixels(text, { warmupSeconds = 30, minimumSeconds = 3
   const durationSeconds = measured.length > 1 ? (measured.at(-1).arrivalUs - measured[0].arrivalUs) / 1e6 : 0;
   // One interval of tolerance only accounts for endpoint sampling, not missing frames.
   if (durationSeconds + 1 / 60 < minimumSeconds) errors.push('Insufficient measured duration.');
+  // Negotiated 60/1 alone is not delivery proof: a source can increment its
+  // identity once per request yet emit only 50 samples/s. Keep a one-sample
+  // endpoint allowance for arrival jitter; identity continuity remains strict.
+  const expectedSamples = Math.round(durationSeconds * 60) + 1;
+  if (Math.abs(measured.length - expectedSamples) > 1) errors.push('Measured sample cadence differs from negotiated 60/1.');
   if (invalid) errors.push(`${invalid} undecodable/torn pixel identities.`);
   if (repeated || missing || reordered) errors.push(`Continuity failed: repeated=${repeated}, missing=${missing}, reordered=${reordered}.`);
   const maximumIntervalMs = intervals.at(-1) ?? null;
