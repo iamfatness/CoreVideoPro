@@ -98,6 +98,86 @@ precede pruning their editors. Source text overrides and distinct scene bindings
 must preserve stable source identity. #592 remains a diagnostic dependency only
 for its defect fix, not an excuse to guess or block unrelated usability changes.
 
+## Fast UI/UX delivery approach
+
+October 5 refinement: deliver visible operator improvements through small changes
+to the existing WinUI screens. Reuse current components, navigation and policies;
+avoid a new design system or wholesale workspace redesign. The work order remains
+in BACKLOG. Layout safety under #507 accompanies the reporting work; the rest of
+the usability scope follows the previously approved settings/automation work.
+
+### Transport and status: first visible beta milestone
+
+Keep Record, Stream, Camera and Take controls in fixed positions. Place a concise
+status in reserved space; long errors expand only in Details/Health. Show output
+state with text as well as color: Connecting, Streaming, Degraded, Stopping or
+Failed. Display destination-specific reasons and effective feed cadence when
+the existing backpressure evidence supports it. Do not call transport progress
+receiver playback or display an invented rate.
+
+Keep #507 layout work and #759/#610 status-policy changes in separate reviewable
+PRs, using the same agreed vocabulary. The layout patch can use existing truthful
+facts immediately; do not delay fixed button placement for the entire metrics
+audit. Package a first beta once these changes pass focused checks and installed
+visual validation. This milestone does not depend on finishing all 19 issues.
+
+### Sources: reduce the steps to a usable input
+
+Use the existing input inspector as the main surface. Each row makes identity,
+assignment, editable name, actual format, signal and audio pairing easy to find.
+Keep role/dropout configuration reachable without duplicating the health panel.
+Put infrequent details behind an explicit expansion and preserve row selection,
+keyboard focus and saved values during live refresh. Document each removed or
+relocated control and its replacement under #590; avoid cosmetic removals that
+make a real operator task harder.
+
+### Scenes and lower thirds: make setup predictable
+
+Offer existing-layout presets for solo, two-person and presenter-plus-screen.
+Use distinct eligible inputs and obvious empty placeholders. Preserve custom
+scenes and source identity; do not introduce a new scene canvas. For #593, place
+name and secondary-line fields next to the source, with preview and Reset to
+default. Empty secondary text stays intentionally empty. Add persistence through
+scene changes and restart. Keep #592's frame-correlated investigation separate:
+do not hold the editable fields for an unproven animation fix or claim the
+lowercase-fragment defect is solved by adding those fields.
+
+### Settings: one place for setup and troubleshooting
+
+Group Zoom setup, Health and support export inside the existing Settings
+destination. Retain useful health facts and actionable errors while removing
+the redundant navigation labels. Add a persistent OHG enable choice that defaults
+off for fresh profiles and safely changes tabs when disabled. Preserve existing
+OHG configuration. #594 and #595 can share design review, but each issue gets
+its own scoped implementation and acceptance evidence.
+
+### Review and evidence without a long design cycle
+
+Before changing a screen, capture its current layout and produce one annotated
+target layout or working preview at a normal window size. Review control placement,
+labels and task flow before spreading the change to other screens. Do not create
+a separate mock app with different behavior; use the actual WinUI components.
+
+For each slice, exercise one short operator task: start a stream and see a failure,
+assign an input, create and Take a two-person scene, edit an on-air lower third,
+or export support evidence. Verify keyboard use, narrow/normal window sizes and
+common display scaling, with long/changing status text. For live-refresh screens,
+confirm that edits, selection and focus survive roster/status updates. For simple
+layout/navigation changes, build and visual checks suffice; use targeted regression
+tests where state, persistence, identity or command timing changes.
+
+Use a first transport/status beta and a later coherent usability beta, rather
+than waiting for one large redesign or releasing every cosmetic patch. An installed
+mixed-source rehearsal must preserve output quality and show settings. Record
+which tasks passed, remaining defects and missing receiver/device evidence.
+The #587 first-click Join defect remains in the usability scope and can be fixed
+independently of visual layout work once its binding timing is reproduced.
+
+The first milestone is deliberately small. Do not promise a calendar completion
+date before validating the remaining lifecycle gaps, the #592 reproduction and
+settings compatibility. Narrow PRs and observable acceptance, rather than skipping
+checks, are how this work finishes quickly.
+
 ## Change and validation discipline
 
 Use one focused issue/seam per PR, with at most three items in flight and one
