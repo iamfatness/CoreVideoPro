@@ -320,6 +320,14 @@ public sealed class NativeMediaCoreOutputSender
     /// a core that predates it — treat absence as unknown, never as healthy.
     /// </summary>
     public CoreVideoPro.MediaCore.Contracts.OutputLifecycle? Lifecycle { get; init; }
+    public NativeMediaCoreSenderBackpressure? Backpressure { get; init; }
+}
+
+public sealed class NativeMediaCoreSenderBackpressure
+{
+    public int AppliedDivisor { get; init; }
+    public int Level { get; init; }
+    public string? LastReason { get; init; }
 }
 
 public sealed class NativeMediaCoreOutputSenderSession

@@ -352,6 +352,9 @@ public static class LiveProductionSync
         bool streaming,
         string programResolutionLabel)
     {
+        var degradation = StreamDegradationReadout.Format(snapshot);
+        if (degradation is not null) return degradation;
+
         var liveOutputs = snapshot.OutputHealth
             .Where(item =>
                 !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase) &&
@@ -405,6 +408,15 @@ public static class LiveProductionSync
 
     public static string ResolveStreamHealthStatus(NativeMediaCoreStateSnapshot snapshot, bool streaming)
     {
+        // A healthy-looking queue sample does not undo an applied feed reduction.
+        // Preserve an explicit failure over a degraded-stream warning.
+        if (snapshot.OutputHealth.Any(item =>
+                !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase) && item.Status == "failed") ||
+            snapshot.OutputSenderSession.Senders.Any(sender => sender.Status == "failed"))
+            return "failed";
+        if (StreamDegradationReadout.Format(snapshot) is not null)
+            return "warning";
+
         var health = snapshot.OutputHealth.FirstOrDefault(item =>
             !item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase) &&
             (item.Destination.Equals("rtmp", StringComparison.OrdinalIgnoreCase) ||
