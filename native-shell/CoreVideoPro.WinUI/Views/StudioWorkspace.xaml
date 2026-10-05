@@ -1007,20 +1007,30 @@
 
                 </StackPanel>
 
-                <!-- Center: output status + transport controls -->
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
-                            HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" Margin="0,0,8,0">
+                <!-- Status has its own reserved row; content and error visibility cannot
+                     change the transport group's width or move an on-air control. -->
+                <Grid Grid.Column="1" Width="718" RowSpacing="4"
+                      HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="28" />
+                        <RowDefinition Height="44" />
+                    </Grid.RowDefinitions>
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="80" />
+                        </Grid.ColumnDefinitions>
                         <TextBlock Text="{x:Bind ViewModel.OutputStatusBrief, Mode=OneWay}" VerticalAlignment="Center"
                                    Foreground="{StaticResource StudioMutedBrush}" FontSize="11"
-                                   MaxWidth="190" TextTrimming="CharacterEllipsis"
+                                   TextTrimming="CharacterEllipsis"
                                    ToolTipService.ToolTip="{x:Bind ViewModel.OutputOperatorStatus, Mode=OneWay}" />
-                        <Button Content="{x:Bind ViewModel.OutputStatusDetailsLabel, Mode=OneWay}"
+                        <Button Grid.Column="1" Content="Details"
+                                AutomationProperties.Name="Output status details"
                                 Padding="8,4"
                                 MinWidth="0"
                                 MinHeight="0"
                                 FontSize="11"
-                                Visibility="{x:Bind ViewModel.OutputStatusDetailsVisibility, Mode=OneWay}"
+                                HorizontalAlignment="Stretch"
                                 Style="{StaticResource StudioGhostButton}">
                             <Button.Flyout>
                                 <Flyout Placement="Top">
@@ -1037,9 +1047,10 @@
                                 </Flyout>
                             </Button.Flyout>
                         </Button>
-                    </StackPanel>
+                    </Grid>
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8">
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                        <Button Style="{StaticResource TakeButton}" MinWidth="86" MinHeight="40"
+                        <Button Style="{StaticResource TakeButton}" Width="122" MinHeight="40"
                                 CornerRadius="8,0,0,8"
                                 Command="{x:Bind ViewModel.TakeCommand}"
                                 IsEnabled="{x:Bind ViewModel.CanTake, Mode=OneWay}"
@@ -1079,7 +1090,7 @@
                         </Button>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <Button MinWidth="92" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button Width="144" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             AutomationProperties.Name="Record"
                             FontSize="13" Command="{x:Bind ViewModel.ToggleRecordingCommand}"
                             Background="{x:Bind ViewModel.RecordButtonBackground, Mode=OneWay}"
@@ -1232,7 +1243,7 @@
                     </Button>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <Button MinWidth="92" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
+                    <Button Width="144" MinHeight="44" CornerRadius="8,0,0,8" BorderThickness="1" FontWeight="ExtraBold"
                             FontSize="13" AutomationProperties.Name="Stream" Command="{x:Bind ViewModel.ToggleStreamingCommand}"
                             Background="{x:Bind ViewModel.StreamButtonBackground, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.StreamButtonBorder, Mode=OneWay}"
@@ -1351,7 +1362,7 @@
                     <!-- Virtual camera (virtual-camera-spec V4): output the program as a
                          system webcam Zoom/Teams/Meet can select. -->
                     <StackPanel Orientation="Horizontal" Spacing="0">
-                    <ToggleButton MinHeight="44" CornerRadius="8,0,0,8" Padding="12,4"
+                    <ToggleButton Width="160" MinHeight="44" CornerRadius="8,0,0,8" Padding="12,4"
                                   AutomationProperties.Name="Virtual camera"
                                   IsChecked="{x:Bind ViewModel.VirtualCameraEnabled, Mode=TwoWay}"
                                   ToolTipService.ToolTip="{x:Bind ViewModel.VirtualCameraStatusLabel, Mode=OneWay}">
@@ -1390,7 +1401,8 @@
                         </Button.Flyout>
                     </Button>
                     </StackPanel>
-                </StackPanel>
+                    </StackPanel>
+                </Grid>
 
                 <!-- Right: OUTPUTS stats, mini-stats, clock, master audio -->
                 <ScrollViewer Grid.Row="1" Grid.ColumnSpan="3" HorizontalScrollBarVisibility="Auto"
