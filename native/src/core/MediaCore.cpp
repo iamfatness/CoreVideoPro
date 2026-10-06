@@ -997,6 +997,13 @@ rpc::Json MediaCore::sessionState() const {
   state.emplace("realtimeEvidence", rpc::Json::Object{
       {"monitorWorker", rpc::Json::Object{
           {"enabled", monitorWorker.enabled},
+          {"observationVersion", "monitor-isolation-v1"},
+          {"requestedMode", monitorWorker.requestedMode},
+          {"effectiveMode", monitorWorker.effectiveMode},
+          {"selectionSource", monitorWorker.selectionSource},
+          {"readiness", monitorWorker.readiness},
+          {"failureReason", monitorWorker.failureReason},
+          {"deliveryEpoch", static_cast<double>(buffer.generation)},
           {"submitted", static_cast<double>(monitorWorker.submitted)},
           {"completed", static_cast<double>(monitorWorker.completed)},
           {"superseded", static_cast<double>(monitorWorker.superseded)},

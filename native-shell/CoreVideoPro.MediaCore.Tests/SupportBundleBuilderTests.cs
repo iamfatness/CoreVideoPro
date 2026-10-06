@@ -8,6 +8,44 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class SupportBundleBuilderTests
 {
     [Fact]
+    public void MonitorIsolation_OlderPeerEnabledDoesNotClaimReadiness()
+    {
+        var snapshot = BuildSampleSnapshot() with { RawJson = """{"realtimeEvidence":{"monitorWorker":{"enabled":true}}}""" };
+        var observation = MonitorIsolationObservation.FromSnapshot(snapshot);
+        Assert.True(observation.WorkerExists);
+        Assert.Equal("unknown", observation.EffectiveMode);
+        Assert.Equal("unavailable", observation.Readiness);
+        Assert.Null(observation.DeliveryEpoch);
+    }
+
+    [Fact]
+    public void MonitorIsolation_NewCoreFieldsReachBundleAndTriage()
+    {
+        var snapshot = BuildSampleSnapshot() with { RawJson = """
+            {"realtimeEvidence":{"monitorWorker":{"enabled":true,"requestedMode":"isolated",
+            "effectiveMode":"isolated","selectionSource":"override","readiness":"degraded",
+            "failureReason":"monitor-initialization","deliveryEpoch":7}}}
+            """ };
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+        var json = SupportBundleBuilder.Serialize(bundle);
+        Assert.Contains("monitor-initialization", json);
+        Assert.Contains("requested isolated; effective isolated; selection override; readiness degraded", json);
+        Assert.Equal(7, bundle.MediaCore!.MonitorIsolation.DeliveryEpoch);
+    }
+
+    [Theory]
+    [InlineData("bad json")]
+    [InlineData("{\"realtimeEvidence\":42}")]
+    [InlineData("{\"realtimeEvidence\":{\"monitorWorker\":{\"readiness\":42,\"failureReason\":\"credential SECRET\",\"deliveryEpoch\":-1}}}")]
+    public void MonitorIsolation_MalformedPeerCannotClaimHealthOrLeakFreeText(string raw)
+    {
+        var observation = MonitorIsolationObservation.FromSnapshot(BuildSampleSnapshot() with { RawJson = raw });
+        Assert.Equal("unavailable", observation.Readiness);
+        Assert.Equal("unknown", observation.FailureReason);
+        Assert.Null(observation.DeliveryEpoch);
+    }
+
+    [Fact]
     public void RedactEndpoint_StripsCredentialsAndSecretQueryParams()
     {
         var redacted = SupportBundleBuilder.RedactEndpoint(

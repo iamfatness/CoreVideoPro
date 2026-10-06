@@ -36,24 +36,46 @@ class MonitorRenderWorker {
     }
     changed_.notify_one();
   }
-  void refuse() { std::lock_guard<std::mutex> lock(mutex_); ++failed_; }
+  void refuse() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++failed_;
+    readiness_ = "degraded";
+    failureReason_ = "monitor-frame-admission";
+  }
   std::shared_ptr<const MonitorRenderResult> latest() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return result_;
   }
   MonitorRenderDiagnostics diagnostics() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return {true, submitted_, completed_, superseded_, failed_, pending_ ? 1 : 0,
+    MonitorRenderDiagnostics result{true, submitted_, completed_, superseded_, failed_, pending_ ? 1 : 0,
         result_ ? result_->sequence : 0, result_ ? result_->workMs : 0};
+    result.requestedMode = result.effectiveMode = "isolated";
+    result.selectionSource = "constructor";
+    result.readiness = readiness_;
+    result.failureReason = failureReason_;
+    return result;
   }
  private:
   void run(Render& render, std::function<void()>& initialize) {
     core::ComApartmentLifetime apartment;
     struct ReleaseBackend { Render& render; ~ReleaseBackend() { render = {}; } } release{render};
     if (initialize) {
-      try { initialize(); }
-      catch (...) { std::lock_guard<std::mutex> lock(mutex_); ++failed_; }
+      try {
+        initialize();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (failed_ == 0) readiness_ = "ready";
+      }
+      catch (...) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++failed_;
+        readiness_ = "degraded";
+        failureReason_ = "monitor-initialization";
+      }
       initialize = {};
+    } else {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (failed_ == 0) readiness_ = "ready";
     }
     auto lastLog = std::chrono::steady_clock::now();
     for (;;) {
@@ -74,10 +96,14 @@ class MonitorRenderWorker {
           std::lock_guard<std::mutex> lock(mutex_);
           result_.swap(immutable);
           ++completed_;
+          readiness_ = "ready";
+          failureReason_.clear();
         }
       } catch (...) {
         std::lock_guard<std::mutex> lock(mutex_);
         ++failed_;
+        readiness_ = "degraded";
+        failureReason_ = "monitor-render";
       }
       const auto now = std::chrono::steady_clock::now();
       if (now - lastLog >= std::chrono::seconds(2)) {
@@ -102,6 +128,7 @@ class MonitorRenderWorker {
   std::shared_ptr<const MonitorRenderResult> result_;
   bool stopping_ = false;
   uint64_t submitted_ = 0, superseded_ = 0, completed_ = 0, failed_ = 0;
+  std::string readiness_ = "starting", failureReason_;
   std::thread thread_;
 };
 
