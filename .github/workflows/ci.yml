@@ -24,6 +24,11 @@ jobs:
         run: node contracts/generate.mjs --check
       - name: Release evidence validator tests
         run: node --test scripts/tests/release-evidence.test.mjs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Monitor isolation evidence judge and bounded IPC tests
+        run: python -m unittest discover -s scripts/qa -p test_monitor_evidence.py -v
       - name: Frame and recording QA harness tests
         run: npm run test:qa-harness
 
