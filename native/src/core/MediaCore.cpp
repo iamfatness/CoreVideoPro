@@ -993,8 +993,27 @@ rpc::Json MediaCore::sessionState() const {
         {"commitAvailableMb", static_cast<double>(systemMemoryAvailableBytes_ / (1024 * 1024))},
         {"commitLimitMb", static_cast<double>(systemMemoryLimitBytes_ / (1024 * 1024))}});
   }
+  const auto capturePreparation = modules_.captureDevice->shmCapturePreparationDiagnostics();
   const auto monitorWorker = modules_.compositor->monitorDiagnostics();
   state.emplace("realtimeEvidence", rpc::Json::Object{
+      {"capturePreparation", rpc::Json::Object{
+          {"kind", "winui-shared-memory"}, {"version", "shm-preparation-v1"},
+          {"enabled", capturePreparation.enabled}, {"state", capturePreparation.state},
+          {"reason", capturePreparation.reason},
+          {"accepted", static_cast<double>(capturePreparation.accepted)},
+          {"refused", static_cast<double>(capturePreparation.refused)},
+          {"prepared", static_cast<double>(capturePreparation.prepared)},
+          {"torn", static_cast<double>(capturePreparation.torn)},
+          {"poolBusy", static_cast<double>(capturePreparation.poolBusy)},
+          {"failed", static_cast<double>(capturePreparation.failed)},
+          {"residentBytes", static_cast<double>(capturePreparation.residentBytes)},
+          {"memoryAccounting", "mapped-payload-plus-four-cpu-frames"},
+          {"budgetBytes", static_cast<double>(capturePreparation.budgetBytes)},
+          {"active", static_cast<double>(capturePreparation.active)},
+          {"retiring", static_cast<double>(capturePreparation.retiring)},
+          {"copyTotalNs", static_cast<double>(capturePreparation.copyTotalNs)},
+          {"copyMaximumNs", static_cast<double>(capturePreparation.copyMaximumNs)},
+          {"senderAcquisitionTimeVerified", false}}},
       {"monitorWorker", rpc::Json::Object{
           {"enabled", monitorWorker.enabled},
           {"observationVersion", "monitor-isolation-v1"},

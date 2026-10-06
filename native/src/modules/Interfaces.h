@@ -1606,6 +1606,14 @@ class ICaptureAudioConsumer {
   virtual void publish(AudioFrame frame) = 0;
 };
 
+struct CapturePreparationDiagnostics {
+  bool enabled = false;
+  std::string state = "unavailable", reason;
+  uint64_t accepted = 0, refused = 0, prepared = 0, torn = 0, poolBusy = 0, failed = 0;
+  size_t residentBytes = 0, budgetBytes = 0, active = 0, retiring = 0;
+  uint64_t copyTotalNs = 0, copyMaximumNs = 0;
+};
+
 class ICaptureDevice : public ICaptureDeviceLifecycle {
  public:
   ~ICaptureDevice() override = default;
@@ -1613,6 +1621,7 @@ class ICaptureDevice : public ICaptureDeviceLifecycle {
   // adapters keep their existing CPU behavior; GPU capture may avoid readback
   // only after this explicit snapshot establishes that no CPU consumer exists.
   virtual void setVideoConsumerDemand(const std::vector<SourceVideoDemand>&) {}
+  virtual CapturePreparationDiagnostics shmCapturePreparationDiagnostics() const { return {}; }
   // CPU recording arrivals are independent of the latest GPU preview/Program
   // slot. Drain all admitted frames, preserving their own identity and time.
   virtual std::vector<VideoFrame> takeCpuVideoFrames() { return {}; }

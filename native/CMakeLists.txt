@@ -130,6 +130,7 @@ add_library(corevideo_native
   src/modules/CoreAudioMonitorOutputAdapter.cpp
   src/modules/WasapiMonitorOutputAdapter.cpp
   src/modules/WinUiCaptureDeviceAdapter.cpp
+  src/modules/ShmCapturePreparation.cpp
   src/modules/ZoomEngineClient.cpp
   src/modules/ZoomEngineProcess.cpp
   src/modules/ZoomEngineRuntime.cpp
@@ -719,6 +720,7 @@ if(BUILD_TESTING)
     tests/CaptureDeviceLifecycleTest.cpp
     tests/CaptureDeviceLifecycleTest.cpp
     tests/CaptureIngestTest.cpp
+    tests/ShmCapturePreparationTest.cpp
     tests/ProgramFramePreviewHealthTest.cpp
     tests/SourceBusTest.cpp
     tests/SourceAudioIngressTest.cpp
