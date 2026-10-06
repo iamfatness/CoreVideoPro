@@ -9,6 +9,7 @@ namespace CoreVideoPro.WinUI.ViewModels;
 
 public sealed partial class TransportViewModel : ObservableObject
 {
+    private readonly OutputSessionClock _outputClock = new();
     [ObservableProperty]
     private bool _magicSceneEnabled = true;
 
@@ -194,6 +195,7 @@ public sealed partial class TransportViewModel : ObservableObject
 
     public void ApplyIdleState(bool recording, bool streaming, string programResolutionLabel)
     {
+        _outputClock.Reset();
         ProgramStatValue = string.IsNullOrWhiteSpace(programResolutionLabel) ? "—" : programResolutionLabel;
         ApplyHealth(ProgramStatHealthLabel, OutputHealthKind.Idle, brush => ProgramStatHealthBrush = brush);
 
@@ -223,7 +225,7 @@ public sealed partial class TransportViewModel : ObservableObject
         string programResolutionLabel,
         bool masterLimiterEnabled)
     {
-        var elapsedSeconds = (int)Math.Floor(snapshot.Diagnostics.GeneratedAtMs / 1000d);
+        var elapsedSeconds = (int)Math.Floor(_outputClock.Observe(snapshot));
         var networkHealth = ResolveNetworkHealth(snapshot);
         var droppedFrames = ResolveDroppedFrames(snapshot);
         var totalFrames = Math.Max(snapshot.ProgramFrameCount, droppedFrames);

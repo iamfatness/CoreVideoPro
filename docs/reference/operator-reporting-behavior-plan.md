@@ -57,6 +57,16 @@ production, degradation/interruption and failure. â€œReceiver playback verifiedâ
 requires receiver evidence; local production alone cannot establish it. Retain
 actionable errors in Details/Health even when the main status is concise.
 
+The LIVE clock is elapsed local output-session time from the first observed
+recording or stream production, sampled on the next status refresh. Connecting
+alone does not start it. Retries, interruptions and finalization remain in that
+session until every recording/stream lifecycle ends; ending one output while
+another continues does not reset it. It is not media delivered during the retry
+or receiver playback duration. The shell uses a monotonic clock rather than
+snapshot timestamps or refresh counts. The bridge's diagnostic elapsed time
+also uses monotonic core-session time; explicit test timestamps apply only to
+that request and cannot change the live clock.
+
 Dependency: settle lifecycle semantics before the degraded readout and status
 layout; settle adapter liveness before restoring capture dropout controls. The
 diagnostic audit follows the corrected facts rather than inventing a new source

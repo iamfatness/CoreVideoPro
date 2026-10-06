@@ -20,7 +20,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     private Timer? _spineSyncTimer;
     private readonly SingleFlightTimerWork _pollWork = new();
     private readonly SingleFlightTimerWork _spineWork = new();
-    private double _elapsedMs;
+    private readonly TimeProvider _time;
+    private long? _sessionStartedAt;
     private NativeMediaCoreStateSnapshot? _lastSnapshot;
     private IReadOnlyDictionary<string, (string SessionId, string State)> _lastIsoOutputStates =
         new Dictionary<string, (string, string)>();
@@ -30,8 +31,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     private long _spineFactoryVersion;
     private CancellationTokenSource? _spineFactoryCancellation;
 
-    public MediaCoreBridgeService(MediaCoreSupervisor? supervisor = null)
+    public MediaCoreBridgeService(MediaCoreSupervisor? supervisor = null, TimeProvider? timeProvider = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
         _supervisor = supervisor ?? new MediaCoreSupervisor();
         _rosterFacts = new LatestRosterFactMailbox(PublishRosterFact);
         _audioMonitorControl = new AudioMonitorControlCoordinator(
@@ -113,6 +115,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     public async Task<NativeMediaCoreProfile?> StartAsync(CancellationToken cancellationToken = default)
     {
         var profile = await _supervisor.StartAsync(cancellationToken).ConfigureAwait(false);
+        lock (_gate) { _sessionStartedAt ??= _time.GetTimestamp(); }
         StartPolling();
         return profile;
     }
@@ -147,7 +150,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             _rosterRecoveryGeneration++;
             _rosterRecoveryInFlight = false;
             _rosterFacts.Reset();
-            _elapsedMs = 0;
+            _sessionStartedAt = null;
             _spinePayloadFactory = null;
             _spineFactoryVersion++;
         }
@@ -372,17 +375,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         double? elapsedMs,
         CancellationToken cancellationToken)
     {
-        lock (_gate)
-        {
-            if (elapsedMs is not null)
-            {
-                _elapsedMs = elapsedMs.Value;
-            }
-        }
-
         var snapshot = await _supervisor.SyncMediaCoreAsync(
             commands,
-            GetElapsedMs(),
+            elapsedMs ?? GetElapsedMs(),
             cancellationToken).ConfigureAwait(false);
         PublishSnapshot(snapshot);
         return snapshot;
@@ -393,7 +388,6 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     {
         return await _syncScheduler.TryPollAsync(async () =>
         {
-            AdvanceElapsed(16);
             return await SyncCoreAsync([], null, cancellationToken).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -408,17 +402,9 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
             throw new InvalidOperationException("Media core is not running.");
         }
 
-        lock (_gate)
-        {
-            if (elapsedMs is not null)
-            {
-                _elapsedMs = elapsedMs.Value;
-            }
-        }
-
         var spine = await _supervisor.SyncZoomMediaSpineAsync(
                 spinePayload,
-                GetElapsedMs(),
+                elapsedMs ?? GetElapsedMs(),
                 cancellationToken)
             .ConfigureAwait(false);
         PublishSpineSnapshot(spine);
@@ -779,8 +765,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
                 // Validate and submit as one ordered operation relative to Stop or
                 // reconfiguration. No UI work or snapshot callbacks run under this lock.
                 if (version != _spineFactoryVersion || !Running) return;
-                _elapsedMs += 500;
-                response = _supervisor.SyncZoomMediaSpineAsync(payload, _elapsedMs, cancellationToken);
+                response = _supervisor.SyncZoomMediaSpineAsync(payload, GetElapsedMs(), cancellationToken);
             }
             var spine = await response.ConfigureAwait(false);
             lock (_gate) { if (version != _spineFactoryVersion) return; }
@@ -963,15 +948,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     {
         lock (_gate)
         {
-            return _elapsedMs;
-        }
-    }
-
-    private void AdvanceElapsed(double deltaMs)
-    {
-        lock (_gate)
-        {
-            _elapsedMs += deltaMs;
+            return _sessionStartedAt is { } started ? _time.GetElapsedTime(started).TotalMilliseconds : 0;
         }
     }
 

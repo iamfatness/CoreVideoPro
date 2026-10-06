@@ -1448,7 +1448,8 @@
                                 <TextBlock Text="{x:Bind ViewModel.Transport.FrameDropsLabel, Mode=OneWay}"
                                            Style="{StaticResource OutputStatValue}" />
                             </StackPanel>
-                            <StackPanel Spacing="2" MinWidth="48">
+                            <StackPanel Spacing="2" MinWidth="48"
+                                        ToolTipService.ToolTip="Elapsed output session since recording or streaming first produced media. Includes retries; resets when all outputs end. Receiver playback is not verified.">
                                 <TextBlock Text="LIVE" Style="{StaticResource OutputStatLabel}" />
                                 <TextBlock Text="{x:Bind ViewModel.Transport.LiveClockLabel, Mode=OneWay}"
                                            Style="{StaticResource OutputStatValue}" />
