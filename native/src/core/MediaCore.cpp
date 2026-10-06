@@ -1000,6 +1000,7 @@ rpc::Json MediaCore::sessionState() const {
           {"kind", "winui-shared-memory"}, {"version", "shm-preparation-v1"},
           {"enabled", capturePreparation.enabled}, {"state", capturePreparation.state},
           {"reason", capturePreparation.reason},
+          {"lastRefusalReason", capturePreparation.lastRefusalReason},
           {"accepted", static_cast<double>(capturePreparation.accepted)},
           {"refused", static_cast<double>(capturePreparation.refused)},
           {"prepared", static_cast<double>(capturePreparation.prepared)},

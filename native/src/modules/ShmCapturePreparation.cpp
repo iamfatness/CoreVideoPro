@@ -59,7 +59,7 @@ ShmCapturePreparation::~ShmCapturePreparation() {
 }
 bool ShmCapturePreparation::registerBuffer(const std::string& id, const std::string& name, int width, int height) {
   std::lock_guard<std::mutex> lock(control_);
-  auto refuse = [&](const char* reason) { ++stats_.refused; stats_.reason = reason; stats_.state = "degraded"; return false; };
+  auto refuse = [&](const char* reason) { ++stats_.refused; stats_.reason = stats_.lastRefusalReason = reason; stats_.state = "degraded"; return false; };
   if (id.empty() || id.size() > 1024 || name.empty() || name.size() > 260 || width <= 0 || height <= 0) return refuse("invalid-mapping");
   const auto pixels = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
   if (pixels > (kBudgetBytes - 16) / (4 * (kPoolFrames + 1))) return refuse("capture-budget");
@@ -117,19 +117,25 @@ void ShmCapturePreparation::run() {
   uint64_t identity = 0;
   for (;;) {
     { std::unique_lock<std::mutex> lock(control_);
-      changed_.wait_for(lock, std::chrono::milliseconds(2));
+      if (active.empty() && retiring.empty() && std::atomic_load(&wanted_)->empty()) {
+        changed_.wait(lock, [&] { return stopping_ || !std::atomic_load(&wanted_)->empty(); });
+      } else {
+        changed_.wait_for(lock, std::chrono::milliseconds(2));
+      }
       if (stopping_) break;
     }
     const auto wanted = std::atomic_load(&wanted_);
     uint64_t refused = 0, prepared = 0, torn = 0, busy = 0, failed = 0;
     uint64_t copyTotalNs = 0, copyMaximumNs = 0;
     std::string reason;
+    std::string refusalReason;
+    const auto refuse = [&](const char* value) { ++refused; refusalReason = reason = value; };
     for (auto it = retiring.begin(); it != retiring.end();)
       it = it->second->released() ? retiring.erase(it) : std::next(it);
     for (auto it = active.begin(); it != active.end();) {
       const auto desired = std::find_if(wanted->begin(), wanted->end(), [&](const auto& r) { return r.id == it->first; });
       if (desired != wanted->end() && desired->generation == it->second->request.generation) { ++it; continue; }
-      if (retiring.count(it->first)) { ++refused; reason = "capture-retirement-pending"; ++it; continue; }
+      if (retiring.count(it->first)) { refuse("capture-retirement-pending"); ++it; continue; }
       it->second->last = {}; // release this owner's payload before checking external leases
       retiring.emplace(it->first, std::move(it->second));
       it = active.erase(it);
@@ -142,8 +148,8 @@ void ShmCapturePreparation::run() {
     };
     for (const auto& request : *wanted) {
       if (active.count(request.id)) continue;
-      if (active.size() + retiring.size() >= kMaxSources * 2) { ++refused; reason = "capture-source-capacity"; continue; }
-      if (residency() + request.bytes * (kPoolFrames + 1) + 16 > kBudgetBytes) { ++refused; reason = "capture-budget"; continue; }
+      if (active.size() + retiring.size() >= kMaxSources * 2) { refuse("capture-source-capacity"); continue; }
+      if (residency() + request.bytes * (kPoolFrames + 1) + 16 > kBudgetBytes) { refuse("capture-budget"); continue; }
       auto mapping = std::make_unique<Mapping>(); mapping->request = request;
       // The desired registry owns the frozen fallback until replacement pixels
       // arrive. A mapping must not keep that retired generation alive itself.
@@ -158,11 +164,12 @@ void ShmCapturePreparation::run() {
       if (!mapping->view) continue;
       auto sequence = [&] { return *reinterpret_cast<const volatile uint32_t*>(mapping->view); };
       const auto first = sequence();
+      std::atomic_thread_fence(std::memory_order_acquire);
       if ((first & 1) || (!mapping->seen && first == 0) || (mapping->seen && first == mapping->sequence)) continue;
       uint32_t width, height;
       std::memcpy(&width, mapping->view + 4, 4); std::memcpy(&height, mapping->view + 8, 4);
       if (width != static_cast<uint32_t>(mapping->request.width) || height != static_cast<uint32_t>(mapping->request.height)) {
-        ++refused; reason = "capture-dimensions"; continue;
+        refuse("capture-dimensions"); continue;
       }
       auto available = std::find_if(mapping->pool.begin(), mapping->pool.end(), [](const auto& p) { return p.use_count() == 1; });
       if (available == mapping->pool.end()) { ++busy; reason = "capture-pool-busy"; continue; }
@@ -219,6 +226,7 @@ void ShmCapturePreparation::run() {
         }
       }
       stats_.refused += refused; stats_.prepared += prepared; stats_.torn += torn;
+      if (!refusalReason.empty()) stats_.lastRefusalReason = refusalReason;
       stats_.poolBusy += busy; stats_.failed += failed;
       stats_.copyTotalNs += copyTotalNs; stats_.copyMaximumNs = std::max(stats_.copyMaximumNs, copyMaximumNs);
       stats_.residentBytes = residency(); stats_.active = active.size(); stats_.retiring = retiring.size();

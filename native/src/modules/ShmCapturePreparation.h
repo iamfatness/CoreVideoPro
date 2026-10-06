@@ -16,7 +16,7 @@ class ShmCapturePreparation {
     uint64_t accepted = 0, refused = 0, prepared = 0, torn = 0, poolBusy = 0, failed = 0;
     uint64_t copyTotalNs = 0, copyMaximumNs = 0;
     size_t residentBytes = 0, active = 0, retiring = 0;
-    std::string state = "idle", reason;
+    std::string state = "idle", reason, lastRefusalReason;
   };
   // Test-only callable: no environment, command or settings surface supplies it.
   explicit ShmCapturePreparation(std::function<void()> beforeCopy = {});

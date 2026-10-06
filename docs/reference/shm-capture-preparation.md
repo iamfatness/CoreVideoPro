@@ -31,6 +31,8 @@ mapping-open, allocation and dimension failures are observable separately in
 and four CPU buffers; it is not process working-set or total GPU memory.
 `memoryAccounting` names this accounting explicitly. Reasons are fixed values;
 no mapping names or exception text enter diagnostics.
+`reason` describes current preparation state; `lastRefusalReason` retains the
+latest named rejection even after existing sources resume a ready state.
 
 An even, changed sequence and a stable header around the copy are required.
 Sequence zero before the first arrival and odd/in-progress writes cannot create
@@ -38,6 +40,8 @@ a fresh frame. A torn copy is rejected. Each accepted copy has a monotonic
 prepared identity and registration generation (`sourceEpoch`). Its
 `captureTimestamp100ns` records the steady-clock read-observation boundary,
 not upstream camera acquisition. `senderAcquisitionTimeVerified` remains false.
+The adapter retains the legacy `timestampMs` delivery-clock stamp separately;
+re-serving a held image does not change its acquisition observation or identity.
 These identities do not prove that every publisher frame was delivered.
 
 Native `ShmCapturePreparation.*` tests exercise real Windows mapping pixels,

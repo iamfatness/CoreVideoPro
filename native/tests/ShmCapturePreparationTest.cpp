@@ -21,6 +21,7 @@ TEST(ShmCapturePreparation, RejectsInvalidAndOverBudgetRequestsBeforeAllocation)
   EXPECT_FALSE(preparation.registerBuffer("id", "name", std::numeric_limits<int>::max(), std::numeric_limits<int>::max()));
   EXPECT_EQ(preparation.stats().accepted, 0u);
   EXPECT_EQ(preparation.stats().refused, 3u);
+  EXPECT_EQ(preparation.stats().lastRefusalReason, "capture-budget");
   EXPECT_EQ(preparation.stats().residentBytes, 0u);
 }
 
@@ -164,6 +165,33 @@ TEST(ShmCapturePreparation, TornCopyIsRejectedAndTheNextCompleteFrameRecovers) {
   EXPECT_EQ(recovered.frameId, 1); // rejected copy never acquired a delivered identity
   EXPECT_EQ(recovered.pixels->back(), 22);
   EXPECT_TRUE(waitFor([&] { return preparation.stats().state == "ready"; }));
+  EXPECT_FALSE(preparation.registerBuffer("camera", writer.name, 0, 64));
+  ASSERT_TRUE(waitFor([&] { return preparation.stats().state == "ready"; }));
+  EXPECT_EQ(preparation.stats().lastRefusalReason, "invalid-mapping");
+}
+
+TEST(ShmCapturePreparation, BridgePreservesDeliveryClockWithoutRestampingAcquisitionOrIdentity) {
+  Writer writer(64, 64);
+  writer.write(2, 77);
+  WinUiCaptureDeviceAdapter bridge(std::make_unique<EmptyCapture>());
+  bridge.registerCaptureBuffer("camera", writer.name, 64, 64);
+  ASSERT_TRUE(waitFor([&] { return bridge.shmCapturePreparationDiagnostics().prepared > 0; }));
+  struct Consumer : ICaptureVideoConsumer {
+    VideoFrame frame;
+    void publish(VideoFrame next) override { frame = std::move(next); }
+    void end(const std::string&) override {}
+  } first, held;
+  bridge.deliverVideo(first, 123);
+  bridge.deliverVideo(held, 234);
+  ASSERT_TRUE(first.frame.hasPixels());
+  ASSERT_TRUE(held.frame.hasPixels());
+  EXPECT_EQ(first.frame.timestampMs, 123);
+  EXPECT_EQ(held.frame.timestampMs, 234);
+  EXPECT_EQ(first.frame.captureTimestamp100ns, held.frame.captureTimestamp100ns);
+  EXPECT_GT(first.frame.captureTimestamp100ns, 0);
+  EXPECT_EQ(first.frame.frameId, held.frame.frameId);
+  EXPECT_EQ(first.frame.sourceEpoch, held.frame.sourceEpoch);
+  EXPECT_EQ(first.frame.pixels, held.frame.pixels);
 }
 
 TEST(ShmCapturePreparation, BlockedCopyDoesNotBlockProgramConsumerOrRealPixelComposition) {

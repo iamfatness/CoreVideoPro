@@ -25,7 +25,7 @@ CapturePreparationDiagnostics WinUiCaptureDeviceAdapter::shmCapturePreparationDi
   return {true, stats.state, stats.reason, stats.accepted, stats.refused, stats.prepared,
       stats.torn, stats.poolBusy, stats.failed, stats.residentBytes,
       ShmCapturePreparation::kBudgetBytes, stats.active, stats.retiring,
-      stats.copyTotalNs, stats.copyMaximumNs};
+      stats.copyTotalNs, stats.copyMaximumNs, stats.lastRefusalReason};
 #endif
 }
 
@@ -39,6 +39,9 @@ void WinUiCaptureDeviceAdapter::captureVideoTick(int64_t timestampMs) {
   std::vector<VideoFrame> frames = std::move(collect.frames);
 
   for (auto frame : preparation_.latest()) {
+    // Preserve the legacy delivery clock separately from the immutable
+    // preparation observation time and source identity.
+    frame.timestampMs = timestampMs;
     frames.erase(std::remove_if(frames.begin(), frames.end(),
         [&](const VideoFrame& inner) { return inner.participantId == frame.participantId; }), frames.end());
     frames.push_back(std::move(frame));
