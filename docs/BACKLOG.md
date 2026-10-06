@@ -97,6 +97,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#794](https://github.com/iamfatness/CoreVideoPro/issues/794) | First evidence slice of owner-approved #517: maintained mixed-source monitor A/B harness, bounded IPC and retained failed trials. Inherits parent execution scope; no independent rank or qualification closure. |
 | [#782](https://github.com/iamfatness/CoreVideoPro/issues/782) | Windows supervisor disposal queried an already-disposed Process in the crash lock-order CI test. Captured stack and run; attribution and focused fix need owner rank. |
 | [#784](https://github.com/iamfatness/CoreVideoPro/issues/784) | Screen/window capture flashes after asynchronous WGC lifecycle change: the shell rejects connecting and auto-retries, repeatedly restarting sessions. Fixed in merged #785 and beta `beta-2026-10-04-92e6b1e`: accepted pending requests are preserved and repeated connect is idempotent. Owner visual check was positive; installed capture alongside streaming acceptance remains. |
 | [#735](https://github.com/iamfatness/CoreVideoPro/issues/735) | Fixed: the CPU-fallback stream path delivered nothing from 2026-09-30 because shared-AAC routing withheld PCM from a sender that was not on the GPU path. Remaining: RTMP was not tested separately from SRT; owner acceptance on a machine without a hardware encoder. |

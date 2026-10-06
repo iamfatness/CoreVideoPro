@@ -1,0 +1,58 @@
+# Mixed-source monitor isolation evidence (#794, parent #517)
+
+This Windows headless test compares the existing inline and isolated monitor
+paths using one **Release** binary. It creates eight fake Zoom I420 1080p30
+sources, two BGRA shared-memory captures (1080p/1440p at nominal 60 Hz), a
+1080p60 Program and Preview, a 1080p multiview, and local Program recording.
+It explicitly selects the two-frame Program buffer and disables GPU capture
+ingress so that only monitor isolation differs. The capture producer advances
+a header/pixel counter on a solid image; it does not exercise physical camera
+or Windows Graphics Capture acquisition.
+
+```powershell
+python scripts/qa/monitor-isolation-ab.py `
+  --core native/build-dev/corevideo-native.exe `
+  --fake native/build-dev/corevideo-zoom-engine-fake.exe `
+  --source-commit <commit-that-built-these-executables> `
+  --output artifacts/monitor-ab-unique-run
+```
+
+Defaults: three pairs, two measured minutes per trial, ten seconds of warmup.
+Pair orders alternate inline/isolated then isolated/inline. Every trial gets a
+fresh owned core and unique Local shared-memory mappings. Do not run a build,
+other QA workload or live production concurrently. The source commit and
+Release configuration are operator declarations; SHA256 hashes identify the
+actual binaries, and the manifest inventories available adapters/drivers.
+Adapter inventory does not prove which adapter the compositor selected.
+
+The output directory must be new. Each trial retains its snapshots as JSONL,
+stderr, result JSON and recording even on failure. RAM retains two snapshots,
+one pending IPC request/response and no event backlog; stderr drains directly
+to disk. The driver closes stdin and waits for its owned process to exit,
+killing that process only on shutdown timeout. It never edits settings,
+restarts the installed app or searches for unrelated processes to kill.
+Evidence on disk grows with the requested duration; retain it until reviewed.
+
+`programBufferVerdict` checks measured deltas for underruns, scheduled deadline
+misses, output sequence gaps, skipped production slots and audio sample loss.
+Render overruns absorbed by the buffer remain visible without being relabeled
+as output loss. `recordingVerdict` separately checks measured recorder missing
+frames, encoder video/audio queue drops and failures. Any missing/reset
+counter, stopped recording, inactive buffer, changed profile/generation or
+non-progressing worker invalidates the trial. Nonzero measured loss fails its
+boundary. Exit 1 means at least one trial failed or is invalid; a failing inline
+control is useful evidence and must not be discarded. Short smoke tests may
+override duration/pairs but do not meet the specification's repeatability gate.
+
+Both verdicts remain aggregate evidence. Advancing texture metadata and a
+playable MP4 do not establish per-frame identity, actual display presentation,
+GPU readiness, decoded A/V skew or camera receiver delivery. Release
+qualification remains **MISSING_EVIDENCE**. Real SDK/capture, fault injection,
+resource bounds, installed soak and hardware coverage remain separate gates
+in the [approved specification](../../docs/reference/render-delivery-spec.md).
+
+The portable judge/IPC tests run in CI without a GPU:
+
+```powershell
+python -m unittest discover -s scripts/qa -p test_monitor_evidence.py -v
+```
