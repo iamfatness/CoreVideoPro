@@ -41,7 +41,7 @@ public sealed class SupportBundleBuilderTests
     {
         var observation = MonitorIsolationObservation.FromSnapshot(BuildSampleSnapshot() with { RawJson = raw });
         Assert.Equal("unavailable", observation.Readiness);
-        Assert.Equal("", observation.FailureReason);
+        Assert.Equal("unknown", observation.FailureReason);
         Assert.Null(observation.DeliveryEpoch);
     }
 

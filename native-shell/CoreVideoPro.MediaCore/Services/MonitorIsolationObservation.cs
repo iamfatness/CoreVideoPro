@@ -10,7 +10,7 @@ public sealed record MonitorIsolationObservation
     public string EffectiveMode { get; init; } = "unknown";
     public string SelectionSource { get; init; } = "unknown";
     public string Readiness { get; init; } = "unavailable";
-    public string FailureReason { get; init; } = "";
+    public string FailureReason { get; init; } = "unknown";
     public long? DeliveryEpoch { get; init; }
     public bool? WorkerExists { get; init; }
 
@@ -31,7 +31,7 @@ public sealed record MonitorIsolationObservation
                 EffectiveMode = Known(worker, "effectiveMode", "unknown", "inline", "isolated"),
                 SelectionSource = Known(worker, "selectionSource", "unknown", "default", "override", "constructor"),
                 Readiness = Known(worker, "readiness", "unavailable", "starting", "ready", "degraded"),
-                FailureReason = Known(worker, "failureReason", "", "monitor-initialization", "monitor-render", "monitor-frame-admission", "invalid-monitor-override"),
+                FailureReason = Known(worker, "failureReason", "unknown", "", "monitor-initialization", "monitor-render", "monitor-frame-admission", "invalid-monitor-override"),
                 DeliveryEpoch = worker.TryGetProperty("deliveryEpoch", out var epoch) && epoch.ValueKind == JsonValueKind.Number && epoch.TryGetInt64(out var number) && number >= 0 ? number : null,
                 WorkerExists = worker.TryGetProperty("enabled", out var enabled) && enabled.ValueKind is JsonValueKind.True or JsonValueKind.False ? enabled.GetBoolean() : null
             };
