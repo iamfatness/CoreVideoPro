@@ -2,6 +2,75 @@
 
 Implementation specification, October 3, 2026. Parent: [#517](https://github.com/iamfatness/CoreVideoPro/issues/517). The owner authorized starting after the show while remaining in the meeting. Work ranking is recorded in [BACKLOG](../BACKLOG.md). This specification supersedes the architectural alternatives in the incident plan retained in the owner's local workspace. Development and isolated tests do not require replacing the running installation.
 
+Revision October 6, 2026: installed baseline `77bac0c5c8ddc7b05723b70c946749926e890b38`. This revision adds current incident evidence and defines how to qualify and enable the existing isolation implementation. The [completion plan](render-delivery-completion-plan.md) describes execution; BACKLOG remains the only ranked queue.
+
+## October 6 evidence and limits
+
+The live run had monitor isolation disabled. Source export remained inside
+Program rendering, including sources outside its single visible layer. A
+sampled call took 31.367 ms, of which 29.857 ms was source export, against a
+16.667 ms frame period. A fresh 30.084-second interval contained 22 Program
+buffer underruns, 144 render deadline misses and 953 monitor shed ticks.
+No additional camera publication replacements occurred; this does not prove
+loss-free upstream production or camera receiver playback.
+
+A matched experiment used the exact installed core binary (SHA256
+`a0f1e91d9d3041f01975cc6de72a69dbea7bee8bc3916e961f58764771f7f5f0`),
+eight synthetic Zoom inputs requested at 1080p30, two BGRA captures at 1080p60
+and 2560x1440p60, 1080p60 Program/Preview/multiview, a two-frame buffer and local
+Program recording. Approximately 20 seconds per path produced:
+
+| Observation | Inline monitors | Isolated monitors |
+|---|---:|---:|
+| Buffer underruns | 2 | 0 |
+| Render deadline misses | 68 | 33 |
+| Monitor shed ticks | 1,201 | 0 |
+| Mean Program-thread work | 9.727 ms | 6.029 ms |
+| Audio lost samples | 0 | 0 |
+
+The isolated worker completed 1,209 requests without failure or pending
+replacement. Seven focused native regressions passed, including Program
+composing while the monitor worker was blocked, actual Preview/multiview
+pixels across resize, and delivered camera NV12 identity. Zoom-only controls
+had no buffer underruns on either path: source count alone did not reproduce
+the incident. [Evidence and exclusions](https://github.com/iamfatness/CoreVideoPro/issues/517#issuecomment-6026674449) remain on #517.
+
+This establishes a serialized monitor/source-export bottleneck and supports
+isolation as the repair direction. It does not attribute every underrun or
+individual driver/preemption wait, or qualify real SDK/WGC inputs, presentation,
+camera receivers, decoded A/V or long runs. The 33 remaining render misses
+remain visible even when the buffer absorbs them.
+
+## Launch behavior and implementation seams
+
+The existing `COREVIDEO_ISOLATE_MONITORS` switch is sampled at compositor
+creation. Explicit `1` selects isolation; explicit `0` selects the legacy path
+for matched QA or rollback. Unset retains the shipping default until installed
+gates pass. A default change preserves these explicit overrides. No automatic
+live switch occurs during a show. Isolation and GPU capture ingress retain
+separate gates; passing one does not silently enable the other.
+
+Publish requested/effective mode, selection source (default or override),
+worker readiness, fallback reason and delivery epoch through existing generated
+observations and the support bundle. Older peers report unknown. Initialization
+refusal produces a named degraded state, never successful isolation. Any
+legacy fallback explicitly reports that optional work again shares Program's
+deadline; it preserves format and buffer settings.
+
+| Seam | Required final behavior |
+|---|---|
+| `D3D11CompositorAdapter` | No optional per-source conversion/copy/export in Program. Preserve decoupled shell publication. Monitor initialization, resize, joins and destruction stay off Program. |
+| `MonitorRenderWorker` and admission | One active job and at most one pending latest job. Replacement drops monitor work only. Immutable identities and ready images cross the boundary; unused/missing monitor inputs cannot retain Program leases or refuse unrelated valid work. |
+| Consumer demand | Preview/multiview use monitor-local textures. Individual exports require actual fallback/inspector/popout demand. Hidden/destroyed consumers release their demand without removing Program/ISO demand. A configured Preview composite retires its legacy individual-source fallback. |
+| Capture and CPU fallback | Prepare BGRA/I420 fallback views outside Program. Program consumes ready images; no uploads solely for monitors. Preserve qualified GPU ingress and the independent CPU/ISO branch; unsupported paths have explicit reasons. |
+| Identity and presentation | Carry completed image sequence, source epoch, Take/layout revision and capture identity through publication, shell acquire and presentation submission. Program tiles show actual buffered delivery. Never stamp old pixels with the latest render-loop sequence. |
+| Health | Report monitor degradation separately from production failure. Actual monitor completion cadence, optional drops, Program underruns and camera reader/receiver evidence are separate facts. A loop-frame label cannot prove Preview FPS. |
+
+Use existing compositor/worker/source-bus seams. Missing observation fields go
+through `contracts/observation.schema.json` and generated readers, with their
+first real UI/bundle consumer. No new ownership in `StudioViewModel`, per-frame
+file I/O, quality reduction or additional configured buffering belongs here.
+
 ## Outcome and scope
 
 Deliver continuous 1920x1080 Program at 60 fps, continuous virtual-camera delivery to a qualified receiver, and smooth 60 fps multiview on the reference rig with the October 3 workload. Source cameras may have lower native cadence; their held frames must not be misclassified as a production failure. Preserve source resolution, color, audio synchronization and the existing two-frame Program buffer. Do not buy continuity by adding steady-state buffering or reducing quality.
@@ -10,7 +79,7 @@ The implementation must remove per-source monitor conversion/export from Program
 
 Do not refactor unrelated production state, replace the Zoom SDK transport, change the encoder architecture, implement new ingest products, or retire CPU fallback. A distinct virtual-camera failure discovered through tracing gets a focused repair and its own acceptance evidence; it is not automatically attributed to #517.
 
-## What is established
+## October 3 baseline evidence (historical)
 
 Evidence is pinned to installed commit `75c38387578e19a9b01533f7a95ae1e03d2f049d`, not current main. Implementation must reconcile subsequent changes before editing. The saved read-only snapshots and logs are in `preserved-local-evidence/show-20261003-render/` in the owner's workspace, outside this checkout; they are not redistributed with the repository.
 
@@ -132,7 +201,7 @@ For the reference workload, target Program CPU render work at p99 <= 8 ms and p9
 | Camera repair if required | Focused change at the first proven divergent downstream boundary | Receiver trace demonstrates the failing boundary and corrected delivery under identical load. |
 | Installed qualification | One packaged candidate containing qualified slices | Meets the end-to-end gates and retains rollback. |
 
-Each slice must include its first real consumer and regression tests; do not merge unused foundation types. These dependencies do not change BACKLOG rank. Create scoped child issues under #517 when scheduling code work; only the proven downstream failure merits a separate incident claim. This draft has not posted or changed GitHub issues.
+Each slice must include its first real consumer and regression tests; do not merge unused foundation types. These dependencies do not change BACKLOG rank. Create scoped child issues under #517 when scheduling code work; only a proven distinct downstream failure merits a separate incident claim. Current evidence and this revision are tracked on #517.
 
 ## Tests and acceptance
 
