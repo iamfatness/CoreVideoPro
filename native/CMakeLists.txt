@@ -805,6 +805,8 @@ if(BUILD_TESTING)
     tests/ZoomEngineClientTest.cpp
     tests/I420RangeExpandTest.cpp
     tests/ZoomEngineProcessTest.cpp
+    tests/EngineShareLifecycleTest.cpp
+    zoom-engine/engine/engine-share.cpp
     tests/ZoomEngineRuntimeTest.cpp
     tests/ZoomEngineStateTest.cpp
   )
@@ -841,7 +843,7 @@ if(BUILD_TESTING)
     COREVIDEO_WITH_DECKLINK=$<BOOL:${COREVIDEO_WITH_DECKLINK}>
     COREVIDEO_WITH_AJA=$<BOOL:${COREVIDEO_WITH_AJA}>
     COREVIDEO_WITH_UVC=$<BOOL:${COREVIDEO_WITH_UVC}>)
-  target_include_directories(corevideo-native-tests PRIVATE zoom-engine/shared plugin-host virtualcam-dll)
+  target_include_directories(corevideo-native-tests PRIVATE tests/share-sdk zoom-engine/engine zoom-engine/shared plugin-host virtualcam-dll)
   if(GTest_FOUND)
     target_compile_definitions(corevideo-native-tests PRIVATE COREVIDEO_USE_SYSTEM_GTEST=1)
     target_link_libraries(corevideo-native-tests PRIVATE GTest::gtest)

@@ -404,3 +404,25 @@ TEST(ZoomEngineRuntimeState, MeasuredDeliveredFpsIsFramesOverElapsedSinceFirstFr
     EXPECT_EQ(corevideo::modules::measuredDeliveredFps(snapshot.subscriptions[0]), 10);
   }
 }
+
+TEST(ZoomEngineRuntimeState, HelperLossClearsConnectedAndRawMediaState) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(R"({"cmd":"auth_ok"})"));
+  state.apply(eventFrom(R"({"cmd":"joined"})"));
+  state.apply(eventFrom(R"({"cmd":"raw_media_status","active":true})"));
+  EXPECT_TRUE(state.snapshot().rawMediaActive);
+  EXPECT_TRUE(state.sdkAuthenticated());
+  state.apply(eventFrom(R"({"cmd":"error","stage":"engine_disconnected","message":"Zoom SDK helper exited unexpectedly. Rejoin the meeting."})"));
+  const auto snapshot=state.snapshot();
+  EXPECT_EQ(snapshot.meetingState,"error");
+  EXPECT_FALSE(snapshot.rawMediaActive);
+  EXPECT_FALSE(state.sdkAuthenticated());
+  ASSERT_FALSE(snapshot.warnings.empty());
+  EXPECT_NE(snapshot.warnings.back().find("Rejoin"),std::string::npos);
+}
+TEST(ZoomEngineRuntimeState, RecoverableMediaErrorKeepsMeetingConnected) {
+  corevideo::modules::ZoomEngineRuntimeState state;
+  state.apply(eventFrom(R"({"cmd":"joined"})"));
+  state.apply(eventFrom(R"({"cmd":"error","stage":"raw_media_start_failed","message":"Privilege pending"})"));
+  EXPECT_EQ(state.snapshot().meetingState,"in-meeting");
+}

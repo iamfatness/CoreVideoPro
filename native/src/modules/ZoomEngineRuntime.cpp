@@ -808,7 +808,11 @@ void ZoomEngineRuntime::readerLoop() {
     std::uint64_t generation;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (!readerRunning_ || restartBeforeJoin_ || !process_ || !process_->running()) {
+      if (!readerRunning_ || restartBeforeJoin_ || !process_) {
+        return;
+      }
+      if (!process_->running()) {
+        reportEngineLossLocked("Zoom SDK helper exited unexpectedly. Rejoin the meeting to restore Zoom media.");
         return;
       }
       process = process_;
@@ -818,13 +822,29 @@ void ZoomEngineRuntime::readerLoop() {
     auto event = process->readEvent();
     if (!event) {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (readerRunning_ && generation == processGeneration_) {
-        state_.apply({ZoomEngineEventKind::Error, "error", "", "read", process->lastError()});
+      if (readerRunning_ && !restartBeforeJoin_ && generation == processGeneration_) {
+        reportEngineLossLocked("Zoom SDK helper connection lost. Rejoin the meeting to restore Zoom media.");
       }
       return;
     }
     applyEvent(*event, generation);
   }
+}
+
+void ZoomEngineRuntime::reportEngineLossLocked(const std::string& message) {
+  state_.apply({ZoomEngineEventKind::Error, "error", "", "engine_disconnected", message});
+  restartBeforeJoin_ = true;
+  acceptJoinEvents_ = false;
+  initialized_ = false;
+  mediaStarted_ = false;
+  ++processGeneration_; // reject video/audio work captured before helper loss
+  latestDecodedFrames_.clear();
+  frameSync_.clear();
+  pendingAudio_.clear();
+  closeAudioStreamsLocked();
+  closeVideoStreamsLocked();
+  purgeQueuedEngineSendsLocked("helper connection lost");
+  ::corevideo::core::nativeLogf("[zoom-engine] %s\n", message.c_str());
 }
 
 void ZoomEngineRuntime::applyEvent(const ZoomEngineEvent& event, std::optional<std::uint64_t> generation) {

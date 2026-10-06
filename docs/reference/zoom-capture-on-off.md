@@ -75,3 +75,9 @@ a launch sync that collided with that poll used to leave EngineStatus reading
 until Engine On. `MediaCoreLaunchStatusPolicy` now treats a skipped launch sync
 as backpressure: the core is reported ready and the retry worker delivers the
 sync. Only a real failure reads "unavailable" (`MediaCoreLaunchStatusPolicyTests`).
+
+## SDK callback reentrancy during share transitions
+
+Zoom renderer operations can synchronously invoke raw status, frame and destruction callbacks, or wait for a callback on another thread. Never hold the share-state mutex across SDK renderer/controller calls. `RendererCallbackGate` drains admitted frame access, suspends new renderer callbacks, and releases the mutex for SDK calls. Lifecycle commands wait for a transition to finish; share-controller events during a transition request reconciliation after renderer ownership is committed. Targets and shared memory remain protected by the state mutex. This prevents the share-end reentrant mutex exception captured in #790.
+
+A helper exit or lost IPC connection is a fatal `engine_disconnected` event, unlike recoverable mid-meeting media warnings. It clears connected/raw-media state, retires stale media work and requires a fresh SDK process on the next Join. Zoom's own crash handler may write dumps under `%APPDATA%/ZoomSDK/logs/zoomcrash_*` without a Windows Application crash event; preserve those artifacts privately.

@@ -846,6 +846,11 @@ TEST(ZoomEngineRuntime, CoalescesVersionedRosterFactsOnExistingEventDrain) {
 
 namespace corevideo::modules {
 struct ZoomEngineRuntimeTestAccess {
+  static void runReader(ZoomEngineRuntime& runtime, bool enabled=true) {
+    {std::lock_guard<std::mutex> lock(runtime.mutex_);runtime.readerRunning_=enabled;}
+    runtime.readerLoop();
+  }
+
   static void installVideoRegion(ZoomEngineRuntime& runtime, std::shared_ptr<void> region,
                                  std::uint32_t width = 4, std::uint32_t height = 4) {
     std::lock_guard<std::mutex> lock(runtime.mutex_);
@@ -1766,4 +1771,37 @@ TEST(ZoomFramePlayout, HighRateProducerCannotEvictEveryFrameBeforeItBecomesDue) 
   }
   EXPECT_GE(shown, 115);
   EXPECT_EQ(static_cast<size_t>(shown) + lost + queue.size(), 240u);
+}
+
+TEST(ZoomEngineRuntime, DeadHelperReportsLossInsteadOfReturningSilently) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH","fake-engine");
+  corevideo::modules::ZoomEngineRuntime runtime;
+  auto fake=std::make_shared<FakeZoomEngineProcessClient>();
+  runtime.installEngineProcessForTest(fake);
+  runtime.applyEngineEventForTest(corevideo::modules::parseZoomEngineEvent(R"({"cmd":"joined"})").value());
+  fake->setRunning(false);
+  corevideo::modules::ZoomEngineRuntimeTestAccess::runReader(runtime);
+  const auto snapshot=runtime.snapshot();
+  EXPECT_EQ(snapshot.getString("meetingState"),"error");
+  ASSERT_TRUE(snapshot.get("warnings") != nullptr);
+  EXPECT_NE(snapshot.get("warnings")->asArray().back().asString().find("helper exited"),std::string::npos);
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+TEST(ZoomEngineRuntime, LostPipeReportsDisconnectionWhileProcessStillRuns) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH","fake-engine");
+  corevideo::modules::ZoomEngineRuntime runtime;
+  runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+  runtime.applyEngineEventForTest(corevideo::modules::parseZoomEngineEvent(R"({"cmd":"joined"})").value());
+  corevideo::modules::ZoomEngineRuntimeTestAccess::runReader(runtime);
+  EXPECT_EQ(runtime.snapshot().getString("meetingState"),"error");
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+TEST(ZoomEngineRuntime, NormalReaderStopDoesNotReportHelperFailure) {
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH","fake-engine");
+  corevideo::modules::ZoomEngineRuntime runtime;
+  runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+  runtime.applyEngineEventForTest(corevideo::modules::parseZoomEngineEvent(R"({"cmd":"joined"})").value());
+  corevideo::modules::ZoomEngineRuntimeTestAccess::runReader(runtime,false);
+  EXPECT_EQ(runtime.snapshot().getString("meetingState"),"in_meeting");
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
 }
