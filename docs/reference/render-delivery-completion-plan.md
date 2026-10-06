@@ -1,10 +1,64 @@
 # CoreVideo Pro delivery repair completion plan
 
-Owner approved, October 3, 2026. This plan explains how to finish and qualify the work in [#517](https://github.com/iamfatness/CoreVideoPro/issues/517) and draft [PR #780](https://github.com/iamfatness/CoreVideoPro/pull/780), including the installation dependency tracked in [#781](https://github.com/iamfatness/CoreVideoPro/issues/781). The [render delivery specification](render-delivery-spec.md) remains the behavioral contract. [BACKLOG](../BACKLOG.md) remains the only ranked work queue; the sequence below describes engineering dependencies and proposes no automatic promotion or closure.
+Originally approved October 3, 2026; revised for owner review October 6. This plan explains remaining implementation and qualification under [#517](https://github.com/iamfatness/CoreVideoPro/issues/517), following merged [PR #780](https://github.com/iamfatness/CoreVideoPro/pull/780) and the camera installation work in [#781](https://github.com/iamfatness/CoreVideoPro/issues/781). The [render delivery specification](render-delivery-spec.md) remains the behavioral contract. [BACKLOG](../BACKLOG.md) remains the only ranked work queue; the phases describe engineering dependencies and propose no automatic promotion or closure.
 
-The intended result is continuous 1080p60 Program, virtual-camera delivery and multiview under the agreed show workload, without lower quality, extra configured buffering, or audio regression. The next proof needed is recovery during an actual camera publication race. Two favorable camera runs are insufficient to enable the experimental fix by default.
+The intended result is continuous 1080p60 Program, virtual-camera delivery and multiview under the agreed show workload, without lower quality, extra configured buffering, or audio regression. The immediate proof is that the isolated monitor path protects real mixed-source delivery; a favorable short A/B is insufficient to enable it by default. Separate downstream camera failures require their own attributable repair and qualification.
 
-## Evidence supporting the plan
+## October 6 revision: address the active monitor/Program incident
+
+The current candidate is installed beta `77bac0c`, not the older publisher/QA
+DLL combination described below. Monitor isolation is implemented but defaults
+off. The new matched experiment corroborates the source-export bottleneck;
+its short isolated run had zero buffer underruns but still 33 render deadline
+misses. This is evidence for further implementation and qualification, not
+permission to close #517 or advertise complete frame delivery.
+
+The [updated specification](render-delivery-spec.md#october-6-evidence-and-limits)
+defines behavior. The phases below describe dependencies within #517, not a
+replacement backlog or an instruction to launch parallel agents. Existing
+camera registration changes shipped in #783 and capture reconnect changes in
+#785; retain their acceptance requirements rather than rebuilding those fixes.
+
+| Phase | Concrete work | Completion evidence / dependency |
+|---|---|---|
+| Establish a reproducible case | Turn the successful artifact experiments into a maintained headless harness. Pin binary, flags, GPU/driver, formats, source count, buffer and sampling windows. Add real WGC/UVC and media to the synthetic case; start with eight Zoom sources plus the 1080p camera and 1440p screen. Keep camera publication tests separately owned so a test cannot replace a live feed. | Repeat inline/isolated pairs in both orders, at least three pairs of two minutes after a fixed warm-up. Preserve every failure and exclude concurrent unrelated tests explicitly. If a control does not fail, report that and retain the live evidence; do not manufacture a favorable baseline. |
+| Complete the monitor boundary | Audit the existing isolated worker against the spec. Remove remaining optional source conversions/uploads/exports from Program. Finish consumer demand and worker-prepared CPU fallback where still missing. Confirm buffered Program-tile identity and Take/layout attribution. Keep source representation and ISO requirements intact. | Deterministic blocked/slow monitor, full mailbox, hidden/reopened surfaces, rapid resize and device loss do not block Program or corrupt pixels. Real pixel/identity tests cover source formats and retained production leases. Code fixes get focused PRs under #517 or scoped child issues before implementation. |
+| Make mode and losses observable | Bind requested/effective isolation and refusal/fallback reasons, source/export stage timings, actual monitor completion and shell presentation identities to generated contracts and existing Health/support consumers. Separate render lateness, absorbed overruns, buffer losses, monitor drops and camera receiver losses. | Old/missing fields remain unknown. Controlled faults fail the correct boundary's judge. Program progress cannot prove Preview motion; publication cannot prove receiver playback. Bounded diagnostics meet the existing overhead target. |
+| Qualify the installed candidate | Build one exact production Release candidate. Run a session-only isolation test against the actual SDK/capture/media configuration, then the controlled 30-minute soak and 90-minute installed rehearsal. Include recording, streaming and camera, source churn, shares, Takes, display reconnect and output recovery. | The gates below pass with exact source/receiver identities and A/V evidence. Test the available lower-tier reference machine before broad hardware claims; any unavailable path is MISSING_EVIDENCE. |
+| Enable and release | Only after qualification, change the default in a focused PR while retaining explicit `0` rollback and `1` QA overrides. Record effective mode at startup and in the package evidence. Verify the installer and startup select the tested mode; publish a beta with the supported workload and remaining limits. | Required native/shell/CI checks and exact packaged-runtime startup pass. Keep the prior installer, flags and settings. Installed operator acceptance, not a default flip, completes #517's declared scope. |
+
+The maintained harness must drain events without unbounded response/event
+storage, use unique process-owned test IPC/capture names, and stop only its own
+core/helpers. Test filters must be checked for a nonzero executed count: the
+native lightweight runner supports one wildcard filter per invocation, not
+`--gtest_list_tests` or colon-separated filters. Verify the newly built Release
+binary path and hash; do not qualify a stale test executable.
+
+## Acceptance for the default change
+
+| Boundary | Required result after the fixed warm-up |
+|---|---|
+| Program | Zero new skipped production slots, buffer underruns, missed scheduled output-delivery deadlines or output sequence gaps. Measure GPU readiness at the delivery deadline. Report render wakeup misses/overruns separately: an absorbed overrun is diagnostic, not proof of output loss or a reason to erase the measurement. |
+| Healthy Preview/multiview | Target 60 Hz completed compositions and identity-correct presentation submissions, with no unexplained monitor gaps/repeats, mailbox replacements or cadence shedding in the reference workload. Incoming 30 fps sources may hold their pixels without being counted as a 60 Hz compositor failure. Unknown display/scanout evidence stays unknown. |
+| Faulted optional monitor | A 25 ms delayed/blocked monitor, stalled UI reader, mailbox exhaustion or monitor-device loss affects its own freshness/drops only. Program continues without new losses; recovery publishes the newest valid identity without retaining production slots. |
+| Camera and other outputs | Qualified 60/1 receiver sees the expected unique identities with no missed/repeated/reordered/torn samples; negotiate and score 60000/1001 separately. Recording/stream/camera together retain independent continuity. A faulty receiver or missing correlation cannot certify delivery. |
+| Audio and quality | Zero new lost samples/underruns; decoded A/V meets the existing one-frame sync criterion without long-run drift. Preserve source/output resolution, configured fps/codec/bitrate, color and the two-frame Program buffer. Never trade reduced quality or increased buffering for a passing frame count. |
+| Resources/lifecycle | Existing 256 MiB monitor and 512 MiB ingress budgets include caches, exports, pending and retiring generations. No growth/leak after repeated open/close/resize/rejoin. Test shutdown, reconnect, adapter/format mismatch and rollback without unsafe texture release or joins on Program. |
+
+If isolated real-show results still lose Program frames, retain isolation as
+an explicitly labeled test candidate and use the first divergent boundary to
+repair ready-image preparation, locking, GPU contention, buffer pacing or
+camera publication as demonstrated. Do not increase buffering, suppress
+counters, remove failing tests or infer success from an average. Camera-reader
+repair packages A/B below become immediate only if receiver evidence locates
+a remaining independent downstream failure.
+
+The first reviewable milestone is the reproducible harness plus explicit mode
+and delivery evidence on the existing worker. The release milestone is the
+qualified default change and installed rehearsal. General UI/settings work
+remains in its own backlog issues; this plan does not expand into that scope.
+
+## October 3 baseline evidence (historical)
 
 The original show logs confirmed monitor shedding and expensive source export work inside Program rendering. GPU capture and monitor isolation now have implementations and focused tests, but the full specification is not complete.
 
@@ -14,7 +68,7 @@ The current installed reader failed a measured minute with one repeated frame, f
 
 Implementation baseline for this review is `37036a63`. The installed publisher is `0b9b5deb`; the QA DLL was built from the later reader plus the explicit diagnostic-target change. They must not be represented as one qualified release. Full raw evidence, hashes and cleanup records are in the owner's `preserved-local-evidence/render-repair-0b9b5deb/validation-report.md` outside this checkout.
 
-## Work packages and dependencies
+## Broader October 3 work packages and dependencies
 
 | Package | Concrete deliverable | Depends on | Exit evidence |
 |---|---|---|---|
@@ -25,7 +79,7 @@ Implementation baseline for this review is `37036a63`. The installed publisher i
 | E — Complete production evidence | Bounded event tracing and versioned native/shell contracts | Start with A; finish as B and D stabilize | Every delivery boundary observable; trace loss prevents false acceptance; overhead within budget |
 | F — Qualify and release | One reproducible package containing accepted changes | B, C, D and E | Controlled soak, installed rehearsal, A/V, resource and hardware gates pass |
 
-A is the immediate engineering step. C and D can progress independently once their issue scope is approved; neither should be folded into an unrelated fix. Qualification begins only when the exact candidate and receiver are identified. This is not authorization to launch parallel agents.
+These packages describe the broader October 3 completion scope. The October 6 phases above define the immediate engineering dependencies for the new incident. A/B remain conditional on a demonstrated independent camera failure; C is now installation/fleet qualification of the shipped repair. D/E continue through the existing render implementation. Qualification begins only when the exact candidate and receiver are identified. This is not authorization to launch parallel agents.
 
 ## Demonstrate and repair camera contention
 
@@ -88,7 +142,13 @@ The zero-deadline-miss gate follows the stricter repository acceptance requireme
 
 ## Review decisions and completion
 
-For this review, confirm the full scope and acceptance gates above, and whether #781 should be ranked as a prerequisite to final #517 qualification. Proposed execution after review is A, then the proven camera repair, installation and render completion, followed by integrated qualification. Create scoped child issues for remaining #517 implementation slices and update BACKLOG only after the owner's ranking decision. Keep one issue per PR and preserve #780 as draft until its own scope is reviewable and validated.
+The October 6 review covers the current phases and acceptance gates above:
+reproducible evidence, complete isolation boundaries, truthful observations,
+installed qualification, then a gated default change and beta. #780 is merged;
+do not reopen its historical draft status or reimplement shipped camera
+registration. Create scoped child issues for remaining #517 code slices before
+implementation; BACKLOG rank changes require the owner. Keep one issue/seam
+per PR and publish exact acceptance evidence without closing unqualified work.
 
 Enable default flags only for the qualified supported workload after all gates pass. Present the final evidence, remaining limitations and rollback procedure for operator acceptance before release. On a delivery, audio, compatibility or latency regression, restore the last usable package and settings; do not restore the obsolete development registration or hide the failure by lowering quality. Close issues only after their required changes are merged and their acceptance conditions are met.
 
