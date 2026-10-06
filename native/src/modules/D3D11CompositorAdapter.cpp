@@ -117,8 +117,11 @@ struct CpuStageScope {
 class D3D11Compositor final : public ICompositor {
  public:
   D3D11Compositor(ComPtrLite<ID3D11Device> device, ComPtrLite<ID3D11DeviceContext> context,
-                  bool isolateMonitors = false, bool monitorBackend = false, bool enableGpuIngress = false)
-      : device_(std::move(device)), context_(std::move(context)) {
+                  bool isolateMonitors = false, bool monitorBackend = false, bool enableGpuIngress = false,
+                  std::string selectionSource = "constructor", std::string requestedMode = {})
+      : device_(std::move(device)), context_(std::move(context)),
+        monitorSelectionSource_(std::move(selectionSource)),
+        monitorRequestedMode_(requestedMode.empty() ? (isolateMonitors ? "isolated" : "inline") : std::move(requestedMode)) {
     initializePipeline();
     const char* counterPattern = std::getenv("COREVIDEO_QA_PROGRAM_COUNTER");
     if (counterPattern && std::string(counterPattern) == "1") {
@@ -184,7 +187,13 @@ class D3D11Compositor final : public ICompositor {
     return monitorWorker_ ? monitorWorker_->latest() : nullptr;
   }
   MonitorRenderDiagnostics monitorDiagnostics() const override {
-    return monitorWorker_ ? monitorWorker_->diagnostics() : MonitorRenderDiagnostics{};
+    auto result = monitorWorker_ ? monitorWorker_->diagnostics() : MonitorRenderDiagnostics{};
+    result.requestedMode = monitorRequestedMode_;
+    result.effectiveMode = monitorWorker_ ? "isolated" : "inline";
+    result.selectionSource = monitorSelectionSource_;
+    if (!monitorWorker_) result.readiness = "ready";
+    if (monitorRequestedMode_ == "invalid") result.failureReason = "invalid-monitor-override";
+    return result;
   }
   void configureProgramBuffer(int frames) override { requestedProgramFrames_.store(frames == 2 ? 2 : 3); }
   void prepareProgramBuffer(int width, int height) override {
@@ -3030,6 +3039,7 @@ class D3D11Compositor final : public ICompositor {
   uint64_t slowProgramFrames_ = 0;
   long long worstSlowProgramUs_ = 0;
   bool pipelineReady_ = false;
+  std::string monitorSelectionSource_, monitorRequestedMode_;
   std::string initError_;
 };
 
@@ -3064,7 +3074,10 @@ std::unique_ptr<ICompositor> createD3D11Compositor() {
 
   const char* isolate = std::getenv("COREVIDEO_ISOLATE_MONITORS");
   return std::make_unique<D3D11Compositor>(std::move(device), std::move(context),
-      isolate && std::string(isolate) == "1");
+      isolate && std::string(isolate) == "1", false, false,
+      isolate ? "override" : "default",
+      !isolate || std::string(isolate) == "0" ? "inline" :
+          (std::string(isolate) == "1" ? "isolated" : "invalid"));
 }
 
 }  // namespace corevideo::modules

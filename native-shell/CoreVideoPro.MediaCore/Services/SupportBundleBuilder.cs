@@ -201,6 +201,7 @@ public static class SupportBundleBuilder
 
         return new SupportBundleMediaCore
         {
+            MonitorIsolation = MonitorIsolationObservation.FromSnapshot(snapshot),
             SceneId = snapshot.SceneId,
             RenderPlanId = snapshot.RenderPlan.RenderPlanId,
             Source = new SupportBundleMediaCoreSource
@@ -517,6 +518,8 @@ public static class SupportBundleBuilder
             lines.Add(
                 $"Video source: {SourceBacking(snapshot.SourceSnapshot)}; subscribed {snapshot.SourceSnapshot.SubscribedSourceCount}; delivered {snapshot.FrameCount}; stale {snapshot.SourceSnapshot.StaleFrameCount}");
             lines.Add($"Output warnings: {snapshot.Warnings.Count}");
+            var isolation = mediaCore?.MonitorIsolation ?? new MonitorIsolationObservation();
+            lines.Add($"Monitor isolation: requested {isolation.RequestedMode}; effective {isolation.EffectiveMode}; selection {isolation.SelectionSource}; readiness {isolation.Readiness}; reason {(isolation.FailureReason.Length == 0 ? "none" : isolation.FailureReason)}; delivery epoch {isolation.DeliveryEpoch?.ToString() ?? "unknown"}");
 
             if (mediaCore is not null)
             {

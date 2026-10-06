@@ -6,6 +6,62 @@
 
 using namespace corevideo::modules;
 
+TEST(MonitorRenderWorker, InitializationReportsStartingBeforeDeviceIsReady) {
+  std::promise<void> entered, release;
+  auto gate = release.get_future().share();
+  MonitorRenderWorker worker([](const MonitorRenderRequest&) { return MonitorRenderResult{}; }, [&] {
+    entered.set_value(); gate.wait();
+  });
+  auto started = entered.get_future().wait_for(std::chrono::seconds(2));
+  auto evidence = worker.diagnostics();
+  release.set_value(); // release before assertions so failure cannot hang teardown
+  ASSERT_TRUE(started == std::future_status::ready);
+  EXPECT_TRUE(evidence.enabled);
+  EXPECT_EQ(evidence.readiness, "starting");
+  EXPECT_EQ(evidence.completed, 0u);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (worker.diagnostics().readiness == "starting" && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_EQ(worker.diagnostics().readiness, "ready");
+  EXPECT_EQ(worker.diagnostics().completed, 0u);
+}
+
+TEST(MonitorRenderWorker, InitializationFailureRemainsIsolatedAndSuccessfulWorkRecovers) {
+  MonitorRenderWorker worker([](const MonitorRenderRequest& request) {
+    if (request.sequence == 1) throw std::runtime_error("render failure");
+    return MonitorRenderResult{};
+  }, [] { throw std::runtime_error("init failure with private details"); });
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (worker.diagnostics().failed == 0 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  auto failed = worker.diagnostics();
+  EXPECT_EQ(failed.failed, 1u);
+  EXPECT_EQ(failed.effectiveMode, "isolated");
+  EXPECT_EQ(failed.readiness, "degraded");
+  EXPECT_EQ(failed.failureReason, "monitor-initialization");
+  MonitorRenderRequest request;
+  request.sequence = 1;
+  worker.submit(request);
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (worker.diagnostics().failed < 2 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_EQ(worker.diagnostics().failureReason, "monitor-render");
+  EXPECT_TRUE(worker.latest() == nullptr);
+  request.sequence = 2;
+  worker.submit(request);
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (worker.diagnostics().completed == 0 && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  auto recovered = worker.diagnostics();
+  EXPECT_EQ(recovered.readiness, "ready");
+  EXPECT_TRUE(recovered.failureReason.empty());
+  EXPECT_EQ(recovered.failed, 2u);
+  EXPECT_EQ(recovered.lastSequence, 2);
+  worker.refuse();
+  EXPECT_EQ(worker.diagnostics().readiness, "degraded");
+  EXPECT_EQ(worker.diagnostics().failureReason, "monitor-frame-admission");
+}
+
 TEST(MonitorFrameAdmission, UnusedGpuSourceCannotRefuseAnOtherwiseReadyMonitor) {
   MonitorRenderRequest request;
   request.previewActive = true;

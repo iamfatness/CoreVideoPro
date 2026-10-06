@@ -1050,6 +1050,11 @@ struct MonitorRenderDiagnostics {
   int pending = 0;
   int64_t lastSequence = 0;
   double lastWorkMs = 0;
+  // Unknown for older/unsupported compositors. enabled retains its historical
+  // meaning (worker exists), independently of backend readiness.
+  std::string requestedMode = "unknown", effectiveMode = "unknown";
+  std::string selectionSource = "unknown", readiness = "unavailable";
+  std::string failureReason;
 };
 
 class ICompositor {
