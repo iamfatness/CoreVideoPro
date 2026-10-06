@@ -128,6 +128,7 @@ class ZoomEngineRuntime {
   [[nodiscard]] bool ensureStarted(const std::function<bool()>& cancelled);
   void startReaderLocked();
   void readerLoop();
+  void reportEngineLossLocked(const std::string& message);
   void applyEvent(const ZoomEngineEvent& event, std::optional<std::uint64_t> generation = {});
   void stopReader();
   void startSenderLocked();

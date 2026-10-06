@@ -2,6 +2,7 @@
 #include "i420-range-expand.h"
 
 #include "engine-ipc.h"
+#include "renderer-callback-gate.h"
 
 #include <cstdint>
 #include <memory>
@@ -75,10 +76,11 @@ private:
         uint64_t frame_count = 0;
     };
 
-    uint32_t active_share_source_id(uint32_t *user_id) const;
-    void subscribe_active_share_locked(const char *reason);
-    bool subscribe_to_locked(uint32_t share_source_id, const char *reason);
-    void unsubscribe_renderer_locked();
+    uint32_t active_share_source_id(uint32_t *user_id, std::unique_lock<std::mutex> &lock);
+    void subscribe_active_share_locked(const char *reason, std::unique_lock<std::mutex> &lock);
+    bool subscribe_to_locked(uint32_t share_source_id, const char *reason, std::unique_lock<std::mutex> &lock);
+    void unsubscribe_renderer_locked(std::unique_lock<std::mutex> &lock);
+    void reconcile_pending_share_locked(std::unique_lock<std::mutex> &lock);
     void clear_target_shm_locked();
     bool ensure_shm(ShareTarget &target,
                     const std::string &source_uuid,
@@ -89,6 +91,8 @@ private:
     ZOOMSDK::IMeetingShareController *m_share_ctrl = nullptr;
     ZOOMSDK::IZoomSDKRenderer *m_renderer = nullptr;
     mutable std::mutex m_mtx;
+    RendererCallbackGate m_callback_gate;
+    bool m_pending_share_refresh = false; // guarded by m_mtx
     I420RangeNormalizer m_rangeNormalizer; // guarded by m_mtx
     uint64_t m_limitedFrames = 0;
     std::unordered_map<std::string, std::unique_ptr<ShareTarget>> m_targets;

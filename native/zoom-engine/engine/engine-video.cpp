@@ -117,8 +117,8 @@ ParticipantSubscription::~ParticipantSubscription()
 {
     // Teardown must serialize with an in-flight onRawDataFrameReceived (the
     // ZoomISO rule: never destroy a renderer while a raw-data callback is
-    // running). EngineShare gets this by taking m_mtx in both the callback and
-    // the teardown; here we use the stopping-flag + drain variant instead of
+    // running). EngineShare uses a callback gate and drains m_mtx before SDK calls;
+    // here we use the stopping-flag + drain variant instead of
     // holding m_targets_mtx across the SDK calls, because we cannot prove
     // unSubscribe()/destroyRenderer() never synchronously wait on a callback
     // that itself takes m_targets_mtx (holding it across them could deadlock).

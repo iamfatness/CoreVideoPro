@@ -67,8 +67,14 @@ void ZoomEngineRuntimeState::apply(const ZoomEngineEvent& event, std::uint64_t n
       // A mid-meeting error (e.g. raw_media_start_failed while the record
       // privilege is pending) is a WARNING — demoting meetingState_ made the
       // shell read "not in a meeting" while live. Only pre-join errors are
-      // join failures.
-      if (meetingState_ != "in-meeting") {
+      // join failures. A lost helper/IPC connection is fatal even mid-meeting.
+      if (event.stage == "engine_disconnected") {
+        meetingState_ = "error";
+        sdkAuthenticated_ = false;
+        rawMediaActive_ = false;
+        activeSpeakerId_ = 0;
+        screenShareParticipantId_ = 0;
+      } else if (meetingState_ != "in-meeting") {
         meetingState_ = "error";
       }
       // #475: a join_failed reason is wire vocabulary. Operators read this.
