@@ -1674,7 +1674,7 @@ class D3D11Compositor final : public ICompositor {
   // only when the content changed since the last upload. Returns nullptr when
   // the frame has no stable source identity (or the GPU resources fail) — the
   // caller then falls back to the shared scratch upload path.
-  SourceTex* acquireSourceTex(const VideoFrame& frame) {
+  SourceTex* acquireSourceTex(const VideoFrame& frame, bool allowCpuUpload = true) {
     CpuStageScope timing(profileMvActive_, stageProfileNs_[MvUpload]);
     if (!frame.participantId.empty() && frame.hasGpuPixels() && gpuConsumer_ && gpuReadLeases_) {
       const auto image = std::dynamic_pointer_cast<const D3DVideoImage>(frame.gpuPixels);
@@ -1694,6 +1694,7 @@ class D3D11Compositor final : public ICompositor {
         return &entry;
       }
     }
+    if (!allowCpuUpload) return nullptr;
     const bool isI420 = frame.hasI420();
     if (frame.participantId.empty() || (!isI420 && !frame.hasPixels())) {
       return nullptr;
@@ -2027,7 +2028,9 @@ class D3D11Compositor final : public ICompositor {
         continue;
       }
       const CompositorColorGrade grade = effectiveParticipantGrade(renderPlan, f);
-      SourceTex* admittedSource = acquireSourceTex(f);
+      // Determine the admitted GPU format without moving CPU uploads ahead
+      // of the existing asynchronous exporter-readiness check below.
+      SourceTex* admittedSource = acquireSourceTex(f, false);
       const bool useI420 = admittedSource ? admittedSource->isI420 : f.hasI420();
       const int width = admittedSource ? admittedSource->width : (useI420 ? f.i420Width : f.pixelWidth);
       const int height = admittedSource ? admittedSource->height : (useI420 ? f.i420Height : f.pixelHeight);
