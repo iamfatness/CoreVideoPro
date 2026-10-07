@@ -247,7 +247,7 @@ TEST(I420CaptureArrival, NativeCaptureTapPreparesRealPixelsAndFencesHeldSnapshot
   auto reference = createD3D11Compositor();
   _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "1");
   auto prepared = createD3D11Compositor(); ASSERT_TRUE(reference && prepared);
-  auto owner = std::make_shared<I420SourcePreparation>(true, I420SourcePreparation::Policy::PrepareSelected);
+  auto owner = std::make_shared<I420SourcePreparation>(true);
   I420CaptureArrival arrival("capture:camera", owner);
   auto plan = planFor("capture:camera");
   VideoFrame held;
@@ -311,25 +311,6 @@ TEST(I420SourcePreparation, SubmittedCompletionSurvivesNewerSelectionAndUnsubmit
   releaseCurrent.store(true);
   ASSERT_TRUE(await([&] { return bool(current.preparedGpu->acquire(true)); }));
   EXPECT_EQ(current.i420->front(), 200); EXPECT_EQ(first.i420->front(), 40);
-  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
-}
-
-TEST(I420SourcePreparation, UnbufferedCapturePreparesSelectedTokenBeforeUnobservedFutureArrival) {
-  PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
-  I420SourcePreparation owner(true, I420SourcePreparation::Policy::PrepareSelected);
-  auto selected = sourceFrame("camera", 1, 1, 40); offer(owner, selected);
-  ASSERT_TRUE(await([&] { return bool(selected.preparedGpu->acquire(true)); }));
-  auto future = sourceFrame("camera", 1, 2, 200); offer(owner, future);
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  EXPECT_FALSE(future.preparedGpu->completionPublished.load());
-  EXPECT_EQ(owner.stats().prepared, 1u);
-  auto oldImage = selected.preparedGpu->acquire(false); ASSERT_TRUE(oldImage);
-  EXPECT_EQ(oldImage->sourceFrameId, 1);
-  ASSERT_TRUE(await([&] { return bool(future.preparedGpu->acquire(true)); }));
-  EXPECT_EQ(owner.stats().prepared, 2u);
-  auto result = compositor->render(planFor("camera"), {future});
-  ASSERT_FALSE(result.preview.bgra.empty());
-  EXPECT_NEAR(result.preview.bgra[(32 * 64 + 32) * 4], 200, 1);
   EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
 }
 

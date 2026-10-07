@@ -79,10 +79,6 @@ Reconnect or dimension change assigns a new epoch, even if frame numbering
 restarts. The routing alias is fixed before the capture thread starts, so the
 token and source descriptor use the same `capture:` identity. Adapter polling
 copies the held descriptor and token; it does not offer another arrival.
-Unbuffered native capture prepares only the Program-selected token. Otherwise
-an unobserved future arrival can complete after its CPU descriptor is replaced,
-while the selected token waits behind it. Zoom retains arrival preparation
-ahead of its existing CPU playout reserve. Neither policy alters CPU selection.
 
 CPU/ISO bytes and negotiated color hints remain authoritative. Disabled
 preparation retains the CPU path. This adds no capture FIFO or Program buffer.
@@ -97,6 +93,25 @@ consumer/GPU-read leases still prevent slot reuse. CPU tokens do not pin slots.
 This matters for unbuffered 60 fps capture, where GPU completion commonly
 occurs after the next CPU arrival. Tests force that interleaving and compare
 the older admitted pixels, followed by the newer identity.
+Event-query polling on this preparation worker allows D3D query progress.
+On the physical 1080p60 capture rig, DONOTFLUSH polling left uploads pending for
+hundreds of milliseconds despite the initial submission Flush; allowing query
+progress restored approximately 60 completed images per second. This polling
+uses the preparation context and never Program's context. Initial GPU
+submission still does not certify a ready image; publication requires S_OK
+and a completed event.
+
+`scripts/qa/native-i420-capture.py` drives one explicitly selected native
+MF/UVC device in an owned development core. Supply the exact native device id,
+Release binary and source commit, and a new output directory. It pins 1080p60
+Program, two-frame buffering, GPU capture off and monitor isolation on. The
+CPU preparation flag is an explicit argument. It preserves warm-up samples,
+scores source admission separately from native buffer delivery, and can repeat
+disconnect/reconnect in the same core. Each reconnect must expose a new admitted
+epoch; native transition counters include disconnect and subsequent warm-up.
+It stops only its own core and writes binary/harness hashes with the evidence.
+This proves sampled preparation/Program behavior, not every physical input
+pixel, scanout, receiver playback, acquisition latency or installed/fleet support.
 
 Every completed frame has a unique immutable wrapper. CPU/ISO tokens hold only
 weak GPU publication references. Reusing a plane slot cannot make a retained

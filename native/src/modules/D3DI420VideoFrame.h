@@ -112,7 +112,10 @@ class D3DI420FramePool {
   void poll(ID3D11DeviceContext* context) {
     for (auto& slot : slots_) if (slot.pending) {
       BOOL ready = FALSE;
-      const auto result = context->GetData(slot.ready.Get(), &ready, sizeof(ready), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+      // Worker-owned polling must allow query progress. DONOTFLUSH left the
+      // production 1080p60 capture queries pending for hundreds of milliseconds
+      // despite the initial submit Flush. This never runs on Program's context.
+      const auto result = context->GetData(slot.ready.Get(), &ready, sizeof(ready), 0);
       if (FAILED(result)) failure_ = result; // never recycle an unproven write
       if (result == S_OK && ready)
         slot.pending = false;
