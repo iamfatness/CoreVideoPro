@@ -25,6 +25,15 @@ Limits remain 64 registered sources, 16 active generations, 28 pending tokens
 per source and 512 MiB shared production storage. A source may keep one charged
 retiring generation. A third generation is refused until that lease releases.
 CPU and ISO references do not pin GPU slots; submitted GPU reads do.
+Valid offers refused by source, pending-token or retiring-generation limits
+return an identity-correct stopped token with an explicit capacity reason. The
+token owns no queue entry, pool or CPU pixels. Producer held-frame refresh can
+retry it without changing the original descriptor. Active-generation and
+quarantine limits report their reason on the waiting demand, and clear it when
+resource construction becomes admissible. A shared residency-budget refusal
+releases partial allocation and reports a stopped retryable token rather than
+a terminal device failure. Program surfaces these reasons in admission evidence
+and its existing degraded-source warnings; it does not allocate on refusal.
 BGRA row stride and straight alpha are preserved. I420 range/matrix metadata
 stays on the original CPU descriptor and is applied by the consumer shader.
 
