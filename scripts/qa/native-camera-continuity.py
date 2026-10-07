@@ -33,7 +33,7 @@ def main():
               "coreSha256": hashlib.sha256(args.core.read_bytes()).hexdigest(),
               "receiverSha256": hashlib.sha256(args.receiver.read_bytes()).hexdigest(),
               "harnessSha256": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
-              "flags": flags, "duration": args.duration, "warmup": 30,
+              "flags": flags, "duration": args.duration, "warmup": 30, "osEnumerationSettleSeconds": 2,
               "scope": "Synthetic counter-only reference through the OS camera; no full input workload, physical display, content latency, decoded A/V, installed-module or fleet qualification."}
     core = receiver = None
     started = time.monotonic()
@@ -53,6 +53,9 @@ def main():
             raise RuntimeError("OS camera activation failed: " + str(camera.get("warning", "unknown reason")))
         if not camera.get("enabled"):
             raise RuntimeError("OS camera output did not become enabled; setup evidence is incomplete")
+        # MFCreateVirtualCamera::Start can precede the endpoint notification.
+        # Fixed setup settle; the receiver still gets its full pinned warmup.
+        time.sleep(2)
         with raw_path.open("wb") as raw, (output / "receiver.stderr.log").open("wb") as error:
             receiver = subprocess.Popen([str(args.receiver.resolve()), str(args.duration)],
                 stdout=raw, stderr=error, stdin=subprocess.DEVNULL,
