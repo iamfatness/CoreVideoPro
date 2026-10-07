@@ -576,6 +576,47 @@ TEST(CpuSourcePreparation, MissingGpuConsumerFailsFutureArrivalsWithAttributable
   EXPECT_FALSE(next.preparedGpu->acquire(true)); EXPECT_EQ(next.i420->front(), 170);
 }
 
+TEST(CpuSourcePreparation, InitialMissingProductionConsumerRecoversHeldStillWithoutRetryingForMonitorOnlyRegistration) {
+  PreparationFlags flags;
+  auto owner = std::make_shared<CpuSourcePreparation>(true);
+  StillMediaFrameCache cache(std::make_unique<PreparedStillDecoder>(), StillMediaFrameCache::kDefaultCacheBudgetBytes, owner);
+  cache.setDesired({{"media:initial-logo", "logo.png"}});
+  ASSERT_TRUE(cache.waitForIdle(5000));
+  auto frames = cache.collectFrames(100); ASSERT_EQ(frames.size(), 1u);
+  auto held = frames.front(); ASSERT_TRUE(held.preparedGpu);
+  held.preparedGpu->acquire(true);
+  ASSERT_TRUE(await([&] { return !owner->stats().supported; }));
+  const auto cpu = held.pixels; const auto epoch = held.sourceEpoch;
+  const auto observed = held.captureTimestamp100ns; const auto id = held.frameId;
+  ComPtr<ID3D11Device> monitorDevice; ComPtr<ID3D11DeviceContext> monitorContext;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+      &monitorDevice, nullptr, &monitorContext)));
+  auto monitor = D3DVideoConsumers::add(monitorDevice.Get(), true); ASSERT_TRUE(monitor);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_FALSE(owner->stats().supported); EXPECT_EQ(owner->stats().failed, 1u);
+  EXPECT_EQ(owner->stats().active, 0u);
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "0");
+  auto reference = createD3D11Compositor(); ASSERT_TRUE(reference);
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "1");
+  auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  ASSERT_TRUE(await([&] {
+    frames = cache.collectFrames(200); if (frames.empty()) return false;
+    held = frames.front(); return held.preparedGpu && bool(held.preparedGpu->acquire(true));
+  }));
+  auto original = held; original.preparedGpu.reset();
+  const auto expected = reference->render(planFor(original.participantId), {original});
+  const auto actual = compositor->render(planFor(held.participantId), {held});
+  EXPECT_EQ(actual.preview.bgra, expected.preview.bgra);
+  EXPECT_EQ(actual.sourceAdmissions.front().state, "ready");
+  EXPECT_EQ(held.pixels, cpu); EXPECT_EQ(held.sourceEpoch, epoch);
+  EXPECT_EQ(held.captureTimestamp100ns, observed); EXPECT_EQ(held.frameId, id);
+  EXPECT_TRUE(owner->stats().supported); EXPECT_EQ(owner->stats().failed, 1u);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().textureCreates, 0u);
+}
+
 TEST(CpuSourcePreparation, RecreatedConsumerRecoversHeldStillWithOriginalIdentityAndPixels) {
   PreparationFlags flags;
   auto first = createD3D11Compositor(); ASSERT_TRUE(first);

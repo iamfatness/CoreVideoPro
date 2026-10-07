@@ -121,6 +121,7 @@ struct CpuSourcePreparation::Impl {
     // next tick instead of being accidentally treated as already imported.
     consumerRevision = D3DVideoConsumers::revision();
     const auto consumers = D3DVideoConsumers::snapshot();
+    productionConsumers.clear();
     for (const auto& consumer : consumers) if (!consumer->monitor) productionConsumers.push_back(consumer->id);
     for (const auto& consumer : consumers) if (!consumer->monitor) {
       ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter;
@@ -130,6 +131,7 @@ struct CpuSourcePreparation::Impl {
               D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &producer, nullptr, &owner))) return false;
       std::lock_guard<std::mutex> lock(mutex);
       device = std::move(producer); context = std::move(owner);
+      measured.supported = true;
       return true;
     }
     return false;
@@ -278,6 +280,20 @@ struct CpuSourcePreparation::Impl {
     while (!stopping.load()) {
       const auto observedRevision = workRevision.load();
       try {
+        // An initial creation failure has no pools/context to retire. Retry
+        // once for a changed production consumer set, never on every CPU
+        // arrival or optional monitor registration. Actual device loss with
+        // live resources retains the existing conservative stopped state.
+        if (deviceFailed && !context && D3DVideoConsumers::revision() != consumerRevision) {
+          const auto revision = D3DVideoConsumers::revision();
+          std::vector<uint64_t> ids;
+          for (const auto& consumer : D3DVideoConsumers::snapshot())
+            if (!consumer->monitor) ids.push_back(consumer->id);
+          consumerRevision = revision;
+          if (!ids.empty() && ids != productionConsumers) {
+            deviceFailed = false; attempted = false;
+          }
+        }
         if (!context && !attempted) {
           bool needed = false;
           for (const auto& source : snapshot()) if (source->demand->lastDemand100ns.load()) needed = true;
@@ -366,6 +382,7 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
       token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
       token->cpuStride = stride; token->cpu = cpu;
       token->demand = std::make_shared<CpuSourceGpuDemand>(); token->demand->failed.store(true);
+      if (!impl_->device) token->demand->stopped.store(true); // retryable initial setup, no live GPU resources
       return token;
     }
     auto found = impl_->sources.find(id);
