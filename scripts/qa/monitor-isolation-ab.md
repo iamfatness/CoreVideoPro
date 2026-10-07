@@ -30,6 +30,14 @@ Release configuration are operator declarations; SHA256 hashes identify the
 actual binaries, and the manifest inventories available adapters/drivers.
 Adapter inventory does not prove which adapter the compositor selected.
 
+`--program-scene capture` selects the 2560x1440 BGRA mapping alone;
+`--program-scene mixed` selects that mapping and two 1080p I420 guests in
+three equal-width regions. The default `zoom` keeps the original single guest.
+Run identical scenes with preparation `0` and `1` to compare preparation
+while comparing like monitor modes. Snapshots retain `programSourceAdmission`
+for requested/actual identities and explicit ready/held/unavailable state;
+periodic observations do not prove every rendered frame or display presentation.
+
 The output directory must be new. Each trial retains its snapshots as JSONL,
 stderr, result JSON and recording even on failure. RAM retains two snapshots,
 one pending IPC request/response and no event backlog; stderr drains directly

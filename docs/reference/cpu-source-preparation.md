@@ -89,7 +89,21 @@ full/limited range and grading; check zero Program CPU source uploads for ready
 views; exercise the real decoded-arrival parser and compositor; retain CPU/ISO
 frames across slot reuse and reconnect; and delay/fail a selected source's
 resource creation while a healthy source continues. These are functional
-checks. CPU fallback remains available before a ready view, so opt-in still
-does not guarantee that every Program frame avoids CPU uploads. Sustained
+checks. The enabled Program path admits only compatible GPU-completed views. Before
+readiness, it holds one GPU-only last-valid descriptor from the same nonzero
+epoch and dimensions, never newer than CPU selection; otherwise it draws the
+unavailable slate and reports its reason. Unsupported or failed preparation
+does not fall back to a Program CPU upload. CPU/ISO descriptors remain original.
+The bounded 64-source hold cache expires after 300 unused Program frames and
+is separate from inline optional-pass caches. Held color hints belong to the
+actual image, while operator framing/grade still follow the current plan.
+Inline participant source exports are suspended in this mode with the explicit
+source-exports-require-monitor-isolation warning; enable monitor isolation for
+independent source exports. The opt-in never silently changes that flag.
+Snapshot programSourceAdmission version 1 carries requested and actual source
+epoch/frame/observation-time identities and ready/held/unavailable reasons for
+the completed shell snapshot. Unavailable actual identities are null. It does
+not prove display presentation, source acquisition or native output freshness.
+The default-off path retains its original CPU behavior. Sustained
 delivery, phase-dependent latency, monitor freshness and installed/fleet gates
 remain required under #802 and parent #517.

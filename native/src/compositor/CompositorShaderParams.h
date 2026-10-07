@@ -66,7 +66,7 @@ struct YuvShaderParams {
 
 inline YuvShaderParams yuvShaderParamsForFrame(const VideoFrame* frame) {
   YuvShaderParams params;
-  if (!frame || !frame->hasI420()) {
+  if (!frame || (!frame->hasI420() && !(frame->gpuPixels && frame->gpuPixels->backend == GpuVideoFrame::Backend::D3D11I420))) {
     return params;
   }
   if (frame->i420Bt601) {

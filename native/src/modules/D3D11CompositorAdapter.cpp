@@ -35,6 +35,7 @@
 #include "modules/D3DDecoupledExport.h"
 #include "modules/MonitorRenderWorker.h"
 #include "modules/MonitorFrameAdmission.h"
+#include "modules/ProgramSourceAdmission.h"
 #include "modules/D3DVideoFrame.h"
 #include "modules/D3DI420VideoFrame.h"
 #include "modules/DeliveryCounterPattern.h"
@@ -132,6 +133,7 @@ class D3D11Compositor final : public ICompositor {
     }
     const char* gpuCapture = std::getenv("COREVIDEO_GPU_CAPTURE");
     const char* cpuPreparation = std::getenv("COREVIDEO_CPU_SOURCE_PREPARATION");
+    strictCpuSources_ = cpuPreparation && std::string(cpuPreparation) == "1" && !monitorBackend;
     if (enableGpuIngress || (gpuCapture && std::string(gpuCapture) == "1") ||
         (cpuPreparation && std::string(cpuPreparation) == "1")) {
       gpuConsumer_ = D3DVideoConsumers::add(device_.get(), monitorBackend);
@@ -245,6 +247,7 @@ class D3D11Compositor final : public ICompositor {
     frame.frameNumber = frameNumber_;
     frame.renderPlanId = deterministicPlan.renderPlanId;
     frame.renderer = "d3d11";
+    frame.cpuSourceReadyOnly = strictCpuSources_;
     frame.health = deterministicPlan.warnings.empty() ? "live" : "degraded";
     frame.warnings = deterministicPlan.warnings;
     frame.renderPlanSignature = renderPlanSignature(deterministicPlan);
@@ -274,7 +277,7 @@ class D3D11Compositor final : public ICompositor {
     const auto resolveUs = stageUs();
     long long uploadUs = 0;
     for (const auto& layer : layers) {
-      drawLayer(layer, deterministicPlan, &uploadUs);
+      drawLayer(layer, deterministicPlan, &uploadUs, strictCpuSources_ ? &frame : nullptr);
     }
     if (qaCounterContext_) drawDeliveryCounter();
     const auto drawUs = stageUs();
@@ -332,7 +335,11 @@ class D3D11Compositor final : public ICompositor {
     const auto vcamUs = stageUs();
     if (!buffered) exportSharedTexture(frame);
     const auto sharedUs = stageUs();
-    if (!monitorWorker_) exportParticipantTextures(deterministicPlan, frames, frame);
+    if (!monitorWorker_ && !strictCpuSources_) exportParticipantTextures(deterministicPlan, frames, frame);
+    if (!monitorWorker_ && strictCpuSources_) {
+      frame.health = "degraded";
+      frame.warnings.push_back("source-exports-require-monitor-isolation");
+    }
     const auto participantUs = stageUs();
     // Evict cached source textures no pass has sampled recently (participant
     // left / source unrouted). 300 program frames ≈ 5s at 60fps — long enough
@@ -597,6 +604,8 @@ class D3D11Compositor final : public ICompositor {
   std::unique_ptr<MonitorRenderWorker> monitorWorker_;
   std::shared_ptr<D3DVideoConsumer> gpuConsumer_;
   std::unique_ptr<D3DVideoReadLeases> gpuReadLeases_;
+  bool strictCpuSources_ = false;
+  ProgramSourceAdmissionPolicy programAdmission_;
   bool monitorBatch_ = false, monitorBufferedProgram_ = false;
   ProgramFrameSharedTexture monitorProgram_;
   std::shared_ptr<const void> monitorProgramOwner_;
@@ -1192,7 +1201,26 @@ class D3D11Compositor final : public ICompositor {
     drawSolidQuad(layer, renderPlan, {rect.x + rect.width - strokeX, rect.y, strokeX, rect.height}, color, borderAlpha);
   }
 
-  void drawLayer(const ResolvedLayer& layer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr) {
+  void drawLayer(const ResolvedLayer& requestedLayer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr, ProgramFrame* admission = nullptr) {
+    auto layer = requestedLayer;
+    VideoFrame admittedImage;
+    if (admission && layer.frame && !compositorLayerIsOverlay(layer.plan) &&
+        !(layer.plan.tilesDecoration.enabled && layer.plan.tilesDecoration.glowPass)) {
+      auto selected = programAdmission_.select(*layer.frame, frameNumber_, [&](const auto& gpu) {
+        if (!gpuConsumer_ || !gpuReadLeases_) return false;
+        bool compatible = false;
+        if (auto planar = std::dynamic_pointer_cast<const D3DI420VideoImage>(gpu)) compatible = planar->view(gpuConsumer_->id) != nullptr;
+        else if (auto bgra = std::dynamic_pointer_cast<const D3DVideoImage>(gpu)) compatible = bgra->view(gpuConsumer_->id) != nullptr;
+        return compatible && gpuReadLeases_->hold(gpu);
+      });
+      if (admission->sourceAdmissions.size() < ProgramSourceAdmissionPolicy::kMaxSources)
+        admission->sourceAdmissions.push_back(selected.evidence);
+      if (selected.evidence.state != "ready") {
+        admission->health = "degraded";
+        admission->warnings.push_back("source-preparation:" + selected.evidence.sourceId + ":" + selected.evidence.state + ":" + selected.evidence.reason);
+      }
+      admittedImage = std::move(selected.image); layer.frame = &admittedImage;
+    }
     const compositor::LayerRect rect{
         layer.plan.rect.x, layer.plan.rect.y, layer.plan.rect.width, layer.plan.rect.height};
     const float layerAlpha = compositorLayerOpacity(layer.plan);
@@ -1278,12 +1306,12 @@ class D3D11Compositor final : public ICompositor {
     // their cached per-source textures (uploaded only on content change); frames
     // without one (media layers) take the legacy shared-scratch upload.
     const auto uploadStart = uploadUs ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    SourceTex* sourceTex = layer.frame != nullptr ? acquireSourceTex(*layer.frame) : nullptr;
+    SourceTex* sourceTex = layer.frame != nullptr ? acquireSourceTex(*layer.frame, admission == nullptr) : nullptr;
     // A prepared BGRA view can coexist with the original I420 planes retained
     // for ISO. Select the shader from the admitted texture, not that CPU copy.
     const bool isI420 = sourceTex ? sourceTex->isI420 : layer.frame != nullptr && layer.frame->hasI420();
     const bool textured = layer.retainedProgram != nullptr || sourceTex != nullptr ||
-        (layer.frame != nullptr &&
+        (admission == nullptr && layer.frame != nullptr &&
          (isI420 ? uploadLayerI420Texture(*layer.frame)
                  : (layer.frame->hasPixels() && uploadLayerTexture(*layer.frame))));
     if (uploadUs) {

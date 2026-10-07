@@ -267,6 +267,13 @@ struct ProgramBufferDiagnostics {
   std::string status = "unsupported";
 };
 
+struct ProgramSourceAdmission {
+  std::string sourceId, state, reason;
+  uint64_t requestedEpoch = 0, actualEpoch = 0;
+  int64_t requestedFrameId = 0, actualFrameId = -1;
+  int64_t requestedCapture100ns = 0, actualCapture100ns = 0;
+};
+
 struct ProgramFrame {
   int width = 1920;
   int height = 1080;
@@ -333,6 +340,8 @@ struct ProgramFrame {
   // Retain GPU resources and attribution for this exact buffered frame.
   std::shared_ptr<const void> gpuOwner;
   std::shared_ptr<const CompositorRenderPlan> renderPlanEvidence;
+  bool cpuSourceReadyOnly = false;
+  std::vector<ProgramSourceAdmission> sourceAdmissions;
 };
 
 struct CompositorLayerRect {

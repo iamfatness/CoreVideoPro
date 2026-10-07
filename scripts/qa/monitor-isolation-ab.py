@@ -19,6 +19,20 @@ def fixed(route_id, pid):
     }
 
 
+def program_routes(scene):
+    if scene == "zoom":
+        return [fixed("pgm", "101")]
+    capture = fixed("screen", "")
+    capture.update(mode="capture-input", captureDeviceId="qa-screen")
+    capture.pop("participantId")
+    if scene == "capture":
+        return [capture]
+    routes = [capture, fixed("guest", "101"), fixed("guest2", "102")]
+    for i, route in enumerate(routes):
+        route["rect"] = {"x": i / 3, "y": 0, "width": 1 / 3, "height": 1}
+    return routes
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Synthetic mixed-source monitor A/B; not release qualification"
@@ -34,6 +48,7 @@ def main():
     ap.add_argument("--duration", type=float, default=120)
     ap.add_argument("--pairs", type=int, default=3)
     ap.add_argument("--warmup", type=float, default=10)
+    ap.add_argument("--program-scene", choices=("zoom", "capture", "mixed"), default="zoom")
     ap.add_argument(
         "--cpu-source-preparation", choices=("0", "1"), default="0",
         help="Explicit CPU BGRA/I420 GPU preparation override; held constant across both monitor modes",
@@ -80,6 +95,8 @@ def main():
         "pairs": a.pairs,
         "warmup": a.warmup,
         "programBufferFrames": 2,
+        "programScene": a.program_scene,
+        "programRoutes": program_routes(a.program_scene),
         "sourceFormats": [
             "8 fake Zoom I420 1920x1080 30fps",
             "BGRA mapping 1920x1080 60Hz",
@@ -174,6 +191,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "previewSharedTexture",
                 "multiviewSharedTexture",
                 "recording",
+                "programSourceAdmission",
             ]
         }
 
@@ -260,7 +278,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 {
                     "type": "load-scene-graph",
                     "sceneId": "ab-program",
-                    "routes": [fixed("pgm", "101")],
+                    "routes": program_routes(a.program_scene),
                 },
                 {
                     "type": "set-preview-scene",

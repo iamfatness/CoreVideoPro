@@ -913,6 +913,20 @@ rpc::Json previewSharedTextureEvent(const ProgramFrame& frame) {
   };
 }
 
+rpc::Json programSourceAdmissionJson(const ProgramFrame& frame) {
+  rpc::Json::Array sources;
+  for (const auto& source : frame.sourceAdmissions) sources.emplace_back(rpc::Json::Object{
+      {"sourceId", source.sourceId}, {"state", source.state}, {"reason", source.reason},
+      {"requestedEpoch", static_cast<double>(source.requestedEpoch)}, {"requestedFrameId", static_cast<double>(source.requestedFrameId)},
+      {"requestedCapture100ns", static_cast<double>(source.requestedCapture100ns)},
+      {"actualEpoch", source.actualFrameId >= 0 ? rpc::Json(static_cast<double>(source.actualEpoch)) : rpc::Json(nullptr)},
+      {"actualFrameId", source.actualFrameId >= 0 ? rpc::Json(static_cast<double>(source.actualFrameId)) : rpc::Json(nullptr)},
+      {"actualCapture100ns", source.actualFrameId >= 0 ? rpc::Json(static_cast<double>(source.actualCapture100ns)) : rpc::Json(nullptr)}});
+  return rpc::Json::Object{{"version", 1}, {"readyOnlyRequested", frame.cpuSourceReadyOnly},
+      {"programFrameNumber", static_cast<double>(frame.frameNumber)}, {"deliverySequence", static_cast<double>(frame.deliverySequence)},
+      {"presentationVerified", false}, {"sources", std::move(sources)}};
+}
+
 rpc::Json programFramePreviewJson(const ProgramFrame& frame) {
   if (frame.preview.width <= 0 || frame.preview.height <= 0 || frame.preview.bgra.empty()) {
     return nullptr;
