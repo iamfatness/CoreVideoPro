@@ -84,6 +84,105 @@ MonitorRenderRequest requestAtSize(int size) {
 }
 }
 
+TEST(PreparedSourcePixels, BgraGpuViewKeepsCpuI420ForIsoWithoutSelectingYuvShader) {
+  const char* gpuRaw = std::getenv("COREVIDEO_GPU_CAPTURE");
+  const std::string gpuPrevious = gpuRaw ? gpuRaw : "";
+  const char* monitorRaw = std::getenv("COREVIDEO_ISOLATE_MONITORS");
+  const std::string monitorPrevious = monitorRaw ? monitorRaw : "";
+  _putenv_s("COREVIDEO_GPU_CAPTURE", "1");
+  _putenv_s("COREVIDEO_ISOLATE_MONITORS", "0");
+  auto compositor = createD3D11Compositor();
+  _putenv_s("COREVIDEO_GPU_CAPTURE", gpuPrevious.c_str());
+  _putenv_s("COREVIDEO_ISOLATE_MONITORS", monitorPrevious.c_str());
+  ASSERT_TRUE(compositor != nullptr);
+  ComPtrLite<ID3D11Device> producer;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+      producer.put(), nullptr, context.put())));
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT; desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ComPtrLite<ID3D11Texture2D> texture;
+  ComPtrLite<ID3D11RenderTargetView> target;
+  ASSERT_TRUE(SUCCEEDED(producer->CreateTexture2D(&desc, nullptr, texture.put())));
+  ASSERT_TRUE(SUCCEEDED(producer->CreateRenderTargetView(texture.get(), nullptr, target.put())));
+  const float red[] = {201.f / 255, 0, 0, 1};
+  context->ClearRenderTargetView(target.get(), red);
+  D3DVideoFramePool pool;
+  ASSERT_TRUE(pool.initialize(producer.get(), 64, 64, 1));
+  const int slot = pool.beginCopy(context.get(), texture.get());
+  ASSERT_GE(slot, 0); context->Flush();
+  auto request = requestAtSize(64);
+  auto& frame = request.frames.front();
+  frame.pixels.reset(); frame.pixelWidth = frame.pixelHeight = frame.pixelStride = 0;
+  // Deliberately different representations prove both shader selection and
+  // export sizing use the admitted GPU view. CPU planes must remain available.
+  auto cpu = std::make_shared<std::vector<uint8_t>>(128 * 128 * 3 / 2, 128);
+  frame.i420 = cpu; frame.i420Width = frame.i420Height = 128;
+  frame.sourceEpoch = 7; frame.frameId = 19; frame.captureTimestamp100ns = 123456;
+  const auto readyBy = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!(frame.gpuPixels = pool.completed(context.get(), slot)) && std::chrono::steady_clock::now() < readyBy)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(frame.gpuPixels != nullptr);
+  auto plan = request.programPlan; plan.skipCpuReadback = false;
+  auto result = compositor->render(plan, request.frames);
+  ASSERT_FALSE(result.preview.bgra.empty());
+  const size_t center = (result.preview.height / 2 * result.preview.width + result.preview.width / 2) * 4;
+  EXPECT_EQ(result.preview.bgra[center], 0);
+  EXPECT_EQ(result.preview.bgra[center + 1], 0);
+  EXPECT_NEAR(result.preview.bgra[center + 2], 201, 1);
+  uint32_t exportedPixel = 0;
+  const auto exportBy = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  do {
+    result = compositor->render(plan, request.frames);
+    if (!result.participantSharedTextures.empty()) {
+      const auto& source = result.participantSharedTextures.front();
+      EXPECT_EQ(source.width, 64); EXPECT_EQ(source.height, 64);
+      ProgramFrameSharedTexture exported;
+      exported.sharedHandleHex = source.sharedHandleHex;
+      exportedPixel = consumeCenter(exported);
+    }
+    if (exportedPixel != 0xffc90000u) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  } while (exportedPixel != 0xffc90000u && std::chrono::steady_clock::now() < exportBy);
+  EXPECT_EQ(exportedPixel, 0xffc90000u);
+  auto gpuOnly = frame;
+  gpuOnly.i420.reset(); gpuOnly.i420Width = gpuOnly.i420Height = 0;
+  ++gpuOnly.frameId;
+  result = compositor->render(plan, {gpuOnly});
+  ASSERT_FALSE(result.preview.bgra.empty());
+  EXPECT_NEAR(result.preview.bgra[center + 2], 201, 1);
+  exportedPixel = 0;
+  const auto gpuOnlyBy = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  do {
+    result = compositor->render(plan, {gpuOnly});
+    if (!result.participantSharedTextures.empty()) {
+      const auto& source = result.participantSharedTextures.front();
+      EXPECT_EQ(source.width, 64); EXPECT_EQ(source.height, 64);
+      ProgramFrameSharedTexture exported;
+      exported.sharedHandleHex = source.sharedHandleHex;
+      exportedPixel = consumeCenter(exported);
+    }
+    if (exportedPixel != 0xffc90000u) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  } while (exportedPixel != 0xffc90000u && std::chrono::steady_clock::now() < gpuOnlyBy);
+  EXPECT_EQ(exportedPixel, 0xffc90000u);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(frame.i420, cpu); EXPECT_EQ(frame.sourceEpoch, 7u);
+  EXPECT_EQ(frame.frameId, 19); EXPECT_EQ(frame.captureTimestamp100ns, 123456);
+  // An image without an imported consumer view must keep the legacy CPU
+  // fallback usable. The shader follows what was actually admitted.
+  auto unavailable = std::make_shared<GpuVideoFrame>();
+  unavailable->width = unavailable->height = 64;
+  auto fallback = frame; fallback.gpuPixels = unavailable; ++fallback.frameId;
+  result = compositor->render(plan, {fallback});
+  ASSERT_FALSE(result.preview.bgra.empty());
+  for (size_t channel = 0; channel < 3; ++channel)
+    EXPECT_NEAR(result.preview.bgra[center + channel], 128, 12);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 1u);
+}
+
 TEST(IsolatedMonitorPixels, UnavailableInputHoldsItsPixelsWhileOtherInputsAdvanceAndRecover) {
   const char* raw = std::getenv("COREVIDEO_GPU_CAPTURE"); const std::string previous = raw ? raw : "";
   _putenv_s("COREVIDEO_GPU_CAPTURE", "1");

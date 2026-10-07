@@ -1274,9 +1274,11 @@ class D3D11Compositor final : public ICompositor {
     // when the layer has no decoded pixels at all. Sources with a stable id bind
     // their cached per-source textures (uploaded only on content change); frames
     // without one (media layers) take the legacy shared-scratch upload.
-    const bool isI420 = layer.frame != nullptr && layer.frame->hasI420();
     const auto uploadStart = uploadUs ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     SourceTex* sourceTex = layer.frame != nullptr ? acquireSourceTex(*layer.frame) : nullptr;
+    // A prepared BGRA view can coexist with the original I420 planes retained
+    // for ISO. Select the shader from the admitted texture, not that CPU copy.
+    const bool isI420 = sourceTex ? sourceTex->isI420 : layer.frame != nullptr && layer.frame->hasI420();
     const bool textured = layer.retainedProgram != nullptr || sourceTex != nullptr ||
         (layer.frame != nullptr &&
          (isI420 ? uploadLayerI420Texture(*layer.frame)
@@ -1672,7 +1674,7 @@ class D3D11Compositor final : public ICompositor {
   // only when the content changed since the last upload. Returns nullptr when
   // the frame has no stable source identity (or the GPU resources fail) — the
   // caller then falls back to the shared scratch upload path.
-  SourceTex* acquireSourceTex(const VideoFrame& frame) {
+  SourceTex* acquireSourceTex(const VideoFrame& frame, bool allowCpuUpload = true) {
     CpuStageScope timing(profileMvActive_, stageProfileNs_[MvUpload]);
     if (!frame.participantId.empty() && frame.hasGpuPixels() && gpuConsumer_ && gpuReadLeases_) {
       const auto image = std::dynamic_pointer_cast<const D3DVideoImage>(frame.gpuPixels);
@@ -1692,6 +1694,7 @@ class D3D11Compositor final : public ICompositor {
         return &entry;
       }
     }
+    if (!allowCpuUpload) return nullptr;
     const bool isI420 = frame.hasI420();
     if (frame.participantId.empty() || (!isI420 && !frame.hasPixels())) {
       return nullptr;
@@ -2025,9 +2028,12 @@ class D3D11Compositor final : public ICompositor {
         continue;
       }
       const CompositorColorGrade grade = effectiveParticipantGrade(renderPlan, f);
-      const bool useI420 = f.hasI420();
-      const int width = useI420 ? f.i420Width : f.pixelWidth;
-      const int height = useI420 ? f.i420Height : f.pixelHeight;
+      // Determine the admitted GPU format without moving CPU uploads ahead
+      // of the existing asynchronous exporter-readiness check below.
+      SourceTex* admittedSource = acquireSourceTex(f, false);
+      const bool useI420 = admittedSource ? admittedSource->isI420 : f.hasI420();
+      const int width = admittedSource ? admittedSource->width : (useI420 ? f.i420Width : f.pixelWidth);
+      const int height = admittedSource ? admittedSource->height : (useI420 ? f.i420Height : f.pixelHeight);
       auto& pt = participantTextures_[f.participantId];
       if (!pt.local || pt.width != width || pt.height != height) {
         const auto createStart = std::chrono::steady_clock::now();
