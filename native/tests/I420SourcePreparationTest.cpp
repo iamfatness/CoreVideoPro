@@ -110,6 +110,27 @@ TEST(ProgramSourceAdmission, FailedOrStoppedProducerClearsHeldImage) {
   EXPECT_EQ(policy.select(frame, 5, [](const auto&) { return true; }).evidence.reason, "preparation-stopped");
 }
 
+TEST(ProgramSourceAdmission, AbandonedCpuSelectionCannotBlockALaterCompletion) {
+  ProgramSourceAdmissionPolicy policy;
+  auto frameFor = [](int64_t id) {
+    VideoFrame frame; frame.participantId = "source"; frame.sourceEpoch = 1; frame.frameId = id;
+    frame.captureTimestamp100ns = id * 100; frame.width = frame.height = 64;
+    auto token = std::make_shared<CpuSourceGpuView>(); token->sourceId = frame.participantId;
+    token->sourceEpoch = 1; token->frameId = id; token->captureTimestamp100ns = frame.captureTimestamp100ns;
+    token->width = token->height = 64; token->demand = std::make_shared<CpuSourceGpuDemand>(); frame.preparedGpu = token;
+    return frame;
+  };
+  auto abandoned = frameFor(1); policy.select(abandoned, 1, [](const auto&) { return true; });
+  abandoned.preparedGpu->superseded.store(true);
+  auto pending = frameFor(2); policy.select(pending, 2, [](const auto&) { return true; });
+  auto gpu = std::make_shared<GpuVideoFrame>(); gpu->sourceId = "source"; gpu->sourceEpoch = 1;
+  gpu->sourceFrameId = 2; gpu->sourceCaptureTimestamp100ns = 200; gpu->width = gpu->height = 64;
+  pending.preparedGpu->ready.store(gpu); pending.preparedGpu->completionPublished.store(true);
+  auto result = policy.select(frameFor(3), 3, [](const auto&) { return true; });
+  EXPECT_EQ(result.evidence.state, "held"); EXPECT_EQ(result.evidence.actualFrameId, 2);
+  EXPECT_EQ(result.evidence.requestedFrameId, 3);
+}
+
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
 #define NOMINMAX
 #include <windows.h>

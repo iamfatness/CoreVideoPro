@@ -339,6 +339,8 @@ TEST(ShmGpuPreparation, ContinuousCpuSelectionAdmitsLateCompletedPixelsWithoutCh
     owner.offer(device.Get(), context.Get(), current);
     compositor->render(plan, {current}); // select this identity before its GPU completion
     auto next = makeFrame(id + 1);
+    owner.supersedeUnsubmitted(current); // an in-flight upload survives newer CPU arrival
+    EXPECT_FALSE(current.preparedGpu->superseded.load());
     ASSERT_TRUE(waitFor([&] { owner.poll(context.Get(), next); return bool(current.preparedGpu->acquire(false)); }));
     EXPECT_FALSE(next.gpuPixels); EXPECT_FALSE(current.gpuPixels);
     auto rendered = compositor->render(plan, {next});

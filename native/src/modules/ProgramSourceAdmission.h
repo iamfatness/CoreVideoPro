@@ -27,7 +27,7 @@ class ProgramSourceAdmissionPolicy {
     auto pending = pending_.find(requested.participantId);
     if (pending != pending_.end() && (requested.sourceEpoch == 0 || pending->second.image.sourceEpoch != requested.sourceEpoch ||
         pending->second.token->width != width || pending->second.token->height != height ||
-        !pending->second.token->demand || pending->second.token->demand->stopped.load() || pending->second.token->demand->failed.load())) {
+        !pending->second.token->demand || pending->second.token->demand->stopped.load() || pending->second.token->demand->failed.load() || pending->second.token->superseded.load())) {
       pending_.erase(pending); pending = pending_.end();
     }
     if (pending != pending_.end() && pending->second.token->completionPublished.load() && pending->second.token->ready.load().expired()) {
@@ -49,6 +49,7 @@ class ProgramSourceAdmissionPolicy {
         gpu = token->acquire(true);
         proof.reason = token->demand && token->demand->stopped.load() ? "preparation-stopped" : "preparation-pending";
         if (token->demand && token->demand->failed.load()) proof.reason = "preparation-failed";
+        if (token->superseded.load()) proof.reason = "preparation-superseded";
       } else proof.reason = "preparation-identity-mismatch";
     }
     if (proof.reason == "preparation-stopped" || proof.reason == "preparation-failed") {
@@ -85,7 +86,7 @@ class ProgramSourceAdmissionPolicy {
       }
       // Keep one selected identity until its asynchronous completion is read.
       // The token holds weak CPU/GPU payloads; this never retains CPU/ISO pixels.
-      if (pending == pending_.end() && requested.preparedGpu && requested.sourceEpoch != 0 &&
+      if (pending == pending_.end() && requested.preparedGpu && !requested.preparedGpu->superseded.load() && requested.sourceEpoch != 0 &&
           requested.preparedGpu->sourceId == requested.participantId && requested.preparedGpu->sourceEpoch == requested.sourceEpoch &&
           requested.preparedGpu->frameId == requested.frameId && requested.preparedGpu->captureTimestamp100ns == requested.captureTimestamp100ns &&
           requested.preparedGpu->width == width && requested.preparedGpu->height == height && pending_.size() < kMaxSources) {

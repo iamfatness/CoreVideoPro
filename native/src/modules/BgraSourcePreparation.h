@@ -67,6 +67,11 @@ class BgraSourcePreparation {
     context->Flush(); // preparation owner submits; Program never flushes this context
   }
   const Stats& stats() const { return stats_; }
+  void supersedeUnsubmitted(const VideoFrame& frame) {
+    const auto& token = frame.preparedGpu;
+    if (token && token != pendingToken_ && !token->completionPublished.load() &&
+        token->demand && !token->demand->failed.load()) token->superseded.store(true);
+  }
   bool released(ID3D11DeviceContext* context) {
     ready_ = {}; pendingToken_.reset(); // retirement never publishes new completions
     return !initialized_ || pool_.idle(context);

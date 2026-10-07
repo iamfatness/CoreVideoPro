@@ -44,9 +44,10 @@ struct CpuSourceGpuView {
   CpuSourceGpuPublication ready;
   std::atomic<bool> consumed{false};
   std::atomic<bool> completionPublished{false};
+  std::atomic<bool> superseded{false};
 
   std::shared_ptr<const GpuVideoFrame> acquire(bool select) {
-    if (!demand || demand->stopped.load() || demand->failed.load()) return {};
+    if (!demand || demand->stopped.load() || demand->failed.load() || superseded.load()) return {};
     if (select) {
       auto previous = demand->selectedFrameId.load();
       while (previous < frameId && !demand->selectedFrameId.compare_exchange_weak(previous, frameId)) {}

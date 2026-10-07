@@ -234,6 +234,9 @@ void ShmCapturePreparation::run() {
       copyTotalNs += workNs; copyMaximumNs = std::max(copyMaximumNs, workNs);
       if (sequence() != first) { ++torn; continue; }
       auto& frame = mapping->last;
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
+      mapping->gpu.supersedeUnsubmitted(frame);
+#endif
       frame = {};
       frame.participantId = "capture:" + id;
       frame.width = frame.naturalWidth = frame.pixelWidth = mapping->request.width;
