@@ -170,6 +170,7 @@ phrase they quote.
 | [`docs/reference/live-meeting-qa-2026-08-09.md`](docs/reference/live-meeting-qa-2026-08-09.md) | shell UI defects seen in real meetings (eight worked examples) |
 | [`docs/reference/media-no-decoder.md`](docs/reference/media-no-decoder.md) | media decode failures |
 | [`docs/reference/monitor-input-admission.md`](docs/reference/monitor-input-admission.md) | isolated monitor holds, input identity and bounded cache retirement |
+| [`docs/reference/cpu-source-preparation.md`](docs/reference/cpu-source-preparation.md) | optional SHM BGRA GPU uploads on the preparation owner, identity fences and qualification limits |
 | [`docs/reference/observing-a-running-core.md`](docs/reference/observing-a-running-core.md) | reading live state: `GET /snapshot`, the control API |
 | [`docs/reference/ohg-show-engine-host.md`](docs/reference/ohg-show-engine-host.md) | the OHG show engine, `show-engine/`, its host process |
 | [`docs/reference/operator-stutter-snapshot-apply.md`](docs/reference/operator-stutter-snapshot-apply.md) | shell lag/stutter, snapshot apply cost |

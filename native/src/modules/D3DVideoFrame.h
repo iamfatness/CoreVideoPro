@@ -130,6 +130,24 @@ class D3DVideoFramePool {
     return true;
   }
   bool dimensions(int width, int height) const { return width == width_ && height == height_; }
+  // CPU source preparation calls this on its context owner, never Program.
+  // UpdateSubresource consumes the immutable CPU bytes before returning; the
+  // event query below still fences GPU completion before shared publication.
+  int beginUpload(ID3D11DeviceContext* context, const uint8_t* bytes, size_t size, int stride) {
+    if (!bytes || stride < width_ * 4 || height_ <= 0 ||
+        size < static_cast<size_t>(height_ - 1) * stride + static_cast<size_t>(width_) * 4) return -1;
+    poll(context);
+    for (size_t i = 0; i < slots_.size(); ++i) {
+      auto& slot = slots_[i];
+      if (!slot.pending && slot.image && slot.image.use_count() == 1) {
+        context->UpdateSubresource(slot.image->producer.Get(), 0, nullptr, bytes, stride, 0);
+        context->End(slot.ready.Get());
+        slot.pending = true;
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  }
   // Begin before the compatibility CPU readback. Publication below checks the
   // actual copy completion, never just the return from CopyResource.
   int beginCopy(ID3D11DeviceContext* context, ID3D11Texture2D* source) {

@@ -5,12 +5,16 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <cstdlib>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#endif
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
+#include "modules/BgraSourcePreparation.h"
 #endif
 
 namespace corevideo::modules {
@@ -22,6 +26,9 @@ struct ShmCapturePreparation::Mapping {
   VideoFrame last;
   uint32_t sequence = 0;
   bool seen = false;
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
+  BgraSourcePreparation gpu;
+#endif
   ~Mapping() {
 #ifdef _WIN32
     if (view) UnmapViewOfFile(view);
@@ -51,7 +58,9 @@ struct ShmCapturePreparation::Mapping {
 };
 
 ShmCapturePreparation::ShmCapturePreparation(std::function<void()> beforeCopy)
-    : beforeCopy_(std::move(beforeCopy)), thread_([this] { run(); }) {}
+    : beforeCopy_(std::move(beforeCopy)),
+      gpuRequested_([] { const char* flag = std::getenv("COREVIDEO_CPU_SOURCE_PREPARATION");
+        return flag && std::string(flag) == "1"; }()), thread_([this] { run(); }) {}
 ShmCapturePreparation::~ShmCapturePreparation() {
   { std::lock_guard<std::mutex> lock(control_); stopping_ = true; }
   changed_.notify_one();
@@ -115,6 +124,18 @@ ShmCapturePreparation::Stats ShmCapturePreparation::stats() const {
 void ShmCapturePreparation::run() {
   std::map<std::string, std::unique_ptr<Mapping>> active, retiring;
   uint64_t identity = 0;
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
+  ComPtr<ID3D11Device> gpuDevice;
+  ComPtr<ID3D11DeviceContext> gpuContext;
+  bool gpuDeviceAttempted = false;
+  BgraSourcePreparation::Stats gpuTotals;
+  auto accumulateGpu = [&](const BgraSourcePreparation::Stats& before, const BgraSourcePreparation::Stats& after) {
+    gpuTotals.prepared += after.prepared - before.prepared;
+    gpuTotals.busy += after.busy - before.busy;
+    gpuTotals.failed += after.failed - before.failed;
+    gpuTotals.superseded += after.superseded - before.superseded;
+  };
+#endif
   for (;;) {
     { std::unique_lock<std::mutex> lock(control_);
       if (active.empty() && retiring.empty() && std::atomic_load(&wanted_)->empty()) {
@@ -130,8 +151,13 @@ void ShmCapturePreparation::run() {
     std::string reason;
     std::string refusalReason;
     const auto refuse = [&](const char* value) { ++refused; refusalReason = reason = value; };
-    for (auto it = retiring.begin(); it != retiring.end();)
-      it = it->second->released() ? retiring.erase(it) : std::next(it);
+    for (auto it = retiring.begin(); it != retiring.end();) {
+      bool released = it->second->released();
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
+      if (gpuContext) released = released && it->second->gpu.released(gpuContext.Get());
+#endif
+      it = released ? retiring.erase(it) : std::next(it);
+    }
     for (auto it = active.begin(); it != active.end();) {
       const auto desired = std::find_if(wanted->begin(), wanted->end(), [&](const auto& r) { return r.id == it->first; });
       if (desired != wanted->end() && desired->generation == it->second->request.generation) { ++it; continue; }
@@ -160,6 +186,29 @@ void ShmCapturePreparation::run() {
       active.emplace(request.id, std::move(mapping));
     }
     bool changed = false;
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
+    // No device or pool exists without both an explicit opt-in and a real
+    // compositor consumer. Create on that consumer's adapter, not a guessed GPU.
+    if (gpuRequested_ && !gpuDeviceAttempted) {
+      const auto consumers = D3DVideoConsumers::snapshot();
+      auto consumer = std::find_if(consumers.begin(), consumers.end(), [](const auto& c) { return !c->monitor; });
+      if (consumer != consumers.end()) {
+        gpuDeviceAttempted = true;
+        ComPtr<IDXGIDevice> dxgi;
+        ComPtr<IDXGIAdapter> adapter;
+        if (SUCCEEDED((*consumer)->device.As(&dxgi)) && SUCCEEDED(dxgi->GetAdapter(&adapter)))
+          D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+              nullptr, 0, D3D11_SDK_VERSION, &gpuDevice, nullptr, &gpuContext);
+        if (!gpuDevice || !gpuContext) core::nativeLogf("[cpu-source-preparation] GPU device unavailable; CPU retained\n");
+      }
+    }
+    if (gpuContext) for (auto& [id, mapping] : active) {
+      const auto before = mapping->gpu.stats();
+      if (mapping->gpu.poll(gpuContext.Get(), mapping->last)) changed = true;
+      mapping->gpu.offer(gpuDevice.Get(), gpuContext.Get(), mapping->last);
+      accumulateGpu(before, mapping->gpu.stats());
+    }
+#endif
     for (auto& [id, mapping] : active) {
       if (!mapping->view) continue;
       auto sequence = [&] { return *reinterpret_cast<const volatile uint32_t*>(mapping->view); };
@@ -196,6 +245,13 @@ void ShmCapturePreparation::run() {
       frame.captureTimestamp100ns = captureTime; // observation boundary, not sender-provided acquisition time
       mapping->seen = true; mapping->sequence = first;
       ++prepared; changed = true;
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
+      if (gpuContext) {
+        const auto before = mapping->gpu.stats();
+        mapping->gpu.offer(gpuDevice.Get(), gpuContext.Get(), frame);
+        accumulateGpu(before, mapping->gpu.stats());
+      }
+#endif
     }
     const auto old = std::atomic_load(&completed_);
     // Publish after all copies; the descriptor handoff never holds control_.
@@ -230,6 +286,12 @@ void ShmCapturePreparation::run() {
       stats_.poolBusy += busy; stats_.failed += failed;
       stats_.copyTotalNs += copyTotalNs; stats_.copyMaximumNs = std::max(stats_.copyMaximumNs, copyMaximumNs);
       stats_.residentBytes = residency(); stats_.active = active.size(); stats_.retiring = retiring.size();
+      stats_.gpuRequested = gpuRequested_;
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
+      stats_.gpuPrepared = gpuTotals.prepared; stats_.gpuBusy = gpuTotals.busy;
+      stats_.gpuFailed = gpuTotals.failed + (gpuDeviceAttempted && !gpuDevice ? 1u : 0u);
+      stats_.gpuSuperseded = gpuTotals.superseded;
+#endif
       if (std::atomic_load(&wanted_) != wanted) { stats_.state = "warming"; }
       else if (!reason.empty()) { stats_.reason = reason; stats_.state = "degraded"; }
       else if (wanted->empty()) { stats_.reason.clear(); stats_.state = "idle"; }

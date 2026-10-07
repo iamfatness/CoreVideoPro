@@ -130,7 +130,9 @@ class D3D11Compositor final : public ICompositor {
       core::nativeLogf("[delivery-counter] QA synthetic pixel markers enabled\n");
     }
     const char* gpuCapture = std::getenv("COREVIDEO_GPU_CAPTURE");
-    if (enableGpuIngress || (gpuCapture && std::string(gpuCapture) == "1")) {
+    const char* cpuPreparation = std::getenv("COREVIDEO_CPU_SOURCE_PREPARATION");
+    if (enableGpuIngress || (gpuCapture && std::string(gpuCapture) == "1") ||
+        (cpuPreparation && std::string(cpuPreparation) == "1")) {
       gpuConsumer_ = D3DVideoConsumers::add(device_.get(), monitorBackend);
       gpuReadLeases_ = std::make_unique<D3DVideoReadLeases>(device_.get(), context_.get());
     }
