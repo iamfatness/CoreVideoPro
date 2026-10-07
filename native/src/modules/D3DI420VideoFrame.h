@@ -49,7 +49,7 @@ class D3DI420FramePool {
       auto storage = std::make_shared<D3DI420Storage>();
       auto reserved = D3DVideoImage::residentBytes.load();
       do {
-        if (reserved + bytes > 512u * 1024u * 1024u) return false;
+        if (reserved + bytes > 512u * 1024u * 1024u) { capacityRefused_ = true; return false; }
       } while (!D3DVideoImage::residentBytes.compare_exchange_weak(reserved, reserved + bytes));
       storage->bytes = bytes;
       for (size_t plane = 0; plane < 3; ++plane) {
@@ -108,6 +108,7 @@ class D3DI420FramePool {
     return true;
   }
   HRESULT failure() const { return failure_; }
+  bool capacityRefused() const { return capacityRefused_; }
  private:
   void poll(ID3D11DeviceContext* context) {
     for (auto& slot : slots_) if (slot.pending) {
@@ -125,5 +126,6 @@ class D3DI420FramePool {
   std::array<Slot, 3> slots_;
   int width_ = 0, height_ = 0;
   HRESULT failure_ = S_OK;
+  bool capacityRefused_ = false;
 };
 }

@@ -100,7 +100,7 @@ class D3DVideoFramePool {
       const size_t limit = (monitor ? 256u : 512u) * 1024u * 1024u;
       auto reserved = residency.load();
       do {
-        if (reserved + bytes > limit) return false;
+        if (reserved + bytes > limit) { capacityRefused_ = true; return false; }
       } while (!residency.compare_exchange_weak(reserved, reserved + bytes));
       image->bytes = bytes;
       image->monitor = monitor;
@@ -179,6 +179,7 @@ class D3DVideoFramePool {
     return true;
   }
   HRESULT failure() const { return failure_; }
+  bool capacityRefused() const { return capacityRefused_; }
  private:
   void poll(ID3D11DeviceContext* context) {
     for (auto& slot : slots_) if (slot.pending) {
@@ -194,6 +195,7 @@ class D3DVideoFramePool {
   std::array<Slot, 3> slots_;
   int width_ = 0, height_ = 0;
   bool allowQueryProgress_ = false;
+  bool capacityRefused_ = false;
   HRESULT failure_ = S_OK;
 };
 

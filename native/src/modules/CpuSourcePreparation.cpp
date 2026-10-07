@@ -88,12 +88,14 @@ struct CpuSourcePreparation::Impl {
         source = std::move(builds.front()); builds.pop_front(); producer = device;
       }
       std::shared_ptr<D3DPreparedSourcePool> pool;
+      bool capacityRefused = false;
       if (!source->demand->stopped.load()) {
         try {
           if (beforeResources) beforeResources(source->id);
           if (!source->demand->stopped.load()) {
             auto candidate = std::make_shared<D3DPreparedSourcePool>();
             if (candidate->initialize(producer.Get(), source->width, source->height, source->epoch, source->bgra)) pool = std::move(candidate);
+            else capacityRefused = candidate->capacityRefused();
           }
         } catch (...) { pool.reset(); }
       }
@@ -104,6 +106,10 @@ struct CpuSourcePreparation::Impl {
         else {
           if (measured.active) --measured.active;
           if (source->demand->stopped.load()) ++measured.superseded;
+          else if (capacityRefused) {
+            source->demand->capacity.store(CpuPreparationCapacity::Residency);
+            source->demand->stopped.store(true); ++measured.refused;
+          }
           else { source->demand->failed.store(true); ++measured.failed; }
         }
       }
@@ -177,10 +183,13 @@ struct CpuSourcePreparation::Impl {
       {
         std::lock_guard<std::mutex> lock(mutex);
         pool = source->pool;
-        if (!source->demand->stopped.load() && lastDemand && !source->buildAttempted && measured.active < kMaxActive) {
+        if (!source->demand->stopped.load() && lastDemand && !source->buildAttempted) {
           bool quarantineFull;
           { std::lock_guard<std::mutex> quarantineLock(quarantineMutex); quarantineFull = quarantined.size() >= kMaxActive * 2; }
-          if (!quarantineFull) {
+          if (measured.active >= kMaxActive) source->demand->capacity.store(CpuPreparationCapacity::ActiveGenerations);
+          else if (quarantineFull) source->demand->capacity.store(CpuPreparationCapacity::Quarantine);
+          else {
+            source->demand->capacity.store(CpuPreparationCapacity::None);
             source->buildAttempted = source->building = true; ++measured.active;
             builds.push_back(source); changed.notify_one();
           }
@@ -335,6 +344,19 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
     ++impl_->measured.refused; return {};
   }
   try {
+    const auto refused = [&](CpuPreparationCapacity reason) {
+      ++impl_->measured.refused;
+      auto token = std::make_shared<CpuSourceGpuView>();
+      token->sourceId = id; token->sourceEpoch = epoch; token->frameId = frameId;
+      token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
+      token->cpuStride = stride; token->cpu = cpu;
+      token->demand = std::make_shared<CpuSourceGpuDemand>();
+      token->demand->capacity.store(reason);
+      // Attributed refusal owns no queue entry, pool or pixels. Existing
+      // producer held-token refresh retries it after capacity becomes free.
+      token->demand->stopped.store(true);
+      return token;
+    };
     // A failed owner still provides an attributable failed token for new CPU
     // arrivals. Returning null would let Program keep a cached pre-failure
     // image without observing the stopped producer.
@@ -354,12 +376,11 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
       ++impl_->measured.refused; return {};
     }
     if (!source || source->epoch != epoch || source->width != width || source->height != height || source->bgra != bgra || source->demand->stopped.load()) {
-      if ((!source && impl_->sources.size() >= kMaxSources) || impl_->retiring.size() >= kMaxSources) {
-        ++impl_->measured.refused; return {};
-      }
+      if (!source && impl_->sources.size() >= kMaxSources) return refused(CpuPreparationCapacity::Sources);
+      if (impl_->retiring.size() >= kMaxSources) return refused(CpuPreparationCapacity::RetiringGenerations);
       if (source && std::any_of(impl_->retiring.begin(), impl_->retiring.end(), [&](const auto& old) {
           return old->id == id && (old->pool || old->building);
-        })) { ++impl_->measured.refused; return {}; } // one charged retiring generation per source
+        })) return refused(CpuPreparationCapacity::RetiringGenerations); // one charged retiring generation per source
       auto replacement = std::make_shared<Impl::Source>();
       replacement->id = id; replacement->epoch = epoch; replacement->width = width; replacement->height = height;
       replacement->bgra = bgra;
@@ -370,7 +391,7 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
       source = std::move(replacement); impl_->sources.insert_or_assign(id, source);
     }
     while (!source->queued.empty() && source->queued.front().expired()) source->queued.pop_front();
-    if (source->queued.size() >= kPendingPerSource) { ++impl_->measured.refused; return {}; }
+    if (source->queued.size() >= kPendingPerSource) return refused(CpuPreparationCapacity::PendingTokens);
     auto token = std::make_shared<CpuSourceGpuView>();
     token->sourceId = id; token->sourceEpoch = epoch; token->frameId = frameId;
     token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
