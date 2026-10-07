@@ -33,6 +33,7 @@ class D3DPreparedSourcePool {
   }
   bool idle(ID3D11DeviceContext* context) { return bgra_ ? bgra_->idle(context) : i420_->idle(context); }
   HRESULT failure() const { return bgra_ ? bgra_->failure() : i420_->failure(); }
+  bool capacityRefused() const { return bgra_ ? bgra_->capacityRefused() : i420_->capacityRefused(); }
  private:
   std::unique_ptr<D3DVideoFramePool> bgra_;
   std::unique_ptr<D3DI420FramePool> i420_;

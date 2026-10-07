@@ -42,18 +42,21 @@ struct CpuSourcePreparation::Impl {
   std::atomic<bool> stopping{false};
   std::atomic<bool> resourcesStopped{false};
   bool deviceFailed = false; // GPU owner only
+  bool recoveryRequested = false; // one attempt per changed production consumer set
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   uint64_t consumerRevision = 0; // GPU owner only
   std::vector<uint64_t> productionConsumers;
   std::function<void(const std::string&)> beforeResources;
   std::function<void(const std::string&)> afterUpload;
+  std::function<int32_t()> deviceFailure;
   std::thread gpuThread, resourceThread;
   inline static std::mutex quarantineMutex;
   inline static std::vector<std::shared_ptr<D3DPreparedSourcePool>> quarantined;
 
-  explicit Impl(bool enabled, std::function<void(const std::string&)> hook, std::function<void(const std::string&)> uploaded)
-      : beforeResources(std::move(hook)), afterUpload(std::move(uploaded)) {
+  explicit Impl(bool enabled, std::function<void(const std::string&)> hook, std::function<void(const std::string&)> uploaded,
+      std::function<int32_t()> failure)
+      : beforeResources(std::move(hook)), afterUpload(std::move(uploaded)), deviceFailure(std::move(failure)) {
     measured.requested = enabled; measured.supported = true;
     if (enabled) {
       try {
@@ -88,12 +91,14 @@ struct CpuSourcePreparation::Impl {
         source = std::move(builds.front()); builds.pop_front(); producer = device;
       }
       std::shared_ptr<D3DPreparedSourcePool> pool;
+      bool capacityRefused = false;
       if (!source->demand->stopped.load()) {
         try {
           if (beforeResources) beforeResources(source->id);
           if (!source->demand->stopped.load()) {
             auto candidate = std::make_shared<D3DPreparedSourcePool>();
             if (candidate->initialize(producer.Get(), source->width, source->height, source->epoch, source->bgra)) pool = std::move(candidate);
+            else capacityRefused = candidate->capacityRefused();
           }
         } catch (...) { pool.reset(); }
       }
@@ -104,6 +109,10 @@ struct CpuSourcePreparation::Impl {
         else {
           if (measured.active) --measured.active;
           if (source->demand->stopped.load()) ++measured.superseded;
+          else if (capacityRefused) {
+            source->demand->capacity.store(CpuPreparationCapacity::Residency);
+            source->demand->stopped.store(true); ++measured.refused;
+          }
           else { source->demand->failed.store(true); ++measured.failed; }
         }
       }
@@ -115,6 +124,7 @@ struct CpuSourcePreparation::Impl {
     // next tick instead of being accidentally treated as already imported.
     consumerRevision = D3DVideoConsumers::revision();
     const auto consumers = D3DVideoConsumers::snapshot();
+    productionConsumers.clear();
     for (const auto& consumer : consumers) if (!consumer->monitor) productionConsumers.push_back(consumer->id);
     for (const auto& consumer : consumers) if (!consumer->monitor) {
       ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter;
@@ -124,12 +134,14 @@ struct CpuSourcePreparation::Impl {
               D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &producer, nullptr, &owner))) return false;
       std::lock_guard<std::mutex> lock(mutex);
       device = std::move(producer); context = std::move(owner);
+      measured.supported = true;
       return true;
     }
     return false;
   }
   void haltPreparation(HRESULT reason) {
     deviceFailed = true;
+    recoveryRequested = false;
     pendingWrites = false;
     for (const auto& source : snapshot()) {
       source->demand->stopped.store(true);
@@ -148,6 +160,10 @@ struct CpuSourcePreparation::Impl {
     pendingWrites = false;
     const auto removed = device->GetDeviceRemovedReason();
     if (FAILED(removed)) { haltPreparation(removed); return; }
+    if (deviceFailure) {
+      const auto injected = static_cast<HRESULT>(deviceFailure());
+      if (FAILED(injected)) { haltPreparation(injected); return; }
+    }
     const auto current = snapshot();
     const auto revision = D3DVideoConsumers::revision();
     if (revision != consumerRevision) {
@@ -177,10 +193,13 @@ struct CpuSourcePreparation::Impl {
       {
         std::lock_guard<std::mutex> lock(mutex);
         pool = source->pool;
-        if (!source->demand->stopped.load() && lastDemand && !source->buildAttempted && measured.active < kMaxActive) {
+        if (!source->demand->stopped.load() && lastDemand && !source->buildAttempted) {
           bool quarantineFull;
           { std::lock_guard<std::mutex> quarantineLock(quarantineMutex); quarantineFull = quarantined.size() >= kMaxActive * 2; }
-          if (!quarantineFull) {
+          if (measured.active >= kMaxActive) source->demand->capacity.store(CpuPreparationCapacity::ActiveGenerations);
+          else if (quarantineFull) source->demand->capacity.store(CpuPreparationCapacity::Quarantine);
+          else {
+            source->demand->capacity.store(CpuPreparationCapacity::None);
             source->buildAttempted = source->building = true; ++measured.active;
             builds.push_back(source); changed.notify_one();
           }
@@ -269,6 +288,40 @@ struct CpuSourcePreparation::Impl {
     while (!stopping.load()) {
       const auto observedRevision = workRevision.load();
       try {
+        // Only a changed production consumer set requests a rebuild. A failed
+        // owner does not allocate on each arrival or monitor registration.
+        if (deviceFailed && D3DVideoConsumers::revision() != consumerRevision) {
+          const auto revision = D3DVideoConsumers::revision();
+          std::vector<uint64_t> ids;
+          for (const auto& consumer : D3DVideoConsumers::snapshot())
+            if (!consumer->monitor) ids.push_back(consumer->id);
+          consumerRevision = revision;
+          if (!ids.empty() && ids != productionConsumers) {
+            recoveryRequested = true;
+          }
+        }
+        if (deviceFailed && recoveryRequested) {
+          bool drained = true;
+          for (const auto& source : snapshot()) {
+            std::shared_ptr<D3DPreparedSourcePool> pool;
+            bool building;
+            { std::lock_guard<std::mutex> lock(mutex); pool = source->pool; building = source->building; }
+            if (building) drained = false;
+            if (!pool) continue;
+            // This polls on the old context owner only. Pending writes and
+            // retained GPU reads keep storage charged; an irrecoverable query
+            // remains stopped, with the existing shutdown quarantine policy.
+            if (!context || !pool->idle(context.Get())) { drained = false; continue; }
+            source->pending.reset(); source->pendingSlot = -1;
+            { std::lock_guard<std::mutex> lock(mutex); source->pool.reset(); if (measured.active) --measured.active; }
+          }
+          if (drained) {
+            { std::lock_guard<std::mutex> lock(mutex); context.Reset(); device.Reset(); }
+            // Keep stopped source metadata until the successful next tick:
+            // its existing demand triggers setup while offers stay failed.
+            recoveryRequested = false; deviceFailed = false; attempted = false;
+          }
+        }
         if (!context && !attempted) {
           bool needed = false;
           for (const auto& source : snapshot()) if (source->demand->lastDemand100ns.load()) needed = true;
@@ -302,13 +355,14 @@ struct CpuSourcePreparation::Impl {
     }
   }
 #else
-  explicit Impl(bool enabled, std::function<void(const std::string&)>, std::function<void(const std::string&)>) { measured.requested = enabled; }
+  explicit Impl(bool enabled, std::function<void(const std::string&)>, std::function<void(const std::string&)>,
+      std::function<int32_t()>) { measured.requested = enabled; }
 #endif
 };
 
 CpuSourcePreparation::CpuSourcePreparation(bool enabled, std::function<void(const std::string&)> hook,
-    std::function<void(const std::string&)> uploaded)
-    : impl_(std::make_unique<Impl>(enabled, std::move(hook), std::move(uploaded))) {}
+    std::function<void(const std::string&)> uploaded, std::function<int32_t()> failure)
+    : impl_(std::make_unique<Impl>(enabled, std::move(hook), std::move(uploaded), std::move(failure))) {}
 CpuSourcePreparation::~CpuSourcePreparation() = default;
 CpuSourcePreparation::Stats CpuSourcePreparation::stats() const { std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->measured; }
 std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offer(const std::string& id, uint64_t epoch,
@@ -335,6 +389,19 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
     ++impl_->measured.refused; return {};
   }
   try {
+    const auto refused = [&](CpuPreparationCapacity reason) {
+      ++impl_->measured.refused;
+      auto token = std::make_shared<CpuSourceGpuView>();
+      token->sourceId = id; token->sourceEpoch = epoch; token->frameId = frameId;
+      token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
+      token->cpuStride = stride; token->cpu = cpu;
+      token->demand = std::make_shared<CpuSourceGpuDemand>();
+      token->demand->capacity.store(reason);
+      // Attributed refusal owns no queue entry, pool or pixels. Existing
+      // producer held-token refresh retries it after capacity becomes free.
+      token->demand->stopped.store(true);
+      return token;
+    };
     // A failed owner still provides an attributable failed token for new CPU
     // arrivals. Returning null would let Program keep a cached pre-failure
     // image without observing the stopped producer.
@@ -344,6 +411,7 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
       token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
       token->cpuStride = stride; token->cpu = cpu;
       token->demand = std::make_shared<CpuSourceGpuDemand>(); token->demand->failed.store(true);
+      token->demand->stopped.store(true); // producer refresh retries only after owner setup succeeds
       return token;
     }
     auto found = impl_->sources.find(id);
@@ -354,12 +422,11 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
       ++impl_->measured.refused; return {};
     }
     if (!source || source->epoch != epoch || source->width != width || source->height != height || source->bgra != bgra || source->demand->stopped.load()) {
-      if ((!source && impl_->sources.size() >= kMaxSources) || impl_->retiring.size() >= kMaxSources) {
-        ++impl_->measured.refused; return {};
-      }
+      if (!source && impl_->sources.size() >= kMaxSources) return refused(CpuPreparationCapacity::Sources);
+      if (impl_->retiring.size() >= kMaxSources) return refused(CpuPreparationCapacity::RetiringGenerations);
       if (source && std::any_of(impl_->retiring.begin(), impl_->retiring.end(), [&](const auto& old) {
           return old->id == id && (old->pool || old->building);
-        })) { ++impl_->measured.refused; return {}; } // one charged retiring generation per source
+        })) return refused(CpuPreparationCapacity::RetiringGenerations); // one charged retiring generation per source
       auto replacement = std::make_shared<Impl::Source>();
       replacement->id = id; replacement->epoch = epoch; replacement->width = width; replacement->height = height;
       replacement->bgra = bgra;
@@ -370,7 +437,7 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
       source = std::move(replacement); impl_->sources.insert_or_assign(id, source);
     }
     while (!source->queued.empty() && source->queued.front().expired()) source->queued.pop_front();
-    if (source->queued.size() >= kPendingPerSource) { ++impl_->measured.refused; return {}; }
+    if (source->queued.size() >= kPendingPerSource) return refused(CpuPreparationCapacity::PendingTokens);
     auto token = std::make_shared<CpuSourceGpuView>();
     token->sourceId = id; token->sourceEpoch = epoch; token->frameId = frameId;
     token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;

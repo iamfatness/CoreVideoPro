@@ -50,9 +50,12 @@ class ProgramSourceAdmissionPolicy {
         proof.reason = token->demand && token->demand->stopped.load() ? "preparation-stopped" : "preparation-pending";
         if (token->demand && token->demand->failed.load()) proof.reason = "preparation-failed";
         if (token->superseded.load()) proof.reason = "preparation-superseded";
+        if (token->demand && token->demand->capacity.load() != CpuPreparationCapacity::None)
+          proof.reason = cpuPreparationCapacityReason(token->demand->capacity.load());
       } else proof.reason = "preparation-identity-mismatch";
     }
-    if (proof.reason == "preparation-stopped" || proof.reason == "preparation-failed") {
+    if (proof.reason == "preparation-stopped" || proof.reason == "preparation-failed" ||
+        (requested.preparedGpu && requested.preparedGpu->demand && requested.preparedGpu->demand->stopped.load())) {
       if (previous != held_.end()) held_.erase(previous);
       pending_.erase(requested.participantId);
       return result; // A removed/failed producer cannot prove its held surface.

@@ -24,11 +24,26 @@ class CpuSourceGpuPublication {
   mutable std::mutex mutex_;
   std::weak_ptr<const GpuVideoFrame> image_;
 };
+enum class CpuPreparationCapacity : uint8_t {
+  None, Sources, PendingTokens, RetiringGenerations, ActiveGenerations, Quarantine, Residency
+};
+inline const char* cpuPreparationCapacityReason(CpuPreparationCapacity reason) {
+  switch (reason) {
+    case CpuPreparationCapacity::Sources: return "preparation-source-capacity";
+    case CpuPreparationCapacity::PendingTokens: return "preparation-pending-token-capacity";
+    case CpuPreparationCapacity::RetiringGenerations: return "preparation-retiring-generation-capacity";
+    case CpuPreparationCapacity::ActiveGenerations: return "preparation-active-generation-capacity";
+    case CpuPreparationCapacity::Quarantine: return "preparation-quarantine-capacity";
+    case CpuPreparationCapacity::Residency: return "preparation-residency-capacity";
+    default: return "preparation-pending";
+  }
+}
 struct CpuSourceGpuDemand {
   std::atomic<int64_t> selectedFrameId{-1};
   std::atomic<int64_t> lastDemand100ns{0};
   std::atomic<bool> stopped{false};
   std::atomic<bool> failed{false};
+  std::atomic<CpuPreparationCapacity> capacity{CpuPreparationCapacity::None};
 };
 
 // CPU playout/trim/ISO descriptors retain this identity, not a GPU pool slot.
