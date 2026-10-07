@@ -3,10 +3,27 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace corevideo::modules {
+// libc++ does not implement atomic<weak_ptr> on every supported target.
+// Publication has no GPU calls under this lock; Program never waits for it.
+class CpuSourceGpuPublication {
+ public:
+  void store(std::weak_ptr<const GpuVideoFrame> image) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    image_ = std::move(image);
+  }
+  std::weak_ptr<const GpuVideoFrame> load() const {
+    std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+    return lock.owns_lock() ? image_ : std::weak_ptr<const GpuVideoFrame>{};
+  }
+ private:
+  mutable std::mutex mutex_;
+  std::weak_ptr<const GpuVideoFrame> image_;
+};
 struct CpuSourceGpuDemand {
   std::atomic<int64_t> selectedFrameId{-1};
   std::atomic<int64_t> lastDemand100ns{0};
@@ -23,7 +40,7 @@ struct CpuSourceGpuView {
   int width = 0, height = 0;
   std::weak_ptr<const std::vector<uint8_t>> cpu;
   std::shared_ptr<CpuSourceGpuDemand> demand;
-  std::atomic<std::weak_ptr<const GpuVideoFrame>> ready;
+  CpuSourceGpuPublication ready;
   std::atomic<bool> consumed{false};
 
   std::shared_ptr<const GpuVideoFrame> acquire(bool select) {
