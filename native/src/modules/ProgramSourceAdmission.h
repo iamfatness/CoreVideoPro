@@ -37,9 +37,10 @@ class ProgramSourceAdmissionPolicy {
           token->width == width && token->height == height) {
         gpu = token->acquire(true);
         proof.reason = token->demand && token->demand->stopped.load() ? "preparation-stopped" : "preparation-pending";
+        if (token->demand && token->demand->failed.load()) proof.reason = "preparation-failed";
       } else proof.reason = "preparation-identity-mismatch";
     }
-    if (proof.reason == "preparation-stopped") {
+    if (proof.reason == "preparation-stopped" || proof.reason == "preparation-failed") {
       if (previous != held_.end()) held_.erase(previous);
       return result; // A removed/failed producer cannot prove its held surface.
     }

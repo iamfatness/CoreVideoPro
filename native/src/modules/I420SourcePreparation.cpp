@@ -92,7 +92,7 @@ struct I420SourcePreparation::Impl {
         std::lock_guard<std::mutex> lock(mutex);
         source->building = false;
         if (pool && !source->demand->stopped.load()) source->pool = std::move(pool);
-        else { if (measured.active) --measured.active; ++measured.failed; }
+        else { source->demand->failed.store(true); if (measured.active) --measured.active; ++measured.failed; }
       }
     }
   }
@@ -210,7 +210,7 @@ struct I420SourcePreparation::Impl {
         if (!context && !attempted) {
           bool needed = false;
           for (const auto& source : snapshot()) if (source->demand->lastDemand100ns.load()) needed = true;
-          if (needed) { attempted = true; if (!createDevice()) { std::lock_guard<std::mutex> lock(mutex); ++measured.failed; } }
+          if (needed) { attempted = true; if (!createDevice()) haltPreparation(E_FAIL); }
         }
         if (context && !deviceFailed) tick();
       } catch (...) { std::lock_guard<std::mutex> lock(mutex); ++measured.failed; }

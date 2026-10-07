@@ -28,6 +28,7 @@ struct CpuSourceGpuDemand {
   std::atomic<int64_t> selectedFrameId{-1};
   std::atomic<int64_t> lastDemand100ns{0};
   std::atomic<bool> stopped{false};
+  std::atomic<bool> failed{false};
 };
 
 // CPU playout/trim/ISO descriptors retain this identity, not a GPU pool slot.
@@ -44,7 +45,7 @@ struct CpuSourceGpuView {
   std::atomic<bool> consumed{false};
 
   std::shared_ptr<const GpuVideoFrame> acquire(bool select) {
-    if (!demand || demand->stopped.load()) return {};
+    if (!demand || demand->stopped.load() || demand->failed.load()) return {};
     if (select) {
       auto previous = demand->selectedFrameId.load();
       while (previous < frameId && !demand->selectedFrameId.compare_exchange_weak(previous, frameId)) {}

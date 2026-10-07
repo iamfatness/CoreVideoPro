@@ -89,6 +89,27 @@ TEST(ProgramSourceAdmission, RefusesWrongGpuIdentityConsumerAndExpiresUndemanded
   ASSERT_TRUE(rows[0].get("actualFrameId")); EXPECT_TRUE(rows[0].get("actualFrameId")->isNull());
 }
 
+TEST(ProgramSourceAdmission, FailedOrStoppedProducerClearsHeldImage) {
+  ProgramSourceAdmissionPolicy policy;
+  VideoFrame frame; frame.participantId = "source"; frame.sourceEpoch = 1; frame.frameId = 1;
+  frame.width = frame.height = 64;
+  auto gpu = std::make_shared<GpuVideoFrame>(); gpu->width = gpu->height = 64; frame.gpuPixels = gpu;
+  EXPECT_EQ(policy.select(frame, 1, [](const auto&) { return true; }).evidence.state, "ready");
+  frame.gpuPixels.reset();
+  auto token = std::make_shared<CpuSourceGpuView>();
+  token->sourceId = frame.participantId; token->sourceEpoch = frame.sourceEpoch; token->frameId = frame.frameId;
+  token->width = token->height = 64; token->demand = std::make_shared<CpuSourceGpuDemand>();
+  token->demand->failed.store(true); frame.preparedGpu = token;
+  auto failed = policy.select(frame, 2, [](const auto&) { return true; });
+  EXPECT_EQ(failed.evidence.reason, "preparation-failed"); EXPECT_FALSE(failed.image.gpuPixels);
+  frame.preparedGpu.reset();
+  EXPECT_EQ(policy.select(frame, 3, [](const auto&) { return true; }).evidence.state, "unavailable");
+  frame.gpuPixels = gpu;
+  EXPECT_EQ(policy.select(frame, 4, [](const auto&) { return true; }).evidence.state, "ready");
+  frame.gpuPixels.reset(); token->demand->failed.store(false); token->demand->stopped.store(true); frame.preparedGpu = token;
+  EXPECT_EQ(policy.select(frame, 5, [](const auto&) { return true; }).evidence.reason, "preparation-stopped");
+}
+
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
 #define NOMINMAX
 #include <windows.h>
@@ -286,6 +307,7 @@ TEST(I420SourcePreparation, FailedResourceCreationIsUnavailableWithoutBlockingHe
   EXPECT_EQ(fallback.health, "degraded");
   ASSERT_EQ(fallback.sourceAdmissions.size(), 1u);
   EXPECT_EQ(fallback.sourceAdmissions.front().state, "unavailable");
+  EXPECT_EQ(fallback.sourceAdmissions.front().reason, "preparation-failed");
   EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
   EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
   EXPECT_EQ(compositor->sourceTexStats().textureCreates, 0u);

@@ -84,6 +84,11 @@ failed device or rebuild views when a compositor consumer is replaced. Those
 recovery cases, actual hardware device loss and the diagnostics export contract
 remain unqualified.
 
+A failed per-source resource build reports preparation-failed through its
+selected token. Device initialization refusal stops preparation explicitly;
+neither failure remains labeled as pending. Failed or stopped preparation
+invalidates Program's held image for that source.
+
 Release tests compare actual independent-device pixels for both color matrices,
 full/limited range and grading; check zero Program CPU source uploads for ready
 views; exercise the real decoded-arrival parser and compositor; retain CPU/ISO
