@@ -204,6 +204,31 @@ void offer(I420SourcePreparation& owner, VideoFrame& frame) {
 }
 }
 
+TEST(I420SourcePreparation, FutureDecodeArrivalsCannotEvictTheNextCpuPlayoutSelection) {
+  PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  I420SourcePreparation owner(true);
+  std::vector<VideoFrame> playout;
+  for (int id = 1; id <= 6; ++id) playout.push_back(sourceFrame("delayed", 1, id, id * 30));
+  offer(owner, playout[0]);
+  ASSERT_TRUE(await([&] { return bool(playout[0].preparedGpu->acquire(true)); }));
+  auto first = compositor->render(planFor("delayed"), {playout[0]});
+  ASSERT_EQ(first.sourceAdmissions.front().actualFrameId, 1);
+  // Decode arrives before CPU playout/trim. Retain original CPU descriptors,
+  // with more arrivals than GPU slots; do not select any of them yet.
+  for (size_t index = 1; index < playout.size(); ++index) offer(owner, playout[index]);
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  ProgramFrame selected;
+  ASSERT_TRUE(await([&] {
+    selected = compositor->render(planFor("delayed"), {playout[1]});
+    return !selected.sourceAdmissions.empty() && selected.sourceAdmissions.front().actualFrameId == 2;
+  })) << "Future preparation recycled frame 2 before CPU playout selected it";
+  ASSERT_FALSE(selected.preview.bgra.empty());
+  EXPECT_NEAR(selected.preview.bgra.front(), 60, 1);
+  EXPECT_EQ(playout[1].i420->front(), 60);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+}
+
 TEST(I420SourcePreparation, IndependentDeviceMatchesCpuColorRangeMatricesAndGradeWithZeroSourceUploads) {
   PreparationFlags flags;
   I420SourcePreparation owner(true);

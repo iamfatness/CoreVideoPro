@@ -106,6 +106,12 @@ owners retain a two-millisecond maintenance wait for demand and retirement.
 These are requested waits, not scheduler guarantees. Program neither wakes nor
 waits for this owner. Sparse source-selection age can diagnose a preparation
 delay but does not certify end-to-end acquisition or presentation latency.
+The owner starts an upload only for the CPU-selected identity. Future arrivals
+remain weak CPU tokens in the bounded queue until selected; older unsubmitted
+tokens are explicitly abandoned. Preparing all arrivals ahead of CPU playout
+can recycle a future image before its eventual selection, especially with
+guest trim. A submitted older selection still completes and remains readable
+with its original identity. Selection changes no CPU playout or ISO descriptor.
 
 `scripts/qa/native-i420-capture.py` drives one explicitly selected native
 MF/UVC device in an owned development core. Supply the exact native device id,

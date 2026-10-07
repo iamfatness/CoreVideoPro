@@ -196,6 +196,12 @@ struct I420SourcePreparation::Impl {
         }
       }
       if (!next) continue;
+      // CPU playout/guest trim may select an arrival well behind the decode
+      // head. Preparing future arrivals into three slots evicts that exact
+      // selected image before Program can read it. Keep future CPU tokens in
+      // the weak queue; only the selected identity may start a new upload.
+      // Submitted older selections still complete and remain attributable.
+      if (next->frameId > selected) continue;
       auto cpu = next->cpu.lock(); if (!cpu) continue;
       int slot = pool->beginUpload(context.Get(), *cpu);
       if (slot < 0) {
