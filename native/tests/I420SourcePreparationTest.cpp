@@ -1166,6 +1166,28 @@ TEST(I420SourcePreparation, InvalidDuplicateAndBoundedPendingOffersPreserveCpuFr
   EXPECT_TRUE(owner.offer("source", 1, 29, 29000, 64, 64, frame.i420));
 }
 
+TEST(CpuSourcePreparation, ExpiredPendingEntriesBehindRetainedOldTokenDoNotKeepRefusingHeldCurrentFrame) {
+  CpuSourcePreparation owner(true);
+  auto frame = sourceFrame("source", 1, 1);
+  std::vector<std::shared_ptr<CpuSourceGpuView>> tokens;
+  for (size_t id = 1; id <= CpuSourcePreparation::kPendingPerSource; ++id) {
+    auto token = owner.offer("source", 1, id, id * 1000, 64, 64, frame.i420);
+    ASSERT_TRUE(token); tokens.push_back(std::move(token));
+  }
+  auto refused = owner.offer("source", 1, 29, 29000, 64, 64, frame.i420);
+  ASSERT_TRUE(refused); ASSERT_EQ(refused->demand->capacity.load(), CpuPreparationCapacity::PendingTokens);
+  const auto retainedOld = tokens.front();
+  tokens.clear(); // only the first weak queue entry remains live; 27 have expired
+  auto recovered = owner.offer("source", 1, 29, 29000, 64, 64, frame.i420);
+  ASSERT_TRUE(recovered);
+  EXPECT_FALSE(recovered->demand->stopped.load());
+  EXPECT_EQ(recovered->demand->capacity.load(), CpuPreparationCapacity::None);
+  EXPECT_EQ(recovered->frameId, 29); EXPECT_EQ(recovered->captureTimestamp100ns, 29000);
+  EXPECT_EQ(recovered->sourceEpoch, 1u); EXPECT_EQ(recovered->cpu.lock(), frame.i420);
+  EXPECT_FALSE(retainedOld->superseded.load()); EXPECT_FALSE(retainedOld->demand->stopped.load());
+  EXPECT_EQ(owner.stats().active, 0u); // no production selection, no GPU allocation
+}
+
 TEST(CpuSourcePreparation, SourceCapacityRefusalCarriesIdentityWithoutRetainingCpuPixels) {
   CpuSourcePreparation owner(true);
   auto frame = sourceFrame("capacity", 1, 1);
