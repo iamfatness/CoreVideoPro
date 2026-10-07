@@ -143,10 +143,20 @@ TEST(I420SourcePreparation, CpuAndIsoReferencesDoNotPinThreeGpuSlotsOrResurrectR
 
 TEST(I420SourcePreparation, DelayedSelectedSourceResourcesLeaveHealthyGpuPixelsAdvancing) {
   PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
-  std::atomic<bool> faultStarted{false}, faultFinished{false};
+  std::atomic<bool> faultStarted{false}, faultFinished{false}, releaseFault{false};
   I420SourcePreparation owner(true, [&](const std::string& id) {
-    if (id == "bad") { faultStarted.store(true); std::this_thread::sleep_for(std::chrono::milliseconds(250)); faultFinished.store(true); }
+    if (id == "bad") {
+      faultStarted.store(true);
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (!releaseFault.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      faultFinished.store(true);
+    }
   });
+  struct ReleaseFaultOnExit {
+    std::atomic<bool>& release;
+    ~ReleaseFaultOnExit() { release.store(true); }
+  } releaseOnExit{releaseFault}; // release before owner joins, including assertion failure
   auto good = sourceFrame("good", 1, 1, 50); offer(owner, good);
   ASSERT_TRUE(await([&] { return bool(good.preparedGpu->acquire(true)); }));
   auto plan = planFor("good");
