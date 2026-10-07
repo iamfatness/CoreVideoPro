@@ -59,6 +59,12 @@ plan remains the qualification reference for #517, with installed rollback and
 failed evidence preserved. The October 4 owner focus below supersedes its code-work
 priority while the remaining acceptance stays open.
 
+Owner approved prioritizing [#804](https://github.com/iamfatness/CoreVideoPro/issues/804)
+on October 7 ahead of the remaining #802 admission/health work: isolate optional
+shell/multiview export API stalls from scheduled Program publication. PR #808 stays
+draft, with its failed exact-head cadence evidence retained, until this repair is
+qualified. Installed validation may resume now that the owner reports the app closed.
+
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
 | Incident | A | [#790](https://github.com/iamfatness/CoreVideoPro/issues/790) | Owner priority October 5: fix confirmed screen-share teardown callback reentrancy that crashed the SDK helper during the live meeting test. Add deterministic lifecycle regressions, verify helper-loss reporting, ship a corrective beta and repeat live acceptance. Preempts the normal queue until the crash repair ships. |
@@ -99,7 +105,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 |---|---|
 | [#798](https://github.com/iamfatness/CoreVideoPro/issues/798) | Hosted fake-core initial zoom-snapshot request timed out before polling assertions in #792 CI. Exact PR full suite and targeted hosted rerun passed; failed job retained. Attribution unknown, distinct from #754; needs owner rank. |
 | [#802](https://github.com/iamfatness/CoreVideoPro/issues/802) | Approved #517 CPU fallback boundary after merged #797/#801. Merged #805 fixes GPU/CPU format coexistence. PR #806 adds optional SHM BGRA uploads on the preparation owner; Zoom/I420 preparation, lifecycle and delivery qualification remain. Preserve source playout/guest trim, CPU/ISO and identity. No independent rank change. |
-| [#804](https://github.com/iamfatness/CoreVideoPro/issues/804) | #517 measured follow-on: GPU-ready Program packets expired during scheduled shell/multiview export calls (16.6–19.4 ms); retained losses fail release qualification. Trace/preparation/publication repair needs owner priority relative to approved #802. |
+| [#804](https://github.com/iamfatness/CoreVideoPro/issues/804) | #517 measured follow-on: GPU-ready Program packets expired during scheduled shell/multiview export calls (16.6–19.4 ms); retained losses fail release qualification. Owner promoted October 7 ahead of remaining #802: isolate optional publication from native delivery with bounded independent GPU read leases; preserve failed evidence and repeat exact-head qualification. |
 | [#807](https://github.com/iamfatness/CoreVideoPro/issues/807) | macOS Metal full native CI suite segfaulted on #806 after focused checks passed. Attribution unconfirmed; retain the failed trial, identify the test/stack and verify exact-head CI. Unranked; does not replace approved #802 work. |
 | [#782](https://github.com/iamfatness/CoreVideoPro/issues/782) | Windows supervisor disposal queried an already-disposed Process in the crash lock-order CI test. Captured stack and run; attribution and focused fix need owner rank. |
 | [#784](https://github.com/iamfatness/CoreVideoPro/issues/784) | Screen/window capture flashes after asynchronous WGC lifecycle change: the shell rejects connecting and auto-retries, repeatedly restarting sessions. Fixed in merged #785 and beta `beta-2026-10-04-92e6b1e`: accepted pending requests are preserved and repeated connect is idempotent. Owner visual check was positive; installed capture alongside streaming acceptance remains. |

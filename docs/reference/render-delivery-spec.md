@@ -240,3 +240,49 @@ Build one candidate with commit, flags, adapter/driver, source formats, receiver
 - [Existing export isolation](https://github.com/iamfatness/CoreVideoPro/blob/75c3838/native/src/modules/D3DDecoupledExport.h)
 - [Shedding policy](https://github.com/iamfatness/CoreVideoPro/blob/75c3838/native/src/core/MonitorShedPolicy.h#L98)
 - [Existing render-budget issue and earlier measurements](https://github.com/iamfatness/CoreVideoPro/issues/517)
+
+## Windows buffered optional publication ownership (#804)
+
+The native delivery packet and optional shell/multiview snapshots have distinct
+publication boundaries. Preparation holds input key 1, converts the exact image
+to owned NV12 when requested, and copies it into a per-slot immutable BGRA
+snapshot. It releases the input to key 0 and verifies the preparation GPU event
+before marking the slot Ready. Scheduled delivery makes no D3D calls; it advances
+the native sequence/PTS and queues the NV12 packet. Its sharedTexture is empty.
+
+Shell and multiview each own a separate device/context, completion query and
+stable keyed output texture. Each accepts at most one source read lease, including
+running work; an occupied or failed branch refuses subsequent offers instead of
+queuing them. A free branch cannot be held behind the other reader. The original
+slot pool remains depth + 3 (five slots for the two-frame setting); slots with
+outstanding readers cannot return to the producer. The additional immutable BGRA
+snapshot costs width * height * 4 bytes per slot, approximately 39.6 MiB at 1080p
+with two-frame buffering, excluding existing input/output/readback allocations.
+There is no per-frame texture creation or growing handle cache.
+
+Each export worker verifies its actual GPU copy event before dropping its source
+lease. Metadata retains that same frame number, delivery sequence, generation
+and render-plan evidence, and advances before key 1 exposes the completed copy.
+latestDeliveredProgramFrame peeks the completed shell snapshot; the multiview PGM
+cell separately peeks the completed multiview snapshot. Native output consumers
+continue using takeDeliveredProgramFrame. A delayed optional snapshot must not
+advance native delivery counters or claim display presentation. Existing stable
+handle/key consumer semantics are preserved; physical receiver/display frame
+identity still needs the parent qualification evidence.
+
+Busy output ownership preserves the previous published snapshot. A GPU-query
+error/timeout or uncertain exception disables that branch and quarantines its
+source slot rather than permitting a future frame to overwrite an unfinished
+read. A two-second query limit bounds polling; a driver API that never returns
+can still prevent joining its worker during teardown. Device recreation and
+that driver-hang shutdown case remain separate lifecycle qualification limits.
+
+The bounded asynchronous [program-buffer-export] trace reports branch, frame,
+generation, completed/refused/busy/unconsumed counts and maximum worker API wall
+time at most once per second per active branch. Its GPU read completion flag is
+not display presentation proof. Refusals also contribute to the existing
+aggregate displayBusy diagnostic. Native deadline misses/underruns remain
+independent; optional refusal never becomes a successful native frame claim.
+The fault test holds either branch for roughly one second while native NV12
+continues at 60 Hz, reads the other branch's actual GPU pixels and then checks
+that the delayed image still contains its original tagged pixels.

@@ -17,12 +17,14 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
 namespace corevideo::modules {
 
-// Each submitted texture has one owner at a time: render (key 0), preparation
-// (key 1), delivery (key 2), then render again. Preparation and delivery use
-// distinct devices/contexts; neither calls into the render immediate context.
+// Producer and preparation hand off the input with keys 0/1. Preparation
+// makes an immutable snapshot and proves GPU completion. Delivery uses no D3D
+// calls; two bounded optional readers retain the snapshot until their GPU reads
+// complete. No worker calls into the render immediate context.
 class D3DProgramBuffer {
   friend struct D3DProgramBufferTestAccess;
  public:
@@ -41,10 +43,14 @@ class D3DProgramBuffer {
     wakeEvent_ = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
     try {
       prepareThread_ = std::thread([this] { try { prepareLoop(); } catch (...) { fail("prepare-worker"); } });
+      shellThread_ = std::thread([this] { exportLoop(shellBranch_, true); });
+      multiviewThread_ = std::thread([this] { exportLoop(multiviewBranch_, false); });
       deliveryThread_ = std::thread([this] { try { deliveryLoop(); } catch (...) { fail("delivery-worker"); } });
     } catch (...) {
       fail("start-workers");
       if (prepareThread_.joinable()) prepareThread_.join();
+      if (shellThread_.joinable()) shellThread_.join();
+      if (multiviewThread_.joinable()) multiviewThread_.join();
       initialized_ = false;
     }
   }
@@ -53,6 +59,8 @@ class D3DProgramBuffer {
     notifyChanged();
     if (prepareThread_.joinable()) prepareThread_.join();
     if (deliveryThread_.joinable()) deliveryThread_.join();
+    if (shellThread_.joinable()) shellThread_.join();
+    if (multiviewThread_.joinable()) multiviewThread_.join();
     if (wakeEvent_) ::CloseHandle(wakeEvent_);
   }
   bool valid() const { return initialized_; }
@@ -116,8 +124,8 @@ class D3DProgramBuffer {
   }
   bool multiview(ProgramFrameSharedTexture& texture, std::shared_ptr<const void>& owner) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!latest_) return false;
-    texture = {multiviewOutput_->handle, 0, width_, height_, "B8G8R8A8_UNORM", latest_->frameNumber};
+    if (!multiviewLatest_) return false;
+    texture = {multiviewOutput_->handle, 0, width_, height_, "B8G8R8A8_UNORM", multiviewLatest_->frameNumber};
     owner = multiviewOutput_; return true;
   }
   ProgramBufferDiagnostics diagnostics() const {
@@ -128,21 +136,25 @@ class D3DProgramBuffer {
  private:
   void fail(const char* stage) {
     { std::lock_guard<std::mutex> lock(mutex_); diagnostics_.status = "failed"; diagnostics_.activeFrames = 0; stopped_ = true; }
-    ::corevideo::core::nativeLogf("[program-buffer-failure] stage=%s prepare_device_hr=0x%08lx delivery_device_hr=0x%08lx\n",
+    ::corevideo::core::nativeLogf("[program-buffer-failure] stage=%s prepare_device_hr=0x%08lx shell_export_device_hr=0x%08lx\n",
         stage, static_cast<unsigned long>(prepareDevice_ ? prepareDevice_->GetDeviceRemovedReason() : E_FAIL),
-        static_cast<unsigned long>(deliveryDevice_ ? deliveryDevice_->GetDeviceRemovedReason() : E_FAIL));
+        static_cast<unsigned long>(shellBranch_.device ? shellBranch_.device->GetDeviceRemovedReason() : E_FAIL));
     notifyChanged();
   }
   void notifyChanged() {
     changed_.notify_all();
     if (wakeEvent_) ::SetEvent(wakeEvent_);
   }
-  enum class State { Free, Writing, Submitted, Preparing, Ready, Delivering };
+  enum class State { Free, Writing, Submitted, Preparing, Ready, Delivering, Exporting };
   struct Slot {
     State state = State::Free;
-    ComPtrLite<ID3D11Texture2D> producerTexture, prepareTexture, deliveryTexture;
-    ComPtrLite<IDXGIKeyedMutex> producerMutex, prepareMutex, deliveryMutex;
+    ComPtrLite<ID3D11Texture2D> producerTexture, prepareTexture;
+    ComPtrLite<IDXGIKeyedMutex> producerMutex, prepareMutex;
     ComPtrLite<ID3D11ShaderResourceView> sourceView;
+    // Immutable while either optional branch holds a read lease. Preparation
+    // verifies the snapshot copy; each reader verifies completion before reuse.
+    ComPtrLite<ID3D11Texture2D> snapshot, shellSnapshot, multiviewSnapshot;
+    unsigned readers = 0;
     ProgramFrame frame;
     bool needsNv12 = false;
     int64_t productionSlot = 0;
@@ -157,6 +169,19 @@ class D3DProgramBuffer {
     ComPtrLite<IDXGIKeyedMutex> mutex;
     std::string handle;
   };
+  struct ExportBranch {
+    ComPtrLite<ID3D11Device> device;
+    ComPtrLite<ID3D11DeviceContext> context;
+    ComPtrLite<ID3D11Query> complete;
+    Slot* pending = nullptr;
+    std::shared_ptr<const ProgramFrame> frame;
+    bool busy = false, failed = false;
+    uint64_t refused = 0, outputBusy = 0, unconsumed = 0, completed = 0;
+    int64_t maxApiNs = 0, maxAcquireNs = 0, maxCopyNs = 0, maxFlushNs = 0, maxQueryNs = 0;
+    std::chrono::steady_clock::time_point lastTrace{};
+  };
+  // Installed only before submission by hardware fault tests.
+  std::function<void(bool)> beforeExport_;
   static int64_t now100ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
@@ -178,7 +203,8 @@ class D3DProgramBuffer {
     ComPtrLite<IDXGIAdapter> adapter;
     if (FAILED(producer->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(dxgi.put()))) ||
         FAILED(dxgi->GetAdapter(adapter.put())) || !makeDevice(adapter.get(), prepareDevice_, prepareContext_) ||
-        !makeDevice(adapter.get(), deliveryDevice_, deliveryContext_)) return false;
+        !makeDevice(adapter.get(), shellBranch_.device, shellBranch_.context) ||
+        !makeDevice(adapter.get(), multiviewBranch_.device, multiviewBranch_.context)) return false;
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = width_; desc.Height = height_; desc.MipLevels = desc.ArraySize = 1;
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
@@ -190,27 +216,35 @@ class D3DProgramBuffer {
       if (FAILED(producer->CreateTexture2D(&desc, nullptr, slot->producerTexture.put())) ||
           !share(slot->producerTexture.get(), handle, slot->producerMutex) ||
           FAILED(prepareDevice_->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(slot->prepareTexture.put()))) ||
-          FAILED(deliveryDevice_->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(slot->deliveryTexture.put()))) ||
           FAILED(slot->prepareTexture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(slot->prepareMutex.put()))) ||
-          FAILED(slot->deliveryTexture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(slot->deliveryMutex.put()))) ||
           FAILED(prepareDevice_->CreateShaderResourceView(slot->prepareTexture.get(), nullptr, slot->sourceView.put()))) return false;
+      auto snapshotDesc = desc;
+      snapshotDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+      ComPtrLite<IDXGIResource> resource;
+      if (FAILED(prepareDevice_->CreateTexture2D(&snapshotDesc, nullptr, slot->snapshot.put())) ||
+          FAILED(slot->snapshot->QueryInterface(__uuidof(IDXGIResource), reinterpret_cast<void**>(resource.put()))) ||
+          FAILED(resource->GetSharedHandle(&handle)) ||
+          FAILED(shellBranch_.device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(slot->shellSnapshot.put()))) ||
+          FAILED(multiviewBranch_.device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(slot->multiviewSnapshot.put())))) return false;
       slots_.push_back(std::move(slot));
     }
     output_ = std::make_shared<Output>();
     HANDLE handle = nullptr;
-    if (FAILED(deliveryDevice_->CreateTexture2D(&desc, nullptr, output_->texture.put())) ||
+    if (FAILED(shellBranch_.device->CreateTexture2D(&desc, nullptr, output_->texture.put())) ||
         !share(output_->texture.get(), handle, output_->mutex)) return false;
     char encoded[32]; std::snprintf(encoded, sizeof(encoded), "0x%llX", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle)));
     output_->handle = encoded;
     multiviewOutput_ = std::make_shared<Output>();
     handle = nullptr;
-    if (FAILED(deliveryDevice_->CreateTexture2D(&desc, nullptr, multiviewOutput_->texture.put())) ||
+    if (FAILED(multiviewBranch_.device->CreateTexture2D(&desc, nullptr, multiviewOutput_->texture.put())) ||
         !share(multiviewOutput_->texture.get(), handle, multiviewOutput_->mutex)) return false;
     std::snprintf(encoded, sizeof(encoded), "0x%llX", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle)));
     multiviewOutput_->handle = encoded;
     if (!initializeNv12()) return false;
     D3D11_QUERY_DESC complete{D3D11_QUERY_EVENT, 0};
     if (FAILED(prepareDevice_->CreateQuery(&complete, prepareComplete_.put()))) return false;
+    if (FAILED(shellBranch_.device->CreateQuery(&complete, shellBranch_.complete.put())) ||
+        FAILED(multiviewBranch_.device->CreateQuery(&complete, multiviewBranch_.complete.put()))) return false;
     initialized_ = true;
     return true;
   }
@@ -375,10 +409,11 @@ class D3DProgramBuffer {
       }
       const auto prepareBegin = std::chrono::steady_clock::now();
       const bool pixelsReady = !slot->needsNv12 || prepareNv12(*slot);
-      // Submit the keyed handoff before waiting for its GPU event. State stays
-      // Preparing, so delivery cannot acquire key 2 until the query completes;
-      // render cannot reacquire key 0 until delivery retires the slot.
-      const bool released = slot->prepareMutex->ReleaseSync(2) == S_OK;
+      prepareContext_->CopyResource(slot->snapshot.get(), slot->prepareTexture.get());
+      // Return the input key after all preparation reads. Ready still requires
+      // actual GPU completion, and the slot cannot be rewritten until both
+      // optional snapshot readers have completed.
+      const bool released = slot->prepareMutex->ReleaseSync(0) == S_OK;
       const bool ready = pixelsReady && released && completePreparation();
       {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -440,8 +475,7 @@ class D3DProgramBuffer {
     while (!stopped_) {
       while (!delivery_.empty() && delivery_.front()->state == State::Ready && timeline_->isExpired(delivery_.front()->productionSlot)) {
         auto* expired = delivery_.front();
-        if (expired->deliveryMutex->AcquireSync(2, 0) != S_OK) break;
-        expired->deliveryMutex->ReleaseSync(0); expired->state = State::Free; delivery_.pop_front(); ++diagnostics_.overflows;
+        expired->state = State::Free; delivery_.pop_front(); ++diagnostics_.overflows;
       }
       const auto targetSlot = timeline_->nextSlot();
       const auto deadline = std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
@@ -468,109 +502,37 @@ class D3DProgramBuffer {
         }
         continue;
       }
-      // Preparation already verified the retained image on the GPU. Own that
-      // immutable slot until publication; do not introduce a second copy/query
-      // between adjacent delivery deadlines. Stable monitor exports remain
-      // readable throughout the lead.
-      if (stopped_) break;
+      // No D3D calls on the delivery clock: Ready proves preparation and the
+      // immutable snapshot completed. Optional publication has separate owners.
       auto* slot = delivery_.front(); slot->state = State::Delivering;
-      const auto acquireBegin = std::chrono::steady_clock::now();
-      lock.unlock();
-      const bool acquired = slot->deliveryMutex->AcquireSync(2, 0) == S_OK;
-      const bool gpuReady = acquired; // Ready state requires completed preparation.
-      const auto completed = std::chrono::steady_clock::now();
-      lock.lock();
-      const auto acquireNs = std::chrono::duration_cast<std::chrono::nanoseconds>(completed - acquireBegin).count();
-      const auto deliveryLeadNs = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - acquireBegin).count();
-      const auto readyLeadNs = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - slot->readyAt).count();
-      const auto beginAfterReadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(acquireBegin - slot->readyAt).count();
-      const auto completionLateNs = std::chrono::duration_cast<std::chrono::nanoseconds>(completed - deadline).count();
-      maximumAcquireNs_ = (std::max)(maximumAcquireNs_, static_cast<int64_t>(acquireNs));
-      minimumDeliveryLeadNs_ = (std::min)(minimumDeliveryLeadNs_, static_cast<int64_t>(deliveryLeadNs));
-      maximumCompletionLateNs_ = (std::max)(maximumCompletionLateNs_, static_cast<int64_t>(completionLateNs));
-      if (completed > deadline) {
-        ++diagnostics_.deadlineMisses;
-        ::corevideo::core::nativeLogf("[program-buffer-miss] stage=delivery-acquire slot=%lld lead_ns=%lld ready_lead_ns=%lld begin_after_ready_ns=%lld acquire_ns=%lld late_ns=%lld\n",
-             static_cast<long long>(slot->productionSlot), static_cast<long long>(deliveryLeadNs),
-             static_cast<long long>(readyLeadNs), static_cast<long long>(beginAfterReadyNs),
-             static_cast<long long>(acquireNs), static_cast<long long>(completionLateNs));
-      }
       if (!stopped_) waitUntilPrecise(lock, deadline, timer, [&] { return stopped_; });
+      if (stopped_) break;
       const auto due = timeline_->takeDue(now100ns() * 100);
       const bool current = due && due->slot == slot->productionSlot;
       if (due) diagnostics_.underruns += due->skippedSlots;
-      const bool publish = current && gpuReady && !stopped_;
-      const int64_t expiresAtNs = timeline_->deadlineNs(slot->productionSlot + 1);
-      lock.unlock();
-      uint64_t unconsumed = 0, busy = 0;
-      // Copy only at publication, never hold a display key during the lead or
-      // readiness query. ReleaseSync orders the GPU copy for its consumer;
-      // this is submission evidence, not measured display GPU completion.
-      auto exportFrame = [&](Output& output) {
-        bool owned = output.mutex->AcquireSync(0, 0) == S_OK;
-        if (!owned) { owned = output.mutex->AcquireSync(1, 0) == S_OK; if (owned) ++unconsumed; }
-        if (!owned) { ++busy; return false; }
-        deliveryContext_->CopyResource(output.texture.get(), slot->deliveryTexture.get());
-        deliveryContext_->Flush();
-        return true; // Release both exports together after checking submission expiry.
-      };
-      const auto exportBegin = std::chrono::steady_clock::now();
-      const bool shellCopied = publish && exportFrame(*output_);
-      const bool multiviewCopied = publish && exportFrame(*multiviewOutput_);
-      const auto exportEnd = std::chrono::steady_clock::now();
-      const bool exportExpired = std::chrono::duration_cast<std::chrono::nanoseconds>(exportEnd.time_since_epoch()).count() >= expiresAtNs;
-      if (shellCopied) output_->mutex->ReleaseSync(exportExpired ? 0 : 1);
-      if (multiviewCopied) multiviewOutput_->mutex->ReleaseSync(exportExpired ? 0 : 1);
-      if (acquired) slot->deliveryMutex->ReleaseSync(0);
-      lock.lock();
-      maximumExportSubmitNs_ = (std::max)(maximumExportSubmitNs_, static_cast<int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(exportEnd - exportBegin).count()));
-      maximumExportSubmitLateNs_ = (std::max)(maximumExportSubmitLateNs_, static_cast<int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(exportEnd - deadline).count()));
-      if (lastTimingLog_.time_since_epoch().count() == 0 || exportEnd - lastTimingLog_ >= std::chrono::seconds(2)) {
-        ::corevideo::core::nativeVerboseLogf("[program-buffer-timing] depth=%d preparation=gpu-ready-before-delivery max_acquire_ns=%lld min_delivery_lead_ns=%lld max_completion_late_ns=%lld max_export_submit_ns=%lld max_export_submit_late_ns=%lld deadline_misses=%llu delivered=%llu retained_frame_gpu_ready_checked=1 export_gpu_completion_verified=0 display_presentation_verified=0\n",
-            depth_, static_cast<long long>(maximumAcquireNs_), static_cast<long long>(minimumDeliveryLeadNs_),
-            static_cast<long long>(maximumCompletionLateNs_), static_cast<long long>(maximumExportSubmitNs_),
-            static_cast<long long>(maximumExportSubmitLateNs_), static_cast<unsigned long long>(diagnostics_.deadlineMisses),
-            static_cast<unsigned long long>(diagnostics_.delivered));
-        lastTimingLog_ = exportEnd;
-      }
-      diagnostics_.displayUnconsumed += unconsumed; diagnostics_.displayBusy += busy;
-      if (stopped_) break;
-      // A driver submission may block past subsequent slots. Consume those
-      // deadlines and discard this packet instead of delivering an expired PTS.
-      if (const auto missed = timeline_->takeDue(now100ns() * 100))
-        diagnostics_.underruns += missed->skippedSlots + 1;
-      const bool deliveryExpired = exportExpired || now100ns() * 100 >= expiresAtNs;
+      const bool deliveryExpired = now100ns() * 100 >= timeline_->deadlineNs(slot->productionSlot + 1);
       if (!current || deliveryExpired) {
-        ::corevideo::core::nativeLogf("[program-buffer-miss] stage=publish slot=%lld current=%d expired=%d export_ns=%lld late_ns=%lld\n",
-            static_cast<long long>(slot->productionSlot), current, deliveryExpired,
-            static_cast<long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(exportEnd - exportBegin).count()),
-            static_cast<long long>(now100ns() * 100 - timeline_->deadlineNs(slot->productionSlot)));
-        if (current) ++diagnostics_.underruns;
-        else if (due) ++diagnostics_.underruns; // The selected due slot had no delivered packet.
-        if (shellCopied || multiviewCopied) latest_.reset(); // Export contents no longer prove the old snapshot.
+        if (current || due) ++diagnostics_.underruns;
+        ::corevideo::core::nativeLogf("[program-buffer-miss] stage=publish slot=%lld current=%d expired=%d optional_export_on_delivery=0\n",
+            static_cast<long long>(slot->productionSlot), current, deliveryExpired);
         delivery_.pop_front(); slot->state = State::Free; ++diagnostics_.overflows;
         diagnostics_.occupancy = static_cast<int>(delivery_.size());
         continue;
-      }
-      if (!acquired || !gpuReady) {
-        ++diagnostics_.underruns; ++diagnostics_.gpuNotReady;
-        // A failed GPU query cannot prove this slot or either exported image.
-        diagnostics_.status = "failed"; diagnostics_.activeFrames = 0; stopped_ = true; notifyChanged(); break;
       }
       slot->frame.deliverySequence = ++diagnostics_.delivered;
       slot->frame.deliveredAt100ns = now100ns();
       slot->frame.timelineTimestamp100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline.time_since_epoch()).count() / 100;
       slot->frame.gpuOwner = output_;
-      if (shellCopied) shellFrameNumber_ = slot->frame.frameNumber;
-      slot->frame.sharedTexture = {output_->handle, 0, width_, height_, "B8G8R8A8_UNORM", shellFrameNumber_};
-      if (!shellCopied) slot->frame.sharedTexture = {}; // Never pair new Program proof with an older shell export.
+      slot->frame.sharedTexture = {}; // Optional snapshots publish independently.
       auto published = std::make_shared<const ProgramFrame>(std::move(slot->frame));
-      // Main Program is the multiview PGM cell. Its snapshot cannot advance
-      // source/content proof when that independently owned export was busy.
-      if (multiviewCopied) latest_ = published;
+      auto offer = [&](ExportBranch& branch) {
+        if (branch.busy || branch.failed) { ++diagnostics_.displayBusy; ++branch.refused; return; }
+        branch.busy = true; branch.pending = slot; branch.frame = published; ++slot->readers;
+      };
+      offer(shellBranch_); offer(multiviewBranch_);
       if (delivered_.size() >= static_cast<size_t>(depth_ + 2)) { delivered_.pop_front(); ++diagnostics_.overflows; }
       delivered_.push_back(*published);
-      delivery_.pop_front(); slot->state = State::Free;
+      delivery_.pop_front(); slot->state = slot->readers ? State::Exporting : State::Free;
       diagnostics_.occupancy = static_cast<int>(delivery_.size());
       notifyChanged();
       lock.unlock();
@@ -578,6 +540,94 @@ class D3DProgramBuffer {
       lock.lock();
     }
     if (timer) ::CloseHandle(timer);
+  }
+  void exportLoop(ExportBranch& branch, bool shell) {
+    try {
+      for (;;) {
+        Slot* slot;
+        std::shared_ptr<const ProgramFrame> frame;
+        {
+          std::unique_lock<std::mutex> lock(mutex_);
+          changed_.wait(lock, [&] { return stopped_ || branch.pending; });
+          if (stopped_) return;
+          slot = std::exchange(branch.pending, nullptr); frame = std::move(branch.frame);
+        }
+        const auto apiBegin = std::chrono::steady_clock::now();
+        if (beforeExport_) beforeExport_(shell);
+        auto& output = shell ? output_ : multiviewOutput_;
+        const auto acquireBegin = std::chrono::steady_clock::now();
+        bool unconsumed = false;
+        bool held = output->mutex->AcquireSync(0, 0) == S_OK;
+        if (!held) { held = output->mutex->AcquireSync(1, 0) == S_OK; unconsumed = held; }
+        const auto acquireEnd = std::chrono::steady_clock::now();
+        int64_t copyNs = 0, flushNs = 0, queryNs = 0;
+        bool ready = !held;
+        const auto started = std::chrono::steady_clock::now();
+        if (held) {
+          branch.context->CopyResource(output->texture.get(), shell ? slot->shellSnapshot.get() : slot->multiviewSnapshot.get());
+          const auto copyEnd = std::chrono::steady_clock::now();
+          branch.context->End(branch.complete.get()); branch.context->Flush();
+          const auto flushEnd = std::chrono::steady_clock::now();
+          copyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(copyEnd - started).count();
+          flushNs = std::chrono::duration_cast<std::chrono::nanoseconds>(flushEnd - copyEnd).count();
+          const auto limit = started + std::chrono::seconds(2);
+          for (;;) {
+            BOOL done = FALSE;
+            const auto hr = branch.context->GetData(branch.complete.get(), &done, sizeof(done), 0);
+            if (hr == S_OK && done) { ready = true; break; }
+            if (FAILED(hr) || std::chrono::steady_clock::now() >= limit) break;
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+          }
+          queryNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - flushEnd).count();
+        }
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (unconsumed) { ++diagnostics_.displayUnconsumed; ++branch.unconsumed; }
+          if (!held) { ++diagnostics_.displayBusy; ++branch.outputBusy; }
+          const auto ended = std::chrono::steady_clock::now();
+          branch.maxApiNs = (std::max)(branch.maxApiNs, static_cast<int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(ended - apiBegin).count()));
+          branch.maxAcquireNs = (std::max)(branch.maxAcquireNs, static_cast<int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(acquireEnd - acquireBegin).count()));
+          branch.maxCopyNs = (std::max)(branch.maxCopyNs, copyNs);
+          branch.maxFlushNs = (std::max)(branch.maxFlushNs, flushNs);
+          branch.maxQueryNs = (std::max)(branch.maxQueryNs, queryNs);
+          if (held && ready) ++branch.completed;
+          if (branch.lastTrace.time_since_epoch().count() == 0 || ended - branch.lastTrace >= std::chrono::seconds(1)) {
+            ::corevideo::core::nativeVerboseLogf("[program-buffer-export] branch=%s frame=%lld generation=%llu completed=%llu refused=%llu busy=%llu unconsumed=%llu max_api_ns=%lld max_acquire_ns=%lld max_copy_ns=%lld max_end_flush_ns=%lld max_query_wait_ns=%lld gpu_read_completed=%d display_presentation_verified=0\n",
+                shell ? "shell" : "multiview", static_cast<long long>(frame->frameNumber),
+                static_cast<unsigned long long>(diagnostics_.generation), static_cast<unsigned long long>(branch.completed),
+                static_cast<unsigned long long>(branch.refused), static_cast<unsigned long long>(branch.outputBusy),
+                static_cast<unsigned long long>(branch.unconsumed), static_cast<long long>(branch.maxApiNs), static_cast<long long>(branch.maxAcquireNs),
+                static_cast<long long>(branch.maxCopyNs), static_cast<long long>(branch.maxFlushNs),
+                static_cast<long long>(branch.maxQueryNs), held && ready);
+            branch.lastTrace = ended;
+          }
+          if (held && ready) {
+            auto snapshot = std::make_shared<ProgramFrame>(*frame);
+            snapshot->gpuOwner = output;
+            snapshot->sharedTexture = {output->handle, 0, width_, height_, "B8G8R8A8_UNORM", frame->frameNumber};
+            // Advance metadata before exposing the completed pixels (key 1).
+            if (shell) latest_ = std::move(snapshot);
+            else multiviewLatest_ = std::move(snapshot);
+          }
+          if (ready) {
+            if (--slot->readers == 0) slot->state = State::Free;
+            branch.busy = false;
+          } else {
+            // Unknown GPU completion quarantines this lease; never reuse it.
+            branch.failed = true;
+            ::corevideo::core::nativeLogf("[program-buffer-export-failure] branch=%s frame=%lld source_quarantined=1\n",
+                shell ? "shell" : "multiview", static_cast<long long>(frame->frameNumber));
+          }
+        }
+        if (held) output->mutex->ReleaseSync(ready ? 1 : 0);
+        notifyChanged();
+        if (!ready) return;
+      }
+    } catch (...) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      branch.failed = true; // An uncertain read keeps its source lease quarantined.
+      ::corevideo::core::nativeLogf("[program-buffer-export-failure] branch=%s exception=1 source_quarantined=1\n", shell ? "shell" : "multiview");
+    }
   }
   int width_, height_, depth_;
   bool initialized_ = false, stopped_ = false;
@@ -590,21 +640,17 @@ class D3DProgramBuffer {
   std::unique_ptr<core::ProgramPlayoutTimeline> timeline_;
   int64_t lastProducedSlot_ = -1;
   int64_t firstFrameNumber_ = 0;
-  std::shared_ptr<const ProgramFrame> latest_;
+  std::shared_ptr<const ProgramFrame> latest_, multiviewLatest_;
+  ExportBranch shellBranch_, multiviewBranch_;
   std::shared_ptr<Output> output_;
   std::shared_ptr<Output> multiviewOutput_;
-  int64_t shellFrameNumber_ = 0;
-  int64_t maximumAcquireNs_ = 0, maximumCompletionLateNs_ = 0;
-  int64_t minimumDeliveryLeadNs_ = INT64_MAX;
-  std::chrono::steady_clock::time_point lastTimingLog_{};
-  int64_t maximumExportSubmitNs_ = 0, maximumExportSubmitLateNs_ = 0;
   ComPtrLite<ID3D11Query> prepareComplete_;
   std::function<void(const ProgramFrame&)> deliveredCallback_;
-  std::thread prepareThread_, deliveryThread_;
+  std::thread prepareThread_, deliveryThread_, shellThread_, multiviewThread_;
   HANDLE wakeEvent_ = nullptr;
   std::chrono::steady_clock::time_point lastExpiredSkipLog_{};
-  ComPtrLite<ID3D11Device> prepareDevice_, deliveryDevice_;
-  ComPtrLite<ID3D11DeviceContext> prepareContext_, deliveryContext_;
+  ComPtrLite<ID3D11Device> prepareDevice_;
+  ComPtrLite<ID3D11DeviceContext> prepareContext_;
   ComPtrLite<ID3D11VertexShader> vs_;
   ComPtrLite<ID3D11PixelShader> psY_, psUv_;
   ComPtrLite<ID3D11SamplerState> sampler_;
