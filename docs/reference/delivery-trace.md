@@ -1,9 +1,9 @@
 # Bounded core delivery trace
 
 The first #823 implementation observes Windows CPU-source preparation GPU
-completion, source draw submission, Program-buffer submission, completed GPU
-snapshot preparation and scheduled delivery. Source draw submission identifies
-its exact selected descriptor; it does not prove GPU completion. The later
+completion, source upload start/submission/refusal, source draw submission, Program-buffer submission, completed GPU
+snapshot preparation and scheduled delivery. Source request/draw submission identifies
+its exact requested and selected descriptors; it does not prove GPU completion. The later
 Program-ready record is emitted only after the real completion query succeeds.
 Source observation time remains distinct from verified acquisition/exposure time.
 Camera reader emission, camera receiver, monitor completion and physical display
@@ -27,7 +27,8 @@ No new camera-DLL thread is introduced.
 V1 uses the 80-byte `DeliveryTraceHeader` and 72-byte `DeliveryTraceEvent` in
 little-endian form, pinned by native layout assertions and the Python structs.
 Windows event timestamps are raw QPC ticks with the host frequency in the
-header; other hosts use steady-clock nanoseconds. Source observation timestamps
+header; other hosts use steady-clock nanoseconds. The judge also reports requested-versus-drawn source observation age; this is
+selection lag, not actual acquisition-to-receiver content latency. Source observation timestamps
 retain their separate steady-clock 100ns domain. Do not subtract these clocks
 or claim actual content latency without calibration and acquisition evidence.
 
@@ -44,7 +45,7 @@ The additive `deliveryEvidence` snapshot is governed by the native/C#/Swift
 contracts and observation projections. Missing old-peer fields remain unknown;
 zero losses or enabled capture never imply receiver/display health. Counter
 snapshots are not evidence of individual frame delivery. The QA judge joins raw
-exact Program identities and rejects trace loss, incomplete/malformed captures,
+exact Program identities and the expected scene ingredients and rejects trace loss, incomplete/malformed captures,
 missing submission/completion, changed layout attribution and delivery gaps.
 The scope field always leaves broader release qualification missing.
 

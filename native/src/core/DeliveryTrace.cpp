@@ -18,6 +18,7 @@
 
 namespace corevideo::core {
 namespace {
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free, "Trace append requires lock-free 64-bit atomics");
 std::atomic<DeliveryTraceCapture*> active{nullptr};
 std::uint64_t frequency() {
 #if defined(_WIN32)
@@ -83,6 +84,8 @@ struct DeliveryTraceCapture::State {
         if (!output) throw std::runtime_error("trace write");
         exported.fetch_add(count);
       }
+      output.flush();
+      if (!output) throw std::runtime_error("trace body flush");
       header.exported = exported.load(); header.lost = lost.load();
       header.failures = failures.load(); header.ended = deliveryTraceNow(); header.complete = 1;
       output.seekp(0); output.write(reinterpret_cast<const char*>(&header), sizeof(header)); output.flush();
@@ -147,7 +150,7 @@ rpc::Json DeliveryTraceCapture::snapshot() const {
     {"lost", static_cast<double>(state_->lost.load())},
     {"exportFailures", static_cast<double>(state_->failures.load())},
     {"cameraReaderObserved", false}, {"displayObserved", false}, {"sourceAcquisitionObserved", false},
-    {"boundaries", "source-gpu-ready/source-draw-submitted/program-submitted/program-gpu-ready/program-delivered"}};
+    {"boundaries", "source-gpu-ready/source-requested/source-draw-submitted/program-submitted/program-gpu-ready/program-delivered"}};
 }
 std::unique_ptr<DeliveryTraceCapture> startDeliveryTraceFromEnvironment() {
   const char* path = std::getenv("COREVIDEO_DELIVERY_TRACE_PATH");

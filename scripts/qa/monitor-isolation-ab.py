@@ -502,11 +502,14 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 spec = importlib.util.spec_from_file_location("delivery_trace", pathlib.Path(__file__).with_name("delivery-trace.py"))
                 trace_judge = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(trace_judge)
+                if core is None or core.proc.returncode != 0:
+                    raise ValueError("core did not finalize its requested trace successfully")
                 if trace_start is None or trace_end is None:
                     raise ValueError("missing pinned measured trace window")
                 results[-1]["deliveryTrace"] = trace_judge.judge(trace_path, a.warmup,
                     max(1, a.duration - 1 / 60), trace_start, trace_end,
-                    require_source_ready=a.cpu_source_preparation == "1")
+                    require_source_ready=a.cpu_source_preparation == "1",
+                    expected_source_ids=["capture:" + route["captureDeviceId"] if route["mode"] == "capture-input" else route["participantId"] for route in program_routes(a.program_scene)])
             except Exception as error:
                 results[-1]["deliveryTrace"] = {"result": "INVALID", "error": str(error)}
             print(label + " deliveryTrace=" + results[-1]["deliveryTrace"]["result"], flush=True)

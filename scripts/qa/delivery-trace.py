@@ -8,10 +8,11 @@ import struct
 HEADER = struct.Struct("<8sIIQQQQQQqq")
 EVENT = struct.Struct("<QQQqqqqQII")
 STAGES = {1: "source-gpu-ready", 2: "source-draw-submitted", 3: "program-submitted",
-          4: "program-gpu-ready", 5: "program-delivered", 6: "program-miss"}
+          4: "program-gpu-ready", 5: "program-delivered", 6: "program-miss", 7: "source-requested", 8: "source-upload-started",
+          9: "source-upload-submitted", 10: "source-upload-refused"}
 
 
-def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require_source_ready=False):
+def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require_source_ready=False, expected_source_ids=None):
     errors = []
     if not 0 <= warmup <= 30 or minimum < 1:
         raise ValueError("warmup must be 0..30 and minimum >=1")
@@ -35,7 +36,7 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
         if not started <= baseline < end <= ended:
             raise ValueError("measurement window outside finalized capture")
         stages, deliveries, misses, sources = {}, [], 0, {}
-        gpu_ready, selected = {}, []
+        gpu_ready, selected, requested, selection_age, drawn = {}, [], {}, [], {}
         for _ in range(count):
             record = source.read(EVENT.size)
             if len(record) != EVENT.size:
@@ -50,16 +51,35 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
                 stages[key] = (timestamp, layout)
                 if stage == 5 and baseline <= timestamp <= end:
                     deliveries.append((source_epoch, program, timestamp))
+            elif stage == 7:
+                requested[(program, tag, source_epoch)] = (frame, observed, timestamp)
             elif stage == 1:
                 key = (tag, source_epoch, frame)
                 gpu_ready[key] = min(timestamp, gpu_ready.get(key, timestamp))
             elif stage == 6 and baseline <= timestamp <= end:
                 misses += 1
-            elif stage == 2 and baseline <= timestamp <= end:
+            elif stage == 2:
+                drawn.setdefault(program, []).append((tag, source_epoch, frame, observed, timestamp, reason))
+        expected_tags = set()
+        for identity in expected_source_ids or []:
+            tag = 14695981039346656037 ^ epoch
+            for value in identity.encode("utf8"):
+                tag = ((tag ^ value) * 1099511628211) & 0xffffffffffffffff
+            expected_tags.add(tag)
+        for generation, program, delivered_time in deliveries:
+            ingredients = drawn.get(program, [])
+            if expected_tags and {row[0] for row in ingredients} != expected_tags:
+                errors.append("delivered Program missing its expected drawn sources")
+            for tag, source_epoch, frame, observed, timestamp, reason in ingredients:
                 if reason == 3 or source_epoch == 0 or frame < 0 or observed <= 0 or tag == 0:
                     errors.append("unavailable or unattributable selected source")
                 sources.setdefault(tag, set()).add(frame)
                 selected.append(((tag, source_epoch, frame), timestamp))
+                wanted = requested.get((program, tag, source_epoch))
+                if wanted is None or wanted[0] < frame or wanted[1] < observed or wanted[2] > timestamp:
+                    errors.append("draw missing matching requested source identity")
+                else:
+                    selection_age.append((wanted[1] - observed) / 10000)
         if require_source_ready:
             for key, timestamp in selected:
                 if key not in gpu_ready or gpu_ready[key] > timestamp:
@@ -86,10 +106,13 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
         # Counter identity alone could falsely pass 50fps under a 60fps label.
         if abs(len(qualified) - (round(seconds * 60) + 1)) > 1:
             errors.append("Program delivery differs from required 60/1 cadence")
+        selection_age.sort()
+        percentile = lambda p: selection_age[min(len(selection_age) - 1, int(p * len(selection_age)))] if selection_age else None
         return {"schema": "delivery-trace-verdict-v1", "result": "FAIL" if errors else "PASS",
                 "exported": count, "lost": lost, "exportFailures": failures,
                 "measuredSeconds": seconds, "measurementStartTicks": baseline, "measurementEndTicks": end, "delivered": len(qualified), "gaps": gaps,
                 "reordered": reordered, "misses": misses,
+                "sourceSelectionObservationAgeMs": {"samples": len(selection_age), "p50": percentile(.5), "p95": percentile(.95), "maximum": selection_age[-1] if selection_age else None, "scope": "Requested CPU selection versus actual drawn source observation; not acquisition-to-receiver content latency"},
                 "sourceGpuCompletionRequired": require_source_ready,
                 "selectedSources": {str(tag): len(frames) for tag, frames in sources.items()},
                 "errors": sorted(set(errors)), "releaseQualification": "MISSING_EVIDENCE",

@@ -104,6 +104,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#825](https://github.com/iamfatness/CoreVideoPro/issues/825) | Disabled-preparation/inline qualification lost six packets in three pairs: a late Preparing head became expired Ready and remained at the following deadline. Suspected wait-predicate amplification needs deterministic real-GPU reproduction; does not establish why the first preparation was late. Unranked; current #802/#823 work continues. |
 | [#823](https://github.com/iamfatness/CoreVideoPro/issues/823) | Remaining owner-approved #517 delivery diagnostics: bounded per-frame trace, native/C#/Swift observations, source/output identity and latency attribution. Continues the parent qualification scope after #802; no independent rank or default change. |
 | [#814](https://github.com/iamfatness/CoreVideoPro/issues/814) | [recording-write-queue-spec.md](reference/recording-write-queue-spec.md) (2026-10-07). Split the live 2–3 frame Program buffer from recording. Program and each ISO writer own a bounded write queue (default 10 frames) so a disk stall becomes file latency, not an ISO drop. Pre-roll is out of scope. Unranked until the owner assigns a rank. |
 | [#798](https://github.com/iamfatness/CoreVideoPro/issues/798) | Hosted fake-core initial zoom-snapshot request timed out before polling assertions in #792 CI. Exact PR full suite and targeted hosted rerun passed; failed job retained. Attribution unknown, distinct from #754; needs owner rank. |

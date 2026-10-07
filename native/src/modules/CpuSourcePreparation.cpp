@@ -260,6 +260,11 @@ struct CpuSourcePreparation::Impl {
       // new CPU playout buffer. Older submissions remain attributable.
       if (next->frameId > selected && source->lastSubmittedFrameId > selected) continue;
       auto cpu = next->cpu.lock(); if (!cpu) continue;
+      core::DeliveryTraceEvent upload;
+      upload.stage = core::DeliveryStage::SourceUploadStarted;
+      upload.sourceTag = core::deliveryTraceTag(next->sourceId); upload.sourceEpoch = next->sourceEpoch;
+      upload.sourceFrameId = next->frameId; upload.sourceObservation100ns = next->captureTimestamp100ns;
+      core::recordDeliveryTrace(upload);
       int slot = pool->beginUpload(context.Get(), *cpu, next->cpuStride);
       if (slot < 0) {
         // Late completions remain readable across newer CPU selections, but
@@ -272,6 +277,9 @@ struct CpuSourcePreparation::Impl {
         }
         if (count > 1) { *oldest = {}; slot = pool->beginUpload(context.Get(), *cpu, next->cpuStride); }
       }
+      upload.stage = slot >= 0 ? core::DeliveryStage::SourceUploadSubmitted : core::DeliveryStage::SourceUploadRefused;
+      upload.reason = slot >= 0 ? core::DeliveryReason::None : core::DeliveryReason::Unavailable;
+      core::recordDeliveryTrace(upload);
       if (slot >= 0) {
         source->pendingSlot = slot; source->pending = next; submitted = pendingWrites = true;
         source->lastSubmittedFrameId = next->frameId;

@@ -1206,6 +1206,17 @@ class D3D11Compositor final : public ICompositor {
     auto layer = requestedLayer;
     VideoFrame admittedImage;
     core::DeliveryReason traceReason = core::DeliveryReason::Ready;
+    if (traceFrame && requestedLayer.frame && !compositorLayerIsOverlay(layer.plan) &&
+        !(layer.plan.tilesDecoration.enabled && layer.plan.tilesDecoration.glowPass)) {
+      core::DeliveryTraceEvent requested;
+      requested.stage = core::DeliveryStage::SourceRequested;
+      requested.programSequence = frameNumber_; requested.layoutTag = traceFrame->renderPlanSignature;
+      requested.sourceTag = core::deliveryTraceTag(requestedLayer.frame->participantId);
+      requested.sourceEpoch = requestedLayer.frame->sourceEpoch;
+      requested.sourceFrameId = requestedLayer.frame->frameId;
+      requested.sourceObservation100ns = requestedLayer.frame->captureTimestamp100ns;
+      core::recordDeliveryTrace(requested);
+    }
     if (admission && layer.frame && !compositorLayerIsOverlay(layer.plan) &&
         !(layer.plan.tilesDecoration.enabled && layer.plan.tilesDecoration.glowPass)) {
       auto selected = programAdmission_.select(*layer.frame, frameNumber_, [&](const auto& gpu) {

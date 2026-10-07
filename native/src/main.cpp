@@ -20,8 +20,12 @@ int main() {
   // The live server runs the audio/output worker, so it needs the encoder wrapped
   // in AsyncEncoderSink (non-blocking submit + drop-to-latest). Tests construct
   // MediaCore with createDefaultModules and keep the synchronous encoder.
-  corevideo::core::MediaCore mediaCore(corevideo::modules::createLiveServerModules());
-  corevideo::rpc::JsonRpcServer server(mediaCore);
-  server.run(std::cin, std::cout);
-  return 0;
+  {
+    corevideo::core::MediaCore mediaCore(corevideo::modules::createLiveServerModules());
+    corevideo::rpc::JsonRpcServer server(mediaCore);
+    server.run(std::cin, std::cout);
+  }
+  // Capture finalization follows media teardown. A failed explicit export must
+  // remain visible to the owned QA caller even if an older file looks complete.
+  return deliveryTrace && !deliveryTrace->close() ? 1 : 0;
 }

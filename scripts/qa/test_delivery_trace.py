@@ -68,16 +68,24 @@ class DeliveryTraceJudgeTests(unittest.TestCase):
 
     def test_selected_source_requires_exact_preceding_gpu_identity(self):
         header, events = self.fixture()
-        values = list(module.HEADER.unpack(header)); values[5] += 2
+        values = list(module.HEADER.unpack(header)); values[5] += 3
         ready = module.EVENT.pack(77, 42, 7, -1, 18, 1000, 50, 0, 1, 0)
+        requested = module.EVENT.pack(77, 42, 7, 0, 18, 1005, 50, 9, 7, 0)
         selected = module.EVENT.pack(77, 42, 7, 0, 18, 1010, 50, 9, 2, 1)
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "trace.bin"
-            path.write_bytes(module.HEADER.pack(*values) + ready + selected + b"".join(events))
+            path.write_bytes(module.HEADER.pack(*values) + ready + requested + selected + b"".join(events))
             self.assertEqual(module.judge(path, 0, 2, require_source_ready=True)["result"], "PASS")
             bad = module.EVENT.pack(77, 42, 7, -1, 19, 1000, 50, 0, 1, 0)
-            path.write_bytes(module.HEADER.pack(*values) + bad + selected + b"".join(events))
+            path.write_bytes(module.HEADER.pack(*values) + bad + requested + selected + b"".join(events))
             self.assertEqual(module.judge(path, 0, 2, require_source_ready=True)["result"], "FAIL")
+
+    def test_missing_expected_source_cannot_be_hidden_by_program_progress(self):
+        header, events = self.fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "trace.bin"
+            path.write_bytes(header + b"".join(events))
+            self.assertEqual(module.judge(path, 0, 2, expected_source_ids=["101"])["result"], "FAIL")
 
     def test_50fps_identity_progress_cannot_pass(self):
         header, events = self.fixture()
