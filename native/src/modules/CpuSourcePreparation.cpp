@@ -436,7 +436,10 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
       }
       source = std::move(replacement); impl_->sources.insert_or_assign(id, source);
     }
-    while (!source->queued.empty() && source->queued.front().expired()) source->queued.pop_front();
+    // Retaining one old descriptor must not charge expired entries behind it.
+    // The scan is bounded by kPendingPerSource and never removes live tokens.
+    source->queued.erase(std::remove_if(source->queued.begin(), source->queued.end(),
+        [](const auto& pending) { return pending.expired(); }), source->queued.end());
     if (source->queued.size() >= kPendingPerSource) return refused(CpuPreparationCapacity::PendingTokens);
     auto token = std::make_shared<CpuSourceGpuView>();
     token->sourceId = id; token->sourceEpoch = epoch; token->frameId = frameId;
