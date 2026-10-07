@@ -1274,9 +1274,11 @@ class D3D11Compositor final : public ICompositor {
     // when the layer has no decoded pixels at all. Sources with a stable id bind
     // their cached per-source textures (uploaded only on content change); frames
     // without one (media layers) take the legacy shared-scratch upload.
-    const bool isI420 = layer.frame != nullptr && layer.frame->hasI420();
     const auto uploadStart = uploadUs ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     SourceTex* sourceTex = layer.frame != nullptr ? acquireSourceTex(*layer.frame) : nullptr;
+    // A prepared BGRA view can coexist with the original I420 planes retained
+    // for ISO. Select the shader from the admitted texture, not that CPU copy.
+    const bool isI420 = sourceTex ? sourceTex->isI420 : layer.frame != nullptr && layer.frame->hasI420();
     const bool textured = layer.retainedProgram != nullptr || sourceTex != nullptr ||
         (layer.frame != nullptr &&
          (isI420 ? uploadLayerI420Texture(*layer.frame)
@@ -2025,9 +2027,10 @@ class D3D11Compositor final : public ICompositor {
         continue;
       }
       const CompositorColorGrade grade = effectiveParticipantGrade(renderPlan, f);
-      const bool useI420 = f.hasI420();
-      const int width = useI420 ? f.i420Width : f.pixelWidth;
-      const int height = useI420 ? f.i420Height : f.pixelHeight;
+      SourceTex* source = acquireSourceTex(f);
+      const bool useI420 = source ? source->isI420 : f.hasI420();
+      const int width = source ? source->width : useI420 ? f.i420Width : f.pixelWidth;
+      const int height = source ? source->height : useI420 ? f.i420Height : f.pixelHeight;
       auto& pt = participantTextures_[f.participantId];
       if (!pt.local || pt.width != width || pt.height != height) {
         const auto createStart = std::chrono::steady_clock::now();

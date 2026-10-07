@@ -31,3 +31,15 @@ Native regression coverage includes a deliberately blocked monitor while Program
 `COREVIDEO_DELIVERY_TRACE=1` enables an optional, separately versioned camera correlation mapping. The exact buffered Program identity and delivery time travel with the immutable NV12 packet, including through pending-frame replacement. The DLL verifies mapping identity and matching seqlocks before attributing pixels, and reports the identity actually emitted for fresh/held samples. The shipping pixel ABI is unchanged. V2 log summaries preserve unknown status for missing or racing correlation and never claim receiver presentation. Tests exercise stale epochs, replaced mapping identity, queue supersession, and wrong-format input followed by correctly attributed held output.
 
 Core readiness, Take evidence, tile freshness and source continuity recognize GPU payloads as content. The capture bus preserves their dimensions, frame identity and shared ownership through disconnect; CPU-only ISO admission still requires its CPU representation. This distinction is necessary before removing compatibility readback.
+
+The D3D compositor selects its sampling shader and source-export dimensions
+from the admitted source texture. A prepared BGRA GPU image may coexist with
+the original I420 CPU planes needed by ISO; that CPU representation must not
+select the YUV shader after a BGRA view has been bound. GPU-only exports use
+the admitted image dimensions, even when CPU pixel dimensions are zero. If
+no compatible GPU view/read lease is admitted, the existing CPU fallback
+selects its own format. `PreparedSourcePixels` checks actual Program pixels
+and independently consumed source-export pixels for these cases, with zero
+CPU source uploads for the admitted GPU view. This format correction does
+not implement off-Program CPU preparation or qualify delivery performance;
+those remain under [#802](https://github.com/iamfatness/CoreVideoPro/issues/802).
