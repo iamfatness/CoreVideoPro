@@ -28,6 +28,11 @@ struct ProgramBufferTimerResolution {
 namespace corevideo::modules {
 struct D3DProgramBufferTestAccess {
   static void beforeExport(D3DProgramBuffer& buffer, std::function<void(bool)> hook) { buffer.beforeExport_ = std::move(hook); }
+  static unsigned readLeases(D3DProgramBuffer& buffer) {
+    std::lock_guard<std::mutex> lock(buffer.mutex_);
+    unsigned leases = 0; for (const auto& slot : buffer.slots_) leases += slot->readers;
+    return leases;
+  }
   static void fail(D3DProgramBuffer& buffer) { buffer.fail("test-injected"); }
 };
 }
@@ -401,6 +406,7 @@ TEST(D3DProgramBuffer, BlockedOptionalExportPreservesNativeCadenceAndOtherReader
       frame.productionAnchorNs = anchorNs; frame.width = frame.height = 64;
       buffer.submit(context.get(), source.get(), std::move(frame), true); context->Flush();
       ProgramFrame packet; while (buffer.take(packet, 0)) receive(packet);
+      EXPECT_LE(D3DProgramBufferTestAccess::readLeases(buffer), 2u);
     }
     while (received < 60) { ProgramFrame packet; ASSERT_TRUE(buffer.take(packet, 50)); receive(packet); }
     ASSERT_TRUE(entered.load());

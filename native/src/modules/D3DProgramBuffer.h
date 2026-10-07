@@ -580,6 +580,13 @@ class D3DProgramBuffer {
           }
           queryNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - flushEnd).count();
         }
+        std::shared_ptr<ProgramFrame> snapshot;
+        if (held && ready) {
+          // Optional allocation/copy cannot hold the delivery clock's mutex.
+          snapshot = std::make_shared<ProgramFrame>(*frame);
+          snapshot->gpuOwner = output;
+          snapshot->sharedTexture = {output->handle, 0, width_, height_, "B8G8R8A8_UNORM", frame->frameNumber};
+        }
         {
           std::lock_guard<std::mutex> lock(mutex_);
           if (unconsumed) { ++diagnostics_.displayUnconsumed; ++branch.unconsumed; }
@@ -602,9 +609,6 @@ class D3DProgramBuffer {
             branch.lastTrace = ended;
           }
           if (held && ready) {
-            auto snapshot = std::make_shared<ProgramFrame>(*frame);
-            snapshot->gpuOwner = output;
-            snapshot->sharedTexture = {output->handle, 0, width_, height_, "B8G8R8A8_UNORM", frame->frameNumber};
             // Advance metadata before exposing the completed pixels (key 1).
             if (shell) latest_ = std::move(snapshot);
             else multiviewLatest_ = std::move(snapshot);
