@@ -484,7 +484,10 @@ TEST(I420SourcePreparation, ReconnectFencesSameFrameIdAndRetiresOnlyAfterExterna
   EXPECT_EQ(owner.stats().active, 2u);
   // A pinned retired generation must prevent a third allocation for this source.
   auto third = sourceFrame("source", 6, 20, 220); offer(owner, third);
-  EXPECT_FALSE(third.preparedGpu);
+  ASSERT_TRUE(third.preparedGpu);
+  EXPECT_EQ(third.preparedGpu->demand->capacity.load(), CpuPreparationCapacity::RetiringGenerations);
+  EXPECT_TRUE(third.preparedGpu->demand->stopped.load());
+  EXPECT_FALSE(third.preparedGpu->acquire(true));
   EXPECT_EQ(owner.stats().active, 2u);
   EXPECT_TRUE(fresh.preparedGpu->acquire(false));
   lease.reset();
