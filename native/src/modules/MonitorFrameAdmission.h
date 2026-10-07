@@ -13,19 +13,29 @@ inline bool monitorPlanNeedsFrame(const CompositorRenderPlan& plan, const VideoF
     return layer.participantId.empty() && layer.mediaAssetId.empty() && !layer.hasFillColor;
   });
 }
+inline bool monitorRequestNeedsFrame(const MonitorRenderRequest& request, const VideoFrame& frame) {
+  return (request.previewActive && monitorPlanNeedsFrame(request.previewPlan, frame)) ||
+      (request.multiviewActive && monitorPlanNeedsFrame(request.multiviewPlan, frame)) ||
+      std::any_of(request.sourceExports.begin(), request.sourceExports.end(),
+          [&](const auto& demand) { return demand.sourceId == frame.participantId; });
+}
 inline bool prepareMonitorFrames(MonitorRenderRequest& request) {
+  request.unavailableInputs.clear();
   request.frames.erase(std::remove_if(request.frames.begin(), request.frames.end(), [&](const auto& frame) {
-    return !(request.previewActive && monitorPlanNeedsFrame(request.previewPlan, frame)) &&
-        !(request.multiviewActive && monitorPlanNeedsFrame(request.multiviewPlan, frame)) &&
-        std::none_of(request.sourceExports.begin(), request.sourceExports.end(),
-            [&](const auto& demand) { return demand.sourceId == frame.participantId; });
+    return !monitorRequestNeedsFrame(request, frame);
   }), request.frames.end());
-  bool admitted = true;
   for (auto& frame : request.frames) {
     const bool hadGpu = frame.hasGpuPixels();
+    // Pool generations are independent. Validate role and dimensions, not
+    // equality of those counters. Capture publishes both from the same copy.
+    if (frame.monitorGpuPixels && (!frame.monitorGpuPixels->monitorPrivate ||
+        frame.monitorGpuPixels == frame.gpuPixels ||
+        (hadGpu && (frame.monitorGpuPixels->width != frame.gpuPixels->width ||
+                    frame.monitorGpuPixels->height != frame.gpuPixels->height))))
+      frame.monitorGpuPixels.reset();
     frame.gpuPixels = std::move(frame.monitorGpuPixels);
-    if (hadGpu && !frame.hasContent()) admitted = false;
+    if (hadGpu && !frame.hasContent()) request.unavailableInputs.push_back(frame.participantId);
   }
-  return admitted;
+  return true; // unavailable inputs never refuse unrelated monitor work
 }
 }

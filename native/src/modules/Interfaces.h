@@ -1026,6 +1026,7 @@ struct MonitorRenderRequest {
   CompositorRenderPlan multiviewPlan;
   CompositorRenderPlan previewPlan;
   std::vector<VideoFrame> frames;
+  std::vector<std::string> unavailableInputs;
   std::vector<MultiviewTileRect> tiles;
   std::vector<SourceMonitorDemand> sourceExports;
   bool multiviewActive = false;
@@ -1035,6 +1036,11 @@ struct MonitorRenderRequest {
   std::shared_ptr<const void> deliveredProgramOwner;
 };
 
+struct MonitorInputObservation {
+  std::string sourceId, state, reason;
+  uint64_t sourceEpoch = 0, requestedEpoch = 0;
+  int64_t frameId = 0, captureTimestamp100ns = 0;
+};
 struct MonitorRenderResult {
   int64_t sequence = 0;
   ProgramFrameSharedTexture multiview;
@@ -1042,9 +1048,14 @@ struct MonitorRenderResult {
   std::vector<MultiviewTileRect> tiles;
   std::vector<ParticipantSharedTexture> sources;
   double workMs = 0;
+  uint64_t readyInputs = 0, heldInputs = 0, unavailableInputs = 0;
+  uint64_t retainedInputs = 0, retainedInputBytes = 0, retentionRefusals = 0;
+  std::vector<MonitorInputObservation> inputs;
 };
 
 struct MonitorRenderDiagnostics {
+  static constexpr size_t InputCapacity = 64;
+  static constexpr uint64_t InputByteBudget = 256ull * 1024 * 1024;
   bool enabled = false;
   uint64_t submitted = 0, completed = 0, superseded = 0, failed = 0;
   int pending = 0;
@@ -1055,6 +1066,8 @@ struct MonitorRenderDiagnostics {
   std::string requestedMode = "unknown", effectiveMode = "unknown";
   std::string selectionSource = "unknown", readiness = "unavailable";
   std::string failureReason;
+  uint64_t readyInputs = 0, heldInputs = 0, unavailableInputs = 0;
+  uint64_t retainedInputs = 0, retainedInputBytes = 0, retentionRefusals = 0;
 };
 
 class ICompositor {

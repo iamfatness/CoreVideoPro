@@ -174,10 +174,7 @@ class D3D11Compositor final : public ICompositor {
   bool hasIsolatedMonitors() const override { return monitorWorker_ != nullptr; }
   void submitMonitors(MonitorRenderRequest request) override {
     if (!monitorWorker_) return;
-    if (!prepareMonitorFrames(request)) {
-      monitorWorker_->refuse();
-      return; // retain the last completed monitor; never borrow a capture slot
-    }
+    prepareMonitorFrames(request);
     request.bufferedProgram = programBufferFrames() > 0;
     if (auto buffer = currentProgramBuffer())
       buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner);
@@ -583,7 +580,12 @@ class D3D11Compositor final : public ICompositor {
     }
     if (request.previewActive) result.preview = renderPreview(request.previewPlan, request.frames);
     for (auto it = sourceTextures_.begin(); it != sourceTextures_.end();) {
-      it = (frameNumber_ - it->second.lastUsedFrame > 300) ? sourceTextures_.erase(it) : std::next(it);
+      const bool demanded = std::any_of(request.frames.begin(), request.frames.end(),
+          [&](const auto& frame) { return frame.participantId == it->first; });
+      // Optional cache references retire on this owner immediately when demand
+      // ends. In-flight GPU reads keep their independent completion leases.
+      it = (!demanded || frameNumber_ - it->second.lastUsedFrame > 300)
+          ? sourceTextures_.erase(it) : std::next(it);
     }
     if (gpuReadLeases_) gpuReadLeases_->finish();
     context_->Flush();
@@ -669,6 +671,7 @@ class D3D11Compositor final : public ICompositor {
     int width = 0;
     int height = 0;
     int64_t lastFrameId = -1;  // skip re-uploading an unchanged (held) frame
+    uint64_t lastSourceEpoch = 0;
     // Grade last baked into this export; re-upload if it changes even when the
     // frame is held (color-grade slider drag on a static source).
     CompositorColorGrade lastGrade;
@@ -2088,7 +2091,7 @@ class D3D11Compositor final : public ICompositor {
       // shell-facing texture — the render context never acquires a keyed mutex a
       // slow preview consumer might hold, so it can never stall here.
       const bool gradeChanged = !gradesEqual(grade, pt.lastGrade);
-      const bool frameChanged = (f.frameId != pt.lastFrameId) || gradeChanged;
+      const bool frameChanged = (f.frameId != pt.lastFrameId) || (f.sourceEpoch != pt.lastSourceEpoch) || gradeChanged;
       if (frameChanged && pt.local) {
         bool uploaded = false;
         ID3D11Texture2D* exportTexture = pt.local.get();
@@ -2117,6 +2120,7 @@ class D3D11Compositor final : public ICompositor {
           CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantRelease]);
           if (pt.exporter->submit(context_.get(), exportTexture, f.frameId)) {
             pt.lastFrameId = f.frameId;
+            pt.lastSourceEpoch = f.sourceEpoch;
             pt.lastGrade = grade;
           }
         } else if (profileEnabled) {

@@ -10,5 +10,7 @@ struct GpuVideoFrame {
   Backend backend = Backend::D3D11Bgra;
   int width = 0, height = 0;
   uint64_t generation = 0;
+  // A separately allocated optional pool; never a production capture lease.
+  bool monitorPrivate = false;
 };
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "modules/Interfaces.h"
+#include "modules/MonitorInputCache.h"
 #include "core/BoundedAsyncLog.h"
 #include "core/ComApartmentLifetime.h"
 #include <condition_variable>
@@ -54,6 +55,12 @@ class MonitorRenderWorker {
     result.selectionSource = "constructor";
     result.readiness = readiness_;
     result.failureReason = failureReason_;
+    if (result_) {
+      result.readyInputs = result_->readyInputs; result.heldInputs = result_->heldInputs;
+      result.unavailableInputs = result_->unavailableInputs;
+      result.retainedInputs = result_->retainedInputs; result.retainedInputBytes = result_->retainedInputBytes;
+      result.retentionRefusals = result_->retentionRefusals;
+    }
     return result;
   }
  private:
@@ -78,6 +85,7 @@ class MonitorRenderWorker {
       if (failed_ == 0) readiness_ = "ready";
     }
     auto lastLog = std::chrono::steady_clock::now();
+    MonitorInputCache inputs;
     for (;;) {
       std::shared_ptr<const MonitorRenderRequest> job;
       {
@@ -88,7 +96,15 @@ class MonitorRenderWorker {
       }
       const auto start = std::chrono::steady_clock::now();
       try {
-        auto result = std::make_shared<MonitorRenderResult>(render(*job));
+        auto prepared = *job;
+        MonitorRenderResult observation;
+        inputs.prepare(prepared, observation);
+        auto result = std::make_shared<MonitorRenderResult>(render(prepared));
+        result->readyInputs = observation.readyInputs; result->heldInputs = observation.heldInputs;
+        result->unavailableInputs = observation.unavailableInputs;
+        result->retainedInputs = observation.retainedInputs; result->retainedInputBytes = observation.retainedInputBytes;
+        result->retentionRefusals = observation.retentionRefusals;
+        result->inputs = std::move(observation.inputs);
         result->sequence = job->sequence;
         result->workMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         std::shared_ptr<const MonitorRenderResult> immutable = std::move(result);

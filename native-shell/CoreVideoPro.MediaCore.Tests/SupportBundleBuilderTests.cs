@@ -31,6 +31,35 @@ public sealed class SupportBundleBuilderTests
         Assert.Contains("last refusal invalid-mapping; logical bytes 115200032/536870912", json);
     }
 
+    [Fact]
+    public void MonitorInputs_ObservedHoldsReachBundleWithoutClaimingWorkerFailure()
+    {
+        var snapshot = BuildSampleSnapshot() with { RawJson = """
+          {"realtimeEvidence":{"monitorWorker":{"enabled":true,"completed":12,"readiness":"ready",
+          "inputObservationVersion":"monitor-input-admission-v1","readyInputs":2,"heldInputs":1,
+          "unavailableInputs":0,"retainedInputs":3,"retainedInputBytes":4096,"retentionRefusals":0}}}
+          """ };
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+        Assert.Equal("ready", bundle.MediaCore!.MonitorIsolation.Readiness);
+        Assert.Equal(1, bundle.MediaCore.MonitorIsolation.HeldInputs);
+        Assert.Equal(4096, bundle.MediaCore.MonitorIsolation.RetainedInputBytes);
+        Assert.Contains("Monitor inputs: ready 2; held 1; unavailable 0", SupportBundleBuilder.Serialize(bundle));
+    }
+
+    [Theory]
+    [InlineData("{\"enabled\":false,\"completed\":12,\"heldInputs\":0}")]
+    [InlineData("{\"enabled\":true,\"completed\":0,\"heldInputs\":0}")]
+    [InlineData("{\"enabled\":true,\"completed\":12,\"heldInputs\":-1}")]
+    [InlineData("{\"enabled\":true,\"completed\":12,\"heldInputs\":0.5}")]
+    [InlineData("{\"enabled\":true,\"completed\":12,\"heldInputs\":true}")]
+    [InlineData("{\"enabled\":true,\"completed\":12,\"heldInputs\":9007199254740992}")]
+    public void MonitorInputs_UnobservedOrMalformedCountsRemainUnknown(string fields)
+    {
+        var raw = "{\"realtimeEvidence\":{\"monitorWorker\":{\"inputObservationVersion\":\"monitor-input-admission-v1\"," + fields[1..] + "}}";
+        var observation = MonitorIsolationObservation.FromSnapshot(BuildSampleSnapshot() with { RawJson = raw });
+        Assert.Null(observation.HeldInputs);
+    }
+
     [Theory]
     [InlineData("bad json")]
     [InlineData("{}")]

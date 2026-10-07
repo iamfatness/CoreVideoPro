@@ -30,7 +30,7 @@ std::unique_ptr<ICompositor> isolatedCompositor() {
 
 // Independently opens and consumes the exported pixels, rather than trusting
 // the job's metadata or the compositor's submission counter.
-uint32_t consumeCenter(const ProgramFrameSharedTexture& exported) {
+uint32_t consumeCenter(const ProgramFrameSharedTexture& exported, float x = .5f) {
   ComPtrLite<ID3D11Device> device;
   ComPtrLite<ID3D11DeviceContext> context;
   if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
@@ -52,7 +52,7 @@ uint32_t consumeCenter(const ProgramFrameSharedTexture& exported) {
   key->ReleaseSync(0);
   D3D11_MAPPED_SUBRESOURCE mapped{};
   if (FAILED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) return 0;
-  const auto* p = static_cast<const uint8_t*>(mapped.pData) + (desc.Height / 2) * mapped.RowPitch + (desc.Width / 2) * 4;
+  const auto* p = static_cast<const uint8_t*>(mapped.pData) + (desc.Height / 2) * mapped.RowPitch + static_cast<size_t>(desc.Width * x) * 4;
   const uint32_t pixel = (uint32_t(p[3]) << 24) | (uint32_t(p[2]) << 16) | (uint32_t(p[1]) << 8) | p[0];
   context->Unmap(staging.get(), 0);
   return pixel;
@@ -82,6 +82,105 @@ MonitorRenderRequest requestAtSize(int size) {
   request.frames.push_back(frame);
   return request;
 }
+}
+
+TEST(IsolatedMonitorPixels, UnavailableInputHoldsItsPixelsWhileOtherInputsAdvanceAndRecover) {
+  const char* raw = std::getenv("COREVIDEO_GPU_CAPTURE"); const std::string previous = raw ? raw : "";
+  _putenv_s("COREVIDEO_GPU_CAPTURE", "1");
+  auto compositor = isolatedCompositor(); _putenv_s("COREVIDEO_GPU_CAPTURE", previous.c_str());
+  ASSERT_TRUE(compositor != nullptr);
+  const auto readyBy = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (compositor->monitorDiagnostics().readiness == "starting" && std::chrono::steady_clock::now() < readyBy)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_EQ(compositor->monitorDiagnostics().readiness, "ready");
+  auto request = requestAtSize(128);
+  auto fault = request.frames.front(); fault.participantId = "fault"; fault.sourceEpoch = 1;
+  auto bytes = std::make_shared<std::vector<uint8_t>>(64 * 64 * 4, 0);
+  for (size_t i = 0; i < bytes->size(); i += 4) { (*bytes)[i] = 211; (*bytes)[i + 3] = 255; }
+  ComPtrLite<ID3D11Device> producer; ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, producer.put(), nullptr, context.put())));
+  D3D11_TEXTURE2D_DESC desc{}; desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT; desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ComPtrLite<ID3D11Texture2D> source; ComPtrLite<ID3D11RenderTargetView> target;
+  ASSERT_TRUE(SUCCEEDED(producer->CreateTexture2D(&desc, nullptr, source.put())));
+  ASSERT_TRUE(SUCCEEDED(producer->CreateRenderTargetView(source.get(), nullptr, target.put())));
+  const float blue[] = {0, 0, 211.f / 255, 1}; context->ClearRenderTargetView(target.get(), blue);
+  D3DVideoFramePool privatePool; ASSERT_TRUE(privatePool.initialize(producer.get(), 64, 64, 9, true));
+  const int slot = privatePool.beginCopy(context.get(), source.get()); ASSERT_GE(slot, 0); context->Flush();
+  std::shared_ptr<const GpuVideoFrame> image;
+  const auto copyBy = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!(image = privatePool.completed(context.get(), slot)) && std::chrono::steady_clock::now() < copyBy)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(image != nullptr);
+  auto production = std::make_shared<GpuVideoFrame>(); production->width = production->height = 64; production->generation = 44;
+  fault.pixels.reset(); fault.gpuPixels = production; fault.monitorGpuPixels = image;
+  request.frames.push_back(fault);
+  request.sourceExports.push_back({"fault", SourceMonitorConsumer::Inspector, "qa"});
+  request.multiviewPlan.layers.front().rect = {0, 0, .5f, 1};
+  auto layer = request.multiviewPlan.layers.front(); layer.participantId = layer.sourceId = "fault";
+  layer.layerId = "monitor:fault"; layer.rect = {.5f, 0, .5f, 1};
+  request.multiviewPlan.layers.push_back(layer);
+  int64_t sequence = 0;
+  const auto publish = [&](uint64_t held, uint64_t ready) {
+    std::shared_ptr<const MonitorRenderResult> result;
+    const auto firstSequence = sequence + 1;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    do {
+      request.sequence = ++sequence; compositor->submitMonitors(request);
+      std::this_thread::sleep_for(std::chrono::milliseconds(5)); result = compositor->latestMonitors();
+    } while ((!result || result->heldInputs != held || result->readyInputs != ready ||
+        result->sequence < request.sequence - 1 || result->preview.sharedHandleHex.empty() ||
+        result->preview.frameNumber < firstSequence || result->multiview.frameNumber < firstSequence ||
+        result->sources.empty() || result->sources.front().frameNumber == 0 ||
+        result->multiview.sharedHandleHex.empty()) && std::chrono::steady_clock::now() < deadline);
+    return result;
+  };
+  auto initial = publish(0, 2); ASSERT_TRUE(initial != nullptr);
+  EXPECT_EQ(consumeCenter(initial->multiview, .75f), 0xff0000d3u);
+  // Lose only the optional private copy, while production itself remains valid.
+  request.frames[1].pixels.reset(); request.frames[1].monitorGpuPixels.reset(); request.frames[1].gpuPixels = production;
+  request.frames[1].sourceEpoch = 2; request.frames[1].frameId = 22;
+  auto green = std::make_shared<std::vector<uint8_t>>(64 * 64 * 4, 0);
+  for (size_t i = 0; i < green->size(); i += 4) { (*green)[i + 1] = 201; (*green)[i + 3] = 255; }
+  request.frames[0].pixels = green; request.frames[0].frameId = 2;
+  auto mixed = publish(1, 1); ASSERT_TRUE(mixed != nullptr);
+  EXPECT_EQ(mixed->heldInputs, 1u); EXPECT_EQ(mixed->readyInputs, 1u);
+  EXPECT_EQ(consumeCenter(mixed->preview), 0xff00c900u);
+  EXPECT_EQ(consumeCenter(mixed->multiview, .25f), 0xff00c900u);
+  // Reading the same export twice requires a new publication/key transfer.
+  mixed = publish(1, 1);
+  EXPECT_EQ(consumeCenter(mixed->multiview, .75f), 0xff0000d3u);
+  auto identity = std::find_if(mixed->inputs.begin(), mixed->inputs.end(), [](const auto& input) { return input.sourceId == "fault"; });
+  ASSERT_TRUE(identity != mixed->inputs.end());
+  EXPECT_EQ(identity->state, "held"); EXPECT_EQ(identity->sourceEpoch, 1u);
+  EXPECT_EQ(identity->requestedEpoch, 2u); EXPECT_EQ(identity->frameId, 1);
+  request.frames[0].pixels.reset(); request.frames[0].gpuPixels = production;
+  auto allHeld = publish(2, 0); ASSERT_TRUE(allHeld != nullptr);
+  EXPECT_EQ(allHeld->heldInputs, 2u); EXPECT_EQ(consumeCenter(allHeld->preview), 0xff00c900u);
+  request.frames[0].gpuPixels.reset(); request.frames[0].pixels = green;
+  request.frames[1].gpuPixels.reset(); request.frames[1].pixels = green;
+  request.frames[1].frameId = 1; // reconnect can restart IDs; epoch must invalidate export dedup
+  auto recovered = publish(0, 2); ASSERT_TRUE(recovered != nullptr);
+  EXPECT_EQ(recovered->heldInputs, 0u); EXPECT_EQ(recovered->readyInputs, 2u);
+  uint32_t sourcePixel = 0;
+  const auto exportBy = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  do {
+    recovered = publish(0, 2);
+    if (!recovered->sources.empty()) {
+      ProgramFrameSharedTexture exported; const auto& source = recovered->sources.front();
+      exported.sharedHandleHex = source.sharedHandleHex; exported.width = source.width; exported.height = source.height;
+      sourcePixel = consumeCenter(exported);
+    }
+  } while (sourcePixel != 0xff00c900u && std::chrono::steady_clock::now() < exportBy);
+  EXPECT_EQ(sourcePixel, 0xff00c900u);
+  EXPECT_EQ(compositor->monitorDiagnostics().failed, 0u);
+  request = {}; request.sequence = ++sequence; compositor->submitMonitors(request);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (compositor->monitorDiagnostics().lastSequence != sequence && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_EQ(compositor->monitorDiagnostics().retainedInputs, 0u);
 }
 
 TEST(IsolatedMonitorPixels, IndependentDeviceReceivesPreviewAndMultiviewAcrossResizeAndRetirement) {

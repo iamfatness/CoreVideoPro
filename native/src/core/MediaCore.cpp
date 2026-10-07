@@ -1,5 +1,6 @@
 #include "core/BoundedAsyncLog.h"
 #include "core/MediaCore.h"
+#include "modules/MonitorInputEvidence.h"
 #include "core/SystemMemoryPolicy.h"
 
 #include "compositor/CompositorLayout.h"
@@ -1031,6 +1032,16 @@ rpc::Json MediaCore::sessionState() const {
           {"pending", monitorWorker.pending}, {"capacity", 1},
           {"lastSequence", static_cast<double>(monitorWorker.lastSequence)},
           {"lastWorkMs", monitorWorker.lastWorkMs},
+          {"inputObservationVersion", "monitor-input-admission-v1"},
+          {"inputs", modules::monitorInputEvidence(modules_.compositor->latestMonitors())},
+          {"readyInputs", static_cast<double>(monitorWorker.readyInputs)},
+          {"heldInputs", static_cast<double>(monitorWorker.heldInputs)},
+          {"unavailableInputs", static_cast<double>(monitorWorker.unavailableInputs)},
+          {"retainedInputs", static_cast<double>(monitorWorker.retainedInputs)},
+          {"retainedInputBytes", static_cast<double>(monitorWorker.retainedInputBytes)},
+          {"retentionRefusals", static_cast<double>(monitorWorker.retentionRefusals)},
+          {"inputCapacity", static_cast<double>(modules::MonitorRenderDiagnostics::InputCapacity)},
+          {"inputByteBudget", static_cast<double>(modules::MonitorRenderDiagnostics::InputByteBudget)},
           {"displayPresentationVerified", false}}},
       {"metricVersion", "realtime-worker-evidence-v1"},
       {"render", rpc::Json::Object{
