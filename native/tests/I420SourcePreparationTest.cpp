@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <thread>
 #include <stdexcept>
+#include <future>
 
 using namespace corevideo::modules;
 TEST(I420CaptureArrival, HeldSnapshotsPreserveCpuIdentityAndReconnectOrResizeChangesEpoch) {
@@ -190,6 +191,7 @@ TEST(ProgramSourceAdmission, AbandonedCpuSelectionCannotBlockALaterCompletion) {
 #include <windows.h>
 #include "modules/D3DI420VideoFrame.h"
 #include "modules/StillMediaFrameCache.h"
+#include "modules/BrowserSourceHostAdapter.h"
 #include "core/MediaTransports.h"
 namespace {
 struct PreparationFlags {
@@ -660,6 +662,88 @@ TEST(CpuSourcePreparation, I420ConsumerChurnKeepsOneRetiringGenerationAndMonitor
   EXPECT_EQ(third->sourceTexStats().scratchUploads, 0u);
   EXPECT_EQ(third->sourceTexStats().textureCreates, 0u);
   EXPECT_LE(D3DVideoImage::residentBytes.load(), 512u * 1024u * 1024u);
+}
+
+TEST(BrowserSourcePreparation, OptInRealHostPreparesWithoutRenderPollingAndSurvivesBlockedReaderRemoval) {
+  const char* enabled = std::getenv("COREVIDEO_CAPTURE_TESTS");
+  if (!enabled || std::string(enabled) != "1") {
+    std::fprintf(stderr, "[capture-test] SKIPPED real browser host; enable COREVIDEO_CAPTURE_TESTS=1\n");
+    return;
+  }
+  PreparationFlags flags;
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "0");
+  auto reference = createD3D11Compositor();
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "1");
+  auto compositor = createD3D11Compositor(); ASSERT_TRUE(reference); ASSERT_TRUE(compositor);
+  auto owner = std::make_shared<CpuSourcePreparation>(true);
+  std::atomic<bool> pause{false}, blocked{false}, release{false};
+  BrowserSourceHostAdapter browser(std::string(), owner, [&] {
+    if (!pause.load()) return;
+    blocked.store(true);
+    const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!release.load() && std::chrono::steady_clock::now() < limit)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  });
+  struct ReleaseReader {
+    std::atomic<bool>& release;
+    ~ReleaseReader() { release.store(true); }
+  } releaseOnExit{release}; // release before browser joins on assertion failures
+  std::string error;
+  auto id = browser.addSource("data:text/html,%3Cbody%20style=%22margin:0;background:rgb(40,90,180)%22%3E", 64, 64, 60, error);
+  ASSERT_FALSE(id.empty()) << error;
+  // Real WebView2 host and SHM reader must advance without any render poll.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  bool received = false;
+  while (std::chrono::steady_clock::now() < deadline) {
+    const auto stats = browser.telemetry();
+    if (!stats.empty() && stats[0].framesReceived > 0) { received = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(received) << "Real browser host did not publish before render polling";
+  const auto center = (32 * 64 + 32) * 4;
+  std::vector<VideoFrame> frames;
+  ASSERT_TRUE(await([&] {
+    frames = browser.pollVideoFrames(123);
+    return frames.size() == 1 && frames[0].pixels && frames[0].pixels->size() > center + 2 &&
+        std::abs(int(frames[0].pixels->at(center)) - 180) <= 1 &&
+        std::abs(int(frames[0].pixels->at(center + 1)) - 90) <= 1 &&
+        std::abs(int(frames[0].pixels->at(center + 2)) - 40) <= 1;
+  })) << "WebView2 never painted the known page colors after its initial blank frame";
+  auto frame = frames.front(); ASSERT_TRUE(frame.preparedGpu);
+  ASSERT_TRUE(await([&] { return bool(frame.preparedGpu->acquire(true)); }));
+  auto cpuOnly = frame; cpuOnly.preparedGpu.reset();
+  const auto expected = reference->render(planFor(frame.participantId), {cpuOnly});
+  const auto actual = compositor->render(planFor(frame.participantId), {frame});
+  ASSERT_EQ(actual.sourceAdmissions.front().state, "ready");
+  EXPECT_EQ(actual.preview.bgra, expected.preview.bgra);
+  EXPECT_NEAR(frame.pixels->at(center), 180, 1);
+  EXPECT_NEAR(frame.pixels->at(center + 1), 90, 1);
+  EXPECT_NEAR(frame.pixels->at(center + 2), 40, 1);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().textureCreates, 0u);
+  auto reopened = createD3D11Compositor(); ASSERT_TRUE(reopened);
+  ASSERT_TRUE(await([&] {
+    auto latest = browser.pollVideoFrames(200);
+    if (latest.empty()) return false;
+    auto result = reopened->render(planFor(frame.participantId), latest);
+    return !result.sourceAdmissions.empty() && result.sourceAdmissions.front().state == "ready" && result.preview.bgra == expected.preview.bgra;
+  }));
+  EXPECT_EQ(reopened->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(reopened->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(reopened->sourceTexStats().textureCreates, 0u);
+  pause.store(true);
+  ASSERT_TRUE(await([&] { return blocked.load(); }));
+  auto collected = std::async(std::launch::async, [&] { return browser.pollVideoFrames(250); });
+  ASSERT_TRUE(collected.wait_for(std::chrono::milliseconds(250)) == std::future_status::ready)
+      << "Render polling waited behind the blocked SHM reader";
+  const auto held = collected.get(); ASSERT_EQ(held.size(), 1u);
+  EXPECT_TRUE(browser.removeSource(id)); EXPECT_TRUE(browser.pollVideoFrames(300).empty());
+  release.store(true);
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  EXPECT_TRUE(browser.pollVideoFrames(400).empty()); // stale reader cannot republish removed source
+  EXPECT_EQ(held[0].pixels->at(center), 180);
+  EXPECT_EQ(frame.pixels->at(center), 180); // removal did not mutate old CPU/ISO
 }
 
 TEST(CpuSourcePreparation, MediaDecoderWorkerPublishesPreparedPixelsWithoutChangingPlaybackOrCpuIdentity) {
