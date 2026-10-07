@@ -9,6 +9,7 @@
 #include <thread>
 #include <stdexcept>
 #include <future>
+#include <fstream>
 
 using namespace corevideo::modules;
 TEST(I420CaptureArrival, HeldSnapshotsPreserveCpuIdentityAndReconnectOrResizeChangesEpoch) {
@@ -929,6 +930,157 @@ TEST(CpuSourcePreparation, OptInActualNdiReceiverPreparesOriginalPixelsAndReconn
 #else
   EXPECT_TRUE(false) << "NDI adapter/output gates unavailable; this is missing evidence";
 #endif
+}
+
+
+namespace {
+struct OwnedNetworkPublisher {
+  PROCESS_INFORMATION process{};
+  std::string logPath;
+  ~OwnedNetworkPublisher() {
+    if (process.hProcess) {
+      if (WaitForSingleObject(process.hProcess, 0) == WAIT_TIMEOUT) {
+        TerminateProcess(process.hProcess, 0); WaitForSingleObject(process.hProcess, 2000);
+      }
+      CloseHandle(process.hProcess); CloseHandle(process.hThread);
+    }
+    if (!logPath.empty()) {
+      std::ifstream log(logPath); std::string contents((std::istreambuf_iterator<char>(log)), {});
+      std::fprintf(stderr, "[capture-test] publisher log: %s\n%s", logPath.c_str(), contents.substr(0, 4096).c_str());
+    }
+  }
+  bool start(bool rtmp, int port) {
+    const std::string endpoint = rtmp
+        ? "rtmp://127.0.0.1:" + std::to_string(port) + "/live/held"
+        : "srt://127.0.0.1:" + std::to_string(port) + "?mode=caller&latency=120000";
+    std::string command = "C:\\ffmpeg\\bin\\ffmpeg.exe -hide_banner -loglevel error -nostdin -re "
+        "-f lavfi -i color=c=0x285ab4:s=1920x1080:r=60 -f lavfi -i sine=frequency=997:sample_rate=48000 "
+        "-t 10 -map 0:v -map 1:a -c:v h264_nvenc -preset p1 -tune ull -pix_fmt yuv420p "
+        "-g 60 -c:a aac -ac 2 -f " + std::string(rtmp ? "flv " : "mpegts ") + endpoint;
+    char temp[MAX_PATH]{}; GetTempPathA(MAX_PATH, temp);
+    logPath = std::string(temp) + "cvp-held-publisher-" + std::to_string(GetCurrentProcessId()) + (rtmp ? "-rtmp.log" : "-srt.log");
+    SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE log = CreateFileA(logPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE input = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING, 0, nullptr);
+    STARTUPINFOA startup{}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdOutput = startup.hStdError = log; startup.hStdInput = input;
+    const bool started = CreateProcessA(nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+                          nullptr, nullptr, &startup, &process) != FALSE;
+    CloseHandle(log); CloseHandle(input); return started;
+  }
+};
+void heldNetworkRecovery(bool rtmp) {
+  PreparationFlags flags;
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "0");
+  auto reference = createD3D11Compositor(); ASSERT_TRUE(reference);
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "1");
+  auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  auto owner = std::make_shared<CpuSourcePreparation>(true);
+  auto receiver = rtmp ? createRtmpIngestCaptureDevice(owner) : createSrtIngestCaptureDevice(owner);
+  ASSERT_TRUE(receiver) << "Actual network ingest gate missing";
+  const int port = 23000 + (GetCurrentProcessId() % 12000) + (rtmp ? 1 : 0);
+  const std::string deviceId = rtmp ? "qa-held-rtmp" : "qa-held-srt";
+  if (rtmp) {
+    RtmpIngestSourceConfig config; config.id = config.deviceId = deviceId; config.name = "Owned held QA";
+    config.url = "rtmp://127.0.0.1:" + std::to_string(port) + "/live/held";
+    receiver->configureRtmpIngestSources({config});
+  } else {
+    SrtIngestSourceConfig config; config.id = config.deviceId = deviceId; config.name = "Owned held QA";
+    config.host = "127.0.0.1"; config.port = port; receiver->configureSrtIngestSources({config});
+  }
+  receiver->connect(deviceId);
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  OwnedNetworkPublisher publisher; ASSERT_TRUE(publisher.start(rtmp, port));
+  struct Video final : ICaptureVideoConsumer {
+    VideoFrame latest; size_t published = 0;
+    void publish(VideoFrame frame) override { ++published; latest = std::move(frame); }
+    void end(const std::string&) override {}
+  } sink;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+  while (std::chrono::steady_clock::now() < deadline && !sink.latest.preparedGpu) {
+    receiver->deliverVideo(sink, 100); std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(sink.latest.preparedGpu) << "Actual local publisher produced no prepared CPU descriptor";
+  const auto finishDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+  while (WaitForSingleObject(publisher.process.hProcess, 0) == WAIT_TIMEOUT &&
+      std::chrono::steady_clock::now() < finishDeadline) {
+    receiver->deliverVideo(sink, 150);
+    if (sink.latest.preparedGpu) sink.latest.preparedGpu->acquire(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_EQ(WaitForSingleObject(publisher.process.hProcess, 0), DWORD(WAIT_OBJECT_0));
+  DWORD exitCode = 1; GetExitCodeProcess(publisher.process.hProcess, &exitCode); ASSERT_EQ(exitCode, 0u);
+  ASSERT_TRUE(await([&] { return receiver->enumerate().front().lastFrameAgeMs > 2000; }));
+  receiver->deliverVideo(sink, 200);
+  const auto held = sink.latest; ASSERT_TRUE(held.hasPixels()); ASSERT_TRUE(held.preparedGpu);
+  auto cpuOnly = held; cpuOnly.preparedGpu.reset();
+  const auto oldOutput = reference->render(planFor(held.participantId), {cpuOnly});
+  EXPECT_NEAR(held.pixels->at(0), 180, 8);
+  EXPECT_NEAR(held.pixels->at(1), 90, 8);
+  EXPECT_NEAR(held.pixels->at(2), 40, 8);
+  const auto before = receiver->enumerate().front(); EXPECT_FALSE(before.signalPresent);
+  compositor.reset();
+  auto replacement = createD3D11Compositor(); ASSERT_TRUE(replacement);
+  ProgramFrame recovered;
+  const bool ready = await([&] {
+    receiver->deliverVideo(sink, 300);
+    recovered = replacement->render(planFor(held.participantId), {sink.latest});
+    return !recovered.sourceAdmissions.empty() && recovered.sourceAdmissions.front().state == "ready";
+  });
+  const auto stats = owner->stats();
+  std::fprintf(stderr, "[capture-test] held recovery ready=%d tokenChanged=%d stopped=%d superseded=%d prepared=%llu refused=%llu failed=%llu active=%zu sources=%zu reason=%s\n",
+      ready, sink.latest.preparedGpu != held.preparedGpu,
+      sink.latest.preparedGpu && sink.latest.preparedGpu->demand && sink.latest.preparedGpu->demand->stopped.load(),
+      sink.latest.preparedGpu && sink.latest.preparedGpu->superseded.load(),
+      static_cast<unsigned long long>(stats.prepared), static_cast<unsigned long long>(stats.refused),
+      static_cast<unsigned long long>(stats.failed), stats.active, stats.sources,
+      recovered.sourceAdmissions.empty() ? "no-admission" : recovered.sourceAdmissions.front().reason.c_str());
+  ASSERT_TRUE(ready) << "Stalled network held frame never refreshed for replacement production consumer";
+  EXPECT_NE(sink.latest.preparedGpu, held.preparedGpu);
+  EXPECT_EQ(sink.latest.pixels, held.pixels); EXPECT_EQ(sink.latest.frameId, held.frameId);
+  EXPECT_EQ(sink.latest.sourceEpoch, held.sourceEpoch);
+  EXPECT_EQ(sink.latest.captureTimestamp100ns, held.captureTimestamp100ns);
+  EXPECT_EQ(recovered.preview.bgra, oldOutput.preview.bgra);
+  const auto after = receiver->enumerate().front(); EXPECT_FALSE(after.signalPresent);
+  EXPECT_EQ(after.decodedFrames, before.decodedFrames);
+  EXPECT_EQ(after.decodedAudioSamples, before.decodedAudioSamples);
+  EXPECT_EQ(replacement->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(replacement->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(replacement->sourceTexStats().textureCreates, 0u);
+  OwnedNetworkPublisher freshPublisher; ASSERT_TRUE(freshPublisher.start(rtmp, port));
+  const auto restartDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+  bool freshReady = false;
+  while (std::chrono::steady_clock::now() < restartDeadline && !freshReady) {
+    receiver->deliverVideo(sink, 350);
+    auto output = replacement->render(planFor(held.participantId), {sink.latest});
+    freshReady = sink.latest.sourceEpoch > held.sourceEpoch && sink.latest.frameId > held.frameId &&
+        !output.sourceAdmissions.empty() && output.sourceAdmissions.front().state == "ready" &&
+        output.sourceAdmissions.front().actualEpoch == sink.latest.sourceEpoch;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_TRUE(freshReady) << "Fresh decoder epoch was overwritten or never became ready";
+  EXPECT_EQ(*held.pixels, *cpuOnly.pixels); // original CPU descriptor is immutable
+  receiver->configureSrtIngestSources({}); receiver->configureRtmpIngestSources({});
+  const auto published = sink.published;
+  receiver->deliverVideo(sink, 400);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  receiver->deliverVideo(sink, 500);
+  EXPECT_EQ(sink.published, published); EXPECT_TRUE(receiver->enumerate().empty());
+}
+}
+TEST(CpuSourcePreparation, OptInActualRtmpHeldFrameRecoversWithoutFreshDecodeOrFalseLiveHealth) {
+  const char* enabled = std::getenv("COREVIDEO_REQUIRE_NETWORK_TEST");
+  if (!enabled || std::string(enabled) != "1") {
+    std::fprintf(stderr, "[capture-test] SKIPPED actual RTMP held recovery; enable COREVIDEO_REQUIRE_NETWORK_TEST=1\n"); return;
+  }
+  heldNetworkRecovery(true);
+}
+TEST(CpuSourcePreparation, OptInActualSrtHeldFrameRecoversWithoutFreshDecodeOrFalseLiveHealth) {
+  const char* enabled = std::getenv("COREVIDEO_REQUIRE_NETWORK_TEST");
+  if (!enabled || std::string(enabled) != "1") {
+    std::fprintf(stderr, "[capture-test] SKIPPED actual SRT held recovery; enable COREVIDEO_REQUIRE_NETWORK_TEST=1\n"); return;
+  }
+  heldNetworkRecovery(false);
 }
 
 TEST(CpuSourcePreparation, MediaDecoderWorkerPublishesPreparedPixelsWithoutChangingPlaybackOrCpuIdentity) {

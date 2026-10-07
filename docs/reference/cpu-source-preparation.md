@@ -84,9 +84,18 @@ publishing the descriptor. Its timed receive loop refreshes stopped held tokens.
 SRT and RTMP offer each original decoded BGRA buffer on the decoder reader;
 each decoder spawn starts a new preparation epoch while CPU frame counts remain
 cumulative. Program polls descriptors only. Audio decoding and original CPU/ISO
-buffers are preserved. A stalled blocking network read cannot refresh a held
-token until another decoded arrival; this is not qualified as stalled-input
-recovery. Transport acquisition cadence and codec conversion are independent
+buffers are preserved. When preparation is enabled, one metadata worker per
+network adapter refreshes stopped held descriptors independently of the blocking
+decoder read. It snapshots at most 64 channels per 50 ms pass, rotating larger
+configured sets. Offers occur outside adapter/channel locks; commit checks the
+same CPU buffer, epoch, frame ID, observation time and old token so a fresh decode
+wins. Refresh changes only the prepared GPU token: it does not copy pixels,
+advance decode/audio counters, renew observation time or mark a stale feed live.
+Shutdown wakes and joins that worker before retiring decoder channels. The
+preparation-off path starts no refresh worker. Real local SRT/RTMP publishers
+exercise stopped-input consumer recreation against an independent CPU pixel
+reference; this does not qualify physical device reset or output continuity.
+Transport acquisition cadence and codec conversion are independent
 of byte-exact preparation of the decoded CPU pixels.
 Installed output continuity, receiver/display identities,
 latency, A/V and hardware qualification remain governed by #802/#517 and the
