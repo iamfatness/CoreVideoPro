@@ -1,5 +1,6 @@
 #include "modules/I420SourcePreparation.h"
 #include "modules/I420CaptureArrival.h"
+#include "modules/CpuVideoArrival.h"
 #include "modules/Interfaces.h"
 #include "modules/MonitorFrameAdmission.h"
 #include <gtest/gtest.h>
@@ -38,6 +39,27 @@ TEST(I420CaptureArrival, InvalidArrivalsDoNotConsumeIdentityOrPublishPartialPlan
   EXPECT_FALSE(arrival.publish(cpu, 128, 64, false, false).hasContent());
   EXPECT_FALSE(arrival.publish(cpu, 8000, 64, false, false).hasContent());
   EXPECT_EQ(arrival.publish(cpu, 64, 64, false, false).frameId, 1);
+}
+
+TEST(CpuVideoArrival, HeldPollingPreservesPlaybackTimeCpuBytesAndObservationIdentity) {
+  using namespace corevideo::modules;
+  auto owner = std::make_shared<CpuSourcePreparation>(false);
+  CpuVideoArrival tap("media:clip", owner);
+  VideoFrame first; first.frameId = 12; first.timestampMs = 750;
+  first.width = first.pixelWidth = 3; first.height = first.pixelHeight = 2; first.pixelStride = 16;
+  first.pixels = std::make_shared<const std::vector<uint8_t>>(32, 90);
+  tap.prepare(first);
+  const auto original = first.pixels;
+  auto held = first; held.timestampMs = 900; tap.prepare(held);
+  EXPECT_EQ(held.pixels, original); EXPECT_EQ(held.timestampMs, 900);
+  EXPECT_EQ(held.sourceEpoch, first.sourceEpoch); EXPECT_EQ(held.captureTimestamp100ns, first.captureTimestamp100ns);
+  auto rewind = first; rewind.frameId = 1; tap.prepare(rewind);
+  EXPECT_GT(rewind.sourceEpoch, first.sourceEpoch);
+  auto newPixelsSameId = rewind; newPixelsSameId.pixels = std::make_shared<const std::vector<uint8_t>>(32, 190);
+  tap.prepare(newPixelsSameId); EXPECT_GT(newPixelsSameId.sourceEpoch, rewind.sourceEpoch);
+  CpuVideoArrival disabled("media:clip", {});
+  auto legacy = first; legacy.sourceEpoch = 0; legacy.captureTimestamp100ns = 0;
+  disabled.prepare(legacy); EXPECT_EQ(legacy.sourceEpoch, 0u); EXPECT_EQ(legacy.captureTimestamp100ns, 0);
 }
 
 TEST(CpuSourceGpuView, RejectsWrongIdentityAndCpuDescriptorsDoNotOwnGpuImages) {
@@ -167,6 +189,8 @@ TEST(ProgramSourceAdmission, AbandonedCpuSelectionCannotBlockALaterCompletion) {
 #define NOMINMAX
 #include <windows.h>
 #include "modules/D3DI420VideoFrame.h"
+#include "modules/StillMediaFrameCache.h"
+#include "core/MediaTransports.h"
 namespace {
 struct PreparationFlags {
   std::string cpu, monitor;
@@ -227,6 +251,48 @@ TEST(I420SourcePreparation, FutureDecodeArrivalsCannotEvictTheNextCpuPlayoutSele
   EXPECT_EQ(playout[1].i420->front(), 60);
   EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
   EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+}
+
+TEST(CpuSourcePreparation, BgraStrideAlphaAndDelayedSelectionMatchIndependentCpuPixels) {
+  PreparationFlags flags;
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "0");
+  auto reference = createD3D11Compositor();
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "1");
+  auto compositor = createD3D11Compositor(); ASSERT_TRUE(reference); ASSERT_TRUE(compositor);
+  auto owner = std::make_shared<CpuSourcePreparation>(true);
+  CpuVideoArrival arrival("media:clip", owner);
+  VideoFrame cpu; cpu.participantId = "media:clip"; cpu.frameId = 1;
+  cpu.width = cpu.pixelWidth = cpu.naturalWidth = 63;
+  cpu.height = cpu.pixelHeight = cpu.naturalHeight = 65; cpu.pixelStride = 63 * 4 + 8;
+  auto bytes = std::make_shared<std::vector<uint8_t>>(cpu.pixelStride * cpu.pixelHeight, 231);
+  for (int y = 0; y < cpu.pixelHeight; ++y) for (int x = 0; x < cpu.pixelWidth; ++x) {
+    const auto p = y * cpu.pixelStride + x * 4;
+    (*bytes)[p] = 30; (*bytes)[p + 1] = 100; (*bytes)[p + 2] = 190; (*bytes)[p + 3] = 127;
+  }
+  cpu.pixels = bytes;
+  auto expected = reference->render(planFor("media:clip"), {cpu});
+  arrival.prepare(cpu); ASSERT_TRUE(cpu.preparedGpu);
+  ASSERT_TRUE(await([&] { return bool(cpu.preparedGpu->acquire(true)); }));
+  auto actual = compositor->render(planFor("media:clip"), {cpu});
+  EXPECT_EQ(actual.preview.bgra, expected.preview.bgra);
+  EXPECT_EQ(actual.sourceAdmissions.front().state, "ready");
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(cpu.pixels, bytes); EXPECT_EQ(cpu.pixels->back(), 231);
+  std::vector<VideoFrame> queued;
+  for (int id = 2; id <= 7; ++id) {
+    auto frame = cpu; frame.frameId = id;
+    auto next = std::make_shared<std::vector<uint8_t>>(*bytes); (*next)[0] = static_cast<uint8_t>(id * 20);
+    frame.pixels = next; arrival.prepare(frame); queued.push_back(std::move(frame));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  ASSERT_TRUE(await([&] {
+    actual = compositor->render(planFor("media:clip"), {queued.front()});
+    return actual.sourceAdmissions.front().actualFrameId == 2;
+  }));
+  expected = reference->render(planFor("media:clip"), {queued.front()});
+  EXPECT_EQ(actual.preview.bgra, expected.preview.bgra);
+  EXPECT_EQ(queued.front().pixels->back(), 231);
 }
 
 TEST(I420SourcePreparation, IndependentDeviceMatchesCpuColorRangeMatricesAndGradeWithZeroSourceUploads) {
@@ -414,10 +480,144 @@ TEST(I420SourcePreparation, ReconnectFencesSameFrameIdAndRetiresOnlyAfterExterna
   EXPECT_EQ(lease->sourceEpoch, 4u); EXPECT_EQ(lease->sourceFrameId, 20);
   EXPECT_EQ(old.i420->front(), 50); EXPECT_EQ(fresh.i420->front(), 190);
   EXPECT_EQ(owner.stats().active, 2u);
+  // A pinned retired generation must prevent a third allocation for this source.
+  auto third = sourceFrame("source", 6, 20, 220); offer(owner, third);
+  EXPECT_FALSE(third.preparedGpu);
+  EXPECT_EQ(owner.stats().active, 2u);
+  EXPECT_TRUE(fresh.preparedGpu->acquire(false));
   lease.reset();
   ASSERT_TRUE(await([&] { return owner.stats().active == 1; }));
   EXPECT_EQ(old.i420->front(), 50); // retained CPU/ISO does not defer GPU retirement
   EXPECT_FALSE(owner.offer("source", 4, 21, 21000, 64, 64, old.i420));
+  offer(owner, third); ASSERT_TRUE(third.preparedGpu);
+  ASSERT_TRUE(await([&] { return bool(third.preparedGpu->acquire(true)); }));
+  EXPECT_EQ(third.i420->front(), 220);
+}
+
+namespace {
+class PreparedStillDecoder final : public IStillImageDecoder {
+ public:
+  std::atomic<uint64_t> version{1};
+  std::optional<uint64_t> fileVersion(const std::string&) override { return version.load(); }
+  bool decode(const std::string&, StillImagePixels& out, std::string&) override {
+    out.width = out.height = 64;
+    auto bytes = std::make_shared<std::vector<uint8_t>>(64 * 64 * 4, 0);
+    for (size_t index = 0; index < bytes->size(); index += 4) {
+      (*bytes)[index] = 40; (*bytes)[index + 1] = 90;
+      (*bytes)[index + 2] = 150; (*bytes)[index + 3] = 127;
+    }
+    out.bgra = bytes; return true;
+  }
+};
+class PreparedMediaDecoder final : public IMediaDecoder {
+ public:
+  explicit PreparedMediaDecoder(std::shared_ptr<const std::vector<uint8_t>> bytes) : bytes_(std::move(bytes)) {}
+  std::vector<VideoFrame> pollMediaFrames(const MediaDecodeRequest& request, int64_t) override {
+    VideoFrame frame; frame.participantId = request.sourceId;
+    frame.width = frame.height = frame.pixelWidth = frame.pixelHeight = 64;
+    frame.pixelStride = 256; frame.frameId = 17; frame.timestampMs = 1234;
+    frame.pixels = bytes_; return {frame};
+  }
+ private:
+  std::shared_ptr<const std::vector<uint8_t>> bytes_;
+};
+}
+
+TEST(CpuSourcePreparation, StillWorkerPreparesAliasesAndFencesChangedFileWithoutChangingCpuPixels) {
+  PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  auto owner = std::make_shared<CpuSourcePreparation>(true);
+  auto decoder = std::make_unique<PreparedStillDecoder>(); auto* fake = decoder.get();
+  StillMediaFrameCache cache(std::move(decoder), StillMediaFrameCache::kDefaultCacheBudgetBytes, owner);
+  cache.setDesired({{"media:logo", "logo.png"}, {"media:alias", "logo.png"}});
+  ASSERT_TRUE(cache.waitForIdle(5000));
+  auto frames = cache.collectFrames(100); ASSERT_EQ(frames.size(), 2u);
+  EXPECT_EQ(frames[0].pixels, frames[1].pixels);
+  for (auto& frame : frames) {
+    ASSERT_TRUE(frame.preparedGpu);
+    ASSERT_TRUE(await([&] { return bool(frame.preparedGpu->acquire(true)); }));
+    auto result = compositor->render(planFor(frame.participantId), {frame});
+    ASSERT_FALSE(result.preview.bgra.empty());
+    EXPECT_EQ(result.sourceAdmissions.front().state, "ready");
+    EXPECT_EQ(frame.pixels->at(3), 127);
+  }
+  EXPECT_NE(frames[0].preparedGpu->sourceId, frames[1].preparedGpu->sourceId);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+  auto held = cache.collectFrames(200);
+  EXPECT_EQ(held[0].pixels, frames[0].pixels);
+  EXPECT_EQ(held[0].captureTimestamp100ns, frames[0].captureTimestamp100ns);
+  EXPECT_EQ(held[0].timestampMs, 200);
+  fake->version.store(2);
+  cache.setDesired({{"media:logo", "logo.png"}, {"media:alias", "logo.png"}});
+  ASSERT_TRUE(cache.waitForIdle(5000));
+  auto updated = cache.collectFrames(300); ASSERT_EQ(updated.size(), 2u);
+  EXPECT_GT(updated[0].sourceEpoch, frames[0].sourceEpoch);
+  EXPECT_NE(updated[0].pixels, frames[0].pixels);
+  EXPECT_EQ(frames[0].pixels->at(3), 127);
+  ASSERT_TRUE(updated[0].preparedGpu);
+  ASSERT_TRUE(await([&] { return bool(updated[0].preparedGpu->acquire(true)); }));
+}
+
+TEST(CpuSourcePreparation, MissingGpuConsumerFailsFutureArrivalsWithAttributableTokens) {
+  CpuSourcePreparation owner(true);
+  auto first = sourceFrame("source", 1, 1, 80); offer(owner, first);
+  ASSERT_TRUE(first.preparedGpu); first.preparedGpu->acquire(true);
+  ASSERT_TRUE(await([&] { return !owner.stats().supported; }));
+  auto next = sourceFrame("source", 1, 2, 170); offer(owner, next);
+  ASSERT_TRUE(next.preparedGpu); ASSERT_TRUE(next.preparedGpu->demand);
+  EXPECT_TRUE(next.preparedGpu->demand->failed.load());
+  EXPECT_EQ(next.preparedGpu->sourceId, "source");
+  EXPECT_EQ(next.preparedGpu->sourceEpoch, 1u); EXPECT_EQ(next.preparedGpu->frameId, 2);
+  EXPECT_FALSE(next.preparedGpu->acquire(true)); EXPECT_EQ(next.i420->front(), 170);
+}
+
+TEST(CpuSourcePreparation, MediaDecoderWorkerPublishesPreparedPixelsWithoutChangingPlaybackOrCpuIdentity) {
+  PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  auto owner = std::make_shared<CpuSourcePreparation>(true);
+  auto bytes = std::make_shared<const std::vector<uint8_t>>(64 * 64 * 4, 255);
+  corevideo::core::MediaTransports transports([bytes] { return std::make_unique<PreparedMediaDecoder>(bytes); }, owner);
+  corevideo::core::MediaTransportDesired desired;
+  desired.sourceId = "media:clip"; desired.assetId = "clip"; desired.path = "clip.mp4";
+  desired.kind = "video"; desired.onPreview = true;
+  auto changes = transports.apply({desired}, 0); ASSERT_EQ(changes.size(), 1u);
+  std::optional<VideoFrame> frame;
+  int64_t selectedAt100ns = 0;
+  ASSERT_TRUE(await([&] {
+    selectedAt100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+    frame = corevideo::core::MediaTransports::selectVideo(*changes[0].entry, selectedAt100ns);
+    return frame.has_value();
+  }));
+  EXPECT_EQ(frame->pixels, bytes); EXPECT_EQ(frame->frameId, 17);
+  EXPECT_EQ(frame->timestampMs, selectedAt100ns / 10000);
+  {
+    std::lock_guard<std::mutex> lock(changes[0].entry->mutex);
+    EXPECT_EQ(changes[0].entry->video.hold().timestampMs, 1234);
+  }
+  ASSERT_TRUE(frame->preparedGpu);
+  ASSERT_TRUE(await([&] { return bool(frame->preparedGpu->acquire(true)); }));
+  auto result = compositor->render(planFor("media:clip"), {*frame});
+  ASSERT_FALSE(result.preview.bgra.empty()); EXPECT_EQ(result.preview.bgra.front(), 255);
+  EXPECT_EQ(result.sourceAdmissions.front().actualFrameId, 17);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(bytes->front(), 255);
+  const auto oldToken = frame->preparedGpu;
+  const auto oldEpoch = frame->sourceEpoch;
+  const auto oldObservation = frame->captureTimestamp100ns;
+  // Force the existing idle-retirement signal, then exercise the real decoder
+  // owner's refresh while the clip remains cued with no new video identity.
+  oldToken->demand->stopped.store(true);
+  ASSERT_TRUE(await([&] {
+    frame = corevideo::core::MediaTransports::selectVideo(*changes[0].entry, selectedAt100ns);
+    return frame && frame->preparedGpu != oldToken;
+  }));
+  EXPECT_EQ(frame->pixels, bytes); EXPECT_EQ(frame->frameId, 17);
+  EXPECT_EQ(frame->sourceEpoch, oldEpoch); EXPECT_EQ(frame->captureTimestamp100ns, oldObservation);
+  ASSERT_TRUE(await([&] { return bool(frame->preparedGpu->acquire(true)); }));
+  auto reopened = compositor->render(planFor("media:clip"), {*frame});
+  EXPECT_EQ(reopened.sourceAdmissions.front().state, "ready");
+  EXPECT_EQ(reopened.preview.bgra, result.preview.bgra);
 }
 
 TEST(I420SourcePreparation, InvalidDuplicateAndBoundedPendingOffersPreserveCpuFrames) {

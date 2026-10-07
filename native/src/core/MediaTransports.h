@@ -5,6 +5,7 @@
 #include "modules/Interfaces.h"
 #include "modules/MediaPlaybackTimeline.h"
 #include "modules/MediaVideoPresentation.h"
+#include "modules/CpuVideoArrival.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -100,8 +101,8 @@ class MediaTransports final {
     int64_t videoQueued = 0, decoderRestarts = 0;
   };
 
-  explicit MediaTransports(DecoderFactory factory)
-      : factory_(std::move(factory)), manager_([this] { manage(); }) {}
+  explicit MediaTransports(DecoderFactory factory, std::shared_ptr<modules::CpuSourcePreparation> preparation = {})
+      : factory_(std::move(factory)), preparation_(std::move(preparation)), manager_([this] { manage(); }) {}
   ~MediaTransports() {
     { std::lock_guard<std::mutex> lock(mutex_); stopped_ = true; }
     changed_.notify_all();
@@ -600,6 +601,9 @@ class MediaTransports final {
       // owner. MF uses async callbacks, so polls never wait for ReadSample.
       auto decoder = factory_();
       if (!decoder) throw std::runtime_error("Media decoder unavailable.");
+      std::string sourceId;
+      { std::lock_guard<std::mutex> lock(entry->mutex); sourceId = entry->desired.sourceId; }
+      modules::CpuVideoArrival arrival(std::move(sourceId), preparation_);
       auto* prefetchDecoder = dynamic_cast<modules::IMediaVideoPrefetch*>(decoder.get());
       const std::weak_ptr<Entry> weakEntry = entry;
       const auto attachWake = [&] {
@@ -679,6 +683,9 @@ class MediaTransports final {
           std::lock_guard<std::mutex> lock(entry->mutex);
           entry->positionMs = prefetchDecoder ? prefetchDecoder->playbackPositionMs() : -1;
           entry->durationMs = prefetchDecoder ? prefetchDecoder->mediaDurationMs() : -1;
+          if (preparation_) entry->video.refreshPrepared([&](modules::VideoFrame& frame) {
+            arrival.refreshStopped(frame);
+          });
         }
         // A paused clip that has rolled holds its on-air frame: prefetch
         // nothing (no video, no audio) until it resumes. A clip that has
@@ -708,6 +715,7 @@ class MediaTransports final {
           }
         }
         bool sawNewFrame = false;
+        for (auto& sample : video) arrival.prepare(sample.frame);
         for (const auto& sample : video) {
           if (sample.frame.frameId == lastFrameId) continue;
           lastFrameId = sample.frame.frameId; lastNewFrameMs = nowMs;
@@ -818,6 +826,7 @@ class MediaTransports final {
   }
 
   DecoderFactory factory_;
+  std::shared_ptr<modules::CpuSourcePreparation> preparation_;
   mutable std::mutex mutex_;
   std::condition_variable changed_;
   bool stopped_ = false;

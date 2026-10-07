@@ -19,6 +19,7 @@
 #include <vector>
 
 namespace corevideo::modules {
+class CpuSourcePreparation;
 
 struct VideoFrame {
   std::string participantId;
@@ -1755,6 +1756,7 @@ struct ModuleSet {
   bool permitStubZoomSession = true;
 
   std::unique_ptr<ICompositor> compositor;
+  std::shared_ptr<CpuSourcePreparation> cpuSourcePreparation;
   // #535 slice 3b: the module set carries a DECODER FACTORY, not one
   // owner object. core::MediaTransports owns one decoder per media source
   // and calls this to open each. Empty on a platform with no media
@@ -1815,7 +1817,7 @@ std::unique_ptr<ICaptureDevice> createAjaCaptureDevice();
 // frames keyed "capture:<stableDeviceId>" straight into the compositor — no
 // WinUI shared-memory hop. The WinUI bridge remains the fallback path and
 // supersedes these frames for the same device id.
-std::unique_ptr<ICaptureDevice> createUvcCaptureDevice();
+std::unique_ptr<ICaptureDevice> createUvcCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
 
 // Screen capture via Windows.Graphics.Capture (docs/capture-sources-spec.md
 // SC): monitors enumerate as "screen:<n>" capture devices; frames deliver as

@@ -79,6 +79,12 @@ class MediaVideoPresentation {
   const VideoFrame& current() const { return current_; }
   bool hasFrame() const { return current_.hasPixels() || !queued_.empty(); }
   size_t queued() const { return queued_.size(); }
+  // Decoder-owner metadata maintenance only. Does not change playout times,
+  // queue membership or frame order; the render selector never calls this.
+  void refreshPrepared(const std::function<void(VideoFrame&)>& refresh) {
+    if (current_.hasPixels()) refresh(current_);
+    for (auto& sample : queued_) refresh(sample.frame);
+  }
  private:
   std::deque<ScheduledMediaVideo> queued_;
   VideoFrame current_;

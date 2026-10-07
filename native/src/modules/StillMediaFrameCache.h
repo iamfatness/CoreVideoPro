@@ -35,6 +35,7 @@
 // logos composite correctly on program, preview and multiview.
 
 #include "modules/Interfaces.h"
+#include "modules/CpuVideoArrival.h"
 
 #include <condition_variable>
 #include <cstdint>
@@ -93,7 +94,8 @@ class StillMediaFrameCache {
   static constexpr size_t kDefaultCacheBudgetBytes = 64ull * 1024ull * 1024ull;
 
   explicit StillMediaFrameCache(std::unique_ptr<IStillImageDecoder> decoder = createPlatformStillImageDecoder(),
-                                size_t cacheBudgetBytes = kDefaultCacheBudgetBytes);
+                                size_t cacheBudgetBytes = kDefaultCacheBudgetBytes,
+                                std::shared_ptr<CpuSourcePreparation> preparation = {});
   ~StillMediaFrameCache();
 
   StillMediaFrameCache(const StillMediaFrameCache&) = delete;
@@ -134,11 +136,14 @@ class StillMediaFrameCache {
     bool checked = false;  // worker concluded for the current path (bound or failed)
     bool missingFile = false;  // stat failed — re-check periodically (self-heal)
     std::shared_ptr<const CachedImage> bound;
+    std::shared_ptr<CpuVideoArrival> arrival; // worker-only preparation tap per source alias
+    VideoFrame preparedFrame; // published under mutex; render only copies
     std::string failure;  // non-empty => this key currently has no frame, and why
   };
 
   void ensureWorkerLocked();
   void workerLoop();
+  void prepareBoundLocked(const std::string& key, DesiredEntry& entry);
   // Rate-limited (5s/key) stderr warning. Caller holds mutex_.
   void warnRateLimitedLocked(const std::string& key, const std::string& message);
   // Evicts least-recently-used cache entries not currently desired until the
@@ -147,6 +152,7 @@ class StillMediaFrameCache {
 
   std::unique_ptr<IStillImageDecoder> decoder_;
   const size_t cacheBudgetBytes_;
+  std::shared_ptr<CpuSourcePreparation> preparation_;
 
   mutable std::mutex mutex_;
   mutable std::condition_variable workerCv_;

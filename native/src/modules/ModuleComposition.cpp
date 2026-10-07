@@ -12,11 +12,13 @@
 #include "modules/OutputDestinationSupervisor.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/WinUiCaptureDeviceAdapter.h"
+#include "modules/CpuSourcePreparation.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -429,6 +431,8 @@ ModuleSet createDefaultModules() {
   recordCapability(modules, "gpu-compositor", modules.compositor->rendererName() != "software"
       ? "available" : (COREVIDEO_WITH_D3D11 || COREVIDEO_WITH_METAL)
           ? "failed-to-construct" : "omitted", COREVIDEO_STUB ? "stub-build" : "");
+  if (const char* prepare = std::getenv("COREVIDEO_CPU_SOURCE_PREPARATION"); prepare && std::string(prepare) == "1")
+    modules.cpuSourcePreparation = std::make_shared<CpuSourcePreparation>(true);
   if (auto mediaDecoderFactory = createMediaFoundationMediaDecoderFactory()) {
     modules.mediaDecoderFactory = std::move(mediaDecoderFactory);
   }
@@ -573,7 +577,7 @@ ModuleSet createDefaultModules() {
   // these frames for a device the shell bridges via shm, so the WinUI path
   // remains the fallback arbiter for the same device id.
   bool cameraConstructed = false;
-  if (auto uvc = createUvcCaptureDevice()) {
+  if (auto uvc = createUvcCaptureDevice(modules.cpuSourcePreparation)) {
     hardwareCaptureDevices.push_back(std::move(uvc));
     cameraConstructed = true;
   }

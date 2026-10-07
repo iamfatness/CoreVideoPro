@@ -177,6 +177,7 @@ phrase they quote.
 | [`docs/reference/output-supervisor.md`](docs/reference/output-supervisor.md) | stream/record destinations, restarts, the output supervisor |
 | [`docs/reference/performance-profiling.md`](docs/reference/performance-profiling.md) | measuring lag/stutter/crash: PresentMon, perf.log, dumps |
 | [`docs/reference/persistent-media-source.md`](docs/reference/persistent-media-source.md) | media/clip/still sources, cue/live/pause transport |
+| [`docs/reference/cpu-source-preparation.md`](docs/reference/cpu-source-preparation.md) | bounded CPU arrival preparation, GPU identity and held-frame refresh |
 | [`docs/reference/recording-output-location.md`](docs/reference/recording-output-location.md) | recording output paths |
 | [`docs/reference/secrets-and-oauth.md`](docs/reference/secrets-and-oauth.md) | secrets storage, OAuth return URI |
 | [`docs/reference/shared-texture-export-cost.md`](docs/reference/shared-texture-export-cost.md) | creating D3D exports / anything new on the render thread |

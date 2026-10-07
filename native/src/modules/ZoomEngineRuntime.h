@@ -21,11 +21,10 @@
 #include <vector>
 
 namespace corevideo::modules {
-class I420SourcePreparation;
 
 class ZoomEngineRuntime {
  public:
-  ZoomEngineRuntime();
+  explicit ZoomEngineRuntime(std::shared_ptr<CpuSourcePreparation> preparation = {});
   ~ZoomEngineRuntime();
 
   ZoomEngineRuntime(const ZoomEngineRuntime&) = delete;
@@ -335,7 +334,7 @@ class ZoomEngineRuntime {
     bool lumaRangeProbed = false;
   };
   std::map<std::string, VideoStreamRef> videoStreams_;
-  std::unique_ptr<I420SourcePreparation> i420Preparation_;
+  std::shared_ptr<CpuSourcePreparation> i420Preparation_;
   std::uint64_t staleVideoPublications_ = 0;
   std::uint64_t videoPublishedSinceLog_ = 0;
   std::chrono::steady_clock::time_point videoPublishLogStamp_ = std::chrono::steady_clock::now();

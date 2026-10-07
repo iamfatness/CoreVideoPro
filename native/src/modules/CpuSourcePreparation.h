@@ -1,0 +1,33 @@
+#pragma once
+#include "modules/CpuSourceGpuView.h"
+#include <functional>
+
+namespace corevideo::modules {
+// Actual decoded-arrival tap. Offers occur before source playout/guest trim;
+// Program selects the same token later and resolves only its exact ready view.
+class CpuSourcePreparation {
+ public:
+  static constexpr size_t kMaxSources = 64, kMaxActive = 16, kPendingPerSource = 28;
+  struct Stats { bool requested = false, supported = false;
+    uint64_t prepared = 0, refused = 0, superseded = 0, failed = 0;
+    size_t sources = 0, active = 0;
+  };
+  // Test-only resource/upload interleaving hooks; no command/settings/environment accepts them.
+  explicit CpuSourcePreparation(bool enabled, std::function<void(const std::string&)> beforeResources = {},
+      std::function<void(const std::string&)> afterUpload = {});
+  ~CpuSourcePreparation();
+  std::shared_ptr<CpuSourceGpuView> offer(const std::string& sourceId, uint64_t epoch, int64_t frameId,
+      int64_t captureTimestamp100ns, int width, int height,
+      const std::shared_ptr<const std::vector<uint8_t>>& cpu);
+  Stats stats() const;
+  std::shared_ptr<CpuSourceGpuView> offerBgra(const std::string& sourceId, uint64_t epoch, int64_t frameId,
+      int64_t captureTimestamp100ns, int width, int height, int stride,
+      const std::shared_ptr<const std::vector<uint8_t>>& cpu);
+ private:
+  std::shared_ptr<CpuSourceGpuView> offerCpu(const std::string& sourceId, uint64_t epoch, int64_t frameId,
+      int64_t captureTimestamp100ns, int width, int height, int stride, bool bgra,
+      const std::shared_ptr<const std::vector<uint8_t>>& cpu);
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+}

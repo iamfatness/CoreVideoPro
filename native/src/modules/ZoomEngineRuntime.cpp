@@ -58,13 +58,15 @@ std::atomic<uint64_t> nextVideoSourceEpoch{1};
 
 }  // namespace
 
-ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()) {
+ZoomEngineRuntime::ZoomEngineRuntime(std::shared_ptr<CpuSourcePreparation> preparation)
+    : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()) {
   // Frame sync is ON by default (owner decision 2026-08-06: behave like a
   // hardware switcher input). COREVIDEO_FRAME_SYNC=0 trades the smoothness back
   // for one frame of latency — keep it working, it is the A/B control.
   frameSyncEnabled_ = envInt("COREVIDEO_FRAME_SYNC", 1) != 0;
-  if (envString("COREVIDEO_CPU_SOURCE_PREPARATION") == "1")
-    i420Preparation_ = std::make_unique<I420SourcePreparation>(true);
+  i420Preparation_ = std::move(preparation);
+  if (!i420Preparation_ && envString("COREVIDEO_CPU_SOURCE_PREPARATION") == "1")
+    i420Preparation_ = std::make_shared<CpuSourcePreparation>(true);
 }
 
 ZoomEngineRuntime::~ZoomEngineRuntime() {
