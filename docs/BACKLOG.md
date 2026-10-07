@@ -61,9 +61,10 @@ priority while the remaining acceptance stays open.
 
 Owner approved prioritizing [#804](https://github.com/iamfatness/CoreVideoPro/issues/804)
 on October 7 ahead of the remaining #802 admission/health work: isolate optional
-shell/multiview export API stalls from scheduled Program publication. PR #808 stays
-draft, with its failed exact-head cadence evidence retained, until this repair is
-qualified. Installed validation may resume now that the owner reports the app closed.
+shell/multiview export API stalls from scheduled Program publication. PR #809 and
+PR #808 are merged; the failed intermediate cadence/source evidence remains
+retained. Remaining #802 producer and lifecycle work resumes. Installed validation
+may resume now that the owner reports the app closed; defaults remain gated by #517.
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
@@ -104,7 +105,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 | Issue | Remaining work |
 |---|---|
 | [#798](https://github.com/iamfatness/CoreVideoPro/issues/798) | Hosted fake-core initial zoom-snapshot request timed out before polling assertions in #792 CI. Exact PR full suite and targeted hosted rerun passed; failed job retained. Attribution unknown, distinct from #754; needs owner rank. |
-| [#802](https://github.com/iamfatness/CoreVideoPro/issues/802) | Approved #517 CPU fallback boundary after merged #797/#801. Merged #805 fixes GPU/CPU format coexistence and #806 prepares SHM BGRA. Draft [#808](https://github.com/iamfatness/CoreVideoPro/pull/808) adds decoded-arrival I420 preparation with real consumer/pixel/reconnect checks; strict ready-only Program admission, recovery and measured delivery qualification remain. Preserve source playout/guest trim, CPU/ISO and identity. No independent rank change. |
+| [#802](https://github.com/iamfatness/CoreVideoPro/issues/802) | Approved #517 CPU fallback boundary after merged #797/#801. Merged #805/#806/#808 implement format coexistence, SHM BGRA, decoded I420, strict ready-only admission and sampled source-health evidence. Eight matched trials delivered 57,675 measured Program packets without native/recording loss; combined preparation/isolation had zero measured render misses in both reference scenes. Native UVC arrival support is in progress. Other CPU producers, recovery, latency and installed qualification remain. Preserve source playout/guest trim, CPU/ISO and identity. No independent rank change. |
 | [#804](https://github.com/iamfatness/CoreVideoPro/issues/804) | #517 measured follow-on: GPU-ready Program packets expired during scheduled shell/multiview export calls (16.6–19.4 ms); retained losses fail release qualification. Owner-promoted repair merged in [#809](https://github.com/iamfatness/CoreVideoPro/pull/809); six matched trials and full native/CI pass. Receiver/display, installed/fleet and lifecycle qualification remain. Remaining #802 work resumes. |
 | [#807](https://github.com/iamfatness/CoreVideoPro/issues/807) | macOS Metal full native CI suite segfaulted on #806 after focused checks passed. Attribution unconfirmed; retain the failed trial, identify the test/stack and verify exact-head CI. Unranked; does not replace approved #802 work. |
 | [#782](https://github.com/iamfatness/CoreVideoPro/issues/782) | Windows supervisor disposal queried an already-disposed Process in the crash lock-order CI test. Captured stack and run; attribution and focused fix need owner rank. |

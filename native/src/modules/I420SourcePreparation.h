@@ -12,8 +12,9 @@ class I420SourcePreparation {
     uint64_t prepared = 0, refused = 0, superseded = 0, failed = 0;
     size_t sources = 0, active = 0;
   };
-  // Test-only resource hook; no command/settings/environment accepts it.
-  explicit I420SourcePreparation(bool enabled, std::function<void(const std::string&)> beforeResources = {});
+  // Test-only resource/upload interleaving hooks; no command/settings/environment accepts them.
+  explicit I420SourcePreparation(bool enabled, std::function<void(const std::string&)> beforeResources = {},
+      std::function<void(const std::string&)> afterUpload = {});
   ~I420SourcePreparation();
   std::shared_ptr<CpuSourceGpuView> offer(const std::string& sourceId, uint64_t epoch, int64_t frameId,
       int64_t captureTimestamp100ns, int width, int height,

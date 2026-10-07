@@ -40,11 +40,13 @@ struct I420SourcePreparation::Impl {
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   std::function<void(const std::string&)> beforeResources;
+  std::function<void(const std::string&)> afterUpload;
   std::thread gpuThread, resourceThread;
   inline static std::mutex quarantineMutex;
   inline static std::vector<std::shared_ptr<D3DI420FramePool>> quarantined;
 
-  explicit Impl(bool enabled, std::function<void(const std::string&)> hook) : beforeResources(std::move(hook)) {
+  explicit Impl(bool enabled, std::function<void(const std::string&)> hook, std::function<void(const std::string&)> uploaded)
+      : beforeResources(std::move(hook)), afterUpload(std::move(uploaded)) {
     measured.requested = enabled; measured.supported = true;
     if (enabled) {
       try {
@@ -153,12 +155,12 @@ struct I420SourcePreparation::Impl {
       const auto selected = source->demand->selectedFrameId.load();
       for (auto& ready : source->ready) {
         const auto token = ready.token.lock();
-        if (ready.image && (source->demand->stopped.load() || !token || token->consumed.load() || token->frameId < selected))
+        if (ready.image && (source->demand->stopped.load() || !token || token->consumed.load()))
           ready = {}; // active Program source/read caches still own their wrapper
       }
       if (source->pendingSlot >= 0) {
         if (auto storage = pool->completed(context.Get(), source->pendingSlot)) {
-          if (!source->demand->stopped.load() && source->pending && source->pending->frameId >= selected) {
+          if (!source->demand->stopped.load() && source->pending) {
             auto image = std::make_shared<D3DI420VideoImage>(std::move(storage), *source->pending);
             auto& ready = source->ready[source->pendingSlot];
             ready = {source->pending, image};
@@ -183,16 +185,31 @@ struct I420SourcePreparation::Impl {
         while (!source->queued.empty()) {
           next = source->queued.front().lock();
           if (next && next->frameId >= selected && !next->cpu.expired()) break;
+          if (next) next->superseded.store(true); // selected token was never submitted
           source->queued.pop_front(); ++measured.superseded; next.reset();
         }
       }
       if (!next) continue;
       auto cpu = next->cpu.lock(); if (!cpu) continue;
-      const int slot = pool->beginUpload(context.Get(), *cpu);
+      int slot = pool->beginUpload(context.Get(), *cpu);
+      if (slot < 0) {
+        // Late completions remain readable across newer CPU selections, but
+        // producer-owned completion retention cannot consume all three slots.
+        auto oldest = source->ready.end();
+        size_t count = 0;
+        for (auto it = source->ready.begin(); it != source->ready.end(); ++it) if (it->image) {
+          ++count;
+          if (oldest == source->ready.end() || it->image->sourceFrameId < oldest->image->sourceFrameId) oldest = it;
+        }
+        if (count > 1) { *oldest = {}; slot = pool->beginUpload(context.Get(), *cpu); }
+      }
       if (slot >= 0) {
         source->pendingSlot = slot; source->pending = next; submitted = true;
-        std::lock_guard<std::mutex> lock(mutex);
-        if (!source->queued.empty() && source->queued.front().lock() == next) source->queued.pop_front();
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          if (!source->queued.empty() && source->queued.front().lock() == next) source->queued.pop_front();
+        }
+        if (afterUpload) afterUpload(source->id); // test-only interleaving seam
       }
     }
     if (submitted) context->Flush(); // one batch submission, only on GPU owner
@@ -236,12 +253,13 @@ struct I420SourcePreparation::Impl {
     }
   }
 #else
-  explicit Impl(bool enabled, std::function<void(const std::string&)>) { measured.requested = enabled; }
+  explicit Impl(bool enabled, std::function<void(const std::string&)>, std::function<void(const std::string&)>) { measured.requested = enabled; }
 #endif
 };
 
-I420SourcePreparation::I420SourcePreparation(bool enabled, std::function<void(const std::string&)> hook)
-    : impl_(std::make_unique<Impl>(enabled, std::move(hook))) {}
+I420SourcePreparation::I420SourcePreparation(bool enabled, std::function<void(const std::string&)> hook,
+    std::function<void(const std::string&)> uploaded)
+    : impl_(std::make_unique<Impl>(enabled, std::move(hook), std::move(uploaded))) {}
 I420SourcePreparation::~I420SourcePreparation() = default;
 I420SourcePreparation::Stats I420SourcePreparation::stats() const { std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->measured; }
 std::shared_ptr<CpuSourceGpuView> I420SourcePreparation::offer(const std::string& id, uint64_t epoch,

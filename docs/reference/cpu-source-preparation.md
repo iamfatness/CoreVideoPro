@@ -69,6 +69,31 @@ tokens per source. Only Program demand activates a pool. Five seconds without
 demand retires it; external GPU leases defer release. These planes share the
 existing 512 MiB logical source-GPU budget with BGRA images.
 
+## Native Media Foundation I420 capture
+
+The same launch opt-in requests a preparation owner shared by the native UVC
+adapter's capture sessions. `I420CaptureArrival` offers the immutable repacked
+NV12/YUY2 planes on the capture thread, outside the snapshot mutex. Each real
+arrival gets a local observation timestamp and increasing frame identity.
+Reconnect or dimension change assigns a new epoch, even if frame numbering
+restarts. The routing alias is fixed before the capture thread starts, so the
+token and source descriptor use the same `capture:` identity. Adapter polling
+copies the held descriptor and token; it does not offer another arrival.
+
+CPU/ISO bytes and negotiated color hints remain authoritative. Disabled
+preparation retains the CPU path. This adds no capture FIFO or Program buffer.
+It does not qualify CPU BGRA media, browser or native WGC fallback producers.
+
+The I420 owner retains attributable submitted completions when a newer CPU
+selection arrives. A newer selection cannot relabel or erase an in-flight
+image. Unsubmitted obsolete tokens are explicitly superseded so Program can
+replace a pending identity that will never complete. On upload pressure the
+owner releases its oldest completed image while retaining the current one;
+consumer/GPU-read leases still prevent slot reuse. CPU tokens do not pin slots.
+This matters for unbuffered 60 fps capture, where GPU completion commonly
+occurs after the next CPU arrival. Tests force that interleaving and compare
+the older admitted pixels, followed by the newer identity.
+
 Every completed frame has a unique immutable wrapper. CPU/ISO tokens hold only
 weak GPU publication references. Reusing a plane slot cannot make a retained
 old CPU token resolve newer pixels. Program's existing read queries protect
