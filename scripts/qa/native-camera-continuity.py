@@ -48,6 +48,11 @@ def main():
         (output / "setup.json").write_text(json.dumps(response, indent=2))
         if not response.get("ok"):
             raise RuntimeError("reference output setup refused")
+        camera = response.get("snapshot", {}).get("virtualCamera", {})
+        if camera.get("status") == "failed":
+            raise RuntimeError("OS camera activation failed: " + str(camera.get("warning", "unknown reason")))
+        if not camera.get("enabled"):
+            raise RuntimeError("OS camera output did not become enabled; setup evidence is incomplete")
         with raw_path.open("wb") as raw, (output / "receiver.stderr.log").open("wb") as error:
             receiver = subprocess.Popen([str(args.receiver.resolve()), str(args.duration)],
                 stdout=raw, stderr=error, stdin=subprocess.DEVNULL,
