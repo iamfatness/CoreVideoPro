@@ -31,7 +31,13 @@ Idle GPU retirement does not invalidate the CPU frame. Still and decoder
 workers refresh stopped tokens for exact held descriptors without advancing
 playout or changing observation time. Failed GPU owners publish attributable
 failed tokens for subsequent valid arrivals; they cannot silently resurrect
-an old prepared image. Device/consumer recreation is separate qualification.
+an old prepared image. The GPU owner watches production consumer registration.
+A changed production consumer set fences prepared tokens; producer arrivals
+and held-frame refresh create new immutable views on the resource owner.
+Old GPU reads remain charged until they finish, with one retiring generation
+per source. Monitor-only registration does not fence production preparation.
+Same-adapter consumer recreation has real BGRA/I420 pixel tests; preparation
+device loss and adapter migration remain separate qualification.
 
 WGC CPU fallback transfers OS frames to the bounded capture worker and offers
 BGRA before publishing its descriptor. The descriptor snapshots its logical
