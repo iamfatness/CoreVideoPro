@@ -3,7 +3,7 @@
 
 import argparse, pathlib, json, time, hashlib, mmap, struct, threading, uuid, sys, math, subprocess
 from contextlib import ExitStack
-from monitor_evidence import Core, judge, counters, judge_recording
+from monitor_evidence import Core, judge, counters, judge_recording, SourceAdmissionJudge
 
 
 def fixed(route_id, pid):
@@ -138,6 +138,7 @@ def main():
         if any(
             r.get("programBufferVerdict") != "PASS"
             or r.get("recordingVerdict") != "PASS"
+            or r.get("sampledSourceAdmissionVerdict") == "FAIL"
             for r in results
         )
         else 0
@@ -154,6 +155,9 @@ def run_trial(a, exe, fake, out, label, isolated, results):
     captures = []
     stop = threading.Event()
     publisher = None
+    admission_judge = SourceAdmissionJudge(
+        ["capture:" + route["captureDeviceId"] if route["mode"] == "capture-input" else route["participantId"]
+         for route in program_routes(a.program_scene)], a.cpu_source_preparation == "1")
 
     def make_core():
         return Core(
@@ -376,6 +380,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
         ), "capture sources not flowing"
 
         def retain(snapshot):
+            admission_judge.observe(snapshot)
             if (
                 snapshot["programBuffer"]["generation"]
                 != first["programBuffer"]["generation"]
@@ -434,6 +439,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
             "seconds": seconds,
             **judge(samples, isolated),
             **judge_recording(first, last),
+            **admission_judge.result(),
         }
         result["observedSourceFormats"] = [
             {

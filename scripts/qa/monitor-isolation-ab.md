@@ -57,6 +57,14 @@ boundary. Exit 1 means at least one trial failed or is invalid; a failing inline
 control is useful evidence and must not be discarded. Short smoke tests may
 override duration/pairs but do not meet the specification's repeatability gate.
 
+When preparation is enabled, `sampledSourceAdmissionVerdict` independently
+requires every selected reference source to have ready/held, nonfuture,
+same-epoch actual identities that advance with new CPU arrivals at the
+quarter-second sample boundaries. Missing evidence and a frozen actual image
+fail even if Program keeps delivering slate frames without a buffer underrun.
+The preparation-off control reports NOT_REQUESTED. This is sampled source
+evidence, not every-frame source continuity or physical presentation proof.
+
 Both verdicts remain aggregate evidence. Advancing texture metadata and a
 playable MP4 do not establish per-frame identity, actual display presentation,
 GPU readiness, decoded A/V skew or camera receiver delivery. Release

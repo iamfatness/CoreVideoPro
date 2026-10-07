@@ -43,6 +43,7 @@ struct CpuSourceGpuView {
   std::shared_ptr<CpuSourceGpuDemand> demand;
   CpuSourceGpuPublication ready;
   std::atomic<bool> consumed{false};
+  std::atomic<bool> completionPublished{false};
 
   std::shared_ptr<const GpuVideoFrame> acquire(bool select) {
     if (!demand || demand->stopped.load() || demand->failed.load()) return {};

@@ -3,7 +3,41 @@ import sys
 import tempfile
 import unittest
 
-from monitor_evidence import COUNTERS, Core, judge, judge_recording
+from monitor_evidence import COUNTERS, Core, judge, judge_recording, SourceAdmissionJudge
+
+
+class SourceAdmissionTests(unittest.TestCase):
+    def row(self, requested=11, actual=10, **changes):
+        row = dict(sourceId="capture:screen", state="held", requestedEpoch=1, actualEpoch=1,
+                   requestedFrameId=requested, actualFrameId=actual,
+                   requestedCapture100ns=requested * 1000, actualCapture100ns=actual * 1000)
+        row.update(changes)
+        return {"programSourceAdmission": {"version": 1, "readyOnlyRequested": True, "sources": [row]}}
+
+    def test_progressing_held_images_are_only_a_sampled_pass(self):
+        evidence = SourceAdmissionJudge(["capture:screen"], True)
+        evidence.observe(self.row())
+        evidence.observe(self.row(12, 11))
+        self.assertEqual("PASS", evidence.result()["sampledSourceAdmissionVerdict"])
+        self.assertIn("not every composed frame", evidence.result()["sourceAdmissionScope"])
+
+    def test_frozen_image_fails_despite_advancing_requested_identity(self):
+        evidence = SourceAdmissionJudge(["capture:screen"], True)
+        evidence.observe(self.row(12, 4))
+        evidence.observe(self.row(12000, 4))
+        self.assertEqual("FAIL", evidence.result()["sampledSourceAdmissionVerdict"])
+
+    def test_missing_unknown_or_future_evidence_never_passes(self):
+        for sample in ({}, self.row(actualFrameId=None), self.row(actual=12), self.row(actualEpoch=2), self.row(actualFrameId=10.5)):
+            evidence = SourceAdmissionJudge(["capture:screen"], True)
+            evidence.observe(sample)
+            evidence.observe(self.row(12, 11))
+            self.assertEqual("FAIL", evidence.result()["sampledSourceAdmissionVerdict"])
+
+    def test_disabled_preparation_is_not_claimed_as_a_source_pass(self):
+        evidence = SourceAdmissionJudge(["capture:screen"], False)
+        evidence.observe({})
+        self.assertEqual("NOT_REQUESTED", evidence.result()["sampledSourceAdmissionVerdict"])
 
 
 def snapshot():

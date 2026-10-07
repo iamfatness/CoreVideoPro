@@ -163,6 +163,7 @@ struct I420SourcePreparation::Impl {
             auto& ready = source->ready[source->pendingSlot];
             ready = {source->pending, image};
             source->pending->ready.store(image);
+            source->pending->completionPublished.store(true);
             std::lock_guard<std::mutex> lock(mutex); ++measured.prepared;
           } else { std::lock_guard<std::mutex> lock(mutex); ++measured.superseded; }
           source->pendingSlot = -1; source->pending.reset();

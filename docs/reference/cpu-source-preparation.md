@@ -11,14 +11,15 @@ adapter. Each mapping generation owns a three-image `D3DVideoFramePool`.
 `BgraSourcePreparation` uploads the immutable BGRA bytes with their actual
 row stride, submits an event query and polls on the preparation owner. Program
 does not create these images, upload these bytes or poll this producer context.
-Only a completed upload matching the current participant id, source epoch,
-frame id and dimensions can attach a GPU representation. A superseded upload
-cannot replace the authoritative CPU frame or spend a source's playout reserve.
+Each completion publishes a uniquely attributed wrapper through the original
+CPU frame's weak token. Late completion remains attributable even after newer
+CPU arrivals. It cannot replace the authoritative CPU frame or spend a source's
+playout reserve; Program reports an older admitted completion as held.
 
 CPU bytes, capture observation time and source identity remain unchanged for
-ISO and software consumers. Until a matching GPU representation is ready, the
-existing CPU path remains available. The opt-in therefore does **not** assert
-that every Program frame avoids CPU uploads. No additional playout FIFO or
+ISO and software consumers. The enabled Program path uses completed images or
+an explicit hold/slate, without a CPU source upload fallback. The default-off
+path retains its original CPU behavior. No additional playout FIFO or
 Program buffer is introduced. The existing 2 ms owner polling can affect when
 a representation becomes usable; latency qualification must measure that
 boundary rather than assume it is free.
@@ -102,6 +103,15 @@ does not fall back to a Program CPU upload. CPU/ISO descriptors remain original.
 The bounded 64-source hold cache expires after 300 unused Program frames and
 is separate from inline optional-pass caches. Held color hints belong to the
 actual image, while operator framing/grade still follow the current plan.
+One additional selected-identity token per source can observe a late completion;
+its descriptor retains no CPU/ISO payload. Expired publication, failure,
+source epoch and size changes invalidate that pending identity. A completed
+older selection is explicitly held, with its actual identity, never relabeled
+as the latest requested source frame. BGRA mapping completions use unique
+identity wrappers and weak publication just like I420. The producer retains
+at most two completed BGRA images within its existing three-slot pool,
+independent of CPU/ISO token lifetime; pressure retires the oldest owner-held
+completion while GPU read leases still protect any consumer's pixels.
 Inline participant source exports are suspended in this mode with the explicit
 source-exports-require-monitor-isolation warning; enable monitor isolation for
 independent source exports. The opt-in never silently changes that flag.

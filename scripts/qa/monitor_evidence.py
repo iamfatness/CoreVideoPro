@@ -180,6 +180,56 @@ def judge(snapshots, isolated):
     }
 
 
+class SourceAdmissionJudge:
+    """Sparse shell-snapshot checks, never per-frame or presentation proof."""
+    def __init__(self, source_ids, enabled):
+        self.sources = set(source_ids)
+        self.enabled = enabled
+        self.previous = {}
+        self.errors = set()
+        self.samples = 0
+
+    def observe(self, snapshot):
+        if not self.enabled:
+            return
+        self.samples += 1
+        admission = snapshot.get("programSourceAdmission")
+        if not isinstance(admission, dict) or admission.get("version") != 1 or admission.get("readyOnlyRequested") is not True:
+            self.errors.add("missing-or-inactive-admission-evidence")
+            return
+        rows = admission.get("sources")
+        if not isinstance(rows, list) or len(rows) > 64:
+            self.errors.add("invalid-source-admission-array")
+            return
+        observed = {}
+        for row in rows:
+            if isinstance(row, dict) and row.get("sourceId") in self.sources:
+                observed[row["sourceId"]] = row
+        if set(observed) != self.sources:
+            self.errors.add("selected-source-evidence-missing")
+        for source, row in observed.items():
+            fields = ["requestedEpoch", "actualEpoch", "requestedFrameId", "actualFrameId", "requestedCapture100ns", "actualCapture100ns"]
+            if row.get("state") not in ("ready", "held") or any(type(row.get(field)) not in (int, float) or not math.isfinite(row[field]) or row[field] < 0 or row[field] != math.floor(row[field]) for field in fields):
+                self.errors.add(source + ":unavailable-or-invalid-identity")
+                continue
+            if row["actualEpoch"] != row["requestedEpoch"] or row["actualFrameId"] > row["requestedFrameId"] or row["actualCapture100ns"] > row["requestedCapture100ns"]:
+                self.errors.add(source + ":future-or-wrong-epoch")
+            previous = self.previous.get(source)
+            if previous and (row["actualFrameId"] < previous["actualFrameId"] or
+                    (row["requestedFrameId"] > previous["requestedFrameId"] and row["actualFrameId"] == previous["actualFrameId"])):
+                self.errors.add(source + ":actual-image-did-not-advance-with-arrivals")
+            self.previous[source] = row
+
+    def result(self):
+        if not self.enabled:
+            return {"sampledSourceAdmissionVerdict": "NOT_REQUESTED"}
+        if self.samples < 2:
+            self.errors.add("insufficient-source-observations")
+        return {"sampledSourceAdmissionVerdict": "FAIL" if self.errors else "PASS",
+                "sourceAdmissionErrors": sorted(self.errors), "sourceAdmissionSamples": self.samples,
+                "sourceAdmissionScope": "Periodic completed shell snapshots; not every composed frame or physical presentation"}
+
+
 def judge_recording(first, last):
     """Recording proof counters include startup; compare only measured deltas."""
     fields = (
