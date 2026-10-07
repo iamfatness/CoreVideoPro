@@ -47,7 +47,15 @@ stopped held tokens without new CPU bytes or a new observation time. CPU demand
 preserves pending capture order; capacity refusals remain reported as drops.
 Direct GPU capture and its separate CPU/ISO branch retain their own payloads.
 
-This wiring does not cover browser input. SHM BGRA uses its existing owner.
+Browser input uses one bounded reader thread with at most 64 sources when
+preparation is enabled. OS mapping, seqlock BGRA copying and preparation run
+outside the adapter's metadata lock. Program polls immutable descriptors.
+Each actual host spawn receives a unique SHM name and reader generation;
+retained old readers cannot collide with a restarted host or publish into a
+removed/replaced source. Reader observations are stamped on exact copied
+pixels; the browser SHM ABI does not carry host acquisition time. Held tokens
+refresh on the reader. Original CPU/ISO bytes and legacy preparation-off
+polling remain available. SHM BGRA uses its existing separate owner.
 Installed output continuity, receiver/display identities,
 latency, A/V and hardware qualification remain governed by #802/#517 and the
 [render delivery specification](render-delivery-spec.md).

@@ -396,6 +396,8 @@ MediaCore::MediaCore(modules::ModuleSet modules)
     mediaTransports_ = std::make_unique<core::MediaTransports>(modules_.mediaDecoderFactory, modules_.cpuSourcePreparation);
   }
   if (modules_.cpuSourcePreparation)
+    browserSources_ = modules::createBrowserSourceHostAdapter(modules_.cpuSourcePreparation);
+  if (modules_.cpuSourcePreparation)
     stillMediaCache_ = std::make_unique<modules::StillMediaFrameCache>(modules::createPlatformStillImageDecoder(),
         modules::StillMediaFrameCache::kDefaultCacheBudgetBytes, modules_.cpuSourcePreparation);
   // Put the virtual camera on the RENDER cadence. Publishing it from the ~50Hz

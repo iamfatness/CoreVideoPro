@@ -4,6 +4,7 @@
 #include "modules/BrowserHostExitMessage.h"
 
 #include "modules/BrowserSourceShm.h"
+#include "modules/CpuSourcePreparation.h"
 
 #include <algorithm>
 #include <chrono>
@@ -79,9 +80,55 @@ unsigned long currentPid() {
 
 }  // namespace
 
-BrowserSourceHostAdapter::BrowserSourceHostAdapter(std::string hostExecutablePath)
+// One reader generation per actual host. The reader thread owns mapping,
+// seqlock copying and arrival preparation; snapshot polling owns no pixels.
+struct BrowserSourceHostAdapter::CpuReader {
+  std::string shmName;
+  int width, height;
+  int64_t frameId, lastMapAttemptMs = 0;
+  void* handle = nullptr;
+  const uint8_t* view = nullptr;
+  size_t bytes = 0;
+  uint32_t sequence = 0;
+  uint64_t epoch;
+  VideoFrame frame;
+  explicit CpuReader(const Source& source)
+      : shmName(source.shmName), width(source.width), height(source.height),
+        frameId(source.frameId), epoch(source.sourceEpoch) {}
+  ~CpuReader() {
+#ifdef _WIN32
+    if (view) UnmapViewOfFile(view);
+    if (handle) CloseHandle(static_cast<HANDLE>(handle));
+#else
+    if (view) ::munmap(const_cast<uint8_t*>(view), bytes);
+    if (handle) ::close(static_cast<int>(reinterpret_cast<intptr_t>(handle)));
+#endif
+  }
+  void map(int64_t now) {
+    if (view || now - lastMapAttemptMs < kMapRetryIntervalMs) return;
+    lastMapAttemptMs = now;
+    bytes = browsershm::mappingBytes(width, height);
+#ifdef _WIN32
+    handle = OpenFileMappingA(FILE_MAP_READ, FALSE, shmName.c_str());
+    if (!handle) return;
+    view = static_cast<const uint8_t*>(MapViewOfFile(static_cast<HANDLE>(handle), FILE_MAP_READ, 0, 0, bytes));
+    if (!view) { CloseHandle(static_cast<HANDLE>(handle)); handle = nullptr; }
+#else
+    const int fd = ::shm_open(shmName.c_str(), O_RDONLY, 0);
+    if (fd < 0) return;
+    void* mapped = ::mmap(nullptr, bytes, PROT_READ, MAP_SHARED, fd, 0);
+    if (mapped == MAP_FAILED) { ::close(fd); return; }
+    handle = reinterpret_cast<void*>(static_cast<intptr_t>(fd));
+    view = static_cast<const uint8_t*>(mapped);
+#endif
+  }
+};
+
+BrowserSourceHostAdapter::BrowserSourceHostAdapter(std::string hostExecutablePath,
+    std::shared_ptr<CpuSourcePreparation> preparation, std::function<void()> beforeRead)
     : hostExecutablePath_(hostExecutablePath.empty() ? resolveDefaultHostPath()
-                                                     : std::move(hostExecutablePath)) {}
+                                                     : std::move(hostExecutablePath)), preparation_(std::move(preparation)),
+      beforeRead_(std::move(beforeRead)) {}
 
 BrowserSourceHostAdapter::~BrowserSourceHostAdapter() {
   {
@@ -97,6 +144,7 @@ BrowserSourceHostAdapter::~BrowserSourceHostAdapter() {
   if (supervisor_.joinable()) {
     supervisor_.join();
   }
+  if (reader_.joinable()) reader_.join();
 }
 
 bool BrowserSourceHostAdapter::validateAddRequest(const std::string& url, int width, int height,
@@ -144,6 +192,10 @@ std::string BrowserSourceHostAdapter::addSource(const std::string& url, int widt
   std::string id;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (preparation_ && sources_.size() >= CpuSourcePreparation::kMaxSources) {
+      error = "Browser preparation source capacity reached (64).";
+      return {};
+    }
     const int ordinal = nextOrdinal_++;
     id = "browser:" + std::to_string(ordinal);
     Source source;
@@ -202,6 +254,7 @@ bool BrowserSourceHostAdapter::reloadSource(const std::string& id, std::string& 
     if (!reloadedInPlace) {
       // Dead / gave-up / unpipeable host: give it a fresh restart cycle.
       closeProcessLocked(source);
+      closeMappingLocked(source);
       source.policy.reset();
       source.lastError.clear();
       needsRespawn = true;
@@ -255,6 +308,14 @@ std::vector<VideoFrame> BrowserSourceHostAdapter::pollVideoFrames(int64_t timest
   const int64_t now = nowMs();
   std::vector<VideoFrame> frames;
   for (auto& [id, source] : sources_) {
+    if (preparation_) {
+      if (!source.preparedFrame.hasPixels() ||
+          (!source.processHandle && now - source.lastFrameAtMs > kFrozenFrameGraceMs)) continue;
+      auto frame = source.preparedFrame;
+      frame.timestampMs = timestampMs;
+      frames.push_back(std::move(frame));
+      continue;
+    }
     if (source.view == nullptr && source.processHandle != nullptr) {
       tryMapLocked(source, now);
     }
@@ -353,6 +414,82 @@ void BrowserSourceHostAdapter::ensureSupervisorStarted() {
   }
   supervisorStarted_ = true;
   supervisor_ = std::thread([this] { supervisorLoop(); });
+  if (preparation_) reader_ = std::thread([this] { readerLoop(); });
+}
+
+void BrowserSourceHostAdapter::readerLoop() {
+  for (;;) {
+    std::vector<std::pair<std::string, std::shared_ptr<CpuReader>>> jobs;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stopping_) return;
+      for (const auto& [id, source] : sources_)
+        if (source.processHandle && source.reader) jobs.emplace_back(id, source.reader);
+    }
+    for (const auto& [id, reader] : jobs) {
+      const auto observedAtMs = nowMs();
+      bool fresh = false;
+      try {
+        reader->map(observedAtMs); // OS mapping and full pixel copy outside leaf lock
+        if (reader->view) {
+          if (beforeRead_) beforeRead_();
+          auto read = browsershm::readNewFrame(reader->view, reader->bytes, reader->sequence);
+          if (read.gotNewFrame) {
+            {
+              std::lock_guard<std::mutex> lock(mutex_);
+              const auto found = sources_.find(id);
+              if (stopping_ || found == sources_.end() || found->second.reader != reader) continue;
+              if (reader->frame.hasPixels() && (reader->frame.pixelWidth != read.width || reader->frame.pixelHeight != read.height))
+                reader->epoch = ++found->second.sourceEpoch;
+            }
+            VideoFrame frame;
+            frame.participantId = "capture:" + id; frame.frameId = ++reader->frameId;
+            frame.width = frame.naturalWidth = frame.pixelWidth = read.width;
+            frame.height = frame.naturalHeight = frame.pixelHeight = read.height;
+            frame.pixelStride = read.width * 4; frame.pixels = std::move(read.pixels);
+            frame.timestampMs = observedAtMs;
+            frame.sourceEpoch = reader->epoch;
+            // This is the reader's observation time. The SHM header does not
+            // carry host acquisition time; do not claim capture latency from it.
+            frame.captureTimestamp100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+            frame.preparedGpu = preparation_->offerBgra(frame.participantId, frame.sourceEpoch,
+                frame.frameId, frame.captureTimestamp100ns, frame.pixelWidth, frame.pixelHeight, frame.pixelStride, frame.pixels);
+            reader->frame = std::move(frame); fresh = true;
+          } else if (reader->frame.hasPixels() && (!reader->frame.preparedGpu ||
+              (reader->frame.preparedGpu->demand && reader->frame.preparedGpu->demand->stopped.load()))) {
+            auto& frame = reader->frame;
+            auto token = preparation_->offerBgra(frame.participantId, frame.sourceEpoch, frame.frameId,
+                frame.captureTimestamp100ns, frame.pixelWidth, frame.pixelHeight, frame.pixelStride, frame.pixels);
+            if (token) frame.preparedGpu = std::move(token);
+          }
+        }
+      } catch (...) {
+        core::nativeLogf("[browser] reader failure for %s\n", id.c_str());
+        continue;
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      const auto found = sources_.find(id);
+      if (stopping_ || found == sources_.end() || found->second.reader != reader) {
+        if (reader->frame.preparedGpu && reader->frame.preparedGpu->demand)
+          reader->frame.preparedGpu->demand->stopped.store(true);
+        continue;
+      }
+      auto& source = found->second;
+      source.preparedFrame = reader->frame;
+      if (!fresh) continue;
+      source.frameId = reader->frame.frameId;
+      source.lastFrameAtMs = observedAtMs;
+      source.policy.onHealthy();
+      if (!source.fpsWindowStartMs) source.fpsWindowStartMs = observedAtMs;
+      ++source.fpsWindowFrames;
+      if (observedAtMs - source.fpsWindowStartMs >= kFpsWindowMs) {
+        source.measuredFps = source.fpsWindowFrames * 1000.0 / (observedAtMs - source.fpsWindowStartMs);
+        source.fpsWindowStartMs = observedAtMs; source.fpsWindowFrames = 0;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
 }
 
 void BrowserSourceHostAdapter::supervisorLoop() {
@@ -406,6 +543,9 @@ void BrowserSourceHostAdapter::supervisorLoop() {
         continue;
       }
       source.spawnInFlight = true;
+      // A retained old reader mapping must never share a name with its next
+      // host. Keep each spawn's OS mapping distinct, including failed attempts.
+      source.shmName = browsershm::shmName(currentPid(), nextMappingOrdinal_++);
       jobs.push_back(SpawnJob{source});
     }
     if (jobs.empty()) {
@@ -457,6 +597,8 @@ void BrowserSourceHostAdapter::supervisorLoop() {
         source.processHandle = outcome.processHandle;
         source.stdinWrite = outcome.stdinWrite;
         ++source.generation;
+        ++source.sourceEpoch;
+        if (preparation_) source.reader = std::make_shared<CpuReader>(source);
         ++source.restartCount;
         source.lastSequence = 0;
         source.lastMapAttemptMs = 0;
@@ -618,6 +760,7 @@ void BrowserSourceHostAdapter::closeProcessLocked(Source& source) {
 }
 
 void BrowserSourceHostAdapter::closeMappingLocked(Source& source) {
+  source.reader.reset(); // in-flight reader job retains its own mapping safely
 #ifdef _WIN32
   if (source.view != nullptr) {
     UnmapViewOfFile(source.view);
@@ -696,8 +839,9 @@ int64_t BrowserSourceHostAdapter::nowMs() {
       .count();
 }
 
-std::unique_ptr<BrowserSourceHostAdapter> createBrowserSourceHostAdapter() {
-  return std::make_unique<BrowserSourceHostAdapter>();
+std::unique_ptr<BrowserSourceHostAdapter> createBrowserSourceHostAdapter(
+    std::shared_ptr<CpuSourcePreparation> preparation) {
+  return std::make_unique<BrowserSourceHostAdapter>(std::string(), std::move(preparation));
 }
 
 }  // namespace corevideo::modules

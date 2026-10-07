@@ -6,7 +6,9 @@
 // zoom-engine isolation pattern: untrusted page content NEVER runs in the core).
 // The host renders the URL offscreen via WebView2 and publishes BGRA frames into a
 // named shared-memory seqlock buffer (BrowserSourceShm.h — the SAME layout the WinUI
-// capture bridge uses), which this adapter polls each render tick and emits as
+// capture bridge uses). With CPU preparation enabled its bounded reader owns
+// SHM copying/preparation and render polling collects descriptors. Legacy mode
+// polls on each render tick. Both emit
 // VideoFrames keyed "capture:browser:<n>" — so browser sources ride the existing
 // capture ingest seam: compositor, routing, multiview and scenes need zero changes.
 //
@@ -25,6 +27,7 @@
 #include "modules/Interfaces.h"
 
 #include <condition_variable>
+#include <functional>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -57,7 +60,9 @@ class BrowserSourceHostAdapter {
  public:
   // `hostExecutablePath` empty => resolve next to the running executable
   // (corevideo-browser-host.exe), overridable via COREVIDEO_BROWSER_HOST_PATH.
-  explicit BrowserSourceHostAdapter(std::string hostExecutablePath = std::string());
+  explicit BrowserSourceHostAdapter(std::string hostExecutablePath = std::string(),
+      std::shared_ptr<CpuSourcePreparation> preparation = {},
+      std::function<void()> beforeRead = {}); // test-only interleaving; no operator setting
   ~BrowserSourceHostAdapter();
 
   BrowserSourceHostAdapter(const BrowserSourceHostAdapter&) = delete;
@@ -96,6 +101,7 @@ class BrowserSourceHostAdapter {
                                  std::string& error);
 
  private:
+  struct CpuReader;
   struct Source {
     std::string id;
     std::string url;
@@ -122,6 +128,9 @@ class BrowserSourceHostAdapter {
     int lastHeight = 0;
     int64_t frameId = 0;
     int64_t lastFrameAtMs = 0;
+    std::shared_ptr<CpuReader> reader;
+    uint64_t sourceEpoch = 0;
+    VideoFrame preparedFrame;
 
     // Supervision.
     BrowserHostRestartPolicy policy;
@@ -137,6 +146,7 @@ class BrowserSourceHostAdapter {
 
   void ensureSupervisorStarted();
   void supervisorLoop();
+  void readerLoop();
   // Runs UNLOCKED. Returns true and fills the handles on success.
   bool spawnHost(const Source& snapshot, void*& processHandle, void*& stdinWrite,
                  std::string& error) const;
@@ -149,13 +159,18 @@ class BrowserSourceHostAdapter {
   mutable std::mutex mutex_;  // leaf lock; never held across spawn/blocking work
   std::map<std::string, Source> sources_;
   int nextOrdinal_ = 1;
+  int nextMappingOrdinal_ = 1;
+  std::shared_ptr<CpuSourcePreparation> preparation_;
+  std::function<void()> beforeRead_;
 
   std::thread supervisor_;
+  std::thread reader_;
   std::condition_variable supervisorCv_;
   bool supervisorStarted_ = false;
   bool stopping_ = false;
 };
 
-std::unique_ptr<BrowserSourceHostAdapter> createBrowserSourceHostAdapter();
+std::unique_ptr<BrowserSourceHostAdapter> createBrowserSourceHostAdapter(
+    std::shared_ptr<CpuSourcePreparation> preparation = {});
 
 }  // namespace corevideo::modules
