@@ -15,6 +15,8 @@ class ShmCapturePreparation {
   struct Stats {
     uint64_t accepted = 0, refused = 0, prepared = 0, torn = 0, poolBusy = 0, failed = 0;
     uint64_t copyTotalNs = 0, copyMaximumNs = 0;
+    bool gpuRequested = false;
+    uint64_t gpuPrepared = 0, gpuBusy = 0, gpuFailed = 0, gpuSuperseded = 0;
     size_t residentBytes = 0, active = 0, retiring = 0;
     std::string state = "idle", reason, lastRefusalReason;
   };
@@ -46,6 +48,7 @@ class ShmCapturePreparation {
   std::atomic<uint64_t> nextGeneration_{1};
   bool stopping_ = false;
   std::function<void()> beforeCopy_;
+  bool gpuRequested_ = false;
   std::thread thread_;
 };
 }

@@ -34,6 +34,10 @@ def main():
     ap.add_argument("--duration", type=float, default=120)
     ap.add_argument("--pairs", type=int, default=3)
     ap.add_argument("--warmup", type=float, default=10)
+    ap.add_argument(
+        "--cpu-source-preparation", choices=("0", "1"), default="0",
+        help="Explicit SHM BGRA GPU preparation override; held constant across both monitor modes",
+    )
     a = ap.parse_args()
     if sys.platform != "win32":
         ap.error("Windows named mappings and D3D11 required")
@@ -64,6 +68,7 @@ def main():
         "flags": {
             "COREVIDEO_PROGRAM_BUFFER_FRAMES": "2",
             "COREVIDEO_GPU_CAPTURE": "0",
+            "COREVIDEO_CPU_SOURCE_PREPARATION": a.cpu_source_preparation,
             "COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE": "0",
             "COREVIDEO_ISOLATE_MONITORS": "0 and 1",
         },
@@ -146,6 +151,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "COREVIDEO_FAKE_NO_CHURN": "1",
                 "COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE": "0",
                 "COREVIDEO_GPU_CAPTURE": "0",
+                "COREVIDEO_CPU_SOURCE_PREPARATION": a.cpu_source_preparation,
             },
             out / (label + ".stderr.log"),
         )
