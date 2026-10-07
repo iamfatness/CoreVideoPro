@@ -958,7 +958,9 @@ struct OwnedNetworkPublisher {
         "-t 10 -map 0:v -map 1:a -c:v h264_nvenc -preset p1 -tune ull -pix_fmt yuv420p "
         "-g 60 -c:a aac -ac 2 -f " + std::string(rtmp ? "flv " : "mpegts ") + endpoint;
     char temp[MAX_PATH]{}; GetTempPathA(MAX_PATH, temp);
-    logPath = std::string(temp) + "cvp-held-publisher-" + std::to_string(GetCurrentProcessId()) + (rtmp ? "-rtmp.log" : "-srt.log");
+    static std::atomic<uint64_t> serial{0};
+    logPath = std::string(temp) + "cvp-held-publisher-" + std::to_string(GetCurrentProcessId()) +
+        "-" + std::to_string(serial.fetch_add(1)) + (rtmp ? "-rtmp.log" : "-srt.log");
     SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     HANDLE log = CreateFileA(logPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     HANDLE input = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING, 0, nullptr);
@@ -1013,6 +1015,7 @@ void heldNetworkRecovery(bool rtmp) {
   ASSERT_TRUE(await([&] { return receiver->enumerate().front().lastFrameAgeMs > 2000; }));
   receiver->deliverVideo(sink, 200);
   const auto held = sink.latest; ASSERT_TRUE(held.hasPixels()); ASSERT_TRUE(held.preparedGpu);
+  const auto originalBytes = *held.pixels;
   auto cpuOnly = held; cpuOnly.preparedGpu.reset();
   const auto oldOutput = reference->render(planFor(held.participantId), {cpuOnly});
   EXPECT_NEAR(held.pixels->at(0), 180, 8);
@@ -1059,7 +1062,7 @@ void heldNetworkRecovery(bool rtmp) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   ASSERT_TRUE(freshReady) << "Fresh decoder epoch was overwritten or never became ready";
-  EXPECT_EQ(*held.pixels, *cpuOnly.pixels); // original CPU descriptor is immutable
+  EXPECT_EQ(*held.pixels, originalBytes); // original CPU descriptor is immutable
   receiver->configureSrtIngestSources({}); receiver->configureRtmpIngestSources({});
   const auto published = sink.published;
   receiver->deliverVideo(sink, 400);
