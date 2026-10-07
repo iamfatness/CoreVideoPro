@@ -202,6 +202,7 @@ public static class SupportBundleBuilder
         return new SupportBundleMediaCore
         {
             MonitorIsolation = MonitorIsolationObservation.FromSnapshot(snapshot),
+            CapturePreparation = CapturePreparationObservation.FromSnapshot(snapshot),
             SceneId = snapshot.SceneId,
             RenderPlanId = snapshot.RenderPlan.RenderPlanId,
             Source = new SupportBundleMediaCoreSource
@@ -520,6 +521,8 @@ public static class SupportBundleBuilder
             lines.Add($"Output warnings: {snapshot.Warnings.Count}");
             var isolation = mediaCore?.MonitorIsolation ?? new MonitorIsolationObservation();
             lines.Add($"Monitor isolation: requested {isolation.RequestedMode}; effective {isolation.EffectiveMode}; selection {isolation.SelectionSource}; readiness {isolation.Readiness}; reason {(isolation.FailureReason.Length == 0 ? "none" : isolation.FailureReason)}; delivery epoch {isolation.DeliveryEpoch?.ToString() ?? "unknown"}");
+            var preparation = mediaCore?.CapturePreparation ?? new CapturePreparationObservation();
+            lines.Add($"SHM capture preparation: enabled {preparation.Enabled?.ToString().ToLowerInvariant() ?? "unknown"}; state {preparation.State}; active {preparation.Active?.ToString() ?? "unknown"}; retiring {preparation.Retiring?.ToString() ?? "unknown"}; prepared {preparation.Prepared?.ToString() ?? "unknown"}; refused {preparation.Refused?.ToString() ?? "unknown"}; reason {(preparation.Reason.Length == 0 ? "none" : preparation.Reason)}; last refusal {(preparation.LastRefusalReason.Length == 0 ? "none" : preparation.LastRefusalReason)}; logical bytes {preparation.ResidentBytes?.ToString() ?? "unknown"}/{preparation.BudgetBytes?.ToString() ?? "unknown"}; accounting {preparation.MemoryAccounting}; sender acquisition unverified");
 
             if (mediaCore is not null)
             {

@@ -8,6 +8,81 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class SupportBundleBuilderTests
 {
     [Fact]
+    public void CapturePreparation_NewFieldsReachBundleAndTriage()
+    {
+        var snapshot = BuildSampleSnapshot() with { RawJson = """
+            {"realtimeEvidence":{"capturePreparation":{"kind":"winui-shared-memory",
+            "version":"shm-preparation-v1","enabled":true,"state":"ready","reason":"",
+            "lastRefusalReason":"invalid-mapping","accepted":2,"refused":3,"prepared":60,
+            "torn":1,"poolBusy":0,"failed":0,"active":2,"retiring":0,
+            "memoryAccounting":"mapped-payload-plus-four-cpu-frames","residentBytes":115200032,
+            "budgetBytes":536870912,"copyTotalNs":1.25e9,"copyMaximumNs":25000000,
+            "senderAcquisitionTimeVerified":false}}}
+            """ };
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+        var observation = bundle.MediaCore!.CapturePreparation;
+        Assert.True(observation.Enabled);
+        Assert.Equal("ready", observation.State);
+        Assert.Equal(3, observation.Refused);
+        Assert.Equal(1_250_000_000, observation.CopyTotalNs);
+        Assert.False(observation.SenderAcquisitionTimeVerified);
+        var json = SupportBundleBuilder.Serialize(bundle);
+        Assert.Contains("SHM capture preparation: enabled true; state ready; active 2; retiring 0; prepared 60; refused 3", json);
+        Assert.Contains("last refusal invalid-mapping; logical bytes 115200032/536870912", json);
+    }
+
+    [Theory]
+    [InlineData("bad json")]
+    [InlineData("{}")]
+    [InlineData("{\"realtimeEvidence\":{\"capturePreparation\":{\"enabled\":true,\"state\":\"ready\"}}}")]
+    public void CapturePreparation_OlderOrMalformedPeerCannotClaimReadiness(string raw)
+    {
+        var observation = CapturePreparationObservation.FromSnapshot(BuildSampleSnapshot() with { RawJson = raw });
+        Assert.Null(observation.Enabled);
+        Assert.Equal("unavailable", observation.State);
+        Assert.Null(observation.Prepared);
+        Assert.Null(observation.ResidentBytes);
+    }
+
+    [Fact]
+    public void CapturePreparation_InvalidFieldsStayUnknownAndFreeTextIsExcluded()
+    {
+        var snapshot = BuildSampleSnapshot() with { RawJson = """
+            {"realtimeEvidence":{"capturePreparation":{"kind":"winui-shared-memory",
+            "version":"shm-preparation-v1","enabled":true,"state":"credential SECRET",
+            "reason":"credential SECRET","lastRefusalReason":"credential SECRET",
+            "prepared":-1,"refused":"3","poolBusy":false,"copyTotalNs":1e100,
+            "active":0.5,"residentBytes":100,"budgetBytes":200,"senderAcquisitionTimeVerified":true}}}
+            """ };
+        var bundle = SupportBundleBuilder.Build(snapshot, new MediaCoreHealth());
+        var observation = bundle.MediaCore!.CapturePreparation;
+        Assert.Equal("unknown", observation.State);
+        Assert.Equal("unknown", observation.Reason);
+        Assert.Equal("unknown", observation.LastRefusalReason);
+        Assert.Null(observation.Prepared);
+        Assert.Null(observation.Refused);
+        Assert.Null(observation.PoolBusy);
+        Assert.Null(observation.CopyTotalNs);
+        Assert.Null(observation.Active);
+        Assert.Null(observation.ResidentBytes);
+        Assert.Null(observation.SenderAcquisitionTimeVerified);
+        Assert.DoesNotContain("SECRET", SupportBundleBuilder.Serialize(bundle));
+    }
+
+    [Fact]
+    public void CapturePreparation_DisabledPeerDoesNotReportReadyOrMeasuredZeros()
+    {
+        var snapshot = BuildSampleSnapshot() with { RawJson = """
+            {"realtimeEvidence":{"capturePreparation":{"kind":"winui-shared-memory",
+            "version":"shm-preparation-v1","enabled":false,"state":"ready","prepared":0}}}
+            """ };
+        var observation = CapturePreparationObservation.FromSnapshot(snapshot);
+        Assert.False(observation.Enabled);
+        Assert.Equal("unavailable", observation.State);
+        Assert.Null(observation.Prepared);
+    }
+
+    [Fact]
     public void MonitorIsolation_OlderPeerEnabledDoesNotClaimReadiness()
     {
         var snapshot = BuildSampleSnapshot() with { RawJson = """{"realtimeEvidence":{"monitorWorker":{"enabled":true}}}""" };

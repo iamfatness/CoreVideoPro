@@ -72,6 +72,7 @@ public sealed record SupportBundleOutputDestinationSummary
 public sealed record SupportBundleMediaCore
 {
     public CoreVideoPro.MediaCore.Services.MonitorIsolationObservation MonitorIsolation { get; init; } = new();
+    public CoreVideoPro.MediaCore.Services.CapturePreparationObservation CapturePreparation { get; init; } = new();
     public string? SceneId { get; init; }
     public string? RenderPlanId { get; init; }
     public required SupportBundleMediaCoreSource Source { get; init; }

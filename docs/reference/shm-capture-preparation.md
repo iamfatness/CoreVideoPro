@@ -33,6 +33,10 @@ and four CPU buffers; it is not process working-set or total GPU memory.
 no mapping names or exception text enter diagnostics.
 `reason` describes current preparation state; `lastRefusalReason` retains the
 latest named rejection even after existing sources resume a ready state.
+The support bundle reads this node through the generated core observation,
+allowlists fixed states/reasons and includes counters plus a triage line. Missing,
+disabled, malformed or older peers retain unknown measurements; arbitrary error
+strings never enter the summary. The logical charge is not relabeled as RSS.
 
 An even, changed sequence and a stable header around the copy are required.
 Sequence zero before the first arrival and odd/in-progress writes cannot create
