@@ -27,6 +27,7 @@ struct I420SourcePreparation::Impl {
     // GPU owner only from here down.
     std::shared_ptr<CpuSourceGpuView> pending;
     int pendingSlot = -1;
+    int64_t lastSubmittedFrameId = -1;
     struct Ready { std::weak_ptr<CpuSourceGpuView> token; std::shared_ptr<const GpuVideoFrame> image; };
     std::array<Ready, 3> ready;
   };
@@ -199,9 +200,10 @@ struct I420SourcePreparation::Impl {
       // CPU playout/guest trim may select an arrival well behind the decode
       // head. Preparing future arrivals into three slots evicts that exact
       // selected image before Program can read it. Keep future CPU tokens in
-      // the weak queue; only the selected identity may start a new upload.
-      // Submitted older selections still complete and remain attributable.
-      if (next->frameId > selected) continue;
+      // the weak queue and admit at most one future arrival. That one image
+      // can be ready before selection without unbounded GPU lookahead or a
+      // new CPU playout buffer. Older submissions remain attributable.
+      if (next->frameId > selected && source->lastSubmittedFrameId > selected) continue;
       auto cpu = next->cpu.lock(); if (!cpu) continue;
       int slot = pool->beginUpload(context.Get(), *cpu);
       if (slot < 0) {
@@ -217,6 +219,7 @@ struct I420SourcePreparation::Impl {
       }
       if (slot >= 0) {
         source->pendingSlot = slot; source->pending = next; submitted = pendingWrites = true;
+        source->lastSubmittedFrameId = next->frameId;
         {
           std::lock_guard<std::mutex> lock(mutex);
           if (!source->queued.empty() && source->queued.front().lock() == next) source->queued.pop_front();
