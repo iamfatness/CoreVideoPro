@@ -134,9 +134,10 @@ class GuestAvSyncVideo {
           (!frame.hasI420() && !frame.hasPixels())) continue;
       const int delayMs = -clampGuestAvOffsetMs(wanted->second);
       auto& state = states_[frame.participantId];
-      if (state.delayMs != delayMs) {
+      if (state.delayMs != delayMs || state.sourceEpoch != frame.sourceEpoch) {
         state = {};
         state.delayMs = delayMs;
+        state.sourceEpoch = frame.sourceEpoch;
       }
       if (!state.hasSeen || state.lastSeenFrameId != frame.frameId) {
         state.queue.push_back({nowMs + delayMs, frame});
@@ -166,6 +167,7 @@ class GuestAvSyncVideo {
   };
   struct State {
     std::deque<Pending> queue;
+    uint64_t sourceEpoch = 0;
     modules::VideoFrame released;
     int64_t lastSeenFrameId = 0;
     int delayMs = 0;

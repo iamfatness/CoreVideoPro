@@ -36,6 +36,7 @@
 #include "modules/MonitorRenderWorker.h"
 #include "modules/MonitorFrameAdmission.h"
 #include "modules/D3DVideoFrame.h"
+#include "modules/D3DI420VideoFrame.h"
 #include "modules/DeliveryCounterPattern.h"
 
 #include <algorithm>
@@ -1678,8 +1679,37 @@ class D3D11Compositor final : public ICompositor {
   // caller then falls back to the shared scratch upload path.
   SourceTex* acquireSourceTex(const VideoFrame& frame, bool allowCpuUpload = true) {
     CpuStageScope timing(profileMvActive_, stageProfileNs_[MvUpload]);
-    if (!frame.participantId.empty() && frame.hasGpuPixels() && gpuConsumer_ && gpuReadLeases_) {
-      const auto image = std::dynamic_pointer_cast<const D3DVideoImage>(frame.gpuPixels);
+    auto gpu = frame.gpuPixels;
+    if (!gpu && frame.preparedGpu && gpuConsumer_ && !gpuConsumer_->monitor &&
+        frame.preparedGpu->sourceId == frame.participantId && frame.preparedGpu->sourceEpoch == frame.sourceEpoch &&
+        frame.preparedGpu->frameId == frame.frameId &&
+        (!frame.hasI420() || (frame.preparedGpu->width == frame.i420Width && frame.preparedGpu->height == frame.i420Height)) &&
+        frame.preparedGpu->captureTimestamp100ns == frame.captureTimestamp100ns)
+      gpu = frame.preparedGpu->acquire(allowCpuUpload);
+    if (!frame.participantId.empty() && gpu && gpuConsumer_ && gpuReadLeases_) {
+      if (const auto planar = std::dynamic_pointer_cast<const D3DI420VideoImage>(gpu)) {
+        const bool matches = planar->sourceId == frame.participantId && planar->sourceEpoch == frame.sourceEpoch &&
+            planar->sourceFrameId == frame.frameId && planar->sourceCaptureTimestamp100ns == frame.captureTimestamp100ns;
+        const auto* view = matches ? planar->view(gpuConsumer_->id) : nullptr;
+        if (view && gpuReadLeases_->hold(planar)) {
+          auto& entry = sourceTextures_[frame.participantId];
+          if (entry.gpuImage != planar) {
+            entry = SourceTex{}; entry.gpuImage = planar; entry.isI420 = true;
+            for (size_t plane = 0; plane < 3; ++plane) {
+              auto* texture = plane == 0 ? &entry.y : plane == 1 ? &entry.u : &entry.v;
+              auto* srv = plane == 0 ? &entry.ySrv : plane == 1 ? &entry.uSrv : &entry.vSrv;
+              view->textures[plane]->AddRef(); *texture->put() = view->textures[plane].Get();
+              view->srvs[plane]->AddRef(); *srv->put() = view->srvs[plane].Get();
+            }
+            entry.width = planar->width; entry.height = planar->height;
+          }
+          if (frame.preparedGpu) frame.preparedGpu->consumed.store(true);
+          entry.lastFrameId = frame.frameId; entry.lastUsedFrame = frameNumber_;
+          ++sourceTexStats_.cacheHits;
+          return &entry;
+        }
+      }
+      const auto image = std::dynamic_pointer_cast<const D3DVideoImage>(gpu);
       const auto* view = image ? image->view(gpuConsumer_->id) : nullptr;
       if (view && gpuReadLeases_->hold(image)) {
         auto& entry = sourceTextures_[frame.participantId];

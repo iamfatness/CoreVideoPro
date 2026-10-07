@@ -1,6 +1,7 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineRuntime.h"
 #include "modules/ZoomMeetingId.h"
+#include "modules/I420SourcePreparation.h"
 
 #include "config/ZoomMeetingSdkConfig.h"
 #include "engine-ipc.h"
@@ -53,6 +54,7 @@ rpc::Json::Array stringArray(const std::vector<std::string>& values) {
 }
 
 constexpr double kFrameStaleAfterMs = 1000.0;
+std::atomic<uint64_t> nextVideoSourceEpoch{1};
 
 }  // namespace
 
@@ -61,6 +63,8 @@ ZoomEngineRuntime::ZoomEngineRuntime() : config_(loadConfig()), startedAt_(std::
   // hardware switcher input). COREVIDEO_FRAME_SYNC=0 trades the smoothness back
   // for one frame of latency — keep it working, it is the A/B control.
   frameSyncEnabled_ = envInt("COREVIDEO_FRAME_SYNC", 1) != 0;
+  if (envString("COREVIDEO_CPU_SOURCE_PREPARATION") == "1")
+    i420Preparation_ = std::make_unique<I420SourcePreparation>(true);
 }
 
 ZoomEngineRuntime::~ZoomEngineRuntime() {
@@ -705,6 +709,10 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
     frame.i420Width = decoded.width;
     frame.i420Height = decoded.height;
     frame.frameId = decoded.frameId;
+    frame.sourceEpoch = decoded.sourceEpoch;
+    frame.captureTimestamp100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        decoded.observedAt.time_since_epoch()).count() / 100;
+    frame.preparedGpu = decoded.preparedGpu;
     frames.push_back(std::move(frame));
   }
 
@@ -1281,6 +1289,7 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
     ref.regionOpaque.reset();  // shared_ptr deleter closes the mapping
     ref.lastSequence = 0;
     ref.frameRateBudget = {};
+    ref.sourceEpoch = nextVideoSourceEpoch.fetch_add(1);
   }
   ref.participantId = event.participantId;
   ref.sourceGeneration = sourceGeneration;
@@ -1328,6 +1337,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     bool buildThumbnail = false;
     bool probeLumaRange = false;
     std::uint64_t generation = 0;
+    std::uint64_t sourceEpoch = 0;
   };
   // Thumbnail-event pace: ~2/s per participant is plenty for the shell's roster
   // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
@@ -1371,7 +1381,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
       const bool buildThumbnail = ref.lastThumbnailEmitMs < 0 ||
                                   nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs;
       jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
-                      buildThumbnail, !ref.lumaRangeProbed, processGeneration_});
+                      buildThumbnail, !ref.lumaRangeProbed, processGeneration_, ref.sourceEpoch});
     }
   }
 
@@ -1384,6 +1394,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     std::shared_ptr<const std::vector<std::uint8_t>> i420Shared;
     std::chrono::steady_clock::time_point observedAt{};
     LumaRangeProbe lumaRange;
+    std::shared_ptr<CpuSourceGpuView> preparedGpu;
   };
   std::vector<SnapshotResult> results;
   results.reserve(jobs.size());
@@ -1403,6 +1414,10 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     if (result.frame && !result.frame->i420.empty()) {
       result.i420Shared =
           std::make_shared<const std::vector<std::uint8_t>>(std::move(result.frame->i420));
+      if (i420Preparation_) result.preparedGpu = i420Preparation_->offer(result.frame->participantId,
+          job.sourceEpoch, result.frame->frameId,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(result.observedAt.time_since_epoch()).count() / 100,
+          result.frame->i420Width, result.frame->i420Height, result.i420Shared);
       if (job.probeLumaRange && result.i420Shared->size() >=
                                     static_cast<std::size_t>(job.width) * job.height) {
         result.lumaRange = probeLumaRange(result.i420Shared->data(), job.width, job.height,
@@ -1425,6 +1440,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     if (shuttingDown_ || restartBeforeJoin_ || result.job.generation != processGeneration_ ||
         stream == videoStreams_.end() || stream->second.regionOpaque != result.job.holder ||
         stream->second.participantId != result.job.participantId ||
+        stream->second.sourceEpoch != result.job.sourceEpoch ||
         stream->second.width != result.job.width || stream->second.height != result.job.height) {
       rejectStale();
       continue;  // leave, resize, remap, or helper retirement while copying
@@ -1453,7 +1469,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
                    result.lumaRange.sampled);
     }
     publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
-                            std::move(result.i420Shared), result.observedAt);
+                            std::move(result.i420Shared), result.observedAt, std::move(result.preparedGpu));
     ++videoPublishedSinceLog_;
   }
   const auto now = std::chrono::steady_clock::now();
@@ -1469,7 +1485,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
 void ZoomEngineRuntime::publishVideoFrameLocked(
     const std::string& uuid, VideoStreamRef& ref, const ZoomEngineRgbaFrame& frame,
     std::shared_ptr<const std::vector<std::uint8_t>> i420,
-    std::chrono::steady_clock::time_point observedAt) {
+    std::chrono::steady_clock::time_point observedAt, std::shared_ptr<CpuSourceGpuView> preparedGpu) {
   state_.recordFrameIngestSuccess(uuid, ref.participantId, ref.width, ref.height, frame.frameId,
                                   runtimeElapsedMs(), ref.sourceGeneration);
 
@@ -1520,6 +1536,8 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
     incoming.width = static_cast<int>(frame.i420Width);
     incoming.height = static_cast<int>(frame.i420Height);
     incoming.frameId = static_cast<std::int64_t>(frame.frameId);
+    incoming.sourceEpoch = ref.sourceEpoch;
+    incoming.preparedGpu = std::move(preparedGpu);
 
     if (frameSyncEnabled_) {
       // Queue behind whatever is already waiting — never jump the line, or a
