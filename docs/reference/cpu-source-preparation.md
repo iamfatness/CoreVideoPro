@@ -3,7 +3,7 @@
 `CpuSourcePreparation` owns bounded D3D11 preparation for immutable CPU I420
 and BGRA arrivals. `I420SourcePreparation` remains a compatibility alias.
 The launch override `COREVIDEO_CPU_SOURCE_PREPARATION=1` creates one shared
-owner in module composition for Zoom, native UVC, media playback and stills.
+owner in module composition for Zoom, native UVC, WGC CPU fallback, media playback and stills.
 The override defaults off. Unsupported platforms do not publish GPU views.
 
 Media decoding calls `CpuVideoArrival` on its decoder thread before pushing
@@ -33,7 +33,15 @@ playout or changing observation time. Failed GPU owners publish attributable
 failed tokens for subsequent valid arrivals; they cannot silently resurrect
 an old prepared image. Device/consumer recreation is separate qualification.
 
-This wiring does not cover browser input or WGC CPU fallback. SHM BGRA uses
-its existing owner. Installed output continuity, receiver/display identities,
+WGC CPU fallback transfers OS frames to the bounded capture worker and offers
+BGRA before publishing its descriptor. The descriptor snapshots its logical
+epoch and calibrated WGC observation time with those exact pixels. Geometry
+changes fence the generation on the capture owner. Its idle callback refreshes
+stopped held tokens without new CPU bytes or a new observation time. CPU demand
+preserves pending capture order; capacity refusals remain reported as drops.
+Direct GPU capture and its separate CPU/ISO branch retain their own payloads.
+
+This wiring does not cover browser input. SHM BGRA uses its existing owner.
+Installed output continuity, receiver/display identities,
 latency, A/V and hardware qualification remain governed by #802/#517 and the
 [render delivery specification](render-delivery-spec.md).

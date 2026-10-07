@@ -594,7 +594,7 @@ ModuleSet createDefaultModules() {
     hardwareCaptureDevices.push_back(std::move(sckScreens));
   }
   // Screen capture (WGC): monitors as sources, same arbitration rules.
-  if (auto wgcScreens = createWgcScreenCaptureDevice()) {
+  if (auto wgcScreens = createWgcScreenCaptureDevice(modules.cpuSourcePreparation)) {
     hardwareCaptureDevices.push_back(std::move(wgcScreens));
   }
   if (hardwareCaptureDevices.size() == 1) {
