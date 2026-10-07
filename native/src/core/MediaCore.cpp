@@ -374,7 +374,7 @@ rpc::Json::Array uniqueWarnings(const rpc::Json::Array& payloadWarnings, const r
 }  // namespace
 
 MediaCore::MediaCore(modules::ModuleSet modules)
-    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>()) {
+    : modules_(std::move(modules)), zoomEngineRuntime_(std::make_unique<modules::ZoomEngineRuntime>(modules_.cpuSourcePreparation)) {
   std::random_device random;
   audioMonitorControlEpoch_ = "monitor-" + std::to_string(monotonicMs()) + "-" +
                               std::to_string(random());
@@ -393,8 +393,11 @@ MediaCore::MediaCore(modules::ModuleSet modules)
   // the build has no media decoder (the stub), which is what every media path
   // below tests for.
   if (modules_.mediaDecoderFactory) {
-    mediaTransports_ = std::make_unique<core::MediaTransports>(modules_.mediaDecoderFactory);
+    mediaTransports_ = std::make_unique<core::MediaTransports>(modules_.mediaDecoderFactory, modules_.cpuSourcePreparation);
   }
+  if (modules_.cpuSourcePreparation)
+    stillMediaCache_ = std::make_unique<modules::StillMediaFrameCache>(modules::createPlatformStillImageDecoder(),
+        modules::StillMediaFrameCache::kDefaultCacheBudgetBytes, modules_.cpuSourcePreparation);
   // Put the virtual camera on the RENDER cadence. Publishing it from the ~50Hz
   // output worker capped a 60fps program at 50fps everywhere. The sink runs on
   // the compositor's tap thread; publishNv12 is internally locked and no-ops
@@ -2816,7 +2819,7 @@ void MediaCore::syncMediaTransportsDesired() {
 void MediaCore::setStillImageDecoderForTest(std::unique_ptr<modules::IStillImageDecoder> decoder,
                                             size_t cacheBudgetBytes) {
   stillMediaCache_ =
-      std::make_unique<modules::StillMediaFrameCache>(std::move(decoder), cacheBudgetBytes);
+      std::make_unique<modules::StillMediaFrameCache>(std::move(decoder), cacheBudgetBytes, modules_.cpuSourcePreparation);
   syncStillMediaDesired();
 }
 

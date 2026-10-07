@@ -131,7 +131,7 @@ add_library(corevideo_native
   src/modules/WasapiMonitorOutputAdapter.cpp
   src/modules/WinUiCaptureDeviceAdapter.cpp
   src/modules/ShmCapturePreparation.cpp
-  src/modules/I420SourcePreparation.cpp
+  src/modules/CpuSourcePreparation.cpp
   src/modules/ZoomEngineClient.cpp
   src/modules/ZoomEngineProcess.cpp
   src/modules/ZoomEngineRuntime.cpp

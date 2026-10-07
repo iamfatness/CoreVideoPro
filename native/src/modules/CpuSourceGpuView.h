@@ -39,6 +39,7 @@ struct CpuSourceGpuView {
   uint64_t sourceEpoch = 0;
   int64_t frameId = 0, captureTimestamp100ns = 0;
   int width = 0, height = 0;
+  int cpuStride = 0; // BGRA upload stride; I420 retains its tightly packed planes
   std::weak_ptr<const std::vector<uint8_t>> cpu;
   std::shared_ptr<CpuSourceGpuDemand> demand;
   CpuSourceGpuPublication ready;

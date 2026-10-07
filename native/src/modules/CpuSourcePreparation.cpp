@@ -1,4 +1,4 @@
-#include "modules/I420SourcePreparation.h"
+#include "modules/CpuSourcePreparation.h"
 #include "core/BoundedAsyncLog.h"
 #include <algorithm>
 #include <condition_variable>
@@ -7,11 +7,11 @@
 #include <mutex>
 #include <thread>
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
-#include "modules/D3DI420VideoFrame.h"
+#include "modules/D3DPreparedSourcePool.h"
 #endif
 
 namespace corevideo::modules {
-struct I420SourcePreparation::Impl {
+struct CpuSourcePreparation::Impl {
   mutable std::mutex mutex;
   Stats measured;
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
@@ -20,9 +20,10 @@ struct I420SourcePreparation::Impl {
     uint64_t epoch = 0;
     int64_t lastOfferedFrameId = -1;
     int width = 0, height = 0;
+    bool bgra = false;
     std::shared_ptr<CpuSourceGpuDemand> demand = std::make_shared<CpuSourceGpuDemand>();
     std::deque<std::weak_ptr<CpuSourceGpuView>> queued; // protected by Impl::mutex
-    std::shared_ptr<D3DI420FramePool> pool; // setup handoff protected by mutex
+    std::shared_ptr<D3DPreparedSourcePool> pool; // setup handoff protected by mutex
     bool buildAttempted = false, building = false;
     // GPU owner only from here down.
     std::shared_ptr<CpuSourceGpuView> pending;
@@ -47,7 +48,7 @@ struct I420SourcePreparation::Impl {
   std::function<void(const std::string&)> afterUpload;
   std::thread gpuThread, resourceThread;
   inline static std::mutex quarantineMutex;
-  inline static std::vector<std::shared_ptr<D3DI420FramePool>> quarantined;
+  inline static std::vector<std::shared_ptr<D3DPreparedSourcePool>> quarantined;
 
   explicit Impl(bool enabled, std::function<void(const std::string&)> hook, std::function<void(const std::string&)> uploaded)
       : beforeResources(std::move(hook)), afterUpload(std::move(uploaded)) {
@@ -84,13 +85,13 @@ struct I420SourcePreparation::Impl {
         if (stopping.load()) { resourcesStopped.store(true); return; }
         source = std::move(builds.front()); builds.pop_front(); producer = device;
       }
-      std::shared_ptr<D3DI420FramePool> pool;
+      std::shared_ptr<D3DPreparedSourcePool> pool;
       if (!source->demand->stopped.load()) {
         try {
           if (beforeResources) beforeResources(source->id);
           if (!source->demand->stopped.load()) {
-            auto candidate = std::make_shared<D3DI420FramePool>();
-            if (candidate->initialize(producer.Get(), source->width, source->height)) pool = std::move(candidate);
+            auto candidate = std::make_shared<D3DPreparedSourcePool>();
+            if (candidate->initialize(producer.Get(), source->width, source->height, source->epoch, source->bgra)) pool = std::move(candidate);
           }
         } catch (...) { pool.reset(); }
       }
@@ -130,7 +131,7 @@ struct I420SourcePreparation::Impl {
     }
     // Keep pools charged and pending writes unreusable until shutdown drains
     // or quarantines them. CPU descriptors remain available for fallback.
-    core::nativeLogf("[cpu-i420-preparation] GPU preparation stopped reason=0x%08lx\n",
+    core::nativeLogf("[cpu-source-preparation] GPU preparation stopped reason=0x%08lx\n",
         static_cast<unsigned long>(reason));
   }
   void tick() {
@@ -144,7 +145,7 @@ struct I420SourcePreparation::Impl {
     for (const auto& source : current) {
       const auto lastDemand = source->demand->lastDemand100ns.load();
       if (lastDemand && now - lastDemand > 50'000'000) source->demand->stopped.store(true);
-      std::shared_ptr<D3DI420FramePool> pool;
+      std::shared_ptr<D3DPreparedSourcePool> pool;
       {
         std::lock_guard<std::mutex> lock(mutex);
         pool = source->pool;
@@ -166,9 +167,8 @@ struct I420SourcePreparation::Impl {
           ready = {}; // active Program source/read caches still own their wrapper
       }
       if (source->pendingSlot >= 0) {
-        if (auto storage = pool->completed(context.Get(), source->pendingSlot)) {
+        if (auto image = pool->completed(context.Get(), source->pendingSlot, *source->pending)) {
           if (!source->demand->stopped.load() && source->pending) {
-            auto image = std::make_shared<D3DI420VideoImage>(std::move(storage), *source->pending);
             auto& ready = source->ready[source->pendingSlot];
             ready = {source->pending, image};
             source->pending->ready.store(image);
@@ -205,7 +205,7 @@ struct I420SourcePreparation::Impl {
       // new CPU playout buffer. Older submissions remain attributable.
       if (next->frameId > selected && source->lastSubmittedFrameId > selected) continue;
       auto cpu = next->cpu.lock(); if (!cpu) continue;
-      int slot = pool->beginUpload(context.Get(), *cpu);
+      int slot = pool->beginUpload(context.Get(), *cpu, next->cpuStride);
       if (slot < 0) {
         // Late completions remain readable across newer CPU selections, but
         // producer-owned completion retention cannot consume all three slots.
@@ -215,7 +215,7 @@ struct I420SourcePreparation::Impl {
           ++count;
           if (oldest == source->ready.end() || it->image->sourceFrameId < oldest->image->sourceFrameId) oldest = it;
         }
-        if (count > 1) { *oldest = {}; slot = pool->beginUpload(context.Get(), *cpu); }
+        if (count > 1) { *oldest = {}; slot = pool->beginUpload(context.Get(), *cpu, next->cpuStride); }
       }
       if (slot >= 0) {
         source->pendingSlot = slot; source->pending = next; submitted = pendingWrites = true;
@@ -264,11 +264,11 @@ struct I420SourcePreparation::Impl {
       context->Flush();
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
       for (auto& source : current) if (source->pool && source->pendingSlot >= 0) {
-        while (!source->pool->completed(context.Get(), source->pendingSlot) && std::chrono::steady_clock::now() < deadline)
+        while (!source->pool->completed(context.Get(), source->pendingSlot, *source->pending) && std::chrono::steady_clock::now() < deadline)
           std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        if (!source->pool->completed(context.Get(), source->pendingSlot)) {
+        if (!source->pool->completed(context.Get(), source->pendingSlot, *source->pending)) {
           std::lock_guard<std::mutex> lock(quarantineMutex); quarantined.push_back(source->pool);
-          core::nativeLogf("[cpu-i420-preparation] pending GPU write quarantined at shutdown\n");
+          core::nativeLogf("[cpu-source-preparation] pending GPU write quarantined at shutdown\n");
         }
       }
     }
@@ -278,36 +278,67 @@ struct I420SourcePreparation::Impl {
 #endif
 };
 
-I420SourcePreparation::I420SourcePreparation(bool enabled, std::function<void(const std::string&)> hook,
+CpuSourcePreparation::CpuSourcePreparation(bool enabled, std::function<void(const std::string&)> hook,
     std::function<void(const std::string&)> uploaded)
     : impl_(std::make_unique<Impl>(enabled, std::move(hook), std::move(uploaded))) {}
-I420SourcePreparation::~I420SourcePreparation() = default;
-I420SourcePreparation::Stats I420SourcePreparation::stats() const { std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->measured; }
-std::shared_ptr<CpuSourceGpuView> I420SourcePreparation::offer(const std::string& id, uint64_t epoch,
+CpuSourcePreparation::~CpuSourcePreparation() = default;
+CpuSourcePreparation::Stats CpuSourcePreparation::stats() const { std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->measured; }
+std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offer(const std::string& id, uint64_t epoch,
     int64_t frameId, int64_t captureTimestamp100ns, int width, int height,
+    const std::shared_ptr<const std::vector<uint8_t>>& cpu) {
+  return offerCpu(id, epoch, frameId, captureTimestamp100ns, width, height, 0, false, cpu);
+}
+std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerBgra(const std::string& id, uint64_t epoch,
+    int64_t frameId, int64_t captureTimestamp100ns, int width, int height, int stride,
+    const std::shared_ptr<const std::vector<uint8_t>>& cpu) {
+  return offerCpu(id, epoch, frameId, captureTimestamp100ns, width, height, stride, true, cpu);
+}
+std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::string& id, uint64_t epoch,
+    int64_t frameId, int64_t captureTimestamp100ns, int width, int height, int stride, bool bgra,
     const std::shared_ptr<const std::vector<uint8_t>>& cpu) {
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  if (!impl_->measured.requested || !impl_->measured.supported || !cpu) return {};
+  if (!impl_->measured.requested || !cpu) return {};
   if (id.empty() || id.size() > 1024 || !epoch || width <= 0 || height <= 0 ||
       frameId < 0 ||
-      width > 7680 || height > 4320 || (width & 1) || (height & 1) ||
-      cpu->size() < static_cast<size_t>(width) * height * 3 / 2) { ++impl_->measured.refused; return {}; }
+      width > 7680 || height > 4320 ||
+      (!bgra && ((width & 1) || (height & 1) || cpu->size() < static_cast<size_t>(width) * height * 3 / 2)) ||
+      (bgra && (stride < width * 4 || cpu->size() < static_cast<size_t>(height - 1) * stride + static_cast<size_t>(width) * 4))) {
+    ++impl_->measured.refused; return {};
+  }
   try {
+    // A failed owner still provides an attributable failed token for new CPU
+    // arrivals. Returning null would let Program keep a cached pre-failure
+    // image without observing the stopped producer.
+    if (!impl_->measured.supported) {
+      auto token = std::make_shared<CpuSourceGpuView>();
+      token->sourceId = id; token->sourceEpoch = epoch; token->frameId = frameId;
+      token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
+      token->cpuStride = stride; token->cpu = cpu;
+      token->demand = std::make_shared<CpuSourceGpuDemand>(); token->demand->failed.store(true);
+      return token;
+    }
     auto found = impl_->sources.find(id);
     std::shared_ptr<Impl::Source> source = found == impl_->sources.end() ? nullptr : found->second;
     if (source && source->epoch > epoch) { ++impl_->measured.superseded; return {}; }
     if (source && source->epoch == epoch && !source->demand->stopped.load() &&
-        (source->width != width || source->height != height || frameId <= source->lastOfferedFrameId)) {
+        (source->width != width || source->height != height || source->bgra != bgra || frameId <= source->lastOfferedFrameId)) {
       ++impl_->measured.refused; return {};
     }
-    if (!source || source->epoch != epoch || source->width != width || source->height != height || source->demand->stopped.load()) {
+    if (!source || source->epoch != epoch || source->width != width || source->height != height || source->bgra != bgra || source->demand->stopped.load()) {
       if ((!source && impl_->sources.size() >= kMaxSources) || impl_->retiring.size() >= kMaxSources) {
         ++impl_->measured.refused; return {};
       }
+      if (source && std::any_of(impl_->retiring.begin(), impl_->retiring.end(), [&](const auto& old) {
+          return old->id == id && (old->pool || old->building);
+        })) { ++impl_->measured.refused; return {}; } // one charged retiring generation per source
       auto replacement = std::make_shared<Impl::Source>();
       replacement->id = id; replacement->epoch = epoch; replacement->width = width; replacement->height = height;
-      if (source) { source->demand->stopped.store(true); impl_->retiring.push_back(source); }
+      replacement->bgra = bgra;
+      if (source) {
+        source->demand->stopped.store(true);
+        if (source->pool || source->building) impl_->retiring.push_back(source);
+      }
       source = std::move(replacement); impl_->sources.insert_or_assign(id, source);
     }
     while (!source->queued.empty() && source->queued.front().expired()) source->queued.pop_front();
@@ -315,6 +346,7 @@ std::shared_ptr<CpuSourceGpuView> I420SourcePreparation::offer(const std::string
     auto token = std::make_shared<CpuSourceGpuView>();
     token->sourceId = id; token->sourceEpoch = epoch; token->frameId = frameId;
     token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
+    token->cpuStride = stride;
     token->cpu = cpu; token->demand = source->demand; source->queued.push_back(token);
     source->lastOfferedFrameId = frameId;
     impl_->measured.sources = impl_->sources.size();

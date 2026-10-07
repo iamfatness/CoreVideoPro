@@ -561,8 +561,9 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
   // Initial discovery happens during module construction, before media workers
   // start. Preserve immediate connect-by-id for restored shows. Only periodic
   // refresh used to run under coreMutex; all later refresh is asynchronous.
-  UvcCaptureDeviceAdapter()
-      : preparation_([] {
+  explicit UvcCaptureDeviceAdapter(std::shared_ptr<CpuSourcePreparation> preparation)
+      : preparation_([&] {
+          if (preparation) return std::move(preparation);
           const char* flag = std::getenv("COREVIDEO_CPU_SOURCE_PREPARATION");
           return flag && std::string(flag) == "1" ? std::make_shared<I420SourcePreparation>(true) : nullptr;
         }()), devices_([] {
@@ -857,8 +858,8 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
 
 }  // namespace
 
-std::unique_ptr<ICaptureDevice> createUvcCaptureDevice() {
-  return std::make_unique<UvcCaptureDeviceAdapter>();
+std::unique_ptr<ICaptureDevice> createUvcCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation) {
+  return std::make_unique<UvcCaptureDeviceAdapter>(std::move(preparation));
 }
 
 }  // namespace corevideo::modules
@@ -867,7 +868,7 @@ std::unique_ptr<ICaptureDevice> createUvcCaptureDevice() {
 
 namespace corevideo::modules {
 
-std::unique_ptr<ICaptureDevice> createUvcCaptureDevice() {
+std::unique_ptr<ICaptureDevice> createUvcCaptureDevice(std::shared_ptr<CpuSourcePreparation>) {
   return nullptr;
 }
 

@@ -83,7 +83,8 @@ struct D3DVideoImage final : GpuVideoFrame {
 // the capture context's owner. Admission accounts images retained after resize.
 class D3DVideoFramePool {
  public:
-  bool initialize(ID3D11Device* device, int width, int height, uint64_t generation, bool monitor = false) {
+  bool initialize(ID3D11Device* device, int width, int height, uint64_t generation, bool monitor = false,
+      bool allowQueryProgress = false) {
     if (width <= 0 || height <= 0 || width > 7680 || height > 4320) return false;
     const size_t bytes = static_cast<size_t>(width) * height * 4;
     const auto consumers = D3DVideoConsumers::snapshot();
@@ -129,7 +130,7 @@ class D3DVideoFramePool {
       if (FAILED(device->CreateQuery(&query, &slot.ready))) return false;
       slot.image = std::move(image);
     }
-    width_ = width; height_ = height;
+    width_ = width; height_ = height; allowQueryProgress_ = allowQueryProgress;
     return true;
   }
   bool dimensions(int width, int height) const { return width == width_ && height == height_; }
@@ -177,17 +178,23 @@ class D3DVideoFramePool {
       if (slot.pending || (slot.image && slot.image.use_count() != 1)) return false;
     return true;
   }
+  HRESULT failure() const { return failure_; }
  private:
   void poll(ID3D11DeviceContext* context) {
     for (auto& slot : slots_) if (slot.pending) {
       BOOL ready = FALSE;
-      if (context->GetData(slot.ready.Get(), &ready, sizeof(ready), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK && ready)
+      const auto result = context->GetData(slot.ready.Get(), &ready, sizeof(ready),
+          allowQueryProgress_ ? 0 : D3D11_ASYNC_GETDATA_DONOTFLUSH);
+      if (FAILED(result)) failure_ = result;
+      if (result == S_OK && ready)
         slot.pending = false;
     }
   }
   struct Slot { std::shared_ptr<D3DVideoImage> image; ComPtr<ID3D11Query> ready; bool pending = false; };
   std::array<Slot, 3> slots_;
   int width_ = 0, height_ = 0;
+  bool allowQueryProgress_ = false;
+  HRESULT failure_ = S_OK;
 };
 
 // Lease lifetime includes every submitted GPU read, not merely the CPU draw

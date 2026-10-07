@@ -250,8 +250,8 @@ bool isStillImageMediaAsset(const std::string& mediaAssetKind, const std::string
 }
 
 StillMediaFrameCache::StillMediaFrameCache(std::unique_ptr<IStillImageDecoder> decoder,
-                                           size_t cacheBudgetBytes)
-    : decoder_(std::move(decoder)), cacheBudgetBytes_(cacheBudgetBytes) {}
+                                           size_t cacheBudgetBytes, std::shared_ptr<CpuSourcePreparation> preparation)
+    : decoder_(std::move(decoder)), cacheBudgetBytes_(cacheBudgetBytes), preparation_(std::move(preparation)) {}
 
 StillMediaFrameCache::~StillMediaFrameCache() {
   {
@@ -308,7 +308,7 @@ std::vector<VideoFrame> StillMediaFrameCache::collectFrames(int64_t timestampMs)
     }
     const auto& image = entry.bound->image;
     std::const_pointer_cast<CachedImage>(entry.bound)->lastUseTick = useTick_;
-    VideoFrame frame;
+    VideoFrame frame = entry.preparedFrame;
     frame.participantId = sourceKey;
     frame.width = image.width;
     frame.height = image.height;
@@ -396,6 +396,11 @@ void StillMediaFrameCache::enforceBudgetLocked() {
 void StillMediaFrameCache::workerLoop() {
   std::unique_lock<std::mutex> lock(mutex_);
   while (!stop_) {
+    // Static images have no further decoded arrivals. Refresh a stopped token
+    // on this owner, including redisplay after the GPU idle-retirement window.
+    if (preparation_) for (auto& [key, entry] : desired_) if (entry.bound &&
+        (!entry.preparedFrame.preparedGpu || (entry.preparedFrame.preparedGpu->demand &&
+          entry.preparedFrame.preparedGpu->demand->stopped.load()))) prepareBoundLocked(key, entry);
     const bool haveMissing = std::any_of(desired_.begin(), desired_.end(), [](const auto& pair) {
       return pair.second.missingFile;
     });
@@ -414,7 +419,8 @@ void StillMediaFrameCache::workerLoop() {
           }
         }
       } else {
-        workerCv_.wait(lock);
+        if (preparation_) workerCv_.wait_for(lock, std::chrono::milliseconds(100));
+        else workerCv_.wait(lock);
       }
       continue;
     }
@@ -491,6 +497,7 @@ void StillMediaFrameCache::workerLoop() {
     entry.checked = true;
     if (!version) {
       entry.bound.reset();
+      entry.preparedFrame = {}; entry.arrival.reset();
       entry.missingFile = true;
       entry.failure = "file missing or unreadable — keeping placeholder";
       warnRateLimitedLocked(workKey, "still media " + workKey + " file missing or unreadable: '" +
@@ -500,13 +507,16 @@ void StillMediaFrameCache::workerLoop() {
     entry.missingFile = false;
     auto cached = cache_.find(workPath);
     if (cached != cache_.end() && cached->second->version == *version) {
+      if (entry.bound != cached->second) { entry.arrival.reset(); entry.preparedFrame = {}; }
       entry.bound = cached->second;
+      prepareBoundLocked(workKey, entry);
       entry.failure.clear();
       cached->second->lastUseTick = ++useTick_;
       continue;
     }
     if (!decodeOk || !decoded.bgra) {
       entry.bound.reset();
+      entry.preparedFrame = {}; entry.arrival.reset();
       entry.failure = decodeError.empty() ? "decode failed — keeping placeholder" : decodeError;
       warnRateLimitedLocked(workKey, "still media " + workKey + " decode FAILED for '" + workPath +
                                          "': " + entry.failure);
@@ -527,8 +537,24 @@ void StillMediaFrameCache::workerLoop() {
     cacheBytes_ += image->bytes;
     enforceBudgetLocked();
     entry.bound = std::move(image);
+    entry.arrival.reset(); entry.preparedFrame = {};
+    prepareBoundLocked(workKey, entry);
     entry.failure.clear();
   }
+}
+
+void StillMediaFrameCache::prepareBoundLocked(const std::string& key, DesiredEntry& entry) {
+  if (!preparation_ || !entry.bound) return;
+  if (!entry.arrival) entry.arrival = std::make_shared<CpuVideoArrival>(key, preparation_);
+  auto& frame = entry.preparedFrame;
+  const auto& image = entry.bound->image;
+  frame.participantId = key; frame.frameId = entry.bound->frameId;
+  frame.width = frame.naturalWidth = frame.pixelWidth = image.width;
+  frame.height = frame.naturalHeight = frame.pixelHeight = image.height;
+  frame.pixelStride = image.width * 4; frame.pixels = image.bgra;
+  // Queue/identity work only under this leaf lock; resource creation, uploads
+  // and GPU queries remain on the shared owner's independent threads.
+  entry.arrival->prepare(frame);
 }
 
 }  // namespace corevideo::modules
