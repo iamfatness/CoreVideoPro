@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "Interfaces.h"
+#include "ShmCapturePreparation.h"
 
 namespace corevideo::modules {
 
@@ -18,7 +19,8 @@ namespace corevideo::modules {
 // buffer (a seqlock: header { sequence, width, height, reserved } followed by
 // tightly packed BGRA), and announces the buffer name via the
 // "register-capture-shm" command. This adapter maps each announced buffer and, on
-// every render tick, copies the latest consistent frame out as a VideoFrame keyed
+// a dedicated preparation owner copies consistent frames; render ticks consume
+// completed VideoFrame descriptors keyed
 // by "capture:<deviceId>" — the same id a scene route's capture-input layer
 // resolves to — so the core composites real capture pixels into the program frame
 // (and therefore into recording / streaming output).
@@ -27,7 +29,8 @@ namespace corevideo::modules {
 // delegated to the wrapped inner device so existing behavior is unchanged.
 class WinUiCaptureDeviceAdapter final : public ICaptureDevice {
  public:
-  explicit WinUiCaptureDeviceAdapter(std::unique_ptr<ICaptureDevice> inner);
+  explicit WinUiCaptureDeviceAdapter(std::unique_ptr<ICaptureDevice> inner,
+      std::function<void()> beforeShmCopy = {});
   ~WinUiCaptureDeviceAdapter() override;
 
   std::vector<CaptureDeviceInfo> enumerate() const override { return inner_->enumerate(); }
@@ -66,6 +69,7 @@ class WinUiCaptureDeviceAdapter final : public ICaptureDevice {
   // Real capture frames from the WinUI shared-memory buffers, merged with whatever
   // the inner device produces (e.g. dev test patterns for hardware adapters).
   void captureVideoTick(int64_t timestampMs) override;
+  CapturePreparationDiagnostics shmCapturePreparationDiagnostics() const override;
 
   // MUST forward: the shell bridge carries no audio, but the devices this wraps do
   // (SRT ingest carries its guest's audio embedded in the transport). The
@@ -88,28 +92,8 @@ class WinUiCaptureDeviceAdapter final : public ICaptureDevice {
   void unregisterCaptureBuffer(const std::string& deviceId) override;
 
  private:
-  struct Buffer {
-    std::string shmName;
-    void* mappingHandle = nullptr;  // HANDLE
-    const uint8_t* view = nullptr;
-    int width = 0;
-    int height = 0;
-    std::size_t mappedBytes = 0;
-    uint32_t lastSequence = 0;
-    int64_t frameId = 0;
-    // Last consistent frame, held so the compositor always has capture pixels even on
-    // render ticks with no new frame (capture ~30/60fps vs the render tick) — otherwise
-    // those ticks composite the pink "no pixels" slate (flashing pink program/preview).
-    std::shared_ptr<std::vector<uint8_t>> lastPixels;
-    int lastWidth = 0;
-    int lastHeight = 0;
-  };
-
-  void closeBufferLocked(Buffer& buffer);
-
   std::unique_ptr<ICaptureDevice> inner_;
-  mutable std::mutex mutex_;
-  std::map<std::string, Buffer> buffers_;
+  ShmCapturePreparation preparation_;
 };
 
 }  // namespace corevideo::modules
