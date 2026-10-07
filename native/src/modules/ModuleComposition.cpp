@@ -531,7 +531,7 @@ ModuleSet createDefaultModules() {
   modules.captureDevice = std::make_unique<NoCaptureDevice>();
 #endif
   bool srtIngestConstructed = false;
-  if (auto srtIngest = createSrtIngestCaptureDevice()) {
+  if (auto srtIngest = createSrtIngestCaptureDevice(modules.cpuSourcePreparation)) {
     hardwareCaptureDevices.push_back(std::move(srtIngest));
     srtIngestConstructed = true;
   }
@@ -543,7 +543,7 @@ ModuleSet createDefaultModules() {
       COREVIDEO_STUB ? "stub-build" : !COREVIDEO_WITH_SRT_INGEST ? "build-gate-off"
           : srtIngestConstructed ? "ffmpeg-decoder" : "");
   bool rtmpIngestConstructed = false;
-  if (auto rtmpIngest = createRtmpIngestCaptureDevice()) {
+  if (auto rtmpIngest = createRtmpIngestCaptureDevice(modules.cpuSourcePreparation)) {
     hardwareCaptureDevices.push_back(std::move(rtmpIngest));
     rtmpIngestConstructed = true;
   }
@@ -553,7 +553,7 @@ ModuleSet createDefaultModules() {
       COREVIDEO_STUB ? "stub-build" : !COREVIDEO_WITH_RTMP_INGEST ? "build-gate-off"
           : rtmpIngestConstructed ? "ffmpeg-decoder" : "");
   bool ndiIngestConstructed = false;
-  if (auto ndiIngest = createNdiReceiveCaptureDevice()) {
+  if (auto ndiIngest = createNdiReceiveCaptureDevice(modules.cpuSourcePreparation)) {
     hardwareCaptureDevices.push_back(std::move(ndiIngest));
     ndiIngestConstructed = true;
   }

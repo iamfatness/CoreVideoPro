@@ -1806,9 +1806,9 @@ std::unique_ptr<IOutputSender> createSrtOutputSender();
 std::unique_ptr<IOutputSender> createFfmpegSrtOutputSender();
 std::unique_ptr<IOutputSender> createHlsOutputSender();
 std::unique_ptr<IOutputSender> createNdiOutputSender();
-std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice();
-std::unique_ptr<ICaptureDevice> createRtmpIngestCaptureDevice();
-std::unique_ptr<ICaptureDevice> createNdiReceiveCaptureDevice();
+std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
+std::unique_ptr<ICaptureDevice> createRtmpIngestCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
+std::unique_ptr<ICaptureDevice> createNdiReceiveCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
 std::unique_ptr<ICaptureDevice> createDeckLinkCaptureDevice();
 std::unique_ptr<ICaptureDevice> createAjaCaptureDevice();
 // Native UVC webcam/capture-card ingest via Media Foundation (dev-gated behind

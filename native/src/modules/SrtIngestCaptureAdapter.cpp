@@ -1,5 +1,6 @@
 #include "core/FrameAllocation.h"
 #include "modules/Interfaces.h"
+#include "modules/CpuVideoArrival.h"
 #include "modules/SrtFfmpegArgs.h"
 #include "modules/SrtIngestHealthPolicy.h"
 #include "modules/RtmpIngestPolicy.h"
@@ -144,6 +145,8 @@ struct ReaderChannel {
   std::atomic_bool running{true};
   std::mutex mutex;                                       // guards the fields below
   std::shared_ptr<const std::vector<uint8_t>> latest;     // tightly packed BGRA
+  std::shared_ptr<CpuSourcePreparation> preparation;
+  VideoFrame preparedFrame; // reader publishes; capture tick copies metadata
   std::string connectionState = "connecting";
   std::string warning;
   int64_t framesReceived = 0;
@@ -408,7 +411,9 @@ inline std::string quoteWindowsArgument(const std::string& argument) {
 
 class NetworkIngestCaptureDevice final : public ICaptureDevice {
  public:
-  explicit NetworkIngestCaptureDevice(bool rtmpListen = false) : rtmpListen_(rtmpListen) {}
+  explicit NetworkIngestCaptureDevice(bool rtmpListen = false,
+      std::shared_ptr<CpuSourcePreparation> preparation = {})
+      : rtmpListen_(rtmpListen), preparation_(std::move(preparation)) {}
   ~NetworkIngestCaptureDevice() override { stopAll(); }
 
   std::vector<std::string> audioSourceIds() const override {
@@ -511,6 +516,7 @@ class NetworkIngestCaptureDevice final : public ICaptureDevice {
         auto channel = std::make_shared<ReaderChannel>();
         channel->config = config;
         channel->rtmpListen = rtmpListen_;
+        channel->preparation = preparation_;
         next.emplace(config.deviceId, std::move(channel));
       }
       // Whatever is left in channels_ is no longer configured.
@@ -584,6 +590,13 @@ class NetworkIngestCaptureDevice final : public ICaptureDevice {
       int64_t frameId = 0;
       {
         std::lock_guard lock(channel->mutex);
+        if (channel->preparation) {
+          if (channel->preparedFrame.hasPixels()) {
+            auto frame = channel->preparedFrame; frame.timestampMs = timestampMs;
+            frames.push_back(std::move(frame));
+          }
+          continue;
+        }
         pixels = channel->latest;
         frameId = channel->framesReceived;
       }
@@ -799,6 +812,9 @@ class NetworkIngestCaptureDevice final : public ICaptureDevice {
       const bool haveBuffer = core::tryResizeFrameBuffer(buffer, frameBytes);
       if (!haveBuffer) allocationFailures.note(frameBytes);
       bool sawFrame = false;
+      // A decoder/publisher restart is a fresh logical source epoch even when
+      // geometry and the cumulative CPU frame counter remain unchanged.
+      CpuVideoArrival arrival("capture:" + channel->config.deviceId, channel->preparation);
       while (haveBuffer && channel->running.load()) {
         if (!readExactly(*channel, buffer.data(), frameBytes)) {
           break;  // decoder exited or the publisher went away
@@ -808,9 +824,19 @@ class NetworkIngestCaptureDevice final : public ICaptureDevice {
           allocationFailures.note(frameBytes);
           continue;  // the bytes are consumed; the last published frame is held
         }
+        VideoFrame prepared;
+        if (channel->preparation) {
+          prepared.participantId = "capture:" + channel->config.deviceId;
+          { std::lock_guard lock(channel->mutex); prepared.frameId = channel->framesReceived + 1; }
+          prepared.width = prepared.naturalWidth = prepared.pixelWidth = channel->width;
+          prepared.height = prepared.naturalHeight = prepared.pixelHeight = channel->height;
+          prepared.pixelStride = channel->width * kBytesPerPixel; prepared.pixels = published;
+          arrival.prepare(prepared); // reader owner, before publication, no pixels on Program
+        }
         {
           std::lock_guard lock(channel->mutex);
           channel->latest = std::move(published);
+          channel->preparedFrame = std::move(prepared);
           ++channel->framesReceived;
           channel->lastFrameAtMs = monotonicMs();
           channel->connectionState = "receiving";
@@ -1184,23 +1210,24 @@ class NetworkIngestCaptureDevice final : public ICaptureDevice {
   std::map<std::string, std::string> selectedInputs_;
   std::map<std::string, int> audioSyncOffsets_;
   bool rtmpListen_ = false;
+  std::shared_ptr<CpuSourcePreparation> preparation_;
 };
 
 }  // namespace
 
-std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice() {
+std::unique_ptr<ICaptureDevice> createSrtIngestCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation) {
 #if !COREVIDEO_STUB && !COREVIDEO_WITH_SRT_INGEST
   return nullptr;
 #else
-  return std::make_unique<NetworkIngestCaptureDevice>();
+  return std::make_unique<NetworkIngestCaptureDevice>(false, std::move(preparation));
 #endif
 }
 
-std::unique_ptr<ICaptureDevice> createRtmpIngestCaptureDevice() {
+std::unique_ptr<ICaptureDevice> createRtmpIngestCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation) {
 #if !COREVIDEO_STUB && !COREVIDEO_WITH_RTMP_INGEST
   return nullptr;
 #else
-  return std::make_unique<NetworkIngestCaptureDevice>(true);
+  return std::make_unique<NetworkIngestCaptureDevice>(true, std::move(preparation));
 #endif
 }
 
