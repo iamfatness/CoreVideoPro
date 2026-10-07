@@ -571,6 +571,97 @@ TEST(CpuSourcePreparation, MissingGpuConsumerFailsFutureArrivalsWithAttributable
   EXPECT_FALSE(next.preparedGpu->acquire(true)); EXPECT_EQ(next.i420->front(), 170);
 }
 
+TEST(CpuSourcePreparation, RecreatedConsumerRecoversHeldStillWithOriginalIdentityAndPixels) {
+  PreparationFlags flags;
+  auto first = createD3D11Compositor(); ASSERT_TRUE(first);
+  auto owner = std::make_shared<CpuSourcePreparation>(true);
+  StillMediaFrameCache cache(std::make_unique<PreparedStillDecoder>(),
+      StillMediaFrameCache::kDefaultCacheBudgetBytes, owner);
+  cache.setDesired({{"media:logo", "logo.png"}});
+  ASSERT_TRUE(cache.waitForIdle(5000));
+  auto frames = cache.collectFrames(100); ASSERT_EQ(frames.size(), 1u);
+  ASSERT_TRUE(frames[0].preparedGpu);
+  ASSERT_TRUE(await([&] { return bool(frames[0].preparedGpu->acquire(true)); }));
+  const auto original = frames[0];
+  const auto retained = original.preparedGpu->acquire(false);
+  ASSERT_TRUE(retained);
+  const auto expected = first->render(planFor("media:logo"), frames);
+  ASSERT_EQ(expected.sourceAdmissions.front().state, "ready");
+  // A real replacement compositor registers a different consumer device/id.
+  // Retain the old image across recreation to exercise immutable read leases.
+  first.reset();
+  auto reopened = createD3D11Compositor(); ASSERT_TRUE(reopened);
+  ProgramFrame actual;
+  ASSERT_TRUE(await([&] {
+    frames = cache.collectFrames(200);
+    actual = reopened->render(planFor("media:logo"), frames);
+    return !actual.sourceAdmissions.empty() && actual.sourceAdmissions.front().state == "ready";
+  })) << "Held still never rebuilt views for the recreated consumer";
+  EXPECT_NE(frames[0].preparedGpu, original.preparedGpu);
+  EXPECT_EQ(frames[0].pixels, original.pixels);
+  EXPECT_EQ(frames[0].frameId, original.frameId);
+  EXPECT_EQ(frames[0].sourceEpoch, original.sourceEpoch);
+  EXPECT_EQ(frames[0].captureTimestamp100ns, original.captureTimestamp100ns);
+  EXPECT_EQ(actual.preview.bgra, expected.preview.bgra);
+  EXPECT_EQ(retained->sourceFrameId, original.frameId);
+  EXPECT_EQ(reopened->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(reopened->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(reopened->sourceTexStats().textureCreates, 0u);
+}
+
+TEST(CpuSourcePreparation, I420ConsumerChurnKeepsOneRetiringGenerationAndMonitorRegistrationDoesNotFence) {
+  PreparationFlags flags;
+  auto first = createD3D11Compositor(); ASSERT_TRUE(first);
+  auto owner = std::make_shared<CpuSourcePreparation>(true);
+  CpuVideoArrival arrival("media:i420", owner);
+  auto frame = sourceFrame("media:i420", 1, 7, 170); arrival.prepare(frame);
+  std::shared_ptr<const GpuVideoFrame> oldLease;
+  ASSERT_TRUE(await([&] { oldLease = frame.preparedGpu->acquire(true); return bool(oldLease); }));
+  const auto oldToken = frame.preparedGpu;
+  auto expected = first->render(planFor(frame.participantId), {frame});
+  // Monitor-only consumers are not allowed to steal production source views.
+  ComPtr<ID3D11Device> monitorDevice; ComPtr<ID3D11DeviceContext> monitorContext;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+      &monitorDevice, nullptr, &monitorContext)));
+  auto monitor = D3DVideoConsumers::add(monitorDevice.Get(), true); ASSERT_TRUE(monitor);
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  EXPECT_FALSE(oldToken->demand->stopped.load()); EXPECT_TRUE(oldToken->acquire(false));
+  auto second = createD3D11Compositor(); ASSERT_TRUE(second);
+  ASSERT_TRUE(await([&] { return oldToken->demand->stopped.load(); }));
+  const auto originalCpu = frame.i420;
+  const auto originalEpoch = frame.sourceEpoch;
+  const auto originalObservation = frame.captureTimestamp100ns;
+  arrival.refreshStopped(frame); ASSERT_NE(frame.preparedGpu, oldToken);
+  ASSERT_TRUE(await([&] { return bool(frame.preparedGpu->acquire(true)); }));
+  const auto secondToken = frame.preparedGpu;
+  auto actual = second->render(planFor(frame.participantId), {frame});
+  EXPECT_EQ(actual.preview.bgra, expected.preview.bgra);
+  EXPECT_EQ(owner->stats().active, 2u); // old independent read still owns storage
+  auto third = createD3D11Compositor(); ASSERT_TRUE(third);
+  ASSERT_TRUE(await([&] { return secondToken->demand->stopped.load(); }));
+  arrival.refreshStopped(frame);
+  EXPECT_EQ(frame.preparedGpu, secondToken); // no third generation while old read lives
+  EXPECT_LE(owner->stats().active, 2u);
+  EXPECT_EQ(oldLease->sourceFrameId, 7);
+  // Destroy the old compositor's source cache as well as the independent read.
+  first.reset(); oldLease.reset();
+  ASSERT_TRUE(await([&] {
+    arrival.refreshStopped(frame);
+    return frame.preparedGpu != secondToken;
+  }));
+  ASSERT_TRUE(await([&] { return bool(frame.preparedGpu->acquire(true)); }));
+  actual = third->render(planFor(frame.participantId), {frame});
+  EXPECT_EQ(actual.sourceAdmissions.front().state, "ready");
+  EXPECT_EQ(actual.preview.bgra, expected.preview.bgra);
+  EXPECT_EQ(frame.i420, originalCpu); EXPECT_EQ(frame.sourceEpoch, originalEpoch);
+  EXPECT_EQ(frame.captureTimestamp100ns, originalObservation); EXPECT_EQ(frame.frameId, 7);
+  EXPECT_EQ(third->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(third->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(third->sourceTexStats().textureCreates, 0u);
+  EXPECT_LE(D3DVideoImage::residentBytes.load(), 512u * 1024u * 1024u);
+}
+
 TEST(CpuSourcePreparation, MediaDecoderWorkerPublishesPreparedPixelsWithoutChangingPlaybackOrCpuIdentity) {
   PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
   auto owner = std::make_shared<CpuSourcePreparation>(true);

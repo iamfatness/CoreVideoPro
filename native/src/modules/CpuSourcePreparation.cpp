@@ -44,6 +44,8 @@ struct CpuSourcePreparation::Impl {
   bool deviceFailed = false; // GPU owner only
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
+  uint64_t consumerRevision = 0; // GPU owner only
+  std::vector<uint64_t> productionConsumers;
   std::function<void(const std::string&)> beforeResources;
   std::function<void(const std::string&)> afterUpload;
   std::thread gpuThread, resourceThread;
@@ -99,13 +101,21 @@ struct CpuSourcePreparation::Impl {
         std::lock_guard<std::mutex> lock(mutex);
         source->building = false;
         if (pool && !source->demand->stopped.load()) source->pool = std::move(pool);
-        else { source->demand->failed.store(true); if (measured.active) --measured.active; ++measured.failed; }
+        else {
+          if (measured.active) --measured.active;
+          if (source->demand->stopped.load()) ++measured.superseded;
+          else { source->demand->failed.store(true); ++measured.failed; }
+        }
       }
       workRevision.fetch_add(1); gpuChanged.notify_one();
     }
   }
   bool createDevice() {
+    // Read revision before snapshot: a concurrent addition is revisited on the
+    // next tick instead of being accidentally treated as already imported.
+    consumerRevision = D3DVideoConsumers::revision();
     const auto consumers = D3DVideoConsumers::snapshot();
+    for (const auto& consumer : consumers) if (!consumer->monitor) productionConsumers.push_back(consumer->id);
     for (const auto& consumer : consumers) if (!consumer->monitor) {
       ComPtr<IDXGIDevice> dxgi; ComPtr<IDXGIAdapter> adapter;
       ComPtr<ID3D11Device> producer; ComPtr<ID3D11DeviceContext> owner;
@@ -139,6 +149,24 @@ struct CpuSourcePreparation::Impl {
     const auto removed = device->GetDeviceRemovedReason();
     if (FAILED(removed)) { haltPreparation(removed); return; }
     const auto current = snapshot();
+    const auto revision = D3DVideoConsumers::revision();
+    if (revision != consumerRevision) {
+      std::vector<uint64_t> ids;
+      for (const auto& consumer : D3DVideoConsumers::snapshot())
+        if (!consumer->monitor) ids.push_back(consumer->id);
+      consumerRevision = revision;
+      if (ids != productionConsumers) {
+        productionConsumers = std::move(ids);
+        // Shared views are immutable and consumer-specific. Never import into
+        // live storage or on Program. Existing producer refresh/arrival taps
+        // replace stopped tokens; the old pool drains reads before retirement.
+        // Optional monitor registration alone does not invalidate production.
+        for (const auto& source : current) {
+          std::lock_guard<std::mutex> lock(mutex);
+          if (source->buildAttempted) source->demand->stopped.store(true);
+        }
+      }
+    }
     const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
     bool submitted = false;
