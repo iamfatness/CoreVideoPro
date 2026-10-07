@@ -3,7 +3,6 @@
 import argparse
 import hashlib
 import json
-import math
 import pathlib
 import shutil
 import subprocess
@@ -46,6 +45,7 @@ def main():
                      "deviceName": "CoreVideo Pro Camera"},
                     {"type": "start-program-output", "destinations": ["virtual-camera"], "isoParticipantIds": []}]
         response = core.sync(commands, 0)
+        (output / "setup.json").write_text(json.dumps(response, indent=2))
         if not response.get("ok"):
             raise RuntimeError("reference output setup refused")
         with raw_path.open("wb") as raw, (output / "receiver.stderr.log").open("wb") as error:
@@ -73,6 +73,11 @@ def main():
             report["receiverExitCode"] = receiver.returncode
         # This reference demands camera output only; optional monitor progress
         # is not inferred from the isolation launch flag.
+        if receiver.returncode != 0:
+            raise RuntimeError("OS camera receiver exited " + str(receiver.returncode) + ": " +
+                (output / "receiver.stderr.log").read_text(errors="replace")[-2000:])
+        if first is None or last is None:
+            raise RuntimeError("receiver ended before a measured native interval was available")
         report["nativeBuffer"] = judge([first, last], False)
         verdict = subprocess.run([node, str(pathlib.Path(__file__).with_name("camera-pixel-receiver.mjs")), str(raw_path)],
             capture_output=True, text=True, timeout=30,
