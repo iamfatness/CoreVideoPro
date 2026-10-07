@@ -75,6 +75,7 @@ public sealed class CoreObservationModel
     public JsonElement? ZoomGuestAvSyncRevision => Get("zoomGuestAvSyncRevision");
     public JsonElement? SystemMemory => Get("systemMemory");
     public JsonElement? ZoomSubscriptionChurn => Get("zoomSubscriptionChurn");
+    public JsonElement? ProgramSourceAdmission => Get("programSourceAdmission");
     public string TypedJson() => Project(View.Typed);
     public string QualificationJson() => Project(View.Qualification);
     public string ControlJson() => Project(View.Control);
@@ -165,6 +166,7 @@ public sealed class CoreObservationModel
         "zoomGuestAvSyncRevision" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "systemMemory" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         "zoomSubscriptionChurn" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
+        "programSourceAdmission" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         _ => 1
     };
 }

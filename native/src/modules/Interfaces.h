@@ -4,6 +4,7 @@
 #include "contracts/Lifecycle.h"
 #include "modules/ProgramAacEncoder.h"
 #include "modules/GpuVideoFrame.h"
+#include "modules/CpuSourceGpuView.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -60,6 +61,9 @@ struct VideoFrame {
   bool i420FullRange = true;
   bool i420Bt601 = false;
   std::shared_ptr<const GpuVideoFrame> gpuPixels;
+  // Resolved after authoritative source reserve/guest trim selection. The CPU
+  // descriptor only holds a weak GPU publication, so ISO cannot pin the pool.
+  std::shared_ptr<CpuSourceGpuView> preparedGpu;
   // Same source identity in a separate optional pool. Monitor requests must
   // never retain the production capture lease while waiting for their worker.
   std::shared_ptr<const GpuVideoFrame> monitorGpuPixels;
@@ -263,6 +267,13 @@ struct ProgramBufferDiagnostics {
   std::string status = "unsupported";
 };
 
+struct ProgramSourceAdmission {
+  std::string sourceId, state, reason;
+  uint64_t requestedEpoch = 0, actualEpoch = 0;
+  int64_t requestedFrameId = 0, actualFrameId = -1;
+  int64_t requestedCapture100ns = 0, actualCapture100ns = 0;
+};
+
 struct ProgramFrame {
   int width = 1920;
   int height = 1080;
@@ -329,6 +340,8 @@ struct ProgramFrame {
   // Retain GPU resources and attribution for this exact buffered frame.
   std::shared_ptr<const void> gpuOwner;
   std::shared_ptr<const CompositorRenderPlan> renderPlanEvidence;
+  bool cpuSourceReadyOnly = false;
+  std::vector<ProgramSourceAdmission> sourceAdmissions;
 };
 
 struct CompositorLayerRect {

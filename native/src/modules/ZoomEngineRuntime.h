@@ -21,6 +21,7 @@
 #include <vector>
 
 namespace corevideo::modules {
+class I420SourcePreparation;
 
 class ZoomEngineRuntime {
  public:
@@ -240,6 +241,8 @@ class ZoomEngineRuntime {
     // Full-resolution I420 planes (Y + U + V tightly packed). The compositor
     // uploads these to the GPU and converts to RGB in-shader.
     std::shared_ptr<const std::vector<std::uint8_t>> i420;
+    std::shared_ptr<CpuSourceGpuView> preparedGpu;
+    uint64_t sourceEpoch = 0;
     int width = 0;   // luma width
     int height = 0;  // luma height
     std::int64_t frameId = 0;
@@ -307,6 +310,7 @@ class ZoomEngineRuntime {
   struct VideoStreamRef {
     std::uint32_t participantId = 0;
     std::uint64_t sourceGeneration = 0;
+    std::uint64_t sourceEpoch = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t lastSequence = 0;
@@ -331,6 +335,7 @@ class ZoomEngineRuntime {
     bool lumaRangeProbed = false;
   };
   std::map<std::string, VideoStreamRef> videoStreams_;
+  std::unique_ptr<I420SourcePreparation> i420Preparation_;
   std::uint64_t staleVideoPublications_ = 0;
   std::uint64_t videoPublishedSinceLog_ = 0;
   std::chrono::steady_clock::time_point videoPublishLogStamp_ = std::chrono::steady_clock::now();
@@ -356,7 +361,8 @@ class ZoomEngineRuntime {
   void publishVideoFrameLocked(const std::string& uuid, VideoStreamRef& ref,
                                const ZoomEngineRgbaFrame& frame,
                                std::shared_ptr<const std::vector<std::uint8_t>> i420,
-                               std::chrono::steady_clock::time_point observedAt);
+                               std::chrono::steady_clock::time_point observedAt,
+                               std::shared_ptr<CpuSourceGpuView> preparedGpu = {});
   void closeVideoStreamsLocked();
 };
 

@@ -25,6 +25,8 @@ inline bool prepareMonitorFrames(MonitorRenderRequest& request) {
     return !monitorRequestNeedsFrame(request, frame);
   }), request.frames.end());
   for (auto& frame : request.frames) {
+    const bool hadPrepared = static_cast<bool>(frame.preparedGpu);
+    frame.preparedGpu.reset(); // optional jobs cannot acquire production slots later
     const bool hadGpu = frame.hasGpuPixels();
     // Pool generations are independent. Validate role and dimensions, not
     // equality of those counters. Capture publishes both from the same copy.
@@ -34,7 +36,7 @@ inline bool prepareMonitorFrames(MonitorRenderRequest& request) {
                     frame.monitorGpuPixels->height != frame.gpuPixels->height))))
       frame.monitorGpuPixels.reset();
     frame.gpuPixels = std::move(frame.monitorGpuPixels);
-    if (hadGpu && !frame.hasContent()) request.unavailableInputs.push_back(frame.participantId);
+    if ((hadGpu || hadPrepared) && !frame.hasContent()) request.unavailableInputs.push_back(frame.participantId);
   }
   return true; // unavailable inputs never refuse unrelated monitor work
 }

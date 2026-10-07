@@ -107,3 +107,20 @@ TEST(GuestAvSync, BoundsAndSignsAreExplicit) {
   EXPECT_EQ(corevideo::core::clampGuestAvOffsetMs(0), 0);
   EXPECT_EQ(corevideo::core::clampGuestAvOffsetMs(-30), -30);
 }
+
+TEST(GuestAvSync, SourceReconnectWithReusedFrameIdDiscardsOldTrimmedPictures) {
+  GuestAvSyncVideo sync;
+  auto first = picture("101", 1); first.sourceEpoch = 5;
+  auto queued = picture("101", 2); queued.sourceEpoch = 5;
+  std::vector<VideoFrame> frames{first}; sync.apply(frames, {{"101", -100}}, 0);
+  frames = {queued}; sync.apply(frames, {{"101", -100}}, 20);
+  EXPECT_EQ(frames.front().frameId, 1);
+  auto reconnected = picture("101", 2); reconnected.sourceEpoch = 6;
+  frames = {reconnected}; sync.apply(frames, {{"101", -100}}, 40);
+  EXPECT_EQ(frames.front().sourceEpoch, 6u);
+  EXPECT_EQ(frames.front().frameId, 2);
+  reconnected.frameId = 3;
+  frames = {reconnected}; sync.apply(frames, {{"101", -100}}, 150);
+  EXPECT_EQ(frames.front().sourceEpoch, 6u);
+  EXPECT_EQ(frames.front().frameId, 2);
+}

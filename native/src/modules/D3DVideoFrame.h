@@ -57,6 +57,9 @@ class D3DVideoConsumers {
 };
 
 struct D3DVideoImage final : GpuVideoFrame {
+  // A uniquely attributed prepared wrapper can lease existing pool storage.
+  // Only the pool image carries residency bytes; wrappers carry zero bytes.
+  std::shared_ptr<const D3DVideoImage> storage;
   struct View {
     uint64_t consumer = 0;
     ComPtr<ID3D11Texture2D> texture;

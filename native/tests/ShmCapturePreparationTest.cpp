@@ -280,12 +280,13 @@ TEST(ShmGpuPreparation, RealMappingRendersReadyPixelsWithoutProgramCpuUploadAndK
   ASSERT_TRUE(preparation.registerBuffer("camera", writer.name, 64, 64));
   writer.write(2, 91, true);
   auto original = awaitColor(preparation, 91);
-  ASSERT_TRUE(waitFor([&] { auto frames = preparation.latest(); return frames.size() == 1 && frames[0].gpuPixels; }));
+  ASSERT_TRUE(waitFor([&] { auto frames = preparation.latest(); return frames.size() == 1 && frames[0].preparedGpu && frames[0].preparedGpu->acquire(false); }));
   auto ready = preparation.latest().front();
   EXPECT_EQ(ready.pixels, original.pixels);
   EXPECT_EQ(ready.frameId, original.frameId);
   EXPECT_EQ(ready.sourceEpoch, original.sourceEpoch);
   EXPECT_EQ(ready.captureTimestamp100ns, original.captureTimestamp100ns);
+  EXPECT_FALSE(ready.gpuPixels); // CPU/ISO descriptors carry only weak GPU publication
   auto plan = capturePlan(64, 64);
   auto result = compositor->render(plan, {ready});
   ASSERT_FALSE(result.preview.bgra.empty());
@@ -301,7 +302,7 @@ TEST(ShmGpuPreparation, RealMappingRendersReadyPixelsWithoutProgramCpuUploadAndK
   EXPECT_EQ(preparation.stats().gpuFailed, 0u);
   writer.write(4, 173, true);
   ASSERT_TRUE(waitFor([&] { auto frames = preparation.latest(); return frames.size() == 1 &&
-      frames[0].gpuPixels && frames[0].pixels->front() == 173; }));
+      frames[0].preparedGpu && frames[0].preparedGpu->acquire(false) && frames[0].pixels->front() == 173; }));
   auto fresh = preparation.latest().front();
   EXPECT_GT(fresh.frameId, ready.frameId);
   EXPECT_EQ(fresh.sourceEpoch, ready.sourceEpoch);
@@ -313,6 +314,52 @@ TEST(ShmGpuPreparation, RealMappingRendersReadyPixelsWithoutProgramCpuUploadAndK
   preparation.unregisterBuffer("camera");
   ASSERT_TRUE(waitFor([&] { return preparation.latest().empty(); }));
   EXPECT_EQ(ready.pixels->front(), 91);
+}
+
+TEST(ShmGpuPreparation, ContinuousCpuSelectionAdmitsLateCompletedPixelsWithoutChangingIsoIdentity) {
+  CpuPreparationFlag flag;
+  auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  ComPtr<ID3D11Device> device; ComPtr<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context)));
+  auto makeFrame = [](int64_t id) {
+    VideoFrame frame; frame.participantId = "capture:camera"; frame.sourceEpoch = 1; frame.frameId = id;
+    frame.captureTimestamp100ns = id * 1000;
+    frame.width = frame.height = frame.pixelWidth = frame.pixelHeight = 64; frame.pixelStride = 256;
+    auto bytes = std::make_shared<std::vector<uint8_t>>(64 * 64 * 4, static_cast<uint8_t>(id));
+    for (size_t i = 3; i < bytes->size(); i += 4) (*bytes)[i] = 255;
+    frame.pixels = bytes;
+    auto token = std::make_shared<CpuSourceGpuView>(); token->sourceId = frame.participantId;
+    token->sourceEpoch = frame.sourceEpoch; token->frameId = id; token->captureTimestamp100ns = frame.captureTimestamp100ns;
+    token->width = token->height = 64; token->cpu = bytes; token->demand = std::make_shared<CpuSourceGpuDemand>();
+    frame.preparedGpu = std::move(token); return frame;
+  };
+  BgraSourcePreparation owner; auto current = makeFrame(1); auto plan = capturePlan(64, 64);
+  for (int64_t id = 1; id <= 120; ++id) {
+    owner.offer(device.Get(), context.Get(), current);
+    compositor->render(plan, {current}); // select this identity before its GPU completion
+    auto next = makeFrame(id + 1);
+    owner.supersedeUnsubmitted(current); // an in-flight upload survives newer CPU arrival
+    EXPECT_FALSE(current.preparedGpu->superseded.load());
+    ASSERT_TRUE(waitFor([&] { owner.poll(context.Get(), next); return bool(current.preparedGpu->acquire(false)); }));
+    EXPECT_FALSE(next.gpuPixels); EXPECT_FALSE(current.gpuPixels);
+    auto rendered = compositor->render(plan, {next});
+    ASSERT_EQ(rendered.sourceAdmissions.size(), 1u);
+    EXPECT_EQ(rendered.sourceAdmissions.front().state, "held");
+    EXPECT_EQ(rendered.sourceAdmissions.front().actualFrameId, id);
+    EXPECT_EQ(rendered.sourceAdmissions.front().requestedFrameId, id + 1);
+    ASSERT_FALSE(rendered.preview.bgra.empty());
+    EXPECT_NEAR(rendered.preview.bgra[(32 * 64 + 32) * 4], id, 1);
+    EXPECT_EQ(next.pixels->front(), id + 1); EXPECT_EQ(current.pixels->front(), id);
+    current = std::move(next);
+  }
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(owner.stats().prepared, 120u);
+  current.sourceEpoch = 2; current.preparedGpu.reset();
+  auto reconnect = compositor->render(plan, {current});
+  EXPECT_EQ(reconnect.sourceAdmissions.front().state, "unavailable");
+  EXPECT_EQ(reconnect.sourceAdmissions.front().actualFrameId, -1);
 }
 
 TEST(ShmGpuPreparation, LateUploadCannotAttachToAnotherSourceIdentityAndOtherSourceRemainsIndependent) {
@@ -409,19 +456,19 @@ TEST(ShmGpuPreparation, ReconnectFencesOldIdentityAndRetainsGpuOnlyLeaseUntilRet
   ShmCapturePreparation preparation;
   ASSERT_TRUE(preparation.registerBuffer("camera", first.name, 64, 64));
   first.write(2, 61, true);
-  ASSERT_TRUE(waitFor([&] { auto frames = preparation.latest(); return frames.size() == 1 && frames[0].gpuPixels; }));
+  ASSERT_TRUE(waitFor([&] { auto frames = preparation.latest(); return frames.size() == 1 && frames[0].preparedGpu && frames[0].preparedGpu->acquire(false); }));
   std::shared_ptr<const GpuVideoFrame> heldGpu;
   uint64_t oldEpoch;
   {
-    auto old = preparation.latest().front(); heldGpu = old.gpuPixels; oldEpoch = old.sourceEpoch;
+    auto old = preparation.latest().front(); heldGpu = old.preparedGpu->acquire(false); oldEpoch = old.sourceEpoch;
   }
   ASSERT_TRUE(preparation.registerBuffer("camera", replacement.name, 96, 64));
   replacement.write(2, 182, true);
   ASSERT_TRUE(waitFor([&] { auto frames = preparation.latest(); return frames.size() == 1 &&
-      frames[0].sourceEpoch != oldEpoch && frames[0].gpuPixels && frames[0].pixels->front() == 182; }));
+      frames[0].sourceEpoch != oldEpoch && frames[0].preparedGpu && frames[0].preparedGpu->acquire(false) && frames[0].pixels->front() == 182; }));
   ASSERT_TRUE(waitFor([&] { return preparation.stats().retiring == 1; }));
   EXPECT_EQ(heldGpu->width, 64);
-  EXPECT_EQ(preparation.latest().front().gpuPixels->width, 96);
+  EXPECT_EQ(preparation.latest().front().preparedGpu->acquire(false)->width, 96);
   heldGpu.reset();
   ASSERT_TRUE(waitFor([&] { return preparation.stats().retiring == 0; }));
   preparation.unregisterBuffer("camera");

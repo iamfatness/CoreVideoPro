@@ -11,14 +11,15 @@ adapter. Each mapping generation owns a three-image `D3DVideoFramePool`.
 `BgraSourcePreparation` uploads the immutable BGRA bytes with their actual
 row stride, submits an event query and polls on the preparation owner. Program
 does not create these images, upload these bytes or poll this producer context.
-Only a completed upload matching the current participant id, source epoch,
-frame id and dimensions can attach a GPU representation. A superseded upload
-cannot replace the authoritative CPU frame or spend a source's playout reserve.
+Each completion publishes a uniquely attributed wrapper through the original
+CPU frame's weak token. Late completion remains attributable even after newer
+CPU arrivals. It cannot replace the authoritative CPU frame or spend a source's
+playout reserve; Program reports an older admitted completion as held.
 
 CPU bytes, capture observation time and source identity remain unchanged for
-ISO and software consumers. Until a matching GPU representation is ready, the
-existing CPU path remains available. The opt-in therefore does **not** assert
-that every Program frame avoids CPU uploads. No additional playout FIFO or
+ISO and software consumers. The enabled Program path uses completed images or
+an explicit hold/slate, without a CPU source upload fallback. The default-off
+path retains its original CPU behavior. No additional playout FIFO or
 Program buffer is introduced. The existing 2 ms owner polling can affect when
 a representation becomes usable; latency qualification must measure that
 boundary rather than assume it is free.
@@ -44,6 +45,80 @@ in padded BGRA rows, bounded held-image exhaustion with another source still
 preparing, late epoch rejection, and resize/reconnect retirement with a GPU-only
 external lease. They establish these behaviors on the tested Windows rig.
 They do not establish sustained 60 fps, installed delivery, physical display,
-Zoom I420 preparation, full-resolution phase-dependent latency, or fleet
+full-resolution phase-dependent latency, or fleet
 support. Those remain required by the render-delivery specification before
 enabling this path in a release.
+
+## Decoded Zoom I420 arrival
+
+The same opt-in requests `I420SourcePreparation` from `ZoomEngineRuntime`.
+The real SHM decoded-arrival copy offers its immutable CPU planes outside the
+runtime mutex, before the existing source playout reserve and guest A/V trim.
+Neither preparation nor GPU completion changes CPU frame selection. A token
+travels with the selected CPU frame; Program resolves its view only after
+selection, matching source id, epoch, frame id, observation time and dimensions.
+Observation time is local arrival observation, not sender acquisition time.
+Reconnect assigns a new source epoch and clears old guest-trim pictures even
+when the new stream reuses an old frame id.
+
+A resource owner initializes/imports three R8 plane images per slot. A separate
+GPU owner submits tight I420 planes and polls actual event-query completion;
+slow resource creation for one source does not block another source's uploads.
+Admission is bounded to 64 source records, 16 active pools and 28 weak pending
+tokens per source. Only Program demand activates a pool. Five seconds without
+demand retires it; external GPU leases defer release. These planes share the
+existing 512 MiB logical source-GPU budget with BGRA images.
+
+Every completed frame has a unique immutable wrapper. CPU/ISO tokens hold only
+weak GPU publication references. Reusing a plane slot cannot make a retained
+old CPU token resolve newer pixels. Program's existing read queries protect
+the admitted wrapper until GPU reads complete. Optional monitor snapshots
+drop the token and cannot acquire production slots later.
+
+Invalid dimensions, incomplete planes, duplicate/out-of-order identities,
+same-epoch dimension changes, capacity exhaustion and resource creation failure
+refuse preparation while preserving CPU delivery. Query failure or producer
+device removal stops this preparation owner and logs the HRESULT. Pending
+writes remain charged and unreusable; shutdown drains them for at most two
+seconds, then quarantines unresolved pools. This slice does not recreate a
+failed device or rebuild views when a compositor consumer is replaced. Those
+recovery cases, actual hardware device loss and the diagnostics export contract
+remain unqualified.
+
+A failed per-source resource build reports preparation-failed through its
+selected token. Device initialization refusal stops preparation explicitly;
+neither failure remains labeled as pending. Failed or stopped preparation
+invalidates Program's held image for that source.
+
+Release tests compare actual independent-device pixels for both color matrices,
+full/limited range and grading; check zero Program CPU source uploads for ready
+views; exercise the real decoded-arrival parser and compositor; retain CPU/ISO
+frames across slot reuse and reconnect; and delay/fail a selected source's
+resource creation while a healthy source continues. These are functional
+checks. The enabled Program path admits only compatible GPU-completed views. Before
+readiness, it holds one GPU-only last-valid descriptor from the same nonzero
+epoch and dimensions, never newer than CPU selection; otherwise it draws the
+unavailable slate and reports its reason. Unsupported or failed preparation
+does not fall back to a Program CPU upload. CPU/ISO descriptors remain original.
+The bounded 64-source hold cache expires after 300 unused Program frames and
+is separate from inline optional-pass caches. Held color hints belong to the
+actual image, while operator framing/grade still follow the current plan.
+One additional selected-identity token per source can observe a late completion;
+its descriptor retains no CPU/ISO payload. Expired publication, failure,
+source epoch and size changes invalidate that pending identity. A completed
+older selection is explicitly held, with its actual identity, never relabeled
+as the latest requested source frame. BGRA mapping completions use unique
+identity wrappers and weak publication just like I420. The producer retains
+at most two completed BGRA images within its existing three-slot pool,
+independent of CPU/ISO token lifetime; pressure retires the oldest owner-held
+completion while GPU read leases still protect any consumer's pixels.
+Inline participant source exports are suspended in this mode with the explicit
+source-exports-require-monitor-isolation warning; enable monitor isolation for
+independent source exports. The opt-in never silently changes that flag.
+Snapshot programSourceAdmission version 1 carries requested and actual source
+epoch/frame/observation-time identities and ready/held/unavailable reasons for
+the completed shell snapshot. Unavailable actual identities are null. It does
+not prove display presentation, source acquisition or native output freshness.
+The default-off path retains its original CPU behavior. Sustained
+delivery, phase-dependent latency, monitor freshness and installed/fleet gates
+remain required under #802 and parent #517.

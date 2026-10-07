@@ -1119,6 +1119,7 @@ rpc::Json MediaCore::sessionState() const {
   if (const auto activeSpeakerId = zoomCapture.getString("activeSpeakerId"); !activeSpeakerId.empty()) {
     state.emplace("activeSpeakerId", activeSpeakerId);
   }
+  state.emplace("programSourceAdmission", modules::programSourceAdmissionJson(lastProgramFrame_));
   const auto preview = modules::programFramePreviewJson(lastProgramFrame_);
   if (!preview.isNull()) {
     state.emplace("programFramePreview", preview);

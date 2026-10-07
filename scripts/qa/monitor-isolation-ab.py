@@ -3,7 +3,7 @@
 
 import argparse, pathlib, json, time, hashlib, mmap, struct, threading, uuid, sys, math, subprocess
 from contextlib import ExitStack
-from monitor_evidence import Core, judge, counters, judge_recording
+from monitor_evidence import Core, judge, counters, judge_recording, SourceAdmissionJudge
 
 
 def fixed(route_id, pid):
@@ -17,6 +17,20 @@ def fixed(route_id, pid):
         "zIndex": 0,
         "rect": {"x": 0, "y": 0, "width": 1, "height": 1},
     }
+
+
+def program_routes(scene):
+    if scene == "zoom":
+        return [fixed("pgm", "101")]
+    capture = fixed("screen", "")
+    capture.update(mode="capture-input", captureDeviceId="qa-screen")
+    capture.pop("participantId")
+    if scene == "capture":
+        return [capture]
+    routes = [capture, fixed("guest", "101"), fixed("guest2", "102")]
+    for i, route in enumerate(routes):
+        route["rect"] = {"x": i / 3, "y": 0, "width": 1 / 3, "height": 1}
+    return routes
 
 
 def main():
@@ -34,9 +48,10 @@ def main():
     ap.add_argument("--duration", type=float, default=120)
     ap.add_argument("--pairs", type=int, default=3)
     ap.add_argument("--warmup", type=float, default=10)
+    ap.add_argument("--program-scene", choices=("zoom", "capture", "mixed"), default="zoom")
     ap.add_argument(
         "--cpu-source-preparation", choices=("0", "1"), default="0",
-        help="Explicit SHM BGRA GPU preparation override; held constant across both monitor modes",
+        help="Explicit CPU BGRA/I420 GPU preparation override; held constant across both monitor modes",
     )
     a = ap.parse_args()
     if sys.platform != "win32":
@@ -80,6 +95,8 @@ def main():
         "pairs": a.pairs,
         "warmup": a.warmup,
         "programBufferFrames": 2,
+        "programScene": a.program_scene,
+        "programRoutes": program_routes(a.program_scene),
         "sourceFormats": [
             "8 fake Zoom I420 1920x1080 30fps",
             "BGRA mapping 1920x1080 60Hz",
@@ -121,6 +138,7 @@ def main():
         if any(
             r.get("programBufferVerdict") != "PASS"
             or r.get("recordingVerdict") != "PASS"
+            or r.get("sampledSourceAdmissionVerdict") == "FAIL"
             for r in results
         )
         else 0
@@ -137,6 +155,9 @@ def run_trial(a, exe, fake, out, label, isolated, results):
     captures = []
     stop = threading.Event()
     publisher = None
+    admission_judge = SourceAdmissionJudge(
+        ["capture:" + route["captureDeviceId"] if route["mode"] == "capture-input" else route["participantId"]
+         for route in program_routes(a.program_scene)], a.cpu_source_preparation == "1")
 
     def make_core():
         return Core(
@@ -174,6 +195,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "previewSharedTexture",
                 "multiviewSharedTexture",
                 "recording",
+                "programSourceAdmission",
             ]
         }
 
@@ -260,7 +282,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 {
                     "type": "load-scene-graph",
                     "sceneId": "ab-program",
-                    "routes": [fixed("pgm", "101")],
+                    "routes": program_routes(a.program_scene),
                 },
                 {
                     "type": "set-preview-scene",
@@ -358,6 +380,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
         ), "capture sources not flowing"
 
         def retain(snapshot):
+            admission_judge.observe(snapshot)
             if (
                 snapshot["programBuffer"]["generation"]
                 != first["programBuffer"]["generation"]
@@ -416,6 +439,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
             "seconds": seconds,
             **judge(samples, isolated),
             **judge_recording(first, last),
+            **admission_judge.result(),
         }
         result["observedSourceFormats"] = [
             {

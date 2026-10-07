@@ -234,6 +234,9 @@ void ShmCapturePreparation::run() {
       copyTotalNs += workNs; copyMaximumNs = std::max(copyMaximumNs, workNs);
       if (sequence() != first) { ++torn; continue; }
       auto& frame = mapping->last;
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
+      mapping->gpu.supersedeUnsubmitted(frame);
+#endif
       frame = {};
       frame.participantId = "capture:" + id;
       frame.width = frame.naturalWidth = frame.pixelWidth = mapping->request.width;
@@ -243,6 +246,15 @@ void ShmCapturePreparation::run() {
       frame.frameId = static_cast<int64_t>(++identity);
       frame.sourceEpoch = mapping->request.generation;
       frame.captureTimestamp100ns = captureTime; // observation boundary, not sender-provided acquisition time
+      if (gpuRequested_) {
+        auto token = std::make_shared<CpuSourceGpuView>();
+        token->sourceId = frame.participantId; token->sourceEpoch = frame.sourceEpoch; token->frameId = frame.frameId;
+        token->captureTimestamp100ns = frame.captureTimestamp100ns; token->width = frame.pixelWidth; token->height = frame.pixelHeight;
+        token->cpu = frame.pixels; token->demand = std::make_shared<CpuSourceGpuDemand>(); frame.preparedGpu = std::move(token);
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
+        if (gpuDeviceAttempted && !gpuContext) frame.preparedGpu->demand->failed.store(true);
+#endif
+      }
       mapping->seen = true; mapping->sequence = first;
       ++prepared; changed = true;
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB

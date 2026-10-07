@@ -58,6 +58,29 @@ public sealed class CoreSnapshotObserverTests
         Assert.DoesNotContain("hidden", view.RootElement.GetRawText());
     }
 
+    [Fact]
+    public void SourceAdmissionRetainsActualIdentityAndUnknownsInPublicObservationViews()
+    {
+        var model = CoreObservationModel.Parse("""
+            {"programSourceAdmission":{"version":1,"readyOnlyRequested":true,"presentationVerified":false,
+              "sources":[{"sourceId":"zoom:1","state":"held","requestedFrameId":12,"actualFrameId":10},
+                         {"sourceId":"zoom:2","state":"unavailable","actualFrameId":null}]}}
+            """);
+        using var typed = JsonDocument.Parse(model.TypedJson());
+        Assert.False(typed.RootElement.TryGetProperty("programSourceAdmission", out _));
+        foreach (var json in new[] { model.QualificationJson(), model.ControlJson() })
+        {
+            using var view = JsonDocument.Parse(json);
+            var admission = view.RootElement.GetProperty("programSourceAdmission");
+            Assert.False(admission.GetProperty("presentationVerified").GetBoolean());
+            var sources = admission.GetProperty("sources");
+            Assert.Equal(12, sources[0].GetProperty("requestedFrameId").GetInt32());
+            Assert.Equal(10, sources[0].GetProperty("actualFrameId").GetInt32());
+            Assert.Equal(JsonValueKind.Null, sources[1].GetProperty("actualFrameId").ValueKind);
+        }
+        Assert.Null(CoreObservationModel.Parse("{}").ProgramSourceAdmission);
+    }
+
     private static NativeMediaCoreStateSnapshot Parse(string state)
     {
         using var response = JsonDocument.Parse($"{{\"id\":\"core-1\",\"ok\":true,\"state\":{state}}}");

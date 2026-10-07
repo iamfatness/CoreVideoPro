@@ -18,7 +18,7 @@ python scripts/qa/monitor-isolation-ab.py `
 ```
 
 Defaults: three pairs, two measured minutes per trial, ten seconds of warmup.
-`--cpu-source-preparation 1` requests the optional SHM BGRA upload owner;
+`--cpu-source-preparation 1` requests optional SHM BGRA and decoded Zoom I420 preparation;
 its value stays constant across both monitor modes and is pinned in the manifest.
 The default `0` overrides any inherited flag. Neither a requested flag nor
 aggregate Program progress proves that every selected source used a ready GPU
@@ -29,6 +29,14 @@ other QA workload or live production concurrently. The source commit and
 Release configuration are operator declarations; SHA256 hashes identify the
 actual binaries, and the manifest inventories available adapters/drivers.
 Adapter inventory does not prove which adapter the compositor selected.
+
+`--program-scene capture` selects the 2560x1440 BGRA mapping alone;
+`--program-scene mixed` selects that mapping and two 1080p I420 guests in
+three equal-width regions. The default `zoom` keeps the original single guest.
+Run identical scenes with preparation `0` and `1` to compare preparation
+while comparing like monitor modes. Snapshots retain `programSourceAdmission`
+for requested/actual identities and explicit ready/held/unavailable state;
+periodic observations do not prove every rendered frame or display presentation.
 
 The output directory must be new. Each trial retains its snapshots as JSONL,
 stderr, result JSON and recording even on failure. RAM retains two snapshots,
@@ -48,6 +56,14 @@ non-progressing worker invalidates the trial. Nonzero measured loss fails its
 boundary. Exit 1 means at least one trial failed or is invalid; a failing inline
 control is useful evidence and must not be discarded. Short smoke tests may
 override duration/pairs but do not meet the specification's repeatability gate.
+
+When preparation is enabled, `sampledSourceAdmissionVerdict` independently
+requires every selected reference source to have ready/held, nonfuture,
+same-epoch actual identities that advance with new CPU arrivals at the
+quarter-second sample boundaries. Missing evidence and a frozen actual image
+fail even if Program keeps delivering slate frames without a buffer underrun.
+The preparation-off control reports NOT_REQUESTED. This is sampled source
+evidence, not every-frame source continuity or physical presentation proof.
 
 Both verdicts remain aggregate evidence. Advancing texture metadata and a
 playable MP4 do not establish per-frame identity, actual display presentation,

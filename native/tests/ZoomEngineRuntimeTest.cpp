@@ -860,6 +860,7 @@ struct ZoomEngineRuntimeTestAccess {
     stream.participantId = 42;
     stream.width = width;
     stream.height = height;
+    stream.sourceEpoch = 5;
     stream.lumaRangeProbed = true;
     runtime.frameSyncEnabled_ = false;
   }
@@ -914,6 +915,7 @@ struct ZoomEngineRuntimeTestAccess {
       case 4: ++runtime.processGeneration_; break;
       case 5: runtime.shuttingDown_ = true; break;
       case 6: runtime.restartBeforeJoin_ = true; break;
+      case 7: ++stream.sourceEpoch; break;
     }
   }
   static void markInitialized(ZoomEngineRuntime& runtime) {
@@ -977,7 +979,7 @@ TEST(ZoomEngineRuntime, UnsubscribeRetiresHeldFrameAndFrameSyncQueue) {
 
 TEST(ZoomEngineRuntime, VideoPublicationRejectsReplacedMappingIdentityAndRetiredGenerations) {
   using namespace corevideo::modules;
-  for (int mutation = 0; mutation != 7; ++mutation) {
+  for (int mutation = 0; mutation != 8; ++mutation) {
     ZoomEngineRuntime runtime;
     auto original = std::make_shared<InMemoryVideoRegion>();
     auto replacement = std::make_shared<InMemoryVideoRegion>();
@@ -1035,6 +1037,56 @@ TEST(ZoomEngineRuntime, IngestPublishesMetadataOnlySourceFormatFact) {
   EXPECT_GT(format->getNumber("fps"), 0);
   EXPECT_TRUE(fact->stringify().find("bgraBase64") == std::string::npos);
 }
+
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
+TEST(ZoomEngineRuntime, ActualDecodedArrivalPreparesExactGpuViewWithoutRestampingSelectedCpuFrame) {
+  using namespace corevideo::modules;
+  struct Flags {
+    std::string cpu, monitor;
+    Flags() {
+      const char* raw = std::getenv("COREVIDEO_CPU_SOURCE_PREPARATION"); cpu = raw ? raw : "";
+      raw = std::getenv("COREVIDEO_ISOLATE_MONITORS"); monitor = raw ? raw : "";
+      setEnv("COREVIDEO_CPU_SOURCE_PREPARATION", "1"); setEnv("COREVIDEO_ISOLATE_MONITORS", "0");
+    }
+    ~Flags() { setEnv("COREVIDEO_CPU_SOURCE_PREPARATION", cpu.c_str()); setEnv("COREVIDEO_ISOLATE_MONITORS", monitor.c_str()); }
+  } flags;
+  auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  ZoomEngineRuntime runtime;
+  auto region = std::make_shared<InMemoryVideoRegion>();
+  ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(region));
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime);
+  auto frames = runtime.latestDecodedVideoFrames(100);
+  ASSERT_EQ(frames.size(), 1u);
+  ASSERT_TRUE(frames.front().preparedGpu);
+  EXPECT_EQ(frames.front().sourceEpoch, 5u);
+  EXPECT_GT(frames.front().captureTimestamp100ns, 0);
+  const auto original = frames.front();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  std::shared_ptr<const GpuVideoFrame> ready;
+  do {
+    ready = frames.front().preparedGpu->acquire(true);
+    if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  } while (!ready && std::chrono::steady_clock::now() < deadline);
+  ASSERT_TRUE(ready);
+  frames = runtime.latestDecodedVideoFrames(200);
+  EXPECT_EQ(frames.front().i420, original.i420);
+  EXPECT_EQ(frames.front().frameId, original.frameId);
+  EXPECT_EQ(frames.front().sourceEpoch, original.sourceEpoch);
+  EXPECT_EQ(frames.front().captureTimestamp100ns, original.captureTimestamp100ns);
+  EXPECT_EQ(frames.front().timestampMs, 200);
+  EXPECT_EQ(ready->sourceCaptureTimestamp100ns, original.captureTimestamp100ns);
+  EXPECT_EQ(ready->sourceFrameId, original.frameId);
+  CompositorRenderPlan plan; plan.width = plan.height = 32;
+  CompositorRenderPlanLayer layer; layer.kind = "participant-video";
+  layer.sourceId = layer.participantId = "42"; layer.rect = {0, 0, 1, 1};
+  plan.layers.push_back(layer);
+  auto result = compositor->render(plan, frames);
+  ASSERT_FALSE(result.preview.bgra.empty());
+  EXPECT_NEAR(result.preview.bgra[(16 * 32 + 16) * 4], 128, 1);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+}
+#endif
 
 TEST(ZoomEngineRuntime, AuthAndJoinTimeoutsRetireHelperAndRejectLateEvents) {
   using namespace corevideo::modules;
