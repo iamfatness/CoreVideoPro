@@ -18,7 +18,7 @@ python scripts/qa/monitor-isolation-ab.py `
 ```
 
 Defaults: three pairs, two measured minutes per trial, ten seconds of warmup.
-`--cpu-source-preparation 1` requests the optional SHM BGRA upload owner;
+`--cpu-source-preparation 1` requests optional SHM BGRA and decoded Zoom I420 preparation;
 its value stays constant across both monitor modes and is pinned in the manifest.
 The default `0` overrides any inherited flag. Neither a requested flag nor
 aggregate Program progress proves that every selected source used a ready GPU

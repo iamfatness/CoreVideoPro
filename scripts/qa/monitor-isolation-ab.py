@@ -36,7 +36,7 @@ def main():
     ap.add_argument("--warmup", type=float, default=10)
     ap.add_argument(
         "--cpu-source-preparation", choices=("0", "1"), default="0",
-        help="Explicit SHM BGRA GPU preparation override; held constant across both monitor modes",
+        help="Explicit CPU BGRA/I420 GPU preparation override; held constant across both monitor modes",
     )
     a = ap.parse_args()
     if sys.platform != "win32":
