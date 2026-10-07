@@ -5,7 +5,7 @@ paths using one **Release** binary. It creates eight fake Zoom I420 1080p30
 sources, two BGRA shared-memory captures (1080p/1440p at nominal 60 Hz), a
 1080p60 Program and Preview, a 1080p multiview, and local Program recording.
 It explicitly selects the two-frame Program buffer and disables GPU capture
-ingress so that only monitor isolation differs. The capture producer advances
+ingress and CPU source GPU preparation so that only monitor isolation differs. The capture producer advances
 a header/pixel counter on a solid image; it does not exercise physical camera
 or Windows Graphics Capture acquisition.
 
@@ -18,6 +18,11 @@ python scripts/qa/monitor-isolation-ab.py `
 ```
 
 Defaults: three pairs, two measured minutes per trial, ten seconds of warmup.
+`--cpu-source-preparation 1` requests the optional SHM BGRA upload owner;
+its value stays constant across both monitor modes and is pinned in the manifest.
+The default `0` overrides any inherited flag. Neither a requested flag nor
+aggregate Program progress proves that every selected source used a ready GPU
+view; pixel, preparation-health and latency evidence remain separate requirements.
 Pair orders alternate inline/isolated then isolated/inline. Every trial gets a
 fresh owned core and unique Local shared-memory mappings. Do not run a build,
 other QA workload or live production concurrently. The source commit and
