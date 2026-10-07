@@ -289,6 +289,7 @@ try {
     if (!restartCompleted && Date.now() >= restartAt && device?.signalPresent) {
       const beforeVideo = device.decodedFrames;
       const beforeAudio = device.decodedAudioSamples;
+      const beforePreparedEpoch = previousAdmission?.actualEpoch;
       const publisherExited = new Promise((resolve) => {
         if (publisher.exitCode !== null) resolve(true);
         else publisher.once("exit", () => resolve(true));
@@ -320,6 +321,9 @@ try {
           if (publisher.exitCode !== null || publisher.signalCode !== null) break;
           const check = await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] });
           const current = check.snapshot?.captureDevices?.find((d) => d.id === deviceId);
+          const prepared = check.snapshot?.programSourceAdmission?.sources?.find((row) => row.sourceId === `capture:${deviceId}`);
+          const preparedRecovered = preparation !== "1" || (Number.isSafeInteger(beforePreparedEpoch) &&
+            ["ready", "held"].includes(prepared?.state) && prepared.actualEpoch === prepared.requestedEpoch && prepared.actualEpoch > beforePreparedEpoch);
           if (current?.signalPresent === true &&
               current.decodedFrames > lastVideo && current.decodedAudioSamples > lastAudio) {
             growingSamples += 1;
@@ -328,7 +332,7 @@ try {
           }
           lastVideo = current?.decodedFrames ?? lastVideo;
           lastAudio = current?.decodedAudioSamples ?? lastAudio;
-          if (growingSamples >= 2 && lastVideo > beforeVideo && lastAudio > beforeAudio) {
+          if (growingSamples >= 2 && lastVideo > beforeVideo && lastAudio > beforeAudio && preparedRecovered) {
             recovered = true;
             device = current;
           }
@@ -460,6 +464,7 @@ try {
     // The channel must rebind without requiring another scene or source click.
     const framesBefore = device?.decodedFrames ?? 0;
     const audioBefore = device?.decodedAudioSamples ?? 0;
+    const beforePreparedEpoch = previousAdmission?.actualEpoch;
     let recovered = false;
     for (let attempt = 0; attempt < 3 && !recovered; attempt += 1) {
       launchPublisher();
@@ -468,9 +473,12 @@ try {
         await sleep(500);
         const sync = await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] });
         const current = sync.snapshot?.captureDevices?.find((d) => d.id === deviceId);
+        const prepared = sync.snapshot?.programSourceAdmission?.sources?.find((row) => row.sourceId === `capture:${deviceId}`);
+        const preparedRecovered = preparation !== "1" || (Number.isSafeInteger(beforePreparedEpoch) &&
+          ["ready", "held"].includes(prepared?.state) && prepared.actualEpoch === prepared.requestedEpoch && prepared.actualEpoch > beforePreparedEpoch);
         lastState = `${current?.connectionState ?? "missing"}/frames=${current?.decodedFrames ?? 0}/audio=${current?.decodedAudioSamples ?? 0}`;
         recovered = current?.signalPresent === true && current?.decodedFrames > framesBefore &&
-                    current?.decodedAudioSamples > audioBefore;
+                    current?.decodedAudioSamples > audioBefore && preparedRecovered;
         if (publisher.exitCode !== null) break;
       }
       if (!recovered) {
