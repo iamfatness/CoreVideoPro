@@ -48,12 +48,18 @@ Old GPU reads remain charged until they finish, with one retiring generation
 per source. Monitor-only registration does not fence production preparation.
 Same-adapter consumer recreation has real BGRA/I420 pixel tests; preparation
 device loss and adapter migration remain separate qualification.
-If initial setup fails before any preparation device/context exists, a changed
-production consumer set permits one new setup attempt. Monitor-only registration
-and repeated CPU arrivals do not cause setup retries. Failed initial tokens are
+After owner failure, a changed production consumer set requests one setup
+attempt. Monitor-only registration and repeated CPU arrivals do not request
+rebuilds. Existing pools must first complete their writes and release retained
+GPU read leases on their old context owner; resource builds must also finish.
+Storage stays charged until that drain completes. Only then does the GPU owner
+release its old device/context and create the replacement. Failed tokens are
 stopped so producer-held-frame refresh can replace them after setup succeeds.
-This recovery has no old GPU resources to retire and does not implement recovery
-from loss of an already active preparation device.
+Initial setup has no GPU resources to drain. An irrecoverable pending query
+remains stopped/charged and follows existing shutdown quarantine; it is not
+freed to force recovery. An injected device-status failure with real textures
+and retained reads exercises drain/rebuild; physical device reset and adapter
+migration remain unqualified.
 
 WGC CPU fallback transfers OS frames to the bounded capture worker and offers
 BGRA before publishing its descriptor. The descriptor snapshots its logical

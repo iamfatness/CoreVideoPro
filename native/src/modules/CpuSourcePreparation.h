@@ -12,9 +12,9 @@ class CpuSourcePreparation {
     uint64_t prepared = 0, refused = 0, superseded = 0, failed = 0;
     size_t sources = 0, active = 0;
   };
-  // Test-only resource/upload interleaving hooks; no command/settings/environment accepts them.
+  // Test-only resource/upload/device-status hooks; no command/settings/environment accepts them.
   explicit CpuSourcePreparation(bool enabled, std::function<void(const std::string&)> beforeResources = {},
-      std::function<void(const std::string&)> afterUpload = {});
+      std::function<void(const std::string&)> afterUpload = {}, std::function<int32_t()> deviceFailure = {});
   ~CpuSourcePreparation();
   std::shared_ptr<CpuSourceGpuView> offer(const std::string& sourceId, uint64_t epoch, int64_t frameId,
       int64_t captureTimestamp100ns, int width, int height,

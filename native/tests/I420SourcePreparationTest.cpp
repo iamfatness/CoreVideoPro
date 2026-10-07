@@ -617,6 +617,55 @@ TEST(CpuSourcePreparation, InitialMissingProductionConsumerRecoversHeldStillWith
   EXPECT_EQ(compositor->sourceTexStats().textureCreates, 0u);
 }
 
+TEST(CpuSourcePreparation, InjectedDeviceFailureWaitsForOldReadLeaseBeforeRebuildingForReplacementConsumer) {
+  PreparationFlags flags;
+  auto first = createD3D11Compositor(); ASSERT_TRUE(first);
+  std::atomic<bool> failNextUpload{false};
+  std::atomic<bool> failDevice{false};
+  auto owner = std::make_shared<CpuSourcePreparation>(true, std::function<void(const std::string&)>{},
+      [&](const std::string&) {
+        if (failNextUpload.exchange(false)) failDevice.store(true);
+      }, [&] { return int32_t(failDevice.exchange(false) ? DXGI_ERROR_DEVICE_REMOVED : S_OK); });
+  CpuVideoArrival arrival("media:owner-recovery", owner);
+  auto frame = sourceFrame("media:owner-recovery", 1, 1, 80); arrival.prepare(frame);
+  std::shared_ptr<const GpuVideoFrame> oldLease;
+  ASSERT_TRUE(await([&] { oldLease = frame.preparedGpu->acquire(true); return bool(oldLease); }));
+  const auto oldToken = frame.preparedGpu;
+  failNextUpload.store(true);
+  frame = sourceFrame("media:owner-recovery", 1, 2, 180); arrival.prepare(frame);
+  const auto originalCpu = frame.i420; const auto epoch = frame.sourceEpoch;
+  const auto observed = frame.captureTimestamp100ns;
+  frame.preparedGpu->acquire(true);
+  ASSERT_TRUE(await([&] { return !owner->stats().supported; }));
+  EXPECT_TRUE(oldToken->demand->stopped.load()); EXPECT_FALSE(oldToken->acquire(false));
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "0");
+  auto reference = createD3D11Compositor(); ASSERT_TRUE(reference);
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "1");
+  auto replacement = createD3D11Compositor(); ASSERT_TRUE(replacement);
+  first.reset();
+  for (int attempt = 0; attempt < 10; ++attempt) {
+    arrival.prepare(frame);
+    EXPECT_FALSE(frame.preparedGpu->acquire(true));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_FALSE(owner->stats().supported); EXPECT_EQ(owner->stats().active, 1u);
+  EXPECT_EQ(oldLease->sourceFrameId, 1); EXPECT_EQ(oldLease->sourceEpoch, epoch);
+  oldLease.reset();
+  ASSERT_TRUE(await([&] { arrival.prepare(frame); return bool(frame.preparedGpu->acquire(true)); }));
+  auto original = frame; original.preparedGpu.reset();
+  const auto expected = reference->render(planFor(frame.participantId), {original});
+  const auto actual = replacement->render(planFor(frame.participantId), {frame});
+  EXPECT_EQ(actual.preview.bgra, expected.preview.bgra);
+  EXPECT_EQ(actual.sourceAdmissions.front().state, "ready");
+  EXPECT_EQ(frame.i420, originalCpu); EXPECT_EQ(frame.sourceEpoch, epoch);
+  EXPECT_EQ(frame.frameId, 2); EXPECT_EQ(frame.captureTimestamp100ns, observed);
+  EXPECT_EQ(owner->stats().active, 1u); EXPECT_EQ(owner->stats().failed, 1u);
+  EXPECT_EQ(replacement->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(replacement->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(replacement->sourceTexStats().textureCreates, 0u);
+  EXPECT_LE(D3DVideoImage::residentBytes.load(), 512u * 1024u * 1024u);
+}
+
 TEST(CpuSourcePreparation, RecreatedConsumerRecoversHeldStillWithOriginalIdentityAndPixels) {
   PreparationFlags flags;
   auto first = createD3D11Compositor(); ASSERT_TRUE(first);

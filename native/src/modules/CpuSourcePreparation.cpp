@@ -42,18 +42,21 @@ struct CpuSourcePreparation::Impl {
   std::atomic<bool> stopping{false};
   std::atomic<bool> resourcesStopped{false};
   bool deviceFailed = false; // GPU owner only
+  bool recoveryRequested = false; // one attempt per changed production consumer set
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   uint64_t consumerRevision = 0; // GPU owner only
   std::vector<uint64_t> productionConsumers;
   std::function<void(const std::string&)> beforeResources;
   std::function<void(const std::string&)> afterUpload;
+  std::function<int32_t()> deviceFailure;
   std::thread gpuThread, resourceThread;
   inline static std::mutex quarantineMutex;
   inline static std::vector<std::shared_ptr<D3DPreparedSourcePool>> quarantined;
 
-  explicit Impl(bool enabled, std::function<void(const std::string&)> hook, std::function<void(const std::string&)> uploaded)
-      : beforeResources(std::move(hook)), afterUpload(std::move(uploaded)) {
+  explicit Impl(bool enabled, std::function<void(const std::string&)> hook, std::function<void(const std::string&)> uploaded,
+      std::function<int32_t()> failure)
+      : beforeResources(std::move(hook)), afterUpload(std::move(uploaded)), deviceFailure(std::move(failure)) {
     measured.requested = enabled; measured.supported = true;
     if (enabled) {
       try {
@@ -138,6 +141,7 @@ struct CpuSourcePreparation::Impl {
   }
   void haltPreparation(HRESULT reason) {
     deviceFailed = true;
+    recoveryRequested = false;
     pendingWrites = false;
     for (const auto& source : snapshot()) {
       source->demand->stopped.store(true);
@@ -156,6 +160,10 @@ struct CpuSourcePreparation::Impl {
     pendingWrites = false;
     const auto removed = device->GetDeviceRemovedReason();
     if (FAILED(removed)) { haltPreparation(removed); return; }
+    if (deviceFailure) {
+      const auto injected = static_cast<HRESULT>(deviceFailure());
+      if (FAILED(injected)) { haltPreparation(injected); return; }
+    }
     const auto current = snapshot();
     const auto revision = D3DVideoConsumers::revision();
     if (revision != consumerRevision) {
@@ -280,18 +288,38 @@ struct CpuSourcePreparation::Impl {
     while (!stopping.load()) {
       const auto observedRevision = workRevision.load();
       try {
-        // An initial creation failure has no pools/context to retire. Retry
-        // once for a changed production consumer set, never on every CPU
-        // arrival or optional monitor registration. Actual device loss with
-        // live resources retains the existing conservative stopped state.
-        if (deviceFailed && !context && D3DVideoConsumers::revision() != consumerRevision) {
+        // Only a changed production consumer set requests a rebuild. A failed
+        // owner does not allocate on each arrival or monitor registration.
+        if (deviceFailed && D3DVideoConsumers::revision() != consumerRevision) {
           const auto revision = D3DVideoConsumers::revision();
           std::vector<uint64_t> ids;
           for (const auto& consumer : D3DVideoConsumers::snapshot())
             if (!consumer->monitor) ids.push_back(consumer->id);
           consumerRevision = revision;
           if (!ids.empty() && ids != productionConsumers) {
-            deviceFailed = false; attempted = false;
+            recoveryRequested = true;
+          }
+        }
+        if (deviceFailed && recoveryRequested) {
+          bool drained = true;
+          for (const auto& source : snapshot()) {
+            std::shared_ptr<D3DPreparedSourcePool> pool;
+            bool building;
+            { std::lock_guard<std::mutex> lock(mutex); pool = source->pool; building = source->building; }
+            if (building) drained = false;
+            if (!pool) continue;
+            // This polls on the old context owner only. Pending writes and
+            // retained GPU reads keep storage charged; an irrecoverable query
+            // remains stopped, with the existing shutdown quarantine policy.
+            if (!context || !pool->idle(context.Get())) { drained = false; continue; }
+            source->pending.reset(); source->pendingSlot = -1;
+            { std::lock_guard<std::mutex> lock(mutex); source->pool.reset(); if (measured.active) --measured.active; }
+          }
+          if (drained) {
+            { std::lock_guard<std::mutex> lock(mutex); context.Reset(); device.Reset(); }
+            // Keep stopped source metadata until the successful next tick:
+            // its existing demand triggers setup while offers stay failed.
+            recoveryRequested = false; deviceFailed = false; attempted = false;
           }
         }
         if (!context && !attempted) {
@@ -327,13 +355,14 @@ struct CpuSourcePreparation::Impl {
     }
   }
 #else
-  explicit Impl(bool enabled, std::function<void(const std::string&)>, std::function<void(const std::string&)>) { measured.requested = enabled; }
+  explicit Impl(bool enabled, std::function<void(const std::string&)>, std::function<void(const std::string&)>,
+      std::function<int32_t()>) { measured.requested = enabled; }
 #endif
 };
 
 CpuSourcePreparation::CpuSourcePreparation(bool enabled, std::function<void(const std::string&)> hook,
-    std::function<void(const std::string&)> uploaded)
-    : impl_(std::make_unique<Impl>(enabled, std::move(hook), std::move(uploaded))) {}
+    std::function<void(const std::string&)> uploaded, std::function<int32_t()> failure)
+    : impl_(std::make_unique<Impl>(enabled, std::move(hook), std::move(uploaded), std::move(failure))) {}
 CpuSourcePreparation::~CpuSourcePreparation() = default;
 CpuSourcePreparation::Stats CpuSourcePreparation::stats() const { std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->measured; }
 std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offer(const std::string& id, uint64_t epoch,
@@ -382,7 +411,7 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
       token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
       token->cpuStride = stride; token->cpu = cpu;
       token->demand = std::make_shared<CpuSourceGpuDemand>(); token->demand->failed.store(true);
-      if (!impl_->device) token->demand->stopped.store(true); // retryable initial setup, no live GPU resources
+      token->demand->stopped.store(true); // producer refresh retries only after owner setup succeeds
       return token;
     }
     auto found = impl_->sources.find(id);
