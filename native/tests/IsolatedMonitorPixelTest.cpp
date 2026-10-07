@@ -15,6 +15,7 @@
 #include <dxgi.h>
 #include "compositor/ComPtrLite.h"
 #include "modules/D3DVideoFrame.h"
+#include "modules/CpuSourcePreparation.h"
 
 namespace {
 using namespace corevideo::modules;
@@ -524,6 +525,106 @@ class WgcTestMotion {
   std::atomic<bool> stopping_{false}; bool valid_ = false; std::thread thread_;
 };
 }
+TEST(WgcCpuPreparation, OptInRealCpuCaptureMatchesReferencePixelsWithoutProgramUploads) {
+  const char* enabled = std::getenv("COREVIDEO_CAPTURE_TESTS");
+  if (!enabled || std::string(enabled) != "1") {
+    std::fprintf(stderr, "[capture-test] SKIPPED CPU WGC pixel test; enable COREVIDEO_CAPTURE_TESTS=1\n");
+    return;
+  }
+  struct Flags {
+    std::string cpu, gpu, monitor;
+    Flags() {
+      const char* raw = std::getenv("COREVIDEO_CPU_SOURCE_PREPARATION"); cpu = raw ? raw : "";
+      raw = std::getenv("COREVIDEO_GPU_CAPTURE"); gpu = raw ? raw : "";
+      raw = std::getenv("COREVIDEO_ISOLATE_MONITORS"); monitor = raw ? raw : "";
+      _putenv_s("COREVIDEO_GPU_CAPTURE", "0"); _putenv_s("COREVIDEO_ISOLATE_MONITORS", "0");
+    }
+    ~Flags() {
+      _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", cpu.c_str());
+      _putenv_s("COREVIDEO_GPU_CAPTURE", gpu.c_str());
+      _putenv_s("COREVIDEO_ISOLATE_MONITORS", monitor.c_str());
+    }
+  } flags;
+  WgcTestMotion motion; ASSERT_TRUE(motion.valid());
+  corevideo::core::ComApartmentLifetime apartment;
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "0");
+  auto reference = createD3D11Compositor(); ASSERT_TRUE(reference);
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "1");
+  auto prepared = createD3D11Compositor(); ASSERT_TRUE(prepared);
+  auto owner = std::make_shared<CpuSourcePreparation>(true);
+  auto capture = createWgcScreenCaptureDevice(owner); ASSERT_TRUE(capture);
+  const auto devices = capture->enumerate(); ASSERT_FALSE(devices.empty());
+  capture->connect(devices.front().id);
+  struct Consumer : ICaptureVideoConsumer {
+    VideoFrame frame;
+    void publish(VideoFrame value) override { frame = std::move(value); }
+    void end(const std::string&) override {}
+  } consumer;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!consumer.frame.preparedGpu && std::chrono::steady_clock::now() < deadline) {
+    capture->deliverVideo(consumer, 0); std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_TRUE(consumer.frame.hasPixels()); ASSERT_TRUE(consumer.frame.preparedGpu);
+  EXPECT_FALSE(consumer.frame.hasGpuPixels());
+  const auto cpu = consumer.frame.pixels;
+  const auto observed = consumer.frame.captureTimestamp100ns;
+  ASSERT_GT(observed, 0);
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!consumer.frame.preparedGpu->acquire(true) && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(consumer.frame.preparedGpu->acquire(false));
+  auto request = requestAtSize(64);
+  request.programPlan.skipCpuReadback = false;
+  auto& layer = request.programPlan.layers.front();
+  layer.participantId = layer.sourceId = consumer.frame.participantId;
+  auto original = consumer.frame; original.preparedGpu.reset();
+  const auto expected = reference->render(request.programPlan, {original});
+  const auto actual = prepared->render(request.programPlan, {consumer.frame});
+  ASSERT_FALSE(actual.preview.bgra.empty()); EXPECT_EQ(actual.preview.bgra, expected.preview.bgra);
+  EXPECT_EQ(actual.sourceAdmissions.front().state, "ready");
+  EXPECT_EQ(prepared->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(prepared->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(prepared->sourceTexStats().textureCreates, 0u);
+  EXPECT_EQ(consumer.frame.pixels, cpu); EXPECT_EQ(consumer.frame.captureTimestamp100ns, observed);
+  EXPECT_EQ(consumer.frame.sourceEpoch, consumer.frame.preparedGpu->sourceEpoch);
+  const auto firstId = consumer.frame.frameId;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (consumer.frame.frameId <= firstId && std::chrono::steady_clock::now() < deadline) {
+    capture->deliverVideo(consumer, 0); std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_GT(consumer.frame.frameId, firstId);
+  std::fprintf(stderr, "[capture-test] CPU WGC prepared real %dx%d pixels; source advanced; Program uploads=0\n",
+      consumer.frame.pixelWidth, consumer.frame.pixelHeight);
+  capture->disconnect(devices.front().id);
+  capture->connect(devices.front().id);
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (consumer.frame.sourceEpoch <= original.sourceEpoch && std::chrono::steady_clock::now() < deadline) {
+    capture->deliverVideo(consumer, 0); std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_GT(consumer.frame.sourceEpoch, original.sourceEpoch);
+  ASSERT_TRUE(consumer.frame.preparedGpu);
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!consumer.frame.preparedGpu->acquire(true) && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(consumer.frame.preparedGpu->acquire(false));
+  // Use a fresh independent reference so a restarted capture sequence cannot
+  // reuse the legacy comparator's prior frame-id texture cache.
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "0");
+  auto reconnectReference = createD3D11Compositor(); ASSERT_TRUE(reconnectReference);
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "1");
+  auto freshCpu = consumer.frame; freshCpu.preparedGpu.reset();
+  const auto expectedReconnect = reconnectReference->render(request.programPlan, {freshCpu});
+  const auto actualReconnect = prepared->render(request.programPlan, {consumer.frame});
+  EXPECT_EQ(actualReconnect.preview.bgra, expectedReconnect.preview.bgra);
+  EXPECT_EQ(actualReconnect.sourceAdmissions.front().actualEpoch, consumer.frame.sourceEpoch);
+  EXPECT_EQ(actualReconnect.sourceAdmissions.front().actualFrameId, consumer.frame.frameId);
+  EXPECT_EQ(prepared->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(prepared->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(prepared->sourceTexStats().textureCreates, 0u);
+  EXPECT_EQ(original.pixels, cpu); EXPECT_EQ(original.captureTimestamp100ns, observed);
+  capture->disconnect(devices.front().id);
+}
+
 TEST(GpuCaptureIngress, OptInRealWgcFrameUsesPreparedGpuViewAndIndependentCpuConsumers) {
   const char* enabled = std::getenv("COREVIDEO_CAPTURE_TESTS");
   if (!enabled || std::string(enabled) != "1") {

@@ -8,6 +8,7 @@
 
 #include "core/FrameAllocation.h"
 #include "modules/Interfaces.h"
+#include "modules/CpuSourcePreparation.h"
 
 #if defined(COREVIDEO_WITH_WGC) && COREVIDEO_WITH_WGC
 
@@ -129,9 +130,12 @@ std::vector<MonitorTarget> enumerateMonitors() {
 }
 
 // One active WGC session with immutable completed representations. GPU ingress
-// uses an owner worker; the flag-off compatibility path runs on the callback.
+// uses an owner worker when either preparation path is enabled; the legacy
+// compatibility path runs on the callback.
 class WgcSession {
  public:
+  explicit WgcSession(std::shared_ptr<CpuSourcePreparation> preparation)
+      : preparation_(std::move(preparation)) {}
   // Drain any in-flight FrameArrived callback before this object's D3D members are
   // destroyed — the free-threaded frame pool can invoke onFrame on a DWM thread, and
   // the revoker does not wait for a callback already running (this was crashing the
@@ -202,7 +206,7 @@ class WgcSession {
     }
     framePool_ = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
         winrtDevice, wgd::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, item.Size());
-    if (gpuEnabled_)
+    if (gpuEnabled_ || preparation_)
       worker_ = std::make_unique<CaptureFrameWorker<CapturedFrame>>(
           [this](const CapturedFrame& frame) { processFrame(frame); },
           [this] {
@@ -210,6 +214,7 @@ class WgcSession {
             // A static screen may deliver no next OS frame. Retire the last
             // CPU copy on the capture owner rather than stranding its ISO view.
             if (auto cpu = cpuBranch()) cpu->publishReady(context_.Get());
+            refreshCpuPreparation();
           }, [this] {
             if (auto cpu = cpuBranch()) cpu->stopOnCaptureOwner(context_.Get());
             context_->Flush();
@@ -270,7 +275,8 @@ class WgcSession {
   // (owner-reported flashing in the multiviewer).
   bool getLatest(std::shared_ptr<const std::vector<std::uint8_t>>& outBgra, int& outWidth,
                  int& outHeight, std::int64_t& outFrameId, std::shared_ptr<const GpuVideoFrame>& outGpu,
-                 std::shared_ptr<const GpuVideoFrame>& outMonitorGpu, int64_t& outCapture100ns) {
+                 std::shared_ptr<const GpuVideoFrame>& outMonitorGpu, int64_t& outCapture100ns,
+                 uint64_t& outEpoch, std::shared_ptr<CpuSourceGpuView>& outPrepared) {
     std::lock_guard<std::mutex> lock(latestMutex_);
     if ((!latestBgra_ || latestBgra_->empty()) && !latestGpu_) {
       return false;
@@ -282,13 +288,14 @@ class WgcSession {
     outGpu = latestGpu_;
     outMonitorGpu = latestMonitorGpu_;
     outCapture100ns = latestCapture100ns_;
+    outEpoch = latestSourceEpoch_;
+    outPrepared = latestPrepared_;
     return true;
   }
 
   int width() const { return width_; }
   int height() const { return height_; }
   void requireCpu(bool required) { cpuRequired_.store(required, std::memory_order_release); }
-  uint64_t sourceEpoch() const { return sourceEpoch_; }
   std::vector<VideoFrame> takeCpuFrames() { if (auto cpu = cpuBranch()) return cpu->take(); return {}; }
   std::string cpuWarning() const {
     if (cpuAdmissionFailed_.load()) return "CPU/ISO branch admission failed: " + std::to_string(cpuAdmissionFailed_.load());
@@ -332,7 +339,7 @@ class WgcSession {
   };
   void onFrame(const wgc::Direct3D11CaptureFramePool& pool) {
     // Stop drains this callback before stopping the owner worker. The callback
-    // only transfers one OS frame when GPU ingress is enabled.
+    // only transfers one OS frame when a preparation path is enabled.
     std::lock_guard<std::mutex> frameLock(frameMutex_);
     if (!running_.load(std::memory_order_acquire)) {
       return;
@@ -345,7 +352,7 @@ class WgcSession {
       const auto capture100ns = captureClockCalibrated_
           ? frame.SystemRelativeTime().count() + captureClockOffset100ns_ : 0;
       CapturedFrame captured{std::move(frame), ++captureSequence_, capture100ns};
-      if (worker_) worker_->submit(std::move(captured));
+      if (worker_) worker_->submit(std::move(captured), !gpuEnabled_ && cpuRequired_.load());
       else processFrame(captured);
     } catch (...) { ++refusedFrames_; }
   }
@@ -370,6 +377,11 @@ class WgcSession {
     }
     D3D11_TEXTURE2D_DESC desc{};
     texture->GetDesc(&desc);
+    // Capture owner fences geometry before either CPU or GPU publication.
+    // The published descriptor snapshots this epoch together with its pixels.
+    if (captureWidth_ && (captureWidth_ != desc.Width || captureHeight_ != desc.Height))
+      sourceEpoch_ = ++nextSourceEpoch_;
+    captureWidth_ = desc.Width; captureHeight_ = desc.Height;
     std::optional<CaptureCopyLease> captureLease;
     if (gpuEnabled_) captureLease.emplace(*this, captured.frame);
     int gpuSlot = -1;
@@ -517,6 +529,14 @@ class WgcSession {
   void publish(int64_t sequence, int width, int height,
       std::shared_ptr<const std::vector<uint8_t>> bgra, std::shared_ptr<const GpuVideoFrame> gpu,
       std::shared_ptr<const GpuVideoFrame> monitorGpu, bool cpuMirror, int64_t capture100ns) {
+    std::shared_ptr<CpuSourceGpuView> prepared;
+    if (!capture100ns) capture100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
+    // CPU fallback is offered on the capture owner, never the poll caller.
+    // Direct GPU ingress and original CPU/ISO bytes remain independent.
+    if (preparation_ && bgra && !gpu)
+      prepared = preparation_->offerBgra(sourceId_, sourceEpoch_, sequence, capture100ns,
+          width, height, width * 4, bgra);
     if (gpu) ++gpuFrames_;
     else if (gpuEnabled_) ++gpuFallbackFrames_;
     if (cpuMirror) ++cpuReadbacks_;
@@ -531,6 +551,8 @@ class WgcSession {
       latestHeight_ = height;
       latestFrameId_ = sequence;
       latestCapture100ns_ = capture100ns;
+      latestSourceEpoch_ = sourceEpoch_;
+      latestPrepared_ = std::move(prepared);
       if (gpuEnabled_ && latestFrameId_ % 120 == 0)
         core::nativeLogf("[wgc-gpu-ingress] ready=%llu cpuFallback=%llu cpuMirror=%d cpuReadbacks=%llu residentBytes=%llu generation=%llu monitorCopied=%llu monitorRefused=%llu monitorResidentBytes=%llu gpuCapacityRefused=%llu gpuNotReady=%llu\n",
             static_cast<unsigned long long>(gpuFrames_), static_cast<unsigned long long>(gpuFallbackFrames_),
@@ -540,6 +562,16 @@ class WgcSession {
             static_cast<unsigned long long>(D3DVideoImage::monitorResidentBytes.load()),
             static_cast<unsigned long long>(gpuCapacityRefused_), static_cast<unsigned long long>(gpuNotReady_));
     }
+  }
+
+  void refreshCpuPreparation() {
+    if (!preparation_) return;
+    std::lock_guard<std::mutex> lock(latestMutex_);
+    if (!latestBgra_ || latestGpu_ || (latestPrepared_ && latestPrepared_->demand &&
+        !latestPrepared_->demand->stopped.load())) return;
+    auto token = preparation_->offerBgra(sourceId_, latestSourceEpoch_, latestFrameId_,
+        latestCapture100ns_, latestWidth_, latestHeight_, latestWidth_ * 4, latestBgra_);
+    if (token) latestPrepared_ = std::move(token);
   }
 
   ComPtr<ID3D11Device> device_;
@@ -561,6 +593,8 @@ class WgcSession {
   std::atomic<uint64_t> cpuAdmissionFailed_{0};
   std::string sourceId_;
   uint64_t sourceEpoch_ = 0;
+  UINT captureWidth_ = 0, captureHeight_ = 0; // capture owner only
+  std::shared_ptr<CpuSourcePreparation> preparation_;
   bool captureClockCalibrated_ = false;
   int64_t captureClockOffset100ns_ = 0;
   inline static std::atomic<uint64_t> nextSourceEpoch_{0};
@@ -586,13 +620,16 @@ class WgcSession {
   int latestHeight_ = 0;
   std::int64_t latestFrameId_ = 0;
   int64_t latestCapture100ns_ = 0;
+  uint64_t latestSourceEpoch_ = 0;
+  std::shared_ptr<CpuSourceGpuView> latestPrepared_;
   int width_ = 0;
   int height_ = 0;
 };
 
 class WgcScreenCaptureDevice : public ICaptureDevice {
  public:
-  WgcScreenCaptureDevice() : gpuEnabled_([] {
+  explicit WgcScreenCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation)
+      : preparation_(std::move(preparation)), gpuEnabled_([] {
     const char* value = std::getenv("COREVIDEO_GPU_CAPTURE");
     return value && std::string(value) == "1";
   }()), lifecycle_([this](const std::string& id) {
@@ -600,7 +637,7 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
     const auto windows = enumerateWindows();
     targets.insert(targets.end(), windows.begin(), windows.end());
     for (const auto& target : targets) if (target.id == id) {
-      auto session = std::make_shared<WgcSession>();
+      auto session = std::make_shared<WgcSession>(preparation_);
       {
         std::lock_guard<std::mutex> lock(mutex_);
         if (demandKnown_) session->requireCpu(sourceNeedsCpuVideo(demands_, "capture:" + id));
@@ -672,7 +709,9 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
       int64_t capture100ns = 0;
       std::shared_ptr<const GpuVideoFrame> gpu;
       std::shared_ptr<const GpuVideoFrame> monitorGpu;
-      if (!session->getLatest(bgra, width, height, frameId, gpu, monitorGpu, capture100ns)) {
+      uint64_t epoch = 0;
+      std::shared_ptr<CpuSourceGpuView> prepared;
+      if (!session->getLatest(bgra, width, height, frameId, gpu, monitorGpu, capture100ns, epoch, prepared)) {
         continue;
       }
       VideoFrame frame;
@@ -683,7 +722,8 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
       frame.naturalHeight = height;
       frame.timestampMs = timestampMs;
       frame.frameId = frameId;
-      frame.sourceEpoch = session->sourceEpoch();
+      frame.sourceEpoch = epoch;
+      frame.preparedGpu = std::move(prepared);
       frame.captureTimestamp100ns = capture100ns;
       frame.pixels = bgra;
       frame.gpuPixels = std::move(gpu);
@@ -730,14 +770,15 @@ class WgcScreenCaptureDevice : public ICaptureDevice {
   mutable std::mutex mutex_;
   bool demandKnown_ = false;
   std::vector<SourceVideoDemand> demands_;
+  std::shared_ptr<CpuSourcePreparation> preparation_;
   bool gpuEnabled_ = false;
   CaptureSessionLifecycle<WgcSession> lifecycle_;
 };
 
 }  // namespace
 
-std::unique_ptr<ICaptureDevice> createWgcScreenCaptureDevice() {
-  return std::make_unique<WgcScreenCaptureDevice>();
+std::unique_ptr<ICaptureDevice> createWgcScreenCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation) {
+  return std::make_unique<WgcScreenCaptureDevice>(std::move(preparation));
 }
 
 }  // namespace corevideo::modules
@@ -745,7 +786,7 @@ std::unique_ptr<ICaptureDevice> createWgcScreenCaptureDevice() {
 #else  // COREVIDEO_WITH_WGC
 
 namespace corevideo::modules {
-std::unique_ptr<ICaptureDevice> createWgcScreenCaptureDevice() { return nullptr; }
+std::unique_ptr<ICaptureDevice> createWgcScreenCaptureDevice(std::shared_ptr<CpuSourcePreparation>) { return nullptr; }
 }  // namespace corevideo::modules
 
 #endif  // COREVIDEO_WITH_WGC

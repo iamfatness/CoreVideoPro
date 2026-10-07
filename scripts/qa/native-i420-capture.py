@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Owned-core physical MF capture test; not receiver/display qualification."""
+"""Owned-core MF or controlled WGC capture test; not receiver/display qualification."""
 import argparse
 import hashlib
 import json
@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--core", required=True, type=pathlib.Path)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--device-id", required=True, help="Exact native list-capture-devices id")
+    parser.add_argument("--capture-kind", choices=("uvc", "wgc"), default="uvc")
     parser.add_argument("--output", required=True, type=pathlib.Path)
     parser.add_argument("--duration", type=float, default=120)
     parser.add_argument("--warmup", type=float, default=15)
@@ -37,11 +38,13 @@ def main():
               "driverSha256": hashlib.sha256(pathlib.Path(__file__).with_name("monitor_evidence.py").read_bytes()).hexdigest(),
               "flags": flags, "deviceId": args.device_id, "durationPerPhase": args.duration,
               "warmupPerPhase": args.warmup, "phases": [],
-              "scope": "Physical MF capture into owned development core. Sampled GPU admission and native buffer counters; no tagged input pixels, acquisition clock, installed/display/receiver, A/V or fleet qualification."}
+              "captureKind": args.capture_kind,
+              "scope": "Owned native capture with sampled CPU input/GPU admission and native buffer counters; no per-frame input pixels, acquisition loss, installed/display/receiver, A/V or fleet qualification."}
     core = None
+    motion = None
     connected = False
     start = time.monotonic()
-    source_alias = "qa-native-uvc-" + uuid.uuid4().hex
+    source_alias = "qa-native-uvc-" + uuid.uuid4().hex if args.capture_kind == "uvc" else args.device_id
     source_id = "capture:" + source_alias
 
     def request(body):
@@ -61,9 +64,18 @@ def main():
         devices = request({"type": "list-capture-devices"})
         (output / "devices.json").write_text(json.dumps(devices, indent=2))
         device = next((item for item in devices.get("devices", []) if item.get("id") == args.device_id), None)
-        if not device or device.get("vendor") != "uvc":
-            raise RuntimeError("selected native MF/UVC device is unavailable")
+        vendor = "uvc" if args.capture_kind == "uvc" else "Windows Graphics Capture"
+        if not device or device.get("vendor") != vendor:
+            raise RuntimeError("selected native capture family/device is unavailable")
+        if args.capture_kind == "wgc":
+            if not args.device_id.startswith("screen:"):
+                raise RuntimeError("controlled WGC motion requires a screen device")
+            from wgc_test_motion import WgcTestMotion
+            motion = WgcTestMotion(int(args.device_id.split(":", 1)[1]))
         report["device"] = device
+        expected_geometry = (1920, 1080) if args.capture_kind == "uvc" else (
+            device.get("resolution", {}).get("width"), device.get("resolution", {}).get("height"))
+        report["captureInputReferenceFormat"] = {"width": expected_geometry[0], "height": expected_geometry[1]}
         commands = [{"type": "set-verbose-diagnostics", "enabled": True},
                     {"type": "set-output-profile", "width": 1920, "height": 1080, "fps": 60},
                     {"type": "load-scene-graph", "sceneId": "native-uvc-proof", "routes": [
@@ -73,13 +85,16 @@ def main():
         previous_epoch = None
         previous_native = None
         for index in range(args.reconnects + 1):
-            connect = request({"type": "connect-capture-device", "payload": {"deviceId": args.device_id, "outputSourceId": source_alias}})
+            payload = {"deviceId": args.device_id}
+            if args.capture_kind == "uvc":
+                payload["outputSourceId"] = source_alias
+            connect = request({"type": "connect-capture-device", "payload": payload})
             connected = True
             (output / f"phase-{index}-connect.json").write_text(json.dumps(connect, indent=2))
             phase = {"index": index, "result": "INVALID"}
             report["phases"].append(phase)
             admission = SourceAdmissionJudge([source_id], args.cpu_source_preparation == "1")
-            capture_input = NativeCaptureInputJudge(source_id)
+            capture_input = NativeCaptureInputJudge(source_id, *expected_geometry)
             first = last = None
             measured_started = None
             warmup_end = time.monotonic() + args.warmup
@@ -133,6 +148,10 @@ def main():
                 core.close()
             except Exception as error:
                 report["cleanupError"] = str(error); report["result"] = "INVALID"
+        if motion:
+            motion.close()
+            if motion.error:
+                report["motionError"] = motion.error; report["result"] = "INVALID"
         (output / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps({"result": report["result"], "report": str(output / "report.json")}))
     return 0 if report["result"] == "PASS" else 1

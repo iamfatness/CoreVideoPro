@@ -31,6 +31,24 @@ class NativeCaptureInputTests(unittest.TestCase):
             evidence.observe(self.sample()); evidence.observe(final)
             self.assertEqual("FAIL", evidence.result()["captureInputVerdict"])
 
+    def test_explicit_portrait_reference_still_rejects_resize_and_dropped_input(self):
+        evidence = NativeCaptureInputJudge("capture:camera", 1440, 2560)
+        evidence.observe(self.sample(10, width=1440, height=2560))
+        evidence.observe(self.sample(25, width=1440, height=2560))
+        self.assertEqual("PASS", evidence.result()["captureInputVerdict"])
+        self.assertEqual({"width": 1440, "height": 2560}, evidence.result()["captureInputReferenceFormat"])
+        for changes in ({"width": 1280}, {"height": 1440}, {"droppedFrames": 1}):
+            evidence = NativeCaptureInputJudge("capture:camera", 1440, 2560)
+            evidence.observe(self.sample(10, width=1440, height=2560))
+            final = {"width": 1440, "height": 2560}; final.update(changes)
+            evidence.observe(self.sample(25, **final))
+            self.assertEqual("FAIL", evidence.result()["captureInputVerdict"])
+
+    def test_invalid_reference_geometry_cannot_be_inferred_or_waived(self):
+        for width, height in ((None, 1080), (True, 1080), (0, 1080), (8000, 1080), (1920, 4321)):
+            with self.assertRaises(ValueError):
+                NativeCaptureInputJudge("capture:camera", width, height)
+
 
 class SourceAdmissionTests(unittest.TestCase):
     def row(self, requested=11, actual=10, **changes):

@@ -182,8 +182,11 @@ def judge(snapshots, isolated):
 
 class NativeCaptureInputJudge:
     """CPU input progress is required even when GPU admission is not requested."""
-    def __init__(self, source_id):
+    def __init__(self, source_id, width=1920, height=1080):
+        if type(width) is not int or type(height) is not int or not 0 < width <= 7680 or not 0 < height <= 4320:
+            raise ValueError("capture input reference geometry must be explicit positive bounded integers")
         self.source = source_id
+        self.width, self.height = width, height
         self.previous = None
         self.errors = set()
         self.samples = 0
@@ -197,7 +200,7 @@ class NativeCaptureInputJudge:
             return
         if row.get("kind") != "capture" or row.get("hasVideo") is not True or row.get("health") != "producing":
             self.errors.add("capture-input-not-producing")
-        if row.get("width") != 1920 or row.get("height") != 1080:
+        if row.get("width") != self.width or row.get("height") != self.height:
             self.errors.add("capture-input-not-reference-format")
         fields = [row.get("framesIngested"), row.get("droppedFrames")]
         if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 or value != math.floor(value) for value in fields):
@@ -214,7 +217,8 @@ class NativeCaptureInputJudge:
             self.errors.add("insufficient-input-observations")
         return {"captureInputVerdict": "FAIL" if self.errors else "PASS",
                 "captureInputErrors": sorted(self.errors), "captureInputSamples": self.samples,
-                "captureInputScope": "Periodic CPU ingress progress; not GPU pixels or hardware acquisition loss"}
+                "captureInputScope": "Periodic CPU ingress progress; not GPU pixels or hardware acquisition loss",
+                "captureInputReferenceFormat": {"width": self.width, "height": self.height}}
 
 
 class SourceAdmissionJudge:

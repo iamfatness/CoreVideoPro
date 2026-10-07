@@ -1823,6 +1823,6 @@ std::unique_ptr<ICaptureDevice> createUvcCaptureDevice(std::shared_ptr<CpuSource
 // SC): monitors enumerate as "screen:<n>" capture devices; frames deliver as
 // BGRA keyed "capture:screen:<n>". Dev-gated (COREVIDEO_WITH_WGC); nullptr
 // when the flag is off.
-std::unique_ptr<ICaptureDevice> createWgcScreenCaptureDevice();
+std::unique_ptr<ICaptureDevice> createWgcScreenCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation = {});
 
 }  // namespace corevideo::modules
