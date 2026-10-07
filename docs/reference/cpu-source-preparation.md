@@ -100,3 +100,5 @@ of byte-exact preparation of the decoded CPU pixels.
 Installed output continuity, receiver/display identities,
 latency, A/V and hardware qualification remain governed by #802/#517 and the
 [render delivery specification](render-delivery-spec.md).
+
+The pending-token queue charges only live weak entries. Retaining one old CPU descriptor does not keep expired entries behind it charged against the 28-token limit: a bounded admission scan removes expired entries anywhere in the queue while preserving live tokens and the configured cap. This changes producer admission only; it does not allocate GPU resources or supersede the retained old descriptor.
