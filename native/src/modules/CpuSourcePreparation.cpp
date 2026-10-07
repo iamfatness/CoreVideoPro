@@ -1,4 +1,5 @@
 #include "modules/CpuSourcePreparation.h"
+#include "core/DeliveryTrace.h"
 #include "core/BoundedAsyncLog.h"
 #include <algorithm>
 #include <condition_variable>
@@ -218,6 +219,13 @@ struct CpuSourcePreparation::Impl {
           if (!source->demand->stopped.load() && source->pending) {
             auto& ready = source->ready[source->pendingSlot];
             ready = {source->pending, image};
+            core::DeliveryTraceEvent event;
+            event.stage = core::DeliveryStage::SourceGpuReady;
+            event.sourceTag = core::deliveryTraceTag(source->pending->sourceId);
+            event.sourceEpoch = source->pending->sourceEpoch;
+            event.sourceFrameId = source->pending->frameId;
+            event.sourceObservation100ns = source->pending->captureTimestamp100ns;
+            core::recordDeliveryTrace(event);
             source->pending->ready.store(image);
             source->pending->completionPublished.store(true);
             std::lock_guard<std::mutex> lock(mutex); ++measured.prepared;

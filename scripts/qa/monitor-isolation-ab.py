@@ -45,6 +45,7 @@ def main():
         required=True,
         help="Commit that built the supplied Release core; never infer from checkout",
     )
+    ap.add_argument("--delivery-trace", action="store_true", help="Explicit per-trial bounded core trace; its independent verdict remains separate from release qualification")
     ap.add_argument("--duration", type=float, default=120)
     ap.add_argument("--pairs", type=int, default=3)
     ap.add_argument("--warmup", type=float, default=10)
@@ -94,6 +95,7 @@ def main():
         "duration": a.duration,
         "pairs": a.pairs,
         "warmup": a.warmup,
+        "deliveryTraceRequested": a.delivery_trace,
         "programBufferFrames": 2,
         "programScene": a.program_scene,
         "programRoutes": program_routes(a.program_scene),
@@ -139,6 +141,7 @@ def main():
             r.get("programBufferVerdict") != "PASS"
             or r.get("recordingVerdict") != "PASS"
             or r.get("sampledSourceAdmissionVerdict") == "FAIL"
+            or (a.delivery_trace and r.get("deliveryTrace", {}).get("result") != "PASS")
             for r in results
         )
         else 0
@@ -155,6 +158,8 @@ def run_trial(a, exe, fake, out, label, isolated, results):
     captures = []
     stop = threading.Event()
     publisher = None
+    trace_path = out / (label + ".trace.bin")
+    trace_start = trace_end = None
     admission_judge = SourceAdmissionJudge(
         ["capture:" + route["captureDeviceId"] if route["mode"] == "capture-input" else route["participantId"]
          for route in program_routes(a.program_scene)], a.cpu_source_preparation == "1")
@@ -173,6 +178,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE": "0",
                 "COREVIDEO_GPU_CAPTURE": "0",
                 "COREVIDEO_CPU_SOURCE_PREPARATION": a.cpu_source_preparation,
+                **({"COREVIDEO_DELIVERY_TRACE_PATH": str(trace_path)} if a.delivery_trace else {}),
             },
             out / (label + ".stderr.log"),
         )
@@ -196,6 +202,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "multiviewSharedTexture",
                 "recording",
                 "programSourceAdmission",
+                "deliveryEvidence",
             ]
         }
 
@@ -343,6 +350,11 @@ def run_trial(a, exe, fake, out, label, isolated, results):
             sync()
             time.sleep(0.25)
         first = sync()
+        if a.delivery_trace:
+            trace_start = first.get("deliveryEvidence", {}).get("observedAtTicks")
+            if not isinstance(trace_start, str) or not trace_start.isdecimal():
+                raise RuntimeError("requested delivery trace has no core clock observation")
+            trace_start = int(trace_start)
         before = time.monotonic()
         previous_progress = before
         formats = [
@@ -431,6 +443,11 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 )
                 previous_progress = time.monotonic()
         last = sync()
+        if a.delivery_trace:
+            value = last.get("deliveryEvidence", {}).get("observedAtTicks")
+            if not isinstance(value, str) or not value.isdecimal():
+                raise RuntimeError("requested delivery trace has no final core clock observation")
+            trace_end = int(value)
         retain(last)
         seconds = time.monotonic() - before
         result = {
@@ -479,6 +496,20 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 core.close()
         finally:
             resources.close()
+        if a.delivery_trace:
+            try:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("delivery_trace", pathlib.Path(__file__).with_name("delivery-trace.py"))
+                trace_judge = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(trace_judge)
+                if trace_start is None or trace_end is None:
+                    raise ValueError("missing pinned measured trace window")
+                results[-1]["deliveryTrace"] = trace_judge.judge(trace_path, a.warmup,
+                    max(1, a.duration - 1 / 60), trace_start, trace_end,
+                    require_source_ready=a.cpu_source_preparation == "1")
+            except Exception as error:
+                results[-1]["deliveryTrace"] = {"result": "INVALID", "error": str(error)}
+            print(label + " deliveryTrace=" + results[-1]["deliveryTrace"]["result"], flush=True)
         (out / (label + ".json")).write_text(json.dumps(results[-1], indent=2))
 
 

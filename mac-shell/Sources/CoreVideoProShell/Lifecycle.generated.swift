@@ -1529,3 +1529,95 @@ func validateArtifactValidationResult(_ value: [String: Any]) -> Bool {
   } else { return false }
   return true;
 }
+struct DeliveryEvidenceObservation: Codable {
+  var schemaVersion: String
+  var enabled: Bool
+  var sessionEpoch: String? = nil
+  var clock: String? = nil
+  var boundaries: String? = nil
+  var cameraReaderObserved: Bool
+  var displayObserved: Bool
+  var sourceAcquisitionObserved: Bool
+  var clockFrequency: Int64? = nil
+  var storageBytes: Int64? = nil
+  var capacity: Int64? = nil
+  var accepted: Int64? = nil
+  var exported: Int64? = nil
+  var lost: Int64? = nil
+  var exportFailures: Int64? = nil
+  var observedAtTicks: String? = nil
+}
+func validateDeliveryEvidenceObservation(_ value: [String: Any]) -> Bool {
+  if let raw = value["schemaVersion"] {
+    guard let parsed = raw as? String else { return false }
+    if !["delivery-evidence-v1"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["enabled"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) != CFBooleanGetTypeID() { return false }
+  } else { return false }
+  if let raw = value["sessionEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  }
+  if let raw = value["clock"] {
+    guard let parsed = raw as? String else { return false }
+    if !["qpc","steady-nanoseconds"].contains(parsed) { return false }
+  }
+  if let raw = value["boundaries"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  }
+  if let raw = value["cameraReaderObserved"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) != CFBooleanGetTypeID() { return false }
+  } else { return false }
+  if let raw = value["displayObserved"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) != CFBooleanGetTypeID() { return false }
+  } else { return false }
+  if let raw = value["sourceAcquisitionObserved"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) != CFBooleanGetTypeID() { return false }
+  } else { return false }
+  if let raw = value["clockFrequency"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  }
+  if let raw = value["storageBytes"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  }
+  if let raw = value["capacity"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  }
+  if let raw = value["accepted"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  }
+  if let raw = value["exported"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  }
+  if let raw = value["lost"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  }
+  if let raw = value["exportFailures"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  }
+  if let raw = value["observedAtTicks"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  }
+  return true;
+}

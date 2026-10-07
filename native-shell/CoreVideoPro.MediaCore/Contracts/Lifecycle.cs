@@ -1104,3 +1104,77 @@ public static class ArtifactValidationResultContract {
     return true;
   }
 }
+public sealed record DeliveryEvidenceObservation {
+  [JsonPropertyName("schemaVersion")] public required string SchemaVersion { get; init; }
+  [JsonPropertyName("enabled")] public required bool Enabled { get; init; }
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  [JsonPropertyName("sessionEpoch")] public string? SessionEpoch { get; init; }
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  [JsonPropertyName("clock")] public string? Clock { get; init; }
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  [JsonPropertyName("boundaries")] public string? Boundaries { get; init; }
+  [JsonPropertyName("cameraReaderObserved")] public required bool CameraReaderObserved { get; init; }
+  [JsonPropertyName("displayObserved")] public required bool DisplayObserved { get; init; }
+  [JsonPropertyName("sourceAcquisitionObserved")] public required bool SourceAcquisitionObserved { get; init; }
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("clockFrequency")] public long? ClockFrequency { get; init; }
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("storageBytes")] public long? StorageBytes { get; init; }
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("capacity")] public long? Capacity { get; init; }
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("accepted")] public long? Accepted { get; init; }
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("exported")] public long? Exported { get; init; }
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("lost")] public long? Lost { get; init; }
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("exportFailures")] public long? ExportFailures { get; init; }
+  [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+  [JsonPropertyName("observedAtTicks")] public string? ObservedAtTicks { get; init; }
+}
+public static class DeliveryEvidenceObservationContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasSchemaVersion = value.TryGetProperty("schemaVersion", out var schemaVersion);
+    if (!hasSchemaVersion || !(schemaVersion.ValueKind == JsonValueKind.String && (schemaVersion.GetString() == "delivery-evidence-v1"))) return false;
+    var hasEnabled = value.TryGetProperty("enabled", out var enabled);
+    if (!hasEnabled || !((enabled.ValueKind == JsonValueKind.True || enabled.ValueKind == JsonValueKind.False))) return false;
+    var hasSessionEpoch = value.TryGetProperty("sessionEpoch", out var sessionEpoch);
+    if (hasSessionEpoch && !(sessionEpoch.ValueKind == JsonValueKind.String && sessionEpoch.GetString()!.Length >= 1)) return false;
+    var hasClock = value.TryGetProperty("clock", out var clock);
+    if (hasClock && !(clock.ValueKind == JsonValueKind.String && (clock.GetString() == "qpc" || clock.GetString() == "steady-nanoseconds"))) return false;
+    var hasBoundaries = value.TryGetProperty("boundaries", out var boundaries);
+    if (hasBoundaries && !(boundaries.ValueKind == JsonValueKind.String && boundaries.GetString()!.Length >= 1)) return false;
+    var hasCameraReaderObserved = value.TryGetProperty("cameraReaderObserved", out var cameraReaderObserved);
+    if (!hasCameraReaderObserved || !((cameraReaderObserved.ValueKind == JsonValueKind.True || cameraReaderObserved.ValueKind == JsonValueKind.False))) return false;
+    var hasDisplayObserved = value.TryGetProperty("displayObserved", out var displayObserved);
+    if (!hasDisplayObserved || !((displayObserved.ValueKind == JsonValueKind.True || displayObserved.ValueKind == JsonValueKind.False))) return false;
+    var hasSourceAcquisitionObserved = value.TryGetProperty("sourceAcquisitionObserved", out var sourceAcquisitionObserved);
+    if (!hasSourceAcquisitionObserved || !((sourceAcquisitionObserved.ValueKind == JsonValueKind.True || sourceAcquisitionObserved.ValueKind == JsonValueKind.False))) return false;
+    var hasClockFrequency = value.TryGetProperty("clockFrequency", out var clockFrequency);
+    if (hasClockFrequency && !(clockFrequency.ValueKind == JsonValueKind.Number && clockFrequency.TryGetDouble(out var clockFrequencyNumber) && double.IsFinite(clockFrequencyNumber) && Math.Truncate(clockFrequencyNumber) == clockFrequencyNumber && clockFrequencyNumber >= 0 && clockFrequencyNumber <= 9007199254740991)) return false;
+    var hasStorageBytes = value.TryGetProperty("storageBytes", out var storageBytes);
+    if (hasStorageBytes && !(storageBytes.ValueKind == JsonValueKind.Number && storageBytes.TryGetDouble(out var storageBytesNumber) && double.IsFinite(storageBytesNumber) && Math.Truncate(storageBytesNumber) == storageBytesNumber && storageBytesNumber >= 0 && storageBytesNumber <= 9007199254740991)) return false;
+    var hasCapacity = value.TryGetProperty("capacity", out var capacity);
+    if (hasCapacity && !(capacity.ValueKind == JsonValueKind.Number && capacity.TryGetDouble(out var capacityNumber) && double.IsFinite(capacityNumber) && Math.Truncate(capacityNumber) == capacityNumber && capacityNumber >= 0 && capacityNumber <= 9007199254740991)) return false;
+    var hasAccepted = value.TryGetProperty("accepted", out var accepted);
+    if (hasAccepted && !(accepted.ValueKind == JsonValueKind.Number && accepted.TryGetDouble(out var acceptedNumber) && double.IsFinite(acceptedNumber) && Math.Truncate(acceptedNumber) == acceptedNumber && acceptedNumber >= 0 && acceptedNumber <= 9007199254740991)) return false;
+    var hasExported = value.TryGetProperty("exported", out var exported);
+    if (hasExported && !(exported.ValueKind == JsonValueKind.Number && exported.TryGetDouble(out var exportedNumber) && double.IsFinite(exportedNumber) && Math.Truncate(exportedNumber) == exportedNumber && exportedNumber >= 0 && exportedNumber <= 9007199254740991)) return false;
+    var hasLost = value.TryGetProperty("lost", out var lost);
+    if (hasLost && !(lost.ValueKind == JsonValueKind.Number && lost.TryGetDouble(out var lostNumber) && double.IsFinite(lostNumber) && Math.Truncate(lostNumber) == lostNumber && lostNumber >= 0 && lostNumber <= 9007199254740991)) return false;
+    var hasExportFailures = value.TryGetProperty("exportFailures", out var exportFailures);
+    if (hasExportFailures && !(exportFailures.ValueKind == JsonValueKind.Number && exportFailures.TryGetDouble(out var exportFailuresNumber) && double.IsFinite(exportFailuresNumber) && Math.Truncate(exportFailuresNumber) == exportFailuresNumber && exportFailuresNumber >= 0 && exportFailuresNumber <= 9007199254740991)) return false;
+    var hasObservedAtTicks = value.TryGetProperty("observedAtTicks", out var observedAtTicks);
+    if (hasObservedAtTicks && !(observedAtTicks.ValueKind == JsonValueKind.String && observedAtTicks.GetString()!.Length >= 1)) return false;
+    return true;
+  }
+}

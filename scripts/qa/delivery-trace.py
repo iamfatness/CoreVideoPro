@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Judge the explicitly captured core boundaries; no receiver/display or acquisition claims."""
+import argparse
+import json
+import pathlib
+import struct
+
+HEADER = struct.Struct("<8sIIQQQQQQqq")
+EVENT = struct.Struct("<QQQqqqqQII")
+STAGES = {1: "source-gpu-ready", 2: "source-draw-submitted", 3: "program-submitted",
+          4: "program-gpu-ready", 5: "program-delivered", 6: "program-miss"}
+
+
+def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require_source_ready=False):
+    errors = []
+    if not 0 <= warmup <= 30 or minimum < 1:
+        raise ValueError("warmup must be 0..30 and minimum >=1")
+    if pathlib.Path(path).stat().st_size > 256 * 1024 * 1024:
+        raise ValueError("export exceeds declared capacity")
+    with pathlib.Path(path).open("rb") as source:
+        raw = source.read(HEADER.size)
+        if len(raw) != HEADER.size:
+            raise ValueError("partial header")
+        magic, version, size, frequency, epoch, count, lost, failures, complete, started, ended = HEADER.unpack(raw)
+        if magic != b"CVTRACE1" or version != 1 or size != EVENT.size:
+            raise ValueError("unknown format")
+        if frequency <= 0 or epoch <= 0 or ended <= started or complete != 1:
+            raise ValueError("unfinalized or invalid capture clock/epoch")
+        if pathlib.Path(path).stat().st_size != HEADER.size + count * EVENT.size:
+            raise ValueError("partial/trailing capture")
+        if lost or failures:
+            errors.append("trace loss or export failure invalidates boundary acceptance")
+        baseline = start_ticks if start_ticks is not None else started + warmup * frequency
+        end = ended if end_ticks is None else end_ticks
+        if not started <= baseline < end <= ended:
+            raise ValueError("measurement window outside finalized capture")
+        stages, deliveries, misses, sources = {}, [], 0, {}
+        gpu_ready, selected = {}, []
+        for _ in range(count):
+            record = source.read(EVENT.size)
+            if len(record) != EVENT.size:
+                raise ValueError("partial event")
+            event_epoch, tag, source_epoch, program, frame, timestamp, observed, layout, stage, reason = EVENT.unpack(record)
+            if event_epoch != epoch or stage not in STAGES or reason not in range(5) or not started <= timestamp <= ended:
+                raise ValueError("malformed event identity/time/stage")
+            if stage in (3, 4, 5):
+                key = (source_epoch, program, stage)
+                if source_epoch == 0 or program < 0 or key in stages:
+                    errors.append("duplicate or invalid Program boundary identity")
+                stages[key] = (timestamp, layout)
+                if stage == 5 and baseline <= timestamp <= end:
+                    deliveries.append((source_epoch, program, timestamp))
+            elif stage == 1:
+                key = (tag, source_epoch, frame)
+                gpu_ready[key] = min(timestamp, gpu_ready.get(key, timestamp))
+            elif stage == 6 and baseline <= timestamp <= end:
+                misses += 1
+            elif stage == 2 and baseline <= timestamp <= end:
+                if reason == 3 or source_epoch == 0 or frame < 0 or observed <= 0 or tag == 0:
+                    errors.append("unavailable or unattributable selected source")
+                sources.setdefault(tag, set()).add(frame)
+                selected.append(((tag, source_epoch, frame), timestamp))
+        if require_source_ready:
+            for key, timestamp in selected:
+                if key not in gpu_ready or gpu_ready[key] > timestamp:
+                    errors.append("selected source has no preceding exact GPU completion")
+        # Arrival order between threads is not timestamp order. Join all exact
+        # stage keys, including submissions before the measured warmup edge.
+        qualified = []
+        for generation, program, timestamp in deliveries:
+            submitted = stages.get((generation, program, 3))
+            ready = stages.get((generation, program, 4))
+            if submitted is None or ready is None or not submitted[0] <= ready[0] <= timestamp:
+                errors.append("delivery missing preceding submission/GPU completion")
+            elif submitted[1] != ready[1] or ready[1] != stages[(generation, program, 5)][1]:
+                errors.append("layout attribution changed between Program stages")
+            qualified.append((generation, program, timestamp))
+        qualified.sort(key=lambda row: row[2])
+        gaps = sum(max(0, b[1] - a[1] - 1) for a, b in zip(qualified, qualified[1:]) if a[0] == b[0])
+        reordered = sum(b[1] <= a[1] for a, b in zip(qualified, qualified[1:]) if a[0] == b[0])
+        seconds = (qualified[-1][2] - qualified[0][2]) / frequency if len(qualified) > 1 else 0
+        if seconds + 1 / 60 < minimum:
+            errors.append("insufficient measured Program interval")
+        if gaps or reordered or misses:
+            errors.append("Program gaps/reordering/misses")
+        # Counter identity alone could falsely pass 50fps under a 60fps label.
+        if abs(len(qualified) - (round(seconds * 60) + 1)) > 1:
+            errors.append("Program delivery differs from required 60/1 cadence")
+        return {"schema": "delivery-trace-verdict-v1", "result": "FAIL" if errors else "PASS",
+                "exported": count, "lost": lost, "exportFailures": failures,
+                "measuredSeconds": seconds, "measurementStartTicks": baseline, "measurementEndTicks": end, "delivered": len(qualified), "gaps": gaps,
+                "reordered": reordered, "misses": misses,
+                "sourceGpuCompletionRequired": require_source_ready,
+                "selectedSources": {str(tag): len(frames) for tag, frames in sources.items()},
+                "errors": sorted(set(errors)), "releaseQualification": "MISSING_EVIDENCE",
+                "scope": "Core source draw submission and buffered Program GPU completion/delivery only. Camera, display, A/V, actual acquisition/content latency and fleet remain unobserved."}
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("path", type=pathlib.Path)
+    parser.add_argument("--warmup", type=float, default=15)
+    parser.add_argument("--minimum", type=float, default=30)
+    args = parser.parse_args()
+    try:
+        report = judge(args.path, args.warmup, args.minimum)
+    except Exception as error:
+        report = {"result": "INVALID", "error": str(error)}
+    print(json.dumps(report, indent=2))
+    raise SystemExit(0 if report["result"] == "PASS" else 1)

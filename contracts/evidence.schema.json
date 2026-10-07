@@ -1311,6 +1311,91 @@
           "minLength": 1
         }
       }
+    },
+    "DeliveryEvidenceObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schemaVersion",
+        "enabled",
+        "cameraReaderObserved",
+        "displayObserved",
+        "sourceAcquisitionObserved"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "string",
+          "enum": [
+            "delivery-evidence-v1"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "sessionEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clock": {
+          "type": "string",
+          "enum": [
+            "qpc",
+            "steady-nanoseconds"
+          ]
+        },
+        "boundaries": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cameraReaderObserved": {
+          "type": "boolean"
+        },
+        "displayObserved": {
+          "type": "boolean"
+        },
+        "sourceAcquisitionObserved": {
+          "type": "boolean"
+        },
+        "clockFrequency": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "storageBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "capacity": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "accepted": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "exported": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lost": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "exportFailures": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "observedAtTicks": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   }
 }

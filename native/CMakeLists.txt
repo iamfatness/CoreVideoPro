@@ -90,6 +90,7 @@ endif()
 
 add_library(corevideo_native
   src/core/BoundedAsyncLog.cpp
+  src/core/DeliveryTrace.cpp
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
   src/core/ComApartmentLifetime.cpp
@@ -683,6 +684,7 @@ if(BUILD_TESTING)
 
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
+    tests/DeliveryTraceTest.cpp
     tests/AsyncEncoderSinkTest.cpp
     tests/EncoderSessionReadPolicyTest.cpp
     tests/RecordingTrackWorkerTest.cpp

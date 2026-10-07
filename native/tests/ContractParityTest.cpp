@@ -154,6 +154,7 @@ TEST(ContractParity, EvidenceGoldenMessagesMatchSchema) {
     else if (name == "CompletedOutputObservation") valid = validateCompletedOutputObservation(*payload);
     else if (name == "ResourceLeaseDescriptor") valid = validateResourceLeaseDescriptor(*payload);
     else if (name == "DestinationProgress") valid = validateDestinationProgress(*payload);
+    else if (name == "DeliveryEvidenceObservation") valid = validateDeliveryEvidenceObservation(*payload);
     else if (name == "ArtifactValidationResult") valid = validateArtifactValidationResult(*payload);
     else ASSERT_TRUE(false) << "Unknown identity contract: " << name;
     EXPECT_EQ(valid, fixture.get("accepted")->asBool()) << fixture.getString("id");

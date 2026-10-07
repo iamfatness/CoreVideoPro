@@ -36,6 +36,7 @@
 #include "modules/MonitorRenderWorker.h"
 #include "modules/MonitorFrameAdmission.h"
 #include "modules/ProgramSourceAdmission.h"
+#include "core/DeliveryTrace.h"
 #include "modules/D3DVideoFrame.h"
 #include "modules/D3DI420VideoFrame.h"
 #include "modules/DeliveryCounterPattern.h"
@@ -277,7 +278,7 @@ class D3D11Compositor final : public ICompositor {
     const auto resolveUs = stageUs();
     long long uploadUs = 0;
     for (const auto& layer : layers) {
-      drawLayer(layer, deterministicPlan, &uploadUs, strictCpuSources_ ? &frame : nullptr);
+      drawLayer(layer, deterministicPlan, &uploadUs, strictCpuSources_ ? &frame : nullptr, &frame);
     }
     if (qaCounterContext_) drawDeliveryCounter();
     const auto drawUs = stageUs();
@@ -1201,9 +1202,10 @@ class D3D11Compositor final : public ICompositor {
     drawSolidQuad(layer, renderPlan, {rect.x + rect.width - strokeX, rect.y, strokeX, rect.height}, color, borderAlpha);
   }
 
-  void drawLayer(const ResolvedLayer& requestedLayer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr, ProgramFrame* admission = nullptr) {
+  void drawLayer(const ResolvedLayer& requestedLayer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr, ProgramFrame* admission = nullptr, const ProgramFrame* traceFrame = nullptr) {
     auto layer = requestedLayer;
     VideoFrame admittedImage;
+    core::DeliveryReason traceReason = core::DeliveryReason::Ready;
     if (admission && layer.frame && !compositorLayerIsOverlay(layer.plan) &&
         !(layer.plan.tilesDecoration.enabled && layer.plan.tilesDecoration.glowPass)) {
       auto selected = programAdmission_.select(*layer.frame, frameNumber_, [&](const auto& gpu) {
@@ -1213,6 +1215,8 @@ class D3D11Compositor final : public ICompositor {
         else if (auto bgra = std::dynamic_pointer_cast<const D3DVideoImage>(gpu)) compatible = bgra->view(gpuConsumer_->id) != nullptr;
         return compatible && gpuReadLeases_->hold(gpu);
       });
+      traceReason = selected.evidence.state == "ready" ? core::DeliveryReason::Ready :
+          selected.evidence.state == "held" ? core::DeliveryReason::Held : core::DeliveryReason::Unavailable;
       if (admission->sourceAdmissions.size() < ProgramSourceAdmissionPolicy::kMaxSources)
         admission->sourceAdmissions.push_back(selected.evidence);
       if (selected.evidence.state != "ready") {
@@ -1339,6 +1343,16 @@ class D3D11Compositor final : public ICompositor {
     context_->RSSetState(scissorRasterizerState_.get());
     setScissorFromRect(rect);
     context_->Draw(3, 0);
+    if (traceFrame && layer.frame) {
+      core::DeliveryTraceEvent event;
+      event.stage = core::DeliveryStage::SourceAdmitted;
+      event.programSequence = frameNumber_; event.layoutTag = traceFrame->renderPlanSignature;
+      event.sourceTag = core::deliveryTraceTag(layer.frame->participantId);
+      event.sourceEpoch = layer.frame->sourceEpoch; event.sourceFrameId = layer.frame->frameId;
+      event.sourceObservation100ns = layer.frame->captureTimestamp100ns;
+      event.reason = textured ? traceReason : core::DeliveryReason::Unavailable;
+      core::recordDeliveryTrace(event);
+    }
     context_->RSSetState(rasterizerState_.get());
     if (textured) {
       ID3D11ShaderResourceView* nullViews[] = {nullptr, nullptr, nullptr};

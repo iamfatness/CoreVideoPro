@@ -158,6 +158,7 @@ phrase they quote.
 | [`docs/reference/core-on-air-policy.md`](docs/reference/core-on-air-policy.md) | handshake, Engine on, Record or Join gating; a stub adapter left in a real core |
 | [`docs/reference/core-restart-drill.md`](docs/reference/core-restart-drill.md) | core crash recovery, respawn, Zoom rejoin |
 | [`docs/reference/d3d-device-loss.md`](docs/reference/d3d-device-loss.md) | D3D devices, shared textures, device-removed handling |
+| [`docs/reference/delivery-trace.md`](docs/reference/delivery-trace.md) | explicit bounded core delivery traces, stage identity and loss judgments |
 | [`docs/reference/destination-lifecycle.md`](docs/reference/destination-lifecycle.md) | destination start/stop state and what the UI may claim |
 | [`docs/reference/encoder-capacity-probe.md`](docs/reference/encoder-capacity-probe.md) | encoder session limits, software spill |
 | [`docs/reference/engine-teardown-order.md`](docs/reference/engine-teardown-order.md) | stop/teardown/shutdown paths (the ZoomISO deadlock class) |

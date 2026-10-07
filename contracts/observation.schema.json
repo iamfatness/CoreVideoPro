@@ -310,6 +310,11 @@
       "typed": "omit",
       "qualification": "include",
       "control": "include"
+    },
+    "deliveryEvidence": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
     }
   }
 }

@@ -312,6 +312,7 @@ enum ShellTests {
                 case "CompletedOutputObservation": validate = validateCompletedOutputObservation
                 case "ResourceLeaseDescriptor": validate = validateResourceLeaseDescriptor
                 case "DestinationProgress": validate = validateDestinationProgress
+                case "DeliveryEvidenceObservation": validate = validateDeliveryEvidenceObservation
                 case "ArtifactValidationResult": validate = validateArtifactValidationResult
                 default: expect(false, "unknown contract \(contract)"); continue
                 }
@@ -342,6 +343,7 @@ enum ShellTests {
                     case "CompletedOutputObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(CompletedOutputObservation.self, from: payloadData))
                     case "ResourceLeaseDescriptor": encoded = try JSONEncoder().encode(JSONDecoder().decode(ResourceLeaseDescriptor.self, from: payloadData))
                     case "DestinationProgress": encoded = try JSONEncoder().encode(JSONDecoder().decode(DestinationProgress.self, from: payloadData))
+                    case "DeliveryEvidenceObservation": encoded = try JSONEncoder().encode(JSONDecoder().decode(DeliveryEvidenceObservation.self, from: payloadData))
                     case "ArtifactValidationResult": encoded = try JSONEncoder().encode(JSONDecoder().decode(ArtifactValidationResult.self, from: payloadData))
                     default: expect(false, "unknown fixture type"); continue
                     }

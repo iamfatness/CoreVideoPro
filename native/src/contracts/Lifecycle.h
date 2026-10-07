@@ -1282,4 +1282,78 @@ inline rpc::Json toJson(const ArtifactValidationResult& value) {
   result.emplace("resultId", value.resultId);
   return result;
 }
+struct DeliveryEvidenceObservation {
+  std::string schemaVersion{};
+  bool enabled{};
+  std::optional<std::string> sessionEpoch{};
+  std::optional<std::string> clock{};
+  std::optional<std::string> boundaries{};
+  bool cameraReaderObserved{};
+  bool displayObserved{};
+  bool sourceAcquisitionObserved{};
+  std::optional<std::int64_t> clockFrequency{};
+  std::optional<std::int64_t> storageBytes{};
+  std::optional<std::int64_t> capacity{};
+  std::optional<std::int64_t> accepted{};
+  std::optional<std::int64_t> exported{};
+  std::optional<std::int64_t> lost{};
+  std::optional<std::int64_t> exportFailures{};
+  std::optional<std::string> observedAtTicks{};
+};
+inline bool validateDeliveryEvidenceObservation(const rpc::Json& value) {
+  if (!value.isObject()) return false;
+  const auto* schemaVersion = value.get("schemaVersion");
+  if (!schemaVersion || !(schemaVersion->isString() && (schemaVersion->asString() == "delivery-evidence-v1"))) return false;
+  const auto* enabled = value.get("enabled");
+  if (!enabled || !(enabled->isBool())) return false;
+  const auto* sessionEpoch = value.get("sessionEpoch");
+  if (sessionEpoch && !(sessionEpoch->isString() && sessionEpoch->asString().size() >= 1)) return false;
+  const auto* clock = value.get("clock");
+  if (clock && !(clock->isString() && (clock->asString() == "qpc" || clock->asString() == "steady-nanoseconds"))) return false;
+  const auto* boundaries = value.get("boundaries");
+  if (boundaries && !(boundaries->isString() && boundaries->asString().size() >= 1)) return false;
+  const auto* cameraReaderObserved = value.get("cameraReaderObserved");
+  if (!cameraReaderObserved || !(cameraReaderObserved->isBool())) return false;
+  const auto* displayObserved = value.get("displayObserved");
+  if (!displayObserved || !(displayObserved->isBool())) return false;
+  const auto* sourceAcquisitionObserved = value.get("sourceAcquisitionObserved");
+  if (!sourceAcquisitionObserved || !(sourceAcquisitionObserved->isBool())) return false;
+  const auto* clockFrequency = value.get("clockFrequency");
+  if (clockFrequency && !(clockFrequency->isNumber() && std::floor(clockFrequency->asNumber()) == clockFrequency->asNumber() && clockFrequency->asNumber() >= 0 && clockFrequency->asNumber() <= 9007199254740991)) return false;
+  const auto* storageBytes = value.get("storageBytes");
+  if (storageBytes && !(storageBytes->isNumber() && std::floor(storageBytes->asNumber()) == storageBytes->asNumber() && storageBytes->asNumber() >= 0 && storageBytes->asNumber() <= 9007199254740991)) return false;
+  const auto* capacity = value.get("capacity");
+  if (capacity && !(capacity->isNumber() && std::floor(capacity->asNumber()) == capacity->asNumber() && capacity->asNumber() >= 0 && capacity->asNumber() <= 9007199254740991)) return false;
+  const auto* accepted = value.get("accepted");
+  if (accepted && !(accepted->isNumber() && std::floor(accepted->asNumber()) == accepted->asNumber() && accepted->asNumber() >= 0 && accepted->asNumber() <= 9007199254740991)) return false;
+  const auto* exported = value.get("exported");
+  if (exported && !(exported->isNumber() && std::floor(exported->asNumber()) == exported->asNumber() && exported->asNumber() >= 0 && exported->asNumber() <= 9007199254740991)) return false;
+  const auto* lost = value.get("lost");
+  if (lost && !(lost->isNumber() && std::floor(lost->asNumber()) == lost->asNumber() && lost->asNumber() >= 0 && lost->asNumber() <= 9007199254740991)) return false;
+  const auto* exportFailures = value.get("exportFailures");
+  if (exportFailures && !(exportFailures->isNumber() && std::floor(exportFailures->asNumber()) == exportFailures->asNumber() && exportFailures->asNumber() >= 0 && exportFailures->asNumber() <= 9007199254740991)) return false;
+  const auto* observedAtTicks = value.get("observedAtTicks");
+  if (observedAtTicks && !(observedAtTicks->isString() && observedAtTicks->asString().size() >= 1)) return false;
+  return true;
+}
+inline rpc::Json toJson(const DeliveryEvidenceObservation& value) {
+  rpc::Json::Object result;
+  result.emplace("schemaVersion", value.schemaVersion);
+  result.emplace("enabled", value.enabled);
+  if (value.sessionEpoch) result.emplace("sessionEpoch", *value.sessionEpoch);
+  if (value.clock) result.emplace("clock", *value.clock);
+  if (value.boundaries) result.emplace("boundaries", *value.boundaries);
+  result.emplace("cameraReaderObserved", value.cameraReaderObserved);
+  result.emplace("displayObserved", value.displayObserved);
+  result.emplace("sourceAcquisitionObserved", value.sourceAcquisitionObserved);
+  if (value.clockFrequency) result.emplace("clockFrequency", static_cast<double>(*value.clockFrequency));
+  if (value.storageBytes) result.emplace("storageBytes", static_cast<double>(*value.storageBytes));
+  if (value.capacity) result.emplace("capacity", static_cast<double>(*value.capacity));
+  if (value.accepted) result.emplace("accepted", static_cast<double>(*value.accepted));
+  if (value.exported) result.emplace("exported", static_cast<double>(*value.exported));
+  if (value.lost) result.emplace("lost", static_cast<double>(*value.lost));
+  if (value.exportFailures) result.emplace("exportFailures", static_cast<double>(*value.exportFailures));
+  if (value.observedAtTicks) result.emplace("observedAtTicks", *value.observedAtTicks);
+  return result;
+}
 } // namespace corevideo::contracts
