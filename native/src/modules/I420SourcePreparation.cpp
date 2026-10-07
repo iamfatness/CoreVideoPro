@@ -14,6 +14,7 @@ namespace corevideo::modules {
 struct I420SourcePreparation::Impl {
   mutable std::mutex mutex;
   Stats measured;
+  Policy policy;
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
   struct Source {
     std::string id;
@@ -45,8 +46,8 @@ struct I420SourcePreparation::Impl {
   inline static std::mutex quarantineMutex;
   inline static std::vector<std::shared_ptr<D3DI420FramePool>> quarantined;
 
-  explicit Impl(bool enabled, std::function<void(const std::string&)> hook, std::function<void(const std::string&)> uploaded)
-      : beforeResources(std::move(hook)), afterUpload(std::move(uploaded)) {
+  explicit Impl(bool enabled, std::function<void(const std::string&)> hook, std::function<void(const std::string&)> uploaded, Policy selectedPolicy)
+      : policy(selectedPolicy), beforeResources(std::move(hook)), afterUpload(std::move(uploaded)) {
     measured.requested = enabled; measured.supported = true;
     if (enabled) {
       try {
@@ -184,7 +185,13 @@ struct I420SourcePreparation::Impl {
         std::lock_guard<std::mutex> lock(mutex);
         while (!source->queued.empty()) {
           next = source->queued.front().lock();
-          if (next && next->frameId >= selected && !next->cpu.expired()) break;
+          if (next && next->frameId >= selected && !next->cpu.expired()) {
+            // Unbuffered capture has no CPU playout reserve. Preparing an
+            // unselected future arrival can outlive its CPU descriptor before
+            // Program ever observes its token, starving selected completions.
+            if (policy == Policy::PrepareSelected && next->frameId > selected) next.reset();
+            break;
+          }
           if (next) next->superseded.store(true); // selected token was never submitted
           source->queued.pop_front(); ++measured.superseded; next.reset();
         }
@@ -253,13 +260,14 @@ struct I420SourcePreparation::Impl {
     }
   }
 #else
-  explicit Impl(bool enabled, std::function<void(const std::string&)>, std::function<void(const std::string&)>) { measured.requested = enabled; }
+  explicit Impl(bool enabled, std::function<void(const std::string&)>, std::function<void(const std::string&)>, Policy selectedPolicy)
+      : policy(selectedPolicy) { measured.requested = enabled; }
 #endif
 };
 
 I420SourcePreparation::I420SourcePreparation(bool enabled, std::function<void(const std::string&)> hook,
-    std::function<void(const std::string&)> uploaded)
-    : impl_(std::make_unique<Impl>(enabled, std::move(hook), std::move(uploaded))) {}
+    std::function<void(const std::string&)> uploaded, Policy policy)
+    : impl_(std::make_unique<Impl>(enabled, std::move(hook), std::move(uploaded), policy)) {}
 I420SourcePreparation::~I420SourcePreparation() = default;
 I420SourcePreparation::Stats I420SourcePreparation::stats() const { std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->measured; }
 std::shared_ptr<CpuSourceGpuView> I420SourcePreparation::offer(const std::string& id, uint64_t epoch,

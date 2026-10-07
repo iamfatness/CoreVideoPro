@@ -564,7 +564,8 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
   UvcCaptureDeviceAdapter()
       : preparation_([] {
           const char* flag = std::getenv("COREVIDEO_CPU_SOURCE_PREPARATION");
-          return flag && std::string(flag) == "1" ? std::make_shared<I420SourcePreparation>(true) : nullptr;
+          return flag && std::string(flag) == "1" ?
+              std::make_shared<I420SourcePreparation>(true, I420SourcePreparation::Policy::PrepareSelected) : nullptr;
         }()), devices_([] {
           auto initial = discoverDevices();
           return initial ? std::move(*initial) : std::vector<DeviceEntry>{};

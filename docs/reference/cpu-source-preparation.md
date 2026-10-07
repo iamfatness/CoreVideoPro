@@ -79,6 +79,10 @@ Reconnect or dimension change assigns a new epoch, even if frame numbering
 restarts. The routing alias is fixed before the capture thread starts, so the
 token and source descriptor use the same `capture:` identity. Adapter polling
 copies the held descriptor and token; it does not offer another arrival.
+Unbuffered native capture prepares only the Program-selected token. Otherwise
+an unobserved future arrival can complete after its CPU descriptor is replaced,
+while the selected token waits behind it. Zoom retains arrival preparation
+ahead of its existing CPU playout reserve. Neither policy alters CPU selection.
 
 CPU/ISO bytes and negotiated color hints remain authoritative. Disabled
 preparation retains the CPU path. This adds no capture FIFO or Program buffer.
