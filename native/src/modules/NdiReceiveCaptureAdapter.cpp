@@ -1,5 +1,6 @@
 #include "modules/Interfaces.h"
 #include "modules/NdiReceiveFramePolicy.h"
+#include "modules/CpuVideoArrival.h"
 
 #include <algorithm>
 #include <atomic>
@@ -138,6 +139,8 @@ struct NdiChannel {
   std::thread thread;
   std::mutex mutex;
   std::shared_ptr<const std::vector<uint8_t>> latest;
+  std::unique_ptr<CpuVideoArrival> arrival; // receive owner only
+  VideoFrame preparedFrame; // descriptor protected by channel mutex
   std::vector<AudioFrame> audio;
   int width = 0, height = 0, fps = 0;
   int64_t frameId = 0, lastFrameMs = 0, audioSamples = 0, dropped = 0;
@@ -147,8 +150,9 @@ struct NdiChannel {
 
 class NdiReceiveCaptureDevice final : public ICaptureDevice {
  public:
-  NdiReceiveCaptureDevice(HMODULE library, NdiReceiveApi api, void* finder)
-      : library_(library), api_(api), finder_(finder) {
+  NdiReceiveCaptureDevice(HMODULE library, NdiReceiveApi api, void* finder,
+      std::shared_ptr<CpuSourcePreparation> preparation)
+      : library_(library), api_(api), finder_(finder), preparation_(std::move(preparation)) {
     discovery_ = std::thread([this] { discoverLoop(); });
   }
   ~NdiReceiveCaptureDevice() override {
@@ -249,6 +253,7 @@ class NdiReceiveCaptureDevice final : public ICaptureDevice {
         channel->id = id;
         channel->name = found->second.first;
         channel->url = found->second.second;
+        if (preparation_) channel->arrival = std::make_unique<CpuVideoArrival>("capture:" + id, preparation_);
         channel->thread = std::thread([this, channel] { receiveLoop(channel); });
         channels_[id] = channel;
       }
@@ -279,6 +284,12 @@ class NdiReceiveCaptureDevice final : public ICaptureDevice {
     for (const auto& channel : channels) {
       std::lock_guard lock(channel->mutex);
       if (!channel->latest) continue;
+      if (channel->arrival) {
+        auto frame = channel->preparedFrame;
+        frame.timestampMs = timestampMs;
+        frames.push_back(std::move(frame));
+        continue;
+      }
       VideoFrame frame;
       frame.participantId = "capture:" + channel->id;
       frame.width = frame.naturalWidth = frame.pixelWidth = channel->width;
@@ -352,9 +363,19 @@ class NdiReceiveCaptureDevice final : public ICaptureDevice {
         if (video.fourcc == 0x41524742 || opaque) {      // BGRA
           auto pixels = copyNdiBgra(video.data, video.width, video.height,
                                     video.stride, opaque);
+          VideoFrame prepared;
+          if (pixels && channel->arrival) {
+            prepared.participantId = "capture:" + channel->id;
+            { std::lock_guard lock(channel->mutex); prepared.frameId = channel->frameId + 1; }
+            prepared.width = prepared.naturalWidth = prepared.pixelWidth = video.width;
+            prepared.height = prepared.naturalHeight = prepared.pixelHeight = video.height;
+            prepared.pixelStride = video.width * 4; prepared.pixels = pixels;
+            channel->arrival->prepare(prepared); // receive owner, outside metadata lock
+          }
           std::lock_guard lock(channel->mutex);
           if (pixels) {
             channel->latest = std::move(pixels);
+            channel->preparedFrame = std::move(prepared);
             channel->width = video.width;
             channel->height = video.height;
             channel->fps = video.fpsDenominator > 0
@@ -392,6 +413,16 @@ class NdiReceiveCaptureDevice final : public ICaptureDevice {
         std::lock_guard lock(channel->mutex);
         channel->warning = "NDI receiver reported a stream error.";
       }
+      // The timed receive loop also refreshes a static held picture after
+      // consumer/idle retirement; no new CPU bytes or source observation.
+      if (channel->arrival) {
+        VideoFrame held;
+        { std::lock_guard lock(channel->mutex); held = channel->preparedFrame; }
+        if (held.hasPixels()) {
+          channel->arrival->prepare(held);
+          std::lock_guard lock(channel->mutex); channel->preparedFrame = std::move(held);
+        }
+      }
     }
     api_.recvDestroy(receiver);
   }
@@ -405,13 +436,14 @@ class NdiReceiveCaptureDevice final : public ICaptureDevice {
   std::map<std::string, std::pair<std::string, std::string>> sources_;
   std::map<std::string, std::shared_ptr<NdiChannel>> channels_;
   std::map<std::string, int> offsets_;
+  std::shared_ptr<CpuSourcePreparation> preparation_;
 };
 
 #endif
 
 }  // namespace
 
-std::unique_ptr<ICaptureDevice> createNdiReceiveCaptureDevice() {
+std::unique_ptr<ICaptureDevice> createNdiReceiveCaptureDevice(std::shared_ptr<CpuSourcePreparation> preparation) {
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_NDI_INGEST && defined(_WIN32)
   HMODULE library = loadNdiRuntime();
   if (!library) return nullptr;
@@ -431,7 +463,7 @@ std::unique_ptr<ICaptureDevice> createNdiReceiveCaptureDevice() {
     ::FreeLibrary(library);
     return nullptr;
   }
-  return std::make_unique<NdiReceiveCaptureDevice>(library, api, finder);
+  return std::make_unique<NdiReceiveCaptureDevice>(library, api, finder, std::move(preparation));
 #else
   return nullptr;
 #endif

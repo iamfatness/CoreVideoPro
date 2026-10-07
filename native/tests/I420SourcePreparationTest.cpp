@@ -746,6 +746,93 @@ TEST(BrowserSourcePreparation, OptInRealHostPreparesWithoutRenderPollingAndSurvi
   EXPECT_EQ(frame.pixels->at(center), 180); // removal did not mutate old CPU/ISO
 }
 
+TEST(CpuSourcePreparation, OptInActualNdiReceiverPreparesOriginalPixelsAndReconnectsWithoutProgramUploads) {
+  const char* enabled = std::getenv("COREVIDEO_REQUIRE_NDI_TEST");
+  if (!enabled || std::string(enabled) != "1") {
+    std::fprintf(stderr, "[capture-test] SKIPPED prepared NDI receiver; enable COREVIDEO_REQUIRE_NDI_TEST=1\n");
+    return;
+  }
+#if COREVIDEO_WITH_NDI_INGEST && COREVIDEO_WITH_NDI_OUTPUT
+  PreparationFlags flags;
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "0");
+  auto reference = createD3D11Compositor(); ASSERT_TRUE(reference);
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "1");
+  auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  auto owner = std::make_shared<CpuSourcePreparation>(true);
+  auto sender = createNdiOutputSender();
+  auto receiver = createNdiReceiveCaptureDevice(owner);
+  ASSERT_TRUE(sender && sender->runtimeAvailableAtConstruction() && receiver)
+      << "Actual NDI runtime/receiver unavailable; this is missing evidence";
+  OutputDestinationSettings settings;
+  settings.id = settings.protocol = "ndi";
+  settings.ndiName = "CVPPrepareTest-" + std::to_string(GetCurrentProcessId()); settings.fps = 60;
+  ProgramFrame output; output.width = output.preview.width = 1920;
+  output.height = output.preview.height = 1080;
+  output.preview.bgra.resize(1920u * 1080u * 4);
+  for (size_t i = 0; i < output.preview.bgra.size(); i += 4) {
+    output.preview.bgra[i] = 180; output.preview.bgra[i + 1] = 90;
+    output.preview.bgra[i + 2] = 40; output.preview.bgra[i + 3] = 255;
+  }
+  struct Video final : ICaptureVideoConsumer {
+    VideoFrame latest;
+    void publish(VideoFrame frame) override { latest = std::move(frame); }
+    void end(const std::string&) override {}
+  } sink;
+  std::string deviceId;
+  auto pump = [&] {
+    ++output.frameNumber;
+    sender->sync({"ndi"}, &output, output.frameNumber * 16.667, {settings});
+    if (deviceId.empty()) for (const auto& device : receiver->enumerate()) {
+      if (device.name.find(settings.ndiName) != std::string::npos) {
+        deviceId = device.id; receiver->connect(deviceId); break;
+      }
+    }
+    receiver->deliverVideo(sink, output.frameNumber * 16);
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+  };
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+  while (std::chrono::steady_clock::now() < deadline && !sink.latest.preparedGpu) pump();
+  ASSERT_TRUE(sink.latest.preparedGpu) << "Actual NDI arrival never carried preparation";
+  const auto original = sink.latest;
+  ASSERT_EQ(original.pixelWidth, 1920); ASSERT_EQ(original.pixelHeight, 1080);
+  ASSERT_TRUE(await([&] { return bool(original.preparedGpu->acquire(true)); }));
+  auto pixels = compositor->render(planFor(original.participantId), {original});
+  ASSERT_EQ(pixels.sourceAdmissions.front().state, "ready");
+  const auto center = (32 * 64 + 32) * 4;
+  auto cpuOnly = original; cpuOnly.preparedGpu.reset();
+  auto expected = reference->render(planFor(original.participantId), {cpuOnly});
+  std::fprintf(stderr, "[capture-test] NDI CPU BGR=%u,%u,%u; composed BGR=%u,%u,%u\n",
+      original.pixels->at(0), original.pixels->at(1), original.pixels->at(2),
+      pixels.preview.bgra.at(center), pixels.preview.bgra.at(center + 1), pixels.preview.bgra.at(center + 2));
+  EXPECT_EQ(pixels.preview.bgra, expected.preview.bgra);
+  // NDI transport may convert/compress the sender's nominal RGB; preparation
+  // must exactly preserve the decoded CPU reference, not undo that conversion.
+  EXPECT_NEAR(original.pixels->at(0), 180, 8);
+  EXPECT_NEAR(original.pixels->at(1), 90, 8);
+  EXPECT_NEAR(original.pixels->at(2), 40, 8);
+  const auto originalBytes = *original.pixels;
+  const auto oldEpoch = original.sourceEpoch;
+  receiver->disconnect(deviceId); receiver->connect(deviceId);
+  ASSERT_TRUE(await([&] {
+    pump();
+    return sink.latest.preparedGpu && sink.latest.sourceEpoch > oldEpoch;
+  }));
+  auto fresh = sink.latest;
+  ASSERT_TRUE(await([&] { return bool(fresh.preparedGpu->acquire(true)); }));
+  pixels = compositor->render(planFor(fresh.participantId), {fresh});
+  EXPECT_EQ(pixels.sourceAdmissions.front().state, "ready");
+  EXPECT_EQ(pixels.sourceAdmissions.front().actualEpoch, fresh.sourceEpoch);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().textureCreates, 0u);
+  EXPECT_EQ(*original.pixels, originalBytes);
+  receiver->disconnect(deviceId);
+  sender->sync({}, nullptr, output.frameNumber * 16.667 + 1);
+#else
+  EXPECT_TRUE(false) << "NDI adapter/output gates unavailable; this is missing evidence";
+#endif
+}
+
 TEST(CpuSourcePreparation, MediaDecoderWorkerPublishesPreparedPixelsWithoutChangingPlaybackOrCpuIdentity) {
   PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
   auto owner = std::make_shared<CpuSourcePreparation>(true);

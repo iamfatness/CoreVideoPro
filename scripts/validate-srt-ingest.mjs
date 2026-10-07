@@ -38,9 +38,11 @@ const port = Number(argValue("port", transport === "rtmp" ? 19350 : 9040));
 const sourceSize = argValue("source-size", "1920x1080");
 const sourceFps = Number(argValue("source-fps", 30));
 const mode = argValue("mode", "listener");
+const preparation = argValue("cpu-source-preparation", null);
 if (!/^(srt|rtmp)$/.test(transport) || !/^\d+x\d+$/.test(sourceSize) ||
     !Number.isInteger(sourceFps) || sourceFps < 1 || seconds < 1 ||
-    !["listener", "caller"].includes(mode) || (transport === "rtmp" && mode !== "listener")) {
+    !["listener", "caller"].includes(mode) || (transport === "rtmp" && mode !== "listener") ||
+    (preparation !== null && !["0", "1"].includes(preparation))) {
   console.error("Invalid ingest test transport, source size, fps, or duration.");
   process.exit(1);
 }
@@ -75,8 +77,11 @@ if (!existsSync(nativeCore)) {
 
 const child = spawn(nativeCore, [], {
   cwd: buildDir,
-  env: { ...process.env, COREVIDEO_FFMPEG_DIR: "C:\\ffmpeg\\bin" },
+  env: { ...process.env, COREVIDEO_FFMPEG_DIR: "C:\\ffmpeg\\bin",
+    ...(preparation === null ? {} : { COREVIDEO_CPU_SOURCE_PREPARATION: preparation,
+      COREVIDEO_ISOLATE_MONITORS: "1", COREVIDEO_PROGRAM_BUFFER_FRAMES: "2", COREVIDEO_GPU_CAPTURE: "0" }) },
   stdio: ["pipe", "pipe", "pipe"],
+  windowsHide: true,
 });
 
 const startedAt = Date.now();
@@ -85,6 +90,9 @@ let stdoutBuffer = "";
 let handshake;
 const pending = new Map();
 let coreStderrTail = "";
+let diagnosticLine = "";
+let sourceTextureObservations = 0;
+let sourceTextureWork = 0;
 child.on("exit", (code, signal) => {
   for (const [id, item] of pending) {
     clearTimeout(item.timer);
@@ -113,6 +121,17 @@ child.stdout.on("data", (chunk) => {
 });
 child.stderr.on("data", (chunk) => {
   coreStderrTail = (coreStderrTail + chunk.toString()).slice(-4000);
+  diagnosticLine = (diagnosticLine + chunk.toString()).slice(-65536);
+  let lineEnd;
+  while ((lineEnd = diagnosticLine.indexOf("\n")) >= 0) {
+    const line = diagnosticLine.slice(0, lineEnd);
+    diagnosticLine = diagnosticLine.slice(lineEnd + 1);
+    const sourceWork = line.match(/source-tex uploads=(\d+) hits=\d+ creates=(\d+) scratch=(\d+)/);
+    if (sourceWork) {
+      sourceTextureObservations += 1;
+      sourceTextureWork += Number(sourceWork[1]) + Number(sourceWork[2]) + Number(sourceWork[3]);
+    }
+  }
   // Surface only the ingest adapter's own lines; the core is chatty otherwise.
   for (const line of chunk.toString().split("\n")) {
     if (line.includes("[srt-ingest]") || line.includes("[recording]") || line.includes("[encoder]")) {
@@ -175,8 +194,8 @@ try {
   let publisherErr = "";
   const startPublisher = () => {
     publisherErr = "";
-    const process = spawn(ffmpeg, publisherArgs, { stdio: ["ignore", "ignore", "pipe"] });
-    process.stderr.on("data", (c) => { publisherErr += c.toString(); });
+    const process = spawn(ffmpeg, publisherArgs, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    process.stderr.on("data", (c) => { publisherErr = (publisherErr + c.toString()).slice(-4000); });
     return process;
   };
   publisher = startPublisher();
@@ -188,6 +207,8 @@ try {
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
     commands: [
+      { type: "set-verbose-diagnostics", enabled: true },
+      ...(preparation === null ? [] : [{ type: "set-output-profile", width: 1920, height: 1080, fps: 60 }]),
       {
         type: "load-scene-graph",
         sceneId: recordingName,
@@ -225,6 +246,8 @@ try {
   let renderStart = null;
   let renderEnd = null;
   let maxRenderAgeMs = 0;
+  let admissionSamples = 0;
+  let previousAdmission = null;
   const deadline = Date.now() + seconds * 1000;
   const restartAt = restartPublisher ? Date.now() + Math.floor(seconds * 1000 / 3) : Infinity;
   let restartCompleted = false;
@@ -245,6 +268,23 @@ try {
       if (device.decodedAudioSamples < lastDecodedAudioSamples) failures.push("decoded audio counter regressed");
       lastDecodedFrames = device.decodedFrames ?? 0;
       lastDecodedAudioSamples = device.decodedAudioSamples ?? 0;
+    }
+    if (preparation === "1" && device?.signalPresent) {
+      const admission = sync.snapshot?.programSourceAdmission;
+      const row = admission?.sources?.find((item) => item.sourceId === `capture:${deviceId}`);
+      const fields = ["requestedEpoch", "actualEpoch", "requestedFrameId", "actualFrameId", "requestedCapture100ns", "actualCapture100ns"];
+      if (admission?.version !== 1 || admission.readyOnlyRequested !== true || !row ||
+          !["ready", "held"].includes(row.state) || fields.some((field) => !Number.isSafeInteger(row[field]) || row[field] < 0) ||
+          row.actualEpoch !== row.requestedEpoch || row.actualFrameId > row.requestedFrameId || row.actualCapture100ns > row.requestedCapture100ns) {
+        failures.push("Healthy decoded network source lacks completed identity-correct GPU admission");
+      } else {
+        admissionSamples += 1;
+        if (previousAdmission && row.actualEpoch === previousAdmission.actualEpoch &&
+            row.requestedFrameId > previousAdmission.requestedFrameId && row.actualFrameId <= previousAdmission.actualFrameId) {
+          failures.push("Prepared network source image did not advance with CPU arrivals");
+        }
+        previousAdmission = row;
+      }
     }
     if (!restartCompleted && Date.now() >= restartAt && device?.signalPresent) {
       const beforeVideo = device.decodedFrames;
@@ -315,6 +355,10 @@ try {
   }
 
   if (restartPublisher && !restartCompleted) failures.push("SRT publisher restart proof never ran");
+  if (preparation === "1" && admissionSamples < 2) failures.push("Insufficient actual prepared network source observations");
+  if (preparation === "1" && (sourceTextureObservations < 2 || sourceTextureWork !== 0)) {
+    failures.push(`Program source texture work remains or is unknown: observations=${sourceTextureObservations}, uploads/creates/scratch=${sourceTextureWork}`);
+  }
   if (!device) failures.push(`the ${label} ingest device never appeared in captureDevices`);
   else if (!device.signalPresent) {
     failures.push(`${label} source never reported signal (state=${device.connectionState}, ` +
@@ -468,6 +512,30 @@ if (artifact && existsSync(artifact)) {
   console.log(`program luma  : peak ${best.toFixed(1)} over ${frames} frames`);
   if (frames === 0) failures.push("program recording produced no frames");
   else if (best < 12) failures.push(`program stayed black (peak luma ${best.toFixed(1)}) — the ingested ${label} feed never became pixels`);
+  // A grey placeholder can pass a luma check. Compare static top-row testsrc
+  // colors with an independently generated reference, allowing codec/scale
+  // error. The time-varying bottom band is deliberately excluded.
+  const reference = spawnSync(ffmpeg,
+    ["-v", "error", "-f", "lavfi", "-i", `testsrc=size=${sourceSize}:rate=${sourceFps}`,
+     "-frames:v", "1", "-vf", "scale=16:9", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+    { encoding: "buffer", maxBuffer: 1 << 20, timeout: 15000 });
+  const actual = spawnSync(ffmpeg,
+    ["-v", "error", ...sampleWindow, "-i", artifact, "-vf", "scale=16:9", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+    { encoding: "buffer", maxBuffer: 1 << 28, timeout: 120000 });
+  const bytesPerFrame = 16 * 9 * 3;
+  let bestColorError = Infinity;
+  if (reference.status === 0 && reference.stdout?.length === bytesPerFrame && actual.status === 0) {
+    for (let offset = 0; offset + bytesPerFrame <= actual.stdout.length; offset += bytesPerFrame) {
+      let error = 0, count = 0;
+      for (const y of [1, 2]) for (const x of [2, 4, 6, 9, 11, 13]) for (let channel = 0; channel < 3; channel += 1) {
+        const index = (y * 16 + x) * 3 + channel;
+        error += Math.abs(actual.stdout[offset + index] - reference.stdout[index]); count += 1;
+      }
+      bestColorError = Math.min(bestColorError, error / count);
+    }
+  }
+  console.log(`source pixels : independent testsrc mean color error ${bestColorError.toFixed(2)} (limit 30)`);
+  if (!(bestColorError <= 30)) failures.push("Recorded Program did not match independently specified source colors; a placeholder is not input evidence");
   // AUDIO: the guest's embedded tone must reach the mixer, not just the video.
   const pcm = spawnSync(ffmpeg,
     ["-v", "error", ...sampleWindow, "-i", artifact, "-f", "s16le", "-ac", "1", "-ar", "48000", "-"],
