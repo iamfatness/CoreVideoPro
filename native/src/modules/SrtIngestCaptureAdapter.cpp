@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -413,8 +414,14 @@ class NetworkIngestCaptureDevice final : public ICaptureDevice {
  public:
   explicit NetworkIngestCaptureDevice(bool rtmpListen = false,
       std::shared_ptr<CpuSourcePreparation> preparation = {})
-      : rtmpListen_(rtmpListen), preparation_(std::move(preparation)) {}
-  ~NetworkIngestCaptureDevice() override { stopAll(); }
+      : rtmpListen_(rtmpListen), preparation_(std::move(preparation)) {
+    if (preparation_) heldRefresh_ = std::thread([this] { refreshHeldFrames(); });
+  }
+  ~NetworkIngestCaptureDevice() override {
+    refreshRunning_.store(false); refreshWake_.notify_all();
+    if (heldRefresh_.joinable()) heldRefresh_.join();
+    stopAll();
+  }
 
   std::vector<std::string> audioSourceIds() const override {
     std::lock_guard lock(mutex_);
@@ -621,6 +628,58 @@ class NetworkIngestCaptureDevice final : public ICaptureDevice {
   }
 
  private:
+  // A decoder read may block indefinitely while its valid last CPU frame is
+  // held. Refresh stopped preparation on this separate metadata worker, never
+  // on Program or by inventing a decoded arrival. At most 64 channel descriptors
+  // per pass; larger configured sets rotate through the bounded batch.
+  void refreshHeldFrames() {
+    size_t cursor = 0;
+    while (refreshRunning_.load()) {
+      std::vector<std::shared_ptr<ReaderChannel>> channels;
+      {
+        std::lock_guard lock(mutex_);
+        if (!channels_.empty()) {
+          cursor %= channels_.size();
+          auto it = channels_.begin(); std::advance(it, cursor);
+          const size_t count = std::min(size_t(64), channels_.size());
+          channels.reserve(count);
+          for (size_t i = 0; i < count; ++i) {
+            channels.push_back(it->second);
+            if (++it == channels_.end()) it = channels_.begin();
+          }
+          cursor = (cursor + count) % channels_.size();
+        }
+      }
+      for (const auto& channel : channels) {
+        if (!refreshRunning_.load()) break;
+        VideoFrame held;
+        {
+          std::lock_guard lock(channel->mutex);
+          if (!channel->running.load()) continue;
+          const auto& current = channel->preparedFrame;
+          if (!current.hasPixels() || (current.preparedGpu && current.preparedGpu->demand &&
+              !current.preparedGpu->demand->stopped.load())) continue;
+          held = current;
+        }
+        // CpuVideoArrival remains decoder-thread-owned. Offer only this exact
+        // immutable CPU descriptor outside both adapter/channel leaf locks.
+        auto token = preparation_->offerBgra(held.participantId, held.sourceEpoch, held.frameId,
+            held.captureTimestamp100ns, held.pixelWidth, held.pixelHeight, held.pixelStride, held.pixels);
+        if (!token) continue;
+        std::lock_guard lock(channel->mutex);
+        auto& current = channel->preparedFrame;
+        if (channel->running.load() && current.pixels == held.pixels &&
+            current.sourceEpoch == held.sourceEpoch && current.frameId == held.frameId &&
+            current.captureTimestamp100ns == held.captureTimestamp100ns && current.preparedGpu == held.preparedGpu)
+          current.preparedGpu = std::move(token);
+        // A fresh decode/replacement wins. Dropping a stale offer must not stop
+        // its shared demand, which may also serve the newer decoder descriptor.
+      }
+      std::unique_lock lock(refreshMutex_);
+      refreshWake_.wait_for(lock, std::chrono::milliseconds(50), [this] { return !refreshRunning_.load(); });
+    }
+  }
+
   static bool sameEndpoint(const NetworkIngestSourceConfig& a, const NetworkIngestSourceConfig& b) {
     return a.host == b.host && a.port == b.port && a.mode == b.mode &&
            a.passphrase == b.passphrase && a.streamId == b.streamId && a.latencyMs == b.latencyMs &&
@@ -1211,6 +1270,10 @@ class NetworkIngestCaptureDevice final : public ICaptureDevice {
   std::map<std::string, int> audioSyncOffsets_;
   bool rtmpListen_ = false;
   std::shared_ptr<CpuSourcePreparation> preparation_;
+  std::atomic_bool refreshRunning_{true};
+  std::mutex refreshMutex_;
+  std::condition_variable refreshWake_;
+  std::thread heldRefresh_;
 };
 
 }  // namespace
