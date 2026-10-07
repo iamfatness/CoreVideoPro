@@ -1,4 +1,5 @@
 #include "modules/I420SourcePreparation.h"
+#include "modules/I420CaptureArrival.h"
 #include "modules/Interfaces.h"
 #include "modules/MonitorFrameAdmission.h"
 #include <gtest/gtest.h>
@@ -8,6 +9,37 @@
 #include <stdexcept>
 
 using namespace corevideo::modules;
+TEST(I420CaptureArrival, HeldSnapshotsPreserveCpuIdentityAndReconnectOrResizeChangesEpoch) {
+  I420CaptureArrival first("capture:camera", {});
+  auto cpu = std::make_shared<std::vector<uint8_t>>(64 * 64 * 3 / 2, 128);
+  auto arrival = first.publish(cpu, 64, 64, true, true);
+  EXPECT_EQ(arrival.i420, cpu); EXPECT_EQ(arrival.frameId, 1);
+  EXPECT_TRUE(arrival.sourceEpoch > 0); EXPECT_TRUE(arrival.captureTimestamp100ns > 0);
+  EXPECT_TRUE(arrival.i420FullRange); EXPECT_TRUE(arrival.i420Bt601);
+  EXPECT_FALSE(arrival.preparedGpu);
+  auto held = arrival;
+  auto next = first.publish(cpu, 64, 64, false, false);
+  EXPECT_EQ(next.frameId, 2); EXPECT_EQ(next.sourceEpoch, arrival.sourceEpoch);
+  EXPECT_EQ(held.frameId, 1); EXPECT_EQ(held.captureTimestamp100ns, arrival.captureTimestamp100ns);
+  auto resizedCpu = std::make_shared<std::vector<uint8_t>>(128 * 64 * 3 / 2, 128);
+  auto resized = first.publish(resizedCpu, 128, 64, false, true);
+  EXPECT_TRUE(resized.sourceEpoch > arrival.sourceEpoch); EXPECT_EQ(resized.frameId, 3);
+  I420CaptureArrival reconnected("capture:camera", {});
+  auto fresh = reconnected.publish(cpu, 64, 64, false, false);
+  EXPECT_TRUE(fresh.sourceEpoch > resized.sourceEpoch); EXPECT_EQ(fresh.frameId, 1);
+  EXPECT_EQ(arrival.i420->front(), 128);
+}
+
+TEST(I420CaptureArrival, InvalidArrivalsDoNotConsumeIdentityOrPublishPartialPlanes) {
+  I420CaptureArrival arrival("capture:camera", {});
+  auto cpu = std::make_shared<std::vector<uint8_t>>(64 * 64 * 3 / 2, 128);
+  EXPECT_FALSE(arrival.publish({}, 64, 64, false, false).hasContent());
+  EXPECT_FALSE(arrival.publish(cpu, 63, 64, false, false).hasContent());
+  EXPECT_FALSE(arrival.publish(cpu, 128, 64, false, false).hasContent());
+  EXPECT_FALSE(arrival.publish(cpu, 8000, 64, false, false).hasContent());
+  EXPECT_EQ(arrival.publish(cpu, 64, 64, false, false).frameId, 1);
+}
+
 TEST(CpuSourceGpuView, RejectsWrongIdentityAndCpuDescriptorsDoNotOwnGpuImages) {
   CpuSourceGpuView token;
   token.sourceId = "source"; token.sourceEpoch = 7; token.frameId = 11;
@@ -172,6 +204,31 @@ void offer(I420SourcePreparation& owner, VideoFrame& frame) {
 }
 }
 
+TEST(I420SourcePreparation, FutureDecodeArrivalsCannotEvictTheNextCpuPlayoutSelection) {
+  PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  I420SourcePreparation owner(true);
+  std::vector<VideoFrame> playout;
+  for (int id = 1; id <= 6; ++id) playout.push_back(sourceFrame("delayed", 1, id, id * 30));
+  offer(owner, playout[0]);
+  ASSERT_TRUE(await([&] { return bool(playout[0].preparedGpu->acquire(true)); }));
+  auto first = compositor->render(planFor("delayed"), {playout[0]});
+  ASSERT_EQ(first.sourceAdmissions.front().actualFrameId, 1);
+  // Decode arrives before CPU playout/trim. Retain original CPU descriptors,
+  // with more arrivals than GPU slots; do not select any of them yet.
+  for (size_t index = 1; index < playout.size(); ++index) offer(owner, playout[index]);
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  ProgramFrame selected;
+  ASSERT_TRUE(await([&] {
+    selected = compositor->render(planFor("delayed"), {playout[1]});
+    return !selected.sourceAdmissions.empty() && selected.sourceAdmissions.front().actualFrameId == 2;
+  })) << "Future preparation recycled frame 2 before CPU playout selected it";
+  ASSERT_FALSE(selected.preview.bgra.empty());
+  EXPECT_NEAR(selected.preview.bgra.front(), 60, 1);
+  EXPECT_EQ(playout[1].i420->front(), 60);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(compositor->sourceTexStats().scratchUploads, 0u);
+}
+
 TEST(I420SourcePreparation, IndependentDeviceMatchesCpuColorRangeMatricesAndGradeWithZeroSourceUploads) {
   PreparationFlags flags;
   I420SourcePreparation owner(true);
@@ -207,6 +264,79 @@ TEST(I420SourcePreparation, IndependentDeviceMatchesCpuColorRangeMatricesAndGrad
     EXPECT_EQ(frame.frameId, 20); EXPECT_EQ(frame.sourceEpoch, mode + 1);
     EXPECT_EQ(frame.captureTimestamp100ns, 20000);
   }
+}
+
+TEST(I420CaptureArrival, NativeCaptureTapPreparesRealPixelsAndFencesHeldSnapshotsOnReconnect) {
+  PreparationFlags flags;
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "0");
+  auto reference = createD3D11Compositor();
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "1");
+  auto prepared = createD3D11Compositor(); ASSERT_TRUE(reference && prepared);
+  auto owner = std::make_shared<I420SourcePreparation>(true);
+  I420CaptureArrival arrival("capture:camera", owner);
+  auto plan = planFor("capture:camera");
+  VideoFrame held;
+  for (int index = 0; index < 3; ++index) {
+    auto cpu = std::make_shared<std::vector<uint8_t>>(64 * 64 * 3 / 2, 128);
+    std::fill(cpu->begin(), cpu->begin() + 4096, 40 + index * 60);
+    auto frame = arrival.publish(cpu, 64, 64, index == 1, index == 2);
+    ASSERT_TRUE(frame.preparedGpu);
+    ASSERT_TRUE(await([&] { return bool(frame.preparedGpu->acquire(true)); }));
+    auto cpuOnly = frame; cpuOnly.preparedGpu.reset();
+    auto expected = reference->render(plan, {cpuOnly});
+    auto result = prepared->render(plan, {frame});
+    ASSERT_EQ(result.preview.bgra.size(), expected.preview.bgra.size());
+    ASSERT_FALSE(result.preview.bgra.empty());
+    size_t mismatches = 0;
+    for (size_t pixel = 0; pixel < result.preview.bgra.size(); ++pixel)
+      if (std::abs(int(result.preview.bgra[pixel]) - int(expected.preview.bgra[pixel])) > 1) ++mismatches;
+    EXPECT_EQ(mismatches, 0u); EXPECT_EQ(frame.i420, cpu);
+    held = frame;
+  }
+  I420CaptureArrival reconnect("capture:camera", owner);
+  auto fresh = reconnect.publish(held.i420, 64, 64, held.i420FullRange, held.i420Bt601);
+  ASSERT_TRUE(fresh.preparedGpu); EXPECT_EQ(fresh.frameId, 1);
+  EXPECT_TRUE(fresh.sourceEpoch > held.sourceEpoch);
+  EXPECT_FALSE(held.preparedGpu->acquire(false));
+  ASSERT_TRUE(await([&] { return bool(fresh.preparedGpu->acquire(true)); }));
+  auto result = prepared->render(plan, {fresh}); ASSERT_FALSE(result.preview.bgra.empty());
+  EXPECT_EQ(prepared->sourceTexStats().cachedUploads, 0u);
+  EXPECT_EQ(prepared->sourceTexStats().scratchUploads, 0u);
+  EXPECT_EQ(prepared->sourceTexStats().textureCreates, 0u);
+}
+
+TEST(I420SourcePreparation, SubmittedCompletionSurvivesNewerSelectionAndUnsubmittedTokenIsAbandoned) {
+  PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  std::atomic<bool> uploaded{false}, release{false}, releaseCurrent{false};
+  I420SourcePreparation owner(true, {}, [&](const std::string&) {
+    const bool later = uploaded.exchange(true);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!(later ? releaseCurrent.load() : release.load()) && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  });
+  auto first = sourceFrame("camera", 1, 1, 40); offer(owner, first);
+  ProgramSourceAdmissionPolicy policy;
+  auto canRead = [](const auto& image) { return bool(image); };
+  policy.select(first, 1, canRead);
+  ASSERT_TRUE(await([&] { return uploaded.load(); }));
+  auto abandoned = sourceFrame("camera", 1, 2, 100); offer(owner, abandoned);
+  auto current = sourceFrame("camera", 1, 3, 200); offer(owner, current);
+  policy.select(current, 2, canRead); // updates selection while frame 1 is in flight
+  release.store(true);
+  ASSERT_TRUE(await([&] { return first.preparedGpu->completionPublished.load(); }));
+  ASSERT_TRUE(first.preparedGpu->acquire(false));
+  auto held = policy.select(current, 3, canRead);
+  EXPECT_EQ(held.evidence.actualFrameId, 1); EXPECT_EQ(held.evidence.state, "held");
+  EXPECT_EQ(held.evidence.reason, "previous-selection-completed");
+  auto pixels = compositor->render(planFor("camera"), {held.image});
+  ASSERT_FALSE(pixels.preview.bgra.empty());
+  EXPECT_NEAR(pixels.preview.bgra[(32 * 64 + 32) * 4], 40, 1);
+  ASSERT_TRUE(await([&] { return abandoned.preparedGpu->superseded.load(); }));
+  EXPECT_FALSE(abandoned.preparedGpu->completionPublished.load());
+  releaseCurrent.store(true);
+  ASSERT_TRUE(await([&] { return bool(current.preparedGpu->acquire(true)); }));
+  EXPECT_EQ(current.i420->front(), 200); EXPECT_EQ(first.i420->front(), 40);
+  EXPECT_EQ(compositor->sourceTexStats().cachedUploads, 0u);
 }
 
 TEST(I420SourcePreparation, CpuAndIsoReferencesDoNotPinThreeGpuSlotsOrResurrectReusedImages) {

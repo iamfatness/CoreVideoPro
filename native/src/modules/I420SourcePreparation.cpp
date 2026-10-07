@@ -27,6 +27,7 @@ struct I420SourcePreparation::Impl {
     // GPU owner only from here down.
     std::shared_ptr<CpuSourceGpuView> pending;
     int pendingSlot = -1;
+    int64_t lastSubmittedFrameId = -1;
     struct Ready { std::weak_ptr<CpuSourceGpuView> token; std::shared_ptr<const GpuVideoFrame> image; };
     std::array<Ready, 3> ready;
   };
@@ -34,17 +35,22 @@ struct I420SourcePreparation::Impl {
   std::vector<std::shared_ptr<Source>> retiring;
   std::deque<std::shared_ptr<Source>> builds;
   std::condition_variable changed;
+  std::condition_variable gpuChanged;
+  std::atomic<uint64_t> workRevision{0};
+  bool pendingWrites = false; // GPU owner only
   std::atomic<bool> stopping{false};
   std::atomic<bool> resourcesStopped{false};
   bool deviceFailed = false; // GPU owner only
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   std::function<void(const std::string&)> beforeResources;
+  std::function<void(const std::string&)> afterUpload;
   std::thread gpuThread, resourceThread;
   inline static std::mutex quarantineMutex;
   inline static std::vector<std::shared_ptr<D3DI420FramePool>> quarantined;
 
-  explicit Impl(bool enabled, std::function<void(const std::string&)> hook) : beforeResources(std::move(hook)) {
+  explicit Impl(bool enabled, std::function<void(const std::string&)> hook, std::function<void(const std::string&)> uploaded)
+      : beforeResources(std::move(hook)), afterUpload(std::move(uploaded)) {
     measured.requested = enabled; measured.supported = true;
     if (enabled) {
       try {
@@ -58,7 +64,7 @@ struct I420SourcePreparation::Impl {
     }
   }
   ~Impl() {
-    stopping.store(true); changed.notify_all();
+    stopping.store(true); changed.notify_all(); gpuChanged.notify_all();
     if (resourceThread.joinable()) resourceThread.join();
     if (gpuThread.joinable()) gpuThread.join();
   }
@@ -94,6 +100,7 @@ struct I420SourcePreparation::Impl {
         if (pool && !source->demand->stopped.load()) source->pool = std::move(pool);
         else { source->demand->failed.store(true); if (measured.active) --measured.active; ++measured.failed; }
       }
+      workRevision.fetch_add(1); gpuChanged.notify_one();
     }
   }
   bool createDevice() {
@@ -112,6 +119,7 @@ struct I420SourcePreparation::Impl {
   }
   void haltPreparation(HRESULT reason) {
     deviceFailed = true;
+    pendingWrites = false;
     for (const auto& source : snapshot()) {
       source->demand->stopped.store(true);
       source->ready = {};
@@ -126,6 +134,7 @@ struct I420SourcePreparation::Impl {
         static_cast<unsigned long>(reason));
   }
   void tick() {
+    pendingWrites = false;
     const auto removed = device->GetDeviceRemovedReason();
     if (FAILED(removed)) { haltPreparation(removed); return; }
     const auto current = snapshot();
@@ -153,12 +162,12 @@ struct I420SourcePreparation::Impl {
       const auto selected = source->demand->selectedFrameId.load();
       for (auto& ready : source->ready) {
         const auto token = ready.token.lock();
-        if (ready.image && (source->demand->stopped.load() || !token || token->consumed.load() || token->frameId < selected))
+        if (ready.image && (source->demand->stopped.load() || !token || token->consumed.load()))
           ready = {}; // active Program source/read caches still own their wrapper
       }
       if (source->pendingSlot >= 0) {
         if (auto storage = pool->completed(context.Get(), source->pendingSlot)) {
-          if (!source->demand->stopped.load() && source->pending && source->pending->frameId >= selected) {
+          if (!source->demand->stopped.load() && source->pending) {
             auto image = std::make_shared<D3DI420VideoImage>(std::move(storage), *source->pending);
             auto& ready = source->ready[source->pendingSlot];
             ready = {source->pending, image};
@@ -176,23 +185,46 @@ struct I420SourcePreparation::Impl {
         }
         continue;
       }
-      if (source->pendingSlot >= 0) continue;
+      if (source->pendingSlot >= 0) { pendingWrites = true; continue; }
       std::shared_ptr<CpuSourceGpuView> next;
       {
         std::lock_guard<std::mutex> lock(mutex);
         while (!source->queued.empty()) {
           next = source->queued.front().lock();
           if (next && next->frameId >= selected && !next->cpu.expired()) break;
+          if (next) next->superseded.store(true); // selected token was never submitted
           source->queued.pop_front(); ++measured.superseded; next.reset();
         }
       }
       if (!next) continue;
+      // CPU playout/guest trim may select an arrival well behind the decode
+      // head. Preparing future arrivals into three slots evicts that exact
+      // selected image before Program can read it. Keep future CPU tokens in
+      // the weak queue and admit at most one future arrival. That one image
+      // can be ready before selection without unbounded GPU lookahead or a
+      // new CPU playout buffer. Older submissions remain attributable.
+      if (next->frameId > selected && source->lastSubmittedFrameId > selected) continue;
       auto cpu = next->cpu.lock(); if (!cpu) continue;
-      const int slot = pool->beginUpload(context.Get(), *cpu);
+      int slot = pool->beginUpload(context.Get(), *cpu);
+      if (slot < 0) {
+        // Late completions remain readable across newer CPU selections, but
+        // producer-owned completion retention cannot consume all three slots.
+        auto oldest = source->ready.end();
+        size_t count = 0;
+        for (auto it = source->ready.begin(); it != source->ready.end(); ++it) if (it->image) {
+          ++count;
+          if (oldest == source->ready.end() || it->image->sourceFrameId < oldest->image->sourceFrameId) oldest = it;
+        }
+        if (count > 1) { *oldest = {}; slot = pool->beginUpload(context.Get(), *cpu); }
+      }
       if (slot >= 0) {
-        source->pendingSlot = slot; source->pending = next; submitted = true;
-        std::lock_guard<std::mutex> lock(mutex);
-        if (!source->queued.empty() && source->queued.front().lock() == next) source->queued.pop_front();
+        source->pendingSlot = slot; source->pending = next; submitted = pendingWrites = true;
+        source->lastSubmittedFrameId = next->frameId;
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          if (!source->queued.empty() && source->queued.front().lock() == next) source->queued.pop_front();
+        }
+        if (afterUpload) afterUpload(source->id); // test-only interleaving seam
       }
     }
     if (submitted) context->Flush(); // one batch submission, only on GPU owner
@@ -207,6 +239,7 @@ struct I420SourcePreparation::Impl {
   void gpuLoop() {
     bool attempted = false;
     while (!stopping.load()) {
+      const auto observedRevision = workRevision.load();
       try {
         if (!context && !attempted) {
           bool needed = false;
@@ -215,7 +248,12 @@ struct I420SourcePreparation::Impl {
         }
         if (context && !deviceFailed) tick();
       } catch (...) { std::lock_guard<std::mutex> lock(mutex); ++measured.failed; }
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      // Arrival wakes the owner immediately. Active event queries need prompt
+      // progress; a fixed 2 ms sleep before AND after upload added a source
+      // frame at unfavorable capture/Program phases. No polling on Program.
+      std::unique_lock<std::mutex> wait(mutex);
+      gpuChanged.wait_for(wait, pendingWrites ? std::chrono::microseconds(100) : std::chrono::microseconds(2000),
+          [&] { return stopping.load() || workRevision.load() != observedRevision; });
     }
     // Shutdown/lifecycle owner drains writes; external reads keep immutable
     // storage alive. A pending write cannot become an uncharged reusable pool.
@@ -236,12 +274,13 @@ struct I420SourcePreparation::Impl {
     }
   }
 #else
-  explicit Impl(bool enabled, std::function<void(const std::string&)>) { measured.requested = enabled; }
+  explicit Impl(bool enabled, std::function<void(const std::string&)>, std::function<void(const std::string&)>) { measured.requested = enabled; }
 #endif
 };
 
-I420SourcePreparation::I420SourcePreparation(bool enabled, std::function<void(const std::string&)> hook)
-    : impl_(std::make_unique<Impl>(enabled, std::move(hook))) {}
+I420SourcePreparation::I420SourcePreparation(bool enabled, std::function<void(const std::string&)> hook,
+    std::function<void(const std::string&)> uploaded)
+    : impl_(std::make_unique<Impl>(enabled, std::move(hook), std::move(uploaded))) {}
 I420SourcePreparation::~I420SourcePreparation() = default;
 I420SourcePreparation::Stats I420SourcePreparation::stats() const { std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->measured; }
 std::shared_ptr<CpuSourceGpuView> I420SourcePreparation::offer(const std::string& id, uint64_t epoch,
@@ -279,6 +318,7 @@ std::shared_ptr<CpuSourceGpuView> I420SourcePreparation::offer(const std::string
     token->cpu = cpu; token->demand = source->demand; source->queued.push_back(token);
     source->lastOfferedFrameId = frameId;
     impl_->measured.sources = impl_->sources.size();
+    impl_->workRevision.fetch_add(1); impl_->gpuChanged.notify_one();
     return token;
   } catch (...) { ++impl_->measured.failed; return {}; }
 #else

@@ -180,6 +180,43 @@ def judge(snapshots, isolated):
     }
 
 
+class NativeCaptureInputJudge:
+    """CPU input progress is required even when GPU admission is not requested."""
+    def __init__(self, source_id):
+        self.source = source_id
+        self.previous = None
+        self.errors = set()
+        self.samples = 0
+
+    def observe(self, snapshot):
+        self.samples += 1
+        rows = snapshot.get("sources")
+        row = next((item for item in rows if isinstance(item, dict) and item.get("sourceId") == self.source), None) if isinstance(rows, list) else None
+        if not row:
+            self.errors.add("capture-input-missing")
+            return
+        if row.get("kind") != "capture" or row.get("hasVideo") is not True or row.get("health") != "producing":
+            self.errors.add("capture-input-not-producing")
+        if row.get("width") != 1920 or row.get("height") != 1080:
+            self.errors.add("capture-input-not-reference-format")
+        fields = [row.get("framesIngested"), row.get("droppedFrames")]
+        if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 or value != math.floor(value) for value in fields):
+            self.errors.add("capture-input-counters-unknown")
+            return
+        if self.previous and fields[0] <= self.previous[0]:
+            self.errors.add("capture-input-did-not-advance")
+        if self.previous and fields[1] != self.previous[1]:
+            self.errors.add("capture-input-drop-or-counter-reset")
+        self.previous = fields
+
+    def result(self):
+        if self.samples < 2:
+            self.errors.add("insufficient-input-observations")
+        return {"captureInputVerdict": "FAIL" if self.errors else "PASS",
+                "captureInputErrors": sorted(self.errors), "captureInputSamples": self.samples,
+                "captureInputScope": "Periodic CPU ingress progress; not GPU pixels or hardware acquisition loss"}
+
+
 class SourceAdmissionJudge:
     """Sparse shell-snapshot checks, never per-frame or presentation proof."""
     def __init__(self, source_ids, enabled):

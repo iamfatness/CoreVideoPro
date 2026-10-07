@@ -3,8 +3,10 @@
 #include "modules/Interfaces.h"
 #include "modules/PeriodicDeviceDiscovery.h"
 #include "modules/UvcCaptureSupport.h"
+#include "modules/I420CaptureArrival.h"
 
 #include <memory>
+#include <cstdlib>
 
 // Native UVC capture: Media Foundation VIDCAP enumeration + IMFSourceReader
 // streaming inside the C++ core. Frames enter the compositor as first-class
@@ -142,11 +144,13 @@ constexpr auto kEnumerateRefreshInterval = std::chrono::milliseconds(2000);
 class UvcCaptureSession {
  public:
   UvcCaptureSession(std::string deviceId, std::string deviceName, std::wstring symbolicLink,
+                    std::string sourceId, std::shared_ptr<I420SourcePreparation> preparation,
                     int64_t noFirstFrameTimeoutMs = uvc::kUvcNoFirstFrameTimeoutMs)
       : deviceId_(std::move(deviceId)),
         deviceName_(std::move(deviceName)),
         symbolicLink_(std::move(symbolicLink)),
-        noFirstFrameTimeoutMs_(noFirstFrameTimeoutMs) {
+        noFirstFrameTimeoutMs_(noFirstFrameTimeoutMs),
+        arrival_(std::move(sourceId), std::move(preparation)) {
     thread_ = std::thread([this] { run(); });
   }
 
@@ -158,12 +162,7 @@ class UvcCaptureSession {
   }
 
   struct Snapshot {
-    std::shared_ptr<const std::vector<uint8_t>> i420;
-    int width = 0;
-    int height = 0;
-    int64_t frameId = 0;
-    bool fullRange = false;
-    bool bt601 = false;
+    VideoFrame arrival;
     int negotiatedWidth = 0;
     int negotiatedHeight = 0;
     int negotiatedFps = 0;
@@ -175,12 +174,7 @@ class UvcCaptureSession {
   Snapshot snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
     Snapshot copy;
-    copy.i420 = latestI420_;
-    copy.width = width_;
-    copy.height = height_;
-    copy.frameId = frameId_;
-    copy.fullRange = fullRange_;
-    copy.bt601 = bt601_;
+    copy.arrival = latestArrival_;
     copy.negotiatedWidth = negotiatedWidth_;
     copy.negotiatedHeight = negotiatedHeight_;
     copy.negotiatedFps = negotiatedFps_;
@@ -511,12 +505,13 @@ class UvcCaptureSession {
       }
       auto frame = std::make_shared<std::vector<uint8_t>>(std::move(converted));
       converted = std::vector<uint8_t>();
+      // Offer once at the actual capture arrival, outside the snapshot lock.
+      // The render/ISO consumers retain the authoritative CPU representation.
+      auto arrival = arrival_.publish(frame, width, height, fullRange_, bt601_);
+      if (!arrival.hasContent()) continue;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        latestI420_ = std::move(frame);
-        width_ = width;
-        height_ = height;
-        ++frameId_;
+        latestArrival_ = std::move(arrival);
       }
       if (!loggedFirstFrame) {
         loggedFirstFrame = true;
@@ -530,14 +525,12 @@ class UvcCaptureSession {
   const std::string deviceName_;
   const std::wstring symbolicLink_;
   const int64_t noFirstFrameTimeoutMs_;
+  I420CaptureArrival arrival_;
   std::thread thread_;
   std::atomic<bool> stop_{false};
 
   mutable std::mutex mutex_;
-  std::shared_ptr<const std::vector<uint8_t>> latestI420_;
-  int width_ = 0;
-  int height_ = 0;
-  int64_t frameId_ = 0;
+  VideoFrame latestArrival_;
   bool fullRange_ = false;
   bool bt601_ = false;
   int outputWidth_ = 0;
@@ -569,7 +562,10 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
   // start. Preserve immediate connect-by-id for restored shows. Only periodic
   // refresh used to run under coreMutex; all later refresh is asynchronous.
   UvcCaptureDeviceAdapter()
-      : devices_([] {
+      : preparation_([] {
+          const char* flag = std::getenv("COREVIDEO_CPU_SOURCE_PREPARATION");
+          return flag && std::string(flag) == "1" ? std::make_shared<I420SourcePreparation>(true) : nullptr;
+        }()), devices_([] {
           auto initial = discoverDevices();
           return initial ? std::move(*initial) : std::vector<DeviceEntry>{};
         }()),
@@ -626,7 +622,8 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       // (Re)start the capture session — a fresh attempt clears a prior error
       // (e.g. the camera was re-plugged after an unplug).
       entry.session.reset();
-      entry.session = std::make_unique<UvcCaptureSession>(entry.info.id, entry.info.name, entry.symbolicLink);
+      entry.session = std::make_unique<UvcCaptureSession>(entry.info.id, entry.info.name, entry.symbolicLink,
+          "capture:" + (outputSourceId.empty() ? entry.info.id : outputSourceId), preparation_);
       // Emit frames keyed by the shell's routing id when it supplied one (WinRT vs
       // Media Foundation stable-id reconciliation), else the adapter's own id.
       entry.outputSourceId = outputSourceId;
@@ -684,32 +681,20 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
           entry.info.height = snapshot.negotiatedHeight;
           entry.info.frameRate = snapshot.negotiatedFps;
         }
-        if (snapshot.frameId > 0) {
+        if (snapshot.arrival.frameId > 0) {
           entry.info.signalPresent = true;
           entry.info.warning.clear();
         }
       }
 
-      if (!snapshot.i420 || snapshot.width <= 0 || snapshot.height <= 0) {
+      if (!snapshot.arrival.hasI420()) {
         continue;
       }
 
       // Re-emit the latest held frame every tick (the capture rate is slower
       // than the render tick) so the compositor never starves back to a slate.
-      VideoFrame frame;
-      frame.participantId =
-          "capture:" + (entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId);
-      frame.width = snapshot.width;
-      frame.height = snapshot.height;
-      frame.naturalWidth = snapshot.width;
-      frame.naturalHeight = snapshot.height;
+      VideoFrame frame = snapshot.arrival;
       frame.timestampMs = timestampMs;
-      frame.frameId = snapshot.frameId;
-      frame.i420 = snapshot.i420;
-      frame.i420Width = snapshot.width;
-      frame.i420Height = snapshot.height;
-      frame.i420FullRange = snapshot.fullRange;
-      frame.i420Bt601 = snapshot.bt601;
       frames.push_back(std::move(frame));
     }
     }
@@ -865,6 +850,7 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
   }
 
   mutable std::mutex mutex_;
+  std::shared_ptr<I420SourcePreparation> preparation_;
   mutable std::vector<DeviceEntry> devices_;
   mutable PeriodicDeviceDiscovery<std::vector<DeviceEntry>> discovery_;
 };
