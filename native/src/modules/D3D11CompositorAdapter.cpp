@@ -2027,10 +2027,10 @@ class D3D11Compositor final : public ICompositor {
         continue;
       }
       const CompositorColorGrade grade = effectiveParticipantGrade(renderPlan, f);
-      SourceTex* source = acquireSourceTex(f);
-      const bool useI420 = source ? source->isI420 : f.hasI420();
-      const int width = source ? source->width : useI420 ? f.i420Width : f.pixelWidth;
-      const int height = source ? source->height : useI420 ? f.i420Height : f.pixelHeight;
+      SourceTex* admittedSource = acquireSourceTex(f);
+      const bool useI420 = admittedSource ? admittedSource->isI420 : f.hasI420();
+      const int width = admittedSource ? admittedSource->width : (useI420 ? f.i420Width : f.pixelWidth);
+      const int height = admittedSource ? admittedSource->height : (useI420 ? f.i420Height : f.pixelHeight);
       auto& pt = participantTextures_[f.participantId];
       if (!pt.local || pt.width != width || pt.height != height) {
         const auto createStart = std::chrono::steady_clock::now();
