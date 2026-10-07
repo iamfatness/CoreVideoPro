@@ -101,6 +101,7 @@ class D3DVideoFramePool {
       image->bytes = bytes;
       image->monitor = monitor;
       image->width = width; image->height = height; image->generation = generation;
+      image->monitorPrivate = monitor;
       D3D11_TEXTURE2D_DESC desc{};
       desc.Width = width; desc.Height = height; desc.MipLevels = desc.ArraySize = 1;
       desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
