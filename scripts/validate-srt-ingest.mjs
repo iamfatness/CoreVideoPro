@@ -467,7 +467,7 @@ try {
     const beforePreparedEpoch = previousAdmission?.actualEpoch;
     let recovered = false;
     for (let attempt = 0; attempt < 3 && !recovered; attempt += 1) {
-      launchPublisher();
+      publisher = startPublisher();
       let lastState = "missing";
       for (let sample = 0; sample < 20 && !recovered; sample += 1) {
         await sleep(500);

@@ -3,7 +3,8 @@
 `CpuSourcePreparation` owns bounded D3D11 preparation for immutable CPU I420
 and BGRA arrivals. `I420SourcePreparation` remains a compatibility alias.
 The launch override `COREVIDEO_CPU_SOURCE_PREPARATION=1` creates one shared
-owner in module composition for Zoom, native UVC, WGC CPU fallback, media playback and stills.
+owner in module composition for Zoom, native UVC, WGC CPU fallback, media playback,
+stills, browser, NDI, SRT and RTMP input.
 The override defaults off. Unsupported platforms do not publish GPU views.
 
 Media decoding calls `CpuVideoArrival` on its decoder thread before pushing
@@ -56,6 +57,16 @@ removed/replaced source. Reader observations are stamped on exact copied
 pixels; the browser SHM ABI does not carry host acquisition time. Held tokens
 refresh on the reader. Original CPU/ISO bytes and legacy preparation-off
 polling remain available. SHM BGRA uses its existing separate owner.
+
+NDI offers the original decoded BGRA buffer on its receive worker before
+publishing the descriptor. Its timed receive loop refreshes stopped held tokens.
+SRT and RTMP offer each original decoded BGRA buffer on the decoder reader;
+each decoder spawn starts a new preparation epoch while CPU frame counts remain
+cumulative. Program polls descriptors only. Audio decoding and original CPU/ISO
+buffers are preserved. A stalled blocking network read cannot refresh a held
+token until another decoded arrival; this is not qualified as stalled-input
+recovery. Transport acquisition cadence and codec conversion are independent
+of byte-exact preparation of the decoded CPU pixels.
 Installed output continuity, receiver/display identities,
 latency, A/V and hardware qualification remain governed by #802/#517 and the
 [render delivery specification](render-delivery-spec.md).
