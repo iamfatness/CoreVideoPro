@@ -27,6 +27,12 @@ struct ProgramBufferTimerResolution {
 
 namespace corevideo::modules {
 struct D3DProgramBufferTestAccess {
+  static void beforeExport(D3DProgramBuffer& buffer, std::function<void(bool)> hook) { buffer.beforeExport_ = std::move(hook); }
+  static unsigned readLeases(D3DProgramBuffer& buffer) {
+    std::lock_guard<std::mutex> lock(buffer.mutex_);
+    unsigned leases = 0; for (const auto& slot : buffer.slots_) leases += slot->readers;
+    return leases;
+  }
   static void fail(D3DProgramBuffer& buffer) { buffer.fail("test-injected"); }
 };
 }
@@ -291,7 +297,7 @@ TEST(D3DProgramBuffer, RetainedGpuOnlyFramesKeepTheirPixelsAfterProducerOverwrit
   std::vector<int> pixels;
   int failures = 0;
   {
-    D3DProgramBuffer buffer(producer.get(), 64, 64, 3, 1, [&](const ProgramFrame& frame) {
+    auto readExport = [&](const ProgramFrame& frame) {
       // No test assertions on a worker: collect actual receiver pixels and
       // report failures only after the buffer has joined both workers.
       ComPtrLite<ID3D11Texture2D> exported, staging;
@@ -314,7 +320,8 @@ TEST(D3DProgramBuffer, RetainedGpuOnlyFramesKeepTheirPixelsAfterProducerOverwrit
       if (FAILED(consumerContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) { ++failures; return; }
       pixels.push_back(static_cast<const uint8_t*>(mapped.pData)[32 * mapped.RowPitch + 32 * 4]);
       consumerContext->Unmap(staging.get(), 0);
-    });
+    };
+    D3DProgramBuffer buffer(producer.get(), 64, 64, 3, 1, {});
     ASSERT_TRUE(buffer.valid());
     const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
     const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
@@ -334,10 +341,126 @@ TEST(D3DProgramBuffer, RetainedGpuOnlyFramesKeepTheirPixelsAfterProducerOverwrit
       ASSERT_TRUE(buffer.take(frame, 1500));
       EXPECT_EQ(frame.frameNumber, i + 1);
       EXPECT_TRUE(frame.programNv12Shared == nullptr);
+      ProgramFrame exported;
+      const auto limit = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+      while ((!buffer.latest(exported) || exported.frameNumber != frame.frameNumber) && std::chrono::steady_clock::now() < limit)
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+      ASSERT_EQ(exported.frameNumber, frame.frameNumber);
+      readExport(exported);
     }
   }
   EXPECT_EQ(failures, 0);
   ASSERT_EQ(pixels.size(), 3u);
   for (int i = 0; i < 3; ++i) EXPECT_TRUE(std::abs(pixels[i] - (40 + i * 60)) <= 1);
+}
+
+TEST(D3DProgramBuffer, BlockedOptionalExportPreservesNativeCadenceAndOtherReaderPixels) {
+  ProgramBufferTimerResolution timer;
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ComPtrLite<ID3D11Texture2D> source;
+  ComPtrLite<ID3D11RenderTargetView> target;
+  ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, source.put())));
+  ASSERT_TRUE(SUCCEEDED(device->CreateRenderTargetView(source.get(), nullptr, target.put())));
+  for (const bool blockShell : {true, false}) {
+    std::mutex gateMutex;
+    std::condition_variable gateChanged;
+    bool release = false;
+    std::atomic<bool> entered{false};
+    D3DProgramBuffer buffer(device.get(), 64, 64, 2, 1, {});
+    ASSERT_TRUE(buffer.valid());
+    // Release before buffer destruction, including a fatal assertion path.
+    struct ReleaseGate {
+      std::mutex& mutex; std::condition_variable& changed; bool& release;
+      ~ReleaseGate() { { std::lock_guard<std::mutex> lock(mutex); release = true; } changed.notify_all(); }
+    } releaseGate{gateMutex, gateChanged, release};
+    D3DProgramBufferTestAccess::beforeExport(buffer, [&](bool shell) {
+      if (shell != blockShell || entered.exchange(true)) return;
+      std::unique_lock<std::mutex> lock(gateMutex);
+      gateChanged.wait(lock, [&] { return release; });
+    });
+    const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+    const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+    int received = 0;
+    auto receive = [&](ProgramFrame& packet) {
+      ++received;
+      EXPECT_EQ(packet.frameNumber, received);
+      EXPECT_EQ(packet.deliverySequence, received);
+      ASSERT_TRUE(packet.programNv12Shared != nullptr);
+      const int gray = 40 + static_cast<int>(packet.frameNumber);
+      const int expected = static_cast<int>(std::lround(16.0 + 220.0 * gray / 256.0));
+      EXPECT_TRUE(std::abs((*packet.programNv12Shared)[540 * 1920 + 960] - expected) <= 2);
+    };
+    for (int n = 1; n <= 60; ++n) {
+      std::this_thread::sleep_until(anchor + std::chrono::nanoseconds((n - 1) * 1000000000LL / 60));
+      const float value = (40.0f + n) / 255.0f;
+      const float color[] = {value, value, value, 1}; context->ClearRenderTargetView(target.get(), color);
+      ProgramFrame frame; frame.frameNumber = n; frame.productionSlot = n - 1;
+      frame.productionAnchorNs = anchorNs; frame.width = frame.height = 64;
+      buffer.submit(context.get(), source.get(), std::move(frame), true); context->Flush();
+      ProgramFrame packet; while (buffer.take(packet, 0)) receive(packet);
+      EXPECT_LE(D3DProgramBufferTestAccess::readLeases(buffer), 2u);
+    }
+    while (received < 60) { ProgramFrame packet; ASSERT_TRUE(buffer.take(packet, 50)); receive(packet); }
+    ASSERT_TRUE(entered.load());
+    const auto diagnostics = buffer.diagnostics();
+    EXPECT_EQ(diagnostics.produced, 60u); EXPECT_EQ(diagnostics.delivered, 60u);
+    EXPECT_EQ(diagnostics.underruns, 0u); EXPECT_EQ(diagnostics.overflows, 0u);
+    EXPECT_TRUE(diagnostics.displayBusy >= 50u);
+    ProgramFrame exported;
+    ProgramFrameSharedTexture texture;
+    std::shared_ptr<const void> owner;
+    const auto limit = std::chrono::steady_clock::now() + std::chrono::milliseconds(10);
+    do {
+      if (blockShell) { if (buffer.multiview(texture, owner) && texture.frameNumber >= 58) break; }
+      else { if (buffer.latest(exported) && exported.frameNumber >= 58) { texture = exported.sharedTexture; break; } }
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    } while (std::chrono::steady_clock::now() < limit);
+    ASSERT_TRUE(texture.frameNumber >= 58);
+    ComPtrLite<ID3D11Texture2D> shared, staging;
+    ComPtrLite<IDXGIKeyedMutex> key;
+    const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::stoull(texture.sharedHandleHex, nullptr, 0)));
+    ASSERT_TRUE(SUCCEEDED(device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(shared.put()))));
+    ASSERT_TRUE(SUCCEEDED(shared->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(key.put()))));
+    ASSERT_TRUE(key->AcquireSync(1, 20) == S_OK);
+    auto stagingDesc = desc; stagingDesc.BindFlags = 0; stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&stagingDesc, nullptr, staging.put())));
+    context->CopyResource(staging.get(), shared.get()); context->Flush(); key->ReleaseSync(0);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    ASSERT_TRUE(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)));
+    const int pixel = static_cast<const uint8_t*>(mapped.pData)[32 * mapped.RowPitch + 32 * 4];
+    context->Unmap(staging.get(), 0);
+    EXPECT_TRUE(std::abs(pixel - (40 + texture.frameNumber)) <= 1);
+    // The delayed reader must still export frame 1, even though many source
+    // slots have been recycled while it was stopped. Its read lease survives.
+    { std::lock_guard<std::mutex> lock(gateMutex); release = true; } gateChanged.notify_all();
+    ProgramFrame delayed;
+    ProgramFrameSharedTexture delayedTexture;
+    const auto delayedLimit = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    do {
+      if (blockShell) { if (buffer.latest(delayed)) { delayedTexture = delayed.sharedTexture; break; } }
+      else { if (buffer.multiview(delayedTexture, owner)) break; }
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    } while (std::chrono::steady_clock::now() < delayedLimit);
+    ASSERT_EQ(delayedTexture.frameNumber, 1);
+    const auto delayedHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::stoull(delayedTexture.sharedHandleHex, nullptr, 0)));
+    shared = {}; key = {};
+    ASSERT_TRUE(SUCCEEDED(device->OpenSharedResource(delayedHandle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(shared.put()))));
+    ASSERT_TRUE(SUCCEEDED(shared->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(key.put()))));
+    ASSERT_TRUE(key->AcquireSync(1, 20) == S_OK);
+    context->CopyResource(staging.get(), shared.get()); context->Flush(); key->ReleaseSync(0);
+    ASSERT_TRUE(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)));
+    const int retainedPixel = static_cast<const uint8_t*>(mapped.pData)[32 * mapped.RowPitch + 32 * 4];
+    context->Unmap(staging.get(), 0);
+    EXPECT_TRUE(std::abs(retainedPixel - 41) <= 1);
+  }
 }
 #endif
