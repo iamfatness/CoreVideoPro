@@ -34,6 +34,9 @@ struct I420SourcePreparation::Impl {
   std::vector<std::shared_ptr<Source>> retiring;
   std::deque<std::shared_ptr<Source>> builds;
   std::condition_variable changed;
+  std::condition_variable gpuChanged;
+  std::atomic<uint64_t> workRevision{0};
+  bool pendingWrites = false; // GPU owner only
   std::atomic<bool> stopping{false};
   std::atomic<bool> resourcesStopped{false};
   bool deviceFailed = false; // GPU owner only
@@ -60,7 +63,7 @@ struct I420SourcePreparation::Impl {
     }
   }
   ~Impl() {
-    stopping.store(true); changed.notify_all();
+    stopping.store(true); changed.notify_all(); gpuChanged.notify_all();
     if (resourceThread.joinable()) resourceThread.join();
     if (gpuThread.joinable()) gpuThread.join();
   }
@@ -96,6 +99,7 @@ struct I420SourcePreparation::Impl {
         if (pool && !source->demand->stopped.load()) source->pool = std::move(pool);
         else { source->demand->failed.store(true); if (measured.active) --measured.active; ++measured.failed; }
       }
+      workRevision.fetch_add(1); gpuChanged.notify_one();
     }
   }
   bool createDevice() {
@@ -114,6 +118,7 @@ struct I420SourcePreparation::Impl {
   }
   void haltPreparation(HRESULT reason) {
     deviceFailed = true;
+    pendingWrites = false;
     for (const auto& source : snapshot()) {
       source->demand->stopped.store(true);
       source->ready = {};
@@ -128,6 +133,7 @@ struct I420SourcePreparation::Impl {
         static_cast<unsigned long>(reason));
   }
   void tick() {
+    pendingWrites = false;
     const auto removed = device->GetDeviceRemovedReason();
     if (FAILED(removed)) { haltPreparation(removed); return; }
     const auto current = snapshot();
@@ -178,7 +184,7 @@ struct I420SourcePreparation::Impl {
         }
         continue;
       }
-      if (source->pendingSlot >= 0) continue;
+      if (source->pendingSlot >= 0) { pendingWrites = true; continue; }
       std::shared_ptr<CpuSourceGpuView> next;
       {
         std::lock_guard<std::mutex> lock(mutex);
@@ -204,7 +210,7 @@ struct I420SourcePreparation::Impl {
         if (count > 1) { *oldest = {}; slot = pool->beginUpload(context.Get(), *cpu); }
       }
       if (slot >= 0) {
-        source->pendingSlot = slot; source->pending = next; submitted = true;
+        source->pendingSlot = slot; source->pending = next; submitted = pendingWrites = true;
         {
           std::lock_guard<std::mutex> lock(mutex);
           if (!source->queued.empty() && source->queued.front().lock() == next) source->queued.pop_front();
@@ -224,6 +230,7 @@ struct I420SourcePreparation::Impl {
   void gpuLoop() {
     bool attempted = false;
     while (!stopping.load()) {
+      const auto observedRevision = workRevision.load();
       try {
         if (!context && !attempted) {
           bool needed = false;
@@ -232,7 +239,12 @@ struct I420SourcePreparation::Impl {
         }
         if (context && !deviceFailed) tick();
       } catch (...) { std::lock_guard<std::mutex> lock(mutex); ++measured.failed; }
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      // Arrival wakes the owner immediately. Active event queries need prompt
+      // progress; a fixed 2 ms sleep before AND after upload added a source
+      // frame at unfavorable capture/Program phases. No polling on Program.
+      std::unique_lock<std::mutex> wait(mutex);
+      gpuChanged.wait_for(wait, pendingWrites ? std::chrono::microseconds(100) : std::chrono::microseconds(2000),
+          [&] { return stopping.load() || workRevision.load() != observedRevision; });
     }
     // Shutdown/lifecycle owner drains writes; external reads keep immutable
     // storage alive. A pending write cannot become an uncharged reusable pool.
@@ -297,6 +309,7 @@ std::shared_ptr<CpuSourceGpuView> I420SourcePreparation::offer(const std::string
     token->cpu = cpu; token->demand = source->demand; source->queued.push_back(token);
     source->lastOfferedFrameId = frameId;
     impl_->measured.sources = impl_->sources.size();
+    impl_->workRevision.fetch_add(1); impl_->gpuChanged.notify_one();
     return token;
   } catch (...) { ++impl_->measured.failed; return {}; }
 #else

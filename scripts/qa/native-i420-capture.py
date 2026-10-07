@@ -8,7 +8,7 @@ import pathlib
 import sys
 import time
 import uuid
-from monitor_evidence import Core, SourceAdmissionJudge, judge
+from monitor_evidence import Core, SourceAdmissionJudge, NativeCaptureInputJudge, judge
 
 
 def main():
@@ -79,6 +79,7 @@ def main():
             phase = {"index": index, "result": "INVALID"}
             report["phases"].append(phase)
             admission = SourceAdmissionJudge([source_id], args.cpu_source_preparation == "1")
+            capture_input = NativeCaptureInputJudge(source_id)
             first = last = None
             measured_started = None
             warmup_end = time.monotonic() + args.warmup
@@ -95,12 +96,14 @@ def main():
                             first = current; measured_started = now
                         last = current
                         admission.observe(current)
+                        capture_input.observe(current)
                     time.sleep(.25)
             phase["nativeBuffer"] = judge([first, last], True)
             if previous_native is not None:
                 phase["transitionNativeBuffer"] = judge([previous_native, first], True)
             previous_native = last
             phase["sourceAdmission"] = admission.result()
+            phase["captureInput"] = capture_input.result()
             phase["captureDevices"] = last.get("captureDevices")
             rows = last.get("programSourceAdmission", {}).get("sources", [])
             row = next((item for item in rows if item.get("sourceId") == source_id), None)
@@ -111,7 +114,7 @@ def main():
                 previous_epoch = epoch
             else:
                 phase["reconnectEpochVerdict"] = "NOT_REQUESTED"
-            phase["result"] = "PASS" if phase["nativeBuffer"]["programBufferVerdict"] == "PASS" and phase.get("transitionNativeBuffer", {}).get("programBufferVerdict", "PASS") == "PASS" and phase["sourceAdmission"]["sampledSourceAdmissionVerdict"] != "FAIL" and phase["reconnectEpochVerdict"] != "FAIL" else "FAIL"
+            phase["result"] = "PASS" if phase["nativeBuffer"]["programBufferVerdict"] == "PASS" and phase.get("transitionNativeBuffer", {}).get("programBufferVerdict", "PASS") == "PASS" and phase["captureInput"]["captureInputVerdict"] == "PASS" and phase["sourceAdmission"]["sampledSourceAdmissionVerdict"] != "FAIL" and phase["reconnectEpochVerdict"] != "FAIL" else "FAIL"
             request({"type": "disconnect-capture-device", "payload": {"deviceId": args.device_id}})
             connected = False
             (output / "report.json").write_text(json.dumps(report, indent=2))

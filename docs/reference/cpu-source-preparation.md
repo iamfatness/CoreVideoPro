@@ -100,13 +100,20 @@ progress restored approximately 60 completed images per second. This polling
 uses the preparation context and never Program's context. Initial GPU
 submission still does not certify a ready image; publication requires S_OK
 and a completed event.
+Decoded/capture arrival and resource handoff notify the GPU owner immediately.
+While writes are pending it requests 100 microsecond completion polls; idle
+owners retain a two-millisecond maintenance wait for demand and retirement.
+These are requested waits, not scheduler guarantees. Program neither wakes nor
+waits for this owner. Sparse source-selection age can diagnose a preparation
+delay but does not certify end-to-end acquisition or presentation latency.
 
 `scripts/qa/native-i420-capture.py` drives one explicitly selected native
 MF/UVC device in an owned development core. Supply the exact native device id,
 Release binary and source commit, and a new output directory. It pins 1080p60
 Program, two-frame buffering, GPU capture off and monitor isolation on. The
 CPU preparation flag is an explicit argument. It preserves warm-up samples,
-scores source admission separately from native buffer delivery, and can repeat
+requires advancing CPU input even with preparation disabled, scores GPU source
+admission separately from native buffer delivery, and can repeat
 disconnect/reconnect in the same core. Each reconnect must expose a new admitted
 epoch; native transition counters include disconnect and subsequent warm-up.
 It stops only its own core and writes binary/harness hashes with the evidence.

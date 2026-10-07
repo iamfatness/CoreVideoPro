@@ -3,7 +3,33 @@ import sys
 import tempfile
 import unittest
 
-from monitor_evidence import COUNTERS, Core, judge, judge_recording, SourceAdmissionJudge
+from monitor_evidence import COUNTERS, Core, judge, judge_recording, SourceAdmissionJudge, NativeCaptureInputJudge
+
+
+class NativeCaptureInputTests(unittest.TestCase):
+    def sample(self, count=10, **changes):
+        row = dict(sourceId="capture:camera", kind="capture", hasVideo=True, health="producing",
+                   width=1920, height=1080, framesIngested=count, droppedFrames=0)
+        row.update(changes)
+        return {"sources": [row]}
+
+    def test_progress_only_claims_cpu_ingress(self):
+        evidence = NativeCaptureInputJudge("capture:camera")
+        evidence.observe(self.sample()); evidence.observe(self.sample(25))
+        self.assertEqual("PASS", evidence.result()["captureInputVerdict"])
+        self.assertIn("not GPU pixels", evidence.result()["captureInputScope"])
+
+    def test_disabled_gpu_admission_cannot_hide_failed_or_frozen_capture(self):
+        for final in [{"sources": []}, self.sample(), self.sample(25, health="stalled"), self.sample(25, hasVideo=False)]:
+            evidence = NativeCaptureInputJudge("capture:camera")
+            evidence.observe(self.sample()); evidence.observe(final)
+            self.assertEqual("FAIL", evidence.result()["captureInputVerdict"])
+
+    def test_unknown_partial_lower_quality_or_dropped_input_fails(self):
+        for final in [self.sample(None), self.sample(True), self.sample(25, width=1280), self.sample(25, droppedFrames=1), self.sample(25, droppedFrames=None)]:
+            evidence = NativeCaptureInputJudge("capture:camera")
+            evidence.observe(self.sample()); evidence.observe(final)
+            self.assertEqual("FAIL", evidence.result()["captureInputVerdict"])
 
 
 class SourceAdmissionTests(unittest.TestCase):
