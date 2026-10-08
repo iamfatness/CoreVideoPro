@@ -50,6 +50,22 @@ exact Program identities and the expected scene ingredients and rejects trace lo
 missing submission/completion, changed layout attribution and delivery gaps.
 The scope field always leaves broader release qualification missing.
 
+The exporter also publishes a fixed ten-stage `aggregate` observation at most
+once per second while running. A stopped capture receives one explicit final
+observation. Repeated snapshot reads reuse that completed cache; media append
+does not update histograms, allocate or construct JSON. Each stage carries its
+observed state, exported event/reason counts, last exact identities and raw ticks,
+progress age at the aggregate observation, and a bounded inter-event histogram.
+The 19 inclusive microsecond upper bounds accompany 20 counts (the final count
+is overflow). Unknown stages have no invented last identity or progress age.
+
+Intervals combine every source at one stage, so they are not per-source frame
+cadence, upload/GPU duration or content latency. Cross-thread export timestamp
+inversions are counted separately and excluded from interval buckets; they do
+not establish media reordering. Loss/export failures still invalidate raw boundary
+acceptance regardless of aggregate counts. Raw QPC identities and ages remain
+decimal strings, and older peers can omit this additive observation.
+
 ```powershell
 python scripts/qa/monitor-isolation-ab.py --core C:/path/corevideo-native.exe `
   --fake C:/path/corevideo-zoom-engine-fake.exe --source-commit EXACT_COMMIT `
@@ -65,7 +81,7 @@ judges remain separate. Explicit source/program selection and workload limits
 are retained in the manifest.
 
 This first slice does not complete #823: shared camera diagnostics, monitor/shell
-stage correlation, bounded once-per-second aggregate distributions, explicit
+stage correlation, further per-source age distributions, explicit
 interactive capture, calibrated content latency and the matched <1% p95
 instrumentation-cost gate remain required by the parent spec. Until qualification,
 capture stays opt-in and its partial stage coverage cannot certify #517 or a beta.

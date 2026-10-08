@@ -1394,6 +1394,146 @@
         "observedAtTicks": {
           "type": "string",
           "minLength": 1
+        },
+        "aggregate": {
+          "$ref": "#/$defs/DeliveryAggregateObservation"
+        }
+      }
+    },
+    "DeliveryStageAggregateObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "stage",
+        "observed",
+        "exportedEvents",
+        "timestampOrderInversions",
+        "reasonCounts",
+        "intervalCounts"
+      ],
+      "properties": {
+        "stage": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "observed": {
+          "type": "boolean"
+        },
+        "exportedEvents": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "timestampOrderInversions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "reasonCounts": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "intervalCounts": {
+          "type": "array",
+          "minItems": 20,
+          "maxItems": 20,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "lastTicks": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lastSourceTag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lastSourceEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lastProgramSequence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lastSourceFrameId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lastLayoutTag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lastProgressAgeTicks": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "DeliveryAggregateObservation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schemaVersion",
+        "revision",
+        "observedAtTicks",
+        "refreshPeriodMs",
+        "scope",
+        "intervalUpperBoundsUs",
+        "stages"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "string",
+          "enum": [
+            "delivery-aggregate-v1"
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "observedAtTicks": {
+          "type": "string",
+          "minLength": 1
+        },
+        "refreshPeriodMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 1000
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "intervalUpperBoundsUs": {
+          "type": "array",
+          "minItems": 19,
+          "maxItems": 19,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 60000000
+          }
+        },
+        "stages": {
+          "type": "array",
+          "minItems": 10,
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/DeliveryStageAggregateObservation"
+          }
         }
       }
     }

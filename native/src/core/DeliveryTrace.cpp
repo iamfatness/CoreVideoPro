@@ -1,4 +1,5 @@
 #include "core/DeliveryTrace.h"
+#include "core/DeliveryTraceAggregate.h"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -51,10 +52,30 @@ struct DeliveryTraceCapture::State {
   std::string path;
   std::function<void()> beforeExport;
   DeliveryTraceHeader header;
+  DeliveryTraceAggregate aggregate;
+  // Only the exporter and diagnostic snapshot reader touch this cache.
+  // Keep the short pointer handoff portable to libc++; media append never locks it.
+  std::mutex aggregateMutex;
+  std::shared_ptr<const rpc::Json> aggregateSnapshot;
+  std::int64_t lastAggregateAt = 0;
+  std::uint64_t aggregateRevision = 0;
   explicit State(std::string value, std::function<void()> hook) : path(std::move(value)), beforeExport(std::move(hook)) {
     header.clockFrequency = frequency(); header.started = deliveryTraceNow();
     header.sessionEpoch = static_cast<std::uint64_t>(header.started);
+    aggregateSnapshot = std::make_shared<const rpc::Json>(aggregate.snapshot(header.started, header.clockFrequency, 0));
+    lastAggregateAt = header.started;
     for (std::size_t i = 0; i < capacity; ++i) slots[i].sequence.store(i);
+  }
+  void publishAggregate(bool final = false) {
+    const auto now = deliveryTraceNow();
+    if (!final && now - lastAggregateAt < static_cast<std::int64_t>(header.clockFrequency)) return;
+    auto completed = std::make_shared<const rpc::Json>(aggregate.snapshot(now, header.clockFrequency, ++aggregateRevision));
+    { std::lock_guard<std::mutex> lock(aggregateMutex); aggregateSnapshot = std::move(completed); }
+    lastAggregateAt = now;
+  }
+  std::shared_ptr<const rpc::Json> readAggregate() {
+    std::lock_guard<std::mutex> lock(aggregateMutex);
+    return aggregateSnapshot;
   }
   bool pop(DeliveryTraceEvent& event) {
     const auto position = tail.load(std::memory_order_relaxed);
@@ -77,12 +98,14 @@ struct DeliveryTraceCapture::State {
       while (accepting.load() || writers.load() || tail.load() < head.load()) {
         std::size_t count = 0;
         while (count < batch.size() && pop(batch[count])) ++count;
-        if (!count) { std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue; }
+        if (!count) { publishAggregate(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue; }
         if (sizeof(header) + (exported.load() + count) * sizeof(batch[0]) > maxExportBytes)
           throw std::runtime_error("trace export capacity");
         output.write(reinterpret_cast<const char*>(batch.data()), count * sizeof(batch[0]));
         if (!output) throw std::runtime_error("trace write");
         exported.fetch_add(count);
+        for (std::size_t i = 0; i < count; ++i) aggregate.observe(batch[i], header.clockFrequency);
+        publishAggregate();
       }
       output.flush();
       if (!output) throw std::runtime_error("trace body flush");
@@ -90,6 +113,7 @@ struct DeliveryTraceCapture::State {
       header.failures = failures.load(); header.ended = deliveryTraceNow(); header.complete = 1;
       output.seekp(0); output.write(reinterpret_cast<const char*>(&header), sizeof(header)); output.flush();
       if (!output) throw std::runtime_error("trace finalize");
+      publishAggregate(true); // Explicit stopped final observation may precede the next live refresh.
     } catch (...) { ++failures; accepting.store(false); }
     { std::lock_guard<std::mutex> lock(doneMutex); done = true; }
     doneChanged.notify_all();
@@ -155,6 +179,7 @@ rpc::Json DeliveryTraceCapture::snapshot() const {
     {"exported", static_cast<double>(state_->exported.load())},
     {"lost", static_cast<double>(state_->lost.load())},
     {"exportFailures", static_cast<double>(state_->failures.load())},
+    {"aggregate", *state_->readAggregate()},
     {"cameraReaderObserved", false}, {"displayObserved", false}, {"sourceAcquisitionObserved", false},
     {"boundaries", "source-gpu-ready/source-requested/source-draw-submitted/program-submitted/program-gpu-ready/program-delivered"}};
 }

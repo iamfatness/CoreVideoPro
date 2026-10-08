@@ -1,4 +1,6 @@
 #include "core/DeliveryTrace.h"
+#include "core/DeliveryTraceAggregate.h"
+#include "contracts/Lifecycle.h"
 #include <gtest/gtest.h>
 #include <atomic>
 #include <filesystem>
@@ -111,4 +113,88 @@ TEST(DeliveryTrace, FullStorageRefusesWithoutWaitingAndRetainsEveryAcceptedEvent
   gate->set_value(); ASSERT_TRUE(trace.close()); const auto header = readHeader(path);
   EXPECT_EQ(header.exported, capacity); EXPECT_EQ(header.lost, 1); EXPECT_EQ(header.complete, 1);
   std::error_code error; std::filesystem::remove(path, error);
+}
+
+TEST(DeliveryTrace, AggregateKeepsUnobservedStagesUnknownAndClockDomainsSeparate) {
+  DeliveryTraceAggregate aggregate;
+  auto empty = aggregate.snapshot(100000, 1000000, 0);
+  ASSERT_EQ(empty.get("stages")->asArray().size(), 10u);
+  const auto& unobserved = empty.get("stages")->asArray()[0];
+  EXPECT_FALSE(unobserved.get("observed")->asBool()); EXPECT_EQ(unobserved.get("lastTicks"), nullptr);
+  EXPECT_EQ(unobserved.get("lastProgressAgeTicks"), nullptr);
+  DeliveryTraceEvent event; event.stage = DeliveryStage::SourceGpuReady;
+  event.sourceTag = 42; event.sourceEpoch = 7; event.sourceFrameId = 18;
+  event.timestamp = 100000; event.sourceObservation100ns = 9007199254740993LL;
+  aggregate.observe(event, 1000000);
+  event.timestamp += 16667; aggregate.observe(event, 1000000);
+  event.timestamp += 61000000; aggregate.observe(event, 1000000);
+  event.timestamp -= 1; aggregate.observe(event, 1000000); // Export order, not a pipeline reorder.
+  const auto snapshot = aggregate.snapshot(event.timestamp + 1001, 1000000, 1);
+  const auto& row = snapshot.get("stages")->asArray()[0];
+  EXPECT_TRUE(row.get("observed")->asBool()); EXPECT_EQ(row.getNumber("exportedEvents"), 4);
+  EXPECT_EQ(row.getNumber("timestampOrderInversions"), 1);
+  EXPECT_EQ(row.getString("lastSourceFrameId"), "18"); EXPECT_EQ(row.getString("lastSourceEpoch"), "7");
+  EXPECT_EQ(row.getString("lastSourceTag"), "42"); EXPECT_EQ(row.getString("lastProgressAgeTicks"), "1000");
+  const auto& intervals = row.get("intervalCounts")->asArray();
+  ASSERT_EQ(intervals.size(), 20u); EXPECT_EQ(intervals[7].asNumber(), 1); EXPECT_EQ(intervals[19].asNumber(), 1);
+  double total = 0; for (const auto& value : intervals) total += value.asNumber(); EXPECT_EQ(total, 2);
+  EXPECT_EQ(row.get("reasonCounts")->asArray()[0].asNumber(), 4);
+  event.stage = static_cast<DeliveryStage>(11); aggregate.observe(event, 1000000);
+  event.stage = DeliveryStage::ProgramDelivered; aggregate.observe(event, 0);
+  EXPECT_FALSE(aggregate.snapshot(99999999, 1000000, 2).get("stages")->asArray()[4].get("observed")->asBool());
+}
+
+TEST(DeliveryTrace, LiveAggregateRefreshesAtMostOncePerSecondAndFinalizesAcceptedEvents) {
+  Capture capture;
+  DeliveryTraceEvent event; event.stage = DeliveryStage::ProgramDelivered; event.programSequence = 12;
+  ASSERT_TRUE(capture.trace.record(event));
+  const auto initial = capture.trace.snapshot().get("aggregate")->getNumber("revision"); EXPECT_EQ(initial, 0);
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (capture.trace.snapshot().get("aggregate")->getNumber("revision") == 0 && std::chrono::steady_clock::now() < until)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  const auto first = *capture.trace.snapshot().get("aggregate");
+  EXPECT_TRUE(corevideo::contracts::validateDeliveryEvidenceObservation(capture.trace.snapshot()));
+  EXPECT_EQ(first.getNumber("revision"), 1);
+  const auto later = *capture.trace.snapshot().get("aggregate");
+  EXPECT_EQ(later.getString("observedAtTicks"), first.getString("observedAtTicks"));
+  EXPECT_EQ(later.getNumber("revision"), first.getNumber("revision"));
+  ASSERT_TRUE(capture.trace.close()); const auto final = *capture.trace.snapshot().get("aggregate");
+  EXPECT_TRUE(corevideo::contracts::validateDeliveryEvidenceObservation(capture.trace.snapshot()));
+  EXPECT_EQ(final.getNumber("revision"), 2);
+  const auto& row = final.get("stages")->asArray()[4];
+  EXPECT_EQ(row.getNumber("exportedEvents"), 1); EXPECT_EQ(row.getString("lastProgramSequence"), "12");
+  EXPECT_TRUE(row.get("observed")->asBool());
+}
+
+TEST(DeliveryTrace, ConcurrentDiagnosticReadersSeeCompleteCachedObservationsThroughFinalization) {
+  Capture capture;
+  std::atomic<bool> stop{false};
+  std::atomic<unsigned> invalid{0}, reads{0};
+  std::vector<std::thread> readers;
+  for (int i = 0; i < 3; ++i) readers.emplace_back([&] {
+    double revision = 0;
+    while (!stop.load()) {
+      const auto snapshot = capture.trace.snapshot();
+      const auto& aggregate = *snapshot.get("aggregate");
+      if (!corevideo::contracts::validateDeliveryEvidenceObservation(snapshot) ||
+          aggregate.getNumber("revision") < revision) ++invalid;
+      revision = aggregate.getNumber("revision");
+      const auto& row = aggregate.get("stages")->asArray()[4];
+      const auto count = row.getNumber("exportedEvents");
+      if (row.get("observed")->asBool() &&
+          row.getString("lastProgramSequence") != std::to_string(static_cast<unsigned>(count))) ++invalid;
+      ++reads;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  });
+  for (int i = 1; i <= 100; ++i) {
+    DeliveryTraceEvent event; event.stage = DeliveryStage::ProgramDelivered; event.programSequence = i;
+    if (!capture.trace.record(event)) ++invalid;
+    std::this_thread::sleep_for(std::chrono::milliseconds(12));
+  }
+  const bool closed = capture.trace.close();
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  stop.store(true); for (auto& reader : readers) reader.join();
+  EXPECT_TRUE(closed); EXPECT_EQ(invalid.load(), 0u); EXPECT_GT(reads.load(), 100u);
+  EXPECT_EQ(capture.trace.snapshot().get("aggregate")->get("stages")->asArray()[4].getNumber("exportedEvents"), 100);
 }
