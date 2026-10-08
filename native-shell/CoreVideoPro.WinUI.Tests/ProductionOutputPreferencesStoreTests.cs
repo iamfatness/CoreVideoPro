@@ -7,6 +7,12 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class ProductionOutputPreferencesStoreTests
 {
     [Fact]
+    public void OldPreferencesDefaultToTenRecordingFrames()
+    {
+        var preferences = System.Text.Json.JsonSerializer.Deserialize<ProductionOutputPreferences>("{}");
+        Assert.Equal(10, preferences!.RecordingWriteQueueDepth);
+    }
+    [Fact]
     public void Serializer_RoundTripsStreamAndRecordingOutputControls()
     {
         var preferences = new ProductionOutputPreferences

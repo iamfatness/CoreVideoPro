@@ -7,6 +7,18 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class MediaCoreCommandBuilderTests
 {
+    [Fact]
+    public void RecordingWriteDepthIsSentOnConfigureAndStart()
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "recording-queue-test",
+            Recording = true,
+            RecordingTargets = MediaCoreProductionSyncContext.DefaultRecordingTargets with { WriteQueueDepth = 14 }
+        });
+        foreach (var type in new[] { "set-recording-targets", "start-recording-session" })
+            Assert.Equal(14, commands.Single(command => command.Type == type).ExtensionData!["writeQueueDepth"].GetInt32());
+    }
     private static readonly IReadOnlyList<MediaCoreParticipantWire> Participants =
     [
         new(

@@ -1084,6 +1084,11 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWritersProduceIndependentPlayabl
 
   encoder->stopRecording();
 
+  for (const auto& iso : encoder->session().isoStreams) {
+    ASSERT_TRUE(iso.muxVideoFrameCount.has_value());
+    EXPECT_GE(*iso.muxVideoFrameCount, 4); // committed source samples plus explicit tail padding
+  }
+
   // Files are finalized + playable: program + two ISOs + manifest, all non-zero.
   ASSERT_FALSE(session.recordingSessionDir.empty());
   const fs::path dir(session.recordingSessionDir);
@@ -1557,8 +1562,33 @@ TEST(EncoderRecordingSession, MediaFoundationIndependentIsoWritersDrainAudioVide
   std::vector<float> programPcm(static_cast<size_t>(960) * 2, 0.2f);
   std::array<int64_t, 8> sourceFrames{};
 
+  // The click requests preparation; the promised take starts after every
+  // native source geometry/encoder is ready. No preparation pixels enter files.
+  std::vector<corevideo::modules::IsoSourceVideoFrame> preparationSources;
+  for (int source = 0; source < 8; ++source)
+    preparationSources.push_back(makeIsoI420("zoom:" + std::to_string(source + 1), 640, 360, 0,
+                                             static_cast<uint8_t>(40 + source * 20)));
+  encoder->submitIsoVideo(preparationSources);
+  bool prepared = false;
+  for (int attempt = 0; attempt < 500 && !prepared; ++attempt) {
+    const auto observed = encoder->session();
+    prepared = observed.isoStreams.size() == 8 && std::all_of(observed.isoStreams.begin(), observed.isoStreams.end(),
+        [](const auto& track) { return track.trackOpen; });
+    if (!prepared) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(prepared);
+  EXPECT_FALSE(encoder->progress().allRecordingWritersCommitted);
+  frame.frameNumber = 1;
+  encoder->submit(frame);
+  bool captureStarted = false;
+  for (int attempt = 0; attempt < 500 && !captureStarted; ++attempt) {
+    captureStarted = encoder->session().recordingMuxEpoch100ns > 0;
+    if (!captureStarted) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(captureStarted);
+
   for (int tick = 0; tick < 60; ++tick) {
-    frame.frameNumber = tick + 1;
+    frame.frameNumber = tick + 2;
     encoder->submit(frame);
 
     std::vector<corevideo::modules::IsoSourceVideoFrame> isoVideo;
@@ -2226,4 +2256,22 @@ TEST(EncoderRecordingSession, StoppingRecordWhileAStreamStaysUpDoesNotRestartThe
   EXPECT_EQ(starts, startsBeforeStop)
       << "the stream's desired-state re-assertion restarted the encoder while the "
          "recording was still finalizing, which is what erases its lifecycle";
+}
+
+TEST(EncoderRecordingSession, RecordingDepthReachesConsumerAndRefusalRetainsPreviousSetting) {
+  auto modules = corevideo::modules::createStubModules();
+  auto encoder = std::make_unique<RequestCapturingSink>();
+  auto* captured = encoder.get();
+  modules.encoder = std::move(encoder);
+  corevideo::core::MediaCore core(std::move(modules));
+  core.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "set-recording-targets"}, {"writeQueueDepth", 14}}});
+  EXPECT_EQ(captured->lastRequest.writeQueueDepth, 14);
+  core.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "set-recording-targets"}, {"writeQueueDepth", 31}}});
+  EXPECT_EQ(captured->lastRequest.writeQueueDepth, 14);
+  const auto snapshot = core.sessionState();
+  const auto* recording = snapshot.get("recording");
+  ASSERT_NE(recording, nullptr);
+  EXPECT_NE(recording->getString("queueSettingWarning").find("refused"), std::string::npos);
 }

@@ -1,4 +1,5 @@
 #include "core/BoundedAsyncLog.h"
+#include "modules/RecordingQueuePolicy.h"
 #include "core/MediaCore.h"
 #include "core/DeliveryTrace.h"
 #include "modules/MonitorInputEvidence.h"
@@ -54,6 +55,18 @@
 
 namespace corevideo::core {
 namespace {
+rpc::Json recordingWriteQueueJson(const modules::RecordingWriteQueueEvidence& q) {
+  if (!q.observed) return nullptr;
+  return rpc::Json::Object{
+      {"depth", static_cast<double>(q.depth)}, {"highWater", static_cast<double>(q.highWater)},
+      {"queued", static_cast<double>(q.queued)}, {"accepted", static_cast<double>(q.accepted)},
+      {"completedCalls", static_cast<double>(q.completed)}, {"dropped", static_cast<double>(q.dropped)},
+      {"startupDropped", static_cast<double>(q.startupDropped)},
+      {"droppedAudio", static_cast<double>(q.droppedAudio)}, {"startupDroppedAudio", static_cast<double>(q.startupDroppedAudio)},
+      {"queuedAudioSamples", static_cast<double>(q.queuedAudioSamples)},
+      {"highWaterBytes", static_cast<double>(q.highWaterBytes)}, {"oldestQueuedAgeMs", static_cast<double>(q.oldestQueuedAgeMs)},
+      {"lastOverflowReason", q.lastOverflowReason}};
+}
 
 constexpr int64_t kStaleCaptureAudioAgeMs = 1000;
 // The stub Zoom session's (constant) directed speaker.
@@ -954,6 +967,7 @@ rpc::Json MediaCore::sessionState() const {
         {"finalizeStartedMs", static_cast<double>(encoderEvidence.finalizeStartedMs)},
         {"finalizeFinishedMs", static_cast<double>(encoderEvidence.finalizeFinishedMs)},
         {"finalizeResult", encoderEvidence.finalizeResult},
+        {"finalizeTimeouts", static_cast<double>(encoderEvidence.finalizeTimeouts)},
         {"firstFailure", encoderEvidence.firstFailure},
         {"firstFailureGeneration", static_cast<double>(encoderEvidence.firstFailureGeneration)},
         {"firstFailureMs", static_cast<double>(encoderEvidence.firstFailureMs)}});
@@ -3053,6 +3067,21 @@ void MediaCore::setRecordingTargets(const rpc::Json& command) {
   if (command.get("isoSourceIds") || command.get("isoParticipantIds")) {
     recordingIsoParticipantIds_ = readIsoSourceIds(command);
   }
+  if (command.get("writeQueueDepth")) {
+    const auto value = command.getNumber("writeQueueDepth", 0);
+    std::vector<std::string> ids;
+    for (const auto& id : recordingIsoParticipantIds_) ids.push_back(normalizeIsoSourceId(id));
+    const int width = recordingOutputWidth_ > 0 ? recordingOutputWidth_ : outputWidth_;
+    const int height = recordingOutputHeight_ > 0 ? recordingOutputHeight_ : outputHeight_;
+    const bool nv12 = modules_.compositor && modules_.compositor->suppliesProgramNv12() && width == 1920 && height == 1080;
+    if (value >= 4 && value <= 30 && value == std::floor(value) &&
+        modules::RecordingQueuePolicy::accepts(static_cast<int>(value), width, height, nv12, ids)) {
+      recordingWriteQueueDepth_ = static_cast<int>(value);
+      recordingQueueSettingWarning_.clear();
+    } else {
+      recordingQueueSettingWarning_ = "Recording queue depth refused: use 4–30 frames within the 512 MiB recording retention budget. Previous depth retained.";
+    }
+  }
   {
     // encoder->configureRecording mutation: guard against the worker's encoder use.
     std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
@@ -3179,6 +3208,7 @@ void MediaCore::configureEncoderRecordingRequest() {
   // setRecordingTargets, startRecordingSession â€” acquire it around the call.
   modules::RecordingSessionRequest request;
   request.captureEpoch100ns = recordingCaptureEpoch100ns_;
+  request.writeQueueDepth = recordingWriteQueueDepth_;
   request.sessionId = recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_;
   request.targetFolder = recordingTargetFolder_;
   request.filenamePrefix = recordingFilenamePrefix_;
@@ -5831,7 +5861,7 @@ rpc::Json MediaCore::captureDevicesState() const {
 }
 
 rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const {
-  if (recordingSessionId_.empty() && recordingStatus_ == "stopped") {
+  if (recordingSessionId_.empty() && recordingStatus_ == "stopped" && recordingQueueSettingWarning_.empty()) {
     return nullptr;
   }
 
@@ -5891,6 +5921,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"missingFrames", static_cast<double>(session.recordingProgramMissingFrames)},
           {"droppedFrames", static_cast<double>(session.recordingProgramMissingFrames)},
           {"continuityObserved", session.recordingProgramContinuityObserved},
+          {"writeQueue", recordingWriteQueueJson(session.programWriteQueue)},
           {"bytesWritten", static_cast<double>(programBytesWritten)},
           {"metadataValid", metadataValid},
       },
@@ -5911,6 +5942,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"status", iso.warning.empty() ? publishedWriterStatus : std::string("warning")},
           {"readiness", iso.trackOpen ? "ready" : "missing"},
           {"framesWritten", static_cast<double>(iso.videoFrameCount)},
+          {"muxVideoFrameCount", iso.muxVideoFrameCount ? rpc::Json(static_cast<double>(*iso.muxVideoFrameCount)) : rpc::Json(nullptr)},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},
           // ISO-2: each ISO is self-contained A+V — hasAudio reflects real muxed
@@ -5929,6 +5961,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"videoWorkUs", static_cast<double>(iso.videoWorkUs)},
           {"audioWorkUs", static_cast<double>(iso.audioWorkUs)},
           {"maximumWorkUs", static_cast<double>(iso.maximumWorkUs)},
+          {"writeQueue", recordingWriteQueueJson(iso.writeQueue)},
       };
       if (!iso.warning.empty()) {
         node.emplace("warning", iso.warning);
@@ -5968,6 +6001,8 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
       {"filenamePrefix", recordingFilenamePrefix_},
       {"format", recordingFormat_},
       {"quality", recordingQuality_},
+      {"writeQueueDepth", recordingWriteQueueDepth_},
+      {"queueSettingWarning", recordingQueueSettingWarning_},
       {"encoder",
        rpc::Json::Object{
            {"codec", session.codec},
@@ -6036,7 +6071,10 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
   if (!recordingError_.empty()) {
     recording.emplace("error", recordingError_);
   }
-  if (!recordingWarning_.empty()) {
+  if (!recordingQueueSettingWarning_.empty()) {
+    recording.emplace("warning", recordingQueueSettingWarning_ +
+        (recordingWarning_.empty() ? "" : " " + recordingWarning_));
+  } else if (!recordingWarning_.empty()) {
     recording.emplace("warning", recordingWarning_);
   }
   if (!recordingLastFailure_.empty()) {

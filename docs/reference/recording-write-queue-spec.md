@@ -25,6 +25,37 @@ Deliver playable Program and per-source ISO files that keep every gathered frame
 
 Do not add steady-state latency to Program, Preview, multiview, virtual camera, or stream senders. Do not unbounded-queue frames into RAM. Do not implement pre-roll or instant replay in this change.
 
+## Recording start and UI truth
+
+Owner clarification, October 8, 2026: capture need not begin at the button click,
+but recording must already be happening when the UI says Recording.
+
+The click requests a take. While the selected pipelines initialize, the UI
+reports Preparing; it must not show Recording or start the recording-duration
+counter from the request time. Preparation stays off all live media threads.
+It does not require pre-roll or a separate operator arm action.
+
+Program and every selected ISO must be ready for the actual source geometry and
+recording profile before a single shared capture boundary is selected. Every
+required file must then show committed real video and, where configured, audio
+from that boundary before the UI publishes Recording. An opened file, accepted
+queue item, held first frame or Program-only progress is insufficient evidence.
+A missing or failed selected source must surface an explicit preparation failure
+or incomplete selection; it must not silently become a successful full take.
+
+The requested time, actual shared capture start, preparation delay and observed
+first commits remain distinct evidence. The duration counter uses actual capture
+start. Preparation media is outside the promised take; media admitted at or after
+that boundary must be preserved under the recording queue contract. Do not move
+the boundary after loss or relabel already accepted missing footage to hide it.
+All files keep the same epoch and audio remains aligned.
+
+Preparation needs an explicit bounded timeout and operator-visible error/cancel
+path. Stop during Preparing cancels preparation without briefly publishing
+Recording. Changes to selected sources or profiles invalidate readiness for the
+old configuration. After start, existing stalled-writer health remains based on
+continuing real file progress.
+
 ## Ownership
 
 | Component | Owns | Must not |
@@ -41,6 +72,26 @@ Hand off frame references, not pixel copies, until a writer must convert or enco
 
 Default depth is 10 frames of video per writer, Program included. That matches the vMix recording-memory recommendation and is a capacity limit, not intentional latency. At 60 fps a full queue is about 167 ms of file delay, not 167 ms of on-air delay.
 
+On Windows, selected ISO writers open during Preparing, using their source's
+native geometry and configuring audio before BeginWriting. Program chooses the
+shared capture boundary only after all selected pipelines are ready. Media
+between readiness and publication of that boundary is retained and trimmed to
+the common epoch; writer initialization is outside the take. Geometry changes
+while preparation is pending invalidate that writer's readiness. After readiness,
+the existing conformer handles geometry changes without reopening the file.
+
+The UI shows Preparing until Program and every selected ISO have committed real
+video and configured audio. Program progress alone cannot publish Recording.
+Missing readiness fails after 15 seconds; Stop during preparation cannot publish
+Recording. Capture timestamps and the elapsed timer use the actual shared epoch.
+
+Startup retains the existing bounded burst allowance (at most 96 video items,
+also subject to the file's byte reservation) until the first committed sample's
+backlog drains into the steady-state limit. Codec open may exceed the ten-frame
+window. Removing this allowance reproduced a clipped ISO head in the existing
+eight-writer test. This is startup admission, not pre-roll; startup loss remains
+separate and visible. Steady-state capacity is the configured 4–30 frames.
+
 Audio uses the same time window, sample-counted, on that writer's audio queue. A video queue at 10 frames and an empty audio queue is a bug. Silence-fill on the shared `RecordingPtsClock` epoch stays. A gap is filled, not slid.
 
 Rules:
@@ -56,6 +107,14 @@ Depth is a setting on the recording session, default 10, range 4–30. It is not
 
 Memory is bounded. 10 frames of 1080p60 NV12 is about 30 MB per writer before encode. Eight ISOs plus Program is about 270 MB of uncompressed references if every queue is full and frames have not been encoded. Prefer holding compressed access units once the worker has encoded them, and keep at most one uncompressed frame in flight per worker. Report high-water bytes on the recording snapshot. Refuse to raise depth if the projected cap exceeds the existing frame-allocation budget; say so, do not silently shrink.
 
+The Windows implementation uses raw frame references: Media Foundation's sink
+writer owns encoding and muxing together. The ten-frame FIFO absorbs a blocked
+writer; it is not a separate encoded-packet queue. A recording retention ceiling
+of 512 MiB is separate from the GPU preparation pool. Projection includes the
+short dispatcher handoff, one in-flight frame per writer, thumbnails and audio;
+per-file byte reservations also enforce the ceiling during startup or a source
+size change. A byte refusal must remain distinguishable from a full video FIFO.
+
 ## Failure behavior
 
 | Condition | Recording result | Live result |
@@ -63,7 +122,7 @@ Memory is bounded. 10 frames of 1080p60 NV12 is about 30 MB per writer before en
 | Disk slower than realtime for less than the queue | Frames land late in the file. No drop counter increment | Unchanged |
 | Queue full | That writer drops, charges itself, surfaces `recording.warning` with the source name | Unchanged |
 | Program queue full | Program recording warns. ISO queues are not raided to save Program | Unchanged |
-| Writer open fails | That file is refused and loud. Program still records | Unchanged |
+| Selected writer open fails | That file is refused and loud; the take cannot claim Recording and preparation times out | Unchanged |
 | Core restart mid-record | Existing resume-in-a-new-folder behavior. Queues do not survive the process | Unchanged |
 
 Unknown delivery stays unknown. A queue depth reading is not proof the file is playable. Finalization evidence remains the playable-file check.
@@ -92,6 +151,14 @@ Operator surface: if any recording writer is dropping, Health says which file an
 Slice 1 lands with its test. Do not merge the queue type with no consumer.
 
 ## Tests
+
+- A Record request stays Preparing while any selected file is unready; Program
+  progress alone cannot publish Recording.
+- Recording is published only after all required files commit real media from
+  the shared capture boundary, with no lost media inside the take.
+- Source/profile changes, preparation failure/timeout, and Stop during Preparing
+  cannot leave a false Recording indication.
+- Report request-to-start delay separately; the timer uses actual capture start.
 
 - Program queue absorbs a blocked write and commits the held frames in order, PTS unchanged.
 - ISO queue full drops only that source. Program `dropped` stays 0.

@@ -296,6 +296,7 @@ public sealed record SupportBundleMediaCoreRecordingProof
 
 public sealed record SupportBundleMediaCoreRecordingStream
 {
+    public NativeMediaCoreRecordingWriteQueue? WriteQueue { get; init; }
     public required string Kind { get; init; }
     /// <summary>Canonical ISO source id (`zoom:&lt;pid&gt;` / `capture:&lt;id&gt;`); ISO streams only.</summary>
     public string? SourceId { get; init; }
@@ -306,6 +307,7 @@ public sealed record SupportBundleMediaCoreRecordingStream
     public string? Path { get; init; }
     public required string Status { get; init; }
     public int FramesWritten { get; init; }
+    public long? MuxVideoFrameCount { get; init; }
     /// <summary>Per-source audio sample-frames muxed into this ISO's raw-stem AAC track (ISO-2).</summary>
     public long AudioSamples { get; init; }
     public int DroppedFrames { get; init; }

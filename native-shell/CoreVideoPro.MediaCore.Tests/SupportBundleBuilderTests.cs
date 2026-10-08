@@ -597,6 +597,8 @@ public sealed class SupportBundleBuilderTests
                     SourceId = "zoom:p2",
                     ParticipantId = "p2",
                     DisplayName = "Bob",
+                    MuxVideoFrameCount = 120,
+                    WriteQueue = new NativeMediaCoreRecordingWriteQueue { Depth = 10, Queued = 10, HighWater = 10, Dropped = 2, HighWaterBytes = 30000000 },
                     Path = "Recordings/show/ISO-01-Bob.mp4",
                     Status = "writing",
                     FramesWritten = 118,
@@ -629,6 +631,9 @@ public sealed class SupportBundleBuilderTests
 
         var bob = isoStreams.Single(stream => stream.SourceId == "zoom:p2");
         Assert.Equal("Bob", bob.DisplayName);
+        Assert.Equal(120, bob.MuxVideoFrameCount);
+        Assert.Equal(10, bob.WriteQueue?.Depth);
+        Assert.Contains(bundle.TriageLines, line => line.Contains("Recording queue Bob: 10/10 frames", StringComparison.Ordinal) && line.Contains("full=yes", StringComparison.Ordinal));
         Assert.Equal("Recordings/show/ISO-01-Bob.mp4", bob.Path);
         Assert.Equal(96000, bob.AudioSamples);
         Assert.True(bob.HasAudio);

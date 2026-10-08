@@ -25,6 +25,13 @@ using corevideo::modules::RecordingSessionRequest;
 // that its finalize/teardown are grace-bounded.
 class ControllableEncoder final : public IEncoderSink {
  public:
+  std::atomic<bool> allWritersCommitted{true};
+  bool independentQueues = true;
+  bool supportsIndependentRecordingQueues() const override { return independentQueues; }
+  void reportIdleFailure() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    session_.recordingError = "file worker failed while dispatch idle";
+  }
   // Mimics the SYNCHRONOUS Media Foundation open (95-250ms measured on Windows),
   // which applies as a FIFO item on the writer thread while the producer keeps
   // submitting at 60Hz.
@@ -41,6 +48,7 @@ class ControllableEncoder final : public IEncoderSink {
   std::atomic<int> lastFrameNumber{-1};
   std::atomic<int> audioCount{0};
   std::atomic<int64_t> lastAudioTimestamp{0};
+  std::vector<std::optional<uint64_t>> audioPositions;
   std::atomic<int> isoAudioCount{0};
   std::atomic<int> isoVideoCount{0};
   std::atomic<int> programCountAtSecondIso{0};
@@ -102,6 +110,11 @@ class ControllableEncoder final : public IEncoderSink {
   void submitAudioAt(const float* pcm, int frames, int channels, int rate, int64_t timestamp) override {
     lastAudioTimestamp.store(timestamp);
     submitAudio(pcm, frames, channels, rate);
+  }
+  void submitRecordingAudioAt(const float* pcm, int frames, int channels, int rate, int64_t timestamp,
+                              std::optional<uint64_t> position) override {
+    audioPositions.push_back(position);
+    submitAudioAt(pcm, frames, channels, rate, timestamp);
   }
   void submitAudio(const float* /*interleaved*/, int frameCount, int /*channels*/, int /*sampleRate*/) override {
     if (frameCount <= 0) {
@@ -169,7 +182,7 @@ class ControllableEncoder final : public IEncoderSink {
     std::lock_guard<std::mutex> lock(mutex_);
     return EncoderProgress{session_.recordingVideoFrameCount, session_.recordingAudioPacketCount,
                            innerDroppedVideo.load(), session_.encoderQueueDroppedAudioPackets,
-                           session_.recordingError, session_.recordingWarning};
+                           session_.recordingError, session_.recordingWarning, allWritersCommitted.load()};
   }
 
  private:
@@ -385,7 +398,7 @@ TEST(AsyncEncoderSink, SubmitIsNonBlockingAndDropsToLatestUnderBacklog) {
 
 TEST(AsyncEncoderSink, RepeatedGenerationsShareMediaBudgetAndPreserveStoppedTail) {
   AsyncEncoderSink::Options options;
-  options.maxVideoQueue = options.maxIsoVideoQueue = 2;
+  options.maxVideoQueue = options.maxIsoVideoQueuePerSource = 2;
   options.maxAudioQueue = options.maxIsoAudioQueue = 2;
   auto inner = std::make_unique<ControllableEncoder>();
   auto* raw = inner.get();
@@ -422,15 +435,17 @@ TEST(AsyncEncoderSink, RepeatedGenerationsShareMediaBudgetAndPreserveStoppedTail
   // the first ever applies its Start, and every video item shed while a Start is
   // outstanding is head-of-show shedding, not steady-state loss. The BUDGET
   // behaviour under test is unchanged, so assert the total.
-  EXPECT_EQ(sink.droppedVideoFrames() + sink.startupDroppedVideoFrames(), 396u);
-  EXPECT_EQ(sink.droppedAudioPackets(), 396u);
+  // ISO budgets are now per source: two slots for each of two sources,
+  // across all generations; Program still has two slots total.
+  EXPECT_EQ(sink.droppedVideoFrames() + sink.startupDroppedVideoFrames(), 394u);
+  EXPECT_EQ(sink.droppedAudioPackets(), 394u);
   raw->blockSubmit->store(false);
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(5)));
   EXPECT_EQ(raw->submitCount.load(), 3);
   EXPECT_EQ(raw->lastFrameNumber.load(), 2);
-  EXPECT_EQ(raw->isoVideoCount.load(), 2);
+  EXPECT_EQ(raw->isoVideoCount.load(), 4);
   EXPECT_EQ(raw->audioCount.load(), 2);
-  EXPECT_EQ(raw->isoAudioCount.load(), 2);
+  EXPECT_EQ(raw->isoAudioCount.load(), 4);
   EXPECT_EQ(raw->stopCount.load(), 100);
   ASSERT_TRUE(sink.session().lifecycle);
   EXPECT_EQ(sink.session().lifecycle->state, "failed");
@@ -444,7 +459,7 @@ TEST(AsyncEncoderSink, RepeatedGenerationsShareMediaBudgetAndPreserveStoppedTail
 
 TEST(AsyncEncoderSink, HeldProgramAndIsoFramesRetryAfterOlderGenerationBudgetDrains) {
   AsyncEncoderSink::Options options;
-  options.maxVideoQueue = options.maxIsoVideoQueue = 1;
+  options.maxVideoQueue = options.maxIsoVideoQueuePerSource = 1;
   auto inner = std::make_unique<ControllableEncoder>();
   auto* raw = inner.get();
   raw->blockSubmit->store(true);
@@ -1073,7 +1088,9 @@ TEST(AsyncEncoderSink, IsoAudioSurvivesProgramCodecStartup) {
 TEST(AsyncEncoderSink, EightIsoSourcesSurviveABoundedProgramWriteStall) {
   auto inner = std::make_unique<ControllableEncoder>();
   auto* raw = inner.get();
-  AsyncEncoderSink sink(std::move(inner));
+  AsyncEncoderSink::Options options;
+  options.maxIsoVideoQueuePerSource = 24;
+  AsyncEncoderSink sink(std::move(inner), options);
   sink.start({"recording"}, {});
   sink.submit(videoFrame(1));
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
@@ -1113,7 +1130,7 @@ TEST(AsyncEncoderSink, EightIsoSourcesSurviveABoundedProgramWriteStall) {
 // decide which writer to investigate.
 TEST(AsyncEncoderSink, AnEvictedIsoPictureIsChargedToItsOwnSourceNotTheArrivingOne) {
   AsyncEncoderSink::Options options;
-  options.maxIsoVideoQueue = 2;
+  options.maxIsoVideoQueuePerSource = 2;
   auto inner = std::make_unique<ControllableEncoder>();
   auto* raw = inner.get();
   raw->blockSubmit->store(true);
@@ -1139,6 +1156,7 @@ TEST(AsyncEncoderSink, AnEvictedIsoPictureIsChargedToItsOwnSourceNotTheArrivingO
   submitIso("zoom:fast", 1);
   submitIso("zoom:fast", 2);
   submitIso("zoom:slow", 1);
+  submitIso("zoom:fast", 3);  // only fast is full; slow owns its own slots
 
   auto evidence = sink.evidence();
   const auto fast = evidence.isoVideoBySource.find("zoom:fast");
@@ -1154,7 +1172,7 @@ TEST(AsyncEncoderSink, AnEvictedIsoPictureIsChargedToItsOwnSourceNotTheArrivingO
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
   evidence = sink.evidence();
   // And the survivors really were written: fast lost its first picture only.
-  EXPECT_EQ(evidence.isoVideoBySource["zoom:fast"].written, 1u);
+  EXPECT_EQ(evidence.isoVideoBySource["zoom:fast"].written, 2u);
   EXPECT_EQ(evidence.isoVideoBySource["zoom:slow"].written, 1u);
 }
 
@@ -1162,7 +1180,7 @@ TEST(AsyncEncoderSink, AnEvictedIsoPictureIsChargedToItsOwnSourceNotTheArrivingO
 // (an older generation holds the whole budget), so it keeps the charge.
 TEST(AsyncEncoderSink, ARefusedIsoPictureIsStillChargedToTheArrivingSource) {
   AsyncEncoderSink::Options options;
-  options.maxIsoVideoQueue = 1;
+  options.maxIsoVideoQueuePerSource = 1;
   // The wedged writer is still inside the blocked Program submit at teardown,
   // so bound the destructor's finalize grace rather than paying the 4s default.
   options.finalizeGrace = std::chrono::milliseconds(200);
@@ -1186,19 +1204,19 @@ TEST(AsyncEncoderSink, ARefusedIsoPictureIsStillChargedToTheArrivingSource) {
 
   sink.start({"recording"}, {});
   IsoSourceVideoFrame arriving;
-  arriving.sourceId = "zoom:arriving";
+  arriving.sourceId = "zoom:held";
   arriving.frame.frameId = 1;
   sink.submitIsoVideo({arriving});
 
   const auto evidence = sink.evidence();
-  const auto arrivingEvidence = evidence.isoVideoBySource.find("zoom:arriving");
+  const auto arrivingEvidence = evidence.isoVideoBySource.find("zoom:held");
   ASSERT_NE(arrivingEvidence, evidence.isoVideoBySource.end());
   EXPECT_EQ(arrivingEvidence->second.dropped, 1u)
       << "no victim to evict, so the arriving picture is the one lost";
   // Per-source ISO evidence is scoped to the take: `start()` clears the map, so
-  // the previous generation's held source is absent here by design — its
-  // accepted picture is still queued and is never charged as a drop.
-  EXPECT_EQ(evidence.isoVideoBySource.count("zoom:held"), 0u);
+  // the current generation reuses the same identity. Its refused incoming
+  // picture is charged; the accepted previous take's tail remains queued.
+  EXPECT_EQ(evidence.isoVideoBySource.count("zoom:held"), 1u);
 
   raw->blockSubmit->store(false);
   ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
@@ -1276,4 +1294,133 @@ TEST(AsyncEncoderSink, TheSnapshotIsExactOnceTheBurstHasDrained) {
   EXPECT_EQ(sink.session().recordingVideoFrameCount, 4);
   ASSERT_TRUE(sink.session().lifecycle);
   EXPECT_EQ(sink.session().lifecycle->state, "producing");
+}
+
+TEST(AsyncEncoderSink, AFinalizeTimeoutIsCountedOnceWithoutClaimingCompletion) {
+  AsyncEncoderSink::Options options;
+  options.finalizeGrace = std::chrono::milliseconds(20);
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockStop->store(true);
+  AsyncEncoderSink sink(std::move(inner), options);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  const bool opened = sink.drainForTest(std::chrono::seconds(2));
+  sink.stopRecording();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->stopEntered.load() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  const auto first = sink.evidence(), second = sink.evidence();
+  const auto pending = sink.session();
+  raw->blockStop->store(false);
+  const bool drained = sink.drainForTest(std::chrono::seconds(2));
+  EXPECT_TRUE(opened); EXPECT_TRUE(drained);
+  EXPECT_EQ(first.finalizeTimeouts, 1u); EXPECT_EQ(second.finalizeTimeouts, 1u);
+  EXPECT_EQ(first.finalizeResult, "timeout");
+  ASSERT_TRUE(pending.lifecycle);
+  EXPECT_EQ(pending.lifecycle->state, "finalizing");
+  EXPECT_FALSE(pending.lifecycle->finalized);
+  EXPECT_EQ(sink.evidence().finalizeResult, "returned");
+}
+
+TEST(AsyncEncoderSink, AudioSampleIdentityIncludesDroppedPacketsAndResetsOnNewTake) {
+  AsyncEncoderSink::Options options;
+  options.maxAudioQueue = 2;
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->blockSubmit->store(true);
+  AsyncEncoderSink sink(std::move(inner), options);
+  sink.start({"recording"}, {});
+  sink.submit(videoFrame(1));
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!raw->submitEntered.load() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+  std::vector<float> pcm(1920, 0.2f);
+  for (int i = 0; i < 3; ++i) sink.submitAudioAt(pcm.data(), 960, 2, 48000, 100 + i);
+  raw->blockSubmit->store(false);
+  const bool drained = sink.drainForTest(std::chrono::seconds(2));
+  EXPECT_TRUE(drained);
+  ASSERT_EQ(raw->audioPositions.size(), 2u);
+  ASSERT_TRUE(raw->audioPositions[0]); ASSERT_TRUE(raw->audioPositions[1]);
+  EXPECT_EQ(*raw->audioPositions[0], 960u); EXPECT_EQ(*raw->audioPositions[1], 1920u);
+  sink.stopRecording();
+  sink.start({"recording"}, {});
+  sink.submitAudioAt(pcm.data(), 960, 2, 48000, 300);
+  EXPECT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  ASSERT_EQ(raw->audioPositions.size(), 3u);
+  ASSERT_TRUE(raw->audioPositions[2]); EXPECT_EQ(*raw->audioPositions[2], 0u);
+}
+
+TEST(AsyncEncoderSink, IdleFileFailureIsRetainedAndStopsFurtherMediaInTheTake) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {});
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  raw->reportIdleFailure();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (sink.evidence().firstFailure.empty() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_EQ(sink.evidence().firstFailure, "file worker failed while dispatch idle");
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(raw->submitCount.load(), 0);
+  sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(raw->stopCount.load(), 1);
+}
+
+TEST(AsyncEncoderSink, ProgramProgressCannotClaimRecordingBeforeSelectedIsosCommit) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->allWritersCommitted.store(false);
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {"zoom:101"});
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  ASSERT_TRUE(sink.session().lifecycle.has_value());
+  EXPECT_EQ(sink.session().lifecycle->state, "preparing");
+  EXPECT_FALSE(sink.session().active);
+  raw->allWritersCommitted.store(true);
+  sink.submit(videoFrame(2));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "producing");
+  EXPECT_TRUE(sink.session().active);
+  sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+}
+
+TEST(AsyncEncoderSink, MissingSelectedWriterTimesOutWithoutClaimingRecording) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->allWritersCommitted.store(false);
+  AsyncEncoderSink::Options options;
+  options.preparationTimeout = std::chrono::milliseconds(30);
+  AsyncEncoderSink sink(std::move(inner), options);
+  sink.start({"recording"}, {"zoom:missing"});
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  const auto expired = sink.session();
+  ASSERT_TRUE(expired.lifecycle.has_value());
+  EXPECT_EQ(expired.lifecycle->state, "failed");
+  EXPECT_FALSE(expired.active);
+  EXPECT_NE(expired.lifecycle->error.value_or("").find("preparation timed out"), std::string::npos);
+  sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(raw->stopCount.load(), 1);
+}
+
+TEST(AsyncEncoderSink, StopDuringPreparingNeverReportsProducing) {
+  auto inner = std::make_unique<ControllableEncoder>();
+  auto* raw = inner.get();
+  raw->allWritersCommitted.store(false);
+  AsyncEncoderSink sink(std::move(inner));
+  sink.start({"recording"}, {"zoom:waiting"});
+  sink.submit(videoFrame(1));
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_EQ(sink.session().lifecycle->state, "preparing");
+  sink.stopRecording();
+  ASSERT_TRUE(sink.drainForTest(std::chrono::seconds(2)));
+  EXPECT_FALSE(sink.session().active);
+  EXPECT_NE(sink.session().lifecycle->state, "producing");
 }

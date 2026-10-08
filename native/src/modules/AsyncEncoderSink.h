@@ -49,13 +49,12 @@ namespace corevideo::modules {
 //     producer gate and enqueues a FIFO barrier. Already-accepted media drains
 //     before asynchronous Finalize, preserving the take's A/V tail. The bounded
 //     finalize GRACE is enforced at teardown (destructor), where no lock is held.
-//   - session(): returns a thread-safe snapshot the writer refreshes after every
-//     applied item (eventually consistent within a few frames — fine for the
-//     live app; unit tests that need exact synchronous counts use the wrapped
-//     sink directly).
+//   - session(): returns a thread-safe snapshot refreshed at control barriers,
+//     drained bursts and a 100ms observation backstop, including idle file work.
 //
-// The writer thread is the SOLE owner of the wrapped sink, so no external lock is
-// needed around it. All writer-touched state lives in a shared control block so
+// The dispatcher owns calls into the wrapped sink. Adapters that opt into
+// independent recording queues own file state on dedicated workers and publish
+// immutable snapshots; legacy adapters retain dispatcher ownership. All writer-touched state lives in a shared control block so
 // teardown can bound its wait: the destructor signals the writer and joins within
 // `finalizeGrace`; if the writer is still stuck in a blocking Finalize past the
 // grace it is DETACHED — it keeps the shared block (and the wrapped sink) alive
@@ -65,10 +64,10 @@ class AsyncEncoderSink final : public IEncoderSink {
   struct Options {
     // Max pending PROGRAM video frames before drop-to-latest kicks in.
     size_t maxVideoQueue = 6;
-    // One source picture per item. Allow 32 pictures for each of eight ISOs
-    // while a synchronous Program write stalls; eight total slots clipped
-    // every source almost immediately. Still bounded (~760 MiB at 1080p I420).
-    size_t maxIsoVideoQueue = 256;
+    // Short dispatch handoff PER SOURCE. Disk buffering belongs to that file's
+    // RecordingTrackWorker, independently of every other writer.
+    size_t maxIsoVideoQueuePerSource = 4;
+    size_t maxIsoVideoQueue = 256; // legacy adapters without independent file workers
     // Max pending PROGRAM audio packets before the oldest is dropped.
     size_t maxAudioQueue = 96;
     // Retain ISO audio through the synchronous Program open. Dispatch to the
@@ -77,6 +76,7 @@ class AsyncEncoderSink final : public IEncoderSink {
     size_t maxIsoAudioQueue = 96;
     // Bounded wait for teardown's writer join (the finalize grace at shutdown).
     std::chrono::milliseconds finalizeGrace{4000};
+    std::chrono::milliseconds preparationTimeout{15000};
   };
 
   explicit AsyncEncoderSink(std::unique_ptr<IEncoderSink> inner);
@@ -162,6 +162,7 @@ class AsyncEncoderSink final : public IEncoderSink {
     uint64_t stopGeneration = 0;
     int64_t stopRequestedMs = 0, finalizeStartedMs = 0, finalizeFinishedMs = 0;
     std::string finalizeResult = "not-requested";
+    uint64_t finalizeTimeouts = 0;
     std::string firstFailure;
     uint64_t firstFailureGeneration = 0;
     int64_t firstFailureMs = 0;
@@ -193,12 +194,14 @@ class AsyncEncoderSink final : public IEncoderSink {
     int audioChannels = 0;
     int audioSampleRate = 0;
     int64_t audioTimelineTimestamp100ns = 0;
+    std::optional<uint64_t> audioSamplePosition;
   };
 
   // All state the (possibly-detached) writer thread touches. Held by shared_ptr
   // so a stuck writer keeps it alive after the owning sink is destroyed.
   struct State {
     std::unique_ptr<IEncoderSink> inner;
+    bool independentRecordingQueues = false;
 
     std::mutex queueMutex;
     std::condition_variable queueCv;    // writer waits for work
@@ -207,6 +210,7 @@ class AsyncEncoderSink final : public IEncoderSink {
     uint64_t nextSeq = 1;
     uint64_t appliedSeq = 0;
     uint64_t generation = 0;
+    uint64_t audioSourceSamplePosition = 0;
     Evidence evidence;
     std::string configuredSessionId = "recording";
     // Separate from active: a failed writer still needs one cleanup/finalize.
@@ -249,6 +253,9 @@ class AsyncEncoderSink final : public IEncoderSink {
     // changed on an applied item would report the last good state forever.
     std::atomic<bool> startApplied{false};
     std::atomic<bool> everProgressed{false};
+    std::atomic<bool> allRecordingWritersCommitted{false};
+    std::atomic<int64_t> preparationRequestedAtMs{0};
+    int64_t preparationTimeoutMs = 15000;
     std::atomic<int64_t> lastProgressAtMs{0};
     std::atomic<bool> degradedWarning{false};
     std::atomic<int64_t> producingStaleMs{::corevideo::core::kProducingProgressStaleMs};
@@ -261,6 +268,7 @@ class AsyncEncoderSink final : public IEncoderSink {
 
     size_t maxVideoQueue = 6;
     size_t maxIsoVideoQueue = 256;
+    size_t maxIsoVideoQueuePerSource = 4;
     size_t maxAudioQueue = 96;
     size_t maxIsoAudioQueue = 96;
   };

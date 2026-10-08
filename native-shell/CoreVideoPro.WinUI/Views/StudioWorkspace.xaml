@@ -1211,6 +1211,10 @@
                                             <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
                                                      Message="{x:Bind ViewModel.RecordingDiskWarning, Mode=OneWay}"
                                                      Visibility="{x:Bind ViewModel.RecordingDiskWarningVisibility, Mode=OneWay}" />
+                                            <NumberBox Header="Recording buffer (frames)" Minimum="4" Maximum="30"
+                                                       SpinButtonPlacementMode="Compact"
+                                                       Value="{x:Bind ViewModel.RecordingWriteQueueDepth, Mode=TwoWay}"
+                                                       ToolTipService.ToolTip="Applies to the next recording. Live output delay is unchanged." />
                                             <!-- #469: the operator could not find their shows. The
                                                  folder is always absolute now, so show it. -->
                                             <TextBlock Text="{x:Bind ViewModel.RecordingTargetFolder, Mode=OneWay}"

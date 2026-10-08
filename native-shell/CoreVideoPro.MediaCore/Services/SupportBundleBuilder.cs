@@ -296,12 +296,14 @@ public static class SupportBundleBuilder
                         .Select(stream => new SupportBundleMediaCoreRecordingStream
                         {
                             Kind = stream.Kind,
+                            WriteQueue = stream.WriteQueue,
                             SourceId = stream.SourceId,
                             ParticipantId = stream.ParticipantId,
                             DisplayName = stream.DisplayName,
                             Path = stream.Path,
                             Status = stream.Status,
                             FramesWritten = stream.FramesWritten,
+                            MuxVideoFrameCount = stream.MuxVideoFrameCount,
                             AudioSamples = stream.AudioSamples,
                             DroppedFrames = stream.DroppedFrames,
                             BytesWritten = stream.BytesWritten,
@@ -642,6 +644,14 @@ public static class SupportBundleBuilder
                     var isoStreams = recording.Streams
                         .Where(stream => stream.Kind is not "program")
                         .ToArray();
+                    foreach (var stream in recording.Streams.Where(stream => stream.WriteQueue is not null))
+                    {
+                        var queue = stream.WriteQueue!;
+                        lines.Add($"Recording queue {stream.DisplayName ?? stream.Kind}: {queue.Queued}/{queue.Depth} frames; " +
+                            $"high-water {queue.HighWater}; full={(queue.Queued >= queue.Depth ? "yes" : "no")}; " +
+                            $"drops={queue.Dropped} video/{queue.DroppedAudio} audio; startup drops={queue.StartupDropped}; " +
+                            $"oldest={queue.OldestQueuedAgeMs}ms; high-water bytes={queue.HighWaterBytes}");
+                    }
                     if (isoStreams.Length > 0)
                     {
                         var isoWithAudio = isoStreams.Count(stream => stream.HasAudio);
