@@ -15,7 +15,8 @@ clock query on the media path. Media workers stop before capture destruction.
 This is an internal diagnostic option, not a rollout/default change.
 
 The ring allocates at most 16 MiB of fixed numeric slots. Append uses at most
-four CAS attempts and never waits, formats strings or writes files. Full storage
+sixteen head/slot attempts and never waits, formats strings or writes files. A slot
+advanced by another writer retries the current head rather than claiming full storage. Full storage
 or writer contention increments lost events. A single background exporter drains
 128-event batches to a binary file capped at 256 MiB. Finalization writes the
 accepted export count, loss count, export failures and end time into the header.

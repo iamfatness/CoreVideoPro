@@ -109,10 +109,16 @@ bool DeliveryTraceCapture::record(DeliveryTraceEvent event) noexcept {
   auto& state = *state_;
   ++state.writers;
   if (!state.accepting.load()) { --state.writers; return false; }
-  for (int attempt = 0; attempt < 4; ++attempt) {
+  for (int attempt = 0; attempt < 16; ++attempt) {
     auto position = state.head.load(std::memory_order_relaxed);
     auto& slot = state.slots[position % State::capacity];
-    if (slot.sequence.load(std::memory_order_acquire) != position) break;
+    const auto sequence = slot.sequence.load(std::memory_order_acquire);
+    if (sequence != position) {
+      // Another writer can reserve/publish between our head and slot reads.
+      // An advanced slot is contention, not exhausted storage; retry the head.
+      if (sequence > position) continue;
+      break;
+    }
     if (!state.head.compare_exchange_strong(position, position + 1, std::memory_order_relaxed)) continue;
     event.sessionEpoch = state.header.sessionEpoch;
     if (!event.timestamp) event.timestamp = deliveryTraceNow();

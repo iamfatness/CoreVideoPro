@@ -41,7 +41,7 @@ class DeliveryTraceCapture {
   ~DeliveryTraceCapture();
   DeliveryTraceCapture(const DeliveryTraceCapture&) = delete;
   DeliveryTraceCapture& operator=(const DeliveryTraceCapture&) = delete;
-  // At most four CAS attempts: contention/full storage drops diagnostics only.
+  // At most sixteen head/slot attempts: contention/full storage drops diagnostics only.
   bool record(DeliveryTraceEvent event) noexcept;
   bool close(); // At most two seconds; a blocked sink retains its owned state.
   std::uint64_t tag(std::string_view identity) const noexcept;
