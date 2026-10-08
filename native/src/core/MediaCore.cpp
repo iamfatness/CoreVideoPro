@@ -5942,6 +5942,7 @@ rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const
           {"status", iso.warning.empty() ? publishedWriterStatus : std::string("warning")},
           {"readiness", iso.trackOpen ? "ready" : "missing"},
           {"framesWritten", static_cast<double>(iso.videoFrameCount)},
+          {"muxVideoFrameCount", iso.muxVideoFrameCount ? rpc::Json(static_cast<double>(*iso.muxVideoFrameCount)) : rpc::Json(nullptr)},
           {"durationMs", durationMs},
           {"frameRate", recordingFps},
           // ISO-2: each ISO is self-contained A+V — hasAudio reflects real muxed

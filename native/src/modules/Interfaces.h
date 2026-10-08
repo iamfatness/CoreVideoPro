@@ -517,6 +517,7 @@ struct RecordingWriteQueueEvidence {
 };
 
 struct IsoStreamStatus {
+  std::optional<int64_t> muxVideoFrameCount; // committed samples, including A/V tail padding
   RecordingWriteQueueEvidence writeQueue;
   uint64_t droppedVideoFrames = 0, droppedAudioPackets = 0;
   uint64_t queuedVideoFrames = 0, queuedAudioPackets = 0;

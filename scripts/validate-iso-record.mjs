@@ -343,7 +343,7 @@ try {
         const probe = ffprobeStreams(abs);
         probes.push({path:abs,kind:"iso",sourceId:s.sourceId,...probe});
         if (!probe.available) failures.push(`ISO ${s.sourceId} decode evidence missing`);
-        if (probe.videoFrames !== s.framesWritten) failures.push(`ISO ${s.sourceId} decoded frame count differs from native writer count`);
+        if (probe.videoFrames !== s.muxVideoFrameCount) failures.push(`ISO ${s.sourceId} decoded frame count differs from native writer count`);
         if (probe.width !== 1920 || probe.height !== 1080) failures.push(`ISO ${s.sourceId} geometry is not 1080p`);
         console.log(`ffprobe       : ${s.displayName ?? s.sourceId} -> ${JSON.stringify(probe)}`);
         if (!probe.video) failures.push(`ISO ${s.sourceId} has no video stream`);

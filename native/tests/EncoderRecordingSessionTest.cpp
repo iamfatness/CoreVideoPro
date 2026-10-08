@@ -1084,6 +1084,11 @@ TEST(EncoderRecordingSession, MediaFoundationIsoWritersProduceIndependentPlayabl
 
   encoder->stopRecording();
 
+  for (const auto& iso : encoder->session().isoStreams) {
+    ASSERT_TRUE(iso.muxVideoFrameCount.has_value());
+    EXPECT_GE(*iso.muxVideoFrameCount, 4); // committed source samples plus explicit tail padding
+  }
+
   // Files are finalized + playable: program + two ISOs + manifest, all non-zero.
   ASSERT_FALSE(session.recordingSessionDir.empty());
   const fs::path dir(session.recordingSessionDir);

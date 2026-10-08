@@ -19,7 +19,9 @@ The live two/three-frame Program buffer and audio delay remain independent.
 Each real `recording.streams[].writeQueue` reports configured depth, backlog,
 high-water, accepted items, completed **calls**, loss split from startup, byte
 high-water, age and the last overflow reason. Actual muxed pictures are still
-`framesWritten`; completed calls do not prove a committed sample. Missing queue
+`framesWritten` reports source pictures; `muxVideoFrameCount` reports actual file
+samples including A/V tail padding and is the decoded-file comparator. Completed
+calls do not prove a committed sample. Missing queue
 evidence is null. Support bundles retain these fields and summarize full queues.
 
 Startup keeps the bounded burst allowance under per-file byte reservations; it

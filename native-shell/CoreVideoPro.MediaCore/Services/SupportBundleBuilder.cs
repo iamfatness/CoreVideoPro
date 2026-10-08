@@ -303,6 +303,7 @@ public static class SupportBundleBuilder
                             Path = stream.Path,
                             Status = stream.Status,
                             FramesWritten = stream.FramesWritten,
+                            MuxVideoFrameCount = stream.MuxVideoFrameCount,
                             AudioSamples = stream.AudioSamples,
                             DroppedFrames = stream.DroppedFrames,
                             BytesWritten = stream.BytesWritten,

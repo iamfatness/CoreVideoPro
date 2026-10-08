@@ -1106,6 +1106,7 @@ void publishIsoTrack(IsoWriterEntry& entry) {
   IsoStreamStatus status;
   status.sourceId = entry.sourceId; status.displayName = entry.displayName;
   status.path = entry.path.string(); status.videoFrameCount = entry.videoFrameCount;
+  status.muxVideoFrameCount = entry.writer.videoFrameCount();
   status.audioSampleCount = entry.writer.audioSampleCount(); status.bytesWritten = entry.writer.bytesWritten();
   status.trackOpen = entry.opened && !entry.failed;
   status.encoderPath = isoEncoderPathId(entry.encoderPath); status.fallbackReason = entry.encoderReason;
