@@ -48,6 +48,7 @@ def main():
     )
     ap.add_argument("--delivery-trace", action="store_true", help="Explicit per-trial bounded core trace; its independent verdict remains separate from release qualification")
     ap.add_argument("--render-work-distribution", action="store_true", help="Independent bounded CPU timing collector; enable identically in trace-on/off comparisons")
+    ap.add_argument("--gpu-submission-timing", action="store_true", help="Opt-in slow CPU call-scope attribution for internal encoder/monitor handoffs; not GPU-duration or driver-cause proof")
     ap.add_argument("--duration", type=float, default=120)
     ap.add_argument("--pairs", type=int, default=3)
     ap.add_argument("--warmup", type=float, default=10)
@@ -91,6 +92,7 @@ def main():
             "COREVIDEO_GPU_CAPTURE": "0",
             "COREVIDEO_CPU_SOURCE_PREPARATION": a.cpu_source_preparation,
             "COREVIDEO_QA_RENDER_WORK_DISTRIBUTION": "1" if a.render_work_distribution else "0",
+            "COREVIDEO_QA_GPU_SUBMISSION_TIMING": "1" if a.gpu_submission_timing else "0",
             "COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE": "0",
             "COREVIDEO_ISOLATE_MONITORS": "0 and 1",
         },
@@ -186,6 +188,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "COREVIDEO_GPU_CAPTURE": "0",
                 "COREVIDEO_CPU_SOURCE_PREPARATION": a.cpu_source_preparation,
                 "COREVIDEO_QA_RENDER_WORK_DISTRIBUTION": "1" if a.render_work_distribution else "0",
+                "COREVIDEO_QA_GPU_SUBMISSION_TIMING": "1" if a.gpu_submission_timing else "0",
                 **({"COREVIDEO_DELIVERY_TRACE_PATH": str(trace_path)} if a.delivery_trace else {}),
             },
             out / (label + ".stderr.log"),
