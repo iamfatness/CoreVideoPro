@@ -2,12 +2,14 @@
 """Read-only matched trace-on/off CPU p95 gate. Never certifies a release."""
 import argparse
 import json
+import math
 import pathlib
 from render_work_evidence import compare
 
 
 def judge(reference, traced):
     try:
+        if not isinstance(reference, dict) or not isinstance(traced, dict): raise ValueError("reports must be objects")
         if reference.get("deliveryTraceRequested") is not False or traced.get("deliveryTraceRequested") is not True:
             raise ValueError("explicit trace-off reference and trace-on candidate required")
         keys = ["harnessSha256", "driverSha256", "renderWorkJudgeSha256", "sourceCommit", "buildConfiguration",
@@ -17,7 +19,7 @@ def judge(reference, traced):
             raise ValueError("unmatched workload/binary/collector/hardware manifests")
         if reference["flags"].get("COREVIDEO_QA_RENDER_WORK_DISTRIBUTION") != "1" or reference["hardware"] == "MISSING_EVIDENCE":
             raise ValueError("missing collector or hardware identity")
-        if type(reference["pairs"]) is not int or reference["pairs"] < 1 or reference["duration"] < 30:
+        if type(reference["pairs"]) is not int or reference["pairs"] < 1 or reference["duration"] < 30 or not math.isfinite(reference["duration"]) or not 0 <= reference["warmup"] <= 30:
             raise ValueError("short/incomplete comparison")
         rows = []
         def index(report):
@@ -39,7 +41,7 @@ def judge(reference, traced):
         result = "INVALID" if any(r["result"] == "INVALID" for r in rows) else "FAIL" if any(r["result"] == "FAIL" for r in rows) else "PASS"
         return {"result": result, "trials": rows, "releaseQualification": "MISSING_EVIDENCE",
                 "scope": "Matched CPU p95 trace overhead only; source/content latency, receiver/display, A/V and fleet remain unqualified."}
-    except (KeyError, TypeError, ValueError) as error:
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
         return {"result": "INVALID", "error": str(error), "releaseQualification": "MISSING_EVIDENCE"}
 
 

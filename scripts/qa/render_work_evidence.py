@@ -72,11 +72,13 @@ def judge(first, last, minimum=1200):
                 "p95": quantile(.95), "p99": quantile(.99), "p999": quantile(.999),
                 "scanSpanNs": [a_end - a_start, b_end - b_start],
                 "scope": "CPU render work only; no GPU, source/content latency or presentation qualification."}
-    except (KeyError, TypeError, ValueError) as error:
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
         return {"result": "INVALID", "error": str(error)}
 
 
 def compare(reference, traced):
+    if not isinstance(reference, dict) or not isinstance(traced, dict):
+        return {"result": "INVALID", "error": "distribution summaries must be objects"}
     if reference.get("result") != "PASS" or traced.get("result") != "PASS":
         return {"result": "INVALID", "error": "both whole-interval distributions are required"}
     try:
