@@ -60,16 +60,20 @@ class RenderWorkEvidenceTests(unittest.TestCase):
         manifest = {k: "same" for k in ["harnessSha256", "driverSha256", "renderWorkJudgeSha256", "sourceCommit", "buildConfiguration",
                     "coreSha256", "fakeSha256", "programScene", "programRoutes", "sourceFormats", "output", "hardware"]}
         manifest.update(flags={"COREVIDEO_QA_RENDER_WORK_DISTRIBUTION": "1"}, duration=45, pairs=1, warmup=15,
-                        programBufferFrames=2, deliveryTraceRequested=False, trials=[])
+                        programBufferFrames=2, deliveryTraceRequested=False, verboseDiagnostics=True, trials=[])
         for isolated in (False, True):
             manifest["trials"].append({"label": str(isolated), "isolated": isolated,
                 "programBufferVerdict": "PASS", "recordingVerdict": "PASS", "sampledSourceAdmissionVerdict": "PASS",
                 "renderWorkDistribution": distribution, "deliveryTrace": {"result": "PASS"}})
         traced = copy.deepcopy(manifest); traced["deliveryTraceRequested"] = True
         self.assertEqual("PASS", cost.judge(manifest, traced)["result"])
-        for field in ("coreSha256", "hardware", "flags", "programRoutes"):
+        for field in ("coreSha256", "hardware", "flags", "programRoutes", "verboseDiagnostics"):
             changed = copy.deepcopy(traced); changed[field] = "different"
             self.assertEqual("INVALID", cost.judge(manifest, changed)["result"])
+        changed = copy.deepcopy(traced); changed["verboseDiagnostics"] = False
+        self.assertEqual("INVALID", cost.judge(manifest, changed)["result"])
+        older = copy.deepcopy(manifest); older.pop("verboseDiagnostics")
+        self.assertEqual("INVALID", cost.judge(older, traced)["result"])
         for verdict in ("programBufferVerdict", "recordingVerdict", "sampledSourceAdmissionVerdict"):
             changed = copy.deepcopy(traced); changed["trials"][0][verdict] = "FAIL"
             self.assertEqual("INVALID", cost.judge(manifest, changed)["result"])
