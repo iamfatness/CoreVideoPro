@@ -507,7 +507,17 @@ struct CompositorRenderPlan {
 // the recording snapshot streams[] and folded into recording.warning so a
 // video-only-broken ISO is as loud as a video-only program was (#286). Populated
 // by the Media Foundation sink from its per-source writers.
+struct RecordingWriteQueueEvidence {
+  bool observed = false;
+  uint64_t depth = 0, highWater = 0, queued = 0, accepted = 0, completed = 0;
+  uint64_t dropped = 0, startupDropped = 0, droppedAudio = 0, startupDroppedAudio = 0;
+  uint64_t queuedAudioSamples = 0, highWaterBytes = 0;
+  int64_t oldestQueuedAgeMs = 0;
+  const char* lastOverflowReason = "none";
+};
+
 struct IsoStreamStatus {
+  RecordingWriteQueueEvidence writeQueue;
   uint64_t droppedVideoFrames = 0, droppedAudioPackets = 0;
   uint64_t queuedVideoFrames = 0, queuedAudioPackets = 0;
   uint64_t videoWorkUs = 0, audioWorkUs = 0, maximumWorkUs = 0;
@@ -525,6 +535,7 @@ struct IsoStreamStatus {
 };
 
 struct OutputSession {
+  RecordingWriteQueueEvidence programWriteQueue;
   bool active = false;
   // Present only when the sink reports observed writer lifecycle.
   std::optional<contracts::OutputLifecycle> lifecycle;
@@ -612,6 +623,9 @@ struct IsoSourceSelection {
 };
 
 struct RecordingSessionRequest {
+  // File buffering, independent of the live 2–3 frame presentation buffer.
+  // Captured at Record start; updates while recording apply to the next take.
+  int writeQueueDepth = 10;
   // Steady-clock capture boundary; zero retains legacy first-media epoch.
   int64_t captureEpoch100ns = 0;
   std::string sessionId = "native-recording-session";
@@ -1362,6 +1376,9 @@ class IEncoderSink {
   // may own an independent ordered writer; direct synchronous callers retain
   // their existing behavior.
   virtual void enableIndependentIsoWriters() {}
+  // Source-local dispatch budgets are safe only with independent file workers.
+  // Other platform adapters retain their existing dispatch capacity until wired.
+  [[nodiscard]] virtual bool supportsIndependentRecordingQueues() const { return false; }
   virtual ~IEncoderSink() = default;
   // Cheap progress, called once per queue item by the async writer thread.
   // The DEFAULT derives it from session(), so every existing sink stays correct
@@ -1411,6 +1428,13 @@ class IEncoderSink {
                              int64_t timelineTimestamp100ns) {
     (void)timelineTimestamp100ns;
     submitAudio(interleaved, frameCount, channels, sampleRate);
+  }
+  // Recording-only sample identity, counted before admission. Default preserves
+  // legacy adapters; independent Program writers use gaps to insert silence.
+  virtual void submitRecordingAudioAt(const float* interleaved, int frameCount, int channels, int sampleRate,
+                                      int64_t timestamp100ns, std::optional<uint64_t> samplePosition) {
+    (void)samplePosition;
+    submitAudioAt(interleaved, frameCount, channels, sampleRate, timestamp100ns);
   }
   // A3 (VST latency compensation): the program-audio content latency added by
   // an active out-of-process plugin, in samples at the program rate. The

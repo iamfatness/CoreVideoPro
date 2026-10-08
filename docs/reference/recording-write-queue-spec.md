@@ -41,6 +41,13 @@ Hand off frame references, not pixel copies, until a writer must convert or enco
 
 Default depth is 10 frames of video per writer, Program included. That matches the vMix recording-memory recommendation and is a capacity limit, not intentional latency. At 60 fps a full queue is about 167 ms of file delay, not 167 ms of on-air delay.
 
+Startup retains the existing bounded burst allowance (at most 96 video items,
+also subject to the file's byte reservation) until the first committed sample's
+backlog drains into the steady-state limit. Codec open may exceed the ten-frame
+window. Removing this allowance reproduced a clipped ISO head in the existing
+eight-writer test. This is startup admission, not pre-roll; startup loss remains
+separate and visible. Steady-state capacity is the configured 4–30 frames.
+
 Audio uses the same time window, sample-counted, on that writer's audio queue. A video queue at 10 frames and an empty audio queue is a bug. Silence-fill on the shared `RecordingPtsClock` epoch stays. A gap is filled, not slid.
 
 Rules:
@@ -55,6 +62,14 @@ Rules:
 Depth is a setting on the recording session, default 10, range 4–30. It is not the presentation buffer setting. Changing it does not require an app restart unless the encoder session is already open; a change applies on the next Record start.
 
 Memory is bounded. 10 frames of 1080p60 NV12 is about 30 MB per writer before encode. Eight ISOs plus Program is about 270 MB of uncompressed references if every queue is full and frames have not been encoded. Prefer holding compressed access units once the worker has encoded them, and keep at most one uncompressed frame in flight per worker. Report high-water bytes on the recording snapshot. Refuse to raise depth if the projected cap exceeds the existing frame-allocation budget; say so, do not silently shrink.
+
+The Windows implementation uses raw frame references: Media Foundation's sink
+writer owns encoding and muxing together. The ten-frame FIFO absorbs a blocked
+writer; it is not a separate encoded-packet queue. A recording retention ceiling
+of 512 MiB is separate from the GPU preparation pool. Projection includes the
+short dispatcher handoff, one in-flight frame per writer, thumbnails and audio;
+per-file byte reservations also enforce the ceiling during startup or a source
+size change. A byte refusal must remain distinguishable from a full video FIFO.
 
 ## Failure behavior
 

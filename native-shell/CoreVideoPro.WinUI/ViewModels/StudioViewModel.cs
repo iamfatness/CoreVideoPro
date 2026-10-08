@@ -584,6 +584,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private string _recordingTargetFolder = ResolveDefaultRecordingFolder();
 
+    [ObservableProperty]
+    private double _recordingWriteQueueDepth = 10;
+
     // Absolute default so recordings land somewhere the operator can find
     // (Videos\CoreVideo Pro) rather than the relative "Recordings/CoreVideo Pro" that
     // resolved next to the core exe. Overridable via the settings Browse picker.
@@ -3613,6 +3616,12 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     partial void OnRecordingTargetFolderChanged(string value) => OnRecordingOutputOptionChanged();
+    partial void OnRecordingWriteQueueDepthChanged(double value)
+    {
+        var normalized = double.IsFinite(value) ? Math.Floor(Math.Clamp(value, 4, 30)) : 10;
+        if (value != normalized) { RecordingWriteQueueDepth = normalized; return; }
+        OnRecordingOutputOptionChanged();
+    }
 
     partial void OnRecordingFilenamePrefixChanged(string value) => OnRecordingOutputOptionChanged();
 
@@ -9873,7 +9882,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Format: NormalizeRecordingFormat(RecordingFormat),
             Quality: NormalizeRecordingQuality(RecordingQuality),
             IsoParticipantIds: isoParticipantIds,
-            IsoSourceIds: isoSourceIds);
+            IsoSourceIds: isoSourceIds,
+            WriteQueueDepth: double.IsFinite(RecordingWriteQueueDepth) ? Math.Clamp((int)RecordingWriteQueueDepth, 4, 30) : 10);
 
     // BuildIsoSourceTargets + ComputeEligiblePresentIsoSourceIds moved to ShowInputsCoordinator
     // (PR3 strangler); both keep same-named private forwarders in StudioViewModel.ShowInputs.cs so
@@ -12046,6 +12056,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             RecordingTargetBitrateMbps = NormalizeOutputTargetBitrateMbps(RecordingTargetBitrateMbps),
             RecordingAudioBitrateKbps = NormalizeAudioBitrateKbps(RecordingAudioBitrateKbps),
             RecordingTargetFolder = RecordingTargetFolder,
+            RecordingWriteQueueDepth = double.IsFinite(RecordingWriteQueueDepth) ? Math.Clamp((int)RecordingWriteQueueDepth, 4, 30) : 10,
             RecordingFilenamePrefix = RecordingFilenamePrefix,
             RecordingFormat = RecordingFormat,
             RecordingQuality = RecordingQuality,
@@ -12173,6 +12184,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // uninstall can strand a show. Migrate it here, at restore, so the fix
         // is permanent on the next save; an absolute path the operator chose is
         // returned untouched.
+        RecordingWriteQueueDepth = Math.Clamp(preferences.RecordingWriteQueueDepth, 4, 30);
         RecordingTargetFolder = RecordingFolderPolicy.Resolve(
             preferences.RecordingTargetFolder ?? RecordingTargetFolder, UserVideosFolder());
         RecordingFilenamePrefix = preferences.RecordingFilenamePrefix ?? RecordingFilenamePrefix;

@@ -2227,3 +2227,21 @@ TEST(EncoderRecordingSession, StoppingRecordWhileAStreamStaysUpDoesNotRestartThe
       << "the stream's desired-state re-assertion restarted the encoder while the "
          "recording was still finalizing, which is what erases its lifecycle";
 }
+
+TEST(EncoderRecordingSession, RecordingDepthReachesConsumerAndRefusalRetainsPreviousSetting) {
+  auto modules = corevideo::modules::createStubModules();
+  auto encoder = std::make_unique<RequestCapturingSink>();
+  auto* captured = encoder.get();
+  modules.encoder = std::move(encoder);
+  corevideo::core::MediaCore core(std::move(modules));
+  core.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "set-recording-targets"}, {"writeQueueDepth", 14}}});
+  EXPECT_EQ(captured->lastRequest.writeQueueDepth, 14);
+  core.applyCommands(corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+      {"type", "set-recording-targets"}, {"writeQueueDepth", 31}}});
+  EXPECT_EQ(captured->lastRequest.writeQueueDepth, 14);
+  const auto snapshot = core.sessionState();
+  const auto* recording = snapshot.get("recording");
+  ASSERT_NE(recording, nullptr);
+  EXPECT_NE(recording->getString("queueSettingWarning").find("refused"), std::string::npos);
+}

@@ -296,6 +296,7 @@ public sealed record SupportBundleMediaCoreRecordingProof
 
 public sealed record SupportBundleMediaCoreRecordingStream
 {
+    public NativeMediaCoreRecordingWriteQueue? WriteQueue { get; init; }
     public required string Kind { get; init; }
     /// <summary>Canonical ISO source id (`zoom:&lt;pid&gt;` / `capture:&lt;id&gt;`); ISO streams only.</summary>
     public string? SourceId { get; init; }

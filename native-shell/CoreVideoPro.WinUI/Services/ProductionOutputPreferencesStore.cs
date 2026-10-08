@@ -115,6 +115,7 @@ public sealed class ProductionOutputPreferences
     public double RecordingTargetBitrateMbps { get; set; }
     public int RecordingAudioBitrateKbps { get; set; } = 192;
     public string? RecordingTargetFolder { get; set; }
+    public int RecordingWriteQueueDepth { get; set; } = 10;
     public string? RecordingFilenamePrefix { get; set; }
     public string? RecordingFormat { get; set; }
     public string? RecordingQuality { get; set; }

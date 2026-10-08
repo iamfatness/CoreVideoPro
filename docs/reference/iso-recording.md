@@ -1,5 +1,43 @@
 # ISO recording
 
+## Windows recording queue ownership (#814, October 8, 2026)
+
+When wrapped by `AsyncEncoderSink`, Media Foundation gives Program its own
+`RecordingTrackWorker`, alongside the per-ISO workers. Dispatch does not call
+steady-state Program `WriteSample`; a blocked Program file cannot stop feeding
+ISO files. Each ISO has a four-picture dispatcher handoff and its own configured
+file FIFO (default ten). A/V stays FIFO per file, stamped at capture/gather.
+Program audio carries its source sample position through both queues, including
+refused packets. Known position gaps become silence; callback jitter does not
+retime subsequent audio. ISO audio keeps its existing capture-time gap filling.
+Only that file's oldest queued video may be evicted at overflow. Stop closes the
+file gates, drains accepted media, and finalizes before publishing completion.
+
+`set-recording-targets.writeQueueDepth` is 4–30, defaults to ten, and applies on
+the next Record start. WinUI persists it in the existing recording flyout.
+The live two/three-frame Program buffer and audio delay remain independent.
+Each real `recording.streams[].writeQueue` reports configured depth, backlog,
+high-water, accepted items, completed **calls**, loss split from startup, byte
+high-water, age and the last overflow reason. Actual muxed pictures are still
+`framesWritten`; completed calls do not prove a committed sample. Missing queue
+evidence is null. Support bundles retain these fields and summarize full queues.
+
+Startup keeps the bounded burst allowance under per-file byte reservations; it
+must drain into the steady limit. See [the queue spec](recording-write-queue-spec.md)
+for the 512 MiB projection and the retained startup regression. AVFoundation
+retains its existing dispatch policy until it has independent file workers;
+this implementation and its real-file qualification are Windows-specific.
+
+Headless fault injection uses `COREVIDEO_QA_RECORDING_STALL_SOURCE` (`program`
+or an exact ISO source id), `COREVIDEO_QA_RECORDING_STALL_MS` (1–2000), and
+`COREVIDEO_QA_RECORDING_STALL_AFTER_FRAMES` (30–36000). All must be valid.
+It blocks only that file worker once, with begin/end evidence, and is disabled
+by default. `validate-iso-record.mjs --sources 8 --stall-source program
+--stall-ms 100 --seconds 20 --keep-artifacts --evidence <file>` retains
+snapshots, decoded file counts and explicit Program loss judgments. A declared
+`--allow-capacity-warning` permits only the known CPU-placement admission note;
+it does not waive media loss, writer warnings or missing evidence.
+
 _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
 
 ## ISO recording — ISO-1 (per-source Zoom VIDEO ISO, 2026-07-20)

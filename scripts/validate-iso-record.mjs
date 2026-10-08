@@ -20,7 +20,7 @@
  * Usage: node ./scripts/validate-iso-record.mjs [--seconds 20] [--source-fps 60] [--keep-artifacts]
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, statSync, rmSync } from "node:fs";
+import { existsSync, statSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,6 +38,19 @@ const argValue = (name, fallback) => {
 };
 const recordSeconds = Number(argValue("seconds", 20));
 const keepArtifacts = args.includes("--keep-artifacts");
+const sourceCount = Number(argValue("sources", 2));
+const stallSource = argValue("stall-source", "");
+const stallMs = Number(argValue("stall-ms", 100));
+const writeQueueDepth = Number(argValue("write-queue-depth", 10));
+const evidencePath = argValue("evidence", "");
+const allowCapacityWarning = args.includes("--allow-capacity-warning");
+if (!Number.isInteger(sourceCount) || sourceCount < 2 || sourceCount > 8 ||
+    !Number.isInteger(writeQueueDepth) || writeQueueDepth < 4 || writeQueueDepth > 30 ||
+    (stallSource && (stallMs < 1 || stallMs > 2000))) throw new Error("Invalid recording queue QA options");
+const snapshots = [], probes = [];
+let stallBegin = false, stallEnd = false;
+let lossBaseline = null;
+
 // PIN the fake engine's source frame rate. Left unset it silently ran at the
 // engine's default 30, so an ISO fps number from this rig could not be compared
 // against a source rate — the denominator was never stated. mac-show-drill.py and
@@ -51,13 +64,25 @@ if (!existsSync(nativeCore) || !existsSync(fakeEngine)) {
   process.exit(1);
 }
 
+// A trial must not inherit unrelated CoreVideo experiment flags from the shell.
+const trialEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COREVIDEO_")));
 const child = spawn(nativeCore, [], {
   cwd: buildDir,
   env: {
-    ...process.env,
+    ...trialEnv,
     COREVIDEO_ZOOM_ENGINE_PATH: fakeEngine,
     COREVIDEO_FAKE_NO_CHURN: "1",
     COREVIDEO_FAKE_ENGINE_FPS: sourceFps,
+    COREVIDEO_FAKE_ENGINE_PARTICIPANTS: String(sourceCount),
+    COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE: "0",
+    COREVIDEO_FAKE_ENGINE_RES: "2",
+    COREVIDEO_PROGRAM_BUFFER_FRAMES: "2",
+    COREVIDEO_CPU_SOURCE_PREPARATION: "1",
+    COREVIDEO_ISOLATE_MONITORS: "1",
+    COREVIDEO_GPU_CAPTURE: "0",
+    COREVIDEO_QA_RECORDING_STALL_SOURCE: stallSource,
+    COREVIDEO_QA_RECORDING_STALL_MS: stallSource ? String(stallMs) : "0",
+    COREVIDEO_QA_RECORDING_STALL_AFTER_FRAMES: stallSource ? "180" : "0",
   },
   stdio: ["pipe", "pipe", "pipe"],
 });
@@ -86,7 +111,12 @@ child.stdout.on("data", (chunk) => {
     }
   }
 });
-child.stderr.on("data", (chunk) => process.stderr.write(chunk.toString()));
+child.stderr.on("data", (chunk) => {
+  const text = chunk.toString();
+  if (text.includes("[recording-write-stall-qa]") && text.includes(" begin")) stallBegin = true;
+  if (text.includes("[recording-write-stall-qa]") && text.includes(" end")) stallEnd = true;
+  process.stderr.write(text);
+});
 child.once("exit", (code) => {
   for (const { reject, timer } of pending.values()) { clearTimeout(timer); reject(new Error(`native core exited ${code}`)); }
   pending.clear();
@@ -137,7 +167,7 @@ function isoStreamsOf(snapshot) {
 
 function ffprobeStreams(artifactPath) {
   for (const bin of ["ffprobe", "C:\\ffmpeg\\bin\\ffprobe.exe"]) {
-    const probe = spawnSync(bin, ["-v", "error", "-print_format", "json", "-show_streams", artifactPath], { encoding: "utf8", timeout: 20000 });
+    const probe = spawnSync(bin, ["-v", "error", "-print_format", "json", "-count_frames", "-show_streams", artifactPath], { encoding: "utf8", timeout: 60000 });
     if (probe.error || probe.status !== 0) continue;
     let parsed;
     try { parsed = JSON.parse(probe.stdout); } catch { continue; }
@@ -149,6 +179,9 @@ function ffprobeStreams(artifactPath) {
       available: true,
       video: Boolean(video),
       videoCodec: video?.codec_name ?? null,
+      videoFrames: video?.nb_read_frames == null ? null : Number(video.nb_read_frames),
+      width: video?.width ?? null,
+      height: video?.height ?? null,
       audio: Boolean(audio),
       audioCodec: audio?.codec_name ?? null,
       audioStartSec: Number.isFinite(audioStart) ? audioStart : null,
@@ -174,14 +207,14 @@ try {
   for (let attempt = 0; attempt < 15; attempt += 1) {
     const snap = (await send("zoom-snapshot")).snapshot;
     const participants = participantsOf(snap);
-    if (participants.length >= 2) {
+    if (participants.length >= sourceCount) {
       await send("zoom-media-spine-sync", { spinePayload: buildSpinePayload(participants), elapsedMs: Date.now() - startedAt });
-      selected = participants.slice(0, 2);
+      selected = participants.slice(0, sourceCount);
     }
     await sleep(1000);
-    if (selected.length >= 2) break;
+    if (selected.length >= sourceCount) break;
   }
-  if (selected.length < 2) throw new Error(`fake engine did not present 2 video participants (got ${selected.length})`);
+  if (selected.length < sourceCount) throw new Error(`fake engine did not present 2 video participants (got ${selected.length})`);
   const isoSourceIds = selected.map((p) => `zoom:${p.id}`);
   console.log(`ISO sources   : ${isoSourceIds.join(", ")} (${selected.map((p) => p.name).join(", ")})`);
 
@@ -189,18 +222,20 @@ try {
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
     commands: [
+      { type: "set-verbose-diagnostics", enabled: false },
+      { type: "set-output-profile", width:1920, height:1080, fps:60 },
       { type: "load-scene-graph", sceneId: "iso-record", routes: [{ routeId: "program", mode: "fixed", audioRole: "mix", participantId: selected[0].id }] },
       { type: "sync-audio-routing-matrix", sends: [{ sourceId: "zoom-mix", busId: "master", gainDb: 0 }, { sourceId: "zoom-mix", busId: "stream", gainDb: 0 }] },
       { type: "prepare-encoder-session", preparedAtMs: Date.now() - startedAt, reason: "iso-record warmup" },
       { type: "start-program-output", destinations: ["recording"], isoSourceIds },
-      { type: "set-recording-targets", targetFolder, filenamePrefix: "iso", format: "mp4", quality: "high", isoSourceIds },
+      { type: "set-recording-targets", writeQueueDepth, renderProfile: {width:1920, height:1080, fps:60, codec:"h264"}, targetFolder, filenamePrefix: "iso", format: "mp4", quality: "high", isoSourceIds },
     ],
   });
   await sleep(2000);
 
   await send("media-core-sync", {
     elapsedMs: Date.now() - startedAt,
-    commands: [{ type: "start-recording-session", sessionId: "iso-record-validation", startedAtMs: Date.now(), targetFolder, filenamePrefix: "iso", format: "mp4", quality: "high", isoSourceIds }],
+    commands: [{ type: "start-recording-session", writeQueueDepth, renderProfile: {width:1920, height:1080, fps:60, codec:"h264"}, sessionId: "iso-record-validation", startedAtMs: Date.now(), targetFolder, filenamePrefix: "iso", format: "mp4", quality: "high", isoSourceIds }],
   });
   console.log(`Recording     : ${recordSeconds}s with ISO on ${isoSourceIds.length} sources...`);
 
@@ -208,15 +243,45 @@ try {
   let lastWarning = null;
   const deadline = Date.now() + recordSeconds * 1000;
   while (Date.now() < deadline) {
-    await sleep(Math.min(4000, Math.max(1000, deadline - Date.now())));
+    await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
     const snap = (await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] })).snapshot;
+    snapshots.push(snap);
+    if (!lossBaseline && (snap.recording?.proof?.programFrameCount ?? 0) > 120)
+      lossBaseline = snap;
     lastStreams = isoStreamsOf(snap);
     lastWarning = snap?.recording?.warning ?? null;
     console.log(`poll          : iso=[${lastStreams.map((s) => `${s.displayName ?? s.sourceId}:${s.framesWritten}f/${s.audioSamples ?? 0}a`).join(", ")}] warning=${lastWarning ?? "none"}`);
-    if (lastWarning) failures.push(`recording.warning surfaced: ${lastWarning}`);
+    if (lastWarning && !(allowCapacityWarning && /^\d+ ISO sources? will record on the CPU software encoder, not the GPU/.test(lastWarning)))
+      failures.push(`recording.warning surfaced: ${lastWarning}`);
   }
 
-  const stopSnap = (await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [{ type: "stop-recording-session", reason: "iso-record validation complete" }] })).snapshot;
+  let stopSnap = (await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [{ type: "stop-recording-session", reason: "iso-record validation complete" }] })).snapshot;
+  for (let attempt = 0; attempt < 200 && !["completed", "failed"].includes(stopSnap.recording?.lifecycle?.state); ++attempt) {
+    await sleep(100);
+    stopSnap = (await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] })).snapshot;
+  }
+  snapshots.push(stopSnap);
+  if (stopSnap.recording?.lifecycle?.state !== "completed") failures.push("Recording did not finalize as completed");
+  if (stallSource && (!stallBegin || !stallEnd)) failures.push("Requested stalled write was not observed begin/end");
+  if (stallSource) {
+    const target = (stopSnap.recording?.streams ?? []).find(s => stallSource === "program" ? s.kind === "program" : s.sourceId === stallSource);
+    if (!target?.writeQueue || target.writeQueue.highWater < 2) failures.push("Stalled file queue did not show measured backlog");
+    if ((target?.writeQueue?.dropped ?? -1) !== 0 || (target?.writeQueue?.droppedAudio ?? -1) !== 0) failures.push("Stalled file shed steady-state media");
+  }
+  if (lossBaseline) {
+    const before = lossBaseline.recording?.proof ?? {}, after = stopSnap.recording?.proof ?? {};
+    for (const key of ["programMissingFrames", "encoderQueueDroppedVideoFrames", "encoderQueueDroppedAudioPackets"]) {
+      if (typeof before[key] !== "number" || typeof after[key] !== "number") failures.push(`Recording loss evidence missing: ${key}`);
+      else if (after[key] > before[key]) failures.push(`Steady-state recording loss: ${key}`);
+    }
+    const b = lossBaseline.programBuffer, a = stopSnap.programBuffer;
+    if (!b || !a) failures.push("Program presentation loss evidence missing");
+    else {
+      if (a.activeFrames !== 2 || b.activeFrames !== 2) failures.push("Live Program buffer changed from two frames");
+      if (typeof a.underruns !== "number" || typeof b.underruns !== "number") failures.push("Program underrun counter missing");
+      else if (a.underruns > b.underruns) failures.push("Program presentation underruns increased");
+    }
+  } else failures.push("Steady-state baseline missing");
   const finalStreams = isoStreamsOf(stopSnap);
   const programPath = stopSnap?.recording?.programPath ??
     (stopSnap?.recording?.streams ?? []).find((s) => s.kind === "program")?.path ?? null;
@@ -242,13 +307,17 @@ try {
     artifacts.push(programAbs);
     if (await settle(programAbs)) {
       const pp = ffprobeStreams(programAbs);
+      probes.push({path:programAbs,kind:"program",...pp});
       programAudioStartSec = pp.audioStartSec;
       console.log(`ffprobe pgm   : ${JSON.stringify(pp)}`);
       if (pp.available && !pp.audio) failures.push("PROGRAM has no audio stream (program regressed)");
+      if (!pp.available || !pp.video) failures.push("PROGRAM playable video evidence missing");
+      if (pp.width !== 1920 || pp.height !== 1080) failures.push("Program recording geometry is not 1080p");
+      if (pp.videoFrames !== stopSnap.recording?.proof?.recordingMuxVideoFrameCount) failures.push("Program decoded frame count differs from native mux count");
     }
   }
 
-  if (finalStreams.length < 2) failures.push(`expected 2 ISO streams, got ${finalStreams.length}`);
+  if (finalStreams.length !== sourceCount) failures.push(`expected ${sourceCount} ISO streams, got ${finalStreams.length}`);
   // Upper bound on RAW submits, which is what the frameId dedup has to sit below.
   // ISO video is submitted by the 60Hz video tick (renderVideoOutputTick), beside
   // Program — NOT by the ~50Hz audio worker it used to ride, whose 20ms period is
@@ -272,6 +341,10 @@ try {
         failures.push(`ISO artifact missing/empty: ${abs}`);
       } else {
         const probe = ffprobeStreams(abs);
+        probes.push({path:abs,kind:"iso",sourceId:s.sourceId,...probe});
+        if (!probe.available) failures.push(`ISO ${s.sourceId} decode evidence missing`);
+        if (probe.videoFrames !== s.framesWritten) failures.push(`ISO ${s.sourceId} decoded frame count differs from native writer count`);
+        if (probe.width !== 1920 || probe.height !== 1080) failures.push(`ISO ${s.sourceId} geometry is not 1080p`);
         console.log(`ffprobe       : ${s.displayName ?? s.sourceId} -> ${JSON.stringify(probe)}`);
         if (!probe.video) failures.push(`ISO ${s.sourceId} has no video stream`);
         if (probe.available && !probe.audio) failures.push(`ISO ${s.sourceId} has no audio stream (not self-contained A+V)`);
@@ -307,6 +380,10 @@ try {
   failures.push(error instanceof Error ? error.message : String(error));
   console.error("ISO-RECORD VALIDATION FAIL:", failures.join(" | "));
 } finally {
+  if (evidencePath) {
+    mkdirSync(dirname(resolve(evidencePath)), {recursive:true});
+    writeFileSync(evidencePath, JSON.stringify({sourceCount,sourceFps,recordSeconds,stallSource,stallMs,writeQueueDepth,allowCapacityWarning,programBufferFrames:2,monitorIsolation:true,cpuSourcePreparation:true,verboseDiagnostics:false,stallBegin,stallEnd,failures,probes,snapshots}, null, 2));
+  }
   child.kill();
   if (!keepArtifacts) {
     for (const abs of artifacts) {

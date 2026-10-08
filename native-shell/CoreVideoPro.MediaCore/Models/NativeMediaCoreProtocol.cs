@@ -357,8 +357,26 @@ public sealed class NativeMediaCoreVirtualCamera
     public string Warning { get; init; } = string.Empty;
 }
 
+public sealed class NativeMediaCoreRecordingWriteQueue
+{
+    public string? LastOverflowReason { get; init; }
+    public long Depth { get; init; }
+    public long HighWater { get; init; }
+    public long Queued { get; init; }
+    public long Accepted { get; init; }
+    public long CompletedCalls { get; init; }
+    public long Dropped { get; init; }
+    public long StartupDropped { get; init; }
+    public long DroppedAudio { get; init; }
+    public long StartupDroppedAudio { get; init; }
+    public long QueuedAudioSamples { get; init; }
+    public long HighWaterBytes { get; init; }
+    public long OldestQueuedAgeMs { get; init; }
+}
+
 public sealed class NativeMediaCoreRecordingStream
 {
+    public NativeMediaCoreRecordingWriteQueue? WriteQueue { get; init; }
     public required string Kind { get; init; }
     /// <summary>Canonical ISO source id (`zoom:&lt;pid&gt;` / `capture:&lt;id&gt;`); ISO streams only.</summary>
     public string? SourceId { get; init; }
@@ -381,6 +399,8 @@ public sealed class NativeMediaCoreRecordingStream
 
 public sealed record NativeMediaCoreRecordingSession
 {
+    public int WriteQueueDepth { get; init; }
+    public string? QueueSettingWarning { get; init; }
     public CoreVideoPro.MediaCore.Contracts.OutputLifecycle? Lifecycle { get; init; }
     public required string SessionId { get; init; }
     public bool Active { get; init; }

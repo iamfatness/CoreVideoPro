@@ -9,6 +9,9 @@
 #include "modules/RecordingPtsClock.h"
 #include "modules/RecordingProgramContinuity.h"
 #include "modules/RecordingTrackWorker.h"
+#include "modules/RecordingQueuePolicy.h"
+#include "modules/RecordingAudioContinuity.h"
+#include "modules/RecordingWriteStallQa.h"
 
 #if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_MF_ENCODER
 
@@ -1068,6 +1071,7 @@ class Mp4Writer {
 };
 
 struct IsoWriterEntry {
+  RecordingWriteStallQa writeStallQa;
   std::string sourceId;
   std::string displayName;
   std::filesystem::path path;
@@ -1171,6 +1175,7 @@ void writeIsoVideo(IsoWriterEntry& entry, const IsoSourceVideoFrame& src,
     entry.openedHeight = h;
   }
   bool ok = false;
+  entry.writeStallQa.beforeWrite(entry.sourceId, entry.videoFrameCount);
   if (haveI420) {
     // #482 / T3.8. A guest's frame size changes mid-recording — a Zoom
     // resolution change, the SDK's downgrade ladder, or (since #478, the
@@ -1314,6 +1319,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
 
   void configureRecording(const RecordingSessionRequest& request) override {
     request_ = request;
+    if (programWorker_) return;  // applies to the next take
     session_.recordingSessionId = request.sessionId;
     session_.recordingTargetFolder = request.targetFolder;
     session_.recordingFilenamePrefix = request.filenamePrefix;
@@ -1342,6 +1348,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
 
   OutputSession start(const std::vector<std::string>& destinations, const std::vector<std::string>& isoParticipantIds) override {
     closeWriters();
+    muxEpoch_.store(0);
+    epochClosing_ = false;
+    dispatchActive_ = true;
+    activeRequest_ = request_;
+    programAudioContinuity_ = {};
     recordingStart_.begin(request_.captureEpoch100ns, (std::numeric_limits<int64_t>::max)());
     session_.recordingMuxEpoch100ns = 0;
     session_.recordingWriterReadyAt100ns = 0;
@@ -1354,6 +1365,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.destinations = destinations;
     session_.isoParticipantIds = isoParticipantIds.empty() ? request_.isoParticipantIds : isoParticipantIds;
     session_.encodedFrameCount = 0;
+    session_.programWriteQueue = {};
     session_.recordingArtifactPath.clear();
     session_.recordingSessionDir.clear();
     session_.recordingManifestPath.clear();
@@ -1394,11 +1406,35 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       // never compete with a live show for them.
       EncoderCapacityCache::instance().setRecordingActive(true);
       openRecordingWriters();
+      if (independentIsoWriters_ && program_.writing()) {
+        publishProgramSnapshot();
+        programWorker_ = std::make_unique<RecordingTrackWorker>([this] {
+          programWorkerComInitialized_ = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+        }, [this] {
+          finalizeProgram(); publishProgramSnapshot();
+          if (programWorkerComInitialized_) CoUninitialize();
+        }, activeRequest_.writeQueueDepth, 96, 96,
+           true, static_cast<uint64_t>(48000) * activeRequest_.writeQueueDepth /
+               (std::max)(1, activeRequest_.fps), recordingQueueByteCapacity("program"));
+      }
     }
-    return session_;
+    return session();
   }
 
   void submit(const ProgramFrame& frame) override {
+    if (programWorker_) {
+      auto captured = frame;
+      if (captured.timelineTimestamp100ns <= 0) captured.timelineTimestamp100ns = now100ns();
+      const size_t bytes = captured.programNv12Bytes().size() + captured.programFullBgra.bgra.size() + captured.preview.bgra.size();
+      programWorker_->post(RecordingTrackWorker::Kind::Video, [this, frame = std::move(captured)] {
+        writeProgram(frame);
+        if (session_.recordingMuxVideoFrameCount > 0) programWorker_->finishStartup();
+        publishProgramSnapshot();
+      }, bytes);
+    } else writeProgram(frame);
+  }
+
+  void writeProgram(const ProgramFrame& frame) {
     if (!session_.active) {
       return;
     }
@@ -1407,6 +1443,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     if (!program_.writing()) {
       return;
     }
+    programWriteStallQa_.beforeWrite("program", session_.recordingVideoFrameCount);
 
     // Feed the REAL composed program pixels — the FULL-RESOLUTION readback, not
     // `preview`, which is a 320x180 UI thumbnail. Writing the thumbnail into a
@@ -1472,7 +1509,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
           "Program recording is muxing the low-resolution preview: the full-resolution program "
           "tap is " + std::to_string(frame.programNv12Width) + "x" +
           std::to_string(frame.programNv12Height) + " but this recording is " +
-          std::to_string(request_.width) + "x" + std::to_string(request_.height) +
+          std::to_string(activeRequest_.width) + "x" + std::to_string(activeRequest_.height) +
           ". Record at the tap resolution for a full-quality program.";
     }
 
@@ -1533,6 +1570,26 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
 
   void submitAudioAt(const float* interleaved, int frameCount, int channels, int sampleRate,
                      int64_t timelineTimestamp100ns) override {
+    submitRecordingAudioAt(interleaved, frameCount, channels, sampleRate, timelineTimestamp100ns, std::nullopt);
+  }
+
+  void submitRecordingAudioAt(const float* interleaved, int frameCount, int channels, int sampleRate,
+                              int64_t timelineTimestamp100ns, std::optional<uint64_t> samplePosition) override {
+    if (programWorker_) {
+      if (!interleaved || frameCount <= 0 || channels <= 0) return;
+      std::vector<float> pcm(interleaved, interleaved + static_cast<size_t>(frameCount) * channels);
+      const auto timestamp = timelineTimestamp100ns > 0 ? timelineTimestamp100ns : now100ns();
+      const auto bytes = pcm.size() * sizeof(float);
+      programWorker_->post(RecordingTrackWorker::Kind::Audio,
+          [this, pcm = std::move(pcm), frameCount, channels, sampleRate, timestamp, samplePosition] {
+            writeProgramAudio(pcm.data(), frameCount, channels, sampleRate, timestamp, samplePosition);
+            publishProgramSnapshot();
+          }, bytes, frameCount);
+    } else writeProgramAudio(interleaved, frameCount, channels, sampleRate, timelineTimestamp100ns, samplePosition);
+  }
+
+  void writeProgramAudio(const float* interleaved, int frameCount, int channels, int sampleRate,
+                         int64_t timelineTimestamp100ns, std::optional<uint64_t> samplePosition = std::nullopt) {
     if (!session_.active || interleaved == nullptr || frameCount <= 0 || channels <= 0) {
       return;
     }
@@ -1574,13 +1631,25 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         session_.recordingWarning = "Recording startup audio exceeded its bounded buffer.";
         return;
       }
-      startupAudio_.push_back({std::vector<float>(interleaved, interleaved + frameCount * channels), frameCount, channels, sampleRate, capturedAt});
+      startupAudio_.push_back({std::vector<float>(interleaved, interleaved + frameCount * channels), frameCount, channels, sampleRate, capturedAt, samplePosition});
       return;
     }
     const auto boundary = recordingClock_.trimAudioToEpoch(capturedAt, frameCount, sampleRate);
     if (boundary.retainedFrames == 0) return;
     interleaved += static_cast<size_t>(boundary.skippedFrames) * static_cast<size_t>(channels);
     frameCount = boundary.retainedFrames;
+    if (samplePosition) {
+      auto missing = programAudioContinuity_.gapBefore(*samplePosition + boundary.skippedFrames, frameCount);
+      while (missing > 0) {
+        const auto samples = static_cast<int>((std::min)(missing, static_cast<uint64_t>(4800)));
+        const auto silencePts = recordingClock_.audioPts(boundary.timestamp100ns, samples, sampleRate);
+        if (!program_.writeAudioSilence(samples, silencePts, error)) {
+          setRecordingFailure("Media Foundation could not fill a recording audio gap", error);
+          return;
+        }
+        missing -= samples;
+      }
+    }
     const LONGLONG audioPts = recordingClock_.audioPts(boundary.timestamp100ns, frameCount, sampleRate);
     if (program_.writeAudio(interleaved, frameCount, audioPts, error)) {
       session_.recordingAudioPrerollSampleCount = program_.audioPrerollSampleCount();
@@ -1609,9 +1678,10 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // async encoder writer thread (never coreMutex / the audio worker), so the
   // I420->NV12 interleave and disk WriteSample are off every hot path.
   void enableIndependentIsoWriters() override { independentIsoWriters_ = true; }
+  bool supportsIndependentRecordingQueues() const override { return independentIsoWriters_; }
 
   void submitIsoVideo(const std::vector<IsoSourceVideoFrame>& sources) override {
-    if (!recordingStart_.epoch() || !session_.active) return;
+    if (!dispatchActive_ || (!independentIsoWriters_ && !muxEpoch_.load(std::memory_order_acquire))) return;
     for (const auto& source : sources) {
       const auto found = isoIndexBySource_.find(source.sourceId);
       if (found == isoIndexBySource_.end()) continue;
@@ -1621,9 +1691,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         const auto request = isoRequest_;
         auto captured = source;
         if (captured.timelineTimestamp100ns <= 0) captured.timelineTimestamp100ns = now100ns();
+        const size_t bytes = (captured.frame.i420 ? captured.frame.i420->size() : 0) +
+                             (captured.frame.pixels ? captured.frame.pixels->size() : 0);
         entry.worker->post(RecordingTrackWorker::Kind::Video, [&entry, source = std::move(captured), request] {
           writeIsoVideo(entry, source, *request); publishIsoTrack(entry);
-        });
+        }, bytes);
       } else { writeIsoVideo(entry, source, *isoRequest_); publishIsoTrack(entry); }
     }
     // #529: the per-ISO status rebuild does NOT run here. submitIsoVideo carries
@@ -1637,7 +1709,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
   void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) override {
-    if (!recordingStart_.epoch() || !session_.active) return;
+    if (!dispatchActive_ || (!independentIsoWriters_ && !muxEpoch_.load(std::memory_order_acquire))) return;
     for (const auto& source : sources) {
       const auto found = isoIndexBySource_.find(source.sourceId);
       if (found == isoIndexBySource_.end()) continue;
@@ -1646,9 +1718,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       if (entry.worker) {
         auto captured = source;
         if (captured.timelineTimestamp100ns <= 0) captured.timelineTimestamp100ns = now100ns();
+        const size_t bytes = captured.pcm.size() * sizeof(float);
+        const uint64_t samples = captured.frameCount > 0 ? captured.frameCount : 960; // one silent audio tick
         entry.worker->post(RecordingTrackWorker::Kind::Audio, [&entry, source = std::move(captured)] {
           writeIsoAudio(entry, source); publishIsoTrack(entry);
-        });
+        }, bytes, samples);
       } else { writeIsoAudio(entry, source); publishIsoTrack(entry); }
     }
   }
@@ -1659,6 +1733,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // recordingBytesWritten from the finalized on-disk size. Subsequent
     // submit/submitAudio calls fall through safely (program_.writing() is
     // false), and the next start() reopens fresh writers.
+    dispatchActive_ = false;
     closeWriters();
     if (session_.recordingStatus == "recording" || session_.recordingStatus == "warning") {
       session_.recordingStatus = "stopped";
@@ -1671,49 +1746,42 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // session() now owns. These four counters are maintained by submit /
   // submitAudio as the writes happen, so they are already current here.
   [[nodiscard]] EncoderProgress progress() const override {
-    return EncoderProgress{session_.recordingVideoFrameCount, session_.recordingAudioPacketCount,
-                           session_.encoderQueueDroppedVideoFrames,
-                           session_.encoderQueueDroppedAudioPackets, session_.recordingError,
-                           session_.recordingWarning};
+    std::lock_guard<std::mutex> lock(programSnapshotMutex_);
+    const auto& observed = programWorker_ ? programSnapshot_ : session_;
+    return EncoderProgress{observed.recordingVideoFrameCount, observed.recordingAudioPacketCount,
+                           observed.encoderQueueDroppedVideoFrames,
+                           observed.encoderQueueDroppedAudioPackets, observed.recordingError,
+                           observed.recordingWarning};
   }
 
   OutputSession session() const override {
-    // #529: the rebuild lives HERE, not on the submit path. This sink's contract
-    // is that a caller which submits and then reads sees exact, current counts —
-    // EncoderRecordingSession's tests submit a handful of ISO frames and assert
-    // videoFrameCount/audioSampleCount/isoStreams.size() synchronously, and they
-    // are right to. Throttling that was the regression; throttling how OFTEN the
-    // async wrapper READS is the same saving without the lie (AsyncEncoderSink,
-    // whose own session() is documented eventually-consistent).
-    //
-    // const_cast rather than making session_ mutable: this object is never
-    // actually const (it is owned by a unique_ptr and driven through the
-    // non-const IEncoderSink surface), and AsyncEncoderSink's writer thread is
-    // its SOLE owner, so submit and this read are the same thread — no lock and
-    // no race is introduced by refreshing on read.
-    //
-    // ONLY WHILE WRITERS ARE LIVE. `closeWriters()` does its own final refresh
-    // and THEN clears `isoWriters_`, so a read after stop would rebuild from
-    // zero writers and wipe the finalized per-ISO status it had just captured —
-    // empty `isoStreams`, `videoFrameCount` gone. Found on a real Windows core
-    // by `MediaFoundationIsoVariableRateKeepsElapsedTimelineAcrossFragments`
-    // and `MediaFoundationIndependentIsoWritersDrainAudioVideoBeforeFinalize`,
-    // which both read `session()` AFTER `stopRecording()`; neither compiles on
-    // the stub build, so no CI job could have said so. Once stopped, the
-    // finalized snapshot IS the answer and must be returned untouched.
-    //
-    // The guard belongs HERE and not inside `refreshIsoStreams()`: the rebuild
-    // at the top of a take (after `isoWriters_` is repopulated, line ~1902) must
-    // stay UNCONDITIONAL, because that clear is what stops a previous ISO
-    // recording's streams carrying into a new program-only one.
-    auto* self = const_cast<MediaFoundationEncoderSink*>(this);
-    if (!isoWriters_.empty()) {
-      self->refreshIsoStreams();
-      self->updateBytesWritten();
+    // Direct callers retain synchronous counts. Independent file writers
+    // publish immutable Program snapshots; ISO snapshots are merged on read.
+    // After Stop, return the retained finalized statuses instead of rebuilding
+    // from an empty writer set. No read touches an active MF writer.
+    OutputSession result;
+    if (programWorker_) {
+      std::lock_guard<std::mutex> lock(programSnapshotMutex_);
+      result = programSnapshot_;
+    } else {
+      result = session_;
+      result.recordingProgramMissingFrames = programContinuity_.missingFrames();
+      result.recordingProgramContinuityObserved = programContinuity_.observed();
     }
-    auto result = session_;
-    result.recordingProgramMissingFrames = programContinuity_.missingFrames();
-    result.recordingProgramContinuityObserved = programContinuity_.observed();
+    if (!isoWriters_.empty()) refreshIsoStreams(result);
+    if (programWorker_) {
+      const auto e = programWorker_->evidence();
+      result.programWriteQueue = queueEvidence(e);
+      result.encoderQueueDroppedVideoFrames += e.droppedVideo - e.startupDroppedVideo;
+      result.encoderQueueDroppedAudioPackets += e.droppedAudio - e.startupDroppedAudio;
+      result.recordingStartupDroppedVideoFrames += e.startupDroppedVideo;
+      result.recordingStartupDroppedAudioPackets += e.startupDroppedAudio;
+      if (e.droppedVideo > e.startupDroppedVideo || e.droppedAudio > e.startupDroppedAudio)
+        result.recordingWarning = "Program recording queue overflowed; Program.mp4 lost media.";
+      if (!e.error.empty()) result.recordingError = e.error;
+    }
+    result.recordingBytesWritten = result.recordingProgramBytesWritten;
+    for (const auto& iso : result.isoStreams) result.recordingBytesWritten += iso.bytesWritten;
     if (result.recordingProgramMissingFrames > 0) {
       const auto warning = "Program recording missed " +
           std::to_string(result.recordingProgramMissingFrames) +
@@ -1727,6 +1795,18 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
 
  private:
   void openRecordingWriters() {
+    std::vector<std::string> queueSources;
+    if (!request_.isoSources.empty()) {
+      for (const auto& source : request_.isoSources) queueSources.push_back(source.sourceId);
+    } else {
+      queueSources = request_.isoParticipantIds.empty() ? session_.isoParticipantIds : request_.isoParticipantIds;
+      for (auto& source : queueSources) if (source.find(':') == std::string::npos) source = "zoom:" + source;
+    }
+    if (!RecordingQueuePolicy::accepts(request_.writeQueueDepth, request_.width, request_.height,
+                                      request_.programNv12, queueSources)) {
+      setRecordingFailure("Recording write queue refused", "projected raw frame retention exceeds 512 MiB or depth is outside 4–30");
+      return;
+    }
     const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                          std::chrono::system_clock::now().time_since_epoch())
                          .count();
@@ -1916,7 +1996,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingStatus = "starting";
 
     writeManifest(programPath);
-    refreshIsoStreams();
+    refreshIsoStreams(session_);
 
     session_.recordingArtifactPath = programPath.string();
     session_.recordingWidth = program_.width();
@@ -1959,9 +2039,17 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   void ensureIsoWorker(IsoWriterEntry& entry) {
     if (entry.worker) return;
     // Every track uses the exact Program capture epoch; queue time never moves it.
-    if (!entry.opened) entry.clock.reset(*recordingStart_.epoch());
-    if (!independentIsoWriters_) return;
-    entry.worker = std::make_unique<RecordingTrackWorker>([&entry] {
+    if (!independentIsoWriters_) {
+      if (!entry.opened) entry.clock.reset(muxEpoch_.load(std::memory_order_acquire));
+      return;
+    }
+    entry.worker = std::make_unique<RecordingTrackWorker>([this, &entry] {
+      {
+        std::unique_lock<std::mutex> lock(epochMutex_);
+        epochCv_.wait(lock, [this] { return muxEpoch_.load(std::memory_order_acquire) != 0 || epochClosing_; });
+        if (!muxEpoch_.load(std::memory_order_acquire)) { entry.failed = true; publishIsoTrack(entry); return; }
+        entry.clock.reset(muxEpoch_.load(std::memory_order_acquire));
+      }
       const auto hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
       entry.comInitialized = SUCCEEDED(hr);
       if (FAILED(hr)) { entry.failed = true; entry.warning = "ISO COM initialization failed: " + hresultString(hr); }
@@ -1976,39 +2064,39 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       // rather than releasing all eight devices in one burst after joining.
       entry.frameConformer = D3DIsoFrameConformer();
       if (entry.comInitialized) CoUninitialize();
-    // File encoding may stall for hundreds of milliseconds even after startup.
-    // Live 1080p tests measured up to 780 ms stalls after the first write.
-    // Retain at most 64 source pictures (~190 MiB of 1080p I420) per track
-    // so one such stall does not lose accepted source media at 60 Hz.
-    }, 64, 96, 96);
+    // File buffering is independent of the four-frame dispatch handoff.
+    }, isoRequest_->writeQueueDepth, 96, 96, true,
+       static_cast<uint64_t>(48000) * isoRequest_->writeQueueDepth / (std::max)(1, isoRequest_->fps),
+       recordingQueueByteCapacity(entry.sourceId));
   }
 
-  void refreshIsoStreams() {
-    session_.isoStreams.clear();
-    session_.encoderQueueDroppedVideoFrames = 0;
-    session_.encoderQueueDroppedAudioPackets = 0;
+  void refreshIsoStreams(OutputSession& target) const {
+    target.isoStreams.clear();
+    target.encoderQueueDroppedVideoFrames = target.programWriteQueue.dropped;
+    target.encoderQueueDroppedAudioPackets = target.programWriteQueue.droppedAudio;
     for (const auto& owned : isoWriters_) {
       auto& iso = *owned;
       IsoStreamStatus status;
       { std::lock_guard<std::mutex> lock(iso.snapshotMutex); status = iso.snapshot; }
       if (iso.worker) {
         const auto evidence = iso.worker->evidence();
-        status.droppedVideoFrames = evidence.droppedVideo;
-        status.droppedAudioPackets = evidence.droppedAudio;
+        status.writeQueue = queueEvidence(evidence);
+        status.droppedVideoFrames = evidence.droppedVideo - evidence.startupDroppedVideo;
+        status.droppedAudioPackets = evidence.droppedAudio - evidence.startupDroppedAudio;
         status.queuedVideoFrames = evidence.queuedVideo;
         status.queuedAudioPackets = evidence.queuedAudio;
         status.videoWorkUs = evidence.videoWorkUs;
         status.audioWorkUs = evidence.audioWorkUs;
         status.maximumWorkUs = evidence.maximumWorkUs;
-        session_.encoderQueueDroppedVideoFrames += evidence.droppedVideo;
-        session_.encoderQueueDroppedAudioPackets += evidence.droppedAudio;
+        target.encoderQueueDroppedVideoFrames += status.droppedVideoFrames;
+        target.encoderQueueDroppedAudioPackets += status.droppedAudioPackets;
         if (!evidence.error.empty()) status.warning = "ISO writer failure: " + evidence.error;
         if (evidence.droppedVideo || evidence.droppedAudio)
           status.warning = "ISO recording lost " + std::to_string(evidence.droppedVideo) +
               " video frames and " + std::to_string(evidence.droppedAudio) + " audio packets: " + iso.displayName;
       }
-      if (!status.warning.empty()) raiseIsoWarning(status.warning);
-      session_.isoStreams.push_back(std::move(status));
+      if (!status.warning.empty()) target.recordingWarning = status.warning;
+      target.isoStreams.push_back(std::move(status));
     }
   }
 
@@ -2066,9 +2154,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
 
   void updateBytesWritten() {
     session_.recordingProgramBytesWritten = program_.bytesWritten();
-    int64_t total = session_.recordingProgramBytesWritten;
-    for (const auto& iso : session_.isoStreams) total += iso.bytesWritten;
-    session_.recordingBytesWritten = total;
+    session_.recordingBytesWritten = session_.recordingProgramBytesWritten;
   }
 
   // Absolute 100ns ticks on the process steady clock. IsoSourceAudio carries
@@ -2081,17 +2167,23 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
 
-  void closeWriters() {
-    // The outer Stop barrier has already stopped input dispatch. Tracks keep
-    // draining independently while we spread hardware encoder/device teardown
-    // across time: concurrent Finalize calls coincided with live Program misses.
-    // Only the file-control worker waits; Program delivery never waits here.
-    // Close every ISO before finalizing Program or joining: a hung writer must
-    // not prevent the other files from finalizing.
-    for (auto& iso : isoWriters_) if (iso->worker) {
-      iso->worker->close();
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+  size_t recordingQueueByteCapacity(const std::string& source) const {
+    const uint64_t pixels = static_cast<uint64_t>(activeRequest_.width) * activeRequest_.height;
+    const auto bytesFor = [&](const std::string& id) {
+      const bool nv12 = id == "program" ? activeRequest_.programNv12 : id.rfind("zoom:", 0) == 0;
+      return pixels * (nv12 ? 3 : 8) / 2 + (id == "program" ? 320 * 180 * 4 : 0);
+    };
+    uint64_t totalFrameBytes = bytesFor("program");
+    for (const auto& iso : isoWriters_) totalFrameBytes += bytesFor(iso->sourceId);
+    constexpr uint64_t audioBytes = 96 * 960 * 2 * sizeof(float);
+    const auto frameBytes = bytesFor(source);
+    const auto videoBudget = RecordingQueuePolicy::budgetBytes - (isoWriters_.size() + 1) * audioBytes * 2;
+    const auto share = videoBudget * frameBytes / totalFrameBytes;
+    const auto handoffAndInFlight = frameBytes * (source == "program" ? 7 : 5);
+    return static_cast<size_t>((share > handoffAndInFlight ? share - handoffAndInFlight : 0) + audioBytes);
+  }
+
+  void finalizeProgram() {
     startupAudio_.clear();
     std::string programReconcileError;
     if (!program_.reconcileTail(programReconcileError) && session_.recordingWarning.empty()) {
@@ -2111,6 +2203,51 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       if (session_.recordingWarning.empty()) session_.recordingWarning = session_.recordingError;
       session_.recordingStatus = "warning";
     }
+    updateBytesWritten();
+    {
+      std::lock_guard<std::mutex> lock(epochMutex_);
+      epochClosing_ = true;
+    }
+    epochCv_.notify_all();
+  }
+
+  void publishProgramSnapshot() {
+    auto snapshot = session_;
+    snapshot.recordingProgramMissingFrames = programContinuity_.missingFrames();
+    snapshot.recordingProgramContinuityObserved = programContinuity_.observed();
+    std::lock_guard<std::mutex> lock(programSnapshotMutex_);
+    programSnapshot_ = std::move(snapshot);
+  }
+
+  static RecordingWriteQueueEvidence queueEvidence(const RecordingTrackWorker::Evidence& e) {
+    return {true, e.videoCapacity, e.queueHighWater, e.queuedVideo, e.acceptedVideo, e.completedVideo,
+            e.droppedVideo - e.startupDroppedVideo, e.startupDroppedVideo,
+            e.droppedAudio - e.startupDroppedAudio, e.startupDroppedAudio,
+            e.queuedAudioSamples, e.highWaterBytes, e.oldestQueuedAgeMs, e.lastOverflowReason};
+  }
+
+  void closeWriters() {
+    if (!programWorker_) {
+      std::lock_guard<std::mutex> lock(epochMutex_);
+      epochClosing_ = true;
+    }
+    if (!programWorker_) epochCv_.notify_all();
+    // The outer Stop barrier has already stopped input dispatch. Tracks keep
+    // draining independently while we spread hardware encoder/device teardown
+    // across time: concurrent Finalize calls coincided with live Program misses.
+    // Only the file-control worker waits; Program delivery never waits here.
+    // Close every ISO before finalizing Program or joining: a hung writer must
+    // not prevent the other files from finalizing.
+    for (auto& iso : isoWriters_) if (iso->worker) {
+      iso->worker->close();
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (programWorker_) {
+      programWorker_->close();
+      programWorker_->join();
+      session_ = session();
+      programWorker_.reset();
+    } else finalizeProgram();
     // Each ISO writer finalizes INDEPENDENTLY (its own moov) so a source that
     // dropped mid-show still leaves a playable file, no 0-byte tails (spec §4).
     for (auto& iso : isoWriters_) {
@@ -2127,7 +2264,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       if (iso->failed && session_.recordingError.empty()) session_.recordingError = iso->warning;
     }
     // Refresh the on-disk sizes into the ISO status before clearing.
-    refreshIsoStreams();
+    refreshIsoStreams(session_);
     if (session_.recordingWarning.empty()) {
       // Surface the finalized on-disk size of the program file.
       updateBytesWritten();
@@ -2141,23 +2278,32 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     session_.recordingError = session_.recordingWarning;
     session_.recordingStatus = "warning";
     (void)program_.finalize();
-    for (auto& iso : isoWriters_) if (iso->worker) iso->worker->close();
-    for (auto& iso : isoWriters_) {
-      if (iso->worker) iso->worker->join(); else finalizeIsoTrack(*iso);
-    }
-    isoWriters_.clear();
-    isoIndexBySource_.clear();
-    session_.isoStreams.clear();
+    // ISO ownership stays with the dispatcher; Stop closes all file gates.
+
   }
 
   // One ISO source's writer + its pre-assigned on-disk path (assigned at
   // recording start; the writer opens LAZILY at the source's first frame, sized
   // to that frame — no scaling, no 0-byte files for sources that never deliver).
 
+  // session_, writer and mux clock belong to Program's worker while active.
+  // Dispatcher reads only the immutable snapshot, never the MF writer state.
   OutputSession session_;
+  mutable std::mutex programSnapshotMutex_;
+  OutputSession programSnapshot_;
+  std::unique_ptr<RecordingTrackWorker> programWorker_;
+  bool programWorkerComInitialized_ = false;
+  bool dispatchActive_ = false;
+  std::atomic<int64_t> muxEpoch_{0};
+  std::mutex epochMutex_;
+  std::condition_variable epochCv_;
+  bool epochClosing_ = false;
+  RecordingSessionRequest activeRequest_;
   RecordingSessionRequest request_;
   Mp4Writer program_;
+  RecordingWriteStallQa programWriteStallQa_;
   RecordingProgramContinuity programContinuity_;
+  RecordingAudioContinuity programAudioContinuity_;
   std::vector<std::unique_ptr<IsoWriterEntry>> isoWriters_;
   bool independentIsoWriters_ = false;
   std::shared_ptr<const RecordingSessionRequest> isoRequest_;
@@ -2171,6 +2317,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     if (session_.recordingMuxEpoch100ns == 0) {
       session_.recordingMuxEpoch100ns = *recordingStart_.epoch();
       recordingClock_.reset(session_.recordingMuxEpoch100ns);
+      {
+        std::lock_guard<std::mutex> lock(epochMutex_);
+        muxEpoch_.store(session_.recordingMuxEpoch100ns, std::memory_order_release);
+      }
+      epochCv_.notify_all();
     }
     return true;
   }
@@ -2179,12 +2330,13 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     auto pending = std::move(startupAudio_);
     startupAudio_.clear();
     for (const auto& packet : pending)
-      submitAudioAt(packet.pcm.data(), packet.frames, packet.channels, packet.rate, packet.timestamp);
+      writeProgramAudio(packet.pcm.data(), packet.frames, packet.channels, packet.rate, packet.timestamp, packet.samplePosition);
   }
   struct StartupAudioPacket {
     std::vector<float> pcm;
     int frames, channels, rate;
     int64_t timestamp;
+    std::optional<uint64_t> samplePosition;
   };
   std::deque<StartupAudioPacket> startupAudio_;
   RecordingStartBoundary recordingStart_;
