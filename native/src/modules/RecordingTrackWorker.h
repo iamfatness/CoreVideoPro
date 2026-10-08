@@ -59,9 +59,10 @@ class RecordingTrackWorker {
     // Opening eight 1080p codecs can exceed one second. Retain a bounded
     // startup burst until the first real frame is written and its backlog
     // drains, then return to the smaller steady-state budget.
-    if (startupFinished_ && evidence_.queuedVideo <= videoCapacity_) steady_ = true;
+    if (startupFinished_ && evidence_.queuedVideo <= videoCapacity_ &&
+        (!audioSampleCapacity_ || evidence_.queuedAudioSamples <= audioSampleCapacity_)) steady_ = true;
     const auto videoLimit = steady_ ? videoCapacity_ : startupVideoCapacity_;
-    const auto audioLimit = startupFinished_ ? audioSampleCapacity_ : startupAudioSampleCapacity_;
+    const auto audioLimit = steady_ ? audioSampleCapacity_ : startupAudioSampleCapacity_;
     const auto full = [&] {
       return pending >= (kind == Kind::Video ? videoLimit : audioCapacity_) ||
           bytes > byteCapacity_ || evidence_.queuedBytes > byteCapacity_ - bytes ||

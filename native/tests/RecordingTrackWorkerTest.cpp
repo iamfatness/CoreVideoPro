@@ -184,3 +184,20 @@ TEST(RecordingTrackWorker, StartupAudioAllowanceDrainsWithoutShrinkingAcceptedPa
   EXPECT_EQ(e.startupDroppedAudio, 1u);
   EXPECT_EQ(e.droppedAudio, 2u);
 }
+
+TEST(RecordingTrackWorker, FirstVideoCommitDoesNotAbruptlyShrinkStartupAudioBacklog) {
+  std::promise<void> entered, release;
+  auto gate = release.get_future().share();
+  RecordingTrackWorker worker([&] { entered.set_value(); gate.wait(); }, [] {},
+      10, 96, 96, true, 1920, 1000000, 9600);
+  entered.get_future().wait();
+  for (int i=0;i<8;++i)
+    EXPECT_TRUE(worker.post(RecordingTrackWorker::Kind::Audio, [] {}, 7680, 960));
+  worker.finishStartup();
+  // The first committed video does not make accepted startup audio disappear
+  // or reject the next packet while that larger, bounded backlog drains.
+  EXPECT_TRUE(worker.post(RecordingTrackWorker::Kind::Audio, [] {}, 7680, 960));
+  worker.close(); release.set_value(); worker.join();
+  EXPECT_EQ(worker.evidence().completedAudio, 9u);
+  EXPECT_EQ(worker.evidence().droppedAudio, 0u);
+}
