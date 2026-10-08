@@ -8,7 +8,7 @@ namespace corevideo::core {
 // Exactly the capability names MediaCore::profile() reports in capabilityStates.
 // ContractParity compares this with a constructed core in both directions, so a
 // name the core never reports cannot sit here looking supported.
-inline constexpr std::array<std::string_view, 22> kNativeMediaCoreCapabilities = {
+inline constexpr std::array<std::string_view, 23> kNativeMediaCoreCapabilities = {
     "zoom-raw-video",
     "zoom-raw-audio",
     "gpu-compositor",
@@ -16,6 +16,7 @@ inline constexpr std::array<std::string_view, 22> kNativeMediaCoreCapabilities =
     "dynamic-overlays",
     "chroma-key",
     "smart-framing",
+    "source-grade-preview",
     "audio-mixer",
     "local-audio-capture",
     "audio-monitor-output",
@@ -52,13 +53,14 @@ inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
 // Contract view of the live MediaCore::applyCommandMutation branches. The
 // dispatcher itself decides admission; ContractParity checks this view and the
 // production builder against every branch in both directions.
-inline constexpr std::array<std::string_view, 48> kNativeMediaCoreCommandTypes = {
+inline constexpr std::array<std::string_view, 49> kNativeMediaCoreCommandTypes = {
     "begin-take-transition",
     "load-scene-graph",
     "set-preview-scene",
     "set-participant-transform",
     "set-overlay-asset",
     "set-color-grade",
+    "set-grade-preview",
     "set-source-policy",
     "set-output-profile",
     "start-program-output",
@@ -106,7 +108,7 @@ inline constexpr std::array<std::string_view, 48> kNativeMediaCoreCommandTypes =
 // Every request type JsonRpcServer dispatches on. ContractParity compares this
 // with the dispatcher in both directions and checks that each request the C#
 // and Swift shells send is in it.
-inline constexpr std::array<std::string_view, 33> kCoreRequestTypes = {
+inline constexpr std::array<std::string_view, 34> kCoreRequestTypes = {
     "handshake",
     "ping",
     "snapshot",
@@ -123,6 +125,7 @@ inline constexpr std::array<std::string_view, 33> kCoreRequestTypes = {
     "zoom-snapshot",
     "zoom-media-spine-sync",
     "set-zoom-guest-av-sync-offset",
+    "set-grade-preview",
     "get-output-health",
     "get-output-session",
     "list-capture-devices",
@@ -144,11 +147,12 @@ inline constexpr std::array<std::string_view, 33> kCoreRequestTypes = {
 
 // Unsolicited events the core writes to the shell; each must have a parser in
 // the C# shell (ContractParity).
-inline constexpr std::array<std::string_view, 4> kCoreEventTypes = {
+inline constexpr std::array<std::string_view, 5> kCoreEventTypes = {
     "zoom-video-frame",
     "zoom-source-format",
     "program-frame-preview",
     "program-shared-texture",
+    "grade-preview",
 };
 
 }  // namespace corevideo::core
