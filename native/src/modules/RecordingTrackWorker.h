@@ -39,12 +39,13 @@ class RecordingTrackWorker {
   RecordingTrackWorker(std::function<void()> initialize, std::function<void()> finalize,
                        size_t videoCapacity = 32, size_t audioCapacity = 96, size_t startupVideoCapacity = 0,
                        bool replaceOldestVideo = false, uint64_t audioSampleCapacity = 0,
-                       size_t byteCapacity = (std::numeric_limits<size_t>::max)())
+                       size_t byteCapacity = (std::numeric_limits<size_t>::max)(), uint64_t startupAudioSampleCapacity = 0)
       : initialize_(std::move(initialize)), finalize_(std::move(finalize)),
         videoCapacity_(std::max(size_t{1}, videoCapacity)),
         audioCapacity_(std::max(size_t{1}, audioCapacity)),
         startupVideoCapacity_(std::max(videoCapacity_, startupVideoCapacity)),
         replaceOldestVideo_(replaceOldestVideo), audioSampleCapacity_(audioSampleCapacity), byteCapacity_(byteCapacity),
+        startupAudioSampleCapacity_(std::max(audioSampleCapacity, startupAudioSampleCapacity)),
         startupFinished_(startupVideoCapacity == 0),
         thread_([this] { run(); }) {}
   ~RecordingTrackWorker() { close(); join(); }
@@ -60,11 +61,12 @@ class RecordingTrackWorker {
     // drains, then return to the smaller steady-state budget.
     if (startupFinished_ && evidence_.queuedVideo <= videoCapacity_) steady_ = true;
     const auto videoLimit = steady_ ? videoCapacity_ : startupVideoCapacity_;
+    const auto audioLimit = startupFinished_ ? audioSampleCapacity_ : startupAudioSampleCapacity_;
     const auto full = [&] {
       return pending >= (kind == Kind::Video ? videoLimit : audioCapacity_) ||
           bytes > byteCapacity_ || evidence_.queuedBytes > byteCapacity_ - bytes ||
-          (kind == Kind::Audio && audioSampleCapacity_ &&
-           (audioSamples > audioSampleCapacity_ || evidence_.queuedAudioSamples > audioSampleCapacity_ - audioSamples));
+          (kind == Kind::Audio && audioLimit &&
+           (audioSamples > audioLimit || evidence_.queuedAudioSamples > audioLimit - audioSamples));
     };
     if (full()) {
       evidence_.lastOverflowReason = bytes > byteCapacity_ || evidence_.queuedBytes > byteCapacity_ - bytes
@@ -153,6 +155,7 @@ class RecordingTrackWorker {
   bool replaceOldestVideo_;
   uint64_t audioSampleCapacity_;
   size_t byteCapacity_;
+  uint64_t startupAudioSampleCapacity_;
   mutable std::mutex mutex_;
   std::condition_variable cv_;
   std::deque<Item> queue_;

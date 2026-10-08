@@ -165,3 +165,22 @@ TEST(RecordingTrackWorker, StartupBurstDrainsBeforeTheSteadyLimitTakesOver) {
   EXPECT_EQ(count, 6);
   EXPECT_EQ(worker.evidence().droppedVideo, 2u);
 }
+
+TEST(RecordingTrackWorker, StartupAudioAllowanceDrainsWithoutShrinkingAcceptedPackets) {
+  std::promise<void> entered, release;
+  auto gate = release.get_future().share();
+  RecordingTrackWorker worker([&] { entered.set_value(); gate.wait(); }, [] {},
+      10, 96, 96, true, 1920, 1000000, 9600);
+  entered.get_future().wait();
+  for (int i=0;i<10;++i)
+    EXPECT_TRUE(worker.post(RecordingTrackWorker::Kind::Audio, [] {}, 7680, 960));
+  EXPECT_FALSE(worker.post(RecordingTrackWorker::Kind::Audio, [] {}, 7680, 960));
+  worker.finishStartup();
+  EXPECT_FALSE(worker.post(RecordingTrackWorker::Kind::Audio, [] {}, 7680, 960));
+  worker.close(); release.set_value(); worker.join();
+  const auto e = worker.evidence();
+  EXPECT_EQ(e.acceptedAudio, 10u);
+  EXPECT_EQ(e.completedAudio, 10u);
+  EXPECT_EQ(e.startupDroppedAudio, 1u);
+  EXPECT_EQ(e.droppedAudio, 2u);
+}

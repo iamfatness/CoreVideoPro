@@ -24,7 +24,8 @@ samples including A/V tail padding and is the decoded-file comparator. Completed
 calls do not prove a committed sample. Missing queue
 evidence is null. Support bundles retain these fields and summarize full queues.
 
-Startup keeps the bounded burst allowance under per-file byte reservations; it
+Startup permits up to 96 video references and 96 canonical audio packets under
+the same per-file byte reservations; it
 must drain into the steady limit. See [the queue spec](recording-write-queue-spec.md)
 for the 512 MiB projection and the retained startup regression. AVFoundation
 retains its existing dispatch policy until it has independent file workers;

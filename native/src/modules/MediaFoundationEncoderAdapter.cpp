@@ -1416,7 +1416,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
           if (programWorkerComInitialized_) CoUninitialize();
         }, activeRequest_.writeQueueDepth, 96, 96,
            true, static_cast<uint64_t>(48000) * activeRequest_.writeQueueDepth /
-               (std::max)(1, activeRequest_.fps), recordingQueueByteCapacity("program"));
+               (std::max)(1, activeRequest_.fps), recordingQueueByteCapacity("program"), 96 * 960);
       }
     }
     return session();
@@ -2068,7 +2068,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     // File buffering is independent of the four-frame dispatch handoff.
     }, isoRequest_->writeQueueDepth, 96, 96, true,
        static_cast<uint64_t>(48000) * isoRequest_->writeQueueDepth / (std::max)(1, isoRequest_->fps),
-       recordingQueueByteCapacity(entry.sourceId));
+       recordingQueueByteCapacity(entry.sourceId), 96 * 960);
   }
 
   void refreshIsoStreams(OutputSession& target) const {
