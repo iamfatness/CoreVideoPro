@@ -219,6 +219,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "recording",
                 "programSourceAdmission",
                 "deliveryEvidence",
+                "nativeDiagnostics",
             ]
         }
 
