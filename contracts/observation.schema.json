@@ -216,6 +216,11 @@
       "qualification": "include",
       "control": "include"
     },
+    "gradePreview": {
+      "typed": "omit",
+      "qualification": "include",
+      "control": "include"
+    },
     "realtimeEvidence": {
       "typed": "omit",
       "qualification": "include",

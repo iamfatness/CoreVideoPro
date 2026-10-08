@@ -65,7 +65,9 @@ class GradePreviewController {
     submitted_ = !active_.empty();
     const auto result = compositor.latestGradePreviews();
     const auto health = compositor.gradePreviewDiagnostics();
-    for (auto& [id, entry] : active_) {
+    for (auto& item : active_) {
+      const auto& id = item.first;
+      auto& entry = item.second;
       const auto match = result ? std::find_if(result->gradePreviews.begin(), result->gradePreviews.end(),
           [&](const auto& surface) { return surface.demand.instanceId == id &&
               surface.demand.sourceId == entry.demand.sourceId && surface.demand.revision == entry.demand.revision; })
