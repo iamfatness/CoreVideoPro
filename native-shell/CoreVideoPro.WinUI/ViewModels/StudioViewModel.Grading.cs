@@ -30,6 +30,12 @@ public sealed partial class StudioViewModel
             return;
         }
 
+        if (_openColorGradeEditors.Count >= 3)
+        {
+            CommandStatus = "Close one of the three grade editors before opening another";
+            return;
+        }
+
         var sourceName = ResolveColorGradeSourceName(normalizedSourceId);
 
         var seed = ResolveStoredColorGrade(normalizedSourceId);
