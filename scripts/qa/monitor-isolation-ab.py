@@ -4,6 +4,7 @@
 import argparse, pathlib, json, time, hashlib, mmap, struct, threading, uuid, sys, math, subprocess
 from contextlib import ExitStack
 from monitor_evidence import Core, judge, counters, judge_recording, SourceAdmissionJudge
+from render_work_evidence import judge as judge_render_work
 
 
 def fixed(route_id, pid):
@@ -46,6 +47,7 @@ def main():
         help="Commit that built the supplied Release core; never infer from checkout",
     )
     ap.add_argument("--delivery-trace", action="store_true", help="Explicit per-trial bounded core trace; its independent verdict remains separate from release qualification")
+    ap.add_argument("--render-work-distribution", action="store_true", help="Independent bounded CPU timing collector; enable identically in trace-on/off comparisons")
     ap.add_argument("--duration", type=float, default=120)
     ap.add_argument("--pairs", type=int, default=3)
     ap.add_argument("--warmup", type=float, default=10)
@@ -79,12 +81,16 @@ def main():
         "driverSha256": hashlib.sha256(
             pathlib.Path(__file__).with_name("monitor_evidence.py").read_bytes()
         ).hexdigest(),
+        "renderWorkJudgeSha256": hashlib.sha256(
+            pathlib.Path(__file__).with_name("render_work_evidence.py").read_bytes()
+        ).hexdigest(),
         "sourceCommit": a.source_commit,
         "buildConfiguration": "Release (operator supplied binary)",
         "flags": {
             "COREVIDEO_PROGRAM_BUFFER_FRAMES": "2",
             "COREVIDEO_GPU_CAPTURE": "0",
             "COREVIDEO_CPU_SOURCE_PREPARATION": a.cpu_source_preparation,
+            "COREVIDEO_QA_RENDER_WORK_DISTRIBUTION": "1" if a.render_work_distribution else "0",
             "COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE": "0",
             "COREVIDEO_ISOLATE_MONITORS": "0 and 1",
         },
@@ -142,6 +148,7 @@ def main():
             or r.get("recordingVerdict") != "PASS"
             or r.get("sampledSourceAdmissionVerdict") == "FAIL"
             or (a.delivery_trace and r.get("deliveryTrace", {}).get("result") != "PASS")
+            or (a.render_work_distribution and r.get("renderWorkDistribution", {}).get("result") != "PASS")
             for r in results
         )
         else 0
@@ -178,6 +185,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE": "0",
                 "COREVIDEO_GPU_CAPTURE": "0",
                 "COREVIDEO_CPU_SOURCE_PREPARATION": a.cpu_source_preparation,
+                "COREVIDEO_QA_RENDER_WORK_DISTRIBUTION": "1" if a.render_work_distribution else "0",
                 **({"COREVIDEO_DELIVERY_TRACE_PATH": str(trace_path)} if a.delivery_trace else {}),
             },
             out / (label + ".stderr.log"),
@@ -458,6 +466,9 @@ def run_trial(a, exe, fake, out, label, isolated, results):
             **judge_recording(first, last),
             **admission_judge.result(),
         }
+        if a.render_work_distribution:
+            result["renderWorkDistribution"] = judge_render_work(first, last,
+                minimum=max(1, int(a.duration * 60 * .95)))
         result["observedSourceFormats"] = [
             {
                 k: s.get(k)

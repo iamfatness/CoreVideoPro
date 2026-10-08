@@ -74,6 +74,11 @@ in the [approved specification](../../docs/reference/render-delivery-spec.md).
 
 The portable judge/IPC tests run in CI without a GPU:
 
+For an independent CPU p95 measurement, enable `--render-work-distribution` in
+both trace-on and trace-off runs. The conservative matched comparison is
+documented in [render-work-evidence.md](../../docs/reference/render-work-evidence.md).
+Its result does not certify GPU completion or release qualification.
+
 ```powershell
 python -m unittest discover -s scripts/qa -p test_monitor_evidence.py -v
 ```

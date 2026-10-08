@@ -5,6 +5,7 @@
 #include "core/TilesWallSource.h"
 #include "core/Director.h"
 #include "core/MonitorShedPolicy.h"
+#include "core/RenderWorkDistribution.h"
 #include "core/OutputLifecyclePolicy.h"
 #include "core/FollowSpeakerHold.h"
 #include "core/SpeakerFloor.h"
@@ -968,6 +969,7 @@ class MediaCore {
   std::atomic<int64_t> renderWorkerLockWaitMaximumNs_{0};
   std::atomic<int64_t> renderWorkerWorkTotalNs_{0};
   std::atomic<int64_t> renderWorkerWorkMaximumNs_{0};
+  RenderWorkDistribution renderWorkDistribution_;
   std::atomic<int64_t> renderWorkerDrainTotalNs_{0};
   std::atomic<int64_t> renderWorkerDrainMaximumNs_{0};
   std::atomic<int64_t> audioWorkerGeneration_{0};
