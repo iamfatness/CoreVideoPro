@@ -25,6 +25,37 @@ Deliver playable Program and per-source ISO files that keep every gathered frame
 
 Do not add steady-state latency to Program, Preview, multiview, virtual camera, or stream senders. Do not unbounded-queue frames into RAM. Do not implement pre-roll or instant replay in this change.
 
+## Recording start and UI truth
+
+Owner clarification, October 8, 2026: capture need not begin at the button click,
+but recording must already be happening when the UI says Recording.
+
+The click requests a take. While the selected pipelines initialize, the UI
+reports Preparing; it must not show Recording or start the recording-duration
+counter from the request time. Preparation stays off all live media threads.
+It does not require pre-roll or a separate operator arm action.
+
+Program and every selected ISO must be ready for the actual source geometry and
+recording profile before a single shared capture boundary is selected. Every
+required file must then show committed real video and, where configured, audio
+from that boundary before the UI publishes Recording. An opened file, accepted
+queue item, held first frame or Program-only progress is insufficient evidence.
+A missing or failed selected source must surface an explicit preparation failure
+or incomplete selection; it must not silently become a successful full take.
+
+The requested time, actual shared capture start, preparation delay and observed
+first commits remain distinct evidence. The duration counter uses actual capture
+start. Preparation media is outside the promised take; media admitted at or after
+that boundary must be preserved under the recording queue contract. Do not move
+the boundary after loss or relabel already accepted missing footage to hide it.
+All files keep the same epoch and audio remains aligned.
+
+Preparation needs an explicit bounded timeout and operator-visible error/cancel
+path. Stop during Preparing cancels preparation without briefly publishing
+Recording. Changes to selected sources or profiles invalidate readiness for the
+old configuration. After start, existing stalled-writer health remains based on
+continuing real file progress.
+
 ## Ownership
 
 | Component | Owns | Must not |
@@ -107,6 +138,14 @@ Operator surface: if any recording writer is dropping, Health says which file an
 Slice 1 lands with its test. Do not merge the queue type with no consumer.
 
 ## Tests
+
+- A Record request stays Preparing while any selected file is unready; Program
+  progress alone cannot publish Recording.
+- Recording is published only after all required files commit real media from
+  the shared capture boundary, with no lost media inside the take.
+- Source/profile changes, preparation failure/timeout, and Stop during Preparing
+  cannot leave a false Recording indication.
+- Report request-to-start delay separately; the timer uses actual capture start.
 
 - Program queue absorbs a blocked write and commits the held frames in order, PTS unchanged.
 - ISO queue full drops only that source. Program `dropped` stays 0.
