@@ -33,6 +33,7 @@ AsyncEncoderSink::AsyncEncoderSink(std::unique_ptr<IEncoderSink> inner, Options 
   if (state_->inner) {
     state_->inner->enableIndependentIsoWriters();
     state_->independentRecordingQueues = state_->inner->supportsIndependentRecordingQueues();
+    state_->preparationTimeoutMs = (std::max)(int64_t{1}, options_.preparationTimeout.count());
     state_->snapshot = state_->inner->session();
   }
   writer_ = std::thread(&AsyncEncoderSink::writerLoop, state_);
@@ -115,6 +116,8 @@ uint64_t AsyncEncoderSink::enqueue(Item&& item) {
       // A new take's evidence starts empty: no open applied, nothing written.
       state_->startApplied.store(false, std::memory_order_release);
       state_->everProgressed.store(false, std::memory_order_release);
+      state_->allRecordingWritersCommitted.store(false, std::memory_order_release);
+      state_->preparationRequestedAtMs.store(evidenceNowMs(), std::memory_order_release);
       state_->lastProgressAtMs.store(0, std::memory_order_release);
       state_->degradedWarning.store(false, std::memory_order_release);
     }
@@ -425,9 +428,17 @@ void AsyncEncoderSink::refreshActiveLifecycle(const State& state, contracts::Out
   if (lifecycle.state == "stopping" || lifecycle.state == "finalizing" ||
       ::corevideo::core::OutputLifecyclePolicy::isTerminal(lifecycle.state))
     return;
+  if (!state.allRecordingWritersCommitted.load(std::memory_order_acquire) &&
+      evidenceNowMs() - state.preparationRequestedAtMs.load(std::memory_order_acquire) >= state.preparationTimeoutMs) {
+    lifecycle.state = "failed";
+    lifecycle.health = "failed";
+    lifecycle.error = "Recording preparation timed out waiting for Program or selected ISO media.";
+    return;
+  }
   ::corevideo::core::ActiveOutputObservation observation;
   observation.startApplied = state.startApplied.load(std::memory_order_acquire);
-  observation.everProgressed = state.everProgressed.load(std::memory_order_acquire);
+  observation.everProgressed = state.everProgressed.load(std::memory_order_acquire) &&
+      state.allRecordingWritersCommitted.load(std::memory_order_acquire);
   observation.lastProgressMs = state.lastProgressAtMs.load(std::memory_order_acquire);
   observation.nowMs = evidenceNowMs();
   observation.staleMs = state.producingStaleMs.load(std::memory_order_acquire);
@@ -528,6 +539,7 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
         catch (...) { fresh.recordingError = "Recording observation failed"; }
         lock.lock();
         if (generation != state->generation || !state->active.load()) continue;
+        state->allRecordingWritersCommitted.store(progress.allRecordingWritersCommitted, std::memory_order_release);
         auto& e = state->evidence;
         const auto now = evidenceNowMs();
         if (progress.videoFramesWritten > e.programVideoWritten || progress.audioPacketsWritten > e.programAudioPacketsWritten) {
@@ -541,6 +553,9 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
         e.programAudioPacketsWritten = progress.audioPacketsWritten;
         e.writtenGeneration = generation;
         if (fresh.recordingError.empty()) fresh.recordingError = progress.error;
+        if (!progress.allRecordingWritersCommitted &&
+            now - state->preparationRequestedAtMs.load(std::memory_order_acquire) >= state->preparationTimeoutMs)
+          fresh.recordingError = "Recording preparation timed out waiting for Program or selected ISO media.";
         if (!fresh.recordingError.empty()) {
           failedGeneration = generation;
           generationFailure = fresh.recordingError;
@@ -723,6 +738,13 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       std::lock_guard<std::mutex> queueLock(state->queueMutex);
       auto& evidence = state->evidence;
       const auto now = evidenceNowMs();
+      if (observedProgress && !progress.allRecordingWritersCommitted && item.generation == state->generation &&
+          item.kind != Kind::Configure && item.kind != Kind::StopRecording &&
+          now - state->preparationRequestedAtMs.load(std::memory_order_acquire) >= state->preparationTimeoutMs) {
+        failure = "Recording preparation timed out waiting for Program or selected ISO media.";
+        failedGeneration = item.generation;
+        generationFailure = failure;
+      }
       if (item.generation == state->generation && item.kind != Kind::Configure &&
           state->videoStartupPhase && (madeProgress || !failure.empty())) {
         // The head of the show is over the moment the writer commits its first
@@ -742,6 +764,8 @@ void AsyncEncoderSink::writerLoop(std::shared_ptr<State> state) {
       }
       if (invoked) ++evidence.completedCalls[static_cast<size_t>(item.kind)];
       if (observedProgress && item.kind != Kind::Configure) {
+        if (item.generation == state->generation)
+          state->allRecordingWritersCommitted.store(progress.allRecordingWritersCommitted, std::memory_order_release);
         const bool sameGeneration = evidence.writtenGeneration == item.generation;
         if (!sameGeneration) evidence.lastWriterProgressMs = 0;
         if (item.kind != Kind::Start &&

@@ -76,6 +76,7 @@ class AsyncEncoderSink final : public IEncoderSink {
     size_t maxIsoAudioQueue = 96;
     // Bounded wait for teardown's writer join (the finalize grace at shutdown).
     std::chrono::milliseconds finalizeGrace{4000};
+    std::chrono::milliseconds preparationTimeout{15000};
   };
 
   explicit AsyncEncoderSink(std::unique_ptr<IEncoderSink> inner);
@@ -252,6 +253,9 @@ class AsyncEncoderSink final : public IEncoderSink {
     // changed on an applied item would report the last good state forever.
     std::atomic<bool> startApplied{false};
     std::atomic<bool> everProgressed{false};
+    std::atomic<bool> allRecordingWritersCommitted{false};
+    std::atomic<int64_t> preparationRequestedAtMs{0};
+    int64_t preparationTimeoutMs = 15000;
     std::atomic<int64_t> lastProgressAtMs{0};
     std::atomic<bool> degradedWarning{false};
     std::atomic<int64_t> producingStaleMs{::corevideo::core::kProducingProgressStaleMs};

@@ -1369,6 +1369,9 @@ struct EncoderProgress {
   int64_t droppedAudio = 0;
   std::string error;
   std::string warning;
+  // Real file adapters require all selected tracks to commit before the UI
+  // reports Recording. Legacy adapters retain their existing progress contract.
+  bool allRecordingWritersCommitted = true;
 };
 
 class IEncoderSink {

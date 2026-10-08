@@ -1687,7 +1687,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         ? "Turn the CoreVideo engine on or off for this Zoom meeting."
         : "Join a Zoom meeting before turning the engine on.";
 
-    public string RecordingLabel => Recording ? "Recording" : RecordingRequested ? "Starting…" : "Record";
+    public string RecordingLabel => Recording ? "Recording" : RecordingRequested ? "Preparing…" : "Record";
 
     public string StreamingLabel => Streaming ? "Streaming" : StreamingRequested ? "Starting…" : "Stream";
 

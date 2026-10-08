@@ -1562,8 +1562,33 @@ TEST(EncoderRecordingSession, MediaFoundationIndependentIsoWritersDrainAudioVide
   std::vector<float> programPcm(static_cast<size_t>(960) * 2, 0.2f);
   std::array<int64_t, 8> sourceFrames{};
 
+  // The click requests preparation; the promised take starts after every
+  // native source geometry/encoder is ready. No preparation pixels enter files.
+  std::vector<corevideo::modules::IsoSourceVideoFrame> preparationSources;
+  for (int source = 0; source < 8; ++source)
+    preparationSources.push_back(makeIsoI420("zoom:" + std::to_string(source + 1), 640, 360, 0,
+                                             static_cast<uint8_t>(40 + source * 20)));
+  encoder->submitIsoVideo(preparationSources);
+  bool prepared = false;
+  for (int attempt = 0; attempt < 500 && !prepared; ++attempt) {
+    const auto observed = encoder->session();
+    prepared = observed.isoStreams.size() == 8 && std::all_of(observed.isoStreams.begin(), observed.isoStreams.end(),
+        [](const auto& track) { return track.trackOpen; });
+    if (!prepared) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(prepared);
+  EXPECT_FALSE(encoder->progress().allRecordingWritersCommitted);
+  frame.frameNumber = 1;
+  encoder->submit(frame);
+  bool captureStarted = false;
+  for (int attempt = 0; attempt < 500 && !captureStarted; ++attempt) {
+    captureStarted = encoder->session().recordingMuxEpoch100ns > 0;
+    if (!captureStarted) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(captureStarted);
+
   for (int tick = 0; tick < 60; ++tick) {
-    frame.frameNumber = tick + 1;
+    frame.frameNumber = tick + 2;
     encoder->submit(frame);
 
     std::vector<corevideo::modules::IsoSourceVideoFrame> isoVideo;

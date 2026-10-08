@@ -1071,6 +1071,11 @@ class Mp4Writer {
 };
 
 struct IsoWriterEntry {
+  std::atomic<size_t>* committedTrackCount = nullptr;
+  bool committedTrackReported = false; // owning file worker only
+  std::atomic<bool> prepared{false};
+  bool preparationQueued = false; // dispatcher only
+  bool captureEpochAssigned = false; // owning file worker only
   RecordingWriteStallQa writeStallQa;
   std::string sourceId;
   std::string displayName;
@@ -1103,6 +1108,12 @@ struct IsoWriterEntry {
 
 
 void publishIsoTrack(IsoWriterEntry& entry) {
+  if (entry.committedTrackCount && !entry.committedTrackReported &&
+      !entry.failed && entry.writer.videoFrameCount() > 0 &&
+      (!entry.hasAudio || entry.writer.audioSampleCount() > 0)) {
+    entry.committedTrackReported = true;
+    entry.committedTrackCount->fetch_add(1, std::memory_order_release);
+  }
   IsoStreamStatus status;
   status.sourceId = entry.sourceId; status.displayName = entry.displayName;
   status.path = entry.path.string(); status.videoFrameCount = entry.videoFrameCount;
@@ -1113,6 +1124,51 @@ void publishIsoTrack(IsoWriterEntry& entry) {
   status.warning = entry.warning;
   std::lock_guard<std::mutex> lock(entry.snapshotMutex);
   entry.snapshot = std::move(status);
+}
+
+// Prepare a real source's native geometry without retaining its pixel payload.
+// Opening happens only on that file's worker, before the shared take begins.
+bool prepareIsoWriter(IsoWriterEntry& entry, int w, int h, VideoInput input,
+                      const RecordingSessionRequest& request) {
+  if (entry.failed || w <= 0 || h <= 0) return false;
+  const int fps = request.fps > 0 ? request.fps : kDefaultFps;
+  const int bitrate = request.targetBitrateMbps > 0 ? request.targetBitrateMbps : 18;
+  const std::string codec = request.videoCodec.empty() ? "h264" : request.videoCodec;
+  std::string error;
+  if (!entry.opened) {
+    // Lazy open sized to this source's native frame (no scaling). Zoom I420
+    // → NV12 input; BGRA (capture, ISO-3) → RGB32 input.
+    // #286: the AAC audio stream MUST be added UP FRONT — before
+    // BeginWriting — or AddStream fails 0xC00D36B2 and the ISO silently
+    // becomes a track-less/audio-less file. ISO stems are uniformly 48kHz
+    // stereo (matches program); mono source stems are up-mixed to stereo in
+    // submitIsoAudio. Mp4Writer::open() reset audioConfigured_ (the #286
+    // reset), so a REUSED ISO writer re-adds its stream cleanly.
+    //
+    // ISO-3 pairing: only add the audio stream when this source HAS audio —
+    // a Zoom participant, or a capture device with a paired audio input. A
+    // pure-video capture source (a camera with no paired audio) opens
+    // VIDEO-ONLY, so its ISO is honestly video-only, NOT an all-silence AAC
+    // track. submitIsoAudio then skips it (audioConfigured() stays false).
+    if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input,
+                           entry.encoderPath == IsoEncoderPath::Hardware, true) ||
+        (entry.hasAudio &&
+         !entry.writer.ensureAudioStream(2, 48000, request.audioBitrateKbps, error)) ||
+        !entry.writer.beginWriting(error)) {
+      entry.failed = true;
+      entry.warning = "ISO writer open failed for " + entry.displayName + " (" + entry.sourceId +
+                      "): " + error + ".";
+
+      return false;
+    }
+    entry.opened = true;
+    // #482: an MP4 video track has ONE size. Remember what we opened at so
+    // a later frame at another size is CONFORMED rather than handed to the
+    // writer with mismatched dimensions, which cropped or padded it.
+    entry.openedWidth = w;
+    entry.openedHeight = h;
+  }
+  return entry.opened && !entry.failed;
 }
 
 void writeIsoVideo(IsoWriterEntry& entry, const IsoSourceVideoFrame& src,
@@ -1139,42 +1195,9 @@ void writeIsoVideo(IsoWriterEntry& entry, const IsoSourceVideoFrame& src,
     return;
   }
   std::string error;
-  if (!entry.opened) {
-    // Lazy open sized to this source's native frame (no scaling). Zoom I420
-    // → NV12 input; BGRA (capture, ISO-3) → RGB32 input.
-    const int w = haveI420 ? frame.i420Width : frame.pixelWidth;
-    const int h = haveI420 ? frame.i420Height : frame.pixelHeight;
-    const VideoInput input = haveI420 ? VideoInput::Nv12 : VideoInput::Bgra;
-    // #286: the AAC audio stream MUST be added UP FRONT — before
-    // BeginWriting — or AddStream fails 0xC00D36B2 and the ISO silently
-    // becomes a track-less/audio-less file. ISO stems are uniformly 48kHz
-    // stereo (matches program); mono source stems are up-mixed to stereo in
-    // submitIsoAudio. Mp4Writer::open() reset audioConfigured_ (the #286
-    // reset), so a REUSED ISO writer re-adds its stream cleanly.
-    //
-    // ISO-3 pairing: only add the audio stream when this source HAS audio —
-    // a Zoom participant, or a capture device with a paired audio input. A
-    // pure-video capture source (a camera with no paired audio) opens
-    // VIDEO-ONLY, so its ISO is honestly video-only, NOT an all-silence AAC
-    // track. submitIsoAudio then skips it (audioConfigured() stays false).
-    if (!entry.writer.open(entry.path, w, h, fps, bitrate, codec, error, input,
-                           entry.encoderPath == IsoEncoderPath::Hardware, true) ||
-        (entry.hasAudio &&
-         !entry.writer.ensureAudioStream(2, 48000, request.audioBitrateKbps, error)) ||
-        !entry.writer.beginWriting(error)) {
-      entry.failed = true;
-      entry.warning = "ISO writer open failed for " + entry.displayName + " (" + src.sourceId +
-                      "): " + error + ".";
-
-      return;
-    }
-    entry.opened = true;
-    // #482: an MP4 video track has ONE size. Remember what we opened at so
-    // a later frame at another size is CONFORMED rather than handed to the
-    // writer with mismatched dimensions, which cropped or padded it.
-    entry.openedWidth = w;
-    entry.openedHeight = h;
-  }
+  if (!prepareIsoWriter(entry, haveI420 ? frame.i420Width : frame.pixelWidth,
+                        haveI420 ? frame.i420Height : frame.pixelHeight,
+                        haveI420 ? VideoInput::Nv12 : VideoInput::Bgra, request)) return;
   bool ok = false;
   entry.writeStallQa.beforeWrite(entry.sourceId, entry.videoFrameCount);
   if (haveI420) {
@@ -1353,6 +1376,10 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     epochClosing_ = false;
     dispatchActive_ = true;
     activeRequest_ = request_;
+    committedIsoTracks_.store(0, std::memory_order_release);
+    requiredIsoTracks_ = 0;
+    preparedIsoTracks_.store(0, std::memory_order_release);
+    latestIsoReadyAt_.store(0, std::memory_order_release);
     programAudioContinuity_ = {};
     recordingStart_.begin(request_.captureEpoch100ns, (std::numeric_limits<int64_t>::max)());
     session_.recordingMuxEpoch100ns = 0;
@@ -1423,6 +1450,10 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
   void submit(const ProgramFrame& frame) override {
+    // Preparing is outside the take. Do not build raw-frame backlogs while
+    // selected ISO encoders initialize; the live Program path keeps advancing.
+    if (programWorker_ && !muxEpoch_.load(std::memory_order_acquire) &&
+        preparedIsoTracks_.load(std::memory_order_acquire) != requiredIsoTracks_) return;
     if (programWorker_) {
       auto captured = frame;
       if (captured.timelineTimestamp100ns <= 0) captured.timelineTimestamp100ns = now100ns();
@@ -1576,6 +1607,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
 
   void submitRecordingAudioAt(const float* interleaved, int frameCount, int channels, int sampleRate,
                               int64_t timelineTimestamp100ns, std::optional<uint64_t> samplePosition) override {
+    if (programWorker_ && !muxEpoch_.load(std::memory_order_acquire)) return;
     if (programWorker_) {
       if (!interleaved || frameCount <= 0 || channels <= 0) return;
       std::vector<float> pcm(interleaved, interleaved + static_cast<size_t>(frameCount) * channels);
@@ -1688,13 +1720,39 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       if (found == isoIndexBySource_.end()) continue;
       auto& entry = *isoWriters_[found->second];
       ensureIsoWorker(entry);
+      if (entry.worker && !muxEpoch_.load(std::memory_order_acquire)) {
+        if (!entry.preparationQueued && (source.frame.hasI420() || source.frame.hasPixels())) {
+          const bool i420 = source.frame.hasI420();
+          const int width = i420 ? source.frame.i420Width : source.frame.pixelWidth;
+          const int height = i420 ? source.frame.i420Height : source.frame.pixelHeight;
+          const auto input = i420 ? VideoInput::Nv12 : VideoInput::Bgra;
+          const auto request = isoRequest_;
+          entry.preparationQueued = entry.worker->post(RecordingTrackWorker::Kind::Video,
+              [this, &entry, request, width, height, input] {
+                if (prepareIsoWriter(entry, width, height, input, *request)) {
+                  const auto readyAt = now100ns();
+                  auto previous = latestIsoReadyAt_.load(std::memory_order_relaxed);
+                  while (previous < readyAt && !latestIsoReadyAt_.compare_exchange_weak(
+                      previous, readyAt, std::memory_order_release, std::memory_order_relaxed)) {}
+                  entry.prepared.store(true, std::memory_order_release);
+                  preparedIsoTracks_.fetch_add(1, std::memory_order_release);
+                }
+                publishIsoTrack(entry);
+              });
+        }
+        continue;
+      }
       if (entry.worker) {
         const auto request = isoRequest_;
         auto captured = source;
         if (captured.timelineTimestamp100ns <= 0) captured.timelineTimestamp100ns = now100ns();
         const size_t bytes = (captured.frame.i420 ? captured.frame.i420->size() : 0) +
                              (captured.frame.pixels ? captured.frame.pixels->size() : 0);
-        entry.worker->post(RecordingTrackWorker::Kind::Video, [&entry, source = std::move(captured), request] {
+        entry.worker->post(RecordingTrackWorker::Kind::Video, [this, &entry, source = std::move(captured), request] {
+          if (!entry.captureEpochAssigned) {
+            entry.clock.reset(muxEpoch_.load(std::memory_order_acquire));
+            entry.captureEpochAssigned = true;
+          }
           writeIsoVideo(entry, source, *request); publishIsoTrack(entry);
         }, bytes);
       } else { writeIsoVideo(entry, source, *isoRequest_); publishIsoTrack(entry); }
@@ -1710,7 +1768,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   }
 
   void submitIsoAudio(const std::vector<IsoSourceAudio>& sources) override {
-    if (!dispatchActive_ || (!independentIsoWriters_ && !muxEpoch_.load(std::memory_order_acquire))) return;
+    if (!dispatchActive_ || !muxEpoch_.load(std::memory_order_acquire)) return;
     for (const auto& source : sources) {
       const auto found = isoIndexBySource_.find(source.sourceId);
       if (found == isoIndexBySource_.end()) continue;
@@ -1721,7 +1779,11 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
         if (captured.timelineTimestamp100ns <= 0) captured.timelineTimestamp100ns = now100ns();
         const size_t bytes = captured.pcm.size() * sizeof(float);
         const uint64_t samples = captured.frameCount > 0 ? captured.frameCount : 960; // one silent audio tick
-        entry.worker->post(RecordingTrackWorker::Kind::Audio, [&entry, source = std::move(captured)] {
+        entry.worker->post(RecordingTrackWorker::Kind::Audio, [this, &entry, source = std::move(captured)] {
+          if (!entry.captureEpochAssigned) {
+            entry.clock.reset(muxEpoch_.load(std::memory_order_acquire));
+            entry.captureEpochAssigned = true;
+          }
           writeIsoAudio(entry, source); publishIsoTrack(entry);
         }, bytes, samples);
       } else { writeIsoAudio(entry, source); publishIsoTrack(entry); }
@@ -1749,10 +1811,15 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   [[nodiscard]] EncoderProgress progress() const override {
     std::lock_guard<std::mutex> lock(programSnapshotMutex_);
     const auto& observed = programWorker_ ? programSnapshot_ : session_;
-    return EncoderProgress{observed.recordingVideoFrameCount, observed.recordingAudioPacketCount,
-                           observed.encoderQueueDroppedVideoFrames,
-                           observed.encoderQueueDroppedAudioPackets, observed.recordingError,
-                           observed.recordingWarning};
+    auto result = EncoderProgress{programWorker_ ? observed.recordingMuxVideoFrameCount : observed.recordingVideoFrameCount,
+                           observed.recordingAudioPacketCount, observed.encoderQueueDroppedVideoFrames,
+                           observed.encoderQueueDroppedAudioPackets, observed.recordingError, observed.recordingWarning};
+    if (independentIsoWriters_) {
+      result.allRecordingWritersCommitted = observed.recordingMuxVideoFrameCount > 0 &&
+          observed.recordingAudioSampleCount > 0 &&
+          committedIsoTracks_.load(std::memory_order_acquire) == requiredIsoTracks_;
+    }
+    return result;
   }
 
   OutputSession session() const override {
@@ -1859,6 +1926,8 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       for (const auto& id : ids) isoSel.push_back({id, id});
     }
 
+    requiredIsoTracks_ = isoSel.size();
+
     // LOUD refusal (spec §7): never write ISO files into the temp fallback or a
     // non-creatable session folder. Program still records; ISO is disabled.
     if (!isoSel.empty() && (!targetOk || !sessionDirActive_)) {
@@ -1943,6 +2012,7 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
     for (size_t i = 0; i < isoSel.size(); ++i) {
       auto owned = std::make_unique<IsoWriterEntry>();
       auto& entry = *owned;
+      entry.committedTrackCount = &committedIsoTracks_;
       entry.sourceId = isoSel[i].sourceId;
       entry.displayName = isoSel[i].displayName.empty() ? isoSel[i].sourceId : isoSel[i].displayName;
       entry.hasAudio = isoSel[i].hasAudio;  // ISO-3: video-only for an unpaired capture source
@@ -2045,12 +2115,6 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
       return;
     }
     entry.worker = std::make_unique<RecordingTrackWorker>([this, &entry] {
-      {
-        std::unique_lock<std::mutex> lock(epochMutex_);
-        epochCv_.wait(lock, [this] { return muxEpoch_.load(std::memory_order_acquire) != 0 || epochClosing_; });
-        if (!muxEpoch_.load(std::memory_order_acquire)) { entry.failed = true; publishIsoTrack(entry); return; }
-        entry.clock.reset(muxEpoch_.load(std::memory_order_acquire));
-      }
       const auto hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
       entry.comInitialized = SUCCEEDED(hr);
       if (FAILED(hr)) { entry.failed = true; entry.warning = "ISO COM initialization failed: " + hresultString(hr); }
@@ -2292,6 +2356,10 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   OutputSession session_;
   mutable std::mutex programSnapshotMutex_;
   OutputSession programSnapshot_;
+  std::atomic<size_t> committedIsoTracks_{0};
+  std::atomic<size_t> preparedIsoTracks_{0};
+  std::atomic<int64_t> latestIsoReadyAt_{0};
+  size_t requiredIsoTracks_ = 0; // dispatcher-owned, constant through one take
   std::unique_ptr<RecordingTrackWorker> programWorker_;
   bool programWorkerComInitialized_ = false;
   bool dispatchActive_ = false;
@@ -2314,6 +2382,12 @@ class MediaFoundationEncoderSink final : public IEncoderSink {
   // Program chooses the capture epoch. Each ISO owns a clock anchored to that
   // same epoch, so encoding latency cannot move its A/V timeline.
   bool selectProgramEpoch(int64_t scheduled) {
+    if (independentIsoWriters_ && !recordingStart_.epoch()) {
+      if (preparedIsoTracks_.load(std::memory_order_acquire) != requiredIsoTracks_) return false;
+      session_.recordingWriterReadyAt100ns = (std::max)(session_.recordingWriterReadyAt100ns,
+          latestIsoReadyAt_.load(std::memory_order_acquire));
+      recordingStart_.begin(session_.recordingRequestedAt100ns, session_.recordingWriterReadyAt100ns);
+    }
     if (!recordingStart_.select(scheduled)) return false;
     if (session_.recordingMuxEpoch100ns == 0) {
       session_.recordingMuxEpoch100ns = *recordingStart_.epoch();
