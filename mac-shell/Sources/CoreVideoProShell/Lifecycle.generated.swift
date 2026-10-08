@@ -1529,6 +1529,135 @@ func validateArtifactValidationResult(_ value: [String: Any]) -> Bool {
   } else { return false }
   return true;
 }
+struct DeliveryStageAggregateObservation: Codable {
+  var stage: Int
+  var observed: Bool
+  var exportedEvents: Int64
+  var timestampOrderInversions: Int64
+  var reasonCounts: [Int64]
+  var intervalCounts: [Int64]
+  var lastTicks: String? = nil
+  var lastSourceTag: String? = nil
+  var lastSourceEpoch: String? = nil
+  var lastProgramSequence: String? = nil
+  var lastSourceFrameId: String? = nil
+  var lastLayoutTag: String? = nil
+  var lastProgressAgeTicks: String? = nil
+}
+func validateDeliveryStageAggregateObservation(_ value: [String: Any]) -> Bool {
+  if let raw = value["stage"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 10 { return false }
+  } else { return false }
+  if let raw = value["observed"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) != CFBooleanGetTypeID() { return false }
+  } else { return false }
+  if let raw = value["exportedEvents"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["timestampOrderInversions"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["reasonCounts"] {
+    guard let parsed0 = raw as? [Any], parsed0.count >= 5, parsed0.count <= 5 else { return false }
+    for item in parsed0 {
+      guard let parsed1 = item as? NSNumber else { return false }
+      if CFGetTypeID(parsed1) == CFBooleanGetTypeID() { return false }
+      if parsed1.doubleValue.rounded() != parsed1.doubleValue || parsed1.doubleValue < 0 || parsed1.doubleValue > 9007199254740991 { return false }
+    }
+  } else { return false }
+  if let raw = value["intervalCounts"] {
+    guard let parsed0 = raw as? [Any], parsed0.count >= 20, parsed0.count <= 20 else { return false }
+    for item in parsed0 {
+      guard let parsed1 = item as? NSNumber else { return false }
+      if CFGetTypeID(parsed1) == CFBooleanGetTypeID() { return false }
+      if parsed1.doubleValue.rounded() != parsed1.doubleValue || parsed1.doubleValue < 0 || parsed1.doubleValue > 9007199254740991 { return false }
+    }
+  } else { return false }
+  if let raw = value["lastTicks"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  }
+  if let raw = value["lastSourceTag"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  }
+  if let raw = value["lastSourceEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  }
+  if let raw = value["lastProgramSequence"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  }
+  if let raw = value["lastSourceFrameId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  }
+  if let raw = value["lastLayoutTag"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  }
+  if let raw = value["lastProgressAgeTicks"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  }
+  return true;
+}
+struct DeliveryAggregateObservation: Codable {
+  var schemaVersion: String
+  var revision: Int64
+  var observedAtTicks: String
+  var refreshPeriodMs: Int
+  var scope: String
+  var intervalUpperBoundsUs: [Int]
+  var stages: [DeliveryStageAggregateObservation]
+}
+func validateDeliveryAggregateObservation(_ value: [String: Any]) -> Bool {
+  if let raw = value["schemaVersion"] {
+    guard let parsed = raw as? String else { return false }
+    if !["delivery-aggregate-v1"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["revision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 0 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["observedAtTicks"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["refreshPeriodMs"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1000 || parsed.doubleValue > 1000 { return false }
+  } else { return false }
+  if let raw = value["scope"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["intervalUpperBoundsUs"] {
+    guard let parsed0 = raw as? [Any], parsed0.count >= 19, parsed0.count <= 19 else { return false }
+    for item in parsed0 {
+      guard let parsed1 = item as? NSNumber else { return false }
+      if CFGetTypeID(parsed1) == CFBooleanGetTypeID() { return false }
+      if parsed1.doubleValue.rounded() != parsed1.doubleValue || parsed1.doubleValue < 0 || parsed1.doubleValue > 60000000 { return false }
+    }
+  } else { return false }
+  if let raw = value["stages"] {
+    guard let parsed0 = raw as? [Any], parsed0.count >= 10, parsed0.count <= 10 else { return false }
+    for item in parsed0 {
+      guard let parsed1 = item as? [String: Any], validateDeliveryStageAggregateObservation(parsed1) else { return false }
+    }
+  } else { return false }
+  return true;
+}
 struct DeliveryEvidenceObservation: Codable {
   var schemaVersion: String
   var enabled: Bool
@@ -1546,6 +1675,7 @@ struct DeliveryEvidenceObservation: Codable {
   var lost: Int64? = nil
   var exportFailures: Int64? = nil
   var observedAtTicks: String? = nil
+  var aggregate: DeliveryAggregateObservation? = nil
 }
 func validateDeliveryEvidenceObservation(_ value: [String: Any]) -> Bool {
   if let raw = value["schemaVersion"] {
@@ -1618,6 +1748,9 @@ func validateDeliveryEvidenceObservation(_ value: [String: Any]) -> Bool {
   if let raw = value["observedAtTicks"] {
     guard let parsed = raw as? String else { return false }
     if parsed.isEmpty { return false }
+  }
+  if let raw = value["aggregate"] {
+    guard let parsed0 = raw as? [String: Any], validateDeliveryAggregateObservation(parsed0) else { return false }
   }
   return true;
 }

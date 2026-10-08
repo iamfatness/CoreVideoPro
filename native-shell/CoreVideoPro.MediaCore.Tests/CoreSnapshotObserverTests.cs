@@ -31,6 +31,28 @@ public sealed class CoreSnapshotObserverTests
     }
 
     [Fact]
+    public void DeliveryAggregatesSurviveTypedAndQualificationViewsWithoutInventingUnobservedStages()
+    {
+        var fixture = LifecycleContractTests.Fixtures().Single(row => (string)row[0] == "DeliveryEvidenceObservation.aggregate-valid");
+        var json = "{\"deliveryEvidence\":" + (string)fixture[3] + "}";
+        var snapshot = Parse(json);
+        var aggregate = Assert.IsType<CoreVideoPro.MediaCore.Contracts.DeliveryAggregateObservation>(snapshot.DeliveryEvidence?.Aggregate);
+        Assert.Equal("9007199254740993", aggregate.ObservedAtTicks);
+        Assert.Equal(1000, aggregate.RefreshPeriodMs);
+        Assert.Equal(10, aggregate.Stages.Length);
+        Assert.Equal(19, aggregate.IntervalUpperBoundsUs.Length);
+        Assert.All(aggregate.Stages, stage => {
+            Assert.False(stage.Observed); Assert.Null(stage.LastTicks); Assert.Null(stage.LastProgressAgeTicks);
+            Assert.Equal(20, stage.IntervalCounts.Length); Assert.Equal(5, stage.ReasonCounts.Length);
+        });
+        using var qualification = JsonDocument.Parse(CoreObservationModel.Parse(json).QualificationJson());
+        var projected = qualification.RootElement.GetProperty("deliveryEvidence").GetProperty("aggregate");
+        Assert.Equal("9007199254740993", projected.GetProperty("observedAtTicks").GetString());
+        Assert.Equal(10, projected.GetProperty("stages").GetArrayLength());
+        Assert.Null(Parse("{\"deliveryEvidence\":{\"schemaVersion\":\"delivery-evidence-v1\",\"enabled\":false,\"cameraReaderObserved\":false,\"displayObserved\":false,\"sourceAcquisitionObserved\":false}}").DeliveryEvidence?.Aggregate);
+    }
+
+    [Fact]
     public void SrtCaptureHealthSurvivesTheTypedSnapshotProjection()
     {
         var snapshot = Parse("""
