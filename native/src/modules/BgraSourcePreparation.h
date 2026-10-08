@@ -57,7 +57,10 @@ class BgraSourcePreparation {
       // allocations on every owner poll. A new source generation may retry.
       if (attempted_) { if (frame.preparedGpu && frame.preparedGpu->demand) frame.preparedGpu->demand->failed.store(true); return; }
       attempted_ = true;
-      try { initialized_ = pool_.initialize(device, frame.pixelWidth, frame.pixelHeight, frame.sourceEpoch); }
+      // This producer is idle while an upload is pending. Permit its own
+      // nonblocking completion query to submit driver progress, as the general
+      // CPU preparation owner does; Program never operates this context.
+      try { initialized_ = pool_.initialize(device, frame.pixelWidth, frame.pixelHeight, frame.sourceEpoch, false, true); }
       catch (...) { initialized_ = false; }
       if (!initialized_) { pool_ = D3DVideoFramePool{}; if (frame.preparedGpu && frame.preparedGpu->demand) frame.preparedGpu->demand->failed.store(true); ++stats_.failed; return; }
     }
