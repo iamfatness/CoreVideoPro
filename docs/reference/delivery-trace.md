@@ -1,6 +1,6 @@
 # Bounded core delivery trace
 
-The first #823 implementation observes Windows CPU-source preparation GPU
+The first #823 implementation observes Windows CPU-source and shared-memory BGRA preparation GPU
 completion, source upload start/submission/refusal, source draw submission, Program-buffer submission, completed GPU
 snapshot preparation and scheduled delivery. Source request/draw submission identifies
 its exact requested and selected descriptors; it does not prove GPU completion. The later
