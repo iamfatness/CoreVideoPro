@@ -87,6 +87,24 @@ class DeliveryTraceJudgeTests(unittest.TestCase):
             path.write_bytes(header + b"".join(events))
             self.assertEqual(module.judge(path, 0, 2, expected_source_ids=["101"])["result"], "FAIL")
 
+    def test_stage_distributions_keep_source_selection_and_gpu_clock_distinct(self):
+        header, events = self.fixture()
+        rows = [(8, 1000, -1, 18, 50, 0), (9, 1001, -1, 18, 50, 0),
+                (1, 1003, -1, 18, 50, 0), (7, 1004, 0, 19, 10050, 0),
+                (2, 1010, 0, 18, 50, 2), (10, 1011, -1, 19, 10050, 3)]
+        extra = [module.EVENT.pack(77, 42, 7, program, frame, timestamp, observed, 9, stage, reason)
+                 for stage, timestamp, program, frame, observed, reason in rows]
+        values = list(module.HEADER.unpack(header)); values[5] += len(extra)
+        result = self.judge(module.HEADER.pack(*values), extra + events)
+        self.assertEqual(result["result"], "PASS")
+        source = result["sourceStageDistributions"]["42"]
+        self.assertEqual(source["uploadCallMs"]["p50"], .001)
+        self.assertEqual(source["submissionToObservedGpuReadyMs"]["p50"], .002)
+        self.assertEqual(source["observedReadyToDrawMs"]["p50"], .007)
+        self.assertEqual(source["selectionObservationAgeMs"]["p50"], 1)
+        self.assertEqual(source["held"], 1)
+        self.assertEqual(source["uploadRefusals"], 1)
+
     def test_50fps_identity_progress_cannot_pass(self):
         header, events = self.fixture()
         for index, event in enumerate(events):

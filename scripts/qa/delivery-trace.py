@@ -37,6 +37,7 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
             raise ValueError("measurement window outside finalized capture")
         stages, deliveries, misses, sources = {}, [], 0, {}
         gpu_ready, selected, requested, selection_age, drawn = {}, [], {}, [], {}
+        upload_started, upload_submitted, upload_duration, refusals, source_metrics = {}, {}, {}, {}, {}
         for _ in range(count):
             record = source.read(EVENT.size)
             if len(record) != EVENT.size:
@@ -56,6 +57,15 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
             elif stage == 1:
                 key = (tag, source_epoch, frame)
                 gpu_ready[key] = min(timestamp, gpu_ready.get(key, timestamp))
+            elif stage == 8:
+                upload_started[(tag, source_epoch, frame)] = timestamp
+            elif stage == 9:
+                key = (tag, source_epoch, frame)
+                upload_submitted[key] = timestamp
+                if key in upload_started:
+                    upload_duration[key] = timestamp - upload_started[key]
+            elif stage == 10 and baseline <= timestamp <= end:
+                refusals[tag] = refusals.get(tag, 0) + 1
             elif stage == 6 and baseline <= timestamp <= end:
                 misses += 1
             elif stage == 2:
@@ -75,11 +85,18 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
                     errors.append("unavailable or unattributable selected source")
                 sources.setdefault(tag, set()).add(frame)
                 selected.append(((tag, source_epoch, frame), timestamp))
+                metrics = source_metrics.setdefault(tag, {"draws": 0, "held": 0, "ages": [], "readyAges": [], "keys": set()})
+                metrics["draws"] += 1
+                metrics["held"] += reason == 2
+                metrics["keys"].add((tag, source_epoch, frame))
+                if (tag, source_epoch, frame) in gpu_ready:
+                    metrics["readyAges"].append((timestamp - gpu_ready[(tag, source_epoch, frame)]) * 1000 / frequency)
                 wanted = requested.get((program, tag, source_epoch))
                 if wanted is None or wanted[0] < frame or wanted[1] < observed or wanted[2] > timestamp:
                     errors.append("draw missing matching requested source identity")
                 else:
                     selection_age.append((wanted[1] - observed) / 10000)
+                    metrics["ages"].append((wanted[1] - observed) / 10000)
         if require_source_ready:
             for key, timestamp in selected:
                 if key not in gpu_ready or gpu_ready[key] > timestamp:
@@ -108,12 +125,26 @@ def judge(path, warmup=15, minimum=30, start_ticks=None, end_ticks=None, require
             errors.append("Program delivery differs from required 60/1 cadence")
         selection_age.sort()
         percentile = lambda p: selection_age[min(len(selection_age) - 1, int(p * len(selection_age)))] if selection_age else None
+        def distribution(values):
+            values = sorted(values)
+            return {"samples": len(values), "p50": values[int(.5 * len(values))] if values else None,
+                    "p95": values[int(.95 * len(values))] if values else None, "maximum": values[-1] if values else None}
+        per_source = {}
+        for tag, metrics in source_metrics.items():
+            keys = metrics["keys"]
+            per_source[str(tag)] = {"draws": metrics["draws"], "held": metrics["held"], "uniqueSelectedFrames": len(keys),
+                "uploadRefusals": refusals.get(tag, 0),
+                "uploadCallMs": distribution([upload_duration[key] * 1000 / frequency for key in keys if key in upload_duration]),
+                "submissionToObservedGpuReadyMs": distribution([(gpu_ready[key] - upload_submitted[key]) * 1000 / frequency for key in keys if key in gpu_ready and key in upload_submitted]),
+                "observedReadyToDrawMs": distribution(metrics["readyAges"]),
+                "selectionObservationAgeMs": distribution(metrics["ages"])}
         return {"schema": "delivery-trace-verdict-v1", "result": "FAIL" if errors else "PASS",
                 "exported": count, "lost": lost, "exportFailures": failures,
                 "measuredSeconds": seconds, "measurementStartTicks": baseline, "measurementEndTicks": end, "delivered": len(qualified), "gaps": gaps,
                 "reordered": reordered, "misses": misses,
                 "sourceSelectionObservationAgeMs": {"samples": len(selection_age), "p50": percentile(.5), "p95": percentile(.95), "maximum": selection_age[-1] if selection_age else None, "scope": "Requested CPU selection versus actual drawn source observation; not acquisition-to-receiver content latency"},
                 "sourceGpuCompletionRequired": require_source_ready,
+                "sourceStageDistributions": per_source,
                 "selectedSources": {str(tag): len(frames) for tag, frames in sources.items()},
                 "errors": sorted(set(errors)), "releaseQualification": "MISSING_EVIDENCE",
                 "scope": "Core source draw submission and buffered Program GPU completion/delivery only. Camera, display, A/V, actual acquisition/content latency and fleet remain unobserved."}
