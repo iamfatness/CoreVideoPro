@@ -5,6 +5,7 @@ import argparse, pathlib, json, time, hashlib, mmap, struct, threading, uuid, sy
 from contextlib import ExitStack
 from monitor_evidence import Core, judge, counters, judge_recording, SourceAdmissionJudge
 from render_work_evidence import judge as judge_render_work
+from periodic_snapshots import periodic_snapshots
 
 
 def fixed(route_id, pid):
@@ -88,6 +89,7 @@ def main():
         "renderWorkJudgeSha256": hashlib.sha256(
             pathlib.Path(__file__).with_name("render_work_evidence.py").read_bytes()
         ).hexdigest(),
+        "periodicSamplingSha256": hashlib.sha256(pathlib.Path(__file__).with_name("periodic_snapshots.py").read_bytes()).hexdigest(),
         "sourceCommit": a.source_commit,
         "gradePreviews": a.grade_previews,
         "buildConfiguration": "Release (operator supplied binary)",
@@ -463,26 +465,24 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 raise RuntimeError("isolation mode changed")
 
         retain(first)
-        while time.monotonic() - before < a.duration:
-            retain(sync())
-            time.sleep(0.25)
+        last = first
+        for last in periodic_snapshots(sync, before + a.duration):
+            retain(last)
             if time.monotonic() - previous_progress >= 30:
                 print(
                     label + " measuring " + str(round(time.monotonic() - before)) + "s",
                     flush=True,
                 )
                 previous_progress = time.monotonic()
-        last = sync()
         if a.delivery_trace:
             value = last.get("deliveryEvidence", {}).get("observedAtTicks")
             if not isinstance(value, str) or not value.isdecimal():
                 raise RuntimeError("requested delivery trace has no final core clock observation")
             trace_end = int(value)
-        retain(last)
         seconds = time.monotonic() - before
         if grade_sources:
             facts = last.get("gradePreview", {})
-            if not facts.get("supported") or facts.get("activeEditors") != len(grade_sources) or facts.get("completed", 0) <= 0 or facts.get("failed") != 0:
+            if not facts.get("supported") or facts.get("activeEditors") != len(grade_sources) or facts.get("completed", 0) <= 0 or facts.get("failed") != 0 or facts.get("retainedInputs") != len(grade_sources):
                 raise RuntimeError("native grade worker did not complete the requested workload")
         result = {
             "gradePreviews": len(grade_sources),

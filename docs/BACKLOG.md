@@ -127,6 +127,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#838](https://github.com/iamfatness/CoreVideoPro/issues/838) | Mixed-source QA duplicates initial/final observations before preparation can advance, producing a false 250 ms source-stall judgment. Sampling repair and regression included in #837; pending merge. Unranked intake; no production rank change. |
 | [#834](https://github.com/iamfatness/CoreVideoPro/issues/834) | Windows CI app-exit trace reader can hit a sharing violation while the child appends to trace.txt. Initial main CI failed; unchanged-head retry passed. Make the bounded trace wait tolerate concurrent writes while preserving cleanup assertions. Unranked; not a confirmed production regression. |
 | [#825](https://github.com/iamfatness/CoreVideoPro/issues/825) | Disabled-preparation/inline qualification lost six packets in three pairs: a late Preparing head became expired Ready and remained at the following deadline. Suspected wait-predicate amplification needs deterministic real-GPU reproduction; does not establish why the first preparation was late. Unranked; current #802/#823 work continues. |
 | [#823](https://github.com/iamfatness/CoreVideoPro/issues/823) | Remaining owner-approved #517 delivery diagnostics: bounded per-frame trace, native/C#/Swift observations, source/output identity and latency attribution. Continues the parent qualification scope after #802; no independent rank or default change. |
