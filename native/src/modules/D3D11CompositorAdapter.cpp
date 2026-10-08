@@ -2006,15 +2006,22 @@ class D3D11Compositor final : public ICompositor {
     if (!renderTarget_ || !context_ || targetWidth_ <= 0 || targetHeight_ <= 0) {
       return;
     }
-    prewarmEncoderExport();
-    // A stream's encode path is chosen from the handle on its STARTING frame, so
-    // this caller cannot skip a frame the way a tile can. The export is normally
-    // ready long before (prewarmEncoderExport runs every render); if a stream
-    // starts within the ~20 ms it takes to create, wait for it here, bounded.
-    // That is the cost this path always paid, now only in that one case.
-    if (!encoderExport_ || !encoderExport_->waitUntilReady(std::chrono::milliseconds(250))) {
-      if (encoderExport_ && !encoderExport_->valid()) encoderExport_.reset();
-      return;
+    {
+      GpuSubmissionCpuScope readiness(profileGpuSubmission_, "encoder", 0, frame.frameNumber,
+          GpuSubmissionCpuScope::Kind::Readiness);
+      prewarmEncoderExport();
+      readiness.boundary();
+      // A stream's encode path is chosen from the handle on its STARTING frame, so
+      // this caller cannot skip a frame the way a tile can. The export is normally
+      // ready long before (prewarmEncoderExport runs every render); if a stream
+      // starts within the ~20 ms it takes to create, wait for it here, bounded.
+      // That is the cost this path always paid, now only in that one case.
+      const bool ready = encoderExport_ && encoderExport_->waitUntilReady(std::chrono::milliseconds(250));
+      readiness.boundary();
+      if (!ready) {
+        if (encoderExport_ && !encoderExport_->valid()) encoderExport_.reset();
+        return;
+      }
     }
     submitEncoderExport(frame, submitPixels);
   }
@@ -3084,6 +3091,7 @@ class D3D11Compositor final : public ICompositor {
   int64_t programProductionSlot_ = -1, programProductionAnchorNs_ = 0;
   mutable std::mutex programBufferMutex_;
   std::shared_ptr<D3DProgramBuffer> programBuffer_;
+  const bool profileGpuSubmission_ = GpuSubmissionCpuScope::requested();
   uint64_t programBufferGeneration_ = 0;
   std::string retainedProgramHandle_;
   std::shared_ptr<const void> retainedProgramOwner_;

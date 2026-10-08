@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/BoundedAsyncLog.h"
+#include "modules/GpuSubmissionCpuScope.h"
 
 // Windows-only, included by the D3D adapter after the SDK headers.
 #include "compositor/ComPtrLite.h"
@@ -47,6 +48,9 @@ class D3DDecoupledExport {
   D3DDecoupledExport(ID3D11Device* producer, int width, int height, const char* label,
                      Creation creation = Creation::Immediate)
       : width_(width), height_(height), label_(label) {
+    if (profileSubmission_) ::corevideo::core::nativeLogf(
+        "[gpu-submit-scope-v1] owner=%s epoch=%llu enabled=1 clock=steady-nanoseconds threshold_ns=8000000\n",
+        label_, static_cast<unsigned long long>(submissionEpoch_));
     if (creation == Creation::Immediate) {
       if (!initialize(producer)) { state_.store(kFailed, std::memory_order_release); return; }
       state_.store(kReady, std::memory_order_release);
@@ -129,6 +133,7 @@ class D3DDecoupledExport {
   // the frame (bounded, non-blocking) when every slot is still in flight.
   bool submit(ID3D11DeviceContext* producer, ID3D11Texture2D* src, int64_t frameNumber = 0) {
     if (!ready() || !src) return false;
+    GpuSubmissionCpuScope timing(profileSubmission_, label_, submissionEpoch_, frameNumber);
     Slot* slot = nullptr;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -137,15 +142,20 @@ class D3DDecoupledExport {
         if (candidate->state == State::Free) { slot = candidate.get(); slot->state = State::Writing; break; }
       }
     }
+    timing.boundary();
     if (!slot) { ++dropped_; return false; }
-    if (slot->producerMutex->AcquireSync(0, 0) != S_OK) {
+    const auto acquired = slot->producerMutex->AcquireSync(0, 0);
+    timing.boundary();
+    if (acquired != S_OK) {
       std::lock_guard<std::mutex> lock(mutex_);
       slot->state = State::Free;
       ++producerBusy_;
       return false;
     }
     producer->CopyResource(slot->texture.get(), src);
+    timing.boundary();
     slot->producerMutex->ReleaseSync(1);
+    timing.boundary();
     {
       std::lock_guard<std::mutex> lock(mutex_);
       slot->state = State::Submitted;
@@ -153,6 +163,7 @@ class D3DDecoupledExport {
       queue_.push_back(slot);
     }
     changed_.notify_one();
+    timing.boundary();
     return true;
   }
 
@@ -306,6 +317,9 @@ class D3DDecoupledExport {
 
   int width_, height_;
   const char* label_;
+  inline static std::atomic<std::uint64_t> nextSubmissionEpoch_{0};
+  const std::uint64_t submissionEpoch_ = ++nextSubmissionEpoch_;
+  const bool profileSubmission_ = GpuSubmissionCpuScope::requested();
   // Written by whichever thread runs initialize(). Everything initialize() fills is
   // read by the caller only after this reads kReady.
   static constexpr int kPending = 0, kReady = 1, kFailed = 2;
