@@ -1587,9 +1587,6 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
   if (pendingFrameEvents_.size() >= kMaxPendingZoomFrameEvents) {
     pendingFrameEvents_.erase(pendingFrameEvents_.begin());
   }
-  const auto encodeStarted = timing ? timing->thumbnailStarted() : 0;
-  auto encoded = base64Encode(thumb.data(), thumb.size());
-  if (timing) timing->thumbnailFinished(encodeStarted);
   pendingFrameEvents_.emplace_back(rpc::Json::Object{
       {"type", "zoom-video-frame"},
       {"frame",
@@ -1602,7 +1599,12 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
            {"emitWallMs", static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::system_clock::now().time_since_epoch())
                               .count())},
-           {"bgraBase64", std::move(encoded)},
+           {"bgraBase64", [&] {
+              const auto encodeStarted = timing ? timing->thumbnailStarted() : 0;
+              auto encoded = base64Encode(thumb.data(), thumb.size());
+              if (timing) timing->thumbnailFinished(encodeStarted);
+              return encoded;
+           }()},
        }},
   });
 }
