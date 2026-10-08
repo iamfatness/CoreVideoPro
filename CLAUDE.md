@@ -183,6 +183,7 @@ phrase they quote.
 | [`docs/reference/secrets-and-oauth.md`](docs/reference/secrets-and-oauth.md) | secrets storage, OAuth return URI |
 | [`docs/reference/shared-texture-export-cost.md`](docs/reference/shared-texture-export-cost.md) | creating D3D exports / anything new on the render thread |
 | [`docs/reference/source-bus.md`](docs/reference/source-bus.md) | the source bus, ingests, bus health, slates, hold/black |
+| [`docs/reference/source-grading-spec.md`](docs/reference/source-grading-spec.md) | per-source grade compatibility, expanded editor, native preview and scopes |
 | [`docs/reference/srt-ingest.md`](docs/reference/srt-ingest.md) | SRT contribution feeds in |
 | [`docs/reference/stream-failure-reasons.md`](docs/reference/stream-failure-reasons.md) | stream error surfacing |
 | [`docs/reference/studioviewmodel-strangler.md`](docs/reference/studioviewmodel-strangler.md) | adding anything to `StudioViewModel.cs` or extracting from it |

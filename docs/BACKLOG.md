@@ -83,8 +83,9 @@ October 8: "It is my top rank." Deliver Basic/Advanced expansion, a shared nativ
 grade path, editable master/R/G/B curves and all three truthful scopes as the first
 usable slice. The grading portion of #764 is integrated into this work; its other
 settings findings keep their existing rank. Qualified primary controls, real LUT
-import/stack and reusable presets extend that same implementation. #835 contains
-the design and acceptance contract. New live incidents may still preempt the queue.
+import/stack and reusable presets extend that same implementation. The
+[source grading specification](reference/source-grading-spec.md) defines the design
+and acceptance contract linked from #835. New live incidents may still preempt the queue.
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|

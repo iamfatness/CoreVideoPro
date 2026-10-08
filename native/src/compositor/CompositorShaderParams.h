@@ -11,6 +11,7 @@
 #include <cstdint>
 
 #include "modules/Interfaces.h"
+#include "compositor/ColorGradeParams.h"
 
 namespace corevideo::modules {
 
@@ -92,6 +93,14 @@ inline void applyYuvParams(LayerShaderConstants* constants, const YuvShaderParam
   constants->yuvCoeffs[1] = params.gU;
   constants->yuvCoeffs[2] = params.gV;
   constants->yuvCoeffs[3] = params.bU;
+}
+
+inline void applyColorGradeParams(LayerShaderConstants* constants, const CompositorColorGrade& grade) {
+  const auto p = colorGradeParams(grade);
+  constants->exposure = p.exposure;
+  constants->contrast = p.contrast;
+  constants->saturation = p.saturation;
+  constants->temperature = p.temperature;
 }
 
 }  // namespace corevideo::modules

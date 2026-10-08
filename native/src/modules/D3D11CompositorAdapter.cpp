@@ -86,8 +86,7 @@ bool frameHasContent(const VideoFrame& frame) {
 // export path uses this to keep its fast copy for the common ungraded source and
 // only pay the extra shader pass when a grade actually needs to be baked in.
 bool gradeIsIdentity(const CompositorColorGrade& grade) {
-  return grade.exposure == 0.f && grade.contrast == 0.f &&
-         grade.saturation == 0.f && grade.temperature == 0.f;
+  return colorGradeIsIdentity(grade);
 }
 
 uint32_t rgbaToSignature(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
@@ -691,8 +690,7 @@ class D3D11Compositor final : public ICompositor {
   };
 
   static bool gradesEqual(const CompositorColorGrade& a, const CompositorColorGrade& b) {
-    return a.exposure == b.exposure && a.contrast == b.contrast &&
-           a.saturation == b.saturation && a.temperature == b.temperature;
+    return colorGradesEqual(a, b);
   }
 
   // Per-source GPU texture cache entry. Every source with a stable identity
@@ -1083,10 +1081,7 @@ class D3D11Compositor final : public ICompositor {
     constants->color[2] = static_cast<float>(colorArgb & 0xff) / 255.f;
     constants->color[3] = alpha;
     const auto grade = layer.plan.hasColorGrade ? layer.plan.colorGrade : renderPlan.colorGrade;
-    constants->exposure = grade.exposure * 0.1f;
-    constants->contrast = grade.contrast * 0.1f;
-    constants->saturation = grade.saturation * 0.1f;
-    constants->temperature = grade.temperature * 0.1f;
+    applyColorGradeParams(constants, grade);
     constants->uvScale[0] = uvScaleX;
     constants->uvScale[1] = uvScaleY;
     constants->uvOffset[0] = uvOffsetX;
@@ -1853,10 +1848,7 @@ class D3D11Compositor final : public ICompositor {
     auto* constants = static_cast<LayerShaderConstants*>(mapped.pData);
     *constants = {};
     constants->color[0] = constants->color[1] = constants->color[2] = constants->color[3] = 1.f;
-    constants->exposure = grade.exposure * 0.1f;
-    constants->contrast = grade.contrast * 0.1f;
-    constants->saturation = grade.saturation * 0.1f;
-    constants->temperature = grade.temperature * 0.1f;
+    applyColorGradeParams(constants, grade);
     constants->uvScale[0] = constants->uvScale[1] = 1.f;
     constants->uvOffset[0] = constants->uvOffset[1] = 0.f;
     applyYuvParams(constants, yuvShaderParamsForFrame(frame));
