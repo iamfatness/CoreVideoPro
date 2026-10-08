@@ -203,6 +203,12 @@ Json JsonRpcServer::handle(const Json& request) {
         {"setting", mediaCore_.setZoomGuestAvSyncOffset(participantId, requested)}});
   }
 
+  if (hasType(request, "set-grade-preview")) {
+    if (!mediaCore_.configureGradePreview(request))
+      return failure(id, "protocol-error", "Invalid grading preview identity or revision.");
+    return success(id, Json::Object{{"type", "grade-preview-control"}, {"accepted", true}});
+  }
+
   if (hasType(request, "connect-capture-device")) {
     const Json* payload = request.get("payload");
     if (!payload || !payload->isObject()) {
@@ -604,6 +610,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           enqueueFrame(event.stringify());
         }
         for (const auto& event : mediaCore_.drainParticipantSharedTextureEvents()) {
+          enqueueFrame(event.stringify());
+        }
+        for (const auto& event : mediaCore_.drainGradePreviewEvents()) {
           enqueueFrame(event.stringify());
         }
         // The multiview shared-texture event is tiny and emitted only on
@@ -1143,6 +1152,9 @@ void JsonRpcServer::flushFrameEvents(std::ostream& output) {
     output << event.stringify() << '\n';
   }
   for (const auto& event : mediaCore_.drainParticipantSharedTextureEvents()) {
+    output << event.stringify() << '\n';
+  }
+  for (const auto& event : mediaCore_.drainGradePreviewEvents()) {
     output << event.stringify() << '\n';
   }
   for (const auto& event : mediaCore_.drainMultiviewSharedTextureEvents()) {

@@ -223,6 +223,7 @@ CapabilityReport capabilityReport(const modules::ModuleSet& modules, bool zoomCo
   const bool gpu = modules.compositor && modules.compositor->rendererName() != "software";
   intrinsic("chroma-key", gpu);
   intrinsic("smart-framing", gpu);
+  intrinsic("source-grade-preview", modules.compositor && modules.compositor->supportsGradePreview());
   factory("local-audio-capture");
   factory("audio-monitor-output");
   const char* zoomState = COREVIDEO_WITH_ZOOM && zoomConfigured ? "available" : "omitted";
@@ -1017,6 +1018,7 @@ rpc::Json MediaCore::sessionState() const {
   }
   const auto capturePreparation = modules_.captureDevice->shmCapturePreparationDiagnostics();
   const auto monitorWorker = modules_.compositor->monitorDiagnostics();
+  state.emplace("gradePreview", gradePreviews_.diagnostics(*modules_.compositor));
   state.emplace("deliveryEvidence", core::deliveryEvidenceSnapshot());
   state.emplace("realtimeEvidence", rpc::Json::Object{
       {"capturePreparation", rpc::Json::Object{
@@ -1633,6 +1635,12 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
   return sessionState();
 }
 
+bool MediaCore::configureGradePreview(const rpc::Json& command) {
+  const auto* grade = command.get("grade");
+  return gradePreviews_.configure(command, grade ? readColorGrade(*grade) : modules::CompositorColorGrade{},
+      modules_.compositor->supportsGradePreview());
+}
+
 void MediaCore::applyCommandMutation(const rpc::Json& command) {
   const std::string type = command.getString("type");
   if (type == "begin-take-transition") {
@@ -1647,6 +1655,8 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setOverlayAsset(command);
   } else if (type == "set-color-grade") {
     setColorGrade(command);
+  } else if (type == "set-grade-preview") {
+    if (!configureGradePreview(command)) commandProtocolFailures_.push_back("invalid-grade-preview");
   } else if (type == "set-source-policy") {
     setSourcePolicy(command);
   } else if (type == "set-output-profile") {
@@ -7590,6 +7600,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // number to stamp audio with, but must not take coreMutex to read one.
   lastProgramFrameNumberAtomic_.store(lastProducedFrameNumber_,
                                       std::memory_order_relaxed);
+  gradePreviews_.tick(videoFrames, *modules_.compositor, lastProducedFrameNumber_);
   // Mark a new program frame for the video-out tick. Only the COUNTER moves here
   // (atomic, free); the wakeup itself is deliberately NOT sent under coreMutex —
   // the caller sends it via notifyProgramFramePublished() after releasing the

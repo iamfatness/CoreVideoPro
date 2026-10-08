@@ -2,6 +2,7 @@
     x:Class="CoreVideoPro.WinUI.Views.ColorGradeEditorWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:CoreVideoPro.WinUI.Controls"
     xmlns:vm="using:CoreVideoPro.WinUI.ViewModels"
     Title="Color grade">
 
@@ -35,27 +36,7 @@
                     BorderBrush="{StaticResource StudioBorderBrush}"
                     BorderThickness="1"
                     CornerRadius="6">
-                <Grid>
-                    <Image x:Name="GradedPreviewImage"
-                           Stretch="Uniform"
-                           HorizontalAlignment="Stretch"
-                           VerticalAlignment="Stretch" />
-                    <StackPanel x:Name="PreviewPlaceholder"
-                                HorizontalAlignment="Center"
-                                VerticalAlignment="Center"
-                                Width="280"
-                                Spacing="6">
-                        <TextBlock Text="Waiting for source video"
-                                   Foreground="{StaticResource StudioTextBrush}"
-                                   FontWeight="SemiBold"
-                                   TextAlignment="Center" />
-                        <TextBlock Text="Turn the source on or select a live camera or Zoom feed to preview the grade."
-                                   Foreground="{StaticResource StudioMutedBrush}"
-                                   FontSize="12"
-                                   TextWrapping="WrapWholeWords"
-                                   TextAlignment="Center" />
-                    </StackPanel>
-                </Grid>
+                <controls:VideoSurfaceHost SurfaceState="{x:Bind ViewModel.NativeSurface, Mode=OneWay}" />
             </Border>
 
             <TextBlock Grid.Row="2"
@@ -73,6 +54,8 @@
 
             <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Spacing="14">
+                    <ToggleSwitch Header="Apply edits live" IsOn="{x:Bind ViewModel.LiveEditing, Mode=TwoWay}" />
+                    <ToggleSwitch Header="Compare original (monitor only)" IsOn="{x:Bind ViewModel.CompareOriginal, Mode=TwoWay}" />
                     <StackPanel Spacing="4">
                         <TextBlock Text="Built-in look" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
                         <ComboBox ItemsSource="{x:Bind vm:ColorGradeEditorViewModel.LutOptions}"
@@ -144,7 +127,7 @@
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <Button Grid.Column="0"
-                        Content="Done"
+                        Content="Apply and Done"
                         HorizontalAlignment="Stretch"
                         Command="{x:Bind ViewModel.SaveCommand}" />
                 <Button Grid.Column="1"

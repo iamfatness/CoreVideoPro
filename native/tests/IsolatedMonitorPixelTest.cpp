@@ -31,7 +31,8 @@ std::unique_ptr<ICompositor> isolatedCompositor() {
 
 // Independently opens and consumes the exported pixels, rather than trusting
 // the job's metadata or the compositor's submission counter.
-uint32_t consumeCenter(const ProgramFrameSharedTexture& exported, float x = .5f) {
+template <typename Texture>
+uint32_t consumeCenter(const Texture& exported, float x = .5f) {
   ComPtrLite<ID3D11Device> device;
   ComPtrLite<ID3D11DeviceContext> context;
   if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
@@ -84,6 +85,82 @@ MonitorRenderRequest requestAtSize(int size) {
   return request;
 }
 }
+
+
+namespace {
+GradePreviewSurface awaitGrade(ICompositor& compositor, MonitorRenderRequest request, const std::string& id, int64_t revision) {
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (std::chrono::steady_clock::now() < end) {
+    compositor.submitGradePreviews(request);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    auto result = compositor.latestGradePreviews();
+    if (!result) continue;
+    for (const auto& surface : result->gradePreviews)
+      if (surface.demand.instanceId == id && surface.demand.revision == revision &&
+          !surface.texture.sharedHandleHex.empty()) return surface;
+  }
+  return {};
+}
+uint32_t previewCenter(const ProgramFrame& frame) {
+  const auto& bytes = frame.preview.bgra;
+  const auto at = ((frame.preview.height / 2) * frame.preview.width + frame.preview.width / 2) * 4;
+  if (bytes.size() < static_cast<size_t>(at + 4)) return 0;
+  return (uint32_t(bytes[at+3]) << 24) | (uint32_t(bytes[at+2]) << 16) | (uint32_t(bytes[at+1]) << 8) | bytes[at];
+}
+void gradePixelParity(bool i420) {
+  auto compositor = isolatedCompositor(); ASSERT_TRUE(compositor != nullptr);
+  ASSERT_TRUE(compositor->supportsGradePreview());
+  auto request = requestAtSize(64); request.programPlan.skipCpuReadback = false;
+  auto& source = request.frames.front(); source.sourceEpoch = 8; source.captureTimestamp100ns = 1234;
+  if (i420) {
+    source.pixels.reset(); source.pixelStride = 0;
+    source.i420 = std::make_shared<std::vector<uint8_t>>(64*64*3/2, 110);
+    source.i420Width = source.i420Height = 64;
+  }
+  const auto neutral = previewCenter(compositor->render(request.programPlan, request.frames)); ASSERT_NE(neutral, 0u);
+  request.previewActive = request.multiviewActive = false;
+  CompositorColorGrade warm; warm.lut = "warm-film";
+  request.gradePreviews.push_back({"draft", "test", 1, warm});
+  auto grade = awaitGrade(*compositor, request, "draft", 1);
+  ASSERT_EQ(grade.demand.revision, 1); EXPECT_EQ(grade.sourceEpoch, 8u);
+  EXPECT_EQ(grade.sourceFrameId, source.frameId); EXPECT_EQ(grade.captureTimestamp100ns, 1234);
+  const auto pixel = consumeCenter(grade.texture); ASSERT_NE(pixel, 0u); EXPECT_NE(pixel, neutral);
+  // Editing a private preview leaves Program unchanged.
+  EXPECT_EQ(previewCenter(compositor->render(request.programPlan, request.frames)), neutral);
+  request.programPlan.layers[0].hasColorGrade = true; request.programPlan.layers[0].colorGrade = warm;
+  const auto applied = previewCenter(compositor->render(request.programPlan, request.frames));
+  for (int shift : {0, 8, 16}) EXPECT_LE(std::abs(int((pixel >> shift) & 255) - int((applied >> shift) & 255)), 1);
+  // A held source is regraded without changing its source frame identity.
+  request.gradePreviews[0].revision = 2; request.gradePreviews[0].grade = {};
+  grade = awaitGrade(*compositor, request, "draft", 2);
+  ASSERT_EQ(grade.demand.revision, 2); EXPECT_EQ(grade.sourceFrameId, source.frameId);
+  const auto reset = consumeCenter(grade.texture);
+  for (int shift : {0, 8, 16}) EXPECT_LE(std::abs(int((reset >> shift) & 255) - int((neutral >> shift) & 255)), 1);
+  // A second editor has its own export; its churn cannot prune the held first editor.
+  request.gradePreviews.push_back({"other", "test", 1, warm});
+  auto other = awaitGrade(*compositor, request, "other", 1);
+  ASSERT_NE(other.texture.sharedHandleHex, grade.texture.sharedHandleHex);
+  for (int revision = 2; revision < 38; ++revision) {
+    request.gradePreviews[1].revision = revision;
+    ASSERT_EQ(awaitGrade(*compositor, request, "other", revision).demand.revision, revision);
+  }
+  ASSERT_EQ(awaitGrade(*compositor, request, "draft", 2).demand.instanceId, "draft");
+  request.frames.clear();
+  grade = awaitGrade(*compositor, request, "draft", 2);
+  ASSERT_EQ(grade.status, "held"); EXPECT_EQ(grade.sourceEpoch, 8u);
+  compositor->submitGradePreviews({});
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < end) {
+    auto latest = compositor->latestGradePreviews();
+    if (latest && latest->gradePreviews.empty()) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(compositor->latestGradePreviews()->gradePreviews.empty());
+  EXPECT_EQ(compositor->gradePreviewDiagnostics().retainedInputs, 0u);
+}
+}
+TEST(GradePreviewPixels, BgraDraftMatchesNativeProgramAndRetiresPrivateEditors) { gradePixelParity(false); }
+TEST(GradePreviewPixels, I420DraftMatchesNativeProgramAndRetiresPrivateEditors) { gradePixelParity(true); }
 
 TEST(PreparedSourcePixels, BgraGpuViewKeepsCpuI420ForIsoWithoutSelectingYuvShader) {
   const char* gpuRaw = std::getenv("COREVIDEO_GPU_CAPTURE");

@@ -3,6 +3,7 @@
 #include "compositor/TilesMembership.h"
 #include "compositor/TilesPlanAnimation.h"
 #include "core/TilesWallSource.h"
+#include "core/GradePreviewController.h"
 #include "core/Director.h"
 #include "core/MonitorShedPolicy.h"
 #include "core/RenderWorkDistribution.h"
@@ -146,6 +147,8 @@ class MediaCore {
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramSharedTextureEvents();
   [[nodiscard]] std::vector<rpc::Json> drainParticipantSharedTextureEvents();
+  [[nodiscard]] std::vector<rpc::Json> drainGradePreviewEvents() { return gradePreviews_.drain(); }
+  bool configureGradePreview(const rpc::Json& command);
   [[nodiscard]] std::vector<rpc::Json> drainMultiviewSharedTextureEvents();
   [[nodiscard]] std::vector<rpc::Json> drainPreviewSharedTextureEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);
@@ -825,6 +828,7 @@ class MediaCore {
   int previewRouteCount_ = 0;
   int previewOverlayCount_ = 0;
   modules::CompositorColorGrade previewColorGrade_;
+  GradePreviewController gradePreviews_;
   std::map<std::string, OverlayAssetState> previewOverlayAssets_;
   std::string previewSceneSignature_;
   // Structural signature (handle + dims) of the last emitted preview-shared-texture

@@ -128,3 +128,34 @@ Any additional missed output deadline fails performance acceptance; average FPS 
 an advancing UI counter cannot waive it. Verify bounded memory/resources during
 rapid edits and open/close cycles. Missing receiver or live-meeting evidence remains
 unverified. A specification or synthetic pass does not close #835.
+
+## Native Basic preview implementation
+
+The Basic editor sends an instance/source/revision demand through the small
+`set-grade-preview` RPC acknowledgement. It does not request a production sync
+snapshot. Edits coalesce on a 100 ms control timer; a 500 ms heartbeat renews a
+three-second native lease. Up to three editors share one replaceable pending job.
+Closing or shell shutdown releases demand; a lost close expires the lease.
+
+D3D11 allocates a separate monitor device lazily on its worker, on Program's
+adapter. Only selected immutable source references enter that worker. GPU inputs
+must use monitor-private representations; production capture leases are stripped.
+The existing native source-export shader applies the grade at source resolution,
+without scene framing, borders, overlays, or CPU pixel processing. Each editor
+has its own shared texture. Removing the final demand destroys the backend on its
+owner. Unsupported builds acknowledge the command and report unavailable.
+
+Observations carry editor, source, draft revision, source epoch/frame and capture
+time. Export publication must match retained attribution before emission. The
+shell rejects another editor/source or an older revision. New edits clear the old
+picture while preparing. Unavailable inputs hold their actual prior source identity;
+a source frame that does not advance for one second is labeled stale. Snapshot
+`gradePreview` reports worker submissions/completions/failures and retained inputs,
+with physical display presentation explicitly unverified.
+
+Basic defaults to clearly labeled live editing, preserving its existing apply
+behavior. Turning it off keeps edits private until Apply and Done; comparison
+uses a neutral monitor demand and never changes the applied grade. Closing a draft
+discards it. Closing does not undo edits already applied live. The workspace can
+maximize. This increment does not yet implement the versioned advanced document,
+curves, scopes, stack, imported LUTs, or acknowledged apply/rollback semantics.

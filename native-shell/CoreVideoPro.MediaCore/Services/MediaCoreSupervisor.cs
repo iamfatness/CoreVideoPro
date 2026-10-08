@@ -94,6 +94,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
     public event Action<ProgramSharedTexture>? PreviewSharedTextureReceived;
     public event Action<ParticipantSharedTexture>? ParticipantSharedTextureReceived;
+    public event Action<GradePreviewObservation>? GradePreviewReceived;
     public event Action<MultiviewSharedTexture>? MultiviewSharedTextureReceived;
 
     public MediaCoreHealth Health
@@ -428,6 +429,18 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
             throw new InvalidOperationException(
                 message ?? $"the native media core rejected the {commandName} command");
         }
+    }
+
+    public async Task SetGradePreviewAsync(string instanceId, string sourceId, long revision,
+        bool enabled, MediaCoreColorGradeWire grade, CancellationToken cancellationToken = default)
+    {
+        using var response = await SendAsync(new Dictionary<string, object?> {
+            ["id"] = NextId(), ["type"] = "set-grade-preview", ["instanceId"] = instanceId,
+            ["sourceId"] = sourceId, ["revision"] = revision, ["enabled"] = enabled,
+            ["grade"] = new { lut = grade.Lut, exposure = grade.Exposure, contrast = grade.Contrast,
+                saturation = grade.Saturation, temperature = grade.Temperature }
+        }, cancellationToken).ConfigureAwait(false);
+        ThrowIfRejected(response, "set-grade-preview");
     }
 
     public async Task<NativeMediaCoreProfile?> HandshakeAsync(CancellationToken cancellationToken = default)
@@ -1286,6 +1299,12 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 continue;
             }
 
+            var gradePreview = GradePreviewProtocol.Parse(line);
+            if (gradePreview is not null)
+            {
+                try { GradePreviewReceived?.Invoke(gradePreview); } catch { }
+                continue;
+            }
             var participantTextureEvent = CoreProtocolParser.TryParseParticipantSharedTextureEvent(line);
             if (participantTextureEvent is not null)
             {

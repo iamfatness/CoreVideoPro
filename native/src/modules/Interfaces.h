@@ -1052,6 +1052,18 @@ struct SourceMonitorDemand {
   SourceMonitorConsumer consumer = SourceMonitorConsumer::PreviewFallback;
   std::string instance;
 };
+struct GradePreviewDemand {
+  std::string instanceId, sourceId;
+  int64_t revision = 0;
+  CompositorColorGrade grade;
+};
+struct GradePreviewSurface {
+  GradePreviewDemand demand;
+  uint64_t sourceEpoch = 0;
+  int64_t sourceFrameId = 0, captureTimestamp100ns = 0;
+  ParticipantSharedTexture texture;
+  std::string status = "unavailable", reason;
+};
 struct MonitorRenderRequest {
   int64_t sequence = 0;
   CompositorRenderPlan programPlan;
@@ -1061,6 +1073,7 @@ struct MonitorRenderRequest {
   std::vector<std::string> unavailableInputs;
   std::vector<MultiviewTileRect> tiles;
   std::vector<SourceMonitorDemand> sourceExports;
+  std::vector<GradePreviewDemand> gradePreviews;
   bool multiviewActive = false;
   bool previewActive = false;
   bool bufferedProgram = false;
@@ -1079,6 +1092,7 @@ struct MonitorRenderResult {
   ProgramFrameSharedTexture preview;
   std::vector<MultiviewTileRect> tiles;
   std::vector<ParticipantSharedTexture> sources;
+  std::vector<GradePreviewSurface> gradePreviews;
   double workMs = 0;
   uint64_t readyInputs = 0, heldInputs = 0, unavailableInputs = 0;
   uint64_t retainedInputs = 0, retainedInputBytes = 0, retentionRefusals = 0;
@@ -1111,6 +1125,10 @@ class ICompositor {
   virtual void submitMonitors(MonitorRenderRequest /*request*/) {}
   [[nodiscard]] virtual std::shared_ptr<const MonitorRenderResult> latestMonitors() const { return {}; }
   [[nodiscard]] virtual MonitorRenderDiagnostics monitorDiagnostics() const { return {}; }
+  [[nodiscard]] virtual bool supportsGradePreview() const { return false; }
+  virtual void submitGradePreviews(MonitorRenderRequest /*request*/) {}
+  [[nodiscard]] virtual std::shared_ptr<const MonitorRenderResult> latestGradePreviews() const { return {}; }
+  [[nodiscard]] virtual MonitorRenderDiagnostics gradePreviewDiagnostics() const { return {}; }
   // Startup-only configuration. Unsupported compositors report zero active
   // frames, so consumers must not introduce an unmatched audio delay.
   virtual void configureProgramBuffer(int /*frames*/) {}

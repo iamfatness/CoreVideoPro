@@ -1,265 +1,95 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Models;
+using System.Globalization;
 
 namespace CoreVideoPro.WinUI.ViewModels;
 
-/// <summary>
-/// View-model backing the per-source color grade pop-out window. Edits a working
-/// copy of a <see cref="ColorGrade"/> and publishes live grade/preview updates.
-/// </summary>
+/// <summary>Grade controls and native observations only; never processes pixels.</summary>
 public sealed partial class ColorGradeEditorViewModel : ObservableObject
 {
-    private const int MaxPreviewWidth = 640;
-    private byte[]? _sourcePreviewBgra;
-    private int _sourcePreviewWidth;
-    private int _sourcePreviewHeight;
-
-    /// <summary>Built-in looks; these are not imported .cube LUT files.</summary>
     public static IReadOnlyList<string> LutOptions { get; } =
         ["none", "neutral", "warm-film", "cool-broadcast", "punch"];
 
-    public ColorGradeEditorViewModel(
-        string sourceId,
-        string sourceName,
-        ColorGrade grade,
-        VideoSurfaceState? previewSurface = null)
+    public ColorGradeEditorViewModel(string sourceId, string sourceName, ColorGrade grade)
     {
-        SourceId = sourceId;
-        SourceName = sourceName;
-        _lut = grade.Lut;
-        _exposure = grade.Exposure;
-        _contrast = grade.Contrast;
-        _saturation = grade.Saturation;
-        _temperature = grade.Temperature;
-        SetPreviewSurface(previewSurface);
+        SourceId = sourceId; SourceName = sourceName;
+        _lut = grade.Lut; _exposure = grade.Exposure; _contrast = grade.Contrast;
+        _saturation = grade.Saturation; _temperature = grade.Temperature;
+        _nativeSurface = WaitingSurface();
     }
-
+    public string InstanceId { get; } = Guid.NewGuid().ToString("N");
     public string SourceId { get; }
-
     public string SourceName { get; }
-
     public string HeaderTitle => $"Color grade - {SourceName}";
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(Summary))]
-    private string _lut;
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(Summary))]
-    private int _exposure;
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(Summary))]
-    private int _contrast;
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(Summary))]
-    private int _saturation;
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(Summary))]
-    private int _temperature;
-
-    [ObservableProperty]
-    private byte[]? _gradedPreviewBgra;
-
-    [ObservableProperty]
-    private int _gradedPreviewWidth;
-
-    [ObservableProperty]
-    private int _gradedPreviewHeight;
-
-    [ObservableProperty]
-    private string _previewStatus = "Waiting for source preview frames.";
-
-    public string Summary => BuildGrade().Summary;
-
-    public bool HasPreview => GradedPreviewBgra is { Length: > 0 } && GradedPreviewWidth > 0 && GradedPreviewHeight > 0;
-
+    public long Revision { get; private set; }
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(Summary))] private string _lut;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(Summary))] private int _exposure;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(Summary))] private int _contrast;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(Summary))] private int _saturation;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(Summary))] private int _temperature;
+    [ObservableProperty] private bool _liveEditing = true;
+    [ObservableProperty] private bool _compareOriginal;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(HasPreview))] private VideoSurfaceState _nativeSurface;
+    [ObservableProperty] private string _previewStatus = "Waiting for native grading preview.";
+    public string Summary => CurrentGrade.Summary;
+    public bool HasPreview => NativeSurface.PendingSharedHandle is { IsValid: true };
+    public ColorGrade CurrentGrade => new() { Lut = Lut, Exposure = Exposure, Contrast = Contrast,
+        Saturation = Saturation, Temperature = Temperature };
+    public ColorGrade PreviewGrade => CompareOriginal ? new() { Lut = "none" } : CurrentGrade;
+    public event EventHandler? PreviewRequested;
     public event EventHandler<ColorGrade>? GradeChanged;
-
     public event EventHandler<ColorGrade>? GradeSaved;
-
     public event EventHandler? Closed;
-
-    public void SetPreviewSurface(VideoSurfaceState? surface)
-    {
-        if (surface?.HasPreviewBitmap != true)
-        {
-            _sourcePreviewBgra = null;
-            _sourcePreviewWidth = 0;
-            _sourcePreviewHeight = 0;
-            GradedPreviewBgra = null;
-            GradedPreviewWidth = 0;
-            GradedPreviewHeight = 0;
-            PreviewStatus = surface is null
-                ? "Waiting for this source to publish preview frames."
-                : $"{surface.Title}: {surface.StatusLine}";
-            OnPropertyChanged(nameof(HasPreview));
-            return;
-        }
-
-        PreviewStatus = $"{surface.Title}: {surface.StatusLine}";
-        _sourcePreviewBgra = surface.PreviewBgra;
-        _sourcePreviewWidth = surface.PreviewWidth;
-        _sourcePreviewHeight = surface.PreviewHeight;
-        RebuildPreview(surface.PreviewBgra!, surface.PreviewWidth, surface.PreviewHeight);
-    }
-
-    [RelayCommand]
-    private void Save()
-    {
-        GradeSaved?.Invoke(this, BuildGrade());
-    }
-
-    [RelayCommand]
-    private void Close()
-    {
-        Closed?.Invoke(this, EventArgs.Empty);
-    }
-
     partial void OnLutChanged(string value) => OnGradeEdited();
-
     partial void OnExposureChanged(int value) => OnGradeEdited();
-
     partial void OnContrastChanged(int value) => OnGradeEdited();
-
     partial void OnSaturationChanged(int value) => OnGradeEdited();
-
     partial void OnTemperatureChanged(int value) => OnGradeEdited();
-
+    partial void OnCompareOriginalChanged(bool value) => RequestPreview();
+    partial void OnLiveEditingChanged(bool value) { if (value) GradeChanged?.Invoke(this, CurrentGrade); }
     private void OnGradeEdited()
     {
-        if (_sourcePreviewBgra is { Length: > 0 })
-        {
-            RebuildPreview(_sourcePreviewBgra, _sourcePreviewWidth, _sourcePreviewHeight);
-        }
-
-        GradeChanged?.Invoke(this, BuildGrade());
-        OnPropertyChanged(nameof(HasPreview));
+        RequestPreview();
+        if (LiveEditing) GradeChanged?.Invoke(this, CurrentGrade);
     }
-
-    private ColorGrade BuildGrade() => new()
+    private void RequestPreview()
     {
-        Lut = Lut,
-        Exposure = Exposure,
-        Contrast = Contrast,
-        Saturation = Saturation,
-        Temperature = Temperature
-    };
-
-    private void RebuildPreview(byte[] sourceBgra, int sourceWidth, int sourceHeight)
-    {
-        if (sourceBgra.Length != sourceWidth * sourceHeight * 4 || sourceWidth <= 0 || sourceHeight <= 0)
-        {
-            GradedPreviewBgra = null;
-            GradedPreviewWidth = 0;
-            GradedPreviewHeight = 0;
-            OnPropertyChanged(nameof(HasPreview));
-            return;
-        }
-
-        var targetWidth = sourceWidth;
-        var targetHeight = sourceHeight;
-        if (sourceWidth > MaxPreviewWidth)
-        {
-            var scale = MaxPreviewWidth / (double)sourceWidth;
-            targetWidth = MaxPreviewWidth;
-            targetHeight = Math.Max(1, (int)Math.Round(sourceHeight * scale));
-        }
-
-        var graded = new byte[targetWidth * targetHeight * 4];
-        var grade = BuildGrade();
-        for (var y = 0; y < targetHeight; y++)
-        {
-            var sourceY = Math.Min(sourceHeight - 1, (int)(y * (sourceHeight / (double)targetHeight)));
-            for (var x = 0; x < targetWidth; x++)
-            {
-                var sourceX = Math.Min(sourceWidth - 1, (int)(x * (sourceWidth / (double)targetWidth)));
-                var sourceOffset = ((sourceY * sourceWidth) + sourceX) * 4;
-                var targetOffset = ((y * targetWidth) + x) * 4;
-                ApplyGrade(
-                    sourceBgra[sourceOffset + 2],
-                    sourceBgra[sourceOffset + 1],
-                    sourceBgra[sourceOffset],
-                    grade,
-                    out graded[targetOffset + 2],
-                    out graded[targetOffset + 1],
-                    out graded[targetOffset]);
-                graded[targetOffset + 3] = sourceBgra[sourceOffset + 3];
-            }
-        }
-
-        GradedPreviewBgra = graded;
-        GradedPreviewWidth = targetWidth;
-        GradedPreviewHeight = targetHeight;
-        OnPropertyChanged(nameof(HasPreview));
+        ++Revision;
+        NativeSurface = WaitingSurface();
+        PreviewStatus = CompareOriginal ? "Preparing original source comparison (monitor only)." : "Applying draft to native preview.";
+        PreviewRequested?.Invoke(this, EventArgs.Empty);
     }
-
-    private static void ApplyGrade(
-        byte red,
-        byte green,
-        byte blue,
-        ColorGrade grade,
-        out byte gradedRed,
-        out byte gradedGreen,
-        out byte gradedBlue)
+    public void SetNativeUnavailable(string reason)
     {
-        var exposure = grade.Exposure / 100.0;
-        var contrast = 1.0 + grade.Contrast / 100.0;
-        var saturation = 1.0 + grade.Saturation / 100.0;
-        var temperature = grade.Temperature / 100.0;
-
-        ApplyLutOffsets(grade.Lut, ref exposure, ref contrast, ref saturation, ref temperature);
-
-        var r = Clamp01((red / 255.0) + exposure + temperature * 0.08);
-        var g = Clamp01((green / 255.0) + exposure);
-        var b = Clamp01((blue / 255.0) + exposure - temperature * 0.08);
-
-        r = Clamp01(((r - 0.5) * contrast) + 0.5);
-        g = Clamp01(((g - 0.5) * contrast) + 0.5);
-        b = Clamp01(((b - 0.5) * contrast) + 0.5);
-
-        var luminance = (r * 0.2126) + (g * 0.7152) + (b * 0.0722);
-        r = Clamp01(luminance + ((r - luminance) * saturation));
-        g = Clamp01(luminance + ((g - luminance) * saturation));
-        b = Clamp01(luminance + ((b - luminance) * saturation));
-
-        gradedRed = ToByte(r);
-        gradedGreen = ToByte(g);
-        gradedBlue = ToByte(b);
+        NativeSurface = WaitingSurface() with { StatusLine = reason };
+        PreviewStatus = reason;
     }
-
-    private static void ApplyLutOffsets(
-        string? lut,
-        ref double exposure,
-        ref double contrast,
-        ref double saturation,
-        ref double temperature)
+    public void ObserveNativePreview(GradePreviewObservation observation)
     {
-        switch (lut)
+        if (observation.InstanceId != InstanceId || observation.SourceId != SourceId || observation.Revision != Revision) return;
+        var label = observation.Status switch {
+            "ready" => CompareOriginal ? "Original source — monitor comparison only" : "Native graded source",
+            "stale" => "Source is not advancing — last native image held",
+            "held" => "Source unavailable — last native image held",
+            "preparing" => "Preparing native grading preview",
+            _ => $"Native preview unavailable: {observation.Reason}"
+        };
+        PreviewStatus = label;
+        if (observation.Status is not ("ready" or "held" or "stale") || observation.Texture is not { } texture ||
+            string.IsNullOrEmpty(texture.SharedHandleHex) ||
+            !ulong.TryParse(texture.SharedHandleHex.Replace("0x", "", StringComparison.OrdinalIgnoreCase),
+                NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var handle) || handle == 0)
         {
-            case "warm-film":
-                contrast += 0.05;
-                saturation += 0.05;
-                temperature += 0.16;
-                break;
-            case "cool-broadcast":
-                contrast += 0.04;
-                temperature -= 0.14;
-                break;
-            case "punch":
-                contrast += 0.12;
-                saturation += 0.16;
-                break;
-            case "neutral":
-                contrast += 0.02;
-                break;
+            NativeSurface = WaitingSurface() with { StatusLine = label }; return;
         }
+        NativeSurface = WaitingSurface() with { StatusLine = label,
+            PendingSharedHandle = new SharedTextureHandle { NtHandle = handle, Width = texture.Width,
+                Height = texture.Height, Format = texture.Format, FrameNumber = texture.FrameNumber } };
     }
-
-    private static double Clamp01(double value) => Math.Clamp(value, 0, 1);
-
-    private static byte ToByte(double value) => (byte)Math.Clamp((int)Math.Round(value * 255), 0, 255);
+    private VideoSurfaceState WaitingSurface() => VideoSurfaceState.Waiting(VideoSurfaceKind.Participant,
+        $"grade:{InstanceId}", SourceName);
+    [RelayCommand] private void Save() => GradeSaved?.Invoke(this, CurrentGrade);
+    [RelayCommand] private void Close() => Closed?.Invoke(this, EventArgs.Empty);
 }

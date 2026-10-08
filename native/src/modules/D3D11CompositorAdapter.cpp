@@ -139,7 +139,7 @@ class D3D11Compositor final : public ICompositor {
       gpuConsumer_ = D3DVideoConsumers::add(device_.get(), monitorBackend);
       gpuReadLeases_ = std::make_unique<D3DVideoReadLeases>(device_.get(), context_.get());
     }
-    if (isolateMonitors) {
+    if (isolateMonitors || !monitorBackend) {
       ComPtrLite<IDXGIDevice> dxgi;
       auto adapter = std::make_shared<ComPtrLite<IDXGIAdapter>>();
       if (FAILED(device_->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(dxgi.put()))) ||
@@ -161,14 +161,36 @@ class D3D11Compositor final : public ICompositor {
           };
       // Register the monitor device even before a capture has its first private
       // monitor copy; otherwise admission and device creation wait on each other.
-      monitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor] {
-        renderMonitor({}); // initialize on the owner without publishing a completed job
-      });
-      core::nativeLogf("[monitor-worker] isolation=enabled pending_capacity=1\n");
+      if (isolateMonitors) {
+        monitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor] {
+          renderMonitor({}); // initialize on the owner without publishing a completed job
+        });
+        core::nativeLogf("[monitor-worker] isolation=enabled pending_capacity=1\n");
+      }
+      if (!monitorBackend) {
+        auto gradeBackend = std::make_shared<std::unique_ptr<D3D11Compositor>>();
+        gradeWorker_ = std::make_unique<MonitorRenderWorker>(
+            [adapter, gradeBackend](const MonitorRenderRequest& request) {
+          if (request.gradePreviews.empty()) {
+            gradeBackend->reset(); // release devices/exports on their owner, never Program
+            return MonitorRenderResult{};
+          }
+          if (!*gradeBackend) {
+            ComPtrLite<ID3D11Device> device;
+            ComPtrLite<ID3D11DeviceContext> context;
+            if (FAILED(D3D11CreateDevice(adapter->get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+                device.put(), nullptr, context.put()))) throw std::runtime_error("grade device unavailable");
+            *gradeBackend = std::make_unique<D3D11Compositor>(std::move(device), std::move(context), false, true, true);
+          }
+          return (*gradeBackend)->renderGradeBatch(request);
+        });
+      }
     }
   }
 
   ~D3D11Compositor() override {
+    gradeWorker_.reset();
     monitorWorker_.reset();
     gpuReadLeases_.reset();
     { std::lock_guard<std::mutex> lock(programBufferMutex_); programBuffer_.reset(); }
@@ -176,6 +198,18 @@ class D3D11Compositor final : public ICompositor {
   }
 
   std::string rendererName() const override { return "d3d11"; }
+  bool supportsGradePreview() const override { return gradeWorker_ != nullptr; }
+  void submitGradePreviews(MonitorRenderRequest request) override {
+    if (!gradeWorker_) return;
+    prepareMonitorFrames(request);
+    gradeWorker_->submit(std::move(request));
+  }
+  std::shared_ptr<const MonitorRenderResult> latestGradePreviews() const override {
+    return gradeWorker_ ? gradeWorker_->latest() : nullptr;
+  }
+  MonitorRenderDiagnostics gradePreviewDiagnostics() const override {
+    return gradeWorker_ ? gradeWorker_->diagnostics() : MonitorRenderDiagnostics{};
+  }
   bool hasIsolatedMonitors() const override { return monitorWorker_ != nullptr; }
   void submitMonitors(MonitorRenderRequest request) override {
     if (!monitorWorker_) return;
@@ -601,7 +635,73 @@ class D3D11Compositor final : public ICompositor {
     context_->Flush();
     return result;
   }
-  std::unique_ptr<MonitorRenderWorker> monitorWorker_;
+  MonitorRenderResult renderGradeBatch(const MonitorRenderRequest& request) {
+    frameNumber_ = request.sequence;
+    MonitorRenderResult result;
+    CompositorRenderPlan plan;
+    std::vector<VideoFrame> aliases;
+    for (const auto& demand : request.gradePreviews) {
+      GradePreviewSurface observation; observation.demand = demand;
+      const auto source = std::find_if(request.frames.begin(), request.frames.end(),
+          [&](const auto& frame) { return frame.participantId == demand.sourceId; });
+      if (source == request.frames.end() || !source->hasContent()) {
+        observation.reason = "source-unavailable";
+        result.gradePreviews.push_back(std::move(observation));
+        continue;
+      }
+      const auto alias = "grade:" + demand.instanceId;
+      auto& stamp = gradeStamps_[alias];
+      if (!stamp.token || stamp.revision != demand.revision || stamp.sourceId != demand.sourceId ||
+          stamp.epoch != source->sourceEpoch || stamp.frame != source->frameId) {
+        stamp = {demand.sourceId, demand.revision, source->sourceEpoch, source->frameId, ++gradeToken_};
+      }
+      observation.sourceEpoch = source->sourceEpoch;
+      observation.sourceFrameId = source->frameId;
+      observation.captureTimestamp100ns = source->captureTimestamp100ns;
+      observation.status = std::find(request.unavailableInputs.begin(), request.unavailableInputs.end(),
+          demand.sourceId) == request.unavailableInputs.end() ? "ready" : "held";
+      observation.reason = observation.status == "held" ? "source-unavailable" : "";
+      gradeHistory_[{alias, stamp.token}] = observation;
+      auto frame = *source; frame.participantId = alias; frame.frameId = stamp.token;
+      aliases.push_back(std::move(frame));
+      CompositorRenderPlanLayer layer;
+      layer.participantId = alias; layer.sourceId = alias;
+      layer.hasColorGrade = true; layer.colorGrade = demand.grade;
+      plan.layers.push_back(std::move(layer));
+    }
+    ProgramFrame exported;
+    exportParticipantTextures(plan, aliases, exported);
+    for (const auto& texture : exported.participantSharedTextures) {
+      const auto prior = gradeHistory_.find({texture.participantId, texture.frameNumber});
+      if (prior == gradeHistory_.end()) continue; // no invented attribution for a pending copy
+      auto observation = prior->second; observation.texture = texture;
+      result.gradePreviews.push_back(std::move(observation));
+    }
+    const auto demanded = [&](const std::string& alias) {
+      return std::any_of(request.gradePreviews.begin(), request.gradePreviews.end(),
+          [&](const auto& demand) { return "grade:" + demand.instanceId == alias; });
+    };
+    for (auto it = sourceTextures_.begin(); it != sourceTextures_.end();)
+      it = demanded(it->first) ? std::next(it) : sourceTextures_.erase(it);
+    for (auto it = gradeStamps_.begin(); it != gradeStamps_.end();)
+      it = demanded(it->first) ? std::next(it) : gradeStamps_.erase(it);
+    for (auto it = gradeHistory_.begin(); it != gradeHistory_.end();)
+      it = !demanded(it->first.first) || (gradeToken_ - it->first.second > 32 && gradeStamps_.at(it->first.first).token != it->first.second)
+          ? gradeHistory_.erase(it) : std::next(it);
+    if (gpuReadLeases_) gpuReadLeases_->finish();
+    context_->Flush();
+    return result;
+  }
+  struct GradeStamp {
+    std::string sourceId;
+    int64_t revision = 0;
+    uint64_t epoch = 0;
+    int64_t frame = 0, token = 0;
+  };
+  int64_t gradeToken_ = 0;
+  std::map<std::string, GradeStamp> gradeStamps_;
+  std::map<std::pair<std::string, int64_t>, GradePreviewSurface> gradeHistory_;
+  std::unique_ptr<MonitorRenderWorker> monitorWorker_, gradeWorker_;
   std::shared_ptr<D3DVideoConsumer> gpuConsumer_;
   std::unique_ptr<D3DVideoReadLeases> gpuReadLeases_;
   bool strictCpuSources_ = false;

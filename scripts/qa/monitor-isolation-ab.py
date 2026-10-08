@@ -51,6 +51,7 @@ def main():
     ap.add_argument("--gpu-submission-timing", action="store_true", help="Opt-in slow CPU call-scope attribution for internal encoder/monitor handoffs; not GPU-duration or driver-cause proof")
     ap.add_argument("--zoom-handoff-timing", action="store_true", help="Opt-in slow CPU scopes for Zoom handoff mutex waits and thumbnail encoding; not owner/driver-cause proof")
     ap.add_argument("--normal-logging", action="store_true", help="Leave native verbose diagnostics off; existing harness default remains verbose for attribution")
+    ap.add_argument("--grade-previews", type=int, choices=range(4), default=0, help="Open up to three native draft monitors with 2 Hz lease refresh; pixel/UI proof is separate")
     ap.add_argument("--duration", type=float, default=120)
     ap.add_argument("--pairs", type=int, default=3)
     ap.add_argument("--warmup", type=float, default=10)
@@ -88,6 +89,7 @@ def main():
             pathlib.Path(__file__).with_name("render_work_evidence.py").read_bytes()
         ).hexdigest(),
         "sourceCommit": a.source_commit,
+        "gradePreviews": a.grade_previews,
         "buildConfiguration": "Release (operator supplied binary)",
         "flags": {
             "COREVIDEO_PROGRAM_BUFFER_FRAMES": "2",
@@ -173,6 +175,8 @@ def run_trial(a, exe, fake, out, label, isolated, results):
     publisher = None
     trace_path = out / (label + ".trace.bin")
     trace_start = trace_end = None
+    last_grade_refresh = 0
+    grade_sources = ["101", "102", "capture:qa-screen"][:a.grade_previews]
     admission_judge = SourceAdmissionJudge(
         ["capture:" + route["captureDeviceId"] if route["mode"] == "capture-input" else route["participantId"]
          for route in program_routes(a.program_scene)], a.cpu_source_preparation == "1")
@@ -200,6 +204,14 @@ def run_trial(a, exe, fake, out, label, isolated, results):
         )
 
     def sync(commands=None):
+        nonlocal last_grade_refresh
+        if grade_sources and time.monotonic() - last_grade_refresh >= .5:
+            for index, source in enumerate(grade_sources):
+                reply = core.request({"type": "set-grade-preview", "instanceId": f"qa-grade-{index}",
+                    "sourceId": source, "revision": 1, "enabled": True,
+                    "grade": {"lut": "warm-film"}})
+                assert reply.get("ok"), "grade demand refused"
+            last_grade_refresh = time.monotonic()
         response = core.sync(commands or [], int((time.monotonic() - start) * 1000))
         assert response and response.get("ok"), "sync failed " + str(response)
         return response["snapshot"]
@@ -220,6 +232,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "programSourceAdmission",
                 "deliveryEvidence",
                 "nativeDiagnostics",
+                "gradePreview",
             ]
         }
 
@@ -467,7 +480,13 @@ def run_trial(a, exe, fake, out, label, isolated, results):
             trace_end = int(value)
         retain(last)
         seconds = time.monotonic() - before
+        if grade_sources:
+            facts = last.get("gradePreview", {})
+            if not facts.get("supported") or facts.get("activeEditors") != len(grade_sources) or facts.get("completed", 0) <= 0 or facts.get("failed") != 0:
+                raise RuntimeError("native grade worker did not complete the requested workload")
         result = {
+            "gradePreviews": len(grade_sources),
+            "gradePreviewObservation": last.get("gradePreview"),
             "label": label,
             "isolated": isolated,
             "seconds": seconds,

@@ -82,3 +82,11 @@ Its result does not certify GPU completion or release qualification.
 ```powershell
 python -m unittest discover -s scripts/qa -p test_monitor_evidence.py -v
 ```
+
+`--grade-previews 1|2|3` adds private native warm-film draft monitors, with
+2 Hz lease refresh, without applying their grades to Program. Three selects two
+Zoom sources and the BGRA screen mapping. The manifest pins the count; snapshots
+retain measured `gradePreview` worker facts. Run otherwise identical trials with
+`0` and `3` to compare the overhead. Worker completion is required, but does not
+prove preview pixels or shell presentation; the native pixel tests cover the
+former and an operator window/resize soak must cover the latter.
