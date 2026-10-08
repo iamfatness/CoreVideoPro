@@ -53,13 +53,16 @@ struct DeliveryTraceCapture::State {
   std::function<void()> beforeExport;
   DeliveryTraceHeader header;
   DeliveryTraceAggregate aggregate;
-  std::atomic<std::shared_ptr<const rpc::Json>> aggregateSnapshot;
+  // Only the exporter and diagnostic snapshot reader touch this cache.
+  // Keep the short pointer handoff portable to libc++; media append never locks it.
+  std::mutex aggregateMutex;
+  std::shared_ptr<const rpc::Json> aggregateSnapshot;
   std::int64_t lastAggregateAt = 0;
   std::uint64_t aggregateRevision = 0;
   explicit State(std::string value, std::function<void()> hook) : path(std::move(value)), beforeExport(std::move(hook)) {
     header.clockFrequency = frequency(); header.started = deliveryTraceNow();
     header.sessionEpoch = static_cast<std::uint64_t>(header.started);
-    aggregateSnapshot.store(std::make_shared<const rpc::Json>(aggregate.snapshot(header.started, header.clockFrequency, 0)));
+    aggregateSnapshot = std::make_shared<const rpc::Json>(aggregate.snapshot(header.started, header.clockFrequency, 0));
     lastAggregateAt = header.started;
     for (std::size_t i = 0; i < capacity; ++i) slots[i].sequence.store(i);
   }
@@ -67,8 +70,12 @@ struct DeliveryTraceCapture::State {
     const auto now = deliveryTraceNow();
     if (!final && now - lastAggregateAt < static_cast<std::int64_t>(header.clockFrequency)) return;
     auto completed = std::make_shared<const rpc::Json>(aggregate.snapshot(now, header.clockFrequency, ++aggregateRevision));
-    aggregateSnapshot.store(std::move(completed));
+    { std::lock_guard<std::mutex> lock(aggregateMutex); aggregateSnapshot = std::move(completed); }
     lastAggregateAt = now;
+  }
+  std::shared_ptr<const rpc::Json> readAggregate() {
+    std::lock_guard<std::mutex> lock(aggregateMutex);
+    return aggregateSnapshot;
   }
   bool pop(DeliveryTraceEvent& event) {
     const auto position = tail.load(std::memory_order_relaxed);
@@ -172,7 +179,7 @@ rpc::Json DeliveryTraceCapture::snapshot() const {
     {"exported", static_cast<double>(state_->exported.load())},
     {"lost", static_cast<double>(state_->lost.load())},
     {"exportFailures", static_cast<double>(state_->failures.load())},
-    {"aggregate", *state_->aggregateSnapshot.load()},
+    {"aggregate", *state_->readAggregate()},
     {"cameraReaderObserved", false}, {"displayObserved", false}, {"sourceAcquisitionObserved", false},
     {"boundaries", "source-gpu-ready/source-requested/source-draw-submitted/program-submitted/program-gpu-ready/program-delivered"}};
 }
