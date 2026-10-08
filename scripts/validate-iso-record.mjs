@@ -246,6 +246,14 @@ try {
     await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
     const snap = (await send("media-core-sync", { elapsedMs: Date.now() - startedAt, commands: [] })).snapshot;
     snapshots.push(snap);
+    if (snap.recording?.lifecycle?.state === "producing") {
+      const proof = snap.recording.proof ?? {};
+      const files = snap.recording.streams ?? [];
+      const isos = files.filter(file => file.kind === "iso");
+      if (!(proof.recordingMuxEpoch100ns > 0 && proof.recordingMuxVideoFrameCount > 0 && proof.audioSampleCount > 0) ||
+          isos.length !== sourceCount || isos.some(file => !(file.muxVideoFrameCount > 0 && file.audioSamples > 0)))
+        failures.push("UI Recording state preceded committed media in a required file");
+    }
     if (!lossBaseline && (snap.recording?.proof?.programFrameCount ?? 0) > 120)
       lossBaseline = snap;
     lastStreams = isoStreamsOf(snap);

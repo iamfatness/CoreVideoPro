@@ -72,6 +72,19 @@ Hand off frame references, not pixel copies, until a writer must convert or enco
 
 Default depth is 10 frames of video per writer, Program included. That matches the vMix recording-memory recommendation and is a capacity limit, not intentional latency. At 60 fps a full queue is about 167 ms of file delay, not 167 ms of on-air delay.
 
+On Windows, selected ISO writers open during Preparing, using their source's
+native geometry and configuring audio before BeginWriting. Program chooses the
+shared capture boundary only after all selected pipelines are ready. Media
+between readiness and publication of that boundary is retained and trimmed to
+the common epoch; writer initialization is outside the take. Geometry changes
+while preparation is pending invalidate that writer's readiness. After readiness,
+the existing conformer handles geometry changes without reopening the file.
+
+The UI shows Preparing until Program and every selected ISO have committed real
+video and configured audio. Program progress alone cannot publish Recording.
+Missing readiness fails after 15 seconds; Stop during preparation cannot publish
+Recording. Capture timestamps and the elapsed timer use the actual shared epoch.
+
 Startup retains the existing bounded burst allowance (at most 96 video items,
 also subject to the file's byte reservation) until the first committed sample's
 backlog drains into the steady-state limit. Codec open may exceed the ten-frame
@@ -109,7 +122,7 @@ size change. A byte refusal must remain distinguishable from a full video FIFO.
 | Disk slower than realtime for less than the queue | Frames land late in the file. No drop counter increment | Unchanged |
 | Queue full | That writer drops, charges itself, surfaces `recording.warning` with the source name | Unchanged |
 | Program queue full | Program recording warns. ISO queues are not raided to save Program | Unchanged |
-| Writer open fails | That file is refused and loud. Program still records | Unchanged |
+| Selected writer open fails | That file is refused and loud; the take cannot claim Recording and preparation times out | Unchanged |
 | Core restart mid-record | Existing resume-in-a-new-folder behavior. Queues do not survive the process | Unchanged |
 
 Unknown delivery stays unknown. A queue depth reading is not proof the file is playable. Finalization evidence remains the playable-file check.
