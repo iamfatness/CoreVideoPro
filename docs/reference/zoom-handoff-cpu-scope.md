@@ -29,3 +29,10 @@ Absent/dropped records remain unknown. Preserve the raw delivery trace and
 independent output/recording failures. Hold the flag constant in matched
 instrumentation comparisons. No beta or parent qualification follows from an
 activation marker or a clean short run.
+
+The harness's `--normal-logging` option leaves ordinary native verbose
+diagnostics off. Its existing default remains verbose for attribution, and the
+manifest records that choice as `verboseDiagnostics`. The explicit slow-call
+flag operates independently of ordinary verbose logging. Hold both choices
+constant when making matched comparisons; diagnostic runs do not replace the
+required normal-logging regression.
