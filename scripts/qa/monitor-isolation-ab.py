@@ -49,6 +49,8 @@ def main():
     ap.add_argument("--delivery-trace", action="store_true", help="Explicit per-trial bounded core trace; its independent verdict remains separate from release qualification")
     ap.add_argument("--render-work-distribution", action="store_true", help="Independent bounded CPU timing collector; enable identically in trace-on/off comparisons")
     ap.add_argument("--gpu-submission-timing", action="store_true", help="Opt-in slow CPU call-scope attribution for internal encoder/monitor handoffs; not GPU-duration or driver-cause proof")
+    ap.add_argument("--zoom-handoff-timing", action="store_true", help="Opt-in slow CPU scopes for Zoom handoff mutex waits and thumbnail encoding; not owner/driver-cause proof")
+    ap.add_argument("--normal-logging", action="store_true", help="Leave native verbose diagnostics off; existing harness default remains verbose for attribution")
     ap.add_argument("--duration", type=float, default=120)
     ap.add_argument("--pairs", type=int, default=3)
     ap.add_argument("--warmup", type=float, default=10)
@@ -93,6 +95,7 @@ def main():
             "COREVIDEO_CPU_SOURCE_PREPARATION": a.cpu_source_preparation,
             "COREVIDEO_QA_RENDER_WORK_DISTRIBUTION": "1" if a.render_work_distribution else "0",
             "COREVIDEO_QA_GPU_SUBMISSION_TIMING": "1" if a.gpu_submission_timing else "0",
+            "COREVIDEO_QA_ZOOM_HANDOFF_TIMING": "1" if a.zoom_handoff_timing else "0",
             "COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE": "0",
             "COREVIDEO_ISOLATE_MONITORS": "0 and 1",
         },
@@ -104,6 +107,7 @@ def main():
         "pairs": a.pairs,
         "warmup": a.warmup,
         "deliveryTraceRequested": a.delivery_trace,
+        "verboseDiagnostics": not a.normal_logging,
         "programBufferFrames": 2,
         "programScene": a.program_scene,
         "programRoutes": program_routes(a.program_scene),
@@ -189,6 +193,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "COREVIDEO_CPU_SOURCE_PREPARATION": a.cpu_source_preparation,
                 "COREVIDEO_QA_RENDER_WORK_DISTRIBUTION": "1" if a.render_work_distribution else "0",
                 "COREVIDEO_QA_GPU_SUBMISSION_TIMING": "1" if a.gpu_submission_timing else "0",
+                "COREVIDEO_QA_ZOOM_HANDOFF_TIMING": "1" if a.zoom_handoff_timing else "0",
                 **({"COREVIDEO_DELIVERY_TRACE_PATH": str(trace_path)} if a.delivery_trace else {}),
             },
             out / (label + ".stderr.log"),
@@ -214,6 +219,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "recording",
                 "programSourceAdmission",
                 "deliveryEvidence",
+                "nativeDiagnostics",
             ]
         }
 
@@ -290,7 +296,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
         publisher.start()
         sync(
             [
-                {"type": "set-verbose-diagnostics", "enabled": True},
+                {"type": "set-verbose-diagnostics", "enabled": not a.normal_logging},
                 {
                     "type": "set-output-profile",
                     "width": 1920,

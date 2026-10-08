@@ -22,6 +22,7 @@
 
 namespace corevideo::modules {
 
+class ZoomHandoffCpuScope;
 class ZoomEngineRuntime {
  public:
   explicit ZoomEngineRuntime(std::shared_ptr<CpuSourcePreparation> preparation = {});
@@ -357,11 +358,13 @@ class ZoomEngineRuntime {
   // `i420` is the decoded plane set, already owned by a shared buffer built in
   // the UNLOCKED snapshot phase — publishing must never copy pixels under mutex_
   // (the render thread waits on it while holding coreMutex).
+  const bool profileVideoHandoff_ = false;
   void publishVideoFrameLocked(const std::string& uuid, VideoStreamRef& ref,
                                const ZoomEngineRgbaFrame& frame,
                                std::shared_ptr<const std::vector<std::uint8_t>> i420,
                                std::chrono::steady_clock::time_point observedAt,
-                               std::shared_ptr<CpuSourceGpuView> preparedGpu = {});
+                               std::shared_ptr<CpuSourceGpuView> preparedGpu = {},
+                               ZoomHandoffCpuScope* timing = nullptr);
   void closeVideoStreamsLocked();
 };
 

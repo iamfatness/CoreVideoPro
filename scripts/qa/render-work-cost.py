@@ -14,9 +14,11 @@ def judge(reference, traced):
             raise ValueError("explicit trace-off reference and trace-on candidate required")
         keys = ["harnessSha256", "driverSha256", "renderWorkJudgeSha256", "sourceCommit", "buildConfiguration",
                 "flags", "coreSha256", "fakeSha256", "duration", "pairs", "warmup", "programBufferFrames",
-                "programScene", "programRoutes", "sourceFormats", "output", "hardware"]
+                "programScene", "programRoutes", "sourceFormats", "output", "hardware", "verboseDiagnostics"]
         if any(k not in reference or k not in traced or reference[k] != traced[k] for k in keys):
             raise ValueError("unmatched workload/binary/collector/hardware manifests")
+        if type(reference["verboseDiagnostics"]) is not bool or type(traced["verboseDiagnostics"]) is not bool:
+            raise ValueError("explicit normal/verbose logging choice required")
         if reference["flags"].get("COREVIDEO_QA_RENDER_WORK_DISTRIBUTION") != "1" or reference["hardware"] == "MISSING_EVIDENCE":
             raise ValueError("missing collector or hardware identity")
         if type(reference["pairs"]) is not int or reference["pairs"] < 1 or reference["duration"] < 30 or not math.isfinite(reference["duration"]) or not 0 <= reference["warmup"] <= 30:

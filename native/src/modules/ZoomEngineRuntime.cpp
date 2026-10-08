@@ -1,5 +1,6 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineRuntime.h"
+#include "modules/ZoomHandoffCpuScope.h"
 #include "modules/ZoomMeetingId.h"
 #include "modules/I420SourcePreparation.h"
 
@@ -59,7 +60,10 @@ std::atomic<uint64_t> nextVideoSourceEpoch{1};
 }  // namespace
 
 ZoomEngineRuntime::ZoomEngineRuntime(std::shared_ptr<CpuSourcePreparation> preparation)
-    : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()) {
+    : config_(loadConfig()), startedAt_(std::chrono::steady_clock::now()),
+      profileVideoHandoff_(envString("COREVIDEO_QA_ZOOM_HANDOFF_TIMING") == "1") {
+  if (profileVideoHandoff_) ::corevideo::core::nativeLogf(
+      "[zoom-handoff-scope-v1] enabled=1 clock=steady-nanoseconds threshold_ns=8000000\n");
   // Frame sync is ON by default (owner decision 2026-08-06: behave like a
   // hardware switcher input). COREVIDEO_FRAME_SYNC=0 trades the smoothness back
   // for one frame of latency — keep it working, it is the A/B control.
@@ -115,7 +119,9 @@ ZoomEngineRuntime::Config ZoomEngineRuntime::loadConfig() {
 }
 
 bool ZoomEngineRuntime::configured() const {
+  ZoomHandoffCpuScope timing(profileVideoHandoff_, "configured");
   std::lock_guard<std::mutex> lock(mutex_);
+  timing.acquired();
   return !config_.executablePath.empty();
 }
 
@@ -595,7 +601,9 @@ std::vector<VideoFrame> ZoomEngineRuntime::pollCompositorVideoFrames(int64_t tim
   // Frames are ingested by the dedicated video-ingest thread; this poll just
   // returns published state (pixel work on the render tick collapsed the
   // audio worker to 8 ticks/s in soak run 15).
+  ZoomHandoffCpuScope timing(profileVideoHandoff_, "poll-compositor");
   std::lock_guard<std::mutex> lock(mutex_);
+  timing.acquired();
   return state_.pollCompositorVideoFrames(timestampMs);
 }
 
@@ -657,7 +665,9 @@ std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
 }
 
 std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t timestampMs) {
+  ZoomHandoffCpuScope timing(profileVideoHandoff_, "latest-decoded");
   std::lock_guard<std::mutex> lock(mutex_);
+  timing.acquired();
   // INGEST -> RENDER HANDOFF LATENCY. This is called from the render thread, so
   // `now - observedAt` is exactly how long a decoded frame waited between the
   // ingest thread seeing it in shared memory and the compositor picking it up.
@@ -1430,7 +1440,9 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
 
   if (beforePublish) beforePublish();
   // Phase 3 (locked, cheap): publish only into the captured stream generation.
+  ZoomHandoffCpuScope timing(profileVideoHandoff_, "publish-batch");
   std::lock_guard<std::mutex> lock(mutex_);
+  timing.acquired();
   const auto rejectStale = [&] {
     ++staleVideoPublications_;
     if (staleVideoPublications_ == 1 || staleVideoPublications_ % 100 == 0)
@@ -1471,7 +1483,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
                    result.lumaRange.sampled);
     }
     publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
-                            std::move(result.i420Shared), result.observedAt, std::move(result.preparedGpu));
+                            std::move(result.i420Shared), result.observedAt, std::move(result.preparedGpu), &timing);
     ++videoPublishedSinceLog_;
   }
   const auto now = std::chrono::steady_clock::now();
@@ -1487,7 +1499,8 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
 void ZoomEngineRuntime::publishVideoFrameLocked(
     const std::string& uuid, VideoStreamRef& ref, const ZoomEngineRgbaFrame& frame,
     std::shared_ptr<const std::vector<std::uint8_t>> i420,
-    std::chrono::steady_clock::time_point observedAt, std::shared_ptr<CpuSourceGpuView> preparedGpu) {
+    std::chrono::steady_clock::time_point observedAt, std::shared_ptr<CpuSourceGpuView> preparedGpu,
+    ZoomHandoffCpuScope* timing) {
   state_.recordFrameIngestSuccess(uuid, ref.participantId, ref.width, ref.height, frame.frameId,
                                   runtimeElapsedMs(), ref.sourceGeneration);
 
@@ -1586,7 +1599,12 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
            {"emitWallMs", static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::system_clock::now().time_since_epoch())
                               .count())},
-           {"bgraBase64", base64Encode(thumb.data(), thumb.size())},
+           {"bgraBase64", [&] {
+              const auto encodeStarted = timing ? timing->thumbnailStarted() : 0;
+              auto encoded = base64Encode(thumb.data(), thumb.size());
+              if (timing) timing->thumbnailFinished(encodeStarted);
+              return encoded;
+           }()},
        }},
   });
 }
