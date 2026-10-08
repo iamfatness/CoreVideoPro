@@ -29,6 +29,10 @@ jobs:
           python-version: "3.12"
       - name: Monitor isolation evidence judge and bounded IPC tests
         run: python -m unittest discover -s scripts/qa -p test_monitor_evidence.py -v
+      - name: Delivery trace and matched render-work evidence tests
+        run: |
+          python -m unittest discover -s scripts/qa -p test_delivery_trace.py -v
+          python -m unittest discover -s scripts/qa -p test_render_work_evidence.py -v
       - name: Frame and recording QA harness tests
         run: npm run test:qa-harness
 

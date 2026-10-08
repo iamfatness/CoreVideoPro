@@ -1063,6 +1063,7 @@ rpc::Json MediaCore::sessionState() const {
           {"lockWaitMaximumNs", static_cast<double>(renderWorkerLockWaitMaximumNs_.load(std::memory_order_relaxed))},
           {"workTotalNs", static_cast<double>(renderWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
           {"workMaximumNs", static_cast<double>(renderWorkerWorkMaximumNs_.load(std::memory_order_relaxed))},
+          {"workDistribution", renderWorkDistribution_.snapshot()},
           {"eventDrainTotalNs", static_cast<double>(renderWorkerDrainTotalNs_.load(std::memory_order_relaxed))},
           {"eventDrainMaximumNs", static_cast<double>(renderWorkerDrainMaximumNs_.load(std::memory_order_relaxed))},
           {"gpuCompletionVerified", false}, {"deliveryVerified", false}}},
@@ -1775,6 +1776,7 @@ void MediaCore::reportRenderWorkerProgress(int64_t completedSlots, int64_t skipp
   updateAtomicMaximum(renderWorkerMaximumLatenessNs_, maximumLatenessNs);
   renderWorkerLockWaitTotalNs_.fetch_add((std::max)(int64_t{0}, lockWaitNs), std::memory_order_relaxed);
   renderWorkerWorkTotalNs_.fetch_add((std::max)(int64_t{0}, workNs), std::memory_order_relaxed);
+  renderWorkDistribution_.record(workNs);
   renderWorkerDrainTotalNs_.fetch_add((std::max)(int64_t{0}, drainNs), std::memory_order_relaxed);
   updateAtomicMaximum(renderWorkerLockWaitMaximumNs_, lockWaitNs);
   updateAtomicMaximum(renderWorkerWorkMaximumNs_, workNs);

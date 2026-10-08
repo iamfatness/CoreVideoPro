@@ -685,6 +685,7 @@ if(BUILD_TESTING)
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
     tests/DeliveryTraceTest.cpp
+    tests/RenderWorkDistributionTest.cpp
     tests/AsyncEncoderSinkTest.cpp
     tests/EncoderSessionReadPolicyTest.cpp
     tests/RecordingTrackWorkerTest.cpp
