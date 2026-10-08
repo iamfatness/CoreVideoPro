@@ -15,7 +15,7 @@ public sealed partial class ColorGradeEditorViewModel : ObservableObject
     private int _sourcePreviewWidth;
     private int _sourcePreviewHeight;
 
-    /// <summary>LUT presets mirrored from the renderer (src/engine/colorGrade.ts).</summary>
+    /// <summary>Built-in looks; these are not imported .cube LUT files.</summary>
     public static IReadOnlyList<string> LutOptions { get; } =
         ["none", "neutral", "warm-film", "cool-broadcast", "punch"];
 

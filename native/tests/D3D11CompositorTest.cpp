@@ -1,4 +1,5 @@
 #include "compositor/CompositorLayout.h"
+#include "compositor/ColorGradeParams.h"
 #include "core/ComApartmentLifetime.h"
 #include "core/ZoomBusRoster.h"
 #include "modules/Interfaces.h"
@@ -123,6 +124,24 @@ corevideo::modules::CompositorRenderPlan overlappingSceneGraphPlan() {
 }
 
 }  // namespace
+
+TEST(ColorGradeParams, LegacyAxesRemainUnchangedAndUnknownLooksAreNeutral) {
+  corevideo::modules::CompositorColorGrade grade{2.f, -3.f, 4.f, 5.f};
+  const auto before = corevideo::modules::colorGradeParams(grade);
+  EXPECT_NEAR(before.exposure, .2f, .000001f);
+  EXPECT_NEAR(before.contrast, -.3f, .000001f);
+  EXPECT_NEAR(before.saturation, .4f, .000001f);
+  EXPECT_NEAR(before.temperature, .5f, .000001f);
+  grade.lut = "unrecognized-legacy-look";
+  EXPECT_TRUE(corevideo::modules::colorGradesEqual(grade, {2.f, -3.f, 4.f, 5.f}));
+  grade = {};
+  EXPECT_TRUE(corevideo::modules::colorGradeIsIdentity(grade));
+  for (const auto* look : {"neutral", "warm-film", "cool-broadcast", "punch"}) {
+    grade.lut = look;
+    EXPECT_FALSE(corevideo::modules::colorGradeIsIdentity(grade)) << look;
+    EXPECT_FALSE(corevideo::modules::colorGradesEqual(grade, {})) << look;
+  }
+}
 
 TEST(CompositorLayout, ComputesStableGridCells) {
   const auto topLeft = corevideo::compositor::gridCell(4, 0);
@@ -664,6 +683,40 @@ TEST(StubCompositor, TransparentChromaKeyLayerRevealsLowerLayer) {
 #endif
 
 #if COREVIDEO_WITH_D3D11
+TEST(D3D11Compositor, NamedLookChangesHeldSourcePixelsAndCanReturnToNeutral) {
+  for (const bool i420 : {false, true}) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_TRUE(compositor);
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.width = 640; plan.height = 360;
+  plan.layers.push_back({"camera", "participant-video", "zoom:camera", "camera",
+                         0, {0, 0, 1, 1}, 1});
+  plan.layers[0].hasColorGrade = true;
+  auto source = makeLeftRightBandFrame("camera", 64, 36, 64, 36,
+                                      0xff808080, 0xff808080);
+  source.frameId = 7;
+  if (i420) {
+    source.pixels.reset();
+    source.i420Width = 64; source.i420Height = 36;
+    source.i420 = std::make_shared<std::vector<uint8_t>>(64 * 36 * 3 / 2, 128);
+  }
+  const auto neutral = compositor->render(plan, {source});
+  ASSERT_FALSE(neutral.preview.bgra.empty());
+  plan.layers[0].colorGrade.lut = "warm-film";
+  const auto warm = compositor->render(plan, {source});
+  const auto warmPixel = previewPixelRgba(warm.preview, 100, 80);
+  const auto r = (warmPixel >> 16) & 255, b = warmPixel & 255;
+  EXPECT_GT(r, b);
+  EXPECT_NE(warm.preview.bgra, neutral.preview.bgra);
+  plan.layers[0].colorGrade.lut = "cool-broadcast";
+  const auto cool = compositor->render(plan, {source});
+  const auto coolPixel = previewPixelRgba(cool.preview, 100, 80);
+  EXPECT_LT((coolPixel >> 16) & 255, coolPixel & 255);
+  plan.layers[0].colorGrade.lut = "none";
+  EXPECT_EQ(compositor->render(plan, {source}).preview.bgra, neutral.preview.bgra);
+  }
+}
+
 TEST(D3D11Compositor, OverlayFactoriesSurviveRenderWorkerExit) {
   corevideo::core::ComApartmentLifetime com;
   ASSERT_TRUE(com.initialized());

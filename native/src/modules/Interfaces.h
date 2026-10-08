@@ -357,6 +357,9 @@ struct CompositorColorGrade {
   float contrast = 0.f;
   float saturation = 0.f;
   float temperature = 0.f;
+  // Named legacy look, not an imported LUT file. Retain it on the plan so
+  // export caches and both GPU adapters see the same operator selection.
+  std::string lut = "none";
 };
 
 // Per-layer chroma key (the green/blue screen keyer).

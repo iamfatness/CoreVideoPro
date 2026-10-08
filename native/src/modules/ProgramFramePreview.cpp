@@ -307,6 +307,7 @@ uint32_t renderPlanSignature(const CompositorRenderPlan& renderPlan) {
       mixHash(hash, layer.colorGrade.contrast);
       mixHash(hash, layer.colorGrade.saturation);
       mixHash(hash, layer.colorGrade.temperature);
+      mixHash(hash, layer.colorGrade.lut);
     }
     // The key must participate in the signature exactly like the grade does:
     // this hash is the change-detection key for the whole render plan, so a

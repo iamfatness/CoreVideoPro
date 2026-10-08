@@ -131,6 +131,7 @@ modules::CompositorColorGrade readColorGrade(const rpc::Json& value) {
       clampColorGradeAxis(value.getNumber("contrast", 0.0)),
       clampColorGradeAxis(value.getNumber("saturation", 0.0)),
       clampColorGradeAxis(value.getNumber("temperature", 0.0)),
+      value.getString("lut", "none"),
   };
 }
 
@@ -4117,7 +4118,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
     colorGrade = readColorGrade(*grade);
   }
   signature += "cg:" + std::to_string(colorGrade.exposure) + "," + std::to_string(colorGrade.contrast) + "," +
-               std::to_string(colorGrade.saturation) + "," + std::to_string(colorGrade.temperature) + ";";
+               std::to_string(colorGrade.saturation) + "," + std::to_string(colorGrade.temperature) + ":" + colorGrade.lut + ";";
 
   std::vector<SceneRouteState> routes;
   if (const rpc::Json* routesNode = previewScene.get("routes"); routesNode && routesNode->isArray()) {
@@ -4159,6 +4160,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       if (const rpc::Json* cg = route.get("colorGrade"); cg && cg->isObject()) {
         state.hasColorGrade = true;
         state.colorGrade = readColorGrade(*cg);
+        signature += "route-grade:" + cg->stringify() + ";";
       }
       if (state.routeId.empty()) {
         state.routeId = "preview-route-" + std::to_string(routeIndex);

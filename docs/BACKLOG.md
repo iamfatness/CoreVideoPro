@@ -3,7 +3,13 @@
 **This is the only ordered list of work.** Status and detailed evidence live on
 linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 
-**Owner revised the next focus on 2026-10-04:** accurate output/health reporting,
+**Owner top priority on 2026-10-08:** advanced per-source grading
+[#835](https://github.com/iamfatness/CoreVideoPro/issues/835), with an optional expanded
+workspace, editable curves, histogram, waveform and vectorscope. Its first slice
+includes the grading preview/output consistency repair from #764. This supersedes
+the earlier code-work order; installed recording acceptance can continue alongside it.
+
+**Earlier owner focus on 2026-10-04:** accurate output/health reporting,
 then dropped settings and automation behavior, then operator usability. The review
 found 90 open issues against `main` `92e6b1ea`. Installed acceptance continues alongside
 this sequence; the owner's two-hour bake reports positive render and virtual-camera
@@ -37,10 +43,10 @@ preempt this list on a show night.
 Priority remains show survival, diagnosability, real-show usability, then external
 installation. Build one source bus before adding more ingest paths. MXL stays parked.
 
-## Now — owner-accepted order (2026-10-04)
+## Now — owner-accepted order (2026-10-08)
 
-Three lanes, at most one item in flight per lane. Work the three operator-focus
-rows sequentially, starting with accurate output/health reporting. Owner UI/UX focus
+Three lanes, at most one item in flight per lane and three total. Start with #835;
+the earlier operator-focus rows follow it sequentially. Owner UI/UX focus
 (October 5): pair #507 transport-layout safety with #759/#610 reporting for the first
 visible beta milestone; keep the rest of usability after settings/automation. Lane C acceptance
 can continue alongside that code work; new live failures can still preempt it.
@@ -67,14 +73,25 @@ retained. Remaining #802 producer and lifecycle work resumes. Installed validati
 may resume now that the owner reports the app closed; defaults remain gated by #517.
 
 Owner prioritized [#814](https://github.com/iamfatness/CoreVideoPro/issues/814) on
-October 8: implement the recording write-queue specification next. Recording
-backpressure isolation preempts the remaining #802/#823 code work; their delivery
-qualification and the separate #832 thumbnail mutex finding remain open.
+October 8: implement the recording write-queue specification next. Implementation
+merged in #833 and shipped in installed beta `beta-2026-10-08-51d6281`; the owner's
+real-meeting bake is pending. Remaining #802/#823 delivery qualification and the
+separate #832 thumbnail mutex finding remain open.
+
+Owner ranked [#835](https://github.com/iamfatness/CoreVideoPro/issues/835) first on
+October 8: "It is my top rank." Deliver Basic/Advanced expansion, a shared native
+grade path, editable master/R/G/B curves and all three truthful scopes as the first
+usable slice. The grading portion of #764 is integrated into this work; its other
+settings findings keep their existing rank. Qualified primary controls, real LUT
+import/stack and reusable presets extend that same implementation. The
+[source grading specification](reference/source-grading-spec.md) defines the design
+and acceptance contract linked from #835. New live incidents may still preempt the queue.
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
-| Owner next | A | [#814](https://github.com/iamfatness/CoreVideoPro/issues/814) | Implement [recording write queues](reference/recording-write-queue-spec.md): independent bounded Program and per-source ISO queues, source-local overflow, matched audio window, depth setting and measured stall/drain evidence. Preserve the live Program presentation buffer. |
-| Incident | A | [#790](https://github.com/iamfatness/CoreVideoPro/issues/790) | Owner priority October 5: fix confirmed screen-share teardown callback reentrancy that crashed the SDK helper during the live meeting test. Add deterministic lifecycle regressions, verify helper-loss reporting, ship a corrective beta and repeat live acceptance. Preempts the normal queue until the crash repair ships. |
+| Owner top | A | [#835](https://github.com/iamfatness/CoreVideoPro/issues/835) | Advanced source grading: optional expanded workspace, truthful native preview/output path (grading portion of #764), master/R/G/B curves, histogram, waveform and vectorscope. Preserve existing grades, source identity, production cadence and quality; scope analysis must be bounded and asynchronous. Then qualify advanced primaries, real LUT import/stack and presets against the same native transform. |
+| Acceptance | C | [#814](https://github.com/iamfatness/CoreVideoPro/issues/814) | [Recording write queues](reference/recording-write-queue-spec.md) merged in #833; beta `beta-2026-10-08-51d6281` is published and installed. Independent Program/ISO queues and Preparing-to-Recording behavior passed local and hosted checks. Owner's real-meeting bake remains open; record actual continuity and final-file evidence without claiming synthetic tests prove live delivery. |
+| Acceptance | C | [#790](https://github.com/iamfatness/CoreVideoPro/issues/790) | Screen-share teardown callback reentrancy repair shipped; owner reports the installed screen-share test looks good. Longer live meeting acceptance remains. The historical incident priority does not displace #835 unless a new failure is reported. |
 | 0 | B | [#507](https://github.com/iamfatness/CoreVideoPro/issues/507), [#759](https://github.com/iamfatness/CoreVideoPro/issues/759), [#610](https://github.com/iamfatness/CoreVideoPro/issues/610), [#519](https://github.com/iamfatness/CoreVideoPro/issues/519), [#765](https://github.com/iamfatness/CoreVideoPro/issues/765), [#766](https://github.com/iamfatness/CoreVideoPro/issues/766), [#551](https://github.com/iamfatness/CoreVideoPro/issues/551), [#562](https://github.com/iamfatness/CoreVideoPro/issues/562), [#758](https://github.com/iamfatness/CoreVideoPro/issues/758) | Accurate output/health reporting: distinguish connecting, sending and verified receiver playback; show measured counters and explicit unknown/unavailable states. Finish capture liveness, dropout and diagnostic evidence. Start with #759 and #507 transport stability; then #610 degraded status. |
 | 1 | B | [#764](https://github.com/iamfatness/CoreVideoPro/issues/764), [#763](https://github.com/iamfatness/CoreVideoPro/issues/763), [#761](https://github.com/iamfatness/CoreVideoPro/issues/761) | Dropped settings and automation behavior: trace each operator setting to its core consumer and observable result. Address discarded settings, NDI group behavior, and Set & Forget / Magic Scene execution; distinguish the merged director slices from unbound automation. |
 | 2 | B | [#587](https://github.com/iamfatness/CoreVideoPro/issues/587), [#592](https://github.com/iamfatness/CoreVideoPro/issues/592), [#593](https://github.com/iamfatness/CoreVideoPro/issues/593), [#591](https://github.com/iamfatness/CoreVideoPro/issues/591), [#590](https://github.com/iamfatness/CoreVideoPro/issues/590), [#594](https://github.com/iamfatness/CoreVideoPro/issues/594), [#595](https://github.com/iamfatness/CoreVideoPro/issues/595) | Operator usability: stale Join URL, lower-third consistency and persistence, useful starter scenes, Sources pruning, Health/OHG placement. #507 transport layout accompanies reporting above. Follow reporting and behavior work above. |
@@ -110,6 +127,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#834](https://github.com/iamfatness/CoreVideoPro/issues/834) | Windows CI app-exit trace reader can hit a sharing violation while the child appends to trace.txt. Initial main CI failed; unchanged-head retry passed. Make the bounded trace wait tolerate concurrent writes while preserving cleanup assertions. Unranked; not a confirmed production regression. |
 | [#825](https://github.com/iamfatness/CoreVideoPro/issues/825) | Disabled-preparation/inline qualification lost six packets in three pairs: a late Preparing head became expired Ready and remained at the following deadline. Suspected wait-predicate amplification needs deterministic real-GPU reproduction; does not establish why the first preparation was late. Unranked; current #802/#823 work continues. |
 | [#823](https://github.com/iamfatness/CoreVideoPro/issues/823) | Remaining owner-approved #517 delivery diagnostics: bounded per-frame trace, native/C#/Swift observations, source/output identity and latency attribution. Continues the parent qualification scope after #802; no independent rank or default change. |
 | [#832](https://github.com/iamfatness/CoreVideoPro/issues/832) | Optional Zoom thumbnail event packaging holds the Program frame-fetch mutex for 12–13 ms. Measured overlap and source evidence support moving complete event packaging off-lock with stale-generation validation. Unranked; separate from recording backpressure. |

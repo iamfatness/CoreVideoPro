@@ -943,10 +943,7 @@ class MetalCompositor final : public ICompositor {
     constants.color[2] = static_cast<float>(colorArgb & 0xff) / 255.f;
     constants.color[3] = alpha;
     const auto grade = layer.plan.hasColorGrade ? layer.plan.colorGrade : renderPlan.colorGrade;
-    constants.exposure = grade.exposure * 0.1f;
-    constants.contrast = grade.contrast * 0.1f;
-    constants.saturation = grade.saturation * 0.1f;
-    constants.temperature = grade.temperature * 0.1f;
+    applyColorGradeParams(&constants, grade);
     constants.uvScale[0] = uvScaleX;
     constants.uvScale[1] = uvScaleY;
     constants.uvOffset[0] = uvOffsetX;

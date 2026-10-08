@@ -1710,6 +1710,58 @@ TEST(MediaCoreCommand, PerRouteColorGradeChangesCompositorRenderPlanSignature) {
       second.get("programFrame")->get("renderPlanSignature")->asNumber());
 }
 
+TEST(MediaCoreCommand, NamedLookSurvivesRouteParsingAndChangesSignatureWithoutSliderEdits) {
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  const auto scene = [](const char* look) {
+    return corevideo::rpc::Json::Object{
+      {"type", "load-scene-graph"}, {"sceneId", "graded"},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+        {"routeId", "camera"}, {"mode", "fixed"}, {"participantId", "speaker-1"},
+        {"colorGrade", corevideo::rpc::Json::Object{{"lut", look}}}}}}};
+  };
+  const auto neutral = core.applyCommands({scene("none")});
+  const auto warm = core.applyCommands({scene("warm-film")});
+  ASSERT_TRUE(neutral.get("programFrame") && warm.get("programFrame"));
+  EXPECT_NE(neutral.get("programFrame")->getNumber("renderPlanSignature"),
+            warm.get("programFrame")->getNumber("renderPlanSignature"));
+}
+
+TEST(MediaCoreCommand, PreviewAcceptsAChangedRouteLookWithoutAFramingChange) {
+  class PreviewProbe final : public corevideo::modules::ICompositor {
+   public:
+    std::unique_ptr<corevideo::modules::ICompositor> inner;
+    corevideo::modules::CompositorRenderPlan lastPreview;
+    std::string rendererName() const override { return inner->rendererName(); }
+    corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
+        const std::vector<corevideo::modules::VideoFrame>& frames) override {
+      return inner->render(plan, frames);
+    }
+    corevideo::modules::ProgramFrameSharedTexture renderPreview(
+        const corevideo::modules::CompositorRenderPlan& plan,
+        const std::vector<corevideo::modules::VideoFrame>&) override {
+      lastPreview = plan; return {};
+    }
+  };
+  auto modules = corevideo::modules::createStubModules();
+  auto probe = std::make_unique<PreviewProbe>();
+  probe->inner = std::move(modules.compositor);
+  auto* observed = probe.get(); modules.compositor = std::move(probe);
+  corevideo::core::MediaCore core(std::move(modules));
+  const auto preview = [](const char* look) {
+    return corevideo::rpc::Json::Object{
+      {"type", "set-preview-scene"}, {"sceneId", "pvw"},
+      {"routes", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+        {"routeId", "camera"}, {"mode", "fixed"}, {"participantId", "speaker-1"},
+        {"colorGrade", corevideo::rpc::Json::Object{{"lut", look}}}}}}};
+  };
+  for (const auto* look : {"warm-film", "cool-broadcast"}) {
+    (void)core.applyCommands({preview(look)});
+    for (int i = 0; i < 6; ++i) core.renderDisplayTick();
+    ASSERT_FALSE(observed->lastPreview.layers.empty());
+    EXPECT_EQ(observed->lastPreview.layers.front().colorGrade.lut, look);
+  }
+}
+
 // CHROMA KEY. The core advertised a "chroma-key" capability — and listed it as
 // REQUIRED in kRequiredMvpCapabilities — while implementing none of it: the only
 // command carrying a chromaKey payload discarded it (setParticipantTransform
