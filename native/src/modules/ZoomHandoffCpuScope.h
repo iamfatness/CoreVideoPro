@@ -22,8 +22,9 @@ class ZoomHandoffCpuScope {
     const auto ended = now();
     if (ended - started_ < 8000000) return;
     ::corevideo::core::nativeLogf(
-        "[zoom-handoff-cpu-v1] operation=%s lock_observed=%u wait_ns=%lld body_ns=%lld thumbnail_encode_ns=%lld thumbnails=%llu total_ns=%lld clock=steady-nanoseconds owner_cause_verified=0\n",
-        operation_, acquired_ != 0 ? 1u : 0u,
+        "[zoom-handoff-cpu-v1] operation=%s started_at_ns=%lld acquired_at_ns=%lld ended_at_ns=%lld lock_observed=%u wait_ns=%lld body_ns=%lld thumbnail_encode_ns=%lld thumbnails=%llu total_ns=%lld clock=steady-nanoseconds owner_cause_verified=0\n",
+        operation_, static_cast<long long>(started_), static_cast<long long>(acquired_),
+        static_cast<long long>(ended), acquired_ != 0 ? 1u : 0u,
         static_cast<long long>((acquired_ ? acquired_ : ended) - started_),
         static_cast<long long>(acquired_ ? ended - acquired_ : 0),
         static_cast<long long>(thumbnailNs_), static_cast<unsigned long long>(thumbnails_),

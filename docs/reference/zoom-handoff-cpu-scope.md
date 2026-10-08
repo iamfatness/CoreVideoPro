@@ -23,6 +23,8 @@ record is `[zoom-handoff-scope-v1]`. These are CPU wall durations in steady-cloc
 nanoseconds, including scheduling/preemption. A long mutex acquisition does not
 identify the owner holding it, and overlapping durations do not alone prove
 causation. No clock calibration, source/Program identity or GPU duration is claimed.
+Raw start/acquisition/end timestamps permit overlap analysis in this same
+steady-clock domain; do not subtract raw QPC/MF clocks without calibration.
 
 This is selective attribution, not complete boundary tracing or a health judge.
 Absent/dropped records remain unknown. Preserve the raw delivery trace and
