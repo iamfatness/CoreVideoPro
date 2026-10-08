@@ -1,5 +1,6 @@
 #include "core/BoundedAsyncLog.h"
 #include "core/MediaCore.h"
+#include "core/DeliveryTrace.h"
 #include "modules/MonitorInputEvidence.h"
 #include "core/SystemMemoryPolicy.h"
 
@@ -1001,6 +1002,7 @@ rpc::Json MediaCore::sessionState() const {
   }
   const auto capturePreparation = modules_.captureDevice->shmCapturePreparationDiagnostics();
   const auto monitorWorker = modules_.compositor->monitorDiagnostics();
+  state.emplace("deliveryEvidence", core::deliveryEvidenceSnapshot());
   state.emplace("realtimeEvidence", rpc::Json::Object{
       {"capturePreparation", rpc::Json::Object{
           {"kind", "winui-shared-memory"}, {"version", "shm-preparation-v1"},

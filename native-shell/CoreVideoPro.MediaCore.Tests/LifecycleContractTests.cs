@@ -60,6 +60,7 @@ public sealed class LifecycleContractTests
             "CompletedOutputObservation" => CompletedOutputObservationContract.Validate,
             "ResourceLeaseDescriptor" => ResourceLeaseDescriptorContract.Validate,
             "DestinationProgress" => DestinationProgressContract.Validate,
+            "DeliveryEvidenceObservation" => DeliveryEvidenceObservationContract.Validate,
             "ArtifactValidationResult" => ArtifactValidationResultContract.Validate,
             _ => throw new ArgumentException(contract)
         };
@@ -88,6 +89,7 @@ public sealed class LifecycleContractTests
             "CompletedOutputObservation" => typeof(CompletedOutputObservation),
             "ResourceLeaseDescriptor" => typeof(ResourceLeaseDescriptor),
             "DestinationProgress" => typeof(DestinationProgress),
+            "DeliveryEvidenceObservation" => typeof(DeliveryEvidenceObservation),
             "ArtifactValidationResult" => typeof(ArtifactValidationResult),
             _ => throw new ArgumentException(contract)
         };

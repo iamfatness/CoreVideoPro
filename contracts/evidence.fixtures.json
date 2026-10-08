@@ -8614,5 +8614,41 @@
     "contract": "ArtifactValidationResult",
     "accepted": false,
     "json": "{\"observationId\":\"observationId-1\",\"processEpoch\":\"processEpoch-1\",\"authorityEpoch\":\"authorityEpoch-1\",\"controlRevision\":1,\"clockId\":\"clockId-1\",\"clockGeneration\":1,\"observedAtNs\":1,\"destinationId\":\"destinationId-1\",\"destinationGeneration\":1,\"sessionId\":\"sessionId-1\",\"artifactId\":\"artifactId-1\",\"artifactRevision\":1,\"validatorId\":\"validatorId-1\",\"validatorVersion\":\"validatorVersion-1\",\"status\":\"passed\",\"checkedAtNs\":1,\"byteLength\":1,\"packetCount\":1,\"decodedUnits\":1,\"checkSetId\":\"checkSetId-1\",\"resultId\":\"\"}"
+  },
+  {
+    "id": "DeliveryEvidenceObservation.disabled",
+    "contract": "DeliveryEvidenceObservation",
+    "accepted": true,
+    "json": "{\"enabled\":false,\"cameraReaderObserved\":false,\"displayObserved\":false,\"sourceAcquisitionObserved\":false,\"schemaVersion\":\"delivery-evidence-v1\"}"
+  },
+  {
+    "id": "DeliveryEvidenceObservation.older-empty",
+    "contract": "DeliveryEvidenceObservation",
+    "accepted": false,
+    "json": "{}"
+  },
+  {
+    "id": "DeliveryEvidenceObservation.future-version",
+    "contract": "DeliveryEvidenceObservation",
+    "accepted": false,
+    "json": "{\"enabled\":false,\"cameraReaderObserved\":false,\"displayObserved\":false,\"sourceAcquisitionObserved\":false,\"schemaVersion\":\"delivery-evidence-v2\"}"
+  },
+  {
+    "id": "DeliveryEvidenceObservation.invalid-counter",
+    "contract": "DeliveryEvidenceObservation",
+    "accepted": false,
+    "json": "{\"enabled\":false,\"cameraReaderObserved\":false,\"displayObserved\":false,\"sourceAcquisitionObserved\":false,\"schemaVersion\":\"delivery-evidence-v1\",\"lost\":-1}"
+  },
+  {
+    "id": "DeliveryEvidenceObservation.unknown-progress",
+    "contract": "DeliveryEvidenceObservation",
+    "accepted": true,
+    "json": "{\"enabled\":false,\"cameraReaderObserved\":false,\"displayObserved\":false,\"sourceAcquisitionObserved\":false,\"schemaVersion\":\"delivery-evidence-v1\",\"future\":{\"nested\":1}}"
+  },
+  {
+    "id": "DeliveryEvidenceObservation.enabled",
+    "contract": "DeliveryEvidenceObservation",
+    "accepted": true,
+    "json": "{\"enabled\":true,\"cameraReaderObserved\":false,\"displayObserved\":false,\"sourceAcquisitionObserved\":false,\"schemaVersion\":\"delivery-evidence-v1\",\"sessionEpoch\":\"123\",\"clock\":\"qpc\",\"clockFrequency\":10000000,\"storageBytes\":16777216,\"capacity\":209715,\"accepted\":500,\"exported\":490,\"lost\":1,\"exportFailures\":0,\"boundaries\":\"source-draw-submitted/program-delivered\"}"
   }
 ]

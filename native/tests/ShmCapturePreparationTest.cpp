@@ -15,6 +15,9 @@
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
 #include "modules/D3DVideoFrame.h"
 #include "modules/BgraSourcePreparation.h"
+#include "core/DeliveryTrace.h"
+#include <filesystem>
+#include <fstream>
 #include <cstdlib>
 #endif
 using namespace corevideo::modules;
@@ -360,6 +363,63 @@ TEST(ShmGpuPreparation, ContinuousCpuSelectionAdmitsLateCompletedPixelsWithoutCh
   auto reconnect = compositor->render(plan, {current});
   EXPECT_EQ(reconnect.sourceAdmissions.front().state, "unavailable");
   EXPECT_EQ(reconnect.sourceAdmissions.front().actualFrameId, -1);
+}
+
+TEST(ShmGpuPreparation, TraceRecordsExactLateCompletionBeforePublicationAndPoolRefusal) {
+  using namespace corevideo::core;
+  const auto path = std::filesystem::temp_directory_path() /
+      ("corevideo-shm-trace-" + std::to_string(deliveryTraceNow()) + ".bin");
+  struct Environment {
+    std::string previous = std::getenv("COREVIDEO_DELIVERY_TRACE_PATH") ? std::getenv("COREVIDEO_DELIVERY_TRACE_PATH") : "";
+    ~Environment() { _putenv_s("COREVIDEO_DELIVERY_TRACE_PATH", previous.c_str()); }
+  } environment;
+  _putenv_s("COREVIDEO_DELIVERY_TRACE_PATH", path.string().c_str());
+  auto capture = startDeliveryTraceFromEnvironment(); ASSERT_TRUE(capture);
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code error; std::filesystem::remove(path, error); } } cleanup{path};
+  const auto tag = capture->tag("capture:trace");
+  {
+    ComPtr<ID3D11Device> device; ComPtr<ID3D11DeviceContext> context;
+    ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context)));
+    auto consumer = D3DVideoConsumers::add(device.Get()); ASSERT_TRUE(consumer);
+    auto makeFrame = [](int64_t id) {
+      VideoFrame frame; frame.participantId = "capture:trace"; frame.sourceEpoch = 7; frame.frameId = id;
+      frame.captureTimestamp100ns = id * 1000; frame.width = frame.height = frame.pixelWidth = frame.pixelHeight = 64;
+      frame.pixelStride = 256; frame.pixels = std::make_shared<const std::vector<uint8_t>>(64 * 64 * 4, 131);
+      auto token = std::make_shared<CpuSourceGpuView>(); token->sourceId = frame.participantId;
+      token->sourceEpoch = 7; token->frameId = id; token->captureTimestamp100ns = frame.captureTimestamp100ns;
+      token->width = token->height = 64; token->cpu = frame.pixels; token->demand = std::make_shared<CpuSourceGpuDemand>();
+      frame.preparedGpu = std::move(token); return frame;
+    };
+    BgraSourcePreparation owner;
+    std::vector<std::shared_ptr<const GpuVideoFrame>> held;
+    for (int64_t id = 1; id <= 3; ++id) {
+      auto submitted = makeFrame(id), newer = makeFrame(id + 10);
+      owner.offer(device.Get(), context.Get(), submitted);
+      ASSERT_TRUE(waitFor([&] { owner.poll(context.Get(), newer); return submitted.preparedGpu->completionPublished.load(); }));
+      auto image = submitted.preparedGpu->acquire(false); ASSERT_TRUE(image);
+      EXPECT_EQ(image->sourceFrameId, id); EXPECT_FALSE(newer.preparedGpu->completionPublished.load());
+      held.push_back(std::move(image));
+    }
+    auto refused = makeFrame(4); owner.offer(device.Get(), context.Get(), refused);
+    EXPECT_FALSE(refused.preparedGpu->completionPublished.load()); EXPECT_EQ(owner.stats().busy, 1u);
+  }
+  ASSERT_TRUE(capture->close());
+  std::ifstream input(path, std::ios::binary); DeliveryTraceHeader header;
+  input.read(reinterpret_cast<char*>(&header), sizeof(header)); ASSERT_TRUE(input.good());
+  EXPECT_EQ(header.lost, 0u); EXPECT_EQ(header.failures, 0u); ASSERT_EQ(header.exported, 11u);
+  for (int64_t id = 1; id <= 4; ++id) {
+    const auto expected = id < 4 ? 3 : 2;
+    int64_t previous = 0;
+    for (int stage = 0; stage < expected; ++stage) {
+      DeliveryTraceEvent event; input.read(reinterpret_cast<char*>(&event), sizeof(event)); ASSERT_TRUE(input.good());
+      EXPECT_EQ(event.sourceTag, tag); EXPECT_EQ(event.sourceEpoch, 7u); EXPECT_EQ(event.sourceFrameId, id);
+      EXPECT_EQ(event.sourceObservation100ns, id * 1000); EXPECT_GE(event.timestamp, previous); previous = event.timestamp;
+      EXPECT_EQ(event.stage, stage == 0 ? DeliveryStage::SourceUploadStarted :
+          stage == 1 ? (id < 4 ? DeliveryStage::SourceUploadSubmitted : DeliveryStage::SourceUploadRefused) : DeliveryStage::SourceGpuReady);
+      EXPECT_EQ(event.reason, id == 4 && stage == 1 ? DeliveryReason::Unavailable : DeliveryReason::None);
+    }
+  }
 }
 
 TEST(ShmGpuPreparation, LateUploadCannotAttachToAnotherSourceIdentityAndOtherSourceRemainsIndependent) {

@@ -850,6 +850,7 @@ public sealed record NativeMediaCoreStateSnapshot
 {
     public IReadOnlyList<NativeCaptureDeviceStatus> CaptureDevices { get; init; } = [];
     public JsonElement? ProgramBuffer { get; init; }
+    public CoreVideoPro.MediaCore.Contracts.DeliveryEvidenceObservation? DeliveryEvidence { get; init; }
     public NativeMediaCorePreviewScene? PreviewScene { get; init; }
     public string? SceneId { get; init; }
     public int RouteCount { get; init; }

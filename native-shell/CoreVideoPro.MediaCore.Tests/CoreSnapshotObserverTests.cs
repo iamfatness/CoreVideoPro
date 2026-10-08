@@ -15,6 +15,22 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class CoreSnapshotObserverTests
 {
     [Fact]
+    public void DeliveryTraceIsTypedAndOldPeersDoNotInventObservations()
+    {
+        var old = Parse("{}");
+        Assert.Null(old.DeliveryEvidence);
+        const string json = """{"deliveryEvidence":{"schemaVersion":"delivery-evidence-v1","enabled":true,"lost":2,"cameraReaderObserved":false,"displayObserved":false,"sourceAcquisitionObserved":false,"observedAtTicks":"10000000000000001"}}""";
+        var current = Parse(json);
+        Assert.NotNull(current.DeliveryEvidence);
+        Assert.Equal(2L, current.DeliveryEvidence.Lost);
+        Assert.False(current.DeliveryEvidence.CameraReaderObserved);
+        Assert.Equal("10000000000000001", current.DeliveryEvidence.ObservedAtTicks);
+        var observed = CoreObservationModel.Parse(json);
+        using var qualification = JsonDocument.Parse(observed.QualificationJson());
+        Assert.Equal(2, qualification.RootElement.GetProperty("deliveryEvidence").GetProperty("lost").GetInt32());
+    }
+
+    [Fact]
     public void SrtCaptureHealthSurvivesTheTypedSnapshotProjection()
     {
         var snapshot = Parse("""

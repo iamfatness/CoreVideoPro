@@ -1,6 +1,7 @@
 #include "core/MediaCore.h"
 #include "core/ComApartmentLifetime.h"
 #include "core/BoundedAsyncLog.h"
+#include "core/DeliveryTrace.h"
 #include "modules/Interfaces.h"
 #include "rpc/JsonRpcServer.h"
 
@@ -15,11 +16,16 @@ int main() {
   }
   // Allocate/start diagnostic delivery before creating any media workers.
   (void)corevideo::core::nativeLogStats();
+  auto deliveryTrace = corevideo::core::startDeliveryTraceFromEnvironment();
   // The live server runs the audio/output worker, so it needs the encoder wrapped
   // in AsyncEncoderSink (non-blocking submit + drop-to-latest). Tests construct
   // MediaCore with createDefaultModules and keep the synchronous encoder.
-  corevideo::core::MediaCore mediaCore(corevideo::modules::createLiveServerModules());
-  corevideo::rpc::JsonRpcServer server(mediaCore);
-  server.run(std::cin, std::cout);
-  return 0;
+  {
+    corevideo::core::MediaCore mediaCore(corevideo::modules::createLiveServerModules());
+    corevideo::rpc::JsonRpcServer server(mediaCore);
+    server.run(std::cin, std::cout);
+  }
+  // Capture finalization follows media teardown. A failed explicit export must
+  // remain visible to the owned QA caller even if an older file looks complete.
+  return deliveryTrace && !deliveryTrace->close() ? 1 : 0;
 }

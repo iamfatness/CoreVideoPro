@@ -2,6 +2,7 @@
 
 #include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
+#include "core/DeliveryTrace.h"
 
 // Windows-only implementation, included by the D3D adapter after the SDK headers.
 #include "compositor/ComPtrLite.h"
@@ -31,6 +32,8 @@ class D3DProgramBuffer {
   D3DProgramBuffer(ID3D11Device* producer, int width, int height, int depth, uint64_t generation,
       std::function<void(const ProgramFrame&)> delivered)
       : width_(width), height_(height), depth_(depth == 2 ? 2 : 3), deliveredCallback_(std::move(delivered)) {
+    static std::atomic<uint64_t> nextTraceEpoch{0};
+    traceEpoch_ = ++nextTraceEpoch;
     diagnostics_.requestedFrames = depth_;
     diagnostics_.generation = generation;
     diagnostics_.capacity = depth_ + 3;
@@ -96,6 +99,7 @@ class D3DProgramBuffer {
     // blocking flush or readback is introduced on the producer here.
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      trace(frame, core::DeliveryStage::ProgramSubmitted);
       slot->frame = std::move(frame);
       slot->needsNv12 = nv12;
       slot->submittedAt = std::chrono::steady_clock::now();
@@ -134,6 +138,15 @@ class D3DProgramBuffer {
   }
 
  private:
+  uint64_t traceEpoch_ = 0;
+  void trace(const ProgramFrame& frame, core::DeliveryStage stage,
+                    core::DeliveryReason reason = core::DeliveryReason::None) {
+    core::DeliveryTraceEvent event;
+    event.stage = stage; event.reason = reason; event.programSequence = frame.frameNumber;
+    event.sourceEpoch = traceEpoch_; // Process-unique Program-buffer instance.
+    event.layoutTag = frame.renderPlanSignature;
+    core::recordDeliveryTrace(event);
+  }
   void fail(const char* stage) {
     { std::lock_guard<std::mutex> lock(mutex_); diagnostics_.status = "failed"; diagnostics_.activeFrames = 0; stopped_ = true; }
     ::corevideo::core::nativeLogf("[program-buffer-failure] stage=%s prepare_device_hr=0x%08lx shell_export_device_hr=0x%08lx\n",
@@ -423,6 +436,8 @@ class D3DProgramBuffer {
         ++diagnostics_.prepared;
         submitted_.pop_front();
         slot->readyAt = std::chrono::steady_clock::now();
+        if (ready) trace(slot->frame, core::DeliveryStage::ProgramGpuReady);
+        else trace(slot->frame, core::DeliveryStage::ProgramMiss, core::DeliveryReason::Failed);
         slot->state = State::Ready;
         // Delivery also retires expired ready slots, returning key 0 exactly once.
         if (!ready) { diagnostics_.status = "failed"; diagnostics_.activeFrames = 0; stopped_ = true; }
@@ -475,6 +490,7 @@ class D3DProgramBuffer {
     while (!stopped_) {
       while (!delivery_.empty() && delivery_.front()->state == State::Ready && timeline_->isExpired(delivery_.front()->productionSlot)) {
         auto* expired = delivery_.front();
+        trace(expired->frame, core::DeliveryStage::ProgramMiss, core::DeliveryReason::Failed);
         expired->state = State::Free; delivery_.pop_front(); ++diagnostics_.overflows;
       }
       const auto targetSlot = timeline_->nextSlot();
@@ -487,6 +503,12 @@ class D3DProgramBuffer {
       if (delivery_.empty() || delivery_.front()->state != State::Ready || delivery_.front()->productionSlot != targetSlot) {
         if (const auto due = timeline_->takeDue(now100ns() * 100)) {
           diagnostics_.underruns += due->skippedSlots + 1;
+          core::DeliveryTraceEvent missed;
+          missed.stage = core::DeliveryStage::ProgramMiss;
+          missed.reason = core::DeliveryReason::Unavailable;
+          missed.sourceEpoch = traceEpoch_;
+          missed.programSequence = firstFrameNumber_ + targetSlot;
+          core::recordDeliveryTrace(missed);
           const auto* front = delivery_.empty() ? nullptr : delivery_.front();
           const auto observed = std::chrono::steady_clock::now();
           const auto ageNs = [&](std::chrono::steady_clock::time_point since) {
@@ -512,6 +534,7 @@ class D3DProgramBuffer {
       if (due) diagnostics_.underruns += due->skippedSlots;
       const bool deliveryExpired = now100ns() * 100 >= timeline_->deadlineNs(slot->productionSlot + 1);
       if (!current || deliveryExpired) {
+        trace(slot->frame, core::DeliveryStage::ProgramMiss, core::DeliveryReason::Failed);
         if (current || due) ++diagnostics_.underruns;
         ::corevideo::core::nativeLogf("[program-buffer-miss] stage=publish slot=%lld current=%d expired=%d optional_export_on_delivery=0\n",
             static_cast<long long>(slot->productionSlot), current, deliveryExpired);
@@ -532,6 +555,7 @@ class D3DProgramBuffer {
       offer(shellBranch_); offer(multiviewBranch_);
       if (delivered_.size() >= static_cast<size_t>(depth_ + 2)) { delivered_.pop_front(); ++diagnostics_.overflows; }
       delivered_.push_back(*published);
+      trace(*published, core::DeliveryStage::ProgramDelivered);
       delivery_.pop_front(); slot->state = slot->readers ? State::Exporting : State::Free;
       diagnostics_.occupancy = static_cast<int>(delivery_.size());
       notifyChanged();

@@ -1,6 +1,7 @@
 #pragma once
 #include "modules/D3DVideoFrame.h"
 #include "modules/Interfaces.h"
+#include "core/DeliveryTrace.h"
 
 namespace corevideo::modules {
 // One source, one producer-context owner. The caller keeps authoritative CPU
@@ -25,6 +26,10 @@ class BgraSourcePreparation {
       prepared->width = storage->width; prepared->height = storage->height; prepared->generation = storage->generation;
       prepared->sourceId = pendingToken_->sourceId; prepared->sourceEpoch = pendingToken_->sourceEpoch;
       prepared->sourceFrameId = pendingToken_->frameId; prepared->sourceCaptureTimestamp100ns = pendingToken_->captureTimestamp100ns;
+      // Record the queried image's identity before publishing its weak view.
+      // latest can already describe a newer CPU arrival at this point.
+      trace(core::DeliveryStage::SourceGpuReady, prepared->sourceId, prepared->sourceEpoch,
+          prepared->sourceFrameId, prepared->sourceCaptureTimestamp100ns);
       pendingToken_->ready.store(prepared);
       pendingToken_->completionPublished.store(true);
       ready_[completedSlot] = {pendingToken_, std::move(prepared), pendingToken_->frameId}; pendingToken_.reset();
@@ -37,6 +42,8 @@ class BgraSourcePreparation {
       ++stats_.superseded;
       return false;
     }
+    trace(core::DeliveryStage::SourceGpuReady, latest.participantId, latest.sourceEpoch,
+        latest.frameId, latest.captureTimestamp100ns);
     latest.gpuPixels = std::move(image);
     ++stats_.prepared;
     return true;
@@ -55,11 +62,16 @@ class BgraSourcePreparation {
       if (!initialized_) { pool_ = D3DVideoFramePool{}; if (frame.preparedGpu && frame.preparedGpu->demand) frame.preparedGpu->demand->failed.store(true); ++stats_.failed; return; }
     }
     if (!pool_.dimensions(frame.pixelWidth, frame.pixelHeight)) { ++stats_.failed; return; }
+    trace(core::DeliveryStage::SourceUploadStarted, frame.participantId, frame.sourceEpoch,
+        frame.frameId, frame.captureTimestamp100ns);
     int slot = pool_.beginUpload(context, frame.pixels->data(), frame.pixels->size(), frame.pixelStride);
     if (slot < 0 && readyCount() > 1) {
       releaseOldest(); // bounded completion residency, independent of CPU/ISO token lifetime
       slot = pool_.beginUpload(context, frame.pixels->data(), frame.pixels->size(), frame.pixelStride);
     }
+    trace(slot >= 0 ? core::DeliveryStage::SourceUploadSubmitted : core::DeliveryStage::SourceUploadRefused,
+        frame.participantId, frame.sourceEpoch, frame.frameId, frame.captureTimestamp100ns,
+        slot >= 0 ? core::DeliveryReason::None : core::DeliveryReason::Unavailable);
     if (slot < 0) { ++stats_.busy; return; }
     pending_ = slot; frameId_ = frame.frameId; epoch_ = frame.sourceEpoch;
     sourceId_ = frame.participantId; offered_ = true;
@@ -77,6 +89,13 @@ class BgraSourcePreparation {
     return !initialized_ || pool_.idle(context);
   }
  private:
+  static void trace(core::DeliveryStage stage, const std::string& id, uint64_t epoch,
+      int64_t frame, int64_t observation, core::DeliveryReason reason = core::DeliveryReason::None) {
+    core::DeliveryTraceEvent event;
+    event.stage = stage; event.reason = reason; event.sourceTag = core::deliveryTraceTag(id);
+    event.sourceEpoch = epoch; event.sourceFrameId = frame; event.sourceObservation100ns = observation;
+    core::recordDeliveryTrace(event);
+  }
   D3DVideoFramePool pool_;
   Stats stats_;
   int pending_ = -1;
