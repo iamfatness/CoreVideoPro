@@ -61,5 +61,6 @@ TEST(AdvancedGrade, NonCurveOperationsHaveNeutralCurveResources) {
   document->operations.push_back(primary);
   modules::CompositorColorGrade grade;grade.advanced=document;
   const auto points=modules::compileGradeCurves(grade);
-  EXPECT_EQ(points[0],1.f);EXPECT_EQ(points[1],1.f);
+  EXPECT_EQ(points[0],0.f);EXPECT_EQ(points[1],0.f);
+  EXPECT_EQ(points[2],1.f);EXPECT_EQ(points[3],1.f);
 }

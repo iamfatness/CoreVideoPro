@@ -106,7 +106,9 @@ inline std::array<float, 16 * 32 * 2> compileGradeCurves(const CompositorColorGr
   std::array<float, 16 * 32 * 2> points{};
   for (size_t operation=0;operation<8;++operation) for(size_t channel=0;channel<4;++channel) for(size_t i=0;i<16;++i) {
     GradeCurvePoint point{1,1};
-    if(grade.advanced && operation<grade.advanced->operations.size()) {
+    if(grade.advanced && operation<grade.advanced->operations.size() &&
+          channel<grade.advanced->operations[operation].curves.size() &&
+          !grade.advanced->operations[operation].curves[channel].empty()) {
       const auto& curve=grade.advanced->operations[operation].curves[channel]; point=curve[std::min(i,curve.size()-1)];
     } else if(i==0) point={0,0};
     const auto offset=((operation*4+channel)*16+i)*2; points[offset]=point.x; points[offset+1]=point.y;
