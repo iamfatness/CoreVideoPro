@@ -39,6 +39,14 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             await editor.JoinZoomCommand.ExecuteAsync(null);
             Require(editor.JoinStatus.Contains("valid Zoom", StringComparison.OrdinalIgnoreCase), "Join did not validate the current visible invalid value");
             checks.Add("first Join validates current visible field, without attempting a meeting");
+            var health = Descendants(page).OfType<Expander>().Single(e => e.Name == "HealthSection");
+            health.IsExpanded = true;
+            await Eventually(() => Descendants(health).OfType<DiagnosticsView>().Any(v => v.IsLoaded));
+            Require(Descendants(health).OfType<Button>().Any(b => b.Content?.ToString() == "Export support bundle"), "Support export is missing from Settings health");
+            checks.Add("Settings health expands with the shared diagnostics and support export surface");
+            window.AppWindow.Resize(new SizeInt32(900, 640));
+            health.IsExpanded = false;
+            checks.Add("Settings health collapse and narrow window resize");
         }
         catch (Exception ex) { error = ex.ToString(); }
         finally

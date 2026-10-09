@@ -308,7 +308,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
 
         return readinessStatus == ZoomSdkReadinessStatus.Blocked
-            ? "CoreVideo cannot join Zoom yet. Open Health for details."
+            ? "CoreVideo cannot join Zoom yet. Open Health and support in Settings for details."
             : "Enter a meeting link or ID above when you are ready to connect.";
     }
 
