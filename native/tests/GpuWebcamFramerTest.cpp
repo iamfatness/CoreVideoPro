@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cstdio>
+#include <limits>
 #if defined(_WIN32)
 #include <objbase.h>
 #endif
@@ -67,6 +68,42 @@ TEST(GpuWebcamFramer, RejectsMalformedFrameWithoutModifyingIt) {
   EXPECT_FALSE(framer.warning().empty());
   EXPECT_EQ(bytes->size(),7u); EXPECT_EQ(bytes->front(),77);
 }
+TEST(WebcamLoudnessOverlay, RequiresFullWindowAndFreshFiniteMeasurement) {
+  WebcamLoudnessState state;
+  const auto now=WebcamLoudnessState::Clock::time_point(std::chrono::seconds(10));
+  EXPECT_FALSE(state.read(now).ready);
+  state.update(-18.4,false,now); EXPECT_FALSE(state.read(now).ready);
+  state.update(-18.4,true,now);
+  EXPECT_TRUE(state.read(now+std::chrono::milliseconds(500)).ready);
+  EXPECT_FALSE(state.read(now+std::chrono::milliseconds(501)).ready);
+  state.update(std::numeric_limits<double>::quiet_NaN(),true,now);
+  EXPECT_FALSE(state.read(now).ready);
+  state.update(-120,true,now); EXPECT_TRUE(state.read(now).ready); // measured silence
+}
+TEST(GpuWebcamFramer, LiveLoudnessChangesOnlyCameraPanelAndMirrorsReadably) {
+  ComScope com; GpuWebcamFramer framer;
+  const auto clean=cleanFrame();
+  const auto baseline=framer.apply(clean,width,height,false);
+  const auto live=framer.apply(clean,width,height,false,{true,true,-18.4});
+  const auto quiet=framer.apply(clean,width,height,false,{true,true,-30});
+  const auto stale=framer.apply(clean,width,height,false,{true,false,-18.4});
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11
+  ASSERT_TRUE(baseline!=nullptr); ASSERT_TRUE(live!=nullptr);
+  ASSERT_TRUE(quiet!=nullptr); ASSERT_TRUE(stale!=nullptr);
+  EXPECT_EQ((*live)[981*width+44],235); // first minus glyph
+  EXPECT_TRUE(*live!=*quiet); EXPECT_TRUE(*live!=*stale);
+  for(int y=0;y<height;++y) for(int x=0;x<width;++x)
+    if(x<32 || x>=392 || y<932 || y>=1040)
+      ASSERT_EQ((*live)[y*width+x],(*baseline)[y*width+x]);
+  EXPECT_EQ((*clean)[981*width+44],100);
+  const auto mirrored=framer.apply(clean,width,height,true,{true,true,-18.4});
+  ASSERT_TRUE(mirrored!=nullptr);
+  auto final=*mirrored; mirrorNv12InPlace(final.data(),width,height);
+  EXPECT_TRUE(final==*live);
+#else
+  EXPECT_TRUE(live==nullptr);
+#endif
+}
 TEST(GpuWebcamFramer, Warm1080pProcessingReportsCost) {
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11
   ComScope com;
@@ -76,11 +113,11 @@ TEST(GpuWebcamFramer, Warm1080pProcessingReportsCost) {
   double worst=0,total=0;
   for(int i=0;i<120;++i) {
     const auto start=std::chrono::steady_clock::now();
-    ASSERT_TRUE(framer.apply(clean,width,height,(i&1)!=0) != nullptr);
+    ASSERT_TRUE(framer.apply(clean,width,height,(i&1)!=0,{true,true,-18.4+(i%10)*.1}) != nullptr);
     const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
     total+=ms; if(ms>worst) worst=ms;
   }
-  std::printf("OH Framer warm 1080p GPU upload/blend/readback: mean %.3f ms, worst %.3f ms (120 frames; not receiver cadence proof)\n",total/120,worst);
+  std::printf("OH Framer + LUFS warm 1080p GPU upload/blend/readback: mean %.3f ms, worst %.3f ms (120 frames; not receiver cadence proof)\n",total/120,worst);
 #endif
 }
 }

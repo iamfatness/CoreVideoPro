@@ -12,6 +12,16 @@ white labels
 retain the supplied alpha. Video continues underneath; these are framing guides,
 not a crop or replacement background. The native 1920x1080 camera fills the frame.
 
+The framer includes a lower-left **PGM LUFS-S** readout and a bar spanning
+-60 to 0 LUFS. It reuses the existing post-master Program audio short-term
+measurement (3-second window), rounded to one decimal. It does not measure
+Zoom's returned audio or a receiver's microphone. Warmup, nonfinite values and
+measurements older than 500 ms show `--` with an empty bar; measured silence
+shows `-INF`. No target loudness or compliance verdict is implied by the bar.
+The panel is composed in the same GPU dispatch as the framing asset; audio
+updates only copy a scalar measurement and never wake a GPU operation. Turning
+the framer off removes both the guides and meter. Mirror preserves readability.
+
 ## Output boundary
 
 The compositor's latest NV12 is also consumed by recording/output paths. It must

@@ -1,5 +1,6 @@
 #pragma once
 #include "modules/VirtualCameraPublisher.h"
+#include "modules/WebcamLoudnessOverlay.h"
 #include <condition_variable>
 #include <mutex>
 #include <optional>
@@ -16,6 +17,7 @@ class AsyncVirtualCameraPublisher final : public IVirtualCameraPublisher {
   void stop() override;
   void setMirror(bool mirror) override;
   void setFramerEnabled(bool enabled) override;
+  void setProgramLoudness(double lufs, bool completeWindow) override;
   void setDeviceName(const std::string& name) override;
   VirtualCameraStatus status() const override;
   void publish(const ProgramFrame& frame) override;
@@ -30,6 +32,7 @@ class AsyncVirtualCameraPublisher final : public IVirtualCameraPublisher {
   std::condition_variable wake_;
   bool shutdown_ = false, desiredOn_ = false, mirror_ = false;
   bool framerEnabled_ = false;
+  WebcamLoudnessState loudness_;
   uint64_t revision_ = 0;
   uint64_t framesAccepted_ = 0, pendingFramesReplaced_ = 0, publicationExceptions_ = 0;
   VirtualCameraStatus cached_;

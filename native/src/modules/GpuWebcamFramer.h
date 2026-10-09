@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "modules/WebcamLoudnessOverlay.h"
 
 namespace corevideo::modules {
 // Worker-owned output fork. Never modifies the shared clean Program NV12.
@@ -15,7 +16,7 @@ class GpuWebcamFramer {
   GpuWebcamFramer& operator=(const GpuWebcamFramer&) = delete;
   std::shared_ptr<const std::vector<uint8_t>> apply(
       const std::shared_ptr<const std::vector<uint8_t>>& clean, int width, int height,
-      bool mirror);
+      bool mirror, WebcamLoudnessOverlay loudness = {});
   const std::string& warning() const;
   // Initialize on a bounded preparation thread, then transfer exclusive
   // ownership to the camera worker. Never call prepare/apply concurrently.

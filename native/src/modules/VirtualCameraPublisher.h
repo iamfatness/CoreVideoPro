@@ -74,6 +74,7 @@ class IVirtualCameraPublisher {
   // Mirror-me: flip the published frame horizontally (optional; default no-op).
   virtual void setMirror(bool mirror) { (void)mirror; }
   virtual void setFramerEnabled(bool enabled) { (void)enabled; }
+  virtual void setProgramLoudness(double lufs, bool completeWindow) { (void)lufs; (void)completeWindow; }
   // Operator-set display name; applies on the next start() (optional; no-op default).
   virtual void setDeviceName(const std::string& name) { (void)name; }
 };

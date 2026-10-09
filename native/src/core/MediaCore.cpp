@@ -5125,6 +5125,7 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
                modules::streamingTruePeakBlockDbfs(programTruePeakMeterR_, chunkR.data(), frames));
   programTruePeakDbfs_ = std::max(chunkTruePeak, programTruePeakDbfs_ - 0.5);
   programLufsIntegrated_ = programIntegratedMeter_.integratedLufs();
+  virtualCamera_->setProgramLoudness(programLufsShortTerm_, windowed >= maxSamples);
 }
 
 rpc::Json MediaCore::masterMeterState() const {
