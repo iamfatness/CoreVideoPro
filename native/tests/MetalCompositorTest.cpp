@@ -1,7 +1,6 @@
 // Metal compositor adapter tests (M1). Compiled only under
-// COREVIDEO_WITH_METAL; on a machine without a usable Metal device every test
-// SKIPS instead of failing — a GPU-less CI runner must never brick the suite
-// (deliberate divergence from the D3D11 tests' hard ASSERT_NE).
+// COREVIDEO_WITH_METAL; a missing Metal device is an explicit skip. Shader
+// compilation and pipeline failures on an available device must fail.
 
 #if COREVIDEO_WITH_METAL
 
@@ -55,7 +54,8 @@ std::unique_ptr<ICompositor> makeCompositorOrSkipReason(std::string& skipReason)
   std::string skipReason_;                                                    \
   auto var = makeCompositorOrSkipReason(skipReason_);                         \
   if (!var) {                                                                 \
-    std::fprintf(stderr, "[metal-test] skipping: %s\n", skipReason_.c_str()); \
+    std::fprintf(stderr, "[metal-test] unavailable: %s\n", skipReason_.c_str()); \
+    ASSERT_TRUE(skipReason_.find("no Metal device") != std::string::npos); \
     return;                                                                   \
   }
 
