@@ -15,8 +15,11 @@ public sealed class GradePreviewProtocolTests
     }
     [Fact] public void ScopeTextureRequiresMatchingEpochRevisionKnownSamplingAndColorSpace()
     {
-        var line="""{"type":"grade-preview","instanceId":"a","sourceId":"p1","revision":2,"sourceEpoch":8,"status":"ready","texture":{"width":64,"height":64,"sharedHandleHex":"0x1234"},"scopes":{"status":"ready","revision":2,"sourceEpoch":8,"view":1,"sampleWidth":256,"sampleHeight":144,"sampleCount":36864,"colorSpace":"rec709-sdr-assumed","completionObservedAtUnixMs":1790000000000,"texture":{"width":768,"height":256,"sharedHandleHex":"0x5678"}}}""";
+        var line="""{"type":"grade-preview","instanceId":"a","sourceId":"p1","revision":2,"sourceEpoch":8,"status":"ready","texture":{"width":64,"height":64,"sharedHandleHex":"0x1234"},"scopes":{"status":"ready","revision":2,"sourceEpoch":8,"view":1,"sampleWidth":256,"sampleHeight":144,"sampleCount":36864,"colorSpace":"rec709-sdr-assumed","completionObservedAtUnixMs":1790000000000,"texture":{"width":1536,"height":512,"sharedHandleHex":"0x5678"}}}""";
         var result=GradePreviewProtocol.Parse(line);Assert.NotNull(result);Assert.Equal(1790000000000,result!.Scopes!.CompletionObservedAtUnixMs);
+        Assert.Equal(1536, result.Scopes.Texture!.Width);
+        Assert.Equal(512, result.Scopes.Texture.Height);
+        Assert.Null(GradePreviewProtocol.Parse(line.Replace("\"width\":1536,\"height\":512", "\"width\":768,\"height\":256")));
         Assert.Null(GradePreviewProtocol.Parse(line.Replace("\"sampleCount\":36864","\"sampleCount\":0")));
         Assert.Null(GradePreviewProtocol.Parse(line.Replace("rec709-sdr-assumed","unknown")));
         Assert.Null(GradePreviewProtocol.Parse(line.Replace("\"view\":1","\"view\":9")));

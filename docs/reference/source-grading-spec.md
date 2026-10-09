@@ -222,8 +222,8 @@ on orderly shutdown.
 ## GPU scope observations
 
 The Windows worker grades a private 256×144 sample, then computes GPU bins for
-histogram (256 RGB/luma bins), waveform (64×64 per RGB/luma channel) and vectorscope
-(64×64 Rec.709 Cb/Cr). A second GPU reduction finds histogram peaks once per sample;
+histogram (256 RGB/luma bins), waveform (256×256 per RGB/luma channel) and vectorscope
+(256×256 Rec.709 Cb/Cr). A second GPU reduction finds histogram peaks once per sample;
 the display shader uses a shared RGB peak so channel distributions remain comparable.
 Waveform/vectorscope show logarithmic sample density, not clipping counters.
 Histogram supports luma/RGB; waveform supports luma, RGB overlay and parade.
@@ -231,7 +231,7 @@ Vectorscope includes 75% encoded RGB targets and a skin reference direction, whi
 is a reference rather than a skin classifier. Each scope can expand independently;
 the vectorscope preserves its square geometry in the expanded texture.
 
-The native worker exports one completed 768×256 GPU texture for the scopes, with no
+The native worker exports one completed 1536×512 GPU texture for the scopes, with no
 CPU source/scope readback. The shell receives source epoch/frame/capture timestamp,
 draft revision, original/graded tap, selected view, sample dimensions/count, assumed
 Rec.709 SDR units and status. `completionObservedAtUnixMs` is the wall-clock time the

@@ -41,7 +41,7 @@ public sealed partial class ColorGradeEditorViewModel
     {
         if (!AdvancedExpanded || !ScopesEnabled) { ScopeStatus = "Scopes hidden."; return; }
         var s = observation.Scopes;
-        if (s is null || s.Revision != Revision || s.SourceEpoch != observation.SourceEpoch || s.Original != ScopesOriginal || s.View != ScopeView || s.Texture is not { Width: 768, Height: 256 } t || string.IsNullOrWhiteSpace(t.SharedHandleHex) ||
+        if (s is null || s.Revision != Revision || s.SourceEpoch != observation.SourceEpoch || s.Original != ScopesOriginal || s.View != ScopeView || s.Texture is not { Width: 1536, Height: 512 } t || string.IsNullOrWhiteSpace(t.SharedHandleHex) ||
             !ulong.TryParse(t.SharedHandleHex.Replace("0x","",StringComparison.OrdinalIgnoreCase),NumberStyles.HexNumber,CultureInfo.InvariantCulture,out var handle) || handle == 0) {
             ScopeSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Participant,$"grade:scopes:{InstanceId}","Scopes");
             ScopeStatus = s?.Status == "unavailable" ? "Native scopes unavailable; no measurement available." : "Preparing native scopes; no measurement available."; return;
