@@ -171,6 +171,16 @@
                 <views:DiagnosticsView Height="640" ViewModel="{x:Bind Studio, Mode=OneWay}" />
             </Expander>
 
+            <Border Style="{StaticResource SettingsSectionBorder}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Optional workspaces" Style="{StaticResource StudioSectionTitle}" />
+                    <ToggleSwitch x:Name="OhgShowOption" Header="Enable OHG Show workspace"
+                                  IsOn="{x:Bind Studio.OhgShowEnabled, Mode=TwoWay}" />
+                    <TextBlock Text="Show the experimental OHG controls in navigation. Turning this off preserves your OHG configuration."
+                               Style="{StaticResource StudioBody}" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
             <!-- S3 opt-in telemetry: default OFF, one line of copy stating exactly
                  what's sent, and a "preview what's sent" affordance so egress is
                  inspectable before consent (spec §S3 / §7). -->

@@ -47,6 +47,8 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             window.AppWindow.Resize(new SizeInt32(900, 640));
             health.IsExpanded = false;
             checks.Add("Settings health collapse and narrow window resize");
+            Require(Descendants(page).OfType<ToggleSwitch>().Any(t => t.Name == "OhgShowOption" && !t.IsOn), "Optional OHG workspace control is missing or not off by default");
+            checks.Add("Settings exposes the default-off optional OHG workspace control");
         }
         catch (Exception ex) { error = ex.ToString(); }
         finally
