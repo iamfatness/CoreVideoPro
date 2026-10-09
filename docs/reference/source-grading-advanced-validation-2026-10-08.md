@@ -56,6 +56,14 @@ primaries, curves, cube axes, bypass and I420 normalization against independent
 expected pixels. Hosted results must be checked on the current PR head; successful
 C++ compilation alone does not prove runtime Metal shader compilation.
 
+Known-color GPU scope verification passes all six preview pixel tests, including
+black, white, gray, RGB and a skin-colored patch. Independent Rec.709 equations
+predict the histogram, waveform and vectorscope density locations in the actual
+exported texture. The first test consumed the same one-publication keyed-mutex
+texture repeatedly and failed its second read; the corrected test copies once
+and samples all three scopes from that copy. Both logs are retained. This test
+does not qualify arbitrary ramps, exhaustive clipping or a skin classifier.
+
 ## Matched synthetic delivery trials
 
 Eight owned trials, each ten seconds warmup and sixty measured seconds. Two pairs
@@ -87,8 +95,9 @@ observed all three actual native scope exports advancing with zero invalid or
 unavailable scope observations, matching epochs/revisions/sample metadata.
 
 Production source commit for the measured Windows binary:
-`d5c1f55cab44f39e862e723d8c56e6512b0cbd3e`. Subsequent offscreen-probe and Metal-only
-changes do not change that Windows production binary. Native binary SHA256:
+`d5c1f55cab44f39e862e723d8c56e6512b0cbd3e`. Later offscreen-probe, Metal shader and absent-internal-curve safety changes
+are outside these measured trials. These are pinned implementation-stage trials,
+not final-head performance qualification. Native binary SHA256:
 `5a0b31cfc07a92146ea129e4e755be674fa94dfe897a9448adf24bb4f680b4f3`.
 Harness SHA256: `7cd9dd68e70df31f9c46caaf82335487ce9bed02c2ad9bd1093d8666d6951872`.
 Driver SHA256: `2dceb3a4a9e836cd86754318f8355d3eafeae42708017c3e8642786632ec9caf`.
