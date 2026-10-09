@@ -99,7 +99,7 @@ float3 advancedGrade(float3 rgb, float3 original, constant AdvancedConstants& a,
     if (o.meta.x < 1.5) {
       v = rec709Encode(rec709Linear(saturate(v))*exp2(o.primary.x));
       v = (v-o.primary.z)*o.primary.y+o.primary.z;
-      float y = dot(v,float3(.2126,.7152,.0722)); v = mix(y.xxx,v,o.primary.w);
+      float y = dot(v,float3(.2126,.7152,.0722)); v = mix(float3(y),v,o.primary.w);
       v += float3(o.balance.x*.1-o.balance.y*.05,o.balance.y*.1,-o.balance.x*.1-o.balance.y*.05);
       v = pow(max((v+o.balance.z)*o.meta.z,0),1.0/o.balance.w);
     } else if(o.meta.x > 2.5) {
