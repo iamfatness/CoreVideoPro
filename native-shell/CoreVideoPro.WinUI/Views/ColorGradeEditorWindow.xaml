@@ -21,7 +21,7 @@
                         <TextBlock Grid.Column="1" Text="WAVEFORM · 0–100%" FontSize="10" />
                         <TextBlock Grid.Column="2" Text="VECTORSCOPE · 75%" FontSize="10" />
                     </Grid>
-                    <controls:VideoSurfaceHost x:Name="ScopeHost" Height="210" SurfaceState="{x:Bind ViewModel.ScopeSurface, Mode=OneWay}" />
+                    <controls:VideoSurfaceHost x:Name="ScopeHost" Height="300" SurfaceState="{x:Bind ViewModel.ScopeSurface, Mode=OneWay}" />
                     <TextBlock Text="{x:Bind ViewModel.ScopeStatus, Mode=OneWay}" FontSize="11" TextWrapping="Wrap" />
                     <ComboBox Header="Expand scope" SelectedIndex="{x:Bind ViewModel.ScopeView, Mode=TwoWay}"><ComboBoxItem Content="All scopes" /><ComboBoxItem Content="Histogram" /><ComboBoxItem Content="Waveform" /><ComboBoxItem Content="Vectorscope" /></ComboBox>
                 </StackPanel>

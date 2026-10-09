@@ -241,13 +241,13 @@ TEST(GradePreviewPixels, HistogramWaveformAndVectorscopeConsumeKnownNeutralRgbAn
     const float r=patch[0]/255.f,g=patch[1]/255.f,b=patch[2]/255.f;
     const float luma=.2126f*r+.7152f*g+.0722f*b;
     const int histogramBin=std::min(255,int(luma*255));
-    const int waveformBin=std::min(63,int(luma*63));
-    const int cb=std::min(63,std::max(0,int(((b-luma)/1.8556f+.5f)*63)));
-    const int cr=std::min(63,std::max(0,int(((r-luma)/1.5748f+.5f)*63)));
+    const int waveformBin=std::min(255,int(luma*255));
+    const int cb=std::min(255,std::max(0,int(((b-luma)/1.8556f+.5f)*255)));
+    const int cr=std::min(255,std::max(0,int(((r-luma)/1.5748f+.5f)*255)));
     const auto samples=consumeSamples(surface.scopes.texture,{
         {(histogramBin+.5f)/768.f,.5f},
-        {.5f,1-(waveformBin+.5f)/64.f},
-        {(2+(cb+.5f)/64.f)/3.f,1-(cr+.5f)/64.f}});
+        {.5f,1-(waveformBin+.5f)/256.f},
+        {(2+(cb+.5f)/256.f)/3.f,1-(cr+.5f)/256.f}});
     ASSERT_EQ(samples.size(),3u);
     EXPECT_GT((samples[0]>>8)&255,180u);
     EXPECT_GT((samples[1]>>8)&255,240u);
