@@ -3,6 +3,12 @@
 **This is the only ordered list of work.** Status and detailed evidence live on
 linked GitHub issues. Rules: [AGENTS.md](../AGENTS.md).
 
+**Owner UI/UX direction on 2026-10-09:** while the grading/framer build awaits
+the weekend bake, execute the quick setup bundle sequentially: #587 first-click
+Join, #594 Health inside Settings, then #595 opt-in OHG navigation. Each gets a
+focused PR and short installed acceptance; sustained media qualification remains
+separate. Sources/lower-third/starter-scene work follows this bundle.
+
 **Owner top priority on 2026-10-08:** advanced per-source grading
 [#835](https://github.com/iamfatness/CoreVideoPro/issues/835), with an optional expanded
 workspace, editable curves, histogram, waveform and vectorscope. Its first slice

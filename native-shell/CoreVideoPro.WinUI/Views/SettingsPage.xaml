@@ -54,9 +54,9 @@
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <TextBox Grid.Column="0" Style="{StaticResource StudioField}"
+                        <TextBox x:Name="JoinMeetingField" Grid.Column="0" Style="{StaticResource StudioField}"
                                  PlaceholderText="Zoom meeting URL or ID"
-                                 Text="{x:Bind ViewModel.JoinMeetingUrl, Mode=TwoWay}"
+                                 Text="{x:Bind ViewModel.JoinMeetingUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                  IsEnabled="{x:Bind ViewModel.CanEditJoinFields, Mode=OneWay}" />
                         <TextBox Grid.Column="1" Style="{StaticResource StudioField}"
                                  PlaceholderText="Producer display name"
