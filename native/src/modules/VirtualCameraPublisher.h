@@ -27,6 +27,10 @@ struct VirtualCameraStatus {
   std::uint64_t framesPublished = 0;
   std::string warning;
   std::uint64_t framesAccepted = 0, pendingFramesReplaced = 0, publicationExceptions = 0;
+  bool framerEnabled = false;
+  std::string framerState = "off"; // off | waiting | active | unavailable
+  std::string framerWarning;
+  std::uint64_t framerFrames = 0, framerFailures = 0;
 };
 
 class IVirtualCameraPublisher {
@@ -69,6 +73,7 @@ class IVirtualCameraPublisher {
   virtual VirtualCameraStatus status() const = 0;
   // Mirror-me: flip the published frame horizontally (optional; default no-op).
   virtual void setMirror(bool mirror) { (void)mirror; }
+  virtual void setFramerEnabled(bool enabled) { (void)enabled; }
   // Operator-set display name; applies on the next start() (optional; no-op default).
   virtual void setDeviceName(const std::string& name) { (void)name; }
 };

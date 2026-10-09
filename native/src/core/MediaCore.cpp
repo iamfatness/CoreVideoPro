@@ -3484,6 +3484,7 @@ void MediaCore::syncVirtualCamera(const rpc::Json& command) {
   const std::string deviceName = command.get("deviceName") ? command.get("deviceName")->asString() : "";
 
   virtualCamera_->setMirror(mirror);
+  virtualCamera_->setFramerEnabled(command.get("framerEnabled") && command.get("framerEnabled")->asBool());
   virtualCamera_->setDeviceName(deviceName);
   if (on && !virtualCameraEnabled_) {
     virtualCamera_->start(width, height, fps);
@@ -3509,6 +3510,11 @@ rpc::Json MediaCore::virtualCameraState() const {
       {"framesAccepted", static_cast<double>(status.framesAccepted)},
       {"pendingFramesReplaced", static_cast<double>(status.pendingFramesReplaced)},
       {"publicationExceptions", static_cast<double>(status.publicationExceptions)},
+      {"framerEnabled", status.framerEnabled},
+      {"framerState", status.framerState},
+      {"framerWarning", status.framerWarning},
+      {"framerFrames", static_cast<double>(status.framerFrames)},
+      {"framerFailures", static_cast<double>(status.framerFailures)},
       {"warning", status.warning},
   };
 }

@@ -2,6 +2,13 @@
 
 project(CoreVideoNativeMediaCore LANGUAGES CXX)
 
+# Keep the owner-supplied RGBA PNG byte-for-byte and embed it in the core.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/OH_New_Framer.png")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/OH_New_Framer.png" WEBCAM_FRAMER_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," WEBCAM_FRAMER_BYTES "${WEBCAM_FRAMER_HEX}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/WebcamFramerAsset.h"
+  "#pragma once\nstatic constexpr unsigned char webcamFramerPng[] = {${WEBCAM_FRAMER_BYTES}};\n")
+
 if(WIN32)
   add_executable(corevideo-vcam-publication-qa EXCLUDE_FROM_ALL ../tools/camera-publication-qa.cpp)
   target_compile_features(corevideo-vcam-publication-qa PRIVATE cxx_std_20)
@@ -125,6 +132,7 @@ add_library(corevideo_native
   src/modules/WgcScreenCaptureAdapter.cpp
   src/modules/VirtualCameraPublisher.cpp
   src/modules/AsyncVirtualCameraPublisher.cpp
+  src/modules/GpuWebcamFramer.cpp
   src/modules/UvcCaptureSupport.cpp
   src/modules/WasapiAudioCaptureSourceAdapter.cpp
   src/modules/CoreAudioCaptureSourceAdapter.cpp
@@ -168,6 +176,7 @@ if(APPLE)
 endif()
 
 target_include_directories(corevideo_native PUBLIC src)
+target_include_directories(corevideo_native PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_include_directories(corevideo_native PRIVATE zoom-engine/shared)
 target_include_directories(corevideo_native PUBLIC plugin-host)
 target_compile_definitions(corevideo_native
@@ -553,6 +562,11 @@ endif()
 add_executable(corevideo-native src/main.cpp)
 target_link_libraries(corevideo-native PRIVATE corevideo_native)
 
+if(WIN32)
+  add_executable(corevideo-webcam-framer-qa EXCLUDE_FROM_ALL ../tools/webcam-framer-worker-qa.cpp)
+  target_link_libraries(corevideo-webcam-framer-qa PRIVATE corevideo_native)
+endif()
+
 # ---------------------------------------------------------------------------
 # Synthetic (fake) Zoom capture engine â€” NO Zoom SDK dependency.
 # Speaks the exact same named-pipe + shared-memory protocol as
@@ -676,6 +690,17 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+  # Isolated portable/disabled-GPU contract, without linking the GPU core.
+  add_executable(corevideo-framer-stub-tests EXCLUDE_FROM_ALL
+    tests/TestMain.cpp tests/GpuWebcamFramerTest.cpp tests/AsyncVirtualCameraPublisherTest.cpp
+    src/modules/GpuWebcamFramer.cpp src/modules/AsyncVirtualCameraPublisher.cpp
+    src/modules/VirtualCameraPublisher.cpp)
+  target_include_directories(corevideo-framer-stub-tests PRIVATE src tests)
+  target_compile_definitions(corevideo-framer-stub-tests PRIVATE
+    COREVIDEO_WITH_D3D11=0 COREVIDEO_WITH_VIRTUALCAM=0 COREVIDEO_STUB=1)
+  if(WIN32)
+    target_link_libraries(corevideo-framer-stub-tests PRIVATE ole32)
+  endif()
   find_package(GTest QUIET)
 
   if(WIN32)
@@ -713,6 +738,7 @@ if(BUILD_TESTING)
     tests/D3DCaptureCpuBranchTest.cpp
     tests/VirtualCamRegistrationTest.cpp
     tests/AsyncVirtualCameraPublisherTest.cpp
+    tests/GpuWebcamFramerTest.cpp
     tests/VirtualCameraSlateTest.cpp
     tests/VirtualCameraComposeTest.cpp
     tests/MasteringReferenceTest.cpp
