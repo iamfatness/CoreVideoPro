@@ -18,11 +18,11 @@ public sealed class GradePreviewCoordinator : IDisposable
     private Task _inFlight = Task.CompletedTask;
     private volatile bool _disposed;
     private long _lastRevision = -1, _lastSent;
-    private sealed record Draft(long Revision, ColorGrade Grade);
+    private sealed record Draft(long Revision, ColorGrade Grade, bool ScopesEnabled, bool ScopesOriginal, int HistogramMode, int WaveformMode, bool CompareOriginal, int ScopeView);
     public GradePreviewCoordinator(IGradePreviewTransport bridge, ColorGradeEditorViewModel editor, Action<Action> dispatch)
     {
         _bridge = bridge; _editor = editor; _dispatch = dispatch;
-        _draft = new(editor.Revision, editor.PreviewGrade);
+        _draft = CaptureDraft();
         editor.PreviewRequested += OnDraftChanged;
         bridge.GradePreviewReceived += OnObservation;
         bridge.HealthChanged += OnHealth;
@@ -30,25 +30,33 @@ public sealed class GradePreviewCoordinator : IDisposable
     }
     private void OnDraftChanged(object? sender, EventArgs e)
     {
-        lock (_gate) _draft = new(_editor.Revision, _editor.PreviewGrade);
+        lock (_gate) _draft = CaptureDraft();
     }
+    private Draft CaptureDraft() => new(_editor.Revision, _editor.CurrentGrade, _editor.AdvancedExpanded && _editor.ScopesEnabled,
+        _editor.ScopesOriginal, _editor.HistogramMode, _editor.WaveformMode, _editor.CompareOriginal, _editor.ScopeView);
     private void Tick()
     {
         lock (_gate)
         {
             if (_disposed || !_inFlight.IsCompleted) return;
             if (_lastRevision == _draft.Revision && Stopwatch.GetElapsedTime(_lastSent).TotalMilliseconds < 500) return;
+            var renew = _lastRevision == _draft.Revision;
             _lastRevision = _draft.Revision; _lastSent = Stopwatch.GetTimestamp();
-            _inFlight = SendAsync(_draft, true);
+            _inFlight = SendAsync(_draft, true, renew);
         }
     }
-    private async Task SendAsync(Draft draft, bool enabled)
+    private async Task SendAsync(Draft draft, bool enabled, bool renew = false)
     {
-        try { await _bridge.SetGradePreviewAsync(_editor.InstanceId, _editor.SourceId, draft.Revision, enabled,
-            new(draft.Grade.Lut, draft.Grade.Exposure, draft.Grade.Contrast, draft.Grade.Saturation,
-                draft.Grade.Temperature)).ConfigureAwait(false); }
+        try {
+            var wire = new MediaCoreColorGradeWire(draft.Grade.Lut, draft.Grade.Exposure, draft.Grade.Contrast, draft.Grade.Saturation,
+                draft.Grade.Temperature, draft.Grade.Advanced?.Copy(), draft.ScopesEnabled, draft.ScopesOriginal,
+                draft.HistogramMode, draft.WaveformMode, draft.CompareOriginal, draft.ScopeView);
+            if (renew) await _bridge.RenewGradePreviewAsync(_editor.InstanceId,_editor.SourceId,draft.Revision,wire).ConfigureAwait(false);
+            else await _bridge.SetGradePreviewAsync(_editor.InstanceId,_editor.SourceId,draft.Revision,enabled,wire).ConfigureAwait(false);
+        }
         catch (Exception ex)
         {
+            lock (_gate) { if (_lastRevision == draft.Revision) _lastRevision = -1; }
             if (enabled) _dispatch(() => { if (!_disposed && _editor.Revision == draft.Revision) _editor.SetNativeUnavailable(ex.Message); });
         }
     }
@@ -60,7 +68,10 @@ public sealed class GradePreviewCoordinator : IDisposable
     private void OnHealth(MediaCoreHealth health)
     {
         if (health.Recovering || health.Stopped)
-            _dispatch(() => { if (!_disposed) _editor.SetNativeUnavailable("Native preview reconnecting."); });
+        {
+            lock (_gate) _lastRevision = -1;
+            _dispatch(() => { if (!_disposed) { _editor.ResetGradeAuthority(); _editor.SetNativeUnavailable("Native preview reconnecting."); } });
+        }
     }
     public void Dispose()
     {

@@ -41,6 +41,7 @@
 
 #include "compositor/CompositorLayout.h"
 #include "compositor/CompositorShaderParams.h"
+#include "compositor/AdvancedGrade.h"
 #include "compositor/MetalCompositorShaders.h"
 #include "modules/Interfaces.h"
 #include "modules/OverlayTileRaster.h"
@@ -944,6 +945,10 @@ class MetalCompositor final : public ICompositor {
     constants.color[3] = alpha;
     const auto grade = layer.plan.hasColorGrade ? layer.plan.colorGrade : renderPlan.colorGrade;
     applyColorGradeParams(&constants, grade);
+    const auto advanced = advancedGradeConstants(grade);
+    [encoder setFragmentBytes:&advanced length:sizeof(advanced) atIndex:1];
+    [encoder setFragmentTexture:gradeCurveTexture(grade) atIndex:3];
+    for (size_t i=0;i<8;++i) [encoder setFragmentTexture:gradeCubeTexture(grade,i) atIndex:4+i];
     constants.uvScale[0] = uvScaleX;
     constants.uvScale[1] = uvScaleY;
     constants.uvOffset[0] = uvOffsetX;
@@ -1320,6 +1325,40 @@ class MetalCompositor final : public ICompositor {
 
   // ── members ────────────────────────────────────────────────────────────────
 
+  std::map<std::string, id<MTLTexture>> gradeCurveTextures_;
+  id<MTLTexture> gradeCurveTexture(const CompositorColorGrade& grade) {
+    if (!grade.advanced || grade.advanced->bypass || grade.advanced->operations.empty()) return nil;
+    const auto& key = grade.advanced->content;
+    auto found = gradeCurveTextures_.find(key);
+    if (found != gradeCurveTextures_.end()) return found->second;
+    auto samples = compileGradeCurves(grade);
+    auto desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG32Float width:16 height:32 mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead;
+    desc.storageMode = MTLStorageModeShared;
+    id<MTLTexture> texture = [device_ newTextureWithDescriptor:desc];
+    if (!texture) return nil;
+    [texture replaceRegion:MTLRegionMake2D(0,0,16,32) mipmapLevel:0 withBytes:samples.data() bytesPerRow:16*2*sizeof(float)];
+    if (gradeCurveTextures_.size() >= 64) gradeCurveTextures_.erase(gradeCurveTextures_.begin());
+    gradeCurveTextures_.emplace(key, texture);
+    return texture;
+  }
+  std::map<std::string,id<MTLTexture>> gradeCubeTextures_;
+  id<MTLTexture> gradeCubeTexture(const CompositorColorGrade& grade, size_t index) {
+    if (!grade.advanced || grade.advanced->bypass || index >= grade.advanced->operations.size()) return nil;
+    const auto& cube = grade.advanced->operations[index].cube;
+    if (!cube) return nil;
+    const auto found = gradeCubeTextures_.find(cube->hash);
+    if (found != gradeCubeTextures_.end()) return found->second;
+    MTLTextureDescriptor* desc = [MTLTextureDescriptor new];
+    desc.textureType = MTLTextureType3D; desc.pixelFormat = MTLPixelFormatRGBA32Float;
+    desc.width = desc.height = desc.depth = cube->size; desc.mipmapLevelCount = 1;
+    desc.usage = MTLTextureUsageShaderRead; desc.storageMode = MTLStorageModeShared;
+    id<MTLTexture> texture = [device_ newTextureWithDescriptor:desc];
+    if (!texture) return nil;
+    [texture replaceRegion:MTLRegionMake3D(0,0,0,cube->size,cube->size,cube->size) mipmapLevel:0 slice:0 withBytes:cube->rgba.data() bytesPerRow:cube->size*16 bytesPerImage:cube->size*cube->size*16];
+    if (gradeCubeTextures_.size() >= 64) gradeCubeTextures_.erase(gradeCubeTextures_.begin());
+    gradeCubeTextures_.emplace(cube->hash,texture); return texture;
+  }
   id<MTLDevice> device_ = nil;
   id<MTLCommandQueue> queue_ = nil;
   id<MTLRenderPipelineState> solidPipeline_ = nil;

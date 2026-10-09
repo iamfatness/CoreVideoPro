@@ -1,3 +1,4 @@
+#include "compositor/AdvancedGrade.h"
 #include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
@@ -28,6 +29,7 @@
 #include "compositor/CompositorOverlayRaster.h"  // extracted DirectWrite/WIC/D2D overlay raster
 #include "compositor/TilesDecorationParams.h"
 #include "compositor/CompositorShaders.h"  // extracted HLSL shader sources + pure shader/format helpers
+#include "compositor/D3DGradeScopes.h"
 #include "modules/OverlayTileRaster.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/VirtualCameraFrame.h"  // nv12FrameSize (vcam tap NV12 buffer layout)
@@ -666,15 +668,28 @@ class D3D11Compositor final : public ICompositor {
       aliases.push_back(std::move(frame));
       CompositorRenderPlanLayer layer;
       layer.participantId = alias; layer.sourceId = alias;
-      layer.hasColorGrade = true; layer.colorGrade = demand.grade;
+      layer.hasColorGrade = true; layer.colorGrade = demand.compareOriginal ? CompositorColorGrade{} : demand.grade;
       plan.layers.push_back(std::move(layer));
     }
     ProgramFrame exported;
     exportParticipantTextures(plan, aliases, exported);
+    for (const auto& demand : request.gradePreviews) {
+      if (!demand.scopesEnabled) { gradeScopes_.erase(demand.instanceId); gradeScopeFailures_.erase(demand.instanceId); continue; }
+      const auto frame = std::find_if(aliases.begin(), aliases.end(), [&](const auto& f) { return f.participantId == "grade:" + demand.instanceId; });
+      if (frame != aliases.end()) renderGradeScopes(demand, *frame);
+    }
     for (const auto& texture : exported.participantSharedTextures) {
       const auto prior = gradeHistory_.find({texture.participantId, texture.frameNumber});
       if (prior == gradeHistory_.end()) continue; // no invented attribution for a pending copy
       auto observation = prior->second; observation.texture = texture;
+      if (gradeScopeFailures_.count(observation.demand.instanceId)) observation.scopes.status = "unavailable";
+      if (const auto scope = gradeScopes_.find(observation.demand.instanceId); scope != gradeScopes_.end() && !gradeScopeFailures_.count(observation.demand.instanceId)) {
+        const auto image = scope->second.renderer.published();
+        const auto stamp = scope->second.history.find(image.frameNumber);
+        if (stamp != scope->second.history.end() && stamp->second.revision == observation.demand.revision && stamp->second.sourceEpoch == observation.sourceEpoch) {
+          observation.scopes = stamp->second; observation.scopes.texture = image;
+        }
+      }
       result.gradePreviews.push_back(std::move(observation));
     }
     const auto demanded = [&](const std::string& alias) {
@@ -685,6 +700,10 @@ class D3D11Compositor final : public ICompositor {
       it = demanded(it->first) ? std::next(it) : sourceTextures_.erase(it);
     for (auto it = gradeStamps_.begin(); it != gradeStamps_.end();)
       it = demanded(it->first) ? std::next(it) : gradeStamps_.erase(it);
+    for (auto it = gradeScopes_.begin(); it != gradeScopes_.end();)
+      it = demanded("grade:" + it->first) ? std::next(it) : gradeScopes_.erase(it);
+    for (auto it = gradeScopeFailures_.begin(); it != gradeScopeFailures_.end();)
+      it = demanded("grade:" + *it) ? std::next(it) : gradeScopeFailures_.erase(it);
     for (auto it = gradeHistory_.begin(); it != gradeHistory_.end();)
       it = !demanded(it->first.first) || (gradeToken_ - it->first.second > 32 && gradeStamps_.at(it->first.first).token != it->first.second)
           ? gradeHistory_.erase(it) : std::next(it);
@@ -788,6 +807,45 @@ class D3D11Compositor final : public ICompositor {
     // frame is held (color-grade slider drag on a static source).
     CompositorColorGrade lastGrade;
   };
+  struct GradeScopeWork {
+    ParticipantTex input;
+    ComPtrLite<ID3D11ShaderResourceView> view;
+    D3DGradeScopes renderer;
+    std::map<int64_t, GradePreviewSurface::Scopes> history;
+  };
+  std::map<std::string, GradeScopeWork> gradeScopes_;
+  std::set<std::string> gradeScopeFailures_;
+  void renderGradeScopes(const GradePreviewDemand& demand, const VideoFrame& frame) {
+    auto& work = gradeScopes_[demand.instanceId];
+    if (!work.input.local) {
+      D3D11_TEXTURE2D_DESC desc{}; desc.Width = 256; desc.Height = 144; desc.MipLevels = desc.ArraySize = 1;
+      desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+      desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+      if (FAILED(device_->CreateTexture2D(&desc, nullptr, work.input.local.put())) ||
+          FAILED(device_->CreateRenderTargetView(work.input.local.get(), nullptr, work.input.localRtv.put())) ||
+          FAILED(device_->CreateShaderResourceView(work.input.local.get(), nullptr, work.view.put())) ||
+          !work.renderer.initialize(device_.get())) { gradeScopeFailures_.insert(demand.instanceId); gradeScopes_.erase(demand.instanceId); return; }
+    }
+    const auto grade = demand.scopesOriginal ? CompositorColorGrade{} : demand.grade;
+    const auto* source = acquireSourceTex(frame);
+    const bool i420 = source ? source->isI420 : frame.hasI420();
+    const bool rendered = i420 ? renderI420ToParticipantTexture(frame, work.input, 256, 144, grade)
+        : renderBgraToParticipantTexture(frame, work.input, 256, 144, grade);
+    if (!rendered || !work.renderer.render(context_.get(), work.view.get(), vertexShader_.get(),
+        demand.histogramMode, demand.waveformMode, demand.scopeView, frame.frameId)) { gradeScopeFailures_.insert(demand.instanceId); return; }
+    gradeScopeFailures_.erase(demand.instanceId);
+    const auto original = gradeHistory_.find({frame.participantId, frame.frameId});
+    if (original == gradeHistory_.end()) return;
+    GradePreviewSurface::Scopes stamp;
+    stamp.sourceEpoch = original->second.sourceEpoch; stamp.sourceFrameId = original->second.sourceFrameId;
+    stamp.captureTimestamp100ns = original->second.captureTimestamp100ns; stamp.revision = demand.revision;
+    stamp.original = demand.scopesOriginal; stamp.status = original->second.status;
+    work.history[frame.frameId] = stamp;
+    const auto published = work.renderer.published().frameNumber;
+    for (auto it = work.history.begin(); it != work.history.end();) {
+      it = work.history.size() > 32 && it->first != published && it->first != frame.frameId ? work.history.erase(it) : std::next(it);
+    }
+  }
 
   static bool gradesEqual(const CompositorColorGrade& a, const CompositorColorGrade& b) {
     return colorGradesEqual(a, b);
@@ -1170,6 +1228,7 @@ class D3D11Compositor final : public ICompositor {
       float uvScaleY,
       float uvOffsetX,
       float uvOffsetY) {
+    if (!bindAdvancedGrade(layer.plan.hasColorGrade ? layer.plan.colorGrade : renderPlan.colorGrade)) return false;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(constantBuffer_.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
       return false;
@@ -1941,6 +2000,7 @@ class D3D11Compositor final : public ICompositor {
   // writeLayerConstants so a source graded in the program composite gets the
   // identical grade in its export texture (preview/multiview match program).
   bool writeGradeConstants(const CompositorColorGrade& grade, const VideoFrame* frame = nullptr) {
+    if (!bindAdvancedGrade(grade)) return false;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(constantBuffer_.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
       return false;
@@ -2190,6 +2250,7 @@ class D3D11Compositor final : public ICompositor {
   // export texture) match the graded PROGRAM look for the very same source instead
   // of showing an ungraded, brighter/warmer copy.
   CompositorColorGrade effectiveParticipantGrade(const CompositorRenderPlan& plan, const VideoFrame& frame) const {
+    if (const auto source=plan.sourceGrades.find(frame.participantId); source!=plan.sourceGrades.end()) return source->second;
     for (const auto& layer : plan.layers) {
       const bool matches =
           (!layer.participantId.empty() && layer.participantId == frame.participantId) ||
@@ -3051,6 +3112,63 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11PixelShader> overlayPixelShader_;
   ComPtrLite<ID3D11SamplerState> samplerState_;
   ComPtrLite<ID3D11Buffer> constantBuffer_;
+  struct AdvancedResource {
+    uint64_t lastUse = 0;
+    ComPtrLite<ID3D11Buffer> constants;
+    ComPtrLite<ID3D11ShaderResourceView> curves;
+    std::shared_ptr<ComPtrLite<ID3D11ShaderResourceView>> cubes[8];
+  };
+  std::map<std::string, AdvancedResource> advancedGrades_;
+  uint64_t advancedResourceUse_ = 0;
+  std::map<std::string, std::weak_ptr<ComPtrLite<ID3D11ShaderResourceView>>> gradeCubeCache_;
+  bool bindAdvancedGrade(const CompositorColorGrade& grade) {
+    if (!grade.advanced || grade.advanced->bypass) {
+      ID3D11Buffer* empty[] = {nullptr}; context_->PSSetConstantBuffers(1, 1, empty);
+      ID3D11ShaderResourceView* noTexture[] = {nullptr}; context_->PSSetShaderResources(3, 1, noTexture);
+      ID3D11ShaderResourceView* noCubes[8]{}; context_->PSSetShaderResources(4,8,noCubes);
+      return true;
+    }
+    const auto& key = grade.advanced->content;
+    auto found = advancedGrades_.find(key);
+    if (found == advancedGrades_.end()) {
+      AdvancedResource resource;
+      const auto constants = advancedGradeConstants(grade);
+      D3D11_BUFFER_DESC bd{}; bd.ByteWidth = sizeof(constants); bd.Usage = D3D11_USAGE_IMMUTABLE;
+      bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+      D3D11_SUBRESOURCE_DATA data{}; data.pSysMem = &constants;
+      if (FAILED(device_->CreateBuffer(&bd, &data, resource.constants.put()))) return false;
+      const auto samples = compileGradeCurves(grade);
+      D3D11_TEXTURE2D_DESC td{}; td.Width = 16; td.Height = 32; td.MipLevels = td.ArraySize = 1;
+      td.Format = DXGI_FORMAT_R32G32_FLOAT; td.SampleDesc.Count = 1;
+      td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      data.pSysMem = samples.data(); data.SysMemPitch = 16 * 2 * sizeof(float);
+      ComPtrLite<ID3D11Texture2D> texture;
+      if (FAILED(device_->CreateTexture2D(&td, &data, texture.put())) ||
+          FAILED(device_->CreateShaderResourceView(texture.get(), nullptr, resource.curves.put()))) return false;
+      for (size_t i=0;i<grade.advanced->operations.size();++i) if (const auto& cube=grade.advanced->operations[i].cube) {
+        if (const auto cached = gradeCubeCache_.find(cube->hash); cached != gradeCubeCache_.end()) resource.cubes[i] = cached->second.lock();
+        if (resource.cubes[i]) continue;
+        resource.cubes[i] = std::make_shared<ComPtrLite<ID3D11ShaderResourceView>>();
+        D3D11_TEXTURE3D_DESC cd{}; cd.Width=cd.Height=cd.Depth=cube->size; cd.MipLevels=1;
+        cd.Format=DXGI_FORMAT_R32G32B32A32_FLOAT; cd.Usage=D3D11_USAGE_IMMUTABLE; cd.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        data.pSysMem=cube->rgba.data(); data.SysMemPitch=cube->size*4*sizeof(float); data.SysMemSlicePitch=cube->size*data.SysMemPitch;
+        ComPtrLite<ID3D11Texture3D> lut;
+        if (FAILED(device_->CreateTexture3D(&cd,&data,lut.put())) || FAILED(device_->CreateShaderResourceView(lut.get(),nullptr,resource.cubes[i]->put()))) return false;
+        if (gradeCubeCache_.size() >= 64) gradeCubeCache_.erase(gradeCubeCache_.begin());
+        gradeCubeCache_[cube->hash] = resource.cubes[i];
+      }
+      if (advancedGrades_.size() >= 64) advancedGrades_.erase(std::min_element(advancedGrades_.begin(),advancedGrades_.end(),
+          [](const auto& a,const auto& b) { return a.second.lastUse < b.second.lastUse; }));
+      found = advancedGrades_.emplace(key, std::move(resource)).first;
+    }
+    found->second.lastUse = ++advancedResourceUse_;
+    ID3D11Buffer* buffers[] = {found->second.constants.get()}; context_->PSSetConstantBuffers(1, 1, buffers);
+    ID3D11ShaderResourceView* views[] = {found->second.curves.get()}; context_->PSSetShaderResources(3, 1, views);
+    ID3D11ShaderResourceView* cubes[8]{}; for(size_t i=0;i<8;++i) cubes[i]=found->second.cubes[i] ? found->second.cubes[i]->get() : nullptr;
+    context_->PSSetShaderResources(4,8,cubes);
+    ID3D11SamplerState* sampler[]={samplerState_.get()}; context_->PSSetSamplers(1,1,sampler);
+    return true;
+  }
   ComPtrLite<ID3D11BlendState> blendState_;
   ComPtrLite<ID3D11BlendState> premultipliedBlendState_;
   ComPtrLite<ID3D11RasterizerState> rasterizerState_;

@@ -20,6 +20,7 @@ public sealed partial class ColorGradeEditorWindow : Window
     {
         ViewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
         InitializeComponent();
+        InitializeAdvancedWorkspace();
 
         ViewModel.GradeSaved += OnGradeSaved;
         ViewModel.Closed += OnEditorClosed;
@@ -37,6 +38,7 @@ public sealed partial class ColorGradeEditorWindow : Window
 
     private void OnWindowClosed(object sender, WindowEventArgs args)
     {
+        StopAdvancedWorkspace();
         ViewModel.GradeSaved -= OnGradeSaved;
         ViewModel.Closed -= OnEditorClosed;
         Closed -= OnWindowClosed;
@@ -53,6 +55,7 @@ public sealed partial class ColorGradeEditorWindow : Window
         }
 
         appWindow.Resize(new Windows.Graphics.SizeInt32(WindowWidth, WindowHeight));
+        appWindow.Closing += (_,args) => { if (ViewModel.IsApplying) args.Cancel = true; };
         WindowChromeService.Apply(this, appWindow);
 
         if (appWindow.Presenter is OverlappedPresenter presenter)

@@ -352,6 +352,28 @@ struct CompositorLayerRect {
   float height = 1.f;
 };
 
+struct GradeCurvePoint { float x = 0.f, y = 0.f; };
+struct GradeCubeLut {
+  int size = 0;
+  float domainMin[3]{0,0,0}, domainMax[3]{1,1,1};
+  std::vector<float> rgba;
+  std::string hash;
+};
+struct GradeOperation {
+  std::string id, kind;
+  bool enabled = true;
+  float intensity = 1.f, exposureStops = 0.f, contrast = 1.f, pivot = .5f;
+  float saturation = 1.f, temperature = 0.f, tint = 0.f, lift = 0.f, gamma = 1.f, gain = 1.f;
+  std::vector<std::vector<GradeCurvePoint>> curves;
+  std::shared_ptr<const GradeCubeLut> cube;
+};
+struct AdvancedGradeDocument {
+  bool bypass = false;
+  float intensity = 1.f;
+  std::vector<GradeOperation> operations;
+  // Validated canonical content is also the GPU-resource/cache identity.
+  std::string content;
+};
 struct CompositorColorGrade {
   float exposure = 0.f;
   float contrast = 0.f;
@@ -360,6 +382,7 @@ struct CompositorColorGrade {
   // Named legacy look, not an imported LUT file. Retain it on the plan so
   // export caches and both GPU adapters see the same operator selection.
   std::string lut = "none";
+  std::shared_ptr<const AdvancedGradeDocument> advanced;
 };
 
 // Per-layer chroma key (the green/blue screen keyer).
@@ -485,6 +508,7 @@ struct CompositorRenderPlanLayer {
 };
 
 struct CompositorRenderPlan {
+  std::map<std::string, CompositorColorGrade> sourceGrades;
   std::string renderPlanId;
   std::string sceneId;
   int width = 1920;
@@ -1056,6 +1080,8 @@ struct GradePreviewDemand {
   std::string instanceId, sourceId;
   int64_t revision = 0;
   CompositorColorGrade grade;
+  bool scopesEnabled = false, scopesOriginal = false, compareOriginal = false;
+  int histogramMode = 1, waveformMode = 1, scopeView = 0;
 };
 struct GradePreviewSurface {
   GradePreviewDemand demand;
@@ -1063,6 +1089,13 @@ struct GradePreviewSurface {
   int64_t sourceFrameId = 0, captureTimestamp100ns = 0;
   ParticipantSharedTexture texture;
   std::string status = "unavailable", reason;
+  struct Scopes {
+    ParticipantSharedTexture texture;
+    uint64_t sourceEpoch = 0;
+    int64_t sourceFrameId = 0, captureTimestamp100ns = 0, revision = 0;
+    bool original = false;
+    std::string status = "preparing";
+  } scopes;
 };
 struct MonitorRenderRequest {
   int64_t sequence = 0;

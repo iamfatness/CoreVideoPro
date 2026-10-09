@@ -11,13 +11,14 @@ import time
 class Core:
     """One outstanding request; no event backlog or retained response history."""
 
-    def __init__(self, path, env, stderr_path):
+    def __init__(self, path, env, stderr_path, event_observer=None):
         self.condition = threading.Condition()
         self.pending = None
         self.response = None
         self.closed = False
         self.n = 0
         self.events = 0
+        self.event_observer = event_observer
         with open(stderr_path, "wb") as stderr_file:
             self.proc = subprocess.Popen(
                 [path],
@@ -62,6 +63,8 @@ class Core:
                         self.condition.notify_all()
                     else:
                         self.events += 1
+                        if self.event_observer is not None:
+                            self.event_observer(value)
         finally:
             with self.condition:
                 self.closed = True

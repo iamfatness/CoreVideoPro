@@ -11909,6 +11909,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ZoomAudioMode = ZoomAudioModePreference.Format(_zoomAudioMode),
             ZoomCameraMaxResolution = ZoomCameraMaxResolution,
             ZoomCameraMaxFps = ZoomCameraMaxFps,
+            SourceGrades = CapturePersistedSourceGrades(),
             CustomScenes = _scenes
                 .Where(scene => scene.Id.StartsWith("custom-", StringComparison.Ordinal))
                 .Select(scene => ScenePersistenceService.ToPersisted(
@@ -11932,6 +11933,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)
     {
+        RestorePersistedSourceGrades(preferences.SourceGrades);
         FfmpegBinDirectory = preferences.FfmpegBinDirectory ?? FfmpegBinDirectory;
         StreamRtmpEnabled = preferences.StreamRtmpEnabled;
         StreamNdiEnabled = preferences.StreamNdiEnabled;

@@ -108,8 +108,10 @@ inline constexpr std::array<std::string_view, 49> kNativeMediaCoreCommandTypes =
 // Every request type JsonRpcServer dispatches on. ContractParity compares this
 // with the dispatcher in both directions and checks that each request the C#
 // and Swift shells send is in it.
-inline constexpr std::array<std::string_view, 34> kCoreRequestTypes = {
+inline constexpr std::array<std::string_view, 36> kCoreRequestTypes = {
     "handshake",
+    "register-grade-document",
+    "set-source-grade",
     "ping",
     "snapshot",
     "media-core-sync",

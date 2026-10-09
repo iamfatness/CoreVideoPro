@@ -12,11 +12,12 @@ public sealed partial class ColorGradeEditorViewModel : ObservableObject
     public static IReadOnlyList<string> LutOptions { get; } =
         ["none", "neutral", "warm-film", "cool-broadcast", "punch"];
 
-    public ColorGradeEditorViewModel(string sourceId, string sourceName, ColorGrade grade)
+    public ColorGradeEditorViewModel(string sourceId, string sourceName, ColorGrade grade, long appliedRevision = 0)
     {
-        SourceId = sourceId; SourceName = sourceName;
+        SourceId = sourceId; SourceName = sourceName; _appliedRevision = appliedRevision;
         _lut = grade.Lut; _exposure = grade.Exposure; _contrast = grade.Contrast;
         _saturation = grade.Saturation; _temperature = grade.Temperature;
+        InitializeAdvancedGrade(grade.Advanced);
         _nativeSurface = WaitingSurface();
     }
     public string InstanceId { get; } = Guid.NewGuid().ToString("N");
@@ -36,27 +37,34 @@ public sealed partial class ColorGradeEditorViewModel : ObservableObject
     public string Summary => CurrentGrade.Summary;
     public bool HasPreview => NativeSurface.PendingSharedHandle is { IsValid: true };
     public ColorGrade CurrentGrade => new() { Lut = Lut, Exposure = Exposure, Contrast = Contrast,
-        Saturation = Saturation, Temperature = Temperature };
+        Saturation = Saturation, Temperature = Temperature, Advanced = GradeDocument?.Copy() };
     public ColorGrade PreviewGrade => CompareOriginal ? new() { Lut = "none" } : CurrentGrade;
     public event EventHandler? PreviewRequested;
     public event EventHandler<ColorGrade>? GradeChanged;
     public event EventHandler<ColorGrade>? GradeSaved;
     public event EventHandler? Closed;
+    partial void OnLutChanging(string value) => RememberGrade();
     partial void OnLutChanged(string value) => OnGradeEdited();
+    partial void OnExposureChanging(int value) => RememberGrade();
     partial void OnExposureChanged(int value) => OnGradeEdited();
+    partial void OnContrastChanging(int value) => RememberGrade();
     partial void OnContrastChanged(int value) => OnGradeEdited();
+    partial void OnSaturationChanging(int value) => RememberGrade();
     partial void OnSaturationChanged(int value) => OnGradeEdited();
+    partial void OnTemperatureChanging(int value) => RememberGrade();
     partial void OnTemperatureChanged(int value) => OnGradeEdited();
     partial void OnCompareOriginalChanged(bool value) => RequestPreview();
-    partial void OnLiveEditingChanged(bool value) { if (value) GradeChanged?.Invoke(this, CurrentGrade); }
+    partial void OnLiveEditingChanged(bool value) { if (value) QueueLiveGrade(); }
     private void OnGradeEdited()
     {
+        if (_restoringGrade) return;
         RequestPreview();
-        if (LiveEditing) GradeChanged?.Invoke(this, CurrentGrade);
+        if (LiveEditing) QueueLiveGrade();
     }
     private void RequestPreview()
     {
         ++Revision;
+        ScopeSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Participant,$"grade:scopes:{InstanceId}","Scopes");
         NativeSurface = WaitingSurface();
         PreviewStatus = CompareOriginal ? "Preparing original source comparison (monitor only)." : "Applying draft to native preview.";
         PreviewRequested?.Invoke(this, EventArgs.Empty);
@@ -65,10 +73,12 @@ public sealed partial class ColorGradeEditorViewModel : ObservableObject
     {
         NativeSurface = WaitingSurface() with { StatusLine = reason };
         PreviewStatus = reason;
+        ScopeSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Participant,$"grade:scopes:{InstanceId}","Scopes"); ScopeStatus = reason;
     }
     public void ObserveNativePreview(GradePreviewObservation observation)
     {
         if (observation.InstanceId != InstanceId || observation.SourceId != SourceId || observation.Revision != Revision) return;
+        ObserveScopes(observation);
         var label = observation.Status switch {
             "ready" => CompareOriginal ? "Original source — monitor comparison only" : "Native graded source",
             "stale" => "Source is not advancing — last native image held",
@@ -77,6 +87,7 @@ public sealed partial class ColorGradeEditorViewModel : ObservableObject
             _ => $"Native preview unavailable: {observation.Reason}"
         };
         PreviewStatus = label;
+        if (observation.Status is "held" or "stale") PreviewStatus += $" · source unchanged {observation.SourceAgeMs/1000d:0.0}s";
         if (observation.Status is not ("ready" or "held" or "stale") || observation.Texture is not { } texture ||
             string.IsNullOrEmpty(texture.SharedHandleHex) ||
             !ulong.TryParse(texture.SharedHandleHex.Replace("0x", "", StringComparison.OrdinalIgnoreCase),
@@ -87,9 +98,14 @@ public sealed partial class ColorGradeEditorViewModel : ObservableObject
         NativeSurface = WaitingSurface() with { StatusLine = label,
             PendingSharedHandle = new SharedTextureHandle { NtHandle = handle, Width = texture.Width,
                 Height = texture.Height, Format = texture.Format, FrameNumber = texture.FrameNumber } };
+        ObserveGradeAuthority(observation);
     }
     private VideoSurfaceState WaitingSurface() => VideoSurfaceState.Waiting(VideoSurfaceKind.Participant,
         $"grade:{InstanceId}", SourceName);
-    [RelayCommand] private void Save() => GradeSaved?.Invoke(this, CurrentGrade);
+    [RelayCommand(CanExecute = nameof(CanSubmitGrade))] private async Task Save()
+    {
+        var grade = CurrentGrade;
+        if (await SubmitGradeAsync(grade)) GradeSaved?.Invoke(this, grade);
+    }
     [RelayCommand] private void Close() => Closed?.Invoke(this, EventArgs.Empty);
 }

@@ -16,16 +16,17 @@ public partial class App : Application
         ?? throw new InvalidOperationException("Application requires a UI dispatcher.");
     private static int _firstChanceWrongThread;
     private readonly AudioMeterStressProbe? _meterProbe;
+    private readonly SourceGradeWorkspaceProbe? _gradeProbe;
 
     public App() : this(null) { }
 
-    internal App(AudioMeterStressProbe? meterProbe)
+    internal App(AudioMeterStressProbe? meterProbe, SourceGradeWorkspaceProbe? gradeProbe = null)
     {
-        _meterProbe = meterProbe;
+        _meterProbe = meterProbe; _gradeProbe = gradeProbe;
         InitializeComponent();
         // Use the real generated XAML metadata/resources in the isolated probe,
         // but do not register activation, open a show, or swallow test failures.
-        if (_meterProbe is not null) return;
+        if (_meterProbe is not null || _gradeProbe is not null) return;
         ApplicationLifecycle.BindActivation(Activation);
         // DIAGNOSTIC (limited to 5 writes so it can't destabilize): the recurring
         // CoreMessagingXP 0xc000027b crash is a cross-thread UI access surfacing as
@@ -72,6 +73,7 @@ public partial class App : Application
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
+        if (_gradeProbe is not null) { await _gradeProbe.RunAsync(); Exit(); return; }
         if (_meterProbe is not null)
         {
             await _meterProbe.RunAsync();

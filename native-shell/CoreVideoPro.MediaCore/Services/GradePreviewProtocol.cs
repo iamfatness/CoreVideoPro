@@ -29,6 +29,10 @@ public static class GradePreviewProtocol
                  texture.Format != "B8G8R8A8_UNORM" ||
                  !ulong.TryParse(texture.SharedHandleHex.Replace("0x", "", StringComparison.OrdinalIgnoreCase),
                      NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var handle) || handle == 0)) return null;
+            if (value.Scopes is { } scope && scope.Texture is { Width: > 0 } image &&
+                (scope.Revision != value.Revision || scope.SourceEpoch != value.SourceEpoch || scope.View is < 0 or > 3 || scope.ColorSpace != "rec709-sdr-assumed" || scope.SampleWidth != 256 || scope.SampleHeight != 144 || scope.SampleCount != 36864 ||
+                 image.Width != 768 || image.Height != 256 || image.Format != "B8G8R8A8_UNORM" || string.IsNullOrWhiteSpace(image.SharedHandleHex) || scope.Status is not ("ready" or "held" or "stale") ||
+                 !ulong.TryParse(image.SharedHandleHex.Replace("0x","",StringComparison.OrdinalIgnoreCase),NumberStyles.HexNumber,CultureInfo.InvariantCulture,out var scopeHandle) || scopeHandle == 0)) return null;
             return value;
         }
         catch (JsonException) { return null; }

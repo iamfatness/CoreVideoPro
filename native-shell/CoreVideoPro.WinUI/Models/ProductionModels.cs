@@ -825,9 +825,10 @@ public sealed class ColorGrade
     public int Contrast { get; init; }
     public int Saturation { get; init; }
     public int Temperature { get; init; }
+    public CoreVideoPro.MediaCore.Models.AdvancedGradeDocument? Advanced { get; init; }
 
     public string Summary =>
-        $"LUT {Lut} · exposure {FormatAxis(Exposure)} · contrast {FormatAxis(Contrast)} · saturation {FormatAxis(Saturation)}";
+        $"Look {Lut} · exposure {FormatAxis(Exposure)} · contrast {FormatAxis(Contrast)} · saturation {FormatAxis(Saturation)}";
 
     private static string FormatAxis(int value) => value > 0 ? $"+{value}" : value.ToString();
 }

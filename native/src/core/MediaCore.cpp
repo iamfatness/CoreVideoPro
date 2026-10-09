@@ -6,6 +6,7 @@
 #include "core/SystemMemoryPolicy.h"
 
 #include "compositor/CompositorLayout.h"
+#include "compositor/AdvancedGrade.h"
 #include "compositor/TilesLayout.h"
 #include "compositor/TilesPinnedLayout.h"
 #include "compositor/TilesMembership.h"
@@ -126,13 +127,15 @@ float clampColorGradeAxis(double value) {
 }
 
 modules::CompositorColorGrade readColorGrade(const rpc::Json& value) {
-  return modules::CompositorColorGrade{
+  auto result = modules::CompositorColorGrade{
       clampColorGradeAxis(value.getNumber("exposure", 0.0)),
       clampColorGradeAxis(value.getNumber("contrast", 0.0)),
       clampColorGradeAxis(value.getNumber("saturation", 0.0)),
       clampColorGradeAxis(value.getNumber("temperature", 0.0)),
       value.getString("lut", "none"),
   };
+  if (const auto* advanced = value.get("advanced")) modules::readAdvancedGrade(*advanced, result.advanced);
+  return result;
 }
 
 std::string normalizeVideoCodec(const std::string& codec, const std::string& fallback);
@@ -1636,12 +1639,41 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
 }
 
 bool MediaCore::configureGradePreview(const rpc::Json& command) {
+  if (command.get("renewOnly") && command.get("renewOnly")->asBool()) return gradePreviews_.renew(command);
   const auto* grade = command.get("grade");
+  if (grade) if (const auto* advanced = grade->get("advanced")) {
+    std::shared_ptr<const modules::AdvancedGradeDocument> validated;
+    if (!modules::readAdvancedGrade(*advanced, validated)) return false;
+  }
   return gradePreviews_.configure(command, grade ? readColorGrade(*grade) : modules::CompositorColorGrade{},
       modules_.compositor->supportsGradePreview());
 }
+rpc::Json MediaCore::applySourceGrade(const rpc::Json& command) {
+  if(modules_.compositor->rendererName()=="software") return rpc::Json::Object{{"accepted",false},{"reason","native-source-grade-not-built"}};
+  const auto* grade=command.get("grade"); if(!grade || !grade->isObject()) return rpc::Json::Object{{"accepted",false},{"reason","missing-grade"}};
+  for(const char* axis:{"exposure","contrast","saturation","temperature"}) if(const auto* value=grade->get(axis)) {
+    if(!value->isNumber() || !std::isfinite(value->asNumber()) || std::abs(value->asNumber())>100) return rpc::Json::Object{{"accepted",false},{"reason","invalid-basic-grade"}};
+  }
+  const auto look=grade->getString("lut","none");
+  if(look!="none" && look!="neutral" && look!="warm-film" && look!="cool-broadcast" && look!="punch") return rpc::Json::Object{{"accepted",false},{"reason","unsupported-look"}};
+  if(const auto* advanced=grade->get("advanced")) {std::shared_ptr<const modules::AdvancedGradeDocument> doc;
+    if(!modules::readAdvancedGrade(*advanced,doc)) return rpc::Json::Object{{"accepted",false},{"reason","invalid-advanced-grade"}};}
+  return sourceGrades_.apply(command,readColorGrade(*grade));
+}
 
 void MediaCore::applyCommandMutation(const rpc::Json& command) {
+  // Validate every nested grade before mutating any part of a scene/batch entry.
+  const auto validate = [&](const auto& self, const rpc::Json& node) -> bool {
+    if (node.isArray()) { for (const auto& child : node.asArray()) if (!self(self, child)) return false; }
+    if (node.isObject()) for (const auto& item : node.asObject()) {
+      if (item.first == "advanced") {
+        std::shared_ptr<const modules::AdvancedGradeDocument> parsed;
+        if (!modules::readAdvancedGrade(item.second, parsed)) return false;
+      } else if (!self(self, item.second)) return false;
+    }
+    return true;
+  };
+  if (!validate(validate, command)) { commandProtocolFailures_.push_back("invalid-advanced-grade"); return; }
   const std::string type = command.getString("type");
   if (type == "begin-take-transition") {
     beginTakeTransition(command);
@@ -4127,6 +4159,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   if (const rpc::Json* grade = previewScene.get("colorGrade"); grade && grade->isObject()) {
     colorGrade = readColorGrade(*grade);
   }
+  signature += "advanced:" + (colorGrade.advanced ? colorGrade.advanced->content : "") + ";";
   signature += "cg:" + std::to_string(colorGrade.exposure) + "," + std::to_string(colorGrade.contrast) + "," +
                std::to_string(colorGrade.saturation) + "," + std::to_string(colorGrade.temperature) + ":" + colorGrade.lut + ";";
 
@@ -4531,6 +4564,7 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
   // and recomposes real layers) is a genuine per-layer PGM recompose this
   // call actually holds.
   holdDropoutForMonitoring(renderPlan);
+  sourceGrades_.applyTo(renderPlan,videoFrames);
   return renderPlan;
 }
 
@@ -6856,6 +6890,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     renderPlan.layers.push_back(std::move(layer));
   }
 
+  sourceGrades_.applyTo(renderPlan,videoFrames);
   return renderPlan;
 }
 
@@ -7225,6 +7260,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     }
   }
 
+  sourceGrades_.observe(videoFrames);
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
   const double animationNowMs = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;

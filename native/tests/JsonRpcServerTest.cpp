@@ -739,6 +739,10 @@ TEST(GradePreviewRpc, StubRoundTripsSmallAckAndExplicitUnavailableWithoutRenderi
   auto modules = corevideo::modules::createStubModules();
   corevideo::core::MediaCore core(std::move(modules));
   corevideo::rpc::JsonRpcServer server(core);
+  const auto apply=server.handle(corevideo::rpc::Json::Object{{"id","apply"},{"type","set-source-grade"},
+      {"sourceId","speaker-1"},{"sourceEpoch",0},{"expectedRevision",0},{"grade",corevideo::rpc::Json::Object{{"lut","none"}}}});
+  EXPECT_TRUE(apply.get("ok")->asBool());EXPECT_FALSE(apply.get("accepted")->asBool());
+  EXPECT_EQ(apply.getString("reason"),"native-source-grade-not-built");
   auto response = server.handle(corevideo::rpc::Json::Object{
       {"id", "grade"}, {"type", "set-grade-preview"}, {"instanceId", "editor"},
       {"sourceId", "speaker-1"}, {"revision", 1}, {"grade", corevideo::rpc::Json::Object{{"lut", "warm-film"}}}});

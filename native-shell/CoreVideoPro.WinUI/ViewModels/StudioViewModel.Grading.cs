@@ -10,8 +10,47 @@ namespace CoreVideoPro.WinUI.ViewModels;
 public sealed partial class StudioViewModel
 {
     private readonly Dictionary<ColorGradeEditorViewModel, GradePreviewCoordinator> _gradePreviews = [];
+    private readonly Dictionary<string, ColorGrade> _persistedSourceGrades = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _sourceGradeRevisions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _sourceGradeBindings = new(StringComparer.Ordinal);
+    private string? GradePersistenceKey(string sourceId) => sourceId.StartsWith("capture:",StringComparison.Ordinal) ? sourceId :
+        RoomVideoParticipants.FirstOrDefault(p=>p.Id==sourceId)?.PersistentId is { Length: > 0 } id ? $"zoom-person:{id}" : null;
+    private string GradeSessionBinding(string sourceId) => sourceId.StartsWith("capture:",StringComparison.Ordinal) ? sourceId :
+        RoomVideoParticipants.FirstOrDefault(p=>p.Id==sourceId) is { } p ? $"{p.PersistentId}:{p.SourceGeneration}" : "unavailable";
+    private Dictionary<string,ColorGrade> CapturePersistedSourceGrades() => new(_persistedSourceGrades,StringComparer.Ordinal);
+    private void RestorePersistedSourceGrades(Dictionary<string,ColorGrade>? grades)
+    {
+        _persistedSourceGrades.Clear();
+        foreach(var item in (grades ?? []).Take(64)) {
+            if(item.Value is null) continue;
+            try { item.Value.Advanced?.Validate(); if(item.Key.StartsWith("capture:",StringComparison.Ordinal) || item.Key.StartsWith("zoom-person:",StringComparison.Ordinal)) _persistedSourceGrades[item.Key]=item.Value; }
+            catch(ArgumentException ex) { CommandStatus=$"Saved grade unavailable: {ex.Message}"; }
+        }
+    }
+    private bool _gradeHealthSubscribed;
+    private void ObserveSourceGradeCoreLifetime() {
+        if(_gradeHealthSubscribed) return;_gradeHealthSubscribed=true;_bridge.HealthChanged+=OnSourceGradeCoreHealth;
+    }
+    private void OnSourceGradeCoreHealth(MediaCoreHealth health) {
+        if(health.Recovering || health.Stopped) RunOnUiThread(()=>_sourceGradeRevisions.Clear());
+    }
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _gradePersistenceTimer;
+    private void ScheduleGradePersistence()
+    {
+        _gradePersistenceTimer ??= _dispatcher.CreateTimer();
+        _gradePersistenceTimer.Interval = TimeSpan.FromMilliseconds(750);
+        _gradePersistenceTimer.IsRepeating = false;
+        _gradePersistenceTimer.Tick -= OnGradePersistenceTick;
+        _gradePersistenceTimer.Tick += OnGradePersistenceTick;
+        _gradePersistenceTimer.Stop(); _gradePersistenceTimer.Start();
+    }
+    private void OnGradePersistenceTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender,object args) => SaveProductionOutputPreferences();
     private void StopGradePreviewsForShutdown()
     {
+        if(_gradeHealthSubscribed) { _bridge.HealthChanged-=OnSourceGradeCoreHealth;_gradeHealthSubscribed=false; }
+        _gradePersistenceTimer?.Stop();
+        if (_gradePersistenceTimer is not null) { _gradePersistenceTimer.Tick -= OnGradePersistenceTick; SaveProductionOutputPreferences(); }
+
         foreach (var preview in _gradePreviews.Values) preview.Dispose();
         _gradePreviews.Clear();
     }
@@ -36,14 +75,23 @@ public sealed partial class StudioViewModel
             return;
         }
 
+        ObserveSourceGradeCoreLifetime();
         var sourceName = ResolveColorGradeSourceName(normalizedSourceId);
 
         var seed = ResolveStoredColorGrade(normalizedSourceId);
         var editorViewModel = new ColorGradeEditorViewModel(
             normalizedSourceId,
             sourceName,
-            seed);
+            seed,
+            _sourceGradeRevisions.GetValueOrDefault(normalizedSourceId));
+        if (!_sourceColorGrades.ContainsKey(normalizedSourceId) && GradePersistenceKey(normalizedSourceId) is { } key && _persistedSourceGrades.ContainsKey(key)) {
+            editorViewModel.LiveEditing = false;
+            editorViewModel.EditStatus = "Saved grade loaded as a draft. Apply Live confirms this source binding.";
+        }
+        editorViewModel.ApplyGradeAsync = (grade,epoch,revision) => _bridge.ApplySourceGradeAsync(normalizedSourceId,epoch,revision,
+            new(grade.Lut,grade.Exposure,grade.Contrast,grade.Saturation,grade.Temperature,grade.Advanced?.Copy()));
         editorViewModel.GradeChanged += OnSourceColorGradeChanged;
+        editorViewModel.GradeAuthorityReset += OnSourceGradeAuthorityReset;
         editorViewModel.GradeSaved += OnSourceColorGradeSaved;
 
         var window = new ColorGradeEditorWindow(editorViewModel);
@@ -51,8 +99,10 @@ public sealed partial class StudioViewModel
         window.Closed += (_, _) =>
         {
             preview.Dispose();
+            editorViewModel.StopGradeEditing();
             _gradePreviews.Remove(editorViewModel);
             editorViewModel.GradeChanged -= OnSourceColorGradeChanged;
+            editorViewModel.GradeAuthorityReset -= OnSourceGradeAuthorityReset;
             editorViewModel.GradeSaved -= OnSourceColorGradeSaved;
             _openColorGradeEditors.Remove(editorViewModel);
         };
@@ -64,6 +114,11 @@ public sealed partial class StudioViewModel
     [RelayCommand]
     private void OpenCaptureDeviceColorGradeEditor(string? captureDeviceId) =>
         OpenColorGradeEditor(string.IsNullOrWhiteSpace(captureDeviceId) ? null : $"capture:{captureDeviceId}");
+
+    private void OnSourceGradeAuthorityReset(object? sender,EventArgs e)
+    {
+        if(sender is ColorGradeEditorViewModel editor) _sourceGradeRevisions.Remove(editor.SourceId);
+    }
 
     private void OnSourceColorGradeSaved(object? sender, ColorGrade grade)
     {
@@ -88,24 +143,20 @@ public sealed partial class StudioViewModel
     private void ApplyLiveColorGrade(ColorGradeEditorViewModel editorViewModel, ColorGrade grade, string status)
     {
         _sourceColorGrades[editorViewModel.SourceId] = grade;
+        _sourceGradeRevisions[editorViewModel.SourceId] = editorViewModel.AppliedRevision;
+        _sourceGradeBindings[editorViewModel.SourceId] = GradeSessionBinding(editorViewModel.SourceId);
+        if(GradePersistenceKey(editorViewModel.SourceId) is { } key) {
+            _persistedSourceGrades.Remove(key);
+            if(_persistedSourceGrades.Count>=64) { _persistedSourceGrades.Remove(_persistedSourceGrades.Keys.First()); status += " · oldest saved source grade retired (64-source limit)"; }
+            _persistedSourceGrades[key]=grade;
+        }
         ApplyColorGradeToMatchingRoutes(editorViewModel.SourceId, grade);
         CommandStatus = status;
 
         SyncPreviewCanvasLayers(GetPreviewEditableRoutes());
         RefreshPreviewRoutingState();
-        _ = SyncColorGradeChangeAsync();
-    }
-
-    private async Task SyncColorGradeChangeAsync()
-    {
-        try
-        {
-            await SyncActiveSceneAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            RunOnUiThread(() => CommandStatus = ex.Message);  // catch runs off-thread (ConfigureAwait(false))
-        }
+        ScheduleGradePersistence();
+        // The native source-grade acknowledgement already owns live state.
     }
 
     private string? NormalizeColorGradeSourceId(string? sourceId)
@@ -150,8 +201,13 @@ public sealed partial class StudioViewModel
         return RoomVideoParticipants.FirstOrDefault(participant => participant.Id == sourceId)?.Name ?? sourceId;
     }
 
-    private ColorGrade ResolveStoredColorGrade(string sourceId) =>
-        _sourceColorGrades.TryGetValue(sourceId, out var stored) ? stored : ColorGrade;
+    private ColorGrade ResolveStoredColorGrade(string sourceId)
+    {
+        if(_sourceColorGrades.TryGetValue(sourceId,out var stored) && _sourceGradeBindings.TryGetValue(sourceId,out var binding) && binding==GradeSessionBinding(sourceId)) return stored;
+        _sourceColorGrades.Remove(sourceId);
+        _sourceGradeRevisions.Remove(sourceId);
+        return GradePersistenceKey(sourceId) is { } key && _persistedSourceGrades.TryGetValue(key,out stored) ? stored : ColorGrade;
+    }
 
     private void ApplyColorGradeToMatchingRoutes(string sourceId, ColorGrade grade)
     {
@@ -171,7 +227,7 @@ public sealed partial class StudioViewModel
         var grade = route.ColorGrade;
         if (sourceId is not null && _sourceColorGrades.TryGetValue(sourceId, out var stored))
         {
-            grade = stored;
+            grade = _sourceGradeBindings.TryGetValue(sourceId,out var binding) && binding == GradeSessionBinding(sourceId) ? stored : new ColorGrade { Lut = "none" };
         }
 
         return grade is null
@@ -181,7 +237,8 @@ public sealed partial class StudioViewModel
                 grade.Exposure,
                 grade.Contrast,
                 grade.Saturation,
-                grade.Temperature);
+                grade.Temperature,
+                grade.Advanced?.Copy());
     }
 
     private static string? ResolveColorGradeSourceId(SourceRoute route)
