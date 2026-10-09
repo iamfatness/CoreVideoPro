@@ -123,159 +123,27 @@ public sealed partial class SourcesInputsPage : UserControl
         }
     }
 
-    // Apply the row's current role once the container exists, instead of letting
-    // x:Bind push it during ProcessBindings.
-    //
-    // THIS CRASHED THE APP (2026-08-09, twice in ten minutes). x:Bind drove
-    // Selector.SelectedValue from a phased binding update and it threw
-    // COMException 0x80004005 straight out of set_SelectedValue — unhandled, so
-    // the process died; the dumps bucket as
-    // STOWED_EXCEPTION_80004003_CoreMessagingXP.dll!DispatcherQueue::DeferInvokeCallback,
-    // the 0xc000027b fail-fast this file's siblings already fight. The rows live
-    // in an ItemsRepeater, so a container gets recycled and re-bound while its
-    // ItemsSource binding is still resolving, and assigning a SelectedValue the
-    // ComboBox does not yet contain is what throws.
-    //
-    // Rules kept here: never assign before the items exist, never assign a value
-    // that is not in the list, and never let this escape as an unhandled
-    // exception — a wrong dropdown is a cosmetic bug, a crash ends the show.
-    private void OnProductionRoleComboLoaded(object sender, RoutedEventArgs e)
+    private void OnSourceOptionsClick(object sender, RoutedEventArgs e)
     {
-        if (sender is not ComboBox combo || combo.Tag is not FeedHealthRow row)
-        {
-            return;
-        }
-
-        SyncProductionRoleCombo(combo, row);
-    }
-
-    private void OnFeedHealthElementPrepared(ItemsRepeater sender, ItemsRepeaterElementPreparedEventArgs args)
-    {
-        if (args.Element is not FrameworkElement root)
-        {
-            return;
-        }
-
-        if (FindDescendant<ComboBox>(root, "ProductionRoleCombo") is { Tag: FeedHealthRow role } roleCombo)
-        {
-            SyncProductionRoleCombo(roleCombo, role);
-        }
-
-        if (FindDescendant<ComboBox>(root, "DropoutPolicyCombo") is { Tag: FeedHealthRow policyRow } policyCombo)
-        {
-            SyncDropoutPolicyCombo(policyCombo, policyRow.DropoutPolicy);
-        }
-
-        // #535 slice 4a R2 (final review): the capture-row combo is removed —
-        // a dropout policy is Zoom-only this slice.
-    }
-
-    // #535 slice 4a: same sync pattern as SyncProductionRoleCombo above, for the
-    // same crash class (a recycled ItemsRepeater container can be re-bound while
-    // its ItemsSource binding is still resolving).
-    private void OnDropoutPolicyComboLoaded(object sender, RoutedEventArgs e)
-    {
-        if (sender is not ComboBox combo)
-        {
-            return;
-        }
-
-        switch (combo.Tag)
-        {
-            case FeedHealthRow row:
-                SyncDropoutPolicyCombo(combo, row.DropoutPolicy);
-                break;
-        }
-    }
-
-    private void SyncDropoutPolicyCombo(ComboBox combo, string currentPolicy)
-    {
+        if (sender is not Button { Tag: ShowInputSlotViewModel editor } button ||
+            !editor.ShowSourcePolicies || ViewModel is not { } studio) return;
         try
         {
-            var options = ViewModel?.DropoutPolicyOptions;
-            if (options is null) return;
-
-            combo.SelectionChanged -= OnDropoutPolicyChanged;
-            combo.ItemsSource = options;
-            var policy = currentPolicy ?? "hold";
-            if (!options.Any(option => option.Value == policy))
-            {
-                policy = "hold";
-            }
-            combo.SelectedValue = policy;
-            combo.SelectionChanged += OnDropoutPolicyChanged;
+            var row = studio.FeedHealthRows.FirstOrDefault(item =>
+                string.Equals(item.ParticipantId, editor.ParticipantId, StringComparison.Ordinal));
+            var flyout = SourcePolicyFlyout.Create(button, editor,
+                studio.ProductionRoleAssignmentOptions, studio.DropoutPolicyOptions,
+                row?.ProductionRoleId ?? string.Empty,
+                studio.SourceDropoutPolicy("zoom:" + editor.ParticipantId), row is not null,
+                studio.SetParticipantProductionRole,
+                (participantId, policy) => studio.SetSourceDropoutPolicy("zoom:" + participantId, policy));
+            flyout.ShowAt(button);
         }
         catch (Exception ex)
         {
-            combo.SelectionChanged -= OnDropoutPolicyChanged;
-            combo.SelectionChanged += OnDropoutPolicyChanged;
-            LaunchLog.Write($"sources: dropout-policy selection skipped ({ex.GetType().Name}: {ex.Message})");
+            LaunchLog.Write($"sources: options could not open ({ex.GetType().Name}: {ex.Message})");
         }
     }
-
-    private void OnDropoutPolicyChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (sender is not ComboBox combo || combo.SelectedValue is not string policy)
-        {
-            return;
-        }
-
-        var sourceId = combo.Tag switch
-        {
-            FeedHealthRow row => "zoom:" + row.ParticipantId,
-            _ => null
-        };
-        if (sourceId is null)
-        {
-            return;
-        }
-
-        ViewModel?.SetSourceDropoutPolicy(sourceId, policy);
-    }
-
-    private void SyncProductionRoleCombo(ComboBox combo, FeedHealthRow row)
-    {
-        try
-        {
-            // ElementName bindings inside a recycled ItemsRepeater template are
-            // not guaranteed to resolve before Loaded. Make the page view-model
-            // authoritative and suppress write-back while rebinding the row.
-            var options = ViewModel?.ProductionRoleAssignmentOptions;
-            if (options is null) return;
-
-            combo.SelectionChanged -= OnProductionRoleChanged;
-            combo.ItemsSource = options;
-            var roleId = row.ProductionRoleId ?? string.Empty;
-            if (!options.Any(option => option.Value == roleId))
-            {
-                roleId = string.Empty;
-            }
-            combo.SelectedValue = roleId;
-            combo.SelectionChanged += OnProductionRoleChanged;
-        }
-        catch (Exception ex)
-        {
-            combo.SelectionChanged -= OnProductionRoleChanged;
-            combo.SelectionChanged += OnProductionRoleChanged;
-            LaunchLog.Write($"sources: production-role selection skipped ({ex.GetType().Name}: {ex.Message})");
-        }
-    }
-
-    private void OnProductionRoleChanged(object sender, SelectionChangedEventArgs e)
-    {
-        // Tag (x:Bind), not DataContext (null inside the ItemsRepeater). The
-        // view-model no-ops when the value matches, which also swallows the
-        // initial programmatic selection at row realization.
-        if (sender is not ComboBox combo ||
-            combo.Tag is not FeedHealthRow row ||
-            combo.SelectedValue is not string roleId)
-        {
-            return;
-        }
-
-        ViewModel?.SetParticipantProductionRole(row.ParticipantId, roleId);
-    }
-
     private void OnShowInputMicChanged(object sender, SelectionChangedEventArgs e)
     {
         // Use Tag (x:Bind to the slot view-model), not DataContext, which is null for
