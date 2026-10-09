@@ -52,6 +52,11 @@ void AsyncVirtualCameraPublisher::setDeviceName(const std::string& name) {
   if (name.empty() || name_ == name) return;
   name_ = name; cached_.deviceName = name; ++revision_; wake_.notify_one();
 }
+void AsyncVirtualCameraPublisher::setProgramLoudness(double lufs, bool completeWindow) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  loudness_.update(lufs, completeWindow);
+  // Audio updates do not wake the video worker or start another GPU operation.
+}
 VirtualCameraStatus AsyncVirtualCameraPublisher::status() const {
   std::lock_guard<std::mutex> lock(mutex_);
   auto result = cached_;
@@ -117,6 +122,7 @@ void AsyncVirtualCameraPublisher::run() {
     const auto revision = revision_;
     const bool on = desiredOn_, mirror = mirror_;
     const bool framerEnabled = framerEnabled_;
+    const auto loudness = loudness_.read();
     const auto name = name_;
     const int w = width_, h = height_, fps = fps_;
     int fw = frameWidth_, fh = frameHeight_;
@@ -173,7 +179,7 @@ void AsyncVirtualCameraPublisher::run() {
         frame.reset();
       }
       if (on && framerEnabled && framer && nv12) {
-        if (auto decorated = framer->apply(nv12, fw, fh, mirror)) {
+        if (auto decorated = framer->apply(nv12, fw, fh, mirror, loudness)) {
           nv12 = std::move(decorated); ++framerFrames; framerHasProcessedFrame = true;
         } else ++framerFailures;
       }

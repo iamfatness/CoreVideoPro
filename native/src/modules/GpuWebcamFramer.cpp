@@ -1,6 +1,8 @@
 #include "modules/GpuWebcamFramer.h"
 #include <cstring>
 #include <stdexcept>
+#include <algorithm>
+#include <cmath>
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11
 #include <d3d11.h>
 #include <d3dcompiler.h>
@@ -22,10 +24,63 @@ constexpr char shaderSource[] = R"(
 StructuredBuffer<uint> source : register(t0);
 Texture2D<float4> overlay : register(t1);
 RWStructuredBuffer<uint> result : register(u0);
-cbuffer Dimensions : register(b0) { uint width; uint height; uint words; uint mirror; };
+cbuffer Dimensions : register(b0) {
+  uint width; uint height; uint words; uint mirror;
+  uint meterShow; uint meterReady; int meterTenths; uint reserved;
+};
+// Fixed 5x7 glyphs: digits, P G M L U F S minus I N. No dynamic text textures.
+static const uint font[140] = {
+  14,17,19,21,25,17,14, 4,12,4,4,4,4,14,
+  14,17,1,2,4,8,31, 30,1,1,14,1,1,30,
+  2,6,10,18,31,2,2, 31,16,16,30,1,1,30,
+  14,16,16,30,17,17,14, 31,1,2,4,8,8,8,
+  14,17,17,14,17,17,14, 14,17,17,15,1,1,14,
+  30,17,17,30,16,16,16, 14,17,16,23,17,17,15,
+  17,27,21,21,17,17,17, 16,16,16,16,16,16,31,
+  17,17,17,17,17,17,14, 31,16,16,30,16,16,16,
+  15,16,16,14,1,1,30, 0,0,0,31,0,0,0,
+  14,4,4,4,4,4,14, 17,25,21,19,17,17,17
+};
+bool glyph(uint code, uint x, uint y) {
+  if(code>=20 || x>=5 || y>=7) return false;
+  return (font[code*7+y] & (1u << (4-x))) != 0;
+}
+float4 meterPixel(uint x, uint y) {
+  uint px=x-32, py=y-932;
+  float4 color=float4(0,0,0,.85);
+  if (px>=12 && px<132 && py>=10 && py<24) {
+    static const uint label[10]={10,11,12,99,13,14,15,16,17,16};
+    uint cell=(px-12)/12;
+    if(glyph(label[cell], ((px-12)%12)/2, (py-10)/2)) color=float4(1,1,1,1);
+  }
+  if(px>=12 && px<162 && py>=34 && py<69) {
+    uint cell=(px-12)/30, gx=((px-12)%30)/5, gy=(py-34)/5;
+    uint code=99;
+    if(meterReady==0) { if(cell<2) code=17; }
+    else if(meterTenths<=-1190) {
+      if(cell==0) code=17; if(cell==1) code=18; if(cell==2) code=19; if(cell==3) code=15;
+    } else {
+      uint number=(uint)abs(meterTenths);
+      if(cell==0 && meterTenths<0) code=17;
+      if(cell==1) code=(number/100)%10;
+      if(cell==2) code=(number/10)%10;
+      if(cell==4) code=number%10;
+      if(cell==3 && gx==1 && gy==6) color=float4(1,1,1,1);
+    }
+    if(glyph(code,gx,gy)) color=float4(1,1,1,1);
+  }
+  if(px>=12 && px<348 && py>=88 && py<100) {
+    color=float4(.16,.19,.22,1);
+    float filled=saturate((meterTenths+600)/600.0)*336;
+    if(meterReady!=0 && px-12<filled) color=float4(.12,.75,.95,1);
+  }
+  return color;
+}
 float4 pixel(uint x, uint y) {
   if (mirror != 0) x = width - 1 - x;
-  return overlay.Load(int3(min(1919u, x * 1920 / width), min(1079u, y * 1080 / height), 0));
+  uint ox=min(1919u,x*1920/width), oy=min(1079u,y*1080/height);
+  if(meterShow!=0 && ox>=32 && ox<392 && oy>=932 && oy<1040) return meterPixel(ox,oy);
+  return overlay.Load(int3(ox,oy,0));
 }
 float3 yuv(float3 rgb) {
   return float3(16 + 219 * dot(rgb, float3(.2126,.7152,.0722)),
@@ -107,7 +162,7 @@ struct GpuWebcamFramer::Impl {
     check(D3DCompile(shaderSource, sizeof(shaderSource)-1, "WebcamFramer", nullptr, nullptr,
       "main", "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &diagnostics), "GPU shader compile");
     check(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &shader), "GPU shader");
-    D3D11_BUFFER_DESC cb{}; cb.ByteWidth=16; cb.Usage=D3D11_USAGE_DEFAULT; cb.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_BUFFER_DESC cb{}; cb.ByteWidth=32; cb.Usage=D3D11_USAGE_DEFAULT; cb.BindFlags=D3D11_BIND_CONSTANT_BUFFER;
     check(device->CreateBuffer(&cb, nullptr, &constants), "dimensions buffer");
   }
   void resize(int w, int h) {
@@ -150,7 +205,7 @@ bool GpuWebcamFramer::prepare(int w, int h) {
 #endif
 }
 std::shared_ptr<const std::vector<uint8_t>> GpuWebcamFramer::apply(
-    const std::shared_ptr<const std::vector<uint8_t>>& clean, int w, int h, bool mirror) {
+    const std::shared_ptr<const std::vector<uint8_t>>& clean, int w, int h, bool mirror, WebcamLoudnessOverlay loudness) {
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11
   if(!impl_->error.empty()) return {};
   if(!clean || w<2 || h<2 || w>7680 || h>4320 || (w&1) || (h&1)
@@ -162,7 +217,11 @@ std::shared_ptr<const std::vector<uint8_t>> GpuWebcamFramer::apply(
     if(!prepare(w,h)) return {};
     auto& s=*impl_;
     s.context->UpdateSubresource(s.input.Get(),0,nullptr,clean->data(),0,0);
-    const UINT dims[] = {static_cast<UINT>(w),static_cast<UINT>(h),static_cast<UINT>(clean->size()/4),mirror?1u:0u};
+    const bool ready=loudness.ready && std::isfinite(loudness.lufs);
+    const int tenths=!ready ? -1200 : loudness.lufs<=-119 ? -1200 :
+        static_cast<int>(std::round((std::max)(-99.9,(std::min)(99.9,loudness.lufs))*10));
+    const UINT dims[] = {static_cast<UINT>(w),static_cast<UINT>(h),static_cast<UINT>(clean->size()/4),mirror?1u:0u,
+        loudness.show?1u:0u,ready?1u:0u,static_cast<UINT>(tenths),0};
     s.context->UpdateSubresource(s.constants.Get(),0,nullptr,dims,0,0);
     ID3D11ShaderResourceView* views[]={s.inputView.Get(),s.assetView.Get()};
     ID3D11UnorderedAccessView* targets[]={s.outputView.Get()};
@@ -186,7 +245,7 @@ std::shared_ptr<const std::vector<uint8_t>> GpuWebcamFramer::apply(
     return result;
   } catch(const std::exception& e) { impl_->error=e.what(); return {}; }
 #else
-  (void)clean; (void)w; (void)h; (void)mirror;
+  (void)clean; (void)w; (void)h; (void)mirror; (void)loudness;
   return {};
 #endif
 }
