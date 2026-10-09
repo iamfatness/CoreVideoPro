@@ -69,6 +69,9 @@ public sealed class ProductionOutputPreferences
     }
 
     public int Version { get; set; } = CurrentVersion;
+    // Optional additive UI preference: older profiles default off. OHG config
+    // is stored separately and is never removed when its navigation is hidden.
+    public bool OhgShowEnabled { get; set; }
     public string? FfmpegBinDirectory { get; set; }
     public bool StreamRtmpEnabled { get; set; } = true;
     public bool StreamNdiEnabled { get; set; }

@@ -181,7 +181,7 @@
                     <TextBlock Text="Setup" FontSize="10" FontWeight="Bold"
                                Foreground="{StaticResource StudioMutedBrush}"
                                VerticalAlignment="Center" Margin="10,0,2,0" />
-                    <Button Content="Zoom" Style="{StaticResource GhostButton}"
+                    <Button Content="Settings" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.SettingsTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.SettingsTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.SettingsTabChrome.Foreground, Mode=OneWay}"
@@ -230,17 +230,12 @@
                             Foreground="{x:Bind ViewModel.AutomationTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="automation" />
                     <Button Content="OHG Show" Style="{StaticResource GhostButton}"
+                            Visibility="{x:Bind ViewModel.OhgShowNavigationVisibility, Mode=OneWay}"
                             Background="{x:Bind ViewModel.OhgShowTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.OhgShowTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.OhgShowTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="ohgshow"
                             ToolTipService.ToolTip="OHG show direction — seating, looks, hands queue, gallery" />
-                    <TextBlock Text="Diagnose" FontSize="10" FontWeight="Bold"
-                               Foreground="{StaticResource StudioMutedBrush}"
-                               VerticalAlignment="Center" Margin="10,0,2,0" />
-                    <Button Content="Health" Style="{StaticResource GhostButton}"
-                            Command="{x:Bind ViewModel.OpenDiagnosticsCommand}"
-                            ToolTipService.ToolTip="System status and support tools" />
                     </StackPanel>
                 </ScrollViewer>
 
@@ -780,7 +775,7 @@
 
         <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
                 Visibility="{x:Bind ViewModel.IsSettingsTab, Mode=OneWay}">
-            <views:SettingsPage ViewModel="{x:Bind ViewModel.Settings, Mode=OneWay}" />
+            <views:SettingsPage ViewModel="{x:Bind ViewModel.Settings, Mode=OneWay}" Studio="{x:Bind ViewModel, Mode=OneWay}" />
         </Border>
 
         <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
