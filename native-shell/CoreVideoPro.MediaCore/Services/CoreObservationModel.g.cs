@@ -57,6 +57,7 @@ public sealed class CoreObservationModel
     public JsonElement? ProgramFrameCount => Get("programFrameCount");
     public JsonElement? ProgramFramePreview => Get("programFramePreview");
     public JsonElement? ProgramSharedTexture => Get("programSharedTexture");
+    public JsonElement? GradePreview => Get("gradePreview");
     public JsonElement? RealtimeEvidence => Get("realtimeEvidence");
     public JsonElement? Recording => Get("recording");
     public JsonElement? RenderPlanId => Get("renderPlanId");
@@ -149,6 +150,7 @@ public sealed class CoreObservationModel
         "programFrameCount" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "programFramePreview" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "programSharedTexture" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
+        "gradePreview" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         "realtimeEvidence" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         "recording" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "renderPlanId" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },

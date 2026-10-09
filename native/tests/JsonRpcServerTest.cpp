@@ -734,3 +734,20 @@ TEST(JsonRpcServer, ARealCoreIgnoresTheBreakoutSimulator) {
   EXPECT_EQ(mediaCore.sessionState().getString("breakoutRoomId"), "main");
 }
 #endif
+
+TEST(GradePreviewRpc, StubRoundTripsSmallAckAndExplicitUnavailableWithoutRendering) {
+  auto modules = corevideo::modules::createStubModules();
+  corevideo::core::MediaCore core(std::move(modules));
+  corevideo::rpc::JsonRpcServer server(core);
+  const auto apply=server.handle(corevideo::rpc::Json::Object{{"id","apply"},{"type","set-source-grade"},
+      {"sourceId","speaker-1"},{"sourceEpoch",0},{"expectedRevision",0},{"grade",corevideo::rpc::Json::Object{{"lut","none"}}}});
+  EXPECT_TRUE(apply.get("ok")->asBool());EXPECT_FALSE(apply.get("accepted")->asBool());
+  EXPECT_EQ(apply.getString("reason"),"native-source-grade-not-built");
+  auto response = server.handle(corevideo::rpc::Json::Object{
+      {"id", "grade"}, {"type", "set-grade-preview"}, {"instanceId", "editor"},
+      {"sourceId", "speaker-1"}, {"revision", 1}, {"grade", corevideo::rpc::Json::Object{{"lut", "warm-film"}}}});
+  EXPECT_TRUE(response.get("ok")->asBool());
+  auto events = core.drainGradePreviewEvents(); ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].getString("status"), "unavailable");
+  EXPECT_EQ(events[0].getString("reason"), "native-grade-preview-not-built");
+}

@@ -1,5 +1,6 @@
 #include "modules/Interfaces.h"
 #include "modules/DeliveryCounterPattern.h"
+#include "compositor/AdvancedGrade.h"
 #include "core/ComApartmentLifetime.h"
 #include <gtest/gtest.h>
 #include <chrono>
@@ -7,6 +8,7 @@
 #include <cstdlib>
 #include <future>
 #include <algorithm>
+#include <array>
 
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
 #define NOMINMAX
@@ -31,32 +33,44 @@ std::unique_ptr<ICompositor> isolatedCompositor() {
 
 // Independently opens and consumes the exported pixels, rather than trusting
 // the job's metadata or the compositor's submission counter.
-uint32_t consumeCenter(const ProgramFrameSharedTexture& exported, float x = .5f) {
+template <typename Texture>
+std::vector<uint32_t> consumeSamples(const Texture& exported, const std::vector<std::array<float,2>>& samples) {
   ComPtrLite<ID3D11Device> device;
   ComPtrLite<ID3D11DeviceContext> context;
   if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
       D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
-      device.put(), nullptr, context.put()))) return 0;
+      device.put(), nullptr, context.put()))) return {};
   const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
       std::stoull(exported.sharedHandleHex, nullptr, 16)));
   ComPtrLite<ID3D11Texture2D> texture, staging;
   ComPtrLite<IDXGIKeyedMutex> key;
   if (FAILED(device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(texture.put()))) ||
-      FAILED(texture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(key.put())))) return 0;
+      FAILED(texture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(key.put())))) return {};
   D3D11_TEXTURE2D_DESC desc{};
   texture->GetDesc(&desc);
   desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.MiscFlags = 0;
   desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  if (FAILED(device->CreateTexture2D(&desc, nullptr, staging.put())) || key->AcquireSync(1, 1000) != S_OK) return 0;
+  if (FAILED(device->CreateTexture2D(&desc, nullptr, staging.put())) || key->AcquireSync(1, 1000) != S_OK) return {};
   context->CopyResource(staging.get(), texture.get());
   context->Flush();
   key->ReleaseSync(0);
   D3D11_MAPPED_SUBRESOURCE mapped{};
-  if (FAILED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) return 0;
-  const auto* p = static_cast<const uint8_t*>(mapped.pData) + (desc.Height / 2) * mapped.RowPitch + static_cast<size_t>(desc.Width * x) * 4;
-  const uint32_t pixel = (uint32_t(p[3]) << 24) | (uint32_t(p[2]) << 16) | (uint32_t(p[1]) << 8) | p[0];
+  if (FAILED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) return {};
+  std::vector<uint32_t> pixels;
+  for(const auto& xy:samples) {
+    const auto* p = static_cast<const uint8_t*>(mapped.pData) +
+        static_cast<size_t>(desc.Height * xy[1]) * mapped.RowPitch +
+        static_cast<size_t>(desc.Width * xy[0]) * 4;
+    pixels.push_back((uint32_t(p[3]) << 24) | (uint32_t(p[2]) << 16) | (uint32_t(p[1]) << 8) | p[0]);
+  }
   context->Unmap(staging.get(), 0);
-  return pixel;
+  return pixels;
+}
+
+template <typename Texture>
+uint32_t consumeCenter(const Texture& exported, float x = .5f) {
+  const auto pixels=consumeSamples(exported,{{x,.5f}});
+  return pixels.empty() ? 0 : pixels[0];
 }
 
 MonitorRenderRequest requestAtSize(int size) {
@@ -83,6 +97,203 @@ MonitorRenderRequest requestAtSize(int size) {
   request.frames.push_back(frame);
   return request;
 }
+}
+
+
+namespace {
+GradePreviewSurface awaitGrade(ICompositor& compositor, MonitorRenderRequest request, const std::string& id, int64_t revision) {
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (std::chrono::steady_clock::now() < end) {
+    compositor.submitGradePreviews(request);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    auto result = compositor.latestGradePreviews();
+    if (!result) continue;
+    for (const auto& surface : result->gradePreviews)
+      if (surface.demand.instanceId == id && surface.demand.revision == revision &&
+          !surface.texture.sharedHandleHex.empty()) return surface;
+  }
+  return {};
+}
+uint32_t previewCenter(const ProgramFrame& frame) {
+  const auto& bytes = frame.preview.bgra;
+  const auto at = ((frame.preview.height / 2) * frame.preview.width + frame.preview.width / 2) * 4;
+  if (bytes.size() < static_cast<size_t>(at + 4)) return 0;
+  return (uint32_t(bytes[at+3]) << 24) | (uint32_t(bytes[at+2]) << 16) | (uint32_t(bytes[at+1]) << 8) | bytes[at];
+}
+void gradePixelParity(bool i420, bool advanced = false, bool fullRange = true, bool bt601 = false) {
+  auto compositor = isolatedCompositor(); ASSERT_TRUE(compositor != nullptr);
+  ASSERT_TRUE(compositor->supportsGradePreview());
+  auto request = requestAtSize(64); request.programPlan.skipCpuReadback = false;
+  auto& source = request.frames.front(); source.sourceEpoch = 8; source.captureTimestamp100ns = 1234;
+  if (i420) {
+    source.pixels.reset(); source.pixelStride = 0;
+    source.i420 = std::make_shared<std::vector<uint8_t>>(64*64*3/2, 110);
+    source.i420Width = source.i420Height = 64; source.i420FullRange=fullRange;source.i420Bt601=bt601;
+  }
+  const auto neutral = previewCenter(compositor->render(request.programPlan, request.frames)); ASSERT_NE(neutral, 0u);
+  request.previewActive = request.multiviewActive = false;
+  CompositorColorGrade warm; warm.lut = "warm-film";
+  if(advanced) {
+    const corevideo::rpc::Json line=corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{{"x",0},{"y",0}},corevideo::rpc::Json::Object{{"x",1},{"y",1}}};
+    ASSERT_TRUE(readAdvancedGrade(corevideo::rpc::Json::Object{{"version",2},{"colorSpace","rec709-sdr"},
+        {"operations",corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{{"id","primary"},{"kind","primaries"},{"exposureStops",.5},
+        {"curves",corevideo::rpc::Json::Array{line,line,line,line}}}}}},warm.advanced));
+  }
+  request.gradePreviews.push_back({"draft", "test", 1, warm});
+  auto grade = awaitGrade(*compositor, request, "draft", 1);
+  ASSERT_EQ(grade.demand.revision, 1); EXPECT_EQ(grade.sourceEpoch, 8u);
+  EXPECT_EQ(grade.sourceFrameId, source.frameId); EXPECT_EQ(grade.captureTimestamp100ns, 1234);
+  const auto pixel = consumeCenter(grade.texture); ASSERT_NE(pixel, 0u); EXPECT_NE(pixel, neutral);
+  // Editing a private preview leaves Program unchanged.
+  EXPECT_EQ(previewCenter(compositor->render(request.programPlan, request.frames)), neutral);
+  request.programPlan.layers[0].hasColorGrade = true; request.programPlan.layers[0].colorGrade = warm;
+  const auto applied = previewCenter(compositor->render(request.programPlan, request.frames));
+  for (int shift : {0, 8, 16}) EXPECT_LE(std::abs(int((pixel >> shift) & 255) - int((applied >> shift) & 255)), 1);
+  // A held source is regraded without changing its source frame identity.
+  request.gradePreviews[0].revision = 2; request.gradePreviews[0].grade = {};
+  grade = awaitGrade(*compositor, request, "draft", 2);
+  ASSERT_EQ(grade.demand.revision, 2); EXPECT_EQ(grade.sourceFrameId, source.frameId);
+  const auto reset = consumeCenter(grade.texture);
+  for (int shift : {0, 8, 16}) EXPECT_LE(std::abs(int((reset >> shift) & 255) - int((neutral >> shift) & 255)), 1);
+  // A second editor has its own export; its churn cannot prune the held first editor.
+  request.gradePreviews.push_back({"other", "test", 1, warm});
+  auto other = awaitGrade(*compositor, request, "other", 1);
+  ASSERT_NE(other.texture.sharedHandleHex, grade.texture.sharedHandleHex);
+  for (int revision = 2; revision < 38; ++revision) {
+    request.gradePreviews[1].revision = revision;
+    ASSERT_EQ(awaitGrade(*compositor, request, "other", revision).demand.revision, revision);
+  }
+  ASSERT_EQ(awaitGrade(*compositor, request, "draft", 2).demand.instanceId, "draft");
+  request.frames.clear();
+  grade = awaitGrade(*compositor, request, "draft", 2);
+  ASSERT_EQ(grade.status, "held"); EXPECT_EQ(grade.sourceEpoch, 8u);
+  compositor->submitGradePreviews({});
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < end) {
+    auto latest = compositor->latestGradePreviews();
+    if (latest && latest->gradePreviews.empty()) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(compositor->latestGradePreviews()->gradePreviews.empty());
+  EXPECT_EQ(compositor->gradePreviewDiagnostics().retainedInputs, 0u);
+}
+}
+TEST(GradePreviewPixels, BgraDraftMatchesNativeProgramAndRetiresPrivateEditors) { gradePixelParity(false); }
+TEST(GradePreviewPixels, I420DraftMatchesNativeProgramAndRetiresPrivateEditors) { gradePixelParity(true); }
+TEST(GradePreviewPixels, AdvancedBgraDraftMatchesProgramAndHeldEdits) { gradePixelParity(false,true); }
+TEST(GradePreviewPixels, AdvancedI420DraftMatchesProgramAndHeldEdits) { for(bool full:{false,true}) for(bool bt601:{false,true}) gradePixelParity(true,true,full,bt601); }
+TEST(GradePreviewPixels, AdvancedCurvesPreserveChannelsAndNativeScopesHaveIndependentTap) {
+  auto compositor=isolatedCompositor(); ASSERT_TRUE(compositor);
+  auto request=requestAtSize(64); request.programPlan.skipCpuReadback=false;
+  const auto points=[](float end) {return corevideo::rpc::Json::Array{
+    corevideo::rpc::Json::Object{{"x",0},{"y",0}},corevideo::rpc::Json::Object{{"x",1},{"y",double(end)}}};};
+  const corevideo::rpc::Json doc=corevideo::rpc::Json::Object{{"version",2},{"colorSpace","rec709-sdr"},{"operations",corevideo::rpc::Json::Array{
+    corevideo::rpc::Json::Object{{"id","red-half"},{"kind","curves"},{"curves",corevideo::rpc::Json::Array{points(1),points(.5f),points(1),points(1)}}}}}};
+  CompositorColorGrade grade;ASSERT_TRUE(readAdvancedGrade(doc,grade.advanced));
+  request.programPlan.layers[0].hasColorGrade=true; request.programPlan.layers[0].colorGrade=grade;
+  const auto pixel=previewCenter(compositor->render(request.programPlan,request.frames));
+  EXPECT_LE(std::abs(int((pixel>>16)&255)-89),1); EXPECT_EQ((pixel>>8)&255,99u); EXPECT_EQ(pixel&255,33u);
+  GradePreviewDemand demand{"advanced","test",1,grade};demand.scopesEnabled=true;request.gradePreviews.push_back(demand);
+  GradePreviewSurface surface; const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(15);
+  do {surface=awaitGrade(*compositor,request,"advanced",1); if(!surface.scopes.texture.sharedHandleHex.empty()) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));} while(std::chrono::steady_clock::now()<end);
+  ASSERT_FALSE(surface.scopes.texture.sharedHandleHex.empty()); EXPECT_EQ(surface.scopes.sourceFrameId,request.frames[0].frameId);
+  const auto monitor=consumeCenter(surface.texture);for(int shift:{0,8,16}) EXPECT_LE(std::abs(int((monitor>>shift)&255)-int((pixel>>shift)&255)),1);
+  const auto redCode=(monitor>>16)&255;
+  auto histogram=consumeCenter(surface.scopes.texture,(float(redCode)+.5f)/256.f/3.f);
+  EXPECT_GT((histogram>>16)&255,128u);
+  request.gradePreviews[0].revision=2;request.gradePreviews[0].scopesOriginal=true;
+  do {surface=awaitGrade(*compositor,request,"advanced",2);if(surface.scopes.revision==2 && !surface.scopes.texture.sharedHandleHex.empty()) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));} while(std::chrono::steady_clock::now()<end);
+  ASSERT_EQ(surface.scopes.revision,2); EXPECT_TRUE(surface.scopes.original);
+  histogram=consumeCenter(surface.scopes.texture,(177.5f)/256.f/3.f);EXPECT_GT((histogram>>16)&255,128u);
+  EXPECT_EQ(previewCenter(compositor->render(request.programPlan,request.frames)),pixel);
+  compositor->submitGradePreviews({});
+}
+
+TEST(GradePreviewPixels, HistogramWaveformAndVectorscopeConsumeKnownNeutralRgbAndSkinPatches) {
+  auto compositor=isolatedCompositor(); ASSERT_TRUE(compositor);
+  auto request=requestAtSize(64);
+  GradePreviewDemand demand{"scope-patches","test",1,{}};
+  demand.scopesEnabled=true; demand.histogramMode=0; demand.waveformMode=0;
+  request.gradePreviews.push_back(demand);
+  const int patches[][3]={{0,0,0},{255,255,255},{128,128,128},
+                         {255,0,0},{0,255,0},{0,0,255},{190,134,110}};
+  int64_t revision=0;
+  for(const auto& patch:patches) {
+    auto pixels=std::make_shared<std::vector<uint8_t>>(64*64*4);
+    for(size_t i=0;i<pixels->size();i+=4) {
+      (*pixels)[i]=uint8_t(patch[2]); (*pixels)[i+1]=uint8_t(patch[1]);
+      (*pixels)[i+2]=uint8_t(patch[0]); (*pixels)[i+3]=255;
+    }
+    request.frames[0].pixels=pixels; request.frames[0].frameId=++revision;
+    request.gradePreviews[0].revision=revision;
+    GradePreviewSurface surface;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    do {
+      surface=awaitGrade(*compositor,request,"scope-patches",revision);
+      if(surface.scopes.revision==revision && !surface.scopes.texture.sharedHandleHex.empty()) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    } while(std::chrono::steady_clock::now()<deadline);
+    ASSERT_EQ(surface.scopes.revision,revision);
+    ASSERT_FALSE(surface.scopes.texture.sharedHandleHex.empty());
+    // Independent Rec.709 equations predict the actual GPU density locations.
+    const float r=patch[0]/255.f,g=patch[1]/255.f,b=patch[2]/255.f;
+    const float luma=.2126f*r+.7152f*g+.0722f*b;
+    const int histogramBin=std::min(255,int(luma*255));
+    const int waveformBin=std::min(255,int(luma*255));
+    const int cb=std::min(255,std::max(0,int(((b-luma)/1.8556f+.5f)*255)));
+    const int cr=std::min(255,std::max(0,int(((r-luma)/1.5748f+.5f)*255)));
+    const auto samples=consumeSamples(surface.scopes.texture,{
+        {(histogramBin+.5f)/768.f,.5f},
+        {.5f,1-(waveformBin+.5f)/256.f},
+        {(2+(cb+.5f)/256.f)/3.f,1-(cr+.5f)/256.f}});
+    ASSERT_EQ(samples.size(),3u);
+    EXPECT_GT((samples[0]>>8)&255,180u);
+    EXPECT_GT((samples[1]>>8)&255,240u);
+    EXPECT_GT((samples[2]>>8)&255,240u);
+    EXPECT_GT(samples[2]&255,150u);
+  }
+  compositor->submitGradePreviews({});
+}
+
+TEST(AdvancedGradePixels, ExposurePrimariesStackOrderLutDomainAndGlobalIntensityHaveIndependentExpectedValues) {
+  auto compositor=isolatedCompositor(); ASSERT_TRUE(compositor);
+  auto request=requestAtSize(64);request.programPlan.skipCpuReadback=false;
+  using J=corevideo::rpc::Json;
+  const J::Array line{J::Object{{"x",0},{"y",0}},J::Object{{"x",1},{"y",1}}};
+  const J::Array curves{line,line,line,line};
+  auto primary=J::Object{{"id","primary"},{"kind","primaries"},{"curves",curves},{"exposureStops",1}};
+  auto half=J::Object{{"id","half"},{"kind","curves"},{"curves",J::Array{line,
+      J::Array{J::Object{{"x",0},{"y",0}},J::Object{{"x",1},{"y",.5}}},line,line}}};
+  auto render=[&](J::Array operations,float intensity=1,float legacyExposure=0,bool bypass=false) {
+    CompositorColorGrade grade; grade.exposure=legacyExposure;
+    ASSERT_TRUE(readAdvancedGrade(J::Object{{"version",2},{"colorSpace","rec709-sdr"},{"operations",operations},
+        {"intensity",double(intensity)},{"bypass",bypass}},grade.advanced));
+    request.programPlan.layers[0].hasColorGrade=true; request.programPlan.layers[0].colorGrade=grade;
+    return previewCenter(compositor->render(request.programPlan,request.frames));
+  };
+  // Independent Rec.709 transfer reference, never calls the production translator.
+  const auto exposure=[](double encoded) {double l=encoded<.081?encoded/4.5:std::pow((encoded+.099)/1.099,1/.45);
+    l*=2;return std::clamp(l<.018?4.5*l:1.099*std::pow(l,.45)-.099,0.,1.);};
+  const auto code=[](uint32_t p,int shift){return int((p>>shift)&255);};
+  const auto check=[&](uint32_t pixel,int shift,double expected){EXPECT_LE(std::abs(code(pixel,shift)-int(std::round(expected*255))),1);};
+  auto pixel=render({primary});for(auto [shift,value]:{std::pair{0,33},std::pair{8,99},std::pair{16,177}}) check(pixel,shift,exposure(value/255.));
+  pixel=render({primary,half});check(pixel,16,exposure(177/255.)*.5);
+  const auto reverse=render({half,primary});check(reverse,16,exposure(177/255.*.5)); EXPECT_NE(code(pixel,16),code(reverse,16));
+  primary["exposureStops"]=0;primary["saturation"]=0;
+  pixel=render({primary}); const double luma=(.2126*177+.7152*99+.0722*33)/255.;for(int shift:{0,8,16}) check(pixel,shift,luma);
+  // An empty advanced stack still controls legacy intensity and bypass.
+  pixel=render({},0,20);check(pixel,16,177/255.);check(pixel,8,99/255.);
+  pixel=render({},1,20,true);check(pixel,16,177/255.);check(pixel,8,99/255.);
+  // 2^3 RGB-red-fastest cube, explicit domain, asymmetric output catches axis swaps.
+  std::string text="LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 2 2 2\n";
+  for(int b=0;b<2;++b) for(int g=0;g<2;++g) for(int r=0;r<2;++r) text+=std::to_string(b)+" "+std::to_string(r)+" "+std::to_string(g)+"\n";
+  const auto digest=hashing::sha256(reinterpret_cast<const uint8_t*>(text.data()),text.size());
+  std::ostringstream hash;hash<<std::hex<<std::setfill('0');for(auto b:digest) hash<<std::setw(2)<<int(b);
+  auto cube=parseGradeCube(text,hash.str());ASSERT_TRUE(cube);
+  const J::Object lut{{"id","cube"},{"kind","cube"},{"curves",curves},{"cubeText",text},{"cubeSha256",cube->hash}};
+  pixel=render({lut});check(pixel,16,33/255./2);check(pixel,8,177/255./2);check(pixel,0,99/255./2);
 }
 
 TEST(PreparedSourcePixels, BgraGpuViewKeepsCpuI420ForIsoWithoutSelectingYuvShader) {

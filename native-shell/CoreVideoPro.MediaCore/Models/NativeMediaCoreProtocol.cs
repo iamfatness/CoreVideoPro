@@ -348,6 +348,11 @@ public sealed class NativeMediaCoreVirtualCameraResolution
 
 public sealed class NativeMediaCoreVirtualCamera
 {
+    public bool FramerEnabled { get; init; }
+    public string FramerState { get; init; } = "off";
+    public string FramerWarning { get; init; } = string.Empty;
+    public long FramerFrames { get; init; }
+    public long FramerFailures { get; init; }
     public bool Enabled { get; init; }
     public string Status { get; init; } = "off";
     public string DeviceName { get; init; } = "CoreVideo Pro Camera";

@@ -6,6 +6,7 @@
 #include "core/SystemMemoryPolicy.h"
 
 #include "compositor/CompositorLayout.h"
+#include "compositor/AdvancedGrade.h"
 #include "compositor/TilesLayout.h"
 #include "compositor/TilesPinnedLayout.h"
 #include "compositor/TilesMembership.h"
@@ -126,13 +127,15 @@ float clampColorGradeAxis(double value) {
 }
 
 modules::CompositorColorGrade readColorGrade(const rpc::Json& value) {
-  return modules::CompositorColorGrade{
+  auto result = modules::CompositorColorGrade{
       clampColorGradeAxis(value.getNumber("exposure", 0.0)),
       clampColorGradeAxis(value.getNumber("contrast", 0.0)),
       clampColorGradeAxis(value.getNumber("saturation", 0.0)),
       clampColorGradeAxis(value.getNumber("temperature", 0.0)),
       value.getString("lut", "none"),
   };
+  if (const auto* advanced = value.get("advanced")) modules::readAdvancedGrade(*advanced, result.advanced);
+  return result;
 }
 
 std::string normalizeVideoCodec(const std::string& codec, const std::string& fallback);
@@ -223,6 +226,7 @@ CapabilityReport capabilityReport(const modules::ModuleSet& modules, bool zoomCo
   const bool gpu = modules.compositor && modules.compositor->rendererName() != "software";
   intrinsic("chroma-key", gpu);
   intrinsic("smart-framing", gpu);
+  intrinsic("source-grade-preview", modules.compositor && modules.compositor->supportsGradePreview());
   factory("local-audio-capture");
   factory("audio-monitor-output");
   const char* zoomState = COREVIDEO_WITH_ZOOM && zoomConfigured ? "available" : "omitted";
@@ -1017,6 +1021,7 @@ rpc::Json MediaCore::sessionState() const {
   }
   const auto capturePreparation = modules_.captureDevice->shmCapturePreparationDiagnostics();
   const auto monitorWorker = modules_.compositor->monitorDiagnostics();
+  state.emplace("gradePreview", gradePreviews_.diagnostics(*modules_.compositor));
   state.emplace("deliveryEvidence", core::deliveryEvidenceSnapshot());
   state.emplace("realtimeEvidence", rpc::Json::Object{
       {"capturePreparation", rpc::Json::Object{
@@ -1633,7 +1638,42 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
   return sessionState();
 }
 
+bool MediaCore::configureGradePreview(const rpc::Json& command) {
+  if (command.get("renewOnly") && command.get("renewOnly")->asBool()) return gradePreviews_.renew(command);
+  const auto* grade = command.get("grade");
+  if (grade) if (const auto* advanced = grade->get("advanced")) {
+    std::shared_ptr<const modules::AdvancedGradeDocument> validated;
+    if (!modules::readAdvancedGrade(*advanced, validated)) return false;
+  }
+  return gradePreviews_.configure(command, grade ? readColorGrade(*grade) : modules::CompositorColorGrade{},
+      modules_.compositor->supportsGradePreview());
+}
+rpc::Json MediaCore::applySourceGrade(const rpc::Json& command) {
+  if(modules_.compositor->rendererName()=="software") return rpc::Json::Object{{"accepted",false},{"reason","native-source-grade-not-built"}};
+  const auto* grade=command.get("grade"); if(!grade || !grade->isObject()) return rpc::Json::Object{{"accepted",false},{"reason","missing-grade"}};
+  for(const char* axis:{"exposure","contrast","saturation","temperature"}) if(const auto* value=grade->get(axis)) {
+    if(!value->isNumber() || !std::isfinite(value->asNumber()) || std::abs(value->asNumber())>100) return rpc::Json::Object{{"accepted",false},{"reason","invalid-basic-grade"}};
+  }
+  const auto look=grade->getString("lut","none");
+  if(look!="none" && look!="neutral" && look!="warm-film" && look!="cool-broadcast" && look!="punch") return rpc::Json::Object{{"accepted",false},{"reason","unsupported-look"}};
+  if(const auto* advanced=grade->get("advanced")) {std::shared_ptr<const modules::AdvancedGradeDocument> doc;
+    if(!modules::readAdvancedGrade(*advanced,doc)) return rpc::Json::Object{{"accepted",false},{"reason","invalid-advanced-grade"}};}
+  return sourceGrades_.apply(command,readColorGrade(*grade));
+}
+
 void MediaCore::applyCommandMutation(const rpc::Json& command) {
+  // Validate every nested grade before mutating any part of a scene/batch entry.
+  const auto validate = [&](const auto& self, const rpc::Json& node) -> bool {
+    if (node.isArray()) { for (const auto& child : node.asArray()) if (!self(self, child)) return false; }
+    if (node.isObject()) for (const auto& item : node.asObject()) {
+      if (item.first == "advanced") {
+        std::shared_ptr<const modules::AdvancedGradeDocument> parsed;
+        if (!modules::readAdvancedGrade(item.second, parsed)) return false;
+      } else if (!self(self, item.second)) return false;
+    }
+    return true;
+  };
+  if (!validate(validate, command)) { commandProtocolFailures_.push_back("invalid-advanced-grade"); return; }
   const std::string type = command.getString("type");
   if (type == "begin-take-transition") {
     beginTakeTransition(command);
@@ -1647,6 +1687,8 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setOverlayAsset(command);
   } else if (type == "set-color-grade") {
     setColorGrade(command);
+  } else if (type == "set-grade-preview") {
+    if (!configureGradePreview(command)) commandProtocolFailures_.push_back("invalid-grade-preview");
   } else if (type == "set-source-policy") {
     setSourcePolicy(command);
   } else if (type == "set-output-profile") {
@@ -3484,6 +3526,7 @@ void MediaCore::syncVirtualCamera(const rpc::Json& command) {
   const std::string deviceName = command.get("deviceName") ? command.get("deviceName")->asString() : "";
 
   virtualCamera_->setMirror(mirror);
+  virtualCamera_->setFramerEnabled(command.get("framerEnabled") && command.get("framerEnabled")->asBool());
   virtualCamera_->setDeviceName(deviceName);
   if (on && !virtualCameraEnabled_) {
     virtualCamera_->start(width, height, fps);
@@ -3509,6 +3552,11 @@ rpc::Json MediaCore::virtualCameraState() const {
       {"framesAccepted", static_cast<double>(status.framesAccepted)},
       {"pendingFramesReplaced", static_cast<double>(status.pendingFramesReplaced)},
       {"publicationExceptions", static_cast<double>(status.publicationExceptions)},
+      {"framerEnabled", status.framerEnabled},
+      {"framerState", status.framerState},
+      {"framerWarning", status.framerWarning},
+      {"framerFrames", static_cast<double>(status.framerFrames)},
+      {"framerFailures", static_cast<double>(status.framerFailures)},
       {"warning", status.warning},
   };
 }
@@ -4117,6 +4165,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   if (const rpc::Json* grade = previewScene.get("colorGrade"); grade && grade->isObject()) {
     colorGrade = readColorGrade(*grade);
   }
+  signature += "advanced:" + (colorGrade.advanced ? colorGrade.advanced->content : "") + ";";
   signature += "cg:" + std::to_string(colorGrade.exposure) + "," + std::to_string(colorGrade.contrast) + "," +
                std::to_string(colorGrade.saturation) + "," + std::to_string(colorGrade.temperature) + ":" + colorGrade.lut + ";";
 
@@ -4521,6 +4570,7 @@ modules::CompositorRenderPlan MediaCore::buildMultiviewRenderPlan(const std::vec
   // and recomposes real layers) is a genuine per-layer PGM recompose this
   // call actually holds.
   holdDropoutForMonitoring(renderPlan);
+  sourceGrades_.applyTo(renderPlan,videoFrames);
   return renderPlan;
 }
 
@@ -5075,6 +5125,7 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
                modules::streamingTruePeakBlockDbfs(programTruePeakMeterR_, chunkR.data(), frames));
   programTruePeakDbfs_ = std::max(chunkTruePeak, programTruePeakDbfs_ - 0.5);
   programLufsIntegrated_ = programIntegratedMeter_.integratedLufs();
+  virtualCamera_->setProgramLoudness(programLufsShortTerm_, windowed >= maxSamples);
 }
 
 rpc::Json MediaCore::masterMeterState() const {
@@ -6846,6 +6897,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     renderPlan.layers.push_back(std::move(layer));
   }
 
+  sourceGrades_.applyTo(renderPlan,videoFrames);
   return renderPlan;
 }
 
@@ -7215,6 +7267,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     }
   }
 
+  sourceGrades_.observe(videoFrames);
   auto renderPlan = buildCompositorRenderPlan(videoFrames);
   const double animationNowMs = static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
@@ -7590,6 +7643,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // number to stamp audio with, but must not take coreMutex to read one.
   lastProgramFrameNumberAtomic_.store(lastProducedFrameNumber_,
                                       std::memory_order_relaxed);
+  gradePreviews_.tick(videoFrames, *modules_.compositor, lastProducedFrameNumber_);
   // Mark a new program frame for the video-out tick. Only the COUNTER moves here
   // (atomic, free); the wakeup itself is deliberately NOT sent under coreMutex —
   // the caller sends it via notifyProgramFramePublished() after releasing the

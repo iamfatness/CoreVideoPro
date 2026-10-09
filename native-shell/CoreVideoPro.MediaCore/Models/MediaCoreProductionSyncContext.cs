@@ -179,7 +179,14 @@ public sealed record MediaCoreColorGradeWire(
     int Exposure,
     int Contrast,
     int Saturation,
-    int Temperature);
+    int Temperature,
+    AdvancedGradeDocument? Advanced = null,
+    bool ScopesEnabled = false,
+    bool ScopesOriginal = false,
+    int HistogramMode = 1,
+    int WaveformMode = 1,
+    bool CompareOriginal = false,
+    int ScopeView = 0);
 
 // #535 slice 4a: set-source-policy wire fields, verbatim. DropoutPolicy is
 // "hold" | "black", or null for a NAME-ONLY entry (round 2, final review: a
@@ -368,6 +375,7 @@ public sealed record MediaCoreProductionSyncContext
     // Virtual camera (virtual-camera-spec V4/V5).
     public bool VirtualCameraEnabled { get; init; }
     public bool VirtualCameraMirror { get; init; }
+    public bool VirtualCameraFramerEnabled { get; init; }
     public string VirtualCameraDeviceName { get; init; } = string.Empty;
 
     /// <summary>

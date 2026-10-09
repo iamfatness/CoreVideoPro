@@ -12,6 +12,7 @@ struct ColorGradeParams {
 };
 
 inline ColorGradeParams colorGradeParams(const CompositorColorGrade& grade) {
+  if (grade.advanced && grade.advanced->bypass) return {};
   ColorGradeParams result{grade.exposure * .1f, grade.contrast * .1f,
                          grade.saturation * .1f, grade.temperature * .1f};
   if (grade.lut == "neutral") {
@@ -31,11 +32,13 @@ inline ColorGradeParams colorGradeParams(const CompositorColorGrade& grade) {
 }
 
 inline bool colorGradeIsIdentity(const CompositorColorGrade& grade) {
+  if (grade.advanced && !grade.advanced->bypass && grade.advanced->intensity > 0 && !grade.advanced->operations.empty()) return false;
   const auto p = colorGradeParams(grade);
   return p.exposure == 0 && p.contrast == 0 && p.saturation == 0 && p.temperature == 0;
 }
 
 inline bool colorGradesEqual(const CompositorColorGrade& a, const CompositorColorGrade& b) {
+  if (bool(a.advanced) != bool(b.advanced) || (a.advanced && a.advanced->content != b.advanced->content)) return false;
   const auto x = colorGradeParams(a), y = colorGradeParams(b);
   return x.exposure == y.exposure && x.contrast == y.contrast &&
          x.saturation == y.saturation && x.temperature == y.temperature;

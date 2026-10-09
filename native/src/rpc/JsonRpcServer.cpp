@@ -6,6 +6,7 @@
 #include "core/AnchoredFrameDeadlineTracker.h"
 #include "rpc/CommandMailbox.h"
 #include "contracts/Lifecycle.h"
+#include "compositor/AdvancedGrade.h"
 #include <random>
 
 #include <algorithm>
@@ -201,6 +202,28 @@ Json JsonRpcServer::handle(const Json& request) {
     const int requested = static_cast<int>(std::clamp(offset->asNumber(), -200.0, 200.0));
     return success(id, Json::Object{{"type", "zoom-guest-av-sync-offset"},
         {"setting", mediaCore_.setZoomGuestAvSyncOffset(participantId, requested)}});
+  }
+
+  if (hasType(request, "register-grade-document")) {
+    const auto ref = request.getString("documentRef");
+    if (ref.size()!=64) return failure(id,"protocol-error","Invalid grade document reference.");
+    if (modules::GradeDocuments::find(ref)) return success(id,Json::Object{{"present",true}});
+    const auto raw = request.getString("documentJson");
+    if(raw.empty()) return success(id,Json::Object{{"present",false}});
+    if(raw.size()>2000000) return failure(id,"protocol-error","Grade document exceeds 2 MB.");
+    const auto digest=modules::hashing::sha256(reinterpret_cast<const uint8_t*>(raw.data()),raw.size());
+    std::ostringstream hash; hash<<std::hex<<std::setfill('0'); for(auto b:digest) hash<<std::setw(2)<<int(b);
+    const auto node=Json::parse(raw); std::shared_ptr<const modules::AdvancedGradeDocument> doc;
+    if(hash.str()!=ref || !node || !modules::readAdvancedGrade(*node,doc) || !doc) return failure(id,"protocol-error","Invalid grade document content.");
+    modules::GradeDocuments::remember(ref,std::move(doc)); return success(id,Json::Object{{"present",true}});
+  }
+  if (hasType(request, "set-source-grade")) {
+    return success(id, mediaCore_.applySourceGrade(request).asObject());
+  }
+  if (hasType(request, "set-grade-preview")) {
+    if (!mediaCore_.configureGradePreview(request))
+      return failure(id, "protocol-error", "Invalid grading preview identity or revision.");
+    return success(id, Json::Object{{"type", "grade-preview-control"}, {"accepted", true}});
   }
 
   if (hasType(request, "connect-capture-device")) {
@@ -604,6 +627,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           enqueueFrame(event.stringify());
         }
         for (const auto& event : mediaCore_.drainParticipantSharedTextureEvents()) {
+          enqueueFrame(event.stringify());
+        }
+        for (const auto& event : mediaCore_.drainGradePreviewEvents()) {
           enqueueFrame(event.stringify());
         }
         // The multiview shared-texture event is tiny and emitted only on
@@ -1014,6 +1040,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
             joinCv.notify_one();
           }
           continue;
+        } else if (reqType == "register-grade-document") {
+          // Content parsing owns only the registry mutex; production does not wait.
+          h0 = std::chrono::steady_clock::now(); response = handle(*request); h1 = std::chrono::steady_clock::now();
         } else {
           auto lock = lockCommandCore();
           // Commands apply state and copy a snapshot under the lock; live render
@@ -1143,6 +1172,9 @@ void JsonRpcServer::flushFrameEvents(std::ostream& output) {
     output << event.stringify() << '\n';
   }
   for (const auto& event : mediaCore_.drainParticipantSharedTextureEvents()) {
+    output << event.stringify() << '\n';
+  }
+  for (const auto& event : mediaCore_.drainGradePreviewEvents()) {
     output << event.stringify() << '\n';
   }
   for (const auto& event : mediaCore_.drainMultiviewSharedTextureEvents()) {

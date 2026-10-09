@@ -21,6 +21,7 @@ public sealed partial class StudioViewModel
         }
         Prepare("Magic Scene", () => MagicScene.Stop());
         Prepare("dispatcher timers", StopDispatcherTimersForShutdown);
+        Prepare("grading previews", StopGradePreviewsForShutdown);
         Prepare("lower third", () => _lowerThirdKeyTransitionCts?.Cancel());
         Prepare("capture state", () => _surfaces.SetZoomCaptureSubscribed(false));
         Prepare("event subscriptions", () =>

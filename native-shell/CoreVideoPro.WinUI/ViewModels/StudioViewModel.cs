@@ -144,6 +144,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnVirtualCameraEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+        OnPropertyChanged(nameof(VirtualCameraFramerStatusLabel));
         // O1: vcam intent persists across launches (restore sets the backing
         // field directly, so this save only fires on real operator changes).
         SaveProductionOutputPreferences();
@@ -5441,198 +5442,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(VstBridgeStatusLabel));
     }
 
-    /// <summary>
-    /// Opens the per-source color grade pop-out for a Zoom participant or capture source.
-    /// Saved grades are attached to matching scene routes and sent to native per layer.
-    /// </summary>
-    [RelayCommand]
-    private void OpenColorGradeEditor(string? sourceId)
-    {
-        var normalizedSourceId = NormalizeColorGradeSourceId(sourceId);
-        if (string.IsNullOrWhiteSpace(normalizedSourceId))
-        {
-            CommandStatus = "Select a source before editing its color grade";
-            return;
-        }
-
-        var sourceName = ResolveColorGradeSourceName(normalizedSourceId);
-
-        var seed = ResolveStoredColorGrade(normalizedSourceId);
-        var editorViewModel = new ColorGradeEditorViewModel(
-            normalizedSourceId,
-            sourceName,
-            seed,
-            ResolveColorGradePreviewSurface(normalizedSourceId));
-        editorViewModel.GradeChanged += OnSourceColorGradeChanged;
-        editorViewModel.GradeSaved += OnSourceColorGradeSaved;
-
-        var window = new ColorGradeEditorWindow(editorViewModel);
-        window.Closed += (_, _) =>
-        {
-            editorViewModel.GradeChanged -= OnSourceColorGradeChanged;
-            editorViewModel.GradeSaved -= OnSourceColorGradeSaved;
-            _openColorGradeEditors.Remove(editorViewModel);
-        };
-        _openColorGradeEditors.Add(editorViewModel);
-        window.Activate();
-    }
-
-    [RelayCommand]
-    private void OpenCaptureDeviceColorGradeEditor(string? captureDeviceId) =>
-        OpenColorGradeEditor(string.IsNullOrWhiteSpace(captureDeviceId) ? null : $"capture:{captureDeviceId}");
-
-    private void OnSourceColorGradeSaved(object? sender, ColorGrade grade)
-    {
-        if (sender is not ColorGradeEditorViewModel editorViewModel)
-        {
-            return;
-        }
-
-        ApplyLiveColorGrade(editorViewModel, grade, $"Color grade set for {editorViewModel.SourceName}: {grade.Summary}");
-    }
-
-    private void OnSourceColorGradeChanged(object? sender, ColorGrade grade)
-    {
-        if (sender is not ColorGradeEditorViewModel editorViewModel)
-        {
-            return;
-        }
-
-        ApplyLiveColorGrade(editorViewModel, grade, $"Color grade live for {editorViewModel.SourceName}: {grade.Summary}");
-    }
-
-    private void ApplyLiveColorGrade(ColorGradeEditorViewModel editorViewModel, ColorGrade grade, string status)
-    {
-        _sourceColorGrades[editorViewModel.SourceId] = grade;
-        ApplyColorGradeToMatchingRoutes(editorViewModel.SourceId, grade);
-        CommandStatus = status;
-
-        SyncPreviewCanvasLayers(GetPreviewEditableRoutes());
-        RefreshPreviewRoutingState();
-        _ = SyncColorGradeChangeAsync();
-    }
-
-    private VideoSurfaceState? ResolveColorGradePreviewSurface(string sourceId)
-    {
-        if (sourceId.StartsWith("capture:", StringComparison.OrdinalIgnoreCase))
-        {
-            var captureDeviceId = sourceId["capture:".Length..];
-            return _surfaces.CaptureDeviceSurfaces.TryGetValue(captureDeviceId, out var captureSurface)
-                ? captureSurface
-                : BuildCaptureSceneTile(captureDeviceId)?.Surface;
-        }
-
-        return MultiviewTiles
-            .FirstOrDefault(tile => string.Equals(tile.Participant.Id, sourceId, StringComparison.Ordinal))
-            ?.Surface;
-    }
-
-    private void RefreshOpenColorGradeEditorPreviews()
-    {
-        foreach (var editor in _openColorGradeEditors.ToList())
-        {
-            editor.SetPreviewSurface(ResolveColorGradePreviewSurface(editor.SourceId));
-        }
-    }
-
-    private async Task SyncColorGradeChangeAsync()
-    {
-        try
-        {
-            await SyncActiveSceneAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            RunOnUiThread(() => CommandStatus = ex.Message);  // catch runs off-thread (ConfigureAwait(false))
-        }
-    }
-
-    private string? NormalizeColorGradeSourceId(string? sourceId)
-    {
-        if (string.IsNullOrWhiteSpace(sourceId))
-        {
-            return null;
-        }
-
-        if (sourceId.StartsWith("input-", StringComparison.OrdinalIgnoreCase) &&
-            int.TryParse(sourceId[6..], out var slotNumber) &&
-            ShowInputs.FirstOrDefault(slot => slot.SlotNumber == slotNumber) is { } slot)
-        {
-            return slot.Kind == ShowInputKind.ZoomParticipant
-                ? slot.ParticipantId
-                : string.IsNullOrWhiteSpace(slot.CaptureDeviceId) ? null : $"capture:{slot.CaptureDeviceId}";
-        }
-
-        if (sourceId.StartsWith("capture:", StringComparison.OrdinalIgnoreCase))
-        {
-            var captureDeviceId = sourceId["capture:".Length..];
-            return string.IsNullOrWhiteSpace(captureDeviceId) ? null : $"capture:{captureDeviceId}";
-        }
-
-        if (CaptureDevices.Any(device => string.Equals(device.Id, sourceId, StringComparison.Ordinal)))
-        {
-            return $"capture:{sourceId}";
-        }
-
-        return sourceId;
-    }
-
-    private string ResolveColorGradeSourceName(string sourceId)
-    {
-        if (sourceId.StartsWith("capture:", StringComparison.OrdinalIgnoreCase))
-        {
-            var captureDeviceId = sourceId["capture:".Length..];
-            return CaptureDevices.FirstOrDefault(device => string.Equals(device.Id, captureDeviceId, StringComparison.Ordinal))?.Name ??
-                captureDeviceId;
-        }
-
-        return RoomVideoParticipants.FirstOrDefault(participant => participant.Id == sourceId)?.Name ?? sourceId;
-    }
-
-    private ColorGrade ResolveStoredColorGrade(string sourceId) =>
-        _sourceColorGrades.TryGetValue(sourceId, out var stored) ? stored : ColorGrade;
-
-    private void ApplyColorGradeToMatchingRoutes(string sourceId, ColorGrade grade)
-    {
-        foreach (var route in _sceneRoutes.Values.SelectMany(routes => routes))
-        {
-            var resolved = ResolveRouteFromShowInput(route);
-            if (string.Equals(ResolveColorGradeSourceId(resolved), sourceId, StringComparison.Ordinal))
-            {
-                route.ColorGrade = grade;
-            }
-        }
-    }
-
-    private MediaCoreColorGradeWire? BuildRouteColorGradeWire(SourceRoute route)
-    {
-        var sourceId = ResolveColorGradeSourceId(route);
-        var grade = route.ColorGrade;
-        if (sourceId is not null && _sourceColorGrades.TryGetValue(sourceId, out var stored))
-        {
-            grade = stored;
-        }
-
-        return grade is null
-            ? null
-            : new MediaCoreColorGradeWire(
-                grade.Lut,
-                grade.Exposure,
-                grade.Contrast,
-                grade.Saturation,
-                grade.Temperature);
-    }
-
-    private static string? ResolveColorGradeSourceId(SourceRoute route)
-    {
-        if (route.Mode == SourceRouteMode.CaptureDevice && route.CaptureDeviceId is { Length: > 0 } captureDeviceId)
-        {
-            return $"capture:{captureDeviceId}";
-        }
-
-        return route.ParticipantId;
-    }
-
     [RelayCommand]
     private async Task ToggleGraphicAsync(string graphicId)
     {
@@ -9384,6 +9193,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioMasteringGlueBandHighDb = MasteringGlueBandHighDb,
             VirtualCameraEnabled = VirtualCameraEnabled,
             VirtualCameraMirror = VirtualCameraMirror,
+            VirtualCameraFramerEnabled = VirtualCameraFramerEnabled,
             VirtualCameraDeviceName = VirtualCameraDeviceName,
             ScanVstPlugins = ConsumeVstScanRequest(),
             AudioMonitor = new MediaCoreAudioMonitorWire(
@@ -10597,6 +10407,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioReadoutBindings();
         Tm("audioReadouts");
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+        OnPropertyChanged(nameof(VirtualCameraFramerStatusLabel));
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
         RefreshProgramLowerThirdKeyPosition();
         ReconcileLowerThirdPhaseSync(snapshot);
@@ -11792,7 +11603,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         PreviewSurface = _surfaces.HasPreviewComposite
             ? _surfaces.PreviewCompositeSurface
             : ResolvePreviewPrimarySurface();
-        RefreshOpenColorGradeEditorPreviews();
         SchedulePreviewRoutingRefresh();
         if (!verboseDiagnostics) return;
         sw!.Stop();
@@ -12069,6 +11879,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior,
             VirtualCameraEnabled = VirtualCameraEnabled,
             VirtualCameraMirror = VirtualCameraMirror,
+            VirtualCameraFramerEnabled = VirtualCameraFramerEnabled,
             VirtualCameraName = string.IsNullOrWhiteSpace(VirtualCameraDeviceName)
                 ? null
                 : VirtualCameraDeviceName,
@@ -12104,6 +11915,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ZoomAudioMode = ZoomAudioModePreference.Format(_zoomAudioMode),
             ZoomCameraMaxResolution = ZoomCameraMaxResolution,
             ZoomCameraMaxFps = ZoomCameraMaxFps,
+            SourceGrades = CapturePersistedSourceGrades(),
             CustomScenes = _scenes
                 .Where(scene => scene.Id.StartsWith("custom-", StringComparison.Ordinal))
                 .Select(scene => ScenePersistenceService.ToPersisted(
@@ -12128,6 +11940,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)
     {
         OhgShowEnabled = preferences.OhgShowEnabled;
+        RestorePersistedSourceGrades(preferences.SourceGrades);
         FfmpegBinDirectory = preferences.FfmpegBinDirectory ?? FfmpegBinDirectory;
         StreamRtmpEnabled = preferences.StreamRtmpEnabled;
         StreamNdiEnabled = preferences.StreamNdiEnabled;
@@ -12241,11 +12054,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // no second registration path, idempotent by construction.
         _virtualCameraEnabled = preferences.VirtualCameraEnabled;
         _virtualCameraMirror = preferences.VirtualCameraMirror;
+        _virtualCameraFramerEnabled = preferences.VirtualCameraFramerEnabled;
         _virtualCameraDeviceName = preferences.VirtualCameraName ?? string.Empty;
         OnPropertyChanged(nameof(VirtualCameraEnabled));
         OnPropertyChanged(nameof(VirtualCameraMirror));
+        OnPropertyChanged(nameof(VirtualCameraFramerEnabled));
         OnPropertyChanged(nameof(VirtualCameraDeviceName));
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+        OnPropertyChanged(nameof(VirtualCameraFramerStatusLabel));
 
         // v8 (ISO-4): restore the ISO selection + "Program + ISOs" switch via the BACKING
         // field (same reason as vcam above — the setter would sync a core that isn't up).

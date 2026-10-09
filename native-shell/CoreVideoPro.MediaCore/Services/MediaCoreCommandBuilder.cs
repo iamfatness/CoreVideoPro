@@ -170,7 +170,8 @@ public static class MediaCoreCommandBuilder
                     ["exposure"] = colorGrade.Exposure,
                     ["contrast"] = colorGrade.Contrast,
                     ["saturation"] = colorGrade.Saturation,
-                    ["temperature"] = colorGrade.Temperature
+                    ["temperature"] = colorGrade.Temperature,
+                    ["advanced"] = colorGrade.Advanced
                 },
             ["routes"] = routes.Select(SerializeSceneRoute).ToList(),
             ["tiles"] = SerializeTilesLayer(tiles)
@@ -277,7 +278,8 @@ public static class MediaCoreCommandBuilder
                     ["exposure"] = route.ColorGrade.Exposure,
                     ["contrast"] = route.ColorGrade.Contrast,
                     ["saturation"] = route.ColorGrade.Saturation,
-                    ["temperature"] = route.ColorGrade.Temperature
+                    ["temperature"] = route.ColorGrade.Temperature,
+                    ["advanced"] = route.ColorGrade.Advanced
                 }
         };
 
@@ -406,7 +408,8 @@ public static class MediaCoreCommandBuilder
             ["exposure"] = colorGrade.Exposure,
             ["contrast"] = colorGrade.Contrast,
             ["saturation"] = colorGrade.Saturation,
-            ["temperature"] = colorGrade.Temperature
+            ["temperature"] = colorGrade.Temperature,
+            ["advanced"] = colorGrade.Advanced
         });
 
     // #535 slice 4a: one set-source-policy command per entry, ordered by
@@ -839,6 +842,7 @@ public static class MediaCoreCommandBuilder
             ["height"] = 720,
             ["fps"] = 30,
             ["mirror"] = context.VirtualCameraMirror,
+            ["framerEnabled"] = context.VirtualCameraFramerEnabled,
             ["deviceName"] = context.VirtualCameraDeviceName
         });
 
