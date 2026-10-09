@@ -54,3 +54,12 @@ TEST(AdvancedGrade, LeaseRenewalCannotChangeDraftAndExpiredLeaseRequiresResend) 
   EXPECT_FALSE(control.renew(request,now+std::chrono::seconds(4)));
   auto wrong=request.asObject();wrong["revision"]=5;EXPECT_FALSE(control.renew(wrong,now));
 }
+
+TEST(AdvancedGrade, NonCurveOperationsHaveNeutralCurveResources) {
+  auto document=std::make_shared<modules::AdvancedGradeDocument>();
+  modules::GradeOperation primary;primary.kind="primaries";
+  document->operations.push_back(primary);
+  modules::CompositorColorGrade grade;grade.advanced=document;
+  const auto points=modules::compileGradeCurves(grade);
+  EXPECT_EQ(points[0],1.f);EXPECT_EQ(points[1],1.f);
+}

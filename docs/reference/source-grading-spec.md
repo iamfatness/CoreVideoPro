@@ -241,3 +241,12 @@ transport latency. Preview and scope staleness are judged independently. Hidden
 scopes stop GPU analysis; closing/lease expiry retires worker-owned resources.
 Initialization/render/export failures report unavailable. Physical display and
 external receiver presentation remain separate qualification evidence.
+
+
+The D3D document texture cache retains at most 64 documents by last use; immutable
+cube textures reuse their validated content hash. Resource preparation currently
+occurs on the owning GPU context. A native apply acknowledgement does not promise
+that resource allocation or the first graded GPU frame has completed. Device-loss
+and allocation-failure rollback require separate qualification before release.
+Metal uses the same source-grade operations for composition; the private grading
+workspace/scopes export backend is currently supported on Windows D3D11 only.

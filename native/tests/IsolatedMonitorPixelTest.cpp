@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <future>
 #include <algorithm>
+#include <array>
 
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
 #define NOMINMAX
@@ -33,32 +34,43 @@ std::unique_ptr<ICompositor> isolatedCompositor() {
 // Independently opens and consumes the exported pixels, rather than trusting
 // the job's metadata or the compositor's submission counter.
 template <typename Texture>
-uint32_t consumeCenter(const Texture& exported, float x = .5f) {
+std::vector<uint32_t> consumeSamples(const Texture& exported, const std::vector<std::array<float,2>>& samples) {
   ComPtrLite<ID3D11Device> device;
   ComPtrLite<ID3D11DeviceContext> context;
   if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
       D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
-      device.put(), nullptr, context.put()))) return 0;
+      device.put(), nullptr, context.put()))) return {};
   const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
       std::stoull(exported.sharedHandleHex, nullptr, 16)));
   ComPtrLite<ID3D11Texture2D> texture, staging;
   ComPtrLite<IDXGIKeyedMutex> key;
   if (FAILED(device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(texture.put()))) ||
-      FAILED(texture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(key.put())))) return 0;
+      FAILED(texture->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(key.put())))) return {};
   D3D11_TEXTURE2D_DESC desc{};
   texture->GetDesc(&desc);
   desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.MiscFlags = 0;
   desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  if (FAILED(device->CreateTexture2D(&desc, nullptr, staging.put())) || key->AcquireSync(1, 1000) != S_OK) return 0;
+  if (FAILED(device->CreateTexture2D(&desc, nullptr, staging.put())) || key->AcquireSync(1, 1000) != S_OK) return {};
   context->CopyResource(staging.get(), texture.get());
   context->Flush();
   key->ReleaseSync(0);
   D3D11_MAPPED_SUBRESOURCE mapped{};
-  if (FAILED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) return 0;
-  const auto* p = static_cast<const uint8_t*>(mapped.pData) + (desc.Height / 2) * mapped.RowPitch + static_cast<size_t>(desc.Width * x) * 4;
-  const uint32_t pixel = (uint32_t(p[3]) << 24) | (uint32_t(p[2]) << 16) | (uint32_t(p[1]) << 8) | p[0];
+  if (FAILED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) return {};
+  std::vector<uint32_t> pixels;
+  for(const auto& xy:samples) {
+    const auto* p = static_cast<const uint8_t*>(mapped.pData) +
+        static_cast<size_t>(desc.Height * xy[1]) * mapped.RowPitch +
+        static_cast<size_t>(desc.Width * xy[0]) * 4;
+    pixels.push_back((uint32_t(p[3]) << 24) | (uint32_t(p[2]) << 16) | (uint32_t(p[1]) << 8) | p[0]);
+  }
   context->Unmap(staging.get(), 0);
-  return pixel;
+  return pixels;
+}
+
+template <typename Texture>
+uint32_t consumeCenter(const Texture& exported, float x = .5f) {
+  const auto pixels=consumeSamples(exported,{{x,.5f}});
+  return pixels.empty() ? 0 : pixels[0];
 }
 
 MonitorRenderRequest requestAtSize(int size) {
@@ -196,6 +208,52 @@ TEST(GradePreviewPixels, AdvancedCurvesPreserveChannelsAndNativeScopesHaveIndepe
   ASSERT_EQ(surface.scopes.revision,2); EXPECT_TRUE(surface.scopes.original);
   histogram=consumeCenter(surface.scopes.texture,(177.5f)/256.f/3.f);EXPECT_GT((histogram>>16)&255,128u);
   EXPECT_EQ(previewCenter(compositor->render(request.programPlan,request.frames)),pixel);
+  compositor->submitGradePreviews({});
+}
+
+TEST(GradePreviewPixels, HistogramWaveformAndVectorscopeConsumeKnownNeutralRgbAndSkinPatches) {
+  auto compositor=isolatedCompositor(); ASSERT_TRUE(compositor);
+  auto request=requestAtSize(64);
+  GradePreviewDemand demand{"scope-patches","test",1,{}};
+  demand.scopesEnabled=true; demand.histogramMode=0; demand.waveformMode=0;
+  request.gradePreviews.push_back(demand);
+  const int patches[][3]={{0,0,0},{255,255,255},{128,128,128},
+                         {255,0,0},{0,255,0},{0,0,255},{190,134,110}};
+  int64_t revision=0;
+  for(const auto& patch:patches) {
+    auto pixels=std::make_shared<std::vector<uint8_t>>(64*64*4);
+    for(size_t i=0;i<pixels->size();i+=4) {
+      (*pixels)[i]=uint8_t(patch[2]); (*pixels)[i+1]=uint8_t(patch[1]);
+      (*pixels)[i+2]=uint8_t(patch[0]); (*pixels)[i+3]=255;
+    }
+    request.frames[0].pixels=pixels; request.frames[0].frameId=++revision;
+    request.gradePreviews[0].revision=revision;
+    GradePreviewSurface surface;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    do {
+      surface=awaitGrade(*compositor,request,"scope-patches",revision);
+      if(surface.scopes.revision==revision && !surface.scopes.texture.sharedHandleHex.empty()) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    } while(std::chrono::steady_clock::now()<deadline);
+    ASSERT_EQ(surface.scopes.revision,revision);
+    ASSERT_FALSE(surface.scopes.texture.sharedHandleHex.empty());
+    // Independent Rec.709 equations predict the actual GPU density locations.
+    const float r=patch[0]/255.f,g=patch[1]/255.f,b=patch[2]/255.f;
+    const float luma=.2126f*r+.7152f*g+.0722f*b;
+    const int histogramBin=std::min(255,int(luma*255));
+    const int waveformBin=std::min(63,int(luma*63));
+    const int cb=std::min(63,std::max(0,int(((b-luma)/1.8556f+.5f)*63)));
+    const int cr=std::min(63,std::max(0,int(((r-luma)/1.5748f+.5f)*63)));
+    const auto samples=consumeSamples(surface.scopes.texture,{
+        {(histogramBin+.5f)/768.f,.5f},
+        {.5f,1-(waveformBin+.5f)/64.f},
+        {(2+(cb+.5f)/64.f)/3.f,1-(cr+.5f)/64.f}});
+    ASSERT_EQ(samples.size(),3u);
+    EXPECT_GT((samples[0]>>8)&255,180u);
+    EXPECT_GT((samples[1]>>8)&255,240u);
+    EXPECT_GT((samples[2]>>8)&255,240u);
+    EXPECT_GT(samples[2]&255,150u);
+  }
   compositor->submitGradePreviews({});
 }
 

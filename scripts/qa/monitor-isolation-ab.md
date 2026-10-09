@@ -90,3 +90,19 @@ retain measured `gradePreview` worker facts. Run otherwise identical trials with
 `0` and `3` to compare the overhead. Worker completion is required, but does not
 prove preview pixels or shell presentation; the native pixel tests cover the
 former and an operator window/resize soak must cover the latter.
+
+
+`--advanced-grade` replaces the legacy draft look with an immutable two-operation
+primary/master-curve document and applies the same native source grade to the
+selected Program sources before the measured window. Compare otherwise identical
+`--grade-previews 0` and `3` trials. Open-workspace trials change private drafts at
+2 Hz and enable all three GPU scopes on two Zoom sources and the BGRA screen.
+
+`gradeScopeEvidence` records actual native exports with matching source epoch and
+draft revision, 256×144/36,864 sample metadata, assumed Rec.709 SDR color space,
+and a positive observation time. Requested scope flags alone cannot pass. Any
+invalid/unavailable scope observation or fewer source advances than the measured
+seconds fails the scope trial. The bounded collector retains only three editor
+records, counts and their latest attribution; it does not accumulate pixel data.
+This is sampled native export evidence, not physical display or every-frame scope
+continuity. Program and recording loss checks remain unchanged.
