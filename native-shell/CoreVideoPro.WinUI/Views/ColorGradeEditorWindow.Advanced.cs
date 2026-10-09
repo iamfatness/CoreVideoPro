@@ -12,6 +12,7 @@ namespace CoreVideoPro.WinUI.Views;
 public sealed partial class ColorGradeEditorWindow
 {
     private bool _loadingDocument = true;
+    internal void InitializeOffscreenBindings() => Bindings.Initialize();
     private void InitializeAdvancedWorkspace()
     {
         AdjustmentEditor.AdjustmentEdited += OnAdjustmentEdited;

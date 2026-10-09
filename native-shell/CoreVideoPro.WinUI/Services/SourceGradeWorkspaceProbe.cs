@@ -45,7 +45,7 @@ internal sealed class SourceGradeWorkspaceProbe(string corePath,string reportPat
             var editor = new ColorGradeEditorViewModel("capture:grade-probe","Synthetic grade qualification",new() { Lut="none" });
             editor.ApplyGradeAsync=(grade,epoch,revision)=>bridge.ApplySourceGradeAsync(editor.SourceId,epoch,revision,
                 new(grade.Lut,grade.Exposure,grade.Contrast,grade.Saturation,grade.Temperature,grade.Advanced));
-            window = new(editor);window.AppWindow.MoveAndResize(new RectInt32(-20000,-20000,1320,920));window.AppWindow.Show(false);
+            window = new(editor);window.InitializeOffscreenBindings();window.AppWindow.MoveAndResize(new RectInt32(-20000,-20000,1320,920));window.AppWindow.Show(false);
             var dispatcher=window.DispatcherQueue;
             coordinator=new(bridge,editor,action=>dispatcher.TryEnqueue(()=>action()));
             await Eventually(()=>((FrameworkElement)window.Content).IsLoaded && editor.HasPreview,"Native preview/real XAML did not load");checks.Add("native preview opened in real XAML");
@@ -59,6 +59,9 @@ internal sealed class SourceGradeWorkspaceProbe(string corePath,string reportPat
             var preset=editor.CopyGradeJson();editor.ResetAdvancedCommand.Execute(null);editor.UndoGradeCommand.Execute(null);Require(editor.HasAdvancedAdjustments,"Undo lost grade");Require(editor.PasteGradeJson(preset),"Preset reload failed");checks.Add("undo and preset reload");
             window.AppWindow.Resize(new SizeInt32(1100,760));await Task.Delay(250);
             var hosts=Descendants(window.Content).OfType<VideoSurfaceHost>().ToArray();
+            await Eventually(()=>hosts.Length==2 && hosts.All(h=>h.SurfaceState?.PendingSharedHandle is { IsValid:true } && h.IsGpuPathActive),"Bound GPU surface hosts did not open native textures");checks.Add("bound GPU surface hosts active");
+            Require(Descendants(window.Content).OfType<GradeAdjustmentControl>().Single().Adjustment?.Kind=="curves","Curve control binding did not load");
+            Require(Descendants(window.Content).OfType<Microsoft.UI.Xaml.Controls.ComboBox>().Any(c=>c.SelectedItem is GradeOperation),"Stack selection binding did not load");
             Require(hosts.Length==2 && hosts.All(h=>h.ActualWidth>250 && h.ActualHeight>100),"Preview/scope layout collapsed");
             editor.AdvancedExpanded=false;await Task.Delay(100);editor.AdvancedExpanded=true;window.AppWindow.Resize(new SizeInt32(1320,920));await Task.Delay(250);checks.Add("Basic/Advanced and resize layout");
             await Eventually(()=>editor.HasPreview && editor.ScopeSurface.PendingSharedHandle is { IsValid:true },"Final preview did not complete");
