@@ -25,6 +25,14 @@ public sealed partial class SettingsPage : UserControl
             typeof(SettingsPage),
             new PropertyMetadata(null));
 
+    public StudioViewModel? Studio
+    {
+        get => (StudioViewModel?)GetValue(StudioProperty);
+        set => SetValue(StudioProperty, value);
+    }
+    public static readonly DependencyProperty StudioProperty = DependencyProperty.Register(
+        nameof(Studio), typeof(StudioViewModel), typeof(SettingsPage), new PropertyMetadata(null));
+
     private void RecentMeetings_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (ViewModel is null || sender is not ComboBox comboBox)

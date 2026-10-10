@@ -7,6 +7,22 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class MediaCoreCommandBuilderTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FramerIntentIsSentOnlyToWebcam(bool enabled)
+    {
+        var commands = MediaCoreCommandBuilder.BuildSyncCommands(new MediaCoreProductionSyncContext
+        {
+            ActiveSceneId = "camera-test",
+            VirtualCameraEnabled = true,
+            VirtualCameraFramerEnabled = enabled
+        });
+        var camera = commands.Single(command => command.Type == "sync-virtual-camera");
+        Assert.Equal(enabled, camera.ExtensionData!["framerEnabled"].GetBoolean());
+        Assert.All(commands.Where(command => command.Type != "sync-virtual-camera"),
+            command => Assert.False(command.ExtensionData?.ContainsKey("framerEnabled") ?? false));
+    }
     [Fact]
     public void RecordingWriteDepthIsSentOnConfigureAndStart()
     {
