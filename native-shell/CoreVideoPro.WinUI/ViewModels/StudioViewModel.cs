@@ -11895,6 +11895,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 pair => pair.Key,
                 pair => pair.Value,
                 StringComparer.Ordinal),
+            SourceSecondaryLines = new Dictionary<string, string>(_sourceSecondaryLines, StringComparer.Ordinal),
             SourceDropoutPolicies = _sourceDropoutPolicies.ToDictionary(
                 pair => pair.Key,
                 pair => pair.Value,
@@ -12112,6 +12113,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
         }
 
+        RestoreSourceSecondaryLines(preferences.SourceSecondaryLines);
         _sourceDisplayNames.Clear();
         foreach (var pair in preferences.SourceDisplayNames)
         {
@@ -13598,13 +13600,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         if (source.SourceId.StartsWith("capture:", StringComparison.Ordinal))
         {
             var device = CaptureDevices.First(item => "capture:" + item.Id == source.SourceId);
-            return new LowerThirdSource(source.SourceId,
-                ResolveSourceDisplayName(source.SourceId, device.Name), string.Empty, string.Empty, false, false);
+            return SourceWithOperatorText(source.SourceId,
+                device.Name, string.Empty, string.Empty, false, false);
         }
         var participant = RoomVideoParticipants.First(item => item.Id == source.ParticipantId);
         var isScreenShare = source.Kind == "screen-share";
-        return new LowerThirdSource(source.SourceId,
-            ResolveSourceDisplayName(source.SourceId, participant.Name),
+        return SourceWithOperatorText(source.SourceId,
+            participant.Name,
             isScreenShare ? "Screen share" : string.IsNullOrWhiteSpace(participant.Title) ? participant.RoleLabel : participant.Title,
             string.IsNullOrWhiteSpace(participant.BreakoutRoomName) ? participant.RoleLabel : participant.BreakoutRoomName,
             participant.IsActiveSpeaker, isScreenShare);

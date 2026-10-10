@@ -460,12 +460,18 @@
                                             </Border>
                                         </Grid>
                                         <!-- Everything past the picker exists ONLY on assigned rows. -->
-                                        <TextBox Grid.Column="3"
+                                        <StackPanel Grid.Column="3" Spacing="2">
+                                        <TextBox
                                                  Text="{x:Bind DisplayName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
                                                  Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"
                                                  PlaceholderText="Name"
                                                  ToolTipService.ToolTip="Display name for lower-thirds and multiview (defaults to the source name)"
                                                  HorizontalAlignment="Stretch" VerticalAlignment="Center" />
+                                            <Button x:Name="SourceLowerThirdTextButton" Content="Lower-third text…" Tag="{x:Bind}"
+                                                    Click="OnLowerThirdTextClick" FontSize="10" Padding="5,1"
+                                                    Visibility="{x:Bind CanEditLowerThirdText, Mode=OneWay, Converter={StaticResource BoolToVis}}"
+                                                    Style="{StaticResource OperatorGhostButton}" />
+                                        </StackPanel>
                                         <TextBlock Grid.Column="3" Text="{x:Bind SlotLabel}"
                                                    Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}"
                                                    VerticalAlignment="Center" />

@@ -144,6 +144,13 @@ public sealed partial class SourcesInputsPage : UserControl
             LaunchLog.Write($"sources: options could not open ({ex.GetType().Name}: {ex.Message})");
         }
     }
+
+    private void OnLowerThirdTextClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: ShowInputSlotViewModel editor } button || !editor.CanEditLowerThirdText) return;
+        try { SourceLowerThirdFlyout.Create(button, editor).ShowAt(button); }
+        catch (Exception ex) { LaunchLog.Write($"sources: lower-third editor could not open ({ex.GetType().Name}: {ex.Message})"); }
+    }
     private void OnShowInputMicChanged(object sender, SelectionChangedEventArgs e)
     {
         // Use Tag (x:Bind to the slot view-model), not DataContext, which is null for

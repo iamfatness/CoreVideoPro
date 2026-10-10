@@ -149,6 +149,9 @@ public sealed class ProductionOutputPreferences
     // effectively session-scoped.
     public Dictionary<string, string> SourceDisplayNames { get; set; } = new(StringComparer.Ordinal);
 
+    // Absent key uses metadata; empty value deliberately hides the second line.
+    public Dictionary<string, string> SourceSecondaryLines { get; set; } = new(StringComparer.Ordinal);
+
     // #535 slice 4a: operator's per-source "on dropout" choice ("hold" |
     // "black"), keyed by the same canonical source id as SourceDisplayNames.
     // Absent key = default "hold". Not secret-bearing.
