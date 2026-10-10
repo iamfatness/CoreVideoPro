@@ -349,6 +349,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     /// dead controls.</summary>
     public bool IsAssigned => _slot.IsAssigned;
 
+    public bool ShowSourcePolicies => Kind == ShowInputKind.ZoomParticipant && !string.IsNullOrWhiteSpace(ParticipantId);
+
     /// <summary>Editable display name for the assigned source. Defaults to the derived
     /// Zoom/UVC/asset name; setting it stores the operator override (feeding the auto
     /// lower-thirds and multiview labels). Setting it blank resets to the derived name.</summary>
@@ -442,6 +444,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(RowOpacity));
         OnPropertyChanged(nameof(KindLabel));
         OnPropertyChanged(nameof(IsAssigned));
+        OnPropertyChanged(nameof(ShowSourcePolicies));
         OnPropertyChanged(nameof(AudioDeviceOptions));
         OnPropertyChanged(nameof(SelectedSourceId));
         OnPropertyChanged(nameof(IsSourcePickerEnabled));
@@ -477,6 +480,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(ShowSourceUnavailableWarning));
         OnPropertyChanged(nameof(RowOpacity));
         OnPropertyChanged(nameof(IsAssigned));
+        OnPropertyChanged(nameof(ShowSourcePolicies));
         OnPropertyChanged(nameof(ParticipantId));
         OnPropertyChanged(nameof(CaptureDeviceId));
         OnPropertyChanged(nameof(AudioDeviceId));

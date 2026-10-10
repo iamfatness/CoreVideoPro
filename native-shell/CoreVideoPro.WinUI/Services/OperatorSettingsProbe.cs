@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
 using CoreVideoPro.WinUI.Views;
 using Microsoft.UI.Xaml;
@@ -47,6 +48,10 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             window.AppWindow.Resize(new SizeInt32(900, 640));
             health.IsExpanded = false;
             checks.Add("Settings health collapse and narrow window resize");
+            Require(Descendants(page).OfType<ToggleSwitch>().Any(t => t.Name == "OhgShowOption" && !t.IsOn), "Optional OHG workspace control is missing or not off by default");
+            checks.Add("Settings exposes the default-off optional OHG workspace control");
+            await CheckSourceOptions(window, checks);
+            await CheckSourcesLayout(window, checks);
         }
         catch (Exception ex) { error = ex.ToString(); }
         finally
@@ -56,6 +61,76 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             if (error is not null) Environment.ExitCode = 1;
             window.Close();
         }
+    }
+    private static async Task CheckSourcesLayout(Window window, List<string> checks)
+    {
+        var page = new SourcesInputsPage();
+        window.Content = page;
+        await Eventually(() => page.IsLoaded);
+        var repeater = (ItemsRepeater)page.FindName("ShowInputEditorsRepeater");
+        var slots = Enumerable.Range(1, 10).Select(number => new ShowInputSlot { SlotNumber = number }).ToArray();
+        slots[0].Kind = ShowInputKind.ZoomParticipant; slots[0].ParticipantId = "synthetic-a";
+        slots[1].Kind = ShowInputKind.UvcWebcam; slots[1].CaptureDeviceId = "synthetic-camera";
+        slots[2].Kind = ShowInputKind.Media; slots[2].ParticipantId = "media:synthetic-clip";
+        var editors = slots.Select(slot => new ShowInputSlotViewModel(slot, () => { })).ToArray();
+        repeater.ItemsSource = editors;
+        foreach (var width in new[] { 1100, 900 })
+        {
+            window.AppWindow.Resize(new SizeInt32(width, 760));
+            page.UpdateLayout();
+            for (var i = 0; i < 10; ++i)
+            {
+                var element = repeater.GetOrCreateElement(i);
+                element.UpdateLayout();
+                var button = Descendants(element).OfType<Button>().Single(b => b.Name == "SourceOptionsButton");
+                Require(ReferenceEquals(button.Tag, editors[i]), "Source options template has a stale slot identity");
+                Require(button.Visibility == (i == 0 ? Visibility.Visible : Visibility.Collapsed), "Source options appeared for a non-Zoom assignment");
+            }
+        }
+        Require(slots[0].ParticipantId == "synthetic-a" && slots[1].CaptureDeviceId == "synthetic-camera" && slots[2].ParticipantId == "media:synthetic-clip", "Layout changed source assignments");
+        checks.Add("compiled ten-row Sources template at 1100 and 900 pixels preserves synthetic Zoom/capture/media assignments and Zoom-only options");
+    }
+    private static async Task CheckSourceOptions(Window window, List<string> checks)
+    {
+        var slot = new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.ZoomParticipant, ParticipantId = "synthetic-a" };
+        var editor = new ShowInputSlotViewModel(slot, () => { });
+        var owner = new Button { Content = "Options", Tag = editor };
+        window.Content = owner;
+        await Eventually(() => owner.IsLoaded);
+        var writes = new List<string>();
+        RouteSelectOption[] policies = [new() { Value = "hold", Label = "Hold last frame" }, new() { Value = "black", Label = "Black" }];
+        var flyout = SourcePolicyFlyout.Create(owner, editor, ProductionRoleService.AssignmentOptions,
+            policies, "host", "black", true,
+            (id, value) => writes.Add($"role:{id}:{value}"), (id, value) => writes.Add($"policy:{id}:{value}"));
+        flyout.ShowAt(owner);
+        var panel = (StackPanel)flyout.Content;
+        await Eventually(() => panel.IsLoaded);
+        var combos = panel.Children.OfType<ComboBox>().ToArray();
+        Require(combos[0].SelectedValue as string == "host" && combos[1].SelectedValue as string == "black", "Options lost current role or saved policy");
+        Require(writes.Count == 0, "Opening options wrote back initial selections");
+        combos[0].SelectedValue = "reader";
+        combos[1].SelectedValue = "hold";
+        Require(writes.SequenceEqual(new[] { "role:synthetic-a:reader", "policy:synthetic-a:hold" }), "Options did not target their original guest");
+        checks.Add("real source options preserve selections and write only explicit edits to the selected guest");
+        slot.ParticipantId = "synthetic-b";
+        combos[1].SelectedValue = "black";
+        Require(writes.Count == 2 && !combos[1].IsEnabled, "Reassignment redirected an open source policy edit");
+        flyout.Hide();
+        checks.Add("reassigned slot rejects edits from its old open flyout");
+
+        // An ItemsRepeater can replace Tag without changing the old slot object.
+        var recycled = SourcePolicyFlyout.Create(owner, editor, ProductionRoleService.AssignmentOptions,
+            policies, "", "black", false, (_, _) => writes.Add("unexpected-role"), (_, _) => writes.Add("unexpected-policy"));
+        recycled.ShowAt(owner);
+        var recycledPanel = (StackPanel)recycled.Content;
+        await Eventually(() => recycledPanel.IsLoaded);
+        var recycledCombos = recycledPanel.Children.OfType<ComboBox>().ToArray();
+        Require(!recycledCombos[0].IsEnabled && recycledCombos[1].SelectedValue as string == "black", "Unavailable guest lost saved policy or has an editable role");
+        owner.Tag = new ShowInputSlotViewModel(new ShowInputSlot { SlotNumber = 2, Kind = ShowInputKind.ZoomParticipant, ParticipantId = "synthetic-b" }, () => { });
+        recycledCombos[1].SelectedValue = "hold";
+        Require(writes.Count == 2 && !recycledCombos[1].IsEnabled, "Recycled row redirected an old flyout edit");
+        recycled.Hide();
+        checks.Add("unavailable guest retains saved policy; recycled container rejects stale edits even for the same participant");
     }
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {
