@@ -3,6 +3,7 @@
     x:Name="SettingsRoot"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:views="using:CoreVideoPro.WinUI.Views"
     xmlns:conv="using:CoreVideoPro.WinUI.Converters"
     xmlns:services="using:CoreVideoPro.MediaCore.Services">
 
@@ -164,6 +165,11 @@
                                Style="{StaticResource StudioBody}" />
                 </StackPanel>
             </Border>
+
+            <Expander x:Name="HealthSection" Header="Health and support" HorizontalAlignment="Stretch"
+                      HorizontalContentAlignment="Stretch">
+                <views:DiagnosticsView Height="640" ViewModel="{x:Bind Studio, Mode=OneWay}" />
+            </Expander>
 
             <!-- S3 opt-in telemetry: default OFF, one line of copy stating exactly
                  what's sent, and a "preview what's sent" affordance so egress is
