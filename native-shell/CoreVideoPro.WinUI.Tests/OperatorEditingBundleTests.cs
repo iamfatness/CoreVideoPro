@@ -6,6 +6,18 @@ using Xunit;
 namespace CoreVideoPro.WinUI.Tests;
 public sealed class OperatorEditingBundleTests
 {
+    [Fact] public void ShapeChangeAdvancesScopeRevisionAndPersistsWithoutApplyingGrade()
+    {
+        var e=new ColorGradeEditorViewModel("p1","Guest",new() { Lut="none" });
+        var grade=e.CopyGradeJson();var applied=0;e.GradeChanged+=(_,_)=>applied++;
+        e.SetScopeRoi(new(true,.2,.2,.2,.2));var revision=e.Revision;
+        e.SetScopeRoi(e.ScopeRoi with {Shape="circle"});
+        Assert.Equal(2,e.ScopeRoi.Revision);Assert.True(e.Revision>revision);
+        Assert.Equal(grade,e.CopyGradeJson());Assert.Equal(0,applied);
+        var prefs=new ProductionOutputPreferences {ScopeRegions=new() {["capture:test"]=e.ScopeRoi}};
+        var loaded=ProductionOutputPreferencesSerializer.Deserialize(ProductionOutputPreferencesSerializer.Serialize(prefs))!;
+        Assert.Equal(e.ScopeRoi,loaded.ScopeRegions["capture:test"]);
+    }
     [Fact] public void RoiDoesNotChangeGradeOrPresetAndRejectsInvalidGeometry()
     {
         var e=new ColorGradeEditorViewModel("p1","Guest",new() { Lut="none" }); e.AdvancedExpanded=true;

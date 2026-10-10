@@ -9,7 +9,7 @@ public sealed partial class ColorGradeEditorViewModel
     internal void SetLowerThirdPreview(LowerThirdPreview preview) { _lowerThirdPreview=preview; RequestPreview(); }
     private GradeScopeRoi _scopeRoi = new();
     public GradeScopeRoi ScopeRoi => _scopeRoi;
-    public string ScopeRegionLabel => _scopeRoi.Enabled ? $"ROI · {_scopeRoi.X:P1}, {_scopeRoi.Y:P1} · {_scopeRoi.Width:P1} × {_scopeRoi.Height:P1} · selection {_scopeRoi.Revision}" : "Full frame";
+    public string ScopeRegionLabel => _scopeRoi.Enabled ? $"{(_scopeRoi.Shape=="circle"?"Circle":"Rectangle")} ROI · {_scopeRoi.X:P1}, {_scopeRoi.Y:P1} · {_scopeRoi.Width:P1} × {_scopeRoi.Height:P1} · selection {_scopeRoi.Revision}" : "Full frame";
     public bool ScopeRoiEnabled {
         get => _scopeRoi.Enabled;
         set => SetScopeRoi(value && !_scopeRoi.Enabled && _scopeRoi.Width==1 && _scopeRoi.Height==1

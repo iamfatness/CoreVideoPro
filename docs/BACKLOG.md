@@ -74,6 +74,8 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 ## Now — owner-accepted order (2026-10-08)
 
+Owner-approved follow-up on 2026-10-10: implement [#853](https://github.com/iamfatness/CoreVideoPro/issues/853), draw-first rectangle/circle scope ROI and collapsed precision controls, before further UI/UX slices. Preserve the running meeting. Zero missed delivery slots remains paramount; the owner is researching the #825/#517 misses separately.
+
 Three lanes, at most one item in flight per lane and three total. Start with #835;
 the earlier operator-focus rows follow it sequentially. Owner UI/UX focus
 (October 5): pair #507 transport-layout safety with #759/#610 reporting for the first
@@ -118,6 +120,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner follow-up | A | [#853](https://github.com/iamfatness/CoreVideoPro/issues/853) | Draw-first rectangle/circle scope ROI, move/resize, cancellation, Clear and collapsed precision settings. [Interaction contract](reference/roi-drawing-tools.md). Owner approved this code slice on October 10; preserve live sessions and keep zero-miss delivery acceptance separate. |
 | Owner top | A | [#835](https://github.com/iamfatness/CoreVideoPro/issues/835) | Advanced source grading: optional expanded workspace, truthful native preview/output path (grading portion of #764), master/R/G/B curves, histogram, waveform and vectorscope. Preserve existing grades, source identity, production cadence and quality; scope analysis must be bounded and asynchronous. Then qualify advanced primaries, real LUT import/stack and presets against the same native transform. |
 | Owner next | A | [#839](https://github.com/iamfatness/CoreVideoPro/issues/839) | Owner requested a built-in OH Framer on webcam output only after the #835 review rendering, adding a live Program LUFS-S overlay on October 9. [Specification](reference/webcam-framer.md). Preserve the supplied PNG alpha and clean Program/Preview/recording/stream pixels; persist an off-by-default camera toggle and qualify camera publication cadence. #835 implementation remains in review in #837. |
 | Acceptance | C | [#814](https://github.com/iamfatness/CoreVideoPro/issues/814) | [Recording write queues](reference/recording-write-queue-spec.md) merged in #833; beta `beta-2026-10-08-51d6281` is published and installed. Independent Program/ISO queues and Preparing-to-Recording behavior passed local and hosted checks. Owner's real-meeting bake remains open; record actual continuity and final-file evidence without claiming synthetic tests prove live delivery. |
@@ -152,6 +155,8 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/issues/743) with [#767](https://github.com/iamfatness/CoreVideoPro/issues/767) (owner direction 2026-10-02: remove the mock licensing and caption panels and the stub services for beta; deployed workers are deleted only on explicit confirmation), [#750](https://github.com/iamfatness/CoreVideoPro/issues/750), [#427](https://github.com/iamfatness/CoreVideoPro/issues/427), [#425](https://github.com/iamfatness/CoreVideoPro/issues/425), [#426](https://github.com/iamfatness/CoreVideoPro/issues/426).
 
 ## Unranked — show survival and operator findings
+
+Drawn ROI measurement/refresh defect [#854](https://github.com/iamfatness/CoreVideoPro/issues/854): native coordinate formatting caused valid current-selection results to be rejected, and pending preview handles cleared gesture geometry. Reproduced by the isolated real-XAML/native #853 probe; addressed in that same ROI interaction change. No attribution to production delivery misses and no independent rank change.
 
 These can preempt Next on a show night. They do not jump the ranked Now item until the owner says so.
 

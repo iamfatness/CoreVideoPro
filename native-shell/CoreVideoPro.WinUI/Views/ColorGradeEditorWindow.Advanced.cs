@@ -21,6 +21,7 @@ public sealed partial class ColorGradeEditorWindow
         GradeIntensity.EditStarted += OnAdjustmentEditStarted;
         GradeIntensity.EditCompleted += OnAdjustmentEditCompleted;
         RoiGuide.RoiChanged += (_,roi) => ViewModel.SetScopeRoi(roi);
+        RoiGuide.ToolChanged += (_,_) => RefreshRoi();
         ViewModel.PropertyChanged += OnWorkspacePropertyChanged;
         ViewModel.AdvancedDocumentChanged += OnAdvancedDocumentChanged;
         RefreshWorkspace(); RefreshDocumentControls(); RefreshRoi();

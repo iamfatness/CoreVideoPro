@@ -1,0 +1,17 @@
+# Draw-first scope ROI
+
+Implementation and acceptance contract for [#853](https://github.com/iamfatness/CoreVideoPro/issues/853).
+
+The source-grade preview offers **Draw rectangle**, **Draw circle**, **Select / move**, and **Clear**. Choosing a drawing tool opens Advanced grading, enables scopes, and displays the editor guide. Drag over the subject to create a selection, including over an existing selection. Release switches back to selection mode. Escape or lost pointer capture restores the selection from before the gesture. Clicking without dragging leaves it unchanged.
+
+Drag inside a selection to move it; drag an edge or corner handle to resize it. Arrow keys move one source pixel; Shift+arrows resize one source pixel. The **Precision settings** expander starts collapsed and retains exact numeric overrides and guide/measurement toggles. Clear restores full-frame scope analysis. The guide is editor-only and never appears on Program, Preview, webcam, recording, or stream output.
+
+Coordinates refer to the source image, excluding letterbox/pillarbox areas. Rectangles have independent dimensions. Circles link width and height in source pixels, including reverse-direction drawing, precision changes, keyboard resizing, and source aspect changes. Bounds stay inside the image, with a one-pixel minimum. A circle uses its bounding rectangle for crop/downsample, then excludes sample centers outside the circular mask. Integer crop rounding may shift its boundary by up to one source pixel.
+
+All three scopes use the same native GPU mask, before histogram, waveform, and vectorscope accumulation. Enabled circles contribute 28,960 sample centers on the existing 256×144 analysis grid; rectangles and full-frame analysis contribute 36,864. Scope plot textures remain 1536×512. Work remains in the isolated analysis worker, with bounded demand and existing scope cadence; no production-context pixel readback or increased sampling resolution is added.
+
+Shape defaults to `rectangle` when absent, preserving old settings and requests. Shape and geometry persist as per-source measurement preferences, separate from grade presets. Shape changes advance the preview/selection revisions, and the UI rejects responses whose ROI, revision, source epoch, tap, or view differs. Unknown shapes and inconsistent sample counts are rejected.
+
+Native JSON currently formats coordinates with six significant digits. Measurement matching allows at most 0.0000005 normalized-coordinate error (less than 0.005 source pixel at 8K) while requiring exact selection revision and shape. This prevents valid pointer-drawn results from being rejected by decimal formatting, without accepting responses from an older selection or reducing stored numeric precision.
+
+Acceptance checks cover source-pixel circle geometry in all drag directions, image fitting, bounds, persistence, legacy defaults, revision rejection, and GPU exclusion of known corner colors from each scope while Program pixels stay unchanged. An isolated offscreen real-XAML/native probe checks the toolbar, collapsed precision controls, drawing activation, and circle measurements. This does not establish physical-display gesture acceptance or zero production delivery misses; those require installed operator review and delivery evidence. Keep the current live meeting intact during development. Zero misses remains an independent release requirement under #825/#517.

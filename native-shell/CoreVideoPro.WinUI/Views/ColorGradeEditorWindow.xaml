@@ -10,6 +10,13 @@
             <StackPanel Spacing="4">
                 <TextBlock Text="{x:Bind ViewModel.HeaderTitle}" FontSize="18" FontWeight="SemiBold" />
                 <TextBlock Text="{x:Bind ViewModel.PreviewStatus, Mode=OneWay}" FontSize="11" TextWrapping="Wrap" />
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <ToggleButton x:Name="RectangleRoiTool" Content="Draw rectangle" Click="OnDrawRectangleRoi" />
+                    <ToggleButton x:Name="CircleRoiTool" Content="Draw circle" Click="OnDrawCircleRoi" />
+                    <ToggleButton x:Name="SelectRoiTool" Content="Select / move" Click="OnSelectRoi" />
+                    <Button Content="Clear" Click="OnClearRoi" ToolTipService.ToolTip="Measure the full frame" />
+                </StackPanel>
+                <TextBlock x:Name="RoiToolHint" Text="Choose a shape, then drag over the subject to measure its scopes." FontSize="11" TextWrapping="Wrap" />
             </StackPanel>
             <Border Grid.Row="1" Background="#020304" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="6">
                 <Grid>
@@ -80,15 +87,18 @@
                         </StackPanel>
                         <ToggleSwitch Header="Scopes" IsOn="{x:Bind ViewModel.ScopesEnabled, Mode=TwoWay}" />
                         <ToggleSwitch Header="Analyze original" IsOn="{x:Bind ViewModel.ScopesOriginal, Mode=TwoWay}" />
-                        <ToggleSwitch Header="Region of interest (scopes only)" IsOn="{x:Bind ViewModel.ScopeRoiEnabled, Mode=TwoWay}" />
-                        <ToggleSwitch Header="Show ROI guide (editor only)" IsOn="{x:Bind ViewModel.ScopeRoiGuideVisible, Mode=TwoWay}" />
-                        <TextBlock Text="Drag to draw; drag inside to move or handles to resize. Arrow keys move; Shift+arrows resize. The grade still applies to the whole source." TextWrapping="Wrap" FontSize="11" />
-                        <controls:SliderValueControl x:Name="RoiX" Header="ROI left" Unit="%" DisplayScale="100" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
-                        <controls:SliderValueControl x:Name="RoiY" Header="ROI top" Unit="%" DisplayScale="100" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
-                        <controls:SliderValueControl x:Name="RoiWidth" Header="ROI width" Unit="%" DisplayScale="100" Minimum="0.000001" DefaultValue="1" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
-                        <controls:SliderValueControl x:Name="RoiHeight" Header="ROI height" Unit="%" DisplayScale="100" Minimum="0.000001" DefaultValue="1" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
-                        <Button Content="Clear ROI / full frame" Click="OnClearRoi" />
-                        <Button Content="Reset region to center" Click="OnResetRoi" />
+                        <Expander x:Name="RoiPrecisionSettings" Header="Precision settings" HorizontalAlignment="Stretch">
+                            <StackPanel Spacing="8">
+                                <ToggleSwitch Header="Use selected region (scopes only)" IsOn="{x:Bind ViewModel.ScopeRoiEnabled, Mode=TwoWay}" />
+                                <ToggleSwitch Header="Show ROI guide (editor only)" IsOn="{x:Bind ViewModel.ScopeRoiGuideVisible, Mode=TwoWay}" />
+                                <TextBlock Text="Arrow keys move; Shift+arrows resize. Circle width and height stay linked. The grade applies to the whole source." TextWrapping="Wrap" FontSize="11" />
+                                <controls:SliderValueControl x:Name="RoiX" Header="ROI left" Unit="%" DisplayScale="100" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
+                                <controls:SliderValueControl x:Name="RoiY" Header="ROI top" Unit="%" DisplayScale="100" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
+                                <controls:SliderValueControl x:Name="RoiWidth" Header="ROI width" Unit="%" DisplayScale="100" Minimum="0.000001" DefaultValue="1" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
+                                <controls:SliderValueControl x:Name="RoiHeight" Header="ROI height" Unit="%" DisplayScale="100" Minimum="0.000001" DefaultValue="1" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
+                                <Button Content="Reset region to center" Click="OnResetRoi" />
+                            </StackPanel>
+                        </Expander>
                         <ComboBox Header="Histogram" SelectedIndex="{x:Bind ViewModel.HistogramMode, Mode=TwoWay}"><ComboBoxItem Content="Luma" /><ComboBoxItem Content="RGB overlay" /></ComboBox>
                         <ComboBox Header="Waveform" SelectedIndex="{x:Bind ViewModel.WaveformMode, Mode=TwoWay}"><ComboBoxItem Content="Luma" /><ComboBoxItem Content="RGB overlay" /><ComboBoxItem Content="RGB parade" /></ComboBox>
                         <Button Content="Apply Live" Command="{x:Bind ViewModel.ApplyLiveCommand}" />
