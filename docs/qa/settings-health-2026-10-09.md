@@ -1,5 +1,11 @@
 # Settings health navigation — #594
 
+Delivery update (October 10): PR #842 is merged and included in installed
+`beta-2026-10-10-abb97fb`. The evidence below describes the original development
+trial. Remaining installed checks are consolidated in the
+[UI/UX acceptance protocol](operator-uiux-installed-acceptance.md); merge is no
+longer pending, but issue acceptance remains open.
+
 The top navigation now has one Settings destination in place of Zoom. The
 separate Diagnose label and Health button are removed. Inside Settings, Health
 and support expands the existing diagnostic surface: measured health/status,

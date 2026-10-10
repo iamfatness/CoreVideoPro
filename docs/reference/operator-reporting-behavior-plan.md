@@ -4,6 +4,11 @@ Owner direction: October 4, 2026. Baseline: main `92e6b1ea` and the published
 `beta-2026-10-04-92e6b1e`. This document describes implementation and acceptance;
 `docs/BACKLOG.md` remains the only work order and GitHub issues hold status.
 
+For the shipped October 10 operator editing/navigation bundle, use the
+[installed UI/UX acceptance protocol](../qa/operator-uiux-installed-acceptance.md)
+and its linked specifications. It identifies merged implementation and remaining
+checks without replacing this plan's separate reporting/automation scope.
+
 ## Outcome and boundaries
 
 The operator can trust what the app says, see the effect of a setting, and run

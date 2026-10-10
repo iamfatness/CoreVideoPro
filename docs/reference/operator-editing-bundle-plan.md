@@ -5,17 +5,20 @@ audio and control-usability request. The [bundle specification](operator-editing
 defines behavior. `docs/BACKLOG.md` is the only ranked list; GitHub issues carry
 status. This is a delivery/dependency plan, not a competing queue.
 
-## Starting point
+## Delivery baseline
 
-PR #846 contains the reproduced #592 casing repair; #845 contains source text
-editing/persistence (#593). Both remain drafts. Earlier Sources (#844),
-Settings/Health (#842), OHG opt-in (#843), grading (#837) and webcam framer (#840)
-also require their own acceptance/integration. The mapping-only installed #592
-comparison passed, but its original installation was restored afterward.
+As of October 10, 2026, grading #837, webcam framer #840, Settings/Health #842,
+OHG opt-in #843, Sources #844, source text #845 and casing repair #846 are merged.
+The appearance/shared-control/starter-scene bundle #849 and draw-first ROI #855
+are also merged. Their combined implementation is published and installed in
+[beta-2026-10-10-abb97fb](https://github.com/iamfatness/CoreVideoPro/releases/tag/beta-2026-10-10-abb97fb),
+source commit `abb97fb89fd75527a1c2e425f72e0135877592d8`.
 
-The owner added lower-third appearance #847 and shared controls #848. ROI extends
-the existing grading issue #835. #591 starter-source repetition still needs a
-fresh-profile reproduction. Do not infer completion from this inventory.
+These merges establish implementation, not complete installed acceptance. The
+remaining checks are consolidated in the [installed UI/UX acceptance protocol](../qa/operator-uiux-installed-acceptance.md).
+Use it with each issue's acceptance criteria; do not rebuild the shipped features
+merely because an issue remains open. Earlier mapping-only comparisons and draft
+probe evidence remain historical, with their original limits preserved.
 
 ## Delivery boundaries
 
@@ -56,7 +59,8 @@ an unmerged integration branch. Release requires the applicable current-main gat
 
 ## Review handoff
 
-Provide the interactive control rendering, three lower-third looks, ROI examples
-and this spec as the design review. The installed candidate then demonstrates the
-actual complete workflows. Report each issue as implemented, accepted, failed or
-missing evidence without maintaining another ranked status table in this plan.
+Use the installed beta to review the three lower-third looks, shared controls,
+ROI gestures, starter scenes and navigation under the consolidated acceptance
+protocol. Record results and evidence on each linked issue. Finish the short
+checks before requesting the separate sustained meeting bake; neither can replace
+the other. `docs/BACKLOG.md` remains the work order.

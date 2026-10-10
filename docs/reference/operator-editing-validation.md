@@ -1,11 +1,18 @@
 # Operator editing review candidate
 
-Implementation: `c136dd8`, on `codex/operator-editing-bundle`. The owner requested
+Original review implementation: `c136dd8`, on `codex/operator-editing-bundle`. The owner requested
 one combined review pass for lower-third appearance (#847), shared adjustment
 controls (#848), grading scope ROI (#835) and starter scenes (#591). This builds
 on the existing grading/framer, Sources, Settings/Health, OHG and lower-third text
 branches. The specification remains
 [operator-editing-bundle-spec.md](operator-editing-bundle-spec.md).
+
+October 10 delivery update: #849 merged the bundle, followed by #855 for drawn
+rectangle/circle ROI. The combined implementation is published and installed in
+[beta-2026-10-10-abb97fb](https://github.com/iamfatness/CoreVideoPro/releases/tag/beta-2026-10-10-abb97fb),
+commit `abb97fb89fd75527a1c2e425f72e0135877592d8`. Earlier branch counts below are
+historical evidence; they are not the current release gate totals. The remaining
+checks are in the [installed UI/UX acceptance protocol](../qa/operator-uiux-installed-acceptance.md).
 
 ## Implemented behavior
 
@@ -58,10 +65,19 @@ presentation is explicitly unverified by this probe.
 
 ## Installed review and weekend bake
 
-The local package is an unsigned review candidate, not a published beta. This
-pass does not replace or restart the user's installed application or change
-virtual-camera registration. Installation must run the normal installer and
-verify the registered camera's app directory before using webcam output.
+The original local package was an unsigned review candidate. It has been
+superseded by the published, installed beta above. Current release evidence in
+`artifacts/releases/beta-2026-10-10-abb97fb/VALIDATION.json` records 1,566 native
+tests, 13 installed operator checks, 12 installed grading checks, hosted gates,
+asset digests and installed file/registration verification.
+
+The synthetic OS-camera reference passed its measured 35 seconds with 2,101
+decoded counter samples and zero invalid/repeated/missing/reordered identities.
+It does not qualify full meeting load, physical presentation or A/V. A subsequent
+real meeting lost the SDK helper (#856), and a later launch failed webcam ownership
+checks (#857). Restart recovered webcam activation; a five-second OS receiver read
+300 samples at 1080p60. The exit cause and ownership failure cause remain unresolved.
+These incidents are not UI acceptance passes or reasons to close their issues.
 
 Installed acceptance still needs actual output comparison across Program,
 Preview, webcam, decoded recording and stream; saved appearance/ROI restart;
