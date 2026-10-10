@@ -859,6 +859,48 @@ enum ShellTests {
         expectEqual(payloads[1]["purpose"] as? String, "multiview", "the entry's real purpose")
     }
 
+    // ── dropout policy (per-source, #535 slice 4a reaching Mac) ─────────────
+
+    @MainActor
+    private static func testSourcePolicyCommandsAreZoomOnlyAndOrdered() {
+        // Core contract (MediaCore::setSourcePolicy, #535 slice 4a): only
+        // "zoom:<pid>" may carry dropoutPolicy — a non-zoom id pushes a sticky
+        // scene warning EVERY sync; values are exactly "hold"/"black"; an explicit
+        // hold must be SENT (PRESENT-OR-KEEP: omission keeps the stored black).
+        var zoomB = ShowInputSlot(id: 1); zoomB.kind = "zoom"; zoomB.sourceId = "20"
+        zoomB.dropoutPolicy = "black"
+        var zoomA = ShowInputSlot(id: 2); zoomA.kind = "zoom"; zoomA.sourceId = "11"
+        zoomA.dropoutPolicy = "hold"
+        var capture = ShowInputSlot(id: 3); capture.kind = "capture"; capture.sourceId = "cam"
+        capture.dropoutPolicy = "black"   // unreachable via UI; the filter is the guard
+        var unset = ShowInputSlot(id: 4); unset.kind = "zoom"; unset.sourceId = "30"
+        _ = unset   // dropoutPolicy stays "" — must emit nothing
+        let commands = AppModel.sourcePolicyCommands(slots: [zoomB, zoomA, capture, unset])
+        expectEqual(commands.count, 2, "capture and policy-less slots emit nothing")
+        expectEqual(commands[0]["sourceId"] as? String, "zoom:11", "ordinal order by sourceId")
+        expectEqual(commands[0]["dropoutPolicy"] as? String, "hold",
+                    "an explicit hold is sent — it must overwrite an earlier black")
+        expectEqual(commands[1]["sourceId"] as? String, "zoom:20", "ordinal order by sourceId")
+        expectEqual(commands[1]["dropoutPolicy"] as? String, "black", "black rides verbatim")
+        expectEqual(commands[0]["type"] as? String, "set-source-policy", "the core's command name")
+    }
+
+    @MainActor
+    private static func testSourcePoliciesFollowTheSceneGraphInTheBatch() {
+        // MediaCore: loadSceneGraph clears sceneValidationWarnings_, so a policy
+        // placed BEFORE load-scene-graph has any refusal warning silently wiped.
+        // applyCommands runs in the order given — policies must come last.
+        var slot = ShowInputSlot(id: 1); slot.kind = "zoom"; slot.sourceId = "7"
+        slot.dropoutPolicy = "black"
+        let batch = AppModel.appendSourcePolicies(
+            to: [["type": "load-scene-graph"], ["type": "set-preview-scene"]],
+            slots: [slot])
+        expectEqual(batch.count, 3, "policies are appended, never interleaved")
+        expectEqual(batch[0]["type"] as? String, "load-scene-graph", "scene commands keep position")
+        expectEqual(batch[2]["type"] as? String, "set-source-policy",
+                    "the policy command comes after every scene command")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
 
     @MainActor
@@ -905,6 +947,8 @@ enum ShellTests {
             ("budget/iso-dedupe-determinism", testBudgetIsoTierAndDeterminism),
             ("budget/route-shape", testRoutedZoomPidsReadTheRealRouteShape),
             ("budget/wire-shape", testSpineSubscriptionWireShape),
+            ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
+            ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)

@@ -46,6 +46,14 @@ struct PersistedChromaKey: Codable, Equatable {
     var spill = 0.2
 }
 
+/// Per-source dropout policy (core contract #535 slice 4a, `set-source-policy`).
+/// Keyed by SLOT like `CapturePairing`/`PersistedChromaKey` — zoom pids churn
+/// across meetings; the slot is the stable operator concept.
+struct PersistedSlotPolicy: Codable, Equatable {
+    var slotId = 0
+    var dropoutPolicy = ""
+}
+
 struct ShellPrefs: Codable, Equatable {
     var version = 1
     var joinMeetingId = ""
@@ -64,6 +72,7 @@ struct ShellPrefs: Codable, Equatable {
     var overlays: OverlaysState?
     var capturePairings: [CapturePairing]?
     var chromaKeys: [PersistedChromaKey]?
+    var slotDropoutPolicies: [PersistedSlotPolicy]?
     var lowerThirdName = ""
     var lowerThirdTitle = ""
     var lowerThirdPosition = "lower-left"
@@ -128,6 +137,8 @@ struct ShellPrefs: Codable, Equatable {
                                                    forKey: .capturePairings)) ?? nil)
         chromaKeys = ((try? c.decodeIfPresent([PersistedChromaKey].self,
                                               forKey: .chromaKeys)) ?? nil)
+        slotDropoutPolicies = ((try? c.decodeIfPresent([PersistedSlotPolicy].self,
+                                                       forKey: .slotDropoutPolicies)) ?? nil)
     }
 
     // GUARD for the hazard this initializer exists to fix. A hand-written
@@ -162,6 +173,7 @@ struct ShellPrefs: Codable, Equatable {
         p.overlays = OverlaysState()
         p.capturePairings = [CapturePairing(slotId: 1, audioDeviceId: "d", audioDeviceName: "Mic")]
         p.chromaKeys = [PersistedChromaKey(slotId: 1)]
+        p.slotDropoutPolicies = [PersistedSlotPolicy(slotId: 2, dropoutPolicy: "black")]
         p.vstChannelSelections = ["ch1": "vst:Test"]
         guard let data = try? JSONEncoder().encode(p) else { return "encode failed" }
         guard let back = try? JSONDecoder().decode(ShellPrefs.self, from: data) else {
