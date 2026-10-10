@@ -58,6 +58,10 @@ class GradePreviewController {
       demand.scopeRoi.enabled = roi->get("enabled") && roi->get("enabled")->asBool();
       demand.scopeRoi.x = roi->getNumber("x",0); demand.scopeRoi.y = roi->getNumber("y",0);
       demand.scopeRoi.width = roi->getNumber("width",1); demand.scopeRoi.height = roi->getNumber("height",1);
+      if (const auto* shape=roi->get("shape")) {
+        if (!shape->isString()) return false;
+        demand.scopeRoi.shape=shape->asString();
+      }
       const auto rr = roi->getNumber("revision",0);
       if (!std::isfinite(rr) || rr<0 || rr>2147483647 || std::floor(rr)!=rr) return false;
       demand.scopeRoi.revision = int64_t(rr);
@@ -180,13 +184,13 @@ class GradePreviewController {
       {"sourceAgeMs", std::max(0.0,age)},
       {"status", surface.status}, {"reason", surface.reason},
       {"scopes", rpc::Json::Object{{"status", scope.status},
-        {"roi", rpc::Json::Object{{"enabled",scope.roi.enabled},{"x",scope.roi.x},{"y",scope.roi.y},{"width",scope.roi.width},{"height",scope.roi.height},{"revision",double(scope.roi.revision)}}},
+        {"roi", rpc::Json::Object{{"enabled",scope.roi.enabled},{"x",scope.roi.x},{"y",scope.roi.y},{"width",scope.roi.width},{"height",scope.roi.height},{"revision",double(scope.roi.revision)},{"shape",scope.roi.shape}}},
         {"roiPixelX",scope.roiPixels.x},{"roiPixelY",scope.roiPixels.y},{"roiPixelWidth",scope.roiPixels.width},{"roiPixelHeight",scope.roiPixels.height},
         {"reason", scope.status=="unavailable"?"scope-render-or-export-unavailable":scope.status=="stale"?"source-not-advancing":scope.status=="held"?"source-unavailable":st.width==0?"awaiting-native-scopes":""}, {"sourceAgeMs", std::max(0.0,scopeAge)},
         {"completionObservedAtUnixMs", st.width>0 && found!=active_.end()?double(found->second.scopeCompletionObservedAtMs):0},
         {"view", surface.demand.scopeView}, {"revision", double(scope.revision)}, {"sourceEpoch", double(scope.sourceEpoch)}, {"sourceFrameId", double(scope.sourceFrameId)},
         {"captureTimestamp100ns", double(scope.captureTimestamp100ns)}, {"original", scope.original},
-        {"sampleWidth", st.width>0?256:0}, {"sampleHeight", st.width>0?144:0}, {"sampleCount", st.width>0?36864:0}, {"colorSpace", "rec709-sdr-assumed"},
+        {"sampleWidth", st.width>0?256:0}, {"sampleHeight", st.width>0?144:0}, {"sampleCount", st.width>0?scope.roi.sampleCount():0}, {"colorSpace", "rec709-sdr-assumed"},
         {"units", "encoded 0-1; waveform 0-100%; Cb/Cr"},
         {"texture", rpc::Json::Object{{"sharedHandleHex", st.sharedHandleHex}, {"width", st.width}, {"height", st.height},
           {"format", st.format}, {"frameNumber", double(st.frameNumber)}}}}},

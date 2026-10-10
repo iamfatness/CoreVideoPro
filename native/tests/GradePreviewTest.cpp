@@ -55,9 +55,17 @@ TEST(GradePreviewControl, RoiValidationAndRevisionProtectMeasurements) {
   auto d=demand("roi",1);
   auto fields=d.asObject(); fields["scopeRoi"]=rpc::Json::Object{{"enabled",true},{"x",.25},{"y",.25},{"width",.5},{"height",.5},{"revision",1}};
   ASSERT_TRUE(control.configure(fields,{},true));
+  auto circle=fields; circle["scopeRoi"]=rpc::Json::Object{{"enabled",true},{"x",.25},{"y",.25},{"width",.5},{"height",.5},{"revision",1},{"shape","circle"}};
+  EXPECT_FALSE(control.configure(circle,{},true)); // Same revision cannot silently change geometry/mask.
+  circle["revision"]=2;EXPECT_TRUE(control.configure(circle,{},true));
+  auto invalid=circle; invalid["revision"]=3;
+  invalid["scopeRoi"]=rpc::Json::Object{{"shape","triangle"}};EXPECT_FALSE(control.configure(invalid,{},true));
+  compositor::ScopeRoi mask;mask.enabled=true;mask.shape="circle";
+  EXPECT_EQ(mask.sampleCount(),28960);mask.enabled=false;EXPECT_EQ(mask.sampleCount(),36864);
+  fields["revision"]=3;ASSERT_TRUE(control.configure(fields,{},true));
   auto changed=fields; changed["scopeRoi"]=rpc::Json::Object{{"enabled",true},{"width",.25},{"height",.5},{"revision",2}};
   EXPECT_FALSE(control.configure(changed,{},true));
-  changed["revision"]=2;EXPECT_TRUE(control.configure(changed,{},true));
+  changed["revision"]=4;EXPECT_TRUE(control.configure(changed,{},true));
   changed["scopeRoi"]=rpc::Json::Object{{"enabled",true},{"x",.9},{"width",.2}};
   EXPECT_FALSE(control.configure(changed,{},true));
   compositor::ScopeRoi r; r.enabled=true;r.x=r.y=.999;r.width=r.height=.001;

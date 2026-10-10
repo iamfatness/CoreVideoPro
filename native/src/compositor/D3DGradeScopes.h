@@ -9,8 +9,11 @@ namespace corevideo::modules {
 inline constexpr char kGradeScopeCompute[] = R"(
 Texture2D<float4> source : register(t0);
 RWStructuredBuffer<uint> bins : register(u0);
+cbuffer ScopeConstants : register(b0) { float4 modes; };
 [numthreads(16,16,1)] void main(uint3 p : SV_DispatchThreadID) {
   if (p.x>=256 || p.y>=144) return;
+  float2 region=(float2(p.xy)+.5)/float2(256,144)*2-1;
+  if (modes.w>.5 && dot(region,region)>1) return;
   float3 rgb=saturate(source.Load(int3(p.xy,0)).rgb);
   float y=dot(rgb,float3(.2126,.7152,.0722));
   uint4 h=(uint4)(float4(rgb,y)*255);
@@ -88,9 +91,12 @@ class D3DGradeScopes {
     if(FAILED(device->CreateTexture2D(&td,nullptr,texture_.put())) || FAILED(device->CreateRenderTargetView(texture_.get(),nullptr,rtv_.put()))) return false;
     exporter_=std::make_unique<D3DDecoupledExport>(device,1536,512,"grade-scopes",D3DDecoupledExport::Creation::Deferred); return true;
   }
-  bool render(ID3D11DeviceContext* context,ID3D11ShaderResourceView* input,ID3D11VertexShader* vertex,int histogram,int waveform,int scopeView,int64_t token) {
+  bool render(ID3D11DeviceContext* context,ID3D11ShaderResourceView* input,ID3D11VertexShader* vertex,int histogram,int waveform,int scopeView,int64_t token,bool circle=false) {
     if(!exporter_ || !exporter_->valid()) return false;
     if(!exporter_->ready()) return true; // Deferred creation is preparing, not failure.
+    D3D11_MAPPED_SUBRESOURCE mapped{}; if(FAILED(context->Map(constants_.get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped))) return false;
+    const float modes[4]={float(histogram),float(waveform),float(scopeView),circle?1.f:0.f}; memcpy(mapped.pData,modes,16); context->Unmap(constants_.get(),0);
+    ID3D11Buffer* cb[]={constants_.get()}; context->CSSetConstantBuffers(0,1,cb);
     const UINT zero[4]{}; context->ClearUnorderedAccessViewUint(uav_.get(),zero);
     ID3D11UnorderedAccessView* outputs[]={uav_.get()}; ID3D11ShaderResourceView* inputs[]={input};
     context->CSSetShader(compute_.get(),nullptr,0); context->CSSetUnorderedAccessViews(0,1,outputs,nullptr); context->CSSetShaderResources(0,1,inputs);
@@ -98,9 +104,7 @@ class D3DGradeScopes {
     context->CSSetShader(peak_.get(),nullptr,0);context->Dispatch(1,1,1);
     ID3D11UnorderedAccessView* noUav[]={nullptr}; ID3D11ShaderResourceView* noSrv[]={nullptr};
     context->CSSetUnorderedAccessViews(0,1,noUav,nullptr); context->CSSetShaderResources(0,1,noSrv); context->CSSetShader(nullptr,nullptr,0);
-    D3D11_MAPPED_SUBRESOURCE mapped{}; if(FAILED(context->Map(constants_.get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped))) return false;
-    const float modes[4]={float(histogram),float(waveform),float(scopeView),0}; memcpy(mapped.pData,modes,16); context->Unmap(constants_.get(),0);
-    ID3D11Buffer* cb[]={constants_.get()}; context->PSSetConstantBuffers(0,1,cb);
+    context->PSSetConstantBuffers(0,1,cb);
     ID3D11RenderTargetView* rt[]={rtv_.get()}; context->OMSetRenderTargets(1,rt,nullptr); context->OMSetBlendState(nullptr,nullptr,0xffffffff);
     D3D11_VIEWPORT viewport{}; viewport.Width=1536; viewport.Height=512; viewport.MaxDepth=1; context->RSSetViewports(1,&viewport);
     context->VSSetShader(vertex,nullptr,0); context->PSSetShader(pixel_.get(),nullptr,0);

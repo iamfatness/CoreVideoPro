@@ -864,7 +864,8 @@ class D3D11Compositor final : public ICompositor {
     const bool rendered = i420 ? renderI420ToParticipantTexture(frame, work.input, 256, 144, grade, &demand.scopeRoi)
         : renderBgraToParticipantTexture(frame, work.input, 256, 144, grade, &demand.scopeRoi);
     if (!rendered || !work.renderer.render(context_.get(), work.view.get(), vertexShader_.get(),
-        demand.histogramMode, demand.waveformMode, demand.scopeView, frame.frameId)) { gradeScopeFailures_.insert(demand.instanceId); return; }
+        demand.histogramMode, demand.waveformMode, demand.scopeView, frame.frameId,
+        demand.scopeRoi.enabled && demand.scopeRoi.shape=="circle")) { gradeScopeFailures_.insert(demand.instanceId); return; }
     gradeScopeFailures_.erase(demand.instanceId);
     const auto original = gradeHistory_.find({frame.participantId, frame.frameId});
     if (original == gradeHistory_.end()) return;

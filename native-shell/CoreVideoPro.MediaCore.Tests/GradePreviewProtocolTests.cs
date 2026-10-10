@@ -3,6 +3,15 @@ using Xunit;
 namespace CoreVideoPro.MediaCore.Tests;
 public sealed class GradePreviewProtocolTests
 {
+    [Fact] public void CircleResponseRequiresMaskedSampleCountAndKnownShape()
+    {
+        var line="""{"type":"grade-preview","instanceId":"a","sourceId":"p1","revision":2,"sourceEpoch":8,"status":"ready","texture":{"width":64,"height":64,"sharedHandleHex":"0x1234"},"scopes":{"status":"ready","revision":2,"sourceEpoch":8,"view":1,"roi":{"enabled":true,"shape":"circle","width":1,"height":1},"sampleWidth":256,"sampleHeight":144,"sampleCount":28960,"colorSpace":"rec709-sdr-assumed","texture":{"width":1536,"height":512,"sharedHandleHex":"0x5678"}}}""";
+        Assert.Equal("circle",GradePreviewProtocol.Parse(line)!.Scopes!.Roi.Shape);
+        Assert.Null(GradePreviewProtocol.Parse(line.Replace("28960","36864")));
+        Assert.Null(GradePreviewProtocol.Parse(line.Replace("circle","triangle")));
+        Assert.NotNull(GradePreviewProtocol.Parse(line.Replace("\"enabled\":true","\"enabled\":false").Replace("28960","36864")));
+        Assert.NotNull(GradePreviewProtocol.Parse(line.Replace("\"width\":1,\"height\":1","\"x\":0.999219,\"width\":0.00078125,\"height\":1")));
+    }
     [Theory] [InlineData("ready")] [InlineData("held")] [InlineData("stale")]
     public void ParsesAttributableNativeSurface(string status)
     {

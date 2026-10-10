@@ -60,6 +60,25 @@ internal sealed class SourceGradeWorkspaceProbe(string corePath,string reportPat
             Require(editor.CopyGradeJson()==beforeRoi,"ROI modified the grade");
             var guide=Descendants(window.Content).OfType<ScopeRoiControl>().Single();
             Require(guide.Visibility==Visibility.Visible && guide.Roi==editor.ScopeRoi,"ROI guide did not match native measurement request");
+            Require(window.Content is FrameworkElement root && root.FindName("RoiPrecisionSettings") is Microsoft.UI.Xaml.Controls.Expander {IsExpanded:false},"ROI precision settings must start collapsed");
+            editor.AdvancedExpanded=false;editor.ScopesEnabled=false;window.ArmRoi("circle");
+            Require(editor.AdvancedExpanded && editor.ScopesEnabled && guide.DrawingShape=="circle" && guide.Visibility==Visibility.Visible,"Circle tool did not activate scope workspace");
+            await Eventually(()=>guide.SourceWidth==320 && guide.SourceHeight==180 && guide.ActualWidth>0 && guide.ActualHeight>0,"Drawing guide did not acquire source geometry");
+            var fitted=ScopeRoiGeometry.FitImage(guide.ActualWidth,guide.ActualHeight,320,180);
+            Windows.Foundation.Point Position(double x,double y)=>new(fitted.X+x*fitted.Width,fitted.Y+y*fitted.Height);
+            Require(guide.BeginDrawingGesture(Position(.2,.2)),"Circle gesture did not start over existing ROI");
+            guide.UpdateDrawingGesture(Position(.45,.45));guide.UpdateDrawingGesture(Position(.6,.6));guide.CompleteDrawingGesture();
+            // WinRT Point stores float coordinates: compare within subpixel input precision.
+            Require(Math.Abs(editor.ScopeRoi.Height-.4)<1e-6,$"Consecutive pointer updates lost source geometry: {editor.ScopeRoi}; source {guide.SourceWidth}x{guide.SourceHeight}");
+            await Eventually(()=>editor.ScopeSurface.PendingSharedHandle is {IsValid:true} && editor.ScopeStatus.Contains("Circle ROI"),"Native circle scopes did not reach editor");
+            Require(editor.CopyGradeJson()==beforeRoi && Math.Abs(guide.Roi.Width*320-guide.Roi.Height*180)<.01,"Circle ROI was not round or changed grade");
+            Require(guide.DrawingShape is null,"Drawing release did not restore selection mode");
+            var beforeCancel=editor.ScopeRoi;window.ArmRoi("rectangle");
+            Require(guide.BeginDrawingGesture(Position(.3,.3)),"Redraw did not start inside existing selection");
+            guide.UpdateDrawingGesture(Position(.7,.7));guide.CompleteDrawingGesture(cancel:true);
+            Require(editor.ScopeRoi with {Revision=0}==beforeCancel with {Revision=0},"Cancel did not restore original ROI");
+            Require(!guide.BeginDrawingGesture(Position(.95,.95)),"Select mode drew a new ROI outside selection");
+            checks.Add("draw tools activate scopes, collapsed precision and native circle mask without changing grade");
             editor.ScopesOriginal=false;await Eventually(()=>editor.ScopeStatus.StartsWith("Graded") && editor.ScopeStatus.Contains("ROI "),"Graded ROI tap failed");
             editor.ClearScopeRoi();await Eventually(()=>editor.ScopeStatus.Contains("Full frame"),"Clear ROI did not restore full-frame scopes");
             checks.Add("ROI native sampling, tap changes, guide and full-frame reset without changing grade");

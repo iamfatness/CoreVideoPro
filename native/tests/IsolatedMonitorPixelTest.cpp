@@ -9,6 +9,7 @@
 #include <future>
 #include <algorithm>
 #include <array>
+#include <cstdio>
 
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
 #define NOMINMAX
@@ -278,6 +279,37 @@ TEST(GradePreviewPixels, RoiSamplesOnlySelectedPixelsAndWaveformSpansSelectedReg
   EXPECT_GT((samples[1]>>8)&255,240u);EXPECT_GT((samples[2]>>8)&255,240u);EXPECT_LT((samples[3]>>8)&255,80u);
   EXPECT_EQ(previewCenter(compositor->render(request.programPlan,request.frames)),before);
   compositor->submitGradePreviews({});
+}
+
+TEST(GradePreviewPixels, CircleMaskExcludesCornerColorsFromAllThreeScopesWithoutChangingProgram) {
+  auto compositor=isolatedCompositor();ASSERT_TRUE(compositor);auto request=requestAtSize(64);request.programPlan.skipCpuReadback=false;
+  auto pixels=std::make_shared<std::vector<uint8_t>>(64*64*4,0);
+  for(int y=0;y<64;++y) for(int x=0;x<64;++x) {
+    const double nx=(x+.5)/32-1,ny=(y+.5)/32-1;const bool corner=nx*nx+ny*ny>1.08;
+    const auto i=(y*64+x)*4;(*pixels)[i+1]=corner?0:255;(*pixels)[i+2]=corner?255:0;(*pixels)[i+3]=255;
+  }
+  request.frames[0].pixels=pixels;request.frames[0].frameId=501;
+  const auto before=previewCenter(compositor->render(request.programPlan,request.frames));
+  GradePreviewDemand demand{"circle-pixels","test",1,{}};demand.scopesEnabled=true;demand.scopeRoi.enabled=true;
+  demand.histogramMode=demand.waveformMode=0;
+  request.gradePreviews.push_back(demand);
+  auto measure=[&](int revision,const std::string& shape) {
+    request.gradePreviews[0].revision=revision;request.gradePreviews[0].scopeRoi.shape=shape;
+    GradePreviewSurface surface;const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+    do {surface=awaitGrade(*compositor,request,"circle-pixels",revision);
+      if(surface.scopes.revision==revision && !surface.scopes.texture.sharedHandleHex.empty()) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));} while(std::chrono::steady_clock::now()<deadline);
+    EXPECT_EQ(surface.scopes.revision,revision);EXPECT_FALSE(surface.scopes.texture.sharedHandleHex.empty());
+    const float redLuma=.2126f;const int cb=int(((-redLuma)/1.8556f+.5f)*255),cr=std::min(255,int(((1-redLuma)/1.5748f+.5f)*255));
+    return consumeSamples(surface.scopes.texture,{{54.5f/768,.9f},{(1+.05f)/3,1-54.5f/256},{(2+(cb+.5f)/256)/3,1-(cr+.5f)/256}});
+  };
+  const auto rectangle=measure(1,"rectangle"),circle=measure(2,"circle");
+  ASSERT_EQ(rectangle.size(),3u);ASSERT_EQ(circle.size(),3u);
+  for(int i=0;i<3;++i) {
+    std::fprintf(stderr,"[circle-mask-pixels] scope=%d rectangle=%u circle=%u\n",i,(rectangle[i]>>8)&255,(circle[i]>>8)&255);
+    EXPECT_GT((rectangle[i]>>8)&255,30u);EXPECT_LT((circle[i]>>8)&255,30u);
+  }
+  EXPECT_EQ(previewCenter(compositor->render(request.programPlan,request.frames)),before);compositor->submitGradePreviews({});
 }
 
 TEST(GradePreviewPixels, LowerThirdDraftUsesNativeRasterWithoutChangingProgram) {

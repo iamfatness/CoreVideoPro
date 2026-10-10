@@ -74,6 +74,8 @@ installation. Build one source bus before adding more ingest paths. MXL stays pa
 
 ## Now — owner-accepted order (2026-10-08)
 
+Owner-approved follow-up on 2026-10-10: implement [#853](https://github.com/iamfatness/CoreVideoPro/issues/853), draw-first rectangle/circle scope ROI and collapsed precision controls, before further UI/UX slices. Preserve the running meeting. Zero missed delivery slots remains paramount; the owner is researching the #825/#517 misses separately.
+
 Three lanes, at most one item in flight per lane and three total. Start with #835;
 the earlier operator-focus rows follow it sequentially. Owner UI/UX focus
 (October 5): pair #507 transport-layout safety with #759/#610 reporting for the first
@@ -118,6 +120,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner follow-up | A | [#853](https://github.com/iamfatness/CoreVideoPro/issues/853) | Draw-first rectangle/circle scope ROI, move/resize, cancellation, Clear and collapsed precision settings. [Interaction contract](reference/roi-drawing-tools.md). Owner approved this code slice on October 10; preserve live sessions and keep zero-miss delivery acceptance separate. |
 | Owner top | A | [#835](https://github.com/iamfatness/CoreVideoPro/issues/835) | Advanced source grading: optional expanded workspace, truthful native preview/output path (grading portion of #764), master/R/G/B curves, histogram, waveform and vectorscope. Preserve existing grades, source identity, production cadence and quality; scope analysis must be bounded and asynchronous. Then qualify advanced primaries, real LUT import/stack and presets against the same native transform. |
 | Owner next | A | [#839](https://github.com/iamfatness/CoreVideoPro/issues/839) | Owner requested a built-in OH Framer on webcam output only after the #835 review rendering, adding a live Program LUFS-S overlay on October 9. [Specification](reference/webcam-framer.md). Preserve the supplied PNG alpha and clean Program/Preview/recording/stream pixels; persist an off-by-default camera toggle and qualify camera publication cadence. #835 implementation remains in review in #837. |
 | Acceptance | C | [#814](https://github.com/iamfatness/CoreVideoPro/issues/814) | [Recording write queues](reference/recording-write-queue-spec.md) merged in #833; beta `beta-2026-10-08-51d6281` is published and installed. Independent Program/ISO queues and Preparing-to-Recording behavior passed local and hosted checks. Owner's real-meeting bake remains open; record actual continuity and final-file evidence without claiming synthetic tests prove live delivery. |
@@ -157,6 +160,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#854](https://github.com/iamfatness/CoreVideoPro/issues/854) | Drawn ROI: native coordinate formatting rejects valid measurement results, and pending preview handles clear gesture geometry. Reproduced in the isolated real-XAML/native #853 probe; fix included in #855. No attribution to production delivery misses or independent rank change. |
 | [#838](https://github.com/iamfatness/CoreVideoPro/issues/838) | Mixed-source QA duplicates initial/final observations before preparation can advance, producing a false 250 ms source-stall judgment. Sampling repair and regression included in #837; pending merge. Unranked intake; no production rank change. |
 | [#834](https://github.com/iamfatness/CoreVideoPro/issues/834) | Windows CI app-exit trace reader can hit a sharing violation while the child appends to trace.txt. Initial main CI failed; unchanged-head retry passed. Make the bounded trace wait tolerate concurrent writes while preserving cleanup assertions. Unranked; not a confirmed production regression. |
 | [#825](https://github.com/iamfatness/CoreVideoPro/issues/825) | Disabled-preparation/inline qualification lost six packets in three pairs: a late Preparing head became expired Ready and remained at the following deadline. Suspected wait-predicate amplification needs deterministic real-GPU reproduction; does not establish why the first preparation was late. Unranked; current #802/#823 work continues. |
