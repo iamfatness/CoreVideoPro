@@ -849,15 +849,14 @@ enum ShellTests {
         expectEqual(payloads.count, 2, "one subscription per budget entry")
         expectEqual(payloads[0]["participantId"] as? String, "p1", "payload order is budget order")
         expectEqual(payloads[0]["priority"] as? Int, 0, "priority is the budget index")
-        expectEqual(payloads[1]["priority"] as? Int, 1, "priority is the budget index")
-        // The core's fence (ZoomSubscriptionResolutionPolicy.h): kind "video" is
-        // never promoted to 1080P, and for kind "video" the purpose is part of the
-        // engine's subscription identity — a real purpose here would churn warmed
-        // subscriptions on every bus move. Both flip together in the 1080P task.
-        expectEqual(payloads[1]["kind"] as? String, "video",
-                    "kind stays the fenced legacy kind until the 1080P flip task")
-        expectEqual(payloads[1]["purpose"] as? String, "program",
-                    "the wire purpose stays constant until the kind flip makes identity purpose-free")
+        // participant-video is the tiered kind: the core grants 1080P to the first
+        // 8 camera-on entries IN THIS ORDER (ZoomSubscriptionResolutionPolicy.h),
+        // which is the entire point of the budget. Identity is purpose-free for
+        // this kind, so the real purpose rides the wire without churn.
+        expectEqual(payloads[0]["kind"] as? String, "participant-video",
+                    "the tiered kind — 1080P eligible, budget-order granted")
+        expectEqual(payloads[0]["purpose"] as? String, "program", "the entry's real purpose")
+        expectEqual(payloads[1]["purpose"] as? String, "multiview", "the entry's real purpose")
     }
 
     // ── runner ───────────────────────────────────────────────────────────────

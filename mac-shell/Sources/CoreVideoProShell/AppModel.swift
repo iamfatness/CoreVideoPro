@@ -1377,18 +1377,19 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // The exact objects placed in the spine `subscriptions` array. Fence
-    // (E4/E6, ZoomSubscriptionResolutionPolicy.h): kind "video" is never
-    // promoted to 1080P, and for kind "video" the purpose is part of the
-    // engine's subscription identity — a real purpose here would churn warmed
-    // subscriptions on every bus move. The 1080P flip task activates
-    // `entry.purpose` alongside moving `kind` to "participant-video".
+    // The exact objects placed in the spine `subscriptions` array. kind
+    // "participant-video" (E3/E4/E6, ZoomSubscriptionResolutionPolicy.h) is the
+    // tiered kind: the core grants 1080P to the first 8 camera-on entries in
+    // this budget order, and its engine-side identity
+    // ("participant-video-<pid>-camera") excludes purpose, so the real
+    // `entry.purpose` rides the wire without churning the subscription on a
+    // bus move.
     static func spineSubscriptionPayloads(_ entries: [ZoomSourceBudget.Entry]) -> [JSONObject] {
         entries.enumerated().map { index, entry in
             [
                 "participantId": entry.participantId,
-                "kind": "video",
-                "purpose": "program",
+                "kind": "participant-video",
+                "purpose": entry.purpose,
                 "priority": index,
             ]
         }
