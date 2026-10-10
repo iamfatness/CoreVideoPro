@@ -12,6 +12,10 @@ public sealed class ScopeRoiGeometryTests
         Assert.False(roi.MatchesMeasurement(wire with {Revision=6}));
         Assert.False(roi.MatchesMeasurement(wire with {Shape="rectangle"}));
         Assert.False(roi.MatchesMeasurement(wire with {Width=.226}));
+        var edge=new GradeScopeRoi(true,1279d/1280,0,1d/1280,.1,7,"rectangle");
+        var reported=edge with {X=.999219};
+        Assert.False(reported.IsValid); // Rounded native reply may extend a fraction of a pixel past the edge.
+        Assert.True(edge.MatchesMeasurement(reported));
     }
     [Theory] [InlineData(800,800,0,175,800,450)] [InlineData(1000,450,100,0,800,450)]
     public void ImageGeometryExcludesLetterboxAndPillarbox(double hostW,double hostH,double x,double y,double w,double h)

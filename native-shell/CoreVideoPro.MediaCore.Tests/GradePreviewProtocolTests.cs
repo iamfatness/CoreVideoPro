@@ -10,6 +10,7 @@ public sealed class GradePreviewProtocolTests
         Assert.Null(GradePreviewProtocol.Parse(line.Replace("28960","36864")));
         Assert.Null(GradePreviewProtocol.Parse(line.Replace("circle","triangle")));
         Assert.NotNull(GradePreviewProtocol.Parse(line.Replace("\"enabled\":true","\"enabled\":false").Replace("28960","36864")));
+        Assert.NotNull(GradePreviewProtocol.Parse(line.Replace("\"width\":1,\"height\":1","\"x\":0.999219,\"width\":0.00078125,\"height\":1")));
     }
     [Theory] [InlineData("ready")] [InlineData("held")] [InlineData("stale")]
     public void ParsesAttributableNativeSurface(string status)
