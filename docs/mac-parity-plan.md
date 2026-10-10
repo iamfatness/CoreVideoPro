@@ -73,20 +73,22 @@ not change this ruling — no host imports it yet.)
 Three, all small:
 
 1. **Per-source "On dropout" policy** — hold last frame vs black, persisted,
-   shipped as `set-source-policy` (#535 slice 4a). **Verified absent** from
+   shipped as `set-source-policy` (#535 slice 4a). **CLOSED on this branch
+   (commit bad303c2).** Until that commit this was **verified absent** from
    `mac-shell` (no `dropout` reference anywhere in `mac-shell/Sources/`). The
-   core half of this landed in `native/` and so already reaches Mac
+   core half of this landed in `native/` and so already reached Mac
    (`native/src/core/MediaCore.cpp:2252-2296` — command `set-source-policy`,
    `sourceId` must be `"zoom:<pid>"`, values exactly `"hold"`/`"black"`,
    PRESENT-OR-KEEP semantics, must follow `load-scene-graph` in a batch); what
-   is missing is the operator surface and the persistence. **Task 4** below
-   closes this.
-2. **ISOs armed with Zoom capture off are loud** (T3.7 / #470). The core-side
-   contract (`IsoCapturePreflight.Describe`, Windows) warns because ISO writers
-   open LAZILY at their first frame — a never-fed source leaves no file and no
+   was missing was the operator surface and the persistence. **Task 4**
+   (commit bad303c2) closed this.
+2. **ISOs armed with Zoom capture off are loud** (T3.7 / #470). **CLOSED on
+   this branch (commit e28063dc).** The core-side contract
+   (`IsoCapturePreflight.Describe`, Windows) warns because ISO writers open
+   LAZILY at their first frame — a never-fed source leaves no file and no
    downstream warning is possible; an unobserved capture state is not itself a
-   warning (round-2 ruling). Mac has the same lazy-open AVF writers and today
-   says nothing. **Task 5** below mirrors it.
+   warning (round-2 ruling). Mac has the same lazy-open AVF writers and, until
+   that commit, said nothing. **Task 5** (commit e28063dc) mirrored it.
 3. **Tiles colour pickers** — background, border, glow (T3.5 / #476). See §5.3
    for the reclassification: Mac has no Tiles wall surface to put pickers on,
    so this is N/A-until-Tiles, not a gap to close.
@@ -107,6 +109,13 @@ those two is corrected below.**
 
 ### 5.1 The Zoom-source video ceiling and the 1080P cap — CORRECTED: Mac is fenced BELOW parity, not over budget
 
+**CLOSED on this branch (commits d34c2180, deb2689e).** The under-parity gap
+this section documents — no 1080P on Mac at all — was real as of this audit
+(2026-10-09) and is closed by Task 2 (budget-ordered spine subscriptions,
+d34c2180) and Task 3 (the 1080P kind flip, deb2689e); see §7. The analysis
+below is kept as it stood at audit time, in past tense where it describes
+what WAS true before those commits.
+
 The 2026-09-27 audit read this as "`mac-shell` has no such ceiling... A Mac
 operator can currently exceed it with no guard" and filed it as a VERIFIED GAP
 in the over-budget direction. **That direction is wrong.** Re-verified
@@ -119,26 +128,27 @@ in the over-budget direction. **That direction is wrong.** Re-verified
   subscription at all — frozen/placeholder tiles with no error anywhere (live
   meeting, 2026-08-09: seven cameras on, Susan Cho never subscribed). 10 is the
   number that stopped that failure mode.
-- Separately, there is now a **core-side 1080P concurrency cap of 8 cameras**
+- Separately, there is a **core-side 1080P concurrency cap of 8 cameras**
   (`native/src/modules/ZoomSubscriptionResolutionPolicy.h:94` —
   `kMaxConcurrentFullResolutionCameras = 8`, soak-proven 2026-09-13; granted in
   payload order, i.e. budget order, per spine payload). This lives in `native/`
   and already reaches Mac mechanically — the core doesn't care which shell sent
   the payload.
-- But the core **deliberately fences the Mac shell out of that 1080P tier
-  today.** `wantsFullResolution` returns true only for `kind ==
+- But the core **deliberately fenced the Mac shell out of that 1080P tier, as
+  of 2026-10-09.** `wantsFullResolution` returns true only for `kind ==
   "participant-video"` (`ZoomSubscriptionResolutionPolicy.h:71-72`), and the
-  header says verbatim: *"the macOS shell sends kind 'video' with purpose
-  'program' for every assigned guest and must not be moved to N x 1080P."*
-  Mac sends kind `"video"`, not `"participant-video"` — so it never qualifies,
-  and every Mac camera subscription sits at 720P regardless of the 8-camera
-  cap.
+  header said verbatim, **as of 2026-10-09, since rewritten by deb2689e**:
+  *"the macOS shell sends kind 'video' with purpose 'program' for every
+  assigned guest and must not be moved to N x 1080P."* Mac sent kind
+  `"video"`, not `"participant-video"` — so it never qualified, and every Mac
+  camera subscription sat at 720P regardless of the 8-camera cap.
 
-**So the correct framing flips the 2026-09-27 audit's direction entirely: the
-gap is under-parity (no 1080P on Mac at all), not over-budget (a Mac operator
-exceeding a bandwidth rule).** There is no missing guard to add — there is a
-missing capability to grant, deliberately withheld pending the budget
-machinery described below.
+**So the correct framing flipped the 2026-09-27 audit's direction entirely:
+the gap was under-parity (no 1080P on Mac at all), not over-budget (a Mac
+operator exceeding a bandwidth rule).** There was no missing guard to add —
+there was a missing capability to grant, deliberately withheld pending the
+budget machinery described below (and since granted — see the CLOSED banner
+above).
 
 Two more things the old audit missed because it only looked for a ceiling,
 not for how the ceiling is spent:
@@ -153,22 +163,23 @@ not for how the ceiling is spent:
   (Program routes → Program Tiles → Preview routes → Preview Tiles →
   multiview slots in slot order → ISO-armed → sticky Tiles audio; camera-off
   sources keep audio but never spend video budget — only video is capped).
-  Mac's current `pushSpine` (`mac-shell/AppModel.swift:1294-1360`) subscribes
-  `assignedIds`, a **Set** — nondeterministic order, no cap, no camera-on
-  filter, all purpose `"program"`. The 10-slot patch bay bounds the count at
-  10 today by coincidence, not by policy.
-- **A `hasVideo` flip does not currently re-push the spine.** The roster-apply
-  path (`AppModel.swift:846-874`) calls `recomputeFromSlots()` only when
-  auto-assign placed someone. Harmless today, because nothing filters on
-  camera-on yet — but it becomes the mirror of the Windows 2026-08-09
-  frozen-tile defect the moment a camera-on filter ships without also wiring
-  this re-sync trigger.
+  Mac's `pushSpine` (`mac-shell/AppModel.swift:1294-1360`), until commit
+  d34c2180, subscribed `assignedIds`, a **Set** — nondeterministic order, no
+  cap, no camera-on filter, all purpose `"program"`. The 10-slot patch bay
+  bounded the count at 10 only by coincidence, not by policy.
+- **A `hasVideo` flip did not re-push the spine, until commit d34c2180.** The
+  roster-apply path (`AppModel.swift:846-874`) called `recomputeFromSlots()`
+  only when auto-assign placed someone. Harmless at the time, because nothing
+  filtered on camera-on yet — but it would have become the mirror of the
+  Windows 2026-08-09 frozen-tile defect the moment a camera-on filter shipped
+  without also wiring this re-sync trigger. (`ZoomSourceBudget` plus its
+  `pushSpine` wiring closed both at once.)
 
 This is why Task 2 (budget-ordered, camera-on-filtered, capped spine
-subscriptions) and Task 3 (the 1080P kind flip, held separately for live
-acceptance) are split in §7 — the machinery and the capability grant are
-deliberately decoupled so a reviewer can approve the former without
-committing to the latter sight-unseen.
+subscriptions, SHIPPED d34c2180) and Task 3 (the 1080P kind flip, SHIPPED
+deb2689e, held separately for live acceptance — see §7) were split — the
+machinery and the capability grant were deliberately decoupled so a reviewer
+could approve the former without committing to the latter sight-unseen.
 
 ### 5.2 Recording folder resolution — CLOSED, non-gap
 
@@ -216,23 +227,29 @@ Honesty about method, because the last several plans in this repo were
 written against assumed shapes that turned out wrong:
 
 - **Verified directly:** the CI job scopes; that `mac-shell` builds; the
-  OHG absence; the dropout-policy absence; the three-way ceiling history and
-  the 1080P kind fence (§5.1 — file:line read directly, both in
-  `native-shell` and `native/`); the recording-folder resolution (§5.2 —
-  file:line read directly in both `AppModel.swift` and `SettingsPane.swift`);
-  the absence of a Tiles wall surface on Mac (§5.3); the per-commit tree
-  classification for the 2026-09-05 → 09-27 window (via `--name-only`, after
-  `--stat`'s path truncation produced a wrong first cut); the §8 window
-  commit counts and the named PR numbers (verified by the controller,
-  2026-10-09, against `origin/main @ 47feb000`).
+  OHG absence; the three-way ceiling history (§5.1 — file:line read directly,
+  both in `native-shell` and `native/`); the recording-folder resolution
+  (§5.2 — file:line read directly in both `AppModel.swift` and
+  `SettingsPane.swift`); the absence of a Tiles wall surface on Mac (§5.3);
+  the per-commit tree classification for the 2026-09-05 → 09-27 window (via
+  `--name-only`, after `--stat`'s path truncation produced a wrong first
+  cut); the §8 window commit counts and the named PR numbers (verified by the
+  controller, 2026-10-09, against `origin/main @ 47feb000`).
+- **Verified, then closed on this branch:** the dropout-policy absence (§4
+  item 1 — closed by Task 4, commit bad303c2) and the 1080P kind fence (§5.1
+  — closed by Task 3, commit deb2689e). Both were confirmed absent/fenced by
+  direct file:line reads at audit time (2026-10-09), before this branch's
+  tasks closed them; see the CLOSED banners at §4 item 1 and §5.1.
 - **Inferred from commit subjects and touched paths:** which of the
   `native-shell`-only fixes in the 2026-09-05 → 09-27 window are WinUI
   plumbing versus operator-visible behaviour, and the same classification for
   the 15 Windows-shell-only fixes named in §8.
 - **Not attempted:** any assessment of the 3 features' Mac cost beyond what
   Tasks 2-5 (§7) now scope directly; a Mac-side slate-name equivalent to
-  Windows' `displayName` on source-policy commands (flagged as an open
-  follow-up by Task 4, not shipped blind).
+  Windows' `displayName` on source-policy commands — blocked on Metal slate
+  text — the Metal compositor's failed slate is colour-only today
+  (`TODO(4a-metal-text)` in `native/src/compositor/MetalCompositorAdapter.mm:1209`),
+  so Mac has nowhere to draw a name; revisit when slate text lands.
 
 ## 7. This plan's task list
 
@@ -253,7 +270,7 @@ lives at `docs/superpowers/plans/2026-10-09-mac-parity-batch.md`; summary:
    subscriptions, the count is capped at 10, and a `hasVideo` change re-pushes
    the spine. This lands the machinery the 1080P flip needs without granting
    1080P yet.
-3. **Task 3 — the 1080P flip. SHIPPED** commit deb2689e (this branch; PR pending) — **LIVE ACCEPTANCE PENDING: owner meeting soak (Task 3 Step 6) has NOT run; the Metal path at 8×1080P is unproven on this rig; fallback is reverting the one-line kind flip.**
+3. **Task 3 — the 1080P flip. SHIPPED** commit deb2689e (this branch; PR pending) — **LIVE ACCEPTANCE PENDING: owner meeting soak (Task 3 Step 6) has NOT run; the Metal path at 8×1080P is unproven on this rig; fallback is reverting the one-line kind flip.** Tracked in `docs/BACKLOG.md` under "Unranked — mac-parity-batch live acceptance (2026-10-09)" — no GitHub issue yet; one will be filed when this branch's PR goes up and the backlog row will carry its number.
    One wire change (`kind:
    "participant-video"`, real per-entry purpose) plus a comment-only update to
    `ZoomSubscriptionResolutionPolicy.h`. Deliberately separated from Task 2 so

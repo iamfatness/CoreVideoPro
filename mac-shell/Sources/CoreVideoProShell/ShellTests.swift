@@ -857,6 +857,7 @@ enum ShellTests {
                     "the tiered kind — 1080P eligible, budget-order granted")
         expectEqual(payloads[0]["purpose"] as? String, "program", "the entry's real purpose")
         expectEqual(payloads[1]["purpose"] as? String, "multiview", "the entry's real purpose")
+        expectEqual(payloads[1]["priority"] as? Int, 1, "priority is the budget index")
     }
 
     // ── dropout policy (per-source, #535 slice 4a reaching Mac) ─────────────
@@ -919,9 +920,12 @@ enum ShellTests {
         expectEqual(IsoCapturePreflight.warning(zoomIsoCount: 3, captureIntended: true,
                                                 rawMediaActive: true), nil,
                     "capture on and observed active is healthy")
-        expect(IsoCapturePreflight.warning(zoomIsoCount: 3, captureIntended: true,
-                                           rawMediaActive: false) != nil,
+        let intentOnObservedOff = IsoCapturePreflight.warning(zoomIsoCount: 3, captureIntended: true,
+                                                              rawMediaActive: false)
+        expect(intentOnObservedOff != nil,
                "intent ON but observed OFF still warns — the observed state is the truth")
+        expect(intentOnObservedOff?.contains("re-arm Capture") == true,
+               "intent-ON/observed-OFF copy is distinct — Capture IS on, so the fix is re-arming it, not turning it on")
     }
 
     private static func testIsoPreflightNeverWarnsOnAnUnobservedState() {
