@@ -144,6 +144,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     partial void OnVirtualCameraEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+        OnPropertyChanged(nameof(VirtualCameraFramerStatusLabel));
         // O1: vcam intent persists across launches (restore sets the backing
         // field directly, so this save only fires on real operator changes).
         SaveProductionOutputPreferences();
@@ -9383,6 +9384,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             AudioMasteringGlueBandHighDb = MasteringGlueBandHighDb,
             VirtualCameraEnabled = VirtualCameraEnabled,
             VirtualCameraMirror = VirtualCameraMirror,
+            VirtualCameraFramerEnabled = VirtualCameraFramerEnabled,
             VirtualCameraDeviceName = VirtualCameraDeviceName,
             ScanVstPlugins = ConsumeVstScanRequest(),
             AudioMonitor = new MediaCoreAudioMonitorWire(
@@ -10596,6 +10598,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         RefreshAudioReadoutBindings();
         Tm("audioReadouts");
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+        OnPropertyChanged(nameof(VirtualCameraFramerStatusLabel));
         OnPropertyChanged(nameof(NativeLowerThirdStatus));
         RefreshProgramLowerThirdKeyPosition();
         ReconcileLowerThirdPhaseSync(snapshot);
@@ -12067,6 +12070,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior,
             VirtualCameraEnabled = VirtualCameraEnabled,
             VirtualCameraMirror = VirtualCameraMirror,
+            VirtualCameraFramerEnabled = VirtualCameraFramerEnabled,
             VirtualCameraName = string.IsNullOrWhiteSpace(VirtualCameraDeviceName)
                 ? null
                 : VirtualCameraDeviceName,
@@ -12238,11 +12242,14 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // no second registration path, idempotent by construction.
         _virtualCameraEnabled = preferences.VirtualCameraEnabled;
         _virtualCameraMirror = preferences.VirtualCameraMirror;
+        _virtualCameraFramerEnabled = preferences.VirtualCameraFramerEnabled;
         _virtualCameraDeviceName = preferences.VirtualCameraName ?? string.Empty;
         OnPropertyChanged(nameof(VirtualCameraEnabled));
         OnPropertyChanged(nameof(VirtualCameraMirror));
+        OnPropertyChanged(nameof(VirtualCameraFramerEnabled));
         OnPropertyChanged(nameof(VirtualCameraDeviceName));
         OnPropertyChanged(nameof(VirtualCameraStatusLabel));
+        OnPropertyChanged(nameof(VirtualCameraFramerStatusLabel));
 
         // v8 (ISO-4): restore the ISO selection + "Program + ISOs" switch via the BACKING
         // field (same reason as vcam above — the setter would sync a core that isn't up).

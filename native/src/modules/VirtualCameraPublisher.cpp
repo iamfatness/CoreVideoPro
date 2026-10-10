@@ -390,6 +390,11 @@ class NoopVirtualCameraPublisher final : public IVirtualCameraPublisher {
     status_.state = "off";
   }
   VirtualCameraStatus status() const override { return status_; }
+  void setFramerEnabled(bool enabled) override {
+    status_.framerEnabled = enabled;
+    status_.framerState = enabled ? "unavailable" : "off";
+    status_.framerWarning = enabled ? "OH Framer requires a real Windows D3D11 webcam output. Clean video continues." : "";
+  }
   void setDeviceName(const std::string& name) override {
     if (!name.empty()) status_.deviceName = name;
   }
