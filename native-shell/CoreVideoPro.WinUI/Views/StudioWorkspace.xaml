@@ -230,6 +230,7 @@
                             Foreground="{x:Bind ViewModel.AutomationTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="automation" />
                     <Button Content="OHG Show" Style="{StaticResource GhostButton}"
+                            Visibility="{x:Bind ViewModel.OhgShowNavigationVisibility, Mode=OneWay}"
                             Background="{x:Bind ViewModel.OhgShowTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.OhgShowTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.OhgShowTabChrome.Foreground, Mode=OneWay}"

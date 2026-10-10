@@ -3632,6 +3632,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     partial void OnActiveTabChanged(StudioTab value)
     {
+        if (!KeepNavigationAvailable(value)) return;
         foreach (var name in StudioTabPlumbing.ActiveTabDependentProperties)
         {
             OnPropertyChanged(name);
@@ -11822,6 +11823,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         new()
         {
             Version = ProductionOutputPreferences.CurrentVersion,
+            OhgShowEnabled = OhgShowEnabled,
             FfmpegBinDirectory = FfmpegBinDirectory,
             StreamRtmpEnabled = StreamRtmpEnabled,
             StreamNdiEnabled = StreamNdiEnabled,
@@ -11938,6 +11940,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)
     {
+        OhgShowEnabled = preferences.OhgShowEnabled;
         RestorePersistedSourceGrades(preferences.SourceGrades);
         FfmpegBinDirectory = preferences.FfmpegBinDirectory ?? FfmpegBinDirectory;
         StreamRtmpEnabled = preferences.StreamRtmpEnabled;

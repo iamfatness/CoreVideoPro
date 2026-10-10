@@ -15,6 +15,9 @@ namespace CoreVideoPro.WinUI.ViewModels;
 /// </summary>
 internal static class StudioTabPlumbing
 {
+    internal static StudioTab AvailableTab(StudioTab requested, bool ohgShowEnabled) =>
+        requested == StudioTab.OhgShow && !ohgShowEnabled ? StudioTab.Settings : requested;
+
     /// <summary>
     /// The nav key -> tab mapping. An unrecognized key — including null/empty and a differently
     /// cased one — lands on Studio: a nav button with a typo'd parameter must never leave the
