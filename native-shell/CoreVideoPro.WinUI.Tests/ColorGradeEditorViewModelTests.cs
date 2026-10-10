@@ -1,76 +1,45 @@
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
 using Xunit;
-
 namespace CoreVideoPro.WinUI.Tests;
-
 public sealed class ColorGradeEditorViewModelTests
 {
-    [Fact]
-    public void BuildsGradedPreviewFromSourceSurface()
+    private static ColorGradeEditorViewModel Editor() => new("p1", "Camera", new() { Lut = "none" });
+    private static GradePreviewObservation Ready(ColorGradeEditorViewModel editor, long? revision = null) => new()
     {
-        var surface = VideoSurfaceState
-            .Waiting(VideoSurfaceKind.Multiview, "participant:p1", "Camera 1")
-            .WithPreviewPixels(
-                [
-                    10, 20, 30, 255,
-                    40, 50, 60, 255
-                ],
-                2,
-                1);
-
-        var editor = new ColorGradeEditorViewModel(
-            "p1",
-            "Camera 1",
-            new ColorGrade
-            {
-                Lut = "none",
-                Exposure = 0,
-                Contrast = 0,
-                Saturation = 0,
-                Temperature = 0
-            },
-            surface);
-
-        Assert.True(editor.HasPreview);
-        Assert.Equal(2, editor.GradedPreviewWidth);
-        Assert.Equal(1, editor.GradedPreviewHeight);
-        Assert.Equal(surface.PreviewBgra, editor.GradedPreviewBgra);
+        InstanceId = editor.InstanceId, SourceId = editor.SourceId, Revision = revision ?? editor.Revision,
+        Status = "ready", Texture = new() { SharedHandleHex = "0x1234", Width = 1920, Height = 1080 }
+    };
+    [Fact] public void RejectsOldRevisionWrongSourceAndWrongEditorAndClearsPictureOnEdit()
+    {
+        var editor = Editor(); editor.ObserveNativePreview(Ready(editor)); Assert.True(editor.HasPreview);
+        Assert.True(VideoSurfacePresentationRules.UsesGpuSharedTexture(editor.NativeSurface.SurfaceKey, editor.NativeSurface.Kind));
+        Assert.False(editor.NativeSurface.HasPreviewBitmap);
+        editor.Exposure = 2; Assert.False(editor.HasPreview);
+        editor.ObserveNativePreview(Ready(editor, 0)); Assert.False(editor.HasPreview);
+        editor.ObserveNativePreview(Ready(editor) with { SourceId = "p2" }); Assert.False(editor.HasPreview);
+        editor.ObserveNativePreview(Ready(editor) with { InstanceId = "other" }); Assert.False(editor.HasPreview);
+        editor.ObserveNativePreview(Ready(editor)); Assert.True(editor.HasPreview);
     }
-
-    [Fact]
-    public void RebuildsPreviewAndRaisesLiveChangeWhenControlsMove()
+    [Fact] public void DraftAndOriginalComparisonDoNotChangeOnAirGradeButApplyDoes()
     {
-        var surface = VideoSurfaceState
-            .Waiting(VideoSurfaceKind.Multiview, "participant:p1", "Camera 1")
-            .WithPreviewPixels(
-                [
-                    80, 90, 100, 255,
-                    110, 120, 130, 255
-                ],
-                2,
-                1);
-
-        var editor = new ColorGradeEditorViewModel(
-            "p1",
-            "Camera 1",
-            new ColorGrade
-            {
-                Lut = "none",
-                Exposure = 0,
-                Contrast = 0,
-                Saturation = 0,
-                Temperature = 0
-            },
-            surface);
-        var before = editor.GradedPreviewBgra!.ToArray();
-        ColorGrade? liveGrade = null;
-        editor.GradeChanged += (_, grade) => liveGrade = grade;
-
-        editor.Exposure = 25;
-
-        Assert.NotNull(liveGrade);
-        Assert.Equal(25, liveGrade!.Exposure);
-        Assert.NotEqual(before, editor.GradedPreviewBgra);
+        var editor = Editor(); var changes = 0; ColorGrade? saved = null;
+        editor.GradeChanged += (_, _) => ++changes; editor.GradeSaved += (_, grade) => saved = grade;
+        editor.LiveEditing = false; editor.Exposure = 8; editor.Lut = "warm-film";
+        editor.CompareOriginal = true; Assert.Equal(0, changes); Assert.Equal("none", editor.PreviewGrade.Lut);
+        Assert.Equal(0, editor.PreviewGrade.Exposure);
+        editor.CompareOriginal = false; Assert.Equal("warm-film", editor.PreviewGrade.Lut);
+        editor.SaveCommand.Execute(null); Assert.NotNull(saved); Assert.Equal(8, saved!.Exposure);
+        Assert.Equal(0, changes); editor.LiveEditing = true; Assert.Equal(1, changes);
+        editor.Exposure = 9; Assert.Equal(2, changes);
+    }
+    [Theory] [InlineData("held")] [InlineData("stale")]
+    public void HeldPictureIsLabeledAndUnavailableHasNoFallback(string status)
+    {
+        var editor = Editor(); editor.ObserveNativePreview(Ready(editor) with { Status = status });
+        Assert.True(editor.HasPreview); Assert.Contains("held", editor.PreviewStatus);
+        editor.SetNativeUnavailable("Not built"); Assert.False(editor.HasPreview);
+        Assert.Equal("Not built", editor.PreviewStatus);
     }
 }

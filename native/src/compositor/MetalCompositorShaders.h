@@ -79,6 +79,43 @@ vertex VSOut compositorVertex(uint vid [[vertex_id]]) {
   return out;
 }
 
+struct GradeOp { float4 meta; float4 primary; float4 balance; float4 domainMin; float4 domainMax; };
+struct AdvancedConstants { float4 header; GradeOp operations[8]; };
+float3 rec709Linear(float3 v) { return float3(v.r < .081 ? v.r / 4.5 : pow((v.r+.099)/1.099, 1.0/.45), v.g < .081 ? v.g / 4.5 : pow((v.g+.099)/1.099, 1.0/.45), v.b < .081 ? v.b / 4.5 : pow((v.b+.099)/1.099, 1.0/.45)); }
+float3 rec709Encode(float3 v) { return float3(v.r < .018 ? 4.5*v.r : 1.099*pow(v.r,.45)-.099, v.g < .018 ? 4.5*v.g : 1.099*pow(v.g,.45)-.099, v.b < .018 ? 4.5*v.b : 1.099*pow(v.b,.45)-.099); }
+float curveValue(float x,uint row,uint channel,texture2d<float> gradeCurves) {
+  x=saturate(x); uint y=row*4+channel; float2 a=gradeCurves.read(uint2(0,y)).xy;
+  for(uint i=1;i<16;++i) { float2 b=gradeCurves.read(uint2(i,y)).xy;
+    if(x<=b.x) return mix(a.y,b.y,(x-a.x)/(b.x-a.x)); a=b;
+  }
+  return a.y;
+}
+
+float3 advancedGrade(float3 rgb, float3 original, constant AdvancedConstants& a, texture2d<float> gradeCurves, array<texture3d<float>,8> gradeLuts) {
+  if (a.header.z < .5) return rgb;
+  for (uint i = 0; i < (uint)a.header.x; ++i) {
+    GradeOp o = a.operations[i]; if (o.meta.y <= 0) continue;
+    float3 v = rgb;
+    if (o.meta.x < 1.5) {
+      v = rec709Encode(rec709Linear(saturate(v))*exp2(o.primary.x));
+      v = (v-o.primary.z)*o.primary.y+o.primary.z;
+      float y = dot(v,float3(.2126,.7152,.0722)); v = mix(float3(y),v,o.primary.w);
+      v += float3(o.balance.x*.1-o.balance.y*.05,o.balance.y*.1,-o.balance.x*.1-o.balance.y*.05);
+      v = pow(max((v+o.balance.z)*o.meta.z,0),1.0/o.balance.w);
+    } else if(o.meta.x > 2.5) {
+      float3 uv=saturate((v-o.domainMin.xyz)/(o.domainMax.xyz-o.domainMin.xyz));
+      uv=(uv*(o.meta.w-1)+.5)/o.meta.w;
+      constexpr sampler cubeSampler(coord::normalized,address::clamp_to_edge,filter::linear);
+      v=gradeLuts[i].sample(cubeSampler,uv).rgb;
+    } else {
+      v = float3(curveValue(v.r,i,0,gradeCurves),curveValue(v.g,i,0,gradeCurves),curveValue(v.b,i,0,gradeCurves));
+      v = float3(curveValue(v.r,i,1,gradeCurves),curveValue(v.g,i,2,gradeCurves),curveValue(v.b,i,3,gradeCurves));
+    }
+    rgb = mix(rgb,saturate(v),o.meta.y);
+  }
+  return mix(original,rgb,a.header.y);
+}
+
 static inline float3 applyGrade(float3 rgb, constant LayerConstants& c) {
   rgb = (rgb - 0.5) * (1.0 + c.contrast) + 0.5 + c.exposure;
   float luma = dot(rgb, float3(0.299, 0.587, 0.114));
@@ -128,20 +165,26 @@ static inline float3 suppressSpill(float3 rgb, constant LayerConstants& c) {
 }
 
 fragment float4 compositorSolid(VSOut in [[stage_in]],
+                                constant AdvancedConstants& a [[buffer(1)]],
+                                texture2d<float> gradeCurves [[texture(3)]],
+                                array<texture3d<float>,8> gradeLuts [[texture(4)]],
                                 constant LayerConstants& c [[buffer(0)]]) {
-  return decorateTile(float4(applyGrade(c.color.rgb, c), c.color.a), in.pos.xy, c);
+  return decorateTile(float4(advancedGrade(applyGrade(c.color.rgb, c), c.color.rgb, a, gradeCurves, gradeLuts), c.color.a), in.pos.xy, c);
 }
 
 // Textured variant: samples a decoded BGRA frame and applies the same grade.
 fragment float4 compositorTextured(VSOut in [[stage_in]],
-                                   constant LayerConstants& c [[buffer(0)]],
+                                   constant AdvancedConstants& a [[buffer(1)]],
+                                texture2d<float> gradeCurves [[texture(3)]],
+                                array<texture3d<float>,8> gradeLuts [[texture(4)]],
+                                constant LayerConstants& c [[buffer(0)]],
                                    texture2d<float> layerTexture [[texture(0)]],
                                    sampler layerSampler [[sampler(0)]]) {
   float2 sourceUv = c.uvOffset + in.uv * c.uvScale;
   float4 sampled = layerTexture.sample(layerSampler, sourceUv);
   float keyAlpha = chromaKeyAlpha(sampled.rgb, c);
   float3 rgb = suppressSpill(sampled.rgb, c);
-  return decorateTile(float4(applyGrade(rgb, c), sampled.a * c.color.a * keyAlpha), in.pos.xy, c);
+  return decorateTile(float4(advancedGrade(applyGrade(rgb, c), rgb, a, gradeCurves, gradeLuts), sampled.a * c.color.a * keyAlpha), in.pos.xy, c);
 }
 
 // Overlay variant: the raster texture is PREMULTIPLIED alpha; fading it means
@@ -158,7 +201,10 @@ fragment float4 compositorOverlay(VSOut in [[stage_in]],
 // or BT.601, full or studio swing) then the shared grade — the same math as
 // kCompositorYuvPixelShader.
 fragment float4 compositorI420(VSOut in [[stage_in]],
-                               constant LayerConstants& c [[buffer(0)]],
+                               constant AdvancedConstants& a [[buffer(1)]],
+                                texture2d<float> gradeCurves [[texture(3)]],
+                                array<texture3d<float>,8> gradeLuts [[texture(4)]],
+                                constant LayerConstants& c [[buffer(0)]],
                                texture2d<float> yTexture [[texture(0)]],
                                texture2d<float> uTexture [[texture(1)]],
                                texture2d<float> vTexture [[texture(2)]],
@@ -174,7 +220,7 @@ fragment float4 compositorI420(VSOut in [[stage_in]],
   rgb = saturate(rgb);
   float keyAlpha = chromaKeyAlpha(rgb, c);
   rgb = suppressSpill(rgb, c);
-  return decorateTile(float4(applyGrade(rgb, c), c.color.a * keyAlpha), in.pos.xy, c);
+  return decorateTile(float4(advancedGrade(applyGrade(rgb, c), rgb, a, gradeCurves, gradeLuts), c.color.a * keyAlpha), in.pos.xy, c);
 }
 )MSL";
 

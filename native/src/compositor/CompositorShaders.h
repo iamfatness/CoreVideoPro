@@ -35,6 +35,7 @@
 // the Metal adapter shares them; the HLSL cbuffers below still mirror that
 // exact 80-byte layout.
 #include "compositor/CompositorShaderParams.h"
+#include "compositor/AdvancedGradeShaders.h"
 #include "modules/Interfaces.h"
 
 namespace corevideo::modules {
@@ -99,12 +100,13 @@ float4 decorateTile(float4 sampleColor, float2 pixel) {
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   float3 rgb = color.rgb;
+  float3 ungraded = rgb;
   rgb = (rgb - 0.5) * (1.0 + contrast) + 0.5 + exposure;
   float luma = dot(rgb, float3(0.299, 0.587, 0.114));
   rgb = lerp(float3(luma, luma, luma), rgb, 1.0 + saturation);
   rgb.r += temperature * 0.05;
   rgb.b -= temperature * 0.05;
-  return decorateTile(float4(saturate(rgb), color.a), pos.xy);
+  return decorateTile(float4(advancedGrade(saturate(rgb),ungraded), color.a), pos.xy);
 }
 )";
 
@@ -204,12 +206,13 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   float keyAlpha = chromaKeyAlpha(sampled.rgb);
   float3 keyed = suppressSpill(sampled.rgb);
   float3 rgb = keyed;
+  float3 ungraded = rgb;
   rgb = (rgb - 0.5) * (1.0 + contrast) + 0.5 + exposure;
   float luma = dot(rgb, float3(0.299, 0.587, 0.114));
   rgb = lerp(float3(luma, luma, luma), rgb, 1.0 + saturation);
   rgb.r += temperature * 0.05;
   rgb.b -= temperature * 0.05;
-  return decorateTile(float4(saturate(rgb), sampled.a * color.a * keyAlpha), pos.xy);
+  return decorateTile(float4(advancedGrade(saturate(rgb),ungraded), sampled.a * color.a * keyAlpha), pos.xy);
 }
 )";
 
@@ -346,12 +349,13 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   rgb = saturate(rgb);
   float keyAlpha = chromaKeyAlpha(rgb);
   rgb = suppressSpill(rgb);
+  float3 ungraded = rgb;
   rgb = (rgb - 0.5) * (1.0 + contrast) + 0.5 + exposure;
   float luma = dot(rgb, float3(0.299, 0.587, 0.114));
   rgb = lerp(float3(luma, luma, luma), rgb, 1.0 + saturation);
   rgb.r += temperature * 0.05;
   rgb.b -= temperature * 0.05;
-  return decorateTile(float4(saturate(rgb), color.a * keyAlpha), pos.xy);
+  return decorateTile(float4(advancedGrade(saturate(rgb),ungraded), color.a * keyAlpha), pos.xy);
 }
 )";
 
@@ -422,10 +426,11 @@ inline ComPtrLite<ID3DBlob> compileShader(const char* source, const char* entry,
 // Retry without the optional effect on a Tiles shader failure. Callers disable
 // all decorations together and skip halo quads when this fallback is selected.
 inline ComPtrLite<ID3DBlob> compileTilesShader(const char* source, bool& available, std::string& error) {
-  auto blob = available ? compileShader(source, "main", "ps_5_0", error) : ComPtrLite<ID3DBlob>{};
+  const std::string graded = std::string(kAdvancedGradeHlsl) + source;
+  auto blob = available ? compileShader(graded.c_str(), "main", "ps_5_0", error) : ComPtrLite<ID3DBlob>{};
   if (blob) return blob;
   available = false;
-  const std::string clean = std::string("#define COREVIDEO_DISABLE_TILES_EFFECT 1\n") + source;
+  const std::string clean = std::string("#define COREVIDEO_DISABLE_TILES_EFFECT 1\n") + graded;
   return compileShader(clean.c_str(), "main", "ps_5_0", error);
 }
 

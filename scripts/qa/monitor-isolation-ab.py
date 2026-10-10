@@ -5,6 +5,7 @@ import argparse, pathlib, json, time, hashlib, mmap, struct, threading, uuid, sy
 from contextlib import ExitStack
 from monitor_evidence import Core, judge, counters, judge_recording, SourceAdmissionJudge
 from render_work_evidence import judge as judge_render_work
+from periodic_snapshots import periodic_snapshots
 
 
 def fixed(route_id, pid):
@@ -34,6 +35,17 @@ def program_routes(scene):
     return routes
 
 
+def advanced_grade(revision=1):
+    identity = [{"x": 0, "y": 0}, {"x": 1, "y": 1}]
+    return {"lut": "none", "advanced": {"version": 2, "colorSpace": "rec709-sdr", "intensity": 1,
+        "operations": [
+            {"id": "primaries", "kind": "primaries", "exposureStops": (revision % 5) * .05,
+             "contrast": 1.1, "saturation": 1.05, "curves": [identity] * 4},
+            {"id": "curves", "kind": "curves", "curves": [
+                [{"x": 0, "y": 0}, {"x": .333, "y": .4}, {"x": 1, "y": 1}], identity, identity, identity]}
+        ]}}
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Synthetic mixed-source monitor A/B; not release qualification"
@@ -51,6 +63,8 @@ def main():
     ap.add_argument("--gpu-submission-timing", action="store_true", help="Opt-in slow CPU call-scope attribution for internal encoder/monitor handoffs; not GPU-duration or driver-cause proof")
     ap.add_argument("--zoom-handoff-timing", action="store_true", help="Opt-in slow CPU scopes for Zoom handoff mutex waits and thumbnail encoding; not owner/driver-cause proof")
     ap.add_argument("--normal-logging", action="store_true", help="Leave native verbose diagnostics off; existing harness default remains verbose for attribution")
+    ap.add_argument("--grade-previews", type=int, choices=range(4), default=0, help="Open up to three native draft monitors with 2 Hz lease refresh; pixel/UI proof is separate")
+    ap.add_argument("--advanced-grade", action="store_true", help="Exercise live advanced grades plus editing and native scopes in open editors")
     ap.add_argument("--duration", type=float, default=120)
     ap.add_argument("--pairs", type=int, default=3)
     ap.add_argument("--warmup", type=float, default=10)
@@ -87,7 +101,10 @@ def main():
         "renderWorkJudgeSha256": hashlib.sha256(
             pathlib.Path(__file__).with_name("render_work_evidence.py").read_bytes()
         ).hexdigest(),
+        "periodicSamplingSha256": hashlib.sha256(pathlib.Path(__file__).with_name("periodic_snapshots.py").read_bytes()).hexdigest(),
         "sourceCommit": a.source_commit,
+        "gradePreviews": a.grade_previews,
+        "advancedGrade": a.advanced_grade,
         "buildConfiguration": "Release (operator supplied binary)",
         "flags": {
             "COREVIDEO_PROGRAM_BUFFER_FRAMES": "2",
@@ -173,6 +190,24 @@ def run_trial(a, exe, fake, out, label, isolated, results):
     publisher = None
     trace_path = out / (label + ".trace.bin")
     trace_start = trace_end = None
+    last_grade_refresh = 0
+    grade_revision = 0
+    grade_sources = ["101", "102", "capture:qa-screen"][:a.grade_previews]
+    scope_evidence = {}
+    def observe_grade(event):
+        if event.get("type") != "grade-preview" or event.get("sourceId") not in grade_sources: return
+        scope = event.get("scopes", {})
+        source_id = event["sourceId"]
+        row = scope_evidence.setdefault(source_id, {"observed": 0, "invalid": 0, "unavailable": 0, "advancements": 0})
+        row["unavailable"] += int(scope.get("status") == "unavailable")
+        if scope.get("texture", {}).get("width", 0) == 0: return
+        valid = (scope.get("revision") == event.get("revision") and scope.get("sourceEpoch") == event.get("sourceEpoch")
+            and scope.get("status") in ("ready", "stale", "held") and scope.get("sampleCount") == 36864
+            and scope.get("completionObservedAtUnixMs", 0) > 0 and scope.get("colorSpace") == "rec709-sdr-assumed")
+        previous = row.get("latest", {})
+        row["advancements"] += int(valid and (previous.get("sourceEpoch"), previous.get("sourceFrameId")) != (scope.get("sourceEpoch"), scope.get("sourceFrameId")))
+        row["observed"] += int(valid); row["invalid"] += int(not valid)
+        row["latest"] = {k: scope.get(k) for k in ("revision", "sourceEpoch", "sourceFrameId", "original", "sampleCount", "completionObservedAtUnixMs", "status")}
     admission_judge = SourceAdmissionJudge(
         ["capture:" + route["captureDeviceId"] if route["mode"] == "capture-input" else route["participantId"]
          for route in program_routes(a.program_scene)], a.cpu_source_preparation == "1")
@@ -197,9 +232,22 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 **({"COREVIDEO_DELIVERY_TRACE_PATH": str(trace_path)} if a.delivery_trace else {}),
             },
             out / (label + ".stderr.log"),
+            event_observer=observe_grade if a.advanced_grade else None,
         )
 
     def sync(commands=None):
+        nonlocal last_grade_refresh, grade_revision
+        if grade_sources and time.monotonic() - last_grade_refresh >= .5:
+            grade_revision += 1
+            for index, source in enumerate(grade_sources):
+                reply = core.request({"type": "set-grade-preview", "instanceId": f"qa-grade-{index}",
+                    "sourceId": source, "revision": grade_revision if a.advanced_grade else 1, "enabled": True,
+                    "scopesEnabled": a.advanced_grade, "grade": advanced_grade(grade_revision) if a.advanced_grade else {"lut": "warm-film"}})
+                assert reply.get("ok"), "grade demand refused"
+            last_grade_refresh = time.monotonic()
+        if commands and a.advanced_grade:
+            for command in commands:
+                for route in command.get("routes", []): route["colorGrade"] = advanced_grade()
         response = core.sync(commands or [], int((time.monotonic() - start) * 1000))
         assert response and response.get("ok"), "sync failed " + str(response)
         return response["snapshot"]
@@ -220,6 +268,7 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 "programSourceAdmission",
                 "deliveryEvidence",
                 "nativeDiagnostics",
+                "gradePreview",
             ]
         }
 
@@ -367,6 +416,14 @@ def run_trial(a, exe, fake, out, label, isolated, results):
             sync()
             time.sleep(0.25)
         first = sync()
+        if a.advanced_grade:
+            for source in first.get("programSourceAdmission", {}).get("sources", []):
+                reply = core.request({"type": "set-source-grade", "sourceId": source["sourceId"],
+                    "sourceEpoch": source["requestedEpoch"], "expectedRevision": 0, "grade": advanced_grade()})
+                if not reply.get("accepted"): raise RuntimeError("source grade apply refused: " + str(reply))
+            settle = time.monotonic() + .5
+            while time.monotonic() < settle: sync(); time.sleep(.05)
+            first = sync()
         if a.delivery_trace:
             trace_start = first.get("deliveryEvidence", {}).get("observedAtTicks")
             if not isinstance(trace_start, str) or not trace_start.isdecimal():
@@ -450,24 +507,33 @@ def run_trial(a, exe, fake, out, label, isolated, results):
                 raise RuntimeError("isolation mode changed")
 
         retain(first)
-        while time.monotonic() - before < a.duration:
-            retain(sync())
-            time.sleep(0.25)
+        last = first
+        for last in periodic_snapshots(sync, before + a.duration):
+            retain(last)
             if time.monotonic() - previous_progress >= 30:
                 print(
                     label + " measuring " + str(round(time.monotonic() - before)) + "s",
                     flush=True,
                 )
                 previous_progress = time.monotonic()
-        last = sync()
         if a.delivery_trace:
             value = last.get("deliveryEvidence", {}).get("observedAtTicks")
             if not isinstance(value, str) or not value.isdecimal():
                 raise RuntimeError("requested delivery trace has no final core clock observation")
             trace_end = int(value)
-        retain(last)
         seconds = time.monotonic() - before
+        if grade_sources:
+            facts = last.get("gradePreview", {})
+            if not facts.get("supported") or facts.get("activeEditors") != len(grade_sources) or facts.get("completed", 0) <= 0 or facts.get("failed") != 0 or facts.get("retainedInputs") != len(grade_sources):
+                raise RuntimeError("native grade worker did not complete the requested workload")
+        with core.condition:
+            measured_scopes = json.loads(json.dumps(scope_evidence))
+        if a.advanced_grade and any(measured_scopes.get(s, {}).get("advancements", 0) < max(1,int(a.duration)) or measured_scopes.get(s, {}).get("invalid", 0) or measured_scopes.get(s, {}).get("unavailable", 0) for s in grade_sources):
+            raise RuntimeError("requested scopes were not measured correctly: " + str(measured_scopes))
         result = {
+            "gradeScopeEvidence": measured_scopes,
+            "gradePreviews": len(grade_sources),
+            "gradePreviewObservation": last.get("gradePreview"),
             "label": label,
             "isolated": isolated,
             "seconds": seconds,

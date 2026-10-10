@@ -1,7 +1,6 @@
 // Metal compositor adapter tests (M1). Compiled only under
-// COREVIDEO_WITH_METAL; on a machine without a usable Metal device every test
-// SKIPS instead of failing — a GPU-less CI runner must never brick the suite
-// (deliberate divergence from the D3D11 tests' hard ASSERT_NE).
+// COREVIDEO_WITH_METAL; a missing Metal device is an explicit skip. Shader
+// compilation and pipeline failures on an available device must fail.
 
 #if COREVIDEO_WITH_METAL
 
@@ -55,7 +54,8 @@ std::unique_ptr<ICompositor> makeCompositorOrSkipReason(std::string& skipReason)
   std::string skipReason_;                                                    \
   auto var = makeCompositorOrSkipReason(skipReason_);                         \
   if (!var) {                                                                 \
-    std::fprintf(stderr, "[metal-test] skipping: %s\n", skipReason_.c_str()); \
+    std::fprintf(stderr, "[metal-test] unavailable: %s\n", skipReason_.c_str()); \
+    ASSERT_TRUE(skipReason_.find("no Metal device") != std::string::npos); \
     return;                                                                   \
   }
 
@@ -210,6 +210,64 @@ TEST(MetalCompositor, BgraFrameRendersItsPixels) {
   EXPECT_NEAR(pixel[0], 10, 2);
   EXPECT_NEAR(pixel[1], 200, 2);
   EXPECT_NEAR(pixel[2], 60, 2);
+}
+
+TEST(MetalCompositor, AdvancedPrimariesCurvesCubeAndBypassAffectNativePixels) {
+  MAKE_COMPOSITOR_OR_SKIP(compositor);
+  CompositorRenderPlan plan;
+  plan.renderPlanId = "advanced-metal";
+  plan.layers.push_back(solidLayer("cam", 0, 0, 1, 1));
+  plan.layers[0].hasColorGrade = true;
+  const auto source = bgraFrame("cam", 320, 180, 153, 102, 51);
+  auto check = [&](const std::shared_ptr<AdvancedGradeDocument>& doc,
+                   int r, int g, int b) {
+    plan.layers[0].colorGrade.advanced = doc;
+    const auto rendered = compositor->render(plan, {source});
+    ASSERT_TRUE(rendered.gpuComposed);
+    const auto pixel = previewAt(rendered.preview, .5f, .5f);
+    EXPECT_NEAR(pixel[2], r, 3);
+    EXPECT_NEAR(pixel[1], g, 3);
+    EXPECT_NEAR(pixel[0], b, 3);
+  };
+  auto primaries = std::make_shared<AdvancedGradeDocument>();
+  primaries->content = "metal-gray-primary";
+  GradeOperation primary;
+  primary.kind = "primaries"; primary.saturation = 0;
+  primaries->operations.push_back(primary);
+  // Independent Rec.709 luma: .2126*.2 + .7152*.4 + .0722*.6.
+  check(primaries, 95, 95, 95);
+
+  auto curve = std::make_shared<AdvancedGradeDocument>();
+  curve->content = "metal-master-half";
+  GradeOperation operation;
+  operation.kind = "curves";
+  operation.curves = {{{0,0},{1,.5f}}, {{0,0},{1,1}},
+                      {{0,0},{1,1}}, {{0,0},{1,1}}};
+  curve->operations.push_back(operation);
+  check(curve, 26, 51, 77);
+
+  auto cube = std::make_shared<GradeCubeLut>();
+  cube->size = 2; cube->hash = "metal-red-blue-swap";
+  for (int b=0; b<2; ++b) for (int g=0; g<2; ++g) for (int r=0; r<2; ++r)
+    cube->rgba.insert(cube->rgba.end(), {float(b),float(g),float(r),1.f});
+  auto lut = std::make_shared<AdvancedGradeDocument>();
+  lut->content = "metal-cube-swap";
+  operation = {}; operation.kind = "cube"; operation.cube = cube;
+  lut->operations.push_back(operation);
+  check(lut, 153, 102, 51);
+  lut->bypass = true;
+  check(lut, 51, 102, 153);
+
+  // The same primaries shader also consumes normalized Zoom I420 pixels.
+  plan.layers[0].participantId = "zoom-guest";
+  plan.layers[0].colorGrade.advanced = primaries;
+  const auto yuv = i420Frame("zoom-guest",320,180,120,90,190,true,false);
+  const auto rgb = expectedRgbForYuv(120,90,190,true,false);
+  const auto rendered = compositor->render(plan,{yuv});
+  ASSERT_TRUE(rendered.gpuComposed);
+  const auto pixel = previewAt(rendered.preview,.5f,.5f);
+  const int gray = int(std::lround(.2126*rgb[0]+.7152*rgb[1]+.0722*rgb[2]));
+  for(int channel=0;channel<3;++channel) EXPECT_NEAR(pixel[channel],gray,4);
 }
 
 TEST(MetalCompositor, I420FullRangeBt709ConvertMatchesReference) {

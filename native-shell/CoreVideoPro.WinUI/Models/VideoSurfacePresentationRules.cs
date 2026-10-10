@@ -24,7 +24,8 @@ public static class VideoSurfacePresentationRules
     /// <summary>
     /// Surfaces that present a GPU shared texture directly through a SwapChainPanel:
     /// PROGRAM, PREVIEW, and MULTIVIEW each present the core's single composite texture
-    /// through ONE stable swap chain. Every other surface (including the scene canvas
+    /// through ONE stable swap chain. A bounded pop-out grading monitor also presents
+    /// its private native export. Every other surface (including the scene canvas
     /// editor's per-layer surfaces) falls back to the CPU BGRA preview, and any
     /// <see cref="VideoSurfaceState.PendingSharedHandle"/> it carries is never presented.
     /// </summary>
@@ -32,7 +33,8 @@ public static class VideoSurfacePresentationRules
         IsProgramSurface(surfaceKey, kind) ||
         string.Equals(surfaceKey, PreviewSurfaceKey, StringComparison.Ordinal) ||
         kind == VideoSurfaceKind.Preview ||
-        string.Equals(surfaceKey, MultiviewSurfaceKey, StringComparison.Ordinal);
+        string.Equals(surfaceKey, MultiviewSurfaceKey, StringComparison.Ordinal) ||
+        (kind == VideoSurfaceKind.Participant && surfaceKey?.StartsWith("grade:", StringComparison.Ordinal) == true);
 
     /// <summary>
     /// The surface key the scene canvas editor's layer N binds to, derived from the

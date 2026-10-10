@@ -2,7 +2,7 @@ using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.MediaCore.Services;
 
-public sealed class MediaCoreBridgeService : IMediaCoreBridge
+public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTransport
 {
     private readonly MediaCoreSupervisor _supervisor;
     private readonly MediaCoreSyncScheduler _syncScheduler = new();
@@ -66,6 +66,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
         _supervisor.ProgramSharedTextureReceived += texture => ProgramSharedTextureReceived?.Invoke(texture);
         _supervisor.PreviewSharedTextureReceived += texture => PreviewSharedTextureReceived?.Invoke(texture);
         _supervisor.ParticipantSharedTextureReceived += texture => ParticipantSharedTextureReceived?.Invoke(texture);
+        _supervisor.GradePreviewReceived += observation => GradePreviewReceived?.Invoke(observation);
         _supervisor.MultiviewSharedTextureReceived += texture => MultiviewSharedTextureReceived?.Invoke(texture);
     }
 
@@ -83,6 +84,14 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
     public event Action<ProgramSharedTexture>? PreviewSharedTextureReceived;
     public event Action<ParticipantSharedTexture>? ParticipantSharedTextureReceived;
+    public event Action<GradePreviewObservation>? GradePreviewReceived;
+    public Task SetGradePreviewAsync(string instanceId, string sourceId, long revision, bool enabled,
+        MediaCoreColorGradeWire grade, CancellationToken cancellationToken = default) =>
+        _supervisor.SetGradePreviewAsync(instanceId, sourceId, revision, enabled, grade, cancellationToken);
+    public Task RenewGradePreviewAsync(string instanceId, string sourceId, long revision, MediaCoreColorGradeWire grade,
+        CancellationToken cancellationToken = default) => _supervisor.RenewGradePreviewAsync(instanceId,sourceId,revision,cancellationToken);
+    public Task<SourceGradeApplyOutcome> ApplySourceGradeAsync(string sourceId,ulong sourceEpoch,long expectedRevision,MediaCoreColorGradeWire grade,
+        CancellationToken cancellationToken = default) => _supervisor.ApplySourceGradeAsync(sourceId,sourceEpoch,expectedRevision,grade,cancellationToken);
     public event Action<MultiviewSharedTexture>? MultiviewSharedTextureReceived;
 
     public MediaCoreHealth Health => _supervisor.Health;

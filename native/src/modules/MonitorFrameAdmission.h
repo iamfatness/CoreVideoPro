@@ -14,7 +14,9 @@ inline bool monitorPlanNeedsFrame(const CompositorRenderPlan& plan, const VideoF
   });
 }
 inline bool monitorRequestNeedsFrame(const MonitorRenderRequest& request, const VideoFrame& frame) {
-  return (request.previewActive && monitorPlanNeedsFrame(request.previewPlan, frame)) ||
+  return std::any_of(request.gradePreviews.begin(), request.gradePreviews.end(),
+          [&](const auto& demand) { return demand.sourceId == frame.participantId; }) ||
+      (request.previewActive && monitorPlanNeedsFrame(request.previewPlan, frame)) ||
       (request.multiviewActive && monitorPlanNeedsFrame(request.multiviewPlan, frame)) ||
       std::any_of(request.sourceExports.begin(), request.sourceExports.end(),
           [&](const auto& demand) { return demand.sourceId == frame.participantId; });

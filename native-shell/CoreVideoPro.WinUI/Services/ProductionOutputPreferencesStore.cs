@@ -185,6 +185,7 @@ public sealed class ProductionOutputPreferences
     // Zoom participant ids inside routes are per-meeting and go stale across
     // sessions; show-input-slot assignments (the primary path) survive.
     public List<PersistedScene> CustomScenes { get; set; } = [];
+    public Dictionary<string, ColorGrade> SourceGrades { get; set; } = new(StringComparer.Ordinal);
 
     // Master rack (v6, master-vst-round2-spec §B2). Null blocks = an older
     // file or a fresh profile — the in-app defaults apply and nothing syncs

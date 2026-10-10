@@ -777,6 +777,8 @@ if(BUILD_TESTING)
     tests/SourceContinuityLedgerTest.cpp
     tests/MonitorRenderFaultInjectionTest.cpp
     tests/MonitorRenderWorkerTest.cpp
+    tests/GradePreviewTest.cpp
+    tests/AdvancedGradeTest.cpp
     tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp
     tests/DirectorTest.cpp
