@@ -65,6 +65,7 @@ relaunch. No duration alone establishes all criteria or fleet qualification.
 
 ## Design and historical evidence
 
+- [October 10 installed partial review](operator-uiux-installed-review-2026-10-10.md), with explicit remaining evidence gaps.
 - [Bundle specification](../reference/operator-editing-bundle-spec.md) and [implementation plan](../reference/operator-editing-bundle-plan.md).
 - [Adjustment control specification](../reference/operator-adjustment-controls-spec.md), [grading specification](../reference/source-grading-spec.md), [drawn ROI contract](../reference/roi-drawing-tools.md), [webcam framer specification](../reference/webcam-framer.md).
 - [Combined validation](../reference/operator-editing-validation.md), [Sources audit](sources-controls-2026-10-09.md), [source text](source-lower-third-text-2026-10-09.md), [casing investigation](lower-third-casing-2026-10-09.md), [Settings/Health](settings-health-2026-10-09.md), [OHG opt-in](ohg-navigation-opt-in-2026-10-09.md).
