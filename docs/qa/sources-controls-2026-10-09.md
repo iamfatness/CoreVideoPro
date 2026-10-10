@@ -57,4 +57,7 @@ Use a packaged build with real Zoom/capture/media inputs at the owner's normal
 window sizes. Review the relocated controls, ten-row scrolling, capture list and
 keyboard use. Change Role and On dropout, verify the production behavior, restart
 and confirm source assignments and saved dropout values. The issue stays open
-until that acceptance and merge; the weekend bake remains separate.
+until that acceptance; PR #844 is merged and included in installed
+`beta-2026-10-10-abb97fb`. The local trials above remain historical evidence.
+Use the [UI/UX acceptance protocol](operator-uiux-installed-acceptance.md) for
+the consolidated installed review; the weekend bake remains separate.
