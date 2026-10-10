@@ -15,6 +15,14 @@ the lower-third batch alongside #592/#593, before starter scenes #591. Deliver
 polished presets and a shared appearance editor with actual native output effects;
 source text remains in Sources. Keep short output acceptance and weekend bake distinct.
 
+**Owner control-usability direction on 2026-10-09:** extend the operator batch
+with [#848](https://github.com/iamfatness/CoreVideoPro/issues/848): scene, audio,
+grading and lower-third controls need direct manipulation, meaningful units/ranges,
+clear defaults/reset and visible feedback. Implement the shared interaction standard
+through the existing #847/#835/#591 consumers; precise numeric entry remains available.
+This broadens the accepted UI scope without displacing media acceptance or inventing
+a separate work order.
+
 **Owner top priority on 2026-10-08:** advanced per-source grading
 [#835](https://github.com/iamfatness/CoreVideoPro/issues/835), with an optional expanded
 workspace, editable curves, histogram, waveform and vectorscope. Its first slice
