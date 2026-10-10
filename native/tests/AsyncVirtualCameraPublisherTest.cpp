@@ -6,6 +6,20 @@
 using namespace corevideo::modules;
 using namespace std::chrono_literals;
 namespace {
+#if !COREVIDEO_WITH_VIRTUALCAM
+TEST(AsyncVirtualCameraPublisher, DisabledCameraFactoryReportsFramerIntentAsUnavailable) {
+  auto camera=createVirtualCameraPublisher();
+  EXPECT_FALSE(camera->status().framerEnabled);
+  camera->setFramerEnabled(true);
+  EXPECT_TRUE(camera->status().framerEnabled);
+  EXPECT_EQ(camera->status().framerState,"unavailable");
+  EXPECT_FALSE(camera->status().framerWarning.empty());
+  camera->setFramerEnabled(false);
+  EXPECT_FALSE(camera->status().framerEnabled);
+  EXPECT_EQ(camera->status().framerState,"off");
+  EXPECT_TRUE(camera->status().framerWarning.empty());
+}
+#endif
 struct SlowCamera : IVirtualCameraPublisher {
   std::promise<void> entered, release;
   std::shared_future<void> gate = release.get_future().share();
@@ -41,6 +55,94 @@ struct FailedCamera : IVirtualCameraPublisher {
   void publish(const ProgramFrame&) override {}
   VirtualCameraStatus status() const override { VirtualCameraStatus s; s.state="failed"; s.warning="OS rejected camera"; return s; }
 };
+struct CaptureCamera : IVirtualCameraPublisher {
+  std::mutex captureMutex;
+  std::condition_variable changed;
+  std::shared_ptr<const std::vector<uint8_t>> last;
+  int64_t sequence=0, deliveredAt=0;
+  int lastWidth=0, lastHeight=0;
+  VirtualCameraStatus current;
+  bool start(int,int,int) override { current.enabled=true; current.state="live"; return true; }
+  void stop() override { current.enabled=false; current.state="off"; }
+  void publish(const ProgramFrame&) override {}
+  void publishNv12IdentifiedOnWorker(std::shared_ptr<const std::vector<uint8_t>> bytes,
+      int w,int h,int64_t seq,int64_t at) override {
+    std::lock_guard<std::mutex> lock(captureMutex);
+    last=std::move(bytes); sequence=seq; deliveredAt=at; lastWidth=w; lastHeight=h;
+    ++current.framesPublished; changed.notify_all();
+  }
+  VirtualCameraStatus status() const override { return current; }
+  bool await(int64_t expected) {
+    std::unique_lock<std::mutex> lock(captureMutex);
+    return changed.wait_for(lock,2s,[&]{ return sequence==expected; });
+  }
+};
+TEST(AsyncVirtualCameraPublisher, FramerForkPreservesSourceAttributionAndOffIdentity) {
+  auto inner=std::make_unique<CaptureCamera>(); auto* backend=inner.get();
+  AsyncVirtualCameraPublisher camera(std::move(inner));
+  camera.setFramerEnabled(true); camera.start(1920,1080,60);
+  auto clean=std::make_shared<const std::vector<uint8_t>>(1920*1080*3/2,100);
+  camera.publishNv12Identified(clean,1920,1080,401,9001);
+  ASSERT_TRUE(backend->await(401));
+  const auto readyDeadline=std::chrono::steady_clock::now()+2s;
+  while (camera.status().framerState != "active" && camera.status().framerState != "unavailable"
+         && std::chrono::steady_clock::now()<readyDeadline) {
+    std::this_thread::sleep_for(2ms);
+    camera.publishNv12Identified(clean,1920,1080,401,9001);
+  }
+  EXPECT_NE(camera.status().framerState,"waiting");
+  std::shared_ptr<const std::vector<uint8_t>> decorated;
+  { std::lock_guard<std::mutex> lock(backend->captureMutex);
+    decorated=backend->last;
+    EXPECT_EQ(backend->deliveredAt,9001);
+  }
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11
+  EXPECT_NE(decorated.get(),clean.get());
+  EXPECT_EQ(decorated->at(950*1920+960),58);
+#else
+  EXPECT_EQ(decorated.get(),clean.get());
+#endif
+  EXPECT_EQ(clean->at(950*1920+960),100);
+  camera.setFramerEnabled(false);
+  camera.publishNv12Identified(clean,1920,1080,402,9002);
+  ASSERT_TRUE(backend->await(402));
+  { std::lock_guard<std::mutex> lock(backend->captureMutex);
+    EXPECT_EQ(backend->last.get(),clean.get());
+    EXPECT_EQ(backend->deliveredAt,9002);
+  }
+  EXPECT_FALSE(camera.status().framerEnabled);
+  EXPECT_EQ(camera.status().framerState,"off");
+  // A retained decorated image must remain immutable after another publication.
+#if defined(_WIN32) && COREVIDEO_WITH_D3D11
+  constexpr int expectedTint=58;
+#else
+  constexpr int expectedTint=100;
+#endif
+  EXPECT_EQ(decorated->at(950*1920+960),expectedTint);
+}
+TEST(AsyncVirtualCameraPublisher, FramerFallbackKeepsFixedCameraSizeAndIdentity) {
+  auto inner=std::make_unique<CaptureCamera>(); auto* backend=inner.get();
+  AsyncVirtualCameraPublisher camera(std::move(inner));
+  camera.setFramerEnabled(true); camera.start(1920,1080,60);
+  auto primer=std::make_shared<const std::vector<uint8_t>>(1920*1080*3/2,100);
+  const auto readyDeadline=std::chrono::steady_clock::now()+2s;
+  do {
+    camera.publishNv12Identified(primer,1920,1080,400,9000);
+    std::this_thread::sleep_for(2ms);
+  } while (camera.status().framerState != "active" && camera.status().framerState != "unavailable"
+           && std::chrono::steady_clock::now()<readyDeadline);
+  EXPECT_NE(camera.status().framerState,"waiting");
+  ProgramFrame frame;
+  frame.frameNumber=403; frame.deliveredAt100ns=9003;
+  frame.preview.width=8; frame.preview.height=8; frame.preview.bgra.assign(8*8*4,100);
+  camera.publish(frame);
+  ASSERT_TRUE(backend->await(403));
+  { std::lock_guard<std::mutex> lock(backend->captureMutex);
+    EXPECT_EQ(backend->lastWidth,1920); EXPECT_EQ(backend->lastHeight,1080);
+    EXPECT_EQ(backend->last->size(),1920u*1080*3/2);
+    EXPECT_EQ(backend->deliveredAt,9003);
+  }
+}
 struct QueuedCamera : IVirtualCameraPublisher {
   std::promise<void> entered, release;
   std::shared_future<void> gate = release.get_future().share();

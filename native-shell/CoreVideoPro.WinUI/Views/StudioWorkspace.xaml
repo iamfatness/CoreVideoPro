@@ -181,7 +181,7 @@
                     <TextBlock Text="Setup" FontSize="10" FontWeight="Bold"
                                Foreground="{StaticResource StudioMutedBrush}"
                                VerticalAlignment="Center" Margin="10,0,2,0" />
-                    <Button Content="Zoom" Style="{StaticResource GhostButton}"
+                    <Button Content="Settings" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.SettingsTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.SettingsTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.SettingsTabChrome.Foreground, Mode=OneWay}"
@@ -235,12 +235,6 @@
                             Foreground="{x:Bind ViewModel.OhgShowTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="ohgshow"
                             ToolTipService.ToolTip="OHG show direction — seating, looks, hands queue, gallery" />
-                    <TextBlock Text="Diagnose" FontSize="10" FontWeight="Bold"
-                               Foreground="{StaticResource StudioMutedBrush}"
-                               VerticalAlignment="Center" Margin="10,0,2,0" />
-                    <Button Content="Health" Style="{StaticResource GhostButton}"
-                            Command="{x:Bind ViewModel.OpenDiagnosticsCommand}"
-                            ToolTipService.ToolTip="System status and support tools" />
                     </StackPanel>
                 </ScrollViewer>
 
@@ -780,7 +774,7 @@
 
         <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
                 Visibility="{x:Bind ViewModel.IsSettingsTab, Mode=OneWay}">
-            <views:SettingsPage ViewModel="{x:Bind ViewModel.Settings, Mode=OneWay}" />
+            <views:SettingsPage ViewModel="{x:Bind ViewModel.Settings, Mode=OneWay}" Studio="{x:Bind ViewModel, Mode=OneWay}" />
         </Border>
 
         <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
@@ -1389,6 +1383,13 @@
                             <Flyout Placement="Top">
                                 <StackPanel Spacing="10" MinWidth="230">
                                     <TextBlock Text="Virtual camera" FontWeight="Bold" FontSize="13" />
+                                    <ToggleSwitch Header="OH Framer (webcam only)"
+                                                  IsOn="{x:Bind ViewModel.VirtualCameraFramerEnabled, Mode=TwoWay}" />
+                                    <TextBlock Text="Framing guides over live video. Program, Preview, recordings and streams stay clean."
+                                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                               MaxWidth="280" TextWrapping="WrapWholeWords" />
+                                    <TextBlock Text="{x:Bind ViewModel.VirtualCameraFramerStatusLabel, Mode=OneWay}"
+                                               FontSize="11" MaxWidth="280" TextWrapping="WrapWholeWords" />
                                     <ToggleSwitch Header="Mirror (self-view)"
                                                   IsOn="{x:Bind ViewModel.VirtualCameraMirror, Mode=TwoWay}" />
                                     <TextBlock Text="Flips the camera horizontally, like most webcam self-views."

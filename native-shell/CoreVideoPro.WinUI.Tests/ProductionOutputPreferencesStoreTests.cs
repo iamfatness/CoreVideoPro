@@ -59,6 +59,7 @@ public sealed class ProductionOutputPreferencesStoreTests
             BrandDefaultOverlayBehavior = "manual",
             VirtualCameraEnabled = true,
             VirtualCameraMirror = true,
+            VirtualCameraFramerEnabled = true,
             VirtualCameraName = "Studio A Program",
             MultiviewLayoutMode = "pgmPvwLarge",
             MultiviewTileCount = 5,
@@ -114,6 +115,7 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.Equal("Dr. Jane Smith", roundTripped.SourceDisplayNames["zoom:p-42"]);
         Assert.True(roundTripped.VirtualCameraEnabled);
         Assert.True(roundTripped.VirtualCameraMirror);
+        Assert.True(roundTripped.VirtualCameraFramerEnabled);
         Assert.Equal("Studio A Program", roundTripped.VirtualCameraName);
         Assert.Equal("pgmPvwLarge", roundTripped.MultiviewLayoutMode);
         Assert.Equal(5, roundTripped.MultiviewTileCount);
@@ -141,6 +143,7 @@ public sealed class ProductionOutputPreferencesStoreTests
         // an explicit operator action; blank name keeps the built-in default.
         Assert.False(preferences.VirtualCameraEnabled);
         Assert.False(preferences.VirtualCameraMirror);
+        Assert.False(preferences.VirtualCameraFramerEnabled);
         Assert.Null(preferences.VirtualCameraName);
         Assert.Equal(ZoomAudioModePreference.PerGuestIsoValue, preferences.ZoomAudioMode);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, preferences.Version);
@@ -632,6 +635,7 @@ public sealed class ProductionOutputPreferencesStoreTests
         // default name) — a migration must never switch the camera on.
         Assert.False(loaded.VirtualCameraEnabled);
         Assert.False(loaded.VirtualCameraMirror);
+        Assert.False(loaded.VirtualCameraFramerEnabled);
         Assert.Null(loaded.VirtualCameraName);
         // Secrets and other fields survive the bump untouched...
         Assert.Equal("v4-stream-key", loaded.StreamRtmpStreamKey);
@@ -798,6 +802,7 @@ public sealed class ProductionOutputPreferencesStoreTests
         {
             VirtualCameraEnabled = true,
             VirtualCameraMirror = true,
+            VirtualCameraFramerEnabled = true,
             VirtualCameraName = "Booth Cam"
         });
 
@@ -806,6 +811,7 @@ public sealed class ProductionOutputPreferencesStoreTests
         Assert.NotNull(loaded);
         Assert.True(loaded.VirtualCameraEnabled);
         Assert.True(loaded.VirtualCameraMirror);
+        Assert.True(loaded.VirtualCameraFramerEnabled);
         Assert.Equal("Booth Cam", loaded.VirtualCameraName);
         Assert.Equal(ProductionOutputPreferences.CurrentVersion, loaded.Version);
     }
