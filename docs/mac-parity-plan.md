@@ -335,6 +335,14 @@ All **7 open feature PRs** at audit time (#837, #840, #842–#846) **touch zero
 source grading, lower-third editor/casing, OHG-navigation opt-in, sources
 guest-role/dropout UI relocation) creates new Mac-parity debt by landing.
 
+*(Update 2026-10-10: that queue — #837–#849, ~60 commits — merged to main the
+night after this audit. This branch was rebased over it with zero conflicts;
+the merged work touched no `mac-shell` file and none of the core contracts
+this branch's wire depends on (`set-source-policy`, `participant-video`
+tiering, `subscribedVideoFeeds`), verified by diff at rebase time. The
+Windows-only ledger above grew accordingly; the per-commit classification of
+the new window is the next audit's job, not this one's.)*
+
 **Net effect on this document:** nothing in this window changes §4's item
 count, §5.1's correction, §5.2's closure, or §5.3's reclassification. The
 window is further evidence that the divergence risk remains concentrated in
