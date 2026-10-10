@@ -368,6 +368,7 @@ public sealed record MediaCoreProductionSyncContext
     // Virtual camera (virtual-camera-spec V4/V5).
     public bool VirtualCameraEnabled { get; init; }
     public bool VirtualCameraMirror { get; init; }
+    public bool VirtualCameraFramerEnabled { get; init; }
     public string VirtualCameraDeviceName { get; init; } = string.Empty;
 
     /// <summary>
