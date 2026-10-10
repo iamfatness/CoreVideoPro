@@ -6,6 +6,36 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class LiveProductionSyncTests
 {
+    [Theory]
+    [InlineData("guest", "Guest")]
+    [InlineData("Guest", "Guest")]
+    [InlineData(" GUEST ", "Guest")]
+    [InlineData("", "Guest")]
+    [InlineData(null, "Guest")]
+    [InlineData("host", "Host")]
+    [InlineData("panelist", "Panelist")]
+    [InlineData("presenter", "Presenter")]
+    public void WireAndSdkRoleCasingProduceTheSameFallbackTitle(string? role, string expected)
+    {
+        var raw = new RawParticipantEvent { UserId = "p2", DisplayName = "Dana", Role = role };
+        var mapped = LiveProductionSync.MapRawParticipants([raw]);
+        Assert.Equal(expected, mapped[0].RoleLabel);
+        Assert.Equal(expected, mapped[0].Title);
+        var context = Context with { Participants = mapped };
+        var before = LiveProductionSync.ResolveProgramLowerThird(BuildSnapshot(), context);
+        var refreshed = LiveProductionSync.MapRawParticipants([new RawParticipantEvent { UserId = "p2", DisplayName = "Dana", Role = expected }]);
+        var after = LiveProductionSync.ResolveProgramLowerThird(BuildSnapshot(), context with { Participants = refreshed });
+        Assert.Equal(before, after);
+    }
+
+    [Fact]
+    public void RoleNormalizationPreservesAuthoredTitleAndCustomRole()
+    {
+        var raw = new RawParticipantEvent { UserId = "p2", DisplayName = "Dana", Role = "guest", Title = "guest lecturer" };
+        Assert.Equal("guest lecturer", LiveProductionSync.MapRawParticipants([raw])[0].Title);
+        Assert.Equal("Stage manager", LiveProductionSync.MapRawParticipants([new RawParticipantEvent { UserId = "p2", DisplayName = "Dana", Role = " Stage manager " }])[0].RoleLabel);
+    }
+
     private static readonly LiveProductionSync.LiveProductionSyncContext Context = new()
     {
         ActiveSceneId = "speaker-slides",
