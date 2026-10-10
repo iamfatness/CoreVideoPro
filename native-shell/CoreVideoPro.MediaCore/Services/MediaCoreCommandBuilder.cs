@@ -839,6 +839,7 @@ public static class MediaCoreCommandBuilder
             ["height"] = 720,
             ["fps"] = 30,
             ["mirror"] = context.VirtualCameraMirror,
+            ["framerEnabled"] = context.VirtualCameraFramerEnabled,
             ["deviceName"] = context.VirtualCameraDeviceName
         });
 

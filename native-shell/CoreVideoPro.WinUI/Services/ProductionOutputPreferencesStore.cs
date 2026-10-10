@@ -130,6 +130,7 @@ public sealed class ProductionOutputPreferences
     // capture posture above.
     public bool VirtualCameraEnabled { get; set; }
     public bool VirtualCameraMirror { get; set; }
+    public bool VirtualCameraFramerEnabled { get; set; }
     public string? VirtualCameraName { get; set; }
     public string? MultiviewLayoutMode { get; set; }
     public int MultiviewTileCount { get; set; } = 10;

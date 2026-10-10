@@ -1389,6 +1389,13 @@
                             <Flyout Placement="Top">
                                 <StackPanel Spacing="10" MinWidth="230">
                                     <TextBlock Text="Virtual camera" FontWeight="Bold" FontSize="13" />
+                                    <ToggleSwitch Header="OH Framer (webcam only)"
+                                                  IsOn="{x:Bind ViewModel.VirtualCameraFramerEnabled, Mode=TwoWay}" />
+                                    <TextBlock Text="Framing guides over live video. Program, Preview, recordings and streams stay clean."
+                                               FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+                                               MaxWidth="280" TextWrapping="WrapWholeWords" />
+                                    <TextBlock Text="{x:Bind ViewModel.VirtualCameraFramerStatusLabel, Mode=OneWay}"
+                                               FontSize="11" MaxWidth="280" TextWrapping="WrapWholeWords" />
                                     <ToggleSwitch Header="Mirror (self-view)"
                                                   IsOn="{x:Bind ViewModel.VirtualCameraMirror, Mode=TwoWay}" />
                                     <TextBlock Text="Flips the camera horizontally, like most webcam self-views."
