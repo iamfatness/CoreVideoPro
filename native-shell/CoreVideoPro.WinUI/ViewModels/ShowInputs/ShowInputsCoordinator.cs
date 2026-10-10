@@ -150,7 +150,9 @@ public sealed class ShowInputsCoordinator
                 _host.ResolveSourceDisplayName,
                 _host.SetSourceDisplayName,
                 OnShowInputIsoToggled,
-                MultiviewInputRows.Rows[slot.SlotNumber - 1]));
+                MultiviewInputRows.Rows[slot.SlotNumber - 1],
+                _host.ResolveSourceSecondaryLine, _host.UsesDefaultSourceSecondaryLine,
+                _host.ApplySourceLowerThirdText));
         }
 
         RefreshShowInputEditors(force: true);
