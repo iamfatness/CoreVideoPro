@@ -128,3 +128,125 @@ Any additional missed output deadline fails performance acceptance; average FPS 
 an advancing UI counter cannot waive it. Verify bounded memory/resources during
 rapid edits and open/close cycles. Missing receiver or live-meeting evidence remains
 unverified. A specification or synthetic pass does not close #835.
+
+## Native Basic preview implementation
+
+The Basic editor sends an instance/source/revision demand through the small
+`set-grade-preview` RPC acknowledgement. It does not request a production sync
+snapshot. Edits coalesce on a 100 ms control timer; a 500 ms heartbeat renews a
+three-second native lease. Up to three editors share one replaceable pending job.
+Closing or shell shutdown releases demand; a lost close expires the lease.
+
+D3D11 allocates a separate monitor device lazily on its worker, on Program's
+adapter. Only selected immutable source references enter that worker. GPU inputs
+must use monitor-private representations; production capture leases are stripped.
+The existing native source-export shader applies the grade at source resolution,
+without scene framing, borders, overlays, or CPU pixel processing. Each editor
+has its own shared texture. Removing the final demand destroys the backend on its
+owner. Unsupported builds acknowledge the command and report unavailable.
+
+Observations carry editor, source, draft revision, source epoch/frame and capture
+time. Export publication must match retained attribution before emission. The
+shell rejects another editor/source or an older revision. New edits clear the old
+picture while preparing. Unavailable inputs hold their actual prior source identity;
+a source frame that does not advance for one second is labeled stale. Snapshot
+`gradePreview` reports worker submissions/completions/failures and retained inputs,
+with physical display presentation explicitly unverified.
+
+Basic defaults to clearly labeled live editing, preserving its existing apply
+behavior. Turning it off keeps edits private until Apply and Done; comparison
+uses a neutral monitor demand and never changes the applied grade. Closing a draft
+discards it. Closing does not undo edits already applied live. The workspace can
+maximize. The expanded implementation below adds the versioned document, curves, scopes,
+primaries, ordered stack, LUT import, presets and revisioned source apply.
+
+
+## Expanded workspace implementation
+
+Basic retains its established sliders and built-in looks. Expand opens a resizable
+workspace and switches to private draft editing. Collapse preserves the advanced
+document. Apply Live or Apply and Done submits one immutable grade; Close discards
+unapplied draft edits. Compare Original changes only the selected-source monitor.
+Analyze Original independently changes the scope tap. Enable Apply edits live only
+when edits should reach the show automatically. Close does not undo accepted live
+edits. Undo/redo retains the full Basic and Advanced grade, including a preset load
+as one action, with a bounded 100-entry history.
+
+The version-2 document declares `rec709-sdr`, global bypass/intensity and at most
+eight uniquely identified operations. Operations have independent enable/intensity
+and explicit list order. Primaries expose exposure in stops, encoded contrast/pivot,
+saturation, normalized warm/cool and green/magenta balance, lift, gamma and gain.
+Curves have Master/R/G/B channels and 2–16 strictly ordered float32 control points;
+input endpoints stay at zero and one. Pointer editing, numeric input/output, Delete,
+channel reset and undo use the same document. Native shaders evaluate exact
+piecewise-linear segments from a 16×32 RG32_FLOAT point texture; curves are never
+resampled into an 8-bit curve LUT.
+
+The existing Basic transform and named look run first. For each enabled operation,
+primaries decode the Rec.709 transfer, multiply linear light by `2^exposureStops`,
+then encode. Contrast about the encoded pivot and saturation about Rec.709 luma
+follow. Balance adds `(0.1T−0.05t, 0.1t, −0.1T−0.05t)` in encoded RGB. Lift/gain/gamma
+apply `max((v+lift)*gain,0)^(1/gamma)`. Curves apply Master then the respective RGB
+channel. Cube input is encoded RGB mapped from the declared domain into its
+clamped lattice, with red varying fastest and trilinear interpolation. Each operation
+clips its result to SDR [0,1], then mixes with its input by operation intensity.
+Overall intensity mixes the original pre-Basic RGB with the completed grade.
+Bypass bypasses the entire grade. These controls are SDR balance controls, not a
+camera-specific Kelvin calibration or an HDR color-management system.
+
+Import accepts finite 3D `.cube` lattices of size 2–33, explicit or default domain,
+and at most 2 MB per file. A grade embeds at most 1.5 MB of LUT text; invalid,
+incomplete, 1D, nonfinite, duplicate-header and hash-mismatched LUTs are rejected
+before editing. Original text and SHA256 travel together, so a preset does not
+rely on a workstation-specific path. `.cvgrade` presets and clipboard copy/paste
+contain the entire Basic/Advanced grade. Documents register once by content hash;
+subsequent route sync, preview and apply commands carry a small document reference.
+Native registration is bounded; an expired reference is rejected rather than
+substituting a look. The shell checks presence before use.
+
+`set-source-grade` checks observed source epoch and expected applied revision.
+Invalid documents, missing/replaced sources, revision conflicts and capacity
+failures retain the previous authoritative grade. The shell saves accepted state
+only after native acknowledgement and keeps rejected edits as a draft. The ack
+means control-state acceptance; it is not evidence of a completed GPU frame or
+receiver presentation. Source grades are applied once before composition, including
+Tiles and participant exports outside Program. Raw ISO policy is unchanged.
+
+Saved source grades use stable capture IDs or Zoom persistent participant IDs.
+They never bind by an ephemeral Zoom ID alone. Restored grades open as drafts and
+require explicit Apply Live to confirm the current source binding. Up to 64 source
+grades are saved; saving a new source at capacity retires the oldest with an
+operator status notice. Accepted changes save after a 750 ms debounce and flush
+on orderly shutdown.
+
+## GPU scope observations
+
+The Windows worker grades a private 256×144 sample, then computes GPU bins for
+histogram (256 RGB/luma bins), waveform (256×256 per RGB/luma channel) and vectorscope
+(256×256 Rec.709 Cb/Cr). A second GPU reduction finds histogram peaks once per sample;
+the display shader uses a shared RGB peak so channel distributions remain comparable.
+Waveform/vectorscope show logarithmic sample density, not clipping counters.
+Histogram supports luma/RGB; waveform supports luma, RGB overlay and parade.
+Vectorscope includes 75% encoded RGB targets and a skin reference direction, which
+is a reference rather than a skin classifier. Each scope can expand independently;
+the vectorscope preserves its square geometry in the expanded texture.
+
+The native worker exports one completed 1536×512 GPU texture for the scopes, with no
+CPU source/scope readback. The shell receives source epoch/frame/capture timestamp,
+draft revision, original/graded tap, selected view, sample dimensions/count, assumed
+Rec.709 SDR units and status. `completionObservedAtUnixMs` is the wall-clock time the
+controller first observed the actual completed export token; it is not a fabricated
+GPU timestamp. Source age measures time since observed source advancement, not
+transport latency. Preview and scope staleness are judged independently. Hidden
+scopes stop GPU analysis; closing/lease expiry retires worker-owned resources.
+Initialization/render/export failures report unavailable. Physical display and
+external receiver presentation remain separate qualification evidence.
+
+
+The D3D document texture cache retains at most 64 documents by last use; immutable
+cube textures reuse their validated content hash. Resource preparation currently
+occurs on the owning GPU context. A native apply acknowledgement does not promise
+that resource allocation or the first graded GPU frame has completed. Device-loss
+and allocation-failure rollback require separate qualification before release.
+Metal uses the same source-grade operations for composition; the private grading
+workspace/scopes export backend is currently supported on Windows D3D11 only.

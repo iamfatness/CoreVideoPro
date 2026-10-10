@@ -281,10 +281,12 @@ TEST(ContractParity, EveryRequestTheShellsSendIsHandledByTheCore) {
 }
 
 TEST(ContractParity, EveryCoreEventIsEmittedByTheCoreAndParsedByTheShell) {
-  const std::string coreSource = readRepoTree("native/src", ".cpp");
+  const std::string coreSource = readRepoTree("native/src", ".cpp") +
+      readRepoFile("native/src/core/GradePreviewController.h");
   const std::string shellParser =
       readRepoFile("native-shell/CoreVideoPro.MediaCore/Services/CoreProtocolParser.cs") +
-      readRepoFile("native-shell/CoreVideoPro.MediaCore/Models/CoreProtocolModels.cs");
+      readRepoFile("native-shell/CoreVideoPro.MediaCore/Models/CoreProtocolModels.cs") +
+      readRepoFile("native-shell/CoreVideoPro.MediaCore/Services/GradePreviewProtocol.cs");
   ASSERT_FALSE(coreSource.empty());
   ASSERT_FALSE(shellParser.empty());
   for (const auto name : corevideo::core::kCoreEventTypes) {

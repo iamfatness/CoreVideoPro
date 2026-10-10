@@ -755,6 +755,10 @@ def main():
     core.kill()
 
     if failures:
+        print("\nNative pipeline diagnostics:")
+        for line in core.stderr:
+            if "[compositor]" in line or "shader compile failed" in line:
+                print(f"  {line}")
         print("\nSHOW DRILL FAILED")
         for failure in failures:
             print(f"  - {failure}")

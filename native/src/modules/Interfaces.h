@@ -352,6 +352,28 @@ struct CompositorLayerRect {
   float height = 1.f;
 };
 
+struct GradeCurvePoint { float x = 0.f, y = 0.f; };
+struct GradeCubeLut {
+  int size = 0;
+  float domainMin[3]{0,0,0}, domainMax[3]{1,1,1};
+  std::vector<float> rgba;
+  std::string hash;
+};
+struct GradeOperation {
+  std::string id, kind;
+  bool enabled = true;
+  float intensity = 1.f, exposureStops = 0.f, contrast = 1.f, pivot = .5f;
+  float saturation = 1.f, temperature = 0.f, tint = 0.f, lift = 0.f, gamma = 1.f, gain = 1.f;
+  std::vector<std::vector<GradeCurvePoint>> curves;
+  std::shared_ptr<const GradeCubeLut> cube;
+};
+struct AdvancedGradeDocument {
+  bool bypass = false;
+  float intensity = 1.f;
+  std::vector<GradeOperation> operations;
+  // Validated canonical content is also the GPU-resource/cache identity.
+  std::string content;
+};
 struct CompositorColorGrade {
   float exposure = 0.f;
   float contrast = 0.f;
@@ -360,6 +382,7 @@ struct CompositorColorGrade {
   // Named legacy look, not an imported LUT file. Retain it on the plan so
   // export caches and both GPU adapters see the same operator selection.
   std::string lut = "none";
+  std::shared_ptr<const AdvancedGradeDocument> advanced;
 };
 
 // Per-layer chroma key (the green/blue screen keyer).
@@ -485,6 +508,7 @@ struct CompositorRenderPlanLayer {
 };
 
 struct CompositorRenderPlan {
+  std::map<std::string, CompositorColorGrade> sourceGrades;
   std::string renderPlanId;
   std::string sceneId;
   int width = 1920;
@@ -1052,6 +1076,27 @@ struct SourceMonitorDemand {
   SourceMonitorConsumer consumer = SourceMonitorConsumer::PreviewFallback;
   std::string instance;
 };
+struct GradePreviewDemand {
+  std::string instanceId, sourceId;
+  int64_t revision = 0;
+  CompositorColorGrade grade;
+  bool scopesEnabled = false, scopesOriginal = false, compareOriginal = false;
+  int histogramMode = 1, waveformMode = 1, scopeView = 0;
+};
+struct GradePreviewSurface {
+  GradePreviewDemand demand;
+  uint64_t sourceEpoch = 0;
+  int64_t sourceFrameId = 0, captureTimestamp100ns = 0;
+  ParticipantSharedTexture texture;
+  std::string status = "unavailable", reason;
+  struct Scopes {
+    ParticipantSharedTexture texture;
+    uint64_t sourceEpoch = 0;
+    int64_t sourceFrameId = 0, captureTimestamp100ns = 0, revision = 0;
+    bool original = false;
+    std::string status = "preparing";
+  } scopes;
+};
 struct MonitorRenderRequest {
   int64_t sequence = 0;
   CompositorRenderPlan programPlan;
@@ -1061,6 +1106,7 @@ struct MonitorRenderRequest {
   std::vector<std::string> unavailableInputs;
   std::vector<MultiviewTileRect> tiles;
   std::vector<SourceMonitorDemand> sourceExports;
+  std::vector<GradePreviewDemand> gradePreviews;
   bool multiviewActive = false;
   bool previewActive = false;
   bool bufferedProgram = false;
@@ -1079,6 +1125,7 @@ struct MonitorRenderResult {
   ProgramFrameSharedTexture preview;
   std::vector<MultiviewTileRect> tiles;
   std::vector<ParticipantSharedTexture> sources;
+  std::vector<GradePreviewSurface> gradePreviews;
   double workMs = 0;
   uint64_t readyInputs = 0, heldInputs = 0, unavailableInputs = 0;
   uint64_t retainedInputs = 0, retainedInputBytes = 0, retentionRefusals = 0;
@@ -1111,6 +1158,10 @@ class ICompositor {
   virtual void submitMonitors(MonitorRenderRequest /*request*/) {}
   [[nodiscard]] virtual std::shared_ptr<const MonitorRenderResult> latestMonitors() const { return {}; }
   [[nodiscard]] virtual MonitorRenderDiagnostics monitorDiagnostics() const { return {}; }
+  [[nodiscard]] virtual bool supportsGradePreview() const { return false; }
+  virtual void submitGradePreviews(MonitorRenderRequest /*request*/) {}
+  [[nodiscard]] virtual std::shared_ptr<const MonitorRenderResult> latestGradePreviews() const { return {}; }
+  [[nodiscard]] virtual MonitorRenderDiagnostics gradePreviewDiagnostics() const { return {}; }
   // Startup-only configuration. Unsupported compositors report zero active
   // frames, so consumers must not introduce an unmatched audio delay.
   virtual void configureProgramBuffer(int /*frames*/) {}

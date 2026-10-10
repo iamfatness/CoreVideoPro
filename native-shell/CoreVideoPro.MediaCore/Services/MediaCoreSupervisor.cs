@@ -28,7 +28,7 @@ public sealed class MediaCoreSupervisorOptions
     public int FrameDrainIntervalMs { get; init; } = 1000;
 }
 
-public sealed class MediaCoreSupervisor : IAsyncDisposable
+public sealed partial class MediaCoreSupervisor : IAsyncDisposable
 {
     internal static Encoding ChildProcessEncoding { get; } =
         new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
@@ -94,6 +94,7 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
     public event Action<ProgramSharedTexture>? ProgramSharedTextureReceived;
     public event Action<ProgramSharedTexture>? PreviewSharedTextureReceived;
     public event Action<ParticipantSharedTexture>? ParticipantSharedTextureReceived;
+    public event Action<GradePreviewObservation>? GradePreviewReceived;
     public event Action<MultiviewSharedTexture>? MultiviewSharedTextureReceived;
 
     public MediaCoreHealth Health
@@ -430,6 +431,30 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    public async Task RenewGradePreviewAsync(string instanceId, string sourceId, long revision, CancellationToken cancellationToken = default)
+    {
+        using var response = await SendAsync(new Dictionary<string, object?> {
+            ["id"] = NextId(), ["type"] = "set-grade-preview", ["instanceId"] = instanceId,
+            ["sourceId"] = sourceId, ["revision"] = revision, ["renewOnly"] = true
+        },cancellationToken).ConfigureAwait(false);
+        ThrowIfRejected(response,"set-grade-preview");
+    }
+    public async Task SetGradePreviewAsync(string instanceId, string sourceId, long revision,
+        bool enabled, MediaCoreColorGradeWire grade, CancellationToken cancellationToken = default)
+    {
+        var advanced = enabled && grade.Advanced is not null ? await RegisterGradeDocumentAsync(grade.Advanced,cancellationToken).ConfigureAwait(false) : null;
+        using var response = await SendAsync(new Dictionary<string, object?> {
+            ["id"] = NextId(), ["type"] = "set-grade-preview", ["instanceId"] = instanceId,
+            ["sourceId"] = sourceId, ["revision"] = revision, ["enabled"] = enabled,
+            ["scopesEnabled"] = grade.ScopesEnabled, ["scopesOriginal"] = grade.ScopesOriginal,
+            ["histogramMode"] = grade.HistogramMode, ["waveformMode"] = grade.WaveformMode, ["scopeView"] = grade.ScopeView,
+            ["compareOriginal"] = grade.CompareOriginal,
+            ["grade"] = new { lut = grade.Lut, exposure = grade.Exposure, contrast = grade.Contrast,
+                saturation = grade.Saturation, temperature = grade.Temperature, advanced }
+        }, cancellationToken).ConfigureAwait(false);
+        ThrowIfRejected(response, "set-grade-preview");
+    }
+
     public async Task<NativeMediaCoreProfile?> HandshakeAsync(CancellationToken cancellationToken = default)
     {
         Process handshakeProcess;
@@ -687,12 +712,13 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
 
         try
         {
+            var preparedCommands = await PrepareGradeDocumentsAsync(commands,cancellationToken).ConfigureAwait(false);
             var response = await SendAsync(
                 new Dictionary<string, object?>
                 {
                     ["id"] = NextId(),
                     ["type"] = "media-core-sync",
-                    ["commands"] = commands,
+                    ["commands"] = preparedCommands,
                     ["elapsedMs"] = elapsedMs
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -1286,6 +1312,12 @@ public sealed class MediaCoreSupervisor : IAsyncDisposable
                 continue;
             }
 
+            var gradePreview = GradePreviewProtocol.Parse(line);
+            if (gradePreview is not null)
+            {
+                try { GradePreviewReceived?.Invoke(gradePreview); } catch { }
+                continue;
+            }
             var participantTextureEvent = CoreProtocolParser.TryParseParticipantSharedTextureEvent(line);
             if (participantTextureEvent is not null)
             {
