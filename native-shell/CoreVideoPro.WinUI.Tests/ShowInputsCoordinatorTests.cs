@@ -907,6 +907,9 @@ public sealed class ShowInputsCoordinatorTests
         public string ResolveSourceDisplayName(string? sourceId, string derivedName) => derivedName;
 
         public void SetSourceDisplayName(string? sourceId, string? name) { }
+        public string ResolveSourceSecondaryLine(string? sourceId, string derived) => derived;
+        public bool UsesDefaultSourceSecondaryLine(string? sourceId) => true;
+        public void ApplySourceLowerThirdText(string? sourceId, string? name, string? secondary) { }
 
         public void EnsureAssignedScreensConnected() { }
 

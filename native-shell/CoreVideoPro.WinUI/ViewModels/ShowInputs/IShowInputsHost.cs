@@ -58,6 +58,9 @@ public interface IShowInputsHost
     string ResolveSourceDisplayName(string? sourceId, string derivedName);
 
     void SetSourceDisplayName(string? sourceId, string? name);
+    string ResolveSourceSecondaryLine(string? sourceId, string derived);
+    bool UsesDefaultSourceSecondaryLine(string? sourceId);
+    void ApplySourceLowerThirdText(string? sourceId, string? name, string? secondary);
 
     // --- reactivity + readout pokes preserved from the original method bodies ---
     void EnsureAssignedScreensConnected();
