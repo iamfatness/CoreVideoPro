@@ -11939,11 +11939,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)
     {
-<<<<<<< HEAD
         OhgShowEnabled = preferences.OhgShowEnabled;
-=======
         RestorePersistedSourceGrades(preferences.SourceGrades);
->>>>>>> origin/main
         FfmpegBinDirectory = preferences.FfmpegBinDirectory ?? FfmpegBinDirectory;
         StreamRtmpEnabled = preferences.StreamRtmpEnabled;
         StreamNdiEnabled = preferences.StreamNdiEnabled;
