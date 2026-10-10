@@ -156,12 +156,11 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 ## Unranked — show survival and operator findings
 
-Drawn ROI measurement/refresh defect [#854](https://github.com/iamfatness/CoreVideoPro/issues/854): native coordinate formatting caused valid current-selection results to be rejected, and pending preview handles cleared gesture geometry. Reproduced by the isolated real-XAML/native #853 probe; addressed in that same ROI interaction change. No attribution to production delivery misses and no independent rank change.
-
 These can preempt Next on a show night. They do not jump the ranked Now item until the owner says so.
 
 | Issue | Remaining work |
 |---|---|
+| [#854](https://github.com/iamfatness/CoreVideoPro/issues/854) | Drawn ROI: native coordinate formatting rejects valid measurement results, and pending preview handles clear gesture geometry. Reproduced in the isolated real-XAML/native #853 probe; fix included in #855. No attribution to production delivery misses or independent rank change. |
 | [#838](https://github.com/iamfatness/CoreVideoPro/issues/838) | Mixed-source QA duplicates initial/final observations before preparation can advance, producing a false 250 ms source-stall judgment. Sampling repair and regression included in #837; pending merge. Unranked intake; no production rank change. |
 | [#834](https://github.com/iamfatness/CoreVideoPro/issues/834) | Windows CI app-exit trace reader can hit a sharing violation while the child appends to trace.txt. Initial main CI failed; unchanged-head retry passed. Make the bounded trace wait tolerate concurrent writes while preserving cleanup assertions. Unranked; not a confirmed production regression. |
 | [#825](https://github.com/iamfatness/CoreVideoPro/issues/825) | Disabled-preparation/inline qualification lost six packets in three pairs: a late Preparing head became expired Ready and remained at the following deadline. Suspected wait-predicate amplification needs deterministic real-GPU reproduction; does not establish why the first preparation was late. Unranked; current #802/#823 work continues. |
