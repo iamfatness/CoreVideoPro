@@ -670,6 +670,7 @@ public sealed class BrandKit
     public required string BackgroundColor { get; init; }
     public required string FontFamily { get; init; }
     public required string LowerThirdStyle { get; init; }
+    public CoreVideoPro.MediaCore.Models.LowerThirdAppearance? LowerThirdAppearance { get; init; }
     public required string CaptionStyle { get; init; }
     public required string DefaultOverlayBehavior { get; init; }
 
@@ -678,6 +679,11 @@ public sealed class BrandKit
 
     public string Summary =>
         $"{Name} · {FontFamily} · lower-third {LowerThirdStyle} · logo \"{LogoText}\"";
+    public BrandKit WithAppearance(CoreVideoPro.MediaCore.Models.LowerThirdAppearance? appearance) => new() {
+        Name=Name,LogoText=LogoText,LogoAssetId=LogoAssetId,LogoAssetName=LogoAssetName,LogoAssetPath=LogoAssetPath,
+        BrandColor=BrandColor,AccentColor=AccentColor,BackgroundColor=BackgroundColor,FontFamily=FontFamily,
+        LowerThirdStyle=LowerThirdStyle,LowerThirdAppearance=appearance,CaptionStyle=CaptionStyle,DefaultOverlayBehavior=DefaultOverlayBehavior
+    };
 }
 
 public sealed class CaptionStyle

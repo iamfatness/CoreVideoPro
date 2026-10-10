@@ -4,6 +4,8 @@ using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.ViewModels;
 using CoreVideoPro.WinUI.Views;
+using CoreVideoPro.WinUI.Controls;
+using CoreVideoPro.MediaCore.Models;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -53,6 +55,7 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             await CheckSourceOptions(window, checks);
             await CheckSourcesLayout(window, checks);
             await CheckLowerThirdText(window, checks);
+            await CheckAdjustmentControls(window,checks);
         }
         catch (Exception ex) { error = ex.ToString(); }
         finally
@@ -62,6 +65,28 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             if (error is not null) Environment.ExitCode = 1;
             window.Close();
         }
+    }
+    private static async Task CheckAdjustmentControls(Window window,List<string> checks)
+    {
+        var control=new SliderValueControl { Header="Precision",Minimum=0,Maximum=1,Value=.123456789,StepFrequency=.01 };
+        var away=new Button { Content="Focus target" };var panel=new StackPanel();panel.Children.Add(control);panel.Children.Add(away);window.Content=panel;
+        await Eventually(()=>control.IsLoaded);
+        var field=Descendants(control).OfType<TextBox>().Single();
+        field.Focus(FocusState.Programmatic);await Eventually(()=>field.FocusState!=FocusState.Unfocused);await Task.Delay(30);
+        away.Focus(FocusState.Programmatic);await Eventually(()=>away.FocusState!=FocusState.Unfocused);await Task.Delay(30);Require(control.Value==.123456789,"Focusing exact entry quantized the saved value");
+        field.Focus(FocusState.Programmatic);await Eventually(()=>field.FocusState!=FocusState.Unfocused);await Task.Delay(30);field.Text="NaN";await Task.Delay(30);
+        away.Focus(FocusState.Programmatic);await Eventually(()=>away.FocusState!=FocusState.Unfocused);await Task.Delay(30);Require(control.Value==.123456789,"Invalid entry changed a parameter");
+        field.Focus(FocusState.Programmatic);await Eventually(()=>field.FocusState!=FocusState.Unfocused);await Task.Delay(30);field.Text="0.314159";await Task.Delay(30);
+        away.Focus(FocusState.Programmatic);await Eventually(()=>away.FocusState!=FocusState.Unfocused);await Eventually(()=>control.Value==.314159);Require(control.Value==.314159,$"Exact entry did not commit unchanged: {control.Value:G}");
+        checks.Add("shared slider preserves untouched precision, rejects invalid entry and commits exact entry without step rounding");
+        var designer=new LowerThirdDesignerControl();window.Content=new ScrollViewer { Content=designer };
+        foreach(var id in new[] {"compact-solid","minimal-accent","broadcast"}) {
+            designer.LoadReviewDraft(LowerThirdAppearance.FromPreset(id));await Eventually(()=>designer.IsLoaded);
+            Require(Descendants(designer).OfType<SliderValueControl>().Count()==9,"Designer adjustment controls missing");
+        }
+        window.AppWindow.Resize(new SizeInt32(500,760));designer.UpdateLayout();
+        Require(Descendants(designer).OfType<Button>().Any(b=>b.Content?.ToString()=="Apply look"),"Designer Apply missing");
+        checks.Add("lower-third designer presets, sliders, color selectors and Apply load in real UI at narrow width without live state");
     }
     private static async Task CheckLowerThirdText(Window window, List<string> checks)
     {

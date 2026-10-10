@@ -10,23 +10,26 @@ public sealed class GradeAdjustmentControl : UserControl
         typeof(GradeAdjustmentControl), new PropertyMetadata(null,(d,_) => ((GradeAdjustmentControl)d).LoadAdjustment()));
     public GradeOperation? Adjustment { get => (GradeOperation?)GetValue(AdjustmentProperty); set => SetValue(AdjustmentProperty,value); }
     public event EventHandler<GradeOperation>? AdjustmentEdited;
+    public event EventHandler? EditStarted;
+    public event EventHandler? EditCompleted;
     private readonly StackPanel _root = new() { Spacing = 8 };
     private readonly StackPanel _primaries = new() { Spacing = 6 }, _curves = new() { Spacing = 6 };
     private readonly CheckBox _enabled = new() { Content = "Adjustment enabled" };
-    private readonly NumberBox _intensity = Number("Adjustment intensity",0,1,.05);
-    private readonly Dictionary<string,NumberBox> _numbers = [];
+    private readonly SliderValueControl _intensity = Number("Adjustment intensity",0,1,.01,1,"%",100);
+    private readonly Dictionary<string,SliderValueControl> _numbers = [];
     private readonly ComboBox _channel = new() { ItemsSource = new[] { "Master", "Red", "Green", "Blue" }, SelectedIndex = 0 };
     private readonly GradeCurveControl _curve = new();
-    private readonly NumberBox _pointX = Number("Point input (0–1)",0,1,.01), _pointY = Number("Point output (0–1)",0,1,.01);
+    private readonly SliderValueControl _pointX = Number("Point input",0,1,.01,0,"%",100), _pointY = Number("Point output",0,1,.01,0,"%",100);
     private bool _loading;
     public GradeAdjustmentControl()
     {
         Content = _root; _root.Children.Add(_enabled); _root.Children.Add(_intensity);
+        TrackEdit(_intensity); TrackEdit(_pointX); TrackEdit(_pointY);
         _enabled.Checked += (_,_) => Edited(); _enabled.Unchecked += (_,_) => Edited(); _intensity.ValueChanged += (_,_) => Edited();
-        Add("ExposureStops","Exposure (stops)",-8,8,.1); Add("Contrast","Contrast",0,4,.05);
-        Add("Pivot","Contrast pivot (encoded)",0,1,.05); Add("Saturation","Saturation",0,4,.05);
-        Add("Temperature","Warm / cool balance",-1,1,.05); Add("Tint","Green / magenta balance",-1,1,.05);
-        Add("Lift","Lift (encoded)",-1,1,.01); Add("Gamma","Gamma",.1,4,.05); Add("Gain","Gain",0,4,.05);
+        Add("ExposureStops","Exposure",-8,8,.1,0,"stops","Brighter → right; darker → left."); Add("Contrast","Contrast",0,4,.05,1,"×","Spread around the pivot; 1 is neutral.");
+        Add("Pivot","Contrast pivot (encoded)",0,1,.01,.5,"","Brightness level held by contrast."); Add("Saturation","Saturation",0,4,.05,1,"×","0 removes color; 1 is neutral.");
+        Add("Temperature","Warm / cool balance",-1,1,.01,0,"","Cool ← → warm; 0 is neutral."); Add("Tint","Green / magenta balance",-1,1,.01,0,"","Green ← → magenta; 0 is neutral.");
+        Add("Lift","Lift (encoded)",-1,1,.01,0,"","Adjust black level."); Add("Gamma","Gamma",.1,4,.05,1,"×","Adjust midtones; 1 is neutral."); Add("Gain","Gain",0,4,.05,1,"×","Adjust highlights; 1 is neutral.");
         _root.Children.Add(_primaries); _root.Children.Add(_curves);
         _curves.Children.Add(_channel); _curves.Children.Add(_curve); _curves.Children.Add(_pointX); _curves.Children.Add(_pointY);
         var reset = new Button { Content = "Reset channel" }; _curves.Children.Add(reset); reset.Click += (_,_) => _curve.Reset();
@@ -47,11 +50,15 @@ public sealed class GradeAdjustmentControl : UserControl
         _pointY.ValueChanged += (_,_) => { if (!_loading) _curve.SetSelected(_pointX.Value,_pointY.Value); };
         LoadAdjustment();
     }
-    private static NumberBox Number(string label,double min,double max,double step) => new() {
-        Header = label, Minimum = min, Maximum = max, SmallChange = step, LargeChange = step*10,
-        SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
-    private void Add(string key,string label,double min,double max,double step) {
-        var box = Number(label,min,max,step); _numbers.Add(key,box); _primaries.Children.Add(box); box.ValueChanged += (_,_) => Edited();
+    private static SliderValueControl Number(string label,double min,double max,double step,double neutral=0,string unit="",double scale=1) => new() {
+        Header = label, Minimum = min, Maximum = max, StepFrequency = step, DefaultValue = neutral, Unit = unit, DisplayScale = scale };
+    private void TrackEdit(SliderValueControl control) {
+        control.EditStarted += (_,_) => EditStarted?.Invoke(this,EventArgs.Empty);
+        control.EditCompleted += (_,_) => EditCompleted?.Invoke(this,EventArgs.Empty);
+    }
+    private void Add(string key,string label,double min,double max,double step,double neutral,string unit,string help) {
+        var box = Number(label,min,max,step,neutral,unit); box.Help = help; TrackEdit(box);
+        _numbers.Add(key,box); _primaries.Children.Add(box); box.ValueChanged += (_,_) => Edited();
     }
     private void LoadAdjustment()
     {

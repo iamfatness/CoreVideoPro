@@ -32,6 +32,20 @@ class GradePreviewController {
     if (id.empty() || id.size() > 64 || source.empty() || source.size() > 256 ||
         !std::isfinite(number) || number < 0 || number > 2147483647 || std::floor(number) != number) return false;
     modules::GradePreviewDemand demand{id, source, static_cast<int64_t>(number), std::move(grade)};
+    if (const auto* preview=command.get("lowerThirdPreview"); preview && !preview->isNull()) {
+      const auto* style=preview->get("appearance");
+      if (source!="preview:lower-third" || !style || (!style->isObject() && !style->isNull())) return false;
+      modules::CompositorOverlayContent overlay;
+      if (!style->isNull()) {overlay.appearance=compositor::LowerThirdAppearance::parse(*style);if (!overlay.appearance.valid()) return false;}
+      overlay.text=preview->getString("name","Example guest"); overlay.title=preview->getString("title","Producer");
+      overlay.brandColor=preview->getString("brandColor","#44C1A1"); overlay.brandBackgroundColor=preview->getString("backgroundColor","#0C1118");
+      overlay.imageUri=preview->getString("imageUri"); overlay.keyPosition=preview->getString("position","lower-left");
+      overlay.fontFamily=preview->getString("fontFamily","Inter");
+      if (overlay.text.size()>256 || overlay.title.size()>256 || overlay.imageUri.size()>4096 || overlay.fontFamily.size()>128) return false;
+      demand.lowerThirdPreview=std::move(overlay);
+      demand.lowerThirdPreviewSignature=preview->stringify();
+      for (const auto& [other,entry]:active_) if (other!=id && entry.demand.lowerThirdPreview) return false;
+    }
     demand.scopesEnabled = command.get("scopesEnabled") && command.get("scopesEnabled")->asBool();
     demand.scopesOriginal = command.get("scopesOriginal") && command.get("scopesOriginal")->asBool();
     demand.compareOriginal = command.get("compareOriginal") && command.get("compareOriginal")->asBool();
@@ -39,6 +53,16 @@ class GradePreviewController {
     if (!std::isfinite(hm) || hm < 0 || hm > 1 || std::floor(hm) != hm ||
         !std::isfinite(wm) || wm < 0 || wm > 2 || std::floor(wm) != wm || !std::isfinite(sv) || sv<0 || sv>3 || std::floor(sv)!=sv) return false;
     demand.histogramMode = int(hm); demand.waveformMode = int(wm); demand.scopeView = int(sv);
+    if (const auto* roi = command.get("scopeRoi")) {
+      if (!roi->isObject()) return false;
+      demand.scopeRoi.enabled = roi->get("enabled") && roi->get("enabled")->asBool();
+      demand.scopeRoi.x = roi->getNumber("x",0); demand.scopeRoi.y = roi->getNumber("y",0);
+      demand.scopeRoi.width = roi->getNumber("width",1); demand.scopeRoi.height = roi->getNumber("height",1);
+      const auto rr = roi->getNumber("revision",0);
+      if (!std::isfinite(rr) || rr<0 || rr>2147483647 || std::floor(rr)!=rr) return false;
+      demand.scopeRoi.revision = int64_t(rr);
+      if (!demand.scopeRoi.valid()) return false;
+    }
     const bool enabled = !command.get("enabled") || command.get("enabled")->asBool();
     if (!enabled) { active_.erase(id); return true; }
     if (!supported) { emit({demand, 0, 0, 0, {}, "unavailable", "native-grade-preview-not-built"}); return true; }
@@ -52,9 +76,11 @@ class GradePreviewController {
       if (demand.revision < found->second.demand.revision) return true;
       // Equal revision is a lease refresh, never permission to replace a draft.
       if (demand.revision == found->second.demand.revision && (source != found->second.demand.sourceId ||
+          demand.lowerThirdPreview.has_value()!=found->second.demand.lowerThirdPreview.has_value() ||
+          demand.lowerThirdPreviewSignature!=found->second.demand.lowerThirdPreviewSignature ||
           !modules::colorGradesEqual(demand.grade, found->second.demand.grade) ||
           demand.scopesEnabled != found->second.demand.scopesEnabled || demand.scopesOriginal != found->second.demand.scopesOriginal || demand.compareOriginal != found->second.demand.compareOriginal ||
-          demand.histogramMode != found->second.demand.histogramMode || demand.waveformMode != found->second.demand.waveformMode || demand.scopeView != found->second.demand.scopeView)) return false;
+          !(demand.scopeRoi == found->second.demand.scopeRoi) || demand.histogramMode != found->second.demand.histogramMode || demand.waveformMode != found->second.demand.waveformMode || demand.scopeView != found->second.demand.scopeView)) return false;
       if (demand.revision > found->second.demand.revision) found->second.demand = std::move(demand);
       found->second.renewed = now;
     }
@@ -154,6 +180,8 @@ class GradePreviewController {
       {"sourceAgeMs", std::max(0.0,age)},
       {"status", surface.status}, {"reason", surface.reason},
       {"scopes", rpc::Json::Object{{"status", scope.status},
+        {"roi", rpc::Json::Object{{"enabled",scope.roi.enabled},{"x",scope.roi.x},{"y",scope.roi.y},{"width",scope.roi.width},{"height",scope.roi.height},{"revision",double(scope.roi.revision)}}},
+        {"roiPixelX",scope.roiPixels.x},{"roiPixelY",scope.roiPixels.y},{"roiPixelWidth",scope.roiPixels.width},{"roiPixelHeight",scope.roiPixels.height},
         {"reason", scope.status=="unavailable"?"scope-render-or-export-unavailable":scope.status=="stale"?"source-not-advancing":scope.status=="held"?"source-unavailable":st.width==0?"awaiting-native-scopes":""}, {"sourceAgeMs", std::max(0.0,scopeAge)},
         {"completionObservedAtUnixMs", st.width>0 && found!=active_.end()?double(found->second.scopeCompletionObservedAtMs):0},
         {"view", surface.demand.scopeView}, {"revision", double(scope.revision)}, {"sourceEpoch", double(scope.sourceEpoch)}, {"sourceFrameId", double(scope.sourceFrameId)},

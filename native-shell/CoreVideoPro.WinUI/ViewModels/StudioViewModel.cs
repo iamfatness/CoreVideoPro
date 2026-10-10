@@ -963,6 +963,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             BackgroundColor = BrandKit.BackgroundColor,
             FontFamily = BrandKit.FontFamily,
             LowerThirdStyle = BrandKit.LowerThirdStyle,
+            LowerThirdAppearance = BrandKit.LowerThirdAppearance,
             CaptionStyle = BrandKit.CaptionStyle,
             DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
         });
@@ -5955,6 +5956,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             BackgroundColor = BrandKit.BackgroundColor,
             FontFamily = BrandKit.FontFamily,
             LowerThirdStyle = BrandKit.LowerThirdStyle,
+            LowerThirdAppearance = BrandKit.LowerThirdAppearance,
             CaptionStyle = BrandKit.CaptionStyle,
             DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
         };
@@ -9169,7 +9171,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BrandKit.FontFamily,
                 BrandKit.LowerThirdStyle,
                 BrandKit.CaptionStyle,
-                BrandKit.DefaultOverlayBehavior),
+                BrandKit.DefaultOverlayBehavior, BrandKit.LowerThirdAppearance),
             AudioLimiterEnabled = MasterLimiterEnabled,
             AudioMasteringEnabled = MasteringEnabled,
             AudioMasteringTargetLufs = MasteringTargetLufs,
@@ -11053,6 +11055,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 BackgroundColor = brandKitPatch.BackgroundColor,
                 FontFamily = brandKitPatch.FontFamily,
                 LowerThirdStyle = brandKitPatch.LowerThirdStyle,
+                LowerThirdAppearance = BrandKit.LowerThirdAppearance,
                 CaptionStyle = BrandKit.CaptionStyle,
                 DefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior
             };
@@ -11876,6 +11879,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             LowerThirdBuildInMs = NormalizeLowerThirdTimingMs(LowerThirdBuildInMs),
             LowerThirdBuildOutMs = NormalizeLowerThirdTimingMs(LowerThirdBuildOutMs),
             BrandLowerThirdStyle = BrandKit.LowerThirdStyle,
+            LowerThirdAppearance = BrandKit.LowerThirdAppearance,
+            LowerThirdPresets = Overlays.LowerThirdPresets.ToDictionary(p => p.Key,p => p.Value),
             BrandDefaultOverlayBehavior = BrandKit.DefaultOverlayBehavior,
             VirtualCameraEnabled = VirtualCameraEnabled,
             VirtualCameraMirror = VirtualCameraMirror,
@@ -11917,6 +11922,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             ZoomCameraMaxResolution = ZoomCameraMaxResolution,
             ZoomCameraMaxFps = ZoomCameraMaxFps,
             SourceGrades = CapturePersistedSourceGrades(),
+            ScopeRegions = CaptureScopePreferences(),
             CustomScenes = _scenes
                 .Where(scene => scene.Id.StartsWith("custom-", StringComparison.Ordinal))
                 .Select(scene => ScenePersistenceService.ToPersisted(
@@ -11940,8 +11946,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyProductionOutputPreferences(ProductionOutputPreferences preferences)
     {
+        Overlays.RestoreAppearance(preferences.LowerThirdAppearance,preferences.LowerThirdPresets);
         OhgShowEnabled = preferences.OhgShowEnabled;
         RestorePersistedSourceGrades(preferences.SourceGrades);
+        RestoreScopePreferences(preferences.ScopeRegions);
         FfmpegBinDirectory = preferences.FfmpegBinDirectory ?? FfmpegBinDirectory;
         StreamRtmpEnabled = preferences.StreamRtmpEnabled;
         StreamNdiEnabled = preferences.StreamNdiEnabled;
@@ -12033,6 +12041,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 AccentColor = BrandKit.AccentColor,
                 BackgroundColor = BrandKit.BackgroundColor,
                 FontFamily = BrandKit.FontFamily,
+                LowerThirdAppearance = BrandKit.LowerThirdAppearance,
                 LowerThirdStyle = string.IsNullOrWhiteSpace(preferences.BrandLowerThirdStyle)
                     ? BrandKit.LowerThirdStyle
                     : preferences.BrandLowerThirdStyle,
@@ -13003,8 +13012,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         foreach (var scene in Scenes)
         {
+            if (_sceneRoutes.ContainsKey(scene.Id)) continue;
             _sceneRoutes[scene.Id] = SceneRoutingService
-                .GetRouteDefaults(scene, existingRoutes: null, RoomVideoParticipants)
+                .GetStarterRoutes(scene)
                 .Select(route => route.Clone())
                 .ToList();
         }

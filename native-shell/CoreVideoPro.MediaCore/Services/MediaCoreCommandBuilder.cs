@@ -76,7 +76,8 @@ public static class MediaCoreCommandBuilder
             BuildVirtualCameraCommand(context)
         ]);
 
-        commands.AddRange(BuildOverlayCommands(context.Graphics, context.LowerThirdKey));
+        commands.AddRange(BuildOverlayCommands(context.Graphics, context.LowerThirdKey,
+            context.BrandKit.LowerThirdAppearance?.ShowLogo==true ? context.BrandKit.LogoAssetPath : null));
         commands.AddRange(BuildCaptionCommands(context.CaptionText, context.CaptionSpeaker));
 
         if (context.ScanVstPlugins)
@@ -495,6 +496,7 @@ public static class MediaCoreCommandBuilder
             ["backgroundColor"] = brandKit.BackgroundColor,
             ["fontFamily"] = brandKit.FontFamily,
             ["lowerThirdStyle"] = brandKit.LowerThirdStyle,
+            ["lowerThirdAppearance"] = brandKit.LowerThirdAppearance,
             ["captionStyle"] = brandKit.CaptionStyle,
             ["defaultOverlayBehavior"] = brandKit.DefaultOverlayBehavior
         });
@@ -590,7 +592,7 @@ public static class MediaCoreCommandBuilder
 
     private static IEnumerable<NativeMediaCoreCommand> BuildOverlayCommands(
         IReadOnlyList<MediaCoreGraphicWire> graphics,
-        MediaCoreLowerThirdKeyWire? lowerThirdKey)
+        MediaCoreLowerThirdKeyWire? lowerThirdKey,string? lowerThirdLogoPath)
     {
         if (lowerThirdKey is { Enabled: true } && !string.IsNullOrWhiteSpace(lowerThirdKey.SourceName))
         {
@@ -602,6 +604,7 @@ public static class MediaCoreCommandBuilder
                 ["enabled"] = true,
                 ["sourceId"] = lowerThirdKey.SourceId,
                 ["sourceName"] = lowerThirdKey.SourceName,
+                ["imageUri"] = lowerThirdLogoPath ?? "",
                 ["title"] = lowerThirdKey.Title,
                 ["org"] = lowerThirdKey.Org,
                 ["keyPosition"] = lowerThirdKey.Position,

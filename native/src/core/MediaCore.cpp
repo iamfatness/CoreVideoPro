@@ -3963,6 +3963,14 @@ void MediaCore::setCaptionEnabled(const rpc::Json& command) {
 
 void MediaCore::setBrandKit(const rpc::Json& command) {
   brandWarnings_.clear();
+  if (const auto* style=command.get("lowerThirdAppearance")) {
+    if (style->isNull()) lowerThirdAppearance_={};
+    else if (style->isObject()) {
+      const auto candidate=compositor::LowerThirdAppearance::parse(*style);
+      if (candidate.valid()) lowerThirdAppearance_=candidate;
+      else brandWarnings_.push_back("Invalid lower-third appearance; previous look retained.");
+    }
+  }
   brandName_ = command.getString("name", brandName_);
   brandLogoText_ = command.getString("logoText", brandLogoText_);
   brandColor_ = command.getString("brandColor", brandColor_);
@@ -6841,13 +6849,24 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     layer.order = static_cast<int>(renderPlan.layers.size());
     const auto layout = resolveOverlayLayout(asset->position);
     layer.rect = {layout.x, layout.y, layout.width, layout.height};
+    if (isLowerThird && lowerThirdAppearance_.enabled) {
+      const auto& a=lowerThirdAppearance_;
+      const float height=std::min(.4f,float((a.nameSize+a.titleSize+a.padding*3)/1080.));
+      const float w=float(std::min(a.width,1.-a.safeOffsetX));
+      const bool right=a.anchor.find("right")!=std::string::npos;
+      const bool top=a.anchor.find("upper")!=std::string::npos;
+      layer.rect={right?1.f-float(a.safeOffsetX)-w:float(a.safeOffsetX),top?float(a.safeOffsetY):1.f-float(a.safeOffsetY)-height,w,height};
+      layer.overlay.appearance=a;
+    }
     layer.opacity = 0.92f;
     layer.hasOverlayContent = true;
+    if (isLowerThird && lowerThirdAppearance_.enabled) layer.opacity=1.f;
     layer.overlay.title = asset->title;
     layer.overlay.org = asset->org;
     layer.overlay.text = asset->text;
     layer.overlay.imageUri = asset->imageUri;
     layer.overlay.keyPosition = asset->keyPosition;
+    if (isLowerThird && lowerThirdAppearance_.enabled) layer.overlay.keyPosition=lowerThirdAppearance_.anchor;
     layer.overlay.keyPhase = asset->keyPhase;
     layer.overlay.keyer = asset->keyer;
     layer.overlay.keyProgress = asset->keyProgress;

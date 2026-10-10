@@ -120,7 +120,7 @@ bool CompositorOverlayRaster::drawOverlayTextLine(
     const std::string& fontFamily,
     DWRITE_FONT_WEIGHT weight,
     const D2D1_RECT_F& box,
-    const D2D1_COLOR_F& color) {
+    const D2D1_COLOR_F& color, float explicitFontSize) {
   if (text.empty() || box.right <= box.left || box.bottom <= box.top) {
     return true;
   }
@@ -131,7 +131,7 @@ bool CompositorOverlayRaster::drawOverlayTextLine(
   const std::wstring wideFamily = widenUtf8(fontFamily.empty() ? "Segoe UI" : fontFamily);
   // Em size ~72% of the line box: leaves room for ascenders/descenders so the
   // layout's vertical centering doesn't clip.
-  const float fontSize = (std::max)(4.f, (box.bottom - box.top) * 0.72f);
+  const float fontSize = explicitFontSize>0 ? explicitFontSize : (std::max)(4.f, (box.bottom - box.top) * 0.72f);
   ComPtrLite<IDWriteTextFormat> format;
   if (FAILED(dwriteFactory_->CreateTextFormat(
           wideFamily.c_str(), nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
@@ -175,13 +175,16 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     return nullptr;
   }
   if (!ensureOverlayRasterFactories()) {
+    lastWarning_="Native text/image renderer unavailable.";
     return nullptr;
   }
 
   const uint64_t signature = overlayContentSignature(overlay, widthPx, heightPx);
+  lastWarning_.clear();
 
   ++overlayRasterClock_;
   if (auto existing = overlayTextTextures_.find(signature); existing != overlayTextTextures_.end()) {
+    lastWarning_=existing->second.warning;
     existing->second.lastUsed = overlayRasterClock_;
     return existing->second.view.get();
   }
@@ -247,10 +250,28 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   // (rasterizeOverlayTileBgra) place identical content — preview and program
   // agree by construction. The band background is NOT painted here (it stays
   // a separate quad so its alpha animation matches the CPU mirror).
-  const auto layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
+  auto layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
+  if (overlay.appearance.enabled) {
+    ComPtrLite<IDWriteFontCollection> fonts;BOOL exists=FALSE;UINT32 index=0;
+    const auto family=widenUtf8(layout.fontFamily);
+    if (SUCCEEDED(dwriteFactory_->GetSystemFontCollection(fonts.put())) &&
+        SUCCEEDED(fonts->FindFamilyName(family.c_str(),&index,&exists)) && !exists) {
+      layout.fontFamily="Segoe UI";lastWarning_="Font unavailable; using Segoe UI.";
+    }
+  }
 
   d2dTarget->BeginDraw();
   d2dTarget->Clear(D2D1::ColorF(0.f, 0.f, 0.f, 0.f));
+  ComPtrLite<ID2D1RoundedRectangleGeometry> rounded;
+  bool clipped=false;
+  if (overlay.appearance.enabled && !overlay.isCaption) {
+    const auto band=D2D1::RoundedRect(D2D1::RectF(0,0,float(widthPx),float(heightPx)),layout.cornerRadius,layout.cornerRadius);
+    if (layout.cornerRadius>0 && SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(band,rounded.put()))) {
+      d2dTarget->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(),rounded.get()),nullptr); clipped=true;
+    }
+    ComPtrLite<ID2D1SolidColorBrush> bg;
+    if (SUCCEEDED(d2dTarget->CreateSolidColorBrush(d2dColorFromArgb(layout.backgroundArgb),bg.put()))) d2dTarget->FillRoundedRectangle(band,bg.get());
+  }
 
   ComPtrLite<ID2D1SolidColorBrush> accentBrush;
   if (SUCCEEDED(d2dTarget->CreateSolidColorBrush(d2dColorFromArgb(layout.accentArgb), accentBrush.put()))) {
@@ -264,7 +285,9 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   // Real WIC decode aspect-fitted inside the layout's image slot (the CPU
   // tile draws its deterministic checker in the same slot).
   if (layout.hasImage) {
-    if (auto image = decodeOverlayImage(d2dTarget.get(), overlay.imageUri)) {
+    auto image=decodeOverlayImage(d2dTarget.get(),overlay.imageUri);
+    if (!image) lastWarning_ += " Logo unavailable; image omitted.";
+    if (image) {
       const auto imageSize = image->GetSize();
       float drawWidth = layout.imageRect.width;
       float drawHeight = layout.imageRect.height;
@@ -292,9 +315,10 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
         emphasis ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
         D2D1::RectF(line.rect.x, line.rect.y,
                     line.rect.x + line.rect.width, line.rect.y + line.rect.height),
-        d2dColorFromArgb(line.colorArgb));
+        d2dColorFromArgb(line.colorArgb),line.fontSize);
   }
 
+  if (clipped) d2dTarget->PopLayer();
   const HRESULT endDrawResult = d2dTarget->EndDraw();
   restorePipelineState();
   if (FAILED(endDrawResult)) {
@@ -316,6 +340,7 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     }
     overlayTextTextures_.erase(oldest);
   }
+  entry.warning=lastWarning_;
   const auto inserted = overlayTextTextures_.emplace(signature, std::move(entry));
   return inserted.first->second.view.get();
 }

@@ -36,6 +36,7 @@ struct OverlayTileTextLine {
   std::string text;
   OverlayTileRect rect;
   uint32_t colorArgb = 0xffffffffu;
+  float fontSize = 0.f;
 };
 
 // Resolved tile geometry + brand styling for an overlay's content, in the
@@ -51,6 +52,7 @@ struct OverlayTileLayout {
   OverlayTileRect imageRect;
   std::vector<OverlayTileTextLine> textLines;
   std::string fontFamily = "Inter";
+  float cornerRadius = 0.f;
 };
 
 // Computes the tile layout for an overlay's content. Mirrors the historical

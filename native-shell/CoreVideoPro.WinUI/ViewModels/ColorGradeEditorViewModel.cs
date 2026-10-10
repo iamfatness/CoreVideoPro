@@ -95,7 +95,7 @@ public sealed partial class ColorGradeEditorViewModel : ObservableObject
         {
             NativeSurface = WaitingSurface() with { StatusLine = label }; return;
         }
-        NativeSurface = WaitingSurface() with { StatusLine = label,
+        NativeSurface = WaitingSurface() with { StatusLine = string.IsNullOrWhiteSpace(observation.Reason) ? label : $"{label} · {observation.Reason}",
             PendingSharedHandle = new SharedTextureHandle { NtHandle = handle, Width = texture.Width,
                 Height = texture.Height, Format = texture.Format, FrameNumber = texture.FrameNumber } };
         ObserveGradeAuthority(observation);

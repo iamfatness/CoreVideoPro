@@ -41,6 +41,7 @@ namespace corevideo::modules {
 
 class CompositorOverlayRaster {
  public:
+  const std::string& lastWarning() const { return lastWarning_; }
   // Rasters the overlay's accent bar + text (+ optional WIC image) into a GPU
   // texture using DirectWrite/D2D and returns its SRV, or nullptr to fall back
   // to the accent-bar draw. The texture holds PREMULTIPLIED alpha over a
@@ -82,7 +83,7 @@ class CompositorOverlayRaster {
       const std::string& fontFamily,
       DWRITE_FONT_WEIGHT weight,
       const D2D1_RECT_F& box,
-      const D2D1_COLOR_F& color);
+      const D2D1_COLOR_F& color, float explicitFontSize = 0.f);
 
   // DirectWrite/D2D overlay raster cache: overlayContentSignature (FNV-1a over
   // text/brand/font/size, deliberately excluding animation state) -> rendered
@@ -92,6 +93,7 @@ class CompositorOverlayRaster {
     ComPtrLite<ID3D11Texture2D> texture;
     ComPtrLite<ID3D11ShaderResourceView> view;
     uint64_t lastUsed = 0;
+    std::string warning;
   };
   std::map<uint64_t, OverlayRasterTex> overlayTextTextures_;
   uint64_t overlayRasterClock_ = 0;
@@ -99,6 +101,7 @@ class CompositorOverlayRaster {
   ComPtrLite<IDWriteFactory> dwriteFactory_;
   ComPtrLite<IWICImagingFactory> wicFactory_;
   bool overlayRasterUnavailable_ = false;
+  std::string lastWarning_;
 };
 
 }  // namespace corevideo::modules
