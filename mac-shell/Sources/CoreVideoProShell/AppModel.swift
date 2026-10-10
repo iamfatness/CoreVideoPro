@@ -128,6 +128,14 @@ struct ShowInputSlot: Identifiable, Equatable {
     var keySimilarity = 0.4
     var keySmoothness = 0.1
     var keySpill = 0.2
+    // Per-source dropout policy (core contract #535 slice 4a,
+    // `set-source-policy`). "" = unset — the core's own default ("hold")
+    // applies. "hold"/"black" are operator-chosen and ALWAYS sent (an explicit
+    // "hold" must overwrite an earlier stored "black" — PRESENT-OR-KEEP, E9).
+    // Zoom-only: the core refuses (loudly, every sync) a dropoutPolicy on any
+    // id that isn't "zoom:<pid>", so this is gated to zoom slots everywhere it
+    // is read.
+    var dropoutPolicy = ""
 }
 
 // Per-channel built-in inserts. Names and keys are the CORE's contract
@@ -429,6 +437,9 @@ final class AppModel: ObservableObject {
                                similarity: $0.keySimilarity,
                                smoothness: $0.keySmoothness, spill: $0.keySpill)
         }
+        prefs.slotDropoutPolicies = slots
+            .filter { $0.kind == "zoom" && !$0.dropoutPolicy.isEmpty }
+            .map { PersistedSlotPolicy(slotId: $0.id, dropoutPolicy: $0.dropoutPolicy) }
         prefs.vstChannelSelections = vstChannelSelection.isEmpty ? nil : vstChannelSelection
         prefs.scenes = scenes.map { scene in
             PersistedScene(id: scene.id, name: scene.name, layout: scene.layout,
@@ -460,6 +471,11 @@ final class AppModel: ObservableObject {
             if let index = slots.firstIndex(where: { $0.id == pairing.slotId }) {
                 slots[index].audioDeviceId = pairing.audioDeviceId
                 slots[index].audioDeviceName = pairing.audioDeviceName
+            }
+        }
+        for policy in prefs.slotDropoutPolicies ?? [] {
+            if let index = slots.firstIndex(where: { $0.id == policy.slotId }), slots[index].kind == "zoom" {
+                slots[index].dropoutPolicy = policy.dropoutPolicy
             }
         }
         if prefs.colorGrade.count == 4 {
@@ -849,6 +865,7 @@ final class AppModel: ObservableObject {
         if acceptRoster, let participants = snapshot["participants"] as? [JSONObject] {
             // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
             // the WinUI shell consumes): userId/displayName/videoOn/muted/talking.
+            let cameraOnBefore = Set(roster.filter(\.hasVideo).map(\.id))
             roster = RosterParticipant.parse(participants, assignedIds: assignedIds)
             // Auto-assign video participants into empty slots (the Windows
             // AutomationAutoAssignInputsEnabled default) — join → tiles with
@@ -869,6 +886,13 @@ final class AppModel: ObservableObject {
             if assignedAny {
                 ShellLog.write("auto-assigned into slots")
                 recomputeFromSlots()
+            }
+            // A camera turning ON must re-push the spine: the budget filters on
+            // camera-on, so without this the participant never re-subscribes (the
+            // Windows 2026-08-09 frozen-tile defect, mirrored).
+            let cameraOnAfter = Set(roster.filter(\.hasVideo).map(\.id))
+            if cameraOnAfter != cameraOnBefore && !assignedAny {
+                syncSpine()
             }
         }
     }
@@ -1303,14 +1327,22 @@ final class AppModel: ObservableObject {
                 "talking": participant.talking,
             ]
         }
-        let subscriptions: [JSONObject] = assignedIds.enumerated().map { index, id in
-            [
-                "participantId": id,
-                "kind": "video",
-                "purpose": "program",
-                "priority": index,
-            ]
-        }
+        // Budget-ordered, camera-on-filtered, capped (E1/E2/E5 — see
+        // ZoomSourceBudget.swift). Replaces the old `assignedIds` Set, which was
+        // nondeterministic, uncapped and subscribed camera-off participants.
+        let programRouted = programSceneId.isEmpty
+            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: programSceneId, isProgram: true))
+        let previewRouted = previewSceneId.isEmpty
+            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: previewSceneId))
+        let multiviewAssigned = slots
+            .filter { $0.kind == "zoom" && $0.inShow && !$0.offline }
+            .map(\.sourceId)
+        let isoArmed = isoRecordingEnabled
+            ? slots.filter { $0.kind == "zoom" && $0.iso }.map(\.sourceId) : []
+        let cameraOn = Set(roster.filter(\.hasVideo).map(\.id))
+        let subscriptions = Self.spineSubscriptionPayloads(ZoomSourceBudget.videoEntries(
+            programRouted: programRouted, previewRouted: previewRouted,
+            multiviewAssigned: multiviewAssigned, isoArmed: isoArmed, cameraOn: cameraOn))
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
@@ -1361,6 +1393,74 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // The exact objects placed in the spine `subscriptions` array. kind
+    // "participant-video" (E3/E4/E6, ZoomSubscriptionResolutionPolicy.h) is the
+    // tiered kind: the core grants 1080P to the first 8 camera-on entries in
+    // this budget order, and its engine-side identity
+    // ("participant-video-<pid>-camera") excludes purpose, so the real
+    // `entry.purpose` rides the wire without churning the subscription on a
+    // bus move.
+    static func spineSubscriptionPayloads(_ entries: [ZoomSourceBudget.Entry]) -> [JSONObject] {
+        entries.enumerated().map { index, entry in
+            [
+                "participantId": entry.participantId,
+                "kind": "participant-video",
+                "purpose": entry.purpose,
+                "priority": index,
+            ]
+        }
+    }
+
+    // Per-source dropout policy commands (core contract #535 slice 4a,
+    // E9/E10). Zoom slots ONLY — a capture/media id carrying a dropoutPolicy
+    // pushes a sticky scene-validation warning EVERY sync, which is the
+    // expensive regression this filter guards. An explicit "hold" IS sent
+    // (PRESENT-OR-KEEP means omission can never overwrite a stored "black"),
+    // but a slot with no operator choice ("") emits nothing — the core's own
+    // default applies. Sorted by sourceId ordinal for determinism (E10, mirrors
+    // Windows' MediaCoreCommandBuilder) and de-duplicated by sourceId
+    // keep-first: two slots holding the same participant must not race.
+    // displayName is deliberately not sent here — Windows sends it for slate
+    // names, but Mac's slate-name path is unverified; a parity follow-up, not
+    // shipped blind.
+    static func sourcePolicyCommands(slots: [ShowInputSlot]) -> [JSONObject] {
+        var seenSourceIds = Set<String>()
+        var entries: [(sourceId: String, policy: String)] = []
+        for slot in slots {
+            guard slot.kind == "zoom", !slot.sourceId.isEmpty,
+                  slot.dropoutPolicy == "hold" || slot.dropoutPolicy == "black"
+            else { continue }
+            guard !seenSourceIds.contains(slot.sourceId) else { continue }
+            seenSourceIds.insert(slot.sourceId)
+            entries.append((slot.sourceId, slot.dropoutPolicy))
+        }
+        entries.sort { $0.sourceId < $1.sourceId }
+        return entries.map {
+            ["type": "set-source-policy", "sourceId": "zoom:" + $0.sourceId,
+             "dropoutPolicy": $0.policy]
+        }
+    }
+
+    /// Appends the source-policy commands AFTER whatever is already in the
+    /// batch. The core clears `sceneValidationWarnings_` on `load-scene-graph`,
+    /// so a policy placed before it would have any refusal warning silently
+    /// wiped — policies must always come last.
+    static func appendSourcePolicies(to commands: [JSONObject],
+                                     slots: [ShowInputSlot]) -> [JSONObject] {
+        commands + sourcePolicyCommands(slots: slots)
+    }
+
+    /// Operator sets a slot's dropout policy. Validated against the core's
+    /// exact vocabulary; an unknown value is silently refused rather than
+    /// risking a sticky scene-validation warning.
+    func setDropoutPolicy(slotId: Int, policy: String) {
+        guard policy == "hold" || policy == "black",
+              let index = slots.firstIndex(where: { $0.id == slotId })
+        else { return }
+        slots[index].dropoutPolicy = policy
+        syncScenes()
+    }
+
     // ── scenes + Take ────────────────────────────────────────────────────────
 
     // Rects lifted from SceneCanvasLayoutService: single, two-up (0.02 gap),
@@ -1403,7 +1503,7 @@ final class AppModel: ObservableObject {
                 Double(value & 0xff) / 255.0)
     }
 
-    private func buildRoutes(for sceneId: String, isProgram: Bool = false) -> [JSONObject] {
+    func buildRoutes(for sceneId: String, isProgram: Bool = false) -> [JSONObject] {
         if sceneId == Self.soloSceneA || sceneId == Self.soloSceneB {
             guard let slotId = soloSlotId,
                   let slot = slots.first(where: { $0.id == slotId }),
@@ -1747,11 +1847,12 @@ final class AppModel: ObservableObject {
             }
             commands.append(preview)
         }
-        guard !commands.isEmpty else { return }
+        let batch = Self.appendSourcePolicies(to: commands, slots: slots)
+        guard !batch.isEmpty else { return }
         do {
             _ = try await bridge.request([
                 "type": "media-core-sync", "elapsedMs": elapsedMs(),
-                "commands": commands,
+                "commands": batch,
             ])
         } catch {
             pushWarning("scene sync failed: \(error.localizedDescription)")
@@ -2342,6 +2443,11 @@ final class AppModel: ObservableObject {
                     let isoIds = resolvedIsoSourceIds()
                     let isoLegacy = isoIds.filter { $0.hasPrefix("zoom:") }
                         .map { String($0.dropFirst(5)) }
+                    if let warning = IsoCapturePreflight.warning(
+                        zoomIsoCount: isoLegacy.count, captureIntended: captureEnabled,
+                        rawMediaActive: lastZoomSnapshot["rawMediaActive"] as? Bool) {
+                        pushWarning(warning)
+                    }
                     _ = try await bridge.request([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(),
                         "commands": [

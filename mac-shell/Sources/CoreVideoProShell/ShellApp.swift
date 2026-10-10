@@ -1907,6 +1907,30 @@ struct SlotRow: View {
                         .stroke(Studio.border, lineWidth: 1))
                 }
                 ChromaKeyControl(slot: slot)
+                // Dropout policy (core contract #535 slice 4a, set-source-policy):
+                // zoom-assigned slots only — a non-zoom id pushes a sticky scene
+                // warning every sync, so this control must never reach a capture row.
+                if slot.kind == "zoom" {
+                    Menu {
+                        Button("Hold last frame") {
+                            model.setDropoutPolicy(slotId: slot.id, policy: "hold")
+                        }
+                        Button("Black") {
+                            model.setDropoutPolicy(slotId: slot.id, policy: "black")
+                        }
+                    } label: {
+                        Text(slot.dropoutPolicy == "black" ? "Black" : "Hold last frame")
+                            .font(.grotesk(11))
+                            .foregroundStyle(Studio.textPrimary)
+                            .lineLimit(1)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 130)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Studio.field))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .stroke(Studio.border, lineWidth: 1))
+                }
                 Toggle("ISO", isOn: Binding(
                     get: { slot.iso },
                     set: { _ in model.toggleSlotIso(slot.id) }))

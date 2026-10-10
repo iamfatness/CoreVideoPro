@@ -68,8 +68,11 @@ namespace corevideo::modules {
 // two below the measured failure point with a share on top, and is the number to
 // raise only after a live engine-CPU soak proves more — never to lower silently.
 //
-// Only `participant-video` is tiered: the macOS shell sends kind "video" with
-// purpose "program" for every assigned guest and must not be moved to N x 1080P.
+// Only `participant-video` is tiered. The macOS shell now sends kind
+// "participant-video" in budget order for every camera-on assigned guest (a
+// camera-off filter is the shell's job, same as Windows); kind "video" remains
+// the un-promoted legacy kind, kept for older shells that have not moved to
+// "participant-video" yet.
 struct ZoomSubscriptionResolutionPolicy {
   static constexpr int k360P = 0;
   static constexpr int k720P = 1;
@@ -97,7 +100,9 @@ struct ZoomSubscriptionResolutionPolicy {
   // the engine's subscription key, so any purpose left at a lower tier flips a
   // live renderer the moment that guest is cued or taken — which is exactly the
   // tone shift and the tile drop the operator reported. Only the KIND gates it:
-  // the macOS shell's kind "video" is deliberately not promoted (see above). The
+  // the macOS shell now sends kind "participant-video" in budget order with a
+  // camera-on filter, so it is tiered like every other shell; kind "video"
+  // remains the un-promoted legacy kind for older shells (see above). The
   // purpose parameter stays so the cap's payload-order semantics and any future
   // per-purpose exception keep their seam; it is intentionally unused here.
   [[nodiscard]] static bool wantsFullResolution(std::string_view kind, std::string_view purpose) {

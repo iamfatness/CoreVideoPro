@@ -64,3 +64,30 @@ struct RecordingCommandPolicy {
         }
     }
 }
+
+// ── ISO capture preflight (E11/E16) ──────────────────────────────────────
+
+enum IsoCapturePreflight {
+    /// Warn iff `zoomIsoCount > 0` AND (`captureIntended == false` OR `rawMediaActive == false`).
+    /// `rawMediaActive == nil` with intent ON is unobserved → no warning (E11's round-2 ruling).
+    /// Intent OFF is itself a fact — the shell owns the toggle — so it warns regardless of observation.
+    /// The intent-ON/observed-OFF branch gets its OWN tail: Capture is actually on, so telling the
+    /// operator to "turn Capture on" would be asking them to flip a switch that already reads on —
+    /// the real instruction there is to re-arm it.
+    static func warning(zoomIsoCount: Int, captureIntended: Bool, rawMediaActive: Bool?) -> String? {
+        guard zoomIsoCount > 0 else { return nil }
+        let plural = zoomIsoCount == 1 ? "source" : "sources"
+        let lead = "\(zoomIsoCount) Zoom ISO \(plural) armed with Capture off"
+        // Intent OFF: warn regardless of observation (shell owns the toggle)
+        if !captureIntended {
+            return "\(lead) — their ISO files will not start until frames flow. Turn Capture on, then record."
+        }
+        // Intent ON: only warn if observed OFF (not if nil = unobserved). Capture
+        // IS on here, so the fix is re-arming it, not turning it on.
+        if rawMediaActive == false {
+            return "\(zoomIsoCount) Zoom ISO \(plural) armed, but Capture is on and the engine reports raw " +
+                "media inactive — re-arm Capture, then record."
+        }
+        return nil
+    }
+}

@@ -765,6 +765,181 @@ enum ShellTests {
         expectEqual(broken.r, 0.0, "and never to black, which would key shadows")
     }
 
+    // ── ZoomSourceBudget ─────────────────────────────────────────────────────
+
+    private static func testBudgetProgramOutranksTheWall() {
+        // p-pgm holds a fixed Program route but sits LAST in the wall; order must
+        // come from the tier, not the slot index. Also exercises keep-first dedupe:
+        // p-pgm and p-cue appear in the wall tier too and must appear ONCE, at
+        // their higher tier. Invariant: cameraOn covers every pid used.
+        let entries = ZoomSourceBudget.videoEntries(
+            programRouted: ["p-pgm"],
+            previewRouted: ["p-cue"],
+            multiviewAssigned: ["p-wall1", "p-wall2", "p-pgm", "p-cue"],
+            isoArmed: [],
+            cameraOn: ["p-pgm", "p-cue", "p-wall1", "p-wall2"])
+        expectEqual(entries.map(\.participantId),
+                    ["p-pgm", "p-cue", "p-wall1", "p-wall2"],
+                    "budget order is program, preview, then the wall in slot order — once each")
+        expectEqual(entries[0].purpose, "program", "a fixed program route takes the program purpose")
+        expectEqual(entries[1].purpose, "preview", "a fixed preview route takes the preview purpose")
+        expectEqual(entries[2].purpose, "multiview", "a wall-only source takes the multiview purpose")
+    }
+
+    private static func testBudgetCameraOffSpendsNothing() {
+        // 11 camera-on wall sources w1..w11 (w10/w11 exist to make the cap
+        // reachable) plus a camera-OFF program route ahead of all of them.
+        // Windows rule (ZoomSourceSetPolicy): camera-off never spends VIDEO
+        // budget. The cap is 10 — Windows DefaultMaxVideoSubscriptions, the
+        // fixture-derived constant here.
+        let wall = (1...11).map { "w\($0)" }
+        let entries = ZoomSourceBudget.videoEntries(
+            programRouted: ["p-off"],
+            previewRouted: [],
+            multiviewAssigned: wall,
+            isoArmed: [],
+            cameraOn: Set(wall))
+        expectEqual(entries.count, 10, "the video budget is exactly 10 subscriptions")
+        expect(!entries.contains { $0.participantId == "p-off" },
+               "a camera-off source never spends video budget")
+        expect(entries.contains { $0.participantId == "w10" },
+               "the slot a camera-off source would have taken goes to the next candidate")
+        expect(!entries.contains { $0.participantId == "w11" },
+               "the 11th camera-on candidate is over budget")
+        expectEqual(ZoomSourceBudget.maxVideoSubscriptions, 10,
+                    "CONFIRMATORY: documents the owner ruling; the count assertion above is the guard")
+    }
+
+    private static func testBudgetIsoTierAndDeterminism() {
+        // An iso-armed-only pid enters LAST; an iso-armed pid already listed by a
+        // higher tier is not repeated. Two identical calls agree — CONFIRMATORY
+        // for a pure function; the real nondeterminism guard is budget/wire-shape
+        // plus the pushSpine call site replacing the old Set-derived input.
+        let first = ZoomSourceBudget.videoEntries(
+            programRouted: ["a"], previewRouted: [], multiviewAssigned: ["b"],
+            isoArmed: ["i1", "a"], cameraOn: ["a", "b", "i1"])
+        expectEqual(first.map(\.participantId), ["a", "b", "i1"],
+                    "iso-armed sources enter after the wall, already-listed pids once only")
+        expectEqual(first[2].purpose, "iso", "an iso-only source takes the iso purpose")
+        let second = ZoomSourceBudget.videoEntries(
+            programRouted: ["a"], previewRouted: [], multiviewAssigned: ["b"],
+            isoArmed: ["i1", "a"], cameraOn: ["a", "b", "i1"])
+        expect(first == second, "CONFIRMATORY: deterministic for identical inputs")
+    }
+
+    private static func testRoutedZoomPidsReadTheRealRouteShape() {
+        // Drive the REAL SceneRoute serialization (rule 10: exercise the structure,
+        // not a hand-copied dictionary): a fixed zoom route, an unbound
+        // active-speaker layer and a capture route — only the zoom pid survives.
+        let zoom = SceneRoute(routeId: "r1", mode: "fixed", participantId: "p9",
+                              captureDeviceId: nil, rect: (0, 0, 1, 1), zIndex: 0)
+        let speaker = SceneRoute(routeId: "r2", mode: "active-speaker", participantId: nil,
+                                 captureDeviceId: nil, rect: (0, 0, 1, 1), zIndex: 1)
+        let capture = SceneRoute(routeId: "r3", mode: "capture-input", participantId: nil,
+                                 captureDeviceId: "cam-1", rect: (0, 0, 1, 1), zIndex: 2)
+        let pids = ZoomSourceBudget.routedZoomPids([zoom.json, speaker.json, capture.json])
+        expectEqual(pids, ["p9"], "only routes carrying a participantId contribute budget pids")
+    }
+
+    @MainActor
+    private static func testSpineSubscriptionWireShape() {
+        let entries = [ZoomSourceBudget.Entry(participantId: "p1", purpose: "program"),
+                       ZoomSourceBudget.Entry(participantId: "p2", purpose: "multiview")]
+        let payloads = AppModel.spineSubscriptionPayloads(entries)
+        expectEqual(payloads.count, 2, "one subscription per budget entry")
+        expectEqual(payloads[0]["participantId"] as? String, "p1", "payload order is budget order")
+        expectEqual(payloads[0]["priority"] as? Int, 0, "priority is the budget index")
+        // participant-video is the tiered kind: the core grants 1080P to the first
+        // 8 camera-on entries IN THIS ORDER (ZoomSubscriptionResolutionPolicy.h),
+        // which is the entire point of the budget. Identity is purpose-free for
+        // this kind, so the real purpose rides the wire without churn.
+        expectEqual(payloads[0]["kind"] as? String, "participant-video",
+                    "the tiered kind — 1080P eligible, budget-order granted")
+        expectEqual(payloads[0]["purpose"] as? String, "program", "the entry's real purpose")
+        expectEqual(payloads[1]["purpose"] as? String, "multiview", "the entry's real purpose")
+        expectEqual(payloads[1]["priority"] as? Int, 1, "priority is the budget index")
+    }
+
+    // ── dropout policy (per-source, #535 slice 4a reaching Mac) ─────────────
+
+    @MainActor
+    private static func testSourcePolicyCommandsAreZoomOnlyAndOrdered() {
+        // Core contract (MediaCore::setSourcePolicy, #535 slice 4a): only
+        // "zoom:<pid>" may carry dropoutPolicy — a non-zoom id pushes a sticky
+        // scene warning EVERY sync; values are exactly "hold"/"black"; an explicit
+        // hold must be SENT (PRESENT-OR-KEEP: omission keeps the stored black).
+        var zoomB = ShowInputSlot(id: 1); zoomB.kind = "zoom"; zoomB.sourceId = "20"
+        zoomB.dropoutPolicy = "black"
+        var zoomA = ShowInputSlot(id: 2); zoomA.kind = "zoom"; zoomA.sourceId = "11"
+        zoomA.dropoutPolicy = "hold"
+        var capture = ShowInputSlot(id: 3); capture.kind = "capture"; capture.sourceId = "cam"
+        capture.dropoutPolicy = "black"   // unreachable via UI; the filter is the guard
+        var unset = ShowInputSlot(id: 4); unset.kind = "zoom"; unset.sourceId = "30"
+        _ = unset   // dropoutPolicy stays "" — must emit nothing
+        let commands = AppModel.sourcePolicyCommands(slots: [zoomB, zoomA, capture, unset])
+        expectEqual(commands.count, 2, "capture and policy-less slots emit nothing")
+        expectEqual(commands[0]["sourceId"] as? String, "zoom:11", "ordinal order by sourceId")
+        expectEqual(commands[0]["dropoutPolicy"] as? String, "hold",
+                    "an explicit hold is sent — it must overwrite an earlier black")
+        expectEqual(commands[1]["sourceId"] as? String, "zoom:20", "ordinal order by sourceId")
+        expectEqual(commands[1]["dropoutPolicy"] as? String, "black", "black rides verbatim")
+        expectEqual(commands[0]["type"] as? String, "set-source-policy", "the core's command name")
+    }
+
+    @MainActor
+    private static func testSourcePoliciesFollowTheSceneGraphInTheBatch() {
+        // MediaCore: loadSceneGraph clears sceneValidationWarnings_, so a policy
+        // placed BEFORE load-scene-graph has any refusal warning silently wiped.
+        // applyCommands runs in the order given — policies must come last.
+        var slot = ShowInputSlot(id: 1); slot.kind = "zoom"; slot.sourceId = "7"
+        slot.dropoutPolicy = "black"
+        let batch = AppModel.appendSourcePolicies(
+            to: [["type": "load-scene-graph"], ["type": "set-preview-scene"]],
+            slots: [slot])
+        expectEqual(batch.count, 3, "policies are appended, never interleaved")
+        expectEqual(batch[0]["type"] as? String, "load-scene-graph", "scene commands keep position")
+        expectEqual(batch[2]["type"] as? String, "set-source-policy",
+                    "the policy command comes after every scene command")
+    }
+
+    private static func testIsoPreflightWarnsLoudly() {
+        // The Windows T3.7 defect mirrored: 7 ISO streams sat at framesWritten 0,
+        // no file, recording.warning null. The counts are the fixture constants;
+        // the copy must carry the number and the fix.
+        let seven = IsoCapturePreflight.warning(zoomIsoCount: 7, captureIntended: false,
+                                                rawMediaActive: false)
+        expect(seven != nil, "ISOs armed with capture off must warn")
+        expect(seven?.contains("7 Zoom ISO sources") == true, "the warning names the count")
+        expect(seven?.contains("Turn Capture on") == true, "the warning names the fix")
+        let one = IsoCapturePreflight.warning(zoomIsoCount: 1, captureIntended: false,
+                                              rawMediaActive: false)
+        expect(one?.contains("1 Zoom ISO source ") == true, "singular copy for one source")
+        expectEqual(IsoCapturePreflight.warning(zoomIsoCount: 0, captureIntended: false,
+                                                rawMediaActive: false), nil,
+                    "no ISO sources, no warning")
+        expectEqual(IsoCapturePreflight.warning(zoomIsoCount: 3, captureIntended: true,
+                                                rawMediaActive: true), nil,
+                    "capture on and observed active is healthy")
+        let intentOnObservedOff = IsoCapturePreflight.warning(zoomIsoCount: 3, captureIntended: true,
+                                                              rawMediaActive: false)
+        expect(intentOnObservedOff != nil,
+               "intent ON but observed OFF still warns — the observed state is the truth")
+        expect(intentOnObservedOff?.contains("re-arm Capture") == true,
+               "intent-ON/observed-OFF copy is distinct — Capture IS on, so the fix is re-arming it, not turning it on")
+    }
+
+    private static func testIsoPreflightNeverWarnsOnAnUnobservedState() {
+        // Windows round-2 ruling: capture-off must be a FACT. Intent ON with no
+        // snapshot ever reported (nil) is unobserved — warning here would fire on
+        // every pre-join recording start.
+        expectEqual(IsoCapturePreflight.warning(zoomIsoCount: 4, captureIntended: true,
+                                                rawMediaActive: nil), nil,
+                    "an unobserved capture state is not a warning")
+        expect(IsoCapturePreflight.warning(zoomIsoCount: 4, captureIntended: false,
+                                           rawMediaActive: nil) != nil,
+               "intent OFF is itself observed — the shell owns the Capture toggle")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
 
     @MainActor
@@ -806,6 +981,15 @@ enum ShellTests {
             ("telemetry/dropped-frames", testDroppedFrameReadout),
             ("chromakey/enabled-only", testChromaKeyNodeOnlySentWhenEnabled),
             ("chromakey/colour-parsing", testKeyColourParsing),
+            ("budget/order", testBudgetProgramOutranksTheWall),
+            ("budget/camera-off", testBudgetCameraOffSpendsNothing),
+            ("budget/iso-dedupe-determinism", testBudgetIsoTierAndDeterminism),
+            ("budget/route-shape", testRoutedZoomPidsReadTheRealRouteShape),
+            ("budget/wire-shape", testSpineSubscriptionWireShape),
+            ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
+            ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
+            ("iso/preflight-loud", testIsoPreflightWarnsLoudly),
+            ("iso/preflight-unobserved", testIsoPreflightNeverWarnsOnAnUnobservedState),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
