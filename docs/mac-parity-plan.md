@@ -242,7 +242,8 @@ lives at `docs/superpowers/plans/2026-10-09-mac-parity-batch.md`; summary:
 1. **Task 1 — this document.** Docs-only; corrects §5.1/§5.2 and unblocks the
    scoping below. (This commit.)
 2. **Task 2 — `ZoomSourceBudget`: deterministic, capped, camera-on-filtered
-   spine subscriptions.** Pure Swift policy type plus `AppModel.pushSpine`
+   spine subscriptions. SHIPPED** commit d34c2180 (this branch; PR pending).
+   Pure Swift policy type plus `AppModel.pushSpine`
    wiring. Deliberately wire-conservative: kind stays `"video"` and wire
    purpose stays `"program"` for every entry (purpose is part of the engine's
    subscription identity for kind `"video"`; emitting real purposes now would
@@ -252,7 +253,8 @@ lives at `docs/superpowers/plans/2026-10-09-mac-parity-batch.md`; summary:
    subscriptions, the count is capped at 10, and a `hasVideo` change re-pushes
    the spine. This lands the machinery the 1080P flip needs without granting
    1080P yet.
-3. **Task 3 — the 1080P flip.** One wire change (`kind:
+3. **Task 3 — the 1080P flip. SHIPPED** commit deb2689e (this branch; PR pending) — **LIVE ACCEPTANCE PENDING: owner meeting soak (Task 3 Step 6) has NOT run; the Metal path at 8×1080P is unproven on this rig; fallback is reverting the one-line kind flip.**
+   One wire change (`kind:
    "participant-video"`, real per-entry purpose) plus a comment-only update to
    `ZoomSubscriptionResolutionPolicy.h`. Deliberately separated from Task 2 so
    a reviewer can approve the budget machinery while holding the capability
@@ -265,14 +267,14 @@ lives at `docs/superpowers/plans/2026-10-09-mac-parity-batch.md`; summary:
    path shows distress, the documented fallback is reverting this task's
    one-line kind flip, which restores the 720P fence; Task 2's budget
    machinery stays either way.
-4. **Task 4 — per-source dropout policy: surface, persistence, wire.** Closes
-   §4 item 1. The core half already reaches Mac (§4); this task adds the
+4. **Task 4 — per-source dropout policy: surface, persistence, wire. SHIPPED** commit bad303c2 (this branch; PR pending).
+   Closes §4 item 1. The core half already reaches Mac (§4); this task adds the
    `SlotRow` menu (Hold last frame / Black), the `ShowInputSlot` field and
    `pushScenes` wire-up (ordered by sourceId ordinal, zoom-only, sent after
    `load-scene-graph` in the batch), and ShellPrefs persistence following the
    existing `chromaKeys` pattern.
-5. **Task 5 — ISO-armed-with-capture-off is loud.** Closes §4 item 2 (T3.7
-   mirror). A pure `IsoCapturePreflight.warning(...)` helper plus one call
+5. **Task 5 — ISO-armed-with-capture-off is loud. SHIPPED** commit e28063dc (this branch; PR pending).
+   Closes §4 item 2 (T3.7 mirror). A pure `IsoCapturePreflight.warning(...)` helper plus one call
    site in `toggleRecording()`: warns when ISOs are armed and capture is
    either explicitly off or the observed Zoom snapshot says inactive, but
    never warns on an *unobserved* state (no snapshot has ever reported) —
