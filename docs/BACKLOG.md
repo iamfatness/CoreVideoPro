@@ -19,7 +19,9 @@ source text remains in Sources. Keep short output acceptance and weekend bake di
 with [#848](https://github.com/iamfatness/CoreVideoPro/issues/848): scene, audio,
 grading and lower-third controls need direct manipulation, meaningful units/ranges,
 clear defaults/reset and visible feedback. Implement the shared interaction standard
-through the existing #847/#835/#591 consumers; precise numeric entry remains available.
+through the existing #847/#835/#591 consumers. Owner clarified that sliders with
+synchronized exact number entry are preferred for continuous adjustments; follow
+the [operator adjustment control specification](reference/operator-adjustment-controls-spec.md).
 This broadens the accepted UI scope without displacing media acceptance or inventing
 a separate work order.
 
