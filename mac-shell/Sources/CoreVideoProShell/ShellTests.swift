@@ -765,6 +765,101 @@ enum ShellTests {
         expectEqual(broken.r, 0.0, "and never to black, which would key shadows")
     }
 
+    // ── ZoomSourceBudget ─────────────────────────────────────────────────────
+
+    private static func testBudgetProgramOutranksTheWall() {
+        // p-pgm holds a fixed Program route but sits LAST in the wall; order must
+        // come from the tier, not the slot index. Also exercises keep-first dedupe:
+        // p-pgm and p-cue appear in the wall tier too and must appear ONCE, at
+        // their higher tier. Invariant: cameraOn covers every pid used.
+        let entries = ZoomSourceBudget.videoEntries(
+            programRouted: ["p-pgm"],
+            previewRouted: ["p-cue"],
+            multiviewAssigned: ["p-wall1", "p-wall2", "p-pgm", "p-cue"],
+            isoArmed: [],
+            cameraOn: ["p-pgm", "p-cue", "p-wall1", "p-wall2"])
+        expectEqual(entries.map(\.participantId),
+                    ["p-pgm", "p-cue", "p-wall1", "p-wall2"],
+                    "budget order is program, preview, then the wall in slot order — once each")
+        expectEqual(entries[0].purpose, "program", "a fixed program route takes the program purpose")
+        expectEqual(entries[1].purpose, "preview", "a fixed preview route takes the preview purpose")
+        expectEqual(entries[2].purpose, "multiview", "a wall-only source takes the multiview purpose")
+    }
+
+    private static func testBudgetCameraOffSpendsNothing() {
+        // 11 camera-on wall sources w1..w11 (w10/w11 exist to make the cap
+        // reachable) plus a camera-OFF program route ahead of all of them.
+        // Windows rule (ZoomSourceSetPolicy): camera-off never spends VIDEO
+        // budget. The cap is 10 — Windows DefaultMaxVideoSubscriptions, the
+        // fixture-derived constant here.
+        let wall = (1...11).map { "w\($0)" }
+        let entries = ZoomSourceBudget.videoEntries(
+            programRouted: ["p-off"],
+            previewRouted: [],
+            multiviewAssigned: wall,
+            isoArmed: [],
+            cameraOn: Set(wall))
+        expectEqual(entries.count, 10, "the video budget is exactly 10 subscriptions")
+        expect(!entries.contains { $0.participantId == "p-off" },
+               "a camera-off source never spends video budget")
+        expect(entries.contains { $0.participantId == "w10" },
+               "the slot a camera-off source would have taken goes to the next candidate")
+        expect(!entries.contains { $0.participantId == "w11" },
+               "the 11th camera-on candidate is over budget")
+        expectEqual(ZoomSourceBudget.maxVideoSubscriptions, 10,
+                    "CONFIRMATORY: documents the owner ruling; the count assertion above is the guard")
+    }
+
+    private static func testBudgetIsoTierAndDeterminism() {
+        // An iso-armed-only pid enters LAST; an iso-armed pid already listed by a
+        // higher tier is not repeated. Two identical calls agree — CONFIRMATORY
+        // for a pure function; the real nondeterminism guard is budget/wire-shape
+        // plus the pushSpine call site replacing the old Set-derived input.
+        let first = ZoomSourceBudget.videoEntries(
+            programRouted: ["a"], previewRouted: [], multiviewAssigned: ["b"],
+            isoArmed: ["i1", "a"], cameraOn: ["a", "b", "i1"])
+        expectEqual(first.map(\.participantId), ["a", "b", "i1"],
+                    "iso-armed sources enter after the wall, already-listed pids once only")
+        expectEqual(first[2].purpose, "iso", "an iso-only source takes the iso purpose")
+        let second = ZoomSourceBudget.videoEntries(
+            programRouted: ["a"], previewRouted: [], multiviewAssigned: ["b"],
+            isoArmed: ["i1", "a"], cameraOn: ["a", "b", "i1"])
+        expect(first == second, "CONFIRMATORY: deterministic for identical inputs")
+    }
+
+    private static func testRoutedZoomPidsReadTheRealRouteShape() {
+        // Drive the REAL SceneRoute serialization (rule 10: exercise the structure,
+        // not a hand-copied dictionary): a fixed zoom route, an unbound
+        // active-speaker layer and a capture route — only the zoom pid survives.
+        let zoom = SceneRoute(routeId: "r1", mode: "fixed", participantId: "p9",
+                              captureDeviceId: nil, rect: (0, 0, 1, 1), zIndex: 0)
+        let speaker = SceneRoute(routeId: "r2", mode: "active-speaker", participantId: nil,
+                                 captureDeviceId: nil, rect: (0, 0, 1, 1), zIndex: 1)
+        let capture = SceneRoute(routeId: "r3", mode: "capture-input", participantId: nil,
+                                 captureDeviceId: "cam-1", rect: (0, 0, 1, 1), zIndex: 2)
+        let pids = ZoomSourceBudget.routedZoomPids([zoom.json, speaker.json, capture.json])
+        expectEqual(pids, ["p9"], "only routes carrying a participantId contribute budget pids")
+    }
+
+    @MainActor
+    private static func testSpineSubscriptionWireShape() {
+        let entries = [ZoomSourceBudget.Entry(participantId: "p1", purpose: "program"),
+                       ZoomSourceBudget.Entry(participantId: "p2", purpose: "multiview")]
+        let payloads = AppModel.spineSubscriptionPayloads(entries)
+        expectEqual(payloads.count, 2, "one subscription per budget entry")
+        expectEqual(payloads[0]["participantId"] as? String, "p1", "payload order is budget order")
+        expectEqual(payloads[0]["priority"] as? Int, 0, "priority is the budget index")
+        expectEqual(payloads[1]["priority"] as? Int, 1, "priority is the budget index")
+        // The core's fence (ZoomSubscriptionResolutionPolicy.h): kind "video" is
+        // never promoted to 1080P, and for kind "video" the purpose is part of the
+        // engine's subscription identity — a real purpose here would churn warmed
+        // subscriptions on every bus move. Both flip together in the 1080P task.
+        expectEqual(payloads[1]["kind"] as? String, "video",
+                    "kind stays the fenced legacy kind until the 1080P flip task")
+        expectEqual(payloads[1]["purpose"] as? String, "program",
+                    "the wire purpose stays constant until the kind flip makes identity purpose-free")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
 
     @MainActor
@@ -806,6 +901,11 @@ enum ShellTests {
             ("telemetry/dropped-frames", testDroppedFrameReadout),
             ("chromakey/enabled-only", testChromaKeyNodeOnlySentWhenEnabled),
             ("chromakey/colour-parsing", testKeyColourParsing),
+            ("budget/order", testBudgetProgramOutranksTheWall),
+            ("budget/camera-off", testBudgetCameraOffSpendsNothing),
+            ("budget/iso-dedupe-determinism", testBudgetIsoTierAndDeterminism),
+            ("budget/route-shape", testRoutedZoomPidsReadTheRealRouteShape),
+            ("budget/wire-shape", testSpineSubscriptionWireShape),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)

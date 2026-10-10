@@ -849,6 +849,7 @@ final class AppModel: ObservableObject {
         if acceptRoster, let participants = snapshot["participants"] as? [JSONObject] {
             // Wire shape (ZoomEngineRuntime::rawCaptureSnapshotLocked, same as
             // the WinUI shell consumes): userId/displayName/videoOn/muted/talking.
+            let cameraOnBefore = Set(roster.filter(\.hasVideo).map(\.id))
             roster = RosterParticipant.parse(participants, assignedIds: assignedIds)
             // Auto-assign video participants into empty slots (the Windows
             // AutomationAutoAssignInputsEnabled default) — join → tiles with
@@ -869,6 +870,13 @@ final class AppModel: ObservableObject {
             if assignedAny {
                 ShellLog.write("auto-assigned into slots")
                 recomputeFromSlots()
+            }
+            // A camera turning ON must re-push the spine: the budget filters on
+            // camera-on, so without this the participant never re-subscribes (the
+            // Windows 2026-08-09 frozen-tile defect, mirrored).
+            let cameraOnAfter = Set(roster.filter(\.hasVideo).map(\.id))
+            if cameraOnAfter != cameraOnBefore && !assignedAny {
+                syncSpine()
             }
         }
     }
@@ -1303,14 +1311,22 @@ final class AppModel: ObservableObject {
                 "talking": participant.talking,
             ]
         }
-        let subscriptions: [JSONObject] = assignedIds.enumerated().map { index, id in
-            [
-                "participantId": id,
-                "kind": "video",
-                "purpose": "program",
-                "priority": index,
-            ]
-        }
+        // Budget-ordered, camera-on-filtered, capped (E1/E2/E5 — see
+        // ZoomSourceBudget.swift). Replaces the old `assignedIds` Set, which was
+        // nondeterministic, uncapped and subscribed camera-off participants.
+        let programRouted = programSceneId.isEmpty
+            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: programSceneId, isProgram: true))
+        let previewRouted = previewSceneId.isEmpty
+            ? [] : ZoomSourceBudget.routedZoomPids(buildRoutes(for: previewSceneId))
+        let multiviewAssigned = slots
+            .filter { $0.kind == "zoom" && $0.inShow && !$0.offline }
+            .map(\.sourceId)
+        let isoArmed = isoRecordingEnabled
+            ? slots.filter { $0.kind == "zoom" && $0.iso }.map(\.sourceId) : []
+        let cameraOn = Set(roster.filter(\.hasVideo).map(\.id))
+        let subscriptions = Self.spineSubscriptionPayloads(ZoomSourceBudget.videoEntries(
+            programRouted: programRouted, previewRouted: previewRouted,
+            multiviewAssigned: multiviewAssigned, isoArmed: isoArmed, cameraOn: cameraOn))
         // Multiview sources = the in-show slots that still HAVE a source. An
         // offline slot (participant left, device unplugged) kept its tile and
         // rendered as an unlabeled gray placeholder — a dead box on the wall.
@@ -1361,6 +1377,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // The exact objects placed in the spine `subscriptions` array. Fence
+    // (E4/E6, ZoomSubscriptionResolutionPolicy.h): kind "video" is never
+    // promoted to 1080P, and for kind "video" the purpose is part of the
+    // engine's subscription identity — a real purpose here would churn warmed
+    // subscriptions on every bus move. The 1080P flip task activates
+    // `entry.purpose` alongside moving `kind` to "participant-video".
+    static func spineSubscriptionPayloads(_ entries: [ZoomSourceBudget.Entry]) -> [JSONObject] {
+        entries.enumerated().map { index, entry in
+            [
+                "participantId": entry.participantId,
+                "kind": "video",
+                "purpose": "program",
+                "priority": index,
+            ]
+        }
+    }
+
     // ── scenes + Take ────────────────────────────────────────────────────────
 
     // Rects lifted from SceneCanvasLayoutService: single, two-up (0.02 gap),
@@ -1403,7 +1436,7 @@ final class AppModel: ObservableObject {
                 Double(value & 0xff) / 255.0)
     }
 
-    private func buildRoutes(for sceneId: String, isProgram: Bool = false) -> [JSONObject] {
+    func buildRoutes(for sceneId: String, isProgram: Bool = false) -> [JSONObject] {
         if sceneId == Self.soloSceneA || sceneId == Self.soloSceneB {
             guard let slotId = soloSlotId,
                   let slot = slots.first(where: { $0.id == slotId }),
