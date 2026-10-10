@@ -7,6 +7,29 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class ShowInputSlotViewModelTests
 {
     [Fact]
+    public void ZoomPolicyVisibilityFollowsAssignmentWithoutDiscardingUnavailableGuest()
+    {
+        var slot = new ShowInputSlot { SlotNumber = 1 };
+        var editor = new ShowInputSlotViewModel(slot, () => { });
+        var changes = new List<string?>();
+        editor.PropertyChanged += (_, args) => changes.Add(args.PropertyName);
+        Assert.False(editor.ShowSourcePolicies);
+        slot.Kind = ShowInputKind.ZoomParticipant;
+        slot.ParticipantId = "guest-42";
+        Assert.True(editor.ShowSourcePolicies);
+        Assert.Contains(nameof(editor.ShowSourcePolicies), changes);
+        editor.RefreshSourceOptions([], []);
+        Assert.True(editor.IsSourceMissing);
+        Assert.True(editor.ShowSourcePolicies);
+        Assert.Equal("zoom:guest-42", editor.SourceId);
+        editor.Unassign();
+        Assert.False(editor.ShowSourcePolicies);
+        slot.Kind = ShowInputKind.UvcWebcam;
+        slot.CaptureDeviceId = "camera";
+        Assert.False(editor.ShowSourcePolicies);
+    }
+
+    [Fact]
     public void ChangingKindRefreshesSourceOptionsForSelectedInputType()
     {
         var slot = new ShowInputSlot { SlotNumber = 1 };

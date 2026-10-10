@@ -14,6 +14,9 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     private readonly Func<string?, string, string> _resolveDisplayName;
     // (canonical source id, new name | null-to-reset) -> persist the override.
     private readonly Action<string?, string?> _setDisplayName;
+    private readonly Func<string?, string, string> _resolveSecondary;
+    private readonly Func<string?, bool> _usesDefaultSecondary;
+    private readonly Action<string?, string?, string?> _applyText;
     // ISO-4: (canonical source id, enabled) -> update the operator's ISO selection.
     private readonly Action<string?, bool> _onIsoToggled;
     private IReadOnlyList<Participant> _participants = [];
@@ -33,13 +36,19 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         Func<string?, string, string>? resolveDisplayName = null,
         Action<string?, string?>? setDisplayName = null,
         Action<string?, bool>? onIsoToggled = null,
-        MultiviewInputRow? inspector = null)
+        MultiviewInputRow? inspector = null,
+        Func<string?, string, string>? resolveSecondary = null,
+        Func<string?, bool>? usesDefaultSecondary = null,
+        Action<string?, string?, string?>? applyText = null)
     {
         _slot = slot;
         _onChanged = onChanged;
         _onAudioDeviceChanged = onAudioDeviceChanged ?? ((_, _) => { });
         _resolveDisplayName = resolveDisplayName ?? ((_, derived) => derived);
         _setDisplayName = setDisplayName ?? ((_, _) => { });
+        _resolveSecondary = resolveSecondary ?? ((_, derived) => derived);
+        _usesDefaultSecondary = usesDefaultSecondary ?? (_ => true);
+        _applyText = applyText ?? ((id, name, _) => _setDisplayName(id, name));
         _onIsoToggled = onIsoToggled ?? ((_, _) => { });
         Inspector = inspector ?? new MultiviewInputRow(slot.SlotNumber);
         _slot.PropertyChanged += (_, _) =>
@@ -349,6 +358,9 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     /// dead controls.</summary>
     public bool IsAssigned => _slot.IsAssigned;
 
+    public bool ShowSourcePolicies => Kind == ShowInputKind.ZoomParticipant && !string.IsNullOrWhiteSpace(ParticipantId);
+    public bool CanEditLowerThirdText => IsAssigned && Kind != ShowInputKind.Media;
+
     /// <summary>Editable display name for the assigned source. Defaults to the derived
     /// Zoom/UVC/asset name; setting it stores the operator override (feeding the auto
     /// lower-thirds and multiview labels). Setting it blank resets to the derived name.</summary>
@@ -366,6 +378,25 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     }
 
     public bool IsDisplayNameEditable => !string.IsNullOrEmpty(SourceId);
+
+    public string DefaultDisplayName => DerivedSourceName();
+    public bool UsesDefaultSecondaryLine => _usesDefaultSecondary(SourceId);
+    public string SecondaryLine => _resolveSecondary(SourceId, DefaultSecondaryLine);
+    public string DefaultSecondaryLine
+    {
+        get
+        {
+            var participant = Kind == ShowInputKind.ZoomParticipant ? _participants.FirstOrDefault(p => p.Id == ParticipantId) : null;
+            return participant is null ? string.Empty : SourceLowerThirdText.Preview(
+                string.IsNullOrWhiteSpace(participant.Title) ? participant.RoleLabel : participant.Title,
+                string.IsNullOrWhiteSpace(participant.BreakoutRoomName) ? participant.RoleLabel : participant.BreakoutRoomName);
+        }
+    }
+    public void ApplyLowerThirdText(string name, string secondary, bool useDefault)
+    {
+        _applyText(SourceId, name.Trim() == DefaultDisplayName ? null : name, useDefault ? null : secondary);
+        OnPropertyChanged(nameof(DisplayName));
+    }
 
     private string DerivedSourceName() => Kind switch
     {
@@ -442,6 +473,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(RowOpacity));
         OnPropertyChanged(nameof(KindLabel));
         OnPropertyChanged(nameof(IsAssigned));
+        OnPropertyChanged(nameof(ShowSourcePolicies));
+        OnPropertyChanged(nameof(CanEditLowerThirdText));
         OnPropertyChanged(nameof(AudioDeviceOptions));
         OnPropertyChanged(nameof(SelectedSourceId));
         OnPropertyChanged(nameof(IsSourcePickerEnabled));
@@ -477,6 +510,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(ShowSourceUnavailableWarning));
         OnPropertyChanged(nameof(RowOpacity));
         OnPropertyChanged(nameof(IsAssigned));
+        OnPropertyChanged(nameof(ShowSourcePolicies));
+        OnPropertyChanged(nameof(CanEditLowerThirdText));
         OnPropertyChanged(nameof(ParticipantId));
         OnPropertyChanged(nameof(CaptureDeviceId));
         OnPropertyChanged(nameof(AudioDeviceId));

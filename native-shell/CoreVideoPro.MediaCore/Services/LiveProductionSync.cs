@@ -135,7 +135,7 @@ public static class LiveProductionSync
             {
                 var id = participant.UserId.Trim();
                 var healthLabel = NormalizeFeedHealthLabel(participant);
-                var roleLabel = string.IsNullOrWhiteSpace(participant.Role) ? "Guest" : participant.Role.Trim();
+                var roleLabel = NormalizeRoleLabel(participant.Role);
                 var title = string.IsNullOrWhiteSpace(participant.Title)
                     ? roleLabel
                     : participant.Title.Trim();
@@ -178,6 +178,20 @@ public static class LiveProductionSync
         string.Equals(snapshot.MeetingState, "in_meeting", StringComparison.Ordinal)
             ? MapRawParticipants(snapshot.Participants, snapshot.ActiveSpeakerId)
             : [];
+
+    // SDK roster snapshots use display casing; spine sync responses use wire casing.
+    // Both feed the same source-bound key. Normalize only known role labels so a
+    // refresh cannot change the fallback title (or invalidate its overlay raster).
+    private static string NormalizeRoleLabel(string? role) => role?.Trim().ToLowerInvariant() switch
+    {
+        null or "" or "guest" => "Guest",
+        "host" => "Host",
+        "presenter" => "Presenter",
+        "speaker" => "Speaker",
+        "panelist" => "Panelist",
+        "panel" => "Panel",
+        _ => role!.Trim()
+    };
 
     /// <summary>
     /// Idle production readouts when no snapshot or engine context is available.
