@@ -21,6 +21,13 @@ which is a reference rather than a claim that every skin tone must lie on it.
 Original/Graded explicitly selects the analysis tap. Units and color-space assumptions
 stay visible. Empty, unavailable and stale are distinct from a measured black frame.
 
+The owner added scope ROI on October 9: draw, move or resize a rectangular region
+on the selected-source preview and analyze only its pixels in all three scopes.
+Full frame restores ordinary analysis. ROI changes scope analysis only; grading
+continues to affect the full source. The guide is editor-only and never appears
+in production outputs. Coordinate, sampling, freshness and persistence contracts
+are defined in [the bundled operator editing specification](operator-editing-bundle-spec.md).
+
 Master/R/G/B curves support adding points, dragging, numerical entry and removal.
 Keep endpoints ordered, allow vertical movement, reject duplicate input positions,
 and provide channel reset and undo/redo. Primary controls extend to exposure,

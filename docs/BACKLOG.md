@@ -25,6 +25,13 @@ the [operator adjustment control specification](reference/operator-adjustment-co
 This broadens the accepted UI scope without displacing media acceptance or inventing
 a separate work order.
 
+**Owner bundled design request on 2026-10-09:** scopes in the grade workspace
+must optionally analyze only a selected ROI (#835). Bundle that with #847/#848,
+lower-third text/stability and starter-scene usability under the
+[operator editing specification](reference/operator-editing-bundle-spec.md) and
+[implementation plan](reference/operator-editing-bundle-plan.md). ROI changes
+analysis only, with an editor-only guide; full-source grading/output remains intact.
+
 **Owner top priority on 2026-10-08:** advanced per-source grading
 [#835](https://github.com/iamfatness/CoreVideoPro/issues/835), with an optional expanded
 workspace, editable curves, histogram, waveform and vectorscope. Its first slice
