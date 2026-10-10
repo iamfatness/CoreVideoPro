@@ -14,13 +14,14 @@ public static class Program
             LaunchLog.Write($"base={AppContext.BaseDirectory}");
 
             var runtimeProbe = args.Length == 2 && args[0] == "--verify-runtime";
+            var settingsProbe = args.Length == 2 && args[0] == "--verify-operator-settings";
             var gradeProbe = args.Length == 3 && args[0] == "--verify-source-grade";
             var meterProbe = args.Length == 3 && args[0] == "--verify-audio-meters";
             var probeSeconds = meterProbe ? int.Parse(args[1]) : 0;
             if (meterProbe && probeSeconds is < 5 or > 86400)
                 throw new ArgumentOutOfRangeException(nameof(args), "Meter probe duration must be 5–86400 seconds.");
 #if !COREVIDEO_SELF_CONTAINED
-            var options = runtimeProbe || meterProbe || gradeProbe ? Bootstrap.InitializeOptions.None : Bootstrap.InitializeOptions.OnNoMatch_ShowUI;
+            var options = runtimeProbe || meterProbe || settingsProbe || gradeProbe ? Bootstrap.InitializeOptions.None : Bootstrap.InitializeOptions.OnNoMatch_ShowUI;
             if (!Bootstrap.TryInitialize(0x00020004, null, new PackageVersion(), options, out var bootstrapHr))
             {
                 LaunchLog.Write($"Bootstrap.TryInitialize failed hr=0x{bootstrapHr:X8}");
@@ -40,7 +41,8 @@ public static class Program
             {
                 var context = new DispatcherQueueSynchronizationContext(DispatcherQueue.GetForCurrentThread());
                 SynchronizationContext.SetSynchronizationContext(context);
-                if (gradeProbe) new App(null,new Services.SourceGradeWorkspaceProbe(args[1],args[2]));
+                if (settingsProbe) new App(null, new Services.OperatorSettingsProbe(args[1]));
+                else if (gradeProbe) new App(null,gradeProbe: new Services.SourceGradeWorkspaceProbe(args[1],args[2]));
                 else if (meterProbe) new App(new Services.AudioMeterStressProbe(probeSeconds, args[2]));
                 else new App();
             });
