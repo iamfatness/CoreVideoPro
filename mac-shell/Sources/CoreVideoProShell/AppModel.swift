@@ -2443,6 +2443,9 @@ final class AppModel: ObservableObject {
                     let isoIds = resolvedIsoSourceIds()
                     let isoLegacy = isoIds.filter { $0.hasPrefix("zoom:") }
                         .map { String($0.dropFirst(5)) }
+                    if let warning = IsoCapturePreflight.warning(zoomIsoCount: isoLegacy.count, captureIntended: captureEnabled, rawMediaActive: lastZoomSnapshot["rawMediaActive"] as? Bool) {
+                        pushWarning(warning)
+                    }
                     _ = try await bridge.request([
                         "type": "media-core-sync", "elapsedMs": elapsedMs(),
                         "commands": [

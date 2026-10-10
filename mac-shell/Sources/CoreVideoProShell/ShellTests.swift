@@ -901,6 +901,41 @@ enum ShellTests {
                     "the policy command comes after every scene command")
     }
 
+    private static func testIsoPreflightWarnsLoudly() {
+        // The Windows T3.7 defect mirrored: 7 ISO streams sat at framesWritten 0,
+        // no file, recording.warning null. The counts are the fixture constants;
+        // the copy must carry the number and the fix.
+        let seven = IsoCapturePreflight.warning(zoomIsoCount: 7, captureIntended: false,
+                                                rawMediaActive: false)
+        expect(seven != nil, "ISOs armed with capture off must warn")
+        expect(seven?.contains("7 Zoom ISO sources") == true, "the warning names the count")
+        expect(seven?.contains("Turn Capture on") == true, "the warning names the fix")
+        let one = IsoCapturePreflight.warning(zoomIsoCount: 1, captureIntended: false,
+                                              rawMediaActive: false)
+        expect(one?.contains("1 Zoom ISO source ") == true, "singular copy for one source")
+        expectEqual(IsoCapturePreflight.warning(zoomIsoCount: 0, captureIntended: false,
+                                                rawMediaActive: false), nil,
+                    "no ISO sources, no warning")
+        expectEqual(IsoCapturePreflight.warning(zoomIsoCount: 3, captureIntended: true,
+                                                rawMediaActive: true), nil,
+                    "capture on and observed active is healthy")
+        expect(IsoCapturePreflight.warning(zoomIsoCount: 3, captureIntended: true,
+                                           rawMediaActive: false) != nil,
+               "intent ON but observed OFF still warns — the observed state is the truth")
+    }
+
+    private static func testIsoPreflightNeverWarnsOnAnUnobservedState() {
+        // Windows round-2 ruling: capture-off must be a FACT. Intent ON with no
+        // snapshot ever reported (nil) is unobserved — warning here would fire on
+        // every pre-join recording start.
+        expectEqual(IsoCapturePreflight.warning(zoomIsoCount: 4, captureIntended: true,
+                                                rawMediaActive: nil), nil,
+                    "an unobserved capture state is not a warning")
+        expect(IsoCapturePreflight.warning(zoomIsoCount: 4, captureIntended: false,
+                                           rawMediaActive: nil) != nil,
+               "intent OFF is itself observed — the shell owns the Capture toggle")
+    }
+
     // ── runner ───────────────────────────────────────────────────────────────
 
     @MainActor
@@ -949,6 +984,8 @@ enum ShellTests {
             ("budget/wire-shape", testSpineSubscriptionWireShape),
             ("dropout/zoom-only-ordered", testSourcePolicyCommandsAreZoomOnlyAndOrdered),
             ("dropout/after-scene-graph", testSourcePoliciesFollowTheSceneGraphInTheBatch),
+            ("iso/preflight-loud", testIsoPreflightWarnsLoudly),
+            ("iso/preflight-unobserved", testIsoPreflightNeverWarnsOnAnUnobservedState),
         ]
         for (name, body) in cases {
             FileHandle.standardError.write("  running \(name)\n".data(using: .utf8)!)
