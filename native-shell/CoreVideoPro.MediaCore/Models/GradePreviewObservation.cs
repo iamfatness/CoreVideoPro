@@ -18,6 +18,11 @@ public sealed record GradePreviewObservation
 }
 public sealed record GradeScopeObservation
 {
+    public GradeScopeRoi Roi { get; init; } = new();
+    public int RoiPixelX { get; init; }
+    public int RoiPixelY { get; init; }
+    public int RoiPixelWidth { get; init; }
+    public int RoiPixelHeight { get; init; }
     public long CompletionObservedAtUnixMs { get; init; }
     public int View { get; init; }
     public string Reason { get; init; } = "";

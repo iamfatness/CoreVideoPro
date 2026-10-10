@@ -281,6 +281,8 @@ public sealed partial class OverlaysViewModel : ObservableObject
 
     public void NotifyBrandKitChanged()
     {
+        OnPropertyChanged(nameof(AppliedAppearance));
+        OnPropertyChanged(nameof(AppliedLookLabel));OnPropertyChanged(nameof(AppliedLookAnchor));
         BrandName = BrandKit.Name;
         BrandLogoText = BrandKit.LogoText;
         BrandPrimaryColor = BrandKit.BrandColor;
@@ -334,6 +336,7 @@ public sealed partial class OverlaysViewModel : ObservableObject
             BackgroundColor = BrandBackgroundColor.Trim(),
             FontFamily = BrandKit.FontFamily,
             LowerThirdStyle = BrandLowerThirdStyle,
+            LowerThirdAppearance = BrandKit.LowerThirdAppearance,
             CaptionStyle = CaptionStyleSummary,
             DefaultOverlayBehavior = BrandDefaultOverlayBehavior
         });

@@ -470,27 +470,19 @@
                                                 </StackPanel>
                                                 <!-- S3: exact placement — normalized 0..1, drag stays in sync -->
                                                 <StackPanel Spacing="2">
-                                                    <TextBlock Text="Position (0-1)" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                                                    <Grid ColumnSpacing="4">
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="*" />
-                                                        </Grid.ColumnDefinitions>
-                                                        <NumberBox Header="X" Value="{x:Bind X, Mode=TwoWay}"
-                                                                   Minimum="0" Maximum="1" SmallChange="0.01" LargeChange="0.05"
-                                                                   SpinButtonPlacementMode="Hidden" />
-                                                        <NumberBox Grid.Column="1" Header="Y" Value="{x:Bind Y, Mode=TwoWay}"
-                                                                   Minimum="0" Maximum="1" SmallChange="0.01" LargeChange="0.05"
-                                                                   SpinButtonPlacementMode="Hidden" />
-                                                        <NumberBox Grid.Column="2" Header="W" Value="{x:Bind Width, Mode=TwoWay}"
-                                                                   Minimum="0.08" Maximum="1" SmallChange="0.01" LargeChange="0.05"
-                                                                   SpinButtonPlacementMode="Hidden" />
-                                                        <NumberBox Grid.Column="3" Header="H" Value="{x:Bind Height, Mode=TwoWay}"
-                                                                   Minimum="0.08" Maximum="1" SmallChange="0.01" LargeChange="0.05"
-                                                                   SpinButtonPlacementMode="Hidden" />
-                                                    </Grid>
+                                                    <TextBlock Text="Position and size" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                                                    <StackPanel Spacing="8"><cvcontrols:SliderValueControl Header="Left" Value="{x:Bind X, Mode=TwoWay}"
+                                                                   Minimum="0" Maximum="1" StepFrequency="0.01"
+                                                                    Unit="%" DisplayScale="100" DefaultValue="0" Help="Percent of the scene canvas." />
+<cvcontrols:SliderValueControl  Header="Top" Value="{x:Bind Y, Mode=TwoWay}"
+                                                                   Minimum="0" Maximum="1" StepFrequency="0.01"
+                                                                    Unit="%" DisplayScale="100" DefaultValue="0" Help="Percent of the scene canvas." />
+<cvcontrols:SliderValueControl  Header="Width" Value="{x:Bind Width, Mode=TwoWay}"
+                                                                   Minimum="0.08" Maximum="1" StepFrequency="0.01"
+                                                                    Unit="%" DisplayScale="100" DefaultValue="1" Help="Percent of the scene canvas." />
+<cvcontrols:SliderValueControl  Header="Height" Value="{x:Bind Height, Mode=TwoWay}"
+                                                                   Minimum="0.08" Maximum="1" StepFrequency="0.01"
+                                                                    Unit="%" DisplayScale="100" DefaultValue="1" Help="Percent of the scene canvas." /></StackPanel>
                                                 </StackPanel>
                                                 <Border Background="#101820" BorderBrush="#22303A"
                                                         BorderThickness="1" CornerRadius="6" Padding="8">
@@ -559,72 +551,9 @@
                                                                    FontSize="10"
                                                                    Foreground="{StaticResource StudioMutedBrush}"
                                                                    TextWrapping="WrapWholeWords" />
-                                                        <Grid ColumnSpacing="8">
-                                                            <Grid.ColumnDefinitions>
-                                                                <ColumnDefinition Width="42" />
-                                                                <ColumnDefinition Width="*" />
-                                                                <ColumnDefinition Width="54" />
-                                                            </Grid.ColumnDefinitions>
-                                                            <TextBlock Text="Zoom" FontSize="10"
-                                                                       Foreground="{StaticResource StudioMutedBrush}"
-                                                                       VerticalAlignment="Center" />
-                                                            <Slider Grid.Column="1"
-                                                                    Minimum="0.25"
-                                                                    Maximum="4"
-                                                                    StepFrequency="0.05"
-                                                                    Value="{x:Bind SourceScale, Mode=TwoWay}" />
-                                                            <NumberBox Grid.Column="2"
-                                                                       Value="{x:Bind SourceScale, Mode=TwoWay}"
-                                                                       Minimum="0.25"
-                                                                       Maximum="4"
-                                                                       SmallChange="0.05"
-                                                                       LargeChange="0.25"
-                                                                       SpinButtonPlacementMode="Compact" />
-                                                        </Grid>
-                                                        <Grid ColumnSpacing="8">
-                                                            <Grid.ColumnDefinitions>
-                                                                <ColumnDefinition Width="42" />
-                                                                <ColumnDefinition Width="*" />
-                                                                <ColumnDefinition Width="54" />
-                                                            </Grid.ColumnDefinitions>
-                                                            <TextBlock Text="Pan" FontSize="10"
-                                                                       Foreground="{StaticResource StudioMutedBrush}"
-                                                                       VerticalAlignment="Center" />
-                                                            <Slider Grid.Column="1"
-                                                                    Minimum="-1"
-                                                                    Maximum="1"
-                                                                    StepFrequency="0.01"
-                                                                    Value="{x:Bind SourceOffsetX, Mode=TwoWay}" />
-                                                            <NumberBox Grid.Column="2"
-                                                                       Value="{x:Bind SourceOffsetX, Mode=TwoWay}"
-                                                                       Minimum="-1"
-                                                                       Maximum="1"
-                                                                       SmallChange="0.01"
-                                                                       LargeChange="0.1"
-                                                                       SpinButtonPlacementMode="Compact" />
-                                                        </Grid>
-                                                        <Grid ColumnSpacing="8">
-                                                            <Grid.ColumnDefinitions>
-                                                                <ColumnDefinition Width="42" />
-                                                                <ColumnDefinition Width="*" />
-                                                                <ColumnDefinition Width="54" />
-                                                            </Grid.ColumnDefinitions>
-                                                            <TextBlock Text="Tilt" FontSize="10"
-                                                                       Foreground="{StaticResource StudioMutedBrush}"
-                                                                       VerticalAlignment="Center" />
-                                                            <Slider Grid.Column="1"
-                                                                    Minimum="-1"
-                                                                    Maximum="1"
-                                                                    StepFrequency="0.01"
-                                                                    Value="{x:Bind SourceOffsetY, Mode=TwoWay}" />
-                                                            <NumberBox Grid.Column="2"
-                                                                       Value="{x:Bind SourceOffsetY, Mode=TwoWay}"
-                                                                       Minimum="-1"
-                                                                       Maximum="1"
-                                                                       SmallChange="0.01"
-                                                                       LargeChange="0.1"
-                                                                       SpinButtonPlacementMode="Compact" />
-                                                        </Grid>
+                                                        <cvcontrols:SliderValueControl Header="Zoom" Minimum="0.25" Maximum="4" DefaultValue="1" Unit="%" DisplayScale="100" StepFrequency="0.01" Help="100% is original size; larger values crop closer." Value="{x:Bind SourceScale, Mode=TwoWay}" />
+                                                        <cvcontrols:SliderValueControl Header="Pan" Minimum="-1" Maximum="1" DefaultValue="0" Unit="%" DisplayScale="100" StepFrequency="0.01" Help="Left ← → right; 0 centers the source." Value="{x:Bind SourceOffsetX, Mode=TwoWay}" />
+                                                        <cvcontrols:SliderValueControl Header="Tilt" Minimum="-1" Maximum="1" DefaultValue="0" Unit="%" DisplayScale="100" StepFrequency="0.01" Help="Up ← → down; 0 centers the source." Value="{x:Bind SourceOffsetY, Mode=TwoWay}" />
                                                     </StackPanel>
                                                 </Border>
                                                 <Button Content="Color grade"

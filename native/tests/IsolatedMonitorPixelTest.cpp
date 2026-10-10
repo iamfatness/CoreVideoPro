@@ -257,6 +257,42 @@ TEST(GradePreviewPixels, HistogramWaveformAndVectorscopeConsumeKnownNeutralRgbAn
   compositor->submitGradePreviews({});
 }
 
+TEST(GradePreviewPixels, RoiSamplesOnlySelectedPixelsAndWaveformSpansSelectedRegion) {
+  auto compositor=isolatedCompositor(); ASSERT_TRUE(compositor);
+  auto request=requestAtSize(64);request.programPlan.skipCpuReadback=false;
+  auto pixels=std::make_shared<std::vector<uint8_t>>(64*64*4,0);
+  for(int y=0;y<64;++y) for(int x=0;x<64;++x) {
+    const size_t i=(y*64+x)*4;(*pixels)[i+2]=x>=32?255:0;(*pixels)[i+3]=255;
+  }
+  request.frames[0].pixels=pixels;request.frames[0].frameId=500;
+  const auto before=previewCenter(compositor->render(request.programPlan,request.frames));
+  GradePreviewDemand demand{"roi-pixels","test",1,{}};demand.scopesEnabled=true;demand.histogramMode=demand.waveformMode=0;
+  demand.scopeRoi={true,.75,.5,1./64,1./64,1};request.gradePreviews.push_back(demand);
+  GradePreviewSurface surface;const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+  do { surface=awaitGrade(*compositor,request,"roi-pixels",1);if(surface.scopes.revision==1 && !surface.scopes.texture.sharedHandleHex.empty()) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10)); } while(std::chrono::steady_clock::now()<deadline);
+  ASSERT_EQ(surface.scopes.revision,1);ASSERT_FALSE(surface.scopes.texture.sharedHandleHex.empty());
+  EXPECT_EQ(surface.scopes.roiPixels.width,1);EXPECT_EQ(surface.scopes.roiPixels.height,1);
+  const auto samples=consumeSamples(surface.scopes.texture,{{54.5f/768,.5f},{.36f,1-54.5f/256},{.64f,1-54.5f/256},{.5f/768,.5f}});
+  ASSERT_EQ(samples.size(),4u);EXPECT_GT((samples[0]>>8)&255,180u);
+  EXPECT_GT((samples[1]>>8)&255,240u);EXPECT_GT((samples[2]>>8)&255,240u);EXPECT_LT((samples[3]>>8)&255,80u);
+  EXPECT_EQ(previewCenter(compositor->render(request.programPlan,request.frames)),before);
+  compositor->submitGradePreviews({});
+}
+
+TEST(GradePreviewPixels, LowerThirdDraftUsesNativeRasterWithoutChangingProgram) {
+  auto compositor=isolatedCompositor();ASSERT_TRUE(compositor);auto request=requestAtSize(64);request.programPlan.skipCpuReadback=false;
+  const auto before=previewCenter(compositor->render(request.programPlan,request.frames));
+  GradePreviewDemand demand{"appearance","preview:lower-third",1,{}};CompositorOverlayContent overlay;
+  overlay.appearance.enabled=true;overlay.appearance.showLogo=false;overlay.appearance.backgroundOpacity=1;
+  overlay.appearance.backgroundColor="#FF0000";overlay.text="Example guest";overlay.title="Producer";demand.lowerThirdPreview=overlay;
+  request.gradePreviews.push_back(demand);const auto surface=awaitGrade(*compositor,request,"appearance",1);
+  ASSERT_FALSE(surface.texture.sharedHandleHex.empty());
+  const auto samples=consumeSamples(surface.texture,{{.6f,.9f}});ASSERT_EQ(samples.size(),1u);
+  const auto pixel=samples[0];EXPECT_GT((pixel>>16)&255,220u);EXPECT_LT((pixel>>8)&255,20u);
+  EXPECT_EQ(previewCenter(compositor->render(request.programPlan,request.frames)),before);compositor->submitGradePreviews({});
+}
+
 TEST(AdvancedGradePixels, ExposurePrimariesStackOrderLutDomainAndGlobalIntensityHaveIndependentExpectedValues) {
   auto compositor=isolatedCompositor(); ASSERT_TRUE(compositor);
   auto request=requestAtSize(64);request.programPlan.skipCpuReadback=false;

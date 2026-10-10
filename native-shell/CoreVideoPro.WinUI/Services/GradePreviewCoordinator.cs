@@ -18,7 +18,7 @@ public sealed class GradePreviewCoordinator : IDisposable
     private Task _inFlight = Task.CompletedTask;
     private volatile bool _disposed;
     private long _lastRevision = -1, _lastSent;
-    private sealed record Draft(long Revision, ColorGrade Grade, bool ScopesEnabled, bool ScopesOriginal, int HistogramMode, int WaveformMode, bool CompareOriginal, int ScopeView);
+    private sealed record Draft(long Revision, ColorGrade Grade, bool ScopesEnabled, bool ScopesOriginal, int HistogramMode, int WaveformMode, bool CompareOriginal, int ScopeView, GradeScopeRoi Roi, LowerThirdPreview? LowerThirdPreview);
     public GradePreviewCoordinator(IGradePreviewTransport bridge, ColorGradeEditorViewModel editor, Action<Action> dispatch)
     {
         _bridge = bridge; _editor = editor; _dispatch = dispatch;
@@ -33,7 +33,7 @@ public sealed class GradePreviewCoordinator : IDisposable
         lock (_gate) _draft = CaptureDraft();
     }
     private Draft CaptureDraft() => new(_editor.Revision, _editor.CurrentGrade, _editor.AdvancedExpanded && _editor.ScopesEnabled,
-        _editor.ScopesOriginal, _editor.HistogramMode, _editor.WaveformMode, _editor.CompareOriginal, _editor.ScopeView);
+        _editor.ScopesOriginal, _editor.HistogramMode, _editor.WaveformMode, _editor.CompareOriginal, _editor.ScopeView, _editor.ScopeRoi, _editor.LowerThirdPreview);
     private void Tick()
     {
         lock (_gate)
@@ -50,7 +50,7 @@ public sealed class GradePreviewCoordinator : IDisposable
         try {
             var wire = new MediaCoreColorGradeWire(draft.Grade.Lut, draft.Grade.Exposure, draft.Grade.Contrast, draft.Grade.Saturation,
                 draft.Grade.Temperature, draft.Grade.Advanced?.Copy(), draft.ScopesEnabled, draft.ScopesOriginal,
-                draft.HistogramMode, draft.WaveformMode, draft.CompareOriginal, draft.ScopeView);
+                draft.HistogramMode, draft.WaveformMode, draft.CompareOriginal, draft.ScopeView, draft.Roi, draft.LowerThirdPreview);
             if (renew) await _bridge.RenewGradePreviewAsync(_editor.InstanceId,_editor.SourceId,draft.Revision,wire).ConfigureAwait(false);
             else await _bridge.SetGradePreviewAsync(_editor.InstanceId,_editor.SourceId,draft.Revision,enabled,wire).ConfigureAwait(false);
         }

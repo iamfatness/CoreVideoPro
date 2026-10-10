@@ -13,7 +13,14 @@ public sealed partial class ColorGradeEditorViewModel
     private AdvancedGradeDocument? GradeDocument;
     private bool _restoringGrade;
     private static ColorGrade CopyGrade(ColorGrade grade) => new() { Lut=grade.Lut, Exposure=grade.Exposure, Contrast=grade.Contrast, Saturation=grade.Saturation, Temperature=grade.Temperature, Advanced=grade.Advanced?.Copy() };
-    private void RememberGrade() { if (_restoringGrade) return; _undo.Push(CopyGrade(CurrentGrade)); if (_undo.Count > 100) TrimHistory(); _redo.Clear(); }
+    private bool _adjustmentGesture, _gestureRecorded;
+    public void BeginAdjustmentGesture() { _adjustmentGesture = true; _gestureRecorded = false; }
+    public void EndAdjustmentGesture() { _adjustmentGesture = false; _gestureRecorded = false; }
+    private void RememberGrade() {
+        if (_restoringGrade || (_adjustmentGesture && _gestureRecorded)) return;
+        _undo.Push(CopyGrade(CurrentGrade)); if (_undo.Count > 100) TrimHistory(); _redo.Clear();
+        if (_adjustmentGesture) _gestureRecorded = true;
+    }
     private void RestoreGrade(ColorGrade grade) {
         _restoringGrade = true;
         try { Lut = grade.Lut; Exposure = grade.Exposure; Contrast = grade.Contrast; Saturation = grade.Saturation; Temperature = grade.Temperature; SetDocument(grade.Advanced?.Copy()); }
@@ -41,12 +48,12 @@ public sealed partial class ColorGradeEditorViewModel
     {
         if (!AdvancedExpanded || !ScopesEnabled) { ScopeStatus = "Scopes hidden."; return; }
         var s = observation.Scopes;
-        if (s is null || s.Revision != Revision || s.SourceEpoch != observation.SourceEpoch || s.Original != ScopesOriginal || s.View != ScopeView || s.Texture is not { Width: 1536, Height: 512 } t || string.IsNullOrWhiteSpace(t.SharedHandleHex) ||
+        if (s is null || s.Roi != ScopeRoi || s.Revision != Revision || s.SourceEpoch != observation.SourceEpoch || s.Original != ScopesOriginal || s.View != ScopeView || s.Texture is not { Width: 1536, Height: 512 } t || string.IsNullOrWhiteSpace(t.SharedHandleHex) ||
             !ulong.TryParse(t.SharedHandleHex.Replace("0x","",StringComparison.OrdinalIgnoreCase),NumberStyles.HexNumber,CultureInfo.InvariantCulture,out var handle) || handle == 0) {
             ScopeSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Participant,$"grade:scopes:{InstanceId}","Scopes");
             ScopeStatus = s?.Status == "unavailable" ? "Native scopes unavailable; no measurement available." : "Preparing native scopes; no measurement available."; return;
         }
-        ScopeStatus = $"{(ScopesOriginal ? "Original" : "Graded")} · {s.Status} · unchanged {s.SourceAgeMs/1000d:0.0}s · sample {s.SampleWidth}×{s.SampleHeight} · Rec.709 SDR assumed · histogram shared RGB peak · waveform 0–100% · log density · vectorscope 75% targets";
+        ScopeStatus = $"{(ScopesOriginal ? "Original" : "Graded")} · {(ScopeRoi.Enabled ? $"ROI {s.RoiPixelWidth}×{s.RoiPixelHeight} at {s.RoiPixelX},{s.RoiPixelY}" : "Full frame")} · {s.Status} · unchanged {s.SourceAgeMs/1000d:0.0}s · sample {s.SampleWidth}×{s.SampleHeight} · Rec.709 SDR assumed · waveform 0–100% · vectorscope 75% targets";
         ScopeSurface = VideoSurfaceState.Waiting(VideoSurfaceKind.Participant,$"grade:scopes:{InstanceId}","Scopes") with {
             StatusLine = ScopeStatus, PendingSharedHandle = new SharedTextureHandle { NtHandle = handle, Width = t.Width,
                 Height = t.Height, Format = t.Format, FrameNumber = t.FrameNumber } };

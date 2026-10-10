@@ -213,6 +213,28 @@ OverlayTileLayout computeOverlayTileLayout(
   OverlayTileLayout layout;
   const auto width = static_cast<float>(widthPx);
   const auto height = static_cast<float>(heightPx);
+  if (overlay.appearance.enabled && !overlay.isCaption) {
+    const auto& a=overlay.appearance;
+    const float scale=height/float(a.nameSize+a.titleSize+a.padding*3);
+    const float pad=float(a.padding)*scale, nameSize=float(a.nameSize)*scale, titleSize=float(a.titleSize)*scale;
+    layout.fontFamily=a.fontFamily; layout.cornerRadius=float(a.cornerRadius)*scale;
+    const uint32_t bg=compositor::parseHexColorRgba(a.backgroundColor,0xff0c1118u);
+    layout.backgroundArgb=(bg&0xffffffu)|(uint32_t(std::lround(a.backgroundOpacity*255))<<24);
+    layout.accentArgb=compositor::parseHexColorRgba(a.accentColor,0xff44c1a1u);
+    layout.accentSecondaryArgb=compositor::parseHexColorRgba(overlay.brandAccentColor,0xfff0a85cu);
+    layout.accentBar=a.preset=="broadcast"?OverlayTileRect{0,height-5*scale,width,5*scale}:OverlayTileRect{0,0,5*scale,height};
+    float left=pad+5*scale;
+    if (a.showLogo && !overlay.imageUri.empty()) {
+      layout.hasImage=true; const float logo=std::min(height-pad*2,height*.65f*float(a.logoScale));
+      layout.imageRect={left,(height-logo)*.5f,logo,logo}; left+=logo+pad;
+    }
+    const float available=std::max(0.f,width-pad-left);
+    const auto& name=overlay.text.empty()?overlay.title:overlay.text;
+    const auto& title=!overlay.title.empty()&&overlay.title!=name?overlay.title:overlay.org;
+    if (!name.empty()) layout.textLines.push_back({name,{left,pad,available,nameSize+pad*.5f},compositor::parseHexColorRgba(a.nameColor),nameSize});
+    if (!title.empty()) layout.textLines.push_back({title,{left,pad*2+nameSize,available,titleSize+pad*.5f},compositor::parseHexColorRgba(a.titleColor),titleSize});
+    return layout;
+  }
   layout.backgroundArgb = compositor::parseHexColorRgba(overlay.brandBackgroundColor, 0xff0c1118u);
   layout.accentArgb = compositor::parseHexColorRgba(overlay.brandColor, 0xff44c1a1u);
   layout.accentSecondaryArgb = compositor::parseHexColorRgba(overlay.brandAccentColor, 0xfff0a85cu);
@@ -337,6 +359,14 @@ bool rasterizeOverlayTileBgra(
   for (const auto& line : layout.textLines) {
     drawOverlayTileTextLine(outBgra, widthPx, heightPx, line);
   }
+  const float radius=std::min(layout.cornerRadius,std::min(widthPx,heightPx)*.5f);
+  if (radius>0) for (int y=0;y<heightPx;++y) for (int x=0;x<widthPx;++x) {
+    const float cx=std::clamp(x+.5f,radius,widthPx-radius), cy=std::clamp(y+.5f,radius,heightPx-radius);
+    const float dx=x+.5f-cx,dy=y+.5f-cy;
+    if (dx*dx+dy*dy>radius*radius) {
+      const size_t i=(size_t(y)*widthPx+x)*4; outBgra[i]=outBgra[i+1]=outBgra[i+2]=outBgra[i+3]=0;
+    }
+  }
   return true;
 }
 
@@ -352,6 +382,14 @@ uint64_t overlayContentSignature(
   hashString(hash, overlay.brandAccentColor);
   hashString(hash, overlay.brandBackgroundColor);
   hashString(hash, overlay.fontFamily);
+  const auto& a=overlay.appearance;
+  hashBytes(hash,&a.enabled,sizeof(a.enabled));
+  if (a.enabled) {
+    hashString(hash,a.preset); hashString(hash,a.anchor); hashString(hash,a.fontFamily); hashString(hash,a.nameColor); hashString(hash,a.titleColor);
+    hashString(hash,a.backgroundColor);hashString(hash,a.accentColor);
+    for (const double value : {a.nameSize,a.titleSize,a.backgroundOpacity,a.padding,a.width,a.cornerRadius,a.safeOffsetX,a.safeOffsetY,a.logoScale}) hashBytes(hash,&value,sizeof(value));
+    hashBytes(hash,&a.showLogo,sizeof(a.showLogo));
+  }
   const unsigned char caption = overlay.isCaption ? 1 : 0;
   hashBytes(hash, &caption, 1);
   hashBytes(hash, &widthPx, sizeof(widthPx));

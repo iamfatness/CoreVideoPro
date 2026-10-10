@@ -16,23 +16,35 @@ public sealed partial class ColorGradeEditorWindow
     private void InitializeAdvancedWorkspace()
     {
         AdjustmentEditor.AdjustmentEdited += OnAdjustmentEdited;
+        AdjustmentEditor.EditStarted += OnAdjustmentEditStarted;
+        AdjustmentEditor.EditCompleted += OnAdjustmentEditCompleted;
+        GradeIntensity.EditStarted += OnAdjustmentEditStarted;
+        GradeIntensity.EditCompleted += OnAdjustmentEditCompleted;
+        RoiGuide.RoiChanged += (_,roi) => ViewModel.SetScopeRoi(roi);
         ViewModel.PropertyChanged += OnWorkspacePropertyChanged;
         ViewModel.AdvancedDocumentChanged += OnAdvancedDocumentChanged;
-        RefreshWorkspace(); RefreshDocumentControls();
+        RefreshWorkspace(); RefreshDocumentControls(); RefreshRoi();
     }
     private void StopAdvancedWorkspace()
     {
         AdjustmentEditor.AdjustmentEdited -= OnAdjustmentEdited;
+        AdjustmentEditor.EditStarted -= OnAdjustmentEditStarted;
+        AdjustmentEditor.EditCompleted -= OnAdjustmentEditCompleted;
+        GradeIntensity.EditStarted -= OnAdjustmentEditStarted;
+        GradeIntensity.EditCompleted -= OnAdjustmentEditCompleted;
         ViewModel.PropertyChanged -= OnWorkspacePropertyChanged;
         ViewModel.AdvancedDocumentChanged -= OnAdvancedDocumentChanged;
     }
     private void OnAdjustmentEdited(object? sender,GradeOperation operation) => ViewModel.EditAdjustment(operation);
+    private void OnAdjustmentEditStarted(object? sender,EventArgs e) => ViewModel.BeginAdjustmentGesture();
+    private void OnAdjustmentEditCompleted(object? sender,EventArgs e) => ViewModel.EndAdjustmentGesture();
     private void OnWorkspacePropertyChanged(object? sender,PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(ViewModel.SelectedAdjustment)) RefreshDocumentControls();
         if (e.PropertyName == nameof(ViewModel.AdvancedExpanded) && ViewModel.AdvancedExpanded && AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter { State: Microsoft.UI.Windowing.OverlappedPresenterState.Restored })
             AppWindow.Resize(new Windows.Graphics.SizeInt32(1320,920));
         if (e.PropertyName is nameof(ViewModel.AdvancedExpanded) or nameof(ViewModel.ScopesEnabled)) RefreshWorkspace();
+        if (e.PropertyName is nameof(ViewModel.AdvancedExpanded) or nameof(ViewModel.ScopesEnabled) or nameof(ViewModel.ScopeRoiGuideVisible) or nameof(ViewModel.ScopeRoi) or nameof(ViewModel.NativeSurface)) RefreshRoi();
     }
     private void RefreshWorkspace()
     {
@@ -51,7 +63,7 @@ public sealed partial class ColorGradeEditorWindow
         _loadingDocument = false;
     }
     private void OnBypassGrade(object sender,RoutedEventArgs e) { if (!_loadingDocument) ViewModel.EditDocument(ViewModel.Document with { Bypass = BypassGrade.IsChecked == true }); }
-    private void OnGradeIntensityChanged(NumberBox sender,NumberBoxValueChangedEventArgs e) { if (!_loadingDocument && double.IsFinite(e.NewValue)) ViewModel.EditDocument(ViewModel.Document with { Intensity = e.NewValue }); }
+    private void OnGradeIntensityChanged(object? sender,double value) { if (!_loadingDocument && double.IsFinite(value)) ViewModel.EditDocument(ViewModel.Document with { Intensity = value }); }
     private void OnAdjustmentSelected(object sender,SelectionChangedEventArgs e)
     {
         if (!_loadingDocument && AdjustmentSelector.SelectedItem is GradeOperation selected)

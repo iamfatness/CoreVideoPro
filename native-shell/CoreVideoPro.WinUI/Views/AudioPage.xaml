@@ -473,10 +473,10 @@
                                         Opacity="{x:Bind ViewModel.MasteringStageInputOpacity, Mode=OneWay}">
                                     <StackPanel Spacing="7">
                                         <TextBlock Text="01  INPUT" Style="{StaticResource MasterStageLabel}" />
-                                        <NumberBox Header="Trim · dB" Minimum="-12" Maximum="12"
-                                                   SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                        <controls:SliderValueControl Header="Trim · dB" Minimum="-12" Maximum="12"
+                                                   StepFrequency="0.5"
                                                    IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                   Value="{x:Bind ViewModel.MasteringInputGainDb, Mode=TwoWay}" />
+                                                   Value="{x:Bind ViewModel.MasteringInputGainDb, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
                                     </StackPanel>
                                 </Border>
 
@@ -484,14 +484,14 @@
                                         Opacity="{x:Bind ViewModel.MasteringStageFilterOpacity, Mode=OneWay}">
                                     <StackPanel Spacing="7">
                                         <TextBlock Text="02  FILTER" Style="{StaticResource MasterStageLabel}" />
-                                        <NumberBox Header="High-pass · Hz" Minimum="0" Maximum="300"
-                                                   SmallChange="5" SpinButtonPlacementMode="Compact"
+                                        <controls:SliderValueControl Header="High-pass · Hz" Minimum="0" Maximum="300"
+                                                   StepFrequency="5"
                                                    IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                   Value="{x:Bind ViewModel.MasteringHighPassHz, Mode=TwoWay}" />
-                                        <NumberBox Header="Low-pass · Hz" Minimum="0" Maximum="20000"
-                                                   SmallChange="500" SpinButtonPlacementMode="Compact"
+                                                   Value="{x:Bind ViewModel.MasteringHighPassHz, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
+                                        <controls:SliderValueControl Header="Low-pass · Hz" Minimum="0" Maximum="20000"
+                                                   StepFrequency="500"
                                                    IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                   Value="{x:Bind ViewModel.MasteringLowPassHz, Mode=TwoWay}" />
+                                                   Value="{x:Bind ViewModel.MasteringLowPassHz, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
                                     </StackPanel>
                                 </Border>
 
@@ -499,18 +499,18 @@
                                         Opacity="{x:Bind ViewModel.MasteringStageToneOpacity, Mode=OneWay}">
                                     <StackPanel Spacing="7">
                                         <TextBlock Text="03  TONE" Style="{StaticResource MasterStageLabel}" />
-                                        <NumberBox Header="Low 120 Hz · dB" Minimum="-12" Maximum="12"
-                                                   SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                        <controls:SliderValueControl Header="Low 120 Hz · dB" Minimum="-12" Maximum="12"
+                                                   StepFrequency="0.5"
                                                    IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                   Value="{x:Bind ViewModel.MasteringLowShelfDb, Mode=TwoWay}" />
-                                        <NumberBox Header="Presence 3 kHz · dB" Minimum="-12" Maximum="12"
-                                                   SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                   Value="{x:Bind ViewModel.MasteringLowShelfDb, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
+                                        <controls:SliderValueControl Header="Presence 3 kHz · dB" Minimum="-12" Maximum="12"
+                                                   StepFrequency="0.5"
                                                    IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                   Value="{x:Bind ViewModel.MasteringPresenceDb, Mode=TwoWay}" />
-                                        <NumberBox Header="High 10 kHz · dB" Minimum="-12" Maximum="12"
-                                                   SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                   Value="{x:Bind ViewModel.MasteringPresenceDb, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
+                                        <controls:SliderValueControl Header="High 10 kHz · dB" Minimum="-12" Maximum="12"
+                                                   StepFrequency="0.5"
                                                    IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                   Value="{x:Bind ViewModel.MasteringHighShelfDb, Mode=TwoWay}" />
+                                                   Value="{x:Bind ViewModel.MasteringHighShelfDb, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
                                     </StackPanel>
                                 </Border>
 
@@ -526,10 +526,10 @@
                                             <ComboBoxItem Content="-16 LUFS · Podcast" />
                                             <ComboBoxItem Content="-23 LUFS · Broadcast" />
                                         </ComboBox>
-                                        <NumberBox Header="Max loudness ride · dB" Minimum="0" Maximum="12"
-                                                   SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                        <controls:SliderValueControl Header="Max loudness ride · dB" Minimum="0" Maximum="12"
+                                                   StepFrequency="0.5"
                                                    IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                   Value="{x:Bind ViewModel.MasteringMaxRideDb, Mode=TwoWay}" />
+                                                   Value="{x:Bind ViewModel.MasteringMaxRideDb, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
                                         <TextBlock Text="Slow LUFS ride toward the target; 0 dB = ride off."
                                                    FontSize="9" Foreground="{StaticResource StudioMutedBrush}"
                                                    TextWrapping="WrapWholeWords" />
@@ -548,28 +548,28 @@
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <NumberBox Header="Ratio" Minimum="1" Maximum="10"
-                                                       SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                            <controls:SliderValueControl Header="Ratio" Minimum="1" Maximum="10"
+                                                       StepFrequency="0.5"
                                                        IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                       Value="{x:Bind ViewModel.MasteringGlueRatio, Mode=TwoWay}" />
-                                            <NumberBox Grid.Column="1" Header="Makeup · dB" Minimum="-6" Maximum="6"
-                                                       SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                       Value="{x:Bind ViewModel.MasteringGlueRatio, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
+                                            <controls:SliderValueControl Grid.Column="1" Header="Makeup · dB" Minimum="-6" Maximum="6"
+                                                       StepFrequency="0.5"
                                                        IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                       Value="{x:Bind ViewModel.MasteringGlueMakeupDb, Mode=TwoWay}" />
+                                                       Value="{x:Bind ViewModel.MasteringGlueMakeupDb, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
                                         </Grid>
                                         <Grid ColumnSpacing="6">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <NumberBox Header="Attack · ms" Minimum="1" Maximum="200"
-                                                       SmallChange="5" SpinButtonPlacementMode="Compact"
+                                            <controls:SliderValueControl Header="Attack · ms" Minimum="1" Maximum="200"
+                                                       StepFrequency="5"
                                                        IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                       Value="{x:Bind ViewModel.MasteringGlueAttackMs, Mode=TwoWay}" />
-                                            <NumberBox Grid.Column="1" Header="Release · ms" Minimum="20" Maximum="1000"
-                                                       SmallChange="10" SpinButtonPlacementMode="Compact"
+                                                       Value="{x:Bind ViewModel.MasteringGlueAttackMs, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
+                                            <controls:SliderValueControl Grid.Column="1" Header="Release · ms" Minimum="20" Maximum="1000"
+                                                       StepFrequency="10"
                                                        IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                       Value="{x:Bind ViewModel.MasteringGlueReleaseMs, Mode=TwoWay}" />
+                                                       Value="{x:Bind ViewModel.MasteringGlueReleaseMs, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
                                         </Grid>
                                         <ToggleSwitch Header="3-band glue · LR4 200 Hz / 3 kHz"
                                                       OnContent="Multiband" OffContent="Single band"
@@ -581,18 +581,18 @@
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <NumberBox Header="Low · dB" Minimum="-6" Maximum="6"
-                                                       SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                            <controls:SliderValueControl Header="Low · dB" Minimum="-6" Maximum="6"
+                                                       StepFrequency="0.5"
                                                        IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                       Value="{x:Bind ViewModel.MasteringGlueBandLowDb, Mode=TwoWay}" />
-                                            <NumberBox Grid.Column="1" Header="Mid · dB" Minimum="-6" Maximum="6"
-                                                       SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                       Value="{x:Bind ViewModel.MasteringGlueBandLowDb, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
+                                            <controls:SliderValueControl Grid.Column="1" Header="Mid · dB" Minimum="-6" Maximum="6"
+                                                       StepFrequency="0.5"
                                                        IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                       Value="{x:Bind ViewModel.MasteringGlueBandMidDb, Mode=TwoWay}" />
-                                            <NumberBox Grid.Column="2" Header="High · dB" Minimum="-6" Maximum="6"
-                                                       SmallChange="0.5" SpinButtonPlacementMode="Compact"
+                                                       Value="{x:Bind ViewModel.MasteringGlueBandMidDb, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
+                                            <controls:SliderValueControl Grid.Column="2" Header="High · dB" Minimum="-6" Maximum="6"
+                                                       StepFrequency="0.5"
                                                        IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                       Value="{x:Bind ViewModel.MasteringGlueBandHighDb, Mode=TwoWay}" />
+                                                       Value="{x:Bind ViewModel.MasteringGlueBandHighDb, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
                                         </Grid>
                                     </StackPanel>
                                 </Border>
@@ -602,10 +602,10 @@
                                             Opacity="{x:Bind ViewModel.MasteringStageWidthOpacity, Mode=OneWay}">
                                         <StackPanel Spacing="7">
                                             <TextBlock Text="06  WIDTH" Style="{StaticResource MasterStageLabel}" />
-                                            <NumberBox Header="Stereo width · 1.0 = normal" Minimum="0" Maximum="2"
-                                                       SmallChange="0.05" SpinButtonPlacementMode="Compact"
+                                            <controls:SliderValueControl Header="Stereo width · 1.0 = normal" Minimum="0" Maximum="2"
+                                                       StepFrequency="0.05"
                                                        IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                       Value="{x:Bind ViewModel.MasteringStereoWidth, Mode=TwoWay}" />
+                                                       Value="{x:Bind ViewModel.MasteringStereoWidth, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
                                         </StackPanel>
                                     </Border>
                                     <Border Style="{StaticResource MasterStageBorder}"
@@ -614,10 +614,10 @@
                                             <TextBlock Text="07  CEILING" Style="{StaticResource MasterStageLabel}" />
                                             <ToggleSwitch Header="Master protection" OnContent="In" OffContent="Bypass"
                                                           IsOn="{x:Bind ViewModel.MasterLimiterEnabled, Mode=TwoWay}" />
-                                            <NumberBox Header="True-peak ceiling · dBFS" Minimum="-6" Maximum="-0.5"
-                                                       SmallChange="0.1" SpinButtonPlacementMode="Compact"
+                                            <controls:SliderValueControl Header="True-peak ceiling · dBFS" Minimum="-6" Maximum="-0.5"
+                                                       StepFrequency="0.1"
                                                        IsEnabled="{x:Bind ViewModel.MasteringEnabled, Mode=OneWay}"
-                                                       Value="{x:Bind ViewModel.MasteringCeilingDbfs, Mode=TwoWay}" />
+                                                       Value="{x:Bind ViewModel.MasteringCeilingDbfs, Mode=TwoWay}" DefaultValue="0" Unit="×" Help="Input level change divided by output level change." />
                                             <TextBlock Text="{x:Bind ViewModel.MasterLimiterSummary, Mode=OneWay}"
                                                        FontSize="9" Foreground="{StaticResource StudioMutedBrush}"
                                                        TextWrapping="WrapWholeWords" />

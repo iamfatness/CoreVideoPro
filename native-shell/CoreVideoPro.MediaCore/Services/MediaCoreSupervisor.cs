@@ -449,6 +449,8 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
             ["scopesEnabled"] = grade.ScopesEnabled, ["scopesOriginal"] = grade.ScopesOriginal,
             ["histogramMode"] = grade.HistogramMode, ["waveformMode"] = grade.WaveformMode, ["scopeView"] = grade.ScopeView,
             ["compareOriginal"] = grade.CompareOriginal,
+            ["scopeRoi"] = grade.ScopeRoi ?? new GradeScopeRoi(),
+            ["lowerThirdPreview"] = grade.LowerThirdPreview,
             ["grade"] = new { lut = grade.Lut, exposure = grade.Exposure, contrast = grade.Contrast,
                 saturation = grade.Saturation, temperature = grade.Temperature, advanced }
         }, cancellationToken).ConfigureAwait(false);

@@ -94,6 +94,7 @@ public sealed partial class StudioViewModel
         editorViewModel.GradeAuthorityReset += OnSourceGradeAuthorityReset;
         editorViewModel.GradeSaved += OnSourceColorGradeSaved;
 
+        InitializeEditorScopePreferences(editorViewModel);
         var window = new ColorGradeEditorWindow(editorViewModel);
         var preview = new GradePreviewCoordinator(_bridge, editorViewModel, RunOnUiThread);
         window.Closed += (_, _) =>

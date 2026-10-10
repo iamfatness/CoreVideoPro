@@ -55,6 +55,14 @@ internal sealed class SourceGradeWorkspaceProbe(string corePath,string reportPat
             foreach(var scope in new[]{1,2,3,0}) {editor.ScopeView=scope;await Eventually(()=>editor.ScopeSurface.PendingSharedHandle is { IsValid:true },"Expanded scope did not update");}
             checks.Add("each scope expansion");
             editor.ScopesOriginal=true;editor.CompareOriginal=true;await Eventually(()=>editor.HasPreview && editor.ScopeSurface.PendingSharedHandle is { IsValid:true },"Original comparison did not update");checks.Add("independent original taps");
+            var beforeRoi=editor.CopyGradeJson();editor.SetScopeRoi(new(true,.2,.25,.25,.5));
+            await Eventually(()=>editor.ScopeSurface.PendingSharedHandle is { IsValid:true } && editor.ScopeStatus.Contains("ROI "),"ROI scopes did not reach the editor");
+            Require(editor.CopyGradeJson()==beforeRoi,"ROI modified the grade");
+            var guide=Descendants(window.Content).OfType<ScopeRoiControl>().Single();
+            Require(guide.Visibility==Visibility.Visible && guide.Roi==editor.ScopeRoi,"ROI guide did not match native measurement request");
+            editor.ScopesOriginal=false;await Eventually(()=>editor.ScopeStatus.StartsWith("Graded") && editor.ScopeStatus.Contains("ROI "),"Graded ROI tap failed");
+            editor.ClearScopeRoi();await Eventually(()=>editor.ScopeStatus.Contains("Full frame"),"Clear ROI did not restore full-frame scopes");
+            checks.Add("ROI native sampling, tap changes, guide and full-frame reset without changing grade");
             editor.CompareOriginal=false;editor.ScopesOriginal=false;
             var preset=editor.CopyGradeJson();editor.ResetAdvancedCommand.Execute(null);editor.UndoGradeCommand.Execute(null);Require(editor.HasAdvancedAdjustments,"Undo lost grade");Require(editor.PasteGradeJson(preset),"Preset reload failed");checks.Add("undo and preset reload");
             window.AppWindow.Resize(new SizeInt32(1100,760));await Task.Delay(250);
@@ -76,6 +84,14 @@ internal sealed class SourceGradeWorkspaceProbe(string corePath,string reportPat
             var encoder=await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId,stream);
             encoder.SetPixelData(BitmapPixelFormat.Bgra8,BitmapAlphaMode.Premultiplied,(uint)bitmap.PixelWidth,(uint)bitmap.PixelHeight,96,96,bytes);
             await encoder.FlushAsync();checks.Add("real XAML layout image (GPU pixels excluded by capture API)");
+            coordinator.Dispose();coordinator=null;
+            var draft=new ColorGradeEditorViewModel("preview:lower-third","Lower-third draft",new() { Lut="none" });draft.LiveEditing=false;
+            draft.SetLowerThirdPreview(new(new() { NameSize=53.25,ShowLogo=false }));
+            coordinator=new(bridge,draft,action=>dispatcher.TryEnqueue(()=>action()));
+            await Eventually(()=>draft.HasPreview,"Native lower-third draft did not render");
+            draft.SetLowerThirdPreview(new(LowerThirdAppearance.FromPreset("minimal-accent")));
+            await Eventually(()=>draft.HasPreview,"Native lower-third preset change did not render");
+            checks.Add("isolated native lower-third draft and preset replacement");
         } catch(Exception ex) { error=ex.ToString(); }
         finally {
             coordinator?.Dispose();await publish.DisposeAsync();

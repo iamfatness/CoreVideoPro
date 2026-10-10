@@ -8,7 +8,7 @@ public static class CaptionStyleHelper
 {
     public static IReadOnlyList<string> FontSizeOptions { get; } = ["small", "medium", "large"];
 
-    public static IReadOnlyList<string> LowerThirdPositionOptions { get; } = ["lower-left", "upper-left"];
+    public static IReadOnlyList<string> LowerThirdPositionOptions { get; } = ["lower-left", "lower-right", "upper-left", "upper-right"];
 
     public static IReadOnlyList<string> CaptionPositionOptions { get; } = ["bottom", "top"];
 
@@ -43,9 +43,8 @@ public static class CaptionStyleHelper
     }
 
     public static (HorizontalAlignment Horizontal, VerticalAlignment Vertical) LowerThirdAlignment(string position) =>
-        position == "upper-left"
-            ? (HorizontalAlignment.Left, VerticalAlignment.Top)
-            : (HorizontalAlignment.Left, VerticalAlignment.Bottom);
+        (position.EndsWith("right",StringComparison.Ordinal) ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+         position.StartsWith("upper",StringComparison.Ordinal) ? VerticalAlignment.Top : VerticalAlignment.Bottom);
 
     public static bool IsCaptionStripBelowProgram(string captionPosition) =>
         captionPosition != "top";

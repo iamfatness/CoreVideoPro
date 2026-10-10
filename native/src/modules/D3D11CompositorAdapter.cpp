@@ -644,6 +644,32 @@ class D3D11Compositor final : public ICompositor {
     std::vector<VideoFrame> aliases;
     for (const auto& demand : request.gradePreviews) {
       GradePreviewSurface observation; observation.demand = demand;
+      if (demand.lowerThirdPreview) {
+        CompositorRenderPlan preview; preview.width=1920; preview.height=1080; preview.skipCpuReadback=true;
+        // Native sample canvas deliberately contains no live media. The same
+        // cached DirectWrite/WIC raster and composition path serves program.
+        for (int i=0;i<3;++i) {
+          CompositorRenderPlanLayer bg; bg.layerId="appearance-bg-"+std::to_string(i); bg.kind="background"; bg.order=i;
+          bg.rect={float(i)/3,0,1.f/3,1}; bg.hasFillColor=true; bg.fillColor=i==0?"#101828":i==1?"#60758C":"#B8C6D4"; preview.layers.push_back(bg);
+        }
+        CompositorRenderPlanLayer key; key.layerId="appearance-preview"; key.kind="overlay"; key.order=3; key.hasOverlayContent=true; key.overlay=*demand.lowerThirdPreview;
+        const auto& a=key.overlay.appearance; const float h=float((a.nameSize+a.titleSize+a.padding*3)/1080.); const float w=float(std::min(a.width,1.-a.safeOffsetX));
+        key.rect={float(a.safeOffsetX),1.f-float(a.safeOffsetY)-h,w,h};
+        if (key.overlay.keyPosition.find("upper")!=std::string::npos) key.rect.y=float(a.safeOffsetY);
+        if (key.overlay.keyPosition.find("right")!=std::string::npos) key.rect.x=1.f-float(a.safeOffsetX)-w;
+        if (!a.enabled) {const auto legacy=compositor::lowerThirdOverlay();key.rect={legacy.x,legacy.y,legacy.width,legacy.height};key.opacity=.92f;}
+        preview.layers.push_back(key);
+        observation.sourceEpoch=1; observation.sourceFrameId=demand.revision; observation.status="ready";
+        appearanceHistory_[request.sequence]=observation;
+        const auto image=renderPreview(preview,{}); const auto stamp=appearanceHistory_.find(image.frameNumber);
+        if (image.width>0 && stamp!=appearanceHistory_.end() && stamp->second.demand.instanceId==demand.instanceId && stamp->second.demand.revision==demand.revision) {
+          observation.texture.sharedHandleHex=image.sharedHandleHex; observation.texture.width=image.width; observation.texture.height=image.height;
+          observation.texture.format=image.format; observation.texture.frameNumber=image.frameNumber;
+          observation.reason=overlayRaster_.lastWarning();
+        } else { observation.status="preparing"; observation.reason="awaiting-native-appearance"; }
+        while (appearanceHistory_.size()>32) appearanceHistory_.erase(appearanceHistory_.begin());
+        result.gradePreviews.push_back(std::move(observation)); continue;
+      }
       const auto source = std::find_if(request.frames.begin(), request.frames.end(),
           [&](const auto& frame) { return frame.participantId == demand.sourceId; });
       if (source == request.frames.end() || !source->hasContent()) {
@@ -718,6 +744,7 @@ class D3D11Compositor final : public ICompositor {
     int64_t frame = 0, token = 0;
   };
   int64_t gradeToken_ = 0;
+  std::map<int64_t,GradePreviewSurface> appearanceHistory_;
   std::map<std::string, GradeStamp> gradeStamps_;
   std::map<std::pair<std::string, int64_t>, GradePreviewSurface> gradeHistory_;
   std::unique_ptr<MonitorRenderWorker> monitorWorker_, gradeWorker_;
@@ -815,6 +842,11 @@ class D3D11Compositor final : public ICompositor {
   };
   std::map<std::string, GradeScopeWork> gradeScopes_;
   std::set<std::string> gradeScopeFailures_;
+  static std::pair<int,int> scopeSourceDimensions(const VideoFrame& frame) {
+    if (frame.hasI420()) return {frame.i420Width,frame.i420Height};
+    if (frame.hasGpuPixels()) return {frame.gpuPixels->width,frame.gpuPixels->height};
+    return {frame.pixelWidth>0?frame.pixelWidth:frame.width,frame.pixelHeight>0?frame.pixelHeight:frame.height};
+  }
   void renderGradeScopes(const GradePreviewDemand& demand, const VideoFrame& frame) {
     auto& work = gradeScopes_[demand.instanceId];
     if (!work.input.local) {
@@ -829,8 +861,8 @@ class D3D11Compositor final : public ICompositor {
     const auto grade = demand.scopesOriginal ? CompositorColorGrade{} : demand.grade;
     const auto* source = acquireSourceTex(frame);
     const bool i420 = source ? source->isI420 : frame.hasI420();
-    const bool rendered = i420 ? renderI420ToParticipantTexture(frame, work.input, 256, 144, grade)
-        : renderBgraToParticipantTexture(frame, work.input, 256, 144, grade);
+    const bool rendered = i420 ? renderI420ToParticipantTexture(frame, work.input, 256, 144, grade, &demand.scopeRoi)
+        : renderBgraToParticipantTexture(frame, work.input, 256, 144, grade, &demand.scopeRoi);
     if (!rendered || !work.renderer.render(context_.get(), work.view.get(), vertexShader_.get(),
         demand.histogramMode, demand.waveformMode, demand.scopeView, frame.frameId)) { gradeScopeFailures_.insert(demand.instanceId); return; }
     gradeScopeFailures_.erase(demand.instanceId);
@@ -840,6 +872,8 @@ class D3D11Compositor final : public ICompositor {
     stamp.sourceEpoch = original->second.sourceEpoch; stamp.sourceFrameId = original->second.sourceFrameId;
     stamp.captureTimestamp100ns = original->second.captureTimestamp100ns; stamp.revision = demand.revision;
     stamp.original = demand.scopesOriginal; stamp.status = original->second.status;
+    const auto size=scopeSourceDimensions(frame);
+    stamp.roi = demand.scopeRoi; stamp.roiPixels = demand.scopeRoi.pixels(size.first,size.second);
     work.history[frame.frameId] = stamp;
     const auto published = work.renderer.published().frameNumber;
     for (auto it = work.history.begin(); it != work.history.end();) {
@@ -1671,7 +1705,7 @@ class D3D11Compositor final : public ICompositor {
     // Brand-styled band background.
     context_->RSSetState(scissorRasterizerState_.get());
     setScissorFromRect(clip);
-    drawSolidQuad(layer, renderPlan, animated, background, alpha);
+    if (!overlay.appearance.enabled || overlay.isCaption) drawSolidQuad(layer, renderPlan, animated, background, alpha);
 
     // If a DirectWrite/WIC raster is available, composite it over the band; the
     // texture carries the real text/image pixels. Otherwise fall back to the
@@ -1999,7 +2033,7 @@ class D3D11Compositor final : public ICompositor {
   // the per-participant export passes. The *0.1 axis scaling MUST match
   // writeLayerConstants so a source graded in the program composite gets the
   // identical grade in its export texture (preview/multiview match program).
-  bool writeGradeConstants(const CompositorColorGrade& grade, const VideoFrame* frame = nullptr) {
+  bool writeGradeConstants(const CompositorColorGrade& grade, const VideoFrame* frame = nullptr, const compositor::ScopeRoi* roi = nullptr) {
     if (!bindAdvancedGrade(grade)) return false;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(constantBuffer_.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -2011,6 +2045,15 @@ class D3D11Compositor final : public ICompositor {
     applyColorGradeParams(constants, grade);
     constants->uvScale[0] = constants->uvScale[1] = 1.f;
     constants->uvOffset[0] = constants->uvOffset[1] = 0.f;
+    if (roi && roi->enabled && frame && frame->width>0 && frame->height>0) {
+      const auto size=scopeSourceDimensions(*frame);const auto r = roi->pixels(size.first,size.second);
+      // Sample only inside the selected pixel centers; bilinear filtering must
+      // never pull an adjacent, unselected pixel into a tiny ROI.
+      constants->uvOffset[0] = float(r.x+.5)/size.first;
+      constants->uvOffset[1] = float(r.y+.5)/size.second;
+      constants->uvScale[0] = float(r.width-1)/size.first;
+      constants->uvScale[1] = float(r.height-1)/size.second;
+    }
     applyYuvParams(constants, yuvShaderParamsForFrame(frame));
     context_->Unmap(constantBuffer_.get(), 0);
     ID3D11Buffer* buffers[] = {constantBuffer_.get()};
@@ -2415,7 +2458,7 @@ class D3D11Compositor final : public ICompositor {
   // viewport, shaders) — only called from exportParticipantTextures, which runs
   // after the program composite + share, so the next render() re-binds its state.
   bool renderI420ToParticipantTexture(const VideoFrame& frame, ParticipantTex& pt, int width, int height,
-                                      const CompositorColorGrade& grade) {
+                                      const CompositorColorGrade& grade, const compositor::ScopeRoi* roi = nullptr) {
     if (!pt.localRtv) {
       return false;
     }
@@ -2425,7 +2468,7 @@ class D3D11Compositor final : public ICompositor {
     if (!sourceTex && !uploadLayerI420Texture(frame)) {
       return false;
     }
-    if (!beginParticipantExportPass(pt, width, height, grade, &frame)) {
+    if (!beginParticipantExportPass(pt, width, height, grade, &frame, roi)) {
       return false;
     }
     context_->PSSetShader(yuvPixelShader_.get(), nullptr, 0);
@@ -2450,7 +2493,7 @@ class D3D11Compositor final : public ICompositor {
   // in exportParticipantTextures still handles the common ungraded case). Same
   // effective color pipeline the program's drawLayer BGRA path uses.
   bool renderBgraToParticipantTexture(const VideoFrame& frame, ParticipantTex& pt, int width, int height,
-                                      const CompositorColorGrade& grade) {
+                                      const CompositorColorGrade& grade, const compositor::ScopeRoi* roi = nullptr) {
     if (!pt.localRtv) {
       return false;
     }
@@ -2458,7 +2501,7 @@ class D3D11Compositor final : public ICompositor {
     if (!sourceTex && !uploadLayerTexture(frame)) {
       return false;
     }
-    if (!beginParticipantExportPass(pt, width, height, grade)) {
+    if (!beginParticipantExportPass(pt, width, height, grade, &frame, roi)) {
       return false;
     }
     context_->PSSetShader(texturedPixelShader_.get(), nullptr, 0);
@@ -2480,7 +2523,7 @@ class D3D11Compositor final : public ICompositor {
   // carrying the source's effective color grade. Returns false (and unbinds the
   // target) if the constant upload fails.
   bool beginParticipantExportPass(ParticipantTex& pt, int width, int height, const CompositorColorGrade& grade,
-                                  const VideoFrame* frame = nullptr) {
+                                  const VideoFrame* frame = nullptr, const compositor::ScopeRoi* roi = nullptr) {
     ID3D11RenderTargetView* renderTargets[] = {pt.localRtv.get()};
     context_->OMSetRenderTargets(1, renderTargets, nullptr);
 
@@ -2497,7 +2540,7 @@ class D3D11Compositor final : public ICompositor {
     // Opaque overwrite (no source-over blend) — the export texture is a 1:1 copy.
     context_->OMSetBlendState(nullptr, nullptr, 0xffffffffu);
     context_->VSSetShader(vertexShader_.get(), nullptr, 0);
-    if (!writeGradeConstants(grade, frame)) {
+    if (!writeGradeConstants(grade, frame, roi)) {
       ID3D11RenderTargetView* nullTargets[] = {nullptr};
       context_->OMSetRenderTargets(1, nullTargets, nullptr);
       return false;

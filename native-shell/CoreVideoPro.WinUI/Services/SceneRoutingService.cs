@@ -187,6 +187,19 @@ public static class SceneRoutingService
         }
     }
 
+    /// <summary>Fresh starter scenes bind distinct stable Inputs, even before a room joins.</summary>
+    public static IReadOnlyList<SourceRoute> GetStarterRoutes(Scene scene)
+    {
+        var count = GetRouteSlotCount(scene, []);
+        return Enumerable.Range(0,count).Select(index => new SourceRoute {
+            Id = $"{scene.Id}-{index+1}",
+            Mode = scene.Layout == "speaker-slides" && index == count-1 ? SourceRouteMode.ScreenShare : SourceRouteMode.Fixed,
+            ShowInputSlotNumber = scene.Layout == "speaker-slides" && index == count-1 ? null : index+1,
+            AudioRole = scene.Layout == "speaker-slides" && index == count-1 ? SourceAudioRole.Audience : SourceAudioRole.Mix,
+            ZIndex = index
+        }).ToList();
+    }
+
     public static IReadOnlyList<SourceRoute> GetRouteDefaults(
         Scene scene,
         IReadOnlyList<SourceRoute>? existingRoutes,

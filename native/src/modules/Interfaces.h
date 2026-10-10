@@ -1,5 +1,7 @@
 #pragma once
 #include "modules/SourceVideoDemand.h"
+#include "compositor/ScopeRoi.h"
+#include "compositor/LowerThirdAppearance.h"
 
 #include "contracts/Lifecycle.h"
 #include "modules/ProgramAacEncoder.h"
@@ -412,6 +414,7 @@ struct CompositorChromaKey {
 // have a TS protocol mirror. The source command fields (set-overlay-asset /
 // push-caption-cue / set-brand-kit) already exist in both protocol mirrors.
 struct CompositorOverlayContent {
+  compositor::LowerThirdAppearance appearance;
   std::string title;        // Lower-third title line (e.g. speaker name).
   std::string org;          // Lower-third secondary line (e.g. organization).
   std::string text;         // Free-form overlay text / caption body.
@@ -1082,6 +1085,9 @@ struct GradePreviewDemand {
   CompositorColorGrade grade;
   bool scopesEnabled = false, scopesOriginal = false, compareOriginal = false;
   int histogramMode = 1, waveformMode = 1, scopeView = 0;
+  compositor::ScopeRoi scopeRoi;
+  std::optional<CompositorOverlayContent> lowerThirdPreview;
+  std::string lowerThirdPreviewSignature;
 };
 struct GradePreviewSurface {
   GradePreviewDemand demand;
@@ -1094,6 +1100,8 @@ struct GradePreviewSurface {
     uint64_t sourceEpoch = 0;
     int64_t sourceFrameId = 0, captureTimestamp100ns = 0, revision = 0;
     bool original = false;
+    compositor::ScopeRoi roi;
+    compositor::ScopeRoiPixels roiPixels;
     std::string status = "preparing";
   } scopes;
 };

@@ -50,6 +50,19 @@ TEST(GradePreviewControl, RejectsInvalidAndAmbiguousRevisionAndReportsUnsupporte
   EXPECT_EQ(events[0].getString("status"), "unavailable");
   EXPECT_EQ(events[0].getString("reason"), "native-grade-preview-not-built");
 }
+TEST(GradePreviewControl, RoiValidationAndRevisionProtectMeasurements) {
+  core::GradePreviewController control;
+  auto d=demand("roi",1);
+  auto fields=d.asObject(); fields["scopeRoi"]=rpc::Json::Object{{"enabled",true},{"x",.25},{"y",.25},{"width",.5},{"height",.5},{"revision",1}};
+  ASSERT_TRUE(control.configure(fields,{},true));
+  auto changed=fields; changed["scopeRoi"]=rpc::Json::Object{{"enabled",true},{"width",.25},{"height",.5},{"revision",2}};
+  EXPECT_FALSE(control.configure(changed,{},true));
+  changed["revision"]=2;EXPECT_TRUE(control.configure(changed,{},true));
+  changed["scopeRoi"]=rpc::Json::Object{{"enabled",true},{"x",.9},{"width",.2}};
+  EXPECT_FALSE(control.configure(changed,{},true));
+  compositor::ScopeRoi r; r.enabled=true;r.x=r.y=.999;r.width=r.height=.001;
+  const auto p=r.pixels(64,64);EXPECT_EQ(p.x,63);EXPECT_EQ(p.y,63);EXPECT_EQ(p.width,1);EXPECT_EQ(p.height,1);
+}
 TEST(GradePreviewControl, MatchesRevisionAndSourceIdentityAndDetectsHeldFrameRatherThanJobCadence) {
   core::GradePreviewController control; PreviewCompositor compositor;
   auto now = core::GradePreviewController::Clock::now();

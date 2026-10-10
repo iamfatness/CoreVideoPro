@@ -126,6 +126,8 @@ public sealed class ProductionOutputPreferences
     public double LowerThirdBuildInMs { get; set; }
     public double LowerThirdBuildOutMs { get; set; }
     public string? BrandLowerThirdStyle { get; set; }
+    public CoreVideoPro.MediaCore.Models.LowerThirdAppearance? LowerThirdAppearance { get; set; }
+    public Dictionary<string,CoreVideoPro.MediaCore.Models.LowerThirdAppearance> LowerThirdPresets { get; set; } = new();
     public string? BrandDefaultOverlayBehavior { get; set; }
     // Virtual camera (beta spec O1): operator intent survives restarts. Enabled
     // deliberately defaults to false — exposing the program feed system-wide is
@@ -192,6 +194,7 @@ public sealed class ProductionOutputPreferences
     // sessions; show-input-slot assignments (the primary path) survive.
     public List<PersistedScene> CustomScenes { get; set; } = [];
     public Dictionary<string, ColorGrade> SourceGrades { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<string, GradeScopeRoi> ScopeRegions { get; set; } = new(StringComparer.Ordinal);
 
     // Master rack (v6, master-vst-round2-spec §B2). Null blocks = an older
     // file or a fresh profile — the in-app defaults apply and nothing syncs

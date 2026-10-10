@@ -12,10 +12,14 @@
                 <TextBlock Text="{x:Bind ViewModel.PreviewStatus, Mode=OneWay}" FontSize="11" TextWrapping="Wrap" />
             </StackPanel>
             <Border Grid.Row="1" Background="#020304" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="1" CornerRadius="6">
-                <controls:VideoSurfaceHost SurfaceState="{x:Bind ViewModel.NativeSurface, Mode=OneWay}" />
+                <Grid>
+                    <controls:VideoSurfaceHost SurfaceState="{x:Bind ViewModel.NativeSurface, Mode=OneWay}" />
+                    <controls:ScopeRoiControl x:Name="RoiGuide" Visibility="Collapsed" />
+                </Grid>
             </Border>
             <StackPanel Grid.Row="2" Spacing="6">
                 <StackPanel x:Name="ScopePanel" Visibility="Collapsed" Spacing="6">
+                    <TextBlock Text="{x:Bind ViewModel.ScopeRegionLabel, Mode=OneWay}" FontWeight="SemiBold" FontSize="11" />
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
                         <TextBlock Text="HISTOGRAM · 0–255" FontSize="10" />
                         <TextBlock Grid.Column="1" Text="WAVEFORM · 0–100%" FontSize="10" />
@@ -38,16 +42,16 @@
                     <TextBlock Text="{x:Bind ViewModel.AdvancedIndicator, Mode=OneWay}" FontSize="11" />
                     <StackPanel x:Name="BasicPanel" Spacing="10">
                         <ComboBox Header="Built-in look" ItemsSource="{x:Bind vm:ColorGradeEditorViewModel.LutOptions}" SelectedItem="{x:Bind ViewModel.Lut, Mode=TwoWay}" HorizontalAlignment="Stretch" />
-                        <TextBlock Text="Exposure" /><Slider Minimum="-50" Maximum="50" StepFrequency="1" Value="{x:Bind ViewModel.Exposure, Mode=TwoWay}" />
-                        <TextBlock Text="Contrast" /><Slider Minimum="-50" Maximum="50" StepFrequency="1" Value="{x:Bind ViewModel.Contrast, Mode=TwoWay}" />
-                        <TextBlock Text="Saturation" /><Slider Minimum="-50" Maximum="50" StepFrequency="1" Value="{x:Bind ViewModel.Saturation, Mode=TwoWay}" />
-                        <TextBlock Text="Temperature" /><Slider Minimum="-50" Maximum="50" StepFrequency="1" Value="{x:Bind ViewModel.Temperature, Mode=TwoWay}" />
+                        <controls:SliderValueControl Header="Exposure" Unit="points" Minimum="-50" Maximum="50" StepFrequency="1" Value="{x:Bind ViewModel.Exposure, Mode=TwoWay}" EditStarted="OnAdjustmentEditStarted" EditCompleted="OnAdjustmentEditCompleted" Help="0 is neutral. Expand grade for exposure in stops." />
+                        <controls:SliderValueControl Header="Contrast" Unit="points" Minimum="-50" Maximum="50" StepFrequency="1" Value="{x:Bind ViewModel.Contrast, Mode=TwoWay}" EditStarted="OnAdjustmentEditStarted" EditCompleted="OnAdjustmentEditCompleted" Help="0 is neutral; higher values increase contrast." />
+                        <controls:SliderValueControl Header="Saturation" Unit="points" Minimum="-50" Maximum="50" StepFrequency="1" Value="{x:Bind ViewModel.Saturation, Mode=TwoWay}" EditStarted="OnAdjustmentEditStarted" EditCompleted="OnAdjustmentEditCompleted" Help="0 is neutral; higher values increase color." />
+                        <controls:SliderValueControl Header="Temperature" Unit="points" Minimum="-50" Maximum="50" StepFrequency="1" Value="{x:Bind ViewModel.Temperature, Mode=TwoWay}" EditStarted="OnAdjustmentEditStarted" EditCompleted="OnAdjustmentEditCompleted" Help="Cool ← → warm; 0 is neutral." />
                     </StackPanel>
                     <StackPanel x:Name="AdvancedPanel" Visibility="Collapsed" Spacing="8">
                         <TextBlock Text="ADVANCED GRADE · REC.709 SDR" FontWeight="SemiBold" />
                         <TextBlock Text="{x:Bind ViewModel.EditStatus, Mode=OneWay}" TextWrapping="Wrap" FontSize="11" />
                         <CheckBox x:Name="BypassGrade" Content="Bypass grade" Click="OnBypassGrade" />
-                        <NumberBox x:Name="GradeIntensity" Header="Overall grade intensity" Minimum="0" Maximum="1" SmallChange="0.05" Value="1" ValueChanged="OnGradeIntensityChanged" SpinButtonPlacementMode="Compact" />
+                        <controls:SliderValueControl x:Name="GradeIntensity" Header="Overall grade intensity" Unit="%" DisplayScale="100" Minimum="0" Maximum="1" DefaultValue="1" StepFrequency="0.01" Value="1" ValueChanged="OnGradeIntensityChanged" Help="Blend the complete grade with the original image." />
                         <StackPanel Orientation="Horizontal" Spacing="4">
                             <Button Content="+ Primaries" Command="{x:Bind ViewModel.AddPrimariesCommand}" />
                             <Button Content="+ Curves" Command="{x:Bind ViewModel.AddCurvesCommand}" />
@@ -76,6 +80,15 @@
                         </StackPanel>
                         <ToggleSwitch Header="Scopes" IsOn="{x:Bind ViewModel.ScopesEnabled, Mode=TwoWay}" />
                         <ToggleSwitch Header="Analyze original" IsOn="{x:Bind ViewModel.ScopesOriginal, Mode=TwoWay}" />
+                        <ToggleSwitch Header="Region of interest (scopes only)" IsOn="{x:Bind ViewModel.ScopeRoiEnabled, Mode=TwoWay}" />
+                        <ToggleSwitch Header="Show ROI guide (editor only)" IsOn="{x:Bind ViewModel.ScopeRoiGuideVisible, Mode=TwoWay}" />
+                        <TextBlock Text="Drag to draw; drag inside to move or handles to resize. Arrow keys move; Shift+arrows resize. The grade still applies to the whole source." TextWrapping="Wrap" FontSize="11" />
+                        <controls:SliderValueControl x:Name="RoiX" Header="ROI left" Unit="%" DisplayScale="100" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
+                        <controls:SliderValueControl x:Name="RoiY" Header="ROI top" Unit="%" DisplayScale="100" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
+                        <controls:SliderValueControl x:Name="RoiWidth" Header="ROI width" Unit="%" DisplayScale="100" Minimum="0.000001" DefaultValue="1" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
+                        <controls:SliderValueControl x:Name="RoiHeight" Header="ROI height" Unit="%" DisplayScale="100" Minimum="0.000001" DefaultValue="1" StepFrequency="0.001" ValueChanged="OnRoiNumberChanged" />
+                        <Button Content="Clear ROI / full frame" Click="OnClearRoi" />
+                        <Button Content="Reset region to center" Click="OnResetRoi" />
                         <ComboBox Header="Histogram" SelectedIndex="{x:Bind ViewModel.HistogramMode, Mode=TwoWay}"><ComboBoxItem Content="Luma" /><ComboBoxItem Content="RGB overlay" /></ComboBox>
                         <ComboBox Header="Waveform" SelectedIndex="{x:Bind ViewModel.WaveformMode, Mode=TwoWay}"><ComboBoxItem Content="Luma" /><ComboBoxItem Content="RGB overlay" /><ComboBoxItem Content="RGB parade" /></ComboBox>
                         <Button Content="Apply Live" Command="{x:Bind ViewModel.ApplyLiveCommand}" />

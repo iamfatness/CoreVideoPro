@@ -186,7 +186,9 @@ public sealed record MediaCoreColorGradeWire(
     int HistogramMode = 1,
     int WaveformMode = 1,
     bool CompareOriginal = false,
-    int ScopeView = 0);
+    int ScopeView = 0,
+    GradeScopeRoi? ScopeRoi = null,
+    LowerThirdPreview? LowerThirdPreview = null);
 
 // #535 slice 4a: set-source-policy wire fields, verbatim. DropoutPolicy is
 // "hold" | "black", or null for a NAME-ONLY entry (round 2, final review: a
@@ -208,7 +210,8 @@ public sealed record MediaCoreBrandKitWire(
     string FontFamily,
     string LowerThirdStyle,
     string CaptionStyle,
-    string DefaultOverlayBehavior);
+    string DefaultOverlayBehavior,
+    LowerThirdAppearance? LowerThirdAppearance = null);
 
 public sealed record MediaCoreRecordingTargetsWire(
     string TargetFolder,
