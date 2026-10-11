@@ -30,6 +30,7 @@ const check=(b,m)=>{if(!b)throw Error(m);};
 const counterKeys=['underruns','overflows','deadlineMisses','gpuNotReady','outputSequenceGaps'];
 let receiver=null,receiverExit=null,last=null,before=null,spine=null;const admittedLoads=new Set();
 const persist=()=>writeFileSync(join(out,'verdict.json'),JSON.stringify(report,null,2));
+persist();
 try{
  for(let i=0;i<100&&!handshake;i++)await sleep(100);check(handshake,'No native handshake');
  await sync([{type:'set-verbose-diagnostics',enabled:true}]);
