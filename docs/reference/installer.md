@@ -4,6 +4,20 @@ _Moved verbatim from `CLAUDE.md` (#737). Paths are relative to the repo root._
 
 Three rules, all learned from the owner's own machine:
 
+Upgrade retirement (#865): after payload, camera ownership, registry and shortcuts
+have committed, Setup runs `Remove-PreviousInstallations.ps1`. The standard per-user
+install root retains one registered version. Custom QA destinations never clean
+the real install root. Candidates require the exact uninstall registration,
+publisher, version marker and package manifest; paths and ancestor reparse points
+are checked before deletion. Running versions and unverifiable candidates remain
+with a cleanup report and warning. Missing version folders permit removal of their
+matching stale registration only. Cleanup removes hash-matching delivered files,
+allowlisted first-run runtime files and version shortcuts, using nonrecursive
+directory removal. Modified payload files and operator files remain. It never
+invokes older uninstallers or changes webcam registration: legacy uninstallers
+can otherwise unregister the newly installed camera. The upgrade helper tests use
+an isolated registry namespace and temporary fixtures.
+
 - **ONE stable `CoreVideo Pro` shortcut** (desktop + Start menu), repointed at
   each install. The owner accumulated five version-named desktop shortcuts,
   launched a three-day-old build by mistake and filed a defect against code that

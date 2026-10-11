@@ -104,7 +104,7 @@ foreach ($required in @('msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.
 Get-ChildItem -LiteralPath $crtDirectory -File -Filter '*.dll' |
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $app -Force }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'alpha/Install-MediaRuntime.ps1') -Destination $app
-foreach ($helper in @('Install-VirtualCamera.ps1','VirtualCameraRegistration.psm1','Remove-OwnedShortcuts.ps1')) {
+foreach ($helper in @('Install-VirtualCamera.ps1','VirtualCameraRegistration.psm1','Remove-OwnedShortcuts.ps1','Remove-PreviousInstallations.ps1','PreviousInstallations.psm1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "alpha/$helper") -Destination $app
 }
 $testerGuide = if ($channel -eq 'beta') { 'docs/beta-tester-guide.md' } else { 'docs/alpha-tester-guide.md' }
