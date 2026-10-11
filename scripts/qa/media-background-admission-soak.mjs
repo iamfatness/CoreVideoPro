@@ -7,15 +7,18 @@ import {readFileSync,writeFileSync,mkdirSync,createWriteStream,existsSync} from 
 import {resolve,dirname,join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {parseArgs} from 'node:util';
+import {finished} from 'node:stream/promises';
+import {judgeCameraPixels} from './camera-pixel-receiver.mjs';
 const {values:v}=parseArgs({options:{core:{type:'string'},engine:{type:'string'},background:{type:'string'},out:{type:'string'},seconds:{type:'string',default:'1800'},loads:{type:'string',default:'20'},sources:{type:'string',default:'8'},receiver:{type:'string'}}});
 for(const key of ['core','engine','background','out']) if(!v[key]) throw Error(`Missing --${key}`);
 const core=resolve(v.core),engine=resolve(v.engine),background=resolve(v.background),out=resolve(v.out);
 for(const f of [core,engine,background]) if(!existsSync(f)) throw Error('Required input file missing');
+if(v.receiver&&!existsSync(resolve(v.receiver)))throw Error('Independent camera receiver file missing');
 const seconds=Number(v.seconds),loads=Number(v.loads),wanted=Number(v.sources);
 if(!Number.isFinite(seconds)||seconds<30||seconds>7200||!Number.isInteger(loads)||loads<1||loads>100||!Number.isInteger(wanted)||wanted<1||wanted>16) throw Error('Invalid duration/load/source bounds');
 if(!process.env.COREVIDEO_TEST_MEETING_URL) throw Error('Protected meeting URL must be supplied in environment');
 mkdirSync(out,{recursive:true});
-const report={complete:false,passed:false,coreSha256:createHash('sha256').update(readFileSync(core)).digest('hex'),seconds,loads,wanted,samples:0,changes:[],failures:[],scope:'Real SDK ingestion, production defaults, cold media load delivery counters; external OS-camera pixel verdict remains independent'};
+const report={complete:false,passed:false,coreSha256:createHash('sha256').update(readFileSync(core)).digest('hex'),seconds,loads,wanted,samples:0,changes:[],failures:[],scope:'Real SDK ingestion, production defaults, cold media load delivery counters; independent OS-camera pixels when receiver supplied. Display presentation and A/V remain unverified'};
 const child=spawn(core,[],{cwd:dirname(core),windowsHide:true,stdio:['pipe','pipe','pipe'],env:{...process.env,COREVIDEO_ZOOM_ENGINE_PATH:engine,COREVIDEO_PROGRAM_BUFFER_FRAMES:"2"}});
 const log=createWriteStream(join(out,'core-private.log'));child.stderr.pipe(log);
 let id=0,buffer='',handshake,exit=null;const pending=new Map();
@@ -28,7 +31,7 @@ const harnessStarted=Date.now();
 const sync=async(commands=[])=>{const r=await send('media-core-sync',{elapsedMs:Date.now()-harnessStarted,commands});if(r.ok===false)throw Error('Native sync rejected');return r.snapshot;};
 const check=(b,m)=>{if(!b)throw Error(m);};
 const counterKeys=['underruns','overflows','deadlineMisses','gpuNotReady','outputSequenceGaps'];
-let receiver=null,receiverExit=null,last=null,before=null,spine=null;const admittedLoads=new Set();
+let receiver=null,receiverExit=null,receiverOutputDone=null,last=null,before=null,spine=null;const admittedLoads=new Set();
 const persist=()=>writeFileSync(join(out,'verdict.json'),JSON.stringify(report,null,2));
 persist();
 try{
@@ -54,9 +57,10 @@ try{
  check(before.realtimeEvidence?.monitorWorker?.effectiveMode==='isolated','Production monitor isolation not active');
  check(before.programSourceAdmission?.readyOnlyRequested===true, 'Ready-only source preparation evidence missing');
  check(before.virtualCamera?.enabled===true && before.virtualCamera.framesPublished>0,'Registered webcam did not start publishing');
- writeFileSync(join(out,'start-private.json'),JSON.stringify(before,null,2));
- if(v.receiver){const stdout=createWriteStream(join(out,'receiver.ndjson')),stderr=createWriteStream(join(out,'receiver.stderr'));receiver=spawn(resolve(v.receiver),[String(Math.ceil(seconds+35))],{windowsHide:true,stdio:['ignore','pipe','pipe']});receiver.stdout.pipe(stdout);receiver.stderr.pipe(stderr);receiver.on('exit',code=>{receiverExit=code;});}
+ writeFileSync(join(out,'camera-start-private.json'),JSON.stringify(before,null,2));
+ if(v.receiver){const stdout=createWriteStream(join(out,'receiver.ndjson')),stderr=createWriteStream(join(out,'receiver.stderr'));receiverOutputDone=finished(stdout);receiverOutputDone.catch(()=>{});receiver=spawn(resolve(v.receiver),[String(Math.ceil(seconds+35))],{windowsHide:true,stdio:['ignore','pipe','pipe']});receiver.stdout.pipe(stdout);receiver.stderr.pipe(stderr);receiver.on('exit',code=>{receiverExit=code;});}
  if(receiver){for(let i=0;i<60;i++){await sleep(500);last=await sync();}before=last;}
+ writeFileSync(join(out,'start-private.json'),JSON.stringify(before,null,2));
  const start=Date.now(),end=start+seconds*1000;let nextLoad=0,minute=-1;
  const samples=createWriteStream(join(out,'samples.ndjson'));
  while(Date.now()<end){
@@ -85,13 +89,25 @@ try{
  const r=await send('zoom-media-spine-sync',{spinePayload:subscription,elapsedMs:500});writeFileSync(join(out,'spine-end-private.json'),JSON.stringify(r.spineSnapshot,null,2));
  report.admittedLoads=[...admittedLoads].sort((a,b)=>a-b);
  if(admittedLoads.size!==loads)report.failures.push('Not every cold background delivered an admitted GPU image');
- report.passed=report.failures.length===0;persist();
+ report.programDeliveryPassed=counterKeys.every(k=>report.counterDeltas[k]===0)&&admittedLoads.size===loads;
+ // A receiver's successful process exit is not a pixel-continuity verdict.
+ // Final acceptance is computed only after its capture has been drained/judged.
+ persist();
 }catch(e){report.failures.push(e.message.replace(/https?:\/\/\S+/g,'<redacted>'));persist();}
 finally{
  if(receiver&&report.complete){for(let i=0;i<30&&receiverExit===null;i++)await sleep(500);}
  try{await sync([{type:'sync-virtual-camera',on:false}]);await send('zoom-leave',{},10000);await send('shutdown',{},5000);}catch{}
  child.stdin.end();setTimeout(()=>{if(exit===null)child.kill();},5000).unref();
  if(receiver){for(let i=0;i<30&&receiverExit===null;i++)await sleep(500);if(receiverExit===null)receiver.kill();report.receiverExit=receiverExit;if(receiverExit!==0){report.failures.push('Independent camera receiver failed');report.passed=false;}}
+ if(receiver && receiverExit!==null){
+  try{
+   await receiverOutputDone;
+   report.receiverVerdict=judgeCameraPixels(readFileSync(join(out,'receiver.ndjson'),'utf8'),{minimumSeconds:seconds});
+   writeFileSync(join(out,'receiver-verdict.json'),JSON.stringify(report.receiverVerdict,null,2));
+   if(!report.receiverVerdict.osCameraContinuityVerified)report.failures.push('Independent OS camera pixel continuity failed');
+  }catch(e){report.failures.push(`Camera pixel judge failed: ${e.message}`);}
+ }
+ report.passed=report.complete&&report.failures.length===0;
  log.end();persist();console.log(JSON.stringify(report));
 }
 process.exitCode=report.passed?0:1;
