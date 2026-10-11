@@ -53,6 +53,7 @@ try{
  check(before.programBuffer?.activeFrames===2,'Expected existing two-frame Program buffer');
  check(before.realtimeEvidence?.monitorWorker?.effectiveMode==='isolated','Production monitor isolation not active');
  check(before.programSourceAdmission?.readyOnlyRequested===true, 'Ready-only source preparation evidence missing');
+ check(before.virtualCamera?.enabled===true && before.virtualCamera.framesPublished>0,'Registered webcam did not start publishing');
  writeFileSync(join(out,'start-private.json'),JSON.stringify(before,null,2));
  if(v.receiver){const stdout=createWriteStream(join(out,'receiver.ndjson')),stderr=createWriteStream(join(out,'receiver.stderr'));receiver=spawn(resolve(v.receiver),[String(Math.ceil(seconds+35))],{windowsHide:true,stdio:['ignore','pipe','pipe']});receiver.stdout.pipe(stdout);receiver.stderr.pipe(stderr);receiver.on('exit',code=>{receiverExit=code;});}
  if(receiver){for(let i=0;i<60;i++){await sleep(500);last=await sync();}before=last;}
@@ -90,7 +91,7 @@ finally{
  if(receiver&&report.complete){for(let i=0;i<30&&receiverExit===null;i++)await sleep(500);}
  try{await sync([{type:'sync-virtual-camera',on:false}]);await send('zoom-leave',{},10000);await send('shutdown',{},5000);}catch{}
  child.stdin.end();setTimeout(()=>{if(exit===null)child.kill();},5000).unref();
- if(receiver){for(let i=0;i<30&&receiverExit===null;i++)await sleep(500);if(receiverExit===null)receiver.kill();report.receiverExit=receiverExit;}
+ if(receiver){for(let i=0;i<30&&receiverExit===null;i++)await sleep(500);if(receiverExit===null)receiver.kill();report.receiverExit=receiverExit;if(receiverExit!==0){report.failures.push('Independent camera receiver failed');report.passed=false;}}
  log.end();persist();console.log(JSON.stringify(report));
 }
 process.exitCode=report.passed?0:1;
