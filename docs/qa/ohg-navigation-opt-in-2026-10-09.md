@@ -1,5 +1,11 @@
 # OHG navigation opt-in — #595
 
+Delivery update (October 10): PR #843 is merged and included in installed
+`beta-2026-10-10-abb97fb`. The evidence below describes the original development
+trial. Remaining installed checks are consolidated in the
+[UI/UX acceptance protocol](operator-uiux-installed-acceptance.md); issue acceptance
+remains open.
+
 Settings now exposes Enable OHG Show workspace under Optional workspaces.
 Fresh/older profiles default off. The additive OhgShowEnabled production
 preference round-trips through the existing serializer and store without a
