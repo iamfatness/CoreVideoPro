@@ -2,10 +2,16 @@
 
 `CpuSourcePreparation` owns bounded D3D11 preparation for immutable CPU I420
 and BGRA arrivals. `I420SourcePreparation` remains a compatibility alias.
-The launch override `COREVIDEO_CPU_SOURCE_PREPARATION=1` creates one shared
-owner in module composition for Zoom, native UVC, WGC CPU fallback, media playback,
-stills, browser, NDI, SRT and RTMP input.
-The override defaults off. Unsupported platforms do not publish GPU views.
+Normal Windows D3D11 module composition creates one shared
+owner by default for Zoom, native UVC, WGC CPU fallback, media playback,
+stills, browser, NDI, SRT and RTMP input. `COREVIDEO_CPU_SOURCE_PREPARATION=0` explicitly selects the
+legacy CPU path for comparisons; `1` enables preparation on direct adapter
+fixtures too. Unsupported platforms do not publish GPU views. Direct factory
+fixtures retain their legacy default unless production preparation is requested.
+Production preparation also defaults optional source exports, Preview and
+multiview to their isolated monitor owner. Explicit monitor overrides remain
+honored; forcing inline with preparation enabled reports unavailable source
+exports instead of silently uploading on Program.
 
 Media decoding calls `CpuVideoArrival` on its decoder thread before pushing
 the existing CPU presentation queue. Still decoding calls it on the cache

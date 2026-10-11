@@ -15,10 +15,11 @@ The additive `observationVersion: monitor-isolation-v1` fields are:
 | failureReason | Fixed diagnostic code; never an exception message |
 | deliveryEpoch | Existing Program-buffer generation; not a monitor frame identity |
 
-The D3D factory preserves current startup behavior: unset selects inline by
-default, explicit `COREVIDEO_ISOLATE_MONITORS=0` selects inline, `1` selects
+Normal Windows production module composition selects isolated monitors with
+CPU source preparation enabled. Direct D3D factory fixtures without preparation
+retain inline behavior. Explicit `COREVIDEO_ISOLATE_MONITORS=0` selects inline, `1` selects
 isolated. Other override values retain inline behavior but are reported as
-invalid with `invalid-monitor-override`. There is no hot toggle or default change.
+invalid with `invalid-monitor-override`. There is no hot toggle.
 Unsupported compositors report unknown mode and unavailable readiness.
 
 An isolated worker starts as `starting`, becomes `ready` after initialization,

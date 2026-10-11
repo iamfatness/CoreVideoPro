@@ -78,6 +78,11 @@ preempt this list on a show night.
 Priority remains show survival, diagnosability, real-show usability, then external
 installation. Build one source bus before adding more ingest paths. MXL stays parked.
 
+Owner-approved on 2026-10-11: execute #802 production source preparation and
+expired-ready Program queue recovery, then require zero missed delivery slots
+while repeatedly loading the 1080p background in the designated test meeting.
+Preserve the existing session while building; restart/rejoin for candidate validation.
+
 ## Now — owner-accepted order (2026-10-08)
 
 Owner-approved follow-up on 2026-10-10: implement [#853](https://github.com/iamfatness/CoreVideoPro/issues/853), draw-first rectangle/circle scope ROI and collapsed precision controls, before further UI/UX slices. Preserve the running meeting. Zero missed delivery slots remains paramount; the owner is researching the #825/#517 misses separately.
@@ -126,7 +131,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
-| Owner follow-up | B | [#859](https://github.com/iamfatness/CoreVideoPro/issues/859) | Owner approved October 10: fix idle Stop inventing stopping/finalizing recording state, preserve actual asynchronous finalization, and validate repeated idle/terminal stops plus decoded real recording. |
+| Owner follow-up | A | [#802](https://github.com/iamfatness/CoreVideoPro/issues/802) | Owner approved October 11: enable completed source preparation in Windows production, isolate optional exports, repair expired-ready queue retirement, and validate repeated cold 1080p background loads with zero missed delivery slots in the test meeting. |
 | Owner follow-up | A | [#853](https://github.com/iamfatness/CoreVideoPro/issues/853) | Draw-first rectangle/circle scope ROI, move/resize, cancellation, Clear and collapsed precision settings. [Interaction contract](reference/roi-drawing-tools.md). Owner approved this code slice on October 10; preserve live sessions and keep zero-miss delivery acceptance separate. |
 | Owner top | A | [#835](https://github.com/iamfatness/CoreVideoPro/issues/835) | Advanced source grading: optional expanded workspace, truthful native preview/output path (grading portion of #764), master/R/G/B curves, histogram, waveform and vectorscope. Preserve existing grades, source identity, production cadence and quality; scope analysis must be bounded and asynchronous. Then qualify advanced primaries, real LUT import/stack and presets against the same native transform. |
 | Owner next | A | [#839](https://github.com/iamfatness/CoreVideoPro/issues/839) | Owner requested a built-in OH Framer on webcam output only after the #835 review rendering, adding a live Program LUFS-S overlay on October 9. [Specification](reference/webcam-framer.md). Preserve the supplied PNG alpha and clean Program/Preview/recording/stream pixels; persist an off-by-default camera toggle and qualify camera publication cadence. #835 implementation merged in #837; combined installed acceptance remains open. |
@@ -169,7 +174,6 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 |---|---|
 | [#856](https://github.com/iamfatness/CoreVideoPro/issues/856) | Installed October 10 beta lost the local Zoom helper at 09:06:24 EDT while shell/core stayed alive. No matching new WER event/dump; exit/IPC cause remains unproven. Capture child exit status and identify the causal path; no network-only or #790 attribution established. Unranked intake. |
 | [#857](https://github.com/iamfatness/CoreVideoPro/issues/857) | Live webcam ownership check fails despite matching machine/user registrations and a fresh native check passing. Restart recovered activation and a five-second OS receiver read 300 1080p60 samples; causal failure remains unresolved. Qualify normal shortcut/relaunch behavior; recovery alone does not close the issue. Unranked intake. |
-| [#859](https://github.com/iamfatness/CoreVideoPro/issues/859) | Installed idle recording repeatedly reports stopping/finalizing with zero written frames/bytes while the operator UI says Idle. Configured depth 10 is capacity, not pending work. Owner approved fixing idle stop terminal-state handling and preserving real asynchronous finalization on October 10; no damaged recording established. |
 | [#834](https://github.com/iamfatness/CoreVideoPro/issues/834) | Windows CI app-exit trace reader can hit a sharing violation while the child appends to trace.txt. Initial main CI failed; unchanged-head retry passed. Make the bounded trace wait tolerate concurrent writes while preserving cleanup assertions. Unranked; not a confirmed production regression. |
 | [#825](https://github.com/iamfatness/CoreVideoPro/issues/825) | Disabled-preparation/inline qualification lost six packets in three pairs: a late Preparing head became expired Ready and remained at the following deadline. Suspected wait-predicate amplification needs deterministic real-GPU reproduction; does not establish why the first preparation was late. Unranked; current #802/#823 work continues. |
 | [#823](https://github.com/iamfatness/CoreVideoPro/issues/823) | Remaining owner-approved #517 delivery diagnostics: bounded per-frame trace, native/C#/Swift observations, source/output identity and latency attribution. Continues the parent qualification scope after #802; no independent rank or default change. |
@@ -303,6 +307,7 @@ These rows record specific fixes, not blanket production or fleet reliability.
 
 | Issue | Merged fix / acceptance |
 |---|---|
+| [#859](https://github.com/iamfatness/CoreVideoPro/issues/859) | Closed by merged #860: idle Stop no longer invents recording finalization or reserves the encoder generation. Repeated Stops and real decoded recording finalization passed; sustained zero-drop recording remains separate. |
 | [#854](https://github.com/iamfatness/CoreVideoPro/issues/854) | Closed by merged #855: scope-result coordinate rounding tolerance and pending-preview gesture geometry retention. #853 installed interaction and #517 delivery acceptance remain separate. |
 | [#838](https://github.com/iamfatness/CoreVideoPro/issues/838) | Closed by merged #837: mixed-source QA initial/final sampling no longer manufactures a stall before preparation advances. This harness repair does not qualify production delivery. |
 | [#794](https://github.com/iamfatness/CoreVideoPro/issues/794) | Maintained mixed-source monitor A/B harness, bounded IPC and failed-trial retention merged in #795. Harness implementation is complete; #517 delivery qualification remains open. |

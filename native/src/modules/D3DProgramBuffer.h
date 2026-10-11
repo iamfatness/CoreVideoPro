@@ -195,6 +195,7 @@ class D3DProgramBuffer {
   };
   // Installed only before submission by hardware fault tests.
   std::function<void(bool)> beforeExport_;
+  std::function<void(int64_t)> beforePrepare_; // Hardware fault tests, before submission only.
   static int64_t now100ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
@@ -421,6 +422,7 @@ class D3DProgramBuffer {
         continue;
       }
       const auto prepareBegin = std::chrono::steady_clock::now();
+      if (beforePrepare_) beforePrepare_(slot->productionSlot);
       const bool pixelsReady = !slot->needsNv12 || prepareNv12(*slot);
       prepareContext_->CopyResource(slot->snapshot.get(), slot->prepareTexture.get());
       // Return the input key after all preparation reads. Ready still requires
@@ -497,9 +499,14 @@ class D3DProgramBuffer {
       const auto deadline = std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           std::chrono::nanoseconds(timeline_->nextDeadlineNs())));
       waitUntilPrecise(lock, deadline, timer, [&] {
-        return stopped_ || (!delivery_.empty() && delivery_.front()->state == State::Ready && delivery_.front()->productionSlot == targetSlot);
+        return stopped_ || (!delivery_.empty() && delivery_.front()->state == State::Ready &&
+            (delivery_.front()->productionSlot == targetSlot || timeline_->isExpired(delivery_.front()->productionSlot)));
       });
       if (stopped_) break;
+      // A previous slot can complete while we wait for the next deadline.
+      // Retire it now, then wait for the same target; do not charge another miss.
+      if (!delivery_.empty() && delivery_.front()->state == State::Ready &&
+          timeline_->isExpired(delivery_.front()->productionSlot)) continue;
       if (delivery_.empty() || delivery_.front()->state != State::Ready || delivery_.front()->productionSlot != targetSlot) {
         if (const auto due = timeline_->takeDue(now100ns() * 100)) {
           diagnostics_.underruns += due->skippedSlots + 1;
