@@ -2,6 +2,7 @@
 #include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
 #include "modules/Interfaces.h"
+#include "modules/CpuPreparationSelection.h"
 
 // The GPU compositor is intentionally a dev-machine adapter. COREVIDEO_STUB
 // builds must stay portable and resolve this factory to nullptr unless all
@@ -122,7 +123,8 @@ class D3D11Compositor final : public ICompositor {
  public:
   D3D11Compositor(ComPtrLite<ID3D11Device> device, ComPtrLite<ID3D11DeviceContext> context,
                   bool isolateMonitors = false, bool monitorBackend = false, bool enableGpuIngress = false,
-                  std::string selectionSource = "constructor", std::string requestedMode = {})
+                  std::string selectionSource = "constructor", std::string requestedMode = {},
+                  bool prepareCpuSources = false)
       : device_(std::move(device)), context_(std::move(context)),
         monitorSelectionSource_(std::move(selectionSource)),
         monitorRequestedMode_(requestedMode.empty() ? (isolateMonitors ? "isolated" : "inline") : std::move(requestedMode)) {
@@ -134,10 +136,10 @@ class D3D11Compositor final : public ICompositor {
       core::nativeLogf("[delivery-counter] QA synthetic pixel markers enabled\n");
     }
     const char* gpuCapture = std::getenv("COREVIDEO_GPU_CAPTURE");
-    const char* cpuPreparation = std::getenv("COREVIDEO_CPU_SOURCE_PREPARATION");
-    strictCpuSources_ = cpuPreparation && std::string(cpuPreparation) == "1" && !monitorBackend;
+    const bool cpuPreparation = cpuPreparationEnabled(prepareCpuSources);
+    strictCpuSources_ = cpuPreparation && !monitorBackend;
     if (enableGpuIngress || (gpuCapture && std::string(gpuCapture) == "1") ||
-        (cpuPreparation && std::string(cpuPreparation) == "1")) {
+        cpuPreparation) {
       gpuConsumer_ = D3DVideoConsumers::add(device_.get(), monitorBackend);
       gpuReadLeases_ = std::make_unique<D3DVideoReadLeases>(device_.get(), context_.get());
     }
@@ -3402,7 +3404,7 @@ class D3D11Compositor final : public ICompositor {
 
 }  // namespace
 
-std::unique_ptr<ICompositor> createD3D11Compositor() {
+std::unique_ptr<ICompositor> createD3D11Compositor(bool prepareCpuSources) {
   ComPtrLite<ID3D11Device> device;
   ComPtrLite<ID3D11DeviceContext> context;
   D3D_FEATURE_LEVEL selectedFeatureLevel = D3D_FEATURE_LEVEL_11_0;
@@ -3430,11 +3432,13 @@ std::unique_ptr<ICompositor> createD3D11Compositor() {
   }
 
   const char* isolate = std::getenv("COREVIDEO_ISOLATE_MONITORS");
+  const bool isolated = isolate ? std::string(isolate) == "1" : cpuPreparationEnabled(prepareCpuSources);
   return std::make_unique<D3D11Compositor>(std::move(device), std::move(context),
-      isolate && std::string(isolate) == "1", false, false,
+      isolated, false, false,
       isolate ? "override" : "default",
-      !isolate || std::string(isolate) == "0" ? "inline" :
-          (std::string(isolate) == "1" ? "isolated" : "invalid"));
+      !isolate ? (isolated ? "isolated" : "inline") :
+          (std::string(isolate) == "0" ? "inline" :
+          (std::string(isolate) == "1" ? "isolated" : "invalid")), prepareCpuSources);
 }
 
 }  // namespace corevideo::modules
@@ -3443,7 +3447,7 @@ std::unique_ptr<ICompositor> createD3D11Compositor() {
 
 namespace corevideo::modules {
 
-std::unique_ptr<ICompositor> createD3D11Compositor() {
+std::unique_ptr<ICompositor> createD3D11Compositor(bool) {
   return nullptr;
 }
 

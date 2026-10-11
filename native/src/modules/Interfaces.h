@@ -1868,7 +1868,7 @@ ModuleSet createStubModules();
 // stall must never collapse the worker or block stop-recording. Tests use
 // createDefaultModules directly and keep the synchronous encoder.
 ModuleSet createLiveServerModules();
-std::unique_ptr<ICompositor> createD3D11Compositor();
+std::unique_ptr<ICompositor> createD3D11Compositor(bool prepareCpuSources = false);
 // The macOS Metal twin; returns nullptr unless COREVIDEO_WITH_METAL (mirrors
 // the D3D11 null factory — each is non-null on at most one platform).
 std::unique_ptr<ICompositor> createMetalCompositor();

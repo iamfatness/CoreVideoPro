@@ -72,6 +72,11 @@ preempt this list on a show night.
 Priority remains show survival, diagnosability, real-show usability, then external
 installation. Build one source bus before adding more ingest paths. MXL stays parked.
 
+Owner-approved on 2026-10-11: execute #802 production source preparation and
+expired-ready Program queue recovery, then require zero missed delivery slots
+while repeatedly loading the 1080p background in the designated test meeting.
+Preserve the existing session while building; restart/rejoin for candidate validation.
+
 ## Now — owner-accepted order (2026-10-08)
 
 Owner-approved follow-up on 2026-10-10: implement [#853](https://github.com/iamfatness/CoreVideoPro/issues/853), draw-first rectangle/circle scope ROI and collapsed precision controls, before further UI/UX slices. Preserve the running meeting. Zero missed delivery slots remains paramount; the owner is researching the #825/#517 misses separately.
@@ -120,6 +125,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner follow-up | A | [#802](https://github.com/iamfatness/CoreVideoPro/issues/802) | Owner approved October 11: enable completed source preparation in Windows production, isolate optional exports, repair expired-ready queue retirement, and validate repeated cold 1080p background loads with zero missed delivery slots in the test meeting. |
 | Owner follow-up | A | [#853](https://github.com/iamfatness/CoreVideoPro/issues/853) | Draw-first rectangle/circle scope ROI, move/resize, cancellation, Clear and collapsed precision settings. [Interaction contract](reference/roi-drawing-tools.md). Owner approved this code slice on October 10; preserve live sessions and keep zero-miss delivery acceptance separate. |
 | Owner top | A | [#835](https://github.com/iamfatness/CoreVideoPro/issues/835) | Advanced source grading: optional expanded workspace, truthful native preview/output path (grading portion of #764), master/R/G/B curves, histogram, waveform and vectorscope. Preserve existing grades, source identity, production cadence and quality; scope analysis must be bounded and asynchronous. Then qualify advanced primaries, real LUT import/stack and presets against the same native transform. |
 | Owner next | A | [#839](https://github.com/iamfatness/CoreVideoPro/issues/839) | Owner requested a built-in OH Framer on webcam output only after the #835 review rendering, adding a live Program LUFS-S overlay on October 9. [Specification](reference/webcam-framer.md). Preserve the supplied PNG alpha and clean Program/Preview/recording/stream pixels; persist an off-by-default camera toggle and qualify camera publication cadence. #835 implementation remains in review in #837. |

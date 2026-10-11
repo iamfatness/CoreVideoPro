@@ -13,6 +13,7 @@
 #include "modules/ProgramFramePreview.h"
 #include "modules/WinUiCaptureDeviceAdapter.h"
 #include "modules/CpuSourcePreparation.h"
+#include "modules/CpuPreparationSelection.h"
 
 #include <algorithm>
 #include <cctype>
@@ -423,7 +424,8 @@ std::unique_ptr<IOutputSender> createIsolatedOutputSender(
 
 ModuleSet createDefaultModules() {
   auto modules = createStubModules();
-  if (auto compositor = createD3D11Compositor()) {
+  const bool prepareCpuSources = cpuPreparationEnabled(true);
+  if (auto compositor = createD3D11Compositor(prepareCpuSources)) {
     modules.compositor = std::move(compositor);
   } else if (auto metalCompositor = createMetalCompositor()) {
     modules.compositor = std::move(metalCompositor);
@@ -431,7 +433,7 @@ ModuleSet createDefaultModules() {
   recordCapability(modules, "gpu-compositor", modules.compositor->rendererName() != "software"
       ? "available" : (COREVIDEO_WITH_D3D11 || COREVIDEO_WITH_METAL)
           ? "failed-to-construct" : "omitted", COREVIDEO_STUB ? "stub-build" : "");
-  if (const char* prepare = std::getenv("COREVIDEO_CPU_SOURCE_PREPARATION"); prepare && std::string(prepare) == "1")
+  if (prepareCpuSources && modules.compositor->rendererName() == "d3d11")
     modules.cpuSourcePreparation = std::make_shared<CpuSourcePreparation>(true);
   if (auto mediaDecoderFactory = createMediaFoundationMediaDecoderFactory()) {
     modules.mediaDecoderFactory = std::move(mediaDecoderFactory);

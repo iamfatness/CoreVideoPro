@@ -231,6 +231,35 @@ void offer(I420SourcePreparation& owner, VideoFrame& frame) {
 }
 }
 
+TEST(I420SourcePreparation, ProductionFactoryUsesReadyOnlySourcesAndIsolatedExportsByDefault) {
+  PreparationFlags restore;
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "");
+  _putenv_s("COREVIDEO_ISOLATE_MONITORS", "");
+  auto compositor = createD3D11Compositor(true);
+  ASSERT_TRUE(compositor != nullptr);
+  EXPECT_TRUE(compositor->hasIsolatedMonitors());
+  CompositorRenderPlan plan; plan.sceneId = "production-default";
+  plan.renderPlanId = "production-default:1"; plan.width = plan.height = 64;
+  plan.skipCpuReadback = true;
+  CompositorRenderPlanLayer layer; layer.layerId = "background";
+  layer.participantId = "background:clip"; layer.sourceId = layer.participantId;
+  layer.kind = "media-video"; layer.rect = {0, 0, 1, 1}; plan.layers.push_back(layer);
+  VideoFrame raw; raw.participantId = layer.participantId; raw.frameId = 1;
+  raw.width = raw.pixelWidth = 64; raw.height = raw.pixelHeight = 64;
+  raw.pixelStride = 256; raw.pixels = std::make_shared<const std::vector<uint8_t>>(64 * 64 * 4, 255);
+  const auto result = compositor->render(plan, {raw});
+  EXPECT_TRUE(result.cpuSourceReadyOnly);
+  ASSERT_EQ(result.sourceAdmissions.size(), 1u);
+  EXPECT_EQ(result.sourceAdmissions.front().state, "unavailable");
+  // Without a prepared descriptor the enabled production path must not silently
+  // upload CPU bytes or export participant textures on the Program context.
+  EXPECT_TRUE(result.participantSharedTextures.empty());
+  _putenv_s("COREVIDEO_CPU_SOURCE_PREPARATION", "0");
+  auto legacy = createD3D11Compositor(true);
+  ASSERT_TRUE(legacy != nullptr); EXPECT_FALSE(legacy->hasIsolatedMonitors());
+  EXPECT_FALSE(legacy->render(plan, {raw}).cpuSourceReadyOnly);
+}
+
 TEST(I420SourcePreparation, FutureDecodeArrivalsCannotEvictTheNextCpuPlayoutSelection) {
   PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
   I420SourcePreparation owner(true);
