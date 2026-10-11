@@ -3202,29 +3202,27 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
 }
 
 void MediaCore::stopRecordingSession(const rpc::Json& command) {
-  // STOP DOES NOT CLAIM COMPLETION. This used to assign "stopped" here, before
-  // encoder->stopRecording() had even been called — so the RPC returned, and the
-  // operator was told the recording had finished, while the FIFO barrier was
-  // still draining and the moov atom had not been written. The truth lived only
-  // in recording.lifecycle, and the two fields disagreed for the whole finalize
-  // window. What Stop reports now is that stopping has BEGUN; the terminal state
-  // arrives from the writer thread when the barrier has drained and finalization
-  // has actually succeeded or failed (AsyncEncoderSink::writerLoop). The RPC
-  // still does not block — the asynchronous finalization is correct, and
-  // scripts/validate-recording-finalization.mjs proves it completes with the
-  // core alive. Only the lying status field is fixed.
+  // Desired-state synchronization also sends Stop before any recording exists.
+  // That idle assertion has no barrier/lifecycle to complete and must not claim
+  // finalization or take ownership of the shared encoder generation (#859).
+  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+  const auto before = modules_.encoder->session();
+  const bool sinkHasRecording = before.lifecycle.has_value() ||
+      std::find(before.destinations.begin(), before.destinations.end(), "recording") != before.destinations.end();
+  if (recordingStatus_ == "stopped" && recordingSessionId_.empty() && !sinkHasRecording) return;
+
+  // A real Stop begins finalization; only the writer's observed result can
+  // claim completion. AsyncEncoderSink owns its FIFO barrier and terminal state.
   recordingStatus_ = "stopping";
   recordingWriterStatus_ = "finalizing";
   recordingWarning_ = command.getString("reason", "");
-  {
-    // Encoder module mutation: guard against the audio/output worker's
-    // concurrent encoder->submit/submitAudio/session in runAudioOutputWork.
-    // coreMutex (outer, held by the command thread) â†’ audioOutputMutex_ (inner),
-    // matching startRecordingSession/startProgramOutput. Finalizes the MP4
-    // container(s) so the artifact is playable immediately after stop instead
-    // of only after process exit or the next recording start.
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-    modules_.encoder->stopRecording();
+  modules_.encoder->stopRecording();
+  const auto after = modules_.encoder->session();
+  // Synchronous sinks have no lifecycle callback. Their returned stopped state
+  // is completion evidence; do not leave the fallback stuck in finalizing.
+  if (!after.lifecycle && after.recordingStatus == "stopped") {
+    recordingStatus_ = "stopped";
+    recordingWriterStatus_ = "stopped";
   }
 }
 
