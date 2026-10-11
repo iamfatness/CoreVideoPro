@@ -76,6 +76,12 @@ try {
   evidence.profile = handshake.profile;
   if (!['media-foundation', 'avfoundation'].includes(handshake.profile?.encoder))
     throw new Error(`A real recording adapter is required; observed ${handshake.profile?.encoder}`);
+  for (let i = 0; i < 3; ++i) {
+    await sync([{ type: 'stop-recording-session', reason: 'Recording disabled in production state.' }]);
+    if (snapshot?.recording != null)
+      throw new Error(`Idle Stop invented a recording: ${JSON.stringify(snapshot.recording)}`);
+  }
+  evidence.idleStopsPassed = 3;
   await sync([
     { type: 'set-output-profile', width: 1920, height: 1080, fps: 60, targetBitrateMbps: 8 },
     { type: 'load-scene-graph', sceneId: 'generated-recording-proof', routes: [], background: {
@@ -110,6 +116,14 @@ try {
   if (lifecycle?.state !== 'completed' || lifecycle.finalized !== true || lifecycle.sessionId !== sessionId)
     throw new Error(`Matching writer finalization was not confirmed: ${JSON.stringify(lifecycle)}`);
   evidence.finalRecording = snapshot.recording;
+  for (let i = 0; i < 3; ++i) {
+    await sync([{ type: 'stop-recording-session', reason: 'Recording disabled in production state.' }]);
+    if (snapshot?.recording?.lifecycle?.state !== 'completed' ||
+        snapshot.recording.lifecycle.sessionId !== sessionId || snapshot.recording.lifecycle.finalized !== true ||
+        snapshot.recording.status !== 'stopped')
+      throw new Error('Repeated Stop lost the finalized recording outcome');
+  }
+  evidence.repeatedTerminalStopsPassed = 3;
   const artifact = resolve(dirname(core), snapshot.recording.artifactPath ?? '');
   if (!snapshot.recording.artifactPath || (await stat(artifact)).size <= 1024) throw new Error('Recording artifact is missing or empty');
   evidence.artifact = artifact;

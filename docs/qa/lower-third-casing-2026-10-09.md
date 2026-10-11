@@ -59,4 +59,10 @@ sampled, and the retained videos have not been judged frame by frame for every
 possible partial glyph or clipping artifact. Recording and streaming outputs
 were idle. This is not a long bake, a public beta, or closure of #592's broader
 output acceptance criteria. The app left the test meeting and closed afterward;
-the original installed library remains in place.
+the original installed library remained in place at the end of that trial.
+
+Delivery update (October 10): PR #846 is merged and included in installed
+`beta-2026-10-10-abb97fb`. This supersedes the restored-library state above without
+changing the original trial's evidence or output limits. The issue remains open
+for broader output acceptance under the
+[UI/UX acceptance protocol](operator-uiux-installed-acceptance.md).

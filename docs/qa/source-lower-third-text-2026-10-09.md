@@ -51,5 +51,8 @@ reassignment, restart persistence, actual Preview/Program and recording or strea
 pixels, and an on-air edit without a spurious transition. The text preview and
 unit tests do not establish those output checks. #592's observed refresh/lowercase
 fragment still needs its own frame sequence and trace; this change does not assert
-that its root cause has been found or fixed. #593 remains open pending acceptance
-and merge.
+that its root cause has been found or fixed. Those statements describe this
+original trial; the separate casing investigation subsequently established the
+guest/Guest mapping cause and shipped in #846. PR #845 is also merged and both
+are included in installed `beta-2026-10-10-abb97fb`. #593 remains open pending
+acceptance under the [UI/UX acceptance protocol](operator-uiux-installed-acceptance.md).

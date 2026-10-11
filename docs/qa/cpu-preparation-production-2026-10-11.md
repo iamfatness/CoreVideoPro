@@ -114,7 +114,9 @@ acceptance; receiver process exit zero alone cannot certify continuity.
 Seven receiver-judge tests pass, including intentional repeats, gaps, torn
 identities, wrong cadence and incomplete capture. Physical display presentation,
 CPU ISO continuity, unsupported adapters, audio synchronization, and fleet
-behavior remain separate qualification boundaries. PR #862 remains draft.
+behavior remain separate qualification boundaries. After the failed-soak report,
+the owner requested integrating all open PRs on October 11. PR #862 proceeds as
+incremental implementation; #802/#517 and zero-miss acceptance remain open.
 
 Private ignored logs and before/after test evidence are in
 `artifacts/qa-802/` on the reference machine.
