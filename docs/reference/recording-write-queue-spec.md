@@ -164,6 +164,11 @@ Slice 1 lands with its test. Do not merge the queue type with no consumer.
 - ISO queue full drops only that source. Program `dropped` stays 0.
 - Gather cap and write-queue cap are different constants. Filling the write queue does not change `kMaxPendingIsoFramesPerSource`.
 - Stop drains, then finalizes. A moov is present. No 0-byte tail.
+- Repeated disabled-state Stop before any recording exists leaves recording idle
+  (no invented recording snapshot or finalization), and does not reserve the
+  encoder generation against a later non-recording output. A synchronous sink's
+  returned stopped state is terminal evidence; an asynchronous sink still owns
+  its barrier/lifecycle. Repeated Stop after completion retains that outcome.
 - Presentation buffer setting still reads 2 or 3 after the recording depth is set to 10.
 - The seven `EncoderRecordingSession.*` Windows tests still see exact counts on the wrapped sink. Async snapshot lag stays on `AsyncEncoderSink::session()`, not on the Media Foundation sink.
 

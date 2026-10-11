@@ -1,5 +1,6 @@
 #include "core/MediaCore.h"
 #include "modules/Interfaces.h"
+#include "modules/AsyncEncoderSink.h"
 #include "modules/RecordingProgramContinuity.h"
 
 #include "EncoderCapacityProbeTestSupport.h"
@@ -245,6 +246,47 @@ TEST(EncoderRecordingSession, StubStopRecordingFreezesRecordingAccumulation) {
   EXPECT_EQ(after.encodedFrameCount, stopped.encodedFrameCount + 1);
 }
 
+TEST(EncoderRecordingSession, IdleStopDoesNotInventRecordingFinalization) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  for (int i = 0; i < 3; ++i) {
+    const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+        {"type", "stop-recording-session"},
+        {"reason", "Recording disabled in production state."},
+    });
+    const auto* recording = state.get("recording");
+    EXPECT_TRUE(recording == nullptr || recording->isNull());
+  }
+}
+
+TEST(EncoderRecordingSession, AsyncIdleStopLeavesEncoderAvailableForNonRecordingOutput) {
+  auto modules = corevideo::modules::createStubModules();
+  auto encoder = std::make_unique<corevideo::modules::AsyncEncoderSink>(std::move(modules.encoder));
+  auto* observed = encoder.get();
+  modules.encoder = std::move(encoder);
+  corevideo::core::MediaCore mediaCore(std::move(modules));
+  for (int i = 0; i < 3; ++i) {
+    const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+        {"type", "stop-recording-session"},
+        {"reason", "Recording disabled in production state."},
+    });
+    const auto* recording = state.get("recording");
+    EXPECT_TRUE(recording == nullptr || recording->isNull());
+  }
+  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "start-program-output"},
+      {"destinations", corevideo::rpc::Json::Array{"rtmp"}},
+  });
+  ASSERT_TRUE(observed->drainForTest(std::chrono::seconds(2)));
+  const auto session = observed->session();
+  EXPECT_EQ(session.destinations, std::vector<std::string>{"rtmp"});
+  EXPECT_FALSE(session.lifecycle.has_value());
+  const auto state = mediaCore.applyCommand(corevideo::rpc::Json::Object{
+      {"type", "stop-recording-session"}, {"reason", "Recording disabled in production state."}});
+  const auto* recording = state.get("recording");
+  EXPECT_TRUE(recording == nullptr || recording->isNull());
+  EXPECT_EQ(observed->session().destinations, session.destinations);
+}
+
 TEST(EncoderRecordingSession, MediaCoreStopRecordingSessionFinalizesEncoderRecording) {
   corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
   mediaCore.applyCommands(corevideo::rpc::Json::Array{
@@ -271,6 +313,9 @@ TEST(EncoderRecordingSession, MediaCoreStopRecordingSessionFinalizesEncoderRecor
 
   const auto* encoderSession = stoppedState.get("encoderSession");
   ASSERT_NE(encoderSession, nullptr);
+  ASSERT_NE(stoppedState.get("recording"), nullptr);
+  EXPECT_EQ(stoppedState.get("recording")->getString("status"), "stopped");
+  EXPECT_EQ(stoppedState.get("recording")->getString("writerStatus"), "stopped");
   const double frozenFrameCount = encoderSession->get("recordingFrameCount")->asNumber();
 
   // Further ticks keep encoding (streaming may continue) but must NOT
