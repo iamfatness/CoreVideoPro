@@ -18,6 +18,14 @@ invokes older uninstallers or changes webcam registration: legacy uninstallers
 can otherwise unregister the newly installed camera. The upgrade helper tests use
 an isolated registry namespace and temporary fixtures.
 
+Failure rollback must move Setup's working directory out of `$INSTDIR` before
+removing the owned payload and empty installation directory. `SetOutPath` sets
+both the extraction destination and process working directory. A camera preflight
+failure otherwise leaves an empty but undeletable install root until Setup exits;
+the next attempt treats that root as occupied and refuses to retry. Full upgrade
+validation forces camera preflight failure, checks previous installs remain, then
+retries the same destination successfully.
+
 - **ONE stable `CoreVideo Pro` shortcut** (desktop + Start menu), repointed at
   each install. The owner accumulated five version-named desktop shortcuts,
   launched a three-day-old build by mistake and filed a defect against code that

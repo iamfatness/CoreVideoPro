@@ -208,6 +208,9 @@ Section "CoreVideo Pro" SEC_APP
         ${EndIf}
         ; This was an empty, unregistered destination. Roll back only our exact
         ; payload/metadata, never recursively remove files created by the user.
+        ; SetOutPath also changes Setup's working directory. Windows cannot
+        ; remove that directory while Setup itself still holds it as its cwd.
+        SetOutPath "$TEMP"
         !include "uninstall-files.nsh"
         Delete "$SMPROGRAMS\${SHORTCUT_NAME}\CoreVideo Pro.lnk"
         Delete "$SMPROGRAMS\${SHORTCUT_NAME}\Uninstall.lnk"
