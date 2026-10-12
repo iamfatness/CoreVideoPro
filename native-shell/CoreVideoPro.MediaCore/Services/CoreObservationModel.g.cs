@@ -17,6 +17,8 @@ public sealed class CoreObservationModel
     public JsonElement? Active => Get("active");
     public JsonElement? ActiveSpeakerId => Get("activeSpeakerId");
     public JsonElement? AudioMixSession => Get("audioMixSession");
+    public JsonElement? AudioObservation => Get("audioObservation");
+    public JsonElement? AppliedControlRevision => Get("appliedControlRevision");
     public JsonElement? AudioRoutingMatrix => Get("audioRoutingMatrix");
     public JsonElement? AutoProduction => Get("autoProduction");
     public JsonElement? BrandKit => Get("brandKit");
@@ -110,6 +112,8 @@ public sealed class CoreObservationModel
         "active" => view switch { View.Typed => 0, View.Qualification => 1, _ => 1 },
         "activeSpeakerId" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "audioMixSession" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
+        "audioObservation" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
+        "appliedControlRevision" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "audioRoutingMatrix" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "autoProduction" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
         "brandKit" => view switch { View.Typed => 1, View.Qualification => 1, _ => 1 },
