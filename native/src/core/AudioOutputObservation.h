@@ -19,6 +19,7 @@ struct AudioOutputObservation {
   double truePeakDbfs = -120.0;
   int windowMs = 0;
   int fallbackMonitorFrames = 0;
+  int monitorSampleRate = 48000, monitorChannels = 2;
   SystemMemorySample memory;
   SystemMemoryLevel memoryLevel = SystemMemoryLevel::Unknown;
   std::int64_t memorySampledAtNs = 0;

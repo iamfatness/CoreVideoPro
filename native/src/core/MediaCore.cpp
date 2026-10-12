@@ -24,6 +24,7 @@
 #include "core/SpeakerFloor.h"
 #include "modules/AudioDsp.h"
 #include "modules/AsyncEncoderSink.h"
+#include "modules/AsyncAudioMonitorOutput.h"
 #include "core/SyntheticZoomSlateSource.h"
 #include "modules/ProgramFramePreview.h"
 
@@ -3592,10 +3593,14 @@ void MediaCore::setAudioMonitorControl(const rpc::Json& command) {
 }
 
 void MediaCore::syncAudioMonitor(const rpc::Json& command) {
-  // monitorOutput->start/stop + mixer reads mutate/read audio/output module state the
-  // worker also touches (monitorOutput->render, mixer->monitorBus*); guard the whole
-  // body. coreMutex(outer, held by the command loop) â†’ audioOutputMutex_(inner).
-  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+  // Only direct, single-owner callers use the synchronous adapter. The live
+  // wrapper queues device intent; no device call or DSP work lock is taken.
+  std::unique_lock<std::mutex> audioLock(audioOutputMutex_, std::defer_lock);
+  if (!audioWorkerActive_) audioLock.lock();
+  const bool changed = audioMonitorEnabled_ != (command.get("enabled") && command.get("enabled")->asBool()) ||
+      audioMonitorDeviceId_ != command.getString("deviceId") ||
+      audioMonitorVolume_ != std::clamp(command.getNumber("volume", audioMonitorVolume_), 0.0, 1.0);
+  if (changed) ++audioMonitorIntentRevision_;
   audioMonitorEnabled_ = command.get("enabled") && command.get("enabled")->asBool();
   audioMonitorDeviceId_ = command.getString("deviceId");
   audioMonitorDeviceName_ = command.getString("deviceName");
@@ -3611,7 +3616,7 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
     if (modules_.monitorOutput) {
       modules_.monitorOutput->stop();
     }
-    audioMonitorStatus_ = "muted";
+    audioMonitorStatus_ = modules_.monitorOutput && modules_.monitorOutput->preparing() ? "stopping" : "muted";
     return;
   }
 
@@ -3625,9 +3630,15 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
   // The mixer describes the source bus format; the output adapter converts to
   // the device's own mix format.
   if (modules_.monitorOutput) {
-    const int sampleRate = modules_.mixer ? modules_.mixer->monitorBusSampleRate() : 48000;
-    const int channels = modules_.mixer ? modules_.mixer->monitorBusChannels() : 2;
+    const auto view = audioWorkerActive_ ? audioObservations_.acquire() : AudioObservationStore::View{};
+    const int sampleRate = audioWorkerActive_
+        ? (view.payload ? view.payload->value.monitorSampleRate : 48000)
+        : modules_.mixer ? modules_.mixer->monitorBusSampleRate() : 48000;
+    const int channels = audioWorkerActive_
+        ? (view.payload ? view.payload->value.monitorChannels : 2)
+        : modules_.mixer ? modules_.mixer->monitorBusChannels() : 2;
     if (!modules_.monitorOutput->start(audioMonitorDeviceId_, sampleRate, channels)) {
+      if (modules_.monitorOutput->preparing()) { audioMonitorStatus_ = "preparing"; return; }
       audioMonitorStatus_ = "unavailable";
       const auto outputWarnings = modules_.monitorOutput->warnings();
       audioMonitorWarning_ = outputWarnings.empty()
@@ -4824,6 +4835,8 @@ rpc::Json MediaCore::audioMixSessionState(const AudioOutputObservation& observat
           {"monitorControl", audioMonitorControlState()},
           {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
           {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+          {"monitorQueueDroppedFrames", static_cast<double>(audioMonitorQueueDroppedFrames_)},
+          {"monitorIntentRevision", static_cast<double>(audioMonitorIntentRevision_)},
           {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
           {"participants", participants},
           {"masterMeter", masterMeterState(observation)},
@@ -4857,6 +4870,8 @@ rpc::Json MediaCore::audioMixSessionState(const AudioOutputObservation& observat
         {"monitorControl", audioMonitorControlState()},
         {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
         {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+          {"monitorQueueDroppedFrames", static_cast<double>(audioMonitorQueueDroppedFrames_)},
+          {"monitorIntentRevision", static_cast<double>(audioMonitorIntentRevision_)},
         {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
         {"participants", rpc::Json::Array{}},
         {"masterMeter", masterMeterState(observation)},
@@ -5046,6 +5061,8 @@ rpc::Json MediaCore::audioMixSessionState(const AudioOutputObservation& observat
       {"monitorControl", audioMonitorControlState()},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
       {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+          {"monitorQueueDroppedFrames", static_cast<double>(audioMonitorQueueDroppedFrames_)},
+          {"monitorIntentRevision", static_cast<double>(audioMonitorIntentRevision_)},
       {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
       {"participants", participants},
       {"masterMeter", masterMeterState(observation)},
@@ -5396,6 +5413,8 @@ rpc::Json MediaCore::captureAudioSourcesState(const AudioOutputObservation& obse
       {"fallbackMonitorFrames", fallbackMonitorFrames},
       {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
       {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
+          {"monitorQueueDroppedFrames", static_cast<double>(audioMonitorQueueDroppedFrames_)},
+          {"monitorIntentRevision", static_cast<double>(audioMonitorIntentRevision_)},
       {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
       {"sources", sources},
       {"warnings", warnings},
@@ -7966,6 +7985,8 @@ void MediaCore::captureAudioObservation(AudioOutputObservation& observation) con
   observation.encoder = modules_.encoder->session();
   observation.sender = modules_.outputSender->session();
   observation.mixer = modules_.mixer->session();
+  observation.monitorSampleRate = modules_.mixer->monitorBusSampleRate();
+  observation.monitorChannels = modules_.mixer->monitorBusChannels();
   observation.momentaryLufs = programLufsMomentary_;
   observation.shortTermLufs = programLufsShortTerm_;
   observation.integratedLufs = programLufsIntegrated_;
@@ -8012,6 +8033,12 @@ AudioObservationStore::View MediaCore::audioObservation() const {
 
 void MediaCore::enableAudioOutputWorker() {
   if (audioWorkerActive_) return;
+  if (modules_.monitorOutput && !dynamic_cast<modules::AsyncAudioMonitorOutput*>(modules_.monitorOutput.get())) {
+    asyncMonitorAcceptedBaseline_ = audioMonitorFramesPlayed_;
+    modules_.monitorOutput = std::make_unique<modules::AsyncAudioMonitorOutput>(std::move(modules_.monitorOutput));
+    if (audioMonitorEnabled_)
+      modules_.monitorOutput->start(audioMonitorDeviceId_, modules_.mixer->monitorBusSampleRate(), modules_.mixer->monitorBusChannels());
+  }
   // Latch before the first worker renders. Engine/capture toggles do not change
   // this; a new native process is required to apply a different buffer depth.
   const auto* configured = std::getenv("COREVIDEO_PROGRAM_BUFFER_FRAMES");
@@ -8108,6 +8135,7 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   work.limiterEnabled = audioLimiterEnabled_;
   work.masteringParams = masteringParams_;
   work.audioMonitorEnabled = audioMonitorEnabled_;
+  work.monitorIntentRevision = audioMonitorIntentRevision_;
   work.audioMonitorVolume = audioMonitorVolume_;
   // Feedback-guard inputs (spec R6): the resolved endpoints of every ACTIVE
   // loopback capture source, compared in the monitor block against the
@@ -8653,13 +8681,20 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   };
   const auto& localProgramTap = localBusTap("master");
 
+  results.monitorIntentRevision = work.monitorIntentRevision;
+  results.monitorFramesPlayedTotal = modules_.monitorOutput ? modules_.monitorOutput->acceptedFrameCount() : -1;
+  results.monitorQueueDroppedFrames = modules_.monitorOutput ? modules_.monitorOutput->droppedFrameCount() : 0;
+  if (!work.audioMonitorEnabled) {
+    results.monitorTouched = true;
+    results.monitorStatus = modules_.monitorOutput && modules_.monitorOutput->preparing() ? "stopping" : "muted";
+  }
   if (work.audioMonitorEnabled) {
     results.monitorTouched = true;
     if (work.audioMonitorVolume <= 0.0) {
       results.monitorStatus = "volume-zero";
     } else if (!modules_.monitorOutput || !modules_.monitorOutput->active()) {
-      results.monitorStatus = "unavailable";
-      results.monitorWarning = "Native audio monitor output device is not open.";
+      results.monitorStatus = modules_.monitorOutput && modules_.monitorOutput->preparing() ? "preparing" : "unavailable";
+      if (results.monitorStatus != "preparing") results.monitorWarning = "Native audio monitor output device is not open.";
     } else {
       // PFL/listen: when the operator auditions a specific bus, the monitor
       // renders THAT bus; empty listen id = the normal MON bus. Falls back to
@@ -8687,8 +8722,9 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         results.monitorStatus = "armed";
         results.monitorWarning = "Audio monitor is armed but no PCM reached the MON bus or fallback monitor mix.";
       } else if (modules_.monitorOutput->render(monitorBus.data(), frameCount, channels, work.audioMonitorVolume)) {
-        results.monitorStatus = modules_.monitorOutput->hardwareOutput() ? "playing" : "stub-monitor";
-        results.monitorFramesPlayedDelta += frameCount;
+        results.monitorStatus = !modules_.monitorOutput->deviceDeliveryObserved() ? "queued" :
+            modules_.monitorOutput->hardwareOutput() ? "playing" : "stub-monitor";
+        if (modules_.monitorOutput->acceptedFrameCount() < 0) results.monitorFramesPlayedDelta += frameCount;
       } else {
         results.monitorStatus = "dropping";
         const auto outputWarnings = modules_.monitorOutput->warnings();
@@ -9003,10 +9039,13 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
   mediaPreSumMetered_ = results.mediaPreSumMetered;
   mediaPreSumRmsLevel_ = results.mediaPreSumRmsLevel;
   mediaPreSumPeakLevel_ = results.mediaPreSumPeakLevel;
-  if (results.monitorTouched) {
+  if (results.monitorTouched && results.monitorIntentRevision == audioMonitorIntentRevision_) {
     audioMonitorStatus_ = results.monitorStatus;
     audioMonitorWarning_ = results.monitorWarning;
-    audioMonitorFramesPlayed_ += results.monitorFramesPlayedDelta;
+    if (results.monitorFramesPlayedTotal >= 0)
+      audioMonitorFramesPlayed_ = std::max(audioMonitorFramesPlayed_, asyncMonitorAcceptedBaseline_ + results.monitorFramesPlayedTotal);
+    else audioMonitorFramesPlayed_ += results.monitorFramesPlayedDelta;
+    audioMonitorQueueDroppedFrames_ = results.monitorQueueDroppedFrames;
     audioMonitorUnderruns_ = results.monitorUnderruns;
     audioMonitorFeedbackRisk_ = results.monitorFeedbackRisk;
   }

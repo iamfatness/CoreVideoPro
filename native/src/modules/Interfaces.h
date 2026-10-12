@@ -1398,6 +1398,12 @@ class IAudioMonitorOutput {
   virtual bool render(const float* interleaved, int frameCount, int channels, double volume) = 0;
   [[nodiscard]] virtual bool active() const = 0;
   [[nodiscard]] virtual bool hardwareOutput() const { return false; }
+  // Async device owners distinguish accepted intent from endpoint readiness.
+  [[nodiscard]] virtual bool preparing() const { return false; }
+  // -1 retains synchronous adapters' per-render acceptance accounting.
+  [[nodiscard]] virtual std::int64_t acceptedFrameCount() const { return -1; }
+  [[nodiscard]] virtual std::int64_t droppedFrameCount() const { return 0; }
+  [[nodiscard]] virtual bool deviceDeliveryObserved() const { return active(); }
   [[nodiscard]] virtual std::string deviceName() const = 0;
   [[nodiscard]] virtual std::vector<std::string> warnings() const = 0;
   // Times the endpoint ran completely dry between fills (shared-mode WASAPI

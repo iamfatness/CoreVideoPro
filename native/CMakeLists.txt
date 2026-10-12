@@ -105,6 +105,7 @@ add_library(corevideo_native
   src/core/SourceVideoIngress.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
+  src/modules/AsyncAudioMonitorOutput.cpp
   src/modules/OutputDestinationSupervisor.cpp
   src/modules/BrowserSourceHostAdapter.cpp
   src/compositor/CompositorOverlayRaster.cpp
@@ -806,6 +807,7 @@ if(BUILD_TESTING)
     tests/MediaCoreBatchSnapshotTest.cpp
     tests/PublishedObservationStoreTest.cpp
     tests/ResourceEventLaneTest.cpp
+    tests/AsyncAudioMonitorOutputTest.cpp
     tests/ProgramBufferIntegrationTest.cpp
     tests/OverlayTileRasterTest.cpp
     tests/PluginHostRespawnPolicyTest.cpp

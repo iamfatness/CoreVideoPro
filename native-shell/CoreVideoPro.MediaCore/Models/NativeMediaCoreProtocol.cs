@@ -603,6 +603,8 @@ public sealed class NativeMediaCoreAudioMixSession
     public double MonitorVolume { get; init; }
     public NativeMediaCoreMonitorControl? MonitorControl { get; init; }
     public int MonitorFramesPlayed { get; init; }
+    public long MonitorQueueDroppedFrames { get; init; }
+    public long MonitorIntentRevision { get; init; }
     public IReadOnlyList<NativeMediaCoreParticipantAudioChannel> Participants { get; init; } = [];
     public required string Summary { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];
