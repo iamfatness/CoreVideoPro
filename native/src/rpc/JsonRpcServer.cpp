@@ -1022,8 +1022,48 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     }
   });
 
+  // Optional thumbnail work owns its pump, independently of command/response
+  // pressure. No readback is requested; only an existing bounded preview moves.
+  std::thread programPreviewPumpThread([&] {
+    while (!stopping.load()) {
+      const auto p0 = std::chrono::steady_clock::now();
+      std::vector<Json> previewEvents;
+      std::unique_ptr<modules::ProgramFrame> previewJob;
+      {
+        std::unique_lock<std::mutex> lock(coreMutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+          std::this_thread::sleep_until(p0 + kFramePumpInterval);
+          continue;
+        }
+        // The drain moves owning JSON values and leaves the producer queue empty.
+        core::ScopedLockHoldTimer holdGuard("cmd.frame-pump",
+                                            core::LockHoldGuardrail::kFramePumpBudgetUs);
+        previewEvents = mediaCore_.drainProgramFramePreviewEvents();
+        previewJob = mediaCore_.drainProgramPreviewJob();
+      }
+      const auto drainedAt = std::chrono::steady_clock::now();
+      if (previewJob) {
+        auto preview = modules::programFramePreviewJson(*previewJob);
+        mediaCore_.publishEncodedProgramPreview(preview);
+        if (!preview.isNull()) previewEvents.emplace_back(Json::Object{{"type", "program-frame-preview"}, {"preview", std::move(preview)}});
+      }
+      for (const auto& event : previewEvents) {
+        enqueueFrame(event.stringify());
+      }
+      const auto pumpMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - p0).count();
+      // Distinguish lock acquisition/drain from serialization/writer queue work.
+      if (pumpMs >= 200) {
+        const auto drainMs = std::chrono::duration_cast<std::chrono::milliseconds>(drainedAt - p0).count();
+        ::corevideo::core::nativeLogf("[pump] preview total=%lldms lockWaitAndDrain=%lldms serializeAndEnqueue=%lldms\n",
+                     static_cast<long long>(pumpMs), static_cast<long long>(drainMs),
+                     static_cast<long long>(pumpMs - drainMs));
+      }
+      std::this_thread::sleep_until(p0 + kFramePumpInterval);
+    }
+  });
+
   ResponseAssemblyLane assembly(snapshotAssembler_, enqueueResponse);
-  auto lastPump = std::chrono::steady_clock::now();
   for (;;) {
     {
       std::unique_lock<std::mutex> lock(inMx);
@@ -1149,44 +1189,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       }
     }
 
-    const auto now = std::chrono::steady_clock::now();
 
-    // The render thread drives the display render + shared-texture pump. Here we
-    // only pump the heavy base64 frame/preview events, on a throttled cadence so
-    // they don't starve responses. Only move the owning event snapshots while
-    // holding coreMutex; serialize and enqueue them after releasing it.
-    if (now - lastPump >= kFramePumpInterval) {
-      const auto p0 = std::chrono::steady_clock::now();
-      std::vector<Json> previewEvents;
-      std::unique_ptr<modules::ProgramFrame> previewJob;
-      {
-        auto lock = lockCommandCore();
-        // The drain moves owning JSON values and leaves the producer queue empty.
-        core::ScopedLockHoldTimer holdGuard("cmd.frame-pump",
-                                            core::LockHoldGuardrail::kFramePumpBudgetUs);
-        previewEvents = mediaCore_.drainProgramFramePreviewEvents();
-        previewJob = mediaCore_.drainProgramPreviewJob();
-      }
-      const auto drainedAt = std::chrono::steady_clock::now();
-      if (previewJob) {
-        auto preview = modules::programFramePreviewJson(*previewJob);
-        mediaCore_.publishEncodedProgramPreview(preview);
-        if (!preview.isNull()) previewEvents.emplace_back(Json::Object{{"type", "program-frame-preview"}, {"preview", std::move(preview)}});
-      }
-      for (const auto& event : previewEvents) {
-        enqueueFrame(event.stringify());
-      }
-      const auto pumpMs =
-          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - p0).count();
-      // Distinguish lock acquisition/drain from serialization/writer queue work.
-      if (pumpMs >= 200) {
-        const auto drainMs = std::chrono::duration_cast<std::chrono::milliseconds>(drainedAt - p0).count();
-        ::corevideo::core::nativeLogf("[pump] preview total=%lldms lockWaitAndDrain=%lldms serializeAndEnqueue=%lldms\n",
-                     static_cast<long long>(pumpMs), static_cast<long long>(drainMs),
-                     static_cast<long long>(pumpMs - drainMs));
-      }
-      lastPump = now;
-    }
   }
 
   {
@@ -1204,6 +1207,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     renderThread.join();
   }
   if (resourcePumpThread.joinable()) resourcePumpThread.join();
+  if (programPreviewPumpThread.joinable()) programPreviewPumpThread.join();
   if (zoomPumpThread.joinable()) {
     zoomPumpThread.join();
   }
