@@ -53,7 +53,9 @@ class D3DProgramDisplaySnapshots {
     for (auto& slot : slots_) if (slot.use_count() == 1 && !slot->quarantined.load()) return slot;
     return {};
   }
-  void publish(const std::shared_ptr<Snapshot>& slot, const ProgramFrame& frame) {
+  // Writer owns this reservation exclusively. All string allocation/destruction
+  // happens before taking the Program delivery mutex to expose the publication.
+  static void stamp(const std::shared_ptr<Snapshot>& slot, const ProgramFrame& frame) {
     auto descriptor = slot->frame.sharedTexture;
     descriptor.frameNumber = frame.frameNumber;
     // Retain identity only. CPU thumbnails/NV12 and other output leases belong
@@ -70,19 +72,23 @@ class D3DProgramDisplaySnapshots {
     identity.renderPlanSignature = frame.renderPlanSignature;
     slot->frame = std::move(identity);
     slot->frame.sharedTexture = std::move(descriptor);
-    history_.push_back(slot);
-    if (history_.size() > 2) history_.pop_front();
+  }
+  void publish(const std::shared_ptr<Snapshot>& slot) {
+    history_[next_] = slot;
+    next_ = (next_ + 1) % history_.size();
   }
   bool select(int64_t target, ProgramFrameSharedTexture& texture, std::shared_ptr<const void>& owner) const {
-    for (auto it = history_.rbegin(); it != history_.rend(); ++it) {
-      if ((*it)->frame.timelineTimestamp100ns > target) continue;
-      texture = (*it)->frame.sharedTexture; owner = *it; return true;
+    for (size_t age = 0; age < history_.size(); ++age) {
+      const auto& slot = history_[(next_ + history_.size() - 1 - age) % history_.size()];
+      if (!slot || slot->frame.timelineTimestamp100ns > target) continue;
+      texture = slot->frame.sharedTexture; owner = slot; return true;
     }
     return false;
   }
  private:
   std::array<std::shared_ptr<Snapshot>, Capacity> slots_;
-  std::deque<std::shared_ptr<const Snapshot>> history_;
+  std::array<std::shared_ptr<const Snapshot>, 2> history_;
+  size_t next_ = 0;
 };
 
 // Owned exclusively by the monitor device thread. Imports hold COM resources,

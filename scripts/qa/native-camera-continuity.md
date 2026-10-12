@@ -32,8 +32,7 @@ enabled and the verdict also requires progressing display-copy observations with
 no measured reuse/refusal/skip/reorder increments. These sparse observations do
 not replace the independent multiview GPU pixel phase tests.
 
-The output retains setup, native snapshots, stderr, raw per-sample pixel
-identities and a JSON verdict. PASS requires receiver exit success, advancing
+PASS requires receiver exit success, advancing
 native delivery without buffer losses, and the independent OS-camera judge:
 verified 60/1 cadence, no invalid/torn/duplicate/missing/reordered identities,
 at least 30 measured seconds and no unexplained arrival interval above 33.4 ms.

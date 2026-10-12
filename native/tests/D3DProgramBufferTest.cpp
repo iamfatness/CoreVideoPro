@@ -70,7 +70,7 @@ TEST(D3DProgramBuffer, ImmutableDisplayLeaseSurvivesUnreadPublicationAndPoolExha
     context->Unmap(staging.get(), 0);
     ProgramFrame frame; frame.frameNumber = frame.deliverySequence = sequence;
     frame.timelineTimestamp100ns = sequence * 166667;
-    pool.publish(slot, frame);
+    pool.stamp(slot, frame); pool.publish(slot);
     if (sequence == 1) ASSERT_TRUE(pool.select(frame.timelineTimestamp100ns, published, retained));
   }
   const auto held = std::static_pointer_cast<const D3DProgramDisplaySnapshots::Snapshot>(retained);
@@ -99,7 +99,7 @@ TEST(D3DProgramBuffer, UnretiredMonitorGpuReadQuarantinesItsPublicationOnShutdow
   auto slot = pool.reserve(); ASSERT_TRUE(slot != nullptr);
   const auto quarantinedSlot = slot->slot;
   ProgramFrame frame; frame.deliverySequence = frame.frameNumber = 1; frame.timelineTimestamp100ns = 1;
-  pool.publish(slot, frame); // No producer GPU writes in this lifetime-only test.
+  pool.stamp(slot, frame); pool.publish(slot); // No producer GPU writes in this lifetime-only test.
   ProgramFrameSharedTexture texture;
   std::shared_ptr<const void> owner;
   ASSERT_TRUE(pool.select(1, texture, owner));
@@ -116,7 +116,7 @@ TEST(D3DProgramBuffer, UnretiredMonitorGpuReadQuarantinesItsPublicationOnShutdow
     auto next = pool.reserve(); ASSERT_TRUE(next != nullptr);
     EXPECT_NE(next->slot, quarantinedSlot);
     frame.deliverySequence = frame.frameNumber = n; frame.timelineTimestamp100ns = n;
-    pool.publish(next, frame);
+    pool.stamp(next, frame); pool.publish(next);
   }
   context->Flush();
 }

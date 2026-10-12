@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 import pathlib
 import shutil
 import subprocess
@@ -95,8 +96,17 @@ def main():
             end_display = last.get("realtimeEvidence", {}).get("monitorWorker", {}).get("programDisplay", {})
             valid = all(node.get("observationVersion") == "program-display-snapshot-v1" and node.get("observed") is True
                         for node in (begin_display, end_display))
+            fields = ("copies", "completedCopies", "reused", "refused", "skipped", "reordered")
+            if not valid or any(type(node.get(key)) not in (int, float) or not math.isfinite(node[key]) or
+                                node[key] < 0 or node[key] != math.floor(node[key])
+                                for node in (begin_display, end_display) for key in fields):
+                raise ValueError("Program display copy evidence is missing or malformed")
+            if begin_display.get("generation") != end_display.get("generation"):
+                raise ValueError("Program display generation changed during the reference")
             delta = {name: end_display.get(name, 0) - begin_display.get(name, 0)
-                     for name in ("copies", "completedCopies", "reused", "refused", "skipped", "reordered")} if valid else {}
+                     for name in fields}
+            if any(value < 0 for value in delta.values()):
+                raise ValueError("Program display counters reset during the reference")
             report["programDisplayObservation"] = {
                 "valid": valid, "delta": delta, "last": end_display,
                 "displayPixelsVerified": False,
@@ -108,7 +118,7 @@ def main():
             raise RuntimeError("receiver evidence judge failed: " + verdict.stderr[-1000:])
         report["cameraPixels"] = json.loads(verdict.stdout)
         report["result"] = "PASS" if receiver.returncode == 0 and report["nativeBuffer"]["programBufferVerdict"] == "PASS" and report["cameraPixels"]["osCameraContinuityVerified"] else "FAIL"
-        if args.monitors and (not valid or delta.get("copies", 0) <= 0 or
+        if args.monitors and (not valid or delta.get("copies", 0) <= 0 or delta.get("completedCopies", 0) <= 0 or
                               any(delta.get(key, 0) != 0 for key in ("reused", "refused", "skipped", "reordered"))):
             report["result"] = "FAIL"
     except Exception as error:

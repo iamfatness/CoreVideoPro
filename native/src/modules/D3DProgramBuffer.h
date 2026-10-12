@@ -627,6 +627,7 @@ class D3DProgramBuffer {
         // Expose shell pixels before metadata. Internal display publications are
         // immutable and have no keyed ownership to race with their reader.
         if (shell && held) output->mutex->ReleaseSync(ready ? 1 : 0);
+        if (!shell && held && ready) D3DProgramDisplaySnapshots::stamp(display, *frame);
         {
           std::lock_guard<std::mutex> lock(mutex_);
           if (unconsumed) { ++diagnostics_.displayUnconsumed; ++branch.unconsumed; }
@@ -650,7 +651,7 @@ class D3DProgramBuffer {
           }
           if (held && ready) {
             if (shell) latest_ = std::move(snapshot);
-            else displaySnapshots_.publish(display, *frame);
+            else displaySnapshots_.publish(display);
           }
           if (ready) {
             if (--slot->readers == 0) slot->state = State::Free;

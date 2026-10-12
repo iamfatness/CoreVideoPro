@@ -165,6 +165,8 @@ exact image; the reader caches imports by generation/slot and keeps its lease
 until its GPU copy completes. Unknown reads are quarantined on failure/shutdown;
 exhaustion refuses optional publication without waiting on Program delivery.
 The shell-facing canvas handle remains stable.
+Identity preparation occurs before taking the delivery mutex; publishing swaps
+fixed history entries without allocation. No display GPU work runs under that lock.
 
 Selection targets the render's scheduled production slot minus Program depth
 minus one. This explicit monitor offset is one 60 Hz frame (16.667 ms); camera
@@ -190,6 +192,9 @@ Immutable-lease/exhaustion and unretired-read shutdown checks also passed, along
 with related isolated pixel/resize, worker, cache and timeline tests. The legacy
 source-cache suite passes in inline mode; its participant-export assertion fails
 with isolation enabled on both unchanged baseline and candidate. Managed bundle
-tests passed 35/35. Installed OS-camera, mixed-source meeting, decoded A/V,
+tests passed 35/35; the full managed suite passed 2,382/2,382. The broader native
+run passed 1,569 and failed three fixtures whose same failures reproduce on the
+unchanged beta with isolation enabled and pass inline (tracked in #869).
+Installed OS-camera, mixed-source meeting, decoded A/V,
 hardware device-loss and long-run qualification remain separate gates. These
 focused results do not close #802/#517 or establish release acceptance.
