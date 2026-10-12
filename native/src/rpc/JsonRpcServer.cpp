@@ -1,6 +1,8 @@
 #include "core/BoundedAsyncLog.h"
 #include "rpc/BoundedResponseLane.h"
 #include "rpc/ResourceEventLane.h"
+#include "rpc/ResponseAssemblyLane.h"
+#include "modules/ProgramFramePreview.h"
 #include <array>
 #include "rpc/JsonRpcServer.h"
 
@@ -57,8 +59,8 @@ Json::Array commandBatch(const Json& request) {
 
 }  // namespace
 
-JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler)
-    : mediaCore_(mediaCore), joinHandler_(std::move(joinHandler)) {
+JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler, SnapshotAssembler assembler)
+    : mediaCore_(mediaCore), joinHandler_(std::move(joinHandler)), snapshotAssembler_(std::move(assembler)) {
   std::random_device random;
   processEpoch_ = std::to_string(random()) + "-" + std::to_string(random());
 }
@@ -393,12 +395,16 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   std::atomic<bool> stopping{false};
 
   auto enqueueResponse = [&](std::string message) {
+    if (message.size() > BoundedResponseLane::kMaxMessageBytes) {
+      const auto parsed = Json::parse(message);
+      const auto id = parsed && parsed->get("id") ? *parsed->get("id") : Json("unknown");
+      message = failure(id, "response-too-large",
+          "Response exceeds 4 MiB. Accepted mutations remain applied; request status again.").stringify();
+    }
     {
-      std::lock_guard<std::mutex> lock(outMx);
-      if (outHi.push(std::move(message))) {
-        ::corevideo::core::nativeLogf("[rpc] response lane overflow dropped=%llu depth=%zu\n",
-                     static_cast<unsigned long long>(outHi.dropped()), outHi.size());
-      }
+      std::unique_lock<std::mutex> lock(outMx);
+      outCv.wait(lock, [&] { return outHi.canPush(message.size()); });
+      outHi.push(std::move(message)); // capacity reserved; never drop accepted ACKs
     }
     outCv.notify_one();
   };
@@ -459,6 +465,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           isResponse = false;
         }
         lock.unlock();
+        outCv.notify_all(); // wake off-lock response producers after dequeue
         const auto wStart = std::chrono::steady_clock::now();
         const auto sojournMs =
             std::chrono::duration_cast<std::chrono::milliseconds>(wStart - enqueuedAt).count();
@@ -1015,6 +1022,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     }
   });
 
+  ResponseAssemblyLane assembly(snapshotAssembler_, enqueueResponse);
   auto lastPump = std::chrono::steady_clock::now();
   for (;;) {
     {
@@ -1043,6 +1051,8 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       {
         const std::string reqType = request->getString("type");
         Json response;
+        std::unique_ptr<core::CoreStateCapture> capture;
+        core::SnapshotProjection projection = core::SnapshotProjection::Session;
         std::chrono::steady_clock::time_point h0, h1;
         if ((reqType == "zoom-leave" || reqType == "zoom-cancel") &&
             (!request->get("protocolVersion") || contracts::validateProtocolVersion(*request->get("protocolVersion")))) {
@@ -1072,6 +1082,8 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           // Content parsing owns only the registry mutex; production does not wait.
           h0 = std::chrono::steady_clock::now(); response = handle(*request); h1 = std::chrono::steady_clock::now();
         } else {
+          // Backpressure is admitted before acquiring the render lock.
+          assembly.waitForCapacity();
           auto lock = lockCommandCore();
           // Commands apply state and copy a snapshot under the lock; live render
           // cadence belongs to the display worker. Keep the existing budget as
@@ -1079,10 +1091,20 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           core::ScopedLockHoldTimer holdGuard("cmd.handle",
                                               core::LockHoldGuardrail::kCommandHandleBudgetUs);
           h0 = std::chrono::steady_clock::now();
-          response = handle(*request);
+          mediaCore_.setSnapshotDeferrer([&](std::unique_ptr<core::CoreStateCapture> value, core::SnapshotProjection kind) {
+            capture = std::move(value); projection = kind; return Json(nullptr);
+          });
+          try { response = handle(*request); }
+          catch (...) { mediaCore_.setSnapshotDeferrer({}); throw; }
+          mediaCore_.setSnapshotDeferrer({});
           h1 = std::chrono::steady_clock::now();
         }
         const auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(h1 - h0).count();
+        const auto heldUs = std::chrono::duration_cast<std::chrono::microseconds>(h1 - h0).count();
+        if (heldUs > core::LockHoldGuardrail::kCommandHandleBudgetUs) {
+          ::corevideo::core::nativeVerboseLogf("[command-lock] type=%.80s held_us=%lld capture_deferred=%u\n",
+              reqType.c_str(), static_cast<long long>(heldUs), capture ? 1u : 0u);
+        }
         const auto lockWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(h0 - dequeuedAt).count();
         if (heldMs >= 30) {
           const bool lockFree = reqType == "zoom-join" && mediaCore_.zoomEngineConfigured();
@@ -1101,6 +1123,13 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         }
         // handle() returns an owning snapshot. Serialization can be expensive
         // for a full production sync, and does not need to block the renderer.
+        if (capture) {
+          const std::string field = projection == core::SnapshotProjection::Health ? "health" :
+              projection == core::SnapshotProjection::Profile ? "profile" :
+              reqType == "get-output-session" ? "session" : "snapshot";
+          assembly.submit({std::move(response), std::move(capture), projection, field});
+          continue;
+        }
         const auto serializeStart = std::chrono::steady_clock::now();
         auto responseStr = response.stringify();
         const auto serializeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1129,14 +1158,21 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     if (now - lastPump >= kFramePumpInterval) {
       const auto p0 = std::chrono::steady_clock::now();
       std::vector<Json> previewEvents;
+      std::unique_ptr<modules::ProgramFrame> previewJob;
       {
         auto lock = lockCommandCore();
         // The drain moves owning JSON values and leaves the producer queue empty.
         core::ScopedLockHoldTimer holdGuard("cmd.frame-pump",
                                             core::LockHoldGuardrail::kFramePumpBudgetUs);
         previewEvents = mediaCore_.drainProgramFramePreviewEvents();
+        previewJob = mediaCore_.drainProgramPreviewJob();
       }
       const auto drainedAt = std::chrono::steady_clock::now();
+      if (previewJob) {
+        auto preview = modules::programFramePreviewJson(*previewJob);
+        mediaCore_.publishEncodedProgramPreview(preview);
+        if (!preview.isNull()) previewEvents.emplace_back(Json::Object{{"type", "program-frame-preview"}, {"preview", std::move(preview)}});
+      }
       for (const auto& event : previewEvents) {
         enqueueFrame(event.stringify());
       }
@@ -1160,6 +1196,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   }
   joinCv.notify_one();
   joinWorker.join(); // waits only for cancellation-aware spawn/auth teardown, never coreMutex
+  assembly.finish(); // drain accepted responses while media owners still exist
   stopping.store(true);
   coreHandoff.notify_all();
   outCv.notify_one();

@@ -8,6 +8,19 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class AudioObservationPolicyTests
 {
     [Fact]
+    public void WindowsClockIncludesPipeDelayAndRejectsFuturePublication()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var now = DateTimeOffset.UtcNow;
+        var snapshot = new NativeMediaCoreStateSnapshot { RawReceivedUtc = now,
+            AudioObservation = new() { Sequence = 1, Status = "fresh", AgeMs = 1,
+                ClockDomain = "windows-qpc-ns-v1", PublishedAtNs = 1000000000 } };
+        Assert.Equal(2500, AudioObservationPolicy.AgeMs(snapshot, now, 3500000000));
+        Assert.Equal(double.PositiveInfinity, AudioObservationPolicy.AgeMs(snapshot, now, 500000000));
+        Assert.Equal(1, AudioObservationPolicy.AgeMs(snapshot with { AudioObservation = snapshot.AudioObservation with
+            { ClockDomain = "unrecognized" } }, now, 3500000000));
+    }
+    [Fact]
     public void WireEnvelopeSurvivesParserMapperAndSupportProjection()
     {
         using var response = JsonDocument.Parse("""

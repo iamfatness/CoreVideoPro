@@ -19,6 +19,9 @@ inline std::size_t observationExtraBytes(const modules::IsoStreamStatus& value) 
 inline std::size_t observationExtraBytes(const modules::AudioParticipantMixMetrics& value) {
   return observationExtraBytes(value.participantId) + observationExtraBytes(value.status);
 }
+inline std::size_t observationExtraBytes(const AudioOutputObservation::BusTap& value) {
+  return observationExtraBytes(value.busId);
+}
 inline std::size_t observationExtraBytes(const modules::OutputSender& value) {
   std::size_t bytes = 0;
   for (const auto* field : {&value.senderId, &value.destination, &value.status, &value.warning,
@@ -38,6 +41,7 @@ inline std::size_t observationExtraBytes(const std::vector<T>& values) {
 }
 inline std::size_t audioObservationBytes(const AudioOutputObservation& value) {
   std::size_t bytes = sizeof(value);
+  bytes += observationExtraBytes(value.busTaps);
   const auto& e = value.encoder;
   for (const auto* field : {&e.recordingSessionDir, &e.recordingManifestPath, &e.encoderName,
       &e.codec, &e.recordingSessionId, &e.recordingStatus, &e.recordingTargetFolder,

@@ -94,8 +94,14 @@ struct TilesLayerState {
   std::map<std::string, TilesMemberOverride> overrides;
 };
 
+class CoreStateCapture;
+enum class SnapshotProjection { Session, Health, Profile };
+
 class MediaCore {
+  friend class CoreStateCapture;
  public:
+  using SnapshotDeferrer = std::function<rpc::Json(std::unique_ptr<CoreStateCapture>, SnapshotProjection)>;
+  void setSnapshotDeferrer(SnapshotDeferrer deferrer) { snapshotDeferrer_ = std::move(deferrer); }
   explicit MediaCore(modules::ModuleSet modules = modules::createDefaultModules());
   // Clears the compositor's vcam sink before members are destroyed (see the
   // definition — the publisher outlives nothing without it).
@@ -147,6 +153,9 @@ class MediaCore {
   [[nodiscard]] rpc::Json syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs);
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
+  [[nodiscard]] std::unique_ptr<modules::ProgramFrame> drainProgramPreviewJob();
+  // Encoder pump calls outside coreMutex; retains only the encoded thumbnail.
+  void publishEncodedProgramPreview(rpc::Json preview);
   [[nodiscard]] std::vector<rpc::Json> drainProgramSharedTextureEvents();
   [[nodiscard]] std::vector<rpc::Json> drainParticipantSharedTextureEvents();
   [[nodiscard]] std::vector<rpc::Json> drainGradePreviewEvents() { return sourceGrades_.annotate(gradePreviews_.drain()); }
@@ -418,13 +427,10 @@ class MediaCore {
   [[nodiscard]] bool isoSourceHasAudio(const std::string& sourceId) const;
   // The current ISO selection as canonical scheme-qualified ids (`zoom:<pid>` /
   // `capture:<id>`), for the snapshot `isoSourceIds` mirror.
-  [[nodiscard]] std::vector<std::string> canonicalIsoSourceIds() const;
   void syncParticipantAudioMix(const rpc::Json& command);
   void syncVirtualCamera(const rpc::Json& command);
-  [[nodiscard]] rpc::Json virtualCameraState() const;
   void syncAudioMonitor(const rpc::Json& command);
   void setAudioMonitorControl(const rpc::Json& command);
-  [[nodiscard]] rpc::Json audioMonitorControlState() const;
   // VST host P1 (docs/vst-host-spec.md): operator-initiated plugin discovery.
   // Runs `corevideo-plugin-host --scan` on a detached thread; results live
   // behind pluginHostMutex_ (a leaf lock — held briefly by the thread and by
@@ -502,23 +508,10 @@ class MediaCore {
   // present. The handle is tiny (like the program one) so it is emitted every
   // render to drive the preview GPU present at the full render rate.
   void enqueuePreviewSharedTextureEvent();
-  [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
-  [[nodiscard]] rpc::Json audioMixSessionState(const AudioOutputObservation& observation) const;
   void updateProgramLoudnessMeter(const std::vector<float>& interleaved, int channels, int sampleRate);
-  [[nodiscard]] rpc::Json masterMeterState(const AudioOutputObservation& observation) const;
-  [[nodiscard]] rpc::Json audioRoutingMatrixState() const;
-  [[nodiscard]] rpc::Json captureAudioSourcesState(const AudioOutputObservation& observation) const;
-  [[nodiscard]] rpc::Json captionTrackState() const;
-  [[nodiscard]] rpc::Json brandKitState() const;
-  [[nodiscard]] rpc::Json overlayState() const;
-  [[nodiscard]] rpc::Json mediaPlaybackState() const;
-  [[nodiscard]] rpc::Json autoProductionState() const;
-  [[nodiscard]] rpc::Json outputSenderSessionState(const AudioOutputObservation& observation) const;
   [[nodiscard]] rpc::Json captureDevicesState() const;
-  [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json zoomReadinessState() const;
   [[nodiscard]] rpc::Json zoomEvidenceState() const;
-  [[nodiscard]] std::string resolveMeetingStateForSession() const;
 
   struct SceneRouteState {
     std::string routeId;
@@ -683,6 +676,7 @@ class MediaCore {
   // solver, so a test/consumer can never observe a plan the compositor did
   // not also receive.
   modules::CompositorRenderPlan lastRenderPlan_;
+  int lastPreviewPlanLayerCount_ = 0;
   int routeCount_ = 0;
   int transformCount_ = 0;
   int overlayCount_ = 0;
@@ -908,8 +902,6 @@ class MediaCore {
   // Per-source restart evidence, fed from every render tick's final gather.
   SourceContinuityLedger sourceContinuity_;
   std::int64_t renderTickCounter_ = 0;
-  [[nodiscard]] rpc::Json takeRecordsState() const;
-  [[nodiscard]] rpc::Json zoomSubscriptionChurnState() const;
   void armTakeRecord(const std::string& toSceneId);
   // `frames` is THIS tick's final gather (media frames included): a source the
   // take brought on air with no frame in it counts as missing.
@@ -1198,8 +1190,8 @@ class MediaCore {
   // PR22 sender lifecycle. The adapters report cumulative counters and a status
   // string; freshness is a function of TIME, which needs one place that
   // remembers when each destination last moved. Guarded by coreMutex — the only
-  // reader/writer is outputSenderSessionState(), which the RPC thread calls with
-  // coreMutex held. The decision itself is pure (core::SenderLifecyclePolicy);
+  // reader/writer is CoreStateCapture::outputSenderSessionState(), protected by
+  // snapshotProjectionMutex_ outside coreMutex. The decision is pure;
   // this holds nothing but the observed evidence.
   struct SenderLifecycleEvidence {
     int64_t lastFramesSent = 0;
@@ -1211,8 +1203,6 @@ class MediaCore {
     std::optional<contracts::OutputLifecycle> terminal;
   };
   mutable std::map<std::string, SenderLifecycleEvidence> senderLifecycles_;
-  [[nodiscard]] contracts::OutputLifecycle evaluateSenderLifecycle(
-      const modules::OutputSender& sender, bool desiredActive, int64_t nowMs) const;
 
   // ---- Phase 2 audio/output decouple (gather → work → publish) ----
   // Per-tick inputs gathered under `coreMutex` (plain-data copies + freshly polled
@@ -1299,13 +1289,16 @@ class MediaCore {
   // INNER lock guarding the audio/output module state (mixer, monitorOutput, encoder,
   // outputSender) + the BS.1770 loudness accumulators. Lock order: coreMutex → this.
   mutable std::mutex audioOutputMutex_;
+  mutable std::mutex snapshotProjectionMutex_;
+  SnapshotDeferrer snapshotDeferrer_;
+  rpc::Json encodedPreview_;
+  mutable std::mutex encodedPreviewMutex_;
+  std::unique_ptr<modules::ProgramFrame> pendingProgramPreviewJob_;
   mutable AudioObservationStore audioObservations_;
   std::uint64_t appliedControlRevision_ = 0;
-  void captureAudioObservation(AudioOutputObservation& observation) const;
+  void captureAudioObservation(AudioOutputObservation& observation, const AudioOutputResults* results = nullptr) const;
   void captureObservationMemory(AudioOutputObservation& observation) const;
   [[nodiscard]] AudioObservationStore::View audioObservation() const;
-  [[nodiscard]] rpc::Json profile(const AudioOutputObservation& observation) const;
-  [[nodiscard]] rpc::Json health(const AudioOutputObservation& observation) const;
   // Video encoder/sender submission must never make the 20 ms audio worker wait.
   // The concrete sinks are asynchronous/thread-safe; this lock only serializes
   // video ticks with each other.

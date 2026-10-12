@@ -1407,6 +1407,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     std::chrono::steady_clock::time_point observedAt{};
     LumaRangeProbe lumaRange;
     std::shared_ptr<CpuSourceGpuView> preparedGpu;
+    rpc::Json thumbnailEvent;
   };
   std::vector<SnapshotResult> results;
   results.reserve(jobs.size());
@@ -1414,6 +1415,22 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     results.push_back({job, readZoomEngineI420FrameSnapshot(job.region->ptr, job.region->size, job.uuid,
                                                             job.participantId, 640, 360,
                                                             job.buildThumbnail)});
+    auto& thumbnailResult = results.back();
+    thumbnailResult.observedAt = std::chrono::steady_clock::now();
+    if (thumbnailResult.frame && !thumbnailResult.frame->rgba.empty()) {
+      ZoomHandoffCpuScope thumbnailTiming(profileVideoHandoff_, "thumbnail-package-off-lock");
+      const auto thumbnailStarted = thumbnailTiming.thumbnailStarted();
+      const auto& frame = *thumbnailResult.frame;
+      thumbnailResult.thumbnailEvent = rpc::Json::Object{
+          {"type", "zoom-video-frame"}, {"frame", rpc::Json::Object{
+          {"participantId", frame.participantId}, {"width", static_cast<int>(frame.width)},
+          {"height", static_cast<int>(frame.height)}, {"frameId", static_cast<int>(frame.frameId)},
+          {"observedAtMs", runtimeElapsedMs()},
+          {"emitWallMs", static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::system_clock::now().time_since_epoch()).count())},
+          {"bgraBase64", base64Encode(frame.rgba.data(), frame.rgba.size())}}}};
+      thumbnailTiming.thumbnailFinished(thumbnailStarted);
+    }
     // Take ownership of the decoded I420 into its shared buffer HERE, while
     // UNLOCKED. This used to happen in the publish phase under mutex_, where it
     // copy-constructed the whole plane set (~3.1MB per 1080p participant). The
@@ -1422,7 +1439,6 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     // recording. Moving it out leaves the publish phase a pointer store, which
     // is what "Phase 3 (locked, cheap)" always claimed to be.
     auto& result = results.back();
-    result.observedAt = std::chrono::steady_clock::now();
     if (result.frame && !result.frame->i420.empty()) {
       result.i420Shared =
           std::make_shared<const std::vector<std::uint8_t>>(std::move(result.frame->i420));
@@ -1483,7 +1499,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
                    result.lumaRange.sampled);
     }
     publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
-                            std::move(result.i420Shared), result.observedAt, std::move(result.preparedGpu), &timing);
+                            std::move(result.i420Shared), result.observedAt, std::move(result.preparedGpu), std::move(result.thumbnailEvent), &timing);
     ++videoPublishedSinceLog_;
   }
   const auto now = std::chrono::steady_clock::now();
@@ -1500,7 +1516,7 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
     const std::string& uuid, VideoStreamRef& ref, const ZoomEngineRgbaFrame& frame,
     std::shared_ptr<const std::vector<std::uint8_t>> i420,
     std::chrono::steady_clock::time_point observedAt, std::shared_ptr<CpuSourceGpuView> preparedGpu,
-    ZoomHandoffCpuScope* timing) {
+    rpc::Json thumbnailEvent, ZoomHandoffCpuScope* timing) {
   state_.recordFrameIngestSuccess(uuid, ref.participantId, ref.width, ref.height, frame.frameId,
                                   runtimeElapsedMs(), ref.sourceGeneration);
 
@@ -1577,36 +1593,13 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
   }
   ref.lastThumbnailEmitMs = runtimeElapsedMs();
 
-  const auto observedAtMs = runtimeElapsedMs();
-  const int thumbW = static_cast<int>(frame.width);
-  const int thumbH = static_cast<int>(frame.height);
-  const auto& thumb = frame.rgba;
   // LATEST-WINS cap (see the pre-beacon history: unbounded, this queue once
   // accumulated tens of seconds of stale frames).
   constexpr std::size_t kMaxPendingZoomFrameEvents = 16;
   if (pendingFrameEvents_.size() >= kMaxPendingZoomFrameEvents) {
     pendingFrameEvents_.erase(pendingFrameEvents_.begin());
   }
-  pendingFrameEvents_.emplace_back(rpc::Json::Object{
-      {"type", "zoom-video-frame"},
-      {"frame",
-       rpc::Json::Object{
-           {"participantId", frame.participantId},
-           {"width", thumbW},
-           {"height", thumbH},
-           {"frameId", static_cast<int>(frame.frameId)},
-           {"observedAtMs", observedAtMs},
-           {"emitWallMs", static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                              std::chrono::system_clock::now().time_since_epoch())
-                              .count())},
-           {"bgraBase64", [&] {
-              const auto encodeStarted = timing ? timing->thumbnailStarted() : 0;
-              auto encoded = base64Encode(thumb.data(), thumb.size());
-              if (timing) timing->thumbnailFinished(encodeStarted);
-              return encoded;
-           }()},
-       }},
-  });
+  pendingFrameEvents_.emplace_back(std::move(thumbnailEvent));
 }
 
 void ZoomEngineRuntime::ingestAudioEventLocked(const ZoomEngineEvent& event) {

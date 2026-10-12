@@ -13,5 +13,6 @@ public sealed record AudioOwnerObservation
     public long BudgetBytes { get; init; }
     public long RetainedMetadataBytes { get; init; }
     public long PublishedAtNs { get; init; }
+    public string ClockDomain { get; init; } = string.Empty;
     public string Version { get; init; } = string.Empty;
 }

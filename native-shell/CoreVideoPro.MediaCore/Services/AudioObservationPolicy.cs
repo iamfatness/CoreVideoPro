@@ -1,12 +1,24 @@
 using CoreVideoPro.MediaCore.Models;
+using System.Diagnostics;
 
 namespace CoreVideoPro.MediaCore.Services;
 
 public static class AudioObservationPolicy
 {
-    public static double AgeMs(NativeMediaCoreStateSnapshot snapshot, DateTimeOffset now) =>
-        Math.Max(0, snapshot.AudioObservation?.AgeMs ?? 0) +
-        (snapshot.RawReceivedUtc is { } received ? Math.Max(0, (now - received).TotalMilliseconds) : 0);
+    public static double AgeMs(NativeMediaCoreStateSnapshot snapshot, DateTimeOffset now,
+        double? monotonicNowNs = null)
+    {
+        var age = Math.Max(0, snapshot.AudioObservation?.AgeMs ?? 0) +
+            (snapshot.RawReceivedUtc is { } received ? Math.Max(0, (now - received).TotalMilliseconds) : 0);
+        if (OperatingSystem.IsWindows() && snapshot.AudioObservation is
+            { ClockDomain: "windows-qpc-ns-v1", PublishedAtNs: > 0 } observation)
+        {
+            var at = monotonicNowNs ?? Stopwatch.GetTimestamp() * (1e9 / Stopwatch.Frequency);
+            if (observation.PublishedAtNs > at) return double.PositiveInfinity;
+            age = Math.Max(age, (at - observation.PublishedAtNs) / 1e6);
+        }
+        return age;
+    }
 
     public static string State(NativeMediaCoreStateSnapshot? snapshot, DateTimeOffset now)
     {

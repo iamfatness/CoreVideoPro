@@ -100,6 +100,7 @@ add_library(corevideo_native
   src/core/DeliveryTrace.cpp
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
+  src/core/CoreStateCapture.cpp
   src/core/ComApartmentLifetime.cpp
   src/core/SourceRegistry.cpp
   src/core/SourceVideoIngress.cpp
@@ -808,6 +809,7 @@ if(BUILD_TESTING)
     tests/PublishedObservationStoreTest.cpp
     tests/ResourceEventLaneTest.cpp
     tests/AsyncAudioMonitorOutputTest.cpp
+    tests/ImmutableJsonCaptureTest.cpp
     tests/ProgramBufferIntegrationTest.cpp
     tests/OverlayTileRasterTest.cpp
     tests/PluginHostRespawnPolicyTest.cpp

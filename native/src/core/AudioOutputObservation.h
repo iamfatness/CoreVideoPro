@@ -10,6 +10,14 @@ namespace corevideo::core {
 
 // Measured owner facts only. No PCM, GPU leases, devices or desired settings.
 struct AudioOutputObservation {
+  struct BusTap {
+    std::string busId;
+    std::size_t samples = 0;
+    double peakDbfs = -120, rmsDbfs = -120;
+    bool empty() const { return samples == 0; }
+    std::size_t size() const { return samples; }
+  };
+  std::vector<BusTap> busTaps;
   modules::OutputSession encoder;
   modules::OutputSenderSession sender;
   modules::AudioMixMetrics mixer;
@@ -33,6 +41,11 @@ inline rpc::Json audioObservationMetadata(const AudioObservationStore::View& vie
   const auto ageMs = view.payload ? (std::max)(0LL, static_cast<long long>(
       std::chrono::duration_cast<std::chrono::milliseconds>(now - view.payload->publishedAt).count())) : 0LL;
   return rpc::Json::Object{
+#if defined(_WIN32) && defined(_MSC_VER)
+      // MSVC steady_clock and .NET Stopwatch both wrap system QPC. Consumers
+      // can include assembly, pipe and dispatch time in observation age.
+      {"clockDomain", "windows-qpc-ns-v1"},
+#endif
       {"epoch", epoch}, {"generation", 1},
       {"sequence", static_cast<double>(view.payload ? view.payload->sequence : 0)},
       {"observedRevision", static_cast<double>(view.payload ? view.payload->revision : 0)},
