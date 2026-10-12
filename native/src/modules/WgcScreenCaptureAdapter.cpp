@@ -70,8 +70,8 @@ inline std::vector<MonitorTarget> enumerateWindows() {
         if ((exStyle & WS_EX_TOOLWINDOW) != 0) {
           return TRUE;
         }
-        char title[256] = {};
-        const int len = GetWindowTextA(hwnd, title, sizeof(title));
+        wchar_t title[256] = {};
+        const int len = GetWindowTextW(hwnd, title, static_cast<int>(sizeof(title) / sizeof(title[0])));
         if (len <= 0) {
           return TRUE;
         }
@@ -92,7 +92,9 @@ inline std::vector<MonitorTarget> enumerateWindows() {
         char idbuf[32] = {};
         std::snprintf(idbuf, sizeof(idbuf), "window:%p", reinterpret_cast<void*>(hwnd));
         target.id = idbuf;
-        target.name = std::string(title, static_cast<size_t>(len));
+        // JSON-line responses are UTF-8, irrespective of the Windows ANSI code
+        // page. An accented window title must not corrupt a whole snapshot.
+        target.name = winrt::to_string(winrt::hstring(title, static_cast<uint32_t>(len)));
         list->push_back(std::move(target));
         return TRUE;
       },
