@@ -230,4 +230,17 @@ does not establish physical Program presentation or mixed-source/A/V acceptance.
 
 The installed app joined the authorized real test meeting, obtained raw-recording
 privilege and received eight Zoom feeds alongside one live 1080p capture. The
-longer installed observation is in progress; it is not yet a qualification pass.
+operator reports that Program now looks smooth. The longer observation failed
+after 187.64 seconds: 11,249 delivered frames, three new underruns, two overflows,
+four reused/held display copies and four skipped copied identities. Later app
+counters continued increasing. All samples and the first failure are retained;
+this is not zero-miss acceptance.
+
+At the first failure, render lock-wait maximum rose to 31.8028 ms while render
+CPU work maximum stayed at 8.2923 ms. Empty `media-core-sync` status responses
+spent 34–43 ms constructing snapshots and held the core lock for 35–43 ms,
+coinciding with source-stage misses. Memory health stayed OK and Zoom inputs
+continued arriving. This identifies a separate snapshot/render-lock blocking
+path, tracked with a focused repair plan in #870; attribution to a specific
+nested snapshot operation remains open. Response string serialization is
+already outside that lock. #868 remains draft; #517 and #864 remain open.
