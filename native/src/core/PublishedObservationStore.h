@@ -51,6 +51,11 @@ class PublishedObservationStore {
       if (selected == Capacity) { ++refused_; return false; }
     }
     try {
+      // Reusing a slot must retire the previous payload before entering the
+      // builder's owner-work span. Assignment from an empty string may retain
+      // its heap capacity on libstdc++; swapping transfers that allocation to
+      // a temporary destroyed outside publication and owner work locks.
+      retirePayload(slots_[selected]->value);
       std::size_t bytes = sizeof(T);
       if constexpr (std::is_void_v<std::invoke_result_t<Build, T&>>) {
         build(slots_[selected]->value);
@@ -60,7 +65,7 @@ class PublishedObservationStore {
       if (bytes > maxPayloadBytes_) {
         // An oversized draft never becomes visible. Destroy it before clearing
         // the reservation, outside both publication and owner work locks.
-        slots_[selected]->value = T{};
+        retirePayload(slots_[selected]->value);
         std::lock_guard<std::mutex> lock(mutex_);
         slots_[selected]->bytes = sizeof(T);
         building_[selected] = false;
@@ -69,7 +74,7 @@ class PublishedObservationStore {
       }
       slots_[selected]->bytes = bytes;
     } catch (...) {
-      slots_[selected]->value = T{};
+      retirePayload(slots_[selected]->value);
       std::lock_guard<std::mutex> lock(mutex_);
       slots_[selected]->bytes = sizeof(T);
       building_[selected] = false;
@@ -96,6 +101,11 @@ class PublishedObservationStore {
   }
 
  private:
+  static void retirePayload(T& value) {
+    T empty;
+    using std::swap;
+    swap(value, empty);
+  }
   mutable std::mutex mutex_;
   std::array<std::shared_ptr<Observation>, Capacity> slots_;
   std::array<bool, Capacity> building_{};
