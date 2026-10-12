@@ -18,7 +18,9 @@
 #include <utility>
 
 TEST(JsonRpcServer, StalledResponseAssemblyDoesNotHoldRenderLockAndCapturesRemainOrdered) {
-  corevideo::core::MediaCore core;
+  // This injects response contention, not GPU cold-start latency. Use the same
+  // deterministic compositor in production and stub build configurations.
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
   std::latch entered{1}, release{1};
   std::atomic<int> assemblies{0};
   corevideo::rpc::JsonRpcServer server(core, {}, [&](const corevideo::core::CoreStateCapture& capture,
@@ -59,7 +61,7 @@ TEST(JsonRpcServer, SlowWriterPreservesAcceptedResponsesWithoutHoldingRenderLock
       return std::stringbuf::xsputn(text, count);
     }
   } buffer;
-  corevideo::core::MediaCore core;
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
   corevideo::rpc::JsonRpcServer server(core);
   std::ostringstream commands;
   for (int i = 1; i <= 64; ++i) commands << "{\"id\":" << i << ",\"type\":\"snapshot\"}\n";
