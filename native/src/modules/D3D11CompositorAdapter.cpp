@@ -220,7 +220,7 @@ class D3D11Compositor final : public ICompositor {
     prepareMonitorFrames(request);
     request.bufferedProgram = programBufferFrames() > 0;
     if (auto buffer = currentProgramBuffer())
-      buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner);
+      buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner, programProductionSlot_);
     monitorWorker_->submit(std::move(request));
   }
   std::shared_ptr<const MonitorRenderResult> latestMonitors() const override {
@@ -608,6 +608,10 @@ class D3D11Compositor final : public ICompositor {
     if (request.multiviewActive) {
       monitorTileHistory_[request.sequence] = request.tiles;
       result.multiview = renderMultiview(request.multiviewPlan, request.frames);
+      programDisplayHistory_[request.sequence] = programDisplayReader_.observation();
+      const auto displayMatch = programDisplayHistory_.find(result.multiview.frameNumber);
+      if (displayMatch != programDisplayHistory_.end()) result.programDisplay = displayMatch->second;
+      while (programDisplayHistory_.size() > 16) programDisplayHistory_.erase(programDisplayHistory_.begin());
       const auto match = monitorTileHistory_.find(result.multiview.frameNumber);
       if (match != monitorTileHistory_.end()) {
         result.tiles = match->second;
@@ -623,6 +627,7 @@ class D3D11Compositor final : public ICompositor {
       while (monitorTileHistory_.size() > 16) monitorTileHistory_.erase(monitorTileHistory_.begin());
     } else {
       monitorTileHistory_.clear();
+      programDisplayHistory_.clear();
       lastMonitorTiles_.clear();
       lastMonitorTileSequence_ = -1;
     }
@@ -637,6 +642,7 @@ class D3D11Compositor final : public ICompositor {
     }
     if (gpuReadLeases_) gpuReadLeases_->finish();
     context_->Flush();
+    monitorProgramOwner_.reset();
     return result;
   }
   MonitorRenderResult renderGradeBatch(const MonitorRenderRequest& request) {
@@ -791,29 +797,9 @@ class D3D11Compositor final : public ICompositor {
     if (monitorBatch_) {
       exported = monitorProgram_;
       owner = monitorProgramOwner_;
-      if (exported.sharedHandleHex.empty()) return nullptr;
-    } else if (!buffer || !buffer->multiview(exported, owner)) return nullptr;
-    if (exported.sharedHandleHex != retainedProgramHandle_) {
-      retainedProgramShared_ = {}; retainedProgramKey_ = {}; retainedProgramLocal_ = {}; retainedProgramView_ = {};
-      const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::strtoull(exported.sharedHandleHex.c_str(), nullptr, 16)));
-      if (FAILED(device_->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(retainedProgramShared_.put()))) ||
-          FAILED(retainedProgramShared_->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(retainedProgramKey_.put())))) return nullptr;
-      D3D11_TEXTURE2D_DESC desc{}; retainedProgramShared_->GetDesc(&desc);
-      desc.MiscFlags = 0; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-      if (FAILED(device_->CreateTexture2D(&desc, nullptr, retainedProgramLocal_.put())) ||
-          FAILED(device_->CreateShaderResourceView(retainedProgramLocal_.get(), nullptr, retainedProgramView_.put()))) return nullptr;
-      retainedProgramHandle_ = exported.sharedHandleHex;
-      retainedProgramOwner_ = std::move(owner);
-      retainedProgramCopied_ = false;
-    }
-    // The producer holds this key only for a copy submission. A bounded wait
-    // avoids repeatedly missing that brief interval at a fixed render phase.
-    if (retainedProgramKey_->AcquireSync(1, 1) == S_OK) {
-      context_->CopyResource(retainedProgramLocal_.get(), retainedProgramShared_.get());
-      retainedProgramKey_->ReleaseSync(0);
-      retainedProgramCopied_ = true;
-    }
-    return retainedProgramCopied_ ? retainedProgramView_.get() : nullptr;
+      if (exported.sharedHandleHex.empty()) owner.reset();
+    } else if (buffer) buffer->multiview(exported, owner, programProductionSlot_);
+    return programDisplayReader_.copy(device_.get(), context_.get(), owner);
   }
 
   // Per-participant keyed-mutex shared texture for the GPU multiview tiles.
@@ -3349,12 +3335,8 @@ class D3D11Compositor final : public ICompositor {
   std::shared_ptr<D3DProgramBuffer> programBuffer_;
   const bool profileGpuSubmission_ = GpuSubmissionCpuScope::requested();
   uint64_t programBufferGeneration_ = 0;
-  std::string retainedProgramHandle_;
-  std::shared_ptr<const void> retainedProgramOwner_;
-  ComPtrLite<ID3D11Texture2D> retainedProgramShared_, retainedProgramLocal_;
-  ComPtrLite<IDXGIKeyedMutex> retainedProgramKey_;
-  ComPtrLite<ID3D11ShaderResourceView> retainedProgramView_;
-  bool retainedProgramCopied_ = false;
+  D3DProgramDisplayReader programDisplayReader_;
+  std::map<int64_t, ProgramDisplayObservation> programDisplayHistory_;
   enum ProfileStage { ParticipantAcquire, ParticipantConvert, ParticipantCopy, ParticipantRelease, ParticipantTotal,
                       MvUpload, MvDraw, MvShare, MvTotal, ProfileStageCount };
   // Read dynamically so Health can enable/disable the profiler without a core

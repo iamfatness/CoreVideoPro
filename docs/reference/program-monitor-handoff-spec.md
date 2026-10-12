@@ -151,3 +151,45 @@ not acceptance.
 - Installed beta evidence identifies binary/source hashes, hardware, workload,
   duration, display offset and failures. A finite reference-machine pass does not
   establish fleet-wide guarantees.
+
+## Implemented contract and reference checks
+
+The internal branch now uses eight non-keyed immutable GPU surfaces: two timeline
+publications, request construction, pending mailbox, executing request, two GPU
+reads and one writer. The 1080p BGRA pool owns 66,355,200 GPU bytes; imports alias
+those resources. The reader owns one private image and two reusable EVENT queries.
+Publications retain identity metadata, not CPU thumbnails/NV12 output packets.
+
+The exporter proves GPU copy completion before publication. Requests lease the
+exact image; the reader caches imports by generation/slot and keeps its lease
+until its GPU copy completes. Unknown reads are quarantined on failure/shutdown;
+exhaustion refuses optional publication without waiting on Program delivery.
+The shell-facing canvas handle remains stable.
+
+Selection targets the render's scheduled production slot minus Program depth
+minus one. This explicit monitor offset is one 60 Hz frame (16.667 ms); camera
+and audio playout depth remain unchanged. CPU-arrival-time selection caused a
+jump/repeat near a frame boundary in an early probe and was removed. Canvas
+export and OS presentation latency are separate measured requirements.
+
+Native snapshots and managed support bundles expose requested/copied identity,
+held-image age, generation, copies/completions, reuse/refusal, skipped/reordered
+identities and pool/read bounds. Age is recalculated at serialization. These
+observations explicitly do not claim OS display presentation.
+
+On the RTX 4090 reference (driver 32.0.16.1742), the focused GPU suite passed ten
+tests. Pixel checks cover 1080p60, both Program depths, both monitor modes and
+2/4/10/14 ms producer phases. The independent receiver samples at the fixed
+16 ms position of each 60 Hz slot. All 1,600 measured pixels matched the expected
+timeline image with zero repeats/gaps after a fixed twenty-slot startup interval.
+Startup pixels and every earlier failure remain in local evidence, including an
+immediate-after-submit read of an unfinished outer canvas export. Those earlier
+captures are not clean passes.
+
+Immutable-lease/exhaustion and unretired-read shutdown checks also passed, along
+with related isolated pixel/resize, worker, cache and timeline tests. The legacy
+source-cache suite passes in inline mode; its participant-export assertion fails
+with isolation enabled on both unchanged baseline and candidate. Managed bundle
+tests passed 35/35. Installed OS-camera, mixed-source meeting, decoded A/V,
+hardware device-loss and long-run qualification remain separate gates. These
+focused results do not close #802/#517 or establish release acceptance.

@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--duration", type=int, default=75)
+    parser.add_argument("--monitors", action="store_true", help="Also exercise the Program/Preview multiview handoff; sparse observations are not display pixel proof")
     args = parser.parse_args()
     node = shutil.which("node")
     if sys.platform != "win32" or not args.core.is_file() or not args.receiver.is_file() or not node:
@@ -29,7 +30,7 @@ def main():
     flags = {"COREVIDEO_CPU_SOURCE_PREPARATION": "1", "COREVIDEO_ISOLATE_MONITORS": "1",
              "COREVIDEO_PROGRAM_BUFFER_FRAMES": "2", "COREVIDEO_GPU_CAPTURE": "0",
              "COREVIDEO_QA_PROGRAM_COUNTER": "1"}
-    report = {"sourceCommit": args.source_commit,
+    report = {"sourceCommit": args.source_commit, "monitorsRequested": args.monitors,
               "coreSha256": hashlib.sha256(args.core.read_bytes()).hexdigest(),
               "receiverSha256": hashlib.sha256(args.receiver.read_bytes()).hexdigest(),
               "harnessSha256": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
@@ -44,6 +45,8 @@ def main():
                     {"type": "sync-virtual-camera", "on": True, "mirror": False,
                      "deviceName": "CoreVideo Pro Camera"},
                     {"type": "start-program-output", "destinations": ["virtual-camera"], "isoParticipantIds": []}]
+        if args.monitors:
+            commands.insert(1, {"type": "configure-multiviewer", "layoutMode": "pgmPvwTop", "showLabels": False})
         response = core.sync(commands, 0)
         (output / "setup.json").write_text(json.dumps(response, indent=2))
         if not response.get("ok"):
@@ -86,7 +89,18 @@ def main():
                 (output / "receiver.stderr.log").read_text(errors="replace")[-2000:])
         if first is None or last is None:
             raise RuntimeError("receiver ended before a measured native interval was available")
-        report["nativeBuffer"] = judge([first, last], False)
+        report["nativeBuffer"] = judge([first, last], args.monitors)
+        if args.monitors:
+            begin_display = first.get("realtimeEvidence", {}).get("monitorWorker", {}).get("programDisplay", {})
+            end_display = last.get("realtimeEvidence", {}).get("monitorWorker", {}).get("programDisplay", {})
+            valid = all(node.get("observationVersion") == "program-display-snapshot-v1" and node.get("observed") is True
+                        for node in (begin_display, end_display))
+            delta = {name: end_display.get(name, 0) - begin_display.get(name, 0)
+                     for name in ("copies", "completedCopies", "reused", "refused", "skipped", "reordered")} if valid else {}
+            report["programDisplayObservation"] = {
+                "valid": valid, "delta": delta, "last": end_display,
+                "displayPixelsVerified": False,
+                "scope": "Sparse native copy identities only; separate GPU pixel phase tests are required"}
         verdict = subprocess.run([node, str(pathlib.Path(__file__).with_name("camera-pixel-receiver.mjs")), str(raw_path)],
             capture_output=True, text=True, timeout=30,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -94,6 +108,9 @@ def main():
             raise RuntimeError("receiver evidence judge failed: " + verdict.stderr[-1000:])
         report["cameraPixels"] = json.loads(verdict.stdout)
         report["result"] = "PASS" if receiver.returncode == 0 and report["nativeBuffer"]["programBufferVerdict"] == "PASS" and report["cameraPixels"]["osCameraContinuityVerified"] else "FAIL"
+        if args.monitors and (not valid or delta.get("copies", 0) <= 0 or
+                              any(delta.get(key, 0) != 0 for key in ("reused", "refused", "skipped", "reordered"))):
+            report["result"] = "FAIL"
     except Exception as error:
         report["result"] = "INVALID"
         report["error"] = str(error)

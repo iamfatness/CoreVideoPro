@@ -38,6 +38,89 @@ struct D3DProgramBufferTestAccess {
 };
 }
 
+TEST(D3DProgramBuffer, ImmutableDisplayLeaseSurvivesUnreadPublicationAndPoolExhaustion) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+  D3DProgramDisplaySnapshots pool;
+  ASSERT_TRUE(pool.initialize(device.get(), 64, 64, 19));
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ComPtrLite<ID3D11Texture2D> input, staging;
+  ComPtrLite<ID3D11RenderTargetView> target;
+  ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, input.put())));
+  ASSERT_TRUE(SUCCEEDED(device->CreateRenderTargetView(input.get(), nullptr, target.put())));
+  desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, staging.put())));
+  std::shared_ptr<const void> retained;
+  ProgramFrameSharedTexture published;
+  for (int sequence = 1; sequence <= 100; ++sequence) {
+    auto slot = pool.reserve(); ASSERT_TRUE(slot != nullptr);
+    const float color[] = {sequence / 255.f, sequence / 255.f, sequence / 255.f, 1};
+    context->ClearRenderTargetView(target.get(), color);
+    context->CopyResource(slot->texture.get(), input.get());
+    context->CopyResource(staging.get(), slot->texture.get()); context->Flush();
+    // A blocking staging map proves this test publication's GPU copy completed.
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    ASSERT_TRUE(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)));
+    context->Unmap(staging.get(), 0);
+    ProgramFrame frame; frame.frameNumber = frame.deliverySequence = sequence;
+    frame.timelineTimestamp100ns = sequence * 166667;
+    pool.publish(slot, frame);
+    if (sequence == 1) ASSERT_TRUE(pool.select(frame.timelineTimestamp100ns, published, retained));
+  }
+  const auto held = std::static_pointer_cast<const D3DProgramDisplaySnapshots::Snapshot>(retained);
+  EXPECT_EQ(held->frame.frameNumber, 1); EXPECT_EQ(held->generation, 19u);
+  context->CopyResource(staging.get(), held->texture.get()); context->Flush();
+  D3D11_MAPPED_SUBRESOURCE mapped{};
+  ASSERT_TRUE(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)));
+  EXPECT_EQ(static_cast<const uint8_t*>(mapped.pData)[32 * mapped.RowPitch + 32 * 4], 1);
+  context->Unmap(staging.get(), 0);
+  std::vector<std::shared_ptr<D3DProgramDisplaySnapshots::Snapshot>> writers;
+  while (auto slot = pool.reserve()) writers.push_back(std::move(slot));
+  // Held publication + two history slots + five reserved writers = eight.
+  EXPECT_EQ(writers.size(), 5u);
+  EXPECT_EQ(pool.reserve(), nullptr);
+  writers.clear(); EXPECT_NE(pool.reserve(), nullptr);
+}
+
+TEST(D3DProgramBuffer, UnretiredMonitorGpuReadQuarantinesItsPublicationOnShutdown) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+  D3DProgramDisplaySnapshots pool;
+  ASSERT_TRUE(pool.initialize(device.get(), 64, 64, 41));
+  auto slot = pool.reserve(); ASSERT_TRUE(slot != nullptr);
+  const auto quarantinedSlot = slot->slot;
+  ProgramFrame frame; frame.deliverySequence = frame.frameNumber = 1; frame.timelineTimestamp100ns = 1;
+  pool.publish(slot, frame); // No producer GPU writes in this lifetime-only test.
+  ProgramFrameSharedTexture texture;
+  std::shared_ptr<const void> owner;
+  ASSERT_TRUE(pool.select(1, texture, owner));
+  {
+    D3DProgramDisplayReader reader;
+    ASSERT_TRUE(reader.copy(device.get(), context.get(), owner) != nullptr);
+    EXPECT_EQ(reader.observation().gpuReads, 1);
+    // Intentionally stop without flushing/polling completion. CPU publication
+    // ownership must not be released into a reusable writer slot.
+  }
+  EXPECT_TRUE(slot->quarantined.load());
+  owner.reset(); slot.reset();
+  for (int n = 2; n < 30; ++n) {
+    auto next = pool.reserve(); ASSERT_TRUE(next != nullptr);
+    EXPECT_NE(next->slot, quarantinedSlot);
+    frame.deliverySequence = frame.frameNumber = n; frame.timelineTimestamp100ns = n;
+    pool.publish(next, frame);
+  }
+  context->Flush();
+}
+
 TEST(D3DProgramBuffer, SustainsFullSizeNv12PreparationAtSixtyHertz) {
   ProgramBufferTimerResolution timer;
   using namespace corevideo::modules;
@@ -280,13 +363,13 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
   ComPtrLite<ID3D11DeviceContext> context;
   ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
       D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
-  for (const int phaseMs : {4, 10}) {
+  for (const int depth : {2, 3}) for (const bool isolated : {false, true}) for (const int phaseMs : {2, 4, 10, 14}) {
     auto compositor = createD3D11Compositor();
     ASSERT_TRUE(compositor != nullptr);
-    compositor->configureProgramBuffer(3);
+    compositor->configureProgramBuffer(depth);
     CompositorRenderPlan program;
     program.sceneId = "phase-test"; program.renderPlanId = "phase-test";
-    program.width = 320; program.height = 180; program.fps = 60; program.skipCpuReadback = true;
+    program.width = 1920; program.height = 1080; program.fps = 60; program.skipCpuReadback = true;
     CompositorRenderPlanLayer layer;
     layer.layerId = "route:test"; layer.kind = "participant-video"; layer.participantId = "test";
     layer.sourceId = "zoom:test"; layer.rect = {0, 0, 1, 1}; layer.borderStyle = "none";
@@ -294,18 +377,54 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
     auto multiview = program;
     multiview.layers.front().layerId = "multiview-pgm:buffer-cell";
     multiview.layers.front().hasClipRect = true; multiview.layers.front().clipRect = {0, 0, 1, 1};
-    int changes = 0, previous = -1;
+    compositor->prepareProgramBuffer(1920, 1080);
+    (void)compositor->renderMultiview(multiview, {});
+    if (isolated) {
+      MonitorRenderRequest warm;
+      warm.programPlan = program; warm.multiviewPlan = multiview; warm.multiviewActive = true;
+      compositor->submitMonitors(std::move(warm));
+      const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (!compositor->latestMonitors() && std::chrono::steady_clock::now() < limit)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      ASSERT_TRUE(compositor->latestMonitors() != nullptr);
+    }
+    int changes = 0, previous = -1, repeats = 0, gaps = 0;
     const auto anchor = std::chrono::steady_clock::now();
-    for (int n = 0; n < 24; ++n) {
+    for (int n = 0; n < 120; ++n) {
       const auto tick = anchor + std::chrono::nanoseconds(n * 1000000000LL / 60);
       std::this_thread::sleep_until(tick);
+      compositor->setProgramProductionTiming(n,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count());
       VideoFrame source;
       source.participantId = "test"; source.width = source.pixelWidth = 64; source.height = source.pixelHeight = 64;
       source.pixelStride = 256; source.frameId = n + 1; source.timestampMs = n * 17;
-      source.pixels = std::make_shared<std::vector<uint8_t>>(64u * 64u * 4u, static_cast<uint8_t>(30 + n * 7));
+      auto sourcePixels = std::make_shared<std::vector<uint8_t>>(64u * 64u * 4u, static_cast<uint8_t>(30 + n));
+      for (size_t alpha = 3; alpha < sourcePixels->size(); alpha += 4) (*sourcePixels)[alpha] = 255;
+      source.pixels = std::move(sourcePixels);
       (void)compositor->render(program, {source});
       std::this_thread::sleep_until(tick + std::chrono::milliseconds(phaseMs));
-      const auto exported = compositor->renderMultiview(multiview, {source});
+      ProgramFrameSharedTexture exported;
+      if (isolated) {
+        ASSERT_TRUE(compositor->hasIsolatedMonitors());
+        MonitorRenderRequest request;
+        request.sequence = n + 1; request.programPlan = program; request.multiviewPlan = multiview;
+        request.multiviewActive = true; request.frames = {source};
+        compositor->submitMonitors(std::move(request));
+        const auto limit = std::chrono::steady_clock::now() + std::chrono::milliseconds(10);
+        std::shared_ptr<const MonitorRenderResult> result;
+        do {
+          result = compositor->latestMonitors();
+          if (result && result->sequence >= n + 1) break;
+          std::this_thread::sleep_for(std::chrono::microseconds(100));
+        } while (std::chrono::steady_clock::now() < limit);
+        ASSERT_TRUE(result && result->sequence >= n + 1);
+        exported = result->multiview;
+      } else exported = compositor->renderMultiview(multiview, {source});
+      // An independent receiver samples at the same declared 60 Hz deadline
+      // for every producer phase. Sampling immediately after submission instead
+      // measures variable optional-export completion, not scheduled presentation.
+      // The 14 ms case gives both the monitor and canvas export only 2 ms.
+      std::this_thread::sleep_until(tick + std::chrono::milliseconds(16));
       if (exported.sharedHandleHex.empty()) continue;
       ComPtrLite<ID3D11Texture2D> texture, staging;
       ComPtrLite<IDXGIKeyedMutex> key;
@@ -321,11 +440,22 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
       ASSERT_TRUE(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)));
       const auto pixel = static_cast<const uint8_t*>(mapped.pData)[(desc.Height / 2) * mapped.RowPitch + (desc.Width / 2) * 4];
       context->Unmap(staging.get(), 0);
-      if (n >= 8 && previous >= 0 && pixel != previous) ++changes;
+      std::fprintf(stderr, "[program-display-pixel] depth=%d isolated=%d phase_ms=%d tick=%d canvas=%lld pixel=%u\n",
+          depth, isolated, phaseMs, n, static_cast<long long>(exported.frameNumber), unsigned(pixel));
+      if (n >= 20 && previous >= 0) {
+        EXPECT_EQ(unsigned(pixel), unsigned(30 + n - depth - 1));
+        if (pixel != previous) ++changes;
+        if (pixel == previous) ++repeats;
+        if (pixel != previous + 1) ++gaps;
+      }
       previous = pixel;
       ProgramFrame packet; while (compositor->takeDeliveredProgramFrame(packet, 0)) {}
     }
-    EXPECT_TRUE(changes >= 4) << "phase_ms=" << phaseMs << " pixel_changes=" << changes;
+    std::fprintf(stderr, "[program-display-phase] depth=%d isolated=%d phase_ms=%d changes=%d repeats=%d gaps=%d\n",
+        depth, isolated, phaseMs, changes, repeats, gaps);
+    EXPECT_EQ(changes, 100) << "phase_ms=" << phaseMs << " isolated=" << isolated;
+    EXPECT_EQ(repeats, 0) << "phase_ms=" << phaseMs << " isolated=" << isolated;
+    EXPECT_EQ(gaps, 0) << "phase_ms=" << phaseMs << " isolated=" << isolated;
   }
 }
 TEST(D3DProgramBuffer, RetainedGpuOnlyFramesKeepTheirPixelsAfterProducerOverwrite) {
@@ -479,12 +609,14 @@ TEST(D3DProgramBuffer, BlockedOptionalExportPreservesNativeCadenceAndOtherReader
     ComPtrLite<IDXGIKeyedMutex> key;
     const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::stoull(texture.sharedHandleHex, nullptr, 0)));
     ASSERT_TRUE(SUCCEEDED(device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(shared.put()))));
-    ASSERT_TRUE(SUCCEEDED(shared->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(key.put()))));
-    ASSERT_TRUE(key->AcquireSync(1, 20) == S_OK);
+    if (!blockShell) {
+      ASSERT_TRUE(SUCCEEDED(shared->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(key.put()))));
+      ASSERT_TRUE(key->AcquireSync(1, 20) == S_OK);
+    }
     auto stagingDesc = desc; stagingDesc.BindFlags = 0; stagingDesc.Usage = D3D11_USAGE_STAGING;
     stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&stagingDesc, nullptr, staging.put())));
-    context->CopyResource(staging.get(), shared.get()); context->Flush(); key->ReleaseSync(0);
+    context->CopyResource(staging.get(), shared.get()); context->Flush(); if (key) key->ReleaseSync(0);
     D3D11_MAPPED_SUBRESOURCE mapped{};
     ASSERT_TRUE(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)));
     const int pixel = static_cast<const uint8_t*>(mapped.pData)[32 * mapped.RowPitch + 32 * 4];
@@ -505,9 +637,11 @@ TEST(D3DProgramBuffer, BlockedOptionalExportPreservesNativeCadenceAndOtherReader
     const auto delayedHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::stoull(delayedTexture.sharedHandleHex, nullptr, 0)));
     shared = {}; key = {};
     ASSERT_TRUE(SUCCEEDED(device->OpenSharedResource(delayedHandle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(shared.put()))));
-    ASSERT_TRUE(SUCCEEDED(shared->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(key.put()))));
-    ASSERT_TRUE(key->AcquireSync(1, 20) == S_OK);
-    context->CopyResource(staging.get(), shared.get()); context->Flush(); key->ReleaseSync(0);
+    if (blockShell) {
+      ASSERT_TRUE(SUCCEEDED(shared->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(key.put()))));
+      ASSERT_TRUE(key->AcquireSync(1, 20) == S_OK);
+    }
+    context->CopyResource(staging.get(), shared.get()); context->Flush(); if (key) key->ReleaseSync(0);
     ASSERT_TRUE(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)));
     const int retainedPixel = static_cast<const uint8_t*>(mapped.pData)[32 * mapped.RowPitch + 32 * 4];
     context->Unmap(staging.get(), 0);
