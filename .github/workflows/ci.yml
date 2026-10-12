@@ -273,6 +273,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Installer upgrade retirement safety tests
+        run: powershell.exe -NoProfile -File scripts/alpha/Test-PreviousInstallations.ps1
       - uses: actions/setup-node@v4
         with:
           node-version: 22

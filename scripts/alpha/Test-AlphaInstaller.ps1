@@ -1,7 +1,8 @@
 # Exercises a real silent install/uninstall in a new artifact directory. It never
 # launches the product App or changes an existing installation or user settings.
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Installer)
+param([Parameter(Mandatory=$true)][string]$Installer,
+      [string]$CameraModulePath = (Join-Path $PSScriptRoot 'VirtualCameraRegistration.psm1'))
 $ErrorActionPreference = 'Stop'
 $installerPath = (Resolve-Path -LiteralPath $Installer).Path
 $releaseId = [IO.Path]::GetFileNameWithoutExtension($installerPath).Replace('CoreVideoPro-Setup-', '')
@@ -36,6 +37,20 @@ function Invoke-OwnedProcess([string]$executable, [string[]]$arguments) {
     return $process.ExitCode
 }
 # /D is deliberately last and unquoted: NSIS treats everything after it as the path.
+Import-Module $CameraModulePath -Force
+$priorCamera = Get-CameraMachineRegistration
+$priorUserCamera = Get-CameraMachineRegistration -CurrentUser
+try {
+    # Force a pre-commit failure without modifying machine camera ownership.
+    # Setup must release its cwd and remove the empty root so retry can work.
+    Set-CameraMachineRegistration @{Path=(Join-Path $work 'unknown-camera.dll');Role='InstallerQA.UnknownOwner';AppDirectory='';Sha256='';ThreadingModel='Both'} -CurrentUser
+    if ((Invoke-OwnedProcess $installerPath @('/S', "/D=$installRoot")) -ne 1603) { throw 'Unknown camera owner was not rejected.' }
+    if ((Test-Path -LiteralPath $installRoot) -or (Test-Path $registryPath)) { throw 'Failed setup left its destination or registration; retry would fail.' }
+    $afterFailure = Get-CameraMachineRegistration
+    foreach ($field in @('Path','Role','AppDirectory','Sha256')) {
+        if ($afterFailure[$field] -ne $priorCamera[$field]) { throw "Failed setup changed camera ownership: $field" }
+    }
+} finally { Set-CameraMachineRegistration $priorUserCamera -CurrentUser }
 if ((Invoke-OwnedProcess $installerPath @('/S', "/D=$installRoot")) -ne 0) { throw "Silent installation failed. Evidence: $work" }
 $registration = Get-ItemProperty $registryPath
 if ($registration.InstallLocation -ne $installRoot) { throw 'Uninstall registration points at the wrong directory.' }
@@ -114,4 +129,5 @@ if ((Get-Content -LiteralPath $sentinel -Raw) -ne 'preserve this user file') { t
     silentInstall=$true; runtimeProbe=$true; shortcutTargets=$true; duplicateInstallRejected=$true
     invalidMarkerRejected=$true; silentUninstall=$true; userFilePreserved=$true
     stableShortcutOnly=$true; mediaRuntimeRemoved=$true; manifestEscapeRefused=$true; evidence=$work
+    failedInstallRetry=$true; failedInstallCameraPreserved=$true
 } | ConvertTo-Json | Tee-Object -FilePath (Join-Path $work 'result.json')

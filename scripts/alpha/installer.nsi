@@ -208,6 +208,9 @@ Section "CoreVideo Pro" SEC_APP
         ${EndIf}
         ; This was an empty, unregistered destination. Roll back only our exact
         ; payload/metadata, never recursively remove files created by the user.
+        ; SetOutPath also changes Setup's working directory. Windows cannot
+        ; remove that directory while Setup itself still holds it as its cwd.
+        SetOutPath "$TEMP"
         !include "uninstall-files.nsh"
         Delete "$SMPROGRAMS\${SHORTCUT_NAME}\CoreVideo Pro.lnk"
         Delete "$SMPROGRAMS\${SHORTCUT_NAME}\Uninstall.lnk"
@@ -227,6 +230,15 @@ Section "CoreVideo Pro" SEC_APP
         SetErrorLevel 1603
         Abort
     installed:
+        ; New payload, camera and shortcuts are committed before retirement.
+        ; Never run old uninstallers: legacy camera removal can undo the new owner.
+        nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Remove-PreviousInstallations.ps1" -AppDirectory "$INSTDIR"'
+        Pop $1
+        Pop $2
+        DetailPrint "$2"
+        ${If} $1 != 0
+            MessageBox MB_OK|MB_ICONEXCLAMATION "The new version is installed, but some older versions could not be retired. Close any older CoreVideo sessions and run Remove-PreviousInstallations.ps1 from the new installation. Details: $INSTDIR\previous-installations-cleanup.json" /SD IDOK
+        ${EndIf}
 SectionEnd
 
 Function un.onInit
@@ -341,6 +353,7 @@ Section "Uninstall"
     Delete "$DESKTOP\${SHORTCUT_NAME}.lnk"
     DeleteRegKey HKCU "${UNINSTALL_KEY}"
     Delete "$INSTDIR\.camera-registration-before.json"
+    Delete "$INSTDIR\previous-installations-cleanup.json"
     Delete "$INSTDIR\.corevideo-prerelease-install"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir "$INSTDIR"
