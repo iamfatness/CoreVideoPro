@@ -571,6 +571,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // Flip MediaCore to worker mode: the heavy audio/output half no longer runs on the
   // command thread inside renderSyntheticTick — the audioOutputThread below drives it.
   // (Set before any thread starts so the bool is published before concurrent reads.)
+  mediaCore_.setProgramPreviewPumpActive(true);
   mediaCore_.enableAudioOutputWorker();
 
   // Dedicated render thread: drives the light, video-only display render (GPU
@@ -1208,6 +1209,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   }
   if (resourcePumpThread.joinable()) resourcePumpThread.join();
   if (programPreviewPumpThread.joinable()) programPreviewPumpThread.join();
+  mediaCore_.setProgramPreviewPumpActive(false);
   if (zoomPumpThread.joinable()) {
     zoomPumpThread.join();
   }

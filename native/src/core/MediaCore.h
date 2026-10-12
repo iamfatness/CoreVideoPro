@@ -154,6 +154,8 @@ class MediaCore {
   [[nodiscard]] std::vector<rpc::Json> drainZoomVideoFrameEvents();
   [[nodiscard]] std::vector<rpc::Json> drainProgramFramePreviewEvents();
   [[nodiscard]] std::unique_ptr<modules::ProgramFrame> drainProgramPreviewJob();
+  // Set before starting, and after joining, the live server's preview pump.
+  void setProgramPreviewPumpActive(bool active) { programPreviewPumpActive_ = active; }
   // Encoder pump calls outside coreMutex; retains only the encoded thumbnail.
   void publishEncodedProgramPreview(rpc::Json preview);
   [[nodiscard]] std::vector<rpc::Json> drainProgramSharedTextureEvents();
@@ -1294,6 +1296,7 @@ class MediaCore {
   rpc::Json encodedPreview_;
   mutable std::mutex encodedPreviewMutex_;
   std::unique_ptr<modules::ProgramFrame> pendingProgramPreviewJob_;
+  bool programPreviewPumpActive_ = false;
   mutable AudioObservationStore audioObservations_;
   std::uint64_t appliedControlRevision_ = 0;
   void captureAudioObservation(AudioOutputObservation& observation, const AudioOutputResults* results = nullptr) const;
