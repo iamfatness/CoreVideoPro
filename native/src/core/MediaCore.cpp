@@ -1,6 +1,7 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/RecordingQueuePolicy.h"
 #include "core/MediaCore.h"
+#include "core/AudioObservationFootprint.h"
 #include "core/DeliveryTrace.h"
 #include "modules/MonitorInputEvidence.h"
 #include "core/SystemMemoryPolicy.h"
@@ -448,13 +449,14 @@ MediaCore::~MediaCore() {
 }
 
 rpc::Json MediaCore::profile() const {
+  const auto view = audioObservation();
+  const AudioOutputObservation unobserved;
+  return profile(view.payload ? view.payload->value : unobserved);
+}
+
+rpc::Json MediaCore::profile(const AudioOutputObservation& observation) const {
   const auto renderer = modules_.compositor->rendererName();
-  // encoder->session() is mutated by the audio/output worker; guard the read.
-  modules::OutputSession encoderSession;
-  {
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-    encoderSession = modules_.encoder->session();
-  }
+  const auto& encoderSession = observation.encoder;
   const auto capabilities = capabilityReport(modules_, zoomEngineConfigured(), encoderSession);
   return rpc::Json::Object{
       {"name", renderer == "software" ? "CoreVideo Pro Native Media Core Stub" : "CoreVideo Pro Native Media Core"},
@@ -470,12 +472,15 @@ rpc::Json MediaCore::profile() const {
 }
 
 rpc::Json MediaCore::health() const {
-  // encoder->session() is mutated by the audio/output worker; guard the read.
-  modules::OutputSession session;
-  {
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-    session = modules_.encoder->session();
-  }
+  const auto view = audioObservation();
+  const AudioOutputObservation unobserved;
+  auto result = health(view.payload ? view.payload->value : unobserved).asObject();
+  result.emplace("audioObservation", audioObservationMetadata(view, audioMonitorControlEpoch_));
+  return result;
+}
+
+rpc::Json MediaCore::health(const AudioOutputObservation& observation) const {
+  const auto& session = observation.encoder;
   rpc::Json::Array messages;
 #if COREVIDEO_STUB
   messages.emplace_back("COREVIDEO_STUB synthetic media path active");
@@ -771,15 +776,12 @@ void MediaCore::setScreenShareSource(const rpc::Json& command) {
 }
 
 rpc::Json MediaCore::sessionState() const {
-  // encoder->session() is mutated by the audio/output worker; guard the read. The
-  // other module reads in this snapshot (profile/health/audioMixSessionState/
-  // outputSenderSessionState/captureAudioSourcesState) each take audioOutputMutex_
-  // independently (never nested), so no single lock spans the whole build.
-  modules::OutputSession session;
-  {
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-    session = modules_.encoder->session();
-  }
+  // One immutable owner lease for every audio/output projection in this response.
+  // Live readers never wait for DSP, device work or backend queries.
+  const auto view = audioObservation();
+  const AudioOutputObservation unobserved;
+  const auto& observation = view.payload ? view.payload->value : unobserved;
+  const auto& session = observation.encoder;
   const auto buffer = modules_.compositor->programBufferDiagnostics();
   rpc::Json::Array zoomGuestAvSync;
   for (const auto& [participantId, offsetMs] : zoomGuestAvOffsets_) {
@@ -850,15 +852,15 @@ rpc::Json MediaCore::sessionState() const {
       {"takeRecords", takeRecordsState()},
       {"zoomSubscriptionChurn", zoomSubscriptionChurnState()},
       {"encoderSession", encoderSessionState(session)},
-      {"outputSenderSession", outputSenderSessionState()},
+      {"outputSenderSession", outputSenderSessionState(observation)},
       {"virtualCamera", virtualCameraState()},
       {"captureDevices", captureDevicesState()},
       {"browserSources", browserSourcesState()},
-      {"health", health()},
-      {"profile", profile()},
-      {"audioMixSession", audioMixSessionState()},
+      {"health", health(observation)},
+      {"profile", profile(observation)},
+      {"audioMixSession", audioMixSessionState(observation)},
       {"audioRoutingMatrix", audioRoutingMatrixState()},
-      {"captureAudioSources", captureAudioSourcesState()},
+      {"captureAudioSources", captureAudioSourcesState(observation)},
       {"captionTrack", captionTrackState()},
       {"brandKit", brandKitState()},
       {"overlayState", overlayState()},
@@ -881,6 +883,8 @@ rpc::Json MediaCore::sessionState() const {
       {"breakoutRoomName", breakoutRoomName_},
       {"zoom", rpc::Json::Object{{"readiness", zoomReadinessState()}, {"evidence", zoomEvidenceState()}}},
   };
+  state.emplace("audioObservation", audioObservationMetadata(view, audioMonitorControlEpoch_));
+  state.emplace("appliedControlRevision", static_cast<double>(appliedControlRevision_));
   state.emplace("programBuffer", rpc::Json::Object{
       {"requestedFrames", buffer.requestedFrames}, {"activeFrames", buffer.activeFrames},
       {"generation", static_cast<double>(buffer.generation)},
@@ -987,38 +991,13 @@ rpc::Json MediaCore::sessionState() const {
   const auto renderLastProgressNs = renderWorkerLastProgressNs_.load(std::memory_order_relaxed);
   const auto audioLastProgressNs = audioWorkerLastProgressNs_.load(std::memory_order_relaxed);
   const auto videoOutputLastProgressNs = videoOutputWorkerLastProgressNs_.load(std::memory_order_relaxed);
-  // #728: say when the MACHINE is close to refusing memory. Published unconditionally
-  // (level "unknown" where it cannot be measured, never a healthy-looking absence), and
-  // logged once per transition so the bounded log is not flooded by a starved machine.
-  {
-    const auto memoryNowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    if (systemMemorySampledAtNs_ == 0 || memoryNowNs - systemMemorySampledAtNs_ >= 1'000'000'000) {
-      systemMemorySampledAtNs_ = memoryNowNs;
-      const auto sample = sampleSystemMemory();
-      const auto previous = static_cast<SystemMemoryLevel>(systemMemoryLevel_);
-      const auto level = classifySystemMemory(sample, previous);
-      systemMemoryMeasured_ = sample.measured;
-      systemMemoryAvailableBytes_ = sample.commitAvailableBytes;
-      systemMemoryLimitBytes_ = sample.commitLimitBytes;
-      if (level != previous && !(previous == SystemMemoryLevel::Unknown && level == SystemMemoryLevel::Ok)) {
-        ::corevideo::core::nativeLogf(
-            "[system-memory] %s: %llu MB of %llu MB committable memory is left on this machine%s\n",
-            systemMemoryLevelName(level),
-            static_cast<unsigned long long>(sample.commitAvailableBytes / (1024 * 1024)),
-            static_cast<unsigned long long>(sample.commitLimitBytes / (1024 * 1024)),
-            level == SystemMemoryLevel::Critical
-                ? "; new sources, streams or recordings may fail and the core may stop - close other applications now"
-                : level == SystemMemoryLevel::Low ? "; close other applications before starting more outputs" : "");
-      }
-      systemMemoryLevel_ = static_cast<int>(level);
-    }
-    state.emplace("systemMemory", rpc::Json::Object{
-        {"measured", systemMemoryMeasured_},
-        {"level", systemMemoryLevelName(static_cast<SystemMemoryLevel>(systemMemoryLevel_))},
-        {"commitAvailableMb", static_cast<double>(systemMemoryAvailableBytes_ / (1024 * 1024))},
-        {"commitLimitMb", static_cast<double>(systemMemoryLimitBytes_ / (1024 * 1024))}});
-  }
+  // Machine sampling belongs to the observation owner, never a live status read.
+  state.emplace("systemMemory", rpc::Json::Object{
+      {"measured", observation.memory.measured},
+      {"level", systemMemoryLevelName(observation.memoryLevel)},
+      {"commitAvailableMb", static_cast<double>(observation.memory.commitAvailableBytes / (1024 * 1024))},
+      {"commitLimitMb", static_cast<double>(observation.memory.commitLimitBytes / (1024 * 1024))},
+      {"sampledAtNs", static_cast<double>(observation.memorySampledAtNs)}});
   const auto capturePreparation = modules_.captureDevice->shmCapturePreparationDiagnostics();
   const auto monitorWorker = modules_.compositor->monitorDiagnostics();
   state.emplace("gradePreview", gradePreviews_.diagnostics(*modules_.compositor));
@@ -1596,6 +1575,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   for (const auto& command : commands) {
     const auto ci0 = std::chrono::steady_clock::now();
     applyCommandMutation(command);
+    ++appliedControlRevision_;
     const auto cms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ci0).count();
     if (cms >= 10) {
       ::corevideo::core::nativeLogf("[cmd] '%s' %lldms\n", command.getString("type").c_str(),
@@ -1635,6 +1615,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
 rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
   commandProtocolFailures_.clear();
   applyCommandMutation(command);
+  ++appliedControlRevision_;
   return sessionState();
 }
 
@@ -4792,14 +4773,9 @@ std::string protocolAudioStatusForDsp(const modules::AudioParticipantMixMetrics&
 
 }  // namespace
 
-rpc::Json MediaCore::audioMixSessionState() const {
-  // Reads mixer->session() (mutated by the worker's mixer->mix) and, via
-  // masterMeterState(), the BS.1770 loudness members (mutated by the worker's
-  // updateProgramLoudnessMeter). Hold audioOutputMutex_ across the whole body;
-  // masterMeterState() therefore does NOT lock (only called from here).
-  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+rpc::Json MediaCore::audioMixSessionState(const AudioOutputObservation& observation) const {
   if (audioChannels_.empty()) {
-    const auto nativeMix = modules_.mixer->session();
+    const auto nativeMix = observation.mixer;
     if (!nativeMix.participants.empty()) {
       rpc::Json::Array participants;
       for (const auto& participant : nativeMix.participants) {
@@ -4850,7 +4826,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
           {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
           {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
           {"participants", participants},
-          {"masterMeter", masterMeterState()},
+          {"masterMeter", masterMeterState(observation)},
           {"summary", nativeMix.summary},
           {"warnings", warnings},
       };
@@ -4883,7 +4859,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
         {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
         {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
         {"participants", rpc::Json::Array{}},
-        {"masterMeter", masterMeterState()},
+        {"masterMeter", masterMeterState(observation)},
         {"summary", "Audio mix idle."},
         {"pluginHost", pluginHostState()},
         {"warnings", warnings},
@@ -4893,7 +4869,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
   rpc::Json::Array participants;
   rpc::Json::Array warnings;
   std::unordered_set<std::string> warningSet;
-  const auto nativeMix = modules_.mixer->session();
+  const auto nativeMix = observation.mixer;
   std::map<std::string, modules::AudioParticipantMixMetrics> nativeMetricsByParticipant;
   for (const auto& participant : nativeMix.participants) {
     nativeMetricsByParticipant[participant.participantId] = participant;
@@ -5055,10 +5031,9 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"masterLevel", masterLevel},
       // REAL BS.1770 program loudness (owner-reported: this read a hardcoded
       // -16 whenever mixer channels were synced â€” i.e. always). The worker's
-      // updateProgramLoudnessMeter maintains these members under the same
-      // audioOutputMutex_ this function holds. Short-term (3s) is the live
+      // audio owner publishes these measured values. Short-term (3s) is the live
       // console readout; fall back to momentary until its window fills.
-      {"loudnessLufs", programLufsShortTerm_ > -119.0 ? programLufsShortTerm_ : programLufsMomentary_},
+      {"loudnessLufs", observation.shortTermLufs > -119.0 ? observation.shortTermLufs : observation.momentaryLufs},
       {"pluginHost", pluginHostState()},
       {"limiterEnabled", audioLimiterEnabled_},
       {"limiterActive", limiterActive},
@@ -5073,7 +5048,7 @@ rpc::Json MediaCore::audioMixSessionState() const {
       {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
       {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
       {"participants", participants},
-      {"masterMeter", masterMeterState()},
+      {"masterMeter", masterMeterState(observation)},
       {"summary", summaryText},
       {"warnings", warnings},
   };
@@ -5134,16 +5109,13 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
   virtualCamera_->setProgramLoudness(programLufsShortTerm_, windowed >= maxSamples);
 }
 
-rpc::Json MediaCore::masterMeterState() const {
-  // PRECONDITION: caller holds audioOutputMutex_ (reads the BS.1770 loudness members
-  // the worker mutates). Only called from audioMixSessionState(), which holds it.
-  const int windowMs = programMeterL_.empty() ? 0 : static_cast<int>((programMeterL_.size() * 1000) / 48000);
+rpc::Json MediaCore::masterMeterState(const AudioOutputObservation& observation) const {
   return rpc::Json::Object{
-      {"momentaryLufs", programLufsMomentary_},
-      {"shortTermLufs", programLufsShortTerm_},
-      {"integratedLufs", programLufsIntegrated_},
-      {"truePeakDbfs", programTruePeakDbfs_},
-      {"windowMs", windowMs},
+      {"momentaryLufs", observation.momentaryLufs},
+      {"shortTermLufs", observation.shortTermLufs},
+      {"integratedLufs", observation.integratedLufs},
+      {"truePeakDbfs", observation.truePeakDbfs},
+      {"windowMs", observation.windowMs},
   };
 }
 
@@ -5281,7 +5253,7 @@ const std::vector<float>& MediaCore::audioBusTapPcm(const std::string& busId) co
   return found == routedBusPcm_.end() ? kEmptyTap : found->second;
 }
 
-rpc::Json MediaCore::captureAudioSourcesState() const {
+rpc::Json MediaCore::captureAudioSourcesState(const AudioOutputObservation& observation) const {
   rpc::Json::Array sources;
   rpc::Json::Array warnings;
   std::set<std::string> warningSet;
@@ -5291,13 +5263,7 @@ rpc::Json MediaCore::captureAudioSourcesState() const {
   const int routedMasterFrames = static_cast<int>(programAudioTapPcm().size() / 2);
   const int routedStreamFrames = static_cast<int>(audioBusTapPcm("stream").size() / 2);
   const int routedMonitorFrames = static_cast<int>(audioBusTapPcm("mon").size() / 2);
-  // mixer->monitorBus* is mutated by the worker's mixer->mix; guard the read.
-  int fallbackMonitorFrames = 0;
-  if (routedMonitorFrames == 0 && modules_.mixer) {
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-    fallbackMonitorFrames = static_cast<int>(modules_.mixer->monitorBusPcm().size() /
-                                             static_cast<size_t>(std::max(1, modules_.mixer->monitorBusChannels())));
-  }
+  const int fallbackMonitorFrames = routedMonitorFrames == 0 ? observation.fallbackMonitorFrames : 0;
   std::map<std::string, modules::CaptureAudioSourceMetrics> metricsByCaptureId;
   auto addWarning = [&](const std::string& warning) {
     if (!warning.empty() && warningSet.insert(warning).second) {
@@ -5750,13 +5716,8 @@ contracts::OutputLifecycle MediaCore::evaluateSenderLifecycle(
   return lifecycle;
 }
 
-rpc::Json MediaCore::outputSenderSessionState() const {
-  // outputSender->session() is mutated by the worker's outputSender->sync; guard it.
-  modules::OutputSenderSession senderSession;
-  {
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-    senderSession = modules_.outputSender->session();
-  }
+rpc::Json MediaCore::outputSenderSessionState(const AudioOutputObservation& observation) const {
+  const auto& senderSession = observation.sender;
   const int64_t senderNowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
   rpc::Json::Array senders;
@@ -8001,6 +7962,54 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
 }
 
+void MediaCore::captureAudioObservation(AudioOutputObservation& observation) const {
+  observation.encoder = modules_.encoder->session();
+  observation.sender = modules_.outputSender->session();
+  observation.mixer = modules_.mixer->session();
+  observation.momentaryLufs = programLufsMomentary_;
+  observation.shortTermLufs = programLufsShortTerm_;
+  observation.integratedLufs = programLufsIntegrated_;
+  observation.truePeakDbfs = programTruePeakDbfs_;
+  observation.windowMs = static_cast<int>((programMeterL_.size() * 1000) / 48000);
+  observation.fallbackMonitorFrames = static_cast<int>(modules_.mixer->monitorBusPcm().size() /
+      static_cast<size_t>(std::max(1, modules_.mixer->monitorBusChannels())));
+}
+
+void MediaCore::captureObservationMemory(AudioOutputObservation& observation) const {
+  const auto current = audioObservations_.acquire();
+  if (current.payload) {
+    observation.memory = current.payload->value.memory;
+    observation.memoryLevel = current.payload->value.memoryLevel;
+    observation.memorySampledAtNs = current.payload->value.memorySampledAtNs;
+  }
+  const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (observation.memorySampledAtNs != 0 && nowNs - observation.memorySampledAtNs < 1'000'000'000) return;
+  const auto previous = observation.memoryLevel;
+  observation.memory = sampleSystemMemory();
+  observation.memoryLevel = classifySystemMemory(observation.memory, previous);
+  observation.memorySampledAtNs = nowNs;
+  if (observation.memoryLevel != previous && !(previous == SystemMemoryLevel::Unknown && observation.memoryLevel == SystemMemoryLevel::Ok)) {
+    nativeLogf("[system-memory] %s: %llu MB of %llu MB committable memory remains\n",
+        systemMemoryLevelName(observation.memoryLevel),
+        static_cast<unsigned long long>(observation.memory.commitAvailableBytes / (1024 * 1024)),
+        static_cast<unsigned long long>(observation.memory.commitLimitBytes / (1024 * 1024)));
+  }
+}
+
+AudioObservationStore::View MediaCore::audioObservation() const {
+  if (!audioWorkerActive_) {
+    // Explicit single-owner mode, before live threads exist. Never used to
+    // repair a missing or stale observation in a running server.
+    audioObservations_.publish(appliedControlRevision_, [&](auto& observation) {
+      captureObservationMemory(observation);
+      captureAudioObservation(observation);
+      return audioObservationBytes(observation);
+    });
+  }
+  return audioObservations_.acquire();
+}
+
 void MediaCore::enableAudioOutputWorker() {
   if (audioWorkerActive_) return;
   // Latch before the first worker renders. Engine/capture toggles do not change
@@ -8069,6 +8078,7 @@ std::vector<modules::AudioFrame> MediaCore::pollZoomAudioUnlocked() {
 MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
     std::vector<modules::AudioFrame> prePolledZoomAudio) {
   AudioOutputWorkItem work;
+  work.controlRevision = appliedControlRevision_;
   work.valid = true;
   work.outputTimestamp100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
@@ -9226,6 +9236,14 @@ void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
     std::lock_guard<std::mutex> lock(audioOutputMutex_);
     results = runAudioOutputWork(work);
   }
+  audioObservations_.publish(work.controlRevision, [&](auto& observation) {
+    captureObservationMemory(observation);
+    {
+      std::lock_guard<std::mutex> lock(audioOutputMutex_);
+      captureAudioObservation(observation);
+    }
+    return audioObservationBytes(observation);
+  });
   {
     std::lock_guard<std::mutex> lock(coreMutex);
     ScopedLockHoldTimer holdTimer("audio.publish", LockHoldGuardrail::kDefaultBudgetUs);

@@ -764,6 +764,8 @@ public sealed class NativeMediaCoreEvent
 
 public sealed record NativeMediaCoreDiagnosticsSnapshot
 {
+    public AudioOwnerObservation? AudioObservation { get; init; }
+    public long AppliedControlRevision { get; init; }
     public double GeneratedAtMs { get; init; }
     public string? SceneId { get; init; }
     public int RouteCount { get; init; }
@@ -874,6 +876,8 @@ public sealed record NativeZoomGuestAvSyncAck
 
 public sealed record NativeMediaCoreStateSnapshot
 {
+    public AudioOwnerObservation? AudioObservation { get; init; }
+    public long AppliedControlRevision { get; init; }
     public IReadOnlyList<NativeCaptureDeviceStatus> CaptureDevices { get; init; } = [];
     public JsonElement? ProgramBuffer { get; init; }
     public CoreVideoPro.MediaCore.Contracts.DeliveryEvidenceObservation? DeliveryEvidence { get; init; }

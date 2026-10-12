@@ -16,6 +16,16 @@
       "qualification": "include",
       "control": "include"
     },
+    "audioObservation": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
+    "appliedControlRevision": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
+    },
     "audioRoutingMatrix": {
       "typed": "include",
       "qualification": "include",

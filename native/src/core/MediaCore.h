@@ -6,6 +6,7 @@
 #include "core/GradePreviewController.h"
 #include "core/SourceGradeState.h"
 #include "core/Director.h"
+#include "core/AudioOutputObservation.h"
 #include "core/MonitorShedPolicy.h"
 #include "core/RenderWorkDistribution.h"
 #include "core/OutputLifecyclePolicy.h"
@@ -502,17 +503,17 @@ class MediaCore {
   // render to drive the preview GPU present at the full render rate.
   void enqueuePreviewSharedTextureEvent();
   [[nodiscard]] rpc::Json encoderSessionState(const modules::OutputSession& session) const;
-  [[nodiscard]] rpc::Json audioMixSessionState() const;
+  [[nodiscard]] rpc::Json audioMixSessionState(const AudioOutputObservation& observation) const;
   void updateProgramLoudnessMeter(const std::vector<float>& interleaved, int channels, int sampleRate);
-  [[nodiscard]] rpc::Json masterMeterState() const;
+  [[nodiscard]] rpc::Json masterMeterState(const AudioOutputObservation& observation) const;
   [[nodiscard]] rpc::Json audioRoutingMatrixState() const;
-  [[nodiscard]] rpc::Json captureAudioSourcesState() const;
+  [[nodiscard]] rpc::Json captureAudioSourcesState(const AudioOutputObservation& observation) const;
   [[nodiscard]] rpc::Json captionTrackState() const;
   [[nodiscard]] rpc::Json brandKitState() const;
   [[nodiscard]] rpc::Json overlayState() const;
   [[nodiscard]] rpc::Json mediaPlaybackState() const;
   [[nodiscard]] rpc::Json autoProductionState() const;
-  [[nodiscard]] rpc::Json outputSenderSessionState() const;
+  [[nodiscard]] rpc::Json outputSenderSessionState(const AudioOutputObservation& observation) const;
   [[nodiscard]] rpc::Json captureDevicesState() const;
   [[nodiscard]] rpc::Json recordingState(const modules::OutputSession& session) const;
   [[nodiscard]] rpc::Json zoomReadinessState() const;
@@ -1044,14 +1045,6 @@ class MediaCore {
   int latestProgramNv12Height_ = 0;
   bool zoomJoined_ = false;
   mutable int zoomSnapshotTick_ = 0;
-  // #728: machine-wide available commit, sampled at most once a second from sessionState()
-  // (core/SystemMemoryPolicy.h). Level is a SystemMemoryLevel stored as int so this header
-  // does not pull <windows.h> into every translation unit.
-  mutable std::int64_t systemMemorySampledAtNs_ = 0;
-  mutable std::uint64_t systemMemoryAvailableBytes_ = 0;
-  mutable std::uint64_t systemMemoryLimitBytes_ = 0;
-  mutable int systemMemoryLevel_ = 0;
-  mutable bool systemMemoryMeasured_ = false;
   // Recently directed speakers for follow-speaker routes, scoped to one meeting
   // (#478 N2). Written only from plan builds, which run under coreMutex.
   mutable FollowSpeakerHold followSpeakerHold_;
@@ -1227,6 +1220,7 @@ class MediaCore {
   GuestAvSyncAudio zoomGuestAvAudio_;
   struct AudioOutputWorkItem {
     bool valid = false;
+    std::uint64_t controlRevision = 0;
     int64_t outputTimestamp100ns = 0;
     // Grid time of this block for the shared stream clock; outputTimestamp100ns
     // when no paced worker drives the tick (direct/unit-test callers).
@@ -1298,6 +1292,13 @@ class MediaCore {
   // INNER lock guarding the audio/output module state (mixer, monitorOutput, encoder,
   // outputSender) + the BS.1770 loudness accumulators. Lock order: coreMutex → this.
   mutable std::mutex audioOutputMutex_;
+  mutable AudioObservationStore audioObservations_;
+  std::uint64_t appliedControlRevision_ = 0;
+  void captureAudioObservation(AudioOutputObservation& observation) const;
+  void captureObservationMemory(AudioOutputObservation& observation) const;
+  [[nodiscard]] AudioObservationStore::View audioObservation() const;
+  [[nodiscard]] rpc::Json profile(const AudioOutputObservation& observation) const;
+  [[nodiscard]] rpc::Json health(const AudioOutputObservation& observation) const;
   // Video encoder/sender submission must never make the 20 ms audio worker wait.
   // The concrete sinks are asynchronous/thread-safe; this lock only serializes
   // video ticks with each other.

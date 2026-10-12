@@ -85,6 +85,12 @@ Preserve the existing session while building; restart/rejoin for candidate valid
 
 ## Now — owner-accepted order (2026-10-08)
 
+Owner approved the [cross-subsystem isolation plan](reference/realtime-isolation-audit.md)
+on October 12. Start its first real status/observation consumer under #870,
+then the focused #872/#873 crossings. Keep the existing #517/#823 installed
+delivery qualification and initiating-cause attribution gates; approval does
+not close them or displace the remaining issue-specific acceptance.
+
 Owner-approved follow-up on 2026-10-10: implement [#853](https://github.com/iamfatness/CoreVideoPro/issues/853), draw-first rectangle/circle scope ROI and collapsed precision controls, before further UI/UX slices. Preserve the running meeting. Zero missed delivery slots remains paramount; the owner is researching the #825/#517 misses separately.
 
 Three lanes, at most one item in flight per lane and three total. Start with #835;
@@ -131,6 +137,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner follow-up | A | [#870](https://github.com/iamfatness/CoreVideoPro/issues/870) | Execute the approved status isolation [specification](reference/status-snapshot-isolation-spec.md) and [plan](reference/status-snapshot-isolation-plan.md), starting with immutable audio/output owner observations and continuing through bounded off-lock response assembly. Subsequent #872/#873 crossings follow their focused contracts; preserve live sessions and prove each installed delivery boundary. |
 | Owner follow-up | A | [#802](https://github.com/iamfatness/CoreVideoPro/issues/802) | Owner approved October 11: enable completed source preparation in Windows production, isolate optional exports, repair expired-ready queue retirement, and validate repeated cold 1080p background loads with zero missed delivery slots in the test meeting. |
 | Owner follow-up | A | [#853](https://github.com/iamfatness/CoreVideoPro/issues/853) | Draw-first rectangle/circle scope ROI, move/resize, cancellation, Clear and collapsed precision settings. [Interaction contract](reference/roi-drawing-tools.md). Owner approved this code slice on October 10; preserve live sessions and keep zero-miss delivery acceptance separate. |
 | Owner top | A | [#835](https://github.com/iamfatness/CoreVideoPro/issues/835) | Advanced source grading: optional expanded workspace, truthful native preview/output path (grading portion of #764), master/R/G/B curves, histogram, waveform and vectorscope. Preserve existing grades, source identity, production cadence and quality; scope analysis must be bounded and asynchronous. Then qualify advanced primaries, real LUT import/stack and presets against the same native transform. |
