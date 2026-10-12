@@ -184,6 +184,7 @@ phrase they quote.
 | [`docs/reference/shared-texture-export-cost.md`](docs/reference/shared-texture-export-cost.md) | creating D3D exports / anything new on the render thread |
 | [`docs/reference/source-bus.md`](docs/reference/source-bus.md) | the source bus, ingests, bus health, slates, hold/black |
 | [`docs/reference/status-snapshot-isolation-spec.md`](docs/reference/status-snapshot-isolation-spec.md) | proposed #870 status ownership, off-lock assembly, freshness and delivery acceptance; [implementation sequence](docs/reference/status-snapshot-isolation-plan.md) |
+| [`docs/reference/realtime-isolation-audit.md`](docs/reference/realtime-isolation-audit.md) | cross-subsystem evidence, owner/command/observer isolation contract, lock budgets and integrated fault qualification under #517/#870 |
 | [`docs/reference/source-grading-spec.md`](docs/reference/source-grading-spec.md) | per-source grade compatibility, expanded editor, native preview and scopes |
 | [`docs/reference/srt-ingest.md`](docs/reference/srt-ingest.md) | SRT contribution feeds in |
 | [`docs/reference/stream-failure-reasons.md`](docs/reference/stream-failure-reasons.md) | stream error surfacing |

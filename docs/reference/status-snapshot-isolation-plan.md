@@ -2,6 +2,7 @@
 
 Issue: [#870](https://github.com/iamfatness/CoreVideoPro/issues/870).
 Contract: [specification](status-snapshot-isolation-spec.md).
+Wider dependencies and common verification: [real-time isolation audit](realtime-isolation-audit.md).
 This sequence describes one repair, not a separate ranked backlog. Issue status
 and owner order remain in [BACKLOG](../BACKLOG.md).
 

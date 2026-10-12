@@ -40,6 +40,14 @@ measured native underruns; those two snapshot paths must not be conflated.
 
 ## Required behavior
 
+The [cross-subsystem audit](realtime-isolation-audit.md) defines the wider
+isolation contract and separates measured incidents from source-level risks.
+This spec supplies its first observation/capture consumer; monitor device work
+(#872) and render event formatting (#873) retain focused acceptance boundaries.
+The existing 50 ms command lock warning budget is not this repair's acceptance
+budget. Test the sub-ms core capture contract and absence of nested owner waits,
+including payload retirement and asynchronous command completion.
+
 Status polling, health UI refresh and support-bundle projection must not acquire
 the audio DSP/output lock while holding the render lock. A slow audio owner,
 snapshot builder, device query, encoder status read or response writer must not
