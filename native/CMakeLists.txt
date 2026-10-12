@@ -805,6 +805,7 @@ if(BUILD_TESTING)
     tests/MediaCoreCommandTest.cpp
     tests/MediaCoreBatchSnapshotTest.cpp
     tests/PublishedObservationStoreTest.cpp
+    tests/ResourceEventLaneTest.cpp
     tests/ProgramBufferIntegrationTest.cpp
     tests/OverlayTileRasterTest.cpp
     tests/PluginHostRespawnPolicyTest.cpp
