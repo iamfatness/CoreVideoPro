@@ -121,6 +121,82 @@ TEST(D3DProgramBuffer, UnretiredMonitorGpuReadQuarantinesItsPublicationOnShutdow
   context->Flush();
 }
 
+TEST(D3DProgramBuffer, DisplayReaderRetiresOldGenerationAndReusesItsImageAcrossSlots) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> producer, consumer;
+  ComPtrLite<ID3D11DeviceContext> writer, readerContext;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, producer.put(), nullptr, writer.put())));
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, consumer.put(), nullptr, readerContext.put())));
+  auto publish = [&](D3DProgramDisplaySnapshots& pool, int width, int sequence, int value) {
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = width; desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ComPtrLite<ID3D11Texture2D> source, staging;
+    ComPtrLite<ID3D11RenderTargetView> target;
+    if (FAILED(producer->CreateTexture2D(&desc, nullptr, source.put())) ||
+        FAILED(producer->CreateRenderTargetView(source.get(), nullptr, target.put()))) return std::shared_ptr<const void>{};
+    desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    if (FAILED(producer->CreateTexture2D(&desc, nullptr, staging.put()))) return std::shared_ptr<const void>{};
+    auto slot = pool.reserve(); if (!slot) return std::shared_ptr<const void>{};
+    const float color[] = {value / 255.f, value / 255.f, value / 255.f, 1};
+    writer->ClearRenderTargetView(target.get(), color);
+    writer->CopyResource(slot->texture.get(), source.get());
+    writer->CopyResource(staging.get(), slot->texture.get()); writer->Flush();
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(writer->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) return std::shared_ptr<const void>{};
+    writer->Unmap(staging.get(), 0); // GPU publication is complete.
+    ProgramFrame frame; frame.frameNumber = frame.deliverySequence = sequence;
+    frame.timelineTimestamp100ns = sequence;
+    pool.stamp(slot, frame); pool.publish(slot);
+    ProgramFrameSharedTexture texture; std::shared_ptr<const void> owner;
+    pool.select(sequence, texture, owner); return owner;
+  };
+  auto image = [](ID3D11ShaderResourceView* view) {
+    ComPtrLite<ID3D11Resource> resource;
+    ComPtrLite<ID3D11Texture2D> texture;
+    if (view) { view->GetResource(resource.put()); resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(texture.put())); }
+    return texture;
+  };
+  auto readPixel = [&](ID3D11Texture2D* texture, int width) {
+    D3D11_TEXTURE2D_DESC desc{}; texture->GetDesc(&desc);
+    if (desc.Width != static_cast<UINT>(width)) return -1;
+    desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = desc.MiscFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtrLite<ID3D11Texture2D> staging;
+    if (FAILED(consumer->CreateTexture2D(&desc, nullptr, staging.put()))) return -1;
+    readerContext->CopyResource(staging.get(), texture); readerContext->Flush();
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(readerContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) return -1;
+    const int value = static_cast<const uint8_t*>(mapped.pData)[32 * mapped.RowPitch + (width / 2) * 4];
+    readerContext->Unmap(staging.get(), 0); return value;
+  };
+  D3DProgramDisplayReader reader;
+  auto oldPool = std::make_unique<D3DProgramDisplaySnapshots>();
+  ASSERT_TRUE(oldPool->initialize(producer.get(), 64, 64, 51));
+  auto oldOwner = publish(*oldPool, 64, 1, 51); ASSERT_TRUE(oldOwner != nullptr);
+  std::weak_ptr<const void> oldLifetime = oldOwner;
+  auto oldImage = image(reader.copy(consumer.get(), readerContext.get(), oldOwner));
+  ASSERT_TRUE(oldImage.get() != nullptr);
+  oldOwner.reset(); oldPool.reset(); // Reader's copy has not been flushed/polled.
+  EXPECT_FALSE(oldLifetime.expired());
+  D3DProgramDisplaySnapshots newPool;
+  ASSERT_TRUE(newPool.initialize(producer.get(), 128, 64, 52));
+  auto newOwner = publish(newPool, 128, 1, 204); ASSERT_TRUE(newOwner != nullptr);
+  auto* resizedView = reader.copy(consumer.get(), readerContext.get(), newOwner);
+  auto newImage = image(resizedView); ASSERT_TRUE(newImage.get() != nullptr);
+  EXPECT_EQ(readPixel(oldImage.get(), 64), 51);
+  EXPECT_EQ(readPixel(newImage.get(), 128), 204);
+  reader.retire(readerContext.get());
+  EXPECT_TRUE(oldLifetime.expired());
+  EXPECT_EQ(reader.observation().generation, 52u);
+  EXPECT_EQ(reader.observation().gpuReads, 0);
+  auto nextOwner = publish(newPool, 128, 2, 134); ASSERT_TRUE(nextOwner != nullptr);
+  EXPECT_EQ(reader.copy(consumer.get(), readerContext.get(), nextOwner), resizedView);
+  EXPECT_EQ(readPixel(newImage.get(), 128), 134);
+}
+
 TEST(D3DProgramBuffer, SustainsFullSizeNv12PreparationAtSixtyHertz) {
   ProgramBufferTimerResolution timer;
   using namespace corevideo::modules;

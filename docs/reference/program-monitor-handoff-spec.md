@@ -198,3 +198,21 @@ unchanged beta with isolation enabled and pass inline (tracked in #869).
 Installed OS-camera, mixed-source meeting, decoded A/V,
 hardware device-loss and long-run qualification remain separate gates. These
 focused results do not close #802/#517 or establish release acceptance.
+
+An additional independent-device generation test preserves old pixels while
+their pool retires, verifies resized pixels, proves GPU completion releases the
+old lease, and checks that another slot reuses the private image/view. It passed
+without changing the packaged runtime binary.
+
+The packaged 690fe1e core also ran a 75-second synthetic native-clock reference.
+After its fixed 15-second startup interval, 3,580 delivered frames and display
+copies completed with zero delivery misses, render skips, monitor supersession,
+image reuse, refused copies or copied-identity skips/reordering. It is copy/counter
+evidence, not an OS-camera or physical-display capture. Two startup underruns and
+two overflows remain retained: the first render's encoder-export initialization
+cost 40.840 ms and delayed the initial publication beyond its deadline. This is
+not an all-run zero-miss qualification; #802/#517 remain open.
+
+The local beta installer is ready, but Windows canceled the administrator prompt
+before Setup started. The candidate is not installed, original registration is
+retained, and installed webcam/meeting validation has not been claimed.
