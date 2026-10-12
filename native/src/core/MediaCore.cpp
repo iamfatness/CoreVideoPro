@@ -6060,9 +6060,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // The preview shared-texture event is likewise emitted only on structural
     // change (handle/dims) â€” the live pixels flow through the keyed-mutex texture.
     enqueuePreviewSharedTextureEvent();
-    // The base64 preview is a heavy thumbnail; keep it throttled (~30fps) and
-    // never emit it on the light display tick (it has no fresh readback).
-    if (!videoOnly && nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {
+    // Queue only an already-produced small preview. Software compositors also
+    // produce it on display ticks; GPU display ticks need no new readback.
+    if (!lastProgramFrame_.preview.bgra.empty() &&
+        nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {
       enqueueProgramFramePreviewEvent();
       lastFrameEventEmit_ = nowTp;
     }

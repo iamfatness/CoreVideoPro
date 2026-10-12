@@ -79,6 +79,32 @@ TEST(JsonRpcServer, SlowWriterPreservesAcceptedResponsesWithoutHoldingRenderLock
   EXPECT_GT(frames.at(64) - frames.at(1), 5);
 }
 
+TEST(JsonRpcServer, SoftwarePreviewKeepsPublishingDuringStalledResponseAssembly) {
+  struct PreviewObserver : std::stringbuf {
+    std::atomic<bool> received{false};
+    std::streamsize xsputn(const char* text, std::streamsize count) override {
+      if (std::string_view(text, static_cast<size_t>(count)).find("\"program-frame-preview\"") != std::string_view::npos)
+        received = true;
+      return std::stringbuf::xsputn(text, count);
+    }
+  } observer;
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  std::latch entered{1}, release{1};
+  corevideo::rpc::JsonRpcServer server(core, {}, [&](const corevideo::core::CoreStateCapture& capture,
+      corevideo::core::SnapshotProjection kind) {
+    entered.count_down(); release.wait(); return capture.assemble(kind);
+  });
+  std::istringstream input("{\"id\":1,\"type\":\"snapshot\"}\n"); std::ostream output(&observer);
+  auto run = std::async(std::launch::async, [&] { server.run(input, output); });
+  entered.wait();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!observer.received && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const bool receivedWhileBlocked = observer.received;
+  release.count_down(); run.get();
+  EXPECT_TRUE(receivedWhileBlocked);
+}
+
 // Regression: the host (System.Text.Json default encoder) escapes non-ASCII and
 // HTML-sensitive characters as \uXXXX. These appear in the larger media-core-sync
 // (multiview layout labels) and zoom-media-spine-sync (roster) payloads — e.g. the
