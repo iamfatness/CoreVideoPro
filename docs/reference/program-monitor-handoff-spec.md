@@ -213,6 +213,21 @@ two overflows remain retained: the first render's encoder-export initialization
 cost 40.840 ms and delayed the initial publication beyond its deadline. This is
 not an all-run zero-miss qualification; #802/#517 remain open.
 
-The local beta installer is ready, but Windows canceled the administrator prompt
-before Setup started. The candidate is not installed, original registration is
-retained, and installed webcam/meeting validation has not been claimed.
+The local beta `beta-2026-10-11-690fe1e` was installed on October 12 after the
+administrator prompt was accepted. Setup exited zero, the installed native core
+matches the packaged SHA256, the stable desktop shortcut targets this beta, and
+machine camera registration points to its matching protected DLL. The installer
+retired the previously registered `491e3f7` beta. Service-loaded DLL identity was
+not observable from the unelevated inspection and remains a separate check.
+
+The installed 75-second OS-camera reference passed after its fixed 30-second
+warmup: 2,701 independently decoded counter frames over 45 seconds had zero
+invalid, repeated, missing or reordered identities; maximum arrival interval was
+20.664 ms. Native observations recorded 2,869 delivered frames and completed
+Program display copies with zero measured delivery misses, reuse, refusal,
+skips or reordering. Startup observations remain retained. This synthetic pass
+does not establish physical Program presentation or mixed-source/A/V acceptance.
+
+The installed app joined the authorized real test meeting, obtained raw-recording
+privilege and received eight Zoom feeds alongside one live 1080p capture. The
+longer installed observation is in progress; it is not yet a qualification pass.
