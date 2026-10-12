@@ -923,7 +923,7 @@ std::vector<rpc::Json> MediaCore::drainPreviewSharedTextureEvents() {
 }
 
 void MediaCore::enqueueProgramFramePreviewEvent() {
-  if (audioWorkerActive_) {
+  if (programPreviewPumpActive_) {
     // Only a small, optional preview is retained, never full Program pixels or
     // a GPU resource. Replaceable thumbnails have one pending job.
     if (lastProgramFrame_.preview.bgra.size() > 1024 * 1024) return;
