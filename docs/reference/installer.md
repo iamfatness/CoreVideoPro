@@ -18,6 +18,11 @@ invokes older uninstallers or changes webcam registration: legacy uninstallers
 can otherwise unregister the newly installed camera. The upgrade helper tests use
 an isolated registry namespace and temporary fixtures.
 
+Payload hashes are streamed through .NET SHA-256 rather than relying on
+`Get-FileHash` resolution in Setup's PowerShell helper (#883). The retirement
+regression also runs with that command masked in the planner module on both
+32-bit and 64-bit Windows PowerShell.
+
 Failure rollback must move Setup's working directory out of `$INSTDIR` before
 removing the owned payload and empty installation directory. `SetOutPath` sets
 both the extraction destination and process working directory. A camera preflight

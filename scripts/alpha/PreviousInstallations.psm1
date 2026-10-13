@@ -1,6 +1,21 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Get-InstallPayloadSha256 {
+    param([string]$Path)
+    # Setup's helper must not depend on Get-FileHash command/module resolution.
+    # Stream the validated payload rather than allocating an entire DLL in memory.
+    $hash = [Security.Cryptography.SHA256]::Create()
+    $stream = $null
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        return [BitConverter]::ToString($hash.ComputeHash($stream)).Replace('-', '')
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        $hash.Dispose()
+    }
+}
+
 function Get-OwnedInstallPath {
     param([string]$Root, [string]$Relative)
     if (!$Relative -or [IO.Path]::IsPathRooted($Relative) -or $Relative -match '[:]|(^|[\\/])\.\.([\\/]|$)') {
@@ -58,7 +73,7 @@ function Get-PreviousInstallationPlan {
                 $path = Get-OwnedInstallPath $app $file.path
                 if ($file.sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Invalid payload hash.' }
                 if (Test-Path -LiteralPath $path -PathType Leaf) {
-                    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $file.sha256) { $paths.Add($path) }
+                    if ((Get-InstallPayloadSha256 -Path $path) -eq $file.sha256) { $paths.Add($path) }
                     else { $preserved.Add($path) }
                 }
             }
