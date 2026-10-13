@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
@@ -12,7 +13,12 @@ class Json {
  public:
   using Array = std::vector<Json>;
   using Object = std::map<std::string, Json>;
-  using Value = std::variant<std::nullptr_t, bool, double, std::string, Array, Object>;
+  using StringValue = std::shared_ptr<const std::string>;
+  using ArrayValue = std::shared_ptr<const Array>;
+  using ObjectValue = std::shared_ptr<const Object>;
+  // Containers/strings are immutable leases. Capturing control metadata does
+  // not recursively allocate or copy an entire scene/roster tree.
+  using Value = std::variant<std::nullptr_t, bool, double, StringValue, ArrayValue, ObjectValue>;
 
   Json();
   Json(std::nullptr_t);
@@ -23,6 +29,13 @@ class Json {
   Json(std::string value);
   Json(Array value);
   Json(Object value);
+  Json(const Json&) = default;
+  Json& operator=(const Json&) = default;
+  Json(Json&& other) noexcept : value_(std::move(other.value_)) { other.value_ = nullptr; }
+  Json& operator=(Json&& other) noexcept {
+    if (this != &other) { value_ = std::move(other.value_); other.value_ = nullptr; }
+    return *this;
+  }
 
   [[nodiscard]] bool isNull() const;
   [[nodiscard]] bool isBool() const;

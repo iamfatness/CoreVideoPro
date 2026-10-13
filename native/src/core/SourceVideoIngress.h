@@ -40,5 +40,7 @@ struct SourcePresentationPolicy {
 // SourceBus owns counters and health; this is their one wire projection.
 rpc::Json sourceHealthState(const SourceBus* bus, int64_t nowNs,
     const std::function<SourcePresentationPolicy(const std::string&)>& policyFor);
+rpc::Json sourceHealthState(const std::vector<SourceBus::SourceStatus>& sources,
+    const std::function<SourcePresentationPolicy(const std::string&)>& policyFor);
 
 } // namespace corevideo::core

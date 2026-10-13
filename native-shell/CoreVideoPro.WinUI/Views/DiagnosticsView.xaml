@@ -41,6 +41,9 @@
                 <TextBlock Text="{x:Bind ViewModel.NativeAudioRuntimeStatus, Mode=OneWay}"
                            Style="{StaticResource OperatorSummary}"
                            TextWrapping="WrapWholeWords" />
+                <TextBlock Text="{x:Bind ViewModel.AudioObservationStatus, Mode=OneWay}"
+                           Style="{StaticResource OperatorSummary}"
+                           TextWrapping="WrapWholeWords" />
             </StackPanel>
             <Button Grid.Column="1"
                     Content="Export support bundle"

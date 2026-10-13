@@ -1,5 +1,9 @@
 #include "core/BoundedAsyncLog.h"
 #include "rpc/BoundedResponseLane.h"
+#include "rpc/ResourceEventLane.h"
+#include "rpc/ResponseAssemblyLane.h"
+#include "modules/ProgramFramePreview.h"
+#include <array>
 #include "rpc/JsonRpcServer.h"
 
 #include "core/LockHoldGuardrail.h"
@@ -55,8 +59,8 @@ Json::Array commandBatch(const Json& request) {
 
 }  // namespace
 
-JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler)
-    : mediaCore_(mediaCore), joinHandler_(std::move(joinHandler)) {
+JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler, SnapshotAssembler assembler)
+    : mediaCore_(mediaCore), joinHandler_(std::move(joinHandler)), snapshotAssembler_(std::move(assembler)) {
   std::random_device random;
   processEpoch_ = std::to_string(random()) + "-" + std::to_string(random());
 }
@@ -385,36 +389,60 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // fast but stuck in the output queue / blocked in flush() because the stdout pipe
   // is backed up by the high-rate base64 frame stream and a slow consumer".
   using Stamp = std::chrono::steady_clock::time_point;
+  ResourceEventLane outResources;
   BoundedResponseLane outHi;  // command responses / failures, depth-capped
   std::deque<std::pair<std::string, Stamp>> outLo;  // frame-preview events (droppable)
   std::atomic<bool> stopping{false};
 
   auto enqueueResponse = [&](std::string message) {
+    if (message.size() > BoundedResponseLane::kMaxMessageBytes) {
+      const auto parsed = Json::parse(message);
+      const auto id = parsed && parsed->get("id") ? *parsed->get("id") : Json("unknown");
+      message = failure(id, "response-too-large",
+          "Response exceeds 4 MiB. Accepted mutations remain applied; request status again.").stringify();
+    }
     {
-      std::lock_guard<std::mutex> lock(outMx);
-      if (outHi.push(std::move(message))) {
-        ::corevideo::core::nativeLogf("[rpc] response lane overflow dropped=%llu depth=%zu\n",
-                     static_cast<unsigned long long>(outHi.dropped()), outHi.size());
-      }
+      std::unique_lock<std::mutex> lock(outMx);
+      outCv.wait(lock, [&] { return outHi.canPush(message.size()); });
+      outHi.push(std::move(message)); // capacity reserved; never drop accepted ACKs
     }
     outCv.notify_one();
   };
   auto enqueueFrame = [&](std::string message) {
+    std::string retired;
     {
       std::lock_guard<std::mutex> lock(outMx);
       if (outLo.size() >= kMaxPendingFrameEvents) {
-        outLo.pop_front();  // drop oldest frame; preview is latest-wins
+        retired = std::move(outLo.front().first);
+        outLo.pop_front();  // retire the discarded thumbnail after unlocking
       }
       outLo.emplace_back(std::move(message), std::chrono::steady_clock::now());
     }
     outCv.notify_one();
   };
 
+  auto enqueueResource = [&](const Json& event) {
+    const auto key = event.getString("type") + ":" + event.getString("participantId") + ":" + event.getString("instanceId");
+    auto message = event.stringify(); // never coreMutex or outMx
+    ResourceEventLane::PushResult result;
+    std::uint64_t refused = 0;
+    {
+      std::lock_guard<std::mutex> lock(outMx);
+      result = outResources.push(key, std::move(message));
+      refused = outResources.refused();
+    }
+    if (!result.admitted) {
+      ::corevideo::core::nativeLogf("[rpc] structural event refused count=%llu key=%s\n",
+          static_cast<unsigned long long>(refused), key.c_str());
+    }
+    outCv.notify_one(); // result retires old/rejected bytes after the mailbox lock
+  };
+
   std::thread writer([&] {
     std::unique_lock<std::mutex> lock(outMx);
     for (;;) {
-      outCv.wait(lock, [&] { return !outHi.empty() || !outLo.empty() || stopping.load(); });
-      while (!outHi.empty() || !outLo.empty()) {
+      outCv.wait(lock, [&] { return !outHi.empty() || !outResources.empty() || !outLo.empty() || stopping.load(); });
+      while (!outHi.empty() || !outResources.empty() || !outLo.empty()) {
         std::string message;
         Stamp enqueuedAt;
         bool isResponse;
@@ -425,6 +453,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           message = std::move(item.first);
           enqueuedAt = item.second;
           isResponse = true;
+        } else if (!outResources.empty()) {
+          auto item = outResources.popFront();
+          message = std::move(item.message);
+          enqueuedAt = item.stamp;
+          isResponse = false;
         } else {
           message = std::move(outLo.front().first);
           enqueuedAt = outLo.front().second;
@@ -432,6 +465,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           isResponse = false;
         }
         lock.unlock();
+        outCv.notify_all(); // wake off-lock response producers after dequeue
         const auto wStart = std::chrono::steady_clock::now();
         const auto sojournMs =
             std::chrono::duration_cast<std::chrono::milliseconds>(wStart - enqueuedAt).count();
@@ -537,6 +571,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // Flip MediaCore to worker mode: the heavy audio/output half no longer runs on the
   // command thread inside renderSyntheticTick — the audioOutputThread below drives it.
   // (Set before any thread starts so the bool is published before concurrent reads.)
+  mediaCore_.setProgramPreviewPumpActive(true);
   mediaCore_.enableAudioOutputWorker();
 
   // Dedicated render thread: drives the light, video-only display render (GPU
@@ -617,31 +652,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         const auto t1 = std::chrono::steady_clock::now();
         mediaCore_.renderDisplayTick(cadence.slotIndex(),
             std::chrono::duration_cast<std::chrono::nanoseconds>(cadenceAnchor.time_since_epoch()).count());
-        // The event drain + stringify + enqueue below runs UNDER coreMutex but
-        // outside MediaCore's own stage instrumentation, so it was invisible in
-        // the "[render] stages" line — the unaccounted remainder of a long tick.
-        // Participant texture events scale with the roster (10x1080p = 10 events
-        // per tick, each JSON-serialized here), so it must be attributed.
+        // Surface events are drained by the off-lock resource pump. Rendering
+        // never formats JSON or enters the stdout mailbox.
         const auto tDrain = std::chrono::steady_clock::now();
-        for (const auto& event : mediaCore_.drainProgramSharedTextureEvents()) {
-          enqueueFrame(event.stringify());
-        }
-        for (const auto& event : mediaCore_.drainParticipantSharedTextureEvents()) {
-          enqueueFrame(event.stringify());
-        }
-        for (const auto& event : mediaCore_.drainGradePreviewEvents()) {
-          enqueueFrame(event.stringify());
-        }
-        // The multiview shared-texture event is tiny and emitted only on
-        // structural change, so draining it on the render thread is cheap.
-        for (const auto& event : mediaCore_.drainMultiviewSharedTextureEvents()) {
-          enqueueFrame(event.stringify());
-        }
-        // The preview shared-texture event is likewise tiny + structural-change-
-        // gated, so it is cheap to drain here alongside program/multiview.
-        for (const auto& event : mediaCore_.drainPreviewSharedTextureEvents()) {
-          enqueueFrame(event.stringify());
-        }
         const auto t2 = std::chrono::steady_clock::now();
         tickLockWaitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
         tickWorkNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
@@ -750,6 +763,29 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           cadence.maximumCompletionLatenessNs(), tickLockWaitNs, tickWorkNs, tickDrainNs);
     }
     reportCadence("end"); // includes the final partial 120-frame window
+  });
+
+  // Move-only drain under a short, opportunistic core lock. Formatting, queue
+  // contention and final event retirement stay on this optional worker. Surface
+  // announcements have their own bounded latest-per-surface lane, independent
+  // of the six-message disposable thumbnail queue.
+  std::thread resourcePumpThread([&] {
+    while (!stopping.load()) {
+      std::array<std::vector<Json>, 5> batches;
+      {
+        std::unique_lock<std::mutex> lock(coreMutex, std::try_to_lock);
+        if (lock.owns_lock()) {
+          core::ScopedLockHoldTimer timer("rpc.resource-drain", core::LockHoldGuardrail::kDefaultBudgetUs);
+          batches[0] = mediaCore_.drainProgramSharedTextureEvents();
+          batches[1] = mediaCore_.drainParticipantSharedTextureEvents();
+          batches[2] = mediaCore_.drainGradePreviewEvents();
+          batches[3] = mediaCore_.drainMultiviewSharedTextureEvents();
+          batches[4] = mediaCore_.drainPreviewSharedTextureEvents();
+        }
+      }
+      for (const auto& batch : batches) for (const auto& event : batch) enqueueResource(event);
+      std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    }
   });
 
   // Dedicated Zoom-frame pump: drains the engine frame queue -> stdout on its own
@@ -987,7 +1023,48 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
     }
   });
 
-  auto lastPump = std::chrono::steady_clock::now();
+  // Optional thumbnail work owns its pump, independently of command/response
+  // pressure. No readback is requested; only an existing bounded preview moves.
+  std::thread programPreviewPumpThread([&] {
+    while (!stopping.load()) {
+      const auto p0 = std::chrono::steady_clock::now();
+      std::vector<Json> previewEvents;
+      std::unique_ptr<modules::ProgramFrame> previewJob;
+      {
+        std::unique_lock<std::mutex> lock(coreMutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+          std::this_thread::sleep_until(p0 + kFramePumpInterval);
+          continue;
+        }
+        // The drain moves owning JSON values and leaves the producer queue empty.
+        core::ScopedLockHoldTimer holdGuard("cmd.frame-pump",
+                                            core::LockHoldGuardrail::kFramePumpBudgetUs);
+        previewEvents = mediaCore_.drainProgramFramePreviewEvents();
+        previewJob = mediaCore_.drainProgramPreviewJob();
+      }
+      const auto drainedAt = std::chrono::steady_clock::now();
+      if (previewJob) {
+        auto preview = modules::programFramePreviewJson(*previewJob);
+        mediaCore_.publishEncodedProgramPreview(preview);
+        if (!preview.isNull()) previewEvents.emplace_back(Json::Object{{"type", "program-frame-preview"}, {"preview", std::move(preview)}});
+      }
+      for (const auto& event : previewEvents) {
+        enqueueFrame(event.stringify());
+      }
+      const auto pumpMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - p0).count();
+      // Distinguish lock acquisition/drain from serialization/writer queue work.
+      if (pumpMs >= 200) {
+        const auto drainMs = std::chrono::duration_cast<std::chrono::milliseconds>(drainedAt - p0).count();
+        ::corevideo::core::nativeLogf("[pump] preview total=%lldms lockWaitAndDrain=%lldms serializeAndEnqueue=%lldms\n",
+                     static_cast<long long>(pumpMs), static_cast<long long>(drainMs),
+                     static_cast<long long>(pumpMs - drainMs));
+      }
+      std::this_thread::sleep_until(p0 + kFramePumpInterval);
+    }
+  });
+
+  ResponseAssemblyLane assembly(snapshotAssembler_, enqueueResponse);
   for (;;) {
     {
       std::unique_lock<std::mutex> lock(inMx);
@@ -1015,6 +1092,8 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       {
         const std::string reqType = request->getString("type");
         Json response;
+        std::unique_ptr<core::CoreStateCapture> capture;
+        core::SnapshotProjection projection = core::SnapshotProjection::Session;
         std::chrono::steady_clock::time_point h0, h1;
         if ((reqType == "zoom-leave" || reqType == "zoom-cancel") &&
             (!request->get("protocolVersion") || contracts::validateProtocolVersion(*request->get("protocolVersion")))) {
@@ -1044,6 +1123,8 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           // Content parsing owns only the registry mutex; production does not wait.
           h0 = std::chrono::steady_clock::now(); response = handle(*request); h1 = std::chrono::steady_clock::now();
         } else {
+          // Backpressure is admitted before acquiring the render lock.
+          assembly.waitForCapacity();
           auto lock = lockCommandCore();
           // Commands apply state and copy a snapshot under the lock; live render
           // cadence belongs to the display worker. Keep the existing budget as
@@ -1051,10 +1132,20 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
           core::ScopedLockHoldTimer holdGuard("cmd.handle",
                                               core::LockHoldGuardrail::kCommandHandleBudgetUs);
           h0 = std::chrono::steady_clock::now();
-          response = handle(*request);
+          mediaCore_.setSnapshotDeferrer([&](std::unique_ptr<core::CoreStateCapture> value, core::SnapshotProjection kind) {
+            capture = std::move(value); projection = kind; return Json(nullptr);
+          });
+          try { response = handle(*request); }
+          catch (...) { mediaCore_.setSnapshotDeferrer({}); throw; }
+          mediaCore_.setSnapshotDeferrer({});
           h1 = std::chrono::steady_clock::now();
         }
         const auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(h1 - h0).count();
+        const auto heldUs = std::chrono::duration_cast<std::chrono::microseconds>(h1 - h0).count();
+        if (heldUs > core::LockHoldGuardrail::kCommandHandleBudgetUs) {
+          ::corevideo::core::nativeVerboseLogf("[command-lock] type=%.80s held_us=%lld capture_deferred=%u\n",
+              reqType.c_str(), static_cast<long long>(heldUs), capture ? 1u : 0u);
+        }
         const auto lockWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(h0 - dequeuedAt).count();
         if (heldMs >= 30) {
           const bool lockFree = reqType == "zoom-join" && mediaCore_.zoomEngineConfigured();
@@ -1073,6 +1164,13 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         }
         // handle() returns an owning snapshot. Serialization can be expensive
         // for a full production sync, and does not need to block the renderer.
+        if (capture) {
+          const std::string field = projection == core::SnapshotProjection::Health ? "health" :
+              projection == core::SnapshotProjection::Profile ? "profile" :
+              reqType == "get-output-session" ? "session" : "snapshot";
+          assembly.submit({std::move(response), std::move(capture), projection, field});
+          continue;
+        }
         const auto serializeStart = std::chrono::steady_clock::now();
         auto responseStr = response.stringify();
         const auto serializeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1092,37 +1190,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       }
     }
 
-    const auto now = std::chrono::steady_clock::now();
 
-    // The render thread drives the display render + shared-texture pump. Here we
-    // only pump the heavy base64 frame/preview events, on a throttled cadence so
-    // they don't starve responses. Only move the owning event snapshots while
-    // holding coreMutex; serialize and enqueue them after releasing it.
-    if (now - lastPump >= kFramePumpInterval) {
-      const auto p0 = std::chrono::steady_clock::now();
-      std::vector<Json> previewEvents;
-      {
-        auto lock = lockCommandCore();
-        // The drain moves owning JSON values and leaves the producer queue empty.
-        core::ScopedLockHoldTimer holdGuard("cmd.frame-pump",
-                                            core::LockHoldGuardrail::kFramePumpBudgetUs);
-        previewEvents = mediaCore_.drainProgramFramePreviewEvents();
-      }
-      const auto drainedAt = std::chrono::steady_clock::now();
-      for (const auto& event : previewEvents) {
-        enqueueFrame(event.stringify());
-      }
-      const auto pumpMs =
-          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - p0).count();
-      // Distinguish lock acquisition/drain from serialization/writer queue work.
-      if (pumpMs >= 200) {
-        const auto drainMs = std::chrono::duration_cast<std::chrono::milliseconds>(drainedAt - p0).count();
-        ::corevideo::core::nativeLogf("[pump] preview total=%lldms lockWaitAndDrain=%lldms serializeAndEnqueue=%lldms\n",
-                     static_cast<long long>(pumpMs), static_cast<long long>(drainMs),
-                     static_cast<long long>(pumpMs - drainMs));
-      }
-      lastPump = now;
-    }
   }
 
   {
@@ -1132,12 +1200,16 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   }
   joinCv.notify_one();
   joinWorker.join(); // waits only for cancellation-aware spawn/auth teardown, never coreMutex
+  assembly.finish(); // drain accepted responses while media owners still exist
   stopping.store(true);
   coreHandoff.notify_all();
   outCv.notify_one();
   if (renderThread.joinable()) {
     renderThread.join();
   }
+  if (resourcePumpThread.joinable()) resourcePumpThread.join();
+  if (programPreviewPumpThread.joinable()) programPreviewPumpThread.join();
+  mediaCore_.setProgramPreviewPumpActive(false);
   if (zoomPumpThread.joinable()) {
     zoomPumpThread.join();
   }

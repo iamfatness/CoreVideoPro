@@ -90,9 +90,13 @@ void appendStillSourceVideo(SourceBus& bus,
 // policy callback is shell/core presentation state and defaults to hold.
 rpc::Json sourceHealthState(const SourceBus* bus, int64_t nowNs,
     const std::function<SourcePresentationPolicy(const std::string&)>& policyFor) {
+  return sourceHealthState(bus ? bus->snapshot(nowNs) : std::vector<SourceBus::SourceStatus>{}, policyFor);
+}
+rpc::Json sourceHealthState(const std::vector<SourceBus::SourceStatus>& statuses,
+    const std::function<SourcePresentationPolicy(const std::string&)>& policyFor) {
   rpc::Json::Array sources;
-  if (bus) {
-    for (const auto& source : bus->snapshot(nowNs)) {
+  {
+    for (const auto& source : statuses) {
       const auto policy = policyFor(source.descriptor.sourceId);
       sources.push_back(rpc::Json::Object{
           {"sourceId", source.descriptor.sourceId},

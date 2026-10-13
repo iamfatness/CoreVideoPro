@@ -38,15 +38,14 @@ class LockHoldGuardrail {
   // The threading contract: un-sanctioned coreMutex holds stay under 1ms.
   static constexpr long long kDefaultBudgetUs = 1000;
   // Sanctioned long-hold sites (each is a deliberate design decision):
-  //  - cmd.handle: command mutation and snapshot copying, without live render
-  //    catch-up. Retain the existing budget as a regression backstop above the
-  //    `[cmd] held core lock` warning at 30ms.
-  static constexpr long long kCommandHandleBudgetUs = 50'000;
+  //  - cmd.handle: bounded command mutation/metadata capture only. Projection,
+  //    capacity waits, serialization and backend device work are off-lock.
+  static constexpr long long kCommandHandleBudgetUs = kDefaultBudgetUs;
   //  - render.display-tick: the video-only GPU tick typically holds ~1-2ms;
   //    half a 60fps frame budget is the alarm line.
   static constexpr long long kRenderTickBudgetUs = 8'000;
-  //  - cmd.frame-pump: base64 preview stringify/enqueue on the throttled pump.
-  static constexpr long long kFramePumpBudgetUs = 8'000;
+  //  - cmd.frame-pump: move the optional thumbnail job; encoding is off-lock.
+  static constexpr long long kFramePumpBudgetUs = kDefaultBudgetUs;
 
   // Records one completed hold of `heldUs` at `site` against `budgetUs`.
   // Returns true when the hold exceeded the budget.

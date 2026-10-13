@@ -10,8 +10,9 @@ namespace corevideo::rpc {
 class JsonRpcServer {
  public:
   using JoinHandler = std::function<Json(const Json&, const std::function<bool()>&)>;
+  using SnapshotAssembler = std::function<Json(const core::CoreStateCapture&, core::SnapshotProjection)>;
   // Injectable lifecycle boundary for deterministic delayed-auth/cancellation tests.
-  explicit JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler = {});
+  explicit JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler = {}, SnapshotAssembler assembler = {});
 
   [[nodiscard]] Json handshake() const;
   [[nodiscard]] Json handle(const Json& request);
@@ -25,6 +26,7 @@ class JsonRpcServer {
   core::MediaCore& mediaCore_;
   std::string processEpoch_;
   JoinHandler joinHandler_;
+  SnapshotAssembler snapshotAssembler_;
 };
 
 }  // namespace corevideo::rpc

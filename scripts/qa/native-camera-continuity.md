@@ -27,7 +27,12 @@ capture. Duration must be 65..7200 seconds. Only processes created by this
 harness are terminated during cleanup.
 
 The output retains setup, native snapshots, stderr, raw per-sample pixel
-identities and a JSON verdict. PASS requires receiver exit success, advancing
+identities and a JSON verdict. With `--monitors`, Program/Preview multiview is
+enabled and the verdict also requires progressing display-copy observations with
+no measured reuse/refusal/skip/reorder increments. These sparse observations do
+not replace the independent multiview GPU pixel phase tests.
+
+PASS requires receiver exit success, advancing
 native delivery without buffer losses, and the independent OS-camera judge:
 verified 60/1 cadence, no invalid/torn/duplicate/missing/reordered identities,
 at least 30 measured seconds and no unexplained arrival interval above 33.4 ms.
