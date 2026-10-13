@@ -44,6 +44,12 @@ try {
     Assert (!(Test-Path (Join-Path $registryRoot 'CoreVideoPro-beta-2026-10-11-old'))) 'Old registry entry survived.'
 
     $running = New-Fixture 'beta-2026-10-11-running'
+    $metadata = New-Fixture 'beta-2026-10-11-metadata'
+    [IO.File]::WriteAllText((Join-Path $metadata 'previous-installations-cleanup.json'), '[]')
+    $metadataPlan = @(Get-PreviousInstallationPlan @arguments) | Where-Object directory -eq $metadata
+    $metadataResult = Remove-PreviousInstallation $metadataPlan
+    Assert ($metadataResult.status -eq 'removed') 'Installer metadata retirement failed.'
+    Assert (!(Test-Path -LiteralPath $metadata)) 'Cleanup report left an otherwise retired version folder.'
     $arguments.RunningPaths = @((Join-Path $running 'app.exe'))
     $plan = @(Get-PreviousInstallationPlan @arguments)
     Assert ($plan[0].status -eq 'retained' -and $plan[0].reason -match 'running') 'Running version was not retained.'

@@ -128,7 +128,7 @@ function Remove-PreviousInstallation {
         }
         # Retain marker/manifest/uninstaller if any payload operation failed, so
         # the user can retry. Metadata is retired only after payload completion.
-        foreach ($relative in @('Uninstall.exe','.camera-registration-before.json','.corevideo-prerelease-install','build-manifest.json')) {
+        foreach ($relative in @('Uninstall.exe','.camera-registration-before.json','.corevideo-prerelease-install','build-manifest.json','previous-installations-cleanup.json')) {
             $path = Get-OwnedInstallPath $Plan.directory $relative
             if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
         }
