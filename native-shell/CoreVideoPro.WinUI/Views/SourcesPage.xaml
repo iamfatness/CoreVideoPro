@@ -136,11 +136,14 @@
                         <Button Content="Move forward" Command="{x:Bind Workspace.MoveForwardCommand, Mode=OneWay}"/>
                         <Button Grid.Column="1" Content="Move back" Command="{x:Bind Workspace.MoveBackCommand, Mode=OneWay}"/>
                     </Grid>
-                    <Pivot Grid.Row="2">
+                    <Pivot Grid.Row="2" IsHeaderItemsCarouselEnabled="False">
+                        <Pivot.HeaderTemplate>
+                            <DataTemplate><TextBlock Text="{Binding}" FontSize="16"/></DataTemplate>
+                        </Pivot.HeaderTemplate>
                         <PivotItem Header="Transform">
                             <ScrollViewer HorizontalScrollBarVisibility="Disabled">
                                 <StackPanel Spacing="10" Padding="0,12,8,12">
-                                    <ContentControl Content="{x:Bind Workspace.Selected, Mode=OneWay}" IsEnabled="{x:Bind Workspace.CanEditSelected, Mode=OneWay}">
+                                    <ContentControl Content="{x:Bind Workspace.Selected, Mode=OneWay}" HorizontalContentAlignment="Stretch" IsEnabled="{x:Bind Workspace.CanEditSelected, Mode=OneWay}">
                                         <ContentControl.ContentTemplate>
                                             <DataTemplate x:DataType="vm:SceneCanvasLayerViewModel">
                                                 <StackPanel Spacing="12">
@@ -179,7 +182,10 @@
                             </ScrollViewer>
                         </PivotItem>
                         <PivotItem Header="Tiles" Visibility="{x:Bind Workspace.IsWallSelected, Mode=OneWay, Converter={StaticResource BoolToVis}}">
-                            <Pivot>
+                            <Pivot IsHeaderItemsCarouselEnabled="False">
+                                <Pivot.HeaderTemplate>
+                                    <DataTemplate><TextBlock Text="{Binding}" FontSize="14"/></DataTemplate>
+                                </Pivot.HeaderTemplate>
                                 <PivotItem Header="Layout">
                                     <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
                                         <StackPanel Spacing="12" Padding="0,12,8,12">
