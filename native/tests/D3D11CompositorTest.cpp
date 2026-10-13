@@ -683,6 +683,32 @@ TEST(StubCompositor, TransparentChromaKeyLayerRevealsLowerLayer) {
 #endif
 
 #if COREVIDEO_WITH_D3D11
+TEST(D3D11Compositor, FramingChangesHeldSourcePixelsWithoutReplacingTheSource) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_TRUE(compositor);
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.width = 640; plan.height = 360;
+  plan.layers.push_back({"camera", "participant-video", "zoom:camera", "camera",
+                         0, {0, 0, 1, 1}, 1});
+  auto& layer = plan.layers.front();
+  layer.fitMode = "stretch";
+  layer.sourceScale = 2.f;
+  auto source = makeLeftRightBandFrame("camera", 64, 36, 64, 36,
+                                      0xff40d080, 0xff8040ff);
+  source.frameId = 7;
+  layer.sourceOffsetX = -1.f;
+  const auto left = compositor->render(plan, {source});
+  layer.sourceOffsetX = 1.f;
+  const auto right = compositor->render(plan, {source});
+  ASSERT_FALSE(left.preview.bgra.empty());
+  ASSERT_FALSE(right.preview.bgra.empty());
+  EXPECT_EQ(previewPixelRgba(left.preview, 160, 90), 0xff40d080u);
+  EXPECT_EQ(previewPixelRgba(right.preview, 160, 90), 0xff8040ffu);
+  EXPECT_NE(left.preview.bgra, right.preview.bgra);
+  layer.sourceOffsetX = -1.f;
+  EXPECT_EQ(compositor->render(plan, {source}).preview.bgra, left.preview.bgra);
+}
+
 TEST(D3D11Compositor, NamedLookChangesHeldSourcePixelsAndCanReturnToNeutral) {
   for (const bool i420 : {false, true}) {
   auto compositor = corevideo::modules::createD3D11Compositor();
