@@ -1,6 +1,7 @@
 using CoreVideoPro.WinUI.Models;
 using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
+using DispatcherQueuePriority = Microsoft.UI.Dispatching.DispatcherQueuePriority;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -105,14 +106,36 @@ public sealed partial class SourcesPage
             ConfigureInspectorTabs();
         }
     }
+    private bool _inspectorTabsRefreshQueued;
     private void ConfigureInspectorTabs()
+    {
+        // Scene selection/color hydration can arrive inside a XAML callback.
+        // Changing Pivot membership there can invalidate its native collection.
+        if (_inspectorTabsRefreshQueued) return;
+        _inspectorTabsRefreshQueued = true;
+        UiDispatch.Enqueue(DispatcherQueue, DispatcherQueuePriority.Low, () =>
+        {
+            try { if (IsLoaded && Workspace is not null) ReconcileInspectorTabs(); }
+            finally { _inspectorTabsRefreshQueued = false; }
+        }, "scene-workspace.inspector-tabs");
+    }
+    private void ReconcileInspectorTabs()
     {
         var tabs=Workspace?.IsWallSelected==true
             ? new[]{LayoutInspectorTab,StyleInspectorTab,MembersInspectorTab,TransformInspectorTab}
             : new[]{TransformInspectorTab,AppearanceInspectorTab,SourceInspectorTab};
         if(InspectorTabs.Items.Cast<PivotItem>().SequenceEqual(tabs))return;
-        InspectorTabs.Items.Clear();foreach(var tab in tabs)InspectorTabs.Items.Add(tab);
-        InspectorTabs.SelectedItem=tabs[0];
+        var selected = InspectorTabs.SelectedItem;
+        for (var index = InspectorTabs.Items.Count - 1; index >= 0; index--)
+            if (!tabs.Contains(InspectorTabs.Items[index])) InspectorTabs.Items.RemoveAt(index);
+        for (var index = 0; index < tabs.Length; index++)
+        {
+            var current = InspectorTabs.Items.IndexOf(tabs[index]);
+            if (current == index) continue;
+            if (current >= 0) InspectorTabs.Items.RemoveAt(current);
+            InspectorTabs.Items.Insert(index, tabs[index]);
+        }
+        InspectorTabs.SelectedItem = tabs.Contains(selected) ? selected : tabs[0];
     }
     private void OnSourceListSelectionChanged(object sender,SelectionChangedEventArgs e)
     {FlushGraphicEdit();if(Workspace?.Selected is {} layer)SceneCanvasEditor.SelectLayer(layer);}

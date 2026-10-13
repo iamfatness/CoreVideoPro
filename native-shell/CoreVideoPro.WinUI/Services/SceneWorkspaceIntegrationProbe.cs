@@ -37,13 +37,37 @@ internal static class SceneWorkspaceIntegrationProbe
         Require(workspace.Items.Count==1 && workspace.Items[0].IsTilesWall,"Wall was not a single scene item");
         checks.Add("compiled Scene Builder displays a zero-route Tiles wall as one editable source");
         var tabs=(Pivot)page.FindName("InspectorTabs");
+        await Eventually(()=>tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}));
         Require(tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}),"Tiles inspector does not match the approved flat tabs");
         window.AppWindow.Resize(new SizeInt32(1920,1080));await Task.Delay(100);page.UpdateLayout();canvas.UpdateLayout();
         var viewbox=(Viewbox)canvas.FindName("CanvasViewbox");
         Require(viewbox.ActualWidth>640 && viewbox.ActualHeight>360,"Canvas retains the legacy thumbnail-size viewport cap");
         checks.Add("approved flat Tiles tabs and a canvas fitted to the large workspace rather than the legacy 360px cap");
 
-        var id=studio.PreviewSceneId;studio.ActiveSceneId=id;
+        var id=studio.PreviewSceneId;
+        studio.GalleryBackgroundColor="#102030";workspace.SaveCommand.Execute(null);
+        studio.NewDynamicGalleryCommand.Execute(null);
+        var alternateWallId=studio.PreviewSceneId;
+        studio.GalleryBackgroundColor="#304050";workspace.SaveCommand.Execute(null);
+        var ordinarySceneId=studio.Scenes.First(s=>s.DynamicGallery is null).Id;
+        var transformTab=page.FindName("TransformInspectorTab");
+        for(var cycle=0;cycle<16;cycle++)
+        {
+            studio.SelectSceneCommand.Execute(alternateWallId);await Task.Delay(10);
+            studio.SelectSceneCommand.Execute(ordinarySceneId);await Task.Delay(10);
+            studio.SelectSceneCommand.Execute(id);await Task.Delay(10);
+        }
+        await Eventually(()=>tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}));
+        Require(studio.GalleryBackgroundColor=="#102030","Color hydration changed the selected scene's authored color");
+        Require(tabs.Items.Contains(transformTab),"Tab reconciliation replaced the shared transform control");
+        // A burst must reconcile the latest scene rather than a captured old selection.
+        studio.SelectSceneCommand.Execute(ordinarySceneId);
+        studio.SelectSceneCommand.Execute(alternateWallId);
+        studio.SelectSceneCommand.Execute(id);
+        await Task.Delay(30);
+        Require(studio.GalleryBackgroundColor=="#102030","Rapid scene selection echoed a previous scene's color");
+        checks.Add("compiled inspector survives repeated wall/source scene switches and color hydration without replacing its controls or altering authored colors");
+        studio.ActiveSceneId=id;
         // Mimic the local post-Take reconciliation without sending a command.
         ((ITransportHost)studio).RefreshPreviewRoutingState();
         Require(studio.ProgramSceneRoutes.Count==0,"Probe's initial Program projection is not the empty wall scene");
@@ -102,6 +126,7 @@ internal static class SceneWorkspaceIntegrationProbe
         workspace.Checkpoint();studio.AddCanvasSourceCommand.Execute("input-01");
         await Eventually(()=>workspace.Items.Count==2);
         var source=workspace.Items.Single(i=>!i.IsTilesWall);workspace.Selected=source;
+        await Eventually(()=>tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Transform","Appearance","Source"}));
         Require(tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Transform","Appearance","Source"}),"Ordinary source retains unrelated Tiles tab headers");
         workspace.Checkpoint();source.SetCanvasRect(.1,.2,.4,.4);source.OpacityPercent=62.5;
         source.PixelX=192.5;

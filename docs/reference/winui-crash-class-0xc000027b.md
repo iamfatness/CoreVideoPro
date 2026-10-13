@@ -85,3 +85,13 @@ Rules of thumb: never replace a bound collection at frame rate (sync in place / 
 keep one stable swap chain per surface (program, preview, one multiview);
 present with **skip-present** (only on a new keyed-mutex frame) — smooth-present crashes
 ~31s in.
+
+Scene Builder also produced `coreclr.dll / c0000005` in a managed-to-native
+`ItemCollection.Clear` call (#889, October 13). Its Windows Runtime stack showed
+scene selection -> color-picker TwoWay hydration -> gallery setter -> draft
+initialization -> bound-layer insertion -> inspector refresh -> Pivot clear.
+The gallery echo guard must cover draft initialization, not only the final edit.
+Inspector membership changes must be coalesced outside the current XAML callback,
+reconciled incrementally, and preserve valid selected tab objects. Exercise
+alternating scene types with distinct colors in the compiled-XAML probe; ordinary
+model tests alone did not cover this native callback crash.

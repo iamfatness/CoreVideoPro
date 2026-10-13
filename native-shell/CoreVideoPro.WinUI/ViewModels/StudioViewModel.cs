@@ -13271,9 +13271,11 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void UpdateGallery(Action<DynamicGallerySettings> update)
     {
-        EnsureWorkspaceDraft();
         _galleryEditGuard.TryEdit(() =>
         {
+            // Binding hydration must not initialize a draft or mutate bound
+            // layers before the echo guard rejects it (#889).
+            EnsureWorkspaceDraft();
             if (PreviewScene.DynamicGallery is { } settings)
             {
                 UpdateGalleryCore(settings, update);
