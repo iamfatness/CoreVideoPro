@@ -1515,7 +1515,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _zoomOAuthCoordinator = new ZoomOAuthAppCoordinator(
             _zoomOAuth,
             Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
-        if (Environment.ProcessPath is { } exePath)
+        if (startup.StartInteractiveServices && Environment.ProcessPath is { } exePath)
         {
             if (_zoomOAuthCoordinator.TryRegisterProtocolHandler(exePath, out var protocolError))
             {
@@ -1526,7 +1526,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 LaunchLog.Write($"oauth: callback protocol registration failed: {protocolError}");
             }
         }
-        _zoomOAuthCoordinator.Initialize();
+        if (startup.StartInteractiveServices) _zoomOAuthCoordinator.Initialize();
 
         Settings = new SettingsViewModel(
             _bridge,
