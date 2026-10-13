@@ -23,8 +23,9 @@ public sealed class StudioStartupBootstrap
     public ProductionPreferencesLoadResult Loaded { get; }
     public Exception? LoadError { get; }
     public int ProgramBufferFrames { get; }
+    public bool StartInteractiveServices { get; private set; } = true;
 
-    public static StudioStartupBootstrap Create(IProductionOutputPreferencesStore store, MediaCoreBridgeService? bridge = null)
+    public static StudioStartupBootstrap Create(IProductionOutputPreferencesStore store, MediaCoreBridgeService? bridge = null,bool startInteractiveServices=true)
     {
         ProductionPreferencesLoadResult loaded;
         Exception? error = null;
@@ -38,7 +39,7 @@ public sealed class StudioStartupBootstrap
             error = ex;
             loaded = new ProductionPreferencesLoadResult(ProductionPreferencesLoadStatus.Unreadable, null);
         }
-        return new StudioStartupBootstrap(store, bridge ?? new MediaCoreBridgeService(), loaded, error);
+        return new StudioStartupBootstrap(store, bridge ?? new MediaCoreBridgeService(), loaded, error) {StartInteractiveServices=startInteractiveServices};
     }
 
     public void Restore(Action<ProductionOutputPreferences> apply)

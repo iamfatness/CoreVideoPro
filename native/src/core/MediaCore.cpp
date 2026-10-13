@@ -2194,6 +2194,9 @@ TilesLayerState parseTilesLayer(const rpc::Json& node, std::vector<std::string>*
   tiles.present = true;
   tiles.layerId = node.getString("layerId");
   tiles.order = static_cast<int>(node.getNumber("order", 0.0));
+  const double wallOpacity = node.getNumber("opacity", 1.0);
+  tiles.opacity = static_cast<float>(std::isfinite(wallOpacity) ? std::clamp(wallOpacity, 0.0, 1.0) : 1.0);
+  tiles.transparentBackground = node.get("transparentBackground") && node.get("transparentBackground")->asBool();
   if (const auto* style = node.get("style"); style && style->isObject()) {
     tiles.style.manualFill = style->getString("fillMode", "auto") == "manual";
     tiles.style.backgroundSourceId = style->getString("backgroundSourceId");
@@ -2690,6 +2693,7 @@ void MediaCore::loadSceneGraph(const rpc::Json& command) {
       // them would break the rollout. Ignored, silently.
       // Operator "loop" for a routed asset (shell: MediaRoutePlaybackService.IsLoopingAsset).
       state.mediaAssetLoop = route.get("mediaAssetLoop") && route.get("mediaAssetLoop")->asBool();
+      state.workspaceAuthored = route.get("workspaceAuthored") && route.get("workspaceAuthored")->asBool();
       state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
       const rpc::Json* rect = route.get("rect");
       if (rect && rect->isObject()) {
@@ -4193,6 +4197,7 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       // Ignored here too, for the same reason as the load-scene-graph site.
       // Operator "loop" for a routed asset (shell: MediaRoutePlaybackService.IsLoopingAsset).
       state.mediaAssetLoop = route.get("mediaAssetLoop") && route.get("mediaAssetLoop")->asBool();
+      state.workspaceAuthored = route.get("workspaceAuthored") && route.get("workspaceAuthored")->asBool();
       state.zIndex = static_cast<int>(route.getNumber("zIndex", static_cast<double>(routeIndex)));
       if (const rpc::Json* rect = route.get("rect"); rect && rect->isObject()) {
         state.rectX = static_cast<float>(rect->getNumber("x", 0.0));
@@ -6485,7 +6490,9 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       bool duplicatePerson = false;
       if (binding.kind == "participant-video" && !binding.sourceId.empty()) {
         speakerFloor.observeSource(binding.sourceId, route.personId);
-        if (!speakerFloor.claimPersonSlot(binding.sourceId)) {
+        // Explicit workspace instances reuse a feed without another capture/subscription.
+        // Legacy/automatic routes retain the one-person-slot safety policy.
+        if (!route.workspaceAuthored && !speakerFloor.claimPersonSlot(binding.sourceId)) {
           duplicatePerson = true;
           renderPlan.warnings.push_back("Duplicate person slot refused: route:" + route.routeId);
           binding.sourceId.clear();
@@ -6640,7 +6647,8 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
     // instead. hasFillColor/fillColor are the field both the D3D11 path and
     // the CPU preview path actually read for a sourceless solid layer.
     background.hasFillColor = true;
-    background.fillColor = wall.style.backgroundColor;
+    background.fillColor = wall.transparentBackground ? "#00000000" : wall.style.backgroundColor;
+    background.opacity = wall.opacity;
     background.borderColor = wall.style.backgroundColor;
     background.borderStyle = "none";
     background.borderThickness = 0.f;
@@ -6680,6 +6688,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
       background.sourceId = wall.style.backgroundSourceId;
       background.participantId = background.sourceId.rfind("zoom:", 0) == 0 ? background.sourceId.substr(5) : background.sourceId;
       background.rect = wall.rect;
+      background.opacity = wall.opacity;
       background.order = tilesBaseOrder;
       background.fitMode = "fill";
       annotateLayerSource(background, videoFrames, nowNs);
@@ -6767,6 +6776,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
           if (item.hasZ) tileOrder = item.z;
         }
         layer.order = tilesBaseOrder + 1 + tileOrder;
+        layer.opacity = wall.opacity;
         layer.tilesDecoration = wall.style.decoration;
         if (layer.tilesDecoration.glowSize > 0.f && layer.tilesDecoration.glowIntensity > 0.f) {
           auto glow = layer;

@@ -79,6 +79,8 @@ struct TilesMemberOverride {
 };
 
 struct TilesLayerState {
+  float opacity = 1.f;
+  bool transparentBackground = false;
   bool present = false;
   std::string layerId;
   int order = 0;
@@ -537,6 +539,7 @@ class MediaCore {
     // something a route asserts. Both are still SENT by older shells and are
     // read by nobody — silently ignored, never refused.
     bool mediaAssetLoop = false;
+    bool workspaceAuthored = false;
     float rectX = 0.f;
     float rectY = 0.f;
     float rectWidth = 0.f;

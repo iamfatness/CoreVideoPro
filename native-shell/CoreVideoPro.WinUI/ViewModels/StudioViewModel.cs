@@ -1044,7 +1044,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     [ObservableProperty]
     private string _previewSceneBackgroundAssetId = SceneBackgroundSelectionService.NoBackgroundValue;
 
-    public MediaAsset? PreviewSceneBackgroundAsset => ResolveSceneBackgroundAsset(PreviewSceneId);
+    public MediaAsset? PreviewSceneBackgroundAsset => _workspacePreviewScene?.Id==PreviewSceneId ? FindMediaAsset(WorkspaceBackgroundId) : ResolveSceneBackgroundAsset(PreviewSceneId);
 
     public MediaAsset? ProgramSceneBackgroundAsset => ResolveSceneBackgroundAsset(ActiveSceneId);
 
@@ -1459,7 +1459,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
     }
 
-    private StudioViewModel(StudioStartupBootstrap startup)
+    internal StudioViewModel(StudioStartupBootstrap startup)
     {
         _startupBootstrap = startup;
         _bridge = startup.Bridge;
@@ -1567,7 +1567,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             Settings.OauthStatusMessage = message;
             _ = Settings.RefreshOAuthStatusAsync();
         });
-        _zoomOAuthCoordinator.TryDrainPendingCallback();
+        if(startup.StartInteractiveServices)_zoomOAuthCoordinator.TryDrainPendingCallback();
         Transport = new TransportViewModel();
         _transportCoordinator = new global::CoreVideoPro.WinUI.ViewModels.Transport.TransportCoordinator(_bridge, this, this);
         Overlays = new OverlaysViewModel(this);
@@ -1596,6 +1596,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _surfaces.SurfacesChanged += OnSurfacesChanged;
 
         MediaBinGuidance = MediaBinClassifier.BuildEmptyGuidanceMessage();
+        if(startup.StartInteractiveServices)
+        {
         _captureDiscovery.StartWatching(() => _ = RefreshCaptureDevicesAsync());
         _audioCaptureDiscovery.StartWatching(() => _ = RefreshAudioCaptureDevicesAsync());
         _audioRenderDiscovery.StartWatching(() =>
@@ -1607,6 +1609,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _ = RefreshAudioCaptureDevicesAsync();
         _ = RefreshAudioRenderDevicesAsync();
         _ = StartMediaCoreOnLaunchAsync();
+        }
     }
 
     private readonly ObservableCollection<Scene> _scenes;
@@ -1667,7 +1670,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         Scenes.FirstOrDefault(s => string.Equals(s.Id, PreviewSceneId, StringComparison.Ordinal)) ??
         Scenes.First();
 
-    public Scene PreviewScene =>
+    public Scene PreviewScene => WorkspacePreviewScene;
+
+    private Scene StoredPreviewScene =>
         Scenes.FirstOrDefault(s => string.Equals(s.Id, PreviewSceneId, StringComparison.Ordinal)) ??
         Scenes.FirstOrDefault(s => string.Equals(s.Id, _lastValidPreviewSceneId, StringComparison.Ordinal)) ??
         Scenes.FirstOrDefault(s => string.Equals(s.Id, ActiveSceneId, StringComparison.Ordinal)) ??
@@ -3339,6 +3344,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        if(TrySetWorkspaceBackground(value))return;
         var selection = SceneBackgroundSelectionService.ApplySelection(
             PreviewSceneId,
             value,
@@ -3686,11 +3692,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         LaunchLog.WriteVerbose($"scene-selection phase=begin scene={value} gallery={PreviewScene.DynamicGallery is not null} participants={RoomVideoParticipants.Count}");
+        _workspacePreviewScene = null;
         _lastValidPreviewSceneId = value;
         MagicScene.NotifyPreviewSceneChanged();
         // S2b: cueing a different scene abandons any uncommitted edits to the
         // live scene (the draft belongs to the previously cued scene).
         DiscardLivePreviewDraft();
+        RestoreSavedWorkspacePreview(value);
         SceneBuilderName = PreviewScene.Name;
         NotifyDynamicGalleryPropertiesChanged();
         LaunchLog.WriteVerbose($"scene-selection phase=refresh-items scene={value}");
@@ -4130,6 +4138,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
+        CommitWorkspaceScene();
         CopyPreviewRoutesToScene(scene.Id);
         if (updatesProgramScene)
         {
@@ -6286,6 +6295,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task TrySyncMediaCoreAsync()
     {
+        if (!_startupBootstrap.StartInteractiveServices) return;
         // Don't re-sync in response to a sync's OWN snapshot patch. ApplyLiveProductionPatch
         // applies the snapshot to bound state, which (on a structural change) rebuilds the
         // roster/multiview/show-input collections; some of those paths call TrySyncMediaCoreAsync,
@@ -6453,6 +6463,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task EnsureMediaCoreRunningAsync(string startingStatus)
     {
+        if (!_startupBootstrap.StartInteractiveServices)
+            throw new InvalidOperationException("Native startup is disabled for this isolated editor probe.");
         _syncShutdownCancellation.Token.ThrowIfCancellationRequested();
         // Process creation precedes protocol readiness. A second startup edit
         // must await StartAsync's existing child handshake rather than send its
@@ -8907,19 +8919,10 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // gallery route at order 2 sorts BETWEEN tile 1 and tile 3 and composites a
         // full-canvas cell over individual wall tiles — on PROGRAM, and therefore in
         // the virtual camera, every recording and every stream.
-        // ReconcileDynamicGalleryRoutes() empties the route list too, but it cannot be
-        // the guarantee: it runs on a COALESCED Low-priority dispatch (so
-        // OnPreviewSceneIdChanged only SCHEDULES it before firing the sync
-        // immediately), persisted pre-T1 scenes restore `<sceneId>-tile-<pid>` routes
-        // verbatim at load, and it self-suppresses while `_canvasInteractionActive`
-        // — which does NOT gate BuildTilesLayerWire, so the wall still ships. Dropping
-        // the routes HERE, where the wire is built, makes the invariant hold for every
-        // one of those paths without depending on a UI refresh pass having run.
-        // Core-side characterization of what the interleave WOULD be:
-        // TilesRenderPlan.RoutesAndAWallShareOneOrderNamespace.
-        var sceneRoutes = ProgramScene.DynamicGallery is not null
-            ? new List<MediaCoreSceneRouteWire>()
-            : resolvedProgramRoutes
+        // Suppress only legacy generated tile routes. Authored layers have explicit
+        // ownership and coexist with the native wall in reserved order bands.
+        var sceneRoutes = resolvedProgramRoutes
+                .Where(route => SceneWorkspacePolicy.IsAuthoredRoute(ProgramScene,route))
                 .Select(route => BuildSceneRouteWire(route, resolvedProgramRoutes, isProgramScene: true))
                 .ToList();
 
@@ -8936,11 +8939,15 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             .ToList();
         // Same by-construction rule as the program routes above — the preview bus is
         // composited from its own scene graph and interleaves identically.
-        var previewSceneRoutes = PreviewScene.DynamicGallery is not null
-            ? new List<MediaCoreSceneRouteWire>()
-            : resolvedPreviewRoutes
+        var previewSceneRoutes = resolvedPreviewRoutes
+                .Where(route => SceneWorkspacePolicy.IsAuthoredRoute(PreviewScene,route))
                 .Select(route => BuildSceneRouteWire(route, resolvedPreviewRoutes, isProgramScene: false))
                 .ToList();
+
+        if(sceneRoutes.Count==0&&ProgramScene.DynamicGallery is null)
+            sceneRoutes.Add(BuildSceneRouteWire(SceneWorkspacePolicy.EmptySceneRoute(ProgramScene.Id),[],true));
+        if(previewSceneRoutes.Count==0&&PreviewScene.DynamicGallery is null)
+            previewSceneRoutes.Add(BuildSceneRouteWire(SceneWorkspacePolicy.EmptySceneRoute(PreviewScene.Id),[],false));
 
         var participants = RoomVideoParticipants
             .Select(participant => new MediaCoreParticipantWire(
@@ -9096,7 +9103,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             TilesLayer = tilesLayer,
             PreviewSceneId = PreviewSceneId,
             PreviewSceneRoutes = previewSceneRoutes,
-            PreviewSceneBackground = BuildSceneBackgroundWire(PreviewSceneId),
+            PreviewSceneBackground = BuildSceneBackgroundWire(PreviewSceneId,true),
             PreviewTilesLayer = previewTilesLayer,
             PreviewColorGrade = new MediaCoreColorGradeWire(
                 ColorGrade.Lut,
@@ -9245,7 +9252,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             SourceScale: route.SourceScale,
             SourceOffsetX: route.SourceOffsetX,
             SourceOffsetY: route.SourceOffsetY,
-            Opacity: route.Opacity,
+            Opacity: route.Visible ? route.Opacity : 0,
+            WorkspaceAuthored: route.WorkspaceAuthored,
             ColorGrade: BuildRouteColorGradeWire(route),
             MediaAssetId: mediaAsset?.Id,
             MediaAssetName: mediaAsset?.Name,
@@ -11894,10 +11902,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MultiviewShowTally = MultiviewShowTally,
             MultiviewShowMeters = MultiviewShowMeters,
             MultiviewShowClock = MultiviewShowClock,
-            SceneBackgroundAssetIds = _sceneBackgroundAssetIds.ToDictionary(
-                pair => pair.Key,
-                pair => pair.Value,
-                StringComparer.Ordinal),
+            SceneBackgroundAssetIds = CaptureWorkspaceSavedBackgrounds(),
             SourceDisplayNames = _sourceDisplayNames.ToDictionary(
                 pair => pair.Key,
                 pair => pair.Value,
@@ -11928,6 +11933,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 .Select(scene => ScenePersistenceService.ToPersisted(
                     scene,
                     _sceneRoutes.TryGetValue(scene.Id, out var routes) ? routes : []))
+                .Select(saved=>_workspaceSavedScenes.TryGetValue(saved.Id,out var draft)?draft:saved)
                 .ToList(),
             // B2 (v6): the whole master rack — live settings, both A/B slots,
             // the active slot, and the operator's saved presets. The ACTIVE
@@ -12494,7 +12500,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _refreshingSceneBackgroundSelection = true;
         try
         {
-            PreviewSceneBackgroundAssetId = SceneBackgroundSelectionService.ResolveSelectedAssetId(
+            PreviewSceneBackgroundAssetId = _workspacePreviewScene?.Id==PreviewSceneId ? WorkspaceBackgroundId : SceneBackgroundSelectionService.ResolveSelectedAssetId(
                 PreviewScene.Id,
                 _sceneBackgroundAssetIds,
                 FindMediaAsset,
@@ -12516,9 +12522,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         OnPropertyChanged(nameof(SuperSourceBackgroundSummary));
     }
 
-    private MediaCoreSceneBackgroundWire? BuildSceneBackgroundWire(string sceneId)
+    private MediaCoreSceneBackgroundWire? BuildSceneBackgroundWire(string sceneId,bool preview=false)
     {
-        var asset = ResolveSceneBackgroundAsset(sceneId);
+        var asset = preview ? PreviewSceneBackgroundAsset : ResolveSceneBackgroundAsset(sceneId);
         return asset is null
             ? null
             : new MediaCoreSceneBackgroundWire(
@@ -13073,8 +13079,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         if (!string.Equals(PreviewSceneId, ActiveSceneId, StringComparison.Ordinal))
         {
-            DiscardLivePreviewDraft();
-            return GetMutableRoutes(PreviewSceneId);
+            if(_workspacePreviewScene?.Id!=PreviewSceneId){DiscardLivePreviewDraft();return GetMutableRoutes(PreviewSceneId);}
         }
 
         if (_livePreviewDraft is null ||
@@ -13101,7 +13106,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var draft = _livePreviewDraft;
         if (draft is not null &&
             string.Equals(_livePreviewDraftSceneId, PreviewSceneId, StringComparison.Ordinal) &&
-            string.Equals(PreviewSceneId, ActiveSceneId, StringComparison.Ordinal))
+            (string.Equals(PreviewSceneId, ActiveSceneId, StringComparison.Ordinal)||_workspacePreviewScene?.Id==PreviewSceneId))
         {
             return draft;
         }
@@ -13165,7 +13170,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             mutableRoutes,
             RoomVideoParticipants);
 
-        if (scene.DynamicGallery is null)
+        if (scene.DynamicGallery is null && mutableRoutes.Count>0)
         {
             ReconcileRoutes(mutableRoutes, defaults);
             SceneCanvasLayoutService.EnsureCanvasRects(mutableRoutes, scene.Layout);
@@ -13192,24 +13197,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    // T1 core wall: the core now solves the tile grid itself every frame
-    // (compositor::expandTilesLayer, MediaCore.cpp parseTilesLayer/expandTilesLayer)
-    // from the "tiles" node (TilesLayerPayloadBuilder — membership policy: roster +
-    // video-off filter + max-tiles cap, in roster order). A gallery scene therefore
-    // contributes NO scene routes at all; the core suppresses its legacy full-canvas
-    // fallback whenever a wall is present, so leaving old per-participant tile routes
-    // behind here would double-draw. This method's only remaining job is enforcing
-    // that a DynamicGallery scene's route list stays empty — it used to ALSO solve
-    // rects (DynamicGalleryLayoutService.BuildRects) and mint one SourceRoute per
-    // participant; that logic moved into the core and TilesLayerPayloadBuilder.
-    // DynamicGalleryLayoutService itself is UNCHANGED and stays live as the reference
-    // implementation the C++ port (buildTilesGrid) is tested against — do not delete it.
-    //
-    // NOT THE GUARANTEE (whole-branch review): this is a UI-side tidy-up that runs on a
-    // coalesced Low-priority dispatch and self-suppresses while `_canvasInteractionActive`,
-    // so it cannot be what keeps gallery routes off the wire. The wire-level invariant
-    // ("a gallery scene serializes an empty route list") is enforced by construction in
-    // BuildProductionSyncContext, where the route wires are actually built.
+    // Upgrade older wall scenes by retiring their shell-generated routes. The
+    // workspace explicitly marks authored layers; those survive alongside Tiles.
     private void ReconcileDynamicGalleryRoutes(Scene scene, List<SourceRoute> routes)
     {
         if (scene.DynamicGallery is null || _canvasInteractionActive)
@@ -13217,7 +13206,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             return;
         }
 
-        routes.Clear();
+        routes.RemoveAll(route => !SceneWorkspacePolicy.IsAuthoredRoute(scene,route));
     }
 
     /// <summary>
@@ -13255,7 +13244,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             payload.Style.AnimateLayout, payload.Style.AnimationDurationMs, payload.Style.FillMode, payload.Style.BackgroundSourceId,
             payload.Overrides?.ToDictionary(p => p.Key, p => new MediaCoreTilesOverrideWire(
                 p.Value.Rect is { } r ? new MediaCoreTilesRectWire(r.X, r.Y, r.Width, r.Height) : null,
-                p.Value.CropLeftPercent, p.Value.CropRightPercent, p.Value.Z)));
+                p.Value.CropLeftPercent, p.Value.CropRightPercent, p.Value.Z)),
+            payload.Rect is { } wallRect ? new MediaCoreTilesRectWire(wallRect.X, wallRect.Y, wallRect.Width, wallRect.Height) : null,
+            payload.Opacity, payload.TransparentBackground);
     }
 
     // RE-ENTRANCY GUARD — without it this recurses until the stack dies (crash
@@ -13277,6 +13268,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void UpdateGallery(Action<DynamicGallerySettings> update)
     {
+        EnsureWorkspaceDraft();
         _galleryEditGuard.TryEdit(() =>
         {
             if (PreviewScene.DynamicGallery is { } settings)
@@ -13297,7 +13289,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = $"{PreviewScene.Name} gallery updated on Preview";
         SchedulePreviewRoutingRefresh();
         SyncLiveSceneEditIfNeeded(PreviewSceneId);
-        SaveProductionOutputPreferences();
     }
 
     private void NotifyDynamicGalleryPropertiesChanged()
@@ -13645,41 +13636,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void SyncPreviewCanvasLayers(IReadOnlyList<SourceRoute> routes)
     {
-        if (_canvasInteractionActive)
-        {
-            return;
-        }
-
-        if (PreviewCanvasLayers.Count == routes.Count)
-        {
-            for (var index = 0; index < routes.Count; index++)
-            {
-                PreviewCanvasLayers[index].SyncFromRoute(
-                    routes[index],
-                    RoomVideoParticipants,
-                    CaptureDevices,
-                    ShowInputs,
-                    VisualMediaAssets);
-                PreviewCanvasLayers[index].SetSurface(ResolveLayerSurface(routes[index], index));
-            }
-
-            OnPropertyChanged(nameof(PreviewCanvasLayers));
-            return;
-        }
-
-        PreviewCanvasLayers.Clear();
-        for (var index = 0; index < routes.Count; index++)
-        {
-            PreviewCanvasLayers.Add(new SceneCanvasLayerViewModel(
-                index,
-                routes[index],
-                RoomVideoParticipants,
-                CaptureDevices,
-                ShowInputs,
-                VisualMediaAssets,
-                OnPreviewCanvasLayerChanged));
-            PreviewCanvasLayers[^1].SetSurface(ResolveLayerSurface(routes[index], index));
-        }
+        if (!_canvasInteractionActive) SyncWorkspaceCanvasLayers(routes);
     }
 
     private void PublishPreviewCompositionState(Scene scene, IReadOnlyList<SourceRoute> workingRoutes)
@@ -13945,6 +13902,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         var index = routes.Count;
         var route = SceneRoutingService.BuildAddedSourceRoute(PreviewSceneId, index, optionValue, SelectedMediaAssetId);
         SceneRoutingService.ApplyNormalizeRouteUpdate(route, RoomVideoParticipants);
+        route.ZIndex = routes.Select(r => r.ZIndex).Append(PreviewScene.DynamicGallery?.WallOrder ?? -256).Max() + SceneWorkspacePolicy.OrderStride;
         routes.Add(route);
 
         OnPropertyChanged(nameof(CanTake));
@@ -14001,7 +13959,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
 
         var routes = GetPreviewEditableRoutes();
-        OverlayLayerService.AppendOverlayRoute(
+        var previousOrder=routes.ToDictionary(r=>r.Id,r=>r.ZIndex);
+        var overlay=OverlayLayerService.AppendOverlayRoute(
             routes,
             PreviewSceneId,
             optionValue,
@@ -14011,6 +13970,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             PreviewScene.Layout,
             RoomVideoParticipants);
 
+        foreach(var item in routes)if(previousOrder.TryGetValue(item.Id,out var order))item.ZIndex=order;
+        overlay.ZIndex=routes.Where(r=>r.Id!=overlay.Id).Select(r=>r.ZIndex).Append(PreviewScene.DynamicGallery?.WallOrder??-256).Max()+SceneWorkspacePolicy.OrderStride;
         LaunchLog.Write(
             $"overlay: added parameter='{parameter}' scene={PreviewSceneId} routes={routes.Count} " +
             $"source={optionValue} placement={placement}");
@@ -14297,7 +14258,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     {
         for (var index = 0; index < routes.Count; index++)
         {
-            routes[index].ZIndex = index;
+            routes[index].ZIndex = (index + 1) * SceneWorkspacePolicy.OrderStride;
         }
     }
 
@@ -14429,6 +14390,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void OnPreviewCanvasLayerChanged(SceneCanvasLayerViewModel layer)
     {
+        if (CommitWorkspaceWall(layer)) return;
         var routes = GetPreviewEditableRoutes();
         if (layer.LayerIndex < 0 || layer.LayerIndex >= routes.Count)
         {

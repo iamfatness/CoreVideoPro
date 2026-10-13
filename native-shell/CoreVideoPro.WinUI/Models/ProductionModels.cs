@@ -100,6 +100,13 @@ public sealed class Scene
 /// </summary>
 public sealed class DynamicGallerySettings
 {
+    public NormalizedCanvasRect WallRect { get; set; } = new() { X = 0, Y = 0, Width = 1, Height = 1 };
+    public int WallOrder { get; set; }
+    public double WallOpacity { get; set; } = 1;
+    public bool WallVisible { get; set; } = true;
+    public bool WallLocked { get; set; }
+    public bool TransparentBackground { get; set; }
+
     public string BackgroundColor { get; set; } = "#000000";
     public string BackgroundSourceId { get; set; } = string.Empty;
     public Dictionary<string, TilesMemberOverride> Overrides { get; set; } = new(StringComparer.Ordinal);
@@ -127,6 +134,8 @@ public sealed class DynamicGallerySettings
 
     public DynamicGallerySettings Clone() => new()
     {
+        WallRect = WallRect.Clone(), WallOrder = WallOrder, WallOpacity = WallOpacity,
+        WallVisible = WallVisible, WallLocked = WallLocked, TransparentBackground = TransparentBackground,
         AutoFill = AutoFill,
         MembershipMode = MembershipMode,
         BackgroundColor = BackgroundColor,

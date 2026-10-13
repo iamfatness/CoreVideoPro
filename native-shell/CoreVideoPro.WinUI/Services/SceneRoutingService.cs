@@ -106,6 +106,7 @@ public static class SceneRoutingService
     {
         var route = new SourceRoute
         {
+            WorkspaceAuthored = true,
             Id = $"{sceneId}-add-{Guid.NewGuid():N}"[..(sceneId.Length + 12)],
             Mode = SourceRouteMode.None,
             AudioRole = SourceAudioRole.Mix,
@@ -454,6 +455,8 @@ public static class SceneRoutingService
         normalized.BorderColor = NormalizeBorderColor(route.BorderColor);
         normalized.BorderThickness = Math.Clamp(route.BorderThickness, 0, 12);
         normalized.ColorGrade = route.ColorGrade;
+        normalized.WorkspaceAuthored=route.WorkspaceAuthored;
+        normalized.DisplayName=route.DisplayName;normalized.Visible=route.Visible;normalized.EditorLocked=route.EditorLocked;normalized.Opacity=route.Opacity;
         normalized.ZIndex = route.ZIndex;
         return normalized;
     }
@@ -514,6 +517,8 @@ public static class SceneRoutingService
         target.BorderColor = NormalizeBorderColor(source.BorderColor);
         target.BorderThickness = Math.Clamp(source.BorderThickness, 0, 12);
         target.ColorGrade = source.ColorGrade;
+        target.WorkspaceAuthored=source.WorkspaceAuthored;
+        target.DisplayName=source.DisplayName;target.Visible=source.Visible;target.EditorLocked=source.EditorLocked;target.Opacity=source.Opacity;
         target.ZIndex = source.ZIndex;
     }
 

@@ -50,11 +50,20 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _sourceScale = SceneRoutingService.NormalizeSourceScale(route.SourceScale);
         _sourceOffsetX = SceneRoutingService.NormalizeSourceOffset(route.SourceOffsetX);
         _sourceOffsetY = SceneRoutingService.NormalizeSourceOffset(route.SourceOffsetY);
-        _opacityPercent = Math.Clamp(route.Opacity, 0.1, 1.0) * 100;
+        _opacityPercent = Math.Clamp(route.Opacity, 0, 1.0) * 100;
         ParticipantOptions = BuildSourceOptions(_mode, participants, captureDevices, showInputs, mediaAssets);
     }
 
-    public int LayerIndex { get; }
+    public int LayerIndex { get; private set; }
+    public string ItemId => _route.Id;
+    public SourceRoute Route => _route;
+    public bool IsTilesWall => ItemId.StartsWith("tiles:", StringComparison.Ordinal);
+    public string DisplayName => string.IsNullOrWhiteSpace(_route.DisplayName) ? (IsTilesWall ? "CoreVideo Tiles" : ParticipantOptions.FirstOrDefault(p => p.Value == ParticipantId)?.Label ?? LayerLabel) : _route.DisplayName;
+    public bool IsOrdinarySource => !IsTilesWall;
+    public bool EditorUnlocked => !EditorLocked;
+    public bool Visible => _route.Visible;
+    public bool EditorLocked => _route.EditorLocked;
+    public void SetLayerIndex(int index) { LayerIndex = index; OnPropertyChanged(nameof(LayerLabel)); }
 
     public string LayerLabel => $"Source {LayerIndex + 1}";
 
@@ -145,8 +154,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     [ObservableProperty]
     private double _sourceOffsetY;
 
-    // Per-layer opacity as a percentage (10..100). Floored at 10% in the UI so
-    // a layer can't be made invisible by accident; the wire carries 0..1.
+    // Per-layer opacity as a percentage; visibility is a separate persisted flag.
     [ObservableProperty]
     private double _opacityPercent = 100;
 
@@ -303,7 +311,8 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             SourceScale = SceneRoutingService.NormalizeSourceScale(_route.SourceScale);
             SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(_route.SourceOffsetX);
             SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(_route.SourceOffsetY);
-            OpacityPercent = Math.Clamp(_route.Opacity, 0.1, 1.0) * 100;
+            OpacityPercent = Math.Clamp(_route.Opacity, 0, 1.0) * 100;
+            OnPropertyChanged(nameof(DisplayName)); OnPropertyChanged(nameof(Visible)); OnPropertyChanged(nameof(EditorLocked)); OnPropertyChanged(nameof(EditorUnlocked));
             OnPropertyChanged(nameof(SourceColorGradeId));
             OnPropertyChanged(nameof(ColorGradeSummary));
             OnPropertyChanged(nameof(FramingSummary));
@@ -457,13 +466,13 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _route.SourceScale = SceneRoutingService.NormalizeSourceScale(SourceScale);
         _route.SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(SourceOffsetX);
         _route.SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(SourceOffsetY);
-        _route.Opacity = Math.Clamp(OpacityPercent / 100.0, 0.1, 1.0);
+        _route.Opacity = Math.Clamp(OpacityPercent / 100.0, 0, 1.0);
         _route.SourceFramingModified = SceneRoutingService.HasModifiedSourceFraming(
             _route.FitMode,
             _route.SourceScale,
             _route.SourceOffsetX,
             _route.SourceOffsetY);
-        _route.ZIndex = LayerIndex;
+        // Scene order belongs to the workspace, independent of the route lookup index.
         OnPropertyChanged(nameof(SourceColorGradeId));
         OnPropertyChanged(nameof(ColorGradeSummary));
         OnPropertyChanged(nameof(FramingSummary));

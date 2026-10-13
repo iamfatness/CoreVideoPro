@@ -48,7 +48,7 @@ public static class TilesLayerPayloadBuilder
 
         return new TilesLayerPayload(
             LayerId: $"tiles:{scene.Id}",
-            Order: 0,
+            Order: settings.WallOrder,
             Members: members,
             Style: new TilesStylePayload(
                 TileAspect: DynamicGalleryLayoutService.NormalizeAspectPreset(settings.TileAspect),
@@ -67,7 +67,9 @@ public static class TilesLayerPayloadBuilder
                 AnimateLayout: settings.AnimateLayout,
                 AnimationDurationMs: Math.Clamp(settings.AnimationDurationMs, 100, 2000), FillMode: TilesMembershipPolicy.NormalizeMode(settings.MembershipMode),
                 BackgroundSourceId: settings.BackgroundSourceId),
-            Overrides: settings.Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal));
+            Overrides: settings.Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
+            Rect: SceneWorkspacePolicy.NormalizeRect(settings.WallRect), Opacity: settings.WallVisible ? FiniteClamp(settings.WallOpacity,0,1,1) : 0,
+            TransparentBackground: settings.TransparentBackground);
     }
 
     /// <summary>
@@ -100,7 +102,7 @@ public sealed record TilesLayerPayload(
     string LayerId,
     int Order,
     IReadOnlyList<string> Members,
-    TilesStylePayload Style, IReadOnlyDictionary<string, TilesMemberOverride>? Overrides = null);
+    TilesStylePayload Style, IReadOnlyDictionary<string, TilesMemberOverride>? Overrides = null, NormalizedCanvasRect? Rect = null, double Opacity = 1, bool TransparentBackground = false);
 
 public sealed record TilesStylePayload(
     string TileAspect,
