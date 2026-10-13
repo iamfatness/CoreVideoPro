@@ -4,7 +4,7 @@ using Xunit;
 namespace CoreVideoPro.WinUI.Tests;
 
 /// <summary>
-/// #480: the per-layer source ComboBox lives in an ItemsRepeater template.
+/// #480: the per-layer source ComboBox lives in the selected-source inspector.
 /// SelectedValue must not be driven by x:Bind (CLAUDE.md live-QA crash class);
 /// selection is applied on Loaded, guarded, and only an operator gesture may
 /// commit a pick.
@@ -40,7 +40,7 @@ public sealed class SourcesPageLayerSourceContentTests
     {
         var match = Regex.Match(
             xaml,
-            @"<ComboBox Tag=""\{x:Bind\}""[^>]*SelectionChanged=""OnLayerSourceSelectionChanged""[^>]*/?>",
+            @"<ComboBox\b(?=[^>]*Tag=""\{x:Bind\}"")(?=[^>]*SelectionChanged=""OnLayerSourceSelectionChanged"")[^>]*/?>",
             RegexOptions.Singleline);
         Assert.True(match.Success, "layer source ComboBox not found");
         return match.Value;
