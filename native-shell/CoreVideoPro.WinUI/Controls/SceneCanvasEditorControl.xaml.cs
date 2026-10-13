@@ -97,6 +97,13 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     private void OnEditorSizeChanged(object sender, SizeChangedEventArgs e) =>
         ResizeCanvasViewport();
 
+    private void OnFitView(object sender,RoutedEventArgs e)=>ResizeCanvasViewport();
+    private void OnSafeAreaChanged(object sender,RoutedEventArgs e)
+    {
+        if (SafeAreaGuide is not null)
+            SafeAreaGuide.Visibility=sender is CheckBox {IsChecked:true}?Visibility.Visible:Visibility.Collapsed;
+    }
+
     private void ResizeCanvasViewport()
     {
         var viewportWidth = CanvasViewport.ActualWidth > 0
@@ -109,8 +116,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         var fitSize = SceneCanvasViewportService.ResolveFitSize(
             viewportWidth,
             viewportHeight,
-            DesignWidth / DesignHeight,
-            SceneCanvasViewportService.DefaultEditorMaxHeight);
+            DesignWidth / DesignHeight);
         if (fitSize.Width <= 0 || fitSize.Height <= 0)
         {
             return;
@@ -646,6 +652,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
     private (List<double> X, List<double> Y) BuildSnapGuides(SceneCanvasLayerViewModel dragged)
     {
+        if (SnapToggle.IsChecked != true) return ([],[]);
         var guidesX = new List<double> { 0, 0.5, 1 };
         var guidesY = new List<double> { 0, 0.5, 1 };
         foreach (var frame in _layerFrames.Values)
@@ -717,14 +724,16 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             return;
         }
 
-        var step = IsShiftDown() ? 0.02 : 0.005;
+        var pixels = IsShiftDown() ? 10d : 1d;
+        var stepX=pixels/_selectedLayer.CanvasPixelWidth;
+        var stepY=pixels/_selectedLayer.CanvasPixelHeight;
         double deltaX = 0, deltaY = 0;
         switch (e.Key)
         {
-            case Windows.System.VirtualKey.Left: deltaX = -step; break;
-            case Windows.System.VirtualKey.Right: deltaX = step; break;
-            case Windows.System.VirtualKey.Up: deltaY = -step; break;
-            case Windows.System.VirtualKey.Down: deltaY = step; break;
+            case Windows.System.VirtualKey.Left: deltaX = -stepX; break;
+            case Windows.System.VirtualKey.Right: deltaX = stepX; break;
+            case Windows.System.VirtualKey.Up: deltaY = -stepY; break;
+            case Windows.System.VirtualKey.Down: deltaY = stepY; break;
             default: return;
         }
 
