@@ -1061,6 +1061,7 @@ rpc::Json MediaCore::sessionState() const {
           {"lastWorkMs", monitorWorker.lastWorkMs},
           {"inputObservationVersion", "monitor-input-admission-v1"},
           {"inputs", modules::monitorInputEvidence(modules_.compositor->latestMonitors())},
+          {"programDisplay", modules::programDisplayEvidence(modules_.compositor->latestMonitors())},
           {"readyInputs", static_cast<double>(monitorWorker.readyInputs)},
           {"heldInputs", static_cast<double>(monitorWorker.heldInputs)},
           {"unavailableInputs", static_cast<double>(monitorWorker.unavailableInputs)},

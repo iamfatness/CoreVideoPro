@@ -137,6 +137,24 @@ public sealed class SupportBundleBuilderTests
         Assert.Equal(7, bundle.MediaCore!.MonitorIsolation.DeliveryEpoch);
     }
 
+    [Fact]
+    public void ProgramDisplay_HeldImageKeepsItsCopiedIdentityAndDoesNotClaimPresentation()
+    {
+        var snapshot = BuildSampleSnapshot() with { RawJson = """
+            {"realtimeEvidence":{"monitorWorker":{"programDisplay":{
+            "observationVersion":"program-display-snapshot-v1","observed":true,
+            "state":"held","requestedSequence":72,"copiedSequence":69,
+            "age100ns":500000,"skipped":2,"refused":3,"displayPresentationVerified":false}}}}
+            """ };
+        var observation = MonitorIsolationObservation.FromSnapshot(snapshot);
+        Assert.Equal("held", observation.ProgramDisplayState);
+        Assert.Equal(69, observation.ProgramCopiedSequence);
+        Assert.Equal(500000, observation.ProgramAge100ns);
+        Assert.Equal(2, observation.ProgramSkipped);
+        Assert.Equal(3, observation.ProgramRefused);
+        Assert.Null(MonitorIsolationObservation.FromSnapshot(BuildSampleSnapshot() with { RawJson = "{}" }).ProgramCopiedSequence);
+    }
+
     [Theory]
     [InlineData("bad json")]
     [InlineData("{\"realtimeEvidence\":42}")]
