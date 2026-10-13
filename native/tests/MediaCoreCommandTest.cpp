@@ -7265,6 +7265,83 @@ TEST(MediaCoreMultiview, TheBusCellsCarryTheShellsSubscriptionLimitNotice) {
   EXPECT_EQ(labels["pvw"], "Preview");
 }
 
+TEST(MediaCoreCommand, PreviewSameSourceFramingEditsReachTheCompositor) {
+  class PreviewRecorder final : public corevideo::modules::ICompositor {
+   public:
+    std::string rendererName() const override { return "preview-edit-test"; }
+    corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan&,
+        const std::vector<corevideo::modules::VideoFrame>&) override { return {}; }
+    corevideo::modules::ProgramFrameSharedTexture renderPreview(
+        const corevideo::modules::CompositorRenderPlan& value,
+        const std::vector<corevideo::modules::VideoFrame>&) override { plan = value; return {}; }
+    corevideo::modules::CompositorRenderPlan plan;
+  };
+  auto modules = corevideo::modules::createStubModules();
+  auto recorder = std::make_unique<PreviewRecorder>();
+  auto* observed = recorder.get();
+  modules.compositor = std::move(recorder);
+  corevideo::core::MediaCore core(std::move(modules));
+  auto route = corevideo::rpc::Json::Object{{"routeId", "guest"}, {"mode", "fixed"},
+      {"participantId", "spk-1"}, {"sourceScale", 1.0}, {"sourceOffsetX", 0.0}, {"sourceOffsetY", 0.0},
+      {"rect", corevideo::rpc::Json::Object{{"x", 0.0}, {"y", 0.0}, {"width", 1.0}, {"height", 1.0}}}};
+  const auto sync = [&] {
+    (void)core.applyCommand(corevideo::rpc::Json::Object{{"type", "set-preview-scene"},
+        {"sceneId", "same-scene"}, {"routes", corevideo::rpc::Json::Array{route}}});
+    core.renderDisplayTick();
+  };
+  sync();
+  ASSERT_EQ(observed->plan.layers.size(), 1u);
+  // Each adjustment is sent alone, without changing source, scene or another control.
+  route["sourceScale"] = 2.0; sync();
+  EXPECT_EQ(observed->plan.layers.front().sourceScale, 2.f);
+  route["sourceOffsetX"] = .25; sync();
+  EXPECT_EQ(observed->plan.layers.front().sourceOffsetX, .25f);
+  route["sourceOffsetY"] = -.5; sync();
+  EXPECT_EQ(observed->plan.layers.front().sourceOffsetY, -.5f);
+  route["sourceScale"] = 1.0; sync();
+  EXPECT_EQ(observed->plan.layers.front().sourceScale, 1.f);
+  route["fitMode"] = "fit"; sync();
+  EXPECT_EQ(observed->plan.layers.front().fitMode, "fit");
+  route["opacity"] = .5; sync();
+  EXPECT_EQ(observed->plan.layers.front().opacity, .5f);
+  route["rect"] = corevideo::rpc::Json::Object{{"x", .125}, {"y", .25}, {"width", .5}, {"height", .25}};
+  sync();
+  EXPECT_EQ(observed->plan.layers.front().rect.x, .125f);
+  EXPECT_EQ(observed->plan.layers.front().rect.y, .25f);
+  EXPECT_EQ(observed->plan.layers.front().rect.width, .5f);
+  EXPECT_EQ(observed->plan.layers.front().rect.height, .25f);
+  route["borderStyle"] = "solid"; route["borderThickness"] = 4.0; sync();
+  EXPECT_EQ(observed->plan.layers.front().borderThickness, 4.f);
+  route["borderColor"] = "#FF0000"; sync();
+  EXPECT_EQ(observed->plan.layers.front().borderColor, "#FF0000");
+  route["zIndex"] = 7; sync();
+  EXPECT_EQ(observed->plan.layers.front().order, 7);
+  route["opacity"] = 0.0; sync();
+  EXPECT_EQ(observed->plan.layers.front().opacity, 0.f);
+  route["opacity"] = 1.0; sync();
+  EXPECT_EQ(observed->plan.layers.front().opacity, 1.f);
+}
+
+TEST(MediaCoreCommand, PreviewSameWallOpacityEditsAreApplied) {
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  const auto sync = [&](double opacity) {
+    (void)core.applyCommand(corevideo::rpc::Json::Object{{"type", "set-preview-scene"},
+        {"sceneId", "same-wall"}, {"routes", corevideo::rpc::Json::Array{}},
+        {"tiles", corevideo::rpc::Json::Object{{"layerId", "wall"}, {"opacity", opacity},
+            {"members", corevideo::rpc::Json::Array{}}}}});
+  };
+  sync(1); EXPECT_EQ(core.previewTilesLayerForTest().opacity, 1.f);
+  sync(.25); EXPECT_EQ(core.previewTilesLayerForTest().opacity, .25f);
+  sync(1); EXPECT_EQ(core.previewTilesLayerForTest().opacity, 1.f);
+  for (const bool transparent : {true, false}) {
+    (void)core.applyCommand(corevideo::rpc::Json::Object{{"type", "set-preview-scene"},
+        {"sceneId", "same-wall"}, {"routes", corevideo::rpc::Json::Array{}},
+        {"tiles", corevideo::rpc::Json::Object{{"layerId", "wall"}, {"opacity", 1.0},
+            {"transparentBackground", transparent}, {"members", corevideo::rpc::Json::Array{}}}}});
+    EXPECT_EQ(core.previewTilesLayerForTest().transparentBackground, transparent);
+  }
+}
+
 TEST(MediaCoreCommand, PreviewSceneSyncBuildsMultiLayerCompositePlan) {
   corevideo::core::MediaCore mediaCore;
 
