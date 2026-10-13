@@ -266,6 +266,7 @@ public sealed class PersistedDynamicGallerySettings
     public Dictionary<string, TilesMemberOverride> Overrides { get; set; } = new(StringComparer.Ordinal);
     public List<string?> ManualSlots { get; set; } = [];
     public List<string> ExcludedSourceIds { get; set; } = [];
+    public List<string> OmittedSourceIds { get; set; } = [];
     public string? BoundMeetingId { get; set; }
     public bool AutoFill { get; set; } = true;
     public string? MembershipMode { get; set; }
@@ -288,6 +289,7 @@ public sealed class PersistedDynamicGallerySettings
 
 public sealed class PersistedSceneRoute
 {
+    public CoreVideoPro.WinUI.Models.SceneGraphic? Graphic { get; set; }
     public bool WorkspaceAuthored { get; set; }
     public string DisplayName { get; set; } = string.Empty;
     public bool Visible { get; set; } = true;

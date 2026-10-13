@@ -114,6 +114,7 @@ public sealed class DynamicGallerySettings
     public string MembershipMode { get; set; } = "eligible";
     public List<string?> ManualSlots { get; set; } = [];
     public List<string> ExcludedSourceIds { get; set; } = [];
+    public List<string> OmittedSourceIds { get; set; } = [];
     /// <summary>Meeting number the Zoom identities were saved in. Legacy session ids are only valid in this meeting.</summary>
     public string? BoundMeetingId { get; set; }
     public int MaxTiles { get; set; } = 16;
@@ -143,6 +144,7 @@ public sealed class DynamicGallerySettings
         Overrides = Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
         ManualSlots = [.. ManualSlots],
         ExcludedSourceIds = [.. ExcludedSourceIds],
+        OmittedSourceIds = [.. OmittedSourceIds],
         BoundMeetingId = BoundMeetingId,
         MaxTiles = MaxTiles,
         TileAspect = TileAspect,

@@ -5,6 +5,11 @@ namespace CoreVideoPro.WinUI.Services;
 /// <summary>Scene item identity and native order. A wall occupies a reserved order band.</summary>
 public static class SceneWorkspacePolicy
 {
+    public static IReadOnlyList<NormalizedCanvasRect> ThumbnailRects(Scene scene,IReadOnlyList<SourceRoute> routes)
+    {
+        var copy=routes.Select(r=>r.Clone()).ToList();SceneCanvasLayoutService.EnsureCanvasRects(copy,scene.Layout);
+        return copy.Where(r=>r.Visible&&r.CanvasRect is not null).Select(r=>r.CanvasRect!.Clone()).ToList();
+    }
     public const int OrderStride = 256; // native wall background, glows and members occupy at most 129 orders
     public static bool IsGeneratedTileRoute(string sceneId, string routeId) =>
         routeId.StartsWith(sceneId + "-tile-", StringComparison.Ordinal);
@@ -17,7 +22,7 @@ public static class SceneWorkspacePolicy
         var value=rect?.Clone()??new();
         if(!double.IsFinite(value.X))value.X=0;if(!double.IsFinite(value.Y))value.Y=0;
         if(!double.IsFinite(value.Width))value.Width=1;if(!double.IsFinite(value.Height))value.Height=1;
-        value.Clamp();return value;
+        value.Clamp(.0001,.0001);return value;
     }
 
     public static SourceRoute WallRoute(Scene scene) => new()

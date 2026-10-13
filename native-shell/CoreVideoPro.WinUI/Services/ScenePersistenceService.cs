@@ -31,6 +31,7 @@ public static class ScenePersistenceService
             Overrides = settings.Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
             ManualSlots = [.. settings.ManualSlots],
             ExcludedSourceIds = [.. settings.ExcludedSourceIds],
+            OmittedSourceIds = [.. settings.OmittedSourceIds],
             BoundMeetingId = settings.BoundMeetingId,
             MaxTiles = settings.MaxTiles,
             TileAspect = settings.TileAspect,
@@ -52,6 +53,7 @@ public static class ScenePersistenceService
     public static PersistedSceneRoute ToPersisted(SourceRoute route) =>
         new()
         {
+            Graphic = route.Graphic,
             WorkspaceAuthored = route.WorkspaceAuthored,
             DisplayName = route.DisplayName, Visible = route.Visible, EditorLocked = route.EditorLocked,
             Id = route.Id,
@@ -108,6 +110,7 @@ public static class ScenePersistenceService
             Overrides = (persisted.Overrides ?? []).Where(p => p.Value is not null).Take(64).ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
             ManualSlots = (persisted.ManualSlots ?? []).Take(64).ToList(),
             ExcludedSourceIds = (persisted.ExcludedSourceIds ?? []).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal).Take(1024).ToList(),
+            OmittedSourceIds = (persisted.OmittedSourceIds ?? []).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal).Take(1024).ToList(),
             BoundMeetingId = string.IsNullOrWhiteSpace(persisted.BoundMeetingId) ? null : persisted.BoundMeetingId.Trim(),
             MaxTiles = Math.Clamp(persisted.MaxTiles, 1, 64),
             TileAspect = DynamicGalleryLayoutService.NormalizeAspectPreset(persisted.TileAspect),
@@ -130,6 +133,7 @@ public static class ScenePersistenceService
     {
         var route = new SourceRoute
         {
+            Graphic = persisted.Graphic,
             WorkspaceAuthored = persisted.WorkspaceAuthored,
             DisplayName = persisted.DisplayName, Visible = persisted.Visible, EditorLocked = persisted.EditorLocked,
             Id = persisted.Id,
@@ -163,7 +167,7 @@ public static class ScenePersistenceService
                 Width = persisted.RectWidth.Value,
                 Height = persisted.RectHeight.Value
             };
-            route.CanvasRect.Clamp();
+            route.CanvasRect.Clamp(route.WorkspaceAuthored ? .0001 : .08,route.WorkspaceAuthored ? .0001 : .08);
         }
 
         route.SourceFramingModified = SceneRoutingService.HasModifiedSourceFraming(
