@@ -3582,12 +3582,17 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
       if (state.routeId.empty()) {
         state.routeId = "preview-route-" + std::to_string(routeIndex);
       }
-      signature += "r:" + std::to_string(state.zIndex) + ":" + state.mode + ":" + state.participantId + ":" +
+      // #884: framing edits must invalidate Preview even when source identity
+      // and placement stay unchanged. Otherwise changing the source appears
+      // to be required before the previously edited framing reaches pixels.
+      signature += "r:" + state.routeId + ":" + std::to_string(state.zIndex) + ":" + state.mode + ":" + state.participantId + ":" +
                    state.captureDeviceId + ":" + state.personId + ":" + state.mediaAssetId + ":" + state.mediaAssetPath + ":" +
                    (state.mediaAssetLoop ? "l" : "o") + ":" + state.fitMode + ":" +
                    std::to_string(state.rectX) + "," + std::to_string(state.rectY) + "," +
                    std::to_string(state.rectWidth) + "," + std::to_string(state.rectHeight) + "," +
-                   std::to_string(state.opacity) + "|";
+                   std::to_string(state.opacity) + ":" + std::to_string(state.sourceScale) + "," +
+                   std::to_string(state.sourceOffsetX) + "," + std::to_string(state.sourceOffsetY) + ":" +
+                   state.borderStyle + ":" + state.borderColor + ":" + std::to_string(state.borderThickness) + "|";
       routes.push_back(std::move(state));
       ++routeIndex;
     }
@@ -3639,7 +3644,8 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
   // before the signature early-return below, so an unconditional push would
   // grow sceneValidationWarnings_ without bound.
   warnIfRoutesAndWallCollide(tiles.present, routes.size(), "preview", sceneValidationWarnings_);
-  signature += "tiles:" + std::to_string(tiles.present) + ":" + tiles.layerId + ":" +
+  signature += "tiles:" + std::to_string(tiles.present) + ":" + std::to_string(tiles.opacity) + ":" +
+               std::to_string(tiles.transparentBackground) + ":" + tiles.layerId + ":" +
                std::to_string(tiles.order) + ":" + std::to_string(tiles.rect.x) + "," +
                std::to_string(tiles.rect.y) + "," + std::to_string(tiles.rect.width) + "," +
                std::to_string(tiles.rect.height) + ":" + tiles.style.tileAspect + ":" +
