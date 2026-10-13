@@ -24,11 +24,20 @@ public sealed partial class SourcesPage
                 if(e.PropertyName==nameof(SceneWorkspaceViewModel.Selected)&&Workspace.Selected is {} layer)
                 {
                     SceneCanvasEditor.SelectLayer(layer);
-                    InspectorTabs.SelectedIndex=layer.IsTilesWall?0:3;
+                    ConfigureInspectorTabs();
                 }
             };
-            InspectorTabs.SelectedIndex=Workspace.IsWallSelected?0:3;
+            ConfigureInspectorTabs();
         }
+    }
+    private void ConfigureInspectorTabs()
+    {
+        var tabs=Workspace?.IsWallSelected==true
+            ? new[]{LayoutInspectorTab,StyleInspectorTab,MembersInspectorTab,TransformInspectorTab}
+            : new[]{TransformInspectorTab,AppearanceInspectorTab,SourceInspectorTab};
+        if(InspectorTabs.Items.Cast<PivotItem>().SequenceEqual(tabs))return;
+        InspectorTabs.Items.Clear();foreach(var tab in tabs)InspectorTabs.Items.Add(tab);
+        InspectorTabs.SelectedItem=tabs[0];
     }
     private void OnSourceListSelectionChanged(object sender,SelectionChangedEventArgs e)
     {if(Workspace?.Selected is {} layer)SceneCanvasEditor.SelectLayer(layer);}

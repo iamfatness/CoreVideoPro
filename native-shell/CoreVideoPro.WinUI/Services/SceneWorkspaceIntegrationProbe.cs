@@ -37,7 +37,7 @@ internal static class SceneWorkspaceIntegrationProbe
         Require(workspace.Items.Count==1 && workspace.Items[0].IsTilesWall,"Wall was not a single scene item");
         checks.Add("compiled Scene Builder displays a zero-route Tiles wall as one editable source");
         var tabs=(Pivot)page.FindName("InspectorTabs");
-        Require(tabs.Items.Cast<PivotItem>().Take(4).Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}),"Tiles inspector does not match the approved flat tabs");
+        Require(tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}),"Tiles inspector does not match the approved flat tabs");
         window.AppWindow.Resize(new SizeInt32(1920,1080));await Task.Delay(100);page.UpdateLayout();canvas.UpdateLayout();
         var viewbox=(Viewbox)canvas.FindName("CanvasViewbox");
         Require(viewbox.ActualWidth>640 && viewbox.ActualHeight>360,"Canvas retains the legacy thumbnail-size viewport cap");
@@ -64,6 +64,7 @@ internal static class SceneWorkspaceIntegrationProbe
         workspace.Checkpoint();studio.AddCanvasSourceCommand.Execute("input-01");
         await Eventually(()=>workspace.Items.Count==2);
         var source=workspace.Items.Single(i=>!i.IsTilesWall);workspace.Selected=source;
+        Require(tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Transform","Appearance","Source"}),"Ordinary source retains unrelated Tiles tab headers");
         workspace.Checkpoint();source.SetCanvasRect(.1,.2,.4,.4);source.OpacityPercent=62.5;
         source.PixelX=192.5;
         Require(Math.Abs(source.X-192.5/source.CanvasPixelWidth)<.0000001,"Exact pixel entry did not map to canvas-normalized coordinates");

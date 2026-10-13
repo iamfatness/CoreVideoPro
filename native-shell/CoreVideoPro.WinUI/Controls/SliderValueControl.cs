@@ -65,6 +65,7 @@ public sealed class SliderValueControl : UserControl
             if (Compact && root.Children.Contains(_slider)) {
                 root.Children.Remove(_slider);
                 head.Children.Add(_slider); Grid.SetColumn(_slider, 0);
+                head.Children.Remove(reset);head.ColumnDefinitions.RemoveAt(2);
                 _slider.VerticalAlignment=VerticalAlignment.Center;
                 _entry.Width=67;_range.Visibility=Visibility.Collapsed;
                 _label.FontSize=11;root.Spacing=6;
