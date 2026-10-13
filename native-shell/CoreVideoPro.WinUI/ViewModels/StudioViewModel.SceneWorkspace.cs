@@ -130,6 +130,7 @@ public sealed partial class StudioViewModel
 
     private void SyncWorkspaceCanvasLayers(IReadOnlyList<SourceRoute> routes)
     {
+        var canvasProfile=BuildRequestedOutputProfile("canvas",CanvasResolution,CanvasFps,"h264");
         var entries = routes.Select((route, index) => (route, index)).ToList();
         if (PreviewScene.DynamicGallery is not null)
             entries.Add((SceneWorkspacePolicy.WallRoute(PreviewScene), routes.Count));
@@ -140,6 +141,7 @@ public sealed partial class StudioViewModel
             var layer = existing ?? new SceneCanvasLayerViewModel(index, route, RoomVideoParticipants, CaptureDevices,
                 ShowInputs, VisualMediaAssets, OnPreviewCanvasLayerChanged);
             layer.SetLayerIndex(index);
+            layer.SetCanvasDimensions(canvasProfile.Width,canvasProfile.Height);
             layer.SyncFromRoute(route, RoomVideoParticipants, CaptureDevices, ShowInputs, VisualMediaAssets);
             if (!layer.IsTilesWall) layer.SetSurface(ResolveLayerSurface(route, index));
             wanted.Add(layer);

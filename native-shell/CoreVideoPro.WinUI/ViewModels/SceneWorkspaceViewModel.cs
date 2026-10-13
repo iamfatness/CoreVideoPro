@@ -24,7 +24,7 @@ public sealed partial class SceneWorkspaceViewModel : ObservableObject, IDisposa
     public bool IsSourceSelected => Selected is { IsTilesWall: false };
     public bool CanEditSelected => Selected is { EditorLocked: false };
     public string SelectedName => Selected?.DisplayName ?? "Select a source";
-    public string SelectedKind => IsWallSelected ? "CoreVideo Tiles wall" : Selected?.Mode ?? "Scene source";
+    public string SelectedKind => Selected?.SourceKindLabel ?? "Scene source";
     public bool TransparentBackground => _studio.PreviewScene.DynamicGallery?.TransparentBackground==true;
     public SceneWorkspaceViewModel(StudioViewModel studio)
     {

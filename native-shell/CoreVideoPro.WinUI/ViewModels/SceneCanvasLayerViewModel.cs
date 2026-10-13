@@ -60,7 +60,24 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     public bool IsTilesWall => ItemId.StartsWith("tiles:", StringComparison.Ordinal);
     public string DisplayName => string.IsNullOrWhiteSpace(_route.DisplayName) ? (IsTilesWall ? "CoreVideo Tiles" : ParticipantOptions.FirstOrDefault(p => p.Value == ParticipantId)?.Label ?? LayerLabel) : _route.DisplayName;
     public bool IsOrdinarySource => !IsTilesWall;
+    public string SourceKindLabel => IsTilesWall ? "Tiles wall" : ParticipantId.StartsWith("media:",StringComparison.Ordinal) ? "Media source" :
+        Mode switch { "screen-share" => "Screen share", "active-speaker" => "Active speaker", "spotlight" => "Spotlight", "capture-input" => "Camera", _ => "Show source" };
+    public string SourceGlyph => IsTilesWall ? "\uE80A" : Mode == "screen-share" ? "\uE7F4" : "\uE714";
     public bool EditorUnlocked => !EditorLocked;
+    public double CanvasPixelWidth {get;private set;}=1920;
+    public double CanvasPixelHeight {get;private set;}=1080;
+    public double MinimumPixelWidth=>CanvasPixelWidth*.08;
+    public double MinimumPixelHeight=>CanvasPixelHeight*.08;
+    public double PixelX {get=>X*CanvasPixelWidth;set=>X=value/CanvasPixelWidth;}
+    public double PixelY {get=>Y*CanvasPixelHeight;set=>Y=value/CanvasPixelHeight;}
+    public double PixelWidth {get=>Width*CanvasPixelWidth;set=>Width=value/CanvasPixelWidth;}
+    public double PixelHeight {get=>Height*CanvasPixelHeight;set=>Height=value/CanvasPixelHeight;}
+    public void SetCanvasDimensions(double width,double height)
+    {
+        if(width<=0||height<=0||CanvasPixelWidth==width&&CanvasPixelHeight==height)return;
+        CanvasPixelWidth=width;CanvasPixelHeight=height;
+        foreach(var property in new[]{nameof(CanvasPixelWidth),nameof(CanvasPixelHeight),nameof(MinimumPixelWidth),nameof(MinimumPixelHeight),nameof(PixelX),nameof(PixelY),nameof(PixelWidth),nameof(PixelHeight)})OnPropertyChanged(property);
+    }
     public bool Visible => _route.Visible;
     public bool EditorLocked => _route.EditorLocked;
     public void SetLayerIndex(int index) { LayerIndex = index; OnPropertyChanged(nameof(LayerLabel)); }
@@ -244,13 +261,13 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     // S3: the layer card's numeric X/Y/W/H fields edit the rect directly.
     // Canvas drags go through SetCanvasRect, which sets these silently.
-    partial void OnXChanged(double value) => ApplyVisualChange();
+    partial void OnXChanged(double value) {OnPropertyChanged(nameof(PixelX));ApplyVisualChange();}
 
-    partial void OnYChanged(double value) => ApplyVisualChange();
+    partial void OnYChanged(double value) {OnPropertyChanged(nameof(PixelY));ApplyVisualChange();}
 
-    partial void OnWidthChanged(double value) => ApplyVisualChange();
+    partial void OnWidthChanged(double value) {OnPropertyChanged(nameof(PixelWidth));ApplyVisualChange();}
 
-    partial void OnHeightChanged(double value) => ApplyVisualChange();
+    partial void OnHeightChanged(double value) {OnPropertyChanged(nameof(PixelHeight));ApplyVisualChange();}
 
     partial void OnFitModeChanged(string value) => ApplyVisualChange();
 
@@ -313,6 +330,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(_route.SourceOffsetY);
             OpacityPercent = Math.Clamp(_route.Opacity, 0, 1.0) * 100;
             OnPropertyChanged(nameof(DisplayName)); OnPropertyChanged(nameof(Visible)); OnPropertyChanged(nameof(EditorLocked)); OnPropertyChanged(nameof(EditorUnlocked));
+            OnPropertyChanged(nameof(SourceKindLabel)); OnPropertyChanged(nameof(SourceGlyph));
             OnPropertyChanged(nameof(SourceColorGradeId));
             OnPropertyChanged(nameof(ColorGradeSummary));
             OnPropertyChanged(nameof(FramingSummary));

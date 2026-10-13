@@ -22,8 +22,12 @@ public sealed partial class SourcesPage
             Workspace.PropertyChanged += (_,e)=>
             {
                 if(e.PropertyName==nameof(SceneWorkspaceViewModel.Selected)&&Workspace.Selected is {} layer)
+                {
                     SceneCanvasEditor.SelectLayer(layer);
+                    InspectorTabs.SelectedIndex=layer.IsTilesWall?0:3;
+                }
             };
+            InspectorTabs.SelectedIndex=Workspace.IsWallSelected?0:3;
         }
     }
     private void OnSourceListSelectionChanged(object sender,SelectionChangedEventArgs e)
@@ -61,12 +65,13 @@ public sealed partial class SourcesPage
     private void ApplyWorkspaceWidth()
     {
         if(InspectorColumn is null)return;
-        var compact=ActualWidth<1100;InspectorColumn.Width=new(compact?0:330);
+        var compact=ActualWidth<1180;var wide=ActualWidth>=1700;
+        ScenesColumn.Width=new(wide?250:228);InspectorColumn.Width=new(compact?0:wide?320:292);
         PropertiesButton.Visibility=compact?Visibility.Visible:Visibility.Collapsed;
         ClosePropertiesButton.Visibility=compact?Visibility.Visible:Visibility.Collapsed;
         InspectorDock.Visibility=!compact||_propertiesOpen?Visibility.Visible:Visibility.Collapsed;
         Grid.SetColumn(InspectorDock,compact?1:2);
-        InspectorDock.Width=compact?330:double.NaN;
+        InspectorDock.Width=compact?292:double.NaN;
         InspectorDock.HorizontalAlignment=compact?HorizontalAlignment.Right:HorizontalAlignment.Stretch;
         Canvas.SetZIndex(InspectorDock,compact?10:0);
     }
