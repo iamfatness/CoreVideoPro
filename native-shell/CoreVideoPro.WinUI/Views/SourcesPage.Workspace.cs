@@ -135,7 +135,11 @@ public sealed partial class SourcesPage
             if (current >= 0) InspectorTabs.Items.RemoveAt(current);
             InspectorTabs.Items.Insert(index, tabs[index]);
         }
-        InspectorTabs.SelectedItem = tabs.Contains(selected) ? selected : tabs[0];
+        // A retained item can move to another index while this page is collapsed.
+        // Assigning the same SelectedItem does not repair Pivot's cached index;
+        // its next template application rejects that inconsistent pair.
+        var selection = tabs.Contains(selected) ? selected : tabs[0];
+        InspectorTabs.SelectedIndex = InspectorTabs.Items.IndexOf(selection);
     }
     private void OnSourceListSelectionChanged(object sender,SelectionChangedEventArgs e)
     {FlushGraphicEdit();if(Workspace?.Selected is {} layer)SceneCanvasEditor.SelectLayer(layer);}
