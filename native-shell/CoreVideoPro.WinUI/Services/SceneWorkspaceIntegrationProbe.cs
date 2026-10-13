@@ -67,8 +67,16 @@ internal static class SceneWorkspaceIntegrationProbe
         workspace.ToggleVisibility(source);Require(!source.Visible,"Visibility edit did not update the source row");
         workspace.ToggleVisibility(source);workspace.ToggleLock(source);
         Require(!workspace.FitCommand.CanExecute(null),"Locked source can still run a transform command");
-        workspace.ToggleLock(source);workspace.DuplicateCommand.Execute(null);
+        workspace.ToggleLock(source);
+        source.Route.SpotlightIndex=2;source.Route.BorderStyle="accent";source.Route.BorderColor="#123456";
+        source.Route.BorderThickness=7.5;source.Route.SourceFramingModified=true;
+        workspace.ToggleVisibility(source);workspace.DuplicateCommand.Execute(null);
         Require(workspace.Items.Count==3,"Duplicate did not add an independent scene instance");
+        var duplicate=workspace.Selected!;
+        Require(duplicate.ItemId!=source.ItemId && duplicate.Route.SpotlightIndex==2 &&
+            duplicate.Route.BorderStyle=="accent" && duplicate.Route.BorderColor=="#123456" &&
+            duplicate.Route.BorderThickness==7.5 && duplicate.Route.SourceFramingModified && !duplicate.Visible,
+            "Duplicate lost source targeting, appearance, framing or visibility");
         workspace.RemoveCommand.Execute(null);Require(workspace.Items.Count==2,"Remove did not remove only the instance");
         workspace.UndoCommand.Execute(null);Require(workspace.Items.Count==3,"Undo did not restore the removed source instance");
         Require(studio.ProgramSceneRoutes.Count==0,"Authored Preview layers leaked into on-air wall routes");
