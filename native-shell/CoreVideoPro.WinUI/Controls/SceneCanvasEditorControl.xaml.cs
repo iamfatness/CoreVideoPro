@@ -17,7 +17,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     private const double DesignHeight = 900;
     private const double MinLayerSize = 0.08;
 
-    private readonly Dictionary<int, Border> _layerFrames = new();
+    private readonly Dictionary<string, Border> _layerFrames = new();
     private SceneCanvasLayerViewModel? _selectedLayer;
     private SceneCanvasLayerViewModel? _dragLayer;
     private string _dragMode = "move";
@@ -34,6 +34,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     public event EventHandler<SceneCanvasLayerViewModel>? LayerChanged;
     private long _lastCompositeDragUpdate;
     public event EventHandler<bool>? InteractionChanged;
+    public event EventHandler? InteractionCanceled;
 
     public SceneCanvasEditorControl()
     {
@@ -59,7 +60,10 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         foreach (var frame in _layerFrames.Values)
         {
             if (frame.Tag is SceneCanvasLayerViewModel layer)
+            {
+                Canvas.SetZIndex(frame, layer.Route.ZIndex);
                 UpdateLayerSurface(frame, layer.Surface);
+            }
         }
     }
 
@@ -177,7 +181,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             ? "Add sources from the list below, then drag them anywhere on the frame."
             : "Drag boxes to place them. Drag the center target to pan the source inside its box.";
 
-        var activeIndices = layers.Select(layer => layer.LayerIndex).ToHashSet();
+        var activeIndices = layers.Select(layer => layer.ItemId).ToHashSet();
         foreach (var staleIndex in _layerFrames.Keys.Where(index => !activeIndices.Contains(index)).ToList())
         {
             if (_layerFrames.Remove(staleIndex, out var staleFrame))
@@ -192,22 +196,24 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             }
         }
 
-        foreach (var layer in layers.OrderBy(entry => entry.LayerIndex))
+        foreach (var layer in layers.OrderBy(entry => entry.Route.ZIndex))
         {
-            if (!_layerFrames.TryGetValue(layer.LayerIndex, out var frame))
+            if (!_layerFrames.TryGetValue(layer.ItemId, out var frame))
             {
                 frame = CreateLayerFrame(layer);
-                _layerFrames[layer.LayerIndex] = frame;
+                _layerFrames[layer.ItemId] = frame;
                 LayerCanvas.Children.Add(frame);
             }
             else
             {
                 frame.Tag = layer;
-                UpdateLayerLabel(frame, layer.LayerLabel);
+                UpdateLayerLabel(frame, layer.DisplayName);
             }
 
+            Canvas.SetZIndex(frame, layer.Route.ZIndex);
             UpdateLayerSurface(frame, layer.Surface);
             UpdateLayerVisuals(frame, layer);
+            frame.Visibility=layer.Visible?Visibility.Visible:Visibility.Collapsed;
             ApplyLayerGeometry(frame, layer);
             ApplySelectionStyle(frame, ReferenceEquals(layer, _selectedLayer));
         }
@@ -251,7 +257,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         var label = new TextBlock
         {
             Name = "LayerLabel",
-            Text = layer.LayerLabel,
+            Text = layer.DisplayName,
             FontSize = 14,
             FontWeight = FontWeights.SemiBold,
             Foreground = new SolidColorBrush(Color.FromArgb(255, 237, 244, 239)),
@@ -296,7 +302,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         frame.PointerPressed += OnLayerPointerPressed;
         frame.PointerMoved += OnLayerPointerMoved;
         frame.PointerReleased += OnLayerPointerReleased;
-        frame.PointerCanceled += OnLayerPointerReleased;
+        frame.PointerCanceled += OnLayerPointerCanceled;
         return frame;
     }
 
@@ -308,7 +314,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         frame.PointerPressed -= OnLayerPointerPressed;
         frame.PointerMoved -= OnLayerPointerMoved;
         frame.PointerReleased -= OnLayerPointerReleased;
-        frame.PointerCanceled -= OnLayerPointerReleased;
+        frame.PointerCanceled -= OnLayerPointerCanceled;
     }
 
     private static Border CreateResizeGrip(string tag, HorizontalAlignment horizontal, VerticalAlignment vertical)
@@ -468,6 +474,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         }
 
         _selectedLayer = layer;
+        if(layer.EditorLocked){UpdateSelectionStyles();LayerSelected?.Invoke(this,layer);e.Handled=true;return;}
         _dragLayer = layer;
         _dragStartPointer = e.GetCurrentPoint(LayerCanvas).Position;
         _dragStartControlPointer = e.GetCurrentPoint(this).Position;
@@ -704,7 +711,8 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     // ---- S3 keyboard nudge ----------------------------------------------------
     private void OnEditorKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
-        if (_selectedLayer is null || _dragLayer is not null)
+        if(e.Key==Windows.System.VirtualKey.Escape&&_dragLayer is not null){CancelInteraction();e.Handled=true;return;}
+        if (_selectedLayer is null || _selectedLayer.EditorLocked || _dragLayer is not null)
         {
             return;
         }
@@ -724,12 +732,24 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         var x = Math.Clamp(layer.X + deltaX, 0, 1 - layer.Width);
         var y = Math.Clamp(layer.Y + deltaY, 0, 1 - layer.Height);
         layer.SetCanvasRect(x, y, layer.Width, layer.Height);
-        if (_layerFrames.TryGetValue(layer.LayerIndex, out var frame))
+        if (_layerFrames.TryGetValue(layer.ItemId, out var frame))
         {
+            frame.Visibility=layer.Visible?Visibility.Visible:Visibility.Collapsed;
             ApplyLayerGeometry(frame, layer);
         }
 
         e.Handled = true;
+    }
+
+    private void OnLayerPointerCanceled(object sender,PointerRoutedEventArgs e) {CancelInteraction();e.Handled=true;}
+    private void CancelInteraction()
+    {
+        var layer=_dragLayer;var rect=_dragStartRect;if(layer is null||rect is null)return;
+        layer.SetCanvasRect(rect.X,rect.Y,rect.Width,rect.Height,false);
+        layer.SetSourceOffset(_dragStartSourceOffsetX,_dragStartSourceOffsetY,false);
+        _dragLayer=null;_dragMoved=false;_dragStartRect=null;
+        LayerChanged?.Invoke(this,layer);InteractionCanceled?.Invoke(this,EventArgs.Empty);
+        InteractionChanged?.Invoke(this,false);UpdateSelectionStyles();
     }
 
     private void OnLayerPointerReleased(object sender, PointerRoutedEventArgs e)

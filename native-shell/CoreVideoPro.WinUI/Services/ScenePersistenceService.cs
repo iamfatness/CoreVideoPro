@@ -22,6 +22,8 @@ public static class ScenePersistenceService
     public static PersistedDynamicGallerySettings ToPersisted(DynamicGallerySettings settings) =>
         new()
         {
+            WallRect = settings.WallRect.Clone(), WallOrder = settings.WallOrder, WallOpacity = settings.WallOpacity,
+            WallVisible = settings.WallVisible, WallLocked = settings.WallLocked, TransparentBackground = settings.TransparentBackground,
             AutoFill = settings.AutoFill,
             MembershipMode = settings.MembershipMode,
             BackgroundColor = settings.BackgroundColor,
@@ -50,6 +52,8 @@ public static class ScenePersistenceService
     public static PersistedSceneRoute ToPersisted(SourceRoute route) =>
         new()
         {
+            WorkspaceAuthored = route.WorkspaceAuthored,
+            DisplayName = route.DisplayName, Visible = route.Visible, EditorLocked = route.EditorLocked,
             Id = route.Id,
             Mode = SceneRoutingService.ModeToWire(route.Mode),
             AudioRole = SceneRoutingService.AudioRoleToWire(route.AudioRole),
@@ -93,6 +97,9 @@ public static class ScenePersistenceService
     public static DynamicGallerySettings FromPersisted(PersistedDynamicGallerySettings persisted) =>
         new()
         {
+            WallRect = persisted.WallRect?.Clone() ?? new() { Width = 1, Height = 1 }, WallOrder = persisted.WallOrder,
+            WallOpacity = double.IsFinite(persisted.WallOpacity) ? Math.Clamp(persisted.WallOpacity, 0, 1) : 1,
+            WallVisible = persisted.WallVisible, WallLocked = persisted.WallLocked, TransparentBackground = persisted.TransparentBackground,
             AutoFill = persisted.AutoFill,
             MembershipMode = TilesMembershipPolicy.NormalizeMode(
                 persisted.MembershipMode ?? (persisted.AutoFill ? "eligible" : "manual")),
@@ -123,6 +130,8 @@ public static class ScenePersistenceService
     {
         var route = new SourceRoute
         {
+            WorkspaceAuthored = persisted.WorkspaceAuthored,
+            DisplayName = persisted.DisplayName, Visible = persisted.Visible, EditorLocked = persisted.EditorLocked,
             Id = persisted.Id,
             Mode = SceneRoutingService.ModeFromWire(persisted.Mode),
             AudioRole = SceneRoutingService.AudioRoleFromWire(persisted.AudioRole),
@@ -141,7 +150,7 @@ public static class ScenePersistenceService
             SourceScale = SceneRoutingService.NormalizeSourceScale(persisted.SourceScale),
             SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(persisted.SourceOffsetX),
             SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(persisted.SourceOffsetY),
-            Opacity = Math.Clamp(persisted.Opacity, 0.1, 1.0),
+            Opacity = double.IsFinite(persisted.Opacity) ? Math.Clamp(persisted.Opacity, 0, 1.0) : 1,
             ZIndex = Math.Max(0, persisted.ZIndex)
         };
 

@@ -57,6 +57,10 @@ public sealed class SourceRoute
     public double Opacity { get; set; } = 1.0;
     public bool SourceFramingModified { get; set; }
     public ColorGrade? ColorGrade { get; set; }
+    public bool WorkspaceAuthored { get; set; }
+    public string DisplayName { get; set; } = string.Empty;
+    public bool Visible { get; set; } = true;
+    public bool EditorLocked { get; set; }
     public int ZIndex { get; set; }
 
     public SourceRoute Clone() =>
@@ -81,6 +85,8 @@ public sealed class SourceRoute
             Opacity = Opacity,
             SourceFramingModified = SourceFramingModified,
             ColorGrade = ColorGrade,
+            WorkspaceAuthored = WorkspaceAuthored,
+            DisplayName = DisplayName, Visible = Visible, EditorLocked = EditorLocked,
             ZIndex = ZIndex
         };
 }

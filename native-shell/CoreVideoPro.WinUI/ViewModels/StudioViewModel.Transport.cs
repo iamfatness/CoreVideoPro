@@ -167,7 +167,7 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     bool ITransportHost.IsSceneAvailable(string? sceneId) =>
         !string.IsNullOrWhiteSpace(sceneId) && Scenes.Any(scene => scene.Id == sceneId);
 
-    public bool HasPendingPreviewTake =>
+    public bool HasPendingPreviewTake => HasWorkspaceWallChanges ||
         _livePreviewDraft is not null &&
         string.Equals(_livePreviewDraftSceneId, ActiveSceneId, StringComparison.Ordinal) &&
         SceneTakeRules.HasPendingChanges(GetMutableRoutes(ActiveSceneId), _livePreviewDraft);
@@ -176,7 +176,7 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
         string.Equals(sceneId, _livePreviewDraftSceneId, StringComparison.Ordinal) && HasPendingPreviewTake;
 
     private int _takeMutationDepth;
-    void ITransportHost.BeginTakeMutation() => _takeMutationDepth++;
+    void ITransportHost.BeginTakeMutation() { _takeMutationDepth++; CommitWorkspaceScene(); }
     void ITransportHost.EndTakeMutation() => _takeMutationDepth--;
     void ITransportHost.RequestTakeReconciliation() => QueueProductionSyncRetry("take-rollback");
     void ITransportHost.QueueProductionSyncRetry(string reason) => QueueProductionSyncRetry(reason);
@@ -185,6 +185,11 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     // A rollback must not erase edits made while the media-core reply was pending.
     Func<Func<bool>> ITransportHost.CaptureTakeRollback()
     {
+        var workspaceDraft = _workspacePreviewScene;
+        var workspaceBackgroundId=_workspaceBackgroundId;
+        var backgrounds=_sceneBackgroundAssetIds.ToDictionary(p=>p.Key,p=>p.Value);
+        var originalProgramScene = ProgramScene;
+        var originalPreviewScene = StoredPreviewScene;
         var program = ActiveSceneId;
         var preview = PreviewSceneId;
         var programRoutes = GetMutableRoutes(program).Select(route => route.Clone()).ToList();
@@ -193,16 +198,22 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
         var draftScene = _livePreviewDraftSceneId;
         return () =>
         {
+            var attemptedProgramScene = _scenes.FirstOrDefault(s=>s.Id==program);
+            var attemptedPreviewScene = _scenes.FirstOrDefault(s=>s.Id==preview);
             var attemptedProgram = ActiveSceneId;
             var attemptedPreview = PreviewSceneId;
             var expectedProgram = GetMutableRoutes(program).Select(route => route.Clone()).ToList();
             var expectedPreview = GetMutableRoutes(preview).Select(route => route.Clone()).ToList();
             var expectedDraft = _livePreviewDraft?.Select(route => route.Clone()).ToList();
+            var expectedWorkspaceDraft=_workspacePreviewScene;
             return () =>
             {
                 if (!((ITransportHost)this).IsSceneAvailable(program) ||
                     !((ITransportHost)this).IsSceneAvailable(preview) ||
                     ActiveSceneId != attemptedProgram ||
+                    !ReferenceEquals(expectedWorkspaceDraft,_workspacePreviewScene) ||
+                    !ReferenceEquals(attemptedProgramScene,_scenes.FirstOrDefault(s=>s.Id==program)) ||
+                    !ReferenceEquals(attemptedPreviewScene,_scenes.FirstOrDefault(s=>s.Id==preview)) ||
                     SceneTakeRules.HasPendingChanges(expectedProgram, GetMutableRoutes(program)) ||
                     SceneTakeRules.HasPendingChanges(expectedPreview, GetMutableRoutes(preview)) ||
                     SceneTakeRules.HasPendingChanges(expectedDraft ?? [], _livePreviewDraft ?? []))
@@ -211,6 +222,8 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
                 try
                 {
                     var stillOwnsPreview = PreviewSceneId == attemptedPreview;
+                    var programIndex=_scenes.IndexOf(attemptedProgramScene!);if(programIndex>=0)_scenes[programIndex]=originalProgramScene;
+                    var previewIndex=_scenes.IndexOf(attemptedPreviewScene!);if(previewIndex>=0)_scenes[previewIndex]=originalPreviewScene;
                     ActiveSceneId = program;
                     if (stillOwnsPreview) PreviewSceneId = preview;
                     GetMutableRoutes(program).Clear();
@@ -220,8 +233,11 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
                         GetMutableRoutes(preview).Clear();
                         GetMutableRoutes(preview).AddRange(previewRoutes);
                     }
+                    foreach(var id in new[]{program,preview}){if(backgrounds.TryGetValue(id,out var asset))_sceneBackgroundAssetIds[id]=asset;else _sceneBackgroundAssetIds.Remove(id);}
                     if (stillOwnsPreview)
                     {
+                        _workspaceBackgroundId=workspaceBackgroundId;
+                        _workspacePreviewScene=workspaceDraft;
                         _livePreviewDraft = draft;
                         _livePreviewDraftSceneId = draftScene;
                     }

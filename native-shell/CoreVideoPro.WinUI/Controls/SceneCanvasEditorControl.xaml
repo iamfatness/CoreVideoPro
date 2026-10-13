@@ -29,15 +29,9 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
-            <TextBlock Text="Canvas presets" FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
+            <TextBlock Text="Preview canvas" FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
                        VerticalAlignment="Center" />
-            <ScrollViewer Grid.Column="1"
-                          HorizontalScrollBarVisibility="Auto"
-                          HorizontalScrollMode="Enabled"
-                          VerticalScrollBarVisibility="Disabled"
-                          VerticalScrollMode="Disabled">
-                <StackPanel x:Name="PresetButtonPanel" Orientation="Horizontal" Spacing="6" />
-            </ScrollViewer>
+            <StackPanel x:Name="PresetButtonPanel" Grid.Column="1" Orientation="Horizontal" Spacing="6" Visibility="Collapsed" />
             <TextBlock x:Name="CanvasHintText" Grid.ColumnSpan="2" Grid.Row="1"
                        FontSize="11" Foreground="{StaticResource StudioMutedBrush}"
                        VerticalAlignment="Center" TextWrapping="WrapWholeWords" />

@@ -17,6 +17,39 @@ namespace {
 
 using corevideo::core::MediaCore;
 
+TEST(TilesWorkspace, WallBoundsOpacityAndAuthoredLayerOrderReachThePlan) {
+  MediaCore core;
+  const auto command = corevideo::rpc::Json::parse(R"({"type":"load-scene-graph","sceneId":"panel","routes":[{"routeId":"logo","mode":"fixed","participantId":"99","zIndex":512,"rect":{"x":0,"y":0,"width":0.2,"height":0.2}}],"tiles":{"layerId":"tiles:panel","order":256,"rect":{"x":0.1,"y":0.2,"w":0.8,"h":0.6},"opacity":0.625,"transparentBackground":true,"members":["zoom:42"],"style":{"backgroundColor":"#000000"}}})");
+  ASSERT_TRUE(command.has_value());core.applyCommands({*command});
+  core.setTilesMemberFrameAgesForTest({{"zoom:42",true,0}});
+  const auto& plan = core.lastRenderPlanForTest();
+  const auto background = std::find_if(plan.layers.begin(),plan.layers.end(),[](const auto& l){return l.kind=="tiles-background";});
+  const auto tile = std::find_if(plan.layers.begin(),plan.layers.end(),[](const auto& l){return l.layerId=="tile:zoom:42";});
+  const auto logo = std::find_if(plan.layers.begin(),plan.layers.end(),[](const auto& l){return l.layerId=="route:logo";});
+  ASSERT_NE(background,plan.layers.end());ASSERT_NE(tile,plan.layers.end());ASSERT_NE(logo,plan.layers.end());
+  EXPECT_EQ(background->fillColor,"#00000000");EXPECT_EQ(background->opacity,0.625f);EXPECT_EQ(tile->opacity,0.625f);
+  EXPECT_GE(tile->rect.x,0.1f);EXPECT_GE(tile->rect.y,0.2f);EXPECT_LE(tile->rect.x+tile->rect.width,0.90001f);
+  EXPECT_GT(logo->order,tile->order);EXPECT_EQ(logo->order,512);
+}
+
+TEST(TilesWorkspace, HiddenWallNeverTriggersUnrelatedSourceFallback) {
+  MediaCore core;
+  auto command=corevideo::rpc::Json::parse(R"({"type":"load-scene-graph","sceneId":"hidden","routes":[],"tiles":{"layerId":"tiles:hidden","opacity":0,"members":[],"transparentBackground":true}})");
+  ASSERT_TRUE(command.has_value());core.applyCommands({*command});
+  const auto& plan=core.lastRenderPlanForTest();
+  ASSERT_EQ(plan.layers.size(),1u);EXPECT_EQ(plan.layers[0].opacity,0.f);EXPECT_EQ(plan.layers[0].kind,"tiles-background");
+}
+
+TEST(TilesWorkspace, ExplicitCameraInstancesDoNotStealTheSameGuestsWallSlot) {
+  MediaCore core;
+  auto command=corevideo::rpc::Json::parse(R"({"type":"load-scene-graph","sceneId":"panel","routes":[{"routeId":"pip","mode":"fixed","participantId":"42","workspaceAuthored":true,"zIndex":256,"rect":{"x":0.7,"y":0.7,"width":0.3,"height":0.3}},{"routeId":"copy","mode":"fixed","participantId":"42","workspaceAuthored":true,"zIndex":512,"rect":{"x":0,"y":0,"width":0.2,"height":0.2}}],"tiles":{"layerId":"tiles:panel","members":["zoom:42"]}})");
+  ASSERT_TRUE(command.has_value());(void)core.applyCommands({*command});
+  core.setTilesMemberFrameAgesForTest({{"zoom:42",true,0}});
+  const auto& plan=core.lastRenderPlanForTest();
+  EXPECT_EQ(std::count_if(plan.layers.begin(),plan.layers.end(),[](const auto& l){return l.kind=="participant-video";}),3);
+  EXPECT_TRUE(std::none_of(plan.layers.begin(),plan.layers.end(),[](const auto& l){return l.layerId.rfind("route:",0)==0 && l.opacity==0.f;}));
+}
+
 int countLayersOfKind(const corevideo::modules::CompositorRenderPlan& plan,
                       const std::string& kind) {
   return static_cast<int>(std::count_if(

@@ -32,7 +32,7 @@ public sealed record MediaCoreSceneRouteWire(
     // bus the route is on; a shell-asserted key or playing flag could only fight that
     // decision. The route carries the ASSET and its loop flag, nothing about transport.
     bool MediaAssetLoop = false,
-    string? PersonId = null);
+    string? PersonId = null, bool WorkspaceAuthored = false);
 
 /// <summary>
 /// One ordered multiview tile source for <c>set-multiview-layout</c>. <paramref name="Kind"/> is
@@ -63,13 +63,8 @@ public sealed record MediaCoreMultiviewLayout(
 /// <summary>
 /// T1 core wall: the "tiles" node carried on load-scene-graph/set-preview-scene for a
 /// CoreVideo Tiles (dynamic-gallery) scene. Mirrors <c>TilesLayerPayload</c>
-/// (<c>TilesLayerPayloadBuilder</c>, WinUI project — membership policy only) flattened
-/// for the wire; the core solves the grid layout itself every frame from
-/// <c>Members</c>+<c>Style</c> (MediaCore.cpp parseTilesLayer). No Rect field: the shell
-/// does not solve/send a canvas subregion, so the core's rect defaults apply
-/// (x=0,y=0,w=1,h=1 — full canvas). NOTE the wire key is "w"/"h" here, NOT "width"/
-/// "height" like a scene route's rect (MediaCoreSceneRouteWire) — an easy copy-paste
-/// trap if a later task adds a Rect to this record.
+/// Wall membership, style, instance bounds and opacity. Rect uses w/h on the
+/// native wire; ordinary source routes use width/height. The media core owns layout.
 /// </summary>
 public sealed record MediaCoreTilesLayerWire(
     string LayerId,
@@ -83,7 +78,7 @@ public sealed record MediaCoreTilesLayerWire(
     string BorderShape = "square", string BorderColor = "#000000", double BorderThickness = 0,
     double CornerRadius = 16, string GlowColor = "#FFFFFF", double GlowSize = 0,
     double GlowIntensity = 100, double GlowSoftness = 0, bool AnimateLayout = false, int AnimationDurationMs = 350, string FillMode = "auto",
-    string BackgroundSourceId = "", IReadOnlyDictionary<string, MediaCoreTilesOverrideWire>? Overrides = null);
+    string BackgroundSourceId = "", IReadOnlyDictionary<string, MediaCoreTilesOverrideWire>? Overrides = null, MediaCoreTilesRectWire? Rect = null, double Opacity = 1, bool TransparentBackground = false);
 
 public sealed record MediaCoreTilesRectWire(double X, double Y, double Width, double Height);
 public sealed record MediaCoreTilesOverrideWire(MediaCoreTilesRectWire? Rect, double CropLeftPercent, double CropRightPercent, int? Z);
