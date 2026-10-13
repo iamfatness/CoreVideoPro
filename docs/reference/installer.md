@@ -8,6 +8,10 @@ Upgrade retirement (#865): after payload, camera ownership, registry and shortcu
 have committed, Setup runs `Remove-PreviousInstallations.ps1`. The standard per-user
 install root retains one registered version. Custom QA destinations never clean
 the real install root. Candidates require the exact uninstall registration,
+Payload hashes are streamed through .NET SHA-256 rather than relying on
+`Get-FileHash` resolution in Setup's PowerShell helper (#883). The retirement
+regression also runs with that command masked in the planner module on both
+32-bit and 64-bit Windows PowerShell.
 publisher, version marker and package manifest; paths and ancestor reparse points
 are checked before deletion. Running versions and unverifiable candidates remain
 with a cleanup report and warning. Missing version folders permit removal of their

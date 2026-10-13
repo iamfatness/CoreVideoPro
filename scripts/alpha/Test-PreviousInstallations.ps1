@@ -1,5 +1,13 @@
+param([switch]$WithoutHashCommand)
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'PreviousInstallations.psm1') -Force
+if ($WithoutHashCommand) {
+    # Mask command lookup in the actual planner's module scope, not the test
+    # script's separate session state. Run this mode in a disposable -File process.
+    & (Get-Module PreviousInstallations) {
+        function script:Get-FileHash { throw 'Get-FileHash unavailable in installer helper' }
+    }
+}
 $caseId = [Guid]::NewGuid().ToString('N')
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) "CoreVideoRetirement-$caseId"
 $registryRoot = "HKCU:/Software/CoreVideoProInstallerTests/$caseId"
@@ -12,7 +20,7 @@ function New-Fixture([string]$Id) {
     New-Item -ItemType Directory -Path $app | Out-Null
     [IO.File]::WriteAllText((Join-Path $app '.corevideo-prerelease-install'), $Id)
     [IO.File]::WriteAllText((Join-Path $app 'app.exe'), 'delivered payload')
-    $hash = (Get-FileHash (Join-Path $app 'app.exe')).Hash
+    $hash = (Microsoft.PowerShell.Utility\Get-FileHash (Join-Path $app 'app.exe')).Hash
     @{releaseId=$Id;sourceCommit=('a'*40);files=@(@{path='app.exe';sha256=$hash})} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $app 'build-manifest.json')
     $key = Join-Path $registryRoot "CoreVideoPro-$Id"
     New-Item -Path $key | Out-Null
