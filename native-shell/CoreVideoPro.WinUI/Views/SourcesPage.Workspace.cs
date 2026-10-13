@@ -57,9 +57,22 @@ public sealed partial class SourcesPage
     }
     private void FlushGraphicEdit()
     {
+        // TextChanged may still be queued when Save or a selection change runs.
+        // Capture the current scoped fields before any commit refreshes bindings.
+        var sceneId=ViewModel?.PreviewSceneId;
+        var itemId=Workspace?.Selected?.ItemId;
+        var visibleText=Workspace?.IsText==true&&GraphicTextField?.Tag?.ToString()==itemId
+            &&GraphicTextField.Text!=Workspace.GraphicText?GraphicTextField.Text:null;
+        var visibleColor=Workspace?.IsGraphic==true&&GraphicColorField?.Tag?.ToString()==itemId
+            &&GraphicColorField.Text!=Workspace.GraphicColor?GraphicColorField.Text:null;
         if(_pendingAliasEdit is {} alias){_pendingAliasEdit=null;Workspace?.RenameItem(alias.SceneId,alias.Id,alias.Text);}
         ++_graphicEditVersion;var pending=_pendingGraphicEdit;_pendingGraphicEdit=null;
         if(pending is {} edit)Workspace?.CommitGraphicEdit(edit.SceneId,edit.Id,edit.Text,edit.Color);
+        if(sceneId is not null&&itemId is not null)
+        {
+            if(visibleText is not null)Workspace?.CommitGraphicEdit(sceneId,itemId,visibleText,false);
+            if(visibleColor is not null)Workspace?.CommitGraphicEdit(sceneId,itemId,visibleColor,true);
+        }
         PropertyChanged?.Invoke(this,new(nameof(CanTakeWorkspace)));
     }
     private void OnSaveWorkspace(object sender,RoutedEventArgs e)
