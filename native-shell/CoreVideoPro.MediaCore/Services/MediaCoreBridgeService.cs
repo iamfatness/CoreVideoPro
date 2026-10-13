@@ -796,6 +796,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
         List<IsoOutputLifecycleFact> isoChanges;
         lock (_gate)
         {
+            if (!CoreSnapshotRevisionPolicy.Accept(_lastSnapshot, snapshot)) return;
             _controlRecovery.ObserveRoster(snapshot.RosterEpoch, snapshot.RosterRevision,
                 ZoomRosterSnapshotPolicy.Accept(_lastSnapshot, snapshot.RosterEpoch, snapshot.RosterRevision));
             _controlRecovery.ObserveMonitor(snapshot.AudioMixSession.MonitorControl?.AuthorityEpoch,

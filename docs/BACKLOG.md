@@ -85,6 +85,12 @@ Preserve the existing session while building; restart/rejoin for candidate valid
 
 ## Now — owner-accepted order (2026-10-08)
 
+Owner approved the [cross-subsystem isolation plan](reference/realtime-isolation-audit.md)
+on October 12. Start its first real status/observation consumer under #870,
+then the focused #872/#873 crossings. Keep the existing #517/#823 installed
+delivery qualification and initiating-cause attribution gates; approval does
+not close them or displace the remaining issue-specific acceptance.
+
 Owner-approved follow-up on 2026-10-10: implement [#853](https://github.com/iamfatness/CoreVideoPro/issues/853), draw-first rectangle/circle scope ROI and collapsed precision controls, before further UI/UX slices. Preserve the running meeting. Zero missed delivery slots remains paramount; the owner is researching the #825/#517 misses separately.
 
 Three lanes, at most one item in flight per lane and three total. Start with #835;
@@ -131,6 +137,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner follow-up | A | [#870](https://github.com/iamfatness/CoreVideoPro/issues/870) | Execute the approved status isolation [specification](reference/status-snapshot-isolation-spec.md) and [plan](reference/status-snapshot-isolation-plan.md), starting with immutable audio/output owner observations and continuing through bounded off-lock response assembly. Subsequent #872/#873 crossings follow their focused contracts; preserve live sessions and prove each installed delivery boundary. |
 | Owner follow-up | A | [#802](https://github.com/iamfatness/CoreVideoPro/issues/802) | Owner approved October 11: enable completed source preparation in Windows production, isolate optional exports, repair expired-ready queue retirement, and validate repeated cold 1080p background loads with zero missed delivery slots in the test meeting. |
 | Owner follow-up | A | [#853](https://github.com/iamfatness/CoreVideoPro/issues/853) | Draw-first rectangle/circle scope ROI, move/resize, cancellation, Clear and collapsed precision settings. [Interaction contract](reference/roi-drawing-tools.md). Owner approved this code slice on October 10; preserve live sessions and keep zero-miss delivery acceptance separate. |
 | Owner top | A | [#835](https://github.com/iamfatness/CoreVideoPro/issues/835) | Advanced source grading: optional expanded workspace, truthful native preview/output path (grading portion of #764), master/R/G/B curves, histogram, waveform and vectorscope. Preserve existing grades, source identity, production cadence and quality; scope analysis must be bounded and asynchronous. Then qualify advanced primaries, real LUT import/stack and presets against the same native transform. |
@@ -172,6 +179,9 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
+| [#876](https://github.com/iamfatness/CoreVideoPro/issues/876) | The #870 development meeting interval had zero measured Program-buffer losses, but the Program clock continued emitting source-stage misses during owner teardown after production stopped. Audit the explicit output terminal/drain boundary; retain on-air failures and separate cleanup evidence. Unranked intake. |
+| [#877](https://github.com/iamfatness/CoreVideoPro/issues/877) | Native QA's Python JSON-line driver selected Windows cp1252 and failed on valid UTF-8 output. Make protocol decoding explicitly UTF-8 and preserve bounded reads/cleanup. Harness defect; not evidence of an SDK crash. Unranked intake. |
+| [#878](https://github.com/iamfatness/CoreVideoPro/issues/878) | WGC window discovery returned Windows ANSI title bytes inside UTF-8 status JSON. Unicode title conversion and an actual-window regression test are included in #875 under the approved #870 response contract work; installed verification pending. Separate from #877 and not an SDK crash. |
 | [#864](https://github.com/iamfatness/CoreVideoPro/issues/864) | Owner requested root cause and repair plan for the low-rate multiview Program cell. A/B/A diagnostics confirm keyed-mutex timeout starvation. Implement the [completed-snapshot handoff specification](reference/program-monitor-handoff-spec.md) and validate Program-cell pixels independently; exact first bad release remains unqualified. |
 | [#869](https://github.com/iamfatness/CoreVideoPro/issues/869) | Three Release GPU test fixtures assume inline participant exports or immediate multiview labels. Controlled candidate/baseline runs fail with isolation enabled and pass inline. Make intended modes explicit and keep asynchronous isolated pixel/label coverage; do not disable production isolation. Unranked test-hardening intake. |
 | [#870](https://github.com/iamfatness/CoreVideoPro/issues/870) | Owner requested a [snapshot isolation specification](reference/status-snapshot-isolation-spec.md), [repair plan](reference/status-snapshot-isolation-plan.md) and [cross-subsystem audit](reference/realtime-isolation-audit.md). Status reads wait on audio-owned state while holding the render lock; the initiating operation of the original 35–43 ms stall remains unproven. Implement bounded owner publications/off-lock assembly and prove freshness, command ordering and zero-miss installed acceptance. Unranked; planning does not close the issue. |

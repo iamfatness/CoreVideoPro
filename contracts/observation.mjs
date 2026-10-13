@@ -2,9 +2,9 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
-const source = readFileSync(resolve(root, 'native/src/core/MediaCore.cpp'), 'utf8');
-const start = source.indexOf('rpc::Json MediaCore::sessionState() const {');
-const end = source.indexOf('rpc::Json MediaCore::syncZoomMediaSpine', start);
+const source = readFileSync(resolve(root, 'native/src/core/CoreStateCapture.cpp'), 'utf8');
+const start = source.indexOf('rpc::Json CoreStateCapture::sessionState() const {');
+const end = source.indexOf('rpc::Json CoreStateCapture::health(', start);
 if (start < 0 || end < 0) throw Error('Cannot locate native sessionState()');
 const body = source.slice(start, end);
 const objectStart = body.indexOf('rpc::Json::Object state{');

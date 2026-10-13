@@ -43,13 +43,15 @@ TEST(LockHoldGuardrail, OverBudgetHoldCountsAndRateCapsWarnings) {
   EXPECT_EQ(stats.worstHeldUs, 5'000);
 }
 
-TEST(LockHoldGuardrail, SanctionedSiteBudgetsAllowLongerHolds) {
+TEST(LockHoldGuardrail, OnlyRenderWorkRetainsTheLongerSanctionedBudget) {
   LockHoldGuardrail::resetForTest();
 
-  // 5ms is over the sub-ms default but sanctioned for the command-handle site.
+  // Projection/serialization moved off-lock; command capture no longer gets
+  // the former 50ms exemption. Render work retains its explicit GPU budget.
   EXPECT_TRUE(LockHoldGuardrail::recordHold("test.cmd", 5'000, LockHoldGuardrail::kDefaultBudgetUs));
-  EXPECT_FALSE(
+  EXPECT_TRUE(
       LockHoldGuardrail::recordHold("test.cmd", 5'000, LockHoldGuardrail::kCommandHandleBudgetUs));
+  EXPECT_TRUE(LockHoldGuardrail::recordHold("test.pump", 2'000, LockHoldGuardrail::kFramePumpBudgetUs));
   EXPECT_FALSE(LockHoldGuardrail::recordHold("test.render", 5'000, LockHoldGuardrail::kRenderTickBudgetUs));
   EXPECT_TRUE(LockHoldGuardrail::recordHold("test.render", 9'000, LockHoldGuardrail::kRenderTickBudgetUs));
 }

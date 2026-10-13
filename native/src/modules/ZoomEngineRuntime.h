@@ -363,7 +363,8 @@ class ZoomEngineRuntime {
                                const ZoomEngineRgbaFrame& frame,
                                std::shared_ptr<const std::vector<std::uint8_t>> i420,
                                std::chrono::steady_clock::time_point observedAt,
-                               std::shared_ptr<CpuSourceGpuView> preparedGpu = {},
+                               std::shared_ptr<CpuSourceGpuView> preparedGpu,
+                               rpc::Json thumbnailEvent,
                                ZoomHandoffCpuScope* timing = nullptr);
   void closeVideoStreamsLocked();
 };

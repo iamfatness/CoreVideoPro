@@ -603,6 +603,8 @@ public sealed class NativeMediaCoreAudioMixSession
     public double MonitorVolume { get; init; }
     public NativeMediaCoreMonitorControl? MonitorControl { get; init; }
     public int MonitorFramesPlayed { get; init; }
+    public long MonitorQueueDroppedFrames { get; init; }
+    public long MonitorIntentRevision { get; init; }
     public IReadOnlyList<NativeMediaCoreParticipantAudioChannel> Participants { get; init; } = [];
     public required string Summary { get; init; }
     public IReadOnlyList<string> Warnings { get; init; } = [];
@@ -764,6 +766,8 @@ public sealed class NativeMediaCoreEvent
 
 public sealed record NativeMediaCoreDiagnosticsSnapshot
 {
+    public AudioOwnerObservation? AudioObservation { get; init; }
+    public long AppliedControlRevision { get; init; }
     public double GeneratedAtMs { get; init; }
     public string? SceneId { get; init; }
     public int RouteCount { get; init; }
@@ -874,6 +878,8 @@ public sealed record NativeZoomGuestAvSyncAck
 
 public sealed record NativeMediaCoreStateSnapshot
 {
+    public AudioOwnerObservation? AudioObservation { get; init; }
+    public long AppliedControlRevision { get; init; }
     public IReadOnlyList<NativeCaptureDeviceStatus> CaptureDevices { get; init; } = [];
     public JsonElement? ProgramBuffer { get; init; }
     public CoreVideoPro.MediaCore.Contracts.DeliveryEvidenceObservation? DeliveryEvidence { get; init; }

@@ -1,6 +1,8 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/RecordingQueuePolicy.h"
 #include "core/MediaCore.h"
+#include "core/CoreStateCapture.h"
+#include "core/AudioObservationFootprint.h"
 #include "core/DeliveryTrace.h"
 #include "modules/MonitorInputEvidence.h"
 #include "core/SystemMemoryPolicy.h"
@@ -23,6 +25,8 @@
 #include "core/SpeakerFloor.h"
 #include "modules/AudioDsp.h"
 #include "modules/AsyncEncoderSink.h"
+#include "modules/AsyncOutputSender.h"
+#include "modules/AsyncAudioMonitorOutput.h"
 #include "core/SyntheticZoomSlateSource.h"
 #include "modules/ProgramFramePreview.h"
 
@@ -448,73 +452,20 @@ MediaCore::~MediaCore() {
 }
 
 rpc::Json MediaCore::profile() const {
-  const auto renderer = modules_.compositor->rendererName();
-  // encoder->session() is mutated by the audio/output worker; guard the read.
-  modules::OutputSession encoderSession;
-  {
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-    encoderSession = modules_.encoder->session();
-  }
-  const auto capabilities = capabilityReport(modules_, zoomEngineConfigured(), encoderSession);
-  return rpc::Json::Object{
-      {"name", renderer == "software" ? "CoreVideo Pro Native Media Core Stub" : "CoreVideo Pro Native Media Core"},
-      {"renderer", renderer},
-      {"encoder", encoderSession.encoderName},
-      {"maxProgramResolution", "3840x2160"},
-      {"maxProgramFps", 60},
-      {"maxParticipantFeeds", 10},
-      {"maxIsoRecordings", 8},
-      {"capabilities", capabilities.available},
-      {"capabilityStates", capabilities.states},
-  };
+  auto capture = std::make_unique<CoreStateCapture>(*this);
+  if (snapshotDeferrer_) return snapshotDeferrer_(std::move(capture), SnapshotProjection::Profile);
+  return capture->assemble(SnapshotProjection::Profile);
 }
 
+
+
 rpc::Json MediaCore::health() const {
-  // encoder->session() is mutated by the audio/output worker; guard the read.
-  modules::OutputSession session;
-  {
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-    session = modules_.encoder->session();
-  }
-  rpc::Json::Array messages;
-#if COREVIDEO_STUB
-  messages.emplace_back("COREVIDEO_STUB synthetic media path active");
-#else
-  messages.emplace_back("COREVIDEO dev adapter media path active");
-#endif
-  if (modules_.compositor->rendererName() != "software") {
-    messages.emplace_back("GPU compositor active: " + modules_.compositor->rendererName());
-  }
-  if (session.hardwareAccelerated) {
-    messages.emplace_back("Hardware encoder active: " + session.encoderName);
-  }
-  for (const auto& warning : lastProgramFrame_.warnings) {
-    messages.emplace_back("Compositor warning: " + warning);
-  }
-  return rpc::Json::Object{
-      {"status", session.active ? "live" : "idle"},
-      {"renderer", modules_.compositor->rendererName()},
-      {"renderDeadlineMisses", static_cast<double>(renderDeadlineMisses_.load(std::memory_order_relaxed))},
-      {"programFrameHealth", lastProgramFrame_.health},
-      {"encoder", session.encoderName},
-      {"codec", session.codec},
-      {"targetBitrateMbps", session.targetBitrateMbps},
-      {"hardwareEncoder", session.hardwareAccelerated},
-      {"recordingArtifactPath", session.recordingArtifactPath},
-      {"recordingBytesWritten", static_cast<double>(session.recordingBytesWritten)},
-      {"recordingDurationMs", static_cast<double>(session.recordingDurationMs)},
-      {"recordingFrameCount", static_cast<double>(session.recordingVideoFrameCount)},
-      {"recordingMetadataValid", session.recordingMetadataValid},
-      {"frameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
-      {"encodedFrameCount", static_cast<double>(session.encodedFrameCount)},
-      {"mixedAudioFrames", static_cast<double>(mixedAudioFrameCount_)},
-      {"programPixelSignature", static_cast<double>(lastProgramFrame_.programPixelSignature)},
-      {"renderPlanSignature", static_cast<double>(lastProgramFrame_.renderPlanSignature)},
-      {"captureDeviceCount", static_cast<double>(modules_.captureDevice->enumerate().size())},
-      {"zoom", rpc::Json::Object{{"readiness", zoomReadinessState()}, {"evidence", zoomEvidenceState()}}},
-      {"messages", messages},
-  };
+  auto capture = std::make_unique<CoreStateCapture>(*this);
+  if (snapshotDeferrer_) return snapshotDeferrer_(std::move(capture), SnapshotProjection::Health);
+  return capture->assemble(SnapshotProjection::Health);
 }
+
+
 
 rpc::Json MediaCore::captureDevices() const {
   return captureDevicesState();
@@ -771,514 +722,9 @@ void MediaCore::setScreenShareSource(const rpc::Json& command) {
 }
 
 rpc::Json MediaCore::sessionState() const {
-  // encoder->session() is mutated by the audio/output worker; guard the read. The
-  // other module reads in this snapshot (profile/health/audioMixSessionState/
-  // outputSenderSessionState/captureAudioSourcesState) each take audioOutputMutex_
-  // independently (never nested), so no single lock spans the whole build.
-  modules::OutputSession session;
-  {
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-    session = modules_.encoder->session();
-  }
-  const auto buffer = modules_.compositor->programBufferDiagnostics();
-  rpc::Json::Array zoomGuestAvSync;
-  for (const auto& [participantId, offsetMs] : zoomGuestAvOffsets_) {
-    zoomGuestAvSync.emplace_back(rpc::Json::Object{
-        {"participantId", participantId}, {"offsetMs", offsetMs}});
-  }
-  rpc::Json::Object state{
-      {"sceneId", sceneId_},
-      {"commandProtocolFailures", stringArray(commandProtocolFailures_)},
-      {"routeCount", routeCount_},
-      {"transformCount", transformCount_},
-      {"overlayCount", overlayCount_},
-      {"outputs", stringArray(session.destinations)},
-      {"isoParticipantIds", stringArray(session.isoParticipantIds)},
-      // ISO-3 parity: the canonical scheme-qualified selection (`zoom:<pid>` /
-      // `capture:<id>`) alongside the legacy bare list, so the shell reads back
-      // exactly the ids it can pass to isoSourceIds.
-      {"isoSourceIds", stringArray(canonicalIsoSourceIds())},
-      {"zoomGuestAvSync", std::move(zoomGuestAvSync)},
-      {"zoomGuestAvSyncRevision", static_cast<double>(zoomGuestAvRevision_)},
-      {"outputProfile", outputProfileJson(outputProfileId_, outputResolution_, outputWidth_, outputHeight_, outputFps_, outputTargetBitrateMbps_)},
-      {"encoder", session.encoderName},
-      {"codec", session.codec},
-      {"hardwareEncoder", session.hardwareAccelerated},
-      {"active", session.active},
-      {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
-      {"renderPlanId", lastProgramFrame_.renderPlanId},
-      {"compositorRenderer", lastProgramFrame_.renderer},
-      {"programFrame",
-       rpc::Json::Object{
-           {"sceneId", renderedProgramSources_.sceneId()},
-           // Always present, whatever the attribution is doing. "live" = this
-           // scene id is attributed to a program frame delivered this tick;
-           // "holding" = brief delivery jitter, the id is the last delivered
-           // one; "unknown" = nothing has confirmed it and sceneId is empty.
-           // See RenderedSceneAttributionPolicy.
-           {"sceneIdAttribution", std::string(renderedSceneAttributionState_)},
-           {"sceneIdAttributionTicks", renderedSceneAttributionTicks_},
-           {"deliverySequence", static_cast<double>(lastProgramFrame_.deliverySequence)},
-           {"videoSources", renderedProgramSources_.videoSources()},
-           {"frameNumber", static_cast<double>(lastProgramFrame_.frameNumber)},
-           {"renderPlanId", lastProgramFrame_.renderPlanId},
-           {"renderer", lastProgramFrame_.renderer},
-           {"health", lastProgramFrame_.health},
-           {"width", lastProgramFrame_.width},
-           {"height", lastProgramFrame_.height},
-           {"fps", outputFps_},
-           {"timestampMs", static_cast<double>(lastProgramFrame_.frameNumber * (1000.0 / std::max(1, outputFps_)))},
-           {"layerCount", lastProgramFrame_.layerCount},
-           {"gpuComposed", lastProgramFrame_.gpuComposed},
-           {"programPixelSignature", static_cast<double>(lastProgramFrame_.programPixelSignature)},
-           {"renderPlanSignature", static_cast<double>(lastProgramFrame_.renderPlanSignature)},
-           {"warnings", stringArray(lastProgramFrame_.warnings)},
-       }},
-      {"compositor",
-       rpc::Json::Object{
-           {"status", lastProgramFrame_.frameNumber > 0 ? "live" : "idle"},
-           {"renderPlanId", lastProgramFrame_.renderPlanId},
-           {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
-           {"droppedFrameCount", static_cast<double>(buffer.activeFrames > 0 ?
-               buffer.underruns : renderDeadlineMisses_.load(std::memory_order_relaxed))},
-           {"renderDeadlineMisses", static_cast<double>(renderDeadlineMisses_.load(std::memory_order_relaxed))},
-           {"degradedFrameCount", lastProgramFrame_.health == "degraded" ? 1 : 0},
-       }},
-      // Both unconditional. A take ledger that appears only after a Take, or a
-      // subscription node that appears only once churn happens, is absent in
-      // exactly the case worth detecting (the multiviewer-node lesson).
-      {"takeRecords", takeRecordsState()},
-      {"zoomSubscriptionChurn", zoomSubscriptionChurnState()},
-      {"encoderSession", encoderSessionState(session)},
-      {"outputSenderSession", outputSenderSessionState()},
-      {"virtualCamera", virtualCameraState()},
-      {"captureDevices", captureDevicesState()},
-      {"browserSources", browserSourcesState()},
-      {"health", health()},
-      {"profile", profile()},
-      {"audioMixSession", audioMixSessionState()},
-      {"audioRoutingMatrix", audioRoutingMatrixState()},
-      {"captureAudioSources", captureAudioSourcesState()},
-      {"captionTrack", captionTrackState()},
-      {"brandKit", brandKitState()},
-      {"overlayState", overlayState()},
-      {"mediaPlayback", mediaPlaybackState()},
-      {"autoProduction", autoProductionState()},
-      {"takeTransition", rpc::Json::Object{
-          {"operationId", takeTransition_.operationId},
-          {"revision", static_cast<double>(takeTransition_.revision)},
-          {"mode", takeTransition_.mode},
-          {"durationMs", takeTransition_.durationMs},
-          {"progress", takeTransition_.durationMs > 0.0
-              ? (std::min)(1.0, takeTransition_.elapsedMs / takeTransition_.durationMs)
-              : 1.0},
-          {"status", takeTransition_.operationId.empty() ? "idle" :
-              takeTransition_.waitingForColdMedia ? "warming" :
-              takeTransition_.active ? "active" : "completed"},
-      }},
-      {"meetingState", resolveMeetingStateForSession()},
-      {"breakoutRoomId", breakoutRoomId_},
-      {"breakoutRoomName", breakoutRoomName_},
-      {"zoom", rpc::Json::Object{{"readiness", zoomReadinessState()}, {"evidence", zoomEvidenceState()}}},
-  };
-  state.emplace("programBuffer", rpc::Json::Object{
-      {"requestedFrames", buffer.requestedFrames}, {"activeFrames", buffer.activeFrames},
-      {"generation", static_cast<double>(buffer.generation)},
-      {"status", buffer.status}, {"capacity", buffer.capacity}, {"occupancy", buffer.occupancy},
-      {"produced", static_cast<double>(buffer.produced)},
-      {"delivered", static_cast<double>(buffer.delivered)},
-      {"underruns", static_cast<double>(buffer.underruns)},
-      {"overflows", static_cast<double>(buffer.overflows)},
-      {"gpuNotReady", static_cast<double>(buffer.gpuNotReady)},
-      {"deadlineMisses", static_cast<double>(buffer.deadlineMisses)},
-      {"prepared", static_cast<double>(buffer.prepared)},
-      {"lastQueueWaitMs", buffer.lastQueueWaitMs},
-      {"maxQueueWaitMs", buffer.maxQueueWaitMs},
-      {"lastPreparationMs", buffer.lastPreparationMs},
-      {"maxPreparationMs", buffer.maxPreparationMs},
-      {"displayUnconsumed", static_cast<double>(buffer.displayUnconsumed)},
-      {"displayBusy", static_cast<double>(buffer.displayBusy)},
-      {"outputSequenceGaps", static_cast<double>(bufferedOutputSequenceGaps_.load())},
-      {"displayPresentationVerified", false}, {"destinationCompletionVerified", false}});
-  const auto logStats = nativeLogStats();
-  state.emplace("nativeDiagnostics", rpc::Json::Object{
-      {"logDropped", static_cast<double>(logStats.dropped)},
-      {"logTruncated", static_cast<double>(logStats.truncated)},
-      {"logSinkFailures", static_cast<double>(logStats.sinkFailures)},
-      {"logQueued", static_cast<double>(logStats.queued)}});
-  if (const auto* asyncEncoder = dynamic_cast<const modules::AsyncEncoderSink*>(modules_.encoder.get())) {
-    const auto encoderEvidence = asyncEncoder->evidence();
-    static constexpr std::array<const char*, 7> evidenceKinds{
-        "configure", "start", "programVideo", "isoVideo", "programAudio", "isoAudio", "stop"};
-    rpc::Json::Object enqueued, completed, queued;
-    for (size_t i = 0; i < evidenceKinds.size(); ++i) {
-      enqueued.emplace(evidenceKinds[i], static_cast<double>(encoderEvidence.enqueued[i]));
-      completed.emplace(evidenceKinds[i], static_cast<double>(encoderEvidence.completedCalls[i]));
-      queued.emplace(evidenceKinds[i], static_cast<double>(encoderEvidence.queuedByKind[i]));
-    }
-    // ISO-3 (fidelity): per-source distinct-frame accounting for ISO video, so
-    // an ISO stem's repeat-freeness is MEASURABLE. `framesWritten` on a stream
-    // is an append count and cannot tell a distinct picture from a repeat, which
-    // left any change to the ISO cadence unverifiable. The arrival-side numbers
-    // (queued / heldFrameSuppressed / queueOverflowed) come from the render
-    // gather's ISO queue; the sink-side numbers (submitted / duplicateRejected /
-    // dropped / written) come from the async encoder. Read together they are the
-    // whole chain from decoded frame to muxed frame.
-    std::map<std::string, rpc::Json::Object> isoVideoNodes;
-    {
-      for (const auto& entry : isoVideoIngress_.counters()) {
-        auto& node = isoVideoNodes[entry.first];
-        node.emplace("queued", static_cast<double>(entry.second.distinctSubmitted));
-        node.emplace("heldFrameSuppressed", static_cast<double>(entry.second.duplicateRejected));
-        node.emplace("queueOverflowed", static_cast<double>(entry.second.queueOverflowed));
-      }
-    }
-    for (const auto& entry : encoderEvidence.isoVideoBySource) {
-      auto& node = isoVideoNodes[entry.first];
-      node.emplace("submitted", static_cast<double>(entry.second.submitted));
-      node.emplace("duplicateRejected", static_cast<double>(entry.second.duplicateRejected));
-      node.emplace("dropped", static_cast<double>(entry.second.dropped));
-      node.emplace("written", static_cast<double>(entry.second.written));
-    }
-    rpc::Json::Object isoVideoBySource;
-    for (auto& entry : isoVideoNodes) {
-      isoVideoBySource.emplace(entry.first, std::move(entry.second));
-    }
-    state.emplace("encoderEvidence", rpc::Json::Object{
-        {"metricVersion", "async-encoder-evidence-v1"},
-        {"generation", static_cast<double>(encoderEvidence.generation)},
-        {"lifecycleState", encoderEvidence.lifecycleState},
-        {"operation", encoderEvidence.operation},
-        {"operationGeneration", static_cast<double>(encoderEvidence.operationGeneration)},
-        {"operationSequence", static_cast<double>(encoderEvidence.operationSequence)},
-        {"operationAgeMs", static_cast<double>(encoderEvidence.operationAgeMs)},
-        {"queueDepth", static_cast<double>(encoderEvidence.queueDepth)},
-        {"oldestQueuedAgeMs", static_cast<double>(encoderEvidence.oldestQueuedAgeMs)},
-        {"enqueued", std::move(enqueued)}, {"completedCalls", std::move(completed)},
-        {"queuedByKind", std::move(queued)},
-        {"droppedVideo", static_cast<double>(encoderEvidence.droppedVideo)},
-        {"droppedAudio", static_cast<double>(encoderEvidence.droppedAudio)},
-        // Kept OUT of droppedVideo on purpose: video shed behind the writer's
-        // SYNCHRONOUS open is a clipped head, not steady-state loss. Reported
-        // here so it stays visible and attributable to the startup window.
-        {"startupDroppedVideo", static_cast<double>(encoderEvidence.startupDroppedVideo)},
-        {"isoVideoBySource", std::move(isoVideoBySource)},
-        {"lastWriterProgressMs", static_cast<double>(encoderEvidence.lastWriterProgressMs)},
-        {"programVideoWritten", static_cast<double>(encoderEvidence.programVideoWritten)},
-        {"programAudioPacketsWritten", static_cast<double>(encoderEvidence.programAudioPacketsWritten)},
-        {"writtenGeneration", static_cast<double>(encoderEvidence.writtenGeneration)},
-        {"stopGeneration", static_cast<double>(encoderEvidence.stopGeneration)},
-        {"stopRequestedMs", static_cast<double>(encoderEvidence.stopRequestedMs)},
-        {"finalizeStartedMs", static_cast<double>(encoderEvidence.finalizeStartedMs)},
-        {"finalizeFinishedMs", static_cast<double>(encoderEvidence.finalizeFinishedMs)},
-        {"finalizeResult", encoderEvidence.finalizeResult},
-        {"finalizeTimeouts", static_cast<double>(encoderEvidence.finalizeTimeouts)},
-        {"firstFailure", encoderEvidence.firstFailure},
-        {"firstFailureGeneration", static_cast<double>(encoderEvidence.firstFailureGeneration)},
-        {"firstFailureMs", static_cast<double>(encoderEvidence.firstFailureMs)}});
-  }
-  const auto evidenceNowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count();
-  const auto progressAgeMs = [evidenceNowNs](int64_t lastProgressNs) -> double {
-    return lastProgressNs > 0
-        ? static_cast<double>((std::max)(int64_t{0}, evidenceNowNs - lastProgressNs)) / 1'000'000.0
-        : -1.0;
-  };
-  const auto renderLastProgressNs = renderWorkerLastProgressNs_.load(std::memory_order_relaxed);
-  const auto audioLastProgressNs = audioWorkerLastProgressNs_.load(std::memory_order_relaxed);
-  const auto videoOutputLastProgressNs = videoOutputWorkerLastProgressNs_.load(std::memory_order_relaxed);
-  // #728: say when the MACHINE is close to refusing memory. Published unconditionally
-  // (level "unknown" where it cannot be measured, never a healthy-looking absence), and
-  // logged once per transition so the bounded log is not flooded by a starved machine.
-  {
-    const auto memoryNowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    if (systemMemorySampledAtNs_ == 0 || memoryNowNs - systemMemorySampledAtNs_ >= 1'000'000'000) {
-      systemMemorySampledAtNs_ = memoryNowNs;
-      const auto sample = sampleSystemMemory();
-      const auto previous = static_cast<SystemMemoryLevel>(systemMemoryLevel_);
-      const auto level = classifySystemMemory(sample, previous);
-      systemMemoryMeasured_ = sample.measured;
-      systemMemoryAvailableBytes_ = sample.commitAvailableBytes;
-      systemMemoryLimitBytes_ = sample.commitLimitBytes;
-      if (level != previous && !(previous == SystemMemoryLevel::Unknown && level == SystemMemoryLevel::Ok)) {
-        ::corevideo::core::nativeLogf(
-            "[system-memory] %s: %llu MB of %llu MB committable memory is left on this machine%s\n",
-            systemMemoryLevelName(level),
-            static_cast<unsigned long long>(sample.commitAvailableBytes / (1024 * 1024)),
-            static_cast<unsigned long long>(sample.commitLimitBytes / (1024 * 1024)),
-            level == SystemMemoryLevel::Critical
-                ? "; new sources, streams or recordings may fail and the core may stop - close other applications now"
-                : level == SystemMemoryLevel::Low ? "; close other applications before starting more outputs" : "");
-      }
-      systemMemoryLevel_ = static_cast<int>(level);
-    }
-    state.emplace("systemMemory", rpc::Json::Object{
-        {"measured", systemMemoryMeasured_},
-        {"level", systemMemoryLevelName(static_cast<SystemMemoryLevel>(systemMemoryLevel_))},
-        {"commitAvailableMb", static_cast<double>(systemMemoryAvailableBytes_ / (1024 * 1024))},
-        {"commitLimitMb", static_cast<double>(systemMemoryLimitBytes_ / (1024 * 1024))}});
-  }
-  const auto capturePreparation = modules_.captureDevice->shmCapturePreparationDiagnostics();
-  const auto monitorWorker = modules_.compositor->monitorDiagnostics();
-  state.emplace("gradePreview", gradePreviews_.diagnostics(*modules_.compositor));
-  state.emplace("deliveryEvidence", core::deliveryEvidenceSnapshot());
-  state.emplace("realtimeEvidence", rpc::Json::Object{
-      {"capturePreparation", rpc::Json::Object{
-          {"kind", "winui-shared-memory"}, {"version", "shm-preparation-v1"},
-          {"enabled", capturePreparation.enabled}, {"state", capturePreparation.state},
-          {"reason", capturePreparation.reason},
-          {"lastRefusalReason", capturePreparation.lastRefusalReason},
-          {"accepted", static_cast<double>(capturePreparation.accepted)},
-          {"refused", static_cast<double>(capturePreparation.refused)},
-          {"prepared", static_cast<double>(capturePreparation.prepared)},
-          {"torn", static_cast<double>(capturePreparation.torn)},
-          {"poolBusy", static_cast<double>(capturePreparation.poolBusy)},
-          {"failed", static_cast<double>(capturePreparation.failed)},
-          {"residentBytes", static_cast<double>(capturePreparation.residentBytes)},
-          {"memoryAccounting", "mapped-payload-plus-four-cpu-frames"},
-          {"budgetBytes", static_cast<double>(capturePreparation.budgetBytes)},
-          {"active", static_cast<double>(capturePreparation.active)},
-          {"retiring", static_cast<double>(capturePreparation.retiring)},
-          {"copyTotalNs", static_cast<double>(capturePreparation.copyTotalNs)},
-          {"copyMaximumNs", static_cast<double>(capturePreparation.copyMaximumNs)},
-          {"senderAcquisitionTimeVerified", false}}},
-      {"monitorWorker", rpc::Json::Object{
-          {"enabled", monitorWorker.enabled},
-          {"observationVersion", "monitor-isolation-v1"},
-          {"requestedMode", monitorWorker.requestedMode},
-          {"effectiveMode", monitorWorker.effectiveMode},
-          {"selectionSource", monitorWorker.selectionSource},
-          {"readiness", monitorWorker.readiness},
-          {"failureReason", monitorWorker.failureReason},
-          {"deliveryEpoch", static_cast<double>(buffer.generation)},
-          {"submitted", static_cast<double>(monitorWorker.submitted)},
-          {"completed", static_cast<double>(monitorWorker.completed)},
-          {"superseded", static_cast<double>(monitorWorker.superseded)},
-          {"failed", static_cast<double>(monitorWorker.failed)},
-          {"pending", monitorWorker.pending}, {"capacity", 1},
-          {"lastSequence", static_cast<double>(monitorWorker.lastSequence)},
-          {"lastWorkMs", monitorWorker.lastWorkMs},
-          {"inputObservationVersion", "monitor-input-admission-v1"},
-          {"inputs", modules::monitorInputEvidence(modules_.compositor->latestMonitors())},
-          {"programDisplay", modules::programDisplayEvidence(modules_.compositor->latestMonitors())},
-          {"readyInputs", static_cast<double>(monitorWorker.readyInputs)},
-          {"heldInputs", static_cast<double>(monitorWorker.heldInputs)},
-          {"unavailableInputs", static_cast<double>(monitorWorker.unavailableInputs)},
-          {"retainedInputs", static_cast<double>(monitorWorker.retainedInputs)},
-          {"retainedInputBytes", static_cast<double>(monitorWorker.retainedInputBytes)},
-          {"retentionRefusals", static_cast<double>(monitorWorker.retentionRefusals)},
-          {"inputCapacity", static_cast<double>(modules::MonitorRenderDiagnostics::InputCapacity)},
-          {"inputByteBudget", static_cast<double>(modules::MonitorRenderDiagnostics::InputByteBudget)},
-          {"displayPresentationVerified", false}}},
-      {"metricVersion", "realtime-worker-evidence-v1"},
-      {"render", rpc::Json::Object{
-          {"generation", static_cast<double>(renderWorkerGeneration_.load(std::memory_order_relaxed))},
-          {"observed", renderLastProgressNs > 0},
-          {"progressAgeMs", progressAgeMs(renderLastProgressNs)},
-          {"completedSlots", static_cast<double>(renderWorkerCompletedSlots_.load(std::memory_order_relaxed))},
-          {"skippedSlots", static_cast<double>(renderWorkerSkippedSlots_.load(std::memory_order_relaxed))},
-          {"deadlineMisses", static_cast<double>(renderWorkerDeadlineMisses_.load(std::memory_order_relaxed))},
-          {"maximumLatenessNs", static_cast<double>(renderWorkerMaximumLatenessNs_.load(std::memory_order_relaxed))},
-          {"lockWaitTotalNs", static_cast<double>(renderWorkerLockWaitTotalNs_.load(std::memory_order_relaxed))},
-          {"lockWaitMaximumNs", static_cast<double>(renderWorkerLockWaitMaximumNs_.load(std::memory_order_relaxed))},
-          {"workTotalNs", static_cast<double>(renderWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
-          {"workMaximumNs", static_cast<double>(renderWorkerWorkMaximumNs_.load(std::memory_order_relaxed))},
-          {"workDistribution", renderWorkDistribution_.snapshot()},
-          {"eventDrainTotalNs", static_cast<double>(renderWorkerDrainTotalNs_.load(std::memory_order_relaxed))},
-          {"eventDrainMaximumNs", static_cast<double>(renderWorkerDrainMaximumNs_.load(std::memory_order_relaxed))},
-          {"gpuCompletionVerified", false}, {"deliveryVerified", false}}},
-      // T1.4 monitor load-shedding (core/MonitorShedPolicy.h). Published
-      // unconditionally — divisor 1 / level 0 is the healthy state, and a node
-      // that only appeared while shedding would be absent in exactly the case
-      // worth comparing against.
-      {"monitorShed", rpc::Json::Object{
-          {"divisor", monitorShed_.divisor()},
-          {"level", monitorShed_.level()},
-          {"enteredCount", static_cast<double>(monitorShed_.enteredCount())},
-          {"shedTicks", static_cast<double>(monitorShed_.shedTicks())},
-          {"lastReason", std::string(monitorShed_.lastReason())},
-          // The observation that caused the last divisor change: a shed with a
-          // big monitorCycleMs was monitor-bound; one with a big programMs was
-          // Program- or GPU-bound (see MonitorShedPolicy.h — both shed, by design).
-          {"lastTransitionProgramMs",
-           static_cast<double>(monitorShed_.lastTransitionObservation().programCostNs) / 1e6},
-          {"lastTransitionMonitorCycleMs",
-           static_cast<double>(monitorShed_.lastTransitionObservation().monitorCycleCostNs) / 1e6},
-          {"lastTransitionBudgetMs",
-           static_cast<double>(monitorShed_.lastTransitionObservation().budgetNs) / 1e6}}},
-      // Stream congestion no longer changes the compositor's export cadence.
-      // These are the actual compositor counters, published once for the
-      // encoder texture; per-destination queue pressure lives on each sender.
-      {"encoderExport", rpc::Json::Object{
-          {"divisor", modules_.compositor ? modules_.compositor->encoderExportDivisor() : 1},
-          {"shedFrames", static_cast<double>(
-              modules_.compositor ? modules_.compositor->encoderExportShedFrames() : 0)},
-          {"exporting", modules_.compositor ? modules_.compositor->encoderExporting() : false}}},
-      {"audio", rpc::Json::Object{
-          {"generation", static_cast<double>(audioWorkerGeneration_.load(std::memory_order_relaxed))},
-          {"observed", audioLastProgressNs > 0},
-          {"progressAgeMs", progressAgeMs(audioLastProgressNs)},
-          {"completedTicks", static_cast<double>(audioWorkerCompletedTicks_.load(std::memory_order_relaxed))},
-          {"workTotalNs", static_cast<double>(audioWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
-          {"workMaximumNs", static_cast<double>(audioWorkerWorkMaximumNs_.load(std::memory_order_relaxed))},
-          {"pacerReanchors", static_cast<double>(audioWorkerReanchors_.load(std::memory_order_relaxed))},
-          {"discardedTimelineNs", static_cast<double>(audioWorkerDiscardedTimelineNs_.load(std::memory_order_relaxed))},
-          // Cumulative interleaved PCM samples permanently shed at the feed
-          // FIFO cap, summed over every source. Monotonic for the life of the
-          // process; the qualification harness fails on any reset.
-          {"audioLostSamples", static_cast<double>(audioWorkerLostSamples_.load(std::memory_order_relaxed))}}},
-      {"videoOutput", rpc::Json::Object{
-          {"generation", static_cast<double>(videoOutputWorkerGeneration_.load(std::memory_order_relaxed))},
-          {"observed", videoOutputLastProgressNs > 0},
-          {"progressAgeMs", progressAgeMs(videoOutputLastProgressNs)},
-          {"completedTicks", static_cast<double>(videoOutputWorkerCompletedTicks_.load(std::memory_order_relaxed))},
-          {"workTotalNs", static_cast<double>(videoOutputWorkerWorkTotalNs_.load(std::memory_order_relaxed))},
-          {"workMaximumNs", static_cast<double>(videoOutputWorkerWorkMaximumNs_.load(std::memory_order_relaxed))}}}});
-  const auto zoomCapture = zoomSnapshot();
-  if (zoomCapture.get("participants")) {
-    state.emplace("participants", *zoomCapture.get("participants"));
-  }
-  if (zoomCapture.get("rosterEpoch")) {
-    state.emplace("rosterEpoch", *zoomCapture.get("rosterEpoch"));
-  }
-  if (zoomCapture.get("rosterRevision")) {
-    state.emplace("rosterRevision", *zoomCapture.get("rosterRevision"));
-  }
-  if (const auto activeSpeakerId = zoomCapture.getString("activeSpeakerId"); !activeSpeakerId.empty()) {
-    state.emplace("activeSpeakerId", activeSpeakerId);
-  }
-  state.emplace("programSourceAdmission", modules::programSourceAdmissionJson(lastProgramFrame_));
-  const auto preview = modules::programFramePreviewJson(lastProgramFrame_);
-  if (!preview.isNull()) {
-    state.emplace("programFramePreview", preview);
-  }
-  const auto sharedTexture = modules::programSharedTextureJson(lastProgramFrame_);
-  if (!sharedTexture.isNull()) {
-    state.emplace("programSharedTexture", sharedTexture);
-  }
-  // Cold-start snapshot: a newly connected consumer gets the current multiview
-  // shared texture + tile rects without waiting for the next structural change.
-  const auto multiviewSharedTexture = modules::multiviewSharedTextureJson(lastProgramFrame_);
-  if (!multiviewSharedTexture.isNull()) {
-    state.emplace("multiviewSharedTexture", multiviewSharedTexture);
-  }
-  // Cold-start snapshot: a newly connected consumer gets the current preview
-  // composite shared texture without waiting for the next structural change.
-  const auto previewSharedTexture = modules::previewSharedTextureJson(lastProgramFrame_);
-  if (!previewSharedTexture.isNull()) {
-    state.emplace("previewSharedTexture", previewSharedTexture);
-  }
-  // Preview-bus telemetry (present only once a preview scene is set): lets the WinUI
-  // and tests see the composited preview scene structure without a GPU texture. `composite`
-  // is whether the core runs the dedicated third composite (multi-layer) vs. leaving the
-  // operator preview on the single-source fallback.
-  if (previewSceneActive_) {
-    const auto previewPlanLayers = static_cast<int>(buildPreviewCompositorRenderPlan({}).layers.size());
-    state.emplace("previewScene", rpc::Json::Object{
-                                      {"sceneId", previewSceneId_},
-                                      {"routeCount", previewRouteCount_},
-                                      {"overlayCount", previewOverlayCount_},
-                                      {"layerCount", previewPlanLayers},
-                                      {"composite", hasPreviewScene()},
-                                  });
-  }
-  // T1 (Task 4): publish the solved wall so downstream consumers see what the
-  // core actually drew, not a re-derivation with the solver they are meant to
-  // be judging (this repo has shipped that "proxy that survives the bug"
-  // failure twice — see the loudness-meter and recording-fps history above).
-  // Reads lastRenderPlan_ directly — the SAME layers the compositor just
-  // rendered — so a later pixel oracle knows exactly where to sample and the
-  // canvas editor can position drag handles without recomputing anything.
-  // `.present` alone (re-review finding A), matching the plan-cache gate and
-  // buildRenderPlanForScene's wallActive: a configured wall with NOBODY live
-  // is exactly the state worth publishing (`members: []`), not the state to
-  // hide. A node that disappears in the case worth detecting is the
-  // "multiviewer node that only appears once configured" mistake again.
-  if (tilesLayer_.present) {
-    rpc::Json::Array memberNodes;
-    for (const auto& layer : lastRenderPlan_.layers) {
-      if (layer.kind != "participant-video" || layer.layerId.rfind("tile:", 0) != 0) {
-        continue;
-      }
-      memberNodes.push_back(rpc::Json{rpc::Json::Object{
-          {"sourceId", rpc::Json{layer.sourceId}},
-          {"rect", rpc::Json{rpc::Json::Object{
-              {"x", rpc::Json{static_cast<double>(layer.rect.x)}},
-              {"y", rpc::Json{static_cast<double>(layer.rect.y)}},
-              {"width", rpc::Json{static_cast<double>(layer.rect.width)}},
-              {"height", rpc::Json{static_cast<double>(layer.rect.height)}},
-          }}},
-      }});
-    }
-    state.emplace("tiles", rpc::Json::Object{
-                               {"layerId", tilesLayer_.layerId},
-                               {"members", rpc::Json{memberNodes}},
-                           });
-  }
-  // The multiviewer config the core is ACTUALLY running — always published, even
-  // at defaults. `configure-multiviewer` is a ONE-SHOT the shell sends at app
-  // launch; when the core respawns under a live shell nothing re-sent it, so the
-  // fresh core sat on its `grid` default while the shell still believed
-  // `pgmPvwTop`. That silently dropped the PGM/PVW bus cells off the top of the
-  // wall and degraded it to a bare source grid, and the shell could not detect it
-  // because the applied mode was reported NOWHERE. Reporting it is what lets the
-  // shell reconcile a core generation it did not configure (2026-08-08).
-  state.emplace("multiviewer", rpc::Json::Object{
-                                   {"layoutMode", multiviewLayoutMode_},
-                                   {"tileCount", multiviewTileCount_},
-                                   {"sourceCount", static_cast<int>(multiviewSources_.size())},
-                                   {"showLabels", multiviewShowLabels_},
-                                   {"showTally", multiviewShowTally_},
-                                   {"showMeters", multiviewShowMeters_},
-                                   {"showClock", multiviewShowClock_},
-                               });
-  const int64_t sourceHealthNowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count();
-  state.emplace("sources", core::sourceHealthState(sourceBus_.get(), sourceHealthNowNs,
-      [this](const std::string& id) {
-        const auto it = sourcePolicies_.find(id);
-        return it == sourcePolicies_.end()
-            ? core::SourcePresentationPolicy{}
-            : core::SourcePresentationPolicy{it->second.dropoutPolicy, it->second.displayName};
-      }));
-  // Per-source media TRANSPORT state (#535 slice 3b). Published
-  // unconditionally - the multiviewer-node rule again: an empty array is the
-  // honest answer to "no media is routed", and a node that vanishes in the
-  // case worth detecting is the mistake this codebase keeps paying for.
-  {
-    rpc::Json::Array mediaSourcesArr;
-    if (mediaTransports_) {
-      for (const auto& row : mediaTransports_->snapshot()) {
-        mediaSourcesArr.push_back(rpc::Json::Object{
-            {"sourceId", row.sourceId},
-            {"mediaAssetId", row.assetId},
-            {"state", std::string(core::mediaTransportStateName(row.state))},
-            {"loop", row.loop},
-            {"onProgram", row.onProgram},
-            {"onPreview", row.onPreview},
-            {"positionMs", static_cast<double>(row.positionMs)},
-            {"durationMs", static_cast<double>(row.durationMs)},
-            // #701 frame-delivery trace: a frozen clip is either a decoder that
-            // stopped producing (lastDecodedAgeMs grows, videoQueued drains) or a
-            // presentation that stopped advancing (frames decoded, presented age
-            // grows). Read with programBuffer's delivery counters for the same window.
-            {"decodedVideoFrames", static_cast<double>(row.decodedVideoFrames)},
-            {"lastDecodedAgeMs", static_cast<double>(row.lastDecodedAgeMs)},
-            {"presentedVideoFrames", static_cast<double>(row.presentedVideoFrames)},
-            {"lastPresentedAgeMs", static_cast<double>(row.lastPresentedAgeMs)},
-            {"videoQueued", static_cast<double>(row.videoQueued)},
-            {"decoderRestarts", static_cast<double>(row.decoderRestarts)},
-        });
-      }
-    }
-    state.emplace("mediaSources", rpc::Json{mediaSourcesArr});
-  }
-  const auto recording = recordingState(session);
-  if (!recording.isNull()) {
-    state.emplace("recording", recording);
-  }
-  return state;
+  auto capture = std::make_unique<CoreStateCapture>(*this);
+  if (snapshotDeferrer_) return snapshotDeferrer_(std::move(capture), SnapshotProjection::Session);
+  return capture->assemble(SnapshotProjection::Session);
 }
 
 rpc::Json MediaCore::syncZoomMediaSpine(const rpc::Json& payload, double elapsedMs) {
@@ -1477,10 +923,35 @@ std::vector<rpc::Json> MediaCore::drainPreviewSharedTextureEvents() {
 }
 
 void MediaCore::enqueueProgramFramePreviewEvent() {
+  if (programPreviewPumpActive_) {
+    // Only a small, optional preview is retained, never full Program pixels or
+    // a GPU resource. Replaceable thumbnails have one pending job.
+    if (lastProgramFrame_.preview.bgra.size() > 1024 * 1024) return;
+    auto job = std::make_unique<modules::ProgramFrame>();
+    job->preview = std::move(lastProgramFrame_.preview);
+    job->frameNumber = lastProgramFrame_.frameNumber;
+    job->renderPlanId = lastProgramFrame_.renderPlanId;
+    job->renderer = lastProgramFrame_.renderer;
+    job->health = lastProgramFrame_.health;
+    job->layerCount = lastProgramFrame_.layerCount;
+    job->programPixelSignature = lastProgramFrame_.programPixelSignature;
+    job->renderPlanSignature = lastProgramFrame_.renderPlanSignature;
+    job->warnings = lastProgramFrame_.warnings;
+    pendingProgramPreviewJob_ = std::move(job);
+    return;
+  }
   const auto event = modules::programFramePreviewEvent(lastProgramFrame_);
   if (!event.isNull()) {
     pendingProgramFramePreviewEvents_.emplace_back(event);
   }
+}
+
+std::unique_ptr<modules::ProgramFrame> MediaCore::drainProgramPreviewJob() {
+  return std::move(pendingProgramPreviewJob_);
+}
+void MediaCore::publishEncodedProgramPreview(rpc::Json preview) {
+  { std::lock_guard lock(encodedPreviewMutex_); std::swap(encodedPreview_, preview); }
+  // Old encoded bytes retire outside the cache publication mutex.
 }
 
 void MediaCore::enqueueProgramSharedTextureEvent() {
@@ -1597,6 +1068,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
   for (const auto& command : commands) {
     const auto ci0 = std::chrono::steady_clock::now();
     applyCommandMutation(command);
+    ++appliedControlRevision_;
     const auto cms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ci0).count();
     if (cms >= 10) {
       ::corevideo::core::nativeLogf("[cmd] '%s' %lldms\n", command.getString("type").c_str(),
@@ -1636,6 +1108,7 @@ rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elap
 rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
   commandProtocolFailures_.clear();
   applyCommandMutation(command);
+  ++appliedControlRevision_;
   return sessionState();
 }
 
@@ -1997,21 +1470,7 @@ DirectorRecommendation MediaCore::recommendAutoProduction() const {
   return recommendScene(deriveDirectorSignals(), speakerFloor_.snapshot(nowMs), nowMs);
 }
 
-rpc::Json MediaCore::autoProductionState() const {
-  const auto recommendation = recommendAutoProduction();
-  rpc::Json::Array slotBindings;
-  for (const auto& binding : recommendation.slotBindings) {
-    slotBindings.emplace_back(rpc::Json::Object{
-        {"slotIndex", binding.slotIndex}, {"personId", binding.personId}, {"sourceId", binding.sourceId}});
-  }
-  return rpc::Json::Object{
-      {"ruleId", recommendation.ruleId},
-      {"recommendedSceneId", recommendation.recommendedSceneId},
-      {"confidence", recommendation.confidence},
-      {"rationale", recommendation.rationale},
-      {"slotBindings", std::move(slotBindings)},
-  };
-}
+
 
 rpc::Json MediaCore::zoomReadinessState() const {
   if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
@@ -2087,20 +1546,7 @@ rpc::Json MediaCore::zoomEvidenceState() const {
   };
 }
 
-std::string MediaCore::resolveMeetingStateForSession() const {
-  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    const auto capture = zoomEngineRuntime_->snapshot();
-    const std::string meetingState = capture.getString("meetingState");
-    if (meetingState == "in-meeting" || meetingState == "in_meeting") {
-      return "in_meeting";
-    }
-    if (!meetingState.empty()) {
-      return meetingState;
-    }
-  }
 
-  return zoomJoined_ ? "in_meeting" : "idle";
-}
 
 void MediaCore::simulateBreakoutRoomChange(const rpc::Json& command) {
   const std::string roomId = command.getString("breakoutRoomId");
@@ -2420,78 +1866,9 @@ std::vector<std::string> MediaCore::renderPlanSourceIds(const modules::Composito
   return ids;
 }
 
-rpc::Json MediaCore::takeRecordsState() const {
-  rpc::Json::Array records;
-  for (const auto& record : takeRecords_) {
-    records.emplace_back(rpc::Json::Object{
-        {"fromSceneId", record.fromSceneId},
-        {"toSceneId", record.toSceneId},
-        {"fromRenderPlanId", record.fromRenderPlanId},
-        {"toRenderPlanId", record.toRenderPlanId},
-        {"operationId", record.operationId},
-        {"revision", static_cast<double>(record.revision)},
-        {"mode", record.mode},
-        {"fromLayerIds", stringArray(record.fromLayerIds)},
-        {"toLayerIds", stringArray(record.toLayerIds)},
-        {"fromWallKey", record.fromWallKey},
-        {"toWallKey", record.toWallKey},
-        {"wall", std::string(record.verdict.wall)},
-        {"verdict", std::string(record.verdict.verdict)},
-        {"liveBackgroundExpected", record.observation.liveBackgroundExpected},
-        {"liveBackgroundEmitted", record.observation.liveBackgroundEmitted},
-        {"backgroundDropped", record.verdict.backgroundDropped},
-        {"subscriptionChurnDelta", static_cast<double>(record.observation.subscriptionChurnDelta)},
-        {"subscriptionsChurned", record.verdict.subscriptionsChurned},
-        {"fromSourceIds", stringArray(record.fromSourceIds)},
-        {"sources", [&] {
-           rpc::Json::Array sources;
-           for (const auto& s : record.observation.sharedSources) {
-             const bool restarted = s.generationAfter != s.generationBefore;
-             sources.emplace_back(rpc::Json::Object{
-                 {"sourceId", s.sourceId},
-                 {"generationBefore", static_cast<double>(s.generationBefore)},
-                 {"generationAfter", static_cast<double>(s.generationAfter)},
-                 {"frameIdBefore", static_cast<double>(s.frameIdBefore)},
-                 {"frameIdAfter", static_cast<double>(s.frameIdAfter)},
-                 {"restarted", restarted}});
-           }
-           return sources;
-         }()},
-        {"restartedSources", stringArray(record.verdict.restartedSources)},
-        {"sharedSourceRestarted", record.verdict.sharedSourceRestarted},
-        {"missingSources", stringArray(record.verdict.missingSources)},
-        {"sourceMissing", record.verdict.sourceMissing},
-        {"armedAtMs", record.armedAtMs},
-        {"armedAtFrame", static_cast<double>(record.armedAtFrame)},
-    });
-  }
-  return rpc::Json::Object{
-      {"count", static_cast<double>(takeRecords_.size())},
-      {"pending", pendingTakeRecord_.has_value()},
-      {"records", records},
-  };
-}
 
-rpc::Json MediaCore::zoomSubscriptionChurnState() const {
-  if (zoomEngineRuntime_ && zoomEngineRuntime_->configured()) {
-    return zoomEngineRuntime_->subscriptionChurnState();
-  }
-  // No engine: the node still exists, and says so, rather than vanishing.
-  return rpc::Json::Object{
-      {"engine", false},
-      {"sourceCount", 0.0},
-      {"subscribedCount", 0.0},
-      {"totalChurn", 0.0},
-      {"lastResolutionChanges", 0.0},
-      {"lastCapEvictions", 0.0},
-      {"lastUnrouted", 0.0},
-      {"lastVideoOff", 0.0},
-      {"fullResolutionCap", 0.0},
-      {"fullResolutionDemoted", 0.0},
-      {"lastDepartures", 0.0},
-      {"sources", rpc::Json::Array{}},
-  };
-}
+
+
 
 void MediaCore::armTakeRecord(const std::string& toSceneId) {
   // Per operator action. The outgoing plan is built ONCE here, on the command
@@ -3037,7 +2414,8 @@ void MediaCore::startProgramOutput(const rpc::Json& command) {
   if (!recordingOwnsEncoderGeneration) {
     // Encoder module mutation: guard against the audio/output worker's concurrent
     // encoder->submit/session in runAudioOutputWork. coreMutex(outer)â†’this(inner).
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    std::unique_lock<std::mutex> audioLock(audioOutputMutex_, std::defer_lock);
+    if (!dynamic_cast<modules::AsyncEncoderSink*>(modules_.encoder.get())) audioLock.lock();
     configureEncoderRecordingRequest();
     modules_.encoder->start(command.getStringArray("destinations"), recordingIsoParticipantIds_);
   }
@@ -3080,14 +2458,16 @@ void MediaCore::stopEncoderSession(const rpc::Json& command) {
 }
 
 void MediaCore::failOutputSender(const rpc::Json& command) {
-  // outputSender mutation: guard against the worker's outputSender->sync.
-  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+  // Asynchronous sender owns its command lane; synchronous adapters retain serialization.
+  std::unique_lock<std::mutex> audioLock(audioOutputMutex_, std::defer_lock);
+  if (!dynamic_cast<modules::AsyncOutputSender*>(modules_.outputSender.get())) audioLock.lock();
   modules_.outputSender->fail(command.getString("destination"), command.getString("message", "Output sender failed."), command.get("failedAtMs") ? command.get("failedAtMs")->asNumber() : 0);
 }
 
 void MediaCore::recoverOutputSender(const rpc::Json& command) {
-  // outputSender mutation: guard against the worker's outputSender->sync.
-  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+  // Asynchronous sender owns its command lane; synchronous adapters retain serialization.
+  std::unique_lock<std::mutex> audioLock(audioOutputMutex_, std::defer_lock);
+  if (!dynamic_cast<modules::AsyncOutputSender*>(modules_.outputSender.get())) audioLock.lock();
   modules_.outputSender->recover(command.getString("destination"), command.get("recoveredAtMs") ? command.get("recoveredAtMs")->asNumber() : 0, command.getString("reason", ""));
 }
 
@@ -3128,7 +2508,8 @@ void MediaCore::setRecordingTargets(const rpc::Json& command) {
   }
   {
     // encoder->configureRecording mutation: guard against the worker's encoder use.
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    std::unique_lock<std::mutex> audioLock(audioOutputMutex_, std::defer_lock);
+    if (!dynamic_cast<modules::AsyncEncoderSink*>(modules_.encoder.get())) audioLock.lock();
     configureEncoderRecordingRequest();
   }
 }
@@ -3182,7 +2563,8 @@ void MediaCore::startRecordingSession(const rpc::Json& command) {
     // Encoder module mutation (configureRecording + session + start): guard against
     // the worker's encoder use. setRecordingTargets above locked+released its own
     // configure call (not nested); this is a fresh, non-nested acquisition.
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+    std::unique_lock<std::mutex> audioLock(audioOutputMutex_, std::defer_lock);
+    if (!dynamic_cast<modules::AsyncEncoderSink*>(modules_.encoder.get())) audioLock.lock();
     configureEncoderRecordingRequest();
     auto encoderSession = modules_.encoder->session();
     auto destinations = encoderSession.destinations;
@@ -3206,7 +2588,8 @@ void MediaCore::stopRecordingSession(const rpc::Json& command) {
   // Desired-state synchronization also sends Stop before any recording exists.
   // That idle assertion has no barrier/lifecycle to complete and must not claim
   // finalization or take ownership of the shared encoder generation (#859).
-  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+  std::unique_lock<std::mutex> audioLock(audioOutputMutex_, std::defer_lock);
+    if (!dynamic_cast<modules::AsyncEncoderSink*>(modules_.encoder.get())) audioLock.lock();
   const auto before = modules_.encoder->session();
   const bool sinkHasRecording = before.lifecycle.has_value() ||
       std::find(before.destinations.begin(), before.destinations.end(), "recording") != before.destinations.end();
@@ -3372,14 +2755,7 @@ bool MediaCore::isoSourceHasAudio(const std::string& sourceId) const {
   return false;
 }
 
-std::vector<std::string> MediaCore::canonicalIsoSourceIds() const {
-  std::vector<std::string> out;
-  out.reserve(recordingIsoParticipantIds_.size());
-  for (const auto& rawId : recordingIsoParticipantIds_) {
-    out.push_back(normalizeIsoSourceId(rawId));
-  }
-  return out;
-}
+
 
 void MediaCore::syncParticipantAudioMix(const rpc::Json& command) {
   audioLimiterEnabled_ = !command.get("limiterEnabled") || command.get("limiterEnabled")->asBool();
@@ -3539,39 +2915,9 @@ void MediaCore::syncVirtualCamera(const rpc::Json& command) {
   }
 }
 
-rpc::Json MediaCore::virtualCameraState() const {
-  const auto status = virtualCamera_->status();
-  return rpc::Json::Object{
-      {"enabled", status.enabled},
-      {"status", status.state},
-      {"deviceName", status.deviceName},
-      {"resolution", rpc::Json::Object{{"width", status.width}, {"height", status.height}}},
-      {"fps", status.fps},
-      {"framesPublished", static_cast<double>(status.framesPublished)},
-      {"framesAccepted", static_cast<double>(status.framesAccepted)},
-      {"pendingFramesReplaced", static_cast<double>(status.pendingFramesReplaced)},
-      {"publicationExceptions", static_cast<double>(status.publicationExceptions)},
-      {"framerEnabled", status.framerEnabled},
-      {"framerState", status.framerState},
-      {"framerWarning", status.framerWarning},
-      {"framerFrames", static_cast<double>(status.framerFrames)},
-      {"framerFailures", static_cast<double>(status.framerFailures)},
-      {"warning", status.warning},
-  };
-}
 
-rpc::Json MediaCore::audioMonitorControlState() const {
-  rpc::Json::Array recentResults;
-  for (const auto& operationId : audioMonitorOperationOrder_) {
-    recentResults.emplace_back(audioMonitorOperationResults_.at(operationId));
-  }
-  return rpc::Json::Object{
-      {"authorityEpoch", audioMonitorControlEpoch_},
-      {"revision", static_cast<double>(audioMonitorControlRevision_)},
-      {"lastResult", audioMonitorControlResult_},
-      {"recentResults", recentResults},
-  };
-}
+
+
 
 void MediaCore::setAudioMonitorControl(const rpc::Json& command) {
   const auto operationId = command.getString("operationId");
@@ -3612,10 +2958,14 @@ void MediaCore::setAudioMonitorControl(const rpc::Json& command) {
 }
 
 void MediaCore::syncAudioMonitor(const rpc::Json& command) {
-  // monitorOutput->start/stop + mixer reads mutate/read audio/output module state the
-  // worker also touches (monitorOutput->render, mixer->monitorBus*); guard the whole
-  // body. coreMutex(outer, held by the command loop) â†’ audioOutputMutex_(inner).
-  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
+  // Only direct, single-owner callers use the synchronous adapter. The live
+  // wrapper queues device intent; no device call or DSP work lock is taken.
+  std::unique_lock<std::mutex> audioLock(audioOutputMutex_, std::defer_lock);
+  if (!audioWorkerActive_) audioLock.lock();
+  const bool changed = audioMonitorEnabled_ != (command.get("enabled") && command.get("enabled")->asBool()) ||
+      audioMonitorDeviceId_ != command.getString("deviceId") ||
+      audioMonitorVolume_ != std::clamp(command.getNumber("volume", audioMonitorVolume_), 0.0, 1.0);
+  if (changed) ++audioMonitorIntentRevision_;
   audioMonitorEnabled_ = command.get("enabled") && command.get("enabled")->asBool();
   audioMonitorDeviceId_ = command.getString("deviceId");
   audioMonitorDeviceName_ = command.getString("deviceName");
@@ -3631,7 +2981,7 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
     if (modules_.monitorOutput) {
       modules_.monitorOutput->stop();
     }
-    audioMonitorStatus_ = "muted";
+    audioMonitorStatus_ = modules_.monitorOutput && modules_.monitorOutput->preparing() ? "stopping" : "muted";
     return;
   }
 
@@ -3645,9 +2995,15 @@ void MediaCore::syncAudioMonitor(const rpc::Json& command) {
   // The mixer describes the source bus format; the output adapter converts to
   // the device's own mix format.
   if (modules_.monitorOutput) {
-    const int sampleRate = modules_.mixer ? modules_.mixer->monitorBusSampleRate() : 48000;
-    const int channels = modules_.mixer ? modules_.mixer->monitorBusChannels() : 2;
+    const auto view = audioWorkerActive_ ? audioObservations_.acquire() : AudioObservationStore::View{};
+    const int sampleRate = audioWorkerActive_
+        ? (view.payload ? view.payload->value.monitorSampleRate : 48000)
+        : modules_.mixer ? modules_.mixer->monitorBusSampleRate() : 48000;
+    const int channels = audioWorkerActive_
+        ? (view.payload ? view.payload->value.monitorChannels : 2)
+        : modules_.mixer ? modules_.mixer->monitorBusChannels() : 2;
     if (!modules_.monitorOutput->start(audioMonitorDeviceId_, sampleRate, channels)) {
+      if (modules_.monitorOutput->preparing()) { audioMonitorStatus_ = "preparing"; return; }
       audioMonitorStatus_ = "unavailable";
       const auto outputWarnings = modules_.monitorOutput->warnings();
       audioMonitorWarning_ = outputWarnings.empty()
@@ -4793,292 +4149,7 @@ std::string protocolAudioStatusForDsp(const modules::AudioParticipantMixMetrics&
 
 }  // namespace
 
-rpc::Json MediaCore::audioMixSessionState() const {
-  // Reads mixer->session() (mutated by the worker's mixer->mix) and, via
-  // masterMeterState(), the BS.1770 loudness members (mutated by the worker's
-  // updateProgramLoudnessMeter). Hold audioOutputMutex_ across the whole body;
-  // masterMeterState() therefore does NOT lock (only called from here).
-  std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-  if (audioChannels_.empty()) {
-    const auto nativeMix = modules_.mixer->session();
-    if (!nativeMix.participants.empty()) {
-      rpc::Json::Array participants;
-      for (const auto& participant : nativeMix.participants) {
-        participants.emplace_back(rpc::Json::Object{
-            {"participantId", participant.participantId},
-            {"inputLevel", participant.inputLevel},
-            {"outputLevel", participant.outputLevel},
-            {"gainDb", participant.gainDb},
-            {"rmsDbfs", deriveRmsDbfs(participant.muted ? 0 : participant.outputLevel)},
-            {"peakDbfs", derivePeakDbfs(participant.muted ? 0 : participant.outputLevel)},
-            {"noiseSuppression", participant.noiseSuppressionActive},
-            {"limiterActive", audioLimiterEnabled_ && participant.limiterActive},
-            {"muted", participant.muted},
-            {"status", protocolAudioStatusForDsp(participant)},
-        });
-      }
 
-      rpc::Json::Array warnings;
-      for (const auto& warning : nativeMix.warnings) {
-        warnings.emplace_back(warning);
-      }
-      if (!audioMonitorWarning_.empty()) {
-        warnings.emplace_back(audioMonitorWarning_);
-      }
-      if (modules_.audioCapture) {
-        for (const auto& warning : modules_.audioCapture->warnings()) {
-          warnings.emplace_back(warning);
-        }
-      }
-
-      return rpc::Json::Object{
-          {"status", nativeMix.status},
-          {"masterLevel", nativeMix.masterLevel},
-          {"loudnessLufs", nativeMix.loudnessLufs},
-          {"pluginHost", pluginHostState()},
-          {"limiterEnabled", audioLimiterEnabled_},
-          {"limiterActive", audioLimiterEnabled_ && nativeMix.limiterActive},
-          {"masteringEnabled", masteringParams_.enabled},
-          {"masteringRideDb", audioMasteringRideDb_},
-          {"mixedFrameCount", static_cast<double>(nativeMix.mixedFrameCount)},
-          {"monitorEnabled", audioMonitorEnabled_},
-          {"monitorStatus", audioMonitorStatus_},
-          {"monitorDeviceId", audioMonitorDeviceId_},
-          {"monitorDeviceName", audioMonitorDeviceName_},
-          {"monitorVolume", audioMonitorVolume_},
-          {"monitorControl", audioMonitorControlState()},
-          {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
-          {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
-          {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
-          {"participants", participants},
-          {"masterMeter", masterMeterState()},
-          {"summary", nativeMix.summary},
-          {"warnings", warnings},
-      };
-    }
-
-    rpc::Json::Array warnings;
-    if (!audioMonitorWarning_.empty()) {
-      warnings.emplace_back(audioMonitorWarning_);
-    }
-    if (modules_.audioCapture) {
-      for (const auto& warning : modules_.audioCapture->warnings()) {
-        warnings.emplace_back(warning);
-      }
-    }
-
-    return rpc::Json::Object{
-        {"status", "idle"},
-        {"masterLevel", 0},
-        {"loudnessLufs", -60},
-        {"limiterEnabled", audioLimiterEnabled_},
-        {"limiterActive", false},
-        {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
-        {"monitorEnabled", audioMonitorEnabled_},
-        {"monitorStatus", audioMonitorStatus_},
-        {"monitorDeviceId", audioMonitorDeviceId_},
-        {"monitorDeviceName", audioMonitorDeviceName_},
-        {"monitorVolume", audioMonitorVolume_},
-        {"monitorControl", audioMonitorControlState()},
-        {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
-        {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
-        {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
-        {"participants", rpc::Json::Array{}},
-        {"masterMeter", masterMeterState()},
-        {"summary", "Audio mix idle."},
-        {"pluginHost", pluginHostState()},
-        {"warnings", warnings},
-    };
-  }
-
-  rpc::Json::Array participants;
-  rpc::Json::Array warnings;
-  std::unordered_set<std::string> warningSet;
-  const auto nativeMix = modules_.mixer->session();
-  std::map<std::string, modules::AudioParticipantMixMetrics> nativeMetricsByParticipant;
-  for (const auto& participant : nativeMix.participants) {
-    nativeMetricsByParticipant[participant.participantId] = participant;
-  }
-
-  int masterTotal = 0;
-  int audibleCount = 0;
-  bool limiterWouldReduce = false;
-  int boostingCount = 0;
-  int duckingCount = 0;
-  int mutedCount = 0;
-  int waitingPcmCount = 0;
-  int manualCount = 0;
-  int soloCount = 0;
-  int insertCount = 0;
-  const bool vstHostRunning = pluginHostClient_.ready() && pluginHostClient_.hostAlive();
-  const auto vstHostExchanges = pluginHostClient_.exchanges();
-  const int vstHostStatusCode = pluginHostClient_.statusCode();
-  const std::string vstHostActivePlugin = pluginHostClient_.activePlugin();
-  const std::string vstHostError = pluginHostClient_.lastError();
-
-  // T1.6: the "media" strip meters the pre-sum of every clip it governs (the
-  // signal its DSP actually processes). The clips keep their own ids in the
-  // mixer session.
-  modules::AudioParticipantMixMetrics mediaPreSumMetric;
-  if (mediaPreSumMetered_) {
-    mediaPreSumMetric.participantId = std::string(kMediaAudioControlSourceId);
-    mediaPreSumMetric.rmsLevel = std::clamp(mediaPreSumRmsLevel_, 0.0, 1.0);
-    mediaPreSumMetric.peakLevel = std::clamp(mediaPreSumPeakLevel_, mediaPreSumMetric.rmsLevel, 1.0);
-    mediaPreSumMetric.inputLevel =
-        clampInt(static_cast<int>(std::lround(mediaPreSumMetric.rmsLevel * 100.0)), 0, 100);
-    mediaPreSumMetric.limiterActive = mediaPreSumMetric.peakLevel >= 0.92;
-  }
-
-  for (const auto& channel : audioChannels_) {
-    const auto nativeMetric = nativeMetricsByParticipant.find(channel.participantId);
-    const modules::AudioParticipantMixMetrics* measured =
-        nativeMetric == nativeMetricsByParticipant.end() ? nullptr : &nativeMetric->second;
-    if (mediaPreSumMetered_ && channel.participantId == kMediaAudioControlSourceId) {
-      measured = &mediaPreSumMetric;
-    }
-    const bool hasPcm = measured != nullptr;
-    const int measuredInputLevel = hasPcm ? measured->inputLevel : 0;
-    const int smartGainDb = calculateSmartGainDb(measuredInputLevel);
-    const int gainDb = channel.muted ? -60 : static_cast<int>(clampDouble(smartGainDb + (channel.hasManualGain ? channel.manualGainDb : 0), -12, 12));
-    const bool noiseSuppression = hasPcm && (channel.noiseSuppression || measuredInputLevel < 35 ||
-                                  (measured && measured->noiseSuppressionActive));
-    const int outputLevel = channel.muted || !hasPcm ? 0 : clampInt(measuredInputLevel + gainDb * 4, 0, 100);
-    const bool channelLimiterWouldReduce = hasPcm && outputLevel >= 88;
-    limiterWouldReduce = limiterWouldReduce || channelLimiterWouldReduce || (hasPcm && measured->limiterActive);
-    if (hasPcm && !channel.muted) {
-      masterTotal += outputLevel;
-      ++audibleCount;
-    }
-    if (hasPcm && gainDb > 0 && !channel.muted) ++boostingCount;
-    if (hasPcm && gainDb < 0 && !channel.muted) ++duckingCount;
-    if (channel.muted) ++mutedCount;
-    if (!hasPcm && !channel.muted) ++waitingPcmCount;
-    if (channel.solo) ++soloCount;
-    if (channel.hasManualGain && channel.manualGainDb != 0) ++manualCount;
-    if (!channel.pluginInserts.empty()) {
-      insertCount += static_cast<int>(channel.pluginInserts.size());
-    }
-    if (!hasPcm && !channel.muted && warningSet.insert("missing-pcm:" + channel.participantId).second) {
-      warnings.emplace_back("No native PCM has been mixed for " + channel.participantId + "; meters are held at silence for that channel.");
-    }
-
-    rpc::Json::Array pluginInserts;
-    for (const auto& insert : channel.pluginInserts) {
-      const bool isVst = isHostHandledInsertName(insert);
-      const std::string query = vstSelectionQueryFromInsertName(insert);
-      const bool active = isVst && vstHostRunning && vstHostExchanges > 0 &&
-                          vstHostStatusCode == corevideo::pluginhost::kHostStatusPluginActive &&
-                          (query.empty() || vstHostActivePlugin == query ||
-                           query.find(vstHostActivePlugin) != std::string::npos);
-      const bool failed = isVst && vstHostStatusCode == corevideo::pluginhost::kHostStatusPluginFailed &&
-                          !vstHostError.empty();
-      if (failed && warningSet.insert("vst-host-failed:" + insert).second) {
-        warnings.emplace_back("VST3 insert bypassed safely: " + vstHostError);
-      }
-      pluginInserts.emplace_back(rpc::Json::Object{
-          {"name", insert},
-          {"format", isVst ? "vst3" : "builtin"},
-          {"status", !isVst ? "available" : active ? "processing" : failed ? "bypassed" : "starting"},
-          {"processingEnabled", !isVst || active},
-      });
-    }
-
-    rpc::Json::Object participant{
-        {"participantId", channel.participantId},
-        {"inputLevel", measuredInputLevel},
-        {"outputLevel", outputLevel},
-        {"gainDb", gainDb},
-        // These are OUTPUT meters. A muted strip may still receive non-zero
-        // input PCM, but none of that signal reaches a bus. Publishing the raw
-        // pre-mute measurement made muted microphones appear live in the UI
-        // and control API even while the routed audio was correctly silent.
-        {"rmsDbfs", hasPcm && !channel.muted
-                        ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel))
-                        : deriveRmsDbfs(0)},
-        {"peakDbfs", hasPcm && !channel.muted
-                         ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
-                         : derivePeakDbfs(0)},
-        // #481: PRE-MUTE input meters, measured off the same PCM before mute/
-        // fader is applied. A muted strip still receives signal - this is how
-        // the A1 sees a guest talking while their channel is muted. Never gate
-        // this on channel.muted; that would recreate the bug these fields fix.
-        {"inputRmsDbfs", hasPcm
-                        ? round1Dbfs(modules::linearToDbfs(measured->rmsLevel))
-                        : deriveRmsDbfs(0)},
-        {"inputPeakDbfs", hasPcm
-                         ? round1Dbfs(modules::linearToDbfs(measured->peakLevel))
-                         : derivePeakDbfs(0)},
-        // C7b: live compressor gain reduction (dB, 0 when idle/not engaged) -
-        // feeds the workspace GR meter.
-        {"gainReductionDb",
-         audioCompGainReductionDbBySource_.count(channel.participantId) != 0
-             ? audioCompGainReductionDbBySource_.at(channel.participantId)
-             : 0.0},
-        {"pan", channel.pan},
-        {"solo", channel.solo},
-        {"noiseSuppression", noiseSuppression},
-        {"limiterActive", audioLimiterEnabled_ && (channelLimiterWouldReduce || (hasPcm && measured->limiterActive))},
-        {"muted", channel.muted},
-        {"pluginInserts", pluginInserts},
-        {"status", channel.muted ? "muted" : hasPcm && !measured->status.empty() ? measured->status : hasPcm ? audioStatusFor(false, gainDb) : "waiting-for-pcm"},
-    };
-    if (channel.hasManualGain) {
-      participant.emplace("manualGainDb", channel.manualGainDb);
-    }
-    participants.emplace_back(std::move(participant));
-  }
-
-  const int masterLevel = audibleCount > 0 ? clampInt((masterTotal / audibleCount) + 8, 0, 100) : 0;
-  limiterWouldReduce = limiterWouldReduce || masterLevel >= 88;
-  const bool limiterActive = audioLimiterEnabled_ && limiterWouldReduce;
-  std::ostringstream summary;
-  if (boostingCount > 0) summary << boostingCount << " boosted";
-  if (duckingCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << duckingCount << " ducked";
-  if (waitingPcmCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << waitingPcmCount << " waiting for PCM";
-  if (mutedCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << mutedCount << " muted";
-  if (manualCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << manualCount << " manual";
-  if (soloCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << soloCount << " solo";
-  if (insertCount > 0) summary << (summary.tellp() > 0 ? ", " : "") << insertCount << " inserts";
-  const std::string summaryText = summary.tellp() > 0 ? summary.str() + " in program mix" : "Program mix balanced";
-  if (!audioMonitorWarning_.empty()) {
-    warnings.emplace_back(audioMonitorWarning_);
-  }
-  if (modules_.audioCapture) {
-    for (const auto& warning : modules_.audioCapture->warnings()) {
-      if (warningSet.insert("audio-capture:" + warning).second) {
-        warnings.emplace_back(warning);
-      }
-    }
-  }
-
-  return rpc::Json::Object{
-      {"status", warnings.empty() ? "live" : "warning"},
-      {"masterLevel", masterLevel},
-      // REAL BS.1770 program loudness (owner-reported: this read a hardcoded
-      // -16 whenever mixer channels were synced â€” i.e. always). The worker's
-      // updateProgramLoudnessMeter maintains these members under the same
-      // audioOutputMutex_ this function holds. Short-term (3s) is the live
-      // console readout; fall back to momentary until its window fills.
-      {"loudnessLufs", programLufsShortTerm_ > -119.0 ? programLufsShortTerm_ : programLufsMomentary_},
-      {"pluginHost", pluginHostState()},
-      {"limiterEnabled", audioLimiterEnabled_},
-      {"limiterActive", limiterActive},
-      {"mixedFrameCount", static_cast<double>(mixedAudioFrameCount_)},
-      {"monitorEnabled", audioMonitorEnabled_},
-      {"monitorStatus", audioMonitorStatus_},
-      {"monitorDeviceId", audioMonitorDeviceId_},
-      {"monitorDeviceName", audioMonitorDeviceName_},
-      {"monitorVolume", audioMonitorVolume_},
-      {"monitorControl", audioMonitorControlState()},
-      {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
-      {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
-      {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
-      {"participants", participants},
-      {"masterMeter", masterMeterState()},
-      {"summary", summaryText},
-      {"warnings", warnings},
-  };
-}
 
 void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved, int channels, int sampleRate) {
   if (interleaved.empty() || channels <= 0 || sampleRate <= 0) {
@@ -5135,131 +4206,9 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
   virtualCamera_->setProgramLoudness(programLufsShortTerm_, windowed >= maxSamples);
 }
 
-rpc::Json MediaCore::masterMeterState() const {
-  // PRECONDITION: caller holds audioOutputMutex_ (reads the BS.1770 loudness members
-  // the worker mutates). Only called from audioMixSessionState(), which holds it.
-  const int windowMs = programMeterL_.empty() ? 0 : static_cast<int>((programMeterL_.size() * 1000) / 48000);
-  return rpc::Json::Object{
-      {"momentaryLufs", programLufsMomentary_},
-      {"shortTermLufs", programLufsShortTerm_},
-      {"integratedLufs", programLufsIntegrated_},
-      {"truePeakDbfs", programTruePeakDbfs_},
-      {"windowMs", windowMs},
-  };
-}
 
-rpc::Json MediaCore::audioRoutingMatrixState() const {
-  std::vector<std::string> buses = {
-      "master", "pgm-l", "pgm-r", "iso-1", "iso-2", "iso-3", "iso-4", "iso-5",
-      "iso-6",  "iso-7", "iso-8", "mon",   "stream", "aux-1", "aux-2"};
-  for (const auto& send : audioRoutingSends_) {
-    if (std::find(buses.begin(), buses.end(), send.busId) == buses.end()) {
-      buses.push_back(send.busId);
-    }
-  }
 
-  rpc::Json::Array warnings;
-  for (const auto& warning : audioRoutingWarnings_) {
-    warnings.emplace_back(warning);
-  }
 
-  if (!audioRoutingSynced_ || audioRoutingSends_.empty()) {
-    rpc::Json::Array busSourceCounts;
-    rpc::Json::Array busProcessing;
-    for (const auto& bus : buses) {
-      busSourceCounts.emplace_back(rpc::Json::Object{{"busId", bus}, {"sourceCount", 0}});
-      busProcessing.emplace_back(rpc::Json::Object{{"busId", bus}, {"pluginInserts", rpc::Json::Array{}}});
-    }
-    return rpc::Json::Object{
-        {"status", audioRoutingWarnings_.empty() ? "idle" : "warning"},
-        {"control", audioRouteControl_.snapshot()},
-        {"routedSendCount", 0},
-        {"routedSourceCount", 0},
-        {"busSourceCounts", busSourceCounts},
-        {"busProcessing", busProcessing},
-        {"sends", rpc::Json::Array{}},
-        {"summary", audioRoutingSynced_ ? "No audio crosspoints routed." : "Audio routing matrix idle."},
-        {"warnings", warnings},
-    };
-  }
-
-  std::set<std::string> routedSources;
-  std::map<std::string, std::set<std::string>> busSources;
-  std::map<std::string, std::vector<std::string>> busPluginInserts;
-  rpc::Json::Array sends;
-  for (const auto& send : audioRoutingSends_) {
-    routedSources.insert(send.sourceId);
-    busSources[send.busId].insert(send.sourceId);
-    if (!send.busPluginInserts.empty()) {
-      busPluginInserts[send.busId] = send.busPluginInserts;
-    }
-    rpc::Json::Array inserts;
-    for (const auto& insert : send.busPluginInserts) {
-      inserts.emplace_back(insert);
-    }
-    sends.emplace_back(rpc::Json::Object{
-        {"sourceId", send.sourceId},
-        {"busId", send.busId},
-        {"gainDb", send.gainDb},
-        {"busPluginInserts", inserts},
-    });
-  }
-
-  rpc::Json::Array busSourceCounts;
-  rpc::Json::Array busProcessing;
-  int routedBusCount = 0;
-  for (const auto& bus : buses) {
-    const auto found = busSources.find(bus);
-    const int sourceCount = found == busSources.end() ? 0 : static_cast<int>(found->second.size());
-    if (sourceCount > 0) {
-      ++routedBusCount;
-    }
-    busSourceCounts.emplace_back(rpc::Json::Object{{"busId", bus}, {"sourceCount", sourceCount}});
-    rpc::Json::Array inserts;
-    if (const auto busInserts = busPluginInserts.find(bus); busInserts != busPluginInserts.end()) {
-      for (const auto& insert : busInserts->second) {
-        inserts.emplace_back(insert);
-      }
-    }
-    busProcessing.emplace_back(rpc::Json::Object{{"busId", bus}, {"pluginInserts", inserts}});
-  }
-
-  // Measured PCM taps from the real routing-matrix bus mix this tick. Only buses
-  // that actually received signal appear here, so an operator/test can confirm
-  // real samples are flowing (not just routed crosspoint state).
-  rpc::Json::Array busTaps;
-  for (const auto& [busId, pcm] : routedBusPcm_) {
-    if (pcm.empty()) {
-      continue;
-    }
-    busTaps.emplace_back(rpc::Json::Object{
-        {"busId", busId},
-        {"channels", 2},
-        {"frames", static_cast<int>(pcm.size() / 2)},
-        {"peakDbfs", modules::computeSamplePeakDbfs(pcm.data(), pcm.size())},
-        {"rmsDbfs", modules::computeRmsDbfs(pcm.data(), pcm.size())},
-    });
-  }
-
-  std::ostringstream summary;
-  summary << audioRoutingSends_.size() << " send" << (audioRoutingSends_.size() == 1 ? "" : "s") << " from "
-          << routedSources.size() << " source" << (routedSources.size() == 1 ? "" : "s") << " across " << routedBusCount
-          << " bus(es).";
-
-  return rpc::Json::Object{
-      {"status", audioRoutingWarnings_.empty() ? "live" : "warning"},
-      {"control", audioRouteControl_.snapshot()},
-      {"routedSendCount", static_cast<int>(audioRoutingSends_.size())},
-      {"routedSourceCount", static_cast<int>(routedSources.size())},
-      {"busSourceCounts", busSourceCounts},
-      {"busProcessing", busProcessing},
-      {"busTaps", busTaps},
-      {"programTapFrames", static_cast<int>(programAudioTapPcm().size() / 2)},
-      {"sends", sends},
-      {"summary", summary.str()},
-      {"warnings", warnings},
-  };
-}
 
 const std::vector<float>& MediaCore::programAudioTapPcm() const {
   return audioBusTapPcm("master");
@@ -5282,417 +4231,17 @@ const std::vector<float>& MediaCore::audioBusTapPcm(const std::string& busId) co
   return found == routedBusPcm_.end() ? kEmptyTap : found->second;
 }
 
-rpc::Json MediaCore::captureAudioSourcesState() const {
-  rpc::Json::Array sources;
-  rpc::Json::Array warnings;
-  std::set<std::string> warningSet;
-  int pairedCount = 0;
-  int streamingCount = 0;
-  int64_t totalFramesReceived = 0;
-  const int routedMasterFrames = static_cast<int>(programAudioTapPcm().size() / 2);
-  const int routedStreamFrames = static_cast<int>(audioBusTapPcm("stream").size() / 2);
-  const int routedMonitorFrames = static_cast<int>(audioBusTapPcm("mon").size() / 2);
-  // mixer->monitorBus* is mutated by the worker's mixer->mix; guard the read.
-  int fallbackMonitorFrames = 0;
-  if (routedMonitorFrames == 0 && modules_.mixer) {
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-    fallbackMonitorFrames = static_cast<int>(modules_.mixer->monitorBusPcm().size() /
-                                             static_cast<size_t>(std::max(1, modules_.mixer->monitorBusChannels())));
-  }
-  std::map<std::string, modules::CaptureAudioSourceMetrics> metricsByCaptureId;
-  auto addWarning = [&](const std::string& warning) {
-    if (!warning.empty() && warningSet.insert(warning).second) {
-      warnings.emplace_back(warning);
-    }
-  };
-  if (modules_.audioCapture) {
-    for (const auto& metric : modules_.audioCapture->metrics()) {
-      metricsByCaptureId[metric.captureDeviceId] = metric;
-      if (!metric.warning.empty()) {
-        addWarning(metric.warning);
-      }
-    }
-    for (const auto& warning : modules_.audioCapture->warnings()) {
-      addWarning(warning);
-    }
-  }
-  for (const auto& source : captureAudioSources_) {
-    if (!source.audioDeviceId.empty()) {
-      ++pairedCount;
-    }
 
-    // Dev-gated hardware kinds need a real adapter the portable build can't
-    // provide, so carry the caveat on the source row too (not just the aggregate).
-    std::string hardwareCaveat;
-    if (!source.audioDeviceId.empty() && source.audioSourceKind == "asio-input") {
-      hardwareCaveat = "ASIO source " + source.audioDeviceName + " is selected; native ASIO PCM capture requires the dev-machine adapter.";
-    } else if (!source.audioDeviceId.empty() && source.audioSourceKind == "embedded-capture-audio") {
-      hardwareCaveat = "Embedded capture-card audio " + source.audioDeviceName + " is selected; DeckLink/AJA audio PCM capture requires the hardware adapter.";
-    }
-    if (!hardwareCaveat.empty()) {
-      addWarning(hardwareCaveat);
-    }
 
-    const auto metric = metricsByCaptureId.find(source.captureDeviceId);
-    const bool streaming = metric != metricsByCaptureId.end() && metric->second.streaming;
-    const int64_t framesReceived = metric == metricsByCaptureId.end() ? 0 : metric->second.framesReceived;
-    const int64_t framesRendered = metric == metricsByCaptureId.end() ? 0 : metric->second.framesRendered;
-    const int64_t queuedFrames = metric == metricsByCaptureId.end() ? 0 : metric->second.queuedFrames;
-    const int64_t underrunCount = metric == metricsByCaptureId.end() ? 0 : metric->second.underrunCount;
-    const int64_t emptyPacketPolls = metric == metricsByCaptureId.end() ? 0 : metric->second.emptyPacketPolls;
-    const int64_t startedAtMs = metric == metricsByCaptureId.end() ? 0 : metric->second.startedAtMs;
-    const int64_t lastFrameAtMs = metric == metricsByCaptureId.end() ? 0 : metric->second.lastFrameAtMs;
-    const int64_t stoppedAtMs = metric == metricsByCaptureId.end() ? 0 : metric->second.stoppedAtMs;
-    const int64_t lastFrameAgeMs = streaming && lastFrameAtMs > 0
-                                       ? std::max<int64_t>(0, monotonicMs() - lastFrameAtMs)
-                                       : 0;
-    const double peakDbfs = metric == metricsByCaptureId.end() ? -120.0 : metric->second.peakDbfs;
-    const double rmsDbfs = metric == metricsByCaptureId.end() ? -120.0 : metric->second.rmsDbfs;
-    const bool signalPresent = metric != metricsByCaptureId.end() && metric->second.signalPresent;
-    std::string sourceWarning = metric == metricsByCaptureId.end() ? std::string{} : metric->second.warning;
-    const std::string lastError = metric == metricsByCaptureId.end() ? std::string{} : metric->second.lastError;
-    if (!source.audioDeviceId.empty() && metric == metricsByCaptureId.end()) {
-      sourceWarning = "Audio source is paired but no native PCM adapter is streaming it.";
-      addWarning(source.captureDeviceId + ": " + sourceWarning);
-    } else if (metric != metricsByCaptureId.end() && !streaming && sourceWarning.empty() && !lastError.empty()) {
-      sourceWarning = "Audio capture adapter is not streaming: " + lastError;
-      addWarning(source.captureDeviceId + ": " + sourceWarning);
-    } else if (streaming && framesReceived <= 0 && sourceWarning.empty()) {
-      sourceWarning = "Audio capture stream is open but no PCM frames have arrived.";
-      addWarning(source.captureDeviceId + ": " + sourceWarning);
-    } else if (streaming && framesReceived > 0 && lastFrameAgeMs > kStaleCaptureAudioAgeMs && sourceWarning.empty()) {
-      sourceWarning = "Audio capture PCM is stale; no new frames have arrived for " + std::to_string(lastFrameAgeMs) + " ms.";
-      addWarning(source.captureDeviceId + ": " + sourceWarning);
-    } else if (streaming && framesReceived > 0 && !signalPresent && sourceWarning.empty()) {
-      sourceWarning = "Audio capture is receiving silent PCM frames; check the selected endpoint or play audio through it.";
-      addWarning(source.captureDeviceId + ": " + sourceWarning);
-    }
-    // Fall back to the hardware caveat when no more-specific warning applies, so
-    // ASIO/embedded rows are never silently clean in a build without the adapter.
-    if (sourceWarning.empty()) {
-      sourceWarning = hardwareCaveat;
-    }
-    if (streaming) {
-      ++streamingCount;
-    }
-    totalFramesReceived += framesReceived;
 
-    sources.emplace_back(rpc::Json::Object{
-        {"captureDeviceId", source.captureDeviceId},
-        {"sourceId", metric == metricsByCaptureId.end() ? std::string{} : metric->second.sourceId},
-        {"audioDeviceId", source.audioDeviceId},
-        {"audioDeviceName", source.audioDeviceName},
-        {"audioSourceKind", source.audioSourceKind},
-        {"nativeAudioDeviceId", source.nativeAudioDeviceId},
-        {"audioDriverName", source.audioDriverName},
-        {"embedded", source.embedded},
-        {"audioSyncOffsetMs", source.audioSyncOffsetMs},
-        {"paired", !source.audioDeviceId.empty()},
-        {"captureStreaming", streaming},
-        {"captureFramesReceived", static_cast<double>(framesReceived)},
-        {"captureFramesRendered", static_cast<double>(framesRendered)},
-        {"captureQueuedFrames", static_cast<double>(queuedFrames)},
-        {"captureUnderrunCount", static_cast<double>(underrunCount)},
-        {"emptyPacketPolls", static_cast<double>(emptyPacketPolls)},
-        {"captureStartedAtMs", static_cast<double>(startedAtMs)},
-        {"captureLastFrameAtMs", static_cast<double>(lastFrameAtMs)},
-        {"captureLastFrameAgeMs", static_cast<double>(lastFrameAgeMs)},
-        {"captureStoppedAtMs", static_cast<double>(stoppedAtMs)},
-        {"captureSampleRate", metric == metricsByCaptureId.end() ? 0 : metric->second.sampleRate},
-        {"captureChannels", metric == metricsByCaptureId.end() ? 0 : metric->second.channels},
-        {"peakDbfs", peakDbfs},
-        {"rmsDbfs", rmsDbfs},
-        {"signalPresent", signalPresent},
-        {"endpointId", metric == metricsByCaptureId.end() ? std::string{} : metric->second.endpointId},
-        {"endpointName", metric == metricsByCaptureId.end() ? std::string{} : metric->second.endpointName},
-        {"lastError", lastError},
-        {"warning", sourceWarning},
-    });
-  }
 
-  std::ostringstream summary;
-  summary << pairedCount << " of " << captureAudioSources_.size() << " capture source"
-          << (captureAudioSources_.size() == 1 ? "" : "s") << " paired with audio input; "
-          << streamingCount << " streaming, " << totalFramesReceived << " PCM frames received; "
-          << routedMasterFrames << " master bus frames, " << routedStreamFrames << " stream bus frames, "
-          << routedMonitorFrames << " MON bus frames, "
-          << fallbackMonitorFrames << " fallback monitor frames, "
-          << audioMonitorFramesPlayed_ << " monitor playback frames.";
 
-  return rpc::Json::Object{
-      {"status", !captureAudioSourcesSynced_ ? "idle" : warningSet.empty() ? "ready" : "warning"},
-      {"sourceCount", static_cast<int>(captureAudioSources_.size())},
-      {"pairedCount", pairedCount},
-      {"streamingCount", streamingCount},
-      {"captureFramesReceived", static_cast<double>(totalFramesReceived)},
-      {"routedMasterFrames", routedMasterFrames},
-      {"routedStreamFrames", routedStreamFrames},
-      {"routedMonitorFrames", routedMonitorFrames},
-      {"fallbackMonitorFrames", fallbackMonitorFrames},
-      {"monitorFramesPlayed", static_cast<double>(audioMonitorFramesPlayed_)},
-      {"monitorUnderruns", static_cast<double>(audioMonitorUnderruns_)},
-      {"monitorFeedbackRisk", audioMonitorFeedbackRisk_},
-      {"sources", sources},
-      {"warnings", warnings},
-      {"summary", captureAudioSourcesSynced_ ? summary.str() : "Capture audio source pairing idle."},
-  };
-}
 
-rpc::Json MediaCore::captionTrackState() const {
-  rpc::Json::Array warnings;
-  for (const auto& warning : captionWarnings_) {
-    warnings.emplace_back(warning);
-  }
-  if (!captionEnabled_) {
-    return rpc::Json::Object{
-        {"enabled", false},
-        {"status", "idle"},
-        {"latencyMs", 0},
-        {"warnings", warnings},
-    };
-  }
-  if (captionText_.empty()) {
-    return rpc::Json::Object{
-        {"enabled", true},
-        {"status", "idle"},
-        {"latencyMs", 180},
-        {"warnings", warnings},
-    };
-  }
 
-  rpc::Json::Object cue{
-      {"text", captionText_},
-      {"atMs", captionAtMs_},
-      {"confidence", static_cast<double>(captionConfidence_)},
-  };
-  if (!captionSpeaker_.empty()) {
-    cue.emplace("speaker", captionSpeaker_);
-  }
 
-  return rpc::Json::Object{
-      {"enabled", true},
-      {"status", warnings.empty() ? "live" : "warning"},
-      {"currentCue", cue},
-      {"latencyMs", 180},
-      {"warnings", warnings},
-  };
-}
 
-rpc::Json MediaCore::brandKitState() const {
-  rpc::Json::Array warnings;
-  for (const auto& warning : brandWarnings_) {
-    warnings.emplace_back(warning);
-  }
 
-  const int appliedOverlayCount = overlayCount_;
-  std::ostringstream summary;
-  summary << brandName_;
-  if (appliedOverlayCount > 0) {
-    summary << " applied to " << appliedOverlayCount << " overlays";
-  } else {
-    summary << " ready";
-  }
 
-  return rpc::Json::Object{
-      {"name", brandName_},
-      {"logoText", brandLogoText_},
-      {"brandColor", brandColor_},
-      {"accentColor", brandAccentColor_},
-      {"backgroundColor", brandBackgroundColor_},
-      {"fontFamily", brandFontFamily_},
-      {"lowerThirdStyle", brandLowerThirdStyle_},
-      {"captionStyle", brandCaptionStyle_},
-      {"defaultOverlayBehavior", brandDefaultOverlayBehavior_},
-      {"appliedOverlayCount", appliedOverlayCount},
-      {"summary", summary.str()},
-      {"warnings", warnings},
-  };
-}
-
-rpc::Json MediaCore::overlayState() const {
-  rpc::Json::Array overlays;
-  int lowerThirdCount = 0;
-  int buildingCount = 0;
-  int onAirCount = 0;
-  int hiddenCount = 0;
-
-  std::vector<const OverlayAssetState*> orderedOverlays;
-  orderedOverlays.reserve(overlayAssets_.size());
-  for (const auto& [overlayId, asset] : overlayAssets_) {
-    orderedOverlays.push_back(&asset);
-  }
-  std::sort(
-      orderedOverlays.begin(),
-      orderedOverlays.end(),
-      [](const OverlayAssetState* left, const OverlayAssetState* right) {
-        return left->insertionOrder < right->insertionOrder;
-      });
-
-  for (const auto* asset : orderedOverlays) {
-    const bool isLowerThird = asset->position == "lower-third" || asset->position == "bottom-right";
-    if (isLowerThird) {
-      ++lowerThirdCount;
-    }
-    if (asset->keyPhase == "on-air") {
-      ++onAirCount;
-    } else if (asset->keyPhase == "hidden") {
-      ++hiddenCount;
-    } else if (asset->keyPhase == "building-in" || asset->keyPhase == "building-out") {
-      ++buildingCount;
-    }
-
-    overlays.emplace_back(rpc::Json::Object{
-        {"overlayId", asset->overlayId},
-        {"kind", isLowerThird ? "lower-third" : "overlay"},
-        {"position", asset->position},
-        {"sourceId", asset->sourceId},
-        {"sourceName", asset->sourceName},
-        {"title", asset->title},
-        {"org", asset->org},
-        {"text", asset->text},
-        {"keyPosition", asset->keyPosition},
-        {"keyPhase", asset->keyPhase},
-        {"keyProgress", asset->keyProgress},
-        {"keyer", asset->keyer},
-        {"buildInMs", asset->buildInMs},
-        {"buildOutMs", asset->buildOutMs},
-        {"visible", asset->keyPhase != "hidden" && asset->keyPhase != "building-out" &&
-            (!isLowerThird || asset->sourceId.empty() || renderedProgramSources_.containsOverlay(
-                "overlay:" + asset->overlayId + ":lower-third", asset->sourceId,
-                asset->title, asset->org, asset->text, asset->imageUri, asset->keyPosition,
-                asset->keyer, asset->keyPhase))},
-    });
-  }
-
-  std::ostringstream summary;
-  summary << lowerThirdCount << " lower-third overlay" << (lowerThirdCount == 1 ? "" : "s")
-          << ", " << onAirCount << " on-air, " << buildingCount << " building.";
-
-  return rpc::Json::Object{
-      {"status", overlayAssets_.empty() ? "idle" : buildingCount > 0 ? "transitioning" : onAirCount > 0 ? "live" : "ready"},
-      {"overlayCount", static_cast<int>(overlayAssets_.size())},
-      {"lowerThirdCount", lowerThirdCount},
-      {"onAirCount", onAirCount},
-      {"buildingCount", buildingCount},
-      {"hiddenCount", hiddenCount},
-      {"overlays", overlays},
-      {"summary", summary.str()},
-      {"warnings", rpc::Json::Array{}},
-  };
-}
-
-rpc::Json MediaCore::mediaPlaybackState() const {
-  rpc::Json::Array warnings;
-  for (const auto& warning : mediaPlaybackWarnings_) {
-    warnings.emplace_back(warning);
-  }
-
-  if (mediaPlaybackAssetId_.empty()) {
-    return rpc::Json::Object{
-        {"status", "idle"},
-        {"playing", false},
-        {"summary", "No media asset selected."},
-        {"warnings", warnings},
-    };
-  }
-
-  // #535 slice 3b: the state of the selection is its transport state, never a
-  // flag the shell asserted. A selected asset on neither bus has no transport
-  // and therefore no play state - "unavailable" says exactly that, instead of
-  // the "paused" a stale flag used to report.
-  std::string status = "unavailable";
-  if (mediaTransports_) {
-    const std::string sourceId = "media:" + mediaPlaybackAssetId_;
-    for (const auto& row : mediaTransports_->snapshot()) {
-      if (row.sourceId != sourceId) continue;
-      status = core::mediaTransportStateName(row.state);
-      break;
-    }
-  }
-  const bool playing = status == "live";
-  const std::string& name = mediaPlaybackAssetName_;
-  return rpc::Json::Object{
-      {"status", status},
-      {"mediaAssetId", mediaPlaybackAssetId_},
-      {"mediaAssetName", name},
-      {"mediaAssetKind", mediaPlaybackAssetKind_},
-      {"mediaAssetPath", mediaPlaybackAssetPath_},
-      // Retired (#535 slice 3b); kept as an empty string only so an older
-      // shell reading the field finds a value rather than a missing key.
-      {"mediaPlaybackKey", std::string{}},
-      {"playing", playing},
-      {"summary", name + " " + status + "."},
-      {"warnings", warnings},
-  };
-}
-
-rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) const {
-  rpc::Json::Array targets;
-  for (const auto& destination : session.destinations) {
-    targets.emplace_back(rpc::Json::Object{
-        {"targetId", destination + ":program"},
-        {"destination", destination},
-        {"streamKind", "program"},
-        {"status", encoderLifecycleStatus_ == "encoding" ? "attached" : "idle"},
-        {"attachedFrameCount", static_cast<double>(session.encodedFrameCount)},
-    });
-    if (destination == "recording") {
-      for (const auto& participantId : session.isoParticipantIds) {
-        targets.emplace_back(rpc::Json::Object{
-            {"targetId", "recording:iso:" + participantId},
-            {"destination", "recording"},
-            {"streamKind", "iso"},
-            {"participantId", participantId},
-            {"status", encoderLifecycleStatus_ == "encoding" ? "attached" : "idle"},
-            {"attachedFrameCount", static_cast<double>(session.encodedFrameCount)},
-        });
-      }
-    }
-  }
-
-  rpc::Json::Object lifecycle{
-      {"status", encoderLifecycleStatus_},
-      {"lastTransition", encoderLastTransition_},
-  };
-  if (encoderPreparedAtMs_ > 0) {
-    lifecycle.emplace("preparedAtMs", encoderPreparedAtMs_);
-  }
-  if (encoderStartedAtMs_ > 0) {
-    lifecycle.emplace("startedAtMs", encoderStartedAtMs_);
-  }
-  if (encoderStoppedAtMs_ > 0) {
-    lifecycle.emplace("stoppedAtMs", encoderStoppedAtMs_);
-  }
-
-  const bool warning = session.active && encoderLifecycleStatus_ != "encoding";
-  rpc::Json::Array warnings = warning ? rpc::Json::Array{"Output destinations are armed but encoder lifecycle is not encoding."} : rpc::Json::Array{};
-  if (!session.recordingWarning.empty()) {
-    warnings.emplace_back(session.recordingWarning);
-  }
-  rpc::Json::Object encoderState{
-      {"status", warning || !session.recordingWarning.empty() ? "warning" : encoderLifecycleStatus_ == "encoding" ? "encoding" : "idle"},
-      {"renderPlanId", lastProgramFrame_.renderPlanId},
-      {"programFrameCount", static_cast<double>(lastProgramFrame_.frameNumber)},
-      {"targetBitrateMbps", session.targetBitrateMbps},
-      {"recordingFormat", session.recordingFormat.empty() ? recordingFormat_ : session.recordingFormat},
-      {"recordingVideoCodec", session.recordingVideoCodec.empty() ? session.codec : session.recordingVideoCodec},
-      {"recordingAudioCodec", session.recordingAudioCodec.empty() ? "aac" : session.recordingAudioCodec},
-      {"recordingAudioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
-      {"encoderQueueDroppedVideoFrames", static_cast<double>(session.encoderQueueDroppedVideoFrames)},
-      {"encoderQueueDroppedAudioPackets", static_cast<double>(session.encoderQueueDroppedAudioPackets)},
-      {"targets", targets},
-      {"lifecycle", lifecycle},
-      {"warnings", warnings},
-  };
-  if (!session.recordingArtifactPath.empty()) {
-    encoderState.emplace("recordingArtifactPath", session.recordingArtifactPath);
-    encoderState.emplace("recordingBytesWritten", static_cast<double>(session.recordingBytesWritten));
-    encoderState.emplace("recordingDurationMs", static_cast<double>(session.recordingDurationMs));
-    encoderState.emplace("recordingFrameCount", static_cast<double>(session.recordingVideoFrameCount));
-    encoderState.emplace("recordingMetadataValid", session.recordingMetadataValid);
-  }
-  return encoderState;
-}
 
 // PR22: a destination's state and terminal outcome, decided purely.
 //
@@ -5703,213 +4252,9 @@ rpc::Json MediaCore::encoderSessionState(const modules::OutputSession& session) 
 // the same declared staleness budget. A stream that dies mid-show therefore
 // decays out of `producing` on its own instead of reporting the last status the
 // adapter happened to write.
-contracts::OutputLifecycle MediaCore::evaluateSenderLifecycle(
-    const modules::OutputSender& sender, bool desiredActive, int64_t nowMs) const {
-  const std::string key = sender.senderId.empty() ? sender.destination : sender.senderId;
-  auto& evidence = senderLifecycles_[key];
-  const int64_t sent = modules::outputSenderProgressUnits(sender);
-  if (sent > evidence.lastFramesSent) {
-    evidence.lastFramesSent = sent;
-    evidence.lastProgressMs = nowMs;
-    evidence.everProduced = true;
-  } else if (sent < evidence.lastFramesSent) {
-    // A restarted sender resets its counters; that is a new run, not progress.
-    evidence.lastFramesSent = sent;
-    evidence.everProduced = sent > 0;
-    evidence.lastProgressMs = sent > 0 ? nowMs : 0;
-  }
-  core::SenderObservation observation;
-  observation.status = sender.status;
-  observation.destinationHealth = sender.destinationHealth;
-  observation.desiredActive = desiredActive;
-  observation.framesSent = sent;
-  observation.everProduced = evidence.everProduced;
-  observation.lastProgressMs = evidence.lastProgressMs;
-  observation.nowMs = nowMs;
-  observation.hasError = !sender.lastError.empty();
-  const auto decision = core::SenderLifecyclePolicy::evaluate(observation);
-  contracts::OutputLifecycle lifecycle;
-  lifecycle.sessionId = key.empty() ? std::string("output-sender") : key;
-  lifecycle.desiredActive = desiredActive;
-  lifecycle.state = decision.state;
-  lifecycle.health = decision.health;
-  lifecycle.finalized = core::SenderLifecyclePolicy::finalizedFor(decision, evidence.everProduced);
-  // The error field is diagnostic context for a state that is already bad. It is
-  // NOT attached to a healthy destination: `lastError` is sticky history, and a
-  // producing stream carrying an old string would read as broken in a bundle.
-  if (decision.state == "failed" && !sender.lastError.empty()) {
-    lifecycle.error = sender.lastError;
-  } else if (decision.state == "interrupted") {
-    lifecycle.error = sender.lastError.empty()
-                          ? std::string("Destination stopped producing without being asked to stop")
-                          : "Destination stopped producing without being asked to stop: " + sender.lastError;
-  } else if (decision.state == "failed" && !sender.warning.empty()) {
-    lifecycle.error = sender.warning;
-  }
-  if (core::OutputLifecyclePolicy::isTerminal(decision.state)) evidence.terminal = lifecycle;
-  else if (decision.state == "idle" && evidence.terminal) return *evidence.terminal;
-  return lifecycle;
-}
 
-rpc::Json MediaCore::outputSenderSessionState() const {
-  // outputSender->session() is mutated by the worker's outputSender->sync; guard it.
-  modules::OutputSenderSession senderSession;
-  {
-    std::lock_guard<std::mutex> audioLock(audioOutputMutex_);
-    senderSession = modules_.outputSender->session();
-  }
-  const int64_t senderNowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count();
-  rpc::Json::Array senders;
-  for (const auto& sender : senderSession.senders) {
-    const bool desiredActive =
-        std::find(outputDestinations_.begin(), outputDestinations_.end(), sender.destination) !=
-        outputDestinations_.end();
-    const auto lifecycle = evaluateSenderLifecycle(sender, desiredActive, senderNowMs);
-    // #468 / T2.10: status and destinationHealth are PROJECTIONS of the
-    // lifecycle and the supervisor, never the adapter's last launch state - a
-    // dead destination never disturbs that state, so it read "live"/"ok" for a
-    // stream nothing was receiving.
-    const std::string lifecycleState = lifecycle.state;
-    rpc::Json::Object senderJson{
-        {"senderId", sender.senderId},
-        {"destination", sender.destination},
-        {"status", core::publishedSenderStatus(sender.status, lifecycleState, sender.supervisor)},
-        {"framesSent", static_cast<double>(sender.framesSent)},
-        {"retryCount", sender.retryCount},
-        {"latencyMs", sender.latencyMs},
-        {"bitrateMbps", sender.bitrateMbps},
-        {"destinationHealth", core::publishedSenderDestinationHealth(sender.destinationHealth, lifecycleState, sender.supervisor)},
-        {"lastResultCode", sender.lastResultCode},
-        {"bytesSent", static_cast<double>(sender.bytesSent)},
-        {"audioFramesSent", static_cast<double>(sender.audioFramesSent)},
-        {"audioBytesSent", static_cast<double>(sender.audioBytesSent)},
-        {"droppedAudioPackets", static_cast<double>(sender.droppedAudioPackets)},
-        {"audioChannels", sender.audioChannels},
-        {"audioSampleRate", sender.audioSampleRate},
-    };
-    if (sender.startedAtMs > 0) {
-      senderJson.emplace("startedAtMs", sender.startedAtMs);
-    }
-    if (sender.stoppedAtMs > 0) {
-      senderJson.emplace("stoppedAtMs", sender.stoppedAtMs);
-    }
-    if (sender.lastFrameNumber > 0) {
-      senderJson.emplace("lastFrameNumber", static_cast<double>(sender.lastFrameNumber));
-    }
-    if (sender.muxInputVideo) {
-      const auto& mux = *sender.muxInputVideo;
-      senderJson.emplace("muxInputVideo", rpc::Json::Object{
-          {"payloadBytes", static_cast<double>(mux.payloadBytes)},
-          {"packets", static_cast<double>(mux.packets)},
-          {"mbps", mux.mbps},
-          {"fps", mux.fps},
-          {"lastWriteAgeMs", static_cast<double>(mux.lastWriteAgeMs)},
-          {"boundary", "compressed video written to local FFmpeg input; remote delivery unverified"},
-      });
-    }
-    if (sender.streamClock) {
-      const auto& clock = *sender.streamClock;
-      senderJson.emplace("streamClock", rpc::Json::Object{
-          {"muxInput", clock.muxInput},
-          {"firstVideoPts100ns", static_cast<double>(clock.firstVideoPts100ns)},
-          {"firstAudioPts100ns", static_cast<double>(clock.firstAudioPts100ns)},
-          {"audioUnits", static_cast<double>(clock.audioUnits)},
-          {"audioRefused", static_cast<double>(clock.audioRefused)},
-          {"audioUnanchored", static_cast<double>(clock.audioUnanchored)},
-          {"videoSlotShift", static_cast<double>(clock.videoSlotShift)},
-          {"videoSlotShifts", static_cast<double>(clock.videoSlotShifts)},
-      });
-    }
-    if (!sender.warning.empty()) {
-      senderJson.emplace("warning", sender.warning);
-    }
-    if (!sender.lastError.empty()) {
-      senderJson.emplace("lastError", sender.lastError);
-    }
-    if (!sender.sendArtifactPath.empty()) {
-      senderJson.emplace("sendArtifactPath", sender.sendArtifactPath);
-      senderJson.emplace("sendBytesWritten", static_cast<double>(sender.sendBytesWritten));
-    }
-    if (!sender.runtimeDetail.empty()) {
-      senderJson.emplace("runtimeDetail", sender.runtimeDetail);
-    }
-    // PR19: the output supervisor's per-destination state, verbatim. /snapshot
-    // serves sessionState as-is, so this is the whole path from "a destination
-    // failed on a machine we cannot see" to "the support bundle says which one,
-    // how many times, and why we stopped restarting it".
-    if (sender.supervisor) {
-      const auto& supervisor = *sender.supervisor;
-      senderJson.emplace("supervisor", rpc::Json::Object{
-          {"generation", static_cast<double>(supervisor.generation)},
-          {"healthy", supervisor.healthy},
-          {"gaveUp", supervisor.gaveUp},
-          {"consecutiveFailures", supervisor.consecutiveFailures},
-          {"restarts", supervisor.restarts},
-          {"nextAttemptInMs", static_cast<double>(supervisor.nextAttemptInMs)},
-          {"lastProgressAgeMs", static_cast<double>(supervisor.lastProgressAgeMs)},
-          {"acceptedUnits", static_cast<double>(supervisor.acceptedUnits)},
-          {"staleEventsRejected", static_cast<double>(supervisor.staleEventsRejected)},
-          {"malformedObservations", static_cast<double>(supervisor.malformedObservations)},
-          {"failureClass", supervisor.failureClass},
-          {"reason", supervisor.reason},
-          {"inProcessRisk", supervisor.inProcessRisk},
-          {"interruptible", supervisor.interruptible},
-      });
-    }
-    if (sender.asyncWorker) {
-      const auto& worker = *sender.asyncWorker;
-      senderJson.emplace("asyncWorker", rpc::Json::Object{
-          {"operation", worker.operation},
-          {"stage", worker.stage},
-          {"operationAgeMs", static_cast<double>(worker.operationAgeMs)},
-          {"queuedItems", static_cast<double>(worker.queuedItems)},
-          {"droppedSyncs", static_cast<double>(worker.droppedSyncs)},
-      });
-    }
-    // #597 Task 6: this destination's own view of Lever A/B - published
-    // whenever the sender populated it (GPU-direct senders only; see
-    // OutputBackpressureState in Interfaces.h). The one global fact this node
-    // deliberately omits (how many frames the compositor actually shed) is
-    // published once, unconditionally, at realtimeEvidence.encoderExport below.
-    if (sender.backpressure) {
-      const auto& bp = *sender.backpressure;
-      senderJson.emplace("backpressure", rpc::Json::Object{
-          // `divisor` is the destination's legacy pressure recommendation.
-          // `appliedDivisor` is the actual compositor export rate, now held at
-          // full cadence while each destination owns its own queue recovery.
-          {"divisor", bp.divisor},
-          {"appliedDivisor", modules_.compositor ? modules_.compositor->encoderExportDivisor() : 1},
-          {"level", bp.level},
-          {"bufferedMs", static_cast<double>(bp.bufferedMs)},
-          {"queuedChunks", static_cast<double>(bp.queuedChunks)},
-          {"inFlightWriteMs", static_cast<double>(bp.inFlightWriteMs)},
-          {"maxWriteMs", static_cast<double>(bp.maxWriteMs)},
-          {"slowWriteCount", static_cast<double>(bp.slowWriteCount)},
-          {"enteredCount", static_cast<double>(bp.enteredCount)},
-          {"discardedChunks", static_cast<double>(bp.discardedChunks)},
-          {"discardEvents", static_cast<double>(bp.discardEvents)},
-          // #597 fix round 3, item 3: the two counters above count different
-          // populations, and this says so WHERE A READER MEETS THEM instead of
-          // only in a C++ comment they will never see.
-          {"discardCounterNote", std::string(bp.discardCounterNote)},
-          {"lastReason", bp.lastReason},
-          {"lastTransitionBufferedMs", static_cast<double>(bp.lastTransitionBufferedMs)},
-          {"runId", static_cast<double>(bp.runId)},
-          {"observedAtMs", bp.observedAtMs},
-      });
-    }
-    senderJson.emplace("lifecycle", contracts::toJson(lifecycle));
-    senders.emplace_back(std::move(senderJson));
-  }
 
-  return rpc::Json::Object{
-      {"status", senderSession.status},
-      {"activeSenderCount", senderSession.activeSenderCount},
-      {"senders", senders},
-      {"warnings", stringArray(senderSession.warnings)},
-  };
-}
+
 
 rpc::Json MediaCore::captureDevicesState() const {
   auto devices = modules_.captureDevice->enumerate();
@@ -5920,231 +4265,7 @@ rpc::Json MediaCore::captureDevicesState() const {
   return captureDeviceArray(devices);
 }
 
-rpc::Json MediaCore::recordingState(const modules::OutputSession& session) const {
-  if (recordingSessionId_.empty() && recordingStatus_ == "stopped" && recordingQueueSettingWarning_.empty()) {
-    return nullptr;
-  }
 
-  // The published status is DERIVED from the observed lifecycle whenever the
-  // sink reports one, so `recording.status` and `recording.lifecycle` can never
-  // disagree again. recordingStatus_ remains the internal desired-state gate
-  // (it is what the render gather and the idempotent-start dedup read); it is
-  // not, and never was, evidence of what the writer is doing.
-  const std::string publishedStatus =
-      session.lifecycle ? publishedRecordingStatus(session.lifecycle->state, session.lifecycle->health)
-                        : recordingStatus_;
-  const std::string publishedWriterStatus =
-      session.lifecycle ? publishedRecordingWriterStatus(session.lifecycle->state)
-                        : recordingWriterStatus_;
-  const auto isoIds = recordingIsoParticipantIds_.empty() ? session.isoParticipantIds : recordingIsoParticipantIds_;
-  const int64_t programFramesWritten = session.recordingVideoFrameCount;
-  int64_t isoFramesWritten = 0;
-  int64_t isoBytesWritten = 0;
-  for (const auto& iso : session.isoStreams) {
-    isoFramesWritten += iso.videoFrameCount;
-    isoBytesWritten += iso.bytesWritten;
-  }
-  const double durationMs = static_cast<double>(session.recordingDurationMs);
-  const int64_t audioPacketsObserved = session.recordingAudioPacketCount;
-  const bool audioPresent = session.recordingAudioSampleCount > 0;
-  const int64_t droppedVideoFrames = session.encoderQueueDroppedVideoFrames;
-  const int64_t totalBytesWritten = session.recordingBytesWritten;
-  const int64_t programBytesWritten = session.recordingProgramBytesWritten > 0
-                                          ? session.recordingProgramBytesWritten
-                                          : std::max<int64_t>(0, totalBytesWritten - isoBytesWritten);
-  const int recordingWidth = session.recordingWidth > 0 ? session.recordingWidth : lastProgramFrame_.width;
-  const int recordingHeight = session.recordingHeight > 0 ? session.recordingHeight : lastProgramFrame_.height;
-  const int recordingFps = session.recordingFps > 0 ? session.recordingFps : 30;
-  const std::string containerFormat = session.recordingContainerFormat.empty() ? recordingFormat_ : session.recordingContainerFormat;
-  const std::string videoCodec = session.recordingVideoCodec.empty() ? session.codec : session.recordingVideoCodec;
-  const std::string audioCodec = session.recordingAudioCodec.empty() ? "aac" : session.recordingAudioCodec;
-  const bool metadataValid = session.recordingMetadataValid ||
-                             (programFramesWritten > 0 && !containerFormat.empty() && !videoCodec.empty() && recordingWidth > 0 && recordingHeight > 0 &&
-                              recordingFps > 0 && !audioCodec.empty());
-  // Prefer the sink's REAL artifact path (the MF sink writes into a per-session
-  // subfolder, spec §5); fall back to the synthesized flat path for the stub.
-  const std::string programPath = !session.recordingArtifactPath.empty()
-                                      ? session.recordingArtifactPath
-                                      : recordingTargetFolder_ + "/" + recordingFilenamePrefix_ +
-                                            "-program-0." + recordingFormat_;
-  rpc::Json::Array streams{
-      rpc::Json::Object{
-          {"kind", "program"},
-          {"path", programPath},
-          {"status", publishedWriterStatus},
-          {"expectedFrames", static_cast<double>(programFramesWritten + session.recordingProgramMissingFrames)},
-          {"framesWritten", static_cast<double>(programFramesWritten)},
-          {"durationMs", durationMs},
-          {"frameRate", recordingFps},
-          {"hasAudio", audioPresent},
-          {"audioSamples", static_cast<double>(session.recordingAudioSampleCount)},
-          {"missingFrames", static_cast<double>(session.recordingProgramMissingFrames)},
-          {"droppedFrames", static_cast<double>(session.recordingProgramMissingFrames)},
-          {"continuityObserved", session.recordingProgramContinuityObserved},
-          {"writeQueue", recordingWriteQueueJson(session.programWriteQueue)},
-          {"bytesWritten", static_cast<double>(programBytesWritten)},
-          {"metadataValid", metadataValid},
-      },
-  };
-  if (!session.isoStreams.empty()) {
-    // ISO-1: real per-writer health from the Media Foundation sink — one node per
-    // selected ISO source with its own path, frame count, open state and warning.
-    // A video-only-broken ISO (writer failed to open / lost its track) is as loud
-    // as a video-only program was (#286): its warning shows here AND folds into
-    // recording.warning below.
-    for (const auto& iso : session.isoStreams) {
-      rpc::Json::Object node{
-          {"kind", "iso"},
-          {"sourceId", iso.sourceId},
-          {"participantId", iso.sourceId},
-          {"displayName", iso.displayName},
-          {"path", iso.path},
-          {"status", iso.warning.empty() ? publishedWriterStatus : std::string("warning")},
-          {"readiness", iso.trackOpen ? "ready" : "missing"},
-          {"framesWritten", static_cast<double>(iso.videoFrameCount)},
-          {"muxVideoFrameCount", iso.muxVideoFrameCount ? rpc::Json(static_cast<double>(*iso.muxVideoFrameCount)) : rpc::Json(nullptr)},
-          {"durationMs", durationMs},
-          {"frameRate", recordingFps},
-          // ISO-2: each ISO is self-contained A+V — hasAudio reflects real muxed
-          // raw-stem samples (silence-fill keeps a gated stem's timeline aligned,
-          // so a talking guest reports audio; a never-opened writer reports none).
-          {"hasAudio", iso.audioSampleCount > 0},
-          {"audioSamples", static_cast<double>(iso.audioSampleCount)},
-          {"bytesWritten", static_cast<double>(iso.bytesWritten)},
-          {"metadataValid", iso.trackOpen},
-          {"encoderPath", iso.encoderPath},
-          {"fallbackReason", iso.fallbackReason},
-          {"droppedFrames", static_cast<double>(iso.droppedVideoFrames)},
-          {"droppedAudioPackets", static_cast<double>(iso.droppedAudioPackets)},
-          {"queuedVideoFrames", static_cast<double>(iso.queuedVideoFrames)},
-          {"queuedAudioPackets", static_cast<double>(iso.queuedAudioPackets)},
-          {"videoWorkUs", static_cast<double>(iso.videoWorkUs)},
-          {"audioWorkUs", static_cast<double>(iso.audioWorkUs)},
-          {"maximumWorkUs", static_cast<double>(iso.maximumWorkUs)},
-          {"writeQueue", recordingWriteQueueJson(iso.writeQueue)},
-      };
-      if (!iso.warning.empty()) {
-        node.emplace("warning", iso.warning);
-      }
-      streams.emplace_back(std::move(node));
-    }
-  } else {
-    // A sink without per-writer telemetry must stay explicitly unknown. The old
-    // fallback copied Program counts/bytes into every ISO and made a support
-    // bundle claim successful stems that may never have existed.
-    for (const auto& participantId : isoIds) {
-      streams.emplace_back(rpc::Json::Object{
-          {"kind", "iso"},
-          {"participantId", participantId},
-          {"path", recordingTargetFolder_ + "/" + recordingFilenamePrefix_ + "-iso-" + participantId + "-0." + recordingFormat_},
-          {"status", "unreported"},
-          {"readiness", "unknown"},
-          {"framesWritten", 0},
-          {"durationMs", durationMs},
-          {"frameRate", recordingFps},
-          {"hasAudio", false},
-          {"bytesWritten", 0},
-          {"metadataValid", false},
-      });
-    }
-  }
-
-  rpc::Json::Object recording{
-      {"sessionId", recordingSessionId_.empty() ? "native-recording-session" : recordingSessionId_},
-      {"active", session.lifecycle ? session.lifecycle->state == "producing" :
-                 recordingStatus_ == "recording" || recordingStatus_ == "warning"},
-      {"status", publishedStatus},
-      {"writerStatus", publishedWriterStatus},
-      {"startedAtMs", recordingStartedAtMs_},
-      {"elapsedMs", durationMs},
-      {"targetFolder", recordingTargetFolder_},
-      {"filenamePrefix", recordingFilenamePrefix_},
-      {"format", recordingFormat_},
-      {"quality", recordingQuality_},
-      {"writeQueueDepth", recordingWriteQueueDepth_},
-      {"queueSettingWarning", recordingQueueSettingWarning_},
-      {"encoder",
-       rpc::Json::Object{
-           {"codec", session.codec},
-           {"hardwareAccelerated", session.hardwareAccelerated},
-           {"targetBitrateMbps", session.targetBitrateMbps},
-           {"audioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
-       }},
-      {"estimatedDiskRateMBps", durationMs > 0.0
-                                     ? static_cast<double>(totalBytesWritten) / (1024.0 * 1024.0) /
-                                           (durationMs / 1000.0)
-                                     : 0.0},
-      {"programPath", programPath},
-      {"streams", streams},
-      {"proof",
-       rpc::Json::Object{
-           {"durationMs", durationMs},
-           {"programFrameCount", static_cast<double>(programFramesWritten)},
-           {"recordingVideoPrerollFrameCount", static_cast<double>(session.recordingVideoPrerollFrameCount)},
-           {"recordingVideoTailFrameCount", static_cast<double>(session.recordingVideoTailFrameCount)},
-           {"recordingMuxVideoFrameCount", static_cast<double>(session.recordingMuxVideoFrameCount)},
-           {"programMissingFrames", static_cast<double>(session.recordingProgramMissingFrames)},
-           {"programContinuityObserved", session.recordingProgramContinuityObserved},
-           {"recordingAudioPrerollSampleCount", static_cast<double>(session.recordingAudioPrerollSampleCount)},
-           {"recordingAudioTailSampleCount", static_cast<double>(session.recordingAudioTailSampleCount)},
-           {"recordingRequestedAt100ns", static_cast<double>(session.recordingRequestedAt100ns)},
-           {"recordingWriterReadyAt100ns", static_cast<double>(session.recordingWriterReadyAt100ns)},
-           {"recordingMuxEpoch100ns", static_cast<double>(session.recordingMuxEpoch100ns)},
-           {"recordingStartupDroppedAudioPackets", static_cast<double>(session.recordingStartupDroppedAudioPackets)},
-           {"recordingStartupDroppedVideoFrames", static_cast<double>(session.recordingStartupDroppedVideoFrames)},
-           {"isoFrameCount", static_cast<double>(isoFramesWritten)},
-           {"audioPacketsObserved", static_cast<double>(audioPacketsObserved)},
-           {"audioPresent", audioPresent},
-           {"audioSampleCount", static_cast<double>(session.recordingAudioSampleCount)},
-           {"audioChannels", session.recordingAudioChannels},
-           {"audioSampleRate", session.recordingAudioSampleRate},
-           {"metadataValid", metadataValid},
-           {"containerFormat", containerFormat},
-           {"videoCodec", videoCodec},
-           {"audioCodec", audioCodec},
-           {"audioBitrateKbps", session.recordingAudioBitrateKbps > 0 ? session.recordingAudioBitrateKbps : recordingAudioBitrateKbps_},
-           {"targetBitrateMbps", session.targetBitrateMbps},
-           {"width", recordingWidth},
-           {"height", recordingHeight},
-           {"frameRate", recordingFps},
-           {"failureCount", recordingFailureCount_},
-           {"recoveryCount", recordingRecoveryCount_},
-           {"encoderQueueDroppedVideoFrames", static_cast<double>(session.encoderQueueDroppedVideoFrames)},
-           {"encoderQueueDroppedAudioPackets", static_cast<double>(session.encoderQueueDroppedAudioPackets)},
-       }},
-      {"totalFramesWritten", static_cast<double>(programFramesWritten + isoFramesWritten)},
-      {"totalDroppedFrames", static_cast<double>(droppedVideoFrames)},
-      {"totalBytesWritten", static_cast<double>(totalBytesWritten)},
-  };
-  if (session.lifecycle) {
-    recording.emplace("lifecycle", contracts::toJson(*session.lifecycle));
-  }
-  if (!session.recordingArtifactPath.empty()) {
-    recording.emplace("artifactPath", session.recordingArtifactPath);
-  }
-  if (!session.recordingSessionDir.empty()) {
-    recording.emplace("sessionDir", session.recordingSessionDir);
-  }
-  if (!session.recordingManifestPath.empty()) {
-    recording.emplace("manifestPath", session.recordingManifestPath);
-  }
-  if (!recordingError_.empty()) {
-    recording.emplace("error", recordingError_);
-  }
-  if (!recordingQueueSettingWarning_.empty()) {
-    recording.emplace("warning", recordingQueueSettingWarning_ +
-        (recordingWarning_.empty() ? "" : " " + recordingWarning_));
-  } else if (!recordingWarning_.empty()) {
-    recording.emplace("warning", recordingWarning_);
-  }
-  if (!recordingLastFailure_.empty()) {
-    recording.emplace("lastFailure", recordingLastFailure_);
-  }
-  if (!recordingLastRecovery_.empty()) {
-    recording.emplace("lastRecovery", recordingLastRecovery_);
-  }
-  return recording;
-}
 
 void MediaCore::advanceOverlayAnimation(double frameIntervalMs) {
   overlayAnimationClockMs_ += frameIntervalMs;
@@ -7699,6 +5820,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       if (const auto* wall = tilesWallSources_.find(previewTilesLayer_.layerId))
         wall->applyLatest(request.previewPlan, previewTilesLayer_.layerId);
       request.previewPlan.skipCpuReadback = true;
+      lastPreviewPlanLayerCount_ = static_cast<int>(request.previewPlan.layers.size());
     }
     modules_.compositor->submitMonitors(std::move(request));
     if (const auto result = modules_.compositor->latestMonitors()) {
@@ -7824,6 +5946,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (previewActive && previewDue) {
     const auto previewStartTp = std::chrono::steady_clock::now();
     auto previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
+    lastPreviewPlanLayerCount_ = static_cast<int>(previewPlan.layers.size());
     // Read-only: use find(), never forWall() — a preview scene with no wall
     // has an empty layerId, and forWall("") would insert a phantom map node
     // (allocate + free) under coreMutex on every such render tick.
@@ -7937,9 +6060,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // The preview shared-texture event is likewise emitted only on structural
     // change (handle/dims) â€” the live pixels flow through the keyed-mutex texture.
     enqueuePreviewSharedTextureEvent();
-    // The base64 preview is a heavy thumbnail; keep it throttled (~30fps) and
-    // never emit it on the light display tick (it has no fresh readback).
-    if (!videoOnly && nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {
+    // Queue only an already-produced small preview. Software compositors also
+    // produce it on display ticks; GPU display ticks need no new readback.
+    if (!lastProgramFrame_.preview.bgra.empty() &&
+        nowTp - lastFrameEventEmit_ >= std::chrono::milliseconds(33)) {
       enqueueProgramFramePreviewEvent();
       lastFrameEventEmit_ = nowTp;
     }
@@ -8002,8 +6126,70 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
 }
 
+void MediaCore::captureAudioObservation(AudioOutputObservation& observation, const AudioOutputResults* results) const {
+  observation.busTaps.clear();
+  const auto& buses = results ? results->routedBusPcm : routedBusPcm_;
+  for (const auto& [id, pcm] : buses) {
+    observation.busTaps.push_back({id, pcm.size(), modules::computeSamplePeakDbfs(pcm.data(), pcm.size()),
+        modules::computeRmsDbfs(pcm.data(), pcm.size())});
+  }
+  observation.encoder = modules_.encoder->session();
+  observation.sender = modules_.outputSender->session();
+  observation.mixer = modules_.mixer->session();
+  observation.monitorSampleRate = modules_.mixer->monitorBusSampleRate();
+  observation.monitorChannels = modules_.mixer->monitorBusChannels();
+  observation.momentaryLufs = programLufsMomentary_;
+  observation.shortTermLufs = programLufsShortTerm_;
+  observation.integratedLufs = programLufsIntegrated_;
+  observation.truePeakDbfs = programTruePeakDbfs_;
+  observation.windowMs = static_cast<int>((programMeterL_.size() * 1000) / 48000);
+  observation.fallbackMonitorFrames = static_cast<int>(modules_.mixer->monitorBusPcm().size() /
+      static_cast<size_t>(std::max(1, modules_.mixer->monitorBusChannels())));
+}
+
+void MediaCore::captureObservationMemory(AudioOutputObservation& observation) const {
+  const auto current = audioObservations_.acquire();
+  if (current.payload) {
+    observation.memory = current.payload->value.memory;
+    observation.memoryLevel = current.payload->value.memoryLevel;
+    observation.memorySampledAtNs = current.payload->value.memorySampledAtNs;
+  }
+  const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (observation.memorySampledAtNs != 0 && nowNs - observation.memorySampledAtNs < 1'000'000'000) return;
+  const auto previous = observation.memoryLevel;
+  observation.memory = sampleSystemMemory();
+  observation.memoryLevel = classifySystemMemory(observation.memory, previous);
+  observation.memorySampledAtNs = nowNs;
+  if (observation.memoryLevel != previous && !(previous == SystemMemoryLevel::Unknown && observation.memoryLevel == SystemMemoryLevel::Ok)) {
+    nativeLogf("[system-memory] %s: %llu MB of %llu MB committable memory remains\n",
+        systemMemoryLevelName(observation.memoryLevel),
+        static_cast<unsigned long long>(observation.memory.commitAvailableBytes / (1024 * 1024)),
+        static_cast<unsigned long long>(observation.memory.commitLimitBytes / (1024 * 1024)));
+  }
+}
+
+AudioObservationStore::View MediaCore::audioObservation() const {
+  if (!audioWorkerActive_) {
+    // Explicit single-owner mode, before live threads exist. Never used to
+    // repair a missing or stale observation in a running server.
+    audioObservations_.publish(appliedControlRevision_, [&](auto& observation) {
+      captureObservationMemory(observation);
+      captureAudioObservation(observation);
+      return audioObservationBytes(observation);
+    });
+  }
+  return audioObservations_.acquire();
+}
+
 void MediaCore::enableAudioOutputWorker() {
   if (audioWorkerActive_) return;
+  if (modules_.monitorOutput && !dynamic_cast<modules::AsyncAudioMonitorOutput*>(modules_.monitorOutput.get())) {
+    asyncMonitorAcceptedBaseline_ = audioMonitorFramesPlayed_;
+    modules_.monitorOutput = std::make_unique<modules::AsyncAudioMonitorOutput>(std::move(modules_.monitorOutput));
+    if (audioMonitorEnabled_)
+      modules_.monitorOutput->start(audioMonitorDeviceId_, modules_.mixer->monitorBusSampleRate(), modules_.mixer->monitorBusChannels());
+  }
   // Latch before the first worker renders. Engine/capture toggles do not change
   // this; a new native process is required to apply a different buffer depth.
   const auto* configured = std::getenv("COREVIDEO_PROGRAM_BUFFER_FRAMES");
@@ -8070,6 +6256,7 @@ std::vector<modules::AudioFrame> MediaCore::pollZoomAudioUnlocked() {
 MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
     std::vector<modules::AudioFrame> prePolledZoomAudio) {
   AudioOutputWorkItem work;
+  work.controlRevision = appliedControlRevision_;
   work.valid = true;
   work.outputTimestamp100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
@@ -8099,6 +6286,7 @@ MediaCore::AudioOutputWorkItem MediaCore::gatherAudioOutputWork(
   work.limiterEnabled = audioLimiterEnabled_;
   work.masteringParams = masteringParams_;
   work.audioMonitorEnabled = audioMonitorEnabled_;
+  work.monitorIntentRevision = audioMonitorIntentRevision_;
   work.audioMonitorVolume = audioMonitorVolume_;
   // Feedback-guard inputs (spec R6): the resolved endpoints of every ACTIVE
   // loopback capture source, compared in the monitor block against the
@@ -8644,13 +6832,20 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
   };
   const auto& localProgramTap = localBusTap("master");
 
+  results.monitorIntentRevision = work.monitorIntentRevision;
+  results.monitorFramesPlayedTotal = modules_.monitorOutput ? modules_.monitorOutput->acceptedFrameCount() : -1;
+  results.monitorQueueDroppedFrames = modules_.monitorOutput ? modules_.monitorOutput->droppedFrameCount() : 0;
+  if (!work.audioMonitorEnabled) {
+    results.monitorTouched = true;
+    results.monitorStatus = modules_.monitorOutput && modules_.monitorOutput->preparing() ? "stopping" : "muted";
+  }
   if (work.audioMonitorEnabled) {
     results.monitorTouched = true;
     if (work.audioMonitorVolume <= 0.0) {
       results.monitorStatus = "volume-zero";
     } else if (!modules_.monitorOutput || !modules_.monitorOutput->active()) {
-      results.monitorStatus = "unavailable";
-      results.monitorWarning = "Native audio monitor output device is not open.";
+      results.monitorStatus = modules_.monitorOutput && modules_.monitorOutput->preparing() ? "preparing" : "unavailable";
+      if (results.monitorStatus != "preparing") results.monitorWarning = "Native audio monitor output device is not open.";
     } else {
       // PFL/listen: when the operator auditions a specific bus, the monitor
       // renders THAT bus; empty listen id = the normal MON bus. Falls back to
@@ -8678,8 +6873,9 @@ MediaCore::AudioOutputResults MediaCore::runAudioOutputWork(AudioOutputWorkItem&
         results.monitorStatus = "armed";
         results.monitorWarning = "Audio monitor is armed but no PCM reached the MON bus or fallback monitor mix.";
       } else if (modules_.monitorOutput->render(monitorBus.data(), frameCount, channels, work.audioMonitorVolume)) {
-        results.monitorStatus = modules_.monitorOutput->hardwareOutput() ? "playing" : "stub-monitor";
-        results.monitorFramesPlayedDelta += frameCount;
+        results.monitorStatus = !modules_.monitorOutput->deviceDeliveryObserved() ? "queued" :
+            modules_.monitorOutput->hardwareOutput() ? "playing" : "stub-monitor";
+        if (modules_.monitorOutput->acceptedFrameCount() < 0) results.monitorFramesPlayedDelta += frameCount;
       } else {
         results.monitorStatus = "dropping";
         const auto outputWarnings = modules_.monitorOutput->warnings();
@@ -8994,10 +7190,13 @@ void MediaCore::publishAudioOutputResults(const AudioOutputResults& results) {
   mediaPreSumMetered_ = results.mediaPreSumMetered;
   mediaPreSumRmsLevel_ = results.mediaPreSumRmsLevel;
   mediaPreSumPeakLevel_ = results.mediaPreSumPeakLevel;
-  if (results.monitorTouched) {
+  if (results.monitorTouched && results.monitorIntentRevision == audioMonitorIntentRevision_) {
     audioMonitorStatus_ = results.monitorStatus;
     audioMonitorWarning_ = results.monitorWarning;
-    audioMonitorFramesPlayed_ += results.monitorFramesPlayedDelta;
+    if (results.monitorFramesPlayedTotal >= 0)
+      audioMonitorFramesPlayed_ = std::max(audioMonitorFramesPlayed_, asyncMonitorAcceptedBaseline_ + results.monitorFramesPlayedTotal);
+    else audioMonitorFramesPlayed_ += results.monitorFramesPlayedDelta;
+    audioMonitorQueueDroppedFrames_ = results.monitorQueueDroppedFrames;
     audioMonitorUnderruns_ = results.monitorUnderruns;
     audioMonitorFeedbackRisk_ = results.monitorFeedbackRisk;
   }
@@ -9227,6 +7426,14 @@ void MediaCore::renderAudioOutputTick(std::mutex& coreMutex) {
     std::lock_guard<std::mutex> lock(audioOutputMutex_);
     results = runAudioOutputWork(work);
   }
+  audioObservations_.publish(work.controlRevision, [&](auto& observation) {
+    captureObservationMemory(observation);
+    {
+      std::lock_guard<std::mutex> lock(audioOutputMutex_);
+      captureAudioObservation(observation, &results);
+    }
+    return audioObservationBytes(observation);
+  });
   {
     std::lock_guard<std::mutex> lock(coreMutex);
     ScopedLockHoldTimer holdTimer("audio.publish", LockHoldGuardrail::kDefaultBudgetUs);
