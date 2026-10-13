@@ -29,7 +29,9 @@ The first local publish had only the app PRI. A clean self-contained publish pro
 
 ## Installed review protocol
 
-The October 12 follow-up compiled the main-based PR with a duplication correction: copied layers retain spotlight targeting, border styling, source-framing state and visibility. The compiled-XAML/model probe passed on this corrected source (`workspace-main-operator-probe.json`), including a customized hidden-source duplicate assertion. The earlier `6438b19` review installer predates this correction; it is not evidence for the corrected duplicate behavior.
+The October 12 follow-up compiled the main-based PR with a duplication correction: copied layers retain spotlight targeting, border styling, source-framing state and visibility. The compiled-XAML/model probe passed on this corrected source (`workspace-main-operator-probe.json`), including a customized hidden-source duplicate assertion. All 1,635 shell tests then passed (`workspace-main-all-shell-tests.log`). The prior CI failure was a source-picker guard test whose regex required `Tag` to be the first ComboBox attribute; the selector now ignores attribute order while retaining every guarded-selection assertion. The earlier `6438b19` review installer predates this correction; it is not evidence for the corrected duplicate behavior.
+
+The first installation attempt did not start: Windows reported cancellation of the administrator consent request. The old installation and webcam ownership were unchanged. Saved show/layout/roster data was backed up under `artifacts/design-review/installed-workspace-879/` before the attempt; this private evidence directory is not published.
 
 Use a staged candidate that also retains the installed Program/status isolation fixes. Record its exact source revision and executable paths. Preserve the saved show before installation. Verify the normal desktop shortcut and webcam registration through the established installer workflow after the meeting ends.
 
