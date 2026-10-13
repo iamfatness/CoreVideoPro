@@ -8,10 +8,6 @@ Upgrade retirement (#865): after payload, camera ownership, registry and shortcu
 have committed, Setup runs `Remove-PreviousInstallations.ps1`. The standard per-user
 install root retains one registered version. Custom QA destinations never clean
 the real install root. Candidates require the exact uninstall registration,
-Payload hashes are streamed through .NET SHA-256 rather than relying on
-`Get-FileHash` resolution in Setup's PowerShell helper (#883). The retirement
-regression also runs with that command masked in the planner module on both
-32-bit and 64-bit Windows PowerShell.
 publisher, version marker and package manifest; paths and ancestor reparse points
 are checked before deletion. Running versions and unverifiable candidates remain
 with a cleanup report and warning. Missing version folders permit removal of their
@@ -21,6 +17,11 @@ directory removal. Modified payload files and operator files remain. It never
 invokes older uninstallers or changes webcam registration: legacy uninstallers
 can otherwise unregister the newly installed camera. The upgrade helper tests use
 an isolated registry namespace and temporary fixtures.
+
+Payload hashes are streamed through .NET SHA-256 rather than relying on
+`Get-FileHash` resolution in Setup's PowerShell helper (#883). The retirement
+regression also runs with that command masked in the planner module on both
+32-bit and 64-bit Windows PowerShell.
 
 Failure rollback must move Setup's working directory out of `$INSTDIR` before
 removing the owned payload and empty installation directory. `SetOutPath` sets
