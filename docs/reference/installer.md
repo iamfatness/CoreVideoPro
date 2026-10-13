@@ -22,6 +22,9 @@ Payload hashes are streamed through .NET SHA-256 rather than relying on
 `Get-FileHash` resolution in Setup's PowerShell helper (#883). The retirement
 regression also runs with that command masked in the planner module on both
 32-bit and 64-bit Windows PowerShell.
+The allowlisted retirement metadata includes the previous cleanup report itself;
+otherwise an otherwise empty version folder survives after its registration is gone.
+Unknown operator files and modified payloads remain protected.
 
 Failure rollback must move Setup's working directory out of `$INSTDIR` before
 removing the owned payload and empty installation directory. `SetOutPath` sets
