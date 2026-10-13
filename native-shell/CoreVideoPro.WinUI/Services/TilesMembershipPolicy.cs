@@ -20,7 +20,7 @@ public static class TilesMembershipPolicy
     {
         var mode = NormalizeMode(settings.MembershipMode);
         var excluded = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var key in settings.ExcludedSourceIds ?? [])
+        foreach (var key in (settings.ExcludedSourceIds ?? []).Concat(mode=="eligible" ? [] : settings.OmittedSourceIds ?? []))
         {
             var live = roster is null
                 ? key

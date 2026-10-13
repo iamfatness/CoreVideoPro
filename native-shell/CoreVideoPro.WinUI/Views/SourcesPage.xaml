@@ -6,6 +6,25 @@
                 <ResourceDictionary Source="ms-appx:///Views/OperatorTabResources.xaml"/>
             </ResourceDictionary.MergedDictionaries>
             <x:Double x:Key="ControlContentThemeFontSize">12</x:Double>
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#273930"/><SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#30453A"/>
+            <SolidColorBrush x:Key="SystemAccentColorBrush" Color="#8AE0CA"/>
+            <SolidColorBrush x:Key="SliderThumbBackground" Color="#8AE0CA"/>
+            <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#8AE0CA"/>
+            <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#8AE0CA"/>
+            <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#8AE0CA"/>
+            <SolidColorBrush x:Key="SliderTrackValueFill" Color="#8AE0CA"/>
+            <SolidColorBrush x:Key="SliderTrackValueFillPointerOver" Color="#8AE0CA"/>
+            <SolidColorBrush x:Key="SliderTrackValueFillPressed" Color="#8AE0CA"/>
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="#8AE0CA"/>
+            <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeChecked" Color="#8AE0CA"/>
+            <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="#242A32"/>
+            <SolidColorBrush x:Key="PivotHeaderItemSelectedUnderlineBackground" Color="#8AE0CA"/>
+            <Style TargetType="Button"><Setter Property="FontSize" Value="13"/><Setter Property="Padding" Value="10,7"/><Setter Property="MinHeight" Value="32"/><Setter Property="CornerRadius" Value="6"/><Setter Property="Background" Value="#242A32"/><Setter Property="BorderBrush" Value="#323943"/></Style>
+            <Style TargetType="TextBox"><Setter Property="FontSize" Value="13"/><Setter Property="MinHeight" Value="32"/><Setter Property="Background" Value="#14181E"/><Setter Property="BorderBrush" Value="#323943"/><Setter Property="Padding" Value="8,6"/></Style>
+            <Style TargetType="ComboBox"><Setter Property="FontSize" Value="13"/><Setter Property="MinHeight" Value="32"/><Setter Property="Background" Value="#14181E"/><Setter Property="BorderBrush" Value="#323943"/></Style>
+            <Style x:Key="WorkspaceSectionTitle" TargetType="TextBlock"><Setter Property="FontSize" Value="10"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="CharacterSpacing" Value="90"/></Style>
+            <Style x:Key="WorkspaceHelp" TargetType="TextBlock"><Setter Property="FontSize" Value="11"/><Setter Property="Foreground" Value="#9AA5B4"/><Setter Property="TextWrapping" Value="WrapWholeWords"/></Style>
+            <Style x:Key="WorkspaceDivider" TargetType="Border"><Setter Property="BorderBrush" Value="#323943"/><Setter Property="BorderThickness" Value="0,1,0,0"/><Setter Property="Margin" Value="0,6,0,6"/></Style>
         </ResourceDictionary>
     </UserControl.Resources>
     <Grid x:Name="WorkspaceGrid" RowSpacing="10" SizeChanged="OnWorkspaceSizeChanged">
@@ -19,13 +38,13 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel>
-                <TextBlock Text="Scene Builder" FontSize="20" FontWeight="SemiBold"/>
-                <TextBlock Text="Arrange Preview. Save stores your scene; Take publishes it to Program." FontSize="11" TextWrapping="Wrap" Foreground="{StaticResource StudioMutedBrush}"/>
+                <TextBlock Text="Scene Builder" FontSize="16" FontWeight="SemiBold"/>
+                <TextBlock Text="Build the picture. Keep Program separate." FontSize="11" TextWrapping="Wrap" Foreground="{StaticResource StudioMutedBrush}"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="5">
-                <Button Content="Undo" Command="{x:Bind Workspace.UndoCommand, Mode=OneWay}"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Z" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
-                <Button Content="Redo" Command="{x:Bind Workspace.RedoCommand, Mode=OneWay}"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Z" Modifiers="Control,Shift"/></Button.KeyboardAccelerators></Button>
-                <Button Content="Save changes" Command="{x:Bind Workspace.SaveCommand, Mode=OneWay}"/>
+                <Button Content="Undo" Click="OnUndoWorkspace" IsEnabled="{x:Bind Workspace.UndoAvailable, Mode=OneWay}"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Z" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+                <Button Content="Redo" Click="OnRedoWorkspace" IsEnabled="{x:Bind Workspace.RedoAvailable, Mode=OneWay}"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Z" Modifiers="Control,Shift"/></Button.KeyboardAccelerators></Button>
+                <Button Content="Save changes" Click="OnSaveWorkspace"/>
                 <Button x:Name="PropertiesButton" Content="Properties" Click="OnPropertiesClicked" Visibility="Collapsed"/>
             </StackPanel>
         </Grid>
@@ -39,7 +58,7 @@
             <Grid RowSpacing="8">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="220"/>
+                    <RowDefinition Height="1.2*" MinHeight="90" MaxHeight="250"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
@@ -58,7 +77,7 @@
                         <DataTemplate>
                             <Grid ColumnSpacing="8" Padding="0,6">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="35"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <Border Width="35" Height="23" Background="#263441" CornerRadius="3"><FontIcon Glyph="&#xE80A;" FontSize="13"/></Border>
+                                <cvcontrols:SceneLayoutThumbnailControl Item="{Binding}"/>
                                 <TextBlock Grid.Column="1" Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" FontSize="12" ToolTipService.ToolTip="{Binding Name}"/>
                                 <TextBlock Grid.Column="2" Text="{Binding StatusLabel}" FontSize="9" Foreground="#9AA5B4" VerticalAlignment="Center"/>
                             </Grid>
@@ -66,7 +85,7 @@
                     </ListView.ItemTemplate>
                 </ListView>
                 <StackPanel Grid.Row="2">
-                    <TextBlock Text="Sources" FontWeight="SemiBold"/>
+                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Sources" FontWeight="SemiBold"/><TextBlock Grid.Column="1" Text="{x:Bind Workspace.LayerCountLabel, Mode=OneWay}" Style="{StaticResource WorkspaceHelp}"/></Grid>
                     <TextBlock Text="Top = front of picture" FontSize="11" Foreground="{StaticResource StudioMutedBrush}"/>
                 </StackPanel>
                 <ListView x:Name="SourceList" Grid.Row="3" ItemsSource="{x:Bind Workspace.Items, Mode=OneWay}" SelectedItem="{x:Bind Workspace.Selected, Mode=TwoWay}" SelectionChanged="OnSourceListSelectionChanged" CanDragItems="True" DragItemsStarting="OnSourceDragStarting" KeyDown="OnSourceListKeyDown" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
@@ -91,34 +110,19 @@
                                 <FontIcon Grid.Column="1" Glyph="{x:Bind SourceGlyph, Mode=OneWay}" FontSize="15"/>
                                 <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="3">
                                     <TextBlock Text="{x:Bind DisplayName, Mode=OneWay}" FontSize="12" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind DisplayName, Mode=OneWay}"/>
-                                    <TextBlock Text="{x:Bind SourceKindLabel, Mode=OneWay}" FontSize="10" Foreground="{StaticResource StudioMutedBrush}"/>
+                                    <TextBlock Text="{x:Bind SourceSummary, Mode=OneWay}" FontSize="10" Foreground="{StaticResource StudioMutedBrush}"/>
                                 </StackPanel>
-                                <ToggleButton Grid.Column="3" IsChecked="{x:Bind Visible, Mode=OneWay}" Click="OnVisibilityClicked" MinWidth="24" Padding="4" AutomationProperties.Name="Source visible" ToolTipService.ToolTip="Show or hide source"><Grid Width="16" Height="16"><Path Data="M 1,8 Q 8,1 15,8 Q 8,15 1,8 Z" Stroke="#B7C1CE" StrokeThickness="1"/><Ellipse Width="4" Height="4" Fill="#B7C1CE" HorizontalAlignment="Center" VerticalAlignment="Center"/></Grid></ToggleButton>
-                                <ToggleButton Grid.Column="4" IsChecked="{x:Bind EditorLocked, Mode=OneWay}" Click="OnLockClicked" MinWidth="24" Padding="4" AutomationProperties.Name="Lock source transform" ToolTipService.ToolTip="Lock transform"><FontIcon Glyph="&#xE72E;" FontSize="13"/></ToggleButton>
+                                <ToggleButton Grid.Column="3" IsChecked="{x:Bind Visible, Mode=OneWay}" Click="OnVisibilityClicked" MinWidth="24" Padding="4" AutomationProperties.Name="{x:Bind VisibilityActionName, Mode=OneWay}" ToolTipService.ToolTip="Show or hide source"><Grid Width="16" Height="16"><Path Data="M 1,8 Q 8,1 15,8 Q 8,15 1,8 Z" Stroke="#B7C1CE" StrokeThickness="1"/><Ellipse Width="4" Height="4" Fill="#B7C1CE" HorizontalAlignment="Center" VerticalAlignment="Center"/><Line X1="2" Y1="2" X2="14" Y2="14" Stroke="#B7C1CE" StrokeThickness="1.5" Visibility="{x:Bind IsHidden, Mode=OneWay, Converter={StaticResource BoolToVis}}"/></Grid></ToggleButton>
+                                <ToggleButton Grid.Column="4" IsChecked="{x:Bind EditorLocked, Mode=OneWay}" Click="OnLockClicked" MinWidth="24" Padding="4" AutomationProperties.Name="{x:Bind LockActionName, Mode=OneWay}" ToolTipService.ToolTip="Lock transform"><FontIcon Glyph="{x:Bind LockGlyph, Mode=OneWay}" FontSize="13"/></ToggleButton>
                             </Grid>
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
-                <StackPanel Grid.Row="4" Spacing="5">
-                    <Button Content="＋ Add source" HorizontalAlignment="Stretch">
-                        <Button.Flyout>
-                            <MenuFlyout x:Name="AddSourceFlyout"/>
-                        </Button.Flyout>
-                    </Button>
-                    <Grid ColumnSpacing="4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Button Content="Duplicate" Command="{x:Bind Workspace.DuplicateCommand, Mode=OneWay}"/>
-                        <Button Grid.Column="1" Content="Remove" Command="{x:Bind Workspace.RemoveCommand, Mode=OneWay}"/>
-                    </Grid>
-                    <Button Content="Add overlay" HorizontalAlignment="Stretch">
-                        <Button.Flyout>
-                            <MenuFlyout x:Name="AddOverlayFlyout" Opening="OnAddOverlayFlyoutOpening"/>
-                        </Button.Flyout>
-                    </Button>
-                </StackPanel>
+<Grid Grid.Row="4" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="32"/><ColumnDefinition Width="32"/></Grid.ColumnDefinitions>
+<Button Content="＋ Add source" Click="OnAddSourceCatalog" HorizontalAlignment="Stretch"/>
+<Button Grid.Column="1" Command="{x:Bind Workspace.DuplicateCommand, Mode=OneWay}" Padding="4" AutomationProperties.Name="Duplicate source" ToolTipService.ToolTip="Duplicate selected source"><FontIcon Glyph="&#xE8C8;" FontSize="14"/></Button>
+<Button Grid.Column="2" Command="{x:Bind Workspace.RemoveCommand, Mode=OneWay}" Padding="4" AutomationProperties.Name="Remove source" ToolTipService.ToolTip="Remove selected source"><FontIcon Glyph="&#xE74D;" FontSize="14"/></Button>
+</Grid>
             </Grid>
             </Border>
             <Grid Grid.Column="1" RowSpacing="8">
@@ -129,7 +133,7 @@
                 </Grid.RowDefinitions>
                 <StackPanel Spacing="5">
                     <TextBlock Text="{x:Bind ViewModel.PreviewSceneSummary, Mode=OneWay}" FontSize="18" FontWeight="SemiBold"/>
-                    <TextBlock Text="PREVIEW · Editing a scene draft" FontSize="10" Foreground="#8AE0CA"/>
+                    <Border BorderBrush="#426452" BorderThickness="1" CornerRadius="4" Padding="8,4" HorizontalAlignment="Left"><TextBlock Text="{x:Bind Workspace.PreviewBadge, Mode=OneWay}" FontSize="10" Foreground="#8AE0CA"/></Border><TextBlock Text="{x:Bind Workspace.DraftStatus, Mode=OneWay}" Style="{StaticResource WorkspaceHelp}"/>
                 </StackPanel>
                 <cvcontrols:SceneCanvasEditorControl x:Name="SceneCanvasEditor" Grid.Row="1"/>
                 <Border Grid.Row="2" Background="#191D23" BorderBrush="#282E37" BorderThickness="1" CornerRadius="9" Padding="12">
@@ -142,7 +146,7 @@
                         <TextBlock Text="● PROGRAM · Unchanged by Preview edits" FontSize="10" Foreground="#D1B0B0"/>
                         <TextBlock Text="{x:Bind ViewModel.ProgramSceneSummary, Mode=OneWay}" TextTrimming="CharacterEllipsis"/>
                     </StackPanel>
-                    <Button Grid.Column="1" Content="Take to Program →" Command="{x:Bind ViewModel.TakeCommand}" Background="#8AE0CA" Foreground="#11251F" FontWeight="SemiBold"/>
+                    <Button Grid.Column="1" Content="Take to Program →" Click="OnTakeWorkspace" IsEnabled="{x:Bind CanTakeWorkspace, Mode=OneWay}" Background="#8AE0CA" Foreground="#11251F" FontWeight="SemiBold"/>
                 </Grid>
                 </Border>
             </Grid>
@@ -152,6 +156,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -159,40 +164,38 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="6">
-                            <TextBlock Text="{x:Bind Workspace.SelectedName, Mode=OneWay}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{x:Bind Workspace.SelectedName, Mode=OneWay}" ToolTipService.ToolTip="{x:Bind Workspace.SelectedName, Mode=OneWay}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                             <TextBlock Text="{x:Bind Workspace.SelectedKind, Mode=OneWay}" FontSize="10" Foreground="#8AE0CA"/>
                         </StackPanel>
                         <Button x:Name="ClosePropertiesButton" Grid.Column="1" Content="×" Click="OnPropertiesClicked" Visibility="Collapsed"/>
                     </Grid>
-                    <Grid Grid.Row="1" ColumnSpacing="4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Button Content="Move forward" Command="{x:Bind Workspace.MoveForwardCommand, Mode=OneWay}"/>
-                        <Button Grid.Column="1" Content="Move back" Command="{x:Bind Workspace.MoveBackCommand, Mode=OneWay}"/>
-                    </Grid>
-                    <Pivot x:Name="InspectorTabs" Grid.Row="2" IsHeaderItemsCarouselEnabled="False">
-                        <Pivot.HeaderTemplate>
-                            <DataTemplate><TextBlock Text="{Binding}" FontSize="11"/></DataTemplate>
-                        </Pivot.HeaderTemplate>
-                                <PivotItem x:Name="LayoutInspectorTab" Header="Layout">
+                    <Pivot x:Name="InspectorTabs" Grid.Row="1" Grid.RowSpan="2" IsHeaderItemsCarouselEnabled="False">
+                        <Pivot.HeaderTemplate><DataTemplate><TextBlock Text="{Binding}" FontSize="12" Padding="0,0,0,8"/></DataTemplate></Pivot.HeaderTemplate>
+                        <Pivot.Resources><Thickness x:Key="PivotHeaderItemMargin">0,0,12,0</Thickness><x:Double x:Key="PivotHeaderItemMinWidth">0</x:Double></Pivot.Resources>
+                                <PivotItem x:Name="LayoutInspectorTab" Header="Layout" AutomationProperties.Name="Layout">
                                     <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-                                        <StackPanel Spacing="12" Padding="0,12,8,12">
+                                        <ContentControl HorizontalContentAlignment="Stretch" IsEnabled="{x:Bind Workspace.CanEditSelected, Mode=OneWay}"><StackPanel Spacing="12" Padding="0,12,0,12">
+                                            <TextBlock Text="AUTOMATIC LAYOUT" Style="{StaticResource WorkspaceSectionTitle}"/>
                                             <ComboBox GotFocus="OnDiscreteEditStarted" Header="Tile aspect ratio" ItemsSource="{x:Bind ViewModel.GalleryTileAspectOptions, Mode=OneWay}" SelectedValue="{x:Bind ViewModel.GalleryTileAspect, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label" HorizontalAlignment="Stretch"/>
-                                            <cvcontrols:SliderValueControl Compact="True" Header="Custom aspect ratio" Value="{x:Bind ViewModel.GalleryCustomAspectRatio, Mode=TwoWay}" Minimum="0.25" Maximum="4" DefaultValue="1.7777777777777777" Unit="" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-                                            <cvcontrols:SliderValueControl Compact="True" Header="Tile spacing" Value="{x:Bind ViewModel.GalleryGutterPercent, Mode=TwoWay}" Minimum="0" Maximum="10" DefaultValue="0.741" Unit="%" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-                                            <cvcontrols:SliderValueControl Compact="True" Header="Outer margin" Value="{x:Bind ViewModel.GalleryMarginPercent, Mode=TwoWay}" Minimum="0" Maximum="20" DefaultValue="0.741" Unit="%" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+                                            <cvcontrols:SliderValueControl Compact="True" Visibility="{x:Bind CustomAspectVisibility, Mode=OneWay}" Header="Custom aspect ratio" Value="{x:Bind ViewModel.GalleryCustomAspectRatio, Mode=TwoWay}" Minimum="0.25" Maximum="4" DefaultValue="1.7777777777777777" Unit="" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+                                            <cvcontrols:SliderValueControl Compact="True" Format="0.###" Header="Tile spacing" Value="{x:Bind ViewModel.GalleryGutterPercent, Mode=TwoWay}" Minimum="0" Maximum="10" DefaultValue="0.741" Unit="%" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+                                            <cvcontrols:SliderValueControl Compact="True" Format="0.###" Header="Outer margin" Value="{x:Bind ViewModel.GalleryMarginPercent, Mode=TwoWay}" Minimum="0" Maximum="20" DefaultValue="0.741" Unit="%" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+                                            <TextBlock Text="Spacing and margin are percentages of wall width. Tiles keep their aspect ratio as members join or leave." Style="{StaticResource WorkspaceHelp}"/>
+                                            <Border Style="{StaticResource WorkspaceDivider}"/>
+                                            <TextBlock Text="WALL CAPACITY" Style="{StaticResource WorkspaceSectionTitle}"/>
                                             <cvcontrols:SliderValueControl Compact="True" Header="Maximum visible tiles" Value="{x:Bind ViewModel.GalleryMaxTiles, Mode=TwoWay}" Minimum="1" Maximum="64" DefaultValue="16" Unit="tiles" DisplayScale="1" StepFrequency="1" EditStarted="OnAdjustmentStarted"/>
+                                            <TextBlock Text="The maximum is a ceiling, not empty placeholders." Style="{StaticResource WorkspaceHelp}"/>
+                                            <Expander Header="Advanced layout" HorizontalAlignment="Stretch"><StackPanel Spacing="10">
                                             <ToggleSwitch Header="Animate roster changes" IsOn="{x:Bind ViewModel.GalleryAnimateLayout, Mode=TwoWay}" GotFocus="OnDiscreteEditStarted"/>
                                             <cvcontrols:SliderValueControl Compact="True" Header="Animation duration" Value="{x:Bind ViewModel.GalleryAnimationDurationMs, Mode=TwoWay}" Minimum="100" Maximum="2000" DefaultValue="350" Unit="ms" DisplayScale="1" StepFrequency="1" EditStarted="OnAdjustmentStarted"/>
-                                        </StackPanel>
+                                            </StackPanel></Expander>
+                                        </StackPanel></ContentControl>
                                     </ScrollViewer>
                                 </PivotItem>
-                                <PivotItem x:Name="StyleInspectorTab" Header="Style">
+                                <PivotItem x:Name="StyleInspectorTab" Header="Style" AutomationProperties.Name="Style">
                                     <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-                                        <StackPanel Spacing="12" Padding="0,12,8,12">
-                                            <TextBlock Text="Quick looks" FontWeight="SemiBold"/>
+                                        <ContentControl HorizontalContentAlignment="Stretch" IsEnabled="{x:Bind Workspace.CanEditSelected, Mode=OneWay}"><StackPanel Spacing="12" Padding="0,12,0,12">
+                                            <TextBlock Text="QUICK LOOKS" Style="{StaticResource WorkspaceSectionTitle}"/>
                                             <Grid ColumnSpacing="4">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*"/>
@@ -203,16 +206,19 @@
                                                 <Button Grid.Column="1" Content="Rounded" Tag="rounded" Click="OnTilesPreset"/>
                                                 <Button Grid.Column="2" Content="Broadcast" Tag="broadcast" Click="OnTilesPreset"/>
                                             </Grid>
-                                            <ComboBox GotFocus="OnDiscreteEditStarted" Header="Tile edges" ItemsSource="{x:Bind ViewModel.GalleryBorderShapeOptions, Mode=OneWay}" SelectedValue="{x:Bind ViewModel.GalleryBorderShape, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label" HorizontalAlignment="Stretch"/>
-                                            <cvcontrols:SliderValueControl Compact="True" Header="Corner radius" Value="{x:Bind ViewModel.GalleryCornerRadius, Mode=TwoWay}" Minimum="0" Maximum="100" DefaultValue="16" Unit="px" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+                                            <TextBlock Text="Presets change styling and spacing. Member crops and inclusion stay intact." Style="{StaticResource WorkspaceHelp}"/>
+                                            <Border Style="{StaticResource WorkspaceDivider}"/>
+                                            <TextBlock Text="TILE EDGES" Style="{StaticResource WorkspaceSectionTitle}"/>
+                                            <ComboBox GotFocus="OnDiscreteEditStarted" Header="Tile shape" ItemsSource="{x:Bind ViewModel.GalleryBorderShapeOptions, Mode=OneWay}" SelectedValue="{x:Bind ViewModel.GalleryBorderShape, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label" HorizontalAlignment="Stretch"/>
+                                            <cvcontrols:SliderValueControl Compact="True" Visibility="{x:Bind RoundedTilesVisibility, Mode=OneWay}" Header="Corner radius" Value="{x:Bind ViewModel.GalleryCornerRadius, Mode=TwoWay}" Minimum="0" Maximum="100" DefaultValue="16" Unit="px" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
                                             <cvcontrols:SliderValueControl Compact="True" Header="Border thickness" Value="{x:Bind ViewModel.GalleryBorderThickness, Mode=TwoWay}" Minimum="0" Maximum="32" DefaultValue="0" Unit="px" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
                                             <Grid ColumnSpacing="8">
                                                 <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
                                                     <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
                                                 </Grid.ColumnDefinitions>
-                                                <TextBox Header="Border color" Text="{x:Bind ViewModel.GalleryBorderColor, Mode=TwoWay}" GotFocus="OnDiscreteEditStarted"/>
-                                                <Button Grid.Column="1" Content="Pick" VerticalAlignment="Bottom" Click="OnColorPickerOpened">
+                                                <TextBox Grid.Column="1" Header="Border color" Text="{x:Bind ViewModel.GalleryBorderColor, Mode=TwoWay}" GotFocus="OnDiscreteEditStarted"/>
+                                                <Button Width="36" Background="{x:Bind ViewModel.GalleryBorderSwatch, Mode=OneWay}" AutomationProperties.Name="Choose border color" VerticalAlignment="Bottom" Click="OnColorPickerOpened">
                                                     <Button.Flyout>
                                                         <Flyout>
                                                             <ColorPicker Color="{x:Bind ViewModel.GalleryBorderPickerColor, Mode=TwoWay}" IsAlphaEnabled="False" IsAlphaSliderVisible="False" IsAlphaTextInputVisible="False" IsHexInputVisible="True"/>
@@ -220,14 +226,16 @@
                                                     </Button.Flyout>
                                                 </Button>
                                             </Grid>
+                                            <Border Style="{StaticResource WorkspaceDivider}"/>
+                                            <TextBlock Text="WALL BACKGROUND" Style="{StaticResource WorkspaceSectionTitle}"/>
                                             <CheckBox Content="Transparent wall background" IsChecked="{x:Bind Workspace.TransparentBackground, Mode=OneWay}" Click="OnTilesTransparency"/>
-                                            <Grid ColumnSpacing="8">
+                                            <Grid ColumnSpacing="8" Visibility="{x:Bind OpaqueWallVisibility, Mode=OneWay}">
                                                 <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
                                                     <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
                                                 </Grid.ColumnDefinitions>
-                                                <TextBox Header="Background color" Text="{x:Bind ViewModel.GalleryBackgroundColor, Mode=TwoWay}" GotFocus="OnDiscreteEditStarted"/>
-                                                <Button Grid.Column="1" Content="Pick" VerticalAlignment="Bottom" Click="OnColorPickerOpened">
+                                                <TextBox Grid.Column="1" Header="Background color" Text="{x:Bind ViewModel.GalleryBackgroundColor, Mode=TwoWay}" GotFocus="OnDiscreteEditStarted"/>
+                                                <Button Width="36" Background="{x:Bind ViewModel.GalleryBackgroundSwatch, Mode=OneWay}" AutomationProperties.Name="Choose background color" VerticalAlignment="Bottom" Click="OnColorPickerOpened">
                                                     <Button.Flyout>
                                                         <Flyout>
                                                             <ColorPicker Color="{x:Bind ViewModel.GalleryBackgroundPickerColor, Mode=TwoWay}" IsAlphaEnabled="False" IsAlphaSliderVisible="False" IsAlphaTextInputVisible="False" IsHexInputVisible="True"/>
@@ -235,14 +243,18 @@
                                                     </Button.Flyout>
                                                 </Button>
                                             </Grid>
+<Expander Header="Live background" HorizontalAlignment="Stretch"><StackPanel Spacing="10"><ComboBox Header="Meeting source" ItemsSource="{x:Bind Workspace.Members, Mode=OneWay}" SelectedItem="{x:Bind Workspace.SelectedMember, Mode=OneWay}" DisplayMemberPath="Name" DropDownOpened="OnBackgroundChoiceOpened" DropDownClosed="OnBackgroundChoiceClosed" SelectionChanged="OnBackgroundChoiceChanged" HorizontalAlignment="Stretch"/><Button Content="Use selected member as background" Click="OnSetLiveWallBackground"/><Button Content="Clear live background" Click="OnClearLiveWallBackground"/></StackPanel></Expander>
+                                            <cvcontrols:SliderValueControl Compact="True" Header="Wall opacity" Value="{x:Bind WallOpacityPercent, Mode=TwoWay}" Minimum="0" Maximum="100" Unit="%" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+                                            <Border Style="{StaticResource WorkspaceDivider}"/>
+                                            <TextBlock Text="GLOW" Style="{StaticResource WorkspaceSectionTitle}"/>
                                             <cvcontrols:SliderValueControl Compact="True" Header="Glow size" Value="{x:Bind ViewModel.GalleryGlowSize, Mode=TwoWay}" Minimum="0" Maximum="64" DefaultValue="0" Unit="px" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
                                             <Grid ColumnSpacing="8">
                                                 <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
                                                     <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
                                                 </Grid.ColumnDefinitions>
-                                                <TextBox Header="Glow color" Text="{x:Bind ViewModel.GalleryGlowColor, Mode=TwoWay}" GotFocus="OnDiscreteEditStarted"/>
-                                                <Button Grid.Column="1" Content="Pick" VerticalAlignment="Bottom" Click="OnColorPickerOpened">
+                                                <TextBox Grid.Column="1" Header="Glow color" Text="{x:Bind ViewModel.GalleryGlowColor, Mode=TwoWay}" GotFocus="OnDiscreteEditStarted"/>
+                                                <Button Width="36" Background="{x:Bind ViewModel.GalleryGlowSwatch, Mode=OneWay}" AutomationProperties.Name="Choose glow color" VerticalAlignment="Bottom" Click="OnColorPickerOpened">
                                                     <Button.Flyout>
                                                         <Flyout>
                                                             <ColorPicker Color="{x:Bind ViewModel.GalleryGlowPickerColor, Mode=TwoWay}" IsAlphaEnabled="False" IsAlphaSliderVisible="False" IsAlphaTextInputVisible="False" IsHexInputVisible="True"/>
@@ -250,86 +262,69 @@
                                                     </Button.Flyout>
                                                 </Button>
                                             </Grid>
+                                            <Expander Header="Advanced glow" HorizontalAlignment="Stretch"><StackPanel Spacing="10">
                                             <cvcontrols:SliderValueControl Compact="True" Header="Glow intensity" Value="{x:Bind ViewModel.GalleryGlowIntensity, Mode=TwoWay}" Minimum="0" Maximum="100" DefaultValue="100" Unit="%" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
                                             <cvcontrols:SliderValueControl Compact="True" Header="Glow softness" Value="{x:Bind ViewModel.GalleryGlowSoftness, Mode=TwoWay}" Minimum="0" Maximum="100" DefaultValue="0" Unit="%" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+                                            </StackPanel></Expander>
                                             <Button Content="Reset wall style" Click="OnTilesResetStyle"/>
-                                        </StackPanel>
+                                        </StackPanel></ContentControl>
                                     </ScrollViewer>
                                 </PivotItem>
-                                <PivotItem x:Name="MembersInspectorTab" Header="Members">
-                                    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-                                        <StackPanel Spacing="12" Padding="0,12,8,12">
-                                            <ComboBox GotFocus="OnDiscreteEditStarted" Header="Who appears" ItemsSource="{x:Bind ViewModel.GalleryMembershipModeOptions, Mode=OneWay}" SelectedValue="{x:Bind ViewModel.GalleryMembershipMode, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label" HorizontalAlignment="Stretch"/>
-                                            <ListView ItemsSource="{x:Bind Workspace.Members, Mode=OneWay}" SelectedItem="{x:Bind Workspace.SelectedMember, Mode=TwoWay}" MaxHeight="220" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                                                <ListView.ItemTemplate>
-                                                    <DataTemplate x:DataType="vm:TilesMemberViewModel">
-                                                        <Grid ColumnSpacing="8">
-                                                            <Grid.ColumnDefinitions>
-                                                                <ColumnDefinition Width="*"/>
-                                                                <ColumnDefinition Width="Auto"/>
-                                                            </Grid.ColumnDefinitions>
-                                                            <StackPanel>
-                                                                <TextBlock Text="{x:Bind Name, Mode=OneWay}" TextTrimming="CharacterEllipsis"/>
-                                                                <TextBlock Text="{x:Bind Status, Mode=OneWay}" FontSize="10"/>
-                                                            </StackPanel>
-                                                            <CheckBox Grid.Column="1" IsChecked="{x:Bind Excluded, Mode=OneWay}" Click="OnTileExclusionClicked" Content="Exclude"/>
-                                                        </Grid>
-                                                    </DataTemplate>
-                                                </ListView.ItemTemplate>
-                                            </ListView>
-                                            <cvcontrols:SliderValueControl Compact="True" Header="Manual slot" Value="{x:Bind ViewModel.GalleryManualSlot, Mode=TwoWay}" Minimum="1" Maximum="64" DefaultValue="1" Unit="slot" StepFrequency="1"/>
-                                            <Grid ColumnSpacing="5">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="*"/>
-                                                </Grid.ColumnDefinitions>
-                                                <Button Content="Assign slot" Command="{x:Bind ViewModel.AssignGalleryMemberCommand}" Click="OnDiscreteEditStarted"/>
-                                                <Button Grid.Column="1" Content="Clear slot" Command="{x:Bind ViewModel.ClearGallerySlotCommand}" Click="OnDiscreteEditStarted"/>
-                                            </Grid>
-                                            <Grid ColumnSpacing="5">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="*"/>
-                                                </Grid.ColumnDefinitions>
-                                                <Button Content="Never show" Command="{x:Bind ViewModel.ExcludeGalleryMemberCommand}" Click="OnDiscreteEditStarted"/>
-                                                <Button Grid.Column="1" Content="Allow" Command="{x:Bind ViewModel.AllowGalleryMemberCommand}" Click="OnDiscreteEditStarted"/>
-                                            </Grid>
-                                            <TextBlock Text="{x:Bind ViewModel.GalleryMembershipSummary, Mode=OneWay}" TextWrapping="Wrap" FontSize="11"/>
-                                            <cvcontrols:SliderValueControl Compact="True" Header="Crop left" Value="{x:Bind ViewModel.GalleryTileCropLeft, Mode=TwoWay}" Minimum="0" Maximum="45" DefaultValue="0" Unit="%" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-                                            <cvcontrols:SliderValueControl Compact="True" Header="Crop right" Value="{x:Bind ViewModel.GalleryTileCropRight, Mode=TwoWay}" Minimum="0" Maximum="45" DefaultValue="0" Unit="%" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-                                            <Button Content="Apply crop, keep placement" Click="OnApplyTileCrop"/>
-                                            <Expander Header="Pin tile in wall" HorizontalAlignment="Stretch">
-                                                <StackPanel Spacing="10">
-                                                    <cvcontrols:SliderValueControl Compact="True" Header="Tile left" Value="{x:Bind ViewModel.GalleryTileX, Mode=TwoWay}" Minimum="0" Maximum="1" DefaultValue="0" Unit="%" DisplayScale="100" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-                                                    <cvcontrols:SliderValueControl Compact="True" Header="Tile top" Value="{x:Bind ViewModel.GalleryTileY, Mode=TwoWay}" Minimum="0" Maximum="1" DefaultValue="0" Unit="%" DisplayScale="100" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-                                                    <cvcontrols:SliderValueControl Compact="True" Header="Tile width" Value="{x:Bind ViewModel.GalleryTileWidth, Mode=TwoWay}" Minimum="0.01" Maximum="1" DefaultValue="0.5" Unit="%" DisplayScale="100" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-                                                    <cvcontrols:SliderValueControl Compact="True" Header="Tile height" Value="{x:Bind ViewModel.GalleryTileHeight, Mode=TwoWay}" Minimum="0.01" Maximum="1" DefaultValue="1" Unit="%" DisplayScale="100" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-                                                    <cvcontrols:SliderValueControl Compact="True" Header="Tile order" Value="{x:Bind ViewModel.GalleryTileOrder, Mode=TwoWay}" Minimum="0" Maximum="63" DefaultValue="0" Unit="" DisplayScale="1" StepFrequency="1" EditStarted="OnAdjustmentStarted"/>
-                                                    <TextBlock Text="Position is relative to this wall. Apply pins the member; other tiles reflow in remaining space." TextWrapping="Wrap" FontSize="11"/>
-                                                    <Button Content="Apply pin" Command="{x:Bind ViewModel.ApplyGalleryTileOverrideCommand}" Click="OnDiscreteEditStarted"/>
-                                                    <Button Content="Return to automatic" Command="{x:Bind ViewModel.ClearGalleryTileOverrideCommand}" Click="OnDiscreteEditStarted"/>
-                                                </StackPanel>
-                                            </Expander>
-                                            <Button Content="Use selected member as background" Command="{x:Bind ViewModel.SetGalleryBackgroundSourceCommand}" Click="OnDiscreteEditStarted"/>
-                                            <Button Content="Clear live background" Command="{x:Bind ViewModel.ClearGalleryBackgroundSourceCommand}" Click="OnDiscreteEditStarted"/>
-                                            <Button Content="Clear stale memberships" Command="{x:Bind ViewModel.ClearStaleGalleryEntriesCommand}" Click="OnDiscreteEditStarted"/>
-                                        </StackPanel>
-                                    </ScrollViewer>
-                                </PivotItem>
-                        <PivotItem x:Name="TransformInspectorTab" Header="Transform">
+<PivotItem x:Name="MembersInspectorTab" Header="Members" AutomationProperties.Name="Members">
+ <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+  <ContentControl HorizontalContentAlignment="Stretch" IsEnabled="{x:Bind Workspace.CanEditSelected, Mode=OneWay}"><StackPanel Spacing="12" Padding="0,12,0,12">
+   <TextBlock Text="WHO APPEARS" Style="{StaticResource WorkspaceSectionTitle}"/>
+   <ComboBox Header="Membership mode" ItemsSource="{x:Bind ViewModel.GalleryMembershipModeOptions, Mode=OneWay}" SelectedValue="{x:Bind ViewModel.GalleryMembershipMode, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label" HorizontalAlignment="Stretch" GotFocus="OnDiscreteEditStarted"/>
+   <TextBlock Text="Routed follows show assignments. All eligible follows the meeting. Manual lets you choose individual feeds. Never show excludes a member from every mode." Style="{StaticResource WorkspaceHelp}"/>
+   <ListView ItemsSource="{x:Bind Workspace.Members, Mode=OneWay}" SelectedItem="{x:Bind Workspace.SelectedMember, Mode=TwoWay}" MaxHeight="220" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+    <ListView.ItemContainerStyle><Style TargetType="ListViewItem"><Setter Property="Padding" Value="4"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/></Style></ListView.ItemContainerStyle>
+    <ListView.ItemTemplate><DataTemplate x:DataType="vm:TilesMemberViewModel">
+     <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <CheckBox IsChecked="{x:Bind Included, Mode=OneWay}" IsEnabled="{x:Bind CanInclude, Mode=OneWay}" Click="OnTileInclusionClicked" AutomationProperties.Name="{x:Bind IncludeLabel, Mode=OneWay}" MinWidth="24"/>
+      <TextBlock Grid.Column="1" Text="{x:Bind Name, Mode=OneWay}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTipService.ToolTip="{x:Bind Name, Mode=OneWay}"/>
+      <TextBlock Grid.Column="2" Text="{x:Bind Status, Mode=OneWay}" Style="{StaticResource WorkspaceHelp}" VerticalAlignment="Center"/>
+     </Grid>
+    </DataTemplate></ListView.ItemTemplate>
+   </ListView>
+   <Border Style="{StaticResource WorkspaceDivider}"/>
+   <ContentControl HorizontalContentAlignment="Stretch" IsEnabled="{x:Bind Workspace.MemberEditor.CanEdit, Mode=OneWay}"><StackPanel Spacing="10">
+    <TextBlock Text="{x:Bind Workspace.MemberEditor.FramingTitle, Mode=OneWay}" Style="{StaticResource WorkspaceSectionTitle}"/>
+    <CheckBox Content="Never show this member" IsChecked="{x:Bind Workspace.MemberEditor.NeverShow, Mode=TwoWay}"/>
+    <cvcontrols:SliderValueControl Compact="True" Header="Crop left" Value="{x:Bind Workspace.MemberEditor.CropLeft, Mode=TwoWay}" Minimum="0" Maximum="45" Unit="%" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+    <cvcontrols:SliderValueControl Compact="True" Header="Crop right" Value="{x:Bind Workspace.MemberEditor.CropRight, Mode=TwoWay}" Minimum="0" Maximum="45" Unit="%" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+    <Button Content="Reset this tile crop" Click="OnResetTileCrop"/>
+    <Border Style="{StaticResource WorkspaceDivider}"/>
+    <TextBlock Text="TILE PLACEMENT" Style="{StaticResource WorkspaceSectionTitle}"/>
+    <CheckBox Content="Pin this member in wall" IsChecked="{x:Bind Workspace.MemberEditor.Pinned, Mode=TwoWay}"/>
+    <StackPanel Spacing="10" Visibility="{x:Bind Workspace.MemberEditor.Pinned, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+     <cvcontrols:SliderValueControl Compact="True" Header="Tile X" Value="{x:Bind Workspace.MemberEditor.PixelX, Mode=TwoWay}" Maximum="{x:Bind Workspace.MemberEditor.WallWidth, Mode=OneWay}" Unit="px" StepFrequency="1" EditStarted="OnAdjustmentStarted"/>
+     <cvcontrols:SliderValueControl Compact="True" Header="Tile Y" Value="{x:Bind Workspace.MemberEditor.PixelY, Mode=TwoWay}" Maximum="{x:Bind Workspace.MemberEditor.WallHeight, Mode=OneWay}" Unit="px" StepFrequency="1" EditStarted="OnAdjustmentStarted"/>
+     <cvcontrols:SliderValueControl Compact="True" Header="Tile width" Value="{x:Bind Workspace.MemberEditor.PixelWidth, Mode=TwoWay}" Minimum="1" Maximum="{x:Bind Workspace.MemberEditor.WallWidth, Mode=OneWay}" Unit="px" StepFrequency="1" EditStarted="OnAdjustmentStarted"/>
+     <cvcontrols:SliderValueControl Compact="True" Header="Tile height" Value="{x:Bind Workspace.MemberEditor.PixelHeight, Mode=TwoWay}" Minimum="1" Maximum="{x:Bind Workspace.MemberEditor.WallHeight, Mode=OneWay}" Unit="px" StepFrequency="1" EditStarted="OnAdjustmentStarted"/>
+     <Button Content="Return this tile to automatic" Click="OnUnpinTile"/><Expander Header="Advanced placement" HorizontalAlignment="Stretch"><cvcontrols:SliderValueControl Compact="True" Header="Tile order" Value="{x:Bind Workspace.MemberEditor.Order, Mode=TwoWay}" Minimum="0" Maximum="63" StepFrequency="1" EditStarted="OnAdjustmentStarted"/></Expander>
+    </StackPanel>
+    <TextBlock Text="Pixels are relative to this wall. Automatic tiles reflow in the remaining space. Unpinning keeps this member’s crop." Style="{StaticResource WorkspaceHelp}"/>
+   </StackPanel></ContentControl>
+   <Expander Header="Advanced membership" HorizontalAlignment="Stretch">
+    <StackPanel Spacing="10">
+     <cvcontrols:SliderValueControl Compact="True" Header="Manual slot" Value="{x:Bind ViewModel.GalleryManualSlot, Mode=TwoWay}" Minimum="1" Maximum="64" Unit="slot" StepFrequency="1"/>
+     <Button Content="Assign selected member to slot" Command="{x:Bind ViewModel.AssignGalleryMemberCommand}" Click="OnDiscreteEditStarted"/>
+     <Button Content="Clear slot" Command="{x:Bind ViewModel.ClearGallerySlotCommand}" Click="OnDiscreteEditStarted"/>
+     <TextBlock Text="{x:Bind ViewModel.GalleryMembershipSummary, Mode=OneWay}" Style="{StaticResource WorkspaceHelp}"/>
+     <Button Content="Clear stale memberships" Command="{x:Bind ViewModel.ClearStaleGalleryEntriesCommand}" Click="OnDiscreteEditStarted"/>
+    </StackPanel>
+   </Expander>
+  </StackPanel></ContentControl>
+ </ScrollViewer>
+</PivotItem>
+                        <PivotItem x:Name="TransformInspectorTab" Header="Transform" AutomationProperties.Name="Transform">
                             <ScrollViewer HorizontalScrollBarVisibility="Disabled">
                                 <StackPanel Spacing="10" Padding="0,12,8,12">
                                     <ContentControl Content="{x:Bind Workspace.Selected, Mode=OneWay}" HorizontalContentAlignment="Stretch" IsEnabled="{x:Bind Workspace.CanEditSelected, Mode=OneWay}">
                                         <ContentControl.ContentTemplate>
                                             <DataTemplate x:DataType="vm:SceneCanvasLayerViewModel">
                                                 <StackPanel Spacing="12">
-                                                    <TextBlock Text="Transform" FontWeight="SemiBold"/>
-                                                    <cvcontrols:SliderValueControl Compact="True" Header="Left" Value="{x:Bind PixelX, Mode=TwoWay}" Minimum="0" Maximum="{x:Bind CanvasPixelWidth, Mode=OneWay}" DefaultValue="0" Unit="px" DisplayScale="1" StepFrequency="1" EditStarted="OnAdjustmentStarted"/>
-                                                    <cvcontrols:SliderValueControl Compact="True" Header="Top" Value="{x:Bind PixelY, Mode=TwoWay}" Minimum="0" Maximum="{x:Bind CanvasPixelHeight, Mode=OneWay}" DefaultValue="0" Unit="px" DisplayScale="1" StepFrequency="1" EditStarted="OnAdjustmentStarted"/>
-                                                    <cvcontrols:SliderValueControl Compact="True" Header="Width" Value="{x:Bind PixelWidth, Mode=TwoWay}" Minimum="{x:Bind MinimumPixelWidth, Mode=OneWay}" Maximum="{x:Bind CanvasPixelWidth, Mode=OneWay}" DefaultValue="{x:Bind CanvasPixelWidth, Mode=OneWay}" Unit="px" DisplayScale="1" StepFrequency="1" EditStarted="OnAdjustmentStarted"/>
-                                                    <cvcontrols:SliderValueControl Compact="True" Header="Height" Value="{x:Bind PixelHeight, Mode=TwoWay}" Minimum="{x:Bind MinimumPixelHeight, Mode=OneWay}" Maximum="{x:Bind CanvasPixelHeight, Mode=OneWay}" DefaultValue="{x:Bind CanvasPixelHeight, Mode=OneWay}" Unit="px" DisplayScale="1" StepFrequency="1" EditStarted="OnAdjustmentStarted"/>
-                                                    <cvcontrols:SliderValueControl Compact="True" Header="Opacity" Value="{x:Bind OpacityPercent, Mode=TwoWay}" Minimum="0" Maximum="100" DefaultValue="100" Unit="%" DisplayScale="1" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-
+<TextBlock Text="POSITION AND SIZE" Style="{StaticResource WorkspaceSectionTitle}"/><Grid ColumnSpacing="8" RowSpacing="10"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><NumberBox Grid.Column="0" Grid.Row="0" Header="X position (px)" Value="{x:Bind PixelX, Mode=TwoWay}" SpinButtonPlacementMode="Hidden" GotFocus="OnDiscreteEditStarted" SmallChange="1" LargeChange="10"/><NumberBox Grid.Column="1" Grid.Row="0" Header="Y position (px)" Value="{x:Bind PixelY, Mode=TwoWay}" SpinButtonPlacementMode="Hidden" GotFocus="OnDiscreteEditStarted" SmallChange="1" LargeChange="10"/><NumberBox Grid.Column="0" Grid.Row="1" Header="Width (px)" Value="{x:Bind PixelWidth, Mode=TwoWay}" SpinButtonPlacementMode="Hidden" GotFocus="OnDiscreteEditStarted" SmallChange="1" LargeChange="10"/><NumberBox Grid.Column="1" Grid.Row="1" Header="Height (px)" Value="{x:Bind PixelHeight, Mode=TwoWay}" SpinButtonPlacementMode="Hidden" GotFocus="OnDiscreteEditStarted" SmallChange="1" LargeChange="10"/></Grid><TextBlock Text="Coordinates use the output canvas. Arrow keys move 1 px; Shift moves 10 px." Style="{StaticResource WorkspaceHelp}"/><TextBlock Text="{x:Bind TransformValidationMessage, Mode=OneWay}" Foreground="#E8B18B" TextWrapping="Wrap" FontSize="11"/>
                                                 </StackPanel>
                                             </DataTemplate>
                                         </ContentControl.ContentTemplate>
@@ -340,51 +335,53 @@
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <Button Content="Fit to canvas" Command="{x:Bind Workspace.FitCommand, Mode=OneWay}"/>
-                                        <Button Grid.Column="1" Content="Center" Command="{x:Bind Workspace.CenterCommand, Mode=OneWay}"/>
+                                        <Button Grid.Column="1" Content="Center" Command="{x:Bind Workspace.CenterCommand, Mode=OneWay}"/></Grid><Grid ColumnSpacing="5"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Button Content="Reset transform" Command="{x:Bind Workspace.ResetTransformCommand, Mode=OneWay}"/><Button Grid.Column="1" Content="Move to back" Command="{x:Bind Workspace.MoveToBackCommand, Mode=OneWay}"/>
                                     </Grid>
+<TextBlock Text="FRAMING" Style="{StaticResource WorkspaceSectionTitle}"/>
+<ContentControl Content="{x:Bind Workspace.Selected, Mode=OneWay}" IsEnabled="{x:Bind Workspace.CanEditSelected, Mode=OneWay}" HorizontalContentAlignment="Stretch"><ContentControl.ContentTemplate><DataTemplate x:DataType="vm:SceneCanvasLayerViewModel"><ComboBox Header="Content fitting" ItemsSource="{x:Bind FitModeOptions}" SelectedValue="{x:Bind FitMode, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label" GotFocus="OnDiscreteEditStarted" HorizontalAlignment="Stretch" Visibility="{x:Bind IsOrdinarySource, Converter={StaticResource BoolToVis}}"/></DataTemplate></ContentControl.ContentTemplate></ContentControl>
+<TextBlock Text="The wall transform moves the whole wall. Individual crop and pin controls are in Members." Style="{StaticResource WorkspaceHelp}"/>
                                     <ComboBox GotFocus="OnDiscreteEditStarted" Header="Scene background" ItemsSource="{x:Bind ViewModel.SuperSourceBackgroundOptions, Mode=OneWay}" SelectedValue="{x:Bind ViewModel.PreviewSceneBackgroundAssetId, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label" HorizontalAlignment="Stretch"/>
                                 </StackPanel>
                             </ScrollViewer>
                         </PivotItem>
-                        <PivotItem x:Name="AppearanceInspectorTab" Header="Appearance">
+                        <PivotItem x:Name="AppearanceInspectorTab" Header="Appearance" AutomationProperties.Name="Appearance">
                             <ScrollViewer HorizontalScrollBarVisibility="Disabled">
-                                <ContentControl Content="{x:Bind Workspace.Selected, Mode=OneWay}" HorizontalContentAlignment="Stretch">
+                                <ContentControl Content="{x:Bind Workspace.Selected, Mode=OneWay}" HorizontalContentAlignment="Stretch" IsEnabled="{x:Bind Workspace.CanEditSelected, Mode=OneWay}">
                                     <ContentControl.ContentTemplate>
                                         <DataTemplate x:DataType="vm:SceneCanvasLayerViewModel">
                                             <StackPanel Spacing="14" Padding="0,12,8,12">
-                                                <TextBlock Text="SOURCE APPEARANCE" FontSize="11" Foreground="#B0B9C6"/>
-                                                <ComboBox Header="Border style" ItemsSource="{x:Bind BorderStyleOptions}" SelectedValue="{x:Bind BorderStyle, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label" GotFocus="OnDiscreteEditStarted" HorizontalAlignment="Stretch"/>
-                                                <TextBox Header="Border color" Text="{x:Bind BorderColor, Mode=TwoWay}" GotFocus="OnDiscreteEditStarted"/>
-                                                <cvcontrols:SliderValueControl Compact="True" Header="Border thickness" Value="{x:Bind BorderThickness, Mode=TwoWay}" Minimum="0" Maximum="12" DefaultValue="0" Unit="px" EditStarted="OnAdjustmentStarted"/>
+                                                <TextBlock Text="OPACITY" Style="{StaticResource WorkspaceSectionTitle}"/>
                                                 <cvcontrols:SliderValueControl Compact="True" Header="Opacity" Value="{x:Bind OpacityPercent, Mode=TwoWay}" Minimum="0" Maximum="100" DefaultValue="100" Unit="%" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+                                            <TextBlock Text="0% transparent · 100% opaque" Style="{StaticResource WorkspaceHelp}"/><Button Content="Reset opacity" Command="{Binding Workspace.ResetOpacityCommand, ElementName=SourcesRoot}"/>
                                             </StackPanel>
                                         </DataTemplate>
                                     </ContentControl.ContentTemplate>
                                 </ContentControl>
                             </ScrollViewer>
                         </PivotItem>
-                        <PivotItem x:Name="SourceInspectorTab" Header="Source">
-                            <ScrollViewer HorizontalScrollBarVisibility="Disabled">
-                                <ContentControl Content="{x:Bind Workspace.Selected, Mode=OneWay}" HorizontalContentAlignment="Stretch">
-                                    <ContentControl.ContentTemplate>
-                                        <DataTemplate x:DataType="vm:SceneCanvasLayerViewModel">
-                                                        <StackPanel Spacing="10">
-                                                            <TextBox Header="Name in this scene" Text="{x:Bind DisplayName, Mode=OneWay}" LostFocus="OnSourceNameCommitted"/>
-                                                            <ComboBox GotFocus="OnDiscreteEditStarted" Header="Feed" ItemsSource="{x:Bind ParticipantOptions, Mode=OneWay}" SelectedValuePath="Value" DisplayMemberPath="Label" Tag="{x:Bind}" Loaded="OnLayerSourceComboLoaded" DropDownOpened="OnLayerSourceDropDownOpened" DropDownClosed="OnLayerSourceDropDownClosed" SelectionChanged="OnLayerSourceSelectionChanged"/>
-                                                            <ComboBox GotFocus="OnDiscreteEditStarted" Header="Content fitting" ItemsSource="{x:Bind FitModeOptions}" SelectedValue="{x:Bind FitMode, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label"/>
-                                                            <cvcontrols:SliderValueControl Compact="True" Header="Zoom" Value="{x:Bind SourceScale, Mode=TwoWay}" Minimum="0.25" Maximum="4" DefaultValue="1" Unit="%" DisplayScale="100" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-                                                            <cvcontrols:SliderValueControl Compact="True" Header="Pan" Value="{x:Bind SourceOffsetX, Mode=TwoWay}" Minimum="-1" Maximum="1" DefaultValue="0" Unit="%" DisplayScale="100" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-                                                            <cvcontrols:SliderValueControl Compact="True" Header="Tilt" Value="{x:Bind SourceOffsetY, Mode=TwoWay}" Minimum="-1" Maximum="1" DefaultValue="0" Unit="%" DisplayScale="100" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
-                                                            <Button Content="Reset framing" Command="{x:Bind ResetFramingCommand}" Click="OnDiscreteEditStarted"/>
-                                                            <Button Content="Color grade" Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesRoot}" CommandParameter="{x:Bind SourceColorGradeId, Mode=OneWay}"/>
-                                                        </StackPanel>
-
-                                        </DataTemplate>
-                                    </ContentControl.ContentTemplate>
-                                </ContentControl>
-                            </ScrollViewer>
-                        </PivotItem>
+<PivotItem x:Name="SourceInspectorTab" Header="Source" AutomationProperties.Name="Source">
+<ScrollViewer HorizontalScrollBarVisibility="Disabled" IsEnabled="{x:Bind Workspace.CanEditSelected, Mode=OneWay}">
+<StackPanel Spacing="12" Padding="0,12,0,12">
+<TextBox Header="Name in this scene" Text="{x:Bind Workspace.SelectedAlias, Mode=OneWay}" PlaceholderText="{x:Bind Workspace.SelectedName, Mode=OneWay}" TextChanged="OnSceneAliasChanged" GotFocus="OnDiscreteEditStarted" Tag="{x:Bind Workspace.Selected.ItemId, Mode=OneWay}" LostFocus="OnSourceNameCommitted"/>
+<TextBox x:Name="GraphicTextField" Header="Text" Text="{x:Bind Workspace.GraphicText, Mode=OneWay}" Tag="{x:Bind Workspace.Selected.ItemId, Mode=OneWay}" Visibility="{x:Bind Workspace.IsText, Mode=OneWay, Converter={StaticResource BoolToVis}}" LostFocus="OnGraphicTextCommitted" TextChanged="OnGraphicContentChanged" MaxLength="4096" GotFocus="OnDiscreteEditStarted"/>
+<Grid ColumnSpacing="8" Visibility="{x:Bind Workspace.IsGraphic, Mode=OneWay, Converter={StaticResource BoolToVis}}"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+<Button Width="36" Background="{x:Bind Workspace.GraphicSwatch, Mode=OneWay}" AutomationProperties.Name="Choose graphic color" VerticalAlignment="Bottom" Click="OnColorPickerOpened"><Button.Flyout><Flyout><StackPanel Spacing="10"><ColorPicker Color="{x:Bind Workspace.GraphicPickerColor, Mode=OneWay}" IsAlphaEnabled="False" IsAlphaSliderVisible="False" IsAlphaTextInputVisible="False" IsHexInputVisible="True"/><Button Content="Apply color" Tag="{x:Bind Workspace.Selected.ItemId, Mode=OneWay}" Click="OnApplyGraphicColor"/></StackPanel></Flyout></Button.Flyout></Button>
+<TextBox x:Name="GraphicColorField" Grid.Column="1" Header="Color (hex)" Text="{x:Bind Workspace.GraphicColor, Mode=OneWay}" Tag="{x:Bind Workspace.Selected.ItemId, Mode=OneWay}" LostFocus="OnGraphicColorCommitted" TextChanged="OnGraphicContentChanged" GotFocus="OnDiscreteEditStarted"/>
+</Grid>
+<ContentControl Content="{x:Bind Workspace.Selected, Mode=OneWay}" HorizontalContentAlignment="Stretch" Visibility="{x:Bind Workspace.IsFeed, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+<ContentControl.ContentTemplate><DataTemplate x:DataType="vm:SceneCanvasLayerViewModel"><StackPanel Spacing="10">
+<ComboBox GotFocus="OnDiscreteEditStarted" Header="Feed" ItemsSource="{x:Bind ParticipantOptions, Mode=OneWay}" SelectedValuePath="Value" DisplayMemberPath="Label" Tag="{x:Bind}" Loaded="OnLayerSourceComboLoaded" DropDownOpened="OnLayerSourceDropDownOpened" DropDownClosed="OnLayerSourceDropDownClosed" SelectionChanged="OnLayerSourceSelectionChanged"/>
+<cvcontrols:SliderValueControl Compact="True" Header="Zoom" Value="{x:Bind SourceScale, Mode=TwoWay}" Minimum="0.25" Maximum="4" DefaultValue="1" Unit="%" DisplayScale="100" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+<cvcontrols:SliderValueControl Compact="True" Header="Pan" Value="{x:Bind SourceOffsetX, Mode=TwoWay}" Minimum="-1" Maximum="1" DefaultValue="0" Unit="%" DisplayScale="100" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+<cvcontrols:SliderValueControl Compact="True" Header="Tilt" Value="{x:Bind SourceOffsetY, Mode=TwoWay}" Minimum="-1" Maximum="1" DefaultValue="0" Unit="%" DisplayScale="100" StepFrequency="0.01" EditStarted="OnAdjustmentStarted"/>
+<Button Content="Reset framing" Command="{x:Bind ResetFramingCommand}" Click="OnDiscreteEditStarted"/>
+<Button Content="Color grade" Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesRoot}" CommandParameter="{x:Bind SourceColorGradeId, Mode=OneWay}"/>
+</StackPanel></DataTemplate></ContentControl.ContentTemplate>
+</ContentControl>
+</StackPanel></ScrollViewer>
+</PivotItem>
                     </Pivot>
+                    <TextBlock Grid.Row="3" Text="Changes affect this Preview draft." Style="{StaticResource WorkspaceHelp}" Margin="0,10,0,0"/>
                 </Grid>
             </Border>
         </Grid>

@@ -51,7 +51,7 @@ Use a staged candidate that also retains the installed Program/status isolation 
 | Change aspect, spacing, margin, capacity and animation | Tiles reflow with their requested look; unrelated scene layers retain position/order |
 | Select a member, exclude/allow, assign/clear a manual slot | The wall's membership follows the chosen policy; meeting identity safeguards and stale-entry controls remain available |
 | Crop a selected member | Apply crop retains automatic placement or the existing pin; it does not accidentally create a pin |
-| Pin and return a member to automatic | Pin uses wall-local normalized coordinates; other tiles use the native remaining-space layout |
+| Pin and return a member to automatic | Pin fields use wall-local pixels converted to normalized coordinates; other tiles use the native remaining-space layout |
 | Undo/Redo or cancel a canvas gesture with Escape | Draft geometry/style is restored; cancelled gesture does not remain as a history action |
 | Save while editing the on-air scene | Saved definition changes, Program remains unchanged; next Take publishes the captured draft |
 | Switch away and return to a saved scene | Saved layers, wall style, visibility/lock and authored names are restored |
@@ -59,4 +59,7 @@ Use a staged candidate that also retains the installed Program/status isolation 
 | Exercise controls while roster changes | No lost source/member selection, closing pickers, source substitution or focus jumps |
 | Repeat the matched meeting workload | Separate render, Program, webcam and enabled sender delivery evidence; retain any misses and their initiating-cause attribution |
 
-One Tiles wall per scene is supported. The wall's opacity multiplies its native draw layers; it is not an offscreen alpha-isolated group. Add-source entries reuse existing show feeds and media ownership. Arbitrary new text/color source adapters, nested groups and multiple independent walls are not added by this change. Keep #879 open until installed visual acceptance and persistence/output checks are recorded.
+One Tiles wall per scene is supported. The wall's opacity multiplies its native draw layers; it is not an offscreen alpha-isolated group. Add-source entries reuse existing show feeds and media ownership. Text and color source adapters are implemented in the October 13 parity correction. Nested groups and multiple independent walls remain outside this change. Keep #879 open until installed visual acceptance and persistence/output checks are recorded.
+# Owner acceptance correction, October 13
+
+The owner rejected both the installed design and the narrower proposed layout correction. The complete [approved-design parity audit](scene-builder-approved-design-parity-879.md) records missing controls, interaction differences and whole-window visual differences against the unchanged HTML. The prepared `811bfca` installer remains uninstalled and is not accepted as the complete feature. Existing passing tests do not establish that broader parity. The previous elevation attempt was cancelled; no administrator prompt remains from it.

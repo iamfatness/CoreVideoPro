@@ -12945,6 +12945,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 Scene = scene,
                 Id = scene.Id,
+                ThumbnailRects = SceneWorkspacePolicy.ThumbnailRects(scene,GetMutableRoutes(scene.Id)),
                 SlotNumber = index + 1,
                 IsOnProgram = scene.Id == ActiveSceneId,
                 IsOnPreview = scene.Id == PreviewSceneId,
@@ -13291,6 +13292,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         CommandStatus = $"{PreviewScene.Name} gallery updated on Preview";
         SchedulePreviewRoutingRefresh();
         SyncLiveSceneEditIfNeeded(PreviewSceneId);
+        NotifyWorkspaceContentChanged();
     }
 
     private void NotifyDynamicGalleryPropertiesChanged()
@@ -14416,6 +14418,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             routes.Select(ResolveRouteFromShowInput).ToList());
         OnPropertyChanged(nameof(PreviewCanvasLayers));
         SyncLiveSceneEditIfNeeded(PreviewSceneId);
+        NotifyWorkspaceContentChanged();
     }
 
     private void SyncLiveSceneEditIfNeeded(string sceneId)

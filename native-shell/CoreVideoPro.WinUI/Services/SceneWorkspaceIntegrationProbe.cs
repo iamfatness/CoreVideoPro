@@ -48,6 +48,44 @@ internal static class SceneWorkspaceIntegrationProbe
         ((ITransportHost)studio).RefreshPreviewRoutingState();
         Require(studio.ProgramSceneRoutes.Count==0,"Probe's initial Program projection is not the empty wall scene");
         var original=studio.ProgramScene.DynamicGallery!.GutterPercent;
+        var syntheticMember=new Participant{Id="42",Name="Synthetic member",Health=FeedHealth.Live};
+        // Fixture-only roster injection; interactive SDK services remain disabled.
+        typeof(StudioViewModel).GetProperty(nameof(StudioViewModel.RoomVideoParticipants))!.SetValue(studio,new Participant[]{syntheticMember});
+        typeof(StudioViewModel).GetProperty(nameof(StudioViewModel.RoomParticipantsForInputs))!.SetValue(studio,new Participant[]{syntheticMember});
+        workspace.Refresh();workspace.Selected=workspace.Items.Single(i=>i.IsTilesWall);
+        var member=workspace.MemberEditor;
+        workspace.Checkpoint();member.CropLeft=12.5;
+        Require(studio.PreviewScene.DynamicGallery!.Overrides["zoom:42"].CropLeftPercent==12.5,"Crop remains staged behind Apply");
+        Require(!studio.ProgramScene.DynamicGallery.Overrides.ContainsKey("zoom:42"),"Live crop changed Program");
+        member.Pinned=true;workspace.Checkpoint();member.PixelWidth=500;
+        member.Order=12;
+        Require(Math.Abs(studio.PreviewScene.DynamicGallery.Overrides["zoom:42"].Rect!.Width-500/member.WallWidth)<.000001,"Pin pixel conversion is incorrect");
+        member.Pinned=false;
+        Require(studio.PreviewScene.DynamicGallery.Overrides["zoom:42"] is{Rect:null,CropLeftPercent:12.5},"Unpin discarded the member crop");
+        Require(studio.PreviewScene.DynamicGallery.Overrides["zoom:42"].Z is null,"Unpin retained a custom placement order");
+        member.ResetCrop();Require(member.CropLeft==0,"Scoped crop reset did not clear the selected crop");
+        workspace.UndoCommand.Execute(null);Require(member.CropLeft==12.5,"Undo did not restore scoped crop reset");
+        member.NeverShow=true;Require(workspace.SelectedMember!.Excluded,"Never show toggle did not update member state");
+        member.NeverShow=false;
+        studio.GalleryMembershipMode="manual";workspace.Refresh();
+        workspace.IncludeMember(workspace.Members.Single(),true);
+        Require(studio.WorkspaceMemberIncluded("zoom:42"),"Manual inclusion did not reach membership payload");
+        workspace.IncludeMember(workspace.Members.Single(),false);
+        Require(!studio.WorkspaceMemberIncluded("zoom:42"),"Manual omission did not reach membership payload");
+        var selectedMember=workspace.SelectedMember;
+        var replacement=new Participant{Id="43",Name="Different member",Health=FeedHealth.Live};
+        typeof(StudioViewModel).GetProperty(nameof(StudioViewModel.RoomVideoParticipants))!.SetValue(studio,new Participant[]{replacement});
+        typeof(StudioViewModel).GetProperty(nameof(StudioViewModel.RoomParticipantsForInputs))!.SetValue(studio,new Participant[]{replacement});
+        workspace.Refresh();
+        Require(ReferenceEquals(workspace.SelectedMember,selectedMember)&&!member.CanEdit,"Roster replacement silently retargeted the member editor");
+        var heldCrop=member.CropLeft;member.CropLeft=35;Require(member.CropLeft==heldCrop,"Unavailable member accepted an edit for another guest");
+        typeof(StudioViewModel).GetProperty(nameof(StudioViewModel.RoomVideoParticipants))!.SetValue(studio,new Participant[]{syntheticMember});
+        typeof(StudioViewModel).GetProperty(nameof(StudioViewModel.RoomParticipantsForInputs))!.SetValue(studio,new Participant[]{syntheticMember});
+        workspace.Refresh();Require(ReferenceEquals(workspace.SelectedMember,selectedMember)&&member.CanEdit,"Returning member lost stable editor selection");
+        workspace.Selected!.Route.EditorLocked=true;workspace.Refresh();var previousCrop=member.CropLeft;member.CropLeft=20;
+        Require(member.CropLeft==previousCrop,"Locked wall allowed crop editing");
+        workspace.Selected.Route.EditorLocked=false;studio.WorkspaceWallChange(w=>w.WallLocked=false);workspace.Refresh();
+        checks.Add("compiled member controls commit live crop, preserve crop when unpinning, convert wall pixels, reset/undo crop, separate inclusion/exclusion and guard locked editing without publishing Program");
         workspace.Checkpoint();studio.GalleryGutterPercent=2.25;
         Require(studio.ProgramScene.DynamicGallery.GutterPercent==original,"Preview style edit changed Program");
         workspace.UndoCommand.Execute(null);Require(studio.GalleryGutterPercent==original,"Undo did not restore wall style");
@@ -76,6 +114,7 @@ internal static class SceneWorkspaceIntegrationProbe
         workspace.ToggleVisibility(source);Require(!source.Visible,"Visibility edit did not update the source row");
         workspace.ToggleVisibility(source);workspace.ToggleLock(source);
         Require(!workspace.FitCommand.CanExecute(null),"Locked source can still run a transform command");
+        Require(!workspace.MoveToBackCommand.CanExecute(null),"Locked source can still reorder");
         workspace.ToggleLock(source);
         source.Route.SpotlightIndex=2;source.Route.BorderStyle="accent";source.Route.BorderColor="#123456";
         source.Route.BorderThickness=7.5;source.Route.SourceFramingModified=true;
@@ -90,6 +129,25 @@ internal static class SceneWorkspaceIntegrationProbe
         workspace.UndoCommand.Execute(null);Require(workspace.Items.Count==3,"Undo did not restore the removed source instance");
         Require(studio.ProgramSceneRoutes.Count==0,"Authored Preview layers leaked into on-air wall routes");
         checks.Add("compiled scene layers preserve identity, alias, precision, order, visibility, lock, duplicate and removal history");
+        studio.WorkspaceRasterizeGraphic=graphic=>"fixture-"+Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(graphic))));
+        workspace.AddGraphic("text");
+        var graphicId=workspace.Selected!.ItemId;
+        tabs.SelectedItem=tabs.Items.Cast<PivotItem>().Single(i=>i.Name=="SourceInspectorTab");
+        await Task.Delay(100);page.UpdateLayout();
+        var titleField=Descendants(page).OfType<TextBox>().Single(t=>t.Tag?.ToString()==graphicId&&t.Header?.ToString()=="Text");
+        titleField.Focus(FocusState.Programmatic);await Eventually(()=>titleField.FocusState!=FocusState.Unfocused);
+        titleField.Text="Edited title survives refresh";
+        workspace.Refresh();
+        Require(titleField.Text=="Edited title survives refresh","Unchanged model refresh replaced a pending text edit");
+        var save=Descendants(page).OfType<Button>().Single(b=>b.Content?.ToString()=="Save changes");
+        save.Focus(FocusState.Programmatic);await Eventually(()=>save.FocusState!=FocusState.Unfocused);
+        await Task.Delay(40);
+        page.CommitPendingGraphicEdits();
+        Require(workspace.Selected!.Route.Graphic?.Text=="Edited title survives refresh",$"Text did not commit on focus loss: {page.GraphicEditProbeState}; field={titleField.Text}; tag={titleField.Tag}; selected={workspace.Selected.ItemId}; content={workspace.Selected.Route.Graphic?.Text}; model={studio.WorkspaceRoutes().FirstOrDefault(r=>r.Id==graphicId)?.Graphic?.Text}; status={studio.CommandStatus}");
+        workspace.SaveCommand.Execute(null);
+        Require(store.Value.CustomScenes.Single(s=>s.Id==id).Routes.Single(r=>r.Id==graphicId).Graphic?.Text=="Edited title survives refresh","Save lost authored text content");
+        Require(studio.ProgramSceneRoutes.Count==0,"Authored text save changed Program");
+        checks.Add("compiled authored-text editor preserves pending typing during refresh, commits on focus loss and persists the revision without changing Program");
 
         foreach(var width in new[]{1366,1024})
         {
@@ -107,4 +165,9 @@ internal static class SceneWorkspaceIntegrationProbe
         var clock=Stopwatch.StartNew();while(!ready()){if(clock.Elapsed>TimeSpan.FromSeconds(10))throw new InvalidOperationException("Scene Builder probe timed out");await Task.Delay(20);}
     }
     private static void Require(bool condition,string message){if(!condition)throw new InvalidOperationException(message);}
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
+    {
+        for(var i=0;i<Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root);i++)
+        {var child=Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root,i);yield return child;foreach(var nested in Descendants(child))yield return nested;}
+    }
 }

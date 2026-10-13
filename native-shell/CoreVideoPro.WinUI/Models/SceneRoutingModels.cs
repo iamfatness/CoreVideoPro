@@ -58,6 +58,7 @@ public sealed class SourceRoute
     public bool SourceFramingModified { get; set; }
     public ColorGrade? ColorGrade { get; set; }
     public bool WorkspaceAuthored { get; set; }
+    public SceneGraphic? Graphic { get; set; }
     public string DisplayName { get; set; } = string.Empty;
     public bool Visible { get; set; } = true;
     public bool EditorLocked { get; set; }
@@ -86,6 +87,7 @@ public sealed class SourceRoute
             SourceFramingModified = SourceFramingModified,
             ColorGrade = ColorGrade,
             WorkspaceAuthored = WorkspaceAuthored,
+            Graphic = Graphic,
             DisplayName = DisplayName, Visible = Visible, EditorLocked = EditorLocked,
             ZIndex = ZIndex
         };

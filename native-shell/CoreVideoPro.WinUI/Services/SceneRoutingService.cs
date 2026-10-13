@@ -456,6 +456,7 @@ public static class SceneRoutingService
         normalized.BorderThickness = Math.Clamp(route.BorderThickness, 0, 12);
         normalized.ColorGrade = route.ColorGrade;
         normalized.WorkspaceAuthored=route.WorkspaceAuthored;
+        normalized.Graphic=route.Graphic;
         normalized.DisplayName=route.DisplayName;normalized.Visible=route.Visible;normalized.EditorLocked=route.EditorLocked;normalized.Opacity=route.Opacity;
         normalized.ZIndex = route.ZIndex;
         return normalized;
@@ -518,6 +519,7 @@ public static class SceneRoutingService
         target.BorderThickness = Math.Clamp(source.BorderThickness, 0, 12);
         target.ColorGrade = source.ColorGrade;
         target.WorkspaceAuthored=source.WorkspaceAuthored;
+        target.Graphic=source.Graphic;
         target.DisplayName=source.DisplayName;target.Visible=source.Visible;target.EditorLocked=source.EditorLocked;target.Opacity=source.Opacity;
         target.ZIndex = source.ZIndex;
     }

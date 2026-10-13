@@ -14,7 +14,7 @@
         </ResourceDictionary>
     </UserControl.Resources>
 
-    <Grid RowSpacing="10">
+    <Border Background="#191D23" BorderBrush="#282E37" BorderThickness="1" CornerRadius="9" Padding="12"><Grid RowSpacing="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -63,6 +63,6 @@
                 </Viewbox>
             </Grid>
         </Border>
-        <TextBlock x:Name="CanvasHintText" Grid.Row="2" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords"/>
-    </Grid>
+        <StackPanel Grid.Row="2" Spacing="4"><TextBlock x:Name="CanvasDimensionsText" FontSize="11" Foreground="#9AA5B4"/><TextBlock x:Name="CanvasHintText" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" TextWrapping="WrapWholeWords"/></StackPanel>
+    </Grid></Border>
 </UserControl>

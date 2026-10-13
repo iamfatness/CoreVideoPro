@@ -34,6 +34,7 @@ public sealed class SceneDisplayItem
         new(Windows.UI.Color.FromArgb(255, 61, 220, 151));
 
     public Scene Scene { get; init; } = new();
+    public IReadOnlyList<NormalizedCanvasRect> ThumbnailRects {get;init;}=[];
 
     public string Id { get; init; } = string.Empty;
 

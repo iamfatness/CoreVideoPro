@@ -7,6 +7,8 @@ namespace CoreVideoPro.WinUI.ViewModels;
 // live in SceneWorkspaceViewModel rather than in the production controller.
 public sealed partial class StudioViewModel
 {
+    public event EventHandler? WorkspaceContentChanged;
+    private void NotifyWorkspaceContentChanged()=>WorkspaceContentChanged?.Invoke(this,EventArgs.Empty);
     private Scene? _workspacePreviewScene;
     private readonly Dictionary<string, PersistedScene> _workspaceSavedScenes = new(StringComparer.Ordinal);
     private readonly Dictionary<string,string> _workspaceSavedBackgrounds = new(StringComparer.Ordinal);
@@ -68,6 +70,7 @@ public sealed partial class StudioViewModel
         NotifyDynamicGalleryPropertiesChanged();
         OnPropertyChanged(nameof(PreviewCanvasLayers));
         SyncLiveSceneEditIfNeeded(PreviewSceneId);
+        NotifyWorkspaceContentChanged();
     }
 
     public void WorkspaceRestore(IReadOnlyList<SourceRoute> routes, DynamicGallerySettings? wall, string backgroundId)
@@ -90,7 +93,29 @@ public sealed partial class StudioViewModel
     {
         var wall=PreviewScene.DynamicGallery;if(wall is null)return false;
         var roster=TilesIdentityRoster();var meeting=CurrentTilesMeetingId();
-        return wall.ExcludedSourceIds.Any(saved=>saved==id || TilesIdentityPolicy.ResolveLiveSourceId(saved,roster,meeting,wall.BoundMeetingId)==id);
+        return wall.ExcludedSourceIds.Any(saved=>TilesIdentityPolicy.ResolveLiveSourceId(saved,roster,meeting,wall.BoundMeetingId)==id);
+    }
+    public bool WorkspaceMemberIncluded(string id)=>BuildTilesLayerWire(PreviewScene)?.Members.Contains(id)==true;
+    public bool WorkspaceMemberRouted(string id)=>ShowInputs.Any(s=>s.InShow&&ShowInputRosterService.SlotSourceId(s)==id);
+    public IReadOnlyDictionary<string,WorkspaceMemberState> WorkspaceMemberStates()=>SceneWorkspaceMembershipPolicy.Build(
+        PreviewScene.DynamicGallery,GalleryMemberChoices.Select(c=>c.Id),ShowInputs.Where(s=>s.InShow)
+            .Select(ShowInputRosterService.SlotSourceId).Where(id=>!string.IsNullOrWhiteSpace(id)).Select(id=>id!).ToHashSet(StringComparer.Ordinal),TilesIdentityRoster(),CurrentTilesMeetingId());
+    public void WorkspaceIncludeMember(string id,bool included)
+    {
+        var wall=PreviewScene.DynamicGallery;if(wall is null||wall.MembershipMode=="eligible")return;
+        if(wall.MembershipMode=="manual"&&included&&!WorkspaceMemberIncluded(id))
+        {
+            var empty=wall.ManualSlots.FindIndex(string.IsNullOrEmpty);
+            if(empty<0&&wall.ManualSlots.Count>=64){CommandStatus="Clear a manual slot before adding another member; a wall supports 64 slots.";return;}
+            AssignTilesSlot(empty>=0?empty+1:wall.ManualSlots.Count+1,id);
+        }
+        WorkspaceWallChange(w=>
+        {
+            var roster=TilesIdentityRoster();var meeting=CurrentTilesMeetingId();
+            if(!string.IsNullOrEmpty(meeting))w.BoundMeetingId=meeting;
+            w.OmittedSourceIds.RemoveAll(saved=>saved==id||TilesIdentityPolicy.ResolveLiveSourceId(saved,roster,meeting,w.BoundMeetingId)==id);
+            if(!included)w.OmittedSourceIds.Add(TilesIdentityPolicy.Persist(id,roster));
+        });
     }
 
     private bool HasWorkspaceWallChanges => _workspacePreviewScene?.Id == ActiveSceneId &&

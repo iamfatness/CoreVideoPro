@@ -15,7 +15,8 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 {
     private const double DesignWidth = 1600;
     private const double DesignHeight = 900;
-    private const double MinLayerSize = 0.08;
+    private double MinLayerWidth=>24/(_dragLayer?.CanvasPixelWidth??1920);
+    private double MinLayerHeight=>24/(_dragLayer?.CanvasPixelHeight??1080);
 
     private readonly Dictionary<string, Border> _layerFrames = new();
     private SceneCanvasLayerViewModel? _selectedLayer;
@@ -183,9 +184,11 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
     private void SyncLayers(IReadOnlyList<SceneCanvasLayerViewModel> layers)
     {
+        var dimensions=layers.FirstOrDefault();
+        CanvasDimensionsText.Text=$"{dimensions?.CanvasPixelWidth??1920:0} × {dimensions?.CanvasPixelHeight??1080:0} · Fit view";
         CanvasHintText.Text = layers.Count == 0
-            ? "Add sources from the list below, then drag them anywhere on the frame."
-            : "Drag boxes to place them. Drag the center target to pan the source inside its box.";
+            ? "Add a source from the left dock, then arrange it on the canvas."
+            : "Drag to move · Corner handles resize · Shift keeps aspect · Arrow keys move 1 px; Shift moves 10 px";
 
         var activeIndices = layers.Select(layer => layer.ItemId).ToHashSet();
         foreach (var staleIndex in _layerFrames.Keys.Where(index => !activeIndices.Contains(index)).ToList())
@@ -329,7 +332,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         {
             Width = 14,
             Height = 14,
-            Background = new SolidColorBrush(Color.FromArgb(220, 240, 168, 92)),
+            Background = new SolidColorBrush(Color.FromArgb(255, 138, 224, 202)),
             HorizontalAlignment = horizontal,
             VerticalAlignment = vertical,
             Margin = new Thickness(6),
@@ -439,13 +442,16 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         }
 
         frame.BorderBrush = isSelected
-            ? new SolidColorBrush(Color.FromArgb(255, 68, 193, 161))
-            : BrushForBorderStyle(layer.BorderStyle, layer.BorderColor);
-        frame.BorderThickness = new Thickness(isSelected
-            ? Math.Max(3, layer.BorderThickness)
-            : layer.BorderStyle == "none"
-                ? 0
-                : Math.Clamp(layer.BorderThickness, 0, 12));
+            ? new SolidColorBrush(Color.FromArgb(255, 138, 224, 202))
+            : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        frame.BorderThickness = new Thickness(isSelected ? 2 : 0);
+        if(frame.Child is Grid content)
+            foreach(var child in content.Children.OfType<Border>())
+            {
+                if(child.Tag is string tag)
+                    child.Visibility=isSelected&&layer.EditorUnlocked&&tag!="pan-source"?Visibility.Visible:Visibility.Collapsed;
+                if(child.Child is TextBlock {Name:"LayerLabel"})child.Visibility=Visibility.Collapsed;
+            }
     }
 
     private void UpdateSelectionStyles()
@@ -556,24 +562,24 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             var (guidesX, guidesY) = BuildSnapGuides(_dragLayer);
             if (movesWest)
             {
-                left = Math.Clamp(left + deltaX, 0, right - MinLayerSize);
-                left = Math.Clamp(left + SnapCorrection(left, guidesX), 0, right - MinLayerSize);
+                left = Math.Clamp(left + deltaX, 0, Math.Max(0,right - MinLayerWidth));
+                left = Math.Clamp(left + SnapCorrection(left, guidesX), 0, Math.Max(0,right - MinLayerWidth));
             }
             else
             {
-                right = Math.Clamp(right + deltaX, left + MinLayerSize, 1);
-                right = Math.Clamp(right + SnapCorrection(right, guidesX), left + MinLayerSize, 1);
+                right = Math.Clamp(right + deltaX, Math.Min(1,left + MinLayerWidth), 1);
+                right = Math.Clamp(right + SnapCorrection(right, guidesX), Math.Min(1,left + MinLayerWidth), 1);
             }
 
             if (movesNorth)
             {
-                top = Math.Clamp(top + deltaY, 0, bottom - MinLayerSize);
-                top = Math.Clamp(top + SnapCorrection(top, guidesY), 0, bottom - MinLayerSize);
+                top = Math.Clamp(top + deltaY, 0, Math.Max(0,bottom - MinLayerHeight));
+                top = Math.Clamp(top + SnapCorrection(top, guidesY), 0, Math.Max(0,bottom - MinLayerHeight));
             }
             else
             {
-                bottom = Math.Clamp(bottom + deltaY, top + MinLayerSize, 1);
-                bottom = Math.Clamp(bottom + SnapCorrection(bottom, guidesY), top + MinLayerSize, 1);
+                bottom = Math.Clamp(bottom + deltaY, Math.Min(1,top + MinLayerHeight), 1);
+                bottom = Math.Clamp(bottom + SnapCorrection(bottom, guidesY), Math.Min(1,top + MinLayerHeight), 1);
             }
 
             // Shift = aspect lock to the drag-start ratio: the dominant axis
@@ -585,12 +591,12 @@ public sealed partial class SceneCanvasEditorControl : UserControl
                 var height = bottom - top;
                 if (Math.Abs(width - _dragStartRect.Width) >= Math.Abs(height - _dragStartRect.Height))
                 {
-                    height = Math.Clamp(width / aspect, MinLayerSize, movesNorth ? bottom : 1 - top);
+                    height = Math.Clamp(width / aspect, MinLayerHeight, movesNorth ? bottom : 1 - top);
                     width = height * aspect;
                 }
                 else
                 {
-                    width = Math.Clamp(height * aspect, MinLayerSize, movesWest ? right : 1 - left);
+                    width = Math.Clamp(height * aspect, MinLayerWidth, movesWest ? right : 1 - left);
                     height = width / aspect;
                 }
 
@@ -602,8 +608,8 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         }
         else if (_dragMode == "pan-source")
         {
-            var boxWidth = Math.Max(_dragStartRect.Width, MinLayerSize);
-            var boxHeight = Math.Max(_dragStartRect.Height, MinLayerSize);
+            var boxWidth = Math.Max(_dragStartRect.Width, MinLayerWidth);
+            var boxHeight = Math.Max(_dragStartRect.Height, MinLayerHeight);
             var offset = SourceFramingLayoutService.ResolveOffsetAfterDrag(
                 boxWidth * DesignWidth,
                 boxHeight * DesignHeight,

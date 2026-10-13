@@ -19,10 +19,10 @@ public sealed class NormalizedCanvasRect
             Height = Height
         };
 
-    public void Clamp()
+    public void Clamp(double minimumWidth=0.08,double minimumHeight=0.08)
     {
-        Width = Math.Clamp(Width, 0.08, 1);
-        Height = Math.Clamp(Height, 0.08, 1);
+        Width = Math.Clamp(Width, minimumWidth, 1);
+        Height = Math.Clamp(Height, minimumHeight, 1);
         X = Math.Clamp(X, 0, 1 - Width);
         Y = Math.Clamp(Y, 0, 1 - Height);
     }
