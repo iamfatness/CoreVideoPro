@@ -180,11 +180,8 @@ public static class MediaCoreCommandBuilder
 
     /// <summary>
     /// T1 core wall: the "tiles" node (layerId/order/members/style — see
-    /// <c>MediaCoreTilesLayerWire</c>). Deliberately carries NO rect — the shell no longer
-    /// solves tile layout, so the core's rect defaults (full canvas) apply. Field names
-    /// here (w/h would live under "rect" if ever added) must match
-    /// MediaCore.cpp's parseTilesLayer exactly; a mismatch is silent (an unparsed field
-    /// just takes its C++ default).
+    /// <c>MediaCoreTilesLayerWire</c>). Instance bounds use rect.w/h, matching the
+    /// native wall parser; member layout remains native-owned.
     /// </summary>
     private static Dictionary<string, object?>? SerializeTilesLayer(MediaCoreTilesLayerWire? tiles) =>
         tiles is null
@@ -193,6 +190,9 @@ public static class MediaCoreCommandBuilder
             {
                 ["layerId"] = tiles.LayerId,
                 ["order"] = tiles.Order,
+                ["rect"] = tiles.Rect is { } wallRect ? new Dictionary<string, object?> { ["x"] = wallRect.X, ["y"] = wallRect.Y, ["w"] = wallRect.Width, ["h"] = wallRect.Height } : null,
+                ["opacity"] = tiles.Opacity,
+                ["transparentBackground"] = tiles.TransparentBackground,
                 ["members"] = tiles.Members,
                 ["overrides"] = tiles.Overrides?.ToDictionary(p => p.Key, p => new Dictionary<string, object?>
                 {
@@ -257,6 +257,7 @@ public static class MediaCoreCommandBuilder
             ["sourceOffsetX"] = route.SourceOffsetX,
             ["sourceOffsetY"] = route.SourceOffsetY,
             ["opacity"] = route.Opacity,
+            ["workspaceAuthored"] = route.WorkspaceAuthored,
             ["ptz"] = new Dictionary<string, object?>
             {
                 ["zoom"] = route.SourceScale,

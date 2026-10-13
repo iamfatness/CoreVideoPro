@@ -289,6 +289,7 @@ public sealed partial class StudioWorkspace : UserControl
         }
 
         _boundViewModel = next;
+        if(ProductionFooter is not null)ProductionFooter.Visibility=next?.IsSourcesTab==true?Visibility.Collapsed:Visibility.Visible;
 
         if (next is not null)
         {
@@ -300,6 +301,8 @@ public sealed partial class StudioWorkspace : UserControl
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if(e.PropertyName==nameof(StudioViewModel.ActiveTab)&&ProductionFooter is not null)
+            ProductionFooter.Visibility=_boundViewModel?.IsSourcesTab==true?Visibility.Collapsed:Visibility.Visible;
         if (e.PropertyName is nameof(StudioViewModel.ParticipantListItems))
         {
             ScheduleParticipantListRefresh();

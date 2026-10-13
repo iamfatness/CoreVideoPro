@@ -50,11 +50,66 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _sourceScale = SceneRoutingService.NormalizeSourceScale(route.SourceScale);
         _sourceOffsetX = SceneRoutingService.NormalizeSourceOffset(route.SourceOffsetX);
         _sourceOffsetY = SceneRoutingService.NormalizeSourceOffset(route.SourceOffsetY);
-        _opacityPercent = Math.Clamp(route.Opacity, 0.1, 1.0) * 100;
+        _opacityPercent = Math.Clamp(route.Opacity, 0, 1.0) * 100;
         ParticipantOptions = BuildSourceOptions(_mode, participants, captureDevices, showInputs, mediaAssets);
     }
 
-    public int LayerIndex { get; }
+    public int LayerIndex { get; private set; }
+    public string ItemId => _route.Id;
+    public SourceRoute Route => _route;
+    public bool IsTilesWall => ItemId.StartsWith("tiles:", StringComparison.Ordinal);
+    public string DisplayName => string.IsNullOrWhiteSpace(_route.DisplayName) ? (IsTilesWall ? "CoreVideo Tiles" : ParticipantOptions.FirstOrDefault(p => p.Value == ParticipantId)?.Label ?? LayerLabel) : _route.DisplayName;
+    public bool IsOrdinarySource => !IsTilesWall;
+    public string SourceKindLabel => IsTilesWall ? "Tiles wall" : _route.Graphic is {} graphic ? graphic.Kind=="text"?"Text":"Color background" : ParticipantId.StartsWith("media:",StringComparison.Ordinal) ? "Image / media" :
+        Mode switch { "screen-share" => "Screen share", "active-speaker" => "Active speaker", "spotlight" => "Spotlight", "capture-input" => "Camera", _ => "Show source" };
+    public string SourceGlyph => IsTilesWall ? "\uE80A" : _route.Graphic?.Kind=="text" ? "\uE8D2" : _route.Graphic?.Kind=="color"?"\uE790":ParticipantId.StartsWith("media:",StringComparison.Ordinal)?"\uEB9F":Mode == "screen-share" ? "\uE7F4" : "\uE714";
+    public string SourceSummary => SourceKindLabel + (IsTilesWall?string.Empty:Surface.HasFrames||Surface.AwaitingDirect3D?" · Video":Surface.MediaAssetPath is not null?" · Available":" · Waiting");
+    private int _lastAvailability;
+    partial void OnSurfaceChanged(VideoSurfaceState value)
+    {
+        var state=value.HasFrames||value.AwaitingDirect3D?2:value.MediaAssetPath is not null?1:0;
+        if(state==_lastAvailability)return;_lastAvailability=state;OnPropertyChanged(nameof(SourceSummary));
+    }
+    public bool EditorUnlocked => !EditorLocked;
+    public double CanvasPixelWidth {get;private set;}=1920;
+    public double CanvasPixelHeight {get;private set;}=1080;
+    public double MinimumPixelWidth=>24;
+    public double MinimumPixelHeight=>24;
+    public string TransformValidationMessage {get;private set;}=string.Empty;
+    public double PixelX {get=>X*CanvasPixelWidth;set=>SetPixelValue(value,'x');}
+    public double PixelY {get=>Y*CanvasPixelHeight;set=>SetPixelValue(value,'y');}
+    public double PixelWidth {get=>Width*CanvasPixelWidth;set=>SetPixelValue(value,'w');}
+    public double PixelHeight {get=>Height*CanvasPixelHeight;set=>SetPixelValue(value,'h');}
+    private void SetPixelValue(double value,char field)
+    {
+        var current=field=='x'?PixelX:field=='y'?PixelY:field=='w'?PixelWidth:PixelHeight;
+        if(double.IsFinite(value)&&Math.Abs(value-current)<.000000001)return;
+        var normalized=value/(field is 'x' or 'w'?CanvasPixelWidth:CanvasPixelHeight);
+        var x=field=='x'?normalized:X;var y=field=='y'?normalized:Y;
+        var w=field=='w'?normalized:Width;var h=field=='h'?normalized:Height;
+        if(EditorLocked||!double.IsFinite(normalized)||x<0||y<0||w<24/CanvasPixelWidth||h<24/CanvasPixelHeight||x+w>1.00000001||y+h>1.00000001)
+        {
+            TransformValidationMessage="Position and size must fit inside the canvas; minimum size is 24 × 24 pixels.";
+            foreach(var p in new[]{nameof(PixelX),nameof(PixelY),nameof(PixelWidth),nameof(PixelHeight),nameof(TransformValidationMessage)})OnPropertyChanged(p);
+            return;
+        }
+        TransformValidationMessage=string.Empty;OnPropertyChanged(nameof(TransformValidationMessage));
+        if(!IsTilesWall)_route.WorkspaceAuthored=true;
+        if(field=='x')X=normalized;else if(field=='y')Y=normalized;else if(field=='w')Width=normalized;else Height=normalized;
+    }
+    public void SetCanvasDimensions(double width,double height)
+    {
+        if(width<=0||height<=0||CanvasPixelWidth==width&&CanvasPixelHeight==height)return;
+        CanvasPixelWidth=width;CanvasPixelHeight=height;
+        foreach(var property in new[]{nameof(CanvasPixelWidth),nameof(CanvasPixelHeight),nameof(MinimumPixelWidth),nameof(MinimumPixelHeight),nameof(PixelX),nameof(PixelY),nameof(PixelWidth),nameof(PixelHeight)})OnPropertyChanged(property);
+    }
+    public bool Visible => _route.Visible;
+    public bool EditorLocked => _route.EditorLocked;
+    public bool IsHidden=>!Visible;
+    public string VisibilityActionName=>(Visible?"Hide ":"Show ")+DisplayName;
+    public string LockActionName=>(EditorLocked?"Unlock ":"Lock ")+DisplayName;
+    public string LockGlyph=>EditorLocked?"\uE72E":"\uE785";
+    public void SetLayerIndex(int index) { LayerIndex = index; OnPropertyChanged(nameof(LayerLabel)); }
 
     public string LayerLabel => $"Source {LayerIndex + 1}";
 
@@ -145,8 +200,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
     [ObservableProperty]
     private double _sourceOffsetY;
 
-    // Per-layer opacity as a percentage (10..100). Floored at 10% in the UI so
-    // a layer can't be made invisible by accident; the wire carries 0..1.
+    // Per-layer opacity as a percentage; visibility is a separate persisted flag.
     [ObservableProperty]
     private double _opacityPercent = 100;
 
@@ -236,13 +290,13 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     // S3: the layer card's numeric X/Y/W/H fields edit the rect directly.
     // Canvas drags go through SetCanvasRect, which sets these silently.
-    partial void OnXChanged(double value) => ApplyVisualChange();
+    partial void OnXChanged(double value) {OnPropertyChanged(nameof(PixelX));ApplyVisualChange();}
 
-    partial void OnYChanged(double value) => ApplyVisualChange();
+    partial void OnYChanged(double value) {OnPropertyChanged(nameof(PixelY));ApplyVisualChange();}
 
-    partial void OnWidthChanged(double value) => ApplyVisualChange();
+    partial void OnWidthChanged(double value) {OnPropertyChanged(nameof(PixelWidth));ApplyVisualChange();}
 
-    partial void OnHeightChanged(double value) => ApplyVisualChange();
+    partial void OnHeightChanged(double value) {OnPropertyChanged(nameof(PixelHeight));ApplyVisualChange();}
 
     partial void OnFitModeChanged(string value) => ApplyVisualChange();
 
@@ -303,7 +357,11 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             SourceScale = SceneRoutingService.NormalizeSourceScale(_route.SourceScale);
             SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(_route.SourceOffsetX);
             SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(_route.SourceOffsetY);
-            OpacityPercent = Math.Clamp(_route.Opacity, 0.1, 1.0) * 100;
+            OpacityPercent = Math.Clamp(_route.Opacity, 0, 1.0) * 100;
+            OnPropertyChanged(nameof(DisplayName)); OnPropertyChanged(nameof(Visible)); OnPropertyChanged(nameof(EditorLocked)); OnPropertyChanged(nameof(EditorUnlocked));
+            foreach(var property in new[]{nameof(IsHidden),nameof(VisibilityActionName),nameof(LockActionName),nameof(LockGlyph)})OnPropertyChanged(property);
+            OnPropertyChanged(nameof(SourceKindLabel)); OnPropertyChanged(nameof(SourceGlyph));
+            OnPropertyChanged(nameof(SourceSummary));
             OnPropertyChanged(nameof(SourceColorGradeId));
             OnPropertyChanged(nameof(ColorGradeSummary));
             OnPropertyChanged(nameof(FramingSummary));
@@ -316,6 +374,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
 
     public void SetCanvasRect(double x, double y, double width, double height, bool notify = true)
     {
+        if(!IsTilesWall)_route.WorkspaceAuthored=true;
         // Set silently: the numeric rect fields (S3) hook OnX/Y/Width/HeightChanged
         // for direct edits, and letting those fire here would apply/notify four
         // times per drag move instead of once below.
@@ -449,7 +508,7 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
             Width = Width,
             Height = Height
         };
-        _route.CanvasRect.Clamp();
+        _route.CanvasRect.Clamp(_route.WorkspaceAuthored||IsTilesWall?24/CanvasPixelWidth:.08,_route.WorkspaceAuthored||IsTilesWall?24/CanvasPixelHeight:.08);
         _route.FitMode = SceneRoutingService.NormalizeFitMode(FitMode);
         _route.BorderStyle = SceneRoutingService.NormalizeBorderStyle(BorderStyle);
         _route.BorderColor = SceneRoutingService.NormalizeBorderColor(BorderColor);
@@ -457,13 +516,13 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         _route.SourceScale = SceneRoutingService.NormalizeSourceScale(SourceScale);
         _route.SourceOffsetX = SceneRoutingService.NormalizeSourceOffset(SourceOffsetX);
         _route.SourceOffsetY = SceneRoutingService.NormalizeSourceOffset(SourceOffsetY);
-        _route.Opacity = Math.Clamp(OpacityPercent / 100.0, 0.1, 1.0);
+        _route.Opacity = Math.Clamp(OpacityPercent / 100.0, 0, 1.0);
         _route.SourceFramingModified = SceneRoutingService.HasModifiedSourceFraming(
             _route.FitMode,
             _route.SourceScale,
             _route.SourceOffsetX,
             _route.SourceOffsetY);
-        _route.ZIndex = LayerIndex;
+        // Scene order belongs to the workspace, independent of the route lookup index.
         OnPropertyChanged(nameof(SourceColorGradeId));
         OnPropertyChanged(nameof(ColorGradeSummary));
         OnPropertyChanged(nameof(FramingSummary));

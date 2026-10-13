@@ -8,8 +8,9 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace CoreVideoPro.WinUI.Views;
 
-public sealed partial class SourcesPage : UserControl
+public sealed partial class SourcesPage : UserControl, INotifyPropertyChanged
 {
+    public event PropertyChangedEventHandler? PropertyChanged;
     private readonly LoadedViewModelSubscription<StudioViewModel> _subscriptions;
     private bool _scenePickerRestoreScheduled;
 
@@ -17,6 +18,8 @@ public sealed partial class SourcesPage : UserControl
     {
         _subscriptions = new(SubscribeViewModel, UnsubscribeViewModel);
         InitializeComponent();
+        SceneCanvasEditor.InteractionCanceled += (_,_)=>Workspace?.CancelGestureCheckpoint();
+        SceneCanvasEditor.LayerSelected += (_,layer)=> { if(Workspace is not null)Workspace.Selected=layer; };
         SceneCanvasEditor.PresetRequested += OnCanvasPresetRequested;
         SceneCanvasEditor.LayerChanged += OnCanvasLayerChanged;
         SceneCanvasEditor.InteractionChanged += OnCanvasInteractionChanged;
@@ -42,7 +45,7 @@ public sealed partial class SourcesPage : UserControl
         var page = (SourcesPage)sender;
         var viewModel = (StudioViewModel?)args.NewValue;
         page._subscriptions.SetViewModel(viewModel);
-        page.PopulateAddSourceFlyout(viewModel);
+        page.SetWorkspace(viewModel);
         page.RefreshSceneCanvasEditor();
     }
 
@@ -50,13 +53,14 @@ public sealed partial class SourcesPage : UserControl
     {
         // Pages may be removed and reinserted without their ViewModel DP changing.
         // Restore listeners before reading the current scene on every load.
+        if(Workspace is null)SetWorkspace(ViewModel);
         _subscriptions.Load(ViewModel);
-        PopulateAddSourceFlyout(ViewModel);
         RefreshSceneCanvasEditor();
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        Workspace?.Dispose();Workspace=null;
         _subscriptions.Unload();
         SceneCanvasEditor.SetCompositeSurface(null);
     }
@@ -73,32 +77,11 @@ public sealed partial class SourcesPage : UserControl
         viewModel.PreviewCanvasLayers.CollectionChanged -= OnPreviewCanvasLayersChanged;
     }
 
-    private void PopulateAddSourceFlyout(StudioViewModel? viewModel)
-    {
-        AddSourceFlyout.Items.Clear();
-        if (viewModel is null)
-        {
-            return;
-        }
-
-        foreach (var option in viewModel.AddSourceOptions)
-        {
-            AddSourceFlyout.Items.Add(new MenuFlyoutItem
-            {
-                Text = option.Label,
-                Command = viewModel.AddCanvasSourceCommand,
-                CommandParameter = option.Value
-            });
-        }
-    }
-
-    // POS-2: rebuilt on every open so it always reflects the current media bin
-    // (the one-shot Add-source population above would show a stale asset list).
-    private void OnAddOverlayFlyoutOpening(object sender, object e) =>
-        OverlayLayerMenuBuilder.Populate(AddOverlayFlyout, _subscriptions.Current ?? ViewModel);
-
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if(e.PropertyName==nameof(StudioViewModel.CanTake))PropertyChanged?.Invoke(this,new(nameof(CanTakeWorkspace)));
+        if(e.PropertyName is nameof(StudioViewModel.GalleryBorderShape) or nameof(StudioViewModel.GalleryTileAspect) or nameof(StudioViewModel.GalleryMembershipSummary) or nameof(StudioViewModel.PreviewSceneId))
+            foreach(var name in new[]{nameof(RoundedTilesVisibility),nameof(OpaqueWallVisibility),nameof(WallOpacityPercent),nameof(CustomAspectVisibility)})PropertyChanged?.Invoke(this,new(name));
         if (e.PropertyName == nameof(StudioViewModel.SceneItems) && !_scenePickerRestoreScheduled)
         {
             _scenePickerRestoreScheduled = true;
@@ -141,7 +124,8 @@ public sealed partial class SourcesPage : UserControl
         SceneCanvasEditor.SetCompositeSurface(ViewModel?.SceneCanvasCompositeSurface);
         var layers = ViewModel?.PreviewCanvasLayers.ToList();
         SceneCanvasEditor.SetBackground(ViewModel?.PreviewSceneBackgroundAsset);
-        SceneCanvasEditor.SetLayers(layers, layers?.FirstOrDefault());
+        Workspace?.Refresh();
+        SceneCanvasEditor.SetLayers(layers, Workspace?.Selected ?? layers?.FirstOrDefault());
     }
 
     private void OnCanvasPresetRequested(object? sender, string preset) =>
@@ -156,7 +140,7 @@ public sealed partial class SourcesPage : UserControl
     private void OnLayerSourceDropDownOpened(object sender, object e)
     {
         if (sender is ComboBox { Tag: SceneCanvasLayerViewModel layer })
-            layer.BeginOperatorSourcePick();
+        {Workspace?.Checkpoint();layer.BeginOperatorSourcePick();}
     }
 
     private void OnLayerSourceDropDownClosed(object sender, object e)
@@ -197,6 +181,7 @@ public sealed partial class SourcesPage : UserControl
             option = selected;
         if (option is null && combo.SelectedValue is string value)
             option = layer.ParticipantOptions.FirstOrDefault(item => item.Value == value);
+        if(operatorGesture)Workspace?.Checkpoint();
         if (layer.TryCommitSourceOption(option, operatorGesture))
         {
             LaunchLog.Write(LayerSourceSelectionPolicy.FormatLog(
@@ -228,11 +213,12 @@ public sealed partial class SourcesPage : UserControl
     {
         // ItemsSource refresh clears selection temporarily. Only a real scene
         // selection may cue preview; a binding reset must never become a Take target.
-        if (sender is ComboBox { SelectedValue: string sceneId } &&
+        if (sender is Microsoft.UI.Xaml.Controls.Primitives.Selector { SelectedValue: string sceneId } &&
             ViewModel is { } viewModel &&
             viewModel.Scenes.Any(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal)) &&
             !string.Equals(viewModel.PreviewSceneId, sceneId, StringComparison.Ordinal))
         {
+            FlushGraphicEdit();
             viewModel.SelectSceneCommand.Execute(sceneId);
         }
     }
@@ -242,6 +228,7 @@ public sealed partial class SourcesPage : UserControl
 
     private void OnCanvasInteractionChanged(object? sender, bool isInteracting)
     {
+        if(isInteracting)Workspace?.Checkpoint();
         ViewModel?.SetCanvasInteractionActive(isInteracting);
         if (!isInteracting)
         {

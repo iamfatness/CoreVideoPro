@@ -100,6 +100,13 @@ public sealed class Scene
 /// </summary>
 public sealed class DynamicGallerySettings
 {
+    public NormalizedCanvasRect WallRect { get; set; } = new() { X = 0, Y = 0, Width = 1, Height = 1 };
+    public int WallOrder { get; set; }
+    public double WallOpacity { get; set; } = 1;
+    public bool WallVisible { get; set; } = true;
+    public bool WallLocked { get; set; }
+    public bool TransparentBackground { get; set; }
+
     public string BackgroundColor { get; set; } = "#000000";
     public string BackgroundSourceId { get; set; } = string.Empty;
     public Dictionary<string, TilesMemberOverride> Overrides { get; set; } = new(StringComparer.Ordinal);
@@ -107,6 +114,7 @@ public sealed class DynamicGallerySettings
     public string MembershipMode { get; set; } = "eligible";
     public List<string?> ManualSlots { get; set; } = [];
     public List<string> ExcludedSourceIds { get; set; } = [];
+    public List<string> OmittedSourceIds { get; set; } = [];
     /// <summary>Meeting number the Zoom identities were saved in. Legacy session ids are only valid in this meeting.</summary>
     public string? BoundMeetingId { get; set; }
     public int MaxTiles { get; set; } = 16;
@@ -127,6 +135,8 @@ public sealed class DynamicGallerySettings
 
     public DynamicGallerySettings Clone() => new()
     {
+        WallRect = WallRect.Clone(), WallOrder = WallOrder, WallOpacity = WallOpacity,
+        WallVisible = WallVisible, WallLocked = WallLocked, TransparentBackground = TransparentBackground,
         AutoFill = AutoFill,
         MembershipMode = MembershipMode,
         BackgroundColor = BackgroundColor,
@@ -134,6 +144,7 @@ public sealed class DynamicGallerySettings
         Overrides = Overrides.ToDictionary(p => p.Key, p => p.Value.Clone(), StringComparer.Ordinal),
         ManualSlots = [.. ManualSlots],
         ExcludedSourceIds = [.. ExcludedSourceIds],
+        OmittedSourceIds = [.. OmittedSourceIds],
         BoundMeetingId = BoundMeetingId,
         MaxTiles = MaxTiles,
         TileAspect = TileAspect,

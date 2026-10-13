@@ -24,6 +24,7 @@ public sealed class SliderValueControl : UserControl
     public double DefaultValue { get; set; }
     public double DisplayScale { get; set; } = 1;
     public bool Logarithmic { get; set; }
+    public bool Compact { get; set; }
     public event EventHandler<double>? ValueChanged;
     public event EventHandler? EditStarted;
     public event EventHandler? EditCompleted;
@@ -60,7 +61,17 @@ public sealed class SliderValueControl : UserControl
         };
         _entry.LostFocus += (_, _) => { Commit(); _typing = false; EndEdit(); RefreshValue(false); };
         _entry.KeyDown += OnEntryKey;
-        Loaded += (_, _) => RefreshValue(false);
+        Loaded += (_, _) => {
+            if (Compact && root.Children.Contains(_slider)) {
+                root.Children.Remove(_slider);
+                head.Children.Add(_slider); Grid.SetColumn(_slider, 0);
+                head.Children.Remove(reset);head.ColumnDefinitions.RemoveAt(2);
+                _slider.VerticalAlignment=VerticalAlignment.Center;
+                _entry.Width=67;_range.Visibility=Visibility.Collapsed;
+                _label.FontSize=11;root.Spacing=6;
+            }
+            RefreshValue(false);
+        };
     }
     private void BeginEdit() { if (_editing) return; _editing = true; _beforeEdit = Value; EditStarted?.Invoke(this, EventArgs.Empty); }
     private void EndEdit() { if (!_editing) return; _editing = false; EditCompleted?.Invoke(this, EventArgs.Empty); }
@@ -71,7 +82,8 @@ public sealed class SliderValueControl : UserControl
         if (_refreshing) return;
         _refreshing = true;
         try {
-            _label.Text = Header; _help.Text = Help; _help.Visibility = string.IsNullOrEmpty(Help) ? Visibility.Collapsed : Visibility.Visible;
+            _label.Text = Compact && !string.IsNullOrEmpty(Unit) ? $"{Header} ({Unit})" : Header;
+            _help.Text = Help; _help.Visibility = string.IsNullOrEmpty(Help) ? Visibility.Collapsed : Visibility.Visible;
             AutomationProperties.SetName(_entry, $"{Header} {Unit}, exact value");
             AutomationProperties.SetName(_slider, $"{Header} {Unit}");
             if (double.IsFinite(Value)) {

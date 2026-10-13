@@ -778,7 +778,7 @@
             <views:SettingsPage ViewModel="{x:Bind ViewModel.Settings, Mode=OneWay}" Studio="{x:Bind ViewModel, Mode=OneWay}" />
         </Border>
 
-        <Border Grid.Row="2" Margin="12" Style="{StaticResource StudioPanelBorder}" Padding="20"
+        <Border Grid.Row="2" Margin="12" Background="#101216" Padding="0"
                 Visibility="{x:Bind ViewModel.IsSourcesTab, Mode=OneWay}">
             <views:SourcesPage ViewModel="{x:Bind ViewModel, Mode=OneWay}" />
         </Border>
@@ -818,7 +818,7 @@
             <views:OhgShowPage ViewModel="{x:Bind ViewModel, Mode=OneWay}" />
         </Border>
 
-        <Border Grid.Row="3" Padding="10,8" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,1,0,0"
+        <Border x:Name="ProductionFooter" Grid.Row="3" Padding="10,8" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,1,0,0"
                 Background="#11161A">
             <Grid ColumnSpacing="8" RowSpacing="6">
                 <Grid.RowDefinitions>

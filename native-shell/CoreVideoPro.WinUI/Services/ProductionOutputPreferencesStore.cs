@@ -254,11 +254,19 @@ public sealed class PersistedScene
 
 public sealed class PersistedDynamicGallerySettings
 {
+    public NormalizedCanvasRect WallRect { get; set; } = new() { X = 0, Y = 0, Width = 1, Height = 1 };
+    public int WallOrder { get; set; }
+    public double WallOpacity { get; set; } = 1;
+    public bool WallVisible { get; set; } = true;
+    public bool WallLocked { get; set; }
+    public bool TransparentBackground { get; set; }
+
     public string BackgroundColor { get; set; } = "#000000";
     public string BackgroundSourceId { get; set; } = string.Empty;
     public Dictionary<string, TilesMemberOverride> Overrides { get; set; } = new(StringComparer.Ordinal);
     public List<string?> ManualSlots { get; set; } = [];
     public List<string> ExcludedSourceIds { get; set; } = [];
+    public List<string> OmittedSourceIds { get; set; } = [];
     public string? BoundMeetingId { get; set; }
     public bool AutoFill { get; set; } = true;
     public string? MembershipMode { get; set; }
@@ -281,6 +289,12 @@ public sealed class PersistedDynamicGallerySettings
 
 public sealed class PersistedSceneRoute
 {
+    public CoreVideoPro.WinUI.Models.SceneGraphic? Graphic { get; set; }
+    public bool WorkspaceAuthored { get; set; }
+    public string DisplayName { get; set; } = string.Empty;
+    public bool Visible { get; set; } = true;
+    public bool EditorLocked { get; set; }
+
     public string Id { get; set; } = string.Empty;
     public string Mode { get; set; } = "fixed";      // wire strings (SceneRoutingService)
     public string AudioRole { get; set; } = "mix";

@@ -15,9 +15,10 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 {
     private const double DesignWidth = 1600;
     private const double DesignHeight = 900;
-    private const double MinLayerSize = 0.08;
+    private double MinLayerWidth=>24/(_dragLayer?.CanvasPixelWidth??1920);
+    private double MinLayerHeight=>24/(_dragLayer?.CanvasPixelHeight??1080);
 
-    private readonly Dictionary<int, Border> _layerFrames = new();
+    private readonly Dictionary<string, Border> _layerFrames = new();
     private SceneCanvasLayerViewModel? _selectedLayer;
     private SceneCanvasLayerViewModel? _dragLayer;
     private string _dragMode = "move";
@@ -34,6 +35,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     public event EventHandler<SceneCanvasLayerViewModel>? LayerChanged;
     private long _lastCompositeDragUpdate;
     public event EventHandler<bool>? InteractionChanged;
+    public event EventHandler? InteractionCanceled;
 
     public SceneCanvasEditorControl()
     {
@@ -59,7 +61,10 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         foreach (var frame in _layerFrames.Values)
         {
             if (frame.Tag is SceneCanvasLayerViewModel layer)
+            {
+                Canvas.SetZIndex(frame, layer.Route.ZIndex);
                 UpdateLayerSurface(frame, layer.Surface);
+            }
         }
     }
 
@@ -93,6 +98,13 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     private void OnEditorSizeChanged(object sender, SizeChangedEventArgs e) =>
         ResizeCanvasViewport();
 
+    private void OnFitView(object sender,RoutedEventArgs e)=>ResizeCanvasViewport();
+    private void OnSafeAreaChanged(object sender,RoutedEventArgs e)
+    {
+        if (SafeAreaGuide is not null)
+            SafeAreaGuide.Visibility=sender is CheckBox {IsChecked:true}?Visibility.Visible:Visibility.Collapsed;
+    }
+
     private void ResizeCanvasViewport()
     {
         var viewportWidth = CanvasViewport.ActualWidth > 0
@@ -105,8 +117,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         var fitSize = SceneCanvasViewportService.ResolveFitSize(
             viewportWidth,
             viewportHeight,
-            DesignWidth / DesignHeight,
-            SceneCanvasViewportService.DefaultEditorMaxHeight);
+            DesignWidth / DesignHeight);
         if (fitSize.Width <= 0 || fitSize.Height <= 0)
         {
             return;
@@ -173,11 +184,13 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
     private void SyncLayers(IReadOnlyList<SceneCanvasLayerViewModel> layers)
     {
+        var dimensions=layers.FirstOrDefault();
+        CanvasDimensionsText.Text=$"{dimensions?.CanvasPixelWidth??1920:0} × {dimensions?.CanvasPixelHeight??1080:0} · Fit view";
         CanvasHintText.Text = layers.Count == 0
-            ? "Add sources from the list below, then drag them anywhere on the frame."
-            : "Drag boxes to place them. Drag the center target to pan the source inside its box.";
+            ? "Add a source from the left dock, then arrange it on the canvas."
+            : "Drag to move · Corner handles resize · Shift keeps aspect · Arrow keys move 1 px; Shift moves 10 px";
 
-        var activeIndices = layers.Select(layer => layer.LayerIndex).ToHashSet();
+        var activeIndices = layers.Select(layer => layer.ItemId).ToHashSet();
         foreach (var staleIndex in _layerFrames.Keys.Where(index => !activeIndices.Contains(index)).ToList())
         {
             if (_layerFrames.Remove(staleIndex, out var staleFrame))
@@ -192,22 +205,24 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             }
         }
 
-        foreach (var layer in layers.OrderBy(entry => entry.LayerIndex))
+        foreach (var layer in layers.OrderBy(entry => entry.Route.ZIndex))
         {
-            if (!_layerFrames.TryGetValue(layer.LayerIndex, out var frame))
+            if (!_layerFrames.TryGetValue(layer.ItemId, out var frame))
             {
                 frame = CreateLayerFrame(layer);
-                _layerFrames[layer.LayerIndex] = frame;
+                _layerFrames[layer.ItemId] = frame;
                 LayerCanvas.Children.Add(frame);
             }
             else
             {
                 frame.Tag = layer;
-                UpdateLayerLabel(frame, layer.LayerLabel);
+                UpdateLayerLabel(frame, layer.DisplayName);
             }
 
+            Canvas.SetZIndex(frame, layer.Route.ZIndex);
             UpdateLayerSurface(frame, layer.Surface);
             UpdateLayerVisuals(frame, layer);
+            frame.Visibility=layer.Visible?Visibility.Visible:Visibility.Collapsed;
             ApplyLayerGeometry(frame, layer);
             ApplySelectionStyle(frame, ReferenceEquals(layer, _selectedLayer));
         }
@@ -251,7 +266,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         var label = new TextBlock
         {
             Name = "LayerLabel",
-            Text = layer.LayerLabel,
+            Text = layer.DisplayName,
             FontSize = 14,
             FontWeight = FontWeights.SemiBold,
             Foreground = new SolidColorBrush(Color.FromArgb(255, 237, 244, 239)),
@@ -296,7 +311,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         frame.PointerPressed += OnLayerPointerPressed;
         frame.PointerMoved += OnLayerPointerMoved;
         frame.PointerReleased += OnLayerPointerReleased;
-        frame.PointerCanceled += OnLayerPointerReleased;
+        frame.PointerCanceled += OnLayerPointerCanceled;
         return frame;
     }
 
@@ -308,7 +323,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         frame.PointerPressed -= OnLayerPointerPressed;
         frame.PointerMoved -= OnLayerPointerMoved;
         frame.PointerReleased -= OnLayerPointerReleased;
-        frame.PointerCanceled -= OnLayerPointerReleased;
+        frame.PointerCanceled -= OnLayerPointerCanceled;
     }
 
     private static Border CreateResizeGrip(string tag, HorizontalAlignment horizontal, VerticalAlignment vertical)
@@ -317,7 +332,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         {
             Width = 14,
             Height = 14,
-            Background = new SolidColorBrush(Color.FromArgb(220, 240, 168, 92)),
+            Background = new SolidColorBrush(Color.FromArgb(255, 138, 224, 202)),
             HorizontalAlignment = horizontal,
             VerticalAlignment = vertical,
             Margin = new Thickness(6),
@@ -427,13 +442,16 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         }
 
         frame.BorderBrush = isSelected
-            ? new SolidColorBrush(Color.FromArgb(255, 68, 193, 161))
-            : BrushForBorderStyle(layer.BorderStyle, layer.BorderColor);
-        frame.BorderThickness = new Thickness(isSelected
-            ? Math.Max(3, layer.BorderThickness)
-            : layer.BorderStyle == "none"
-                ? 0
-                : Math.Clamp(layer.BorderThickness, 0, 12));
+            ? new SolidColorBrush(Color.FromArgb(255, 138, 224, 202))
+            : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        frame.BorderThickness = new Thickness(isSelected ? 2 : 0);
+        if(frame.Child is Grid content)
+            foreach(var child in content.Children.OfType<Border>())
+            {
+                if(child.Tag is string tag)
+                    child.Visibility=isSelected&&layer.EditorUnlocked&&tag!="pan-source"?Visibility.Visible:Visibility.Collapsed;
+                if(child.Child is TextBlock {Name:"LayerLabel"})child.Visibility=Visibility.Collapsed;
+            }
     }
 
     private void UpdateSelectionStyles()
@@ -468,6 +486,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         }
 
         _selectedLayer = layer;
+        if(layer.EditorLocked){UpdateSelectionStyles();LayerSelected?.Invoke(this,layer);e.Handled=true;return;}
         _dragLayer = layer;
         _dragStartPointer = e.GetCurrentPoint(LayerCanvas).Position;
         _dragStartControlPointer = e.GetCurrentPoint(this).Position;
@@ -543,24 +562,24 @@ public sealed partial class SceneCanvasEditorControl : UserControl
             var (guidesX, guidesY) = BuildSnapGuides(_dragLayer);
             if (movesWest)
             {
-                left = Math.Clamp(left + deltaX, 0, right - MinLayerSize);
-                left = Math.Clamp(left + SnapCorrection(left, guidesX), 0, right - MinLayerSize);
+                left = Math.Clamp(left + deltaX, 0, Math.Max(0,right - MinLayerWidth));
+                left = Math.Clamp(left + SnapCorrection(left, guidesX), 0, Math.Max(0,right - MinLayerWidth));
             }
             else
             {
-                right = Math.Clamp(right + deltaX, left + MinLayerSize, 1);
-                right = Math.Clamp(right + SnapCorrection(right, guidesX), left + MinLayerSize, 1);
+                right = Math.Clamp(right + deltaX, Math.Min(1,left + MinLayerWidth), 1);
+                right = Math.Clamp(right + SnapCorrection(right, guidesX), Math.Min(1,left + MinLayerWidth), 1);
             }
 
             if (movesNorth)
             {
-                top = Math.Clamp(top + deltaY, 0, bottom - MinLayerSize);
-                top = Math.Clamp(top + SnapCorrection(top, guidesY), 0, bottom - MinLayerSize);
+                top = Math.Clamp(top + deltaY, 0, Math.Max(0,bottom - MinLayerHeight));
+                top = Math.Clamp(top + SnapCorrection(top, guidesY), 0, Math.Max(0,bottom - MinLayerHeight));
             }
             else
             {
-                bottom = Math.Clamp(bottom + deltaY, top + MinLayerSize, 1);
-                bottom = Math.Clamp(bottom + SnapCorrection(bottom, guidesY), top + MinLayerSize, 1);
+                bottom = Math.Clamp(bottom + deltaY, Math.Min(1,top + MinLayerHeight), 1);
+                bottom = Math.Clamp(bottom + SnapCorrection(bottom, guidesY), Math.Min(1,top + MinLayerHeight), 1);
             }
 
             // Shift = aspect lock to the drag-start ratio: the dominant axis
@@ -572,12 +591,12 @@ public sealed partial class SceneCanvasEditorControl : UserControl
                 var height = bottom - top;
                 if (Math.Abs(width - _dragStartRect.Width) >= Math.Abs(height - _dragStartRect.Height))
                 {
-                    height = Math.Clamp(width / aspect, MinLayerSize, movesNorth ? bottom : 1 - top);
+                    height = Math.Clamp(width / aspect, MinLayerHeight, movesNorth ? bottom : 1 - top);
                     width = height * aspect;
                 }
                 else
                 {
-                    width = Math.Clamp(height * aspect, MinLayerSize, movesWest ? right : 1 - left);
+                    width = Math.Clamp(height * aspect, MinLayerWidth, movesWest ? right : 1 - left);
                     height = width / aspect;
                 }
 
@@ -589,8 +608,8 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         }
         else if (_dragMode == "pan-source")
         {
-            var boxWidth = Math.Max(_dragStartRect.Width, MinLayerSize);
-            var boxHeight = Math.Max(_dragStartRect.Height, MinLayerSize);
+            var boxWidth = Math.Max(_dragStartRect.Width, MinLayerWidth);
+            var boxHeight = Math.Max(_dragStartRect.Height, MinLayerHeight);
             var offset = SourceFramingLayoutService.ResolveOffsetAfterDrag(
                 boxWidth * DesignWidth,
                 boxHeight * DesignHeight,
@@ -639,6 +658,7 @@ public sealed partial class SceneCanvasEditorControl : UserControl
 
     private (List<double> X, List<double> Y) BuildSnapGuides(SceneCanvasLayerViewModel dragged)
     {
+        if (SnapToggle.IsChecked != true) return ([],[]);
         var guidesX = new List<double> { 0, 0.5, 1 };
         var guidesY = new List<double> { 0, 0.5, 1 };
         foreach (var frame in _layerFrames.Values)
@@ -704,19 +724,22 @@ public sealed partial class SceneCanvasEditorControl : UserControl
     // ---- S3 keyboard nudge ----------------------------------------------------
     private void OnEditorKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
-        if (_selectedLayer is null || _dragLayer is not null)
+        if(e.Key==Windows.System.VirtualKey.Escape&&_dragLayer is not null){CancelInteraction();e.Handled=true;return;}
+        if (_selectedLayer is null || _selectedLayer.EditorLocked || _dragLayer is not null)
         {
             return;
         }
 
-        var step = IsShiftDown() ? 0.02 : 0.005;
+        var pixels = IsShiftDown() ? 10d : 1d;
+        var stepX=pixels/_selectedLayer.CanvasPixelWidth;
+        var stepY=pixels/_selectedLayer.CanvasPixelHeight;
         double deltaX = 0, deltaY = 0;
         switch (e.Key)
         {
-            case Windows.System.VirtualKey.Left: deltaX = -step; break;
-            case Windows.System.VirtualKey.Right: deltaX = step; break;
-            case Windows.System.VirtualKey.Up: deltaY = -step; break;
-            case Windows.System.VirtualKey.Down: deltaY = step; break;
+            case Windows.System.VirtualKey.Left: deltaX = -stepX; break;
+            case Windows.System.VirtualKey.Right: deltaX = stepX; break;
+            case Windows.System.VirtualKey.Up: deltaY = -stepY; break;
+            case Windows.System.VirtualKey.Down: deltaY = stepY; break;
             default: return;
         }
 
@@ -724,12 +747,24 @@ public sealed partial class SceneCanvasEditorControl : UserControl
         var x = Math.Clamp(layer.X + deltaX, 0, 1 - layer.Width);
         var y = Math.Clamp(layer.Y + deltaY, 0, 1 - layer.Height);
         layer.SetCanvasRect(x, y, layer.Width, layer.Height);
-        if (_layerFrames.TryGetValue(layer.LayerIndex, out var frame))
+        if (_layerFrames.TryGetValue(layer.ItemId, out var frame))
         {
+            frame.Visibility=layer.Visible?Visibility.Visible:Visibility.Collapsed;
             ApplyLayerGeometry(frame, layer);
         }
 
         e.Handled = true;
+    }
+
+    private void OnLayerPointerCanceled(object sender,PointerRoutedEventArgs e) {CancelInteraction();e.Handled=true;}
+    private void CancelInteraction()
+    {
+        var layer=_dragLayer;var rect=_dragStartRect;if(layer is null||rect is null)return;
+        layer.SetCanvasRect(rect.X,rect.Y,rect.Width,rect.Height,false);
+        layer.SetSourceOffset(_dragStartSourceOffsetX,_dragStartSourceOffsetY,false);
+        _dragLayer=null;_dragMoved=false;_dragStartRect=null;
+        LayerChanged?.Invoke(this,layer);InteractionCanceled?.Invoke(this,EventArgs.Empty);
+        InteractionChanged?.Invoke(this,false);UpdateSelectionStyles();
     }
 
     private void OnLayerPointerReleased(object sender, PointerRoutedEventArgs e)

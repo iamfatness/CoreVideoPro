@@ -1209,11 +1209,8 @@ public sealed class MediaCoreCommandBuilderTests
         var tiles = GetObject(sceneGraph, "tiles");
 
         var tilesKeys = tiles.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
-        // No "rect": the shell deliberately sends no canvas subregion, so the
-        // core's rect defaults (x=0,y=0,w=1,h=1) apply. If a later task adds
-        // one, parseTilesLayer reads "w"/"h" here — NOT "width"/"height" like a
-        // scene route's rect.
-        Assert.Equal(["layerId", "members", "order", "overrides", "style"], tilesKeys);
+        // Wall instance bounds use w/h rather than scene routes' width/height.
+        Assert.Equal(["layerId", "members", "opacity", "order", "overrides", "rect", "style", "transparentBackground"], tilesKeys);
 
         var styleKeys = tiles.GetProperty("style").EnumerateObject()
             .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
