@@ -95,9 +95,12 @@ public sealed partial class SceneWorkspaceViewModel : ObservableObject, IDisposa
     {
         if(Selected is not {} item||item.IsTilesWall)return;Checkpoint();var r=item.Route.Clone();
         var copy=new SourceRoute{WorkspaceAuthored=true,Id="source-"+Guid.NewGuid().ToString("N"),Mode=r.Mode,ParticipantId=r.ParticipantId,CaptureDeviceId=r.CaptureDeviceId,
-            ShowInputSlotNumber=r.ShowInputSlotNumber,ProductionRoleId=r.ProductionRoleId,AudioRole=r.AudioRole,CanvasRect=r.CanvasRect?.Clone(),
-            FitMode=r.FitMode,SourceScale=r.SourceScale,SourceOffsetX=r.SourceOffsetX,SourceOffsetY=r.SourceOffsetY,Opacity=r.Opacity,
-            ColorGrade=r.ColorGrade,DisplayName=item.DisplayName+" copy",ZIndex=Items.Select(l=>l.Route.ZIndex).DefaultIfEmpty(0).Max()+SceneWorkspacePolicy.OrderStride};
+            ShowInputSlotNumber=r.ShowInputSlotNumber,ProductionRoleId=r.ProductionRoleId,SpotlightIndex=r.SpotlightIndex,
+            AudioRole=r.AudioRole,CanvasRect=r.CanvasRect?.Clone(),
+            FitMode=r.FitMode,BorderStyle=r.BorderStyle,BorderColor=r.BorderColor,BorderThickness=r.BorderThickness,
+            SourceScale=r.SourceScale,SourceOffsetX=r.SourceOffsetX,SourceOffsetY=r.SourceOffsetY,Opacity=r.Opacity,
+            SourceFramingModified=r.SourceFramingModified,ColorGrade=r.ColorGrade,Visible=r.Visible,
+            DisplayName=item.DisplayName+" copy",ZIndex=Items.Select(l=>l.Route.ZIndex).DefaultIfEmpty(0).Max()+SceneWorkspacePolicy.OrderStride};
         _studio.WorkspaceRoutes().Add(copy);_studio.WorkspaceRefresh();Selected=Items.FirstOrDefault(l=>l.ItemId==copy.Id);
     }
     public void ToggleVisibility(SceneCanvasLayerViewModel item)

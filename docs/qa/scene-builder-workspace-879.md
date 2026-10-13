@@ -1,6 +1,8 @@
 # Scene Builder and CoreVideo Tiles acceptance
 
-Owner-approved implementation of [#879](https://github.com/iamfatness/CoreVideoPro/issues/879), following the [reviewed workspace specification](../reference/scene-builder-workspace-spec.md). Installation and interactive acceptance must wait until the owner's October 12 live meeting and bake finish. Do not close, restart, reconfigure, Take, or register a webcam against that session during development.
+Owner-approved implementation of [#879](https://github.com/iamfatness/CoreVideoPro/issues/879), following the [reviewed workspace specification](../reference/scene-builder-workspace-spec.md). The owner's October 12 live meeting was preserved during development. The owner subsequently reported, "Bake was successful no new issues to report," and authorized further builds and testing. The restart/installation hold is resolved.
+
+That owner observation applies to the previous installed runtime `63d1337`, not the new Scene Builder candidate. It is successful operator-observed bake evidence, without a new measured zero-miss claim or qualification of the redesigned workspace.
 
 ## Development evidence
 
@@ -26,6 +28,8 @@ Failed development evidence is retained. The first offscreen probe read the old 
 The first local publish had only the app PRI. A clean self-contained publish produced the merged theme PRI and passed the runtime probe before packaging. Switching the test build back to framework-dependent settings then hit missing cached theme asset copy items; the final test run used the same self-contained `win-x64` settings and passed. Failed build logs remain in the evidence directory.
 
 ## Installed review protocol
+
+The October 12 follow-up compiled the main-based PR with a duplication correction: copied layers retain spotlight targeting, border styling, source-framing state and visibility. The compiled-XAML/model probe passed on this corrected source (`workspace-main-operator-probe.json`), including a customized hidden-source duplicate assertion. The earlier `6438b19` review installer predates this correction; it is not evidence for the corrected duplicate behavior.
 
 Use a staged candidate that also retains the installed Program/status isolation fixes. Record its exact source revision and executable paths. Preserve the saved show before installation. Verify the normal desktop shortcut and webcam registration through the established installer workflow after the meeting ends.
 
