@@ -371,6 +371,8 @@ public sealed class NativeMediaCoreWireState
     public NativeMediaCoreWireHealth? Health { get; init; }
     public NativeMediaCoreProfile? Profile { get; init; }
     public NativeMediaCoreAudioMixSession? AudioMixSession { get; init; }
+    public AudioOwnerObservation? AudioObservation { get; init; }
+    public long? AppliedControlRevision { get; init; }
     public NativeMediaCoreAudioRoutingMatrix? AudioRoutingMatrix { get; init; }
     public NativeMediaCoreCaptureAudioSources? CaptureAudioSources { get; init; }
     public NativeMediaCoreCaptionTrack? CaptionTrack { get; init; }

@@ -19,6 +19,11 @@ public sealed record MonitorIsolationObservation
     public long? RetainedInputs { get; init; }
     public long? RetainedInputBytes { get; init; }
     public long? RetentionRefusals { get; init; }
+    public long? ProgramCopiedSequence { get; init; }
+    public long? ProgramAge100ns { get; init; }
+    public long? ProgramSkipped { get; init; }
+    public long? ProgramRefused { get; init; }
+    public string ProgramDisplayState { get; init; } = "unavailable";
 
     public static MonitorIsolationObservation FromSnapshot(NativeMediaCoreStateSnapshot? snapshot)
     {
@@ -34,8 +39,17 @@ public sealed record MonitorIsolationObservation
             var inputObserved = Known(worker, "inputObservationVersion", "unknown", "monitor-input-admission-v1") == "monitor-input-admission-v1" &&
                 worker.TryGetProperty("enabled", out var exists) && exists.ValueKind == JsonValueKind.True &&
                 Count(worker, "completed") is > 0;
+            var displayObserved = worker.TryGetProperty("programDisplay", out var display) &&
+                display.ValueKind == JsonValueKind.Object &&
+                Known(display, "observationVersion", "unknown", "program-display-snapshot-v1") == "program-display-snapshot-v1" &&
+                display.TryGetProperty("observed", out var displayPresent) && displayPresent.ValueKind == JsonValueKind.True;
             return new()
             {
+                ProgramCopiedSequence = displayObserved ? Count(display, "copiedSequence") : null,
+                ProgramAge100ns = displayObserved ? Count(display, "age100ns") : null,
+                ProgramSkipped = displayObserved ? Count(display, "skipped") : null,
+                ProgramRefused = displayObserved ? Count(display, "refused") : null,
+                ProgramDisplayState = displayObserved ? Known(display, "state", "unavailable", "copied", "held", "failed", "preparing") : "unavailable",
                 ReadyInputs = inputObserved ? Count(worker, "readyInputs") : null,
                 HeldInputs = inputObserved ? Count(worker, "heldInputs") : null,
                 UnavailableInputs = inputObserved ? Count(worker, "unavailableInputs") : null,

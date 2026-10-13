@@ -231,28 +231,28 @@ Json::Json(std::nullptr_t) : value_(nullptr) {}
 Json::Json(bool value) : value_(value) {}
 Json::Json(int value) : value_(static_cast<double>(value)) {}
 Json::Json(double value) : value_(value) {}
-Json::Json(const char* value) : value_(std::string(value)) {}
-Json::Json(std::string value) : value_(std::move(value)) {}
-Json::Json(Array value) : value_(std::move(value)) {}
-Json::Json(Object value) : value_(std::move(value)) {}
+Json::Json(const char* value) : value_(std::make_shared<const std::string>(value)) {}
+Json::Json(std::string value) : value_(std::make_shared<const std::string>(std::move(value))) {}
+Json::Json(Array value) : value_(std::make_shared<const Array>(std::move(value))) {}
+Json::Json(Object value) : value_(std::make_shared<const Object>(std::move(value))) {}
 
 bool Json::isNull() const { return std::holds_alternative<std::nullptr_t>(value_); }
 bool Json::isBool() const { return std::holds_alternative<bool>(value_); }
 bool Json::isNumber() const { return std::holds_alternative<double>(value_); }
-bool Json::isString() const { return std::holds_alternative<std::string>(value_); }
-bool Json::isArray() const { return std::holds_alternative<Array>(value_); }
-bool Json::isObject() const { return std::holds_alternative<Object>(value_); }
+bool Json::isString() const { return std::holds_alternative<StringValue>(value_); }
+bool Json::isArray() const { return std::holds_alternative<ArrayValue>(value_); }
+bool Json::isObject() const { return std::holds_alternative<ObjectValue>(value_); }
 
 bool Json::asBool(bool fallback) const { return isBool() ? std::get<bool>(value_) : fallback; }
 double Json::asNumber(double fallback) const { return isNumber() ? std::get<double>(value_) : fallback; }
-const std::string& Json::asString() const { return isString() ? std::get<std::string>(value_) : kEmptyString; }
-const Json::Array& Json::asArray() const { return isArray() ? std::get<Array>(value_) : kEmptyArray; }
-const Json::Object& Json::asObject() const { return isObject() ? std::get<Object>(value_) : kEmptyObject; }
+const std::string& Json::asString() const { return isString() ? (*std::get<StringValue>(value_)) : kEmptyString; }
+const Json::Array& Json::asArray() const { return isArray() ? (*std::get<ArrayValue>(value_)) : kEmptyArray; }
+const Json::Object& Json::asObject() const { return isObject() ? (*std::get<ObjectValue>(value_)) : kEmptyObject; }
 
 const Json* Json::get(const std::string& key) const {
   if (!isObject()) return nullptr;
-  auto it = std::get<Object>(value_).find(key);
-  return it == std::get<Object>(value_).end() ? nullptr : &it->second;
+  auto it = (*std::get<ObjectValue>(value_)).find(key);
+  return it == (*std::get<ObjectValue>(value_)).end() ? nullptr : &it->second;
 }
 
 std::string Json::getString(const std::string& key, std::string fallback) const {
@@ -285,11 +285,11 @@ std::string Json::stringify() const {
     else out << value;
     return out.str();
   }
-  if (isString()) return escapeString(std::get<std::string>(value_));
+  if (isString()) return escapeString((*std::get<StringValue>(value_)));
   if (isArray()) {
     std::string out = "[";
     bool first = true;
-    for (const Json& item : std::get<Array>(value_)) {
+    for (const Json& item : (*std::get<ArrayValue>(value_))) {
       if (!first) out += ",";
       first = false;
       out += item.stringify();
@@ -299,7 +299,7 @@ std::string Json::stringify() const {
   }
   std::string out = "{";
   bool first = true;
-  for (const auto& [key, value] : std::get<Object>(value_)) {
+  for (const auto& [key, value] : (*std::get<ObjectValue>(value_))) {
     if (!first) out += ",";
     first = false;
     out += escapeString(key) + ":" + value.stringify();

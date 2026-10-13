@@ -8,6 +8,7 @@
 #include "compositor/ComPtrLite.h"
 #include "compositor/CompositorShaders.h"
 #include "modules/Interfaces.h"
+#include "modules/D3DProgramDisplaySnapshots.h"
 #include "core/ProgramPlayoutTimeline.h"
 #include <condition_variable>
 #include <deque>
@@ -126,11 +127,15 @@ class D3DProgramBuffer {
     if (delivered_.empty()) return false;
     frame = std::move(delivered_.front()); delivered_.pop_front(); return true;
   }
-  bool multiview(ProgramFrameSharedTexture& texture, std::shared_ptr<const void>& owner) const {
+  bool multiview(ProgramFrameSharedTexture& texture, std::shared_ptr<const void>& owner,
+      int64_t productionSlot = -1) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!multiviewLatest_) return false;
-    texture = {multiviewOutput_->handle, 0, width_, height_, "B8G8R8A8_UNORM", multiviewLatest_->frameNumber};
-    owner = multiviewOutput_; return true;
+    // Target the submitting render's scheduled slot, not its variable CPU
+    // arrival time. One explicit display frame behind the delivery timeline.
+    const auto target = productionSlot >= 0 && timeline_
+        ? timeline_->deadlineNs(productionSlot - depth_ - 1) / 100
+        : now100ns() - D3DProgramDisplaySnapshots::PresentationOffset100ns;
+    return displaySnapshots_.select(target, texture, owner);
   }
   ProgramBufferDiagnostics diagnostics() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -248,12 +253,7 @@ class D3DProgramBuffer {
         !share(output_->texture.get(), handle, output_->mutex)) return false;
     char encoded[32]; std::snprintf(encoded, sizeof(encoded), "0x%llX", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle)));
     output_->handle = encoded;
-    multiviewOutput_ = std::make_shared<Output>();
-    handle = nullptr;
-    if (FAILED(multiviewBranch_.device->CreateTexture2D(&desc, nullptr, multiviewOutput_->texture.put())) ||
-        !share(multiviewOutput_->texture.get(), handle, multiviewOutput_->mutex)) return false;
-    std::snprintf(encoded, sizeof(encoded), "0x%llX", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle)));
-    multiviewOutput_->handle = encoded;
+    if (!displaySnapshots_.initialize(multiviewBranch_.device.get(), width_, height_, diagnostics_.generation)) return false;
     if (!initializeNv12()) return false;
     D3D11_QUERY_DESC complete{D3D11_QUERY_EVENT, 0};
     if (FAILED(prepareDevice_->CreateQuery(&complete, prepareComplete_.put()))) return false;
@@ -585,17 +585,23 @@ class D3DProgramBuffer {
         }
         const auto apiBegin = std::chrono::steady_clock::now();
         if (beforeExport_) beforeExport_(shell);
-        auto& output = shell ? output_ : multiviewOutput_;
+        auto output = output_;
+        std::shared_ptr<D3DProgramDisplaySnapshots::Snapshot> display;
+        if (!shell) {
+          std::lock_guard<std::mutex> lock(mutex_);
+          display = displaySnapshots_.reserve();
+        }
         const auto acquireBegin = std::chrono::steady_clock::now();
         bool unconsumed = false;
-        bool held = output->mutex->AcquireSync(0, 0) == S_OK;
-        if (!held) { held = output->mutex->AcquireSync(1, 0) == S_OK; unconsumed = held; }
+        bool held = shell ? output->mutex->AcquireSync(0, 0) == S_OK : static_cast<bool>(display);
+        if (shell && !held) { held = output->mutex->AcquireSync(1, 0) == S_OK; unconsumed = held; }
         const auto acquireEnd = std::chrono::steady_clock::now();
         int64_t copyNs = 0, flushNs = 0, queryNs = 0;
         bool ready = !held;
         const auto started = std::chrono::steady_clock::now();
         if (held) {
-          branch.context->CopyResource(output->texture.get(), shell ? slot->shellSnapshot.get() : slot->multiviewSnapshot.get());
+          branch.context->CopyResource(shell ? output->texture.get() : display->texture.get(),
+              shell ? slot->shellSnapshot.get() : slot->multiviewSnapshot.get());
           const auto copyEnd = std::chrono::steady_clock::now();
           branch.context->End(branch.complete.get()); branch.context->Flush();
           const auto flushEnd = std::chrono::steady_clock::now();
@@ -612,12 +618,16 @@ class D3DProgramBuffer {
           queryNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - flushEnd).count();
         }
         std::shared_ptr<ProgramFrame> snapshot;
-        if (held && ready) {
+        if (shell && held && ready) {
           // Optional allocation/copy cannot hold the delivery clock's mutex.
           snapshot = std::make_shared<ProgramFrame>(*frame);
           snapshot->gpuOwner = output;
           snapshot->sharedTexture = {output->handle, 0, width_, height_, "B8G8R8A8_UNORM", frame->frameNumber};
         }
+        // Expose shell pixels before metadata. Internal display publications are
+        // immutable and have no keyed ownership to race with their reader.
+        if (shell && held) output->mutex->ReleaseSync(ready ? 1 : 0);
+        if (!shell && held && ready) D3DProgramDisplaySnapshots::stamp(display, *frame);
         {
           std::lock_guard<std::mutex> lock(mutex_);
           if (unconsumed) { ++diagnostics_.displayUnconsumed; ++branch.unconsumed; }
@@ -640,21 +650,20 @@ class D3DProgramBuffer {
             branch.lastTrace = ended;
           }
           if (held && ready) {
-            // Advance metadata before exposing the completed pixels (key 1).
             if (shell) latest_ = std::move(snapshot);
-            else multiviewLatest_ = std::move(snapshot);
+            else displaySnapshots_.publish(display);
           }
           if (ready) {
             if (--slot->readers == 0) slot->state = State::Free;
             branch.busy = false;
           } else {
+            if (display) display->quarantined = true;
             // Unknown GPU completion quarantines this lease; never reuse it.
             branch.failed = true;
             ::corevideo::core::nativeLogf("[program-buffer-export-failure] branch=%s frame=%lld source_quarantined=1\n",
                 shell ? "shell" : "multiview", static_cast<long long>(frame->frameNumber));
           }
         }
-        if (held) output->mutex->ReleaseSync(ready ? 1 : 0);
         notifyChanged();
         if (!ready) return;
       }
@@ -675,10 +684,10 @@ class D3DProgramBuffer {
   std::unique_ptr<core::ProgramPlayoutTimeline> timeline_;
   int64_t lastProducedSlot_ = -1;
   int64_t firstFrameNumber_ = 0;
-  std::shared_ptr<const ProgramFrame> latest_, multiviewLatest_;
+  std::shared_ptr<const ProgramFrame> latest_;
   ExportBranch shellBranch_, multiviewBranch_;
   std::shared_ptr<Output> output_;
-  std::shared_ptr<Output> multiviewOutput_;
+  D3DProgramDisplaySnapshots displaySnapshots_;
   ComPtrLite<ID3D11Query> prepareComplete_;
   std::function<void(const ProgramFrame&)> deliveredCallback_;
   std::thread prepareThread_, deliveryThread_, shellThread_, multiviewThread_;

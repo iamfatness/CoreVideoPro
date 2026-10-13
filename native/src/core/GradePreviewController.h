@@ -145,9 +145,12 @@ class GradePreviewController {
   }
   std::vector<rpc::Json> drain() { auto result = std::move(events_); events_.clear(); return result; }
   rpc::Json diagnostics(const modules::ICompositor& compositor) const {
+    return diagnosticsFor(compositor, active_.size());
+  }
+  static rpc::Json diagnosticsFor(const modules::ICompositor& compositor, size_t editors) {
     const auto worker = compositor.gradePreviewDiagnostics();
     return rpc::Json::Object{{"observationVersion", "grade-preview-v1"},
-      {"supported", compositor.supportsGradePreview()}, {"activeEditors", double(active_.size())},
+      {"supported", compositor.supportsGradePreview()}, {"activeEditors", double(editors)},
       {"editorCapacity", double(Capacity)}, {"leaseMs", 3000}, {"requestedIntervalMs", 100},
       {"submitted", double(worker.submitted)}, {"completed", double(worker.completed)},
       {"superseded", double(worker.superseded)}, {"failed", double(worker.failed)},

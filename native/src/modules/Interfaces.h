@@ -1127,6 +1127,15 @@ struct MonitorInputObservation {
   uint64_t sourceEpoch = 0, requestedEpoch = 0;
   int64_t frameId = 0, captureTimestamp100ns = 0;
 };
+struct ProgramDisplayObservation {
+  bool observed = false;
+  uint64_t generation = 0, requestedSequence = 0, copiedSequence = 0;
+  int64_t frameNumber = 0, timelineTimestamp100ns = 0, age100ns = 0;
+  uint64_t copies = 0, completedCopies = 0, reused = 0, refused = 0, skipped = 0, reordered = 0;
+  int capacity = 0, gpuReads = 0;
+  uint64_t allocatedBytes = 0;
+  std::string state = "unavailable";
+};
 struct MonitorRenderResult {
   int64_t sequence = 0;
   ProgramFrameSharedTexture multiview;
@@ -1138,6 +1147,7 @@ struct MonitorRenderResult {
   uint64_t readyInputs = 0, heldInputs = 0, unavailableInputs = 0;
   uint64_t retainedInputs = 0, retainedInputBytes = 0, retentionRefusals = 0;
   std::vector<MonitorInputObservation> inputs;
+  ProgramDisplayObservation programDisplay;
 };
 
 struct MonitorRenderDiagnostics {
@@ -1398,6 +1408,12 @@ class IAudioMonitorOutput {
   virtual bool render(const float* interleaved, int frameCount, int channels, double volume) = 0;
   [[nodiscard]] virtual bool active() const = 0;
   [[nodiscard]] virtual bool hardwareOutput() const { return false; }
+  // Async device owners distinguish accepted intent from endpoint readiness.
+  [[nodiscard]] virtual bool preparing() const { return false; }
+  // -1 retains synchronous adapters' per-render acceptance accounting.
+  [[nodiscard]] virtual std::int64_t acceptedFrameCount() const { return -1; }
+  [[nodiscard]] virtual std::int64_t droppedFrameCount() const { return 0; }
+  [[nodiscard]] virtual bool deviceDeliveryObserved() const { return active(); }
   [[nodiscard]] virtual std::string deviceName() const = 0;
   [[nodiscard]] virtual std::vector<std::string> warnings() const = 0;
   // Times the endpoint ran completely dry between fills (shared-mode WASAPI

@@ -1133,6 +1133,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     public string LoudnessTargetLabel => "target -16 LUFS";
 
     public string LoudnessLevelLabel =>
+        AudioObservationPolicy.MeterWarning(_bridge.LastSnapshot) is { } warning ? warning :
         _bridge.LastSnapshot?.AudioMixSession is { } audio
             ? audio.LimiterActive
                 ? "limiting"
@@ -10344,6 +10345,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     private void ApplySnapshotChanged(NativeMediaCoreStateSnapshot snapshot)
     {
         if (_shutdownPrepared) return;
+        RefreshAudioObservationClock();
         // P0 present-stutter-fix-spec: time each sub-op; log the breakdown only when a
         // snapshot apply is slow enough to stall the present (>10ms on the UI thread).
         var verboseDiagnostics = DiagnosticLog.VerboseEnabled;

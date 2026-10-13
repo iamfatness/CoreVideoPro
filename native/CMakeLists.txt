@@ -100,11 +100,13 @@ add_library(corevideo_native
   src/core/DeliveryTrace.cpp
   src/core/LockHoldGuardrail.cpp
   src/core/MediaCore.cpp
+  src/core/CoreStateCapture.cpp
   src/core/ComApartmentLifetime.cpp
   src/core/SourceRegistry.cpp
   src/core/SourceVideoIngress.cpp
   src/modules/AsyncEncoderSink.cpp
   src/modules/AsyncOutputSender.cpp
+  src/modules/AsyncAudioMonitorOutput.cpp
   src/modules/OutputDestinationSupervisor.cpp
   src/modules/BrowserSourceHostAdapter.cpp
   src/compositor/CompositorOverlayRaster.cpp
@@ -804,6 +806,10 @@ if(BUILD_TESTING)
     tests/D3DDecoupledExportTest.cpp
     tests/MediaCoreCommandTest.cpp
     tests/MediaCoreBatchSnapshotTest.cpp
+    tests/PublishedObservationStoreTest.cpp
+    tests/ResourceEventLaneTest.cpp
+    tests/AsyncAudioMonitorOutputTest.cpp
+    tests/ImmutableJsonCaptureTest.cpp
     tests/ProgramBufferIntegrationTest.cpp
     tests/OverlayTileRasterTest.cpp
     tests/PluginHostRespawnPolicyTest.cpp

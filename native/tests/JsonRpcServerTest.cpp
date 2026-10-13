@@ -4,6 +4,9 @@
 #include "rpc/JsonRpcServer.h"
 #include "rpc/CommandMailbox.h"
 #include <thread>
+#include "core/CoreStateCapture.h"
+#include <future>
+#include <latch>
 
 #include <gtest/gtest.h>
 
@@ -13,6 +16,96 @@
 #include <sstream>
 #include <string>
 #include <utility>
+
+TEST(JsonRpcServer, StalledResponseAssemblyDoesNotHoldRenderLockAndCapturesRemainOrdered) {
+  // This injects response contention, not GPU cold-start latency. Use the same
+  // deterministic compositor in production and stub build configurations.
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  std::latch entered{1}, release{1};
+  std::atomic<int> assemblies{0};
+  corevideo::rpc::JsonRpcServer server(core, {}, [&](const corevideo::core::CoreStateCapture& capture,
+      corevideo::core::SnapshotProjection kind) {
+    if (++assemblies == 1) { entered.count_down(); release.wait(); }
+    return capture.assemble(kind);
+  });
+  std::istringstream input("{\"id\":1,\"type\":\"snapshot\"}\n{\"id\":2,\"type\":\"snapshot\"}\n{\"id\":3,\"type\":\"snapshot\"}\n{\"id\":4,\"type\":\"get-output-session\"}\n");
+  std::ostringstream output;
+  auto run = std::async(std::launch::async, [&] { server.run(input, output); });
+  entered.wait();
+  // Three commands saturate the executing/pending capture slots. Command three
+  // waits for capacity without owning coreMutex; render must continue here.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  release.count_down();
+  run.get();
+  std::map<int, corevideo::rpc::Json> responses;
+  std::istringstream lines(output.str()); std::string line;
+  while (std::getline(lines, line)) {
+    auto parsed = corevideo::rpc::Json::parse(line);
+    if (parsed && parsed->get("id") && parsed->get("id")->isNumber())
+      responses.emplace(static_cast<int>(parsed->getNumber("id")), *parsed);
+  }
+  ASSERT_EQ(responses.size(), 4u);
+  ASSERT_NE(responses[4].get("session"), nullptr);
+  const auto first = responses[1].get("snapshot")->getNumber("programFrameCount");
+  const auto third = responses[3].get("snapshot")->getNumber("programFrameCount");
+  EXPECT_GT(third - first, 5);
+  EXPECT_EQ(assemblies.load(), 4);
+}
+
+TEST(JsonRpcServer, SlowWriterPreservesAcceptedResponsesWithoutHoldingRenderLock) {
+  struct GatedBuffer : std::stringbuf {
+    std::latch entered{1}, release{1};
+    bool first = true;
+    std::streamsize xsputn(const char* text, std::streamsize count) override {
+      if (first) { first = false; entered.count_down(); release.wait(); }
+      return std::stringbuf::xsputn(text, count);
+    }
+  } buffer;
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  corevideo::rpc::JsonRpcServer server(core);
+  std::ostringstream commands;
+  for (int i = 1; i <= 64; ++i) commands << "{\"id\":" << i << ",\"type\":\"snapshot\"}\n";
+  std::istringstream input(commands.str()); std::ostream output(&buffer);
+  auto run = std::async(std::launch::async, [&] { server.run(input, output); });
+  buffer.entered.wait();
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  buffer.release.count_down(); run.get();
+  std::map<int, double> frames;
+  std::istringstream lines(buffer.str()); std::string line;
+  while (std::getline(lines, line)) {
+    auto value = corevideo::rpc::Json::parse(line);
+    if (value && value->get("snapshot") && value->get("id")->isNumber())
+      frames.emplace(static_cast<int>(value->getNumber("id")), value->get("snapshot")->getNumber("programFrameCount"));
+  }
+  ASSERT_EQ(frames.size(), 64u);
+  EXPECT_GT(frames.at(64) - frames.at(1), 5);
+}
+
+TEST(JsonRpcServer, SoftwarePreviewKeepsPublishingDuringStalledResponseAssembly) {
+  struct PreviewObserver : std::stringbuf {
+    std::atomic<bool> received{false};
+    std::streamsize xsputn(const char* text, std::streamsize count) override {
+      if (std::string_view(text, static_cast<size_t>(count)).find("\"program-frame-preview\"") != std::string_view::npos)
+        received = true;
+      return std::stringbuf::xsputn(text, count);
+    }
+  } observer;
+  corevideo::core::MediaCore core(corevideo::modules::createStubModules());
+  std::latch entered{1}, release{1};
+  corevideo::rpc::JsonRpcServer server(core, {}, [&](const corevideo::core::CoreStateCapture& capture,
+      corevideo::core::SnapshotProjection kind) {
+    entered.count_down(); release.wait(); return capture.assemble(kind);
+  });
+  std::istringstream input("{\"id\":1,\"type\":\"snapshot\"}\n"); std::ostream output(&observer);
+  auto run = std::async(std::launch::async, [&] { server.run(input, output); });
+  entered.wait();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!observer.received && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const bool receivedWhileBlocked = observer.received;
+  release.count_down(); run.get();
+  EXPECT_TRUE(receivedWhileBlocked);
+}
 
 // Regression: the host (System.Text.Json default encoder) escapes non-ASCII and
 // HTML-sensitive characters as \uXXXX. These appear in the larger media-core-sync
