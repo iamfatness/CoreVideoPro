@@ -9,17 +9,21 @@ The implementation was built on the installed isolation validation candidate `e5
 | Evidence | Observed result |
 |---|---|
 | Release WinUI compilation | Passed; existing compiler/analyzer warnings remain |
-| Scene, Tiles, overlay and transport shell tests | 310 passed |
+| Scene, Tiles, overlay, transport and startup shell tests | 313 passed with consistent self-contained `win-x64` settings |
 | MediaCore managed tests | 2,395 passed |
 | Release native compilation | Passed |
 | Native `Tiles*` test selection | 81 passed, including new wall-instance/shared-source tests and the D3D rounded-mask/border/glow pixel test |
 | Self-contained runtime probe | Passed, exit 0; 2,370,320-byte merged PRI; bundled runtime/theme modules; no window opened |
 | Offscreen compiled-XAML/model probe | Passed: zero-route wall, protected Program, exact edit/Undo/Redo, saved-scene recall, source identity/order/visibility/lock/duplicate/removal, desktop/compact sizing; core startup disabled |
+| Local review archive | `beta-2026-10-12-6438b19`; package manifest and all 856 file hashes passed; SHA256 `fcbd623eb7b2d7ce6fdbe8ed7305d83ce68ea224fae6d844ff2231f57978851a` |
+| Local review installer | NSIS build completed; not installed or published during the bake |
 | Active installed process preservation | Existing GUI PID 59312 and native PID 66072 remained running; no restart, installation, camera registration or live control command was performed |
 
 The native tests verify wall bounds, draw opacity, transparent background, authored-layer order and suppression of unrelated-source fallback. The existing D3D test samples real rendered pixels for tile decoration. These do not establish a sustained zero-miss bake or installed workspace usability.
 
 Failed development evidence is retained. The first offscreen probe read the old Program display projection after directly assigning a synthetic active scene; its fixture now performs the transport's normal local reconciliation before asserting protection. The second probe detected that lazy command sync could start a separate test core despite disabling launch-time startup. Probe mode now blocks the central startup/sync paths as well. Both reports remain beside the final passing report; the original installed GUI/core processes were not stopped or reconfigured.
+
+The first local publish had only the app PRI. A clean self-contained publish produced the merged theme PRI and passed the runtime probe before packaging. Switching the test build back to framework-dependent settings then hit missing cached theme asset copy items; the final test run used the same self-contained `win-x64` settings and passed. Failed build logs remain in the evidence directory.
 
 ## Installed review protocol
 
