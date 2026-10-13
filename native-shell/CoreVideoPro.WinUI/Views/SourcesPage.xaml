@@ -93,7 +93,7 @@
                                     <TextBlock Text="{x:Bind DisplayName, Mode=OneWay}" FontSize="12" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind DisplayName, Mode=OneWay}"/>
                                     <TextBlock Text="{x:Bind SourceKindLabel, Mode=OneWay}" FontSize="10" Foreground="{StaticResource StudioMutedBrush}"/>
                                 </StackPanel>
-                                <ToggleButton Grid.Column="3" IsChecked="{x:Bind Visible, Mode=OneWay}" Click="OnVisibilityClicked" MinWidth="24" Padding="4" AutomationProperties.Name="Source visible" ToolTipService.ToolTip="Show or hide source"><FontIcon Glyph="&#xE890;" FontSize="13"/></ToggleButton>
+                                <ToggleButton Grid.Column="3" IsChecked="{x:Bind Visible, Mode=OneWay}" Click="OnVisibilityClicked" MinWidth="24" Padding="4" AutomationProperties.Name="Source visible" ToolTipService.ToolTip="Show or hide source"><Grid Width="16" Height="16"><Path Data="M 1,8 Q 8,1 15,8 Q 8,15 1,8 Z" Stroke="#B7C1CE" StrokeThickness="1"/><Ellipse Width="4" Height="4" Fill="#B7C1CE" HorizontalAlignment="Center" VerticalAlignment="Center"/></Grid></ToggleButton>
                                 <ToggleButton Grid.Column="4" IsChecked="{x:Bind EditorLocked, Mode=OneWay}" Click="OnLockClicked" MinWidth="24" Padding="4" AutomationProperties.Name="Lock source transform" ToolTipService.ToolTip="Lock transform"><FontIcon Glyph="&#xE72E;" FontSize="13"/></ToggleButton>
                             </Grid>
                         </DataTemplate>
@@ -176,7 +176,7 @@
                         <Pivot.HeaderTemplate>
                             <DataTemplate><TextBlock Text="{Binding}" FontSize="11"/></DataTemplate>
                         </Pivot.HeaderTemplate>
-                                <PivotItem Visibility="{x:Bind Workspace.IsWallSelected, Mode=OneWay, Converter={StaticResource BoolToVis}}" Header="Layout">
+                                <PivotItem x:Name="LayoutInspectorTab" Header="Layout">
                                     <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
                                         <StackPanel Spacing="12" Padding="0,12,8,12">
                                             <ComboBox GotFocus="OnDiscreteEditStarted" Header="Tile aspect ratio" ItemsSource="{x:Bind ViewModel.GalleryTileAspectOptions, Mode=OneWay}" SelectedValue="{x:Bind ViewModel.GalleryTileAspect, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label" HorizontalAlignment="Stretch"/>
@@ -189,7 +189,7 @@
                                         </StackPanel>
                                     </ScrollViewer>
                                 </PivotItem>
-                                <PivotItem Visibility="{x:Bind Workspace.IsWallSelected, Mode=OneWay, Converter={StaticResource BoolToVis}}" Header="Style">
+                                <PivotItem x:Name="StyleInspectorTab" Header="Style">
                                     <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
                                         <StackPanel Spacing="12" Padding="0,12,8,12">
                                             <TextBlock Text="Quick looks" FontWeight="SemiBold"/>
@@ -256,7 +256,7 @@
                                         </StackPanel>
                                     </ScrollViewer>
                                 </PivotItem>
-                                <PivotItem Visibility="{x:Bind Workspace.IsWallSelected, Mode=OneWay, Converter={StaticResource BoolToVis}}" Header="Members">
+                                <PivotItem x:Name="MembersInspectorTab" Header="Members">
                                     <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
                                         <StackPanel Spacing="12" Padding="0,12,8,12">
                                             <ComboBox GotFocus="OnDiscreteEditStarted" Header="Who appears" ItemsSource="{x:Bind ViewModel.GalleryMembershipModeOptions, Mode=OneWay}" SelectedValue="{x:Bind ViewModel.GalleryMembershipMode, Mode=TwoWay}" SelectedValuePath="Value" DisplayMemberPath="Label" HorizontalAlignment="Stretch"/>
@@ -316,7 +316,7 @@
                                         </StackPanel>
                                     </ScrollViewer>
                                 </PivotItem>
-                        <PivotItem Header="Transform">
+                        <PivotItem x:Name="TransformInspectorTab" Header="Transform">
                             <ScrollViewer HorizontalScrollBarVisibility="Disabled">
                                 <StackPanel Spacing="10" Padding="0,12,8,12">
                                     <ContentControl Content="{x:Bind Workspace.Selected, Mode=OneWay}" HorizontalContentAlignment="Stretch" IsEnabled="{x:Bind Workspace.CanEditSelected, Mode=OneWay}">
@@ -346,7 +346,7 @@
                                 </StackPanel>
                             </ScrollViewer>
                         </PivotItem>
-                        <PivotItem Header="Appearance" Visibility="{x:Bind Workspace.IsSourceSelected, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                        <PivotItem x:Name="AppearanceInspectorTab" Header="Appearance">
                             <ScrollViewer HorizontalScrollBarVisibility="Disabled">
                                 <ContentControl Content="{x:Bind Workspace.Selected, Mode=OneWay}" HorizontalContentAlignment="Stretch">
                                     <ContentControl.ContentTemplate>
@@ -363,7 +363,7 @@
                                 </ContentControl>
                             </ScrollViewer>
                         </PivotItem>
-                        <PivotItem Header="Source" Visibility="{x:Bind Workspace.IsSourceSelected, Mode=OneWay, Converter={StaticResource BoolToVis}}">
+                        <PivotItem x:Name="SourceInspectorTab" Header="Source">
                             <ScrollViewer HorizontalScrollBarVisibility="Disabled">
                                 <ContentControl Content="{x:Bind Workspace.Selected, Mode=OneWay}" HorizontalContentAlignment="Stretch">
                                     <ContentControl.ContentTemplate>
