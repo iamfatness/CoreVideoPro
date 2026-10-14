@@ -7267,8 +7267,9 @@ TEST(MediaCoreMultiview, TheBusCellsCarryTheShellsSubscriptionLimitNotice) {
     };
 
     (void)mediaCore.applyCommand(layout("no video: Cued guest (subscription limit 10)"));
-    auto labels = busLabels("Preview · no video: Cued guest (subscription limit 10)");
-    EXPECT_EQ(labels["pvw"], "Preview Â· no video: Cued guest (subscription limit 10)");
+    const std::string expectedNotice = "Preview \xC2\xB7 no video: Cued guest (subscription limit 10)";
+    auto labels = busLabels(expectedNotice);
+    EXPECT_EQ(labels["pvw"], expectedNotice);
     EXPECT_EQ(labels["pgm"], "Program");
 
     (void)mediaCore.applyCommand(layout(""));
