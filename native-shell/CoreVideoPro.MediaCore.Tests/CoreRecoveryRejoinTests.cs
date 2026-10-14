@@ -61,11 +61,23 @@ public sealed class CoreRecoveryRejoinTests
             var outcomes = new System.Collections.Concurrent.ConcurrentQueue<(MediaCoreRecoveryOutcome Outcome, string? Epoch)>();
             string? latestStatus = null;
             bridge.StatusChanged += status => Interlocked.Exchange(ref latestStatus, status);
-            bridge.RecoveryCompleted += outcome => outcomes.Enqueue((outcome, bridge.LastSnapshot?.RosterEpoch));
+            var outcomeDiagnostics = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            bridge.RecoveryCompleted += outcome =>
+            {
+                var epoch = bridge.LastSnapshot?.RosterEpoch;
+                // Retain failure-time evidence before a later successful recovery can replace it.
+                outcomeDiagnostics.Enqueue(JsonSerializer.Serialize(new
+                {
+                    Outcome = outcome, Epoch = epoch, Status = Volatile.Read(ref latestStatus),
+                    Health = supervisor.Health
+                }));
+                outcomes.Enqueue((outcome, epoch));
+            };
             string Diagnostics() => JsonSerializer.Serialize(new
             {
                 Health = supervisor.Health, Status = Volatile.Read(ref latestStatus),
-                Joins = JoinLines(directory), Outcomes = outcomes.Select(item => new { item.Outcome, item.Epoch }).ToArray()
+                Joins = JoinLines(directory), Outcomes = outcomes.Select(item => new { item.Outcome, item.Epoch }).ToArray(),
+                OutcomeDiagnostics = outcomeDiagnostics.ToArray()
             });
             Assert.NotNull(await bridge.StartAsync());
             await bridge.JoinZoomAsync("https://example.zoom.us/j/123456789", "Producer", webinar: false);
