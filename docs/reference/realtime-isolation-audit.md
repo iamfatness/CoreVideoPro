@@ -46,6 +46,63 @@ device audio continuity; installed device-switch qualification remains separate.
 
 ## Where the pattern recurs
 
+### Resource handoff after the audit
+
+The optional resource pump remains the formatting/mailbox owner. Its core-side
+`ResourceEventStaging` now admits at most 64 Program, participant, Multiview and
+Preview announcements, with a conservative 2 MiB allocation/serialization bound.
+The fixed event schemas reserve 8 KiB for root/texture nodes and keys, 4 KiB per
+Multiview tile and eight bytes per variable string character (including worst
+JSON escaping). These bounds are computed from source facts before constructing
+JSON. An exhausted lane never constructs the rejected payload, evicts an
+accepted announcement or releases a retained payload under `coreMutex`.
+
+A drain moves at most 64 owned immutable JSON leases to the pump. Admission and
+accepted FIFO order are preserved across kinds. Final payload retirement is
+outside the core lock. A blocked pump can retain one additional drained batch,
+so pre-pump ownership is at most two 64-event/2 MiB batches, in addition to the
+separate bounded serialized mailbox. A refused Program/Multiview/Preview
+announcement does not advance its emitted identity/signature; the next render
+retries the current structure. Participant facts retry each tick. Counters at
+`realtimeEvidence.resourceEventStaging` distinguish admission from refusal and
+report pending items and the resident bound; neither counter proves receiver
+delivery. Resource descriptors do not introduce GPU release/ownership barriers.
+The serialized mailbox retains its existing logical wire-byte accounting;
+allocator/string capacity overhead is not a measured resident-memory guarantee.
+
+Grade drain captures the existing maximum sixteen JSON leases and matching
+`appliedRevision` scalars under the lock. Adding that field and copying object
+maps happens after unlock, using the captured revision even if a newer grade is
+applied meanwhile. The synchronous drain remains for isolated direct callers.
+Its owner queue also refuses before JSON construction at sixteen events or a
+512 KiB conservative fixed-schema byte bound, without retiring accepted roots.
+`gradePreview.eventsRefused` and `eventOwnedByteBound` report this pressure.
+Active editor ticks retry the current surface on the next 100 ms tick after
+space returns. A one-shot unsupported/capacity response returns a failed control
+ACK when its event cannot be admitted; repeating that control can retry after
+drain. This avoids acknowledging a diagnostic event that was silently lost.
+
+Serialized mailbox capacity wait belongs only to the pump. On terminal stop,
+saturated admission is cancelled rather than waiting for a blocked pipe writer;
+the summary log records `resource terminal-cancelled` and `oversized` separately.
+The writer's stop signal follows producer joins and final bounded drains, so a
+writable mailbox can finish accepted metadata in order. An unavailable writer
+can lose metadata through explicitly counted terminal cancellation. The existing
+uninterruptible `std::ostream` write/join limitation is not repaired here; this
+change adds no new shutdown wait on mailbox capacity after stop. All mailbox
+condition-variable notifications wake both writer and capacity waiters.
+`[resource-pump]` shutdown summaries attribute formatting and mailbox acquisition/
+capacity wait separately (count, total and maximum microseconds). Core capture
+retains `rpc.resource-drain` lock-guardrail timing; the existing writer reports
+queue sojourn and blocking flush separately. These timings do not establish GPU
+execution cost or receiver presentation.
+
+Deterministic tests stall formatting for 20/40/100/500 ms while the MediaCore
+stub keeps producing Program, saturate staging, verify accepted order and current
+structure retry, check payload leases survive drain, and cancel saturated
+mailbox admission on stop. These establish dependency and ownership behavior,
+not physical GPU/webcam deadlines, installed continuity or a zero-miss result.
+
 | Boundary | Evidence and mechanism | Repair boundary / tracking |
 |---|---|---|
 | Status to audio/output | **Measured interference, source-confirmed nesting.** RPC holds `coreMutex`; `sessionState()` acquires `audioOutputMutex_`. Installed snapshots held the core lock 35–43 ms while Program lost frames. The exact expensive initiating operation is still unproven. | Owner-published immutable observations; bounded core capture and off-lock assembly. [#870](https://github.com/iamfatness/CoreVideoPro/issues/870). |

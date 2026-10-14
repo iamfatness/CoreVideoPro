@@ -59,8 +59,8 @@ Json::Array commandBatch(const Json& request) {
 
 }  // namespace
 
-JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler, SnapshotAssembler assembler)
-    : mediaCore_(mediaCore), joinHandler_(std::move(joinHandler)), snapshotAssembler_(std::move(assembler)) {
+JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler, SnapshotAssembler assembler, ResourceFormatter formatter)
+    : mediaCore_(mediaCore), joinHandler_(std::move(joinHandler)), snapshotAssembler_(std::move(assembler)), resourceFormatter_(std::move(formatter)) {
   std::random_device random;
   processEpoch_ = std::to_string(random()) + "-" + std::to_string(random());
 }
@@ -398,6 +398,9 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   BoundedResponseLane outHi;  // command responses / failures, depth-capped
   std::deque<std::pair<std::string, Stamp>> outLo;  // frame-preview events (droppable)
   std::atomic<bool> stopping{false};
+  std::atomic<bool> writerStopping{false};
+  std::uint64_t resourceCancelled = 0, resourceOversized = 0; // resource pump, then joined final drain
+  std::uint64_t resourceFormatted = 0, formatTotalUs = 0, formatMaxUs = 0, admissionTotalUs = 0, admissionMaxUs = 0;
 
   auto enqueueResponse = [&](std::string message) {
     if (message.size() > BoundedResponseLane::kMaxMessageBytes) {
@@ -411,7 +414,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       outCv.wait(lock, [&] { return outHi.canPush(message.size()); });
       outHi.push(std::move(message)); // capacity reserved; never drop accepted ACKs
     }
-    outCv.notify_one();
+    outCv.notify_all();
   };
   auto enqueueFrame = [&](std::string message) {
     std::string retired;
@@ -423,30 +426,51 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       }
       outLo.emplace_back(std::move(message), std::chrono::steady_clock::now());
     }
-    outCv.notify_one();
+    outCv.notify_all();
   };
 
   auto enqueueResource = [&](const Json& event) {
+    const auto formatStart = std::chrono::steady_clock::now();
     const auto key = event.getString("type") + ":" + event.getString("participantId") + ":" + event.getString("instanceId");
-    auto message = event.stringify(); // never coreMutex or outMx
+    auto message = resourceFormatter_ ? resourceFormatter_(event) : event.stringify(); // never coreMutex or outMx
+    const auto formatUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - formatStart).count());
+    ++resourceFormatted; formatTotalUs += formatUs; formatMaxUs = (std::max)(formatMaxUs, formatUs);
+    if (key.size() > 1024 || message.size() + key.size() > ResourceEventLane::ByteBudget) {
+      ++resourceOversized;
+      ::corevideo::core::nativeLogf("[rpc] structural event refused oversized key_bytes=%zu bytes=%zu\n", key.size(), message.size());
+      return;
+    }
     ResourceEventLane::PushResult result;
     std::uint64_t refused = 0;
+    const auto admissionStart = std::chrono::steady_clock::now();
+    auto accountAdmissionWait = [&] {
+      const auto elapsed = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - admissionStart).count());
+      admissionTotalUs += elapsed; admissionMaxUs = (std::max)(admissionMaxUs, elapsed);
+    };
     {
-      std::lock_guard<std::mutex> lock(outMx);
+      std::unique_lock<std::mutex> lock(outMx);
+      if (!outResources.waitForCapacity(key, message.size(), lock, outCv, [&] { return stopping.load(); })) {
+        ++resourceCancelled;
+        accountAdmissionWait();
+        return; // terminal cancellation; message retires after lock destruction
+      }
       result = outResources.push(key, std::move(message));
       refused = outResources.refused();
     }
+    accountAdmissionWait();
     if (!result.admitted) {
       ::corevideo::core::nativeLogf("[rpc] structural event refused count=%llu key=%s\n",
           static_cast<unsigned long long>(refused), key.c_str());
     }
-    outCv.notify_one(); // result retires old/rejected bytes after the mailbox lock
+    outCv.notify_all(); // result retires old/rejected bytes after the mailbox lock
   };
 
   std::thread writer([&] {
     std::unique_lock<std::mutex> lock(outMx);
     for (;;) {
-      outCv.wait(lock, [&] { return !outHi.empty() || !outResources.empty() || !outLo.empty() || stopping.load(); });
+      outCv.wait(lock, [&] { return !outHi.empty() || !outResources.empty() || !outLo.empty() || writerStopping.load(); });
       while (!outHi.empty() || !outResources.empty() || !outLo.empty()) {
         std::string message;
         Stamp enqueuedAt;
@@ -489,7 +513,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
         }
         lock.lock();
       }
-      if (stopping.load() && outHi.empty() && outLo.empty()) {
+      if (writerStopping.load() && outHi.empty() && outResources.empty() && outLo.empty()) {
         break;
       }
     }
@@ -776,19 +800,18 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // of the six-message disposable thumbnail queue.
   std::thread resourcePumpThread([&] {
     while (!stopping.load()) {
-      std::array<std::vector<Json>, 5> batches;
+      std::vector<Json> resources;
+      core::SourceGradeState::EventBatch grades;
       {
         std::unique_lock<std::mutex> lock(coreMutex, std::try_to_lock);
         if (lock.owns_lock()) {
           core::ScopedLockHoldTimer timer("rpc.resource-drain", core::LockHoldGuardrail::kDefaultBudgetUs);
-          batches[0] = mediaCore_.drainProgramSharedTextureEvents();
-          batches[1] = mediaCore_.drainParticipantSharedTextureEvents();
-          batches[2] = mediaCore_.drainGradePreviewEvents();
-          batches[3] = mediaCore_.drainMultiviewSharedTextureEvents();
-          batches[4] = mediaCore_.drainPreviewSharedTextureEvents();
+          resources = mediaCore_.drainResourceEvents();
+          grades = mediaCore_.captureGradePreviewEvents();
         }
       }
-      for (const auto& batch : batches) for (const auto& event : batch) enqueueResource(event);
+      for (const auto& event : resources) enqueueResource(event);
+      for (const auto& event : std::move(grades).assemble()) enqueueResource(event);
       std::this_thread::sleep_for(std::chrono::milliseconds(8));
     }
   });
@@ -1208,7 +1231,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   assembly.finish(); // drain accepted responses while media owners still exist
   stopping.store(true);
   coreHandoff.notify_all();
-  outCv.notify_one();
+  outCv.notify_all();
   if (renderThread.joinable()) {
     renderThread.join();
   }
@@ -1233,6 +1256,19 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   if (reader.joinable()) {
     reader.join();
   }
+  // Every producer is joined. Transfer final accepted metadata before writer
+  // termination; terminal saturation is explicitly cancelled, never waited on.
+  for (const auto& event : mediaCore_.drainResourceEvents()) enqueueResource(event);
+  for (const auto& event : mediaCore_.drainGradePreviewEvents()) enqueueResource(event);
+  if (resourceCancelled || resourceOversized)
+    ::corevideo::core::nativeLogf("[rpc] resource terminal-cancelled=%llu oversized=%llu\n",
+        static_cast<unsigned long long>(resourceCancelled), static_cast<unsigned long long>(resourceOversized));
+  ::corevideo::core::nativeLogf("[resource-pump] formatted=%llu format_total_us=%llu format_max_us=%llu mailbox_wait_total_us=%llu mailbox_wait_max_us=%llu\n",
+      static_cast<unsigned long long>(resourceFormatted), static_cast<unsigned long long>(formatTotalUs),
+      static_cast<unsigned long long>(formatMaxUs), static_cast<unsigned long long>(admissionTotalUs),
+      static_cast<unsigned long long>(admissionMaxUs));
+  writerStopping.store(true);
+  outCv.notify_all();
   if (writer.joinable()) {
     writer.join();
   }

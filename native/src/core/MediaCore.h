@@ -1,4 +1,5 @@
 #pragma once
+#include "core/ResourceEventStaging.h"
 
 #include "core/SourcePreviewDemand.h"
 #include "compositor/TilesMembership.h"
@@ -163,7 +164,9 @@ class MediaCore {
   void publishEncodedProgramPreview(rpc::Json preview);
   [[nodiscard]] std::vector<rpc::Json> drainProgramSharedTextureEvents();
   [[nodiscard]] std::vector<rpc::Json> drainParticipantSharedTextureEvents();
-  [[nodiscard]] std::vector<rpc::Json> drainGradePreviewEvents() { return sourceGrades_.annotate(gradePreviews_.drain()); }
+  [[nodiscard]] SourceGradeState::EventBatch captureGradePreviewEvents() { return sourceGrades_.captureAnnotations(gradePreviews_.drain()); }
+  [[nodiscard]] std::vector<rpc::Json> drainGradePreviewEvents() { return captureGradePreviewEvents().assemble(); }
+  [[nodiscard]] std::vector<rpc::Json> drainResourceEvents() { return pendingResourceEvents_.drain(); }
   [[nodiscard]] rpc::Json applySourceGrade(const rpc::Json& command);
   bool configureSourcePreviewDemand(const rpc::Json& command);
   bool configureGradePreview(const rpc::Json& command);
@@ -843,7 +846,6 @@ class MediaCore {
   // continuously by the host (mirrors the multiview event gating).
   uint32_t lastPreviewStructureSignature_ = 0;
   bool previewStructureEmitted_ = false;
-  std::vector<rpc::Json> pendingPreviewSharedTextureEvents_;
   int64_t mixedAudioFrameCount_ = 0;
   std::map<std::string, std::vector<float>> routedBusPcm_;
   // Rolling deinterleaved program audio (<= 3 s) feeding the BS.1770 master
@@ -1412,10 +1414,8 @@ class MediaCore {
   modules::ProgramFrameSharedTexture lastPreviewTexture_;
   int lastPreviewWidth_ = 0;
   int lastPreviewHeight_ = 0;
-  std::vector<rpc::Json> pendingMultiviewSharedTextureEvents_;
   std::vector<rpc::Json> pendingProgramFramePreviewEvents_;
-  std::vector<rpc::Json> pendingProgramSharedTextureEvents_;
-  std::vector<rpc::Json> pendingParticipantSharedTextureEvents_;
+  ResourceEventStaging pendingResourceEvents_;
   // #652 test trace: match the fake engine's white source frame to the exact
   // buffered Program frame that reaches the shared-texture publish path.
   std::deque<int64_t> avSyncWhiteProducedFrames_;
