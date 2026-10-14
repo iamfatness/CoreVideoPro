@@ -5826,6 +5826,21 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
         request.sourceExports.push_back({frame.participantId,
             modules::SourceMonitorConsumer::PreviewFallback, "preview-fallback"});
     }
+    // Sources inspectors need identity-safe full-source exports even while
+    // composite Preview is active. Bound demand to ten assigned input rows;
+    // never export every participant. programPlan carries off-air source grades.
+    int inspectorRows = 0;
+    for (const auto& source : multiviewSources_) {
+      if (inspectorRows++ >= 10) break;
+      const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
+          source.captureDeviceId, source.mediaAssetId);
+      const auto nativeId = feed.participantId.empty() ? feed.sourceId : feed.participantId;
+      if (nativeId.empty()) continue;
+      if (std::none_of(request.sourceExports.begin(), request.sourceExports.end(),
+          [&](const auto& demand) { return demand.sourceId == nativeId; }))
+        request.sourceExports.push_back({nativeId, modules::SourceMonitorConsumer::Inspector,
+            "source-thumbnail:" + feed.sourceId});
+    }
     if (request.multiviewActive) {
       request.multiviewPlan = buildMultiviewRenderPlan(videoFrames);
       request.multiviewPlan.skipCpuReadback = true;

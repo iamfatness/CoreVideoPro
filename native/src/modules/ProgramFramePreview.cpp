@@ -819,6 +819,7 @@ std::vector<rpc::Json> participantSharedTextureEvents(const ProgramFrame& frame)
     events.push_back(rpc::Json::Object{
         {"type", "participant-shared-texture"},
         {"participantId", pt.participantId},
+        {"sourceEpoch", static_cast<double>(pt.sourceEpoch)},
         {"texture", rpc::Json::Object{
                         {"sharedHandleHex", pt.sharedHandleHex},
                         {"width", pt.width},

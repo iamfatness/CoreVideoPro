@@ -109,6 +109,8 @@ class D3DDecoupledExport {
     slots_.clear();
     prepared_ = {}; output_ = {}; outputMutex_ = {};
     outputHandle_ = nullptr;
+    outputSourceEpoch_ = 0;
+    publishDescriptor(nullptr, 0, -1);
     publishedFrameNumber_ = std::make_shared<std::atomic<int64_t>>(-1);
     width_ = width; height_ = height;
     stopped_ = false;
@@ -121,7 +123,20 @@ class D3DDecoupledExport {
     return ready();
   }
   bool dimensions(int width, int height) const { return width == width_ && height == height_; }
-  HANDLE handle() const { return ready() ? outputHandle_ : nullptr; }
+  struct Publication { HANDLE handle = nullptr; uint64_t sourceEpoch = 0; int64_t frameNumber = -1; };
+  Publication publication() const {
+    // The worker owns publication. A reader never waits for texture creation/GPU work.
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      const auto before = publicationRevision_.load(std::memory_order_acquire);
+      if (before & 1u) continue;
+      Publication result{publishedHandle_.load(std::memory_order_relaxed),
+          publishedSourceEpoch_.load(std::memory_order_relaxed), publishedFrame_.load(std::memory_order_relaxed)};
+      std::atomic_thread_fence(std::memory_order_acquire);
+      if (before == publicationRevision_.load(std::memory_order_acquire)) return result;
+    }
+    return {};
+  }
+  HANDLE handle() const { return ready() ? publishedHandle_.load(std::memory_order_acquire) : nullptr; }
   int width() const { return width_; }
   int height() const { return height_; }
   std::shared_ptr<std::atomic<int64_t>> publishedFrameNumber() const { return publishedFrameNumber_; }
@@ -131,7 +146,7 @@ class D3DDecoupledExport {
   // to this fast export device. Does not flush: the render context's end-of-pass
   // Flush submits the copy, exactly as D3DProgramBuffer::submit relies on. Drops
   // the frame (bounded, non-blocking) when every slot is still in flight.
-  bool submit(ID3D11DeviceContext* producer, ID3D11Texture2D* src, int64_t frameNumber = 0) {
+  bool submit(ID3D11DeviceContext* producer, ID3D11Texture2D* src, int64_t frameNumber = 0, uint64_t sourceEpoch = 0) {
     if (!ready() || !src) return false;
     GpuSubmissionCpuScope timing(profileSubmission_, label_, submissionEpoch_, frameNumber);
     Slot* slot = nullptr;
@@ -160,6 +175,7 @@ class D3DDecoupledExport {
       std::lock_guard<std::mutex> lock(mutex_);
       slot->state = State::Submitted;
       slot->frameNumber = frameNumber;
+      slot->sourceEpoch = sourceEpoch;
       queue_.push_back(slot);
     }
     changed_.notify_one();
@@ -171,6 +187,7 @@ class D3DDecoupledExport {
   enum class State { Free, Writing, Submitted, Consuming };
   struct Slot {
     int64_t frameNumber = 0;
+    uint64_t sourceEpoch = 0;
     State state = State::Free;
     ComPtrLite<ID3D11Texture2D> texture;        // on producer device
     ComPtrLite<ID3D11Texture2D> opened;         // same resource opened on export device
@@ -235,6 +252,7 @@ class D3DDecoupledExport {
       return false;
     }
     outputHandle_ = outHandle;
+    publishDescriptor(outHandle, 0, -1);
     creationThread_ = std::this_thread::get_id();
     return true;
   }
@@ -242,13 +260,42 @@ class D3DDecoupledExport {
   // Publish prepared_ to the consumer texture. False means the encoder still
   // holds the key; the pixels stay in prepared_ and must be retried. Dropping
   // them here is how frames vanished with encoderExportShedFrames still zero.
-  bool publishPrepared(int64_t frameNumber) {
+  void publishDescriptor(HANDLE handle, uint64_t sourceEpoch, int64_t frameNumber) {
+    publicationRevision_.fetch_add(1, std::memory_order_acq_rel);
+    publishedHandle_.store(handle, std::memory_order_relaxed);
+    publishedSourceEpoch_.store(sourceEpoch, std::memory_order_relaxed);
+    publishedFrame_.store(frameNumber, std::memory_order_relaxed);
+    publicationRevision_.fetch_add(1, std::memory_order_release);
+  }
+
+  bool rotateOutput(uint64_t sourceEpoch) {
+    if (outputSourceEpoch_ == sourceEpoch) return true;
+    // An incarnation must not reuse the shell's cached private texture. Create
+    // only the consumer texture, on this worker; retain the device and slots.
+    D3D11_TEXTURE2D_DESC desc{};
+    output_->GetDesc(&desc);
+    ComPtrLite<ID3D11Texture2D> replacement;
+    ComPtrLite<IDXGIKeyedMutex> replacementMutex;
+    HANDLE replacementHandle = nullptr;
+    if (FAILED(exportDevice_->CreateTexture2D(&desc, nullptr, replacement.put())) ||
+        !share(replacement.get(), replacementHandle) ||
+        FAILED(replacement->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(replacementMutex.put())))) return false;
+    output_ = std::move(replacement);
+    outputMutex_ = std::move(replacementMutex);
+    outputHandle_ = replacementHandle;
+    outputSourceEpoch_ = sourceEpoch;
+    return true;
+  }
+
+  bool publishPrepared(int64_t frameNumber, uint64_t sourceEpoch) {
+    if (!rotateOutput(sourceEpoch)) return false;
     bool owned = outputMutex_->AcquireSync(0, 0) == S_OK;
     if (!owned) owned = outputMutex_->AcquireSync(1, 0) == S_OK;
     if (!owned) return false;
     exportContext_->CopyResource(output_.get(), prepared_.get());
     publishedFrameNumber_->store(frameNumber, std::memory_order_release);
     outputMutex_->ReleaseSync(1);
+    publishDescriptor(outputHandle_, sourceEpoch, frameNumber);
     ++published_;
     exportContext_->Flush();
     return true;
@@ -257,6 +304,7 @@ class D3DDecoupledExport {
   void exportLoop() {
     bool pending = false;
     int64_t pendingFrame = 0;
+    uint64_t pendingEpoch = 0;
     for (;;) {
       Slot* slot = nullptr;
       {
@@ -286,6 +334,7 @@ class D3DDecoupledExport {
         // wait for the producer copy is on THIS export context, never the render one.
         const bool pulled = slot->mutex->AcquireSync(1, 0) == S_OK;
         const int64_t frameNumber = slot->frameNumber;
+        const uint64_t sourceEpoch = slot->sourceEpoch;
         if (pulled) {
           exportContext_->CopyResource(prepared_.get(), slot->opened.get());
           slot->mutex->ReleaseSync(0);  // slot free for the producer immediately
@@ -302,11 +351,12 @@ class D3DDecoupledExport {
         if (pulled) {
           pending = true;
           pendingFrame = frameNumber;
+          pendingEpoch = sourceEpoch;
         }
       }
 
       if (!pending) continue;
-      if (publishPrepared(pendingFrame)) {
+      if (publishPrepared(pendingFrame, pendingEpoch)) {
         pending = false;
       } else {
         ++consumerBusy_;
@@ -335,7 +385,12 @@ class D3DDecoupledExport {
   ComPtrLite<ID3D11Texture2D> prepared_;
   ComPtrLite<ID3D11Texture2D> output_;
   ComPtrLite<IDXGIKeyedMutex> outputMutex_;
-  HANDLE outputHandle_ = nullptr;
+  HANDLE outputHandle_ = nullptr; // worker-owned; public reads use coherent descriptor
+  uint64_t outputSourceEpoch_ = 0;
+  std::atomic<uint64_t> publicationRevision_{0};
+  std::atomic<HANDLE> publishedHandle_{nullptr};
+  std::atomic<uint64_t> publishedSourceEpoch_{0};
+  std::atomic<int64_t> publishedFrame_{-1};
   std::shared_ptr<std::atomic<int64_t>> publishedFrameNumber_ = std::make_shared<std::atomic<int64_t>>(-1);
   std::thread worker_;
   std::uint64_t published_ = 0, dropped_ = 0, producerBusy_ = 0, consumerBusy_ = 0;

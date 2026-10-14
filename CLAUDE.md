@@ -185,6 +185,7 @@ phrase they quote.
 | [`docs/reference/source-bus.md`](docs/reference/source-bus.md) | the source bus, ingests, bus health, slates, hold/black |
 | [`docs/reference/status-snapshot-isolation-spec.md`](docs/reference/status-snapshot-isolation-spec.md) | proposed #870 status ownership, off-lock assembly, freshness and delivery acceptance; [implementation sequence](docs/reference/status-snapshot-isolation-plan.md) |
 | [`docs/reference/realtime-isolation-audit.md`](docs/reference/realtime-isolation-audit.md) | cross-subsystem evidence, owner/command/observer isolation contract, lock budgets and integrated fault qualification under #517/#870 |
+| [`docs/reference/source-thumbnail-isolation.md`](docs/reference/source-thumbnail-isolation.md) | Sources input thumbnails, per-source GPU export identity and source-epoch publication |
 | [`docs/reference/source-grading-spec.md`](docs/reference/source-grading-spec.md) | per-source grade compatibility, expanded editor, native preview and scopes |
 | [`docs/reference/srt-ingest.md`](docs/reference/srt-ingest.md) | SRT contribution feeds in |
 | [`docs/reference/stream-failure-reasons.md`](docs/reference/stream-failure-reasons.md) | stream error surfacing |
