@@ -48,6 +48,18 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     status_.fps = fps;
     status_.state = "starting";
 
+    const auto registration = ensureVirtualCameraRegistration();
+    if (registration.predefinedUserMismatch) {
+      ::corevideo::core::nativeLogf("[virtualcam] predefined HKCU differs from freshly opened user hive; using fresh ownership check\n");
+    }
+    if (!registration.ready) {
+      fail(registration.warning);
+      return false;
+    }
+    if (registration.repaired) {
+      ::corevideo::core::nativeLogf("[virtualcam] repaired missing or stale per-user camera registration\n");
+    }
+
     // 1) Create the cross-session shared-memory slot (writer owns it). File-backed
     //    on %ProgramData% so the Frame Server, which serves the camera from
     //    session 0, can read what we publish from the user's session.
@@ -80,15 +92,6 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     ::MemoryBarrier();
     header_->seq = (header_->seq | 1u) + 1u;  // even = complete
     ensureVirtualCameraServeLogFile();  // serving processes can append diagnostics
-
-    const auto registration = ensureVirtualCameraRegistration();
-    if (!registration.ready) {
-      fail(registration.warning);
-      return false;
-    }
-    if (registration.repaired) {
-      ::corevideo::core::nativeLogf("[virtualcam] repaired missing or stale per-user camera registration\n");
-    }
 
     // 2) Register the OS virtual camera (Win11 MFCreateVirtualCamera). The DLL
     //    named by kMediaSourceClsid serves NV12 samples read from the slot.

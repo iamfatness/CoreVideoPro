@@ -1,5 +1,32 @@
 # Virtual camera (program feed → a webcam for Zoom/Teams/OBS)
 
+## Registration failure recovery (#857)
+
+Webcam enable is desired state, not proof that Windows accepted startup. The
+asynchronous owner formerly marked a failed start as applied and never tried
+again while enable remained true. Repairing the registry alone therefore left
+the camera failed with zero publications. Registration failures (`CAMERA_`)
+now retry on the camera worker at most once per second, including when no video
+arrives. Stop cancels the retry; non-registration Windows failures and exceptions
+do not enter this automatic retry loop. The last failure remains visible until
+an observed successful start clears it.
+
+Each ownership check opens a fresh user hive with `RegOpenCurrentUser` and closes
+it after inspecting/repairing the alias. It does not rely on the process-cached
+predefined HKCU mapping or invalidate Windows' cache globally. The machine owner,
+protected DLL path, and user-owner guards still apply; unknown keys are never
+overwritten. A discrepancy between the predefined and fresh user mapping emits
+a diagnostic without printing registry values. Registration is checked before
+opening/resetting the pixel slot, so refused retries cannot invalidate its pixels.
+
+The October 14 controlled installed-path comparison reproduced the recovery
+latch: after external repair, the baseline stayed failed with zero publications;
+the candidate recovered in the same PID and an OS receiver read 300 1080p60
+samples. This qualifies registration recovery, not pixel-identity continuity or
+a meeting soak. The original October 10/13 false ownership read's initiating
+cause remains unproven. The fresh-hive change removes a cached-context exposure;
+the injected predefined-mapping test is not proof that this caused those events.
+
 ## Reader delivery evidence
 
 The #517 delivery evidence replaces the old `Fill` sample with a

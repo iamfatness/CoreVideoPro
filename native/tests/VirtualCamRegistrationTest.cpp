@@ -117,22 +117,59 @@ TEST(VirtualCamRegistration, StartupRepairsOnlyAliasOfOwnedMachineRuntime) {
   ASSERT_EQ(set(machine, kServer, L"CoreVideoOwnerAppDirectory", app), ERROR_SUCCESS);
   ASSERT_EQ(set(machine, kServer, L"CoreVideoSha256", hash), ERROR_SUCCESS);
   ASSERT_EQ(set(machine, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion", L"CommonFilesDir", temporary.wstring()), ERROR_SUCCESS);
-  ASSERT_EQ(::RegOverridePredefKey(HKEY_LOCAL_MACHINE, machine), ERROR_SUCCESS);
-  ASSERT_EQ(::RegOverridePredefKey(HKEY_CURRENT_USER, user), ERROR_SUCCESS);
-  auto result = corevideo::modules::ensureVirtualCameraRegistration();
+  const auto check = [&] { return corevideo::modules::ensureVirtualCameraRegistrationForRoots(machine, user); };
+  auto result = check();
   EXPECT_TRUE(result.ready) << result.warning;
   EXPECT_TRUE(result.repaired);
   EXPECT_EQ(readRegistration(user), runtime.wstring());
-  EXPECT_FALSE(corevideo::modules::ensureVirtualCameraRegistration().repaired);
+  EXPECT_FALSE(check().repaired);
   ASSERT_EQ(set(user, kServer, L"CoreVideoOwnerRole", L"foreign"), ERROR_SUCCESS);
-  result = corevideo::modules::ensureVirtualCameraRegistration();
+  result = check();
   EXPECT_FALSE(result.ready);
   EXPECT_EQ(readRegistration(user), runtime.wstring());
   EXPECT_NE(result.warning.find("CAMERA_USER_REGISTRATION_CONFLICT"), std::string::npos);
+  // External repair must be visible in this same process, with the same owner
+  // handle; no cached failure, key removal, or application restart is needed.
+  ASSERT_EQ(set(user, kServer, L"CoreVideoOwnerRole", L"CoreVideoPro.VirtualCamera.v1"), ERROR_SUCCESS);
+  result = check();
+  EXPECT_TRUE(result.ready) << result.warning;
+  EXPECT_FALSE(result.repaired);
+  EXPECT_TRUE(result.warning.empty());
   ASSERT_EQ(::RegDeleteTreeW(machine, kServer), ERROR_SUCCESS);
-  result = corevideo::modules::ensureVirtualCameraRegistration();
+  result = check();
   EXPECT_FALSE(result.ready);
   EXPECT_NE(result.warning.find("CAMERA_MACHINE_REGISTRATION_MISSING"), std::string::npos);
+}
+
+TEST(VirtualCamRegistration, FreshUserHiveBypassesAnIncorrectPredefinedMapping) {
+  // Inject a wrong predefined mapping without modifying real camera keys.
+  // This tests the recovery mechanism, not attribution of the production event.
+  HKEY actual = nullptr, sandbox = nullptr, decoy = nullptr;
+  ASSERT_EQ(::RegOpenCurrentUser(KEY_READ | KEY_WRITE, &actual), ERROR_SUCCESS);
+  const auto path = L"Software\\CoreVideoFreshUserHiveTests-" + std::to_wstring(::GetCurrentProcessId());
+  struct Cleanup {
+    HKEY &actual, &sandbox, &decoy; std::wstring path;
+    ~Cleanup() {
+      ::RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
+      if(decoy) ::RegCloseKey(decoy);
+      if(sandbox) ::RegCloseKey(sandbox);
+      ::RegDeleteTreeW(actual, path.c_str()); ::RegCloseKey(actual);
+    }
+  } cleanup{actual,sandbox,decoy,path};
+  ASSERT_EQ(::RegCreateKeyExW(actual,path.c_str(),0,nullptr,REG_OPTION_VOLATILE,KEY_ALL_ACCESS,nullptr,&sandbox,nullptr), ERROR_SUCCESS);
+  ASSERT_EQ(::RegCreateKeyExW(sandbox,L"decoy",0,nullptr,REG_OPTION_VOLATILE,KEY_ALL_ACCESS,nullptr,&decoy,nullptr), ERROR_SUCCESS);
+  HKEY wrong = nullptr;
+  ASSERT_EQ(::RegCreateKeyExW(decoy,path.c_str(),0,nullptr,REG_OPTION_VOLATILE,KEY_ALL_ACCESS,nullptr,&wrong,nullptr), ERROR_SUCCESS);
+  constexpr wchar_t expected[] = L"actual-owner", foreign[] = L"wrong-owner";
+  EXPECT_EQ(::RegSetValueExW(sandbox,nullptr,0,REG_SZ,reinterpret_cast<const BYTE*>(expected),sizeof(expected)),ERROR_SUCCESS);
+  EXPECT_EQ(::RegSetValueExW(wrong,nullptr,0,REG_SZ,reinterpret_cast<const BYTE*>(foreign),sizeof(foreign)),ERROR_SUCCESS);
+  ::RegCloseKey(wrong);
+  ASSERT_EQ(::RegOverridePredefKey(HKEY_CURRENT_USER,decoy),ERROR_SUCCESS);
+  EXPECT_EQ(corevideo::modules::cameraRegistrationString(HKEY_CURRENT_USER,path.c_str()),foreign);
+  HKEY fresh = nullptr;
+  ASSERT_EQ(::RegOpenCurrentUser(KEY_READ,&fresh),ERROR_SUCCESS);
+  EXPECT_EQ(corevideo::modules::cameraRegistrationString(fresh,path.c_str()),expected);
+  ::RegCloseKey(fresh);
 }
 // Run explicitly with COREVIDEO_REQUIRE_VCAM_START=1 against each intended
 // registration path. The default native suite has no camera/OS prerequisite;

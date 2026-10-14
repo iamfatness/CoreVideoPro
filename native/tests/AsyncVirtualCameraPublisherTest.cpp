@@ -55,6 +55,59 @@ struct FailedCamera : IVirtualCameraPublisher {
   void publish(const ProgramFrame&) override {}
   VirtualCameraStatus status() const override { VirtualCameraStatus s; s.state="failed"; s.warning="OS rejected camera"; return s; }
 };
+struct RepairableCamera : IVirtualCameraPublisher {
+  std::atomic<int> attempts{0};
+  std::atomic<bool> repaired{false};
+  VirtualCameraStatus current;
+  bool start(int,int,int) override {
+    ++attempts;
+    current.enabled = repaired.load();
+    current.state = current.enabled ? "live" : "failed";
+    current.warning = current.enabled ? "" : "CAMERA_USER_REGISTRATION_CONFLICT: test ownership mismatch";
+    return current.enabled;
+  }
+  void stop() override { current.enabled=false; current.state="off"; }
+  void publish(const ProgramFrame&) override { if(current.enabled) ++current.framesPublished; }
+  VirtualCameraStatus status() const override { return current; }
+};
+TEST(AsyncVirtualCameraPublisher, RegistrationRepairRecoversWithoutToggleOrRestart) {
+  auto inner=std::make_unique<RepairableCamera>(); auto* backend=inner.get();
+  AsyncVirtualCameraPublisher camera(std::move(inner));
+  camera.start(1920,1080,60);
+  auto deadline=std::chrono::steady_clock::now()+2s;
+  while(camera.status().state!="failed" && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(1ms);
+  ASSERT_EQ(camera.status().state,"failed");
+  // High-rate media must not cause a registration attempt for every frame.
+  ProgramFrame frame;
+  auto until=std::chrono::steady_clock::now()+200ms;
+  while(std::chrono::steady_clock::now()<until) { camera.publish(frame); std::this_thread::sleep_for(1ms); }
+  EXPECT_EQ(backend->attempts.load(),1);
+  backend->repaired=true;
+  // No new media/control wake is required: the owned worker wakes for recovery.
+  deadline=std::chrono::steady_clock::now()+2s;
+  while(camera.status().state!="live" && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(1ms);
+  ASSERT_EQ(camera.status().state,"live");
+  EXPECT_TRUE(camera.status().warning.empty());
+  EXPECT_EQ(backend->attempts.load(),2);
+  camera.publish(frame);
+  deadline=std::chrono::steady_clock::now()+2s;
+  while(!camera.status().framesPublished && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(1ms);
+  EXPECT_GT(camera.status().framesPublished,0u);
+}
+TEST(AsyncVirtualCameraPublisher, StopCancelsPendingRegistrationRetry) {
+  auto inner=std::make_unique<RepairableCamera>(); auto* backend=inner.get();
+  AsyncVirtualCameraPublisher camera(std::move(inner)); camera.start(1920,1080,60);
+  auto deadline=std::chrono::steady_clock::now()+2s;
+  while(camera.status().state!="failed" && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(1ms);
+  ASSERT_EQ(camera.status().state,"failed");
+  camera.stop(); backend->repaired=true;
+  deadline=std::chrono::steady_clock::now()+2s;
+  while(camera.status().state!="off" && std::chrono::steady_clock::now()<deadline) std::this_thread::sleep_for(1ms);
+  ASSERT_EQ(camera.status().state,"off");
+  std::this_thread::sleep_for(1100ms);
+  EXPECT_EQ(backend->attempts.load(),1);
+  EXPECT_FALSE(camera.status().enabled);
+}
 struct CaptureCamera : IVirtualCameraPublisher {
   std::mutex captureMutex;
   std::condition_variable changed;
