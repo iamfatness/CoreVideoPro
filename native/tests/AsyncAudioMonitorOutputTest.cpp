@@ -13,6 +13,12 @@ struct DeviceGate {
   std::mutex mutex;
   std::vector<float> accepted;
   std::vector<std::string> started;
+  std::atomic<bool> released{false};
+  void unblock() { if (!released.exchange(true)) release.count_down(); }
+};
+struct ReleaseGateOnExit {
+  DeviceGate& gate;
+  ~ReleaseGateOnExit() { gate.unblock(); }
 };
 class GatedMonitor final : public corevideo::modules::IAudioMonitorOutput {
  public:
@@ -50,14 +56,16 @@ template<typename Predicate> bool waitUntil(Predicate ready) {
 
 TEST(AsyncAudioMonitorOutput, ActivationDoesNotBlockControlAndLateOldDeviceCannotBecomeReady) {
   auto gate = std::make_shared<DeviceGate>(); gate->blockStart = true;
+  ReleaseGateOnExit release{*gate};
   corevideo::modules::AsyncAudioMonitorOutput monitor(std::make_unique<GatedMonitor>(gate));
-  EXPECT_FALSE(monitor.start("old", 48000, 2)); gate->entered.wait();
+  EXPECT_FALSE(monitor.start("old", 48000, 2));
+  ASSERT_TRUE(waitUntil([&] { return gate->entered.try_wait(); }));
   auto control = std::async(std::launch::async, [&] {
     monitor.stop(); monitor.start("new", 48000, 2);
     return monitor.preparing() && !monitor.active() && monitor.resolvedEndpointId().empty();
   });
   const auto ready = control.wait_for(std::chrono::seconds(2));
-  gate->release.count_down();
+  gate->unblock();
   ASSERT_EQ(ready, std::future_status::ready);
   EXPECT_TRUE(control.get());
   ASSERT_TRUE(waitUntil([&] { return monitor.active(); }));
@@ -65,16 +73,18 @@ TEST(AsyncAudioMonitorOutput, ActivationDoesNotBlockControlAndLateOldDeviceCanno
 }
 TEST(AsyncAudioMonitorOutput, BoundedPressurePreservesSurvivingPcmOrderAndCountsActualAcceptance) {
   auto gate = std::make_shared<DeviceGate>();
+  ReleaseGateOnExit release{*gate};
   corevideo::modules::AsyncAudioMonitorOutput monitor(std::make_unique<GatedMonitor>(gate));
   monitor.start("device", 48000, 2); ASSERT_TRUE(waitUntil([&] { return monitor.active(); }));
   gate->blockRender = true;
-  float first[2]{.1f,.1f}; const bool firstAdmitted = monitor.render(first, 1, 2, 1); gate->entered.wait();
+  float first[2]{.1f,.1f}; const bool firstAdmitted = monitor.render(first, 1, 2, 1);
+  ASSERT_TRUE(waitUntil([&] { return gate->entered.try_wait(); }));
   const auto before = monitor.acceptedFrameCount();
   bool admitted = firstAdmitted;
   for (int i=2;i<=6;++i) { float pcm[2]{i*.1f,i*.1f}; admitted = monitor.render(pcm, 1, 2, 1) && admitted; }
   const bool deliveryObserved = monitor.deviceDeliveryObserved();
   const auto dropped = monitor.droppedFrameCount();
-  gate->release.count_down();
+  gate->unblock();
   EXPECT_TRUE(admitted); EXPECT_EQ(before, 0); EXPECT_FALSE(deliveryObserved);
   EXPECT_EQ(dropped, 1);
   ASSERT_TRUE(waitUntil([&] { return monitor.acceptedFrameCount() == 5; }));
@@ -86,6 +96,7 @@ TEST(AsyncAudioMonitorOutput, BoundedPressurePreservesSurvivingPcmOrderAndCounts
 TEST(AsyncAudioMonitorOutput, StalledDeviceActivationCannotHoldProgramOrAudioOwner) {
   for (const int stallMs : {20, 40, 100, 500}) {
     auto gate = std::make_shared<DeviceGate>(); gate->blockStart = true;
+    ReleaseGateOnExit release{*gate};
     auto modules = corevideo::modules::createStubModules();
     modules.monitorOutput = std::make_unique<GatedMonitor>(gate);
     corevideo::core::MediaCore core(std::move(modules)); core.enableAudioOutputWorker();
@@ -94,7 +105,7 @@ TEST(AsyncAudioMonitorOutput, StalledDeviceActivationCannotHoldProgramOrAudioOwn
       std::lock_guard<std::mutex> lock(coreMutex);
       return core.applyCommand(corevideo::rpc::Json::Object{{"type","sync-audio-monitor"},{"enabled",true},{"deviceId","device"},{"volume",1}});
     });
-    gate->entered.wait();
+    ASSERT_TRUE(waitUntil([&] { return gate->entered.try_wait(); }));
     auto work = std::async(std::launch::async, [&] {
       const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(stallMs);
       do {
@@ -105,7 +116,7 @@ TEST(AsyncAudioMonitorOutput, StalledDeviceActivationCannotHoldProgramOrAudioOwn
       std::lock_guard<std::mutex> lock(coreMutex); return core.sessionState();
     });
     const auto ready = work.wait_for(std::chrono::seconds(2));
-    gate->release.count_down(); command.get(); ASSERT_EQ(ready, std::future_status::ready);
+    gate->unblock(); command.get(); ASSERT_EQ(ready, std::future_status::ready);
     const auto snapshot = work.get(); EXPECT_GT(snapshot.getNumber("programFrameCount"), 0);
     EXPECT_EQ(snapshot.get("audioMixSession")->getString("monitorStatus"), "preparing");
   }
@@ -113,18 +124,19 @@ TEST(AsyncAudioMonitorOutput, StalledDeviceActivationCannotHoldProgramOrAudioOwn
 
 TEST(AsyncAudioMonitorOutput, RetargetDuringStalledStopNeverOpensSupersededEndpoint) {
   auto gate = std::make_shared<DeviceGate>();
+  ReleaseGateOnExit release{*gate};
   corevideo::modules::AsyncAudioMonitorOutput monitor(std::make_unique<GatedMonitor>(gate));
   monitor.start("initial", 48000, 2);
   ASSERT_TRUE(waitUntil([&] { return monitor.active(); }));
   gate->blockStop = true;
   monitor.start("superseded", 48000, 2);
-  gate->entered.wait();
+  ASSERT_TRUE(waitUntil([&] { return gate->entered.try_wait(); }));
   auto control = std::async(std::launch::async, [&] {
     monitor.stop(); monitor.start("final", 48000, 2);
     return monitor.preparing() && !monitor.active() && monitor.resolvedEndpointId().empty();
   });
   const auto finished = control.wait_for(std::chrono::seconds(2));
-  gate->release.count_down();
+  gate->unblock();
   ASSERT_EQ(finished, std::future_status::ready);
   EXPECT_TRUE(control.get());
   ASSERT_TRUE(waitUntil([&] { return monitor.active(); }));
@@ -135,15 +147,21 @@ TEST(AsyncAudioMonitorOutput, RetargetDuringStalledStopNeverOpensSupersededEndpo
 
 TEST(AsyncAudioMonitorOutput, MuteDuringStalledStopCannotRestartCapturedEndpoint) {
   auto gate = std::make_shared<DeviceGate>();
+  ReleaseGateOnExit release{*gate};
   corevideo::modules::AsyncAudioMonitorOutput monitor(std::make_unique<GatedMonitor>(gate));
   monitor.start("initial", 48000, 2);
   ASSERT_TRUE(waitUntil([&] { return monitor.active(); }));
   gate->blockStop = true;
   monitor.start("superseded", 48000, 2);
-  gate->entered.wait();
-  monitor.stop();
-  EXPECT_FALSE(monitor.active()); EXPECT_TRUE(monitor.preparing());
-  gate->release.count_down();
+  ASSERT_TRUE(waitUntil([&] { return gate->entered.try_wait(); }));
+  auto control = std::async(std::launch::async, [&] {
+    monitor.stop();
+    return !monitor.active() && monitor.preparing();
+  });
+  const auto finished = control.wait_for(std::chrono::seconds(2));
+  gate->unblock();
+  ASSERT_EQ(finished, std::future_status::ready);
+  EXPECT_TRUE(control.get());
   ASSERT_TRUE(waitUntil([&] { return !monitor.preparing(); }));
   EXPECT_FALSE(monitor.active());
   std::lock_guard<std::mutex> lock(gate->mutex);
@@ -152,16 +170,17 @@ TEST(AsyncAudioMonitorOutput, MuteDuringStalledStopCannotRestartCapturedEndpoint
 
 TEST(AsyncAudioMonitorOutput, ShutdownDuringStalledStopRetiresOnOwnerWithoutReopening) {
   auto gate = std::make_shared<DeviceGate>();
+  ReleaseGateOnExit release{*gate};
   auto monitor = std::make_unique<corevideo::modules::AsyncAudioMonitorOutput>(std::make_unique<GatedMonitor>(gate));
   monitor->start("initial", 48000, 2);
   ASSERT_TRUE(waitUntil([&] { return monitor->active(); }));
   gate->blockStop = true;
   monitor->start("superseded", 48000, 2);
-  gate->entered.wait();
+  ASSERT_TRUE(waitUntil([&] { return gate->entered.try_wait(); }));
   // Keep the device blocked beyond the wrapper's bounded retirement wait.
   auto destroy = std::async(std::launch::async, [&] { monitor.reset(); });
   const auto finished = destroy.wait_for(std::chrono::seconds(2));
-  gate->release.count_down();
+  gate->unblock();
   ASSERT_EQ(finished, std::future_status::ready);
   destroy.get();
   // The detached owner still owns the backend, so wait for its retirement
