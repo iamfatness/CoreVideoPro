@@ -110,6 +110,7 @@ public sealed class CoreRecoveryRejoinTests
             Assert.True(outcomes.Count == 1, Diagnostics());
             var reported = Assert.Single(outcomes);
             Assert.Equal(MediaCoreRecoveryOutcome.ZoomRejoined, reported.Outcome);
+            Assert.False(string.IsNullOrWhiteSpace(reported.Epoch), Diagnostics());
             Assert.NotEqual(epochBeforeTheCrash, reported.Epoch);
         }
         finally
