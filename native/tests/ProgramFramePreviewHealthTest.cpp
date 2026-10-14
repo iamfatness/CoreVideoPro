@@ -1,3 +1,4 @@
+#include "core/SourcePreviewDemand.h"
 // Task 2 (#535 slice 4a, "bus health on air"): the compositors stop painting
 // the per-id "pink tile" placeholder and resolve one rule from the layer's
 // sourceHealth / dropoutPolicy / sourceDisplayName instead. These tests pin
@@ -190,4 +191,17 @@ TEST(ProgramFramePreviewHealth, ParticipantExportEventPreservesNativeSourceIncar
   ASSERT_NE(events[0].get("sourceEpoch"), nullptr);
   EXPECT_EQ(events[0].get("sourceEpoch")->asNumber(), 17);
   EXPECT_EQ(events[0].get("participantId")->asString(), "capture:cam");
+}
+
+TEST(SourcePreviewDemand, InactiveByDefaultAndStopsOnExplicitReleaseOrExpiredConsumerLease) {
+  corevideo::core::SourcePreviewDemand demand;
+  const auto start = corevideo::core::SourcePreviewDemand::Clock::now();
+  EXPECT_FALSE(demand.active(start));
+  demand.set(true, start);
+  EXPECT_TRUE(demand.active(start + std::chrono::seconds(2)));
+  EXPECT_FALSE(demand.active(start + std::chrono::seconds(3)));
+  demand.set(true, start + std::chrono::seconds(2));
+  EXPECT_TRUE(demand.active(start + std::chrono::seconds(4)));
+  demand.set(false, start + std::chrono::seconds(4));
+  EXPECT_FALSE(demand.active(start + std::chrono::seconds(4)));
 }

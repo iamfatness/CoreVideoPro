@@ -1112,6 +1112,13 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
   return sessionState();
 }
 
+bool MediaCore::configureSourcePreviewDemand(const rpc::Json& command) {
+  const auto* enabled = command.get("enabled");
+  if (!enabled || !enabled->isBool()) return false;
+  sourcePreviewDemand_.set(enabled->asBool());
+  return true;
+}
+
 bool MediaCore::configureGradePreview(const rpc::Json& command) {
   if (command.get("renewOnly") && command.get("renewOnly")->asBool()) return gradePreviews_.renew(command);
   const auto* grade = command.get("grade");
@@ -1161,6 +1168,8 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setOverlayAsset(command);
   } else if (type == "set-color-grade") {
     setColorGrade(command);
+  } else if (type == "set-source-preview-demand") {
+    if (!configureSourcePreviewDemand(command)) commandProtocolFailures_.push_back("invalid-source-preview-demand");
   } else if (type == "set-grade-preview") {
     if (!configureGradePreview(command)) commandProtocolFailures_.push_back("invalid-grade-preview");
   } else if (type == "set-source-policy") {
@@ -5831,7 +5840,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
     // never export every participant. programPlan carries off-air source grades.
     int inspectorRows = 0;
     for (const auto& source : multiviewSources_) {
-      if (inspectorRows++ >= 10) break;
+      if (!sourcePreviewDemand_.active() || inspectorRows++ >= 10) break;
       const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
           source.captureDeviceId, source.mediaAssetId);
       const auto nativeId = feed.participantId.empty() ? feed.sourceId : feed.participantId;
