@@ -1,4 +1,5 @@
 #include "core/GradePreviewController.h"
+#include "core/SourceGradeState.h"
 #include "modules/MonitorInputCache.h"
 #include <gtest/gtest.h>
 using namespace corevideo;
@@ -36,6 +37,52 @@ TEST(GradePreviewControl, CapacityLeaseAndCloseRetireDemandWithoutRenderingProgr
   EXPECT_EQ(compositor.submissions, 2); EXPECT_EQ(compositor.renders, 0);
   control.tick({}, compositor, 3, now + std::chrono::seconds(4));
   EXPECT_EQ(compositor.submissions, 2);
+}
+
+TEST(GradePreviewControl, FullEventQueueRefusesBeforeReplacementAndCurrentSurfaceRetriesAfterDrain) {
+  core::GradePreviewController control; PreviewCompositor compositor;
+  const auto now = core::GradePreviewController::Clock::now();
+  ASSERT_TRUE(control.configure(demand("a", 3), {}, true, now));
+  compositor.result = std::make_shared<modules::MonitorRenderResult>();
+  modules::GradePreviewSurface surface; surface.demand = {"a", "p1", 3, {}};
+  surface.sourceEpoch = 7; surface.status = "ready";
+  compositor.result->gradePreviews.push_back(surface);
+  for (int i = 0; i < 20; ++i) {
+    compositor.result->gradePreviews[0].sourceFrameId = i;
+    control.tick({}, compositor, i, now + std::chrono::milliseconds(100 * i));
+  }
+  EXPECT_EQ(control.eventsRefused(), 4u);
+  EXPECT_LE(control.pendingEventBytes(), core::GradePreviewController::EventByteBudget);
+  auto events = control.drain(); ASSERT_EQ(events.size(), 16u);
+  for (size_t i = 0; i < events.size(); ++i) EXPECT_EQ(events[i].getNumber("sourceFrameId"), double(i));
+  std::weak_ptr<const rpc::Json::Object> lifetime = std::get<rpc::Json::ObjectValue>(events[0].value());
+  core::SourceGradeState grades;
+  auto captured = grades.captureAnnotations(std::move(events));
+  EXPECT_FALSE(lifetime.expired()); EXPECT_EQ(control.pendingEventBytes(), 0u);
+  auto assembled = std::move(captured).assemble();
+  EXPECT_TRUE(lifetime.expired()); // original root retires during off-owner assembly, not during drain
+  assembled.clear();
+  EXPECT_TRUE(lifetime.expired());
+  compositor.result->gradePreviews[0].sourceFrameId = 99;
+  control.tick({}, compositor, 99, now + std::chrono::milliseconds(2100));
+  events = control.drain(); ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].getNumber("sourceFrameId"), 99);
+}
+
+TEST(GradePreviewControl, ExhaustedOneShotUnavailableIsRejectedAndCanBeRetried) {
+  core::GradePreviewController control;
+  for (int i = 0; i < 16; ++i) ASSERT_TRUE(control.configure(demand("unavailable", i), {}, false));
+  EXPECT_FALSE(control.configure(demand("unavailable", 16), {}, false));
+  EXPECT_EQ(control.eventsRefused(), 1u);
+  auto events = control.drain(); ASSERT_EQ(events.size(), 16u);
+  for (size_t i = 0; i < events.size(); ++i) EXPECT_EQ(events[i].getNumber("revision"), double(i));
+  EXPECT_TRUE(control.configure(demand("unavailable", 16), {}, false));
+  events = control.drain(); ASSERT_EQ(events.size(), 1u); EXPECT_EQ(events[0].getNumber("revision"), 16);
+  core::SourceGradeState grades;
+  bool rejected = false;
+  try { (void)grades.captureAnnotations(std::vector<rpc::Json>(17)); }
+  catch (const std::out_of_range&) { rejected = true; }
+  EXPECT_TRUE(rejected);
 }
 TEST(GradePreviewControl, RejectsInvalidAndAmbiguousRevisionAndReportsUnsupported) {
   core::GradePreviewController control;

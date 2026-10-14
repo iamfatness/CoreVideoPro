@@ -16,6 +16,7 @@ class GradePreviewController {
  public:
   using Clock = std::chrono::steady_clock;
   static constexpr size_t Capacity = 3;
+  static constexpr size_t EventCapacity = 16, EventByteBudget = 512 * 1024;
   static constexpr auto Lease = std::chrono::seconds(3);
   static constexpr auto Interval = std::chrono::milliseconds(100);
   bool renew(const rpc::Json& command, Clock::time_point now = Clock::now()) {
@@ -69,11 +70,11 @@ class GradePreviewController {
     }
     const bool enabled = !command.get("enabled") || command.get("enabled")->asBool();
     if (!enabled) { active_.erase(id); return true; }
-    if (!supported) { emit({demand, 0, 0, 0, {}, "unavailable", "native-grade-preview-not-built"}); return true; }
+    if (!supported) return emit({demand, 0, 0, 0, {}, "unavailable", "native-grade-preview-not-built"});
     auto found = active_.find(id);
     if (found == active_.end()) {
       if (active_.size() >= Capacity) {
-        emit({demand, 0, 0, 0, {}, "unavailable", "grade-preview-capacity"}); return true;
+        return emit({demand, 0, 0, 0, {}, "unavailable", "grade-preview-capacity"});
       }
       active_.emplace(id, Entry{std::move(demand), now});
     } else {
@@ -143,15 +144,19 @@ class GradePreviewController {
       emit(surface);
     }
   }
-  std::vector<rpc::Json> drain() { auto result = std::move(events_); events_.clear(); return result; }
+  std::vector<rpc::Json> drain() { auto result = std::move(events_); events_.clear(); eventBytes_ = 0; return result; }
+  size_t pendingEventBytes() const { return eventBytes_; }
+  uint64_t eventsRefused() const { return eventsRefused_; }
   rpc::Json diagnostics(const modules::ICompositor& compositor) const {
-    return diagnosticsFor(compositor, active_.size());
+    return diagnosticsFor(compositor, active_.size(), eventBytes_, eventsRefused_);
   }
-  static rpc::Json diagnosticsFor(const modules::ICompositor& compositor, size_t editors) {
+  static rpc::Json diagnosticsFor(const modules::ICompositor& compositor, size_t editors, size_t eventBytes = 0, uint64_t eventsRefused = 0) {
     const auto worker = compositor.gradePreviewDiagnostics();
     return rpc::Json::Object{{"observationVersion", "grade-preview-v1"},
       {"supported", compositor.supportsGradePreview()}, {"activeEditors", double(editors)},
       {"editorCapacity", double(Capacity)}, {"leaseMs", 3000}, {"requestedIntervalMs", 100},
+      {"eventCapacity", double(EventCapacity)}, {"eventByteCapacity", double(EventByteBudget)},
+      {"eventOwnedByteBound", double(eventBytes)}, {"eventsRefused", double(eventsRefused)},
       {"submitted", double(worker.submitted)}, {"completed", double(worker.completed)},
       {"superseded", double(worker.superseded)}, {"failed", double(worker.failed)},
       {"pending", worker.pending}, {"pendingCapacity", 1}, {"lastWorkMs", worker.lastWorkMs},
@@ -171,8 +176,20 @@ class GradePreviewController {
     int64_t scopeFrame = 0, scopeExport = -1, scopeCompletionObservedAtMs = 0;
     Clock::time_point scopeAdvanced{};
   };
-  void emit(const modules::GradePreviewSurface& surface) {
-    if (events_.size() >= 16) events_.erase(events_.begin());
+  bool emit(const modules::GradePreviewSurface& surface) {
+    // Fixed schema: 16 KiB covers map nodes/keys and fixed diagnostic strings;
+    // eight bytes per varying character bounds allocation and JSON escaping.
+    size_t bound = 16384;
+    for (const auto* text : {&surface.demand.instanceId, &surface.demand.sourceId,
+         &surface.status, &surface.reason, &surface.texture.sharedHandleHex, &surface.texture.format,
+         &surface.scopes.texture.sharedHandleHex, &surface.scopes.texture.format,
+         &surface.scopes.status, &surface.scopes.roi.shape}) {
+      bound = text->size() > EventByteBudget / 8 ? EventByteBudget + 1 :
+          (std::min)(EventByteBudget + 1, bound + 8 * text->size());
+    }
+    if (events_.size() == EventCapacity || bound > EventByteBudget || eventBytes_ > EventByteBudget - bound) {
+      ++eventsRefused_; return false;
+    }
     const auto& t = surface.texture;
     const auto& scope = surface.scopes; const auto& st = scope.texture;
     const auto found = active_.find(surface.demand.instanceId);
@@ -199,9 +216,13 @@ class GradePreviewController {
           {"format", st.format}, {"frameNumber", double(st.frameNumber)}}}}},
       {"texture", rpc::Json::Object{{"sharedHandleHex", t.sharedHandleHex}, {"width", t.width},
           {"height", t.height}, {"format", t.format}, {"frameNumber", double(t.frameNumber)}}}});
+    eventBytes_ += bound;
+    return true;
   }
   std::map<std::string, Entry> active_;
   std::vector<rpc::Json> events_;
+  size_t eventBytes_ = 0;
+  uint64_t eventsRefused_ = 0;
   Clock::time_point lastTick_{};
   bool submitted_ = false;
 };

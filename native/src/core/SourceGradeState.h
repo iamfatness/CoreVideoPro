@@ -3,11 +3,32 @@
 #include "rpc/Json.h"
 #include <cmath>
 #include <algorithm>
+#include <array>
 namespace corevideo::core {
 // Small authoritative control state. Identity fences prevent a reused Zoom id
 // from inheriting a grade, and revisions reject edits from another old editor.
 class SourceGradeState {
  public:
+  struct EventBatch {
+    std::vector<rpc::Json> events;
+    std::array<int64_t, 16> revisions{};
+    std::vector<rpc::Json> assemble() && {
+      for (size_t i = 0; i < events.size(); ++i) {
+        auto object = events[i].asObject();
+        object["appliedRevision"] = double(revisions[i]);
+        events[i] = rpc::Json(std::move(object));
+      }
+      return std::move(events);
+    }
+  };
+  EventBatch captureAnnotations(std::vector<rpc::Json> events) const {
+    EventBatch batch;
+    batch.events = std::move(events);
+    // GradePreviewController has a hard sixteen-event capture bound.
+    for (size_t i = 0; i < batch.events.size(); ++i)
+      batch.revisions.at(i) = revision(batch.events[i].getString("sourceId"));
+    return batch;
+  }
   void observe(const std::vector<modules::VideoFrame>& frames) {
     epochs_.clear();
     for(const auto& frame:frames) if(epochs_.size()<256) epochs_[frame.participantId]=frame.sourceEpoch;
@@ -39,8 +60,7 @@ class SourceGradeState {
   }
   int64_t revision(const std::string& sourceId) const {const auto e=grades_.find(sourceId);return e==grades_.end()?0:e->second.revision;}
   std::vector<rpc::Json> annotate(std::vector<rpc::Json> events) const {
-    for(auto& event:events) {auto object=event.asObject();object["appliedRevision"]=double(revision(event.getString("sourceId")));event=rpc::Json(std::move(object));}
-    return events;
+    return captureAnnotations(std::move(events)).assemble();
   }
  private:
   struct Applied {uint64_t epoch;int64_t revision;modules::CompositorColorGrade grade;};

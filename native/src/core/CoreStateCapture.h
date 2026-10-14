@@ -13,6 +13,7 @@ class CoreStateCapture {
   explicit CoreStateCapture(const MediaCore& core);
   rpc::Json assemble(SnapshotProjection kind) const;
  private:
+  ResourceEventStaging::Facts resourceEventStaging_;
   rpc::Json sessionState() const;
   rpc::Json health(const AudioOutputObservation& observation) const;
   rpc::Json profile(const AudioOutputObservation& observation) const;
@@ -65,6 +66,8 @@ class CoreStateCapture {
   decltype(std::declval<MediaCore>().isoVideoIngress_.counters()) isoDiagnostics_;
   std::vector<SourceBus::SourceStatus> sourceStatuses_;
   std::size_t gradeEditorCount_ = 0;
+  std::size_t gradeEventBytes_ = 0;
+  std::uint64_t gradeEventsRefused_ = 0;
   int previewPlanLayerCount_ = 0;
   bool previewComposite_ = false;
   rpc::Json encodedPreview_;

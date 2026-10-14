@@ -477,6 +477,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
       projectionMutex_(&core.snapshotProjectionMutex_) {
   ScopedLockHoldTimer captureTimer("rpc.metadata-capture", LockHoldGuardrail::kDefaultBudgetUs);
   appliedControlRevision_ = core.appliedControlRevision_;
+  resourceEventStaging_ = core.pendingResourceEvents_.facts();
   audioChannels_ = core.audioChannels_;
   audioCompGainReductionDbBySource_ = core.audioCompGainReductionDbBySource_;
   audioLimiterEnabled_ = core.audioLimiterEnabled_;
@@ -665,6 +666,8 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   sourceStatuses_ = core.sourceBus_ ? core.sourceBus_->snapshot(nowNs) : std::vector<SourceBus::SourceStatus>{};
   isoDiagnostics_ = core.isoVideoIngress_.counters();
   gradeEditorCount_ = core.gradePreviews_.size();
+  gradeEventBytes_ = core.gradePreviews_.pendingEventBytes();
+  gradeEventsRefused_ = core.gradePreviews_.eventsRefused();
   previewComposite_ = core.hasPreviewScene();
   previewPlanLayerCount_ = core.audioWorkerActive_ ? core.lastPreviewPlanLayerCount_ :
       core.previewSceneActive_ ? static_cast<int>(core.buildPreviewCompositorRenderPlan({}).layers.size()) : 0;
@@ -916,9 +919,14 @@ rpc::Json CoreStateCapture::sessionState() const {
       {"sampledAtNs", static_cast<double>(observation.memorySampledAtNs)}});
   const auto capturePreparation = modules_.captureDevice->shmCapturePreparationDiagnostics();
   const auto monitorWorker = modules_.compositor->monitorDiagnostics();
-  state.emplace("gradePreview", GradePreviewController::diagnosticsFor(*modules_.compositor, gradeEditorCount_));
+  state.emplace("gradePreview", GradePreviewController::diagnosticsFor(*modules_.compositor, gradeEditorCount_, gradeEventBytes_, gradeEventsRefused_));
   state.emplace("deliveryEvidence", core::deliveryEvidenceSnapshot());
   state.emplace("realtimeEvidence", rpc::Json::Object{
+      {"resourceEventStaging", rpc::Json::Object{
+          {"version", "resource-event-staging-v1"},
+          {"items", double(resourceEventStaging_.items)}, {"ownedByteBound", double(resourceEventStaging_.bytes)},
+          {"itemCapacity", double(ResourceEventStaging::Capacity)}, {"byteCapacity", double(ResourceEventStaging::ByteBudget)},
+          {"admitted", double(resourceEventStaging_.admitted)}, {"refused", double(resourceEventStaging_.refused)}}},
       {"capturePreparation", rpc::Json::Object{
           {"kind", "winui-shared-memory"}, {"version", "shm-preparation-v1"},
           {"enabled", capturePreparation.enabled}, {"state", capturePreparation.state},

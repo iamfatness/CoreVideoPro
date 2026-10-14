@@ -899,27 +899,19 @@ std::vector<rpc::Json> MediaCore::drainProgramFramePreviewEvents() {
 }
 
 std::vector<rpc::Json> MediaCore::drainProgramSharedTextureEvents() {
-  auto events = std::move(pendingProgramSharedTextureEvents_);
-  pendingProgramSharedTextureEvents_.clear();
-  return events;
+  return pendingResourceEvents_.drain(ResourceEventStaging::Kind::Program);
 }
 
 std::vector<rpc::Json> MediaCore::drainParticipantSharedTextureEvents() {
-  auto events = std::move(pendingParticipantSharedTextureEvents_);
-  pendingParticipantSharedTextureEvents_.clear();
-  return events;
+  return pendingResourceEvents_.drain(ResourceEventStaging::Kind::Participant);
 }
 
 std::vector<rpc::Json> MediaCore::drainMultiviewSharedTextureEvents() {
-  auto events = std::move(pendingMultiviewSharedTextureEvents_);
-  pendingMultiviewSharedTextureEvents_.clear();
-  return events;
+  return pendingResourceEvents_.drain(ResourceEventStaging::Kind::Multiview);
 }
 
 std::vector<rpc::Json> MediaCore::drainPreviewSharedTextureEvents() {
-  auto events = std::move(pendingPreviewSharedTextureEvents_);
-  pendingPreviewSharedTextureEvents_.clear();
-  return events;
+  return pendingResourceEvents_.drain(ResourceEventStaging::Kind::Preview);
 }
 
 void MediaCore::enqueueProgramFramePreviewEvent() {
@@ -958,26 +950,30 @@ void MediaCore::enqueueProgramSharedTextureEvent() {
   // Stable texture pixels update on the delivery thread. Emit only structural
   // changes, not a JSON message for every frame.
   const auto& texture = lastProgramFrame_.sharedTexture;
+  if (!ResourceEventStaging::valid(texture)) return;
   const auto identity = texture.sharedHandleHex + ":" + std::to_string(texture.iosurfaceId) +
       ":" + std::to_string(texture.width) + ":" + std::to_string(texture.height);
   if (identity == lastProgramTextureIdentity_) return;
-  const auto event = modules::programSharedTextureEvent(lastProgramFrame_);
-  if (event.isNull()) return;
-  lastProgramTextureIdentity_ = identity;
-  pendingProgramSharedTextureEvents_.emplace_back(event);
+  if (pendingResourceEvents_.admit(ResourceEventStaging::Kind::Program,
+      ResourceEventStaging::bound(texture), [&] { return modules::programSharedTextureEvent(lastProgramFrame_); }))
+    lastProgramTextureIdentity_ = identity;
 }
 
 void MediaCore::enqueueParticipantSharedTextureEvents() {
-  for (auto& event : modules::participantSharedTextureEvents(lastProgramFrame_)) {
-    pendingParticipantSharedTextureEvents_.emplace_back(std::move(event));
+  for (const auto& texture : lastProgramFrame_.participantSharedTextures) {
+    if (texture.participantId.empty() || texture.sharedHandleHex.empty() || texture.width <= 0 || texture.height <= 0) continue;
+    pendingResourceEvents_.admit(ResourceEventStaging::Kind::Participant,
+        ResourceEventStaging::bound(texture), [&] {
+          modules::ProgramFrame frame; frame.frameNumber = lastProgramFrame_.frameNumber;
+          frame.participantSharedTextures.push_back(texture);
+          auto events = modules::participantSharedTextureEvents(frame);
+          return std::move(events.front());
+        });
   }
 }
 
 void MediaCore::enqueueMultiviewSharedTextureEvent() {
-  const auto event = modules::multiviewSharedTextureEvent(lastProgramFrame_);
-  if (event.isNull()) {
-    return;
-  }
+  if (!ResourceEventStaging::valid(lastProgramFrame_.multiviewSharedTexture)) return;
   // Include the speaker flag: the Sources inspector uses this metadata for its
   // talking border. The event still emits only when a tile fact changes.
   uint32_t signature = 2166136261u;
@@ -1019,16 +1015,16 @@ void MediaCore::enqueueMultiviewSharedTextureEvent() {
   if (multiviewStructureEmitted_ && signature == lastMultiviewStructureSignature_) {
     return;
   }
-  lastMultiviewStructureSignature_ = signature;
-  multiviewStructureEmitted_ = true;
-  pendingMultiviewSharedTextureEvents_.emplace_back(event);
+  if (pendingResourceEvents_.admit(ResourceEventStaging::Kind::Multiview,
+      ResourceEventStaging::bound(lastProgramFrame_.multiviewSharedTexture, &lastProgramFrame_.multiviewTiles),
+      [&] { return modules::multiviewSharedTextureEvent(lastProgramFrame_); })) {
+    lastMultiviewStructureSignature_ = signature;
+    multiviewStructureEmitted_ = true;
+  }
 }
 
 void MediaCore::enqueuePreviewSharedTextureEvent() {
-  const auto event = modules::previewSharedTextureEvent(lastProgramFrame_);
-  if (event.isNull()) {
-    return;
-  }
+  if (!ResourceEventStaging::valid(lastProgramFrame_.previewSharedTexture)) return;
   // Emit only on structural change (handle/dims) or cold start â€” the live pixels
   // flow through the stable keyed-mutex texture, presented continuously by the
   // host, so a per-frame event would only flood the pipe (see the program event).
@@ -1056,9 +1052,12 @@ void MediaCore::enqueuePreviewSharedTextureEvent() {
   if (previewStructureEmitted_ && signature == lastPreviewStructureSignature_) {
     return;
   }
-  lastPreviewStructureSignature_ = signature;
-  previewStructureEmitted_ = true;
-  pendingPreviewSharedTextureEvents_.emplace_back(event);
+  if (pendingResourceEvents_.admit(ResourceEventStaging::Kind::Preview,
+      ResourceEventStaging::bound(lastProgramFrame_.previewSharedTexture),
+      [&] { return modules::previewSharedTextureEvent(lastProgramFrame_); })) {
+    lastPreviewStructureSignature_ = signature;
+    previewStructureEmitted_ = true;
+  }
 }
 
 rpc::Json MediaCore::applyCommands(const rpc::Json::Array& commands, double elapsedMs) {
@@ -1119,15 +1118,19 @@ bool MediaCore::configureSourcePreviewDemand(const rpc::Json& command) {
   return true;
 }
 
-bool MediaCore::configureGradePreview(const rpc::Json& command) {
+bool MediaCore::configureGradePreview(const rpc::Json& command, bool* overloaded) {
+  if (overloaded) *overloaded = false;
   if (command.get("renewOnly") && command.get("renewOnly")->asBool()) return gradePreviews_.renew(command);
   const auto* grade = command.get("grade");
   if (grade) if (const auto* advanced = grade->get("advanced")) {
     std::shared_ptr<const modules::AdvancedGradeDocument> validated;
     if (!modules::readAdvancedGrade(*advanced, validated)) return false;
   }
-  return gradePreviews_.configure(command, grade ? readColorGrade(*grade) : modules::CompositorColorGrade{},
+  const auto refusedBefore = gradePreviews_.eventsRefused();
+  const bool accepted = gradePreviews_.configure(command, grade ? readColorGrade(*grade) : modules::CompositorColorGrade{},
       modules_.compositor->supportsGradePreview());
+  if (overloaded) *overloaded = !accepted && gradePreviews_.eventsRefused() != refusedBefore;
+  return accepted;
 }
 rpc::Json MediaCore::applySourceGrade(const rpc::Json& command) {
   if(modules_.compositor->rendererName()=="software") return rpc::Json::Object{{"accepted",false},{"reason","native-source-grade-not-built"}};
@@ -1171,7 +1174,9 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
   } else if (type == "set-source-preview-demand") {
     if (!configureSourcePreviewDemand(command)) commandProtocolFailures_.push_back("invalid-source-preview-demand");
   } else if (type == "set-grade-preview") {
-    if (!configureGradePreview(command)) commandProtocolFailures_.push_back("invalid-grade-preview");
+    bool overloaded = false;
+    if (!configureGradePreview(command, &overloaded))
+      commandProtocolFailures_.push_back(overloaded ? "grade-preview-overloaded" : "invalid-grade-preview");
   } else if (type == "set-source-policy") {
     setSourcePolicy(command);
   } else if (type == "set-output-profile") {
