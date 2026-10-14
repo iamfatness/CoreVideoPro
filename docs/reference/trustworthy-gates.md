@@ -58,8 +58,27 @@ up to three seconds for the matching job and exact cross-device pixels. The
 subscription-notice fixture also exercises both modes and waits up to two seconds
 for the attributed layout event, checking both notice addition and removal.
 `MultiviewProgramPixelsAdvanceAtFixedConsumerPhases` explicitly selects each
-branch's mode before constructing the compositor; its pixel/deadline and zero
+branch's mode before constructing the compositor; its bounded wait and zero
 repeat/gap requirements remain unchanged.
+
+### Phase timing interpretation and retained failure (#898)
+
+The explicit-mode full Release run at `706a446` with incoming isolation `0`
+retained 1,599 passes and one failure: the isolated phase fixture timed out
+waiting ten milliseconds for the next worker sequence. This is a different
+failure from the previous missing-mode warm-up assertion. It is not classified
+as fixture noise or a production regression without a quiet matched comparison.
+
+The fixture aims to start consumption at tick + 16 ms but does not enforce that
+deadline: a ten-millisecond completion wait begun at phase 14 can extend to
+24 ms after the tick, and keyed-mutex acquisition/readback can extend it further. Therefore
+exact pixels and zero repeats/gaps establish the sampled sequence, not on-time
+presentation. Per-tick timing records now expose tick wake, render return,
+monitor submission/completion observation, consumer start and readback completion
+relative to the scheduled tick. Timeout records include expected/observed
+sequence and monitor counters/readiness. These diagnostics do not change the
+ten-millisecond wait or pixel thresholds. CPU observation timestamps alone do
+not establish GPU-ready time or OS presentation; #898 tracks that distinction.
 
 On a quiet Windows hardware GPU, build Release and run the complete suite once
 with `COREVIDEO_ISOLATE_MONITORS=0` and once with `COREVIDEO_ISOLATE_MONITORS=1`.
