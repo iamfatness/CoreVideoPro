@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "MonitorTestMode.h"
 #include <chrono>
 #include <cstdint>
 #include <thread>
@@ -165,54 +166,70 @@ TEST(D3DDecoupledExport, FrameIdentityMatchesPixelsUnderAsynchronousExport) {
 }
 
 TEST(D3DDecoupledExport, ParticipantBgraExportCopiesCachedPixelsAcrossDevices) {
-  auto compositor = createD3D11Compositor();
-  ASSERT_NE(compositor, nullptr);
-  CompositorRenderPlan plan;
-  plan.width = kW; plan.height = kH;
-  CompositorRenderPlanLayer layer;
-  layer.kind = "participant-video";
-  layer.participantId = "bgra-copy";
-  layer.rect = {0.f, 0.f, 1.f, 1.f};
-  plan.layers.push_back(layer);
-  ComPtrLite<ID3D11Device> consumer;
-  ComPtrLite<ID3D11DeviceContext> context;
-  ASSERT_TRUE(makeDevice(consumer, context));
-  int64_t frameId = 0;
-  for (const uint32_t color : {0xff112233u, 0xff774411u}) {
-    VideoFrame input;
-    input.participantId = "bgra-copy";
-    input.frameId = ++frameId;
-    input.width = input.pixelWidth = kW;
-    input.height = input.pixelHeight = kH;
-    input.pixelStride = kW * 4;
-    auto pixels = std::make_shared<std::vector<uint8_t>>(kW * kH * 4);
-    for (size_t i = 0; i < pixels->size(); i += 4) {
-      for (int b = 0; b < 4; ++b) (*pixels)[i + b] = static_cast<uint8_t>(color >> (b * 8));
-    }
-    input.pixels = pixels;
-    bool matched = false;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (std::chrono::steady_clock::now() < deadline) {
-      const auto frame = compositor->render(plan, {input});
-      // #724: a source's first export is created off the render thread, so the
-      // first frame or two carry no tile handle. The deadline still fails the
-      // test if one never appears.
-      if (frame.participantSharedTextures.empty()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        continue;
+  for (const bool isolated : {false, true}) {
+    corevideo::test::MonitorTestMode mode(isolated);
+    auto compositor = createD3D11Compositor();
+    ASSERT_NE(compositor, nullptr);
+    mode.verify(*compositor, "ParticipantBgraExportCopiesCachedPixelsAcrossDevices");
+    CompositorRenderPlan plan;
+    plan.width = kW; plan.height = kH;
+    CompositorRenderPlanLayer layer;
+    layer.kind = "participant-video";
+    layer.participantId = "bgra-copy";
+    layer.rect = {0.f, 0.f, 1.f, 1.f};
+    plan.layers.push_back(layer);
+    ComPtrLite<ID3D11Device> consumer;
+    ComPtrLite<ID3D11DeviceContext> context;
+    ASSERT_TRUE(makeDevice(consumer, context));
+    int64_t frameId = 0;
+    for (const uint32_t color : {0xff112233u, 0xff774411u}) {
+      VideoFrame input;
+      input.participantId = "bgra-copy";
+      input.frameId = ++frameId;
+      input.width = input.pixelWidth = kW;
+      input.height = input.pixelHeight = kH;
+      input.pixelStride = kW * 4;
+      auto pixels = std::make_shared<std::vector<uint8_t>>(kW * kH * 4);
+      for (size_t i = 0; i < pixels->size(); i += 4) {
+        for (int b = 0; b < 4; ++b) (*pixels)[i + b] = static_cast<uint8_t>(color >> (b * 8));
       }
-      ASSERT_EQ(frame.participantSharedTextures.size(), size_t{1});
-      const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
-          std::stoull(frame.participantSharedTextures[0].sharedHandleHex, nullptr, 0)));
-      uint32_t pixel = 0;
-      if (readOutputPixel(consumer.get(), context.get(), handle, pixel) && pixel == color) {
-        matched = true;
-        break;
+      input.pixels = pixels;
+      bool matched = false;
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (std::chrono::steady_clock::now() < deadline) {
+        const auto frame = compositor->render(plan, {input});
+        auto exports = frame.participantSharedTextures;
+        if (isolated) {
+          MonitorRenderRequest request;
+          request.sequence = frameId;
+          request.programPlan = plan;
+          request.frames = {input};
+          request.sourceExports.push_back({"bgra-copy", SourceMonitorConsumer::Inspector, "gpu-test"});
+          compositor->submitMonitors(std::move(request));
+          const auto result = compositor->latestMonitors();
+          if (result && result->sequence == frameId) exports = result->sources;
+        }
+        // #724: a source's first export is created off the render thread, so the
+        // first frame or two carry no tile handle. The deadline still fails the
+        // test if one never appears.
+        if (exports.empty()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(2));
+          continue;
+        }
+        ASSERT_EQ(exports.size(), size_t{1});
+        EXPECT_EQ(exports[0].participantId, "bgra-copy");
+        const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
+            std::stoull(exports[0].sharedHandleHex, nullptr, 0)));
+        uint32_t pixel = 0;
+        if (readOutputPixel(consumer.get(), context.get(), handle, pixel) && pixel == color) {
+          matched = true;
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      EXPECT_TRUE(matched);
+      EXPECT_EQ(compositor->sourceTexStats().cachedUploads, static_cast<uint64_t>(frameId));
     }
-    EXPECT_TRUE(matched);
-    EXPECT_EQ(compositor->sourceTexStats().cachedUploads, static_cast<uint64_t>(frameId));
   }
 }
 
