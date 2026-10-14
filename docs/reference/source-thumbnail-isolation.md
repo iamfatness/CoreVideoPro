@@ -22,8 +22,16 @@ which texture belongs to a thumbnail.
 
 On the isolated monitor path, source export demand includes at most ten assigned
 Show Input sources even when a composite Preview is active. Existing Preview
-fallback demands remain supported. There is currently no Sources-page visibility
-interest in the monitor protocol, so demand follows the assigned input roster.
+fallback demands remain supported. `SourcesInputsPage` owns ephemeral interest
+only while loaded and `IsInputsTab` is true. Tab exit/unload sends release and
+clears row surfaces. `set-source-preview-demand` leases this optional Inspector
+work for three seconds, renewed once per second while the page is visible and
+the core is healthy. A crashed shell or lost release cannot leave the work alive.
+Renewing changes only the lease deadline, never source admission/subscriptions,
+render-plan generation, source preparation, or persisted production settings.
+Engine stop/recovery drops local preview state and restarts interest only if the
+consumer remains visible. Inactive Inspector interest does not stop source media
+or remove independent Grade/PreviewFallback demands.
 The existing source grade map travels in the render plan and is baked by
 `effectiveParticipantGrade`; source exports remain at their native dimensions.
 

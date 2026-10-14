@@ -224,6 +224,11 @@ Json JsonRpcServer::handle(const Json& request) {
   if (hasType(request, "set-source-grade")) {
     return success(id, mediaCore_.applySourceGrade(request).asObject());
   }
+  if (hasType(request, "set-source-preview-demand")) {
+    if (!mediaCore_.configureSourcePreviewDemand(request))
+      return failure(id, "protocol-error", "Source preview demand requires enabled=true/false.");
+    return success(id, Json::Object{{"type", "source-preview-control"}, {"accepted", true}});
+  }
   if (hasType(request, "set-grade-preview")) {
     if (!mediaCore_.configureGradePreview(request))
       return failure(id, "protocol-error", "Invalid grading preview identity or revision.");

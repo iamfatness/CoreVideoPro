@@ -358,6 +358,7 @@ public sealed class ShowInputsCoordinatorTests
         var bridge = new FakeMediaCoreBridge();
         var host = new FakeShowInputsHost();
         var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using var previewInterest = new PreviewInterestScope(coordinator);
         using (ShowInputWriteScope.Enter("test"))
         {
             host.ShowInputs[0].Kind = ShowInputKind.ZoomParticipant;
@@ -392,6 +393,13 @@ public sealed class ShowInputsCoordinatorTests
         Assert.Equal(0, bridge.SyncCalls);
     }
 
+    private sealed class PreviewInterestScope(ShowInputsCoordinator coordinator) : IDisposable
+    {
+        private readonly ShowInputsCoordinator _coordinator = Start(coordinator);
+        private static ShowInputsCoordinator Start(ShowInputsCoordinator owner) { owner.SetPreviewVisible(true); return owner; }
+        public void Dispose() => _coordinator.SetPreviewVisible(false);
+    }
+
     private static ParticipantSharedTexture Texture(string id, string handle, ulong epoch = 0) => new()
     {
         ParticipantId = id, SharedHandleHex = handle, SourceEpoch = epoch,
@@ -404,6 +412,7 @@ public sealed class ShowInputsCoordinatorTests
         var bridge = new FakeMediaCoreBridge();
         var host = new FakeShowInputsHost();
         var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using var previewInterest = new PreviewInterestScope(coordinator);
         using (ShowInputWriteScope.Enter("test"))
             for (var i = 0; i < 3; i++)
             {
@@ -428,6 +437,13 @@ public sealed class ShowInputsCoordinatorTests
         Assert.Same(surface, coordinator.MultiviewInputRows.Rows[1].PreviewSurface);
         Assert.Same(surface, survivor.PreviewSurface);
         Assert.False(coordinator.MultiviewInputRows.TryAcceptSourcePreview(Texture("guest-2", "0x323400", 1)));
+        coordinator.SetPreviewVisible(false);
+        Assert.Null(survivor.PreviewSurface);
+        Assert.False(coordinator.MultiviewInputRows.TryAcceptSourcePreview(Texture("guest-2", "0x323400", 1)));
+        coordinator.SetPreviewVisible(true);
+        Assert.Null(survivor.PreviewSurface); // Cached pre-unload pixels are never called live.
+        bridge.EmitTexture(Texture("guest-2", "0x423400", 1));
+        Assert.Equal(0x423400UL, survivor.PreviewSurface!.PendingSharedHandle!.NtHandle);
     }
 
     [Fact]
@@ -436,6 +452,7 @@ public sealed class ShowInputsCoordinatorTests
         var bridge = new FakeMediaCoreBridge();
         var host = new FakeShowInputsHost();
         var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using var previewInterest = new PreviewInterestScope(coordinator);
         using (ShowInputWriteScope.Enter("test"))
         {
             host.ShowInputs[0].Kind = ShowInputKind.ZoomParticipant;
@@ -476,6 +493,7 @@ public sealed class ShowInputsCoordinatorTests
         var camera = new CaptureDevice { Id = "cam", NativeDeviceId = "cam", Vendor = "test", Name = "Camera", Inputs = [], SelectedInputId = "cam" };
         host.CaptureDevices.Add(camera);
         var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using var previewInterest = new PreviewInterestScope(coordinator);
         using (ShowInputWriteScope.Enter("test"))
         {
             host.ShowInputs[5].Kind = ShowInputKind.UvcWebcam;

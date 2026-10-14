@@ -2,7 +2,7 @@ using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.MediaCore.Services;
 
-public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTransport
+public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTransport, ISourcePreviewTransport
 {
     private readonly MediaCoreSupervisor _supervisor;
     private readonly MediaCoreSyncScheduler _syncScheduler = new();
@@ -85,6 +85,8 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
     public event Action<ProgramSharedTexture>? PreviewSharedTextureReceived;
     public event Action<ParticipantSharedTexture>? ParticipantSharedTextureReceived;
     public event Action<GradePreviewObservation>? GradePreviewReceived;
+    public Task SetSourcePreviewActiveAsync(bool enabled, CancellationToken cancellationToken = default) =>
+        _supervisor.SetSourcePreviewActiveAsync(enabled, cancellationToken);
     public Task SetGradePreviewAsync(string instanceId, string sourceId, long revision, bool enabled,
         MediaCoreColorGradeWire grade, CancellationToken cancellationToken = default) =>
         _supervisor.SetGradePreviewAsync(instanceId, sourceId, revision, enabled, grade, cancellationToken);

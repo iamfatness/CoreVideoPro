@@ -17,6 +17,7 @@ public sealed class MultiviewInputRowsProjection
     private readonly HashSet<CaptureDevice> _observedCaptureDevices = [];
     private NativeMediaCoreStateSnapshot? _lastRoster;
     private volatile bool _engineStopped;
+    private volatile bool _previewConsumerActive;
     private string? _retiredEpoch;
     private readonly Dictionary<string, IsoOutputLifecycleFact> _isoFacts = new(StringComparer.Ordinal);
     private IReadOnlyList<MultiviewTile> _tiles = [];
@@ -202,7 +203,7 @@ public sealed class MultiviewInputRowsProjection
     /// Called on the bridge thread; only a new handle/format schedules UI work.</summary>
     public bool TryAcceptSourcePreview(ParticipantSharedTexture texture)
     {
-        if (!texture.IsValid) return false;
+        if (!_previewConsumerActive || !texture.IsValid) return false;
         var sourceId = texture.ParticipantId.StartsWith("capture:", StringComparison.Ordinal) ||
                        texture.ParticipantId.StartsWith("media:", StringComparison.Ordinal)
             ? texture.ParticipantId : $"zoom:{texture.ParticipantId}";
@@ -215,7 +216,7 @@ public sealed class MultiviewInputRowsProjection
         if (!handle.IsValid) return false;
         lock (_previewGate)
         {
-            if (!_previewSourceIds.Contains(sourceId) || _previewBlockedIds.Contains(sourceId) || _engineStopped) return false;
+            if (!_previewConsumerActive || !_previewSourceIds.Contains(sourceId) || _previewBlockedIds.Contains(sourceId) || _engineStopped) return false;
             _previewEpochs.TryGetValue(sourceId, out var previousEpoch);
             if (texture.SourceEpoch < previousEpoch ||
                 (_previewNeedsNewEpoch.Contains(sourceId) && previousEpoch > 0 && texture.SourceEpoch <= previousEpoch)) return false;
@@ -234,6 +235,15 @@ public sealed class MultiviewInputRowsProjection
             };
             return true;
         }
+    }
+
+    public void SetPreviewConsumerActive(bool active)
+    {
+        if (_previewConsumerActive == active) return;
+        _previewConsumerActive = active;
+        if (!active)
+            lock (_previewGate) _sourcePreviews.Clear();
+        RefreshSourcePreviews();
     }
 
     public void RefreshSourcePreviews()
@@ -260,7 +270,7 @@ public sealed class MultiviewInputRowsProjection
                     _sourcePreviews.Remove(currentSourceId);
                 }
             }
-        if (!_engineStopped && row.SourceId is { } sourceId &&
+        if (_previewConsumerActive && !_engineStopped && row.SourceId is { } sourceId &&
             _slots.Any(slot => slot.SlotNumber == row.SlotNumber && slot.InShow && slot.IsAssigned) &&
             (sourceId.StartsWith("media:", StringComparison.Ordinal) ||
              sourceId.StartsWith("capture:", StringComparison.Ordinal) && row.StatusLabel == "LIVE" ||
