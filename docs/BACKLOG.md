@@ -10,8 +10,10 @@ is available. The coordinator handles #857 installed beta/recovery validation an
 reconciles shipped versus accepted work. Maximum three development issues in flight.
 The owner accepted administrator consent: October 14 beta is installed, both camera
 ownership entries and shortcuts are verified, and the October 13 install was removed.
-The OS receiver activates, but its measured 45-second continuity trial had 28 repeats
-and 28 missing identities while native buffer counters stayed clean; #517 remains open.
+The first OS receiver trial had 28 repeats/missing identities in an old serving DLL.
+After Frame Server refresh, a serving-identity-qualified 45-second measured trial
+passed with 2,701 samples and zero identity losses. Both trials remain under #517;
+the short reference does not close sustained, mixed-load or real-meeting acceptance.
 Installation is complete; real-meeting and zero-miss output acceptance remain open.
 
 **This is the only ordered list of work.** Status and detailed evidence live on
