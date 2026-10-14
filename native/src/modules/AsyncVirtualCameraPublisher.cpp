@@ -105,6 +105,7 @@ void AsyncVirtualCameraPublisher::run() {
 #endif
   uint64_t appliedRevision = 0;
   bool appliedOn = false, framerHasProcessedFrame = false;
+  auto retryAt = (std::chrono::steady_clock::time_point::max)();
   std::unique_ptr<GpuWebcamFramer> framer;
   std::future<std::unique_ptr<GpuWebcamFramer>> preparing;
   uint64_t framerFrames = 0, framerFailures = 0;
@@ -112,11 +113,16 @@ void AsyncVirtualCameraPublisher::run() {
     std::unique_lock<std::mutex> lock(mutex_);
     const auto ready = [&] {
       return shutdown_ || revision_ != appliedRevision || frame_ || nv12_ ||
+        (desiredOn_ && std::chrono::steady_clock::now() >= retryAt) ||
         (preparing.valid() && preparing.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
     };
     // Poll only during preparation so a completed job is retired even when
     // the camera was stopped and there are no more incoming frames.
-    if (preparing.valid()) wake_.wait_for(lock, std::chrono::milliseconds(16), ready);
+    if (desiredOn_ && retryAt != (std::chrono::steady_clock::time_point::max)()) {
+      const auto deadline = preparing.valid()
+          ? (std::min)(retryAt, std::chrono::steady_clock::now() + std::chrono::milliseconds(16)) : retryAt;
+      wake_.wait_until(lock, deadline, ready);
+    } else if (preparing.valid()) wake_.wait_for(lock, std::chrono::milliseconds(16), ready);
     else wake_.wait(lock, ready);
     if (shutdown_) break;
     const auto revision = revision_;
@@ -136,8 +142,19 @@ void AsyncVirtualCameraPublisher::run() {
     try {
       backend_->setMirror(mirror);
       backend_->setDeviceName(name);
-      if (on && !appliedOn) { backend_->stop(); backend_->start(w, h, fps); }
+      if (on && (!appliedOn || std::chrono::steady_clock::now() >= retryAt)) {
+        backend_->stop(); backend_->start(w, h, fps);
+        const auto started = backend_->status();
+        // Registration can be repaired while this process remains alive.
+        // Retry only registration failures, off the media/control threads,
+        // at most once per second even with incoming 60 Hz frames.
+        retryAt = !started.enabled && started.state == "failed" &&
+            started.warning.rfind("CAMERA_", 0) == 0
+            ? std::chrono::steady_clock::now() + std::chrono::seconds(1)
+            : (std::chrono::steady_clock::time_point::max)();
+      }
       else if (!on && appliedOn) backend_->stop();
+      if (!on) retryAt = (std::chrono::steady_clock::time_point::max)();
       appliedOn = on;
       const bool cameraReady = on && backend_->status().enabled;
       if (!cameraReady || !framerEnabled) { framer.reset(); framerHasProcessedFrame = false; }
@@ -193,9 +210,11 @@ void AsyncVirtualCameraPublisher::run() {
         framerHasProcessedFrame && observed.enabled ? "active" : "waiting";
       if (framer) observed.framerWarning = framer->warning();
     } catch (const std::exception& e) {
+      retryAt = (std::chrono::steady_clock::time_point::max)();
       publicationFailed = attemptedPublication;
       observed.state = "failed"; observed.warning = e.what(); appliedOn = on;
     } catch (...) {
+      retryAt = (std::chrono::steady_clock::time_point::max)();
       publicationFailed = attemptedPublication;
       observed.state = "failed"; observed.warning = "Virtual camera operation failed."; appliedOn = on;
     }
