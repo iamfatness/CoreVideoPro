@@ -2401,7 +2401,7 @@ class D3D11Compositor final : public ICompositor {
         }
         if (uploaded) {
           CpuStageScope timing(profileEnabled, stageProfileNs_[ParticipantRelease]);
-          if (pt.exporter->submit(context_.get(), exportTexture, f.frameId)) {
+          if (pt.exporter->submit(context_.get(), exportTexture, f.frameId, f.sourceEpoch)) {
             pt.lastFrameId = f.frameId;
             pt.lastSourceEpoch = f.sourceEpoch;
             pt.lastGrade = grade;
@@ -2410,12 +2410,15 @@ class D3D11Compositor final : public ICompositor {
           ++stageProfileUploadFailures_;
         }
       }
+      const auto publication = pt.exporter->publication();
+      if (publication.frameNumber < 0 || publication.sourceEpoch != f.sourceEpoch) continue;
       ParticipantSharedTexture info;
       info.participantId = f.participantId;
-      info.sharedHandleHex = handleToHex(pt.exporter->handle());
+      info.sourceEpoch = publication.sourceEpoch;
+      info.sharedHandleHex = handleToHex(publication.handle);
       info.width = pt.width;
       info.height = pt.height;
-      info.frameNumber = pt.exporter->publishedFrameNumber()->load(std::memory_order_acquire);
+      info.frameNumber = publication.frameNumber;
       if (info.frameNumber < 0) continue;
       outFrame.participantSharedTextures.push_back(std::move(info));
     }

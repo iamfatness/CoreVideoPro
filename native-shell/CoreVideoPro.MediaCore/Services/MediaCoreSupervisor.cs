@@ -431,6 +431,14 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
         }
     }
 
+    public async Task SetSourcePreviewActiveAsync(bool enabled, CancellationToken cancellationToken = default)
+    {
+        using var response = await SendAsync(new Dictionary<string, object?> {
+            ["id"] = NextId(), ["type"] = "set-source-preview-demand", ["enabled"] = enabled
+        }, cancellationToken).ConfigureAwait(false);
+        ThrowIfRejected(response, "set-source-preview-demand");
+    }
+
     public async Task RenewGradePreviewAsync(string instanceId, string sourceId, long revision, CancellationToken cancellationToken = default)
     {
         using var response = await SendAsync(new Dictionary<string, object?> {

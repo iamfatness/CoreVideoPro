@@ -7,6 +7,19 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class CoreProtocolParserTests
 {
+    [Theory]
+    [InlineData("", 0UL)]
+    [InlineData(", \"sourceEpoch\": 17", 17UL)]
+    public void ParticipantTextureCarriesOptionalNativeSourceIncarnation(string epochField, ulong expected)
+    {
+        var line = "{\"type\":\"participant-shared-texture\",\"participantId\":\"capture:cam\"" + epochField +
+            ",\"texture\":{\"sharedHandleHex\":\"0x123400\",\"width\":1920,\"height\":1080,\"frameNumber\":3}}";
+        var parsed = CoreProtocolParser.TryParseParticipantSharedTextureEvent(line);
+        Assert.NotNull(parsed);
+        Assert.Equal("capture:cam", parsed.Texture.ParticipantId);
+        Assert.Equal(expected, parsed.Texture.SourceEpoch);
+    }
+
     [Fact]
     public void DirectRosterFactUsesGeneratedRevisionContractAndUpdatesAudioSourceMute()
     {
