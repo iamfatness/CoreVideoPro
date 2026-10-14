@@ -4,6 +4,8 @@
 #include <deque>
 #include <string>
 #include <utility>
+#include <condition_variable>
+#include <mutex>
 
 namespace corevideo::rpc {
 
@@ -17,6 +19,19 @@ class ResourceEventLane {
   using Stamp = std::chrono::steady_clock::time_point;
   struct Item { std::string key, message; Stamp stamp; };
   struct PushResult { bool admitted = false; std::string retired; };
+  bool canPush(const std::string& key, std::size_t messageBytes) const {
+    std::size_t oldBytes = 0; bool existing = false;
+    for (const auto& item : items_) if (item.key == key) { oldBytes = item.message.size() + item.key.size(); existing = true; break; }
+    const auto newBytes = messageBytes + key.size();
+    return !key.empty() && key.size() <= 1024 && (existing || items_.size() < Capacity) &&
+        newBytes <= ByteBudget && bytes_ - oldBytes <= ByteBudget - newBytes;
+  }
+  template<typename Stopped>
+  bool waitForCapacity(const std::string& key, std::size_t bytes,
+                       std::unique_lock<std::mutex>& lock, std::condition_variable& changed, Stopped&& stopped) const {
+    changed.wait(lock, [&] { return canPush(key, bytes) || stopped(); });
+    return canPush(key, bytes);
+  }
 
   PushResult push(std::string key, std::string message, Stamp stamp = std::chrono::steady_clock::now()) {
     PushResult result;
