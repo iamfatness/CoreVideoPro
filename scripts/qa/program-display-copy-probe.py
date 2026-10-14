@@ -46,6 +46,7 @@ def main():
     mapping = None
     sample_count = 0
     latest = {}
+    latest_sources = []
     initial = None
     trace_key = None
     incident_files = []
@@ -63,7 +64,7 @@ def main():
         }, args.output/'native.stderr.log')
         with (args.output/'samples.jsonl').open('w', encoding='utf-8') as sample_file:
             def retain(snapshot):
-                nonlocal sample_count, latest, initial, trace_key
+                nonlocal sample_count, latest, latest_sources, initial, trace_key
                 worker = dict(snapshot.get('realtimeEvidence',{}).get('monitorWorker',{}))
                 display = dict(worker.get('programDisplay',{}))
                 incident = display.pop('incidentTrace', [])
@@ -80,11 +81,12 @@ def main():
                     programBuffer=snapshot.get('programBuffer'),
                     realtimeEvidence=dict(monitorWorker=worker,
                         render=snapshot.get('realtimeEvidence',{}).get('render')),
-                    sources=[{k:s.get(k) for k in ('sourceId','kind','hasVideo','framesIngested')}
+                    sources=[{k:s.get(k) for k in ('sourceId','kind','hasVideo','framesIngested','width','height')}
                         for s in snapshot.get('sources', [])])
                 if sample_file.tell() > 256*1024*1024: raise RuntimeError('sample artifact budget exhausted; incomplete evidence')
                 sample_file.write(json.dumps(row)+'\n'); sample_file.flush()
                 sample_count += 1; latest = display
+                latest_sources = row['sources']
                 if initial is None: initial = row
             retain(core.request({'type':'snapshot'})['snapshot'])
             reply = core.request({'type':'zoom-join', 'payload':{
@@ -139,9 +141,14 @@ def main():
         if mapping: mapping.close()
     if latest.get('refusalObservationVersion') != 'program-display-refusal-v1':
         failure = failure or 'candidate did not expose refusal attribution contract'
+    if not latest.get('observed') or latest.get('readerEpoch') in (None, '0'):
+        failure = failure or 'GPU Program reader was not observed; invalid trial'
+    if sum(s.get('kind') == 'zoom' and s.get('hasVideo') is True for s in latest_sources) != 8:
+        failure = failure or 'eight producing Zoom sources were not observed; invalid trial'
     report = dict(manifest, samples=sample_count, actualSeconds=time.monotonic()-started,
         error=failure, latestDisplay=latest,
         initial=initial, incidentArtifacts=incident_files,
+        latestSources=latest_sources,
         observation='UNVERIFIED' if not latest.get('observed') else 'ATTRIBUTION_ONLY',
         presentationVerdict='UNVERIFIED', allOutputZeroMissVerdict='UNVERIFIED')
     (args.output/'report.json').write_text(json.dumps(report, indent=2))
