@@ -1,4 +1,5 @@
 #include "modules/Interfaces.h"
+#include "MonitorTestMode.h"
 #include <gtest/gtest.h>
 #include <chrono>
 #include <thread>
@@ -440,8 +441,10 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
   ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
       D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
   for (const int depth : {2, 3}) for (const bool isolated : {false, true}) for (const int phaseMs : {2, 4, 10, 14}) {
+    corevideo::test::MonitorTestMode mode(isolated);
     auto compositor = createD3D11Compositor();
     ASSERT_TRUE(compositor != nullptr);
+    mode.verify(*compositor, "MultiviewProgramPixelsAdvanceAtFixedConsumerPhases");
     compositor->configureProgramBuffer(depth);
     CompositorRenderPlan program;
     program.sceneId = "phase-test"; program.renderPlanId = "phase-test";

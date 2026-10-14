@@ -42,3 +42,27 @@ these was failing or flaking on `main`, and each was hiding something.
   noise or as your regression. Copy an installed beta's `corevideo-native.exe` over
   `native/build-dev` for one run (and restore it), or point `COREVIDEO_BUILD_DIR` at a scratch
   folder holding it and the fake engine.
+
+## GPU fixture mode selection (#869)
+
+The test runner prints incoming monitor/preparation overrides. Mode-sensitive
+fixtures additionally print and verify the compositor's actual `effectiveMode`;
+an unset override does not imply isolation for a direct factory call. A scoped
+guard restores prior environment values after worker teardown, even on failure.
+
+`SourceTextureCacheDedupsUploadsAcrossPasses` explicitly selects inline monitors
+and disables CPU preparation: its counters describe the production texture cache.
+`ParticipantBgraExportCopiesCachedPixelsAcrossDevices` exercises both modes. The
+isolated branch requests its participant export from the monitor worker and waits
+up to three seconds for the matching job and exact cross-device pixels. The
+subscription-notice fixture also exercises both modes and waits up to two seconds
+for the attributed layout event, checking both notice addition and removal.
+`MultiviewProgramPixelsAdvanceAtFixedConsumerPhases` explicitly selects each
+branch's mode before constructing the compositor; its pixel/deadline and zero
+repeat/gap requirements remain unchanged.
+
+On a quiet Windows hardware GPU, build Release and run the complete suite once
+with `COREVIDEO_ISOLATE_MONITORS=0` and once with `COREVIDEO_ISOLATE_MONITORS=1`.
+Preserve both logs, including `[gpu-test-run]` and `[gpu-test-mode]` records.
+Focused fixture success or a stub suite is not a substitute for these full GPU
+runs, nor proof of installed OS-camera presentation or unlimited zero misses.
