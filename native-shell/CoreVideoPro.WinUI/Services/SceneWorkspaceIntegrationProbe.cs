@@ -60,6 +60,12 @@ internal static class SceneWorkspaceIntegrationProbe
         await Eventually(()=>tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}));
         Require(studio.GalleryBackgroundColor=="#102030","Color hydration changed the selected scene's authored color");
         Require(tabs.Items.Contains(transformTab),"Tab reconciliation replaced the shared transform control");
+        Require(tabs.SelectedIndex==tabs.Items.IndexOf(tabs.SelectedItem),"Inspector selection index differs from the retained selected tab");
+        page.Visibility=Visibility.Collapsed;
+        studio.SelectSceneCommand.Execute(ordinarySceneId);await Task.Delay(30);
+        studio.SelectSceneCommand.Execute(id);await Task.Delay(30);
+        Require(tabs.SelectedIndex==tabs.Items.IndexOf(tabs.SelectedItem),"Collapsed inspector retained a stale selected index");
+        page.Visibility=Visibility.Visible;await Task.Delay(50);page.UpdateLayout();
         // A burst must reconcile the latest scene rather than a captured old selection.
         studio.SelectSceneCommand.Execute(ordinarySceneId);
         studio.SelectSceneCommand.Execute(alternateWallId);
