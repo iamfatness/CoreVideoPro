@@ -8,8 +8,10 @@ The #872/#873 isolation foundations are already merged; audit remaining consumer
 and acceptance gaps instead of duplicating them. #873 follows #872 when a WIP slot
 is available. The coordinator handles #857 installed beta/recovery validation and
 reconciles shipped versus accepted work. Maximum three development issues in flight.
-The owner is away: the October 14 installation request was cancelled before setup
-started; machine/user registrations and the existing installation remain unchanged.
+The owner accepted administrator consent: October 14 beta is installed, both camera
+ownership entries and shortcuts are verified, and the October 13 install was removed.
+The OS receiver activates, but its measured 45-second continuity trial had 28 repeats
+and 28 missing identities while native buffer counters stayed clean; #517 remains open.
 Installation and the real-meeting bake await desktop administrator consent.
 
 **This is the only ordered list of work.** Status and detailed evidence live on
