@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using Xunit;
@@ -32,6 +33,8 @@ public sealed class CoreRecoveryRejoinTests
                 const profile = {name:'recovery-rejoin-fake',renderer:'software',maxProgramResolution:'1920x1080'};
                 const roster = {meetingState:'in_meeting', rosterEpoch:'1:1:' + process.pid, rosterRevision:1,
                   participants:[{userId:'1',displayName:'Guest',sourceGeneration:1,muted:false,videoOn:true}]};
+                // This fixture tests recovery, not the request-only bootstrap fallback.
+                console.log(JSON.stringify({id:'handshake',ok:true,type:'handshake',protocolVersion:{major:1,minor:0},profile}));
                 readline.createInterface({input:process.stdin}).on('line', line => {
                   const m = JSON.parse(line);
                   let response = {id:m.id,ok:true,type:m.type};
@@ -48,14 +51,34 @@ public sealed class CoreRecoveryRejoinTests
             var supervisor = new MediaCoreSupervisor(new MediaCoreSupervisorOptions
             {
                 Command = "node", Args = [script], WorkingDirectory = directory,
-                HandshakeRequestTimeoutMs = 5000, RequestTimeoutMs = 3000,
+                // #754: functional recovery bounds, not cold-start performance budgets.
+                HandshakeRequestTimeoutMs = 30000, RequestTimeoutMs = 30000,
                 FrameDrainIntervalMs = 100000, ZoomRecoveryRetryDelayMs = 50
             });
             await using var bridge = new MediaCoreBridgeService(supervisor);
             // #732: the shell resumes a recording on this signal, so it must arrive, once, and
             // only after the rejoin's roster has been published.
             var outcomes = new System.Collections.Concurrent.ConcurrentQueue<(MediaCoreRecoveryOutcome Outcome, string? Epoch)>();
-            bridge.RecoveryCompleted += outcome => outcomes.Enqueue((outcome, bridge.LastSnapshot?.RosterEpoch));
+            string? latestStatus = null;
+            bridge.StatusChanged += status => Interlocked.Exchange(ref latestStatus, status);
+            var outcomeDiagnostics = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            bridge.RecoveryCompleted += outcome =>
+            {
+                var epoch = bridge.LastSnapshot?.RosterEpoch;
+                // Retain failure-time evidence before a later successful recovery can replace it.
+                outcomeDiagnostics.Enqueue(JsonSerializer.Serialize(new
+                {
+                    Outcome = outcome, Epoch = epoch, Status = Volatile.Read(ref latestStatus),
+                    Health = supervisor.Health
+                }));
+                outcomes.Enqueue((outcome, epoch));
+            };
+            string Diagnostics() => JsonSerializer.Serialize(new
+            {
+                Health = supervisor.Health, Status = Volatile.Read(ref latestStatus),
+                Joins = JoinLines(directory), Outcomes = outcomes.Select(item => new { item.Outcome, item.Epoch }).ToArray(),
+                OutcomeDiagnostics = outcomeDiagnostics.ToArray()
+            });
             Assert.NotNull(await bridge.StartAsync());
             await bridge.JoinZoomAsync("https://example.zoom.us/j/123456789", "Producer", webinar: false);
             Assert.Single(JoinLines(directory));
@@ -73,19 +96,21 @@ public sealed class CoreRecoveryRejoinTests
             try { await bridge.SyncAsync([new NativeMediaCoreCommand { Type = "test-die" }]); }
             catch (Exception) { /* the core died mid-request, as a crash does */ }
 
-            await UntilAsync(() => competingStart is not null);
+            await UntilAsync(() => competingStart is not null, Diagnostics);
             try { await competingStart!; } catch (Exception) { /* its own outcome is not the point */ }
 
             // The recovery must still run: a second zoom-join, sent to a different process.
-            await UntilAsync(() => JoinLines(directory).Length >= 2);
+            await UntilAsync(() => JoinLines(directory).Length >= 2, Diagnostics);
             var joins = JoinLines(directory);
             Assert.Equal(2, joins.Length);
             Assert.NotEqual(joins[0], joins[1]);
-            await UntilAsync(() => !supervisor.Health.Recovering);
+            await UntilAsync(() => !supervisor.Health.Recovering, Diagnostics);
 
-            await UntilAsync(() => !outcomes.IsEmpty);
+            await UntilAsync(() => !outcomes.IsEmpty, Diagnostics);
+            Assert.True(outcomes.Count == 1, Diagnostics());
             var reported = Assert.Single(outcomes);
             Assert.Equal(MediaCoreRecoveryOutcome.ZoomRejoined, reported.Outcome);
+            Assert.False(string.IsNullOrWhiteSpace(reported.Epoch), Diagnostics());
             Assert.NotEqual(epochBeforeTheCrash, reported.Epoch);
         }
         finally
@@ -102,11 +127,11 @@ public sealed class CoreRecoveryRejoinTests
         catch (IOException) { return []; }
     }
 
-    private static async Task UntilAsync(Func<bool> condition)
+    private static async Task UntilAsync(Func<bool> condition, Func<string> diagnostics)
     {
         // #754: a wait bound for a loaded CI runner, not a budget; only this bound fails the test.
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(90);
         while (!condition() && DateTime.UtcNow < deadline) await Task.Delay(40);
-        Assert.True(condition());
+        Assert.True(condition(), diagnostics());
     }
 }
