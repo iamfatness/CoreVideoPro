@@ -44,7 +44,11 @@ def main():
     stop = threading.Event()
     publisher = None
     mapping = None
-    rows = []
+    sample_count = 0
+    latest = {}
+    initial = None
+    trace_key = None
+    incident_files = []
     failure = None
     started = time.monotonic()
     try:
@@ -59,12 +63,29 @@ def main():
         }, args.output/'native.stderr.log')
         with (args.output/'samples.jsonl').open('w', encoding='utf-8') as sample_file:
             def retain(snapshot):
+                nonlocal sample_count, latest, initial, trace_key
+                worker = dict(snapshot.get('realtimeEvidence',{}).get('monitorWorker',{}))
+                display = dict(worker.get('programDisplay',{}))
+                incident = display.pop('incidentTrace', [])
+                if incident:
+                    key = (display.get('readerEpoch'),display.get('traceOverwritten'),incident[-1].get('observedNs'))
+                    if key != trace_key:
+                        if len(incident_files) >= 64: raise RuntimeError('incident artifact budget exhausted; incomplete evidence')
+                        name = f'incident-{len(incident_files)+1:03}.json'
+                        (args.output/name).write_text(json.dumps(dict(reader=display,records=incident),indent=2))
+                        incident_files.append(name); trace_key = key
+                    display['incidentArtifact'] = incident_files[-1]
+                worker['programDisplay'] = display
                 row = dict(elapsedSeconds=time.monotonic()-started,
                     programBuffer=snapshot.get('programBuffer'),
-                    realtimeEvidence=snapshot.get('realtimeEvidence'),
+                    realtimeEvidence=dict(monitorWorker=worker,
+                        render=snapshot.get('realtimeEvidence',{}).get('render')),
                     sources=[{k:s.get(k) for k in ('sourceId','kind','hasVideo','framesIngested')}
                         for s in snapshot.get('sources', [])])
-                sample_file.write(json.dumps(row)+'\n'); sample_file.flush(); rows.append(row)
+                if sample_file.tell() > 256*1024*1024: raise RuntimeError('sample artifact budget exhausted; incomplete evidence')
+                sample_file.write(json.dumps(row)+'\n'); sample_file.flush()
+                sample_count += 1; latest = display
+                if initial is None: initial = row
             retain(core.request({'type':'snapshot'})['snapshot'])
             reply = core.request({'type':'zoom-join', 'payload':{
                 'meetingNumber':'1234567890','displayName':'Synthetic Program copy attribution'}}, timeout=20)
@@ -116,10 +137,11 @@ def main():
         if publisher: publisher.join(timeout=2)
         if core: core.close()
         if mapping: mapping.close()
-    displays = [r.get('realtimeEvidence',{}).get('monitorWorker',{}).get('programDisplay',{}) for r in rows]
-    latest = displays[-1] if displays else {}
-    report = dict(manifest, samples=len(rows), actualSeconds=time.monotonic()-started,
+    if latest.get('refusalObservationVersion') != 'program-display-refusal-v1':
+        failure = failure or 'candidate did not expose refusal attribution contract'
+    report = dict(manifest, samples=sample_count, actualSeconds=time.monotonic()-started,
         error=failure, latestDisplay=latest,
+        initial=initial, incidentArtifacts=incident_files,
         observation='UNVERIFIED' if not latest.get('observed') else 'ATTRIBUTION_ONLY',
         presentationVerdict='UNVERIFIED', allOutputZeroMissVerdict='UNVERIFIED')
     (args.output/'report.json').write_text(json.dumps(report, indent=2))

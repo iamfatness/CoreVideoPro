@@ -78,6 +78,14 @@ TEST(D3DProgramBuffer, DisplayReaderAttributesEachResourceFailureAndExportsExact
     EXPECT_EQ(json.getNumber("readerReadLimit"), 2);
     EXPECT_EQ(json.get("incidentTrace")->asArray().back().getString("requestedSequence"), "91");
     EXPECT_FALSE(json.get("displayPresentationVerified")->asBool());
+    D3DProgramDisplayReaderTestAccess::fault(reader, {});
+    if (reason != ProgramDisplayReason::QueryCreate) {
+      EXPECT_NE(reader.copy(device.get(), context.get(), owner), nullptr);
+      EXPECT_EQ(reader.observation().copies, 1u);
+      EXPECT_EQ(reader.observation().refused, 1u);
+      EXPECT_EQ(reader.observation().skipped, 0u);
+      context->Flush();
+    }
   }
 }
 
@@ -119,6 +127,12 @@ TEST(D3DProgramBuffer, DisplayReaderCapacityRefusalRecordsPendingIdentitiesWitho
   EXPECT_EQ(reader.observation().refusalReasons[static_cast<size_t>(ProgramDisplayReason::QueryRead)], 1u);
   EXPECT_EQ(reader.observation().state, "failed");
   EXPECT_TRUE(slots[0]->quarantined.load());
+  for (int i = 0; i < 600; ++i) reader.copy(device.get(), context.get(), slots[2]);
+  EXPECT_EQ(reader.observation().incidentTrace->size(), D3DProgramDisplayReader::TraceCapacity);
+  EXPECT_GT(reader.observation().traceOverwritten, 0u);
+  EXPECT_EQ(reader.observation().traceCaptureFailures, 0u);
+  EXPECT_EQ(reader.observation().refusalReasons[static_cast<size_t>(ProgramDisplayReason::FailedReader)], 600u);
+  EXPECT_EQ(reader.observation().copies, 2u);
   context->Flush();
 }
 
