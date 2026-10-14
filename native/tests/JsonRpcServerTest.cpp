@@ -844,3 +844,24 @@ TEST(GradePreviewRpc, StubRoundTripsSmallAckAndExplicitUnavailableWithoutRenderi
   EXPECT_EQ(events[0].getString("status"), "unavailable");
   EXPECT_EQ(events[0].getString("reason"), "native-grade-preview-not-built");
 }
+
+TEST(GradePreviewRpc, ValidPressureIsOverloadedAndCannotMaskLaterInvalidIdentity) {
+  using namespace corevideo;
+  core::MediaCore core(modules::createStubModules()); rpc::JsonRpcServer server(core);
+  const auto request = [](int revision) {
+    return rpc::Json::Object{{"id", "grade"}, {"type", "set-grade-preview"},
+        {"instanceId", "editor"}, {"sourceId", "speaker-1"}, {"revision", revision}};
+  };
+  for (int i = 0; i < 16; ++i) EXPECT_TRUE(server.handle(request(i)).get("ok")->asBool());
+  auto overloaded = server.handle(request(16));
+  EXPECT_FALSE(overloaded.get("ok")->asBool());
+  EXPECT_EQ(overloaded.get("error")->getString("code"), "grade-preview-overloaded");
+  auto invalid = request(17); invalid["instanceId"] = "";
+  auto rejected = server.handle(invalid);
+  EXPECT_FALSE(rejected.get("ok")->asBool()); EXPECT_EQ(rejected.get("error")->getString("code"), "protocol-error");
+  const auto snapshot = core.sessionState();
+  EXPECT_GT(snapshot.get("gradePreview")->getNumber("eventsRefused"), 0);
+  EXPECT_GT(snapshot.get("gradePreview")->getNumber("eventOwnedByteBound"), 0);
+  (void)core.drainGradePreviewEvents();
+  EXPECT_TRUE(server.handle(request(16)).get("ok")->asBool());
+}

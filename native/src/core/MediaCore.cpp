@@ -1118,15 +1118,19 @@ bool MediaCore::configureSourcePreviewDemand(const rpc::Json& command) {
   return true;
 }
 
-bool MediaCore::configureGradePreview(const rpc::Json& command) {
+bool MediaCore::configureGradePreview(const rpc::Json& command, bool* overloaded) {
+  if (overloaded) *overloaded = false;
   if (command.get("renewOnly") && command.get("renewOnly")->asBool()) return gradePreviews_.renew(command);
   const auto* grade = command.get("grade");
   if (grade) if (const auto* advanced = grade->get("advanced")) {
     std::shared_ptr<const modules::AdvancedGradeDocument> validated;
     if (!modules::readAdvancedGrade(*advanced, validated)) return false;
   }
-  return gradePreviews_.configure(command, grade ? readColorGrade(*grade) : modules::CompositorColorGrade{},
+  const auto refusedBefore = gradePreviews_.eventsRefused();
+  const bool accepted = gradePreviews_.configure(command, grade ? readColorGrade(*grade) : modules::CompositorColorGrade{},
       modules_.compositor->supportsGradePreview());
+  if (overloaded) *overloaded = !accepted && gradePreviews_.eventsRefused() != refusedBefore;
+  return accepted;
 }
 rpc::Json MediaCore::applySourceGrade(const rpc::Json& command) {
   if(modules_.compositor->rendererName()=="software") return rpc::Json::Object{{"accepted",false},{"reason","native-source-grade-not-built"}};
@@ -1170,7 +1174,9 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
   } else if (type == "set-source-preview-demand") {
     if (!configureSourcePreviewDemand(command)) commandProtocolFailures_.push_back("invalid-source-preview-demand");
   } else if (type == "set-grade-preview") {
-    if (!configureGradePreview(command)) commandProtocolFailures_.push_back("invalid-grade-preview");
+    bool overloaded = false;
+    if (!configureGradePreview(command, &overloaded))
+      commandProtocolFailures_.push_back(overloaded ? "grade-preview-overloaded" : "invalid-grade-preview");
   } else if (type == "set-source-policy") {
     setSourcePolicy(command);
   } else if (type == "set-output-profile") {

@@ -169,7 +169,7 @@ class MediaCore {
   [[nodiscard]] std::vector<rpc::Json> drainResourceEvents() { return pendingResourceEvents_.drain(); }
   [[nodiscard]] rpc::Json applySourceGrade(const rpc::Json& command);
   bool configureSourcePreviewDemand(const rpc::Json& command);
-  bool configureGradePreview(const rpc::Json& command);
+  bool configureGradePreview(const rpc::Json& command, bool* overloaded = nullptr);
   [[nodiscard]] std::vector<rpc::Json> drainMultiviewSharedTextureEvents();
   [[nodiscard]] std::vector<rpc::Json> drainPreviewSharedTextureEvents();
   [[nodiscard]] rpc::Json applyCommand(const rpc::Json& command);

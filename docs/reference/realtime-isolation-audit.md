@@ -81,6 +81,9 @@ Active editor ticks retry the current surface on the next 100 ms tick after
 space returns. A one-shot unsupported/capacity response returns a failed control
 ACK when its event cannot be admitted; repeating that control can retry after
 drain. This avoids acknowledging a diagnostic event that was silently lost.
+The RPC classifies that valid-request pressure as `grade-preview-overloaded`;
+malformed identity/revision remains `protocol-error`. Nested commands record
+the corresponding overload failure rather than mislabelling it invalid input.
 
 Serialized mailbox capacity wait belongs only to the pump. On terminal stop,
 saturated admission is cancelled rather than waiting for a blocked pipe writer;
