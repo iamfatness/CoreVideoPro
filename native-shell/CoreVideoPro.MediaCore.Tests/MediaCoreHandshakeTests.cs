@@ -30,15 +30,19 @@ public sealed class MediaCoreHandshakeTests
             {
                 Command = "node", Args = [script], WorkingDirectory = Path.GetTempPath(),
                 Environment = new Dictionary<string, string> { ["COREVIDEO_HANDSHAKE_TRACE"] = trace },
-                // #754: this child never volunteers a handshake, so StartAsync waits out
-                // HandshakeRequestTimeoutMs before asking; keep that short. The explicit request and
-                // the outer waits must outlast node's cold start on a loaded CI runner, so those are
-                // bounds, not budgets (the 5 s outer wait timed out there and failed the assertion).
-                HandshakeRequestTimeoutMs = 1000, RequestTimeoutMs = 60000, FrameDrainIntervalMs = 100000, MaxRestarts = 3
+                // #754: HandshakeAsync uses HandshakeRequestTimeoutMs for its pipe write and
+                // reply, independently of RequestTimeoutMs. This is a functional rejection test,
+                // so both request and outer bounds must tolerate a loaded CI runner.
+                HandshakeRequestTimeoutMs = 60000, RequestTimeoutMs = 60000, FrameDrainIntervalMs = 100000, MaxRestarts = 3
             });
             var startup = supervisor.StartAsync();
             var process = (Process)typeof(MediaCoreSupervisor).GetField("_process", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(supervisor)!;
             using var child = Process.GetProcessById(process.Id);
+            // Exercise the public request while StartAsync awaits the same child's profile;
+            // do not spend the generous request bound waiting for an unsolicited bootstrap.
+            // The compatible request-only test below still covers automatic fallback.
+            var handshake = supervisor.HandshakeAsync();
+            Assert.Contains("incompatible", (await Assert.ThrowsAsync<InvalidOperationException>(() => handshake.WaitAsync(TimeSpan.FromSeconds(90)))).Message);
             Assert.Contains("incompatible", (await Assert.ThrowsAsync<InvalidOperationException>(() => startup.WaitAsync(TimeSpan.FromSeconds(90)))).Message);
             await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(90));
             Assert.False(supervisor.Running);
