@@ -53,7 +53,7 @@ inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
 // Contract view of the live MediaCore::applyCommandMutation branches. The
 // dispatcher itself decides admission; ContractParity checks this view and the
 // production builder against every branch in both directions.
-inline constexpr std::array<std::string_view, 49> kNativeMediaCoreCommandTypes = {
+inline constexpr std::array<std::string_view, 50> kNativeMediaCoreCommandTypes = {
     "begin-take-transition",
     "load-scene-graph",
     "set-preview-scene",
@@ -61,6 +61,7 @@ inline constexpr std::array<std::string_view, 49> kNativeMediaCoreCommandTypes =
     "set-overlay-asset",
     "set-color-grade",
     "set-grade-preview",
+    "set-source-preview-demand",
     "set-source-policy",
     "set-output-profile",
     "start-program-output",
@@ -108,7 +109,7 @@ inline constexpr std::array<std::string_view, 49> kNativeMediaCoreCommandTypes =
 // Every request type JsonRpcServer dispatches on. ContractParity compares this
 // with the dispatcher in both directions and checks that each request the C#
 // and Swift shells send is in it.
-inline constexpr std::array<std::string_view, 36> kCoreRequestTypes = {
+inline constexpr std::array<std::string_view, 37> kCoreRequestTypes = {
     "handshake",
     "register-grade-document",
     "set-source-grade",
@@ -128,6 +129,7 @@ inline constexpr std::array<std::string_view, 36> kCoreRequestTypes = {
     "zoom-media-spine-sync",
     "set-zoom-guest-av-sync-offset",
     "set-grade-preview",
+    "set-source-preview-demand",
     "get-output-health",
     "get-output-session",
     "list-capture-devices",
