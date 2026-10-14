@@ -7,6 +7,7 @@ import math
 import mmap
 import pathlib
 import struct
+import sys
 import threading
 import time
 import uuid
@@ -22,22 +23,33 @@ def fixed(route_id, participant_id):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--core', type=pathlib.Path, required=True)
-    parser.add_argument('--fake', type=pathlib.Path, required=True)
+    engine_group = parser.add_mutually_exclusive_group(required=True)
+    engine_group.add_argument('--fake', type=pathlib.Path)
+    engine_group.add_argument('--engine', type=pathlib.Path, help='Real SDK helper; requires --meeting-url-file')
+    parser.add_argument('--meeting-url-file', type=pathlib.Path, help='Full authorized test URL; never copied to evidence')
+    parser.add_argument('--join-credentials-stdin', action='store_true', help='Read SDK JWT/ZAK via anonymous stdin, never persist them')
     parser.add_argument('--output', type=pathlib.Path, required=True)
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--duration', type=float, default=120)
     parser.add_argument('--depth', type=int, choices=(2, 3), default=2)
     args = parser.parse_args()
+    if sys.platform == 'win32' and not sys.flags.utf8_mode:
+        parser.error('Run with python -X utf8; native RPC is UTF-8 (existing harness issue #877)')
     if not math.isfinite(args.duration) or not 0 < args.duration <= 3600:
         parser.error('duration must be finite and in (0, 3600]')
-    if not args.core.is_file() or not args.fake.is_file():
+    engine = args.fake or args.engine
+    if not args.core.is_file() or not engine.is_file():
         parser.error('core and fake executables must exist')
+    if args.engine and (not args.meeting_url_file or not args.meeting_url_file.is_file()):
+        parser.error('real SDK probe requires a file containing the full authorized test URL')
     args.output.mkdir(parents=True, exist_ok=False)
     manifest = dict(sourceCommit=args.source_commit,
         coreSha256=hashlib.sha256(args.core.read_bytes()).hexdigest(),
         harnessSha256=hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
         depth=args.depth, requestedSeconds=args.duration, startupRetained=True,
-        workload='8 synthetic 1080p30 Zoom feeds + 2560x1440 BGRA screen at 60 Hz; isolated 1080p60 monitors',
+        workload=('8 synthetic 1080p30 Zoom feeds' if args.fake else '8 real Zoom feeds (observed sizes/cadence retained)')+
+            ' + 2560x1440 BGRA screen at 60 Hz; isolated 1080p60 monitors',
+        synthetic=bool(args.fake),
         scope='Program reader attribution only. No shell presentation, camera receiver or audio qualification.')
     (args.output/'manifest.json').write_text(json.dumps(manifest, indent=2))
     core = None
@@ -54,7 +66,7 @@ def main():
     started = time.monotonic()
     try:
         core = Core(str(args.core.resolve()), {
-            'COREVIDEO_ZOOM_ENGINE_PATH': str(args.fake.resolve()),
+            'COREVIDEO_ZOOM_ENGINE_PATH': str(engine.resolve()),
             'COREVIDEO_ISOLATE_MONITORS': '1',
             'COREVIDEO_PROGRAM_BUFFER_FRAMES': str(args.depth),
             'COREVIDEO_FAKE_ENGINE_PARTICIPANTS': '8',
@@ -89,10 +101,30 @@ def main():
                 latest_sources = row['sources']
                 if initial is None: initial = row
             retain(core.request({'type':'snapshot'})['snapshot'])
-            reply = core.request({'type':'zoom-join', 'payload':{
-                'meetingNumber':'1234567890','displayName':'Synthetic Program copy attribution'}}, timeout=20)
-            if not reply.get('ok'): raise RuntimeError('synthetic join refused')
-            pids = [str(101+i) for i in range(8)]
+            payload = dict(displayName='CoreVideo Program copy attribution',cameraMaxResolution=2,cameraMaxFps=60)
+            if args.join_credentials_stdin:
+                line = sys.stdin.readline(65537)
+                if len(line) > 65536: raise RuntimeError('join credential input exceeded bound')
+                credentials = json.loads(line)
+                for key in ('sdkJwt','userZak'):
+                    if isinstance(credentials.get(key),str): payload[key] = credentials[key]
+                if not payload.get('sdkJwt'): raise RuntimeError('SDK credential provider did not supply a JWT')
+                del credentials, line
+            if args.fake: payload['meetingNumber'] = '1234567890'
+            else: payload['meetingUrl'] = args.meeting_url_file.read_text(encoding='utf-8-sig').strip()
+            reply = core.request({'type':'zoom-join', 'payload':payload}, timeout=30)
+            if not reply.get('ok'): raise RuntimeError('test join refused')
+            pids = [str(101+i) for i in range(8)] if args.fake else []
+            if args.engine:
+                join_deadline = time.monotonic()+45
+                while time.monotonic() < join_deadline:
+                    zoom = core.request({'type':'zoom-snapshot'})['snapshot']
+                    retain(core.request({'type':'snapshot'})['snapshot'])
+                    pids = [str(p['userId']) for p in zoom.get('participants',[])
+                        if p.get('videoOn') and not p.get('isMe')][:8]
+                    if len(pids) == 8: break
+                    stop.wait(.5)
+                if len(pids) != 8: raise RuntimeError('real meeting did not provide eight video participants')
             reply = core.request({'type':'zoom-media-spine-sync', 'elapsedMs':0, 'payload':{
                 'startCapture':True, 'sourceParticipantIds':pids,
                 'subscriptions':[dict(participantId=p,kind='participant-video',purpose='program',priority=i)
