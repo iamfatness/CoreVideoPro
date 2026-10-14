@@ -252,6 +252,7 @@ public static class CoreProtocolParser
                 Texture = new ParticipantSharedTexture
                 {
                     ParticipantId = participantId,
+                    SourceEpoch = root.TryGetProperty("sourceEpoch", out var sourceEpoch) && sourceEpoch.TryGetUInt64(out var epoch) ? epoch : 0,
                     SharedHandleHex = texture.SharedHandleHex,
                     Width = texture.Width,
                     Height = texture.Height,

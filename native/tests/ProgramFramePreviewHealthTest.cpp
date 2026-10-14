@@ -1,3 +1,4 @@
+#include "core/SourcePreviewDemand.h"
 // Task 2 (#535 slice 4a, "bus health on air"): the compositors stop painting
 // the per-id "pink tile" placeholder and resolve one rule from the layer's
 // sourceHealth / dropoutPolicy / sourceDisplayName instead. These tests pin
@@ -175,4 +176,32 @@ TEST(ProgramFramePreviewHealth, MediaLayerUsesTheSameRule) {
   layer.sourceHealth = "failed";
   const auto plan = makePlan(std::move(layer));
   EXPECT_EQ(renderCentrePixel(plan, {}), corevideo::compositor::kFailedSlateRgba);
+}
+
+TEST(ProgramFramePreviewHealth, ParticipantExportEventPreservesNativeSourceIncarnation) {
+  corevideo::modules::ProgramFrame frame;
+  corevideo::modules::ParticipantSharedTexture source;
+  source.participantId = "capture:cam";
+  source.sharedHandleHex = "0x123400";
+  source.width = 1920; source.height = 1080;
+  source.sourceEpoch = 17; source.frameNumber = 3;
+  frame.participantSharedTextures.push_back(source);
+  const auto events = corevideo::modules::participantSharedTextureEvents(frame);
+  ASSERT_EQ(events.size(), 1u);
+  ASSERT_NE(events[0].get("sourceEpoch"), nullptr);
+  EXPECT_EQ(events[0].get("sourceEpoch")->asNumber(), 17);
+  EXPECT_EQ(events[0].get("participantId")->asString(), "capture:cam");
+}
+
+TEST(SourcePreviewDemand, InactiveByDefaultAndStopsOnExplicitReleaseOrExpiredConsumerLease) {
+  corevideo::core::SourcePreviewDemand demand;
+  const auto start = corevideo::core::SourcePreviewDemand::Clock::now();
+  EXPECT_FALSE(demand.active(start));
+  demand.set(true, start);
+  EXPECT_TRUE(demand.active(start + std::chrono::seconds(2)));
+  EXPECT_FALSE(demand.active(start + std::chrono::seconds(3)));
+  demand.set(true, start + std::chrono::seconds(2));
+  EXPECT_TRUE(demand.active(start + std::chrono::seconds(4)));
+  demand.set(false, start + std::chrono::seconds(4));
+  EXPECT_FALSE(demand.active(start + std::chrono::seconds(4)));
 }

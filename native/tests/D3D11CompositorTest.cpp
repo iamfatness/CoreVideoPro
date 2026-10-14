@@ -3,6 +3,7 @@
 #include "core/ComApartmentLifetime.h"
 #include "core/ZoomBusRoster.h"
 #include "modules/Interfaces.h"
+#include "MonitorTestMode.h"
 
 #include <chrono>
 #include <gtest/gtest.h>
@@ -1097,8 +1098,10 @@ corevideo::modules::CompositorRenderPlan fullRectParticipantPlan(
 // plane upload per new frame, not one per draw — and an unchanged frame must
 // cost none at all.
 TEST(D3D11Compositor, SourceTextureCacheDedupsUploadsAcrossPasses) {
+  corevideo::test::MonitorTestMode mode(false);
   auto compositor = corevideo::modules::createD3D11Compositor();
   ASSERT_NE(compositor, nullptr);
+  mode.verify(*compositor, "SourceTextureCacheDedupsUploadsAcrossPasses");
 
   const auto plan = fullRectParticipantPlan("srctex-dedup", "cam", 320, 180);
   const auto frame = makeI420SolidFrame("cam", 320, 180, 128, 1);

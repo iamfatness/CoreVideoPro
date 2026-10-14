@@ -729,6 +729,8 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     // property named ShowInputEditors so XAML x:Bind is unchanged; it forwards onto the
     // coordinator's stable collection instance (diff-updated in place, never replaced).
     public ObservableCollection<ShowInputSlotViewModel> ShowInputEditors => _showInputsCoordinator.ShowInputEditors;
+    public void SetInputPreviewVisible(bool visible) => _showInputsCoordinator.SetPreviewVisible(visible);
+
 
     public ObservableCollection<SrtIngestSource> SrtIngestSources { get; } =
     [

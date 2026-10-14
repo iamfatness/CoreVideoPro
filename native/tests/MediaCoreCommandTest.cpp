@@ -7,6 +7,7 @@
 
 #include "EncoderCapacityProbeTestSupport.h"
 #include "MediaTestSupport.h"
+#include "MonitorTestMode.h"
 #include "modules/AudioDsp.h"
 #include "modules/Interfaces.h"
 #include "modules/ProgramFramePreview.h"
@@ -7215,54 +7216,66 @@ TEST(MediaCoreMultiview, PgmPvwPreviewCellIsNotPinnedToARosterSourceWithoutAPrev
 // core puts it on the PVW / PGM cell. The overlay draws "PREVIEW · <notice>". An empty
 // notice clears it. Skips without a D3D11 device (the event needs the GPU composite).
 TEST(MediaCoreMultiview, TheBusCellsCarryTheShellsSubscriptionLimitNotice) {
-  auto gpuCompositor = corevideo::modules::createD3D11Compositor();
-  if (!gpuCompositor) {
-    std::fprintf(stderr, "[multiview-validation] skipped: no D3D11 GPU compositor in this environment.\n");
-    return;
-  }
-  auto modules = corevideo::modules::createStubModules();
-  modules.compositor = std::move(gpuCompositor);
-  corevideo::core::MediaCore mediaCore(std::move(modules));
-  (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
-      {"type", "configure-multiviewer"},
-      {"layoutMode", "pgmPvwTop"},
-      {"tileCount", 4},
-  });
-
-  const auto layout = [](const std::string& previewNotice) {
-    return corevideo::rpc::Json::Object{
-        {"type", "set-multiview-layout"},
-        {"canvasWidth", 1920},
-        {"canvasHeight", 1080},
-        {"programNotice", ""},
-        {"previewNotice", previewNotice},
-        {"sources", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
-            {"sourceId", "zoom:alice"}, {"kind", "zoom"}, {"participantId", "alice"},
-            {"slot", 0}, {"label", "Alice"}}}},
-    };
-  };
-  // One drain per layout change: the tiles event is emitted on STRUCTURAL change only.
-  const auto busLabels = [&]() {
-    std::map<std::string, std::string> labels;
-    const auto events = renderUntilMultiviewEvent(mediaCore);
-    EXPECT_FALSE(events.empty());
-    if (events.empty()) return labels;
-    const auto* tiles = events.back().get("tiles");
-    if (!tiles || !tiles->isArray()) return labels;
-    for (const auto& tile : tiles->asArray()) {
-      labels[tile.getString("role")] = tile.getString("label");
+  for (const bool isolated : {false, true}) {
+    corevideo::test::MonitorTestMode mode(isolated);
+    auto gpuCompositor = corevideo::modules::createD3D11Compositor();
+    if (!gpuCompositor) {
+      std::fprintf(stderr, "[multiview-validation] skipped: no D3D11 GPU compositor in this environment.\n");
+      return;
     }
-    return labels;
-  };
+    mode.verify(*gpuCompositor, "TheBusCellsCarryTheShellsSubscriptionLimitNotice");
+    auto modules = corevideo::modules::createStubModules();
+    modules.compositor = std::move(gpuCompositor);
+    corevideo::core::MediaCore mediaCore(std::move(modules));
+    (void)mediaCore.applyCommand(corevideo::rpc::Json::Object{
+        {"type", "configure-multiviewer"},
+        {"layoutMode", "pgmPvwTop"},
+        {"tileCount", 4},
+    });
 
-  (void)mediaCore.applyCommand(layout("no video: Cued guest (subscription limit 10)"));
-  auto labels = busLabels();
-  EXPECT_EQ(labels["pvw"], "Preview Â· no video: Cued guest (subscription limit 10)");
-  EXPECT_EQ(labels["pgm"], "Program");
+    const auto layout = [](const std::string& previewNotice) {
+      return corevideo::rpc::Json::Object{
+          {"type", "set-multiview-layout"},
+          {"canvasWidth", 1920},
+          {"canvasHeight", 1080},
+          {"programNotice", ""},
+          {"previewNotice", previewNotice},
+          {"sources", corevideo::rpc::Json::Array{corevideo::rpc::Json::Object{
+              {"sourceId", "zoom:alice"}, {"kind", "zoom"}, {"participantId", "alice"},
+              {"slot", 0}, {"label", "Alice"}}}},
+      };
+    };
+    // An isolated worker may first finish the previous layout. Drain until the
+    // expected notice is attributed to the completed canvas, within the budget.
+    const auto busLabels = [&](const std::string& expectedPreview) {
+      std::map<std::string, std::string> labels;
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      do {
+        mediaCore.renderDisplayTick();
+        const auto events = mediaCore.drainMultiviewSharedTextureEvents();
+        for (const auto& event : events) {
+          const auto* tiles = event.get("tiles");
+          if (!tiles || !tiles->isArray()) continue;
+          labels.clear();
+          for (const auto& tile : tiles->asArray())
+            labels[tile.getString("role")] = tile.getString("label");
+        }
+        if (labels["pvw"] == expectedPreview) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      } while (std::chrono::steady_clock::now() < deadline);
+      return labels;
+    };
 
-  (void)mediaCore.applyCommand(layout(""));
-  labels = busLabels();
-  EXPECT_EQ(labels["pvw"], "Preview");
+    (void)mediaCore.applyCommand(layout("no video: Cued guest (subscription limit 10)"));
+    const std::string expectedNotice = "Preview \xC2\xB7 no video: Cued guest (subscription limit 10)";
+    auto labels = busLabels(expectedNotice);
+    EXPECT_EQ(labels["pvw"], expectedNotice);
+    EXPECT_EQ(labels["pgm"], "Program");
+
+    (void)mediaCore.applyCommand(layout(""));
+    labels = busLabels("Preview");
+    EXPECT_EQ(labels["pvw"], "Preview");
+  }
 }
 
 TEST(MediaCoreCommand, PreviewSameSourceFramingEditsReachTheCompositor) {

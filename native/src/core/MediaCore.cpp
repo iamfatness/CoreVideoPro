@@ -1111,6 +1111,13 @@ rpc::Json MediaCore::applyCommand(const rpc::Json& command) {
   return sessionState();
 }
 
+bool MediaCore::configureSourcePreviewDemand(const rpc::Json& command) {
+  const auto* enabled = command.get("enabled");
+  if (!enabled || !enabled->isBool()) return false;
+  sourcePreviewDemand_.set(enabled->asBool());
+  return true;
+}
+
 bool MediaCore::configureGradePreview(const rpc::Json& command, bool* overloaded) {
   if (overloaded) *overloaded = false;
   if (command.get("renewOnly") && command.get("renewOnly")->asBool()) return gradePreviews_.renew(command);
@@ -1164,6 +1171,8 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setOverlayAsset(command);
   } else if (type == "set-color-grade") {
     setColorGrade(command);
+  } else if (type == "set-source-preview-demand") {
+    if (!configureSourcePreviewDemand(command)) commandProtocolFailures_.push_back("invalid-source-preview-demand");
   } else if (type == "set-grade-preview") {
     bool overloaded = false;
     if (!configureGradePreview(command, &overloaded))
@@ -5830,6 +5839,21 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       for (const auto& frame : videoFrames)
         request.sourceExports.push_back({frame.participantId,
             modules::SourceMonitorConsumer::PreviewFallback, "preview-fallback"});
+    }
+    // Sources inspectors need identity-safe full-source exports even while
+    // composite Preview is active. Bound demand to ten assigned input rows;
+    // never export every participant. programPlan carries off-air source grades.
+    int inspectorRows = 0;
+    for (const auto& source : multiviewSources_) {
+      if (!sourcePreviewDemand_.active() || inspectorRows++ >= 10) break;
+      const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
+          source.captureDeviceId, source.mediaAssetId);
+      const auto nativeId = feed.participantId.empty() ? feed.sourceId : feed.participantId;
+      if (nativeId.empty()) continue;
+      if (std::none_of(request.sourceExports.begin(), request.sourceExports.end(),
+          [&](const auto& demand) { return demand.sourceId == nativeId; }))
+        request.sourceExports.push_back({nativeId, modules::SourceMonitorConsumer::Inspector,
+            "source-thumbnail:" + feed.sourceId});
     }
     if (request.multiviewActive) {
       request.multiviewPlan = buildMultiviewRenderPlan(videoFrames);

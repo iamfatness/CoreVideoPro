@@ -1,4 +1,5 @@
 #include "modules/Interfaces.h"
+#include "MonitorTestMode.h"
 #include <gtest/gtest.h>
 #include <chrono>
 #include <thread>
@@ -440,8 +441,10 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
   ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
       D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
   for (const int depth : {2, 3}) for (const bool isolated : {false, true}) for (const int phaseMs : {2, 4, 10, 14}) {
+    corevideo::test::MonitorTestMode mode(isolated);
     auto compositor = createD3D11Compositor();
     ASSERT_TRUE(compositor != nullptr);
+    mode.verify(*compositor, "MultiviewProgramPixelsAdvanceAtFixedConsumerPhases");
     compositor->configureProgramBuffer(depth);
     CompositorRenderPlan program;
     program.sceneId = "phase-test"; program.renderPlanId = "phase-test";
@@ -469,6 +472,7 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
     for (int n = 0; n < 120; ++n) {
       const auto tick = anchor + std::chrono::nanoseconds(n * 1000000000LL / 60);
       std::this_thread::sleep_until(tick);
+      const auto tickStarted = std::chrono::steady_clock::now();
       compositor->setProgramProductionTiming(n,
           std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count());
       VideoFrame source;
@@ -478,29 +482,55 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
       for (size_t alpha = 3; alpha < sourcePixels->size(); alpha += 4) (*sourcePixels)[alpha] = 255;
       source.pixels = std::move(sourcePixels);
       (void)compositor->render(program, {source});
+      const auto productionReturned = std::chrono::steady_clock::now();
       std::this_thread::sleep_until(tick + std::chrono::milliseconds(phaseMs));
+      auto monitorSubmitted = std::chrono::steady_clock::now();
       ProgramFrameSharedTexture exported;
       if (isolated) {
         ASSERT_TRUE(compositor->hasIsolatedMonitors());
         MonitorRenderRequest request;
         request.sequence = n + 1; request.programPlan = program; request.multiviewPlan = multiview;
         request.multiviewActive = true; request.frames = {source};
+        monitorSubmitted = std::chrono::steady_clock::now();
         compositor->submitMonitors(std::move(request));
-        const auto limit = std::chrono::steady_clock::now() + std::chrono::milliseconds(10);
+        const auto waitStarted = std::chrono::steady_clock::now();
+        const auto limit = waitStarted + std::chrono::milliseconds(10);
         std::shared_ptr<const MonitorRenderResult> result;
         do {
           result = compositor->latestMonitors();
           if (result && result->sequence >= n + 1) break;
           std::this_thread::sleep_for(std::chrono::microseconds(100));
         } while (std::chrono::steady_clock::now() < limit);
-        ASSERT_TRUE(result && result->sequence >= n + 1);
+        if (!result || result->sequence < n + 1) {
+          const auto now = std::chrono::steady_clock::now();
+          const auto diagnostic = compositor->monitorDiagnostics();
+          const auto us = [&](auto point) {
+            return static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(point - tick).count());
+          };
+          std::fprintf(stderr,
+              "[program-display-timeout] depth=%d isolated=%d phase_ms=%d tick=%d expected_sequence=%d observed_sequence=%lld "
+              "tick_start_us=%lld production_return_us=%lld monitor_submit_us=%lld wait_start_us=%lld observed_us=%lld "
+              "consumer_deadline_us=16000 wait_budget_ms=10 "
+              "monitor_submitted=%llu completed=%llu superseded=%llu failed=%llu pending=%d last_sequence=%lld last_work_ms=%.3f "
+              "effective_mode=%s readiness=%s failure=%s\n",
+              depth, isolated, phaseMs, n, n + 1, static_cast<long long>(result ? result->sequence : -1),
+              us(tickStarted), us(productionReturned), us(monitorSubmitted), us(waitStarted), us(now),
+              static_cast<unsigned long long>(diagnostic.submitted), static_cast<unsigned long long>(diagnostic.completed),
+              static_cast<unsigned long long>(diagnostic.superseded), static_cast<unsigned long long>(diagnostic.failed),
+              diagnostic.pending, static_cast<long long>(diagnostic.lastSequence), diagnostic.lastWorkMs,
+              diagnostic.effectiveMode.c_str(), diagnostic.readiness.c_str(), diagnostic.failureReason.c_str());
+        }
+        ASSERT_TRUE(result && result->sequence >= n + 1)
+            << "depth=" << depth << " phase_ms=" << phaseMs << " tick=" << n
+            << " expected_sequence=" << n + 1 << " observed_sequence=" << (result ? result->sequence : -1);
         exported = result->multiview;
       } else exported = compositor->renderMultiview(multiview, {source});
-      // An independent receiver samples at the same declared 60 Hz deadline
-      // for every producer phase. Sampling immediately after submission instead
-      // measures variable optional-export completion, not scheduled presentation.
-      // The 14 ms case gives both the monitor and canvas export only 2 ms.
+      const auto monitorReturned = std::chrono::steady_clock::now();
+      // Aim at the same consumer phase. The completion wait above and the
+      // keyed-mutex/readback below can pass this deadline: report actual timing
+      // so pixel continuity cannot be mistaken for on-time presentation proof.
       std::this_thread::sleep_until(tick + std::chrono::milliseconds(16));
+      const auto consumerStarted = std::chrono::steady_clock::now();
       if (exported.sharedHandleHex.empty()) continue;
       ComPtrLite<ID3D11Texture2D> texture, staging;
       ComPtrLite<IDXGIKeyedMutex> key;
@@ -516,8 +546,15 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
       ASSERT_TRUE(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)));
       const auto pixel = static_cast<const uint8_t*>(mapped.pData)[(desc.Height / 2) * mapped.RowPitch + (desc.Width / 2) * 4];
       context->Unmap(staging.get(), 0);
-      std::fprintf(stderr, "[program-display-pixel] depth=%d isolated=%d phase_ms=%d tick=%d canvas=%lld pixel=%u\n",
-          depth, isolated, phaseMs, n, static_cast<long long>(exported.frameNumber), unsigned(pixel));
+      const auto readbackComplete = std::chrono::steady_clock::now();
+      const auto us = [&](auto point) {
+        return static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(point - tick).count());
+      };
+      std::fprintf(stderr, "[program-display-pixel] depth=%d isolated=%d phase_ms=%d tick=%d canvas=%lld pixel=%u "
+          "tick_start_us=%lld production_return_us=%lld monitor_submit_us=%lld monitor_return_us=%lld "
+          "consumer_start_us=%lld readback_complete_us=%lld consumer_deadline_us=16000\n",
+          depth, isolated, phaseMs, n, static_cast<long long>(exported.frameNumber), unsigned(pixel),
+          us(tickStarted), us(productionReturned), us(monitorSubmitted), us(monitorReturned), us(consumerStarted), us(readbackComplete));
       if (n >= 20 && previous >= 0) {
         EXPECT_EQ(unsigned(pixel), unsigned(30 + n - depth - 1));
         if (pixel != previous) ++changes;

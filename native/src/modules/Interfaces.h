@@ -227,6 +227,7 @@ struct ParticipantSharedTexture {
   int height = 0;
   std::string format = "B8G8R8A8_UNORM";
   int64_t frameNumber = 0;
+  uint64_t sourceEpoch = 0;
 };
 
 // One tile of the core-composited multiview grid. Geometry (x,y,w,h) is

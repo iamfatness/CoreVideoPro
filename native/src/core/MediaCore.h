@@ -1,6 +1,7 @@
 #pragma once
 #include "core/ResourceEventStaging.h"
 
+#include "core/SourcePreviewDemand.h"
 #include "compositor/TilesMembership.h"
 #include "compositor/TilesPlanAnimation.h"
 #include "core/TilesWallSource.h"
@@ -167,6 +168,7 @@ class MediaCore {
   [[nodiscard]] std::vector<rpc::Json> drainGradePreviewEvents() { return captureGradePreviewEvents().assemble(); }
   [[nodiscard]] std::vector<rpc::Json> drainResourceEvents() { return pendingResourceEvents_.drain(); }
   [[nodiscard]] rpc::Json applySourceGrade(const rpc::Json& command);
+  bool configureSourcePreviewDemand(const rpc::Json& command);
   bool configureGradePreview(const rpc::Json& command, bool* overloaded = nullptr);
   [[nodiscard]] std::vector<rpc::Json> drainMultiviewSharedTextureEvents();
   [[nodiscard]] std::vector<rpc::Json> drainPreviewSharedTextureEvents();
@@ -833,6 +835,7 @@ class MediaCore {
   int previewRouteCount_ = 0;
   int previewOverlayCount_ = 0;
   modules::CompositorColorGrade previewColorGrade_;
+  SourcePreviewDemand sourcePreviewDemand_;
   GradePreviewController gradePreviews_;
   SourceGradeState sourceGrades_;
   std::map<std::string, OverlayAssetState> previewOverlayAssets_;
