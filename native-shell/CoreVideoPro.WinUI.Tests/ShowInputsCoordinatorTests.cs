@@ -353,7 +353,7 @@ public sealed class ShowInputsCoordinatorTests
     }
 
     [Fact]
-    public void ExistingMultiviewTileCoordinatesPatchPreviewCropAndTally()
+    public void CompositeLayoutCannotSupplyOrMoveAnIdentityBoundThumbnail()
     {
         var bridge = new FakeMediaCoreBridge();
         var host = new FakeShowInputsHost();
@@ -364,28 +364,140 @@ public sealed class ShowInputsCoordinatorTests
             host.ShowInputs[0].ParticipantId = "guest";
             host.ShowInputs[0].InShow = true;
         }
+        bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "run:1", RosterRevision = 1,
+            Participants = [new RawParticipantEvent { UserId = "guest", DisplayName = "Guest", VideoOn = true }]
+        });
         var row = coordinator.MultiviewInputRows.Rows[0];
         bridge.EmitMultiview(new MultiviewSharedTexture
         {
-            Tiles = [new MultiviewTile
-            {
-                Role = "source", SourceId = "zoom:guest", Slot = 0,
-                X = 0.2, Y = 0.5, W = 0.2, H = 0.25, Tally = "pvw"
-            }]
+            Tiles = [new MultiviewTile { Role = "source", SourceId = "zoom:guest", Slot = 0,
+                X = 0.2, Y = 0.5, W = 0.2, H = 0.25, Tally = "pvw" }]
         });
+        Assert.False(row.HasPreviewTile); // Metadata alone cannot expose composite pixels.
+        bridge.EmitTexture(Texture("guest", "0x123400", 1));
         Assert.True(row.HasPreviewTile);
-        Assert.InRange(row.PreviewCropRect.X, 0.1999, 0.2001);
-        Assert.Equal(0.25, row.PreviewCropRect.Height);
+        var surface = row.PreviewSurface;
+        Assert.Equal("source-thumbnail:zoom:guest", surface!.SurfaceKey);
+        Assert.Equal(1920, surface.FramingSourceWidth);
+        Assert.Equal(1080, surface.FramingSourceHeight);
         Assert.Equal("pvw", row.PreviewTally);
-        var crop = SourceFramingLayoutService.ResolveTileCrop(72, 40, row.PreviewCropRect);
-        Assert.InRange(crop.Width, 359.99, 360.01);
-        Assert.InRange(crop.Height, 159.99, 160.01);
-        Assert.InRange(crop.TranslateX, -72.01, -71.99);
-        Assert.InRange(crop.TranslateY, -80.01, -79.99);
         bridge.EmitMultiview(new MultiviewSharedTexture { Tiles = [] });
-        Assert.False(row.HasPreviewTile);
+        Assert.Same(surface, row.PreviewSurface); // Wall reflow cannot change the source texture.
         Assert.Equal("none", row.PreviewTally);
+        using (ShowInputWriteScope.Enter("test")) host.ShowInputs[0].ParticipantId = "other";
+        Assert.Null(row.PreviewSurface);
+        Assert.False(row.HasPreviewTile);
         Assert.Equal(0, bridge.SyncCalls);
+    }
+
+    private static ParticipantSharedTexture Texture(string id, string handle, ulong epoch = 0) => new()
+    {
+        ParticipantId = id, SharedHandleHex = handle, SourceEpoch = epoch,
+        Width = 1920, Height = 1080, FrameNumber = 12
+    };
+
+    [Fact]
+    public void RemovalAndSlotReassignmentKeepSurvivingSourceIdentityAndRetireOldHandle()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using (ShowInputWriteScope.Enter("test"))
+            for (var i = 0; i < 3; i++)
+            {
+                host.ShowInputs[i].Kind = ShowInputKind.ZoomParticipant;
+                host.ShowInputs[i].ParticipantId = $"guest-{i}";
+                host.ShowInputs[i].InShow = true;
+            }
+        bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "run:1", RosterRevision = 1,
+            Participants = Enumerable.Range(0, 3).Select(i => new RawParticipantEvent { UserId = $"guest-{i}", DisplayName = $"Guest {i}", VideoOn = true }).ToArray()
+        });
+        for (var i = 0; i < 3; i++) bridge.EmitTexture(Texture($"guest-{i}", $"0x{i + 1}23400", 1));
+        var survivor = coordinator.MultiviewInputRows.Rows[2];
+        var surface = survivor.PreviewSurface;
+        Assert.NotNull(surface);
+        using (ShowInputWriteScope.Enter("test")) host.ShowInputs[0].ParticipantId = null;
+        Assert.Null(coordinator.MultiviewInputRows.Rows[0].PreviewSurface);
+        Assert.Same(surface, survivor.PreviewSurface);
+        Assert.False(coordinator.MultiviewInputRows.TryAcceptSourcePreview(Texture("guest-0", "0x123400", 1)));
+        using (ShowInputWriteScope.Enter("test")) host.ShowInputs[1].ParticipantId = "guest-2";
+        Assert.Same(surface, coordinator.MultiviewInputRows.Rows[1].PreviewSurface);
+        Assert.Same(surface, survivor.PreviewSurface);
+        Assert.False(coordinator.MultiviewInputRows.TryAcceptSourcePreview(Texture("guest-2", "0x323400", 1)));
+    }
+
+    [Fact]
+    public void SourceEpochFenceRejectsOldDescriptorsButResetsWithCoreLifetimeAndSupportsLegacy()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using (ShowInputWriteScope.Enter("test"))
+        {
+            host.ShowInputs[0].Kind = ShowInputKind.ZoomParticipant;
+            host.ShowInputs[0].ParticipantId = "guest";
+            host.ShowInputs[0].InShow = true;
+        }
+        void Roster(string epoch, long revision, long generation) => bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = epoch, RosterRevision = revision,
+            Participants = [new RawParticipantEvent { UserId = "guest", DisplayName = "Guest", VideoOn = true, SourceGeneration = generation }]
+        });
+        Roster("run:1", 1, 1);
+        bridge.EmitTexture(Texture("guest", "0x123400", 10));
+        var row = coordinator.MultiviewInputRows.Rows[0];
+        Assert.NotNull(row.PreviewSurface);
+        Roster("run:1", 2, 2);
+        Assert.Null(row.PreviewSurface);
+        bridge.EmitTexture(Texture("guest", "0x123400", 10));
+        Assert.Null(row.PreviewSurface);
+        bridge.EmitTexture(Texture("guest", "0x223400", 11));
+        Assert.Equal(0x223400UL, row.PreviewSurface!.PendingSharedHandle!.NtHandle);
+        bridge.EmitTexture(Texture("guest", "0x123400", 10));
+        Assert.Equal(0x223400UL, row.PreviewSurface.PendingSharedHandle!.NtHandle);
+        bridge.EmitHealth(new MediaCoreHealth { Recovering = true });
+        Assert.Null(row.PreviewSurface);
+        Assert.False(coordinator.MultiviewInputRows.TryAcceptSourcePreview(Texture("guest", "0x223400", 11)));
+        bridge.EmitHealth(new MediaCoreHealth());
+        Roster("run:2", 1, 1);
+        bridge.EmitTexture(Texture("guest", "0x323400", 0));
+        Assert.Equal(0x323400UL, row.PreviewSurface!.PendingSharedHandle!.NtHandle);
+    }
+
+    [Fact]
+    public void CapturePreviewUsesItsOwnFullSizeExportAndClearsOnDisconnectAndStop()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var camera = new CaptureDevice { Id = "cam", NativeDeviceId = "cam", Vendor = "test", Name = "Camera", Inputs = [], SelectedInputId = "cam" };
+        host.CaptureDevices.Add(camera);
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using (ShowInputWriteScope.Enter("test"))
+        {
+            host.ShowInputs[5].Kind = ShowInputKind.UvcWebcam;
+            host.ShowInputs[5].CaptureDeviceId = "cam";
+            host.ShowInputs[5].InShow = true;
+        }
+        camera.ConnectionState = CaptureConnectionState.Connected;
+        camera.SignalPresent = true;
+        bridge.EmitTexture(Texture("capture:cam", "0x223400", 3));
+        var row = coordinator.MultiviewInputRows.Rows[5];
+        Assert.Equal("source-thumbnail:capture:cam", row.PreviewSurface!.SurfaceKey);
+        camera.SignalPresent = false;
+        Assert.Null(row.PreviewSurface);
+        camera.SignalPresent = true;
+        Assert.Null(row.PreviewSurface); // A fresh descriptor must qualify the reconnect.
+        bridge.EmitTexture(Texture("capture:cam", "0x423400", 4));
+        Assert.Equal(0x423400UL, row.PreviewSurface!.PendingSharedHandle!.NtHandle);
+        bridge.EmitHealth(new MediaCoreHealth { Stopped = true });
+        Assert.Null(row.PreviewSurface);
+        bridge.EmitHealth(new MediaCoreHealth());
+        bridge.EmitTexture(Texture("capture:cam", "0x323400", 1));
+        Assert.Equal(0x323400UL, row.PreviewSurface!.PendingSharedHandle!.NtHandle);
     }
 
     [Fact]
@@ -941,6 +1053,7 @@ public sealed class ShowInputsCoordinatorTests
         public void EmitFormat(ZoomSourceFormatFact fact) => ZoomSourceFormatReceived?.Invoke(fact);
         public void EmitHealth(MediaCoreHealth health) => HealthChanged?.Invoke(health);
         public void EmitIso(IsoOutputLifecycleFact fact) => OutputLifecycleChanged?.Invoke(fact);
+        public void EmitTexture(ParticipantSharedTexture texture) => ParticipantSharedTextureReceived?.Invoke(texture);
         public void EmitMultiview(MultiviewSharedTexture texture) => MultiviewSharedTextureReceived?.Invoke(texture);
         public bool Running => true;
 

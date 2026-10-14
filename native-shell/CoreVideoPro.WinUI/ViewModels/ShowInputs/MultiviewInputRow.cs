@@ -1,6 +1,5 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.UI.Xaml.Media;
-using Windows.Foundation;
 using Windows.UI;
 using CoreVideoPro.MediaCore.Contracts;
 
@@ -30,7 +29,7 @@ public sealed partial class MultiviewInputRow : ObservableObject
     [ObservableProperty] private double _frameAgeMs = -1;
     [ObservableProperty] private string _recLabel = "OFF";
     [ObservableProperty] private bool _hasPreviewTile;
-    [ObservableProperty] private Rect _previewCropRect = new(0, 0, 1, 1);
+    [ObservableProperty] private CoreVideoPro.WinUI.Models.VideoSurfaceState? _previewSurface;
     [ObservableProperty] private string _previewTally = "none";
     [ObservableProperty] private double _meterWidth;
 

@@ -54,6 +54,11 @@ public sealed class ShowInputsCoordinator
             _host.RunOnUiThread(() => MultiviewInputRows.ApplySourceFormatFact(fact));
         _bridge.OutputLifecycleChanged += fact =>
             _host.RunOnUiThread(() => MultiviewInputRows.ApplyOutputLifecycleFact(fact));
+        _bridge.ParticipantSharedTextureReceived += texture =>
+        {
+            if (MultiviewInputRows.TryAcceptSourcePreview(texture))
+                _host.RunOnUiThread(MultiviewInputRows.RefreshSourcePreviews);
+        };
         _bridge.MultiviewSharedTextureReceived += texture =>
         {
             lock (_multiviewTileGate)
@@ -65,11 +70,13 @@ public sealed class ShowInputsCoordinator
         };
         _bridge.HealthChanged += health =>
         {
-            if (health.Stopped)
+            if (health.Stopped || health.Recovering)
             {
                 lock (_multiviewTileGate) _lastMultiviewTileRects = null;
                 _host.RunOnUiThread(MultiviewInputRows.EngineStopped);
             }
+            else if (!health.Recovering)
+                _host.RunOnUiThread(MultiviewInputRows.EngineStarted);
         };
         if (_bridge.LastSnapshot is { } current)
             _host.RunOnUiThread(() => MultiviewInputRows.ApplyRosterFact(current));

@@ -16,10 +16,18 @@ public sealed class MultiviewInputRowsProjection
     private readonly ObservableCollection<CaptureDevice>? _captureDevices;
     private readonly HashSet<CaptureDevice> _observedCaptureDevices = [];
     private NativeMediaCoreStateSnapshot? _lastRoster;
-    private bool _engineStopped;
+    private volatile bool _engineStopped;
     private string? _retiredEpoch;
     private readonly Dictionary<string, IsoOutputLifecycleFact> _isoFacts = new(StringComparer.Ordinal);
     private IReadOnlyList<MultiviewTile> _tiles = [];
+    private readonly object _previewGate = new();
+    // At most one descriptor per currently assigned source (ten stable rows).
+    private readonly Dictionary<string, VideoSurfaceState> _sourcePreviews = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ulong> _previewEpochs = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CoreVideoPro.MediaCore.Contracts.SourceInstanceIdentity> _previewInstances = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _previewBlockedIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _previewNeedsNewEpoch = new(StringComparer.Ordinal);
+    private HashSet<string> _previewSourceIds = new(StringComparer.Ordinal);
     private string _cameraCap = ZoomCameraResolutionPreference.Default;
     private int _cameraFpsCap = ZoomCameraFrameRatePreference.Default;
 
@@ -76,7 +84,17 @@ public sealed class MultiviewInputRowsProjection
         if (sameEpoch && snapshot.RosterRevision == _lastRoster!.RosterRevision &&
             snapshot.ZoomSubscriptions.Count == 0) return;
         if (!sameEpoch)
+        {
+            lock (_previewGate)
+            {
+                _sourcePreviews.Clear();
+                _previewEpochs.Clear();
+                _previewInstances.Clear();
+                _previewBlockedIds.Clear();
+                _previewNeedsNewEpoch.Clear();
+            }
             foreach (var row in Rows) ResetFrame(row);
+        }
         _engineStopped = false;
         _lastRoster = snapshot;
         foreach (var row in Rows) PatchSlot(row.SlotNumber);
@@ -145,17 +163,33 @@ public sealed class MultiviewInputRowsProjection
         _lastRoster = null;
         _isoFacts.Clear();
         _tiles = [];
+        lock (_previewGate)
+        {
+            _sourcePreviews.Clear();
+            _previewEpochs.Clear();
+            _previewInstances.Clear();
+            _previewBlockedIds.Clear();
+            _previewNeedsNewEpoch.Clear();
+        }
         foreach (var row in Rows)
         {
             ResetFrame(row);
             row.StatusLabel = "IDLE";
             row.RecLabel = "OFF";
             row.HasPreviewTile = false;
+            row.PreviewSurface = null;
             row.PreviewTally = "none";
             row.MeterWidth = 0;
             row.RosterEpoch = null;
             row.HighestObservationRevision = 0;
         }
+    }
+
+    public void EngineStarted()
+    {
+        if (!_engineStopped) return;
+        _engineStopped = false;
+        foreach (var row in Rows) PatchSlot(row.SlotNumber);
     }
 
     public void ApplyMultiviewFact(MultiviewSharedTexture multiview)
@@ -164,21 +198,82 @@ public sealed class MultiviewInputRowsProjection
         foreach (var row in Rows) PatchPreview(row);
     }
 
+    /// <summary>Accept native per-source exports, never a crop of a mutable wall texture.
+    /// Called on the bridge thread; only a new handle/format schedules UI work.</summary>
+    public bool TryAcceptSourcePreview(ParticipantSharedTexture texture)
+    {
+        if (!texture.IsValid) return false;
+        var sourceId = texture.ParticipantId.StartsWith("capture:", StringComparison.Ordinal) ||
+                       texture.ParticipantId.StartsWith("media:", StringComparison.Ordinal)
+            ? texture.ParticipantId : $"zoom:{texture.ParticipantId}";
+        var handle = new SharedTextureHandle
+        {
+            NtHandle = CoreProtocolParser.ParseSharedHandleHex(texture.SharedHandleHex),
+            Width = texture.Width, Height = texture.Height,
+            Format = texture.Format, FrameNumber = texture.FrameNumber
+        };
+        if (!handle.IsValid) return false;
+        lock (_previewGate)
+        {
+            if (!_previewSourceIds.Contains(sourceId) || _previewBlockedIds.Contains(sourceId) || _engineStopped) return false;
+            _previewEpochs.TryGetValue(sourceId, out var previousEpoch);
+            if (texture.SourceEpoch < previousEpoch ||
+                (_previewNeedsNewEpoch.Contains(sourceId) && previousEpoch > 0 && texture.SourceEpoch <= previousEpoch)) return false;
+            _previewNeedsNewEpoch.Remove(sourceId);
+            _previewEpochs[sourceId] = texture.SourceEpoch;
+            if (_sourcePreviews.TryGetValue(sourceId, out var existing) &&
+                existing.PendingSharedHandle is { } previous &&
+                previous.NtHandle == handle.NtHandle && previous.Width == handle.Width &&
+                previous.Height == handle.Height && previous.Format == handle.Format &&
+                previousEpoch == texture.SourceEpoch) return false;
+            _sourcePreviews[sourceId] = VideoSurfaceState.Waiting(VideoSurfaceKind.Participant,
+                $"source-thumbnail:{sourceId}", sourceId) with
+            {
+                PendingSharedHandle = handle,
+                NaturalSourceWidth = texture.Width, NaturalSourceHeight = texture.Height
+            };
+            return true;
+        }
+    }
+
+    public void RefreshSourcePreviews()
+    {
+        foreach (var row in Rows) PatchPreview(row);
+    }
+
     private void PatchPreview(MultiviewInputRow row)
     {
-        if (row.StatusLabel == "VIDEO OFF")
-        {
-            row.HasPreviewTile = false;
-            row.PreviewTally = "none";
-            return;
-        }
+        VideoSurfaceState? surface = null;
+        if (row.SourceId is { } currentSourceId)
+            lock (_previewGate)
+            {
+                var eligible = Rows.Any(item => item.SourceId == currentSourceId &&
+                    _slots.Any(slot => slot.SlotNumber == item.SlotNumber && slot.InShow && slot.IsAssigned) &&
+                    (currentSourceId.StartsWith("media:", StringComparison.Ordinal) ||
+                     currentSourceId.StartsWith("capture:", StringComparison.Ordinal) && item.StatusLabel == "LIVE" ||
+                     currentSourceId.StartsWith("zoom:", StringComparison.Ordinal) &&
+                         item.StatusLabel is not ("VIDEO OFF" or "NO INCOMING" or "IDLE")));
+                if (eligible) _previewBlockedIds.Remove(currentSourceId);
+                else
+                {
+                    _previewBlockedIds.Add(currentSourceId);
+                    _sourcePreviews.Remove(currentSourceId);
+                }
+            }
+        if (!_engineStopped && row.SourceId is { } sourceId &&
+            _slots.Any(slot => slot.SlotNumber == row.SlotNumber && slot.InShow && slot.IsAssigned) &&
+            (sourceId.StartsWith("media:", StringComparison.Ordinal) ||
+             sourceId.StartsWith("capture:", StringComparison.Ordinal) && row.StatusLabel == "LIVE" ||
+             sourceId.StartsWith("zoom:", StringComparison.Ordinal) &&
+                 row.StatusLabel is not ("VIDEO OFF" or "NO INCOMING" or "IDLE")))
+            lock (_previewGate) _sourcePreviews.TryGetValue(sourceId, out surface);
+        // Clear before exposing another identity; an unavailable export is a placeholder.
+        row.PreviewSurface = surface;
+        row.HasPreviewTile = surface is not null;
         var tile = _tiles.FirstOrDefault(item => item.Role == "source" &&
-            item.Slot == row.SlotNumber - 1 &&
-            (string.IsNullOrEmpty(item.SourceId) || item.SourceId == row.SourceId));
-        var crop = MultiviewTileCropPolicy.Resolve(tile);
-        row.HasPreviewTile = crop.HasValue;
-        if (crop.HasValue) row.PreviewCropRect = crop.Value;
-        row.PreviewTally = MultiviewTileCropPolicy.Tally(tile, row.FormatStale);
+            item.Slot == row.SlotNumber - 1 && item.SourceId == row.SourceId);
+        row.PreviewTally = row.StatusLabel == "VIDEO OFF" ? "none" :
+            MultiviewTileCropPolicy.Tally(tile, row.FormatStale);
     }
 
     public void ApplyOutputLifecycleFact(IsoOutputLifecycleFact fact)
@@ -219,6 +314,20 @@ public sealed class MultiviewInputRowsProjection
                 ? iso.State.ToUpperInvariant() : "OFF";
             row.HasPreviewTile = false;
             row.PreviewTally = "none";
+        }
+        lock (_previewGate)
+        {
+            _previewSourceIds = Rows.Where(item => item.SourceId is not null)
+                .Select(item => item.SourceId!).ToHashSet(StringComparer.Ordinal);
+            foreach (var retired in _sourcePreviews.Keys.Concat(_previewEpochs.Keys).Concat(_previewBlockedIds).Concat(_previewInstances.Keys).Distinct()
+                         .Where(id => !_previewSourceIds.Contains(id)).ToArray())
+            {
+                _sourcePreviews.Remove(retired);
+                _previewEpochs.Remove(retired);
+                _previewInstances.Remove(retired);
+                _previewBlockedIds.Remove(retired);
+                _previewNeedsNewEpoch.Remove(retired);
+            }
         }
         row.RosterEpoch = _lastRoster?.RosterEpoch;
         row.HighestObservationRevision = _lastRoster?.RosterRevision ?? 0;
@@ -282,13 +391,30 @@ public sealed class MultiviewInputRowsProjection
             };
             if (row.LastAppliedSourceInstance is { } previousInstance &&
                 previousInstance != currentInstance)
+            {
                 ResetFrame(row);
+                lock (_previewGate)
+                {
+                    if (!_previewInstances.TryGetValue(sourceId, out var applied) || applied != currentInstance)
+                    {
+                        _sourcePreviews.Remove(sourceId);
+                        if (_previewEpochs.ContainsKey(sourceId)) _previewNeedsNewEpoch.Add(sourceId);
+                        _previewInstances[sourceId] = currentInstance;
+                    }
+                }
+            }
+            lock (_previewGate) _previewInstances[sourceId] = currentInstance;
             row.LastAppliedSourceInstance = currentInstance;
         }
         row.MeterWidth = Math.Clamp(participant.AudioLevel ?? 0, 0, 100) * 0.8;
         if (participant.VideoOn == false)
         {
             row.StatusLabel = "VIDEO OFF";
+            lock (_previewGate)
+            {
+                _sourcePreviews.Remove(sourceId);
+                if (_previewEpochs.ContainsKey(sourceId)) _previewNeedsNewEpoch.Add(sourceId);
+            }
             ResetFrame(row);
             PatchPreview(row);
             return;

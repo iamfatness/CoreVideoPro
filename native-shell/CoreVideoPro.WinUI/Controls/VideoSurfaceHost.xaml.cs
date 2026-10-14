@@ -259,6 +259,11 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     {
         if (sender is VideoSurfaceHost host)
         {
+            // An old source's backbuffer must never remain visible while the new
+            // identity has no published GPU frame (or the row was unassigned).
+            if (VideoSurfacePresentationRules.IsSourceThumbnail((args.OldValue as VideoSurfaceState)?.SurfaceKey) ||
+                VideoSurfacePresentationRules.IsSourceThumbnail(host.SurfaceState?.SurfaceKey))
+                host.SwapChainHost.Visibility = Visibility.Collapsed;
             host._presentationLifecycle.Refresh(host.UsesGpuSharedTexture);
             host.TryPresentPendingSharedHandle();
             host.UpdatePreviewBitmap();
@@ -387,10 +392,10 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void TryPresentPendingSharedHandle()
     {
-        // The inspector can show ten crops of one Multiview texture. Keep idle
-        // cells off the D3D path and cap their presentation at 30 Hz; the shared
-        // ingest still acquires a produced frame only once across all hosts.
-        if (SourceFit == "tile-crop")
+        // Sources inspectors have ten stable full-source hosts. Keep hidden cells
+        // off the D3D path and cap thumbnail presentation at 30 Hz. Duplicate
+        // source views share one keyed-mutex ingest across all hosts.
+        if (SourceFit == "tile-crop" || VideoSurfacePresentationRules.IsSourceThumbnail(SurfaceKey))
         {
             if (Visibility != Visibility.Visible || ActualWidth <= 0 || ActualHeight <= 0)
                 return;
