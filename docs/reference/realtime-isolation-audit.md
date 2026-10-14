@@ -14,6 +14,36 @@ Static dependencies identify possible interference; they do not prove which
 operation initiated the original #870 stall. The pending #868 Program handoff
 repair is separate from this main baseline.
 
+## Audio monitor owner after the audit
+
+The live path now wraps the monitor adapter in `AsyncAudioMonitorOutput` when
+`MediaCore::enableAudioOutputWorker` runs. Commands submit endpoint intent without
+taking the DSP work lock. Start, stop, PCM delivery and backend retirement run on
+one device owner; status reads lease cached observations. The synchronous path
+remains for direct single-owner callers. This supersedes the audio-monitor
+dependency described in the historical baseline table below.
+
+Each endpoint/rate/channel change or mute advances a generation and clears the
+pending PCM queue. The owner revalidates that generation after a potentially
+blocked stop, before opening the captured endpoint. A mute, retarget or shutdown
+that arrived during stop therefore prevents the superseded endpoint from opening.
+A start already in flight cannot be cancelled, but its late completion cannot
+become the readiness or endpoint observation for newer intent.
+
+PCM admission holds at most four pending packets plus one in flight, with at most
+4096 sample-frames and eight channels per packet. Surviving packets keep order;
+queued packets older than 80 ms are discarded and counted. Accepted-frame counts
+advance only after backend acceptance, not queue admission. Wrapper destruction
+waits up to 200 ms; an uninterruptible driver keeps its own shared worker/backend
+state until it returns rather than delaying core shutdown indefinitely.
+
+`AsyncAudioMonitorOutput` regressions gate activation, PCM rendering and stop
+independently. They cover retarget/mute during blocked stop, superseded readiness,
+bounded packet pressure and owner retirement during blocked stop. The MediaCore
+test also renders Program and polls status while activation is held. These
+deterministic dependency tests do not prove GPU/webcam deadlines or physical
+device audio continuity; installed device-switch qualification remains separate.
+
 ## Where the pattern recurs
 
 | Boundary | Evidence and mechanism | Repair boundary / tracking |

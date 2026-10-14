@@ -141,6 +141,13 @@ void AsyncAudioMonitorOutput::run(const std::shared_ptr<State>& state) {
       if (configure) {
         if (state->inner) {
           state->inner->stop();
+          // Driver stop can outlive a newer mute/retarget or destruction.
+          // Revalidate before opening anything: a captured request is not
+          // permission to resurrect its endpoint after newer intent arrived.
+          {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (state->stopping || state->generation != generation) continue;
+          }
           ready = desired && state->inner->start(id, rate, channels);
         }
         applied = generation;
