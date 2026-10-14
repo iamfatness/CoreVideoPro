@@ -85,6 +85,7 @@ public sealed class ParticipantSharedTexture
     public int Width { get; init; }
     public int Height { get; init; }
     public string Format { get; init; } = "B8G8R8A8_UNORM";
+    public ulong SourceEpoch { get; init; }
     public int FrameNumber { get; init; }
 
     public bool IsValid =>

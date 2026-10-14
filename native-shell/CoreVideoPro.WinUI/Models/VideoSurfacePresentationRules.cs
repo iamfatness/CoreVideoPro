@@ -29,7 +29,11 @@ public static class VideoSurfacePresentationRules
     /// editor's per-layer surfaces) falls back to the CPU BGRA preview, and any
     /// <see cref="VideoSurfaceState.PendingSharedHandle"/> it carries is never presented.
     /// </summary>
+    public static bool IsSourceThumbnail(string? surfaceKey) =>
+        surfaceKey?.StartsWith("source-thumbnail:", StringComparison.Ordinal) == true;
+
     public static bool UsesGpuSharedTexture(string? surfaceKey, VideoSurfaceKind? kind) =>
+        IsSourceThumbnail(surfaceKey) ||
         IsProgramSurface(surfaceKey, kind) ||
         string.Equals(surfaceKey, PreviewSurfaceKey, StringComparison.Ordinal) ||
         kind == VideoSurfaceKind.Preview ||

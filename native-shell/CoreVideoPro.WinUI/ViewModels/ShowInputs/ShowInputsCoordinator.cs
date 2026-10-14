@@ -31,6 +31,9 @@ public sealed class ShowInputsCoordinator
     private readonly IMediaCoreBridge _bridge;
     private readonly IShowInputRosterStore _showInputRosterStore;
     private readonly IShowInputsHost _host;
+    private readonly SourcePreviewDemandController _previewDemand;
+    private bool _previewVisible;
+    private bool _previewEngineAvailable = true;
 
     private bool _showInputRosterLoaded;
     private string _showInputEditorsSignature = "";
@@ -42,6 +45,9 @@ public sealed class ShowInputsCoordinator
         _bridge = bridge;
         _showInputRosterStore = rosterStore;
         _host = host;
+        _previewDemand = new SourcePreviewDemandController(enabled =>
+            bridge is ISourcePreviewTransport transport
+                ? transport.SetSourcePreviewActiveAsync(enabled) : Task.CompletedTask);
         MultiviewInputRows = new MultiviewInputRowsProjection(host.ShowInputs, host.CaptureDevices);
         _bridge.SnapshotChanged += snapshot =>
             _host.RunOnUiThread(() =>
@@ -54,6 +60,11 @@ public sealed class ShowInputsCoordinator
             _host.RunOnUiThread(() => MultiviewInputRows.ApplySourceFormatFact(fact));
         _bridge.OutputLifecycleChanged += fact =>
             _host.RunOnUiThread(() => MultiviewInputRows.ApplyOutputLifecycleFact(fact));
+        _bridge.ParticipantSharedTextureReceived += texture =>
+        {
+            if (MultiviewInputRows.TryAcceptSourcePreview(texture))
+                _host.RunOnUiThread(MultiviewInputRows.RefreshSourcePreviews);
+        };
         _bridge.MultiviewSharedTextureReceived += texture =>
         {
             lock (_multiviewTileGate)
@@ -65,14 +76,35 @@ public sealed class ShowInputsCoordinator
         };
         _bridge.HealthChanged += health =>
         {
-            if (health.Stopped)
+            if (health.Stopped || health.Recovering)
             {
                 lock (_multiviewTileGate) _lastMultiviewTileRects = null;
-                _host.RunOnUiThread(MultiviewInputRows.EngineStopped);
+                _host.RunOnUiThread(() =>
+                {
+                    _previewEngineAvailable = false;
+                    MultiviewInputRows.EngineStopped();
+                    MultiviewInputRows.SetPreviewConsumerActive(false);
+                    _ = _previewDemand.SetEngineAvailableAsync(false);
+                });
             }
+            else if (!health.Recovering)
+                _host.RunOnUiThread(() =>
+                {
+                    _previewEngineAvailable = true;
+                    MultiviewInputRows.EngineStarted();
+                    MultiviewInputRows.SetPreviewConsumerActive(_previewVisible);
+                    _ = _previewDemand.SetEngineAvailableAsync(true);
+                });
         };
         if (_bridge.LastSnapshot is { } current)
             _host.RunOnUiThread(() => MultiviewInputRows.ApplyRosterFact(current));
+    }
+
+    public void SetPreviewVisible(bool visible)
+    {
+        _previewVisible = visible;
+        MultiviewInputRows.SetPreviewConsumerActive(visible && _previewEngineAvailable);
+        _ = _previewDemand.SetVisibleAsync(visible);
     }
 
     public MultiviewInputRowsProjection MultiviewInputRows { get; }

@@ -79,6 +79,42 @@ bool readOutputPixel(ID3D11Device* device, ID3D11DeviceContext* context, HANDLE 
 }
 }  // namespace
 
+TEST(D3DDecoupledExport, SourceIncarnationPublishesNewHandleAndPixelsWhileOldConsumerHoldsItsKey) {
+  ComPtrLite<ID3D11Device> device, consumer;
+  ComPtrLite<ID3D11DeviceContext> context, consumerContext;
+  ASSERT_TRUE(makeDevice(device, context)); ASSERT_TRUE(makeDevice(consumer, consumerContext));
+  D3DDecoupledExport exporter(device.get(), kW, kH, "incarnation-test");
+  auto* originalDevice = D3DDecoupledExportTestAccess::device(exporter);
+  ComPtrLite<ID3D11Texture2D> red, green;
+  ASSERT_TRUE(makeUniformSource(device.get(), context.get(), 0xFFFF0000u, red));
+  ASSERT_TRUE(makeUniformSource(device.get(), context.get(), 0xFF00FF00u, green));
+  auto awaitEpoch = [&](uint64_t epoch) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto publication = exporter.publication();
+      if (publication.sourceEpoch == epoch && publication.frameNumber >= 0) return publication;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return D3DDecoupledExport::Publication{};
+  };
+  ASSERT_TRUE(exporter.submit(context.get(), red.get(), 1, 10)); context->Flush();
+  const auto old = awaitEpoch(10); ASSERT_NE(old.handle, nullptr);
+  ComPtrLite<ID3D11Texture2D> oldResource;
+  ComPtrLite<IDXGIKeyedMutex> oldMutex;
+  ASSERT_TRUE(SUCCEEDED(consumer->OpenSharedResource(old.handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(oldResource.put()))));
+  ASSERT_TRUE(SUCCEEDED(oldResource->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(oldMutex.put()))));
+  ASSERT_EQ(oldMutex->AcquireSync(1, 1000), S_OK);
+  ASSERT_TRUE(exporter.submit(context.get(), green.get(), 1, 11)); context->Flush();
+  const auto current = awaitEpoch(11);
+  ASSERT_NE(current.handle, nullptr);
+  EXPECT_NE(current.handle, old.handle); EXPECT_EQ(current.frameNumber, 1);
+  std::uint32_t pixel = 0;
+  EXPECT_TRUE(readOutputPixel(consumer.get(), consumerContext.get(), current.handle, pixel));
+  EXPECT_EQ(pixel, 0xFF00FF00u);
+  EXPECT_EQ(D3DDecoupledExportTestAccess::device(exporter), originalDevice);
+  oldMutex->ReleaseSync(0);
+}
+
 TEST(D3DDecoupledExport, PublishesFrameToSharedOutputAcrossDevices) {
   ComPtrLite<ID3D11Device> device; ComPtrLite<ID3D11DeviceContext> context;
   ASSERT_TRUE(makeDevice(device, context));
