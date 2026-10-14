@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <atomic>
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -1108,6 +1109,7 @@ struct GradePreviewSurface {
 };
 struct MonitorRenderRequest {
   int64_t sequence = 0;
+  int64_t programDisplayTargetNs = 0, programDisplayDeadlineNs = 0;
   CompositorRenderPlan programPlan;
   CompositorRenderPlan multiviewPlan;
   CompositorRenderPlan previewPlan;
@@ -1128,6 +1130,20 @@ struct MonitorInputObservation {
   uint64_t sourceEpoch = 0, requestedEpoch = 0;
   int64_t frameId = 0, captureTimestamp100ns = 0;
 };
+enum class ProgramDisplayReason : uint32_t {
+  None, ReadCapacity, QueryCreate, QueryRead, Import, TextureCreate, SrvCreate, FailedReader
+};
+struct ProgramDisplayIncident {
+  int64_t observedNs = 0, oldestReadAgeNs = 0;
+  int64_t targetNs = 0, deadlineNs = 0;
+  uint64_t requested = 0, copied = 0, generation = 0, completedSequence = 0;
+  uint64_t pendingSequences[2] = {};
+  int64_t pendingAgesNs[2] = {};
+  int64_t hresult = 0, deviceHresult = 0;
+  uint32_t stage = 0, slot = 0, width = 0, height = 0, pending = 0;
+  ProgramDisplayReason reason = ProgramDisplayReason::None;
+  bool importCached = false;
+};
 struct ProgramDisplayObservation {
   bool observed = false;
   uint64_t generation = 0, requestedSequence = 0, copiedSequence = 0;
@@ -1135,6 +1151,12 @@ struct ProgramDisplayObservation {
   uint64_t copies = 0, completedCopies = 0, reused = 0, refused = 0, skipped = 0, reordered = 0;
   int capacity = 0, gpuReads = 0;
   uint64_t allocatedBytes = 0;
+  uint64_t readerEpoch = 0;
+  int readerReadLimit = 2;
+  std::array<uint64_t, 8> refusalReasons{};
+  uint64_t notReadyPolls = 0, traceOverwritten = 0, traceCaptureFailures = 0;
+  int64_t lastHresult = 0;
+  std::shared_ptr<const std::vector<ProgramDisplayIncident>> incidentTrace;
   std::string state = "unavailable";
 };
 struct MonitorRenderResult {

@@ -24,6 +24,15 @@ public sealed record MonitorIsolationObservation
     public long? ProgramSkipped { get; init; }
     public long? ProgramRefused { get; init; }
     public string ProgramDisplayState { get; init; } = "unavailable";
+    public long? ProgramReaderReadLimit { get; init; }
+    public long? ProgramReadCapacityRefusals { get; init; }
+    public long? ProgramQueryCreateFailures { get; init; }
+    public long? ProgramQueryReadFailures { get; init; }
+    public long? ProgramImportFailures { get; init; }
+    public long? ProgramTextureCreateFailures { get; init; }
+    public long? ProgramSrvCreateFailures { get; init; }
+    public long? ProgramFailedReaderRefusals { get; init; }
+    public long? ProgramNotReadyPolls { get; init; }
 
     public static MonitorIsolationObservation FromSnapshot(NativeMediaCoreStateSnapshot? snapshot)
     {
@@ -50,6 +59,15 @@ public sealed record MonitorIsolationObservation
                 ProgramSkipped = displayObserved ? Count(display, "skipped") : null,
                 ProgramRefused = displayObserved ? Count(display, "refused") : null,
                 ProgramDisplayState = displayObserved ? Known(display, "state", "unavailable", "copied", "held", "failed", "preparing") : "unavailable",
+                ProgramReaderReadLimit = displayObserved ? Count(display, "readerReadLimit") : null,
+                ProgramReadCapacityRefusals = displayObserved ? Reason(display, "read-capacity") : null,
+                ProgramQueryCreateFailures = displayObserved ? Reason(display, "query-create") : null,
+                ProgramQueryReadFailures = displayObserved ? Reason(display, "query-read-failed") : null,
+                ProgramImportFailures = displayObserved ? Reason(display, "import") : null,
+                ProgramTextureCreateFailures = displayObserved ? Reason(display, "texture-create") : null,
+                ProgramSrvCreateFailures = displayObserved ? Reason(display, "srv-create") : null,
+                ProgramFailedReaderRefusals = displayObserved ? Reason(display, "failed-reader") : null,
+                ProgramNotReadyPolls = displayObserved ? Count(display, "notReadyPolls") : null,
                 ReadyInputs = inputObserved ? Count(worker, "readyInputs") : null,
                 HeldInputs = inputObserved ? Count(worker, "heldInputs") : null,
                 UnavailableInputs = inputObserved ? Count(worker, "unavailableInputs") : null,
@@ -67,6 +85,10 @@ public sealed record MonitorIsolationObservation
         }
         catch (JsonException) { return new(); }
     }
+
+    private static long? Reason(JsonElement node, string key) =>
+        node.TryGetProperty("refusalReasons", out var reasons) && reasons.ValueKind == JsonValueKind.Object
+            ? Count(reasons, key) : null;
 
     private static long? Count(JsonElement node, string key) =>
         node.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Number &&

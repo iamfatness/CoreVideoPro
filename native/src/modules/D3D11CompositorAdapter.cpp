@@ -219,6 +219,12 @@ class D3D11Compositor final : public ICompositor {
     if (!monitorWorker_) return;
     prepareMonitorFrames(request);
     request.bufferedProgram = programBufferFrames() > 0;
+    if (programProductionSlot_ >= 0 && programProductionAnchorNs_ > 0) {
+      const int depth = programBufferFrames();
+      const core::ProgramPlayoutTimeline timeline(depth, programProductionAnchorNs_);
+      request.programDisplayTargetNs = timeline.deadlineNs(programProductionSlot_ - depth);
+      request.programDisplayDeadlineNs = timeline.deadlineNs(programProductionSlot_ - depth + 1);
+    }
     if (auto buffer = currentProgramBuffer())
       buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner, programProductionSlot_);
     monitorWorker_->submit(std::move(request));
@@ -593,6 +599,8 @@ class D3D11Compositor final : public ICompositor {
     monitorBufferedProgram_ = request.bufferedProgram;
     monitorProgram_ = request.deliveredProgram;
     monitorProgramOwner_ = request.deliveredProgramOwner;
+    monitorProgramTargetNs_ = request.programDisplayTargetNs;
+    monitorProgramDeadlineNs_ = request.programDisplayDeadlineNs;
     frameNumber_ = request.sequence;
     MonitorRenderResult result;
     ProgramFrame sources;
@@ -642,6 +650,7 @@ class D3D11Compositor final : public ICompositor {
     }
     if (gpuReadLeases_) gpuReadLeases_->finish();
     context_->Flush();
+    programDisplayReader_.flushed();
     monitorProgramOwner_.reset();
     return result;
   }
@@ -799,7 +808,8 @@ class D3D11Compositor final : public ICompositor {
       owner = monitorProgramOwner_;
       if (exported.sharedHandleHex.empty()) owner.reset();
     } else if (buffer) buffer->multiview(exported, owner, programProductionSlot_);
-    return programDisplayReader_.copy(device_.get(), context_.get(), owner);
+    return programDisplayReader_.copy(device_.get(), context_.get(), owner,
+        monitorBatch_ ? monitorProgramTargetNs_ : 0, monitorBatch_ ? monitorProgramDeadlineNs_ : 0);
   }
 
   // Per-participant keyed-mutex shared texture for the GPU multiview tiles.
@@ -3339,6 +3349,7 @@ class D3D11Compositor final : public ICompositor {
   const bool profileGpuSubmission_ = GpuSubmissionCpuScope::requested();
   uint64_t programBufferGeneration_ = 0;
   D3DProgramDisplayReader programDisplayReader_;
+  int64_t monitorProgramTargetNs_ = 0, monitorProgramDeadlineNs_ = 0;
   std::map<int64_t, ProgramDisplayObservation> programDisplayHistory_;
   enum ProfileStage { ParticipantAcquire, ParticipantConvert, ParticipantCopy, ParticipantRelease, ParticipantTotal,
                       MvUpload, MvDraw, MvShare, MvTotal, ProfileStageCount };

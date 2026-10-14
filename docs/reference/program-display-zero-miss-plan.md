@@ -107,6 +107,34 @@ Source anchors:
 
 ## Repair contract
 
+### Refusal evidence contract
+
+`program-display-refusal-v1` is additive to the existing display observation.
+`readerEpoch` separates reader lifetimes; `readerReadLimit` describes the reader,
+not the producer's `capacity`. `refusalReasons` separates admission refusal from
+query creation/read, import, texture creation and SRV creation failures. A query
+read failure is a failure event; subsequent refused requests are separately
+counted as `failed-reader`, so summing every failure category is not the same as
+counting refused requests. `notReadyPolls` includes normal unavailable results
+and is not a dropped-frame count.
+
+The fixed numeric incident history has 512 records and remains below 128 KiB.
+An incident snapshot retains prehistory and refreshes after eight further copy
+submissions. Stage IDs are 1 admission, 2 copy submitted, 3 completion observed,
+4 failure/refusal, 5 completion unavailable and 6 CPU flush returned. Pending
+identities and ages describe outstanding source leases at that observation.
+`traceOverwritten` describes bounded prehistory retention; `traceCaptureFailures`
+invalidates complete incident evidence. Diagnostic allocation failure must not
+throw into rendering. Timestamps and exact identities use decimal strings;
+the clock is steady-clock nanoseconds. Flush and completion-observation times
+are CPU observations, never GPU execution duration or physical presentation.
+No free-text SDK errors, names, credentials or image payloads enter the records.
+
+The headless `scripts/qa/program-display-copy-probe.py` retains startup and the
+synthetic workload's snapshots. It labels all-output and presentation acceptance
+unverified, even if copy counters happen to be zero. It never controls desktop
+input or opens the operator's camera/stream/recording destinations.
+
 Preserve 1080p60 quality, the selected two/three-frame Program buffer, existing
 display offset, audio alignment, enabled outputs and producer isolation. Do not
 increase the pool, read limit or output delay to conceal misses. No CPU readback

@@ -15,6 +15,7 @@
 #include <dxgi.h>
 #include <mmsystem.h>
 #include "modules/D3DProgramBuffer.h"
+#include "modules/MonitorInputEvidence.h"
 
 namespace {
 // JsonRpcServer negotiates this resolution before running the real render
@@ -27,6 +28,10 @@ struct ProgramBufferTimerResolution {
 }
 
 namespace corevideo::modules {
+struct D3DProgramDisplayReaderTestAccess {
+  static void fault(D3DProgramDisplayReader& reader,
+      std::function<std::optional<HRESULT>(ProgramDisplayReason)> fault) { reader.fault_ = std::move(fault); }
+};
 struct D3DProgramBufferTestAccess {
   static void beforeExport(D3DProgramBuffer& buffer, std::function<void(bool)> hook) { buffer.beforeExport_ = std::move(hook); }
   static void beforePrepare(D3DProgramBuffer& buffer, std::function<void(int64_t)> hook) { buffer.beforePrepare_ = std::move(hook); }
@@ -37,6 +42,84 @@ struct D3DProgramBufferTestAccess {
   }
   static void fail(D3DProgramBuffer& buffer) { buffer.fail("test-injected"); }
 };
+}
+
+TEST(D3DProgramBuffer, DisplayReaderAttributesEachResourceFailureAndExportsExactIncident) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+  D3DProgramDisplaySnapshots pool;
+  ASSERT_TRUE(pool.initialize(device.get(), 64, 64, 904));
+  auto slot = pool.reserve(); ASSERT_TRUE(slot != nullptr);
+  ProgramFrame frame; frame.deliverySequence = frame.frameNumber = 91;
+  pool.stamp(slot, frame);
+  std::shared_ptr<const void> owner = slot;
+  for (auto reason : {ProgramDisplayReason::QueryCreate, ProgramDisplayReason::Import,
+      ProgramDisplayReason::TextureCreate, ProgramDisplayReason::SrvCreate}) {
+    D3DProgramDisplayReader reader;
+    D3DProgramDisplayReaderTestAccess::fault(reader, [reason](ProgramDisplayReason actual) -> std::optional<HRESULT> {
+      if (actual == reason) return E_OUTOFMEMORY;
+      return {};
+    });
+    EXPECT_EQ(reader.copy(device.get(), context.get(), owner), nullptr);
+    auto evidence = reader.observation();
+    EXPECT_EQ(evidence.refused, 1u);
+    EXPECT_EQ(evidence.refusalReasons[static_cast<size_t>(reason)], 1u);
+    EXPECT_EQ(evidence.copies, 0u); EXPECT_EQ(evidence.gpuReads, 0);
+    ASSERT_TRUE(evidence.incidentTrace != nullptr);
+    const auto& event = evidence.incidentTrace->back();
+    EXPECT_EQ(event.reason, reason); EXPECT_EQ(event.hresult, E_OUTOFMEMORY);
+    EXPECT_EQ(event.requested, 91u); EXPECT_EQ(event.generation, 904u);
+    EXPECT_EQ(event.width, 64u); EXPECT_EQ(event.deviceHresult, S_OK);
+    auto result = std::make_shared<MonitorRenderResult>(); result->programDisplay = evidence;
+    const auto json = programDisplayEvidence(result);
+    EXPECT_EQ(json.getNumber("readerReadLimit"), 2);
+    EXPECT_EQ(json.get("incidentTrace")->asArray().back().getString("requestedSequence"), "91");
+    EXPECT_FALSE(json.get("displayPresentationVerified")->asBool());
+  }
+}
+
+TEST(D3DProgramBuffer, DisplayReaderCapacityRefusalRecordsPendingIdentitiesWithoutReleasingThem) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+  D3DProgramDisplaySnapshots pool;
+  ASSERT_TRUE(pool.initialize(device.get(), 64, 64, 905));
+  D3DProgramDisplayReader reader;
+  D3DProgramDisplayReaderTestAccess::fault(reader, [](ProgramDisplayReason reason) -> std::optional<HRESULT> {
+    return reason == ProgramDisplayReason::QueryRead ? std::optional<HRESULT>(S_FALSE) : std::nullopt;
+  });
+  std::vector<std::shared_ptr<D3DProgramDisplaySnapshots::Snapshot>> slots;
+  for (int i = 1; i <= 3; ++i) {
+    auto slot = pool.reserve(); ASSERT_TRUE(slot != nullptr);
+    ProgramFrame frame; frame.deliverySequence = frame.frameNumber = i;
+    pool.stamp(slot, frame); slots.push_back(slot);
+    reader.copy(device.get(), context.get(), slot);
+  }
+  const auto observation = reader.observation();
+  EXPECT_EQ(observation.copies, 2u); EXPECT_EQ(observation.completedCopies, 0u);
+  EXPECT_EQ(observation.refusalReasons[static_cast<size_t>(ProgramDisplayReason::ReadCapacity)], 1u);
+  EXPECT_EQ(observation.notReadyPolls, 3u);
+  ASSERT_TRUE(observation.incidentTrace != nullptr);
+  const auto& incident = observation.incidentTrace->back();
+  EXPECT_EQ(incident.pending, 2u); EXPECT_EQ(incident.requested, 3u);
+  EXPECT_EQ(incident.pendingSequences[0], 1u); EXPECT_EQ(incident.pendingSequences[1], 2u);
+  EXPECT_GE(incident.pendingAgesNs[0], 0);
+  EXPECT_FALSE(slots[0]->quarantined.load()); // Retained, not prematurely recycled.
+  // A genuine query failure is separately attributed and cannot release either lease.
+  D3DProgramDisplayReaderTestAccess::fault(reader, [](ProgramDisplayReason reason) -> std::optional<HRESULT> {
+    return reason == ProgramDisplayReason::QueryRead ? std::optional<HRESULT>(E_FAIL) : std::nullopt;
+  });
+  reader.retire(context.get());
+  EXPECT_EQ(reader.observation().gpuReads, 2);
+  EXPECT_EQ(reader.observation().refusalReasons[static_cast<size_t>(ProgramDisplayReason::QueryRead)], 1u);
+  EXPECT_EQ(reader.observation().state, "failed");
+  EXPECT_TRUE(slots[0]->quarantined.load());
+  context->Flush();
 }
 
 TEST(D3DProgramBuffer, ImmutableDisplayLeaseSurvivesUnreadPublicationAndPoolExhaustion) {

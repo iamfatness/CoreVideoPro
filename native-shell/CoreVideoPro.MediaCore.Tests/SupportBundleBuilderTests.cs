@@ -61,6 +61,22 @@ public sealed class SupportBundleBuilderTests
     }
 
     [Theory]
+    [InlineData("{}", null)]
+    [InlineData("{\"read-capacity\":3,\"import\":0}", 3L)]
+    [InlineData("{\"read-capacity\":-1}", null)]
+    [InlineData("{\"read-capacity\":\"credential SECRET\"}", null)]
+    public void ProgramDisplay_RefusalReasonsRemainTypedAndOlderPeersUnknown(string reasons, long? expected)
+    {
+        var raw = "{\"realtimeEvidence\":{\"monitorWorker\":{\"programDisplay\":{" +
+            "\"observationVersion\":\"program-display-snapshot-v1\",\"observed\":true,\"readerReadLimit\":2,\"refusalReasons\":" + reasons + "}}}}";
+        var observation = MonitorIsolationObservation.FromSnapshot(BuildSampleSnapshot() with { RawJson = raw });
+        Assert.Equal(expected, observation.ProgramReadCapacityRefusals);
+        Assert.Equal(2, observation.ProgramReaderReadLimit);
+        Assert.DoesNotContain("SECRET", System.Text.Json.JsonSerializer.Serialize(observation));
+        Assert.Null(MonitorIsolationObservation.FromSnapshot(BuildSampleSnapshot() with { RawJson = "{}" }).ProgramReadCapacityRefusals);
+    }
+
+    [Theory]
     [InlineData("bad json")]
     [InlineData("{}")]
     [InlineData("{\"realtimeEvidence\":{\"capturePreparation\":{\"enabled\":true,\"state\":\"ready\"}}}")]

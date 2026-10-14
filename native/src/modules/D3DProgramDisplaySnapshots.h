@@ -95,35 +95,49 @@ class D3DProgramDisplaySnapshots {
 // not pool leases. Only outstanding GPU reads retain immutable publications.
 class D3DProgramDisplayReader {
  public:
+  static constexpr size_t ReadLimit = 2, TraceCapacity = 512;
+  D3DProgramDisplayReader() : epoch_(nextEpoch_.fetch_add(1)) {}
   ~D3DProgramDisplayReader() {
     // A stopped worker may have submitted a copy whose completion was never
     // polled. Quarantine before releasing its lease, even if the pool survives.
     for (const auto& read : reads_) read.owner->quarantined = true;
   }
   ID3D11ShaderResourceView* copy(ID3D11Device* device, ID3D11DeviceContext* context,
-      const std::shared_ptr<const void>& owner) {
+      const std::shared_ptr<const void>& owner, int64_t targetNs = 0, int64_t deadlineNs = 0) {
+    requestedSnapshot_ = nullptr; importCached_ = false;
     retire(context);
+    targetNs_ = targetNs; deadlineNs_ = deadlineNs;
     held_ = true;
     if (!owner) { ++reused_; return view_.get(); }
     auto snapshot = std::static_pointer_cast<const D3DProgramDisplaySnapshots::Snapshot>(owner);
+    requestedSnapshot_ = snapshot.get();
     requested_ = snapshot->frame.deliverySequence;
-    if (copiedGeneration_ == snapshot->generation && copied_ == requested_) { ++reused_; return view_.get(); }
-    if (reads_.size() >= 2 || failed_) { ++refused_; return view_.get(); }
+    const auto cached = imports_.find(snapshot->slot);
+    importCached_ = generation_ == snapshot->generation && cached != imports_.end() && !!cached->second;
+    record(1);
+    if (copiedGeneration_ == snapshot->generation && copied_ == requested_) {
+      ++reused_; requestedSnapshot_ = nullptr; return view_.get();
+    }
+    if (failed_) return refuse(device, ProgramDisplayReason::FailedReader, lastHresult_);
+    if (reads_.size() >= ReadLimit) return refuse(device, ProgramDisplayReason::ReadCapacity, S_FALSE);
     if (generation_ != snapshot->generation) {
       imports_.clear(); generation_ = snapshot->generation;
     }
     if (!queries_[0]) {
       D3D11_QUERY_DESC query{D3D11_QUERY_EVENT, 0};
-      for (auto& item : queries_) if (FAILED(device->CreateQuery(&query, item.put()))) {
-        failed_ = true; ++refused_; return view_.get();
+      for (auto& item : queries_) if (const auto hr = operation(ProgramDisplayReason::QueryCreate,
+          [&] { return device->CreateQuery(&query, item.put()); }); FAILED(hr)) {
+        failed_ = true; return refuse(device, ProgramDisplayReason::QueryCreate, hr);
       }
     }
     auto& imported = imports_[snapshot->slot];
+    importCached_ = !!imported;
     if (!imported) {
       const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
           std::strtoull(snapshot->frame.sharedTexture.sharedHandleHex.c_str(), nullptr, 16)));
-      if (FAILED(device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(imported.put())))) {
-        ++refused_; return view_.get();
+      if (const auto hr = operation(ProgramDisplayReason::Import, [&] {
+          return device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(imported.put())); }); FAILED(hr)) {
+        return refuse(device, ProgramDisplayReason::Import, hr);
       }
     }
     D3D11_TEXTURE2D_DESC desc{}; imported->GetDesc(&desc);
@@ -131,12 +145,16 @@ class D3DProgramDisplayReader {
       ComPtrLite<ID3D11Texture2D> nextLocal;
       ComPtrLite<ID3D11ShaderResourceView> nextView;
       desc.MiscFlags = 0;
-      if (FAILED(device->CreateTexture2D(&desc, nullptr, nextLocal.put())) ||
-          FAILED(device->CreateShaderResourceView(nextLocal.get(), nullptr, nextView.put()))) { ++refused_; return view_.get(); }
+      if (const auto hr = operation(ProgramDisplayReason::TextureCreate,
+          [&] { return device->CreateTexture2D(&desc, nullptr, nextLocal.put()); }); FAILED(hr))
+        return refuse(device, ProgramDisplayReason::TextureCreate, hr);
+      if (const auto hr = operation(ProgramDisplayReason::SrvCreate,
+          [&] { return device->CreateShaderResourceView(nextLocal.get(), nullptr, nextView.put()); }); FAILED(hr))
+        return refuse(device, ProgramDisplayReason::SrvCreate, hr);
       local_ = std::move(nextLocal); view_ = std::move(nextView);
       width_ = desc.Width; height_ = desc.Height;
     }
-    Read read; read.owner = std::move(snapshot);
+    Read read; read.owner = std::move(snapshot); read.submittedNs = nowNs();
     for (size_t index = 0; index < queries_.size(); ++index) {
       const bool busy = std::any_of(reads_.begin(), reads_.end(), [index](const Read& item) { return item.query == index; });
       if (!busy) { read.query = index; break; }
@@ -153,19 +171,35 @@ class D3DProgramDisplayReader {
     frameNumber_ = read.owner->frame.frameNumber;
     timeline100ns_ = read.owner->frame.timelineTimestamp100ns;
     reads_.push_back(std::move(read));
+    record(2);
+    if (postIncident_ && --postIncident_ == 0) captureIncident();
+    requestedSnapshot_ = nullptr;
     return view_.get();
   }
   void retire(ID3D11DeviceContext* context) {
     for (auto it = reads_.begin(); it != reads_.end();) {
       BOOL done = FALSE;
-      const auto hr = context->GetData(queries_[it->query].get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH);
-      if (hr == S_OK && done) { ++completed_; it = reads_.erase(it); }
-      else { if (FAILED(hr)) { failed_ = true; it->owner->quarantined = true; } ++it; }
+      const auto hr = operation(ProgramDisplayReason::QueryRead, [&] {
+          return context->GetData(queries_[it->query].get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH); });
+      if (hr == S_OK && done) { record(3, ProgramDisplayReason::None, hr, S_OK, it->owner->frame.deliverySequence); ++completed_; it = reads_.erase(it); }
+      else {
+        if (FAILED(hr) && !failed_) {
+          failed_ = true; it->owner->quarantined = true;
+          lastHresult_ = hr; ++reasons_[static_cast<size_t>(ProgramDisplayReason::QueryRead)];
+          ComPtrLite<ID3D11Device> device; context->GetDevice(device.put());
+          record(4, ProgramDisplayReason::QueryRead, hr, device->GetDeviceRemovedReason()); captureIncident();
+        } else if (hr == S_FALSE || (hr == S_OK && !done)) {
+          ++notReadyPolls_; record(5, ProgramDisplayReason::None, hr);
+        }
+        ++it;
+      }
     }
   }
   uint64_t copied() const { return copied_; }
   uint64_t requested() const { return requested_; }
   uint64_t refused() const { return refused_; }
+  // CPU flush return timestamp, explicitly not GPU completion.
+  void flushed() { record(6); }
   ProgramDisplayObservation observation() const {
     ProgramDisplayObservation result;
     result.observed = copies_ > 0; result.generation = copiedGeneration_;
@@ -179,14 +213,80 @@ class D3DProgramDisplayReader {
     result.capacity = D3DProgramDisplaySnapshots::Capacity;
     result.allocatedBytes = uint64_t(width_) * height_ * 4 * result.capacity;
     result.gpuReads = static_cast<int>(reads_.size());
+    result.readerEpoch = epoch_; result.readerReadLimit = ReadLimit;
+    result.refusalReasons = reasons_; result.notReadyPolls = notReadyPolls_;
+    result.lastHresult = lastHresult_; result.traceOverwritten = capturedOverwritten_;
+    result.incidentTrace = incident_;
+    result.traceCaptureFailures = traceCaptureFailures_;
     result.state = failed_ ? "failed" : !copied_ ? "preparing" : held_ ? "held" : "copied";
     return result;
   }
  private:
+  friend struct D3DProgramDisplayReaderTestAccess;
+  // Constructor/owner-only test seam. No environment, command or API binding.
+  std::function<std::optional<HRESULT>(ProgramDisplayReason)> fault_;
+  template<class Call> HRESULT operation(ProgramDisplayReason reason, Call call) {
+    if (fault_) if (auto result = fault_(reason)) return *result;
+    return call();
+  }
   struct Read {
     std::shared_ptr<const D3DProgramDisplaySnapshots::Snapshot> owner;
     size_t query = 0;
+    int64_t submittedNs = 0;
   };
+  static int64_t nowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+  void record(uint32_t stage, ProgramDisplayReason reason = ProgramDisplayReason::None,
+      HRESULT hr = S_OK, HRESULT deviceHr = S_OK, uint64_t completed = 0) {
+    ProgramDisplayIncident event;
+    event.observedNs = nowNs(); event.stage = stage; event.reason = reason;
+    event.targetNs = targetNs_; event.deadlineNs = deadlineNs_;
+    event.requested = requested_; event.copied = copied_; event.generation = generation_;
+    event.hresult = hr; event.deviceHresult = deviceHr; event.importCached = importCached_;
+    event.completedSequence = completed;
+    if (requestedSnapshot_) {
+      event.generation = requestedSnapshot_->generation; event.slot = static_cast<uint32_t>(requestedSnapshot_->slot);
+      event.width = requestedSnapshot_->frame.sharedTexture.width;
+      event.height = requestedSnapshot_->frame.sharedTexture.height;
+    }
+    event.pending = static_cast<uint32_t>(reads_.size());
+    for (size_t i = 0; i < reads_.size() && i < ReadLimit; ++i) {
+      event.pendingSequences[i] = reads_[i].owner->frame.deliverySequence;
+      event.pendingAgesNs[i] = event.observedNs - reads_[i].submittedNs;
+      event.oldestReadAgeNs = (std::max)(event.oldestReadAgeNs, event.pendingAgesNs[i]);
+    }
+    trace_[traceWritten_++ % TraceCapacity] = event;
+  }
+  void captureIncident() noexcept {
+    try {
+    auto events = std::make_shared<std::vector<ProgramDisplayIncident>>();
+    const auto size = (std::min)(traceWritten_, uint64_t(TraceCapacity));
+    events->reserve(static_cast<size_t>(size));
+    for (uint64_t i = traceWritten_ - size; i < traceWritten_; ++i)
+      events->push_back(trace_[i % TraceCapacity]);
+    incident_ = std::move(events); capturedOverwritten_ = traceWritten_ - size;
+    } catch (...) { ++traceCaptureFailures_; } // Diagnostic pressure cannot fail a monitor job.
+  }
+  ID3D11ShaderResourceView* refuse(ID3D11Device* device, ProgramDisplayReason reason, HRESULT hr) {
+    ++refused_; ++reasons_[static_cast<size_t>(reason)]; lastHresult_ = hr;
+    record(4, reason, hr, device->GetDeviceRemovedReason()); captureIncident(); postIncident_ = 8;
+    requestedSnapshot_ = nullptr;
+    return view_.get();
+  }
+  inline static std::atomic<uint64_t> nextEpoch_{1};
+  uint64_t epoch_ = 0, traceWritten_ = 0, capturedOverwritten_ = 0, notReadyPolls_ = 0;
+  uint64_t traceCaptureFailures_ = 0;
+  int64_t targetNs_ = 0, deadlineNs_ = 0;
+  std::array<uint64_t, 8> reasons_{};
+  std::array<ProgramDisplayIncident, TraceCapacity> trace_{};
+  static_assert(sizeof(trace_) <= 128 * 1024);
+  std::shared_ptr<const std::vector<ProgramDisplayIncident>> incident_;
+  const D3DProgramDisplaySnapshots::Snapshot* requestedSnapshot_ = nullptr;
+  HRESULT lastHresult_ = S_OK;
+  unsigned postIncident_ = 0;
+  bool importCached_ = false;
   uint64_t generation_ = 0, copiedGeneration_ = 0, requested_ = 0, copied_ = 0;
   uint64_t copies_ = 0, completed_ = 0, reused_ = 0, refused_ = 0;
   uint64_t skipped_ = 0, reordered_ = 0;
