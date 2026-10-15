@@ -1113,7 +1113,12 @@ struct MonitorCancellationState {
   std::atomic<uint64_t> epoch{0};
   std::atomic<bool> stopped{false};
 };
+struct ProgramDisplayObservation;
 struct MonitorRenderRequest {
+  // Immutable completed copy passed from the deadline owner to the monitor renderer.
+  bool programCopyPrepared = false;
+  std::shared_ptr<const GpuVideoFrame> readyProgramImage;
+  std::shared_ptr<const ProgramDisplayObservation> readyProgramObservation;
   int64_t submittedNs = 0, workerStartedNs = 0, inputsPreparedNs = 0;
   int64_t producerStartedNs = 0, producerPreparedNs = 0;
   std::function<bool(ProgramFrameSharedTexture&, std::shared_ptr<const void>&)> acquireDeliveredProgram;

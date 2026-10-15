@@ -22,9 +22,9 @@ class MonitorRenderWorker {
     std::optional<ProgramDisplayObservation> programDisplay;
   };
   using Maintenance = std::function<MaintenanceResult()>;
-  explicit MonitorRenderWorker(Render render, std::function<void()> initialize = {}, Maintenance maintenance = {})
-      : thread_([this, render = std::move(render), initialize = std::move(initialize), maintenance = std::move(maintenance)]() mutable {
-          run(render, initialize, maintenance);
+  explicit MonitorRenderWorker(Render render, std::function<void()> initialize = {}, Maintenance maintenance = {}, bool prepareInputs = true)
+      : thread_([this, render = std::move(render), initialize = std::move(initialize), maintenance = std::move(maintenance), prepareInputs]() mutable {
+          run(render, initialize, maintenance, prepareInputs);
         }) {}
   ~MonitorRenderWorker() {
     cancellation_->stopped.store(true, std::memory_order_relaxed);
@@ -109,7 +109,7 @@ class MonitorRenderWorker {
       return false;
     }
   }
-  void run(Render& render, std::function<void()>& initialize, Maintenance& maintenance) {
+  void run(Render& render, std::function<void()>& initialize, Maintenance& maintenance, bool prepareInputs) {
     core::ComApartmentLifetime apartment;
     struct ReleaseBackend {
       Render& render; Maintenance& maintenance;
@@ -153,7 +153,7 @@ class MonitorRenderWorker {
         auto prepared = *job;
         prepared.workerStartedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count();
         MonitorRenderResult observation;
-        inputs.prepare(prepared, observation);
+        if (prepareInputs) inputs.prepare(prepared, observation);
         prepared.inputsPreparedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         auto result = std::make_shared<MonitorRenderResult>(render(prepared));
