@@ -89,6 +89,7 @@ class MediaStream
   bool retryTransientRead_ = true;
   uint64_t retriedSamples_ = 0, recoveredSamples_ = 0;
   uint64_t readDeadlineMisses_ = 0;
+  uint64_t retryTimerTimeouts_ = 0, retryTimerFailures_ = 0, unrecoveredTransientSamples_ = 0;
   LONGLONG sampleReadDeadlineUs_ = 0;
 };
 
