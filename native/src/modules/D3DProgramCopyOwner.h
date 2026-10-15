@@ -34,6 +34,12 @@ class D3DProgramCopyOwner {
     request.programCopyPrepared = true;
     request.readyProgramImage = reader_.completedImage();
     request.readyProgramObservation = reader_.completedObservation();
+    const auto current = reader_.observation();
+    if (request.readyProgramObservation && request.readyProgramObservation->copiedSequence != current.requestedSequence) {
+      auto held = std::make_shared<ProgramDisplayObservation>(*request.readyProgramObservation);
+      held->requestedSequence = current.requestedSequence; held->state = "held";
+      request.readyProgramObservation = std::move(held);
+    }
     // Downstream owns only a completed private image, never an input-pool lease
     // or a callback that could retry the production timeline on a late batch.
     request.deliveredProgramOwner.reset(); request.acquireDeliveredProgram = {};

@@ -74,6 +74,7 @@ def main():
     sample_count = 0
     latest = {}
     latest_sources = []
+    monitor_max = {k:0 for k in ("failed", "superseded")}
     initial = None
     trace_key = None
     incident_files = []
@@ -103,7 +104,6 @@ def main():
             'COREVIDEO_DELIVERY_TRACE': '1' if args.camera_receiver else '0',
         }, args.output/'native.stderr.log')
         with (args.output/'samples.jsonl').open('w', encoding='utf-8') as sample_file:
-            monitor_max = {k:0 for k in ("failed", "superseded")}
             def retain(snapshot):
                 nonlocal sample_count, latest, latest_sources, initial, trace_key, incident_bytes, ingredient_samples
                 if serving: serving.poll()
