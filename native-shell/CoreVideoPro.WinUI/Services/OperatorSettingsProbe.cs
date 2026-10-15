@@ -80,6 +80,17 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         field.Focus(FocusState.Programmatic);await Eventually(()=>field.FocusState!=FocusState.Unfocused);await Task.Delay(30);field.Text="0.314159";await Task.Delay(30);
         away.Focus(FocusState.Programmatic);await Eventually(()=>away.FocusState!=FocusState.Unfocused);await Eventually(()=>control.Value==.314159);Require(control.Value==.314159,$"Exact entry did not commit unchanged: {control.Value:G}");
         checks.Add("shared slider preserves untouched precision, rejects invalid entry and commits exact entry without step rounding");
+        var compact = new SliderValueControl { Header="Opacity", Unit="%", DisplayScale=100, Minimum=0, Maximum=1, DefaultValue=1, Value=.4, Compact=true };
+        window.Content=compact; await Eventually(()=>compact.IsLoaded);
+        var reset=Descendants(compact).OfType<Button>().Single();
+        Require(Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(reset)=="Reset Opacity to 100 %", "Compact reset does not identify its setting and default");
+        var starts=0;var ends=0;compact.EditStarted+=(_,_)=>starts++;compact.EditCompleted+=(_,_)=>ends++;
+        var resetPeer=new Microsoft.UI.Xaml.Automation.Peers.ButtonAutomationPeer(reset);
+        ((Microsoft.UI.Xaml.Automation.Provider.IInvokeProvider)resetPeer.GetPattern(Microsoft.UI.Xaml.Automation.Peers.PatternInterface.Invoke)).Invoke();
+        await Eventually(()=>compact.Value==1);
+        Require(starts==1 && ends==1,"Reset was not one complete adjustment gesture");
+        Require(Descendants(compact).OfType<TextBox>().Single().Text=="100","Reset did not synchronize exact entry");
+        checks.Add("compact controls retain an accessible named reset, displayed units and one complete synchronized undo gesture");
         var designer=new LowerThirdDesignerControl();window.Content=new ScrollViewer { Content=designer };
         foreach(var id in new[] {"compact-solid","minimal-accent","broadcast"}) {
             designer.LoadReviewDraft(LowerThirdAppearance.FromPreset(id));await Eventually(()=>designer.IsLoaded);

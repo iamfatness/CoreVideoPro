@@ -32,6 +32,7 @@ public sealed class SliderValueControl : UserControl
     private readonly TextBlock _error = new() { FontSize = 11, TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
     private readonly TextBox _entry = new() { Width = 76, MinWidth = 60, HorizontalAlignment = HorizontalAlignment.Right };
     private readonly AdjustmentSlider _slider = new();
+    private readonly Button _reset = new() { Content = "↺", Padding = new Thickness(7, 3, 7, 3) };
     private readonly TextBlock _range = new() { FontSize = 10, Opacity = .65 };
     private bool _refreshing, _typing, _editing;
     private double _beforeEdit;
@@ -45,13 +46,11 @@ public sealed class SliderValueControl : UserControl
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _label.VerticalAlignment = VerticalAlignment.Center;
         root.Children.Add(_label); head.Children.Add(_entry); Grid.SetColumn(_entry, 1);
-        var reset = new Button { Content = "↺", Padding = new Thickness(7, 3, 7, 3) };
-        AutomationProperties.SetName(reset, "Reset to default"); ToolTipService.SetToolTip(reset, "Reset to default");
-        reset.Click += (_, _) => { BeginEdit(); Value = DefaultValue; EndEdit(); };
-        head.Children.Add(reset); Grid.SetColumn(reset, 2);
+        _reset.Click += (_, _) => { BeginEdit(); _typing = false; ClearError(); Value = DefaultValue; RefreshValue(false); EndEdit(); };
+        head.Children.Add(_reset); Grid.SetColumn(_reset, 2);
         root.Children.Add(head); root.Children.Add(_slider); root.Children.Add(_range); root.Children.Add(_help); root.Children.Add(_error);
         Content = root;
-        _slider.ValueChanged += (_, e) => { if (!_refreshing) Value = FromSlider(e.NewValue); };
+        _slider.ValueChanged += (_, e) => { if (!_refreshing) { ClearError(); Value = FromSlider(e.NewValue); } };
         _slider.StartEdit=BeginEdit; _slider.FinishEdit=EndEdit;
         _entry.GotFocus += (_, _) => {
             _typing = true;_refreshing=true;
@@ -65,7 +64,6 @@ public sealed class SliderValueControl : UserControl
             if (Compact && root.Children.Contains(_slider)) {
                 root.Children.Remove(_slider);
                 head.Children.Add(_slider); Grid.SetColumn(_slider, 0);
-                head.Children.Remove(reset);head.ColumnDefinitions.RemoveAt(2);
                 _slider.VerticalAlignment=VerticalAlignment.Center;
                 _entry.Width=67;_range.Visibility=Visibility.Collapsed;
                 _label.FontSize=11;root.Spacing=6;
@@ -82,10 +80,15 @@ public sealed class SliderValueControl : UserControl
         if (_refreshing) return;
         _refreshing = true;
         try {
-            _label.Text = Compact && !string.IsNullOrEmpty(Unit) ? $"{Header} ({Unit})" : Header;
+            _label.Text = !string.IsNullOrEmpty(Unit) ? $"{Header} ({Unit})" : Header;
             _help.Text = Help; _help.Visibility = string.IsNullOrEmpty(Help) ? Visibility.Collapsed : Visibility.Visible;
             AutomationProperties.SetName(_entry, $"{Header} {Unit}, exact value");
             AutomationProperties.SetName(_slider, $"{Header} {Unit}");
+            AutomationProperties.SetHelpText(_entry, Help);
+            AutomationProperties.SetHelpText(_slider, Help);
+            var resetLabel = $"Reset {Header} to {DefaultValue * DisplayScale:0.##} {Unit}".Trim();
+            AutomationProperties.SetName(_reset, resetLabel);
+            ToolTipService.SetToolTip(_reset, resetLabel);
             if (double.IsFinite(Value)) {
                 _slider.Minimum = UseLog ? 0 : Math.Min(Minimum, Value);
                 _slider.Maximum = UseLog ? 1 : Math.Max(Maximum, Value);
@@ -97,6 +100,7 @@ public sealed class SliderValueControl : UserControl
         } finally { _refreshing = false; }
         if (notify) ValueChanged?.Invoke(this, Value);
     }
+    private void ClearError() { _error.Visibility = Visibility.Collapsed; _error.Text = ""; }
     private bool Commit()
     {
         // TextChanged can be delivered after LostFocus during fast navigation.
