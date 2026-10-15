@@ -618,6 +618,7 @@ class D3D11Compositor final : public ICompositor {
     // source exports, uploads/conversions and other optional monitor GPU work.
     monitorDeliveredView_ = request.multiviewActive && request.bufferedProgram
         ? retainedProgramForMultiview() : nullptr;
+    programDisplayReader_.checkpoint(11);
     ProgramFrame sources;
     sources.frameNumber = request.sequence;
     std::vector<VideoFrame> sourceExports;
@@ -628,6 +629,7 @@ class D3D11Compositor final : public ICompositor {
     }
     exportParticipantTextures(request.programPlan, sourceExports, sources);
     result.sources = std::move(sources.participantSharedTextures);
+    programDisplayReader_.checkpoint(12);
     if (request.multiviewActive) {
       monitorTileHistory_[request.sequence] = request.tiles;
       result.multiview = renderMultiview(request.multiviewPlan, request.frames);
@@ -654,7 +656,9 @@ class D3D11Compositor final : public ICompositor {
       lastMonitorTiles_.clear();
       lastMonitorTileSequence_ = -1;
     }
+    programDisplayReader_.checkpoint(13);
     if (request.previewActive) result.preview = renderPreview(request.previewPlan, request.frames);
+    programDisplayReader_.checkpoint(14);
     for (auto it = sourceTextures_.begin(); it != sourceTextures_.end();) {
       const bool demanded = std::any_of(request.frames.begin(), request.frames.end(),
           [&](const auto& frame) { return frame.participantId == it->first; });
@@ -664,6 +668,7 @@ class D3D11Compositor final : public ICompositor {
           ? sourceTextures_.erase(it) : std::next(it);
     }
     if (gpuReadLeases_) gpuReadLeases_->finish();
+    programDisplayReader_.checkpoint(15);
     context_->Flush();
     programDisplayReader_.flushed();
     result.programDisplayReader = programDisplayReader_.observation();

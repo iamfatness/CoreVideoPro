@@ -202,7 +202,8 @@ class D3DProgramDisplayReader {
     if (lateSubmission) ++lateSubmissions_;
     // The enclosing monitor pass flushes. The copy precedes its draw on the same
     // immediate context; completion retires source ownership, not presentation.
-    if (copiedGeneration_ == generation_ && copied_ && requested_ > copied_ + 1) skipped_ += requested_ - copied_ - 1;
+    const bool identityGap = copiedGeneration_ == generation_ && copied_ && requested_ > copied_ + 1;
+    if (identityGap) skipped_ += requested_ - copied_ - 1;
     if (copiedGeneration_ == generation_ && copied_ && requested_ < copied_) ++reordered_;
     copiedGeneration_ = generation_;
     copied_ = requested_; ++copies_;
@@ -211,6 +212,7 @@ class D3DProgramDisplayReader {
     timeline100ns_ = read.owner->frame.timelineTimestamp100ns;
     reads_.push_back(std::move(read));
     record(2);
+    if (identityGap) { record(10); captureIncident(); postIncident_ = 8; }
     if (postIncident_ && --postIncident_ == 0) captureIncident();
     if (lateSubmission) { record(4, ProgramDisplayReason::Deadline, S_FALSE); captureIncident(); postIncident_ = 8; }
     requestedSnapshot_ = nullptr;
@@ -255,6 +257,8 @@ class D3DProgramDisplayReader {
   uint64_t refused() const { return refused_; }
   // CPU flush return timestamp, explicitly not GPU completion.
   void flushed() { record(6); }
+  // Fixed numeric CPU checkpoints delimit optional work; these are not GPU durations.
+  void checkpoint(uint32_t stage) { record(stage); }
   ProgramDisplayObservation observation() const {
     ProgramDisplayObservation result;
     result.observed = copies_ > 0; result.generation = copiedGeneration_;
