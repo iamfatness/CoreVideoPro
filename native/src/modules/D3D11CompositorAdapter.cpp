@@ -174,6 +174,11 @@ class D3D11Compositor final : public ICompositor {
           warm.programCopyPrepared = true;
           warm.multiviewPlan.skipCpuReadback = warm.previewPlan.skipCpuReadback = true;
           renderMonitor(warm);
+        }, [backend] {
+          MonitorRenderWorker::MaintenanceResult result;
+          if (*backend && (*backend)->gpuReadLeases_)
+            result.pending = (*backend)->gpuReadLeases_->retire();
+          return result;
         });
         auto copyOwner = std::make_shared<std::unique_ptr<D3DProgramCopyOwner>>();
         auto* auxiliary = auxiliaryMonitorWorker_.get();
