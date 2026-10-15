@@ -173,9 +173,9 @@ void MediaStream::LogDeliveryEvidence() {
       static_cast<long long>(read.lastProgramSequence));
   VcamServeLog(b);
   if (retryTransientRead_) {
-    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu readDeadlineMisses=%llu writerActive=%llu changedDuringCopy=%llu copyBudgetExhausted=%llu budgetUs=2000 maxRetries=8 maxPayloadCopies=2",
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu readDeadlineMisses=%llu writerActive=%llu changedDuringCopy=%llu copyBudgetExhausted=%llu timerTimeouts=%llu timerFailures=%llu unrecoveredTransientSamples=%llu budgetUs=2000 maxRetries=8 maxPayloadCopies=2",
         retriedSamples_, recoveredSamples_, readDeadlineMisses_, read.writerActiveObservations,
-        read.changedDuringCopy, read.copyBudgetExhaustions);
+        read.changedDuringCopy, read.copyBudgetExhaustions, retryTimerTimeouts_, retryTimerFailures_, unrecoveredTransientSamples_);
     VcamServeLog(b);
   }
 }
@@ -235,10 +235,20 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
         if (!pacerTimer_) return false;
         LARGE_INTEGER due; due.QuadPart = -std::min<int64_t>(250, remainingUs) * 10;
-        return SetWaitableTimer(pacerTimer_, &due, 0, nullptr, nullptr, FALSE) &&
-            WaitForSingleObject(pacerTimer_, 1) == WAIT_OBJECT_0;
+        if (!SetWaitableTimer(pacerTimer_, &due, 0, nullptr, nullptr, FALSE)) {
+          ++retryTimerFailures_; return false;
+        }
+        const auto waited = WaitForSingleObject(pacerTimer_, 1);
+        if (waited == WAIT_TIMEOUT) ++retryTimerTimeouts_;
+        else if (waited != WAIT_OBJECT_0) { ++retryTimerFailures_; return false; }
+        // A timeout still yielded the CPU. The original absolute deadline,
+        // checked by the helper, decides whether another read is allowed.
+        return true;
       }, retryTransientRead_, retries, retryDeadlineUs, 8);
   if (MFGetSystemTime() / 10 > sampleReadDeadlineUs_) ++readDeadlineMisses_;
+  if (!got && (reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Contended ||
+               reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Unchanged))
+    ++unrecoveredTransientSamples_;
   if (retries) { ++retriedSamples_; if (got) ++recoveredSamples_; }
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
       scratch_.size() == dstLen) {
