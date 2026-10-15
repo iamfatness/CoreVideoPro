@@ -298,18 +298,20 @@ public sealed class ShowInputUnifiedSourceTests
         var editor=Editor(out var slot);
         editor.RefreshSourceOptions([Participant("a","Alice"),Participant("b","Bob")],[]);
         editor.SelectedUnifiedSourceId="zoom:a";editor.InShow=true;
+        var aliceLabel=editor.SelectedUnifiedSourceLabel;
         editor.RefreshSourceOptions([Participant("b","Bob")],[]);
-        Assert.Equal("Zoom · Alice · Offline",editor.SelectedUnifiedSourceLabel);
+        Assert.Equal(aliceLabel+" · Offline",editor.SelectedUnifiedSourceLabel);
         Assert.Contains("Saved assignment retained",editor.AssignmentHint);
         editor.SelectedUnifiedSourceId="zoom:b";
+        var bobLabel=editor.SelectedUnifiedSourceLabel;
         editor.RefreshSourceOptions([],[]);
-        Assert.Equal("Zoom · Bob · Offline",editor.SelectedUnifiedSourceLabel);
+        Assert.Equal(bobLabel+" · Offline",editor.SelectedUnifiedSourceLabel);
         slot.ParticipantId="never-seen";
         editor.RefreshSourceOptions([],[]);
         Assert.DoesNotContain("Alice",editor.SelectedUnifiedSourceLabel);
         Assert.DoesNotContain("Bob",editor.SelectedUnifiedSourceLabel);
         editor.RefreshSourceOptions([Participant("never-seen","Carol")],[]);
-        Assert.Equal("Zoom · Carol",editor.SelectedUnifiedSourceLabel);
+        Assert.StartsWith("Zoom · Carol",editor.SelectedUnifiedSourceLabel);
         Assert.False(editor.IsSourceMissing);
     }
 

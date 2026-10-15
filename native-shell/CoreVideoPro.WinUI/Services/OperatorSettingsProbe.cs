@@ -91,6 +91,24 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         Require(starts==1 && ends==1,"Reset was not one complete adjustment gesture");
         Require(Descendants(compact).OfType<TextBox>().Single().Text=="100","Reset did not synchronize exact entry");
         checks.Add("compact controls retain an accessible named reset, displayed units and one complete synchronized undo gesture");
+        var adjustment=new GradeAdjustmentControl {Adjustment=new GradeOperation {Kind="curves"}};
+        window.Content=adjustment;await Eventually(()=>adjustment.IsLoaded);
+        var curve=Descendants(adjustment).OfType<GradeCurveControl>().Single();
+        var curveEdits=0;adjustment.AdjustmentEdited+=(_,_)=>curveEdits++;
+        curve.SetPoints([new(0,0),new(.5,.5),new(1,1)]);
+        Require(curveEdits==0,"Loading curve points published a grade edit");
+        curve.HandleEditingKey(Windows.System.VirtualKey.Home);
+        curve.HandleEditingKey(Windows.System.VirtualKey.Right,control:true);
+        curve.HandleEditingKey(Windows.System.VirtualKey.Up);
+        Require(Math.Abs(curve.Points[1].Y-.501)<1e-10,"Curve fine keyboard increment is wrong");
+        curve.HandleEditingKey(Windows.System.VirtualKey.Right,shift:true);
+        Require(Math.Abs(curve.Points[1].X-.51)<1e-10,"Curve coarse keyboard increment is wrong");
+        curve.HandleEditingKey(Windows.System.VirtualKey.End);
+        var input=Descendants(adjustment).OfType<SliderValueControl>().Single(v=>v.Header=="Point input");
+        Require(!input.IsEnabled,"Endpoint input is advertised as editable");
+        curve.HandleEditingKey(Windows.System.VirtualKey.Left);
+        Require(curve.Points[^1].X==1,"Keyboard moved a curve endpoint horizontally");
+        checks.Add("compiled grade curve supports keyboard selection, fine/coarse edits and locked endpoint input without hydration edits");
         var designer=new LowerThirdDesignerControl();window.Content=new ScrollViewer { Content=designer };
         foreach(var id in new[] {"compact-solid","minimal-accent","broadcast"}) {
             designer.LoadReviewDraft(LowerThirdAppearance.FromPreset(id));await Eventually(()=>designer.IsLoaded);
@@ -174,15 +192,16 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         }
         Require(slots[0].ParticipantId == "synthetic-a" && slots[1].CaptureDeviceId == "synthetic-camera" && slots[2].ParticipantId == "media:synthetic-clip", "Layout changed source assignments");
         checks.Add("compiled ten-row Sources template at 1100 and 900 pixels preserves synthetic Zoom/capture/media assignments and Zoom-only options");
+        var sourceLabel=editors[0].SelectedUnifiedSourceLabel;
         editors[0].InShow=true;editors[0].RefreshSourceOptions([],[]);
         await Task.Delay(50);
         var picker=Descendants(repeater.GetOrCreateElement(0)).OfType<DropDownButton>().Single(b=>b.Name=="UnifiedSourceButton");
-        Require(picker.Content?.ToString()=="Zoom · Alice · test source · Offline","Offline picker lost the departed source's identity");
+        Require(picker.Content?.ToString()==sourceLabel+" · Offline",$"Offline picker lost the departed source's identity: {picker.Content}; expected {sourceLabel}");
         Require(Microsoft.UI.Xaml.Automation.AutomationProperties.GetHelpText(picker).Contains("Saved assignment retained"),"Offline picker does not explain recovery");
         await ReviewImageWriter.SaveAsync(page,Path.Combine(reviewDirectory,"sources-offline.png"));
         editors[0].RefreshSourceOptions([new Participant {Id="synthetic-a",Name="Alice · test source",Health=FeedHealth.Live}],[]);
         await Task.Delay(50);
-        Require(picker.Content?.ToString()=="Zoom · Alice · test source","Reconnected picker retained the offline state");
+        Require(picker.Content?.ToString()==sourceLabel,"Reconnected picker retained the offline state");
         checks.Add("compiled source row retains its named offline assignment, explains recovery and reconnects without substitution");
     }
     private static async Task CheckSourceOptions(Window window, List<string> checks)

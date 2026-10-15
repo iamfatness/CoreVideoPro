@@ -1,6 +1,7 @@
 using CoreVideoPro.MediaCore.Models;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
@@ -26,6 +27,8 @@ public sealed class GradeCurveControl : UserControl
     public GradeCurveControl()
     {
         Content = _canvas; MinHeight = 220; IsTabStop = true;
+        AutomationProperties.SetName(this,"Grade curve");
+        AutomationProperties.SetHelpText(this,"Home or End selects an endpoint. Control plus left or right selects a point. Arrow keys adjust it; Shift makes a larger adjustment. Delete removes an interior point.");
         for (var i = 1; i < 4; ++i) {
             var vertical = new Line { Stroke = new SolidColorBrush(ColorHelper.FromArgb(255,48,49,54)), StrokeThickness = 1 };
             var horizontal = new Line { Stroke = vertical.Stroke, StrokeThickness = 1 };
@@ -40,7 +43,25 @@ public sealed class GradeCurveControl : UserControl
         PointerReleased += (_, e) => { _dragging = false; ReleasePointerCapture(e.Pointer); };
         PointerCaptureLost += (_, _) => _dragging = false;
         DoubleTapped += (_, e) => { if (SelectedIndex > 0 && SelectedIndex < _points.Length-1) RemoveSelected(); e.Handled = true; };
-        KeyDown += (_, e) => { if (e.Key is VirtualKey.Delete or VirtualKey.Back) { RemoveSelected(); e.Handled = true; } };
+        KeyDown += (_, e) => e.Handled=HandleEditingKey(e.Key,
+            Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down),
+            Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down));
+    }
+    internal bool HandleEditingKey(VirtualKey key,bool shift=false,bool control=false)
+    {
+        if (!IsEnabled) return false;
+        if (key is VirtualKey.Home or VirtualKey.End || (control && key is (VirtualKey.Left or VirtualKey.Right)))
+        {
+            SelectedIndex=key==VirtualKey.Home?0:key==VirtualKey.End?_points.Length-1:
+                Math.Clamp(SelectedIndex+(key==VirtualKey.Left?-1:1),0,_points.Length-1);
+            Draw();PointSelected?.Invoke(this,EventArgs.Empty);return true;
+        }
+        if (key is VirtualKey.Delete or VirtualKey.Back) {RemoveSelected();return true;}
+        if (key is not (VirtualKey.Left or VirtualKey.Right or VirtualKey.Up or VirtualKey.Down)) return false;
+        if (SelectedIndex<0) {SelectedIndex=0;Draw();PointSelected?.Invoke(this,EventArgs.Empty);return true;}
+        var point=_points[SelectedIndex];var step=shift ? .01 : .001;
+        SetSelected(point.X+(key==VirtualKey.Left?-step:key==VirtualKey.Right?step:0),
+            point.Y+(key==VirtualKey.Down?-step:key==VirtualKey.Up?step:0));return true;
     }
     public void SetPoints(IReadOnlyList<GradeCurvePoint> points)
     {

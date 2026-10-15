@@ -17,7 +17,7 @@ public sealed class GradeAdjustmentControl : UserControl
     private readonly CheckBox _enabled = new() { Content = "Adjustment enabled" };
     private readonly SliderValueControl _intensity = Number("Adjustment intensity",0,1,.01,1,"%",100);
     private readonly Dictionary<string,SliderValueControl> _numbers = [];
-    private readonly ComboBox _channel = new() { ItemsSource = new[] { "Master", "Red", "Green", "Blue" }, SelectedIndex = 0 };
+    private readonly ComboBox _channel = new() { Header="Curve channel",ItemsSource = new[] { "Master", "Red", "Green", "Blue" }, SelectedIndex = 0 };
     private readonly GradeCurveControl _curve = new();
     private readonly SliderValueControl _pointX = Number("Point input",0,1,.01,0,"%",100), _pointY = Number("Point output",0,1,.01,0,"%",100);
     private bool _loading;
@@ -33,7 +33,7 @@ public sealed class GradeAdjustmentControl : UserControl
         _root.Children.Add(_primaries); _root.Children.Add(_curves);
         _curves.Children.Add(_channel); _curves.Children.Add(_curve); _curves.Children.Add(_pointX); _curves.Children.Add(_pointY);
         var reset = new Button { Content = "Reset channel" }; _curves.Children.Add(reset); reset.Click += (_,_) => _curve.Reset();
-        _curves.Children.Add(new TextBlock { Text = "Click to add • drag to shape • double-click or Delete to remove. Endpoints move vertically. Linear interpolation.", TextWrapping = TextWrapping.Wrap, FontSize = 11 });
+        _curves.Children.Add(new TextBlock { Text = "Click to add; drag to shape. Home/End selects an endpoint; Ctrl+arrows selects a point. Arrows adjust by 0.1%; Shift by 1%. Delete removes an interior point. Endpoints move vertically. Linear interpolation.", TextWrapping = TextWrapping.Wrap, FontSize = 11 });
         _channel.SelectionChanged += (_,_) => LoadCurve();
         _curve.CurveEdited += (_,_) => {
             if (_loading || Adjustment is not { } a) return;
@@ -41,10 +41,12 @@ public sealed class GradeAdjustmentControl : UserControl
             AdjustmentEdited?.Invoke(this,a with { Curves = curves });
         };
         _curve.PointSelected += (_,_) => {
-            _loading = true; var i = _curve.SelectedIndex;
-            _pointX.IsEnabled = _pointY.IsEnabled = i >= 0;
-            if (i >= 0) { _pointX.Value = _curve.Points[i].X; _pointY.Value = _curve.Points[i].Y; }
-            _loading = false;
+            var loading=_loading;_loading = true; var i = _curve.SelectedIndex;
+            try {
+                _pointY.IsEnabled = i >= 0;
+                _pointX.IsEnabled = i > 0 && i < _curve.Points.Count-1;
+                if (i >= 0) { _pointX.Value = _curve.Points[i].X; _pointY.Value = _curve.Points[i].Y; }
+            } finally {_loading = loading;}
         };
         _pointX.ValueChanged += (_,_) => { if (!_loading) _curve.SetSelected(_pointX.Value,_pointY.Value); };
         _pointY.ValueChanged += (_,_) => { if (!_loading) _curve.SetSelected(_pointX.Value,_pointY.Value); };
