@@ -50,6 +50,8 @@ public sealed class SliderValueControl : UserControl
         head.Children.Add(_reset); Grid.SetColumn(_reset, 2);
         root.Children.Add(head); root.Children.Add(_slider); root.Children.Add(_range); root.Children.Add(_help); root.Children.Add(_error);
         Content = root;
+        _reset.Style=(Style)Application.Current.Resources["StudioGhostButton"];
+        _reset.MinHeight=30;_reset.MinWidth=30;
         _slider.ValueChanged += (_, e) => { if (!_refreshing) { ClearError(); Value = FromSlider(e.NewValue); } };
         _slider.StartEdit=BeginEdit; _slider.FinishEdit=EndEdit;
         _entry.GotFocus += (_, _) => {

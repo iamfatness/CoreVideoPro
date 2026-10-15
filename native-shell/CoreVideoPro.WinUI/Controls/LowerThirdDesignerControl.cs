@@ -3,6 +3,7 @@ using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 
 namespace CoreVideoPro.WinUI.Controls;
 
@@ -35,13 +36,17 @@ public sealed class LowerThirdDesignerControl : UserControl
     public LowerThirdDesignerControl()
     {
         var root=new StackPanel { Spacing=8 }; Content=root;
+        foreach(var field in new[]{_preset,_saved,_anchor}) {
+            field.Background=(Brush)Application.Current.Resources["StudioFieldBrush"];
+            field.Foreground=(Brush)Application.Current.Resources["StudioTextBrush"];
+        }
         root.Children.Add(new TextBlock { Text="Lower-third designer",FontSize=16 });
         root.Children.Add(_preview);root.Children.Add(_previewStatus);root.Children.Add(_compare);root.Children.Add(_status);root.Children.Add(_preset);
         var actions=new StackPanel { Orientation=Orientation.Horizontal,Spacing=8 };
-        var apply=new Button { Content="Apply look" };var cancel=new Button { Content="Cancel draft" };
+        var apply=Action("Apply look",true);var cancel=Action("Cancel draft");
         apply.Click+=(_,_)=> { if (!CommitText()) return; if (Studio?.Overlays.ApplyAppearance(_draft)==true) _status.Text="Look saved; live update requested. Source text is unchanged."; else _status.Text="Check font, colors and values before applying."; };
         cancel.Click+=(_,_)=>LoadDraft();actions.Children.Add(apply);actions.Children.Add(cancel);root.Children.Add(actions);
-        var reset=new Button { Content="Reset draft to starter look" };reset.Click+=(_,_)=>SetDraft(LowerThirdAppearance.FromPreset(_draft.Preset));root.Children.Add(reset);
+        var reset=Action("Reset draft to starter look");reset.Click+=(_,_)=>SetDraft(LowerThirdAppearance.FromPreset(_draft.Preset));root.Children.Add(reset);
         var typography=Section(root,"Typography");typography.Children.Add(_font);
         Add(typography,"NameSize","Name size",16,120,42,1,"px",v=>_draft with { NameSize=v });
         Add(typography,"TitleSize","Title size",12,80,28,1,"px",v=>_draft with { TitleSize=v });
@@ -61,9 +66,9 @@ public sealed class LowerThirdDesignerControl : UserControl
         Add(placement,"SafeOffsetY","Safe offset from top / bottom",0,.25,.06,.005,"%",v=>_draft with { SafeOffsetY=v },100);
         var logo=Section(root,"Source logo");logo.Children.Add(_logo);
         Add(logo,"LogoScale","Logo size",.5,2,1,.05,"×",v=>_draft with { LogoScale=v });
-        var looks=Section(root,"Saved looks");looks.Children.Add(_saved);looks.Children.Add(_presetName);var save=new Button { Content="Save named look" };looks.Children.Add(save);
+        var looks=Section(root,"Saved looks");looks.Children.Add(_saved);looks.Children.Add(_presetName);var save=Action("Save named look");looks.Children.Add(save);
         save.Click+=(_,_)=> { if (!CommitText()) return; if (Studio?.Overlays.SaveAppearancePreset(_presetName.Text,_draft)==true) { _saved.ItemsSource=Studio.Overlays.LowerThirdPresets.Keys.ToArray();_status.Text="Named look saved; Apply look sends it live."; } else _status.Text="Use a name of 1–80 characters and valid appearance settings."; };
-        var duplicate=new Button { Content="Duplicate saved look" };looks.Children.Add(duplicate);
+        var duplicate=Action("Duplicate saved look");looks.Children.Add(duplicate);
         duplicate.Click+=(_,_)=> { if (_saved.SelectedItem is string name && Studio?.Overlays.LowerThirdPresets.TryGetValue(name,out var look)==true) {
             var stem=name.Length>68?name[..68]:name;
             var copy=stem+" copy";
@@ -83,10 +88,19 @@ public sealed class LowerThirdDesignerControl : UserControl
         Loaded+=(_,_)=> { LoadDraft();if (_previewActive) StartPreview(); };
         Unloaded+=(_,_)=>DeactivatePreview();
     }
+    private static Button Action(string label,bool primary=false)=>new() {Content=label,
+        Style=(Style)Application.Current.Resources[primary?"StudioAccentButton":"StudioGhostButton"]};
     private static StackPanel Section(StackPanel parent,string title)
     {
         var body=new StackPanel {Spacing=8};
-        parent.Children.Add(new Expander {Header=title,Content=body,HorizontalAlignment=HorizontalAlignment.Stretch,HorizontalContentAlignment=HorizontalAlignment.Stretch});
+        var section=new Expander {Header=title,Content=body,HorizontalAlignment=HorizontalAlignment.Stretch,HorizontalContentAlignment=HorizontalAlignment.Stretch,
+            Background=(Brush)Application.Current.Resources["StudioSurfaceRaisedBrush"],Foreground=(Brush)Application.Current.Resources["StudioTextBrush"]};
+        if(!new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast) {
+            section.Resources["ExpanderHeaderBackground"]=Application.Current.Resources["StudioSurfaceRaisedBrush"];
+            section.Resources["ExpanderHeaderForeground"]=Application.Current.Resources["StudioTextBrush"];
+            section.Resources["ExpanderChevronForeground"]=Application.Current.Resources["StudioTextBrush"];
+        }
+        parent.Children.Add(section);
         return body;
     }
     private void Add(StackPanel root,string key,string label,double min,double max,double neutral,double step,string unit,Func<double,LowerThirdAppearance> update,double scale=1)
