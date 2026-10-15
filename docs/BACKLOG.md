@@ -1,5 +1,12 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 15, approved Sources design:** implement #590 as the
+table-first workspace with an optional inspector and connected existing grade
+editor. Preserve every existing source, MV, ISO, audio, adapter and grading
+capability; the web mockup is not permission to remove controls. Build an isolated
+review candidate on the submitted UI/UX batch; leave the installed app and
+production settings untouched. See reference/sources-table-workspace-spec.md.
+
 **Owner direction, October 15:** finish the full operator UI/UX review batch while
 the owner is away: starter scenes, Sources identity/clarity, shared adjustments,
 lower thirds, grading/ROI and Settings/navigation. Work sequentially within the

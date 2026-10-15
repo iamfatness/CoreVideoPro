@@ -167,51 +167,8 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         Require(writes.Count == 1 && !staleApply.IsEnabled, "Stale lower-third editor changed a replacement guest");
         stale.Hide(); checks.Add("open lower-third editor rejects Apply after guest replacement");
     }
-    private static async Task CheckSourcesLayout(Window window, List<string> checks,string reviewDirectory)
-    {
-        var page = new SourcesInputsPage();
-        window.Content = page;
-        await Eventually(() => page.IsLoaded);
-        var repeater = (ItemsRepeater)page.FindName("ShowInputEditorsRepeater");
-        var slots = Enumerable.Range(1, 10).Select(number => new ShowInputSlot { SlotNumber = number }).ToArray();
-        slots[0].Kind = ShowInputKind.ZoomParticipant; slots[0].ParticipantId = "synthetic-a";
-        slots[1].Kind = ShowInputKind.UvcWebcam; slots[1].CaptureDeviceId = "synthetic-camera";
-        slots[2].Kind = ShowInputKind.Media; slots[2].ParticipantId = "media:synthetic-clip";
-        var editors = slots.Select(slot => new ShowInputSlotViewModel(slot, () => { })).ToArray();
-        foreach(var editor in editors) editor.RefreshSourceOptions(
-            [new Participant {Id="synthetic-a",Name="Alice · test source",Health=FeedHealth.Live}],
-            [new CaptureDevice {Id="synthetic-camera",Name="Studio camera",NativeDeviceId="synthetic",Vendor="uvc",Inputs=[],SelectedInputId=""}],
-            mediaAssets:[new MediaAsset {Id="synthetic-clip",Name="Opening clip",Kind="video"}]);
-        repeater.ItemsSource = editors;
-        foreach (var width in new[] { 1100, 900 })
-        {
-            window.AppWindow.Resize(new SizeInt32(width, 760));
-            page.UpdateLayout();
-            for (var i = 0; i < 10; ++i)
-            {
-                var element = repeater.GetOrCreateElement(i);
-                element.UpdateLayout();
-                var button = Descendants(element).OfType<Button>().Single(b => b.Name == "SourceOptionsButton");
-                Require(ReferenceEquals(button.Tag, editors[i]), "Source options template has a stale slot identity");
-                Require(button.Visibility == (i == 0 ? Visibility.Visible : Visibility.Collapsed), "Source options appeared for a non-Zoom assignment");
-                var textButton = Descendants(element).OfType<Button>().Single(b => b.Name == "SourceLowerThirdTextButton");
-                Require(textButton.Visibility == (i < 2 ? Visibility.Visible : Visibility.Collapsed), "Lower-third editor advertised an unsupported or unassigned source");
-            }
-        }
-        Require(slots[0].ParticipantId == "synthetic-a" && slots[1].CaptureDeviceId == "synthetic-camera" && slots[2].ParticipantId == "media:synthetic-clip", "Layout changed source assignments");
-        checks.Add("compiled ten-row Sources template at 1100 and 900 pixels preserves synthetic Zoom/capture/media assignments and Zoom-only options");
-        var sourceLabel=editors[0].SelectedUnifiedSourceLabel;
-        editors[0].InShow=true;editors[0].RefreshSourceOptions([],[]);
-        await Task.Delay(50);
-        var picker=Descendants(repeater.GetOrCreateElement(0)).OfType<DropDownButton>().Single(b=>b.Name=="UnifiedSourceButton");
-        Require(picker.Content?.ToString()==sourceLabel+" · Offline",$"Offline picker lost the departed source's identity: {picker.Content}; expected {sourceLabel}");
-        Require(Microsoft.UI.Xaml.Automation.AutomationProperties.GetHelpText(picker).Contains("Saved assignment retained"),"Offline picker does not explain recovery");
-        await ReviewImageWriter.SaveAsync(page,Path.Combine(reviewDirectory,"sources-offline.png"));
-        editors[0].RefreshSourceOptions([new Participant {Id="synthetic-a",Name="Alice · test source",Health=FeedHealth.Live}],[]);
-        await Task.Delay(50);
-        Require(picker.Content?.ToString()==sourceLabel,"Reconnected picker retained the offline state");
-        checks.Add("compiled source row retains its named offline assignment, explains recovery and reconnects without substitution");
-    }
+    private static Task CheckSourcesLayout(Window window, List<string> checks,string reviewDirectory) =>
+        SourcesWorkspaceIntegrationProbe.CheckAsync(window, checks, reviewDirectory);
     private static async Task CheckSourceOptions(Window window, List<string> checks)
     {
         var slot = new ShowInputSlot { SlotNumber = 1, Kind = ShowInputKind.ZoomParticipant, ParticipantId = "synthetic-a" };

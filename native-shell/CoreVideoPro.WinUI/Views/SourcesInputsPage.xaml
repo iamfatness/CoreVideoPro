@@ -38,7 +38,8 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
+            <Expander x:Name="CaptureCatalog" Grid.Row="1" Grid.ColumnSpan="2" Header="Capture devices and browser sources" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+            <Border Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
@@ -154,7 +155,9 @@
                 </StackPanel>
             </Border>
 
-            <Border Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
+            </Expander>
+            <Expander x:Name="SrtCatalog" Grid.Row="2" Grid.ColumnSpan="2" Header="SRT ingest" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+            <Border Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
@@ -249,7 +252,9 @@
                 </StackPanel>
             </Border>
 
-            <Border Grid.Row="3" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
+            </Expander>
+            <Expander x:Name="RtmpCatalog" Grid.Row="3" Grid.ColumnSpan="2" Header="RTMP ingest" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+            <Border Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
@@ -303,268 +308,10 @@
                 </StackPanel>
             </Border>
 
-            <Border Grid.Row="0" Grid.ColumnSpan="2" Style="{StaticResource OperatorSectionBorder}">
-                <StackPanel Spacing="10">
-                    <TextBlock Text="Show inputs (multiview)" Style="{StaticResource OperatorSectionTitle}" />
-                    <TextBlock Text="Assign up to 10 sources below. Toggle In show to put them on the Studio multiview strip."
-                               Style="{StaticResource OperatorSummary}" TextWrapping="WrapWholeWords" />
-                    <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-                        <ComboBox Header="Preferred Zoom camera max"
-                                  ItemsSource="{x:Bind ViewModel.ZoomCameraMaxChoices, Mode=OneWay}"
-                                  SelectedItem="{x:Bind ViewModel.ZoomCameraMaxResolution, Mode=TwoWay}"
-                                  MinWidth="150" />
-                        <TextBlock Text="{x:Bind ViewModel.ZoomCameraMaxStatus, Mode=OneWay}"
-                                   VerticalAlignment="Bottom" TextWrapping="WrapWholeWords"
-                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-                        <ComboBox Header="Max Zoom guest fps (local)"
-                                  ItemsSource="{x:Bind ViewModel.ZoomCameraMaxFpsChoices, Mode=OneWay}"
-                                  SelectedItem="{x:Bind ViewModel.ZoomCameraMaxFps, Mode=TwoWay}"
-                                  MinWidth="170" />
-                        <TextBlock Text="{x:Bind ViewModel.ZoomCameraMaxFpsStatus, Mode=OneWay}"
-                                   VerticalAlignment="Bottom" TextWrapping="WrapWholeWords"
-                                   FontSize="11" Foreground="{StaticResource StudioMutedBrush}" />
-                    </StackPanel>
-                    <TextBlock Text="{x:Bind ViewModel.ShowInputSummary, Mode=OneWay}"
-                               FontSize="11" Foreground="{StaticResource StudioAccentBrush}" TextWrapping="Wrap" />
-                    <!-- An in-show input whose source no longer exists (unplugged display,
-                         changed camera id) is dropped from the multiview silently, leaving
-                         an unexplained placeholder tile. Say so. Scalar string + Visibility
-                         only — never a snapshot-rate bound collection (0xc000027b). -->
-                    <InfoBar IsOpen="True" Severity="Warning" IsClosable="False"
-                             Message="{x:Bind ViewModel.ShowInputWarning, Mode=OneWay}"
-                             Visibility="{x:Bind ViewModel.ShowInputWarningVisibility, Mode=OneWay}" />
-                    <Grid ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Border Background="#122018" BorderBrush="{StaticResource StudioAccentBrush}"
-                                BorderThickness="1" CornerRadius="6" Padding="10,7">
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="1 Assign inputs" FontSize="11" FontWeight="Bold" />
-                                <TextBlock Text="Bind Zoom guests, media, or cameras to stable slots."
-                                           FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                            </StackPanel>
-                        </Border>
-                        <Border Grid.Column="1" Background="#101820" BorderBrush="{StaticResource StudioBorderBrush}"
-                                BorderThickness="1" CornerRadius="6" Padding="10,7">
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="2 Route outputs" FontSize="11" FontWeight="Bold" />
-                                <TextBlock Text="Use Routing for ISO video and program audio."
-                                           FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                            </StackPanel>
-                        </Border>
-                        <Border Grid.Column="2" Background="#101820" BorderBrush="{StaticResource StudioBorderBrush}"
-                                BorderThickness="1" CornerRadius="6" Padding="10,7">
-                            <StackPanel Spacing="2">
-                                <TextBlock Text="3 Compose scenes" FontSize="11" FontWeight="Bold" />
-                                <TextBlock Text="Add Inputs to the 16:9 canvas and Take to Program."
-                                           FontSize="10" Foreground="{StaticResource StudioMutedBrush}"
-                                           TextWrapping="WrapWholeWords" />
-                            </StackPanel>
-                        </Border>
-                    </Grid>
-                    <!-- Dense router list, self-describing rows (no header row — the pickers,
-                         placeholders and chips label themselves). Assigned rows carry the full
-                         control set; unassigned rows collapse to slot number + picker so ten
-                         slots never read as a wall of dead controls. Width-capped so controls
-                         don't stretch absurdly on wide monitors. -->
-                    <ScrollViewer HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto"
-                                  VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled">
-                    <StackPanel Spacing="2">
-                    <Grid MaxWidth="1520" HorizontalAlignment="Left" Height="27" Background="#2C2C2E" ColumnSpacing="6" Padding="8,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="42" /><ColumnDefinition Width="28" />
-                            <ColumnDefinition Width="65" /><ColumnDefinition Width="145" />
-                            <ColumnDefinition Width="95" /><ColumnDefinition Width="245" />
-                            <ColumnDefinition Width="160" /><ColumnDefinition Width="205" />
-                            <ColumnDefinition Width="95" /><ColumnDefinition Width="90" />
-                            <ColumnDefinition Width="85" /><ColumnDefinition Width="140" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="On" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="1" Text="#" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="2" Text="Rec" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="3" Text="Name" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="4" Text="Mode" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="5" Text="Selection" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="6" Text="Format" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="7" Text="Audio" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="8" Text="Status" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="9" Text="Preview" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="10" Text="Meters" VerticalAlignment="Center" />
-                    </Grid>
-                    <ItemsRepeater x:Name="ShowInputEditorsRepeater"
-                                   MaxWidth="1520" HorizontalAlignment="Left"
-                                   ItemsSource="{x:Bind ViewModel.ShowInputEditors, Mode=OneWay}"
-                                   ElementPrepared="OnShowInputEditorPrepared">
-                        <ItemsRepeater.Layout>
-                            <StackLayout Orientation="Vertical" Spacing="2" />
-                        </ItemsRepeater.Layout>
-                        <ItemsRepeater.ItemTemplate>
-                            <DataTemplate x:DataType="vm:ShowInputSlotViewModel">
-                                <Border Background="#232326" CornerRadius="3" Padding="8,3" MinHeight="52"
-                                        Opacity="{x:Bind RowOpacity, Mode=OneWay}">
-                                    <Grid ColumnSpacing="6">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="42" /><ColumnDefinition Width="28" />
-                                            <ColumnDefinition Width="65" /><ColumnDefinition Width="145" />
-                                            <ColumnDefinition Width="95" /><ColumnDefinition Width="245" />
-                                            <ColumnDefinition Width="160" /><ColumnDefinition Width="205" />
-                                            <ColumnDefinition Width="95" /><ColumnDefinition Width="90" />
-                                            <ColumnDefinition Width="85" /><ColumnDefinition Width="140" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="1" Text="{x:Bind SlotNumber}" FontWeight="SemiBold" FontSize="12"
-                                                   VerticalAlignment="Center" />
-                                        <CheckBox Grid.Column="0" MinWidth="0" Padding="0" HorizontalAlignment="Center"
-                                                  VerticalAlignment="Center"
-                                                  IsChecked="{x:Bind InShow, Mode=TwoWay}"
-                                                  IsEnabled="{x:Bind IsAssigned, Mode=OneWay}"
-                                                  ToolTipService.ToolTip="In show — puts this input on the Studio multiview strip" />
-                                        <!-- SRC-1: categorized source picker — a DropDownButton opening a
-                                             menu with one submenu per group (Zoom / Camera / Screen / Media
-                                             / SRT), so long device lists stay filterable AT PICK TIME (the
-                                             reason the old TYPE dropdown existed) without a second control
-                                             to keep consistent. The button face carries "Group · Name", so
-                                             no separate type chip. An OFFLINE warning appears only when an
-                                             enabled slot's source is unavailable; inactive slots retain the
-                                             binding quietly. The flyout is built in code-behind on open
-                                             (OnShowInputEditorPrepared). -->
-                                        <Grid Grid.Column="5" ColumnSpacing="6">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <DropDownButton x:Name="UnifiedSourceButton"
-                                                            Tag="{x:Bind}"
-                                                            Content="{x:Bind SelectedUnifiedSourceLabel, Mode=OneWay}"
-                                                            ToolTipService.ToolTip="{x:Bind AssignmentHint, Mode=OneWay}"
-                                                            AutomationProperties.HelpText="{x:Bind AssignmentHint, Mode=OneWay}"
-                                                            HorizontalAlignment="Stretch"
-                                                            HorizontalContentAlignment="Left"
-                                                            VerticalAlignment="Center" />
-                                        <Button Grid.Column="1" x:Name="SourceOptionsButton"
-                                                Content="Options"
-                                                Style="{StaticResource OperatorGhostButton}"
-                                                Visibility="{x:Bind ShowSourcePolicies, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                Tag="{x:Bind}" Click="OnSourceOptionsClick"
-                                                ToolTipService.ToolTip="Zoom guest role and saved dropout policy" />
-                                            <Border Grid.Column="2" Background="#3A2A10" CornerRadius="3" Padding="6,2"
-                                                    VerticalAlignment="Center"
-                                                    Visibility="{x:Bind ShowSourceUnavailableWarning, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                    ToolTipService.ToolTip="This input is in show, but its saved source is offline. Reconnect it or choose a replacement; the saved binding will reconnect if the source returns.">
-                                                <TextBlock Text="OFFLINE" FontSize="10" FontWeight="SemiBold"
-                                                           Foreground="#E8B341" />
-                                            </Border>
-                                        </Grid>
-                                        <!-- Everything past the picker exists ONLY on assigned rows. -->
-                                        <StackPanel Grid.Column="3" Spacing="2">
-                                        <TextBox
-                                                 Text="{x:Bind DisplayName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                                 Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                 PlaceholderText="Name"
-                                                 ToolTipService.ToolTip="Display name for lower-thirds and multiview (defaults to the source name)"
-                                                 HorizontalAlignment="Stretch" VerticalAlignment="Center" />
-                                            <Button x:Name="SourceLowerThirdTextButton" Content="Lower-third text…" Tag="{x:Bind}"
-                                                    Click="OnLowerThirdTextClick" FontSize="10" Padding="5,1"
-                                                    Visibility="{x:Bind CanEditLowerThirdText, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                    Style="{StaticResource OperatorGhostButton}" />
-                                        </StackPanel>
-                                        <TextBlock Grid.Column="3" Text="{x:Bind SlotLabel}"
-                                                   Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}"
-                                                   VerticalAlignment="Center" />
-                                        <TextBlock Grid.Column="4" Text="{x:Bind KindLabel, Mode=OneWay}"
-                                                   VerticalAlignment="Center" FontSize="10" TextTrimming="CharacterEllipsis" />
-                                        <StackPanel Grid.Column="6" Spacing="1" VerticalAlignment="Center">
-                                            <TextBlock Text="{x:Bind Inspector.FormatLabel, Mode=OneWay}"
-                                                       FontFamily="Consolas" FontSize="11"
-                                                       Foreground="{x:Bind Inspector.FormatBrush, Mode=OneWay}" />
-                                            <TextBlock Text="{x:Bind Inspector.FormatDetailLabel, Mode=OneWay}"
-                                                       Visibility="{x:Bind Inspector.HasFormatDetail, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                       VerticalAlignment="Center" FontSize="10"
-                                                       Foreground="{StaticResource StudioMutedBrush}" Opacity="0.5" />
-                                        </StackPanel>
-                                        <Border Grid.Column="8" Background="{x:Bind Inspector.StatusBackgroundBrush, Mode=OneWay}" CornerRadius="3" Padding="5,2"
-                                                VerticalAlignment="Center" HorizontalAlignment="Left">
-                                            <TextBlock Text="{x:Bind Inspector.StatusChipLabel, Mode=OneWay}"
-                                                       FontSize="10" FontWeight="SemiBold" />
-                                        </Border>
-                                        <StackPanel Grid.Column="7" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                                        <ComboBox x:Name="InputMicCombo"
-                                                  Tag="{x:Bind}"
-                                                  MinWidth="125" MaxWidth="145"
-                                                  PlaceholderText="Pair a microphone"
-                                                  ToolTipService.ToolTip="Microphone paired with this camera (feeds its channel strip)"
-                                                  ItemsSource="{x:Bind AudioDeviceOptions, Mode=OneWay}"
-                                                  SelectedValue="{x:Bind AudioDeviceId, Mode=OneWay}"
-                                                  SelectedValuePath="Value"
-                                                  DisplayMemberPath="Label"
-                                                  Visibility="{x:Bind ShowAudioDevicePicker, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                  HorizontalAlignment="Left" VerticalAlignment="Center" />
-                                        <CheckBox Content="ISO" MinWidth="0" Margin="0"
-                                                  IsChecked="{x:Bind IsoEnabled, Mode=TwoWay}"
-                                                  Visibility="{x:Bind ShowIsoToggle, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                  ToolTipService.ToolTip="Select an isolated per-source file for Program + ISOs"
-                                                  VerticalAlignment="Center" />
-                                        </StackPanel>
-                                        <!-- ISO-4 (spec §7): per-source ISO recording toggle. Only eligible
-                                             video-bearing sources (Zoom guests + capture devices) show it; it
-                                             feeds the operator's isoSourceIds selection (armed only when the
-                                             transport "Program + ISOs" switch is on). -->
-                                        <Border Grid.Column="2" Background="{x:Bind Inspector.RecBackgroundBrush, Mode=OneWay}" CornerRadius="3" Padding="5,2"
-                                                HorizontalAlignment="Left" VerticalAlignment="Center">
-                                            <TextBlock Text="{x:Bind Inspector.RecChipLabel, Mode=OneWay}"
-                                                       FontSize="10" FontWeight="SemiBold" />
-                                        </Border>
-                                        <Border Grid.Column="9" Width="78" Height="43" Background="#111111"
-                                                BorderBrush="{x:Bind Inspector.PreviewBorderBrush, Mode=OneWay}"
-                                                BorderThickness="2" CornerRadius="3" VerticalAlignment="Center">
-                                            <Grid>
-                                                <cvcontrols:VideoSurfaceHost
-                                                    SurfaceState="{x:Bind Inspector.PreviewSurface, Mode=OneWay}"
-                                                    SourceFit="fit"
-                                                    Visibility="{x:Bind Inspector.HasPreviewTile, Mode=OneWay, Converter={StaticResource BoolToVis}}" />
-                                                <TextBlock Text="{x:Bind Inspector.PreviewTally, Mode=OneWay}"
-                                                           FontSize="9" HorizontalAlignment="Center" VerticalAlignment="Center"
-                                                           Visibility="{x:Bind Inspector.HasPreviewTile, Mode=OneWay, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
-                                            </Grid>
-                                        </Border>
-                                        <Border Grid.Column="10" Width="80" Height="8" Background="#3A3A3C" CornerRadius="2" VerticalAlignment="Center">
-                                            <Rectangle Width="{x:Bind Inspector.MeterWidth, Mode=OneWay}" Height="8"
-                                                       Fill="#30D158" HorizontalAlignment="Left" RadiusX="2" RadiusY="2" />
-                                        </Border>
-                                        <StackPanel Grid.Column="11" Orientation="Horizontal" Spacing="3" VerticalAlignment="Center">
-                                        <Button
-                                                Content="Grade"
-                                                Style="{StaticResource OperatorGhostButton}"
-                                                Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                Command="{Binding ViewModel.OpenColorGradeEditorCommand, ElementName=SourcesInputsRoot}"
-                                                CommandParameter="{x:Bind SourceColorGradeId, Mode=OneWay}"
-                                                VerticalAlignment="Center" />
+            </Expander>
+            <cvcontrols:SourcesWorkspaceControl x:Name="SourcesWorkspace" Grid.Row="0" Grid.ColumnSpan="2"
+                Studio="{x:Bind ViewModel, Mode=OneWay}" CatalogRequested="OnSourceCatalogRequested" />
 
-                                        <!-- Lifecycle L1: detach this slot (source stays available) -->
-                                        <Button
-                                                Content="Unassign"
-                                                Style="{StaticResource OperatorGhostButton}"
-                                                Visibility="{x:Bind IsAssigned, Mode=OneWay, Converter={StaticResource BoolToVis}}"
-                                                Command="{Binding ViewModel.UnassignShowInputCommand, ElementName=SourcesInputsRoot}"
-                                                CommandParameter="{x:Bind}"
-                                                ToolTipService.ToolTip="Clear this Show Input slot (the source stays available in Sources)"
-                                                VerticalAlignment="Center" />
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsRepeater.ItemTemplate>
-                    </ItemsRepeater>
-                    </StackPanel>
-                    </ScrollViewer>
-                </StackPanel>
-            </Border>
         </Grid>
     </ScrollViewer>
 </UserControl>
