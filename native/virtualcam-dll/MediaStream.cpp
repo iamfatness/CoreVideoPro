@@ -253,12 +253,12 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
         return true;
       }, retryTransientRead_, retries, sampleReadDeadlineUs_, 8);
   if (MFGetSystemTime() / 10 > sampleReadDeadlineUs_) ++readDeadlineMisses_;
-  if (!got && (reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Contended ||
-               reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Unchanged))
-    ++unrecoveredTransientSamples_;
+  const bool transientMiss = !got && (reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Contended ||
+               reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Unchanged);
+  if (transientMiss) ++unrecoveredTransientSamples_;
   if (retries) { ++retriedSamples_; if (got) ++recoveredSamples_; }
   // Bounded miss diagnosis; never log pixels or identity credentials.
-  if (!got && (unrecoveredTransientSamples_ == 1 || unrecoveredTransientSamples_ % 120 == 0)) {
+  if (transientMiss && (unrecoveredTransientSamples_ == 1 || unrecoveredTransientSamples_ % 120 == 0)) {
     char timing[512];
     _snprintf_s(timing, sizeof(timing), _TRUNCATE,
         "[vcam-read-window] retryEnabled=%d firstReadUs=%lld originalRemainingAfterFirstUs=%lld retries=%u remainingPayloadCopies=%u",
