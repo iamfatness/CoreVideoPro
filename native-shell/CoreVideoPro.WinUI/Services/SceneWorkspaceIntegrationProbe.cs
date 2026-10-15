@@ -55,6 +55,7 @@ internal static class SceneWorkspaceIntegrationProbe
         var tabs=(Pivot)page.FindName("InspectorTabs");
         await Eventually(()=>tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}));
         Require(tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}),"Tiles inspector does not match the approved flat tabs");
+        if(reviewDirectory is not null) await ReviewImageWriter.SaveAsync(page,Path.Combine(reviewDirectory,"scene-tiles.png"));
         window.AppWindow.Resize(new SizeInt32(1920,1080));await Task.Delay(100);page.UpdateLayout();canvas.UpdateLayout();
         var viewbox=(Viewbox)canvas.FindName("CanvasViewbox");
         Require(viewbox.ActualWidth>640 && viewbox.ActualHeight>360,"Canvas retains the legacy thumbnail-size viewport cap");

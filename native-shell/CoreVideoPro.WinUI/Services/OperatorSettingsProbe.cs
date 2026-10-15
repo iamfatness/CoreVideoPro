@@ -108,6 +108,7 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         Require(!input.IsEnabled,"Endpoint input is advertised as editable");
         curve.HandleEditingKey(Windows.System.VirtualKey.Left);
         Require(curve.Points[^1].X==1,"Keyboard moved a curve endpoint horizontally");
+        await ReviewImageWriter.SaveAsync(adjustment,Path.Combine(reviewDirectory,"grade-curve-controls.png"));
         checks.Add("compiled grade curve supports keyboard selection, fine/coarse edits and locked endpoint input without hydration edits");
         var designer=new LowerThirdDesignerControl();window.Content=new ScrollViewer { Content=designer };
         foreach(var id in new[] {"compact-solid","minimal-accent","broadcast"}) {
@@ -123,6 +124,13 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         var applyLook=Descendants(designer).OfType<Button>().Single(b=>b.Content?.ToString()=="Apply look");
         Require(applyLook.TransformToVisual(designer).TransformPoint(new(0,0)).Y<500,"Apply is buried below appearance settings");
         await ReviewImageWriter.SaveAsync((FrameworkElement)window.Content,Path.Combine(reviewDirectory,"lower-third-designer.png"));
+        window.AppWindow.Resize(new SizeInt32(900,1100));
+        foreach(var name in new[]{"Typography","Colors and plate","Size and placement","Source logo","Saved looks"}) {
+            var section=Descendants(designer).OfType<Expander>().Single(e=>e.Header?.ToString()==name);
+            section.IsExpanded=true;await Task.Delay(300);designer.UpdateLayout();
+            await ReviewImageWriter.SaveAsync(section,Path.Combine(reviewDirectory,"designer-"+name.ToLowerInvariant().Replace(' ','-')+".png"));
+            section.IsExpanded=false;
+        }
         checks.Add("lower-third designer presets, sliders, color selectors and Apply load in real UI at narrow width without live state");
     }
     private static async Task CheckLowerThirdText(Window window, List<string> checks)
