@@ -61,3 +61,18 @@ two misses against its overly early 2 ms scheduling threshold; that trial is
 retained, and the final original-frame-boundary policy needs a depth-three run.
 The real-meeting grid still fails source-content admission under #908; none
 of these results qualifies all outputs or the installed registered provider.
+
+The subsequent 90-second combined trial retained 61 held/repeated/missing
+camera identities. Some transient reads ended without a retry; the timer's
+`WAIT_TIMEOUT` early-exit path could abandon remaining original deadline budget.
+The reader now treats timeout as a completed CPU yield and checks the absolute
+deadline before reading again; separate timeout/error/unrecovered counters
+prevent attributing every failed wait to the same cause. The original trial
+does not distinguish timer timeout from an overslept retry budget.
+Following this correction, `source-908-final-depth3` and
+`source-908-age-depth2` each decoded 5,401 direct-DLL samples over 90 seconds
+without invalid/repeated/missing/reordered identities or camera read-deadline
+misses. These phases did not reproduce contention; retain the earlier actual
+collision recovery and failed phase alongside them. The QA aggregate treats
+clean direct-DLL pixels as unverified OS qualification, rather than a known
+camera continuity failure. It never promotes them to all-output PASS.
