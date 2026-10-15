@@ -39,6 +39,36 @@ class CameraServingEvidenceTest(unittest.TestCase):
         self.assertNotIn(b"old history", self.saved.read_bytes())
         self.assertEqual(result["serveLog"]["initialOffset"], 12)
 
+    def test_transient_source_sharing_denial_captures_all_bytes_after_recovery(self):
+        self.log.write_bytes(b"history\n")
+        capture = ServeLogCapture(self.log, self.saved)
+        self.append()
+        original = pathlib.Path.open
+        def busy(path, *args, **kwargs):
+            if path == self.log: raise PermissionError(13, "sharing violation", str(self.log))
+            return original(path, *args, **kwargs)
+        with patch.object(pathlib.Path, "open", autospec=True, side_effect=busy):
+            capture.poll()
+            self.assertFalse(capture.metadata()["captureComplete"])
+        self.append()
+        result = self.judge(capture)
+        self.assertTrue(result["servingIdentityVerified"], result)
+        self.assertEqual(result["serveLog"]["sharingRetries"], 1)
+        self.assertEqual(self.saved.read_bytes(), self.log.read_bytes()[len(b"history\n"):])
+
+    def test_persistent_source_sharing_denial_cannot_qualify(self):
+        self.log.write_bytes(b"history\n")
+        capture = ServeLogCapture(self.log, self.saved)
+        self.append()
+        original = pathlib.Path.open
+        def busy(path, *args, **kwargs):
+            if path == self.log: raise PermissionError(13, "sharing violation", str(self.log))
+            return original(path, *args, **kwargs)
+        with patch.object(pathlib.Path, "open", autospec=True, side_effect=busy):
+            capture.poll()
+            self.assertFalse(capture.metadata()["captureComplete"])
+            self.assertEqual(capture.offset, len(b"history\n"))
+
     def test_core_pid_activation_cannot_stand_in_for_frame_server(self):
         capture = ServeLogCapture(self.log, self.saved)
         self.append(pid=999)

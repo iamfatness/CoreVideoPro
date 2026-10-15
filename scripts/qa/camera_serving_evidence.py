@@ -51,6 +51,7 @@ class ServeLogCapture:
         self.limit, self.identity, self.offset, self.initial_offset = limit, None, 0, 0
         self.anchor, self.anchor_at, self.errors = b"", 0, []
         self.initial_anchor_sha = None
+        self.sharing_retries, self.pending_sharing = 0, False
         self.captured_digest = hashlib.sha256()
         self.destination.write_bytes(b"")
         self._initial = True
@@ -99,6 +100,13 @@ class ServeLogCapture:
                 self.anchor_at = max(0, self.offset - 4096)
                 stream.seek(self.anchor_at)
                 self.anchor = stream.read(self.offset - self.anchor_at)
+                self.pending_sharing = False
+        except PermissionError as error:
+            if self.identity is not None and error.filename and pathlib.Path(error.filename) == self.source:
+                self.sharing_retries += 1
+                self.pending_sharing = True  # Preserve offset; a later read must capture every byte.
+            else:
+                self.errors.append(str(error))
         except FileNotFoundError:
             if self.identity is not None:
                 self.errors.append("serve log disappeared")
@@ -108,6 +116,7 @@ class ServeLogCapture:
     def metadata(self):
         saved_sha = None
         errors = self.errors.copy()
+        if self.pending_sharing: errors.append("serve log final read is denied; append capture incomplete")
         try:
             if self.destination.stat().st_size > self.limit:
                 raise ValueError("Saved serve log exceeds byte bound")
@@ -121,7 +130,7 @@ class ServeLogCapture:
             "capturedBytes": self.offset - self.initial_offset, "limitBytes": self.limit,
             "initialBoundarySha256": self.initial_anchor_sha,
             "capturedSha256": saved_sha,
-            "captureComplete": not errors and self.identity is not None, "errors": errors}
+            "captureComplete": not errors and self.identity is not None, "sharingRetries": self.sharing_retries, "errors": errors}
 
 
 def judge_serving_identity(capture, before, after, expected_path, expected_sha, digest=file_digest):

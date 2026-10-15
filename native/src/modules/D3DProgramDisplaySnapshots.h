@@ -272,7 +272,7 @@ class D3DProgramDisplayReader {
     if (cancelled()) return cancel();
     if (deadlineNs_ > 0 && nowNs() >= deadlineNs_)
       return refuse(device, ProgramDisplayReason::Deadline, S_FALSE);
-    Read read; read.owner = std::move(snapshot); read.submittedNs = nowNs();
+    Read read; read.owner = std::move(snapshot);
     read.targetNs = targetNs_; read.deadlineNs = deadlineNs_;
     for (size_t index = 0; index < queries_.size(); ++index) {
       const bool busy = std::any_of(reads_.begin(), reads_.end(), [index](const Read& item) { return item.query == index; });
@@ -286,9 +286,26 @@ class D3DProgramDisplayReader {
         outputPool_ = std::move(next);
         width_ = desc.Width; height_ = desc.Height;
       }
+      record(36); // Private output reservation, distinct from input-query capacity.
       read.output = outputPool_->reserveOutput();
+      if (!read.output && deadlineNs_ > 0) {
+        ++capacityPressures_; record(37, ProgramDisplayReason::ReadCapacity, S_FALSE);
+        captureIncident(); postIncident_ = 8;
+        const auto start = nowNs();
+        while (!read.output && !cancelled() && nowNs() < deadlineNs_) {
+          deadlineWait_.pause(deadlineNs_ - nowNs());
+          read.output = outputPool_->reserveOutput();
+        }
+        const auto elapsed = nowNs() - start;
+        retryTotalNs_ += elapsed; retryMaximumNs_ = (std::max)(retryMaximumNs_, elapsed);
+        if (cancelled()) return cancel();
+        if (!read.output || nowNs() >= deadlineNs_)
+          return refuse(device, ProgramDisplayReason::Deadline, S_FALSE);
+        ++admittedAfterPressure_; record(38); captureIncident();
+      }
       if (!read.output) return refuse(device, ProgramDisplayReason::ReadCapacity, S_FALSE);
     }
+    read.submittedNs = nowNs();
     context->CopyResource(read.output ? read.output->producer.Get() : local_.get(), imported.get());
     context->End(queries_[read.query].get());
     const bool lateSubmission = deadlineNs_ > 0 && nowNs() >= deadlineNs_;
