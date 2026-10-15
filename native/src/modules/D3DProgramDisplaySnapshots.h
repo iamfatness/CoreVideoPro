@@ -286,7 +286,23 @@ class D3DProgramDisplayReader {
         outputPool_ = std::move(next);
         width_ = desc.Width; height_ = desc.Height;
       }
+      record(36); // Private output reservation, distinct from input-query capacity.
       read.output = outputPool_->reserveOutput();
+      if (!read.output && deadlineNs_ > 0) {
+        ++capacityPressures_; record(37, ProgramDisplayReason::ReadCapacity, S_FALSE);
+        captureIncident(); postIncident_ = 8;
+        const auto start = nowNs();
+        while (!read.output && !cancelled() && nowNs() < deadlineNs_) {
+          deadlineWait_.pause(deadlineNs_ - nowNs());
+          read.output = outputPool_->reserveOutput();
+        }
+        const auto elapsed = nowNs() - start;
+        retryTotalNs_ += elapsed; retryMaximumNs_ = (std::max)(retryMaximumNs_, elapsed);
+        if (cancelled()) return cancel();
+        if (!read.output || nowNs() >= deadlineNs_)
+          return refuse(device, ProgramDisplayReason::Deadline, S_FALSE);
+        ++admittedAfterPressure_; record(38); captureIncident();
+      }
       if (!read.output) return refuse(device, ProgramDisplayReason::ReadCapacity, S_FALSE);
     }
     context->CopyResource(read.output ? read.output->producer.Get() : local_.get(), imported.get());

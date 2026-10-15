@@ -250,6 +250,8 @@ class D3DVideoReadLeases {
     auto& slot = slots_[active_];
     context_->End(slot.query.Get()); slot.pending = true; active_ = -1;
   }
+  // Completion must release upstream storage even when no new image arrives.
+  bool retire() { poll(); return pending(); }
  private:
   bool pending() const { for (const auto& slot : slots_) if (slot.pending) return true; return false; }
   void poll() {
