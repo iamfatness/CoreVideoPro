@@ -1495,7 +1495,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // ShowInputsCoordinator. Construct it (with `this` as its IShowInputsHost) BEFORE the first
         // roster load/projection so the same-named forwarders route through it.
         _showInputsCoordinator = new global::CoreVideoPro.WinUI.ViewModels.ShowInputs.ShowInputsCoordinator(
-            _bridge, CreateShowInputRosterStore(), this);
+            _bridge, startup.StartInteractiveServices ? CreateShowInputRosterStore() : new InMemoryShowInputRosterStore(), this);
         _rtmpIngestCoordinator = new global::CoreVideoPro.WinUI.ViewModels.ShowInputs.RtmpIngestSourcesCoordinator(CreateRtmpIngestSourceStore());
         _rtmpIngestCoordinator.Changed += OnRtmpIngestSourcesChanged;
         LoadShowInputRoster();
