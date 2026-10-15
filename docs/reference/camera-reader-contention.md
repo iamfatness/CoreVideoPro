@@ -19,7 +19,9 @@ invalidate the failure.
 ## Recovery contract
 
 Capture an absolute read deadline before pacing or sample allocation: the
-original scheduled sample time plus 2 ms. A late request gets no renewed wait.
+original next sample boundary minus 2 ms for copy/event delivery. Recovery may
+wait at most 2 ms and may never exceed that original deadline. A late request
+gets no renewed frame budget.
 Retry only unchanged/contended publication, yielding through a high-resolution
 timer for at most 250 microseconds per attempt, eight attempts, and two payload
 copies shared across all attempts. Missing or invalid publishers do not retry.

@@ -105,7 +105,7 @@ IFACEMETHODIMP MediaStream::RequestSample(IUnknown* token) {
     waitHns = nextDueHns_ - now;
     // Capture before pacing/allocation. Never extend this if the request is
     // scheduled late. Reserve the rest of the frame for copy/event delivery.
-    sampleReadDeadlineUs_ = (nextDueHns_ + 20000) / 10;
+    sampleReadDeadlineUs_ = (nextDueHns_ + frameDuration_ - 20000) / 10;
     nextDueHns_ += frameDuration_;
     // Lazy high-resolution timer: the process timer resolution is often 15.6ms,
     // which would quantize a plain Sleep and cap 60fps pacing at ~40fps.
@@ -223,6 +223,7 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   int h = 0;
   unsigned retries = 0;
   unsigned copyBudget = 2;
+  const auto retryDeadlineUs = std::min<int64_t>(sampleReadDeadlineUs_, MFGetSystemTime() / 10 + 2000);
   const bool got = corevideo::modules::readCameraUntilDeadline(
       [&](bool allowReopen) {
         reader_.readLatest(scratch_, w, h, allowReopen, &copyBudget);
@@ -236,7 +237,7 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
         LARGE_INTEGER due; due.QuadPart = -std::min<int64_t>(250, remainingUs) * 10;
         return SetWaitableTimer(pacerTimer_, &due, 0, nullptr, nullptr, FALSE) &&
             WaitForSingleObject(pacerTimer_, 1) == WAIT_OBJECT_0;
-      }, retryTransientRead_, retries, sampleReadDeadlineUs_, 8);
+      }, retryTransientRead_, retries, retryDeadlineUs, 8);
   if (MFGetSystemTime() / 10 > sampleReadDeadlineUs_) ++readDeadlineMisses_;
   if (retries) { ++retriedSamples_; if (got) ++recoveredSamples_; }
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
