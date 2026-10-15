@@ -263,14 +263,14 @@ public sealed class ShowInputUnifiedSourceTests
         Assert.Equal("cam-1", slot.CaptureDeviceId);
         Assert.True(editor.IsSourceMissing);
         Assert.False(editor.ShowSourceUnavailableWarning);
-        Assert.Equal("Not in show · saved source", editor.SelectedUnifiedSourceLabel);
+        Assert.Equal("Camera · Elgato · Not in show", editor.SelectedUnifiedSourceLabel);
         Assert.Contains(editor.UnifiedSourceOptions, o =>
             o.Value == "capture:cam-1" && o.Label.StartsWith("Saved source unavailable —"));
 
         // Availability becomes an operator warning only while this slot is enabled.
         editor.InShow = true;
         Assert.True(editor.ShowSourceUnavailableWarning);
-        Assert.Equal("Source offline — choose or reconnect", editor.SelectedUnifiedSourceLabel);
+        Assert.Equal("Camera · Elgato · Offline", editor.SelectedUnifiedSourceLabel);
 
         editor.InShow = false;
         Assert.False(editor.ShowSourceUnavailableWarning);
@@ -290,6 +290,27 @@ public sealed class ShowInputUnifiedSourceTests
 
         Assert.Equal("Saved source unavailable — previous window capture", options[0].Label);
         Assert.DoesNotContain("00000000000307AE", options[0].Label);
+    }
+
+    [Fact]
+    public void OfflineLabelIsRememberedOnlyForItsOwnAssignment()
+    {
+        var editor=Editor(out var slot);
+        editor.RefreshSourceOptions([Participant("a","Alice"),Participant("b","Bob")],[]);
+        editor.SelectedUnifiedSourceId="zoom:a";editor.InShow=true;
+        editor.RefreshSourceOptions([Participant("b","Bob")],[]);
+        Assert.Equal("Zoom · Alice · Offline",editor.SelectedUnifiedSourceLabel);
+        Assert.Contains("Saved assignment retained",editor.AssignmentHint);
+        editor.SelectedUnifiedSourceId="zoom:b";
+        editor.RefreshSourceOptions([],[]);
+        Assert.Equal("Zoom · Bob · Offline",editor.SelectedUnifiedSourceLabel);
+        slot.ParticipantId="never-seen";
+        editor.RefreshSourceOptions([],[]);
+        Assert.DoesNotContain("Alice",editor.SelectedUnifiedSourceLabel);
+        Assert.DoesNotContain("Bob",editor.SelectedUnifiedSourceLabel);
+        editor.RefreshSourceOptions([Participant("never-seen","Carol")],[]);
+        Assert.Equal("Zoom · Carol",editor.SelectedUnifiedSourceLabel);
+        Assert.False(editor.IsSourceMissing);
     }
 
     private static ShowInputSlotViewModel Editor(out ShowInputSlot slot)

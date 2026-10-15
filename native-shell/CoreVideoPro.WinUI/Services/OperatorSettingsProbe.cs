@@ -53,7 +53,7 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             Require(Descendants(page).OfType<ToggleSwitch>().Any(t => t.Name == "OhgShowOption" && !t.IsOn), "Optional OHG workspace control is missing or not off by default");
             checks.Add("Settings exposes the default-off optional OHG workspace control");
             await CheckSourceOptions(window, checks);
-            await CheckSourcesLayout(window, checks);
+            await CheckSourcesLayout(window, checks,Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
             await CheckLowerThirdText(window, checks);
             await CheckAdjustmentControls(window,checks,Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
             await SceneWorkspaceIntegrationProbe.CheckAsync(window,checks,Path.GetDirectoryName(Path.GetFullPath(reportPath)));
@@ -141,7 +141,7 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         Require(writes.Count == 1 && !staleApply.IsEnabled, "Stale lower-third editor changed a replacement guest");
         stale.Hide(); checks.Add("open lower-third editor rejects Apply after guest replacement");
     }
-    private static async Task CheckSourcesLayout(Window window, List<string> checks)
+    private static async Task CheckSourcesLayout(Window window, List<string> checks,string reviewDirectory)
     {
         var page = new SourcesInputsPage();
         window.Content = page;
@@ -152,6 +152,10 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         slots[1].Kind = ShowInputKind.UvcWebcam; slots[1].CaptureDeviceId = "synthetic-camera";
         slots[2].Kind = ShowInputKind.Media; slots[2].ParticipantId = "media:synthetic-clip";
         var editors = slots.Select(slot => new ShowInputSlotViewModel(slot, () => { })).ToArray();
+        foreach(var editor in editors) editor.RefreshSourceOptions(
+            [new Participant {Id="synthetic-a",Name="Alice · test source",Health=FeedHealth.Live}],
+            [new CaptureDevice {Id="synthetic-camera",Name="Studio camera"}],
+            mediaAssets:[new MediaAsset {Id="synthetic-clip",Name="Opening clip",Kind="video"}]);
         repeater.ItemsSource = editors;
         foreach (var width in new[] { 1100, 900 })
         {
@@ -170,6 +174,16 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         }
         Require(slots[0].ParticipantId == "synthetic-a" && slots[1].CaptureDeviceId == "synthetic-camera" && slots[2].ParticipantId == "media:synthetic-clip", "Layout changed source assignments");
         checks.Add("compiled ten-row Sources template at 1100 and 900 pixels preserves synthetic Zoom/capture/media assignments and Zoom-only options");
+        editors[0].InShow=true;editors[0].RefreshSourceOptions([],[]);
+        await Task.Delay(50);
+        var picker=Descendants(repeater.GetOrCreateElement(0)).OfType<DropDownButton>().Single(b=>b.Name=="UnifiedSourceButton");
+        Require(picker.Content?.ToString()=="Zoom · Alice · test source · Offline","Offline picker lost the departed source's identity");
+        Require(Microsoft.UI.Xaml.Automation.AutomationProperties.GetHelpText(picker).Contains("Saved assignment retained"),"Offline picker does not explain recovery");
+        await ReviewImageWriter.SaveAsync(page,Path.Combine(reviewDirectory,"sources-offline.png"));
+        editors[0].RefreshSourceOptions([new Participant {Id="synthetic-a",Name="Alice · test source",Health=FeedHealth.Live}],[]);
+        await Task.Delay(50);
+        Require(picker.Content?.ToString()=="Zoom · Alice · test source","Reconnected picker retained the offline state");
+        checks.Add("compiled source row retains its named offline assignment, explains recovery and reconnects without substitution");
     }
     private static async Task CheckSourceOptions(Window window, List<string> checks)
     {

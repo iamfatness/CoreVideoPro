@@ -442,6 +442,8 @@
                                             <DropDownButton x:Name="UnifiedSourceButton"
                                                             Tag="{x:Bind}"
                                                             Content="{x:Bind SelectedUnifiedSourceLabel, Mode=OneWay}"
+                                                            ToolTipService.ToolTip="{x:Bind AssignmentHint, Mode=OneWay}"
+                                                            AutomationProperties.HelpText="{x:Bind AssignmentHint, Mode=OneWay}"
                                                             HorizontalAlignment="Stretch"
                                                             HorizontalContentAlignment="Left"
                                                             VerticalAlignment="Center" />

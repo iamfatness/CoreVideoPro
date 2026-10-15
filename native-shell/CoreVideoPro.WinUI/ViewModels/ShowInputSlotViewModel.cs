@@ -328,6 +328,9 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         {
             if (_isSourceMissing)
             {
+                var name = string.Equals(SourceId,_lastAvailableSourceId,StringComparison.Ordinal) ? _lastAvailableSourceName : null;
+                if (!string.IsNullOrWhiteSpace(name))
+                    return InShow ? $"{name} · Offline" : $"{name} · Not in show";
                 return InShow
                     ? "Source offline — choose or reconnect"
                     : "Not in show · saved source";
@@ -338,6 +341,14 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     }
 
     private bool _isSourceMissing;
+    // Operator label only, never a video fallback or a lower-third override. A
+    // different assignment cannot inherit the departed source's remembered name.
+    private string? _lastAvailableSourceId, _lastAvailableSourceName;
+
+    public string AssignmentHint => !IsAssigned ? "Choose a source for this input."
+        : IsSourceMissing ? "Saved assignment retained. Reconnect this source or choose a replacement; another source is never substituted automatically."
+        : !InShow ? "Assigned, but hidden from the show. Enable In show to include this input."
+        : "Assigned and included in the show. Unassign clears only this input; the source remains available.";
 
     /// <summary>True when the slot is assigned but its source is no longer available
     /// (device unplugged, guest left, asset removed). The binding is KEPT — the source
@@ -446,6 +457,11 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             var unified = ShowInputRosterService.BuildUnifiedSourceOptions(participants, captureDevices, _mediaAssets);
             _isSourceMissing = SourceId is { Length: > 0 } assignedId &&
                 !unified.Any(option => string.Equals(option.Value, assignedId, StringComparison.Ordinal));
+            if (!_isSourceMissing)
+            {
+                _lastAvailableSourceId=SourceId;
+                _lastAvailableSourceName=ShowInputRosterService.UnifiedSourceDisplayLabel(unified,SourceId);
+            }
             UnifiedSourceOptions = _isSourceMissing
                 ? ShowInputRosterService.BuildUnifiedSourceOptions(
                     participants, captureDevices, _mediaAssets,
@@ -468,6 +484,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(UnifiedSourceOptions));
         OnPropertyChanged(nameof(SelectedUnifiedSourceId));
         OnPropertyChanged(nameof(SelectedUnifiedSourceLabel));
+        OnPropertyChanged(nameof(AssignmentHint));
         OnPropertyChanged(nameof(IsSourceMissing));
         OnPropertyChanged(nameof(ShowSourceUnavailableWarning));
         OnPropertyChanged(nameof(RowOpacity));
@@ -502,6 +519,7 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 
     private void OnSlotPropertyChanged()
     {
+        OnPropertyChanged(nameof(AssignmentHint));
         OnPropertyChanged(nameof(Kind));
         OnPropertyChanged(nameof(KindLabel));
         OnPropertyChanged(nameof(SelectedUnifiedSourceId));
