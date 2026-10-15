@@ -272,7 +272,7 @@ class D3DProgramDisplayReader {
     if (cancelled()) return cancel();
     if (deadlineNs_ > 0 && nowNs() >= deadlineNs_)
       return refuse(device, ProgramDisplayReason::Deadline, S_FALSE);
-    Read read; read.owner = std::move(snapshot); read.submittedNs = nowNs();
+    Read read; read.owner = std::move(snapshot);
     read.targetNs = targetNs_; read.deadlineNs = deadlineNs_;
     for (size_t index = 0; index < queries_.size(); ++index) {
       const bool busy = std::any_of(reads_.begin(), reads_.end(), [index](const Read& item) { return item.query == index; });
@@ -305,6 +305,7 @@ class D3DProgramDisplayReader {
       }
       if (!read.output) return refuse(device, ProgramDisplayReason::ReadCapacity, S_FALSE);
     }
+    read.submittedNs = nowNs();
     context->CopyResource(read.output ? read.output->producer.Get() : local_.get(), imported.get());
     context->End(queries_[read.query].get());
     const bool lateSubmission = deadlineNs_ > 0 && nowNs() >= deadlineNs_;

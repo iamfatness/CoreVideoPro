@@ -173,7 +173,7 @@ void MediaStream::LogDeliveryEvidence() {
       static_cast<long long>(read.lastProgramSequence));
   VcamServeLog(b);
   if (retryTransientRead_) {
-    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu readDeadlineMisses=%llu writerActive=%llu changedDuringCopy=%llu copyBudgetExhausted=%llu timerTimeouts=%llu timerFailures=%llu unrecoveredTransientSamples=%llu budgetUs=2000 maxRetries=8 maxPayloadCopies=2",
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu readDeadlineMisses=%llu writerActive=%llu changedDuringCopy=%llu copyBudgetExhausted=%llu timerTimeouts=%llu timerFailures=%llu unrecoveredTransientSamples=%llu waitMaxUs=2000 deadlineReserveUs=2000 maxRetries=8 maxPayloadCopies=2",
         retriedSamples_, recoveredSamples_, readDeadlineMisses_, read.writerActiveObservations,
         read.changedDuringCopy, read.copyBudgetExhaustions, retryTimerTimeouts_, retryTimerFailures_, unrecoveredTransientSamples_);
     VcamServeLog(b);
@@ -241,11 +241,15 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
         if (!pacerTimer_) pacerTimer_ = CreateWaitableTimerExW(nullptr, nullptr,
             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
         if (!pacerTimer_) { ++retryTimerFailures_; return false; }
-        LARGE_INTEGER due; due.QuadPart = -std::min<int64_t>(250, remainingUs) * 10;
+        // A warm writer collision gets a short first yield. An early
+        // consumer may need the next publication, so later waits can use the
+        // original sample window instead of holding after an arbitrary 2 ms.
+        const auto pauseUs = std::min<int64_t>(retries ? 2000 : 250, std::max<int64_t>(1, remainingUs / 2));
+        LARGE_INTEGER due; due.QuadPart = -pauseUs * 10;
         if (!SetWaitableTimer(pacerTimer_, &due, 0, nullptr, nullptr, FALSE)) {
           ++retryTimerFailures_; return false;
         }
-        const auto waited = WaitForSingleObject(pacerTimer_, 1);
+        const auto waited = WaitForSingleObject(pacerTimer_, static_cast<DWORD>((pauseUs + 999) / 1000 + 1));
         if (waited == WAIT_TIMEOUT) ++retryTimerTimeouts_;
         else if (waited != WAIT_OBJECT_0) { ++retryTimerFailures_; return false; }
         // A timeout still yielded the CPU. The original absolute deadline,
