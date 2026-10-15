@@ -236,6 +236,7 @@ class D3DProgramDisplayReader {
       }
     }
   }
+  bool needsRetirement() const { return !failed_ && !reads_.empty(); }
   uint64_t copied() const { return copied_; }
   uint64_t requested() const { return requested_; }
   uint64_t refused() const { return refused_; }

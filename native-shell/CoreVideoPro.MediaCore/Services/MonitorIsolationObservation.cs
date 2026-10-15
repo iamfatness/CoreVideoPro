@@ -98,7 +98,7 @@ public sealed record MonitorIsolationObservation
                 EffectiveMode = Known(worker, "effectiveMode", "unknown", "inline", "isolated"),
                 SelectionSource = Known(worker, "selectionSource", "unknown", "default", "override", "constructor"),
                 Readiness = Known(worker, "readiness", "unavailable", "starting", "ready", "degraded"),
-                FailureReason = Known(worker, "failureReason", "unknown", "", "monitor-initialization", "monitor-render", "monitor-frame-admission", "invalid-monitor-override"),
+                FailureReason = Known(worker, "failureReason", "unknown", "", "monitor-initialization", "monitor-render", "monitor-retirement", "monitor-frame-admission", "invalid-monitor-override"),
                 DeliveryEpoch = worker.TryGetProperty("deliveryEpoch", out var epoch) && epoch.ValueKind == JsonValueKind.Number && epoch.TryGetInt64(out var number) && number >= 0 ? number : null,
                 WorkerExists = worker.TryGetProperty("enabled", out var enabled) && enabled.ValueKind is JsonValueKind.True or JsonValueKind.False ? enabled.GetBoolean() : null
             };

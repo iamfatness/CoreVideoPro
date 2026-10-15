@@ -275,6 +275,56 @@ TEST(MonitorRenderWorker, DisableAndShutdownCancelActiveDeadlineWorkWithoutDangl
   }
 }
 
+TEST(MonitorRenderWorker, IdleRetirementPublishesImmutableReaderEvidenceOnItsOwnerAndThenSleeps) {
+  std::promise<void> rendered;
+  std::atomic<bool> gpuDone{false};
+  std::atomic<unsigned> polls{0};
+  std::thread::id renderOwner, maintenanceOwner, destroyedOn;
+  struct Marker {
+    std::thread::id& destination;
+    explicit Marker(std::thread::id& value) : destination(value) {}
+    ~Marker() { destination = std::this_thread::get_id(); }
+  };
+  auto marker = std::make_shared<Marker>(destroyedOn);
+  auto worker = std::make_unique<MonitorRenderWorker>([&, marker](const MonitorRenderRequest&) {
+    renderOwner = std::this_thread::get_id();
+    MonitorRenderResult result;
+    result.programDisplay.copiedSequence = 7; // Older exported canvas attribution stays immutable.
+    result.programDisplayReader.readerEpoch = 9; result.programDisplayReader.copies = 1;
+    result.programDisplayReader.state = "copied";
+    rendered.set_value(); return result;
+  }, std::function<void()>{}, [&, marker] {
+    maintenanceOwner = std::this_thread::get_id(); ++polls;
+    MonitorRenderWorker::MaintenanceResult result;
+    ProgramDisplayObservation reader;
+    reader.readerEpoch = 9; reader.copies = 1; reader.state = "copied";
+    reader.completedCopies = gpuDone ? 1 : 0;
+    result.pending = !gpuDone; result.programDisplay = reader;
+    return result;
+  });
+  marker.reset(); // Backend ownership now belongs only to worker callbacks.
+  MonitorRenderRequest request; request.sequence = 1; request.multiviewActive = true;
+  worker->submit(std::move(request));
+  ASSERT_TRUE(rendered.get_future().wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+  const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!worker->latest() && std::chrono::steady_clock::now() < limit)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const auto old = worker->latest(); ASSERT_TRUE(old != nullptr);
+  gpuDone = true;
+  while (worker->latest()->programDisplayReader.completedCopies == 0 && std::chrono::steady_clock::now() < limit)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_EQ(worker->latest()->programDisplayReader.completedCopies, 1u);
+  EXPECT_EQ(worker->latest()->programDisplay.copiedSequence, 7u);
+  EXPECT_EQ(old->programDisplayReader.completedCopies, 0u);
+  EXPECT_EQ(worker->diagnostics().completed, 1u);
+  const auto settled = polls.load();
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_EQ(polls.load(), settled);
+  EXPECT_TRUE(maintenanceOwner == renderOwner);
+  worker.reset();
+  EXPECT_TRUE(destroyedOn == renderOwner);
+}
+
 TEST(MonitorRenderWorker, FailedWorkDoesNotPublishSuccessfulMetadataAndLaterWorkRecovers) {
   std::promise<void> failed;
   MonitorRenderWorker worker([&](const MonitorRenderRequest& request) {

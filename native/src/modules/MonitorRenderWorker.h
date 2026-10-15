@@ -17,9 +17,14 @@ namespace corevideo::modules {
 class MonitorRenderWorker {
  public:
   using Render = std::function<MonitorRenderResult(const MonitorRenderRequest&)>;
-  explicit MonitorRenderWorker(Render render, std::function<void()> initialize = {})
-      : thread_([this, render = std::move(render), initialize = std::move(initialize)]() mutable {
-          run(render, initialize);
+  struct MaintenanceResult {
+    bool pending = false;
+    std::optional<ProgramDisplayObservation> programDisplay;
+  };
+  using Maintenance = std::function<MaintenanceResult()>;
+  explicit MonitorRenderWorker(Render render, std::function<void()> initialize = {}, Maintenance maintenance = {})
+      : thread_([this, render = std::move(render), initialize = std::move(initialize), maintenance = std::move(maintenance)]() mutable {
+          run(render, initialize, maintenance);
         }) {}
   ~MonitorRenderWorker() {
     cancellation_->stopped.store(true, std::memory_order_relaxed);
@@ -68,9 +73,36 @@ class MonitorRenderWorker {
     return result;
   }
  private:
-  void run(Render& render, std::function<void()>& initialize) {
+  bool maintain(Maintenance& maintenance) {
+    if (!maintenance) return false;
+    try {
+      auto observation = maintenance(); // GPU owner only, never under the mailbox mutex.
+      auto previous = latest();
+      if (observation.programDisplay && previous) {
+        const auto& old = previous->programDisplayReader;
+        const auto& current = *observation.programDisplay;
+        if (old.readerEpoch != current.readerEpoch || old.completedCopies != current.completedCopies ||
+            old.state != current.state || old.incidentTrace != current.incidentTrace) {
+          auto updated = std::make_shared<MonitorRenderResult>(*previous);
+          updated->programDisplayReader = std::move(*observation.programDisplay);
+          std::shared_ptr<const MonitorRenderResult> immutable = std::move(updated);
+          { std::lock_guard<std::mutex> lock(mutex_); result_.swap(immutable); }
+          // Previous metadata/leases are released outside the mailbox lock.
+        }
+      }
+      return observation.pending;
+    } catch (...) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      ++failed_; readiness_ = "degraded"; failureReason_ = "monitor-retirement";
+      return false;
+    }
+  }
+  void run(Render& render, std::function<void()>& initialize, Maintenance& maintenance) {
     core::ComApartmentLifetime apartment;
-    struct ReleaseBackend { Render& render; ~ReleaseBackend() { render = {}; } } release{render};
+    struct ReleaseBackend {
+      Render& render; Maintenance& maintenance;
+      ~ReleaseBackend() { maintenance = {}; render = {}; }
+    } release{render, maintenance};
     if (initialize) {
       try {
         initialize();
@@ -90,14 +122,18 @@ class MonitorRenderWorker {
     }
     auto lastLog = std::chrono::steady_clock::now();
     MonitorInputCache inputs;
+    bool retirementPending = false;
     for (;;) {
       std::shared_ptr<const MonitorRenderRequest> job;
       {
         std::unique_lock<std::mutex> lock(mutex_);
-        changed_.wait(lock, [this] { return stopping_ || pending_; });
+        if (retirementPending)
+          changed_.wait_for(lock, std::chrono::milliseconds(1), [this] { return stopping_ || pending_; });
+        else changed_.wait(lock, [this] { return stopping_ || pending_; });
         if (stopping_) return;
         job.swap(pending_);
       }
+      if (!job) { retirementPending = maintain(maintenance); continue; }
       const auto start = std::chrono::steady_clock::now();
       try {
         auto prepared = *job;
@@ -125,6 +161,7 @@ class MonitorRenderWorker {
         readiness_ = "degraded";
         failureReason_ = "monitor-render";
       }
+      retirementPending = maintain(maintenance);
       const auto now = std::chrono::steady_clock::now();
       if (now - lastLog >= std::chrono::seconds(2)) {
         uint64_t submitted, superseded, completed, failed;

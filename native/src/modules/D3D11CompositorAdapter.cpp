@@ -168,6 +168,14 @@ class D3D11Compositor final : public ICompositor {
       if (isolateMonitors) {
         monitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor] {
           renderMonitor({}); // initialize on the owner without publishing a completed job
+        }, [backend] {
+          MonitorRenderWorker::MaintenanceResult result;
+          if (*backend) {
+            (*backend)->programDisplayReader_.retire((*backend)->context_.get());
+            result.programDisplay = (*backend)->programDisplayReader_.observation();
+            result.pending = (*backend)->programDisplayReader_.needsRetirement();
+          }
+          return result;
         });
         core::nativeLogf("[monitor-worker] isolation=enabled pending_capacity=1\n");
       }
