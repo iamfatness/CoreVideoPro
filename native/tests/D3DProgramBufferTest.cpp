@@ -222,6 +222,50 @@ TEST(D3DProgramBuffer, DisplayReaderRetriesSameIdentityWithinOriginalDeadlineAnd
   }
 }
 
+TEST(D3DProgramBuffer, DisplayReaderRetainsOneReadinessDeadlineFailureAfterLateRecovery) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+  D3DProgramDisplaySnapshots pool;
+  ASSERT_TRUE(pool.initialize(device.get(), 64, 64, 930));
+  auto slot = pool.reserve(); ASSERT_TRUE(slot != nullptr);
+  ProgramFrame frame; frame.frameNumber = frame.deliverySequence = 9; pool.stamp(slot, frame);
+  D3DProgramDisplayReader reader;
+  int64_t clock = 1000000000;
+  const auto target = clock, deadline = clock + 16666667;
+  D3DProgramDisplayReaderTestAccess::clock(reader, [&] { return clock; });
+  ASSERT_TRUE(reader.copy(device.get(), context.get(), slot, target, deadline) != nullptr);
+  D3DProgramDisplayReaderTestAccess::fault(reader, [](ProgramDisplayReason reason) -> std::optional<HRESULT> {
+    return reason == ProgramDisplayReason::QueryRead ? std::optional<HRESULT>(S_FALSE) : std::nullopt;
+  });
+  clock = deadline;
+  reader.retire(context.get()); reader.retire(context.get());
+  auto evidence = reader.observation();
+  EXPECT_EQ(evidence.gpuReadinessDeadlineMisses, 1u);
+  EXPECT_EQ(evidence.completedCopies, 0u); EXPECT_EQ(evidence.gpuReads, 1);
+  EXPECT_FALSE(slot->quarantined.load()); // Still leased; missed readiness cannot permit reuse.
+  ASSERT_TRUE(evidence.incidentTrace != nullptr);
+  bool attributed = false;
+  for (const auto& event : *evidence.incidentTrace) if (event.stage == 9) {
+    attributed = true;
+    EXPECT_EQ(event.subjectSequence, 9u); EXPECT_EQ(event.subjectGeneration, 930u);
+    EXPECT_EQ(event.deadlineNs, deadline); EXPECT_EQ(event.observedNs, deadline);
+  }
+  EXPECT_TRUE(attributed);
+  D3DProgramDisplayReaderTestAccess::fault(reader, {});
+  context->Flush(); ++clock;
+  const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (reader.needsRetirement() && std::chrono::steady_clock::now() < limit) {
+    reader.retire(context.get(), 0); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  evidence = reader.observation();
+  EXPECT_EQ(evidence.gpuReads, 0); EXPECT_EQ(evidence.completedCopies, 1u);
+  EXPECT_EQ(evidence.gpuDeadlineCompletedReads, 1u);
+  EXPECT_EQ(evidence.gpuReadinessDeadlineMisses, 1u); // Recovery cannot reset away the failed deadline.
+}
+
 TEST(D3DProgramBuffer, ImmutableDisplayLeaseSurvivesUnreadPublicationAndPoolExhaustion) {
   using namespace corevideo::modules;
   ComPtrLite<ID3D11Device> device;

@@ -82,6 +82,8 @@ class MonitorRenderWorker {
         const auto& old = previous->programDisplayReader;
         const auto& current = *observation.programDisplay;
         if (old.readerEpoch != current.readerEpoch || old.completedCopies != current.completedCopies ||
+            old.gpuReadinessDeadlineMisses != current.gpuReadinessDeadlineMisses ||
+            old.traceCaptureFailures != current.traceCaptureFailures ||
             old.state != current.state || old.incidentTrace != current.incidentTrace) {
           auto updated = std::make_shared<MonitorRenderResult>(*previous);
           updated->programDisplayReader = std::move(*observation.programDisplay);

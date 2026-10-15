@@ -191,6 +191,7 @@ class D3DProgramDisplayReader {
     if (deadlineNs_ > 0 && nowNs() >= deadlineNs_)
       return refuse(device, ProgramDisplayReason::Deadline, S_FALSE);
     Read read; read.owner = std::move(snapshot); read.submittedNs = nowNs();
+    read.targetNs = targetNs_; read.deadlineNs = deadlineNs_;
     for (size_t index = 0; index < queries_.size(); ++index) {
       const bool busy = std::any_of(reads_.begin(), reads_.end(), [index](const Read& item) { return item.query == index; });
       if (!busy) { read.query = index; break; }
@@ -221,16 +222,28 @@ class D3DProgramDisplayReader {
       BOOL done = FALSE;
       const auto hr = operation(ProgramDisplayReason::QueryRead, [&] {
           return context->GetData(queries_[it->query].get(), &done, sizeof(done), flags); });
-      if (hr == S_OK && done) { record(3, ProgramDisplayReason::None, hr, S_OK, it->owner->frame.deliverySequence,
-          it->owner->generation); ++completed_; it = reads_.erase(it); }
+      const auto observed = nowNs();
+      const bool ready = hr == S_OK && done;
+      if (it->deadlineNs > 0 && !it->deadlineMissed &&
+          (observed > it->deadlineNs || (!ready && observed >= it->deadlineNs))) {
+        it->deadlineMissed = true; ++gpuReadinessDeadlineMisses_;
+        record(9, ProgramDisplayReason::Deadline, hr, S_OK, &*it, observed);
+        captureIncident(); postIncident_ = 8;
+      }
+      if (ready) {
+        if (it->deadlineNs > 0) ++gpuDeadlineCompletedReads_;
+        completionMaximumObservedAgeNs_ = (std::max)(completionMaximumObservedAgeNs_, observed - it->submittedNs);
+        record(3, ProgramDisplayReason::None, hr, S_OK, &*it, observed);
+        ++completed_; it = reads_.erase(it);
+      }
       else {
         if (FAILED(hr) && !failed_) {
           failed_ = true; it->owner->quarantined = true;
           lastHresult_ = hr; ++reasons_[static_cast<size_t>(ProgramDisplayReason::QueryRead)];
           ComPtrLite<ID3D11Device> device; context->GetDevice(device.put());
-          record(4, ProgramDisplayReason::QueryRead, hr, device->GetDeviceRemovedReason()); captureIncident();
+          record(4, ProgramDisplayReason::QueryRead, hr, device->GetDeviceRemovedReason(), &*it, observed); captureIncident();
         } else if (hr == S_FALSE || (hr == S_OK && !done)) {
-          ++notReadyPolls_; record(5, ProgramDisplayReason::None, hr);
+          ++notReadyPolls_; record(5, ProgramDisplayReason::None, hr, S_OK, &*it, observed);
         }
         ++it;
       }
@@ -263,6 +276,9 @@ class D3DProgramDisplayReader {
     result.capacityPressures = capacityPressures_; result.admittedAfterPressure = admittedAfterPressure_;
     result.flushingPollRetirements = flushingPollRetirements_; result.lateSubmissions = lateSubmissions_;
     result.retryTotalNs = retryTotalNs_; result.retryMaximumNs = retryMaximumNs_;
+    result.gpuDeadlineCompletedReads = gpuDeadlineCompletedReads_;
+    result.gpuReadinessDeadlineMisses = gpuReadinessDeadlineMisses_;
+    result.completionMaximumObservedAgeNs = completionMaximumObservedAgeNs_;
     result.state = failed_ ? "failed" : !copied_ ? "preparing" : held_ ? "held" : "copied";
     return result;
   }
@@ -279,6 +295,8 @@ class D3DProgramDisplayReader {
     std::shared_ptr<const D3DProgramDisplaySnapshots::Snapshot> owner;
     size_t query = 0;
     int64_t submittedNs = 0;
+    int64_t targetNs = 0, deadlineNs = 0;
+    bool deadlineMissed = false;
   };
   int64_t nowNs() const {
     if (clock_) return clock_();
@@ -286,18 +304,28 @@ class D3DProgramDisplayReader {
         std::chrono::steady_clock::now().time_since_epoch()).count();
   }
   void record(uint32_t stage, ProgramDisplayReason reason = ProgramDisplayReason::None,
-      HRESULT hr = S_OK, HRESULT deviceHr = S_OK, uint64_t completed = 0, uint64_t completedGeneration = 0) {
+      HRESULT hr = S_OK, HRESULT deviceHr = S_OK, const Read* subject = nullptr, int64_t observedNs = 0) {
     ProgramDisplayIncident event;
-    event.observedNs = nowNs(); event.stage = stage; event.reason = reason;
+    event.observedNs = observedNs ? observedNs : nowNs(); event.stage = stage; event.reason = reason;
     event.targetNs = targetNs_; event.deadlineNs = deadlineNs_;
     event.requested = requested_; event.copied = copied_; event.generation = generation_;
     event.hresult = hr; event.deviceHresult = deviceHr; event.importCached = importCached_;
-    event.completedSequence = completed;
-    event.completedGeneration = completedGeneration; event.pollFlags = lastPollFlags_;
+    event.pollFlags = lastPollFlags_;
+    if (subject) {
+      event.subjectSequence = subject->owner->frame.deliverySequence;
+      event.subjectGeneration = subject->owner->generation;
+      event.targetNs = subject->targetNs; event.deadlineNs = subject->deadlineNs;
+      event.slot = static_cast<uint32_t>(subject->owner->slot);
+      event.width = subject->owner->frame.sharedTexture.width; event.height = subject->owner->frame.sharedTexture.height;
+      if (stage == 3) { event.completedSequence = event.subjectSequence; event.completedGeneration = event.subjectGeneration; }
+    }
     if (requestedSnapshot_) {
-      event.generation = requestedSnapshot_->generation; event.slot = static_cast<uint32_t>(requestedSnapshot_->slot);
-      event.width = requestedSnapshot_->frame.sharedTexture.width;
-      event.height = requestedSnapshot_->frame.sharedTexture.height;
+      event.generation = requestedSnapshot_->generation;
+      if (!subject) {
+        event.slot = static_cast<uint32_t>(requestedSnapshot_->slot);
+        event.width = requestedSnapshot_->frame.sharedTexture.width;
+        event.height = requestedSnapshot_->frame.sharedTexture.height;
+      }
     }
     event.pending = static_cast<uint32_t>(reads_.size());
     for (size_t i = 0; i < reads_.size() && i < ReadLimit; ++i) {
@@ -337,6 +365,8 @@ class D3DProgramDisplayReader {
   std::array<uint64_t, 10> reasons_{};
   uint64_t capacityPressures_ = 0, admittedAfterPressure_ = 0, flushingPollRetirements_ = 0, lateSubmissions_ = 0;
   int64_t retryTotalNs_ = 0, retryMaximumNs_ = 0;
+  uint64_t gpuDeadlineCompletedReads_ = 0, gpuReadinessDeadlineMisses_ = 0;
+  int64_t completionMaximumObservedAgeNs_ = 0;
   UINT lastPollFlags_ = D3D11_ASYNC_GETDATA_DONOTFLUSH;
   std::array<ProgramDisplayIncident, TraceCapacity> trace_{};
   static_assert(sizeof(trace_) <= 128 * 1024);

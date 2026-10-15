@@ -40,6 +40,8 @@ public sealed record MonitorIsolationObservation
     public long? ProgramDeadlineRefusals { get; init; }
     public long? ProgramCancelledRequests { get; init; }
     public long? ProgramLateSubmissions { get; init; }
+    public long? ProgramGpuDeadlineCompletedReads { get; init; }
+    public long? ProgramGpuReadinessDeadlineMisses { get; init; }
 
     public static MonitorIsolationObservation FromSnapshot(NativeMediaCoreStateSnapshot? snapshot)
     {
@@ -88,6 +90,8 @@ public sealed record MonitorIsolationObservation
                 ProgramDeadlineRefusals = readerObserved ? Reason(reader, "deadline") : null,
                 ProgramCancelledRequests = readerObserved ? Reason(reader, "cancelled") : null,
                 ProgramLateSubmissions = readerObserved ? Count(reader, "lateSubmissions") : null,
+                ProgramGpuDeadlineCompletedReads = readerObserved ? Count(reader, "gpuDeadlineCompletedReads") : null,
+                ProgramGpuReadinessDeadlineMisses = readerObserved ? Count(reader, "gpuReadinessDeadlineMisses") : null,
                 ReadyInputs = inputObserved ? Count(worker, "readyInputs") : null,
                 HeldInputs = inputObserved ? Count(worker, "heldInputs") : null,
                 UnavailableInputs = inputObserved ? Count(worker, "unavailableInputs") : null,

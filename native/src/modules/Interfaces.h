@@ -1149,6 +1149,7 @@ struct ProgramDisplayIncident {
   uint64_t requested = 0, copied = 0, generation = 0, completedSequence = 0;
   uint64_t pendingSequences[2] = {};
   uint64_t pendingGenerations[2] = {}, completedGeneration = 0;
+  uint64_t subjectSequence = 0, subjectGeneration = 0;
   int64_t pendingAgesNs[2] = {};
   int64_t hresult = 0, deviceHresult = 0;
   uint32_t stage = 0, slot = 0, width = 0, height = 0, pending = 0;
@@ -1167,6 +1168,8 @@ struct ProgramDisplayObservation {
   int readerReadLimit = 2;
   std::array<uint64_t, 10> refusalReasons{};
   uint64_t capacityPressures = 0, admittedAfterPressure = 0, flushingPollRetirements = 0, lateSubmissions = 0;
+  uint64_t gpuDeadlineCompletedReads = 0, gpuReadinessDeadlineMisses = 0;
+  int64_t completionMaximumObservedAgeNs = 0;
   int64_t retryTotalNs = 0, retryMaximumNs = 0;
   uint64_t notReadyPolls = 0, traceOverwritten = 0, traceCaptureFailures = 0;
   int64_t lastHresult = 0;
