@@ -2,6 +2,7 @@
 
 #include "compositor/ComPtrLite.h"
 #include "modules/Interfaces.h"
+#include "modules/D3DVideoFrame.h"
 #include <array>
 #include <deque>
 #include <map>
@@ -29,6 +30,9 @@ class D3DProgramDisplaySnapshots {
     ProgramFrame frame;
     uint64_t generation = 0;
     size_t slot = 0;
+    // Import descriptors hold COM resources, never mutable publication leases.
+    // Device APIs are thread-safe; no foreign immediate context is touched.
+    std::map<ID3D11Device*, ComPtrLite<ID3D11Texture2D>> monitorImports;
     mutable std::atomic<bool> quarantined{false};
   };
   bool initialize(ID3D11Device* device, int width, int height, uint64_t generation) {
@@ -48,6 +52,20 @@ class D3DProgramDisplaySnapshots {
           static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle)));
       value->frame.sharedTexture = {encoded, 0, width, height, "B8G8R8A8_UNORM", 0};
       slots_[i] = std::move(value);
+    }
+    // Cold OpenSharedResource calls belong to pool setup, before deadline
+    // admission. First use of a later slot must not discover a driver stall on
+    // the critical reader. Late/unsupported consumers keep attributed fallback.
+    const auto consumers = D3DVideoConsumers::snapshot();
+    for (auto& slot : slots_) for (const auto& consumer : consumers) {
+      if (!consumer->monitor || slot->monitorImports.size() >= 8 ||
+          (consumer->device->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED)) continue;
+      ComPtrLite<ID3D11Texture2D> imported;
+      const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
+          std::strtoull(slot->frame.sharedTexture.sharedHandleHex.c_str(), nullptr, 16)));
+      if (SUCCEEDED(consumer->device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D),
+          reinterpret_cast<void**>(imported.put()))))
+        slot->monitorImports.emplace(consumer->device.Get(), std::move(imported));
     }
     return true;
   }
@@ -205,12 +223,21 @@ class D3DProgramDisplayReader {
       }
     }
     auto& imported = imports_[snapshot->slot];
+    if (!imported) {
+      const auto prepared = snapshot->monitorImports.find(device);
+      if (prepared != snapshot->monitorImports.end()) {
+        prepared->second->AddRef(); *imported.put() = prepared->second.get();
+      }
+    }
     importCached_ = !!imported;
     if (!imported) {
       const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
           std::strtoull(snapshot->frame.sharedTexture.sharedHandleHex.c_str(), nullptr, 16)));
-      if (const auto hr = operation(ProgramDisplayReason::Import, [&] {
-          return device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(imported.put())); }); FAILED(hr)) {
+      record(24);
+      const auto hr = operation(ProgramDisplayReason::Import, [&] {
+          return device->OpenSharedResource(handle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(imported.put())); });
+      record(25, ProgramDisplayReason::Import, hr);
+      if (FAILED(hr)) {
         return refuse(device, ProgramDisplayReason::Import, hr);
       }
     }
