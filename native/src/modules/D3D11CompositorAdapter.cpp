@@ -167,11 +167,12 @@ class D3D11Compositor final : public ICompositor {
       // Register the monitor device even before a capture has its first private
       // monitor copy; otherwise admission and device creation wait on each other.
       if (isolateMonitors) {
-        monitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor] {
+        monitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor, backend] {
           MonitorRenderRequest warm;
           warm.sequence = -1; warm.multiviewActive = warm.previewActive = true;
           warm.multiviewPlan.skipCpuReadback = warm.previewPlan.skipCpuReadback = true;
           renderMonitor(warm); // prewarm targets/exporters; never publish this as a completed job
+          (*backend)->programDisplayReader_.prewarm((*backend)->device_.get(), (*backend)->context_.get(), 1920, 1080);
         }, [backend] {
           MonitorRenderWorker::MaintenanceResult result;
           if (*backend) {

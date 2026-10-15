@@ -10,12 +10,14 @@
 #include <cstdlib>
 #include <chrono>
 #include <thread>
+#include <stdexcept>
 
 namespace corevideo::modules {
 
 // In-process immutable GPU publications. These handles never reach the shell.
 // The exporter proves GPU completion before publish; readers retain the slot
-// until their GPU copy completes. No keyed mutex or CPU wait on the monitor.
+// until their GPU copy completes. Monitor waits use the original deadline;
+// producer delivery never waits for a reader.
 class D3DProgramDisplaySnapshots {
  public:
   // Two timeline publications + construction + pending mailbox + executing
@@ -99,6 +101,37 @@ class D3DProgramDisplayReader {
  public:
   static constexpr size_t ReadLimit = 2, TraceCapacity = 512;
   D3DProgramDisplayReader() : epoch_(nextEpoch_.fetch_add(1)) {}
+  void prewarm(ID3D11Device* device, ID3D11DeviceContext* context, UINT width, UINT height) {
+    if (copies_ || !reads_.empty()) throw std::runtime_error("Program reader prewarm must precede admission");
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = width; desc.Height = height; desc.MipLevels = desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    ComPtrLite<ID3D11Texture2D> scratch;
+    ComPtrLite<ID3D11RenderTargetView> target;
+    ComPtrLite<ID3D11Query> ready;
+    D3D11_QUERY_DESC query{D3D11_QUERY_EVENT, 0};
+    if (FAILED(device->CreateTexture2D(&desc, nullptr, local_.put())) ||
+        FAILED(device->CreateShaderResourceView(local_.get(), nullptr, view_.put())) ||
+        FAILED(device->CreateQuery(&query, queries_[0].put())) ||
+        FAILED(device->CreateQuery(&query, queries_[1].put())) ||
+        FAILED(device->CreateQuery(&query, ready.put()))) throw std::runtime_error("Program reader prewarm allocation failed");
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    if (FAILED(device->CreateTexture2D(&desc, nullptr, scratch.put())) ||
+        FAILED(device->CreateRenderTargetView(scratch.get(), nullptr, target.put())))
+      throw std::runtime_error("Program reader prewarm target failed");
+    const float black[] = {0,0,0,1};
+    context->ClearRenderTargetView(target.get(), black);
+    context->CopyResource(local_.get(), scratch.get()); context->End(ready.get()); context->Flush();
+    const auto limit = std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    for (;;) {
+      BOOL done = FALSE; const auto hr = context->GetData(ready.get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+      if (hr == S_OK && done) break;
+      if (FAILED(hr) || std::chrono::steady_clock::now() >= limit) throw std::runtime_error("Program reader prewarm completion failed");
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    width_ = width; height_ = height;
+  }
   ~D3DProgramDisplayReader() {
     // A stopped worker may have submitted a copy whose completion was never
     // polled. Quarantine before releasing its lease, even if the pool survives.
@@ -111,7 +144,7 @@ class D3DProgramDisplayReader {
     retire(context);
     targetNs_ = targetNs; deadlineNs_ = deadlineNs;
     held_ = true;
-    if (!owner) { ++reused_; return view_.get(); }
+    if (!owner) { ++reused_; return copies_ ? view_.get() : nullptr; }
     auto snapshot = std::static_pointer_cast<const D3DProgramDisplaySnapshots::Snapshot>(owner);
     requestedSnapshot_ = snapshot.get();
     requested_ = snapshot->frame.deliverySequence;
@@ -384,13 +417,13 @@ class D3DProgramDisplayReader {
     ++refused_; ++reasons_[static_cast<size_t>(reason)]; lastHresult_ = hr;
     record(4, reason, hr, device->GetDeviceRemovedReason()); captureIncident(); postIncident_ = 8;
     requestedSnapshot_ = nullptr;
-    return view_.get();
+    return copies_ ? view_.get() : nullptr;
   }
   ID3D11ShaderResourceView* cancel() {
     ++reasons_[static_cast<size_t>(ProgramDisplayReason::Cancelled)];
     record(4, ProgramDisplayReason::Cancelled); captureIncident();
     requestedSnapshot_ = nullptr;
-    return view_.get(); // Explicit terminal cancellation is not a capacity refusal.
+    return copies_ ? view_.get() : nullptr; // Explicit terminal cancellation is not a capacity refusal.
   }
   inline static std::atomic<uint64_t> nextEpoch_{1};
   uint64_t epoch_ = 0, traceWritten_ = 0, capturedOverwritten_ = 0, notReadyPolls_ = 0;

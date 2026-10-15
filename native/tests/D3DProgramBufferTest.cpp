@@ -335,6 +335,34 @@ TEST(D3DProgramBuffer, ExactDisplayPublicationCannotSubstituteAnOlderIdentity) {
   EXPECT_TRUE(missingPublication);
 }
 
+TEST(D3DProgramBuffer, DisplayReaderPrewarmCannotAdvertisePixelsBeforeARealCopy) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+  D3DProgramDisplayReader reader; reader.prewarm(device.get(), context.get(), 64, 64);
+  EXPECT_FALSE(reader.observation().observed); EXPECT_EQ(reader.observation().copies, 0u);
+  EXPECT_EQ(reader.copy(device.get(), context.get(), {}), nullptr);
+  D3DProgramDisplaySnapshots pool; ASSERT_TRUE(pool.initialize(device.get(), 64, 64, 933));
+  auto slot = pool.reserve(); ASSERT_TRUE(slot != nullptr);
+  ProgramFrame frame; frame.frameNumber = frame.deliverySequence = 11; pool.stamp(slot, frame);
+  D3DProgramDisplayReaderTestAccess::fault(reader, [](ProgramDisplayReason reason) -> std::optional<HRESULT> {
+    return reason == ProgramDisplayReason::Import ? std::optional<HRESULT>(E_FAIL) : std::nullopt;
+  });
+  EXPECT_EQ(reader.copy(device.get(), context.get(), slot), nullptr);
+  EXPECT_FALSE(reader.observation().observed); EXPECT_EQ(reader.observation().copies, 0u);
+  D3DProgramDisplayReaderTestAccess::fault(reader, {});
+  ASSERT_TRUE(reader.copy(device.get(), context.get(), slot) != nullptr);
+  EXPECT_TRUE(reader.observation().observed); EXPECT_EQ(reader.observation().copies, 1u);
+  context->Flush();
+  const auto limit = std::chrono::steady_clock::now()+std::chrono::seconds(2);
+  while (reader.needsRetirement() && std::chrono::steady_clock::now() < limit) {
+    reader.retire(context.get(), 0); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_EQ(reader.observation().completedCopies, 1u);
+}
+
 TEST(D3DProgramBuffer, ImmutableDisplayLeaseSurvivesUnreadPublicationAndPoolExhaustion) {
   using namespace corevideo::modules;
   ComPtrLite<ID3D11Device> device;
