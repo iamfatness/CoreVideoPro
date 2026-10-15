@@ -456,8 +456,8 @@ unchanged. Unresolved writes quarantine their output lease as well as their
 input lease on shutdown.
 
 Both owners and every output image are prepared before anchoring Program's
-cadence. The initial two/three production slots have no delivered Program
-identity yet; they publish the monitor's actual empty startup state without
+cadence. The initial three/four production slots have no display-eligible Program
+identity yet (selected depth plus the existing one-frame display offset); they publish the monitor's actual empty startup state without
 waiting on or counting a nonexistent negative timeline slot. No admitted
 identity or failed trial is discarded.
 

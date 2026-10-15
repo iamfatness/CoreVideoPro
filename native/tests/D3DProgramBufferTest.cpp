@@ -941,7 +941,9 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
         monitorSubmitted = std::chrono::steady_clock::now();
         compositor->submitMonitors(std::move(request));
         const auto waitStarted = std::chrono::steady_clock::now();
-        const auto limit = waitStarted + std::chrono::milliseconds(10);
+        // Use the original absolute frame boundary. A new relative 10 ms
+        // timeout can expire before the declared deadline at early phases.
+        const auto limit = tick + std::chrono::nanoseconds(1000000000LL / 60);
         std::shared_ptr<const MonitorRenderResult> result;
         do {
           result = compositor->latestMonitors();
@@ -957,7 +959,7 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
           std::fprintf(stderr,
               "[program-display-timeout] depth=%d isolated=%d phase_ms=%d tick=%d expected_sequence=%d observed_sequence=%lld "
               "tick_start_us=%lld production_return_us=%lld monitor_submit_us=%lld wait_start_us=%lld observed_us=%lld "
-              "consumer_deadline_us=16000 wait_budget_ms=10 "
+              "consumer_deadline_us=16666 wait_budget=absolute_frame_boundary "
               "monitor_submitted=%llu completed=%llu superseded=%llu failed=%llu pending=%d last_sequence=%lld last_work_ms=%.3f "
               "effective_mode=%s readiness=%s failure=%s\n",
               depth, isolated, phaseMs, n, n + 1, static_cast<long long>(result ? result->sequence : -1),
