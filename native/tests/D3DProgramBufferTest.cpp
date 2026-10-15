@@ -304,6 +304,37 @@ TEST(D3DProgramBuffer, DisplayReaderCriticalCompletionUsesOriginalDeadlineAndHon
   EXPECT_EQ(reader.observation().gpuReadinessDeadlineMisses, 1u);
 }
 
+TEST(D3DProgramBuffer, ExactDisplayPublicationCannotSubstituteAnOlderIdentity) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+  D3DProgramDisplaySnapshots pool;
+  ASSERT_TRUE(pool.initialize(device.get(), 64, 64, 932));
+  auto old = pool.reserve(); ASSERT_TRUE(old != nullptr);
+  ProgramFrame frame; frame.frameNumber = frame.deliverySequence = 4; frame.timelineTimestamp100ns = 100;
+  pool.stamp(old, frame); pool.publish(old);
+  ProgramFrameSharedTexture texture; std::shared_ptr<const void> owner;
+  ASSERT_TRUE(pool.select(200, texture, owner)); EXPECT_EQ(texture.frameNumber, 4);
+  texture = {}; owner.reset();
+  EXPECT_FALSE(pool.select(200, texture, owner, true)); EXPECT_FALSE(owner);
+  auto next = pool.reserve(); ASSERT_TRUE(next != nullptr);
+  frame.frameNumber = frame.deliverySequence = 5; frame.timelineTimestamp100ns = 200;
+  pool.stamp(next, frame); pool.publish(next);
+  ASSERT_TRUE(pool.select(200, texture, owner, true)); EXPECT_EQ(texture.frameNumber, 5);
+  EXPECT_EQ(owner.get(), next.get());
+  D3DProgramDisplayReader reader;
+  MonitorRenderRequest request; request.programDisplayDeadlineNs = 1;
+  reader.publicationUnavailable(device.get(), request);
+  EXPECT_EQ(reader.refused(), 1u); EXPECT_EQ(reader.observation().reused, 0u);
+  EXPECT_EQ(reader.observation().refusalReasons[static_cast<size_t>(ProgramDisplayReason::Deadline)], 1u);
+  ASSERT_TRUE(reader.observation().incidentTrace != nullptr);
+  bool missingPublication = false;
+  for (const auto& event : *reader.observation().incidentTrace) if (event.stage == 23) missingPublication = true;
+  EXPECT_TRUE(missingPublication);
+}
+
 TEST(D3DProgramBuffer, ImmutableDisplayLeaseSurvivesUnreadPublicationAndPoolExhaustion) {
   using namespace corevideo::modules;
   ComPtrLite<ID3D11Device> device;

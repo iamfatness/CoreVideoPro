@@ -1114,6 +1114,7 @@ struct MonitorCancellationState {
 struct MonitorRenderRequest {
   int64_t submittedNs = 0, workerStartedNs = 0, inputsPreparedNs = 0;
   int64_t producerStartedNs = 0, producerPreparedNs = 0;
+  std::function<bool(ProgramFrameSharedTexture&, std::shared_ptr<const void>&)> acquireDeliveredProgram;
   int64_t sequence = 0;
   int64_t programDisplayTargetNs = 0, programDisplayDeadlineNs = 0;
   CompositorRenderPlan programPlan;

@@ -78,10 +78,11 @@ class D3DProgramDisplaySnapshots {
     history_[next_] = slot;
     next_ = (next_ + 1) % history_.size();
   }
-  bool select(int64_t target, ProgramFrameSharedTexture& texture, std::shared_ptr<const void>& owner) const {
+  bool select(int64_t target, ProgramFrameSharedTexture& texture, std::shared_ptr<const void>& owner, bool exact = false) const {
     for (size_t age = 0; age < history_.size(); ++age) {
       const auto& slot = history_[(next_ + history_.size() - 1 - age) % history_.size()];
       if (!slot || slot->frame.timelineTimestamp100ns > target) continue;
+      if (exact && slot->frame.timelineTimestamp100ns != target) continue;
       texture = slot->frame.sharedTexture; owner = slot; return true;
     }
     return false;
@@ -260,6 +261,12 @@ class D3DProgramDisplayReader {
     }
   }
   bool needsRetirement() const { return !failed_ && !reads_.empty(); }
+  ID3D11ShaderResourceView* publicationUnavailable(ID3D11Device* device, const MonitorRenderRequest& request) {
+    requestedSnapshot_ = nullptr; requested_ = 0; importCached_ = false; held_ = true;
+    targetNs_ = request.programDisplayTargetNs; deadlineNs_ = request.programDisplayDeadlineNs;
+    record(23, ProgramDisplayReason::Deadline);
+    return request.cancelled() ? cancel() : refuse(device, ProgramDisplayReason::Deadline, S_FALSE);
+  }
   void completeBeforeAuxiliary(ID3D11DeviceContext* context, const MonitorRenderRequest& request) {
     if (request.programDisplayDeadlineNs <= 0 || !needsRetirement() || request.cancelled()) return;
     // Submit this critical copy before unrelated CPU export/allocation work.

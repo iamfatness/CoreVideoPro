@@ -168,7 +168,10 @@ class D3D11Compositor final : public ICompositor {
       // monitor copy; otherwise admission and device creation wait on each other.
       if (isolateMonitors) {
         monitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor] {
-          renderMonitor({}); // initialize on the owner without publishing a completed job
+          MonitorRenderRequest warm;
+          warm.sequence = -1; warm.multiviewActive = warm.previewActive = true;
+          warm.multiviewPlan.skipCpuReadback = warm.previewPlan.skipCpuReadback = true;
+          renderMonitor(warm); // prewarm targets/exporters; never publish this as a completed job
         }, [backend] {
           MonitorRenderWorker::MaintenanceResult result;
           if (*backend) {
@@ -238,8 +241,13 @@ class D3D11Compositor final : public ICompositor {
       request.programDisplayTargetNs = timeline.deadlineNs(programProductionSlot_ - depth);
       request.programDisplayDeadlineNs = timeline.deadlineNs(programProductionSlot_ - depth + 1);
     }
-    if (auto buffer = currentProgramBuffer())
+    if (auto buffer = currentProgramBuffer(); buffer && request.multiviewActive) {
       buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner, programProductionSlot_);
+      if (programProductionSlot_ >= 0 && request.programDisplayDeadlineNs > 0)
+        request.acquireDeliveredProgram = [buffer, slot = programProductionSlot_](auto& texture, auto& owner) {
+          return buffer->multiview(texture, owner, slot, true);
+        };
+    }
     monitorWorker_->submit(std::move(request));
   }
   std::shared_ptr<const MonitorRenderResult> latestMonitors() const override {
@@ -619,10 +627,25 @@ class D3D11Compositor final : public ICompositor {
     monitorProgramDeadlineNs_ = request.programDisplayDeadlineNs;
     frameNumber_ = request.sequence;
     MonitorRenderResult result;
+    if (request.multiviewActive && request.bufferedProgram && request.acquireDeliveredProgram) {
+      monitorProgram_ = {}; monitorProgramOwner_.reset();
+      // The export branch can finish after producer dispatch but before this
+      // request's deadline. Refresh this same timeline identity, not a newer one.
+      for (;;) {
+        if (request.cancelled()) break;
+        if (request.acquireDeliveredProgram(monitorProgram_, monitorProgramOwner_)) break;
+        const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (now >= request.programDisplayDeadlineNs) break;
+        std::this_thread::sleep_for(std::chrono::nanoseconds((std::min)(int64_t(100000), request.programDisplayDeadlineNs - now)));
+      }
+    }
     // The delivered Program identity has a fixed deadline. Admit its copy before
     // source exports, uploads/conversions and other optional monitor GPU work.
     monitorDeliveredView_ = request.multiviewActive && request.bufferedProgram
-        ? retainedProgramForMultiview() : nullptr;
+        ? (request.acquireDeliveredProgram && !monitorProgramOwner_
+            ? programDisplayReader_.publicationUnavailable(device_.get(), request)
+            : retainedProgramForMultiview()) : nullptr;
     programDisplayReader_.checkpoint(11);
     if (request.multiviewActive && request.bufferedProgram)
       programDisplayReader_.completeBeforeAuxiliary(context_.get(), request);
