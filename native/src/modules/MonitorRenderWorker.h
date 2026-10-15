@@ -30,7 +30,15 @@ class MonitorRenderWorker {
     cancellation_->stopped.store(true, std::memory_order_relaxed);
     { std::lock_guard<std::mutex> lock(mutex_); stopping_ = true; }
     changed_.notify_one();
+    initialized_.notify_all();
     if (thread_.joinable()) thread_.join(); // compositor shutdown, never a render tick
+  }
+  // Startup only, before the production cadence is anchored. submit() never
+  // waits. The monitor device must exist before pools prepare its imports.
+  bool waitForInitialization(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return initialized_.wait_for(lock, timeout, [this] { return initializationComplete_ || stopping_; }) &&
+        initializationComplete_ && readiness_ == "ready";
   }
   void submit(MonitorRenderRequest request) {
     request.submittedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -124,6 +132,8 @@ class MonitorRenderWorker {
       std::lock_guard<std::mutex> lock(mutex_);
       if (failed_ == 0) readiness_ = "ready";
     }
+    { std::lock_guard<std::mutex> lock(mutex_); initializationComplete_ = true; }
+    initialized_.notify_all();
     auto lastLog = std::chrono::steady_clock::now();
     MonitorInputCache inputs;
     bool retirementPending = false;
@@ -188,6 +198,8 @@ class MonitorRenderWorker {
   }
   mutable std::mutex mutex_;
   std::condition_variable changed_;
+  std::condition_variable initialized_;
+  bool initializationComplete_ = false;
   std::shared_ptr<const MonitorRenderRequest> pending_;
   std::shared_ptr<const MonitorRenderResult> result_;
   bool stopping_ = false;
