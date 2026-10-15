@@ -258,11 +258,12 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   if (transientMiss) ++unrecoveredTransientSamples_;
   if (retries) { ++retriedSamples_; if (got) ++recoveredSamples_; }
   // Bounded miss diagnosis; never log pixels or identity credentials.
-  if (transientMiss && (unrecoveredTransientSamples_ == 1 || unrecoveredTransientSamples_ % 120 == 0)) {
+  if ((transientMiss && (unrecoveredTransientSamples_ == 1 || unrecoveredTransientSamples_ % 120 == 0)) ||
+      (got && retries && (recoveredSamples_ == 1 || recoveredSamples_ % 120 == 0))) {
     char timing[512];
     _snprintf_s(timing, sizeof(timing), _TRUNCATE,
-        "[vcam-read-window] retryEnabled=%d firstReadUs=%lld originalRemainingAfterFirstUs=%lld retries=%u remainingPayloadCopies=%u",
-        retryTransientRead_ ? 1 : 0, firstReadElapsedUs, firstReadRemainingUs, retries, copyBudget);
+        "[vcam-read-window] recovered=%d retryEnabled=%d firstReadUs=%lld originalRemainingAfterFirstUs=%lld retries=%u remainingPayloadCopies=%u",
+        got ? 1 : 0, retryTransientRead_ ? 1 : 0, firstReadElapsedUs, firstReadRemainingUs, retries, copyBudget);
     VcamServeLog(timing);
   }
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
