@@ -154,7 +154,7 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         var editors = slots.Select(slot => new ShowInputSlotViewModel(slot, () => { })).ToArray();
         foreach(var editor in editors) editor.RefreshSourceOptions(
             [new Participant {Id="synthetic-a",Name="Alice · test source",Health=FeedHealth.Live}],
-            [new CaptureDevice {Id="synthetic-camera",Name="Studio camera"}],
+            [new CaptureDevice {Id="synthetic-camera",Name="Studio camera",NativeDeviceId="synthetic",Vendor="uvc",Inputs=[],SelectedInputId=""}],
             mediaAssets:[new MediaAsset {Id="synthetic-clip",Name="Opening clip",Kind="video"}]);
         repeater.ItemsSource = editors;
         foreach (var width in new[] { 1100, 900 })
