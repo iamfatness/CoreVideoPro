@@ -5,6 +5,11 @@ authorized API/offscreen development while away and explicitly excluded changes
 to the installed app. No installation, camera registration, desktop activation,
 meeting join, production preference edit or release was performed.
 
+Review changes are in [#912](https://github.com/iamfatness/CoreVideoPro/pull/912)
+and [#913](https://github.com/iamfatness/CoreVideoPro/pull/913). Merge #912 before
+#913; both target main so the repository's CI and CodeQL workflows run for the
+submitted commits. The latter includes the complete combined review candidate.
+
 ## Changes available for review
 
 | Area | Result |
