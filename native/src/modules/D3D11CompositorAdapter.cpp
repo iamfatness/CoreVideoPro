@@ -477,9 +477,12 @@ class D3D11Compositor final : public ICompositor {
     if (width <= 0 || height <= 0) {
       return out;
     }
+    if (monitorBatch_) programDisplayReader_.checkpoint(26);
     if (!ensureMultiviewRenderTarget(width, height)) {
       return out;
     }
+
+    if (monitorBatch_) programDisplayReader_.checkpoint(27);
 
     // Save the program pass's target dims and point the draw helpers at the
     // multiview canvas. Restored before returning so the next program render()
@@ -531,7 +534,9 @@ class D3D11Compositor final : public ICompositor {
       const auto drawNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - drawStart).count();
       stageProfileNs_[MvDraw] += std::max(0LL, static_cast<long long>(drawNs) - (stageProfileNs_[MvUpload] - uploadBefore));
     }
+    if (monitorBatch_) programDisplayReader_.checkpoint(34);
     { CpuStageScope timing(profileEnabled, stageProfileNs_[MvShare]); exportMultiviewSharedTexture(out); }
+    if (monitorBatch_) programDisplayReader_.checkpoint(35);
 
     targetWidth_ = savedWidth;
     targetHeight_ = savedHeight;
@@ -1861,10 +1866,12 @@ class D3D11Compositor final : public ICompositor {
   // the source stride and the mapped RowPitch).
   bool uploadBgraPixels(ID3D11Texture2D* texture, const VideoFrame& frame) {
     const auto uploadStart = std::chrono::steady_clock::now();
+    if (monitorBatch_) programDisplayReader_.checkpoint(30);
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
       return false;
     }
+    if (monitorBatch_) programDisplayReader_.checkpoint(31);
     const auto mapEnd = std::chrono::steady_clock::now();
     const auto* source = frame.pixels->data();
     const auto sourceStride = static_cast<size_t>(frame.pixelStride);
@@ -1873,7 +1880,9 @@ class D3D11Compositor final : public ICompositor {
     for (int y = 0; y < frame.pixelHeight; ++y) {
       std::memcpy(destination + static_cast<size_t>(y) * mapped.RowPitch, source + static_cast<size_t>(y) * sourceStride, rowBytes);
     }
+    if (monitorBatch_) programDisplayReader_.checkpoint(32);
     context_->Unmap(texture, 0);
+    if (monitorBatch_) programDisplayReader_.checkpoint(33);
     const auto uploadEnd = std::chrono::steady_clock::now();
     if (uploadEnd - uploadStart >= std::chrono::milliseconds(4) &&
         uploadEnd - lastSlowUploadLog_ >= std::chrono::seconds(1)) {
