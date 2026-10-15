@@ -53,9 +53,9 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             Require(Descendants(page).OfType<ToggleSwitch>().Any(t => t.Name == "OhgShowOption" && !t.IsOn), "Optional OHG workspace control is missing or not off by default");
             checks.Add("Settings exposes the default-off optional OHG workspace control");
             await CheckSourceOptions(window, checks);
-            await CheckSourcesLayout(window, checks);
+            await CheckSourcesLayout(window, checks,Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
             await CheckLowerThirdText(window, checks);
-            await CheckAdjustmentControls(window,checks);
+            await CheckAdjustmentControls(window,checks,Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
             await SceneWorkspaceIntegrationProbe.CheckAsync(window,checks,Path.GetDirectoryName(Path.GetFullPath(reportPath)));
         }
         catch (Exception ex) { error = ex.ToString(); }
@@ -67,7 +67,7 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             window.Close();
         }
     }
-    private static async Task CheckAdjustmentControls(Window window,List<string> checks)
+    private static async Task CheckAdjustmentControls(Window window,List<string> checks,string reviewDirectory)
     {
         var control=new SliderValueControl { Header="Precision",Minimum=0,Maximum=1,Value=.123456789,StepFrequency=.01 };
         var away=new Button { Content="Focus target" };var panel=new StackPanel();panel.Children.Add(control);panel.Children.Add(away);window.Content=panel;
@@ -80,13 +80,57 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         field.Focus(FocusState.Programmatic);await Eventually(()=>field.FocusState!=FocusState.Unfocused);await Task.Delay(30);field.Text="0.314159";await Task.Delay(30);
         away.Focus(FocusState.Programmatic);await Eventually(()=>away.FocusState!=FocusState.Unfocused);await Eventually(()=>control.Value==.314159);Require(control.Value==.314159,$"Exact entry did not commit unchanged: {control.Value:G}");
         checks.Add("shared slider preserves untouched precision, rejects invalid entry and commits exact entry without step rounding");
+        var compact = new SliderValueControl { Header="Opacity", Unit="%", DisplayScale=100, Minimum=0, Maximum=1, DefaultValue=1, Value=.4, Compact=true };
+        window.Content=compact; await Eventually(()=>compact.IsLoaded);
+        var reset=Descendants(compact).OfType<Button>().Single(b=>b.Content?.ToString()=="↺");
+        Require(Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(reset)=="Reset Opacity to 100 %", "Compact reset does not identify its setting and default");
+        var starts=0;var ends=0;compact.EditStarted+=(_,_)=>starts++;compact.EditCompleted+=(_,_)=>ends++;
+        var resetPeer=new Microsoft.UI.Xaml.Automation.Peers.ButtonAutomationPeer(reset);
+        ((Microsoft.UI.Xaml.Automation.Provider.IInvokeProvider)resetPeer.GetPattern(Microsoft.UI.Xaml.Automation.Peers.PatternInterface.Invoke)).Invoke();
+        await Eventually(()=>compact.Value==1);
+        Require(starts==1 && ends==1,"Reset was not one complete adjustment gesture");
+        Require(Descendants(compact).OfType<TextBox>().Single().Text=="100","Reset did not synchronize exact entry");
+        checks.Add("compact controls retain an accessible named reset, displayed units and one complete synchronized undo gesture");
+        var adjustment=new GradeAdjustmentControl {Adjustment=new GradeOperation {Kind="curves"}};
+        window.Content=adjustment;await Eventually(()=>adjustment.IsLoaded);
+        var curve=Descendants(adjustment).OfType<GradeCurveControl>().Single();
+        var curveEdits=0;adjustment.AdjustmentEdited+=(_,_)=>curveEdits++;
+        curve.SetPoints([new(0,0),new(.5,.5),new(1,1)]);
+        Require(curveEdits==0,"Loading curve points published a grade edit");
+        curve.HandleEditingKey(Windows.System.VirtualKey.Home);
+        curve.HandleEditingKey(Windows.System.VirtualKey.Right,control:true);
+        curve.HandleEditingKey(Windows.System.VirtualKey.Up);
+        Require(Math.Abs(curve.Points[1].Y-.501)<1e-10,"Curve fine keyboard increment is wrong");
+        curve.HandleEditingKey(Windows.System.VirtualKey.Right,shift:true);
+        Require(Math.Abs(curve.Points[1].X-.51)<1e-10,"Curve coarse keyboard increment is wrong");
+        curve.HandleEditingKey(Windows.System.VirtualKey.End);
+        var input=Descendants(adjustment).OfType<SliderValueControl>().Single(v=>v.Header=="Point input");
+        Require(!input.IsEnabled,"Endpoint input is advertised as editable");
+        curve.HandleEditingKey(Windows.System.VirtualKey.Left);
+        Require(curve.Points[^1].X==1,"Keyboard moved a curve endpoint horizontally");
+        await ReviewImageWriter.SaveAsync(adjustment,Path.Combine(reviewDirectory,"grade-curve-controls.png"));
+        checks.Add("compiled grade curve supports keyboard selection, fine/coarse edits and locked endpoint input without hydration edits");
         var designer=new LowerThirdDesignerControl();window.Content=new ScrollViewer { Content=designer };
         foreach(var id in new[] {"compact-solid","minimal-accent","broadcast"}) {
             designer.LoadReviewDraft(LowerThirdAppearance.FromPreset(id));await Eventually(()=>designer.IsLoaded);
+            foreach(var section in Descendants(designer).OfType<Expander>().Where(e=>e.Header?.ToString() is "Typography" or "Colors and plate" or "Size and placement" or "Source logo" or "Saved looks").ToArray()) section.IsExpanded=true;
+            await Task.Delay(50);
             Require(Descendants(designer).OfType<SliderValueControl>().Count()==9,"Designer adjustment controls missing");
         }
         window.AppWindow.Resize(new SizeInt32(500,760));designer.UpdateLayout();
         Require(Descendants(designer).OfType<Button>().Any(b=>b.Content?.ToString()=="Apply look"),"Designer Apply missing");
+        foreach(var section in Descendants(designer).OfType<Expander>().ToArray()) section.IsExpanded=false;
+        await Task.Delay(50);designer.UpdateLayout();
+        var applyLook=Descendants(designer).OfType<Button>().Single(b=>b.Content?.ToString()=="Apply look");
+        Require(applyLook.TransformToVisual(designer).TransformPoint(new(0,0)).Y<500,"Apply is buried below appearance settings");
+        await ReviewImageWriter.SaveAsync((FrameworkElement)window.Content,Path.Combine(reviewDirectory,"lower-third-designer.png"));
+        window.AppWindow.Resize(new SizeInt32(900,1100));
+        foreach(var name in new[]{"Typography","Colors and plate","Size and placement","Source logo","Saved looks"}) {
+            var section=Descendants(designer).OfType<Expander>().Single(e=>e.Header?.ToString()==name);
+            section.IsExpanded=true;await Task.Delay(300);designer.UpdateLayout();
+            await ReviewImageWriter.SaveAsync(section,Path.Combine(reviewDirectory,"designer-"+name.ToLowerInvariant().Replace(' ','-')+".png"));
+            section.IsExpanded=false;
+        }
         checks.Add("lower-third designer presets, sliders, color selectors and Apply load in real UI at narrow width without live state");
     }
     private static async Task CheckLowerThirdText(Window window, List<string> checks)
@@ -123,7 +167,7 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         Require(writes.Count == 1 && !staleApply.IsEnabled, "Stale lower-third editor changed a replacement guest");
         stale.Hide(); checks.Add("open lower-third editor rejects Apply after guest replacement");
     }
-    private static async Task CheckSourcesLayout(Window window, List<string> checks)
+    private static async Task CheckSourcesLayout(Window window, List<string> checks,string reviewDirectory)
     {
         var page = new SourcesInputsPage();
         window.Content = page;
@@ -134,6 +178,10 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         slots[1].Kind = ShowInputKind.UvcWebcam; slots[1].CaptureDeviceId = "synthetic-camera";
         slots[2].Kind = ShowInputKind.Media; slots[2].ParticipantId = "media:synthetic-clip";
         var editors = slots.Select(slot => new ShowInputSlotViewModel(slot, () => { })).ToArray();
+        foreach(var editor in editors) editor.RefreshSourceOptions(
+            [new Participant {Id="synthetic-a",Name="Alice · test source",Health=FeedHealth.Live}],
+            [new CaptureDevice {Id="synthetic-camera",Name="Studio camera",NativeDeviceId="synthetic",Vendor="uvc",Inputs=[],SelectedInputId=""}],
+            mediaAssets:[new MediaAsset {Id="synthetic-clip",Name="Opening clip",Kind="video"}]);
         repeater.ItemsSource = editors;
         foreach (var width in new[] { 1100, 900 })
         {
@@ -152,6 +200,17 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         }
         Require(slots[0].ParticipantId == "synthetic-a" && slots[1].CaptureDeviceId == "synthetic-camera" && slots[2].ParticipantId == "media:synthetic-clip", "Layout changed source assignments");
         checks.Add("compiled ten-row Sources template at 1100 and 900 pixels preserves synthetic Zoom/capture/media assignments and Zoom-only options");
+        var sourceLabel=editors[0].SelectedUnifiedSourceLabel;
+        editors[0].InShow=true;editors[0].RefreshSourceOptions([],[]);
+        await Task.Delay(50);
+        var picker=Descendants(repeater.GetOrCreateElement(0)).OfType<DropDownButton>().Single(b=>b.Name=="UnifiedSourceButton");
+        Require(picker.Content?.ToString()==sourceLabel+" · Offline",$"Offline picker lost the departed source's identity: {picker.Content}; expected {sourceLabel}");
+        Require(Microsoft.UI.Xaml.Automation.AutomationProperties.GetHelpText(picker).Contains("Saved assignment retained"),"Offline picker does not explain recovery");
+        await ReviewImageWriter.SaveAsync(page,Path.Combine(reviewDirectory,"sources-offline.png"));
+        editors[0].RefreshSourceOptions([new Participant {Id="synthetic-a",Name="Alice · test source",Health=FeedHealth.Live}],[]);
+        await Task.Delay(50);
+        Require(picker.Content?.ToString()==sourceLabel,"Reconnected picker retained the offline state");
+        checks.Add("compiled source row retains its named offline assignment, explains recovery and reconnects without substitution");
     }
     private static async Task CheckSourceOptions(Window window, List<string> checks)
     {

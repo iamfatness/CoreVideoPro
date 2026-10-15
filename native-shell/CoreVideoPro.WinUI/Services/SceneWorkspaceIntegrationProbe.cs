@@ -55,6 +55,7 @@ internal static class SceneWorkspaceIntegrationProbe
         var tabs=(Pivot)page.FindName("InspectorTabs");
         await Eventually(()=>tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}));
         Require(tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}),"Tiles inspector does not match the approved flat tabs");
+        if(reviewDirectory is not null) await ReviewImageWriter.SaveAsync(page,Path.Combine(reviewDirectory,"scene-tiles.png"));
         window.AppWindow.Resize(new SizeInt32(1920,1080));await Task.Delay(100);page.UpdateLayout();canvas.UpdateLayout();
         var viewbox=(Viewbox)canvas.FindName("CanvasViewbox");
         Require(viewbox.ActualWidth>640 && viewbox.ActualHeight>360,"Canvas retains the legacy thumbnail-size viewport cap");
@@ -204,6 +205,21 @@ internal static class SceneWorkspaceIntegrationProbe
             var grid=(Grid)page.FindName("WorkspaceGrid");Require(grid.ActualWidth<=page.ActualWidth+.5,"Workspace overflows horizontally");
         }
         checks.Add("compiled desktop and compact Scene Builder layout exposes the Properties drawer without page overflow");
+        var settingsPage=new SettingsPage {ViewModel=studio.Settings,Studio=studio};window.Content=settingsPage;
+        await Eventually(()=>settingsPage.IsLoaded);
+        var optional=(ToggleSwitch)settingsPage.FindName("OhgShowOption");
+        Require(!optional.IsOn && studio.OhgShowNavigationVisibility==Visibility.Collapsed,"Optional workspace is not off for a fresh profile");
+        optional.IsOn=true;await Eventually(()=>studio.OhgShowEnabled);
+        studio.ActiveTab=StudioTab.OhgShow;
+        optional.IsOn=false;await Eventually(()=>studio.ActiveTab==StudioTab.Settings);
+        Require(!store.Value.OhgShowEnabled,"Hiding optional workspace did not persist");
+        var restored=ProductionOutputPreferencesSerializer.Deserialize(ProductionOutputPreferencesSerializer.Serialize(store.Value))!;
+        Require(!restored.OhgShowEnabled && restored.CustomScenes.Count==store.Value.CustomScenes.Count,"Navigation preference round trip changed saved scenes");
+        var health=(Expander)settingsPage.FindName("HealthSection");health.IsExpanded=true;
+        await Eventually(()=>Descendants(health).OfType<DiagnosticsView>().Any(v=>v.IsLoaded));
+        health.StartBringIntoView();await Task.Delay(100);
+        if(reviewDirectory is not null) await ReviewImageWriter.SaveAsync(settingsPage,Path.Combine(reviewDirectory,"settings-health.png"));
+        checks.Add("compiled Settings enables optional navigation, safely exits the selected workspace on disable and persists without changing saved scenes; Health remains reachable");
         Require(!startup.Bridge.Running,"Isolated workspace probe started a native core");
         window.Content=null;
     }

@@ -42,8 +42,8 @@
                 <TextBlock Text="Build the picture. Keep Program separate." FontSize="11" TextWrapping="Wrap" Foreground="{StaticResource StudioMutedBrush}"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="5">
-                <Button Content="Undo" Click="OnUndoWorkspace" IsEnabled="{x:Bind Workspace.UndoAvailable, Mode=OneWay}"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Z" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
-                <Button Content="Redo" Click="OnRedoWorkspace" IsEnabled="{x:Bind Workspace.RedoAvailable, Mode=OneWay}"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Z" Modifiers="Control,Shift"/></Button.KeyboardAccelerators></Button>
+                <Button Content="Undo" Style="{StaticResource OperatorGhostButton}" Click="OnUndoWorkspace" IsEnabled="{x:Bind Workspace.UndoAvailable, Mode=OneWay}"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Z" Modifiers="Control"/></Button.KeyboardAccelerators></Button>
+                <Button Content="Redo" Style="{StaticResource OperatorGhostButton}" Click="OnRedoWorkspace" IsEnabled="{x:Bind Workspace.RedoAvailable, Mode=OneWay}"><Button.KeyboardAccelerators><KeyboardAccelerator Key="Z" Modifiers="Control,Shift"/></Button.KeyboardAccelerators></Button>
                 <Button Content="Save changes" Click="OnSaveWorkspace"/>
                 <Button x:Name="PropertiesButton" Content="Properties" Click="OnPropertiesClicked" Visibility="Collapsed"/>
             </StackPanel>

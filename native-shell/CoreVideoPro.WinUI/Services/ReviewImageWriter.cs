@@ -12,6 +12,9 @@ internal static class ReviewImageWriter
 {
     internal static async Task SaveAsync(FrameworkElement root, string path)
     {
+        // Let Fluent expansion/theme transitions settle before sampling the
+        // offscreen tree. Immediate captures show transient white control plates.
+        root.UpdateLayout();await Task.Delay(750);root.UpdateLayout();
         var bitmap = new RenderTargetBitmap();
         await bitmap.RenderAsync(root);
         var pixels = await bitmap.GetPixelsAsync();

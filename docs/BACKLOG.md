@@ -1,5 +1,13 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 15:** finish the full operator UI/UX review batch while
+the owner is away: starter scenes, Sources identity/clarity, shared adjustments,
+lower thirds, grading/ROI and Settings/navigation. Work sequentially within the
+three-item limit. Use API/offscreen dev processes and isolated profiles; leave the
+installed app, production settings, camera registration and desktop alone. Deliver
+one coherent review candidate with focused PRs and honest acceptance evidence.
+This development priority supersedes October 14; media acceptance remains open.
+
 **Owner-approved bundle, October 14:** work three parallel development tracks:
 [#872](https://github.com/iamfatness/CoreVideoPro/issues/872) audio monitor lifecycle,
 [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) source thumbnail identity,
