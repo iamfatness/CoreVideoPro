@@ -49,3 +49,15 @@ physical display, audio synchronization or an unlimited zero-miss guarantee.
 Run the real meeting grid at both buffer selections, retain all failed trials,
 then qualify the packaged registered provider before closing camera acceptance.
 Source-generation failures remain separately ranked under #908.
+
+October 14 API-only real-meeting evidence, source `5186bf1`, depth two:
+`camera-517-final-depth2` retained 3,601 direct-DLL receiver samples over
+59.999 seconds, with zero invalid/repeated/missing/reordered identities. The
+serving log recorded one contended read, two writer-active observations, one
+recovery, no changes during copy and zero original read-deadline misses. This
+is an actual write-window collision recovered in the live publisher path.
+The prior revision's depth-three run also had 3,601 clean pixel samples, but
+two misses against its overly early 2 ms scheduling threshold; that trial is
+retained, and the final original-frame-boundary policy needs a depth-three run.
+The real-meeting grid still fails source-content admission under #908; none
+of these results qualifies all outputs or the installed registered provider.
