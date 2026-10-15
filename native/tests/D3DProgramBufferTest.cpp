@@ -147,6 +147,11 @@ TEST(D3DProgramBuffer, PrivateOutputPressureNeedsIndependentConsumerRetirementAn
     D3DProgramDisplaySnapshots input; ASSERT_TRUE(input.initialize(producer.get(), 64, 64, 904));
     D3DProgramDisplayReader reader; reader.prewarm(critical.get(), criticalContext.get(), 64, 64, true);
     D3DVideoReadLeases leases(monitor.get(), monitorContext.get());
+    D3D11_TEXTURE2D_DESC desc{}; desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_STAGING; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtrLite<ID3D11Texture2D> sink;
+    ASSERT_TRUE(SUCCEEDED(monitor->CreateTexture2D(&desc, nullptr, sink.put())));
     std::vector<std::shared_ptr<D3DProgramDisplaySnapshots::Snapshot>> inputs;
     for (int n = 1; n <= 3; ++n) {
       auto slot = input.reserve(); ASSERT_TRUE(slot != nullptr); inputs.push_back(slot);
@@ -156,6 +161,9 @@ TEST(D3DProgramBuffer, PrivateOutputPressureNeedsIndependentConsumerRetirementAn
           (std::chrono::steady_clock::now()+std::chrono::seconds(1)).time_since_epoch()).count();
       reader.completeBeforeAuxiliary(criticalContext.get(), request);
       ASSERT_TRUE(reader.completedImage() != nullptr); ASSERT_TRUE(leases.hold(reader.completedImage()));
+      const auto image = std::dynamic_pointer_cast<const D3DVideoImage>(reader.completedImage());
+      const auto* view = image->view(monitorRegistration->id); ASSERT_TRUE(view != nullptr);
+      monitorContext->CopyResource(sink.get(), view->texture.Get());
     }
     // All three destinations are held by an unfinished consumer batch, while
     // the critical input queries have already completed. No new image can make
