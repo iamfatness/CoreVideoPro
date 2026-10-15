@@ -3,6 +3,7 @@
 #include "compositor/ComPtrLite.h"
 #include "modules/Interfaces.h"
 #include "modules/D3DVideoFrame.h"
+#include "modules/D3DDeadlineWait.h"
 #include <array>
 #include <deque>
 #include <map>
@@ -213,7 +214,7 @@ class D3DProgramDisplayReader {
       while (!failed_ && reads_.size() >= ReadLimit && !cancelled() && nowNs() < deadlineNs_) {
         const auto remaining = deadlineNs_ - nowNs();
         if (remaining <= 0) break;
-        std::this_thread::sleep_for(std::chrono::nanoseconds((std::min)(remaining, int64_t(100000))));
+        deadlineWait_.pause(remaining);
         retire(context);
       }
       const auto elapsed = nowNs() - start;
@@ -377,7 +378,7 @@ class D3DProgramDisplayReader {
     while (needsRetirement() && !request.cancelled() && nowNs() < request.programDisplayDeadlineNs) {
       const auto remaining = request.programDisplayDeadlineNs - nowNs();
       if (remaining <= 0) break;
-      std::this_thread::sleep_for(std::chrono::nanoseconds((std::min)(remaining, int64_t(100000))));
+      deadlineWait_.pause(remaining);
       retire(context);
     }
     record(17);
@@ -522,6 +523,7 @@ class D3DProgramDisplayReader {
   ComPtrLite<ID3D11Texture2D> local_;
   ComPtrLite<ID3D11ShaderResourceView> view_;
   std::array<ComPtrLite<ID3D11Query>, 2> queries_;
+  D3DDeadlineWait deadlineWait_;
   std::deque<Read> reads_;
   std::unique_ptr<D3DVideoFramePool> outputPool_;
   std::shared_ptr<const GpuVideoFrame> completedImage_;
