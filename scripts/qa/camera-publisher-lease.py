@@ -4,6 +4,7 @@ import argparse
 import ctypes
 import hashlib
 import json
+import math
 import os
 import pathlib
 import shutil
@@ -44,8 +45,11 @@ def main():
     parser.add_argument('--owner-directory',type=pathlib.Path)
     parser.add_argument('--api',default='http://127.0.0.1:8011')
     parser.add_argument('--lease',type=pathlib.Path)
+    parser.add_argument('--timeout-seconds',type=float,default=1200,help='Bounded probe lifetime, at most two hours')
     parser.add_argument('command',nargs=argparse.REMAINDER)
     args=parser.parse_args()
+    if not math.isfinite(args.timeout_seconds) or not 0 < args.timeout_seconds <= 7200:
+        parser.error("timeout-seconds must be finite and in (0, 7200]")
     if args.watch:
         lease=json.loads(args.watch.read_text())
         kernel=ctypes.WinDLL('kernel32',use_last_error=True)
@@ -104,7 +108,7 @@ def main():
         if credential_line:
             child.stdin.write(credential_line.encode('utf-8')); child.stdin.close()
             del credential_line
-        try: return child.wait(timeout=1200)
+        try: return child.wait(timeout=args.timeout_seconds)
         finally:
             if child.poll() is None: child.kill(); child.wait(timeout=10)
     finally:
