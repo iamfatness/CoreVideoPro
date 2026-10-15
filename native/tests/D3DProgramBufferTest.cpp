@@ -165,10 +165,10 @@ TEST(D3DProgramBuffer, PrivateOutputPressureNeedsIndependentConsumerRetirementAn
     ProgramFrame frame; frame.frameNumber = frame.deliverySequence = 4; input.stamp(slot, frame);
     std::future<void> release;
     if (independentlyRetire) release = std::async(std::launch::async, [&] {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      timer.waitUntil(std::chrono::steady_clock::now()+std::chrono::milliseconds(2));
       leases.finish(); monitorContext->Flush();
       const auto limit = std::chrono::steady_clock::now()+std::chrono::seconds(1);
-      while (leases.retire() && std::chrono::steady_clock::now()<limit) std::this_thread::sleep_for(std::chrono::microseconds(100));
+      while (leases.retire() && std::chrono::steady_clock::now()<limit) timer.waitUntil(std::chrono::steady_clock::now()+std::chrono::microseconds(100));
     });
     const auto target = std::chrono::steady_clock::now();
     const auto targetNs = std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count();
@@ -178,6 +178,10 @@ TEST(D3DProgramBuffer, PrivateOutputPressureNeedsIndependentConsumerRetirementAn
     if (release.valid()) release.get();
     else { leases.finish(); monitorContext->Flush(); while (leases.retire()) std::this_thread::sleep_for(std::chrono::microseconds(100)); }
     const auto observed = reader.observation();
+    std::fprintf(stderr, "[private-output-pressure] independently_retire=%d copies=%llu refused=%llu pressures=%llu recovered=%llu wait_ns=%lld\n",
+        independentlyRetire, static_cast<unsigned long long>(observed.copies), static_cast<unsigned long long>(observed.refused),
+        static_cast<unsigned long long>(observed.capacityPressures), static_cast<unsigned long long>(observed.admittedAfterPressure),
+        static_cast<long long>(observed.retryMaximumNs));
     EXPECT_EQ(observed.capacityPressures, 1u);
     EXPECT_EQ(observed.refused, independentlyRetire ? 0u : 1u);
     EXPECT_EQ(observed.copies, independentlyRetire ? 4u : 3u);
