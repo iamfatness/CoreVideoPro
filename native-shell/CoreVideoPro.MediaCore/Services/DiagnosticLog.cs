@@ -12,6 +12,11 @@ public static class DiagnosticLog
     private static readonly string Identity = $"pid={Environment.ProcessId} session={Session} build={Build}";
     private static readonly DiagnosticExceptionLimiter Exceptions = new();
     private static int _verboseEnabled;
+    private static string? _verificationDirectory;
+
+    /// <summary>Explicit verification hosts keep their logs beside their report, away from the installed app.</summary>
+    public static void ConfigureVerificationDirectory(string directory) =>
+        _verificationDirectory = Path.GetFullPath(directory);
 
     /// <summary>
     /// Session-scoped diagnostic detail. It deliberately resets off at process
@@ -40,8 +45,9 @@ public static class DiagnosticLog
         try
         {
             var test = IsTestHost;
-            var path = ResolvePath(Path.Combine(Environment.GetFolderPath(
-                Environment.SpecialFolder.LocalApplicationData), "CoreVideoPro"), fileName, test, Session);
+            var root = _verificationDirectory ?? Path.Combine(Environment.GetFolderPath(
+                Environment.SpecialFolder.LocalApplicationData), "CoreVideoPro");
+            var path = ResolvePath(root, fileName, test, Session);
             BoundedLogFile.Append(path,
                 $"[{DateTimeOffset.Now:O}] [{Identity} role={(test ? "test" : "app")}] {message}{Environment.NewLine}");
         }

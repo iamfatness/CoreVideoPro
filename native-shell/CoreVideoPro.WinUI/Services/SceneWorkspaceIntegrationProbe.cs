@@ -21,7 +21,7 @@ internal static class SceneWorkspaceIntegrationProbe
         public ProductionOutputPreferences? Load()=>Value;
         public void Save(ProductionOutputPreferences value)=>Value=ProductionOutputPreferencesSerializer.Deserialize(ProductionOutputPreferencesSerializer.Serialize(value))!;
     }
-    internal static async Task CheckAsync(Window window,List<string> checks)
+    internal static async Task CheckAsync(Window window,List<string> checks,string? reviewDirectory=null)
     {
         var store=new MemoryStore();
         var startup=StudioStartupBootstrap.Create(store,startInteractiveServices:false);
@@ -29,6 +29,22 @@ internal static class SceneWorkspaceIntegrationProbe
         var page=new SourcesPage{ViewModel=studio};window.Content=page;
         window.AppWindow.Resize(new SizeInt32(1366,768));
         await Eventually(()=>page.IsLoaded && page.Workspace is not null);
+        var initialProgram = studio.ActiveSceneId;
+        foreach (var template in new[] { "solo", "two-person", "screen-presenter" })
+        {
+            studio.NewSceneCommand.Execute(template);
+            await Task.Delay(50);
+            var created = store.Value.CustomScenes.Single(scene => scene.Id == studio.PreviewSceneId);
+            Require(created.Routes.All(route => route.Mode != "active-speaker"), "New scene silently follows the current speaker");
+            Require(created.Routes.Count == (template == "solo" ? 1 : 2), "Starter look has wrong source count");
+            Require(created.Routes[0].ShowInputSlotNumber == 1, "Presenter is not bound to stable Input 1");
+            if (template == "two-person") Require(created.Routes[1].ShowInputSlotNumber == 2, "Two-person look repeats Input 1");
+            if (template == "screen-presenter") Require(created.Routes[1].Mode == "screen-share", "Share look does not follow the share source");
+            Require(studio.ActiveSceneId == initialProgram, "New scene changed Program");
+            if (reviewDirectory is not null)
+                await ReviewImageWriter.SaveAsync(page,Path.Combine(reviewDirectory,$"scene-{template}.png"));
+        }
+        checks.Add("compiled starter chooser creates distinct stable Inputs and explicit screen share, persists each look and preserves Program");
         studio.NewDynamicGalleryCommand.Execute(null);
         await Eventually(()=>page.Workspace!.Items.Any(i=>i.IsTilesWall));
         var workspace=page.Workspace!;

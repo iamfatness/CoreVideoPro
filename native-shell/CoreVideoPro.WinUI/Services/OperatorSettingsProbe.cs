@@ -56,7 +56,7 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             await CheckSourcesLayout(window, checks);
             await CheckLowerThirdText(window, checks);
             await CheckAdjustmentControls(window,checks);
-            await SceneWorkspaceIntegrationProbe.CheckAsync(window,checks);
+            await SceneWorkspaceIntegrationProbe.CheckAsync(window,checks,Path.GetDirectoryName(Path.GetFullPath(reportPath)));
         }
         catch (Exception ex) { error = ex.ToString(); }
         finally

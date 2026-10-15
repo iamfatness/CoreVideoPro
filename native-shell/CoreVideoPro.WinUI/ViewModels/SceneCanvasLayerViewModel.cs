@@ -616,11 +616,12 @@ public sealed partial class SceneCanvasLayerViewModel : ObservableObject
         IReadOnlyList<MediaAsset> mediaAssets)
     {
         var showInputOptions = showInputs
-            .Where(slot => slot.InShow && slot.IsAssigned)
             .Select(slot => new RouteSelectOption
             {
                 Value = FormatShowInputValue(slot.SlotNumber),
-                Label = $"{slot.SlotLabel} - {ResolveShowInputSourceLabel(slot, participants, captureDevices)}"
+                Label = !slot.IsAssigned
+                    ? $"{slot.SlotLabel} — Unassigned"
+                    : $"{slot.SlotLabel} — {ResolveShowInputSourceLabel(slot, participants, captureDevices)}{(slot.InShow ? "" : " · Not in show")}"
             })
             .ToList();
 
