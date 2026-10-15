@@ -208,6 +208,9 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 ## Unranked — show survival and operator findings
 
+| [#906](https://github.com/iamfatness/CoreVideoPro/issues/906) | Attribute the Windows GradePreviewCoordinator disposal-test timeout; preserve the failed gate and verify the initiating condition. Owner rank pending. |
+| [#907](https://github.com/iamfatness/CoreVideoPro/issues/907) | Identify the native stub TSan gate hang with bounded per-test progress; timeout is not a reported race. Owner rank pending. |
+
 These can preempt Next on a show night. They do not jump the ranked Now item until the owner says so.
 
 | Issue | Remaining work |

@@ -24,6 +24,11 @@ recover the missing branch/HRESULT. Do not rename this hypothesis a confirmed
 GPU stall, driver fault, or regression from this beta. The first implementation
 gate is attribution, not an assumed capacity fix.
 
+An instrumented real-meeting reproduction later established `read-capacity` as
+the actual branch for that trial. This does not retrospectively attribute the
+historical three or establish a GPU driver fault. See the reproduction limits
+below; the original evidence and its uncertainty remain intact.
+
 ### Preserved measured evidence
 
 Baseline: installed `beta-2026-10-14-4366d5b`, RTX 4090, isolated monitors,
@@ -64,6 +69,64 @@ sample stream
 `43cd68d01df842789279ea25e01e7da8a081490a5143e6b4aa54167d372249ac`.
 The independent OS-camera counter test is separate; it does not qualify this
 real-meeting monitor path.
+
+### Instrumented reproduction
+
+Native source `8a9f433`, Release/D3D11 on the reference RTX 4090, reproduced the
+failure with eight live Zoom feeds, a synthetic 2560x1440 BGRA screen and
+`pgmPvwTop` Multiview. CPU-source preparation was explicitly **0**. Webcam and a
+shell consumer were absent from the owned headless candidate; the operator's
+separate app/webcam publisher remained running. This is attribution evidence,
+not matching-all-output qualification.
+
+**Workload correction:** the first harness revision bound Program to synthetic
+participant `101` during real SDK runs. The real feeds appeared in Multiview,
+but Program selected a missing source. That includes the reproduction below and
+the earlier clean retry/priority/readiness controls: their reader mechanics
+remain evidence, but they do not qualify real-source Program composition.
+The corrected harness binds actual roster IDs and checks every requested
+Program source's GPU admission, dimensions and renderer. Its first actual
+nine-source grid pilot retained initial unavailable-source admission; a clean
+reader count alone does not turn that trial into a full-workload pass.
+
+The corrected grid/camera depth-two trace (`b40a3a4`) isolates a second cause:
+CPU checkpoint 11 (Program copy submitted) to 12 (participant exports done)
+took 64.9321 ms for identity 262. The log records eviction of the screen's
+participant export in that interval. Erasing `ParticipantTex` destroys its
+`D3DDecoupledExport`, whose destructor joins its deferred D3D initialization
+worker. The next selected Program identity is 266: three skipped identities.
+The reader has no refusal, import or allocation error. This is a synchronous
+resource-retirement stall on the monitor owner, independent of the earlier
+capacity-refusal branch. Observed completion ages include this CPU delay and
+are not GPU execution durations.
+
+The repair moves participant exporter eviction, failed creation and replacement
+to a separate bounded retirement owner. Its four-item / 128 MiB texture-payload
+charge includes the executing destructor. On saturation the original caller
+retains ownership and defers the optional replacement; it never joins the
+worker or allocates an overflow queue. Driver/device overhead is outside that
+texture charge. Shutdown still drains owned resources. Snapshot evidence
+reports pending count, charged bytes and refusals.
+
+At sample elapsed 77.360 seconds, requested Program identity 4598 was rejected
+after both real `GetData(DONOTFLUSH)` calls returned `S_FALSE`. Outstanding
+identities 4596/4597 had observation ages 33.374/16.784 ms. The import was cached,
+generation was 1, and `GetDeviceRemovedReason` returned `S_OK`. The original
+absolute deadline still had **15.368 ms** remaining. Abandoning that identity
+before spending its available admission budget is the demonstrated loss
+mechanism. Query age does not identify GPU execution duration or explain driver
+scheduling; that requires the progress/ordering experiment.
+
+The last retained sample had 591 capacity refusals, zero resource/query failure
+counts and 654 skipped identities. Monitor supersessions also occurred (72
+lifetime), so reader repair alone cannot waive the complete-path requirement.
+Program underruns, deadline misses, sequence gaps and GPU-not-ready counts stayed
+zero. The trial stopped at its 64-incident artifact budget after 164.875 seconds;
+it is explicitly incomplete/failed, never a performance pass. Its first incident
+and prehistory remain intact under
+`artifacts/program-display-904/real-program-preview-attribution/` in the #905
+worktree. Later probes have a bounded 512-file / 256 MiB incident-artifact budget,
+separate from the reader's unchanged 512-record / 128 KiB memory bound.
 
 ## Source explanation
 
@@ -121,10 +184,22 @@ counted as `failed-reader`, so summing every failure category is not the same as
 counting refused requests. `notReadyPolls` includes normal unavailable results
 and is not a dropped-frame count.
 
+`capacityPressures` counts admission pressure; `admittedAfterPressure` distinguishes
+absorbed pressure from a refused identity. `deadline` means the original budget
+expired; `cancelled` is explicit monitor-disable/shutdown cancellation and does
+not increment `refused`. `lateSubmissions` records a real copy whose CPU submission
+returned past its deadline; copied pixels cannot waive that failure. The paired
+poll flags and `flushingPollRetirements` describe observed progress when a
+pressure-only flags-0 poll was used, not proof that a driver is defective.
+
 The fixed numeric incident history has 512 records and remains below 128 KiB.
 An incident snapshot retains prehistory and refreshes after eight further copy
 submissions. Stage IDs are 1 admission, 2 copy submitted, 3 completion observed,
-4 failure/refusal, 5 completion unavailable and 6 CPU flush returned. Pending
+4 failure/refusal, 5 completion unavailable and 6 CPU flush returned.
+Stage 7 records pressure, stage 8 recovered admission capacity, and stage 9
+readiness not observed by the read's original deadline. Query records identify
+their `subjectSequence`/generation; their target/deadline refers to that read,
+not the newest request being admitted. Pending
 identities and ages describe outstanding source leases at that observation.
 `traceOverwritten` describes bounded prehistory retention; `traceCaptureFailures`
 invalidates complete incident evidence. Diagnostic allocation failure must not
@@ -133,10 +208,29 @@ the clock is steady-clock nanoseconds. Flush and completion-observation times
 are CPU observations, never GPU execution duration or physical presentation.
 No free-text SDK errors, names, credentials or image payloads enter the records.
 
+Each retained GPU read carries its original target/deadline. An outstanding read
+is counted once in `gpuReadinessDeadlineMisses` if readiness is not observed by
+that deadline; later recovery cannot erase the failure. This is a conservative
+readiness-observation failure, not a measurement of GPU execution time or proof
+that physical display dropped a frame. `gpuDeadlineCompletedReads` establishes
+how many completed reads actually had a declared deadline. Zero misses with
+unknown-deadline reads is not timing qualification.
+
+An idle completion pump uses the existing monitor owner, polling at most once
+per millisecond while reads remain outstanding. With no pending retirement it
+returns to the normal mailbox wait. Device-failed readers stop the idle pump;
+shutdown interrupts software waits. Callback resources retire on that owner
+before its COM apartment closes. Completion updates publish immutable reader
+metadata without inventing a new monitor job or changing exported-image identity.
+
 The headless `scripts/qa/program-display-copy-probe.py` retains startup and the
 synthetic workload's snapshots. It labels all-output and presentation acceptance
 unverified, even if copy counters happen to be zero. It never controls desktop
 input or opens the operator's camera/stream/recording destinations.
+Real-meeting mode uses the full authorized URL from a local input file; optional
+SDK credentials pass through anonymous stdin and never enter capture artifacts.
+The probe requires UTF-8 mode for native RPC (#877). Explicit pre-demand and
+demand-ack phases retain startup counters; they do not reset or discard them.
 
 Preserve 1080p60 quality, the selected two/three-frame Program buffer, existing
 display offset, audio alignment, enabled outputs and producer isolation. Do not
