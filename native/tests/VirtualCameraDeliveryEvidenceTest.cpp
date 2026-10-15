@@ -14,7 +14,7 @@ TEST(VirtualCameraReadRetry, ColdFirstPayloadCopyDoesNotConsumeTheBoundedRecover
       if (first) { now += 3000; return VirtualCameraReadResult::Contended; }
       now += 500; return VirtualCameraReadResult::Fresh;
     }, [&] { return now; }, [&](int64_t remaining) {
-      EXPECT_TRUE(remaining <= 2000); now += 250; return true;
+      EXPECT_TRUE(remaining > 0 && remaining <= sampleDeadline); now += 250; return true;
     }, true, retries, oldEntryClamp ? 2000 : sampleDeadline);
     EXPECT_TRUE(now < sampleDeadline);
     EXPECT_EQ(copies, oldEntryClamp ? 1u : 2u);
