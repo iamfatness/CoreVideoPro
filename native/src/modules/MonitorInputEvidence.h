@@ -4,24 +4,25 @@
 #include <chrono>
 
 namespace corevideo::modules {
-inline rpc::Json programDisplayEvidence(const std::shared_ptr<const MonitorRenderResult>& result) {
-  const auto value = result ? result->programDisplay : ProgramDisplayObservation{};
+inline rpc::Json programDisplayObservationEvidence(const ProgramDisplayObservation& value, bool includeTrace) {
   const int64_t now100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
   const auto age100ns = value.timelineTimestamp100ns > 0 ? (std::max)(int64_t(0), now100ns - value.timelineTimestamp100ns) : 0;
   constexpr const char* reasons[] = {"none", "read-capacity", "query-create", "query-read-failed",
-      "import", "texture-create", "srv-create", "failed-reader"};
+      "import", "texture-create", "srv-create", "failed-reader", "deadline", "cancelled"};
   rpc::Json::Object reasonCounts;
   for (size_t i = 1; i < value.refusalReasons.size(); ++i)
     reasonCounts.emplace(reasons[i], static_cast<double>(value.refusalReasons[i]));
   rpc::Json::Array incidents;
-  if (value.incidentTrace) for (const auto& event : *value.incidentTrace) {
+  if (includeTrace && value.incidentTrace) for (const auto& event : *value.incidentTrace) {
     incidents.emplace_back(rpc::Json::Object{
         {"observedNs", std::to_string(event.observedNs)}, {"stage", static_cast<double>(event.stage)},
         {"reason", reasons[static_cast<size_t>(event.reason)]},
         {"requestedSequence", std::to_string(event.requested)}, {"copiedSequence", std::to_string(event.copied)},
         {"requestedGeneration", std::to_string(event.generation)},
         {"completedSequence", std::to_string(event.completedSequence)},
+        {"completedGeneration", std::to_string(event.completedGeneration)},
+        {"pollFlags", static_cast<double>(event.pollFlags)},
         {"targetNs", std::to_string(event.targetNs)}, {"deadlineNs", std::to_string(event.deadlineNs)},
         {"slot", static_cast<double>(event.slot)}, {"width", static_cast<double>(event.width)},
         {"height", static_cast<double>(event.height)}, {"importCached", event.importCached},
@@ -29,6 +30,8 @@ inline rpc::Json programDisplayEvidence(const std::shared_ptr<const MonitorRende
         {"pending", static_cast<double>(event.pending)},
         {"pendingSequence0", std::to_string(event.pendingSequences[0])},
         {"pendingSequence1", std::to_string(event.pendingSequences[1])},
+        {"pendingGeneration0", std::to_string(event.pendingGenerations[0])},
+        {"pendingGeneration1", std::to_string(event.pendingGenerations[1])},
         {"pendingAgeNs0", std::to_string(event.pendingAgesNs[0])},
         {"pendingAgeNs1", std::to_string(event.pendingAgesNs[1])}});
   }
@@ -47,6 +50,11 @@ inline rpc::Json programDisplayEvidence(const std::shared_ptr<const MonitorRende
       {"readerEpoch", std::to_string(value.readerEpoch)}, {"readerReadLimit", value.readerReadLimit},
       {"refusalObservationVersion", "program-display-refusal-v1"},
       {"refusalReasons", std::move(reasonCounts)}, {"notReadyPolls", static_cast<double>(value.notReadyPolls)},
+      {"capacityPressures", static_cast<double>(value.capacityPressures)},
+      {"admittedAfterPressure", static_cast<double>(value.admittedAfterPressure)},
+      {"flushingPollRetirements", static_cast<double>(value.flushingPollRetirements)},
+      {"lateSubmissions", static_cast<double>(value.lateSubmissions)},
+      {"retryTotalNs", std::to_string(value.retryTotalNs)}, {"retryMaximumNs", std::to_string(value.retryMaximumNs)},
       {"lastHresult", static_cast<double>(value.lastHresult)},
       {"incidentTrace", std::move(incidents)}, {"traceCapacity", 512},
       {"traceOverwritten", std::to_string(value.traceOverwritten)},
@@ -54,6 +62,12 @@ inline rpc::Json programDisplayEvidence(const std::shared_ptr<const MonitorRende
       {"traceClock", "steady-clock-nanoseconds"}, {"traceAgeIsGpuDuration", false},
       {"allocatedBytes", static_cast<double>(value.allocatedBytes)},
       {"presentationOffset100ns", 166666}, {"displayPresentationVerified", false}};
+}
+inline rpc::Json programDisplayEvidence(const std::shared_ptr<const MonitorRenderResult>& result) {
+  auto exported = programDisplayObservationEvidence(result ? result->programDisplay : ProgramDisplayObservation{}, false).asObject();
+  exported.emplace("latestReader", programDisplayObservationEvidence(
+      result ? result->programDisplayReader : ProgramDisplayObservation{}, true));
+  return exported;
 }
 inline rpc::Json monitorInputEvidence(const std::shared_ptr<const MonitorRenderResult>& result) {
   rpc::Json::Array sources;

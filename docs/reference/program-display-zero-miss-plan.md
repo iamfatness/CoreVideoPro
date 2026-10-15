@@ -110,6 +110,9 @@ Source anchors:
 ### Refusal evidence contract
 
 `program-display-refusal-v1` is additive to the existing display observation.
+`latestReader` carries live reader evidence even when the exported canvas is old
+or unavailable. The outer observation retains exported-image attribution;
+never relabel those older pixels with the newest requested/copied identity.
 `readerEpoch` separates reader lifetimes; `readerReadLimit` describes the reader,
 not the producer's `capacity`. `refusalReasons` separates admission refusal from
 query creation/read, import, texture creation and SRV creation failures. A query

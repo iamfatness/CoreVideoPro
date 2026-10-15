@@ -244,6 +244,37 @@ TEST(MonitorRenderWorker, ReplacesPendingWorkWithoutWaitingForTheActiveMonitor) 
   EXPECT_EQ(calls.load(), 2);
 }
 
+TEST(MonitorRenderWorker, DisableAndShutdownCancelActiveDeadlineWorkWithoutDanglingState) {
+  for (const bool disable : {false, true}) {
+    std::promise<void> entered, cancelled;
+    auto cancelledFuture = cancelled.get_future();
+    MonitorRenderRequest retained;
+    std::atomic<bool> cancellationSeen{false};
+    auto worker = std::make_unique<MonitorRenderWorker>([&](const MonitorRenderRequest& request) {
+      if (request.sequence == 1) {
+        retained = request; entered.set_value();
+        const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!request.cancelled() && std::chrono::steady_clock::now() < limit)
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        cancellationSeen = request.cancelled(); cancelled.set_value();
+      }
+      return MonitorRenderResult{};
+    });
+    MonitorRenderRequest request; request.sequence = 1; request.multiviewActive = true;
+    worker->submit(std::move(request));
+    ASSERT_TRUE(entered.get_future().wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+    EXPECT_FALSE(retained.cancelled());
+    if (disable) {
+      MonitorRenderRequest inactive; inactive.sequence = 2; inactive.multiviewActive = false;
+      worker->submit(std::move(inactive));
+      EXPECT_TRUE(cancelledFuture.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+    }
+    worker.reset();
+    EXPECT_TRUE(cancellationSeen.load());
+    EXPECT_TRUE(retained.cancelled()); // The copied request safely outlives its worker.
+  }
+}
+
 TEST(MonitorRenderWorker, FailedWorkDoesNotPublishSuccessfulMetadataAndLaterWorkRecovers) {
   std::promise<void> failed;
   MonitorRenderWorker worker([&](const MonitorRenderRequest& request) {

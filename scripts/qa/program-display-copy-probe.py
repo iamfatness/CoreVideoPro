@@ -32,6 +32,7 @@ def main():
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--duration', type=float, default=120)
     parser.add_argument('--depth', type=int, choices=(2, 3), default=2)
+    parser.add_argument('--cpu-source-preparation', choices=('0','1'), default='1')
     args = parser.parse_args()
     if sys.platform == 'win32' and not sys.flags.utf8_mode:
         parser.error('Run with python -X utf8; native RPC is UTF-8 (existing harness issue #877)')
@@ -47,6 +48,7 @@ def main():
         coreSha256=hashlib.sha256(args.core.read_bytes()).hexdigest(),
         harnessSha256=hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
         depth=args.depth, requestedSeconds=args.duration, startupRetained=True,
+        cpuSourcePreparation=args.cpu_source_preparation,
         workload=('8 synthetic 1080p30 Zoom feeds' if args.fake else '8 real Zoom feeds (observed sizes/cadence retained)')+
             ' + 2560x1440 BGRA screen at 60 Hz; isolated 1080p60 monitors',
         synthetic=bool(args.fake),
@@ -72,13 +74,14 @@ def main():
             'COREVIDEO_FAKE_ENGINE_PARTICIPANTS': '8',
             'COREVIDEO_FAKE_ENGINE_RES': '2', 'COREVIDEO_FAKE_ENGINE_FPS': '30',
             'COREVIDEO_FAKE_NO_CHURN': '1', 'COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE': '0',
-            'COREVIDEO_GPU_CAPTURE': '0', 'COREVIDEO_CPU_SOURCE_PREPARATION': '0',
+            'COREVIDEO_GPU_CAPTURE': '0', 'COREVIDEO_CPU_SOURCE_PREPARATION': args.cpu_source_preparation,
         }, args.output/'native.stderr.log')
         with (args.output/'samples.jsonl').open('w', encoding='utf-8') as sample_file:
             def retain(snapshot):
                 nonlocal sample_count, latest, latest_sources, initial, trace_key
                 worker = dict(snapshot.get('realtimeEvidence',{}).get('monitorWorker',{}))
-                display = dict(worker.get('programDisplay',{}))
+                exported_display = worker.get('programDisplay',{})
+                display = dict(exported_display.get('latestReader',exported_display))
                 incident = display.pop('incidentTrace', [])
                 if incident:
                     key = (display.get('readerEpoch'),display.get('traceOverwritten'),incident[-1].get('observedNs'))
@@ -156,6 +159,7 @@ def main():
                 {'type':'load-scene-graph','sceneId':'probe-program','routes':[fixed('pgm','101')]},
                 {'type':'set-preview-scene','sceneId':'probe-preview','routes':[fixed('pvw','102')]},
                 {'type':'set-multiview-layout','canvasWidth':1920,'canvasHeight':1080,
+                    'layoutMode':'pgmPvwTop',
                     'sources':[dict(sourceId=p,kind='zoom',participantId=p,slot=i,label='Synthetic '+p)
                         for i,p in enumerate(pids)]+[dict(sourceId='capture:qa-screen',kind='capture',
                             captureDeviceId='qa-screen',slot=8,label='Synthetic screen')]},

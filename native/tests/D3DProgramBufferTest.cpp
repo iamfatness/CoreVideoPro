@@ -31,6 +31,7 @@ namespace corevideo::modules {
 struct D3DProgramDisplayReaderTestAccess {
   static void fault(D3DProgramDisplayReader& reader,
       std::function<std::optional<HRESULT>(ProgramDisplayReason)> fault) { reader.fault_ = std::move(fault); }
+  static void clock(D3DProgramDisplayReader& reader, std::function<int64_t()> clock) { reader.clock_ = std::move(clock); }
 };
 struct D3DProgramBufferTestAccess {
   static void beforeExport(D3DProgramBuffer& buffer, std::function<void(bool)> hook) { buffer.beforeExport_ = std::move(hook); }
@@ -73,10 +74,11 @@ TEST(D3DProgramBuffer, DisplayReaderAttributesEachResourceFailureAndExportsExact
     EXPECT_EQ(event.reason, reason); EXPECT_EQ(event.hresult, E_OUTOFMEMORY);
     EXPECT_EQ(event.requested, 91u); EXPECT_EQ(event.generation, 904u);
     EXPECT_EQ(event.width, 64u); EXPECT_EQ(event.deviceHresult, S_OK);
-    auto result = std::make_shared<MonitorRenderResult>(); result->programDisplay = evidence;
+    auto result = std::make_shared<MonitorRenderResult>(); result->programDisplayReader = evidence;
     const auto json = programDisplayEvidence(result);
-    EXPECT_EQ(json.getNumber("readerReadLimit"), 2);
-    EXPECT_EQ(json.get("incidentTrace")->asArray().back().getString("requestedSequence"), "91");
+    EXPECT_EQ(json.get("latestReader")->getNumber("readerReadLimit"), 2);
+    EXPECT_EQ(json.get("latestReader")->get("incidentTrace")->asArray().back().getString("requestedSequence"), "91");
+    EXPECT_FALSE(json.get("observed")->asBool()); // No invented exported-image attribution.
     EXPECT_FALSE(json.get("displayPresentationVerified")->asBool());
     D3DProgramDisplayReaderTestAccess::fault(reader, {});
     if (reason != ProgramDisplayReason::QueryCreate) {
@@ -134,6 +136,88 @@ TEST(D3DProgramBuffer, DisplayReaderCapacityRefusalRecordsPendingIdentitiesWitho
   EXPECT_EQ(reader.observation().refusalReasons[static_cast<size_t>(ProgramDisplayReason::FailedReader)], 600u);
   EXPECT_EQ(reader.observation().copies, 2u);
   context->Flush();
+}
+
+TEST(D3DProgramBuffer, DisplayReaderRetriesSameIdentityWithinOriginalDeadlineAndHonorsExpiryAndCancellation) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+  auto pixel = [&](ID3D11ShaderResourceView* view) {
+    ComPtrLite<ID3D11Resource> source;
+    ComPtrLite<ID3D11Texture2D> texture, staging;
+    view->GetResource(source.put());
+    EXPECT_TRUE(SUCCEEDED(source->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(texture.put()))));
+    D3D11_TEXTURE2D_DESC desc{}; texture->GetDesc(&desc);
+    desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = desc.MiscFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    EXPECT_TRUE(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, staging.put())));
+    context->CopyResource(staging.get(), texture.get()); context->Flush();
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    EXPECT_TRUE(SUCCEEDED(context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)));
+    const int value = static_cast<const uint8_t*>(mapped.pData)[32 * mapped.RowPitch + 32 * 4];
+    context->Unmap(staging.get(), 0); return value;
+  };
+  // Functional clock, not a hardware timing qualification: the completion
+  // seam controls observation availability; staging pixels independently prove
+  // the real submitted copy. No simulated success releases a GPU-owned lease.
+  for (int mode = 0; mode < 4; ++mode) { // legacy one-poll, retry, expired, cancelled
+    D3DProgramDisplaySnapshots pool;
+    ASSERT_TRUE(pool.initialize(device.get(), 64, 64, 1000 + mode));
+    D3DProgramDisplayReader reader;
+    int64_t clock = 1000000000;
+    const int64_t target = clock, deadline = clock + 16666667;
+    D3DProgramDisplayReaderTestAccess::clock(reader, [&] { return clock; });
+    D3DProgramDisplayReaderTestAccess::fault(reader, [](ProgramDisplayReason reason) -> std::optional<HRESULT> {
+      return reason == ProgramDisplayReason::QueryRead ? std::optional<HRESULT>(S_FALSE) : std::nullopt;
+    });
+    std::vector<std::shared_ptr<D3DProgramDisplaySnapshots::Snapshot>> slots;
+    ID3D11ShaderResourceView* view = nullptr;
+    for (int sequence = 1; sequence <= 3; ++sequence) {
+      auto slot = pool.reserve(); ASSERT_TRUE(slot != nullptr);
+      std::vector<uint8_t> color(64 * 64 * 4, static_cast<uint8_t>(sequence * 60));
+      for (size_t i = 3; i < color.size(); i += 4) color[i] = 255;
+      context->UpdateSubresource(slot->texture.get(), 0, nullptr, color.data(), 256, 0);
+      ProgramFrame frame; frame.frameNumber = frame.deliverySequence = sequence;
+      pool.stamp(slot, frame); slots.push_back(slot);
+      if (sequence < 3) view = reader.copy(device.get(), context.get(), slot);
+    }
+    ASSERT_TRUE(view != nullptr);
+    EXPECT_EQ(pixel(view), 120); // Genuine completion, while query observation remains held.
+    auto cancellation = std::make_shared<MonitorCancellationState>();
+    MonitorRenderRequest request; request.cancellation = cancellation;
+    unsigned polls = 0;
+    D3DProgramDisplayReaderTestAccess::fault(reader, [&](ProgramDisplayReason reason) -> std::optional<HRESULT> {
+      if (reason != ProgramDisplayReason::QueryRead) return {};
+      ++polls;
+      if (polls > 20) clock = deadline; // Broken progress cannot wedge the functional test.
+      if (polls > 2 && mode == 2) clock = deadline;
+      if (polls > 2 && mode == 3) cancellation->stopped = true;
+      if (mode == 1 && polls > 4) return {}; // Real GetData, after two held admission/recheck polls.
+      return S_FALSE;
+    });
+    view = reader.copy(device.get(), context.get(), slots[2], target, mode == 0 ? 0 : deadline, &request);
+    const auto evidence = reader.observation();
+    EXPECT_EQ(evidence.capacityPressures, 1u);
+    EXPECT_EQ(evidence.lateSubmissions, 0u);
+    if (mode == 1) {
+      EXPECT_EQ(reader.copied(), 3u); EXPECT_EQ(pixel(view), 180);
+      EXPECT_EQ(evidence.refused, 0u); EXPECT_EQ(evidence.skipped, 0u);
+      EXPECT_EQ(evidence.admittedAfterPressure, 1u);
+      EXPECT_EQ(evidence.gpuReads, 1);
+    } else {
+      EXPECT_EQ(reader.requested(), 3u); EXPECT_EQ(reader.copied(), 2u);
+      EXPECT_EQ(pixel(view), 120); EXPECT_EQ(evidence.gpuReads, 2);
+      const auto reason = mode == 0 ? ProgramDisplayReason::ReadCapacity :
+          mode == 2 ? ProgramDisplayReason::Deadline : ProgramDisplayReason::Cancelled;
+      EXPECT_EQ(evidence.refusalReasons[static_cast<size_t>(reason)], 1u);
+      EXPECT_EQ(evidence.refused, mode == 3 ? 0u : 1u);
+    }
+    D3DProgramDisplayReaderTestAccess::fault(reader, {});
+    reader.retire(context.get());
+    EXPECT_EQ(reader.observation().gpuReads, 0);
+    EXPECT_FALSE(slots[0]->quarantined.load());
+  }
 }
 
 TEST(D3DProgramBuffer, ImmutableDisplayLeaseSurvivesUnreadPublicationAndPoolExhaustion) {

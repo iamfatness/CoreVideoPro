@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
+#include <thread>
 
 namespace corevideo::modules {
 
@@ -103,7 +104,8 @@ class D3DProgramDisplayReader {
     for (const auto& read : reads_) read.owner->quarantined = true;
   }
   ID3D11ShaderResourceView* copy(ID3D11Device* device, ID3D11DeviceContext* context,
-      const std::shared_ptr<const void>& owner, int64_t targetNs = 0, int64_t deadlineNs = 0) {
+      const std::shared_ptr<const void>& owner, int64_t targetNs = 0, int64_t deadlineNs = 0,
+      const MonitorRenderRequest* request = nullptr) {
     requestedSnapshot_ = nullptr; importCached_ = false;
     retire(context);
     targetNs_ = targetNs; deadlineNs_ = deadlineNs;
@@ -115,11 +117,41 @@ class D3DProgramDisplayReader {
     const auto cached = imports_.find(snapshot->slot);
     importCached_ = generation_ == snapshot->generation && cached != imports_.end() && !!cached->second;
     record(1);
+    const auto cancelled = [&] { return request && request->cancelled(); };
+    if (cancelled()) return cancel();
     if (copiedGeneration_ == snapshot->generation && copied_ == requested_) {
       ++reused_; requestedSnapshot_ = nullptr; return view_.get();
     }
     if (failed_) return refuse(device, ProgramDisplayReason::FailedReader, lastHresult_);
-    if (reads_.size() >= ReadLimit) return refuse(device, ProgramDisplayReason::ReadCapacity, S_FALSE);
+    if (deadlineNs_ > 0 && nowNs() >= deadlineNs_)
+      return refuse(device, ProgramDisplayReason::Deadline, S_FALSE);
+    if (reads_.size() >= ReadLimit) {
+      ++capacityPressures_;
+      // Old/inline callers have no declared timeline budget. Never invent a
+      // new timeout: preserve their nonblocking admission policy.
+      if (deadlineNs_ <= 0) return refuse(device, ProgramDisplayReason::ReadCapacity, S_FALSE);
+      record(7, ProgramDisplayReason::ReadCapacity, S_FALSE); captureIncident(); postIncident_ = 8;
+      const auto start = nowNs();
+      const auto before = reads_.size();
+      // Permit driver submission/progress once at actual pressure. Subsequent
+      // polls do not flush, and the producer never participates in this wait.
+      retire(context, 0);
+      flushingPollRetirements_ += before - reads_.size();
+      while (!failed_ && reads_.size() >= ReadLimit && !cancelled() && nowNs() < deadlineNs_) {
+        const auto remaining = deadlineNs_ - nowNs();
+        if (remaining <= 0) break;
+        std::this_thread::sleep_for(std::chrono::nanoseconds((std::min)(remaining, int64_t(100000))));
+        retire(context);
+      }
+      const auto elapsed = nowNs() - start;
+      retryTotalNs_ += elapsed; retryMaximumNs_ = (std::max)(retryMaximumNs_, elapsed);
+      if (cancelled()) return cancel();
+      if (failed_) return refuse(device, ProgramDisplayReason::FailedReader, lastHresult_);
+      if (reads_.size() >= ReadLimit || nowNs() >= deadlineNs_)
+        return refuse(device, ProgramDisplayReason::Deadline, S_FALSE);
+      ++admittedAfterPressure_;
+      record(8); captureIncident();
+    }
     if (generation_ != snapshot->generation) {
       imports_.clear(); generation_ = snapshot->generation;
     }
@@ -154,6 +186,9 @@ class D3DProgramDisplayReader {
       local_ = std::move(nextLocal); view_ = std::move(nextView);
       width_ = desc.Width; height_ = desc.Height;
     }
+    if (cancelled()) return cancel();
+    if (deadlineNs_ > 0 && nowNs() >= deadlineNs_)
+      return refuse(device, ProgramDisplayReason::Deadline, S_FALSE);
     Read read; read.owner = std::move(snapshot); read.submittedNs = nowNs();
     for (size_t index = 0; index < queries_.size(); ++index) {
       const bool busy = std::any_of(reads_.begin(), reads_.end(), [index](const Read& item) { return item.query == index; });
@@ -161,6 +196,8 @@ class D3DProgramDisplayReader {
     }
     context->CopyResource(local_.get(), imported.get());
     context->End(queries_[read.query].get());
+    const bool lateSubmission = deadlineNs_ > 0 && nowNs() >= deadlineNs_;
+    if (lateSubmission) ++lateSubmissions_;
     // The enclosing monitor pass flushes. The copy precedes its draw on the same
     // immediate context; completion retires source ownership, not presentation.
     if (copiedGeneration_ == generation_ && copied_ && requested_ > copied_ + 1) skipped_ += requested_ - copied_ - 1;
@@ -173,15 +210,18 @@ class D3DProgramDisplayReader {
     reads_.push_back(std::move(read));
     record(2);
     if (postIncident_ && --postIncident_ == 0) captureIncident();
+    if (lateSubmission) { record(4, ProgramDisplayReason::Deadline, S_FALSE); captureIncident(); postIncident_ = 8; }
     requestedSnapshot_ = nullptr;
     return view_.get();
   }
-  void retire(ID3D11DeviceContext* context) {
+  void retire(ID3D11DeviceContext* context, UINT flags = D3D11_ASYNC_GETDATA_DONOTFLUSH) {
+    lastPollFlags_ = flags;
     for (auto it = reads_.begin(); it != reads_.end();) {
       BOOL done = FALSE;
       const auto hr = operation(ProgramDisplayReason::QueryRead, [&] {
-          return context->GetData(queries_[it->query].get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH); });
-      if (hr == S_OK && done) { record(3, ProgramDisplayReason::None, hr, S_OK, it->owner->frame.deliverySequence); ++completed_; it = reads_.erase(it); }
+          return context->GetData(queries_[it->query].get(), &done, sizeof(done), flags); });
+      if (hr == S_OK && done) { record(3, ProgramDisplayReason::None, hr, S_OK, it->owner->frame.deliverySequence,
+          it->owner->generation); ++completed_; it = reads_.erase(it); }
       else {
         if (FAILED(hr) && !failed_) {
           failed_ = true; it->owner->quarantined = true;
@@ -218,6 +258,9 @@ class D3DProgramDisplayReader {
     result.lastHresult = lastHresult_; result.traceOverwritten = capturedOverwritten_;
     result.incidentTrace = incident_;
     result.traceCaptureFailures = traceCaptureFailures_;
+    result.capacityPressures = capacityPressures_; result.admittedAfterPressure = admittedAfterPressure_;
+    result.flushingPollRetirements = flushingPollRetirements_; result.lateSubmissions = lateSubmissions_;
+    result.retryTotalNs = retryTotalNs_; result.retryMaximumNs = retryMaximumNs_;
     result.state = failed_ ? "failed" : !copied_ ? "preparing" : held_ ? "held" : "copied";
     return result;
   }
@@ -225,6 +268,7 @@ class D3DProgramDisplayReader {
   friend struct D3DProgramDisplayReaderTestAccess;
   // Constructor/owner-only test seam. No environment, command or API binding.
   std::function<std::optional<HRESULT>(ProgramDisplayReason)> fault_;
+  std::function<int64_t()> clock_;
   template<class Call> HRESULT operation(ProgramDisplayReason reason, Call call) {
     if (fault_) if (auto result = fault_(reason)) return *result;
     return call();
@@ -234,18 +278,20 @@ class D3DProgramDisplayReader {
     size_t query = 0;
     int64_t submittedNs = 0;
   };
-  static int64_t nowNs() {
+  int64_t nowNs() const {
+    if (clock_) return clock_();
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
   }
   void record(uint32_t stage, ProgramDisplayReason reason = ProgramDisplayReason::None,
-      HRESULT hr = S_OK, HRESULT deviceHr = S_OK, uint64_t completed = 0) {
+      HRESULT hr = S_OK, HRESULT deviceHr = S_OK, uint64_t completed = 0, uint64_t completedGeneration = 0) {
     ProgramDisplayIncident event;
     event.observedNs = nowNs(); event.stage = stage; event.reason = reason;
     event.targetNs = targetNs_; event.deadlineNs = deadlineNs_;
     event.requested = requested_; event.copied = copied_; event.generation = generation_;
     event.hresult = hr; event.deviceHresult = deviceHr; event.importCached = importCached_;
     event.completedSequence = completed;
+    event.completedGeneration = completedGeneration; event.pollFlags = lastPollFlags_;
     if (requestedSnapshot_) {
       event.generation = requestedSnapshot_->generation; event.slot = static_cast<uint32_t>(requestedSnapshot_->slot);
       event.width = requestedSnapshot_->frame.sharedTexture.width;
@@ -254,6 +300,7 @@ class D3DProgramDisplayReader {
     event.pending = static_cast<uint32_t>(reads_.size());
     for (size_t i = 0; i < reads_.size() && i < ReadLimit; ++i) {
       event.pendingSequences[i] = reads_[i].owner->frame.deliverySequence;
+      event.pendingGenerations[i] = reads_[i].owner->generation;
       event.pendingAgesNs[i] = event.observedNs - reads_[i].submittedNs;
       event.oldestReadAgeNs = (std::max)(event.oldestReadAgeNs, event.pendingAgesNs[i]);
     }
@@ -275,11 +322,20 @@ class D3DProgramDisplayReader {
     requestedSnapshot_ = nullptr;
     return view_.get();
   }
+  ID3D11ShaderResourceView* cancel() {
+    ++reasons_[static_cast<size_t>(ProgramDisplayReason::Cancelled)];
+    record(4, ProgramDisplayReason::Cancelled); captureIncident();
+    requestedSnapshot_ = nullptr;
+    return view_.get(); // Explicit terminal cancellation is not a capacity refusal.
+  }
   inline static std::atomic<uint64_t> nextEpoch_{1};
   uint64_t epoch_ = 0, traceWritten_ = 0, capturedOverwritten_ = 0, notReadyPolls_ = 0;
   uint64_t traceCaptureFailures_ = 0;
   int64_t targetNs_ = 0, deadlineNs_ = 0;
-  std::array<uint64_t, 8> reasons_{};
+  std::array<uint64_t, 10> reasons_{};
+  uint64_t capacityPressures_ = 0, admittedAfterPressure_ = 0, flushingPollRetirements_ = 0, lateSubmissions_ = 0;
+  int64_t retryTotalNs_ = 0, retryMaximumNs_ = 0;
+  UINT lastPollFlags_ = D3D11_ASYNC_GETDATA_DONOTFLUSH;
   std::array<ProgramDisplayIncident, TraceCapacity> trace_{};
   static_assert(sizeof(trace_) <= 128 * 1024);
   std::shared_ptr<const std::vector<ProgramDisplayIncident>> incident_;

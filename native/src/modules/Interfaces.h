@@ -1107,6 +1107,10 @@ struct GradePreviewSurface {
     std::string status = "preparing";
   } scopes;
 };
+struct MonitorCancellationState {
+  std::atomic<uint64_t> epoch{0};
+  std::atomic<bool> stopped{false};
+};
 struct MonitorRenderRequest {
   int64_t sequence = 0;
   int64_t programDisplayTargetNs = 0, programDisplayDeadlineNs = 0;
@@ -1123,6 +1127,12 @@ struct MonitorRenderRequest {
   bool bufferedProgram = false;
   ProgramFrameSharedTexture deliveredProgram;
   std::shared_ptr<const void> deliveredProgramOwner;
+  std::shared_ptr<const MonitorCancellationState> cancellation;
+  uint64_t cancellationEpoch = 0;
+  bool cancelled() const {
+    return cancellation && (cancellation->stopped.load(std::memory_order_relaxed) ||
+        cancellation->epoch.load(std::memory_order_relaxed) != cancellationEpoch);
+  }
 };
 
 struct MonitorInputObservation {
@@ -1131,16 +1141,18 @@ struct MonitorInputObservation {
   int64_t frameId = 0, captureTimestamp100ns = 0;
 };
 enum class ProgramDisplayReason : uint32_t {
-  None, ReadCapacity, QueryCreate, QueryRead, Import, TextureCreate, SrvCreate, FailedReader
+  None, ReadCapacity, QueryCreate, QueryRead, Import, TextureCreate, SrvCreate, FailedReader, Deadline, Cancelled
 };
 struct ProgramDisplayIncident {
   int64_t observedNs = 0, oldestReadAgeNs = 0;
   int64_t targetNs = 0, deadlineNs = 0;
   uint64_t requested = 0, copied = 0, generation = 0, completedSequence = 0;
   uint64_t pendingSequences[2] = {};
+  uint64_t pendingGenerations[2] = {}, completedGeneration = 0;
   int64_t pendingAgesNs[2] = {};
   int64_t hresult = 0, deviceHresult = 0;
   uint32_t stage = 0, slot = 0, width = 0, height = 0, pending = 0;
+  uint32_t pollFlags = 0;
   ProgramDisplayReason reason = ProgramDisplayReason::None;
   bool importCached = false;
 };
@@ -1153,7 +1165,9 @@ struct ProgramDisplayObservation {
   uint64_t allocatedBytes = 0;
   uint64_t readerEpoch = 0;
   int readerReadLimit = 2;
-  std::array<uint64_t, 8> refusalReasons{};
+  std::array<uint64_t, 10> refusalReasons{};
+  uint64_t capacityPressures = 0, admittedAfterPressure = 0, flushingPollRetirements = 0, lateSubmissions = 0;
+  int64_t retryTotalNs = 0, retryMaximumNs = 0;
   uint64_t notReadyPolls = 0, traceOverwritten = 0, traceCaptureFailures = 0;
   int64_t lastHresult = 0;
   std::shared_ptr<const std::vector<ProgramDisplayIncident>> incidentTrace;
@@ -1171,6 +1185,8 @@ struct MonitorRenderResult {
   uint64_t retainedInputs = 0, retainedInputBytes = 0, retentionRefusals = 0;
   std::vector<MonitorInputObservation> inputs;
   ProgramDisplayObservation programDisplay;
+  // Live reader diagnosis is independent of the older exported canvas identity.
+  ProgramDisplayObservation programDisplayReader;
 };
 
 struct MonitorRenderDiagnostics {

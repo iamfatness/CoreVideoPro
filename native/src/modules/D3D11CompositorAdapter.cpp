@@ -599,6 +599,8 @@ class D3D11Compositor final : public ICompositor {
     monitorBufferedProgram_ = request.bufferedProgram;
     monitorProgram_ = request.deliveredProgram;
     monitorProgramOwner_ = request.deliveredProgramOwner;
+    monitorRequest_ = &request;
+    struct ClearRequest { const MonitorRenderRequest*& request; ~ClearRequest() { request = nullptr; } } clearRequest{monitorRequest_};
     monitorProgramTargetNs_ = request.programDisplayTargetNs;
     monitorProgramDeadlineNs_ = request.programDisplayDeadlineNs;
     frameNumber_ = request.sequence;
@@ -651,6 +653,7 @@ class D3D11Compositor final : public ICompositor {
     if (gpuReadLeases_) gpuReadLeases_->finish();
     context_->Flush();
     programDisplayReader_.flushed();
+    result.programDisplayReader = programDisplayReader_.observation();
     monitorProgramOwner_.reset();
     return result;
   }
@@ -809,7 +812,8 @@ class D3D11Compositor final : public ICompositor {
       if (exported.sharedHandleHex.empty()) owner.reset();
     } else if (buffer) buffer->multiview(exported, owner, programProductionSlot_);
     return programDisplayReader_.copy(device_.get(), context_.get(), owner,
-        monitorBatch_ ? monitorProgramTargetNs_ : 0, monitorBatch_ ? monitorProgramDeadlineNs_ : 0);
+        monitorBatch_ ? monitorProgramTargetNs_ : 0, monitorBatch_ ? monitorProgramDeadlineNs_ : 0,
+        monitorBatch_ ? monitorRequest_ : nullptr);
   }
 
   // Per-participant keyed-mutex shared texture for the GPU multiview tiles.
@@ -3350,6 +3354,7 @@ class D3D11Compositor final : public ICompositor {
   uint64_t programBufferGeneration_ = 0;
   D3DProgramDisplayReader programDisplayReader_;
   int64_t monitorProgramTargetNs_ = 0, monitorProgramDeadlineNs_ = 0;
+  const MonitorRenderRequest* monitorRequest_ = nullptr;
   std::map<int64_t, ProgramDisplayObservation> programDisplayHistory_;
   enum ProfileStage { ParticipantAcquire, ParticipantConvert, ParticipantCopy, ParticipantRelease, ParticipantTotal,
                       MvUpload, MvDraw, MvShare, MvTotal, ProfileStageCount };

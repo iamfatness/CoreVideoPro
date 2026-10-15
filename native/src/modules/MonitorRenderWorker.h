@@ -22,11 +22,15 @@ class MonitorRenderWorker {
           run(render, initialize);
         }) {}
   ~MonitorRenderWorker() {
+    cancellation_->stopped.store(true, std::memory_order_relaxed);
     { std::lock_guard<std::mutex> lock(mutex_); stopping_ = true; }
     changed_.notify_one();
     if (thread_.joinable()) thread_.join(); // compositor shutdown, never a render tick
   }
   void submit(MonitorRenderRequest request) {
+    if (!request.multiviewActive) cancellation_->epoch.fetch_add(1, std::memory_order_relaxed);
+    request.cancellation = cancellation_;
+    request.cancellationEpoch = cancellation_->epoch.load(std::memory_order_relaxed);
     auto next = std::make_shared<const MonitorRenderRequest>(std::move(request));
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -145,6 +149,7 @@ class MonitorRenderWorker {
   bool stopping_ = false;
   uint64_t submitted_ = 0, superseded_ = 0, completed_ = 0, failed_ = 0;
   std::string readiness_ = "starting", failureReason_;
+  std::shared_ptr<MonitorCancellationState> cancellation_ = std::make_shared<MonitorCancellationState>();
   std::thread thread_;
 };
 
