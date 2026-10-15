@@ -1187,6 +1187,7 @@ struct ProgramDisplayObservation {
   std::string state = "unavailable";
 };
 struct MonitorRenderResult {
+  int64_t completedAtNs = 0; // Actual immutable result publication, not observer wake time.
   uint64_t exportRetirementPending = 0, exportRetirementBytes = 0, exportRetirementRefused = 0;
   int64_t sequence = 0;
   ProgramFrameSharedTexture multiview;
