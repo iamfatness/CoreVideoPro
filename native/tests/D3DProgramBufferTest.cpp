@@ -974,6 +974,12 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
               diagnostic.pending, static_cast<long long>(diagnostic.lastSequence), diagnostic.lastWorkMs,
               diagnostic.effectiveMode.c_str(), diagnostic.readiness.c_str(), diagnostic.failureReason.c_str());
         }
+        if (result && result->completedAtNs > deadlineNs) {
+          std::fprintf(stderr, "[program-display-publication-late] completed_us=%lld copied=%llu gpu_misses=%llu state=%s\n",
+              static_cast<long long>((result->completedAtNs - std::chrono::duration_cast<std::chrono::nanoseconds>(tick.time_since_epoch()).count())/1000),
+              static_cast<unsigned long long>(result->programDisplayReader.copiedSequence),
+              static_cast<unsigned long long>(result->programDisplayReader.gpuReadinessDeadlineMisses), result->programDisplayReader.state.c_str());
+        }
         ASSERT_TRUE(result && result->sequence >= n + 1 && result->completedAtNs > 0 && result->completedAtNs <= deadlineNs)
             << "depth=" << depth << " phase_ms=" << phaseMs << " tick=" << n
             << " expected_sequence=" << n + 1 << " observed_sequence=" << (result ? result->sequence : -1);

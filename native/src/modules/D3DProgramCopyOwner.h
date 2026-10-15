@@ -22,7 +22,7 @@ class D3DProgramCopyOwner {
           if (request.acquireDeliveredProgram(request.deliveredProgram, request.deliveredProgramOwner)) break;
           const auto remaining = request.programDisplayDeadlineNs - nowNs();
           if (remaining <= 0) break;
-          std::this_thread::sleep_for(std::chrono::nanoseconds((std::min)(remaining, int64_t(100000))));
+          publicationWait_.pause(remaining);
         }
       }
       if (request.acquireDeliveredProgram && !request.deliveredProgramOwner)
@@ -53,6 +53,7 @@ class D3DProgramCopyOwner {
   ComPtrLite<ID3D11Device> device_;
   ComPtrLite<ID3D11DeviceContext> context_;
   std::shared_ptr<D3DVideoConsumer> consumer_;
+  D3DDeadlineWait publicationWait_;
   D3DProgramDisplayReader reader_;
 };
 }
