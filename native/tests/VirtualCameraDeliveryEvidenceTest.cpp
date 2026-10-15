@@ -5,6 +5,26 @@
 
 using namespace corevideo::modules;
 
+TEST(VirtualCameraReadRetry, ColdFirstPayloadCopyDoesNotConsumeTheBoundedRecoveryWindow) {
+  const auto run = [](bool oldEntryClamp) {
+    int64_t now = 0; unsigned retries = 0; unsigned copies = 0;
+    const int64_t sampleDeadline = 14000;
+    const bool got = readCameraUntilDeadline([&](bool first) {
+      ++copies;
+      if (first) { now += 3000; return VirtualCameraReadResult::Contended; }
+      now += 500; return VirtualCameraReadResult::Fresh;
+    }, [&] { return now; }, [&](int64_t remaining) {
+      EXPECT_TRUE(remaining <= 2000); now += 250; return true;
+    }, true, retries, oldEntryClamp ? 2000 : sampleDeadline);
+    EXPECT_TRUE(now < sampleDeadline);
+    EXPECT_EQ(copies, oldEntryClamp ? 1u : 2u);
+    EXPECT_EQ(retries, oldEntryClamp ? 0u : 1u);
+    return got;
+  };
+  EXPECT_FALSE(run(true)); // The former entry-relative clamp loses a recoverable first sample.
+  EXPECT_TRUE(run(false));
+}
+
 TEST(VirtualCameraReadRetry, OriginalDeadlineIsNotRenewedByLateEntryOrOversleptWait) {
   for (int64_t start : {int64_t{1990}, int64_t{2100}}) {
     int64_t now = start; unsigned retries = 0; int reads = 0, waits = 0;

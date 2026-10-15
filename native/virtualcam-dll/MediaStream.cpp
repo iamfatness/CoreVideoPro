@@ -223,17 +223,24 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   int h = 0;
   unsigned retries = 0;
   unsigned copyBudget = 2;
-  const auto retryDeadlineUs = std::min<int64_t>(sampleReadDeadlineUs_, MFGetSystemTime() / 10 + 2000);
+  const auto readEnteredUs = MFGetSystemTime() / 10;
+  int64_t firstReadElapsedUs = 0;
+  int64_t firstReadRemainingUs = 0;
   const bool got = corevideo::modules::readCameraUntilDeadline(
       [&](bool allowReopen) {
         reader_.readLatest(scratch_, w, h, allowReopen, &copyBudget);
+        if (allowReopen) {
+          const auto firstDoneUs = MFGetSystemTime() / 10;
+          firstReadElapsedUs = firstDoneUs - readEnteredUs;
+          firstReadRemainingUs = sampleReadDeadlineUs_ - firstDoneUs;
+        }
         return reader_.evidence().lastResult;
       }, [] { return MFGetSystemTime() / 10; }, [&](int64_t remainingUs) {
         if (!copyBudget) return false;
         if (remainingUs <= 0) return false;
         if (!pacerTimer_) pacerTimer_ = CreateWaitableTimerExW(nullptr, nullptr,
             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-        if (!pacerTimer_) return false;
+        if (!pacerTimer_) { ++retryTimerFailures_; return false; }
         LARGE_INTEGER due; due.QuadPart = -std::min<int64_t>(250, remainingUs) * 10;
         if (!SetWaitableTimer(pacerTimer_, &due, 0, nullptr, nullptr, FALSE)) {
           ++retryTimerFailures_; return false;
@@ -244,12 +251,20 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
         // A timeout still yielded the CPU. The original absolute deadline,
         // checked by the helper, decides whether another read is allowed.
         return true;
-      }, retryTransientRead_, retries, retryDeadlineUs, 8);
+      }, retryTransientRead_, retries, sampleReadDeadlineUs_, 8);
   if (MFGetSystemTime() / 10 > sampleReadDeadlineUs_) ++readDeadlineMisses_;
   if (!got && (reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Contended ||
                reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Unchanged))
     ++unrecoveredTransientSamples_;
   if (retries) { ++retriedSamples_; if (got) ++recoveredSamples_; }
+  // Bounded miss diagnosis; never log pixels or identity credentials.
+  if (!got && (unrecoveredTransientSamples_ == 1 || unrecoveredTransientSamples_ % 120 == 0)) {
+    char timing[512];
+    _snprintf_s(timing, sizeof(timing), _TRUNCATE,
+        "[vcam-read-window] retryEnabled=%d firstReadUs=%lld originalRemainingAfterFirstUs=%lld retries=%u remainingPayloadCopies=%u",
+        retryTransientRead_ ? 1 : 0, firstReadElapsedUs, firstReadRemainingUs, retries, copyBudget);
+    VcamServeLog(timing);
+  }
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
       scratch_.size() == dstLen) {
     memcpy(dst, scratch_.data(), dstLen);
