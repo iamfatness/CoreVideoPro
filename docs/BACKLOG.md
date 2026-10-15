@@ -154,6 +154,9 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| 1 — October 15 UI/UX | B | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Finish stable-input scene creation and layout fallbacks, quick solo/two-person/share starters, preserved custom routes and fresh/upgraded profile evidence. |
+| 2 — October 15 UI/UX | B | [#590](https://github.com/iamfatness/CoreVideoPro/issues/590), [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) | Sources assignment/offline clarity and identity-safe thumbnail removal/reassignment acceptance. Count one primary development issue per focused PR. |
+| 3 — October 15 UI/UX | B | [#848](https://github.com/iamfatness/CoreVideoPro/issues/848) | Finish shared adjustment consistency and actual effect/persistence checks, followed by the approved existing lower-third, grading/ROI and navigation consumers. |
 | Acceptance | A | [#872](https://github.com/iamfatness/CoreVideoPro/issues/872) | Stale device-start fence merged in #896 with green exact-head CI and deterministic stalled-stop tests. Physical device continuity and installed zero-miss acceptance remain open. |
 | 2 — October 14 | B | [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) | Per-source GPU publication, incarnation fencing and visible-page bounded export demand merged in #899. Native and managed regression coverage passed; actual packaged Sources-page removal, reorder, reassignment and reconnect acceptance remains open. |
 | Follow-through — October 14 | C | [#873](https://github.com/iamfatness/CoreVideoPro/issues/873) | Bounded pre-drain resource staging and off-lock grade annotation are staged in #901, including admitted barrier ordering, explicit exhaustion, stalled-pump and shutdown coverage. Merge/CI and installed full-load delivery acceptance remain open. |

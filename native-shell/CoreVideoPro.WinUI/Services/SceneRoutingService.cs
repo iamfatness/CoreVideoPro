@@ -210,16 +210,13 @@ public static class SceneRoutingService
         // "Add source" affordance appends routes to the working set, and reconciliation must
         // not truncate them back to the layout capacity.
         var slotCount = Math.Max(GetRouteSlotCount(scene, participants), existingRoutes?.Count ?? 0);
-        var slotDefaults = scene.Layout == "speaker-slides"
-            ? GetSlotDefaults(scene, existingRoutes, participants).Concat(["screen-share"]).ToList()
-            : GetSlotDefaults(scene, existingRoutes, participants);
+        var starters = GetStarterRoutes(scene);
 
         return Enumerable.Range(0, slotCount)
             .Select(index =>
             {
                 var existing = existingRoutes?.ElementAtOrDefault(index);
-                var fallback = RouteFromSlot(scene.Id, index, slotDefaults.ElementAtOrDefault(index));
-                return NormalizeRouteUpdate(existing ?? fallback, participants);
+                return NormalizeRouteUpdate(existing ?? starters[index], participants);
             })
             .ToList();
     }
@@ -301,6 +298,7 @@ public static class SceneRoutingService
             // "media:<assetId>" identity. They are not Zoom participants and must
             // not surface the alarming (and false) participant-unavailable warning.
             if (route.Mode == SourceRouteMode.Fixed &&
+                route.ShowInputSlotNumber is null &&
                 participant is null &&
                 !ShowInputRosterService.TryGetMediaAssetId(route.ParticipantId, out _))
             {
@@ -622,69 +620,6 @@ public static class SceneRoutingService
         }
 
         return null;
-    }
-
-    private static SourceRoute RouteFromSlot(string sceneId, int index, string? slot)
-    {
-        if (slot == "screen-share")
-        {
-            return new SourceRoute
-            {
-                Id = $"{sceneId}-{index + 1}",
-                Mode = SourceRouteMode.ScreenShare,
-                AudioRole = SourceAudioRole.Audience
-            };
-        }
-
-        if (slot?.StartsWith("capture:", StringComparison.Ordinal) == true)
-        {
-            return new SourceRoute
-            {
-                Id = $"{sceneId}-{index + 1}",
-                Mode = SourceRouteMode.CaptureDevice,
-                CaptureDeviceId = slot["capture:".Length..],
-                AudioRole = SourceAudioRole.Isolated
-            };
-        }
-
-        return new SourceRoute
-        {
-            Id = $"{sceneId}-{index + 1}",
-            Mode = slot is not null ? SourceRouteMode.Fixed : SourceRouteMode.ActiveSpeaker,
-            ParticipantId = slot,
-            AudioRole = slot is not null ? SourceAudioRole.Isolated : SourceAudioRole.Mix
-        };
-    }
-
-    private static IReadOnlyList<string> GetSlotDefaults(
-        Scene scene,
-        IReadOnlyList<SourceRoute>? existingRoutes,
-        IReadOnlyList<Participant> participants)
-    {
-        var existingSlots = existingRoutes?
-            .Select(RouteToSlot)
-            .Where(slot => slot is not null && slot != "screen-share")
-            .Cast<string>()
-            .ToList() ?? [];
-
-        var sortedParticipants = SortParticipantsForProduction(participants);
-        var slotCount = GetSceneSlotCount(scene, participants);
-        var defaults = new List<string>(existingSlots);
-
-        foreach (var participant in sortedParticipants)
-        {
-            if (defaults.Count >= slotCount)
-            {
-                break;
-            }
-
-            if (!defaults.Contains(participant.Id))
-            {
-                defaults.Add(participant.Id);
-            }
-        }
-
-        return defaults.Take(slotCount).ToList();
     }
 
     private static int GetRouteSlotCount(Scene scene, IReadOnlyList<Participant> participants) =>

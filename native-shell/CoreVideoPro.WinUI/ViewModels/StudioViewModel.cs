@@ -3992,23 +3992,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
     }
 
     [RelayCommand]
-    private void NewScene()
+    private void NewScene(string? template)
     {
         var newId = NewCustomSceneId();
-        var sceneNumber = _scenes.Count(s => s.Id.StartsWith("custom-", StringComparison.Ordinal)) + 1;
-        var scene = new Scene
-        {
-            Id = newId,
-            Name = $"New scene {sceneNumber}",
-            Layout = "host-focus",
-            Automation = "Custom canvas"
-        };
+        var (scene, routes) = StarterSceneFactory.Create(newId, template, _scenes.Select(item => item.Name));
 
         _scenes.Add(scene);
-        _sceneRoutes[newId] = SceneRoutingService
-            .GetRouteDefaults(scene, existingRoutes: null, RoomVideoParticipants)
-            .Select(route => route.Clone())
-            .ToList();
+        _sceneRoutes[newId] = routes;
 
         RefreshSceneItems();
         PreviewSceneId = newId;
@@ -13061,7 +13051,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             }
 
             routes = SceneRoutingService
-                .GetRouteDefaults(scene, existingRoutes: null, RoomVideoParticipants)
+                .GetStarterRoutes(scene)
                 .Select(route => route.Clone())
                 .ToList();
             _sceneRoutes[sceneId] = routes;

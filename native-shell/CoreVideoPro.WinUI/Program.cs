@@ -11,12 +11,14 @@ public static class Program
     {
         try
         {
-            LaunchLog.Write($"base={AppContext.BaseDirectory}");
-
             var runtimeProbe = args.Length == 2 && args[0] == "--verify-runtime";
             var settingsProbe = args.Length == 2 && args[0] == "--verify-operator-settings";
             var gradeProbe = args.Length == 3 && args[0] == "--verify-source-grade";
             var meterProbe = args.Length == 3 && args[0] == "--verify-audio-meters";
+            if (runtimeProbe || settingsProbe || gradeProbe || meterProbe)
+                CoreVideoPro.MediaCore.Services.DiagnosticLog.ConfigureVerificationDirectory(
+                    Path.Combine(Path.GetDirectoryName(Path.GetFullPath(args[^1]))!, "logs"));
+            LaunchLog.Write($"base={AppContext.BaseDirectory}");
             var probeSeconds = meterProbe ? int.Parse(args[1]) : 0;
             if (meterProbe && probeSeconds is < 5 or > 86400)
                 throw new ArgumentOutOfRangeException(nameof(args), "Meter probe duration must be 5–86400 seconds.");

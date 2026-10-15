@@ -69,7 +69,15 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="Scenes" FontWeight="SemiBold"/>
-                    <Button Grid.Column="1" Content="＋" Command="{x:Bind ViewModel.NewSceneCommand}" AutomationProperties.Name="New scene"/>
+                    <Button Grid.Column="1" Content="＋" AutomationProperties.Name="New scene" ToolTipService.ToolTip="Choose a starter layout">
+                        <Button.Flyout>
+                            <MenuFlyout>
+                                <MenuFlyoutItem Text="Solo · Input 1" Command="{x:Bind ViewModel.NewSceneCommand}" CommandParameter="solo"/>
+                                <MenuFlyoutItem Text="Two people · Inputs 1 and 2" Command="{x:Bind ViewModel.NewSceneCommand}" CommandParameter="two-person"/>
+                                <MenuFlyoutItem Text="Screen + presenter · Share and Input 1" Command="{x:Bind ViewModel.NewSceneCommand}" CommandParameter="screen-presenter"/>
+                            </MenuFlyout>
+                        </Button.Flyout>
+                    </Button>
                 </Grid>
                 <ListView x:Name="ScenePicker" Grid.Row="1" ItemsSource="{x:Bind ViewModel.SceneItems, Mode=OneWay}" SelectedValuePath="Id" SelectedValue="{x:Bind ViewModel.PreviewSceneId, Mode=OneWay}" SelectionChanged="OnPreviewSceneSelectionChanged">
                     <ListView.ItemContainerStyle><Style TargetType="ListViewItem"><Setter Property="Padding" Value="4"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/></Style></ListView.ItemContainerStyle>
