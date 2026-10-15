@@ -5,6 +5,7 @@
 #include <thread>
 #include <cmath>
 #include <atomic>
+#include <future>
 
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
 #ifndef NOMINMAX
@@ -130,6 +131,59 @@ TEST(D3DProgramBuffer, DeadlineCopiesContinueWhileOptionalOwnerIsBlockedAndKeepE
   const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (lastPixel.load() != 24 && std::chrono::steady_clock::now() < limit) std::this_thread::sleep_for(std::chrono::milliseconds(1));
   EXPECT_EQ(firstPixel.load(), 1); EXPECT_EQ(lastPixel.load(), 24); EXPECT_EQ(optional.diagnostics().failed, 0u);
+}
+
+TEST(D3DProgramBuffer, PrivateOutputPressureNeedsIndependentConsumerRetirementAndKeepsOriginalDeadline) {
+  ProgramBufferTimerResolution timer;
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> producer, critical, monitor;
+  ComPtrLite<ID3D11DeviceContext> producerContext, criticalContext, monitorContext;
+  for (auto pair : {std::make_pair(&producer, &producerContext), std::make_pair(&critical, &criticalContext), std::make_pair(&monitor, &monitorContext)})
+    ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, pair.first->put(), nullptr, pair.second->put())));
+  auto criticalRegistration = D3DVideoConsumers::add(critical.get(), true);
+  auto monitorRegistration = D3DVideoConsumers::add(monitor.get(), true);
+  for (bool independentlyRetire : {false, true}) {
+    D3DProgramDisplaySnapshots input; ASSERT_TRUE(input.initialize(producer.get(), 64, 64, 904));
+    D3DProgramDisplayReader reader; reader.prewarm(critical.get(), criticalContext.get(), 64, 64, true);
+    D3DVideoReadLeases leases(monitor.get(), monitorContext.get());
+    std::vector<std::shared_ptr<D3DProgramDisplaySnapshots::Snapshot>> inputs;
+    for (int n = 1; n <= 3; ++n) {
+      auto slot = input.reserve(); ASSERT_TRUE(slot != nullptr); inputs.push_back(slot);
+      ProgramFrame frame; frame.frameNumber = frame.deliverySequence = n; input.stamp(slot, frame);
+      reader.copy(critical.get(), criticalContext.get(), slot);
+      MonitorRenderRequest request; request.programDisplayDeadlineNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          (std::chrono::steady_clock::now()+std::chrono::seconds(1)).time_since_epoch()).count();
+      reader.completeBeforeAuxiliary(criticalContext.get(), request);
+      ASSERT_TRUE(reader.completedImage() != nullptr); ASSERT_TRUE(leases.hold(reader.completedImage()));
+    }
+    // All three destinations are held by an unfinished consumer batch, while
+    // the critical input queries have already completed. No new image can make
+    // the consumer's old lazy hold()-time polling run.
+    EXPECT_EQ(reader.observation().gpuReads, 0);
+    auto slot = input.reserve(); ASSERT_TRUE(slot != nullptr);
+    ProgramFrame frame; frame.frameNumber = frame.deliverySequence = 4; input.stamp(slot, frame);
+    std::future<void> release;
+    if (independentlyRetire) release = std::async(std::launch::async, [&] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      leases.finish(); monitorContext->Flush();
+      const auto limit = std::chrono::steady_clock::now()+std::chrono::seconds(1);
+      while (leases.retire() && std::chrono::steady_clock::now()<limit) std::this_thread::sleep_for(std::chrono::microseconds(100));
+    });
+    const auto target = std::chrono::steady_clock::now();
+    const auto targetNs = std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count();
+    MonitorRenderRequest request; request.programDisplayTargetNs = targetNs; request.programDisplayDeadlineNs = targetNs+10000000;
+    reader.copy(critical.get(), criticalContext.get(), slot, targetNs, request.programDisplayDeadlineNs, &request);
+    reader.completeBeforeAuxiliary(criticalContext.get(), request);
+    if (release.valid()) release.get();
+    else { leases.finish(); monitorContext->Flush(); while (leases.retire()) std::this_thread::sleep_for(std::chrono::microseconds(100)); }
+    const auto observed = reader.observation();
+    EXPECT_EQ(observed.capacityPressures, 1u);
+    EXPECT_EQ(observed.refused, independentlyRetire ? 0u : 1u);
+    EXPECT_EQ(observed.copies, independentlyRetire ? 4u : 3u);
+    EXPECT_EQ(observed.admittedAfterPressure, independentlyRetire ? 1u : 0u);
+    EXPECT_EQ(observed.gpuReadinessDeadlineMisses, 0u);
+  }
 }
 
 TEST(D3DProgramBuffer, DisplayReaderUsesSetupImportsForEverySlotWithoutCriticalDriverImport) {
