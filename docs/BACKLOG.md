@@ -7,6 +7,11 @@ copy skips and distinguish a confirmed loss boundary from an unproven refusal
 reason. This owner-directed investigation takes the active delivery lane;
 the other merged-code acceptance gates remain open.
 
+**Owner-ranked continuation, October 14:** after the implemented #904 copy
+repairs, address the camera reader under #517 first, then source-generation
+continuity under #908. These are the next two items in the active delivery lane;
+API-only control and the existing zero-miss acceptance criteria still apply.
+
 **Owner-approved bundle, October 14:** work three parallel development tracks:
 [#872](https://github.com/iamfatness/CoreVideoPro/issues/872) audio monitor lifecycle,
 [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) source thumbnail identity,
@@ -208,7 +213,7 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 ## Unranked — show survival and operator findings
 
-| [#908](https://github.com/iamfatness/CoreVideoPro/issues/908) | Retained Program frames report unavailable/preparation-stopped source pixels during real SDK epoch transitions; preserve pixels through replacement readiness. Owner rank pending. |
+| [#908](https://github.com/iamfatness/CoreVideoPro/issues/908) | Owner-ranked October 14: follows the #517 camera-reader repair in the active delivery lane. Retained Program frames report unavailable/preparation-stopped source pixels during real SDK epoch transitions; preserve pixels through replacement readiness without retaining removed/reassigned guests. |
 
 | [#906](https://github.com/iamfatness/CoreVideoPro/issues/906) | Attribute the Windows GradePreviewCoordinator disposal-test timeout; preserve the failed gate and verify the initiating condition. Owner rank pending. |
 | [#907](https://github.com/iamfatness/CoreVideoPro/issues/907) | Identify the native stub TSan gate hang with bounded per-test progress; timeout is not a reported race. Owner rank pending. |
