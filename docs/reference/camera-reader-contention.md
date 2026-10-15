@@ -114,3 +114,18 @@ remaining original window. No new deadline or extra copy is granted. A controlle
 early-consumer/late-publication case fails under the old cutoff and succeeds
 before the same original sample boundary. This supersedes the intermediate
 post-first-read 2 ms recovery window described above.
+
+
+### Rational camera pacing
+
+The MF pacing clock previously added integer `10,000,000 / fps` 100 ns ticks
+for every request. At 60 fps that loses two-thirds of a tick per frame, moving
+the reader 7.2 ms early over 30 minutes and 14.4 ms early over an hour. A small
+integer remainder accumulator now distributes fractional ticks exactly. Reanchor
+on a genuinely late consumer still resets the fraction and produces no catch-up
+burst; sample timestamps remain actual MF system time. The same original read
+window and delivery reserve use the rational interval. A simulated whole-hour
+regression covers 24/30/60 fps and reset/default behavior. This addresses a
+mathematical long-run phase defect; it is not a claim of a one-hour physical
+camera test. The preceding 30-minute capture uses the pre-cadence reader and
+must stay identified separately from the updated-reader validation.

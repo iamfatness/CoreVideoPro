@@ -101,12 +101,14 @@ IFACEMETHODIMP MediaStream::RequestSample(IUnknown* token) {
     const LONGLONG now = MFGetSystemTime();
     if (nextDueHns_ == 0 || now >= nextDueHns_ + frameDuration_) {
       nextDueHns_ = now;  // first sample, or we fell behind: re-anchor, no catch-up burst
+      cadence_.reset(fps_);
     }
     waitHns = nextDueHns_ - now;
     // Capture before pacing/allocation. Never extend this if the request is
     // scheduled late. Reserve the rest of the frame for copy/event delivery.
-    sampleReadDeadlineUs_ = (nextDueHns_ + frameDuration_ - 20000) / 10;
-    nextDueHns_ += frameDuration_;
+    const auto intervalHns = cadence_.nextInterval100ns();
+    sampleReadDeadlineUs_ = (nextDueHns_ + intervalHns - 20000) / 10;
+    nextDueHns_ += intervalHns;
     // Lazy high-resolution timer: the process timer resolution is often 15.6ms,
     // which would quantize a plain Sleep and cap 60fps pacing at ~40fps.
     if (waitHns > 0 && pacerTimer_ == nullptr) {

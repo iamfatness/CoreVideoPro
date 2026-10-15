@@ -1,9 +1,33 @@
 #include "modules/VirtualCameraDeliveryEvidence.h"
 #include "modules/VirtualCameraReadRetry.h"
+#include "modules/VirtualCameraCadence.h"
 #include "modules/VirtualCameraCorrelation.h"
 #include <gtest/gtest.h>
 
 using namespace corevideo::modules;
+
+TEST(VirtualCameraCadence, WholeHourHasNoFractionalFrameClockDrift) {
+  for (uint32_t fps : {24u, 30u, 60u}) {
+    VirtualCameraCadence cadence(fps); int64_t elapsed = 0;
+    for (uint32_t frame = 0; frame < fps * 3600u; ++frame) {
+      const auto interval = cadence.nextInterval100ns();
+      EXPECT_TRUE(interval == 10000000u / fps || interval == 10000000u / fps + 1);
+      elapsed += interval;
+    }
+    EXPECT_EQ(elapsed, 3600LL * 10000000);
+    if (fps == 60) EXPECT_EQ(elapsed - int64_t(10000000u / fps) * fps * 3600, 144000);
+  }
+}
+
+TEST(VirtualCameraCadence, ReanchorResetsFractionAndZeroRateKeepsThirtyFpsDefault) {
+  VirtualCameraCadence cadence(60);
+  EXPECT_EQ(cadence.nextInterval100ns(), 166666);
+  EXPECT_EQ(cadence.nextInterval100ns(), 166667);
+  cadence.reset(60); EXPECT_EQ(cadence.nextInterval100ns(), 166666);
+  cadence.reset(0); int64_t total = 0;
+  for (int frame = 0; frame < 30; ++frame) total += cadence.nextInterval100ns();
+  EXPECT_EQ(total, 10000000);
+}
 
 TEST(VirtualCameraReadRetry, ColdFirstPayloadCopyDoesNotConsumeTheBoundedRecoveryWindow) {
   const auto run = [](bool oldEntryClamp) {
