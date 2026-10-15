@@ -996,6 +996,18 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
       const auto tickStarted = std::chrono::steady_clock::now();
       compositor->setProgramProductionTiming(n,
           std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count());
+      compositor->beginMonitorTick(true);
+      if (isolated && phaseMs == 14 && n >= 20) {
+        // Reproduce a 15 ms current-frame stall. The buffered Program copy
+        // must already complete; waiting for submitMonitors() would leave
+        // less than 1.667 ms for its GPU query, as in the retained live miss.
+        timer.waitUntil(tick + std::chrono::milliseconds(15));
+        const auto early = compositor->latestMonitors();
+        ASSERT_TRUE(early != nullptr);
+        EXPECT_EQ(early->programDisplayReader.copiedSequence, static_cast<uint64_t>(n - depth));
+        EXPECT_EQ(early->programDisplayReader.gpuReadinessDeadlineMisses, 0u);
+        EXPECT_EQ(early->programDisplayReader.completedCopies, early->programDisplayReader.copies);
+      }
       VideoFrame source;
       source.participantId = "test"; source.width = source.pixelWidth = 64; source.height = source.pixelHeight = 64;
       source.pixelStride = 256; source.frameId = n + 1; source.timestampMs = n * 17;

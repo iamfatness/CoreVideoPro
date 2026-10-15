@@ -524,3 +524,24 @@ pixels still count from their first observation; none is reset or discarded.
 Physical display and full output continuity remain unverified. The original
 `final-41c-depth2/report.json` is unchanged and still carries its earlier strict
 aggregate failure; subsequent runs record both startup and qualified counters.
+
+### Dispatch buffered copying before current-frame rendering
+
+The retained `final-0fb-depth3-600` trace captures a startup miss for identity
+242. Producer submission began 15.454 ms after the original target; worker
+pickup took about 23 microseconds. The copy was submitted at +15.566 ms and
+its event was still S_FALSE at +16.729 ms, after the unchanged 16.667 ms
+boundary. Program CPU work reached 15.233 ms at the same transition. Moving
+optional rendering to another owner had not removed this earlier dependency:
+`submitMonitors` still ran only after current-frame Program rendering.
+
+`beginMonitorTick` now dispatches the already-buffered scheduled image before
+current-frame rendering. The deadline owner can copy while Program prepares
+its next frame. `ProgramMonitorDispatch` joins that completed image with only
+the same tick's later monitor payload. It retains at most one copy and one
+payload, reports unmatched replacement, and fences disabled/consumed work with
+monotonic handoff identities. No old/future image is relabeled and neither
+producer waits. The timeline depth, original deadline, read limit and residency
+ceiling remain unchanged. The actual Multiview phase fixture exercises this
+path, including a controlled 15 ms production stall at the late isolated phase.
+The earlier 30-minute pass does not supersede this later failed startup trial.
