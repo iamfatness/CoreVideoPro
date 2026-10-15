@@ -364,6 +364,12 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
 
     public string KindLabel => _slot.KindLabel;
 
+    public string OverviewName => !string.IsNullOrWhiteSpace(DisplayName) ? DisplayName
+        : IsAssigned ? SelectedUnifiedSourceLabel : SlotLabel;
+    public string AudioSummary => Kind == ShowInputKind.ZoomParticipant ? "Zoom source audio"
+        : AudioDeviceOptions.FirstOrDefault(option => option.Value == AudioDeviceId)?.Label
+          ?? (Kind == ShowInputKind.Media ? "Media audio" : "No paired microphone");
+
     /// <summary>Assigned rows carry the full control set (name, audio, grade, unassign);
     /// unassigned rows collapse to just the picker — visual hierarchy, not a wall of
     /// dead controls.</summary>
@@ -385,6 +391,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
             // Persist blank (or "same as derived") as a reset so we never store a redundant override.
             _setDisplayName(SourceId, string.Equals(trimmed, derived, StringComparison.Ordinal) ? null : trimmed);
             OnPropertyChanged(nameof(DisplayName));
+        OnPropertyChanged(nameof(OverviewName));
+        OnPropertyChanged(nameof(AudioSummary));
         }
     }
 
@@ -407,6 +415,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
     {
         _applyText(SourceId, name.Trim() == DefaultDisplayName ? null : name, useDefault ? null : secondary);
         OnPropertyChanged(nameof(DisplayName));
+        OnPropertyChanged(nameof(OverviewName));
+        OnPropertyChanged(nameof(AudioSummary));
     }
 
     private string DerivedSourceName() => Kind switch
@@ -500,6 +510,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SourceColorGradeId));
         OnPropertyChanged(nameof(SourceId));
         OnPropertyChanged(nameof(DisplayName));
+        OnPropertyChanged(nameof(OverviewName));
+        OnPropertyChanged(nameof(AudioSummary));
         OnPropertyChanged(nameof(IsDisplayNameEditable));
         OnPropertyChanged(nameof(ShowIsoToggle));
     }
@@ -541,6 +553,8 @@ public sealed class ShowInputSlotViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SourceColorGradeId));
         OnPropertyChanged(nameof(SourceId));
         OnPropertyChanged(nameof(DisplayName));
+        OnPropertyChanged(nameof(OverviewName));
+        OnPropertyChanged(nameof(AudioSummary));
         OnPropertyChanged(nameof(IsDisplayNameEditable));
         OnPropertyChanged(nameof(ShowIsoToggle));
     }

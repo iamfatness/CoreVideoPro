@@ -33,6 +33,16 @@ public sealed partial class MultiviewInputRow : ObservableObject
     [ObservableProperty] private string _previewTally = "none";
     [ObservableProperty] private double _meterWidth;
 
+    // Presentation of the same observed fact; a request ceiling is never an FPS measurement.
+    public string ResolutionLabel => FormatLabel.Split('@')[0];
+    public string FrameRateLabel => !FormatStale && FormatLabel.Contains('@')
+        ? FormatLabel[(FormatLabel.IndexOf('@') + 1)..] : "—";
+    partial void OnFormatLabelChanged(string value)
+    {
+        OnPropertyChanged(nameof(ResolutionLabel));
+        OnPropertyChanged(nameof(FrameRateLabel));
+    }
+
     public Brush PreviewBorderBrush => new SolidColorBrush(PreviewTally switch
     {
         "pgm" or "hold" => Color.FromArgb(255, 255, 159, 10),
@@ -85,6 +95,7 @@ public sealed partial class MultiviewInputRow : ObservableObject
 
     private void RaiseFormatChrome()
     {
+        OnPropertyChanged(nameof(FrameRateLabel));
         OnPropertyChanged(nameof(FormatDetailLabel));
         OnPropertyChanged(nameof(HasFormatDetail));
         OnPropertyChanged(nameof(FormatBrush));
