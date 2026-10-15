@@ -73,6 +73,7 @@ class ProgramSourceAdmissionPolicy {
       } else proof.reason = "preparation-identity-mismatch";
     }
     if (proof.reason == "preparation-failed" ||
+        (requested.preparedGpu && requested.preparedGpu->demand && requested.preparedGpu->demand->failed.load()) ||
         (!drainingCapacityTransition && (proof.reason == "preparation-stopped" ||
         (requested.preparedGpu && requested.preparedGpu->demand && requested.preparedGpu->demand->stopped.load())))) {
       if (previous != held_.end()) held_.erase(previous);

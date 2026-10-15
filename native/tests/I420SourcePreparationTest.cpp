@@ -180,7 +180,7 @@ TEST(ProgramSourceAdmission, RetiringCapacityKeepsOnlyBoundedVerifiedSameGuestFo
     auto selected = next; selected.preparedGpu = tokenFor(next, rejection == 1 ? 45 : 44);
     selected.preparedGpu->demand->capacity.store(rejection == 2 ? CpuPreparationCapacity::Sources : CpuPreparationCapacity::RetiringGenerations);
     selected.preparedGpu->demand->stopped.store(true);
-    if (rejection == 3) selected.preparedGpu->demand->failed.store(true);
+    if (rejection == 3) { selected.preparedGpu->demand->failed.store(true); selected.preparedGpu->demand->stopped.store(false); }
     const auto result = policy.select(selected, 2, [](const auto&) { return true; });
     EXPECT_EQ(result.evidence.state, rejection ? "unavailable" : "held");
     if (!rejection) {
