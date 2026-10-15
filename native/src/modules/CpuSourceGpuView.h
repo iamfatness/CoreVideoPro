@@ -39,6 +39,9 @@ inline const char* cpuPreparationCapacityReason(CpuPreparationCapacity reason) {
   }
 }
 struct CpuSourceGpuDemand {
+  // A format replacement may drain the same participant lifetime through CPU
+  // playout. Selecting its successor is the explicit retirement boundary.
+  std::weak_ptr<CpuSourceGpuDemand> predecessor;
   std::atomic<int64_t> selectedFrameId{-1};
   std::atomic<int64_t> lastDemand100ns{0};
   std::atomic<bool> stopped{false};
@@ -65,6 +68,7 @@ struct CpuSourceGpuView {
   std::shared_ptr<const GpuVideoFrame> acquire(bool select) {
     if (!demand || demand->stopped.load() || demand->failed.load() || superseded.load()) return {};
     if (select) {
+      if (auto old = demand->predecessor.lock()) old->stopped.store(true);
       auto previous = demand->selectedFrameId.load();
       while (previous < frameId && !demand->selectedFrameId.compare_exchange_weak(previous, frameId)) {}
       demand->lastDemand100ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(

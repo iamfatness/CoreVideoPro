@@ -529,6 +529,43 @@ TEST(I420SourcePreparation, ReconnectFencesSameFrameIdAndRetiresOnlyAfterExterna
   EXPECT_EQ(third.i420->front(), 220);
 }
 
+TEST(I420SourcePreparation, FormatReplacementDrainsSelectedOldPixelsUntilSuccessorSelection) {
+  PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  I420SourcePreparation owner(true);
+  const auto offerLifetime = [&](VideoFrame& f, uint64_t lifetime) {
+    f.preparedGpu = owner.offer(f.participantId, f.sourceEpoch, f.frameId,
+        f.captureTimestamp100ns, f.i420Width, f.i420Height, f.i420, lifetime);
+  };
+  auto old = sourceFrame("guest", 100, 1, 40); offerLifetime(old, 99);
+  ASSERT_TRUE(await([&] { return bool(old.preparedGpu->acquire(true)); }));
+  auto oldSelected = sourceFrame("guest", 100, 2, 90); offerLifetime(oldSelected, 99);
+  auto fresh = sourceFrame("guest", 101, 3, 190); offerLifetime(fresh, 99);
+  ASSERT_TRUE(fresh.preparedGpu);
+  EXPECT_FALSE(oldSelected.preparedGpu->demand->stopped.load());
+  ASSERT_TRUE(await([&] { return bool(oldSelected.preparedGpu->acquire(true)); }));
+  auto image = oldSelected.preparedGpu->acquire(false);
+  ASSERT_TRUE(image);
+  oldSelected.gpuPixels = image;
+  auto pixels = compositor->render(planFor("guest"), {oldSelected});
+  ASSERT_FALSE(pixels.preview.bgra.empty());
+  EXPECT_NEAR(pixels.preview.bgra[(32 * 64 + 32) * 4], 90, 1);
+  // A reconnect is still an immediate fence; only explicit same-lifetime
+  // resolution replacement may drain the already-selected descriptors.
+  ASSERT_TRUE(await([&] { return bool(fresh.preparedGpu->acquire(true)); }));
+  EXPECT_TRUE(oldSelected.preparedGpu->demand->stopped.load());
+  EXPECT_FALSE(oldSelected.preparedGpu->acquire(false));
+  compositor->render(planFor("guest"), {fresh}); // replace the consumer's old-image lease
+  pixels = {}; // retained Program packet also owns the exact old source lease
+  image.reset(); oldSelected.gpuPixels.reset();
+  ASSERT_TRUE(await([&] {
+    compositor->render(planFor("guest"), {fresh}); // retire completed consumer reads on their owner
+    return owner.stats().active == 1;
+  }));
+  auto reconnect = sourceFrame("guest", 102, 4, 210); offerLifetime(reconnect, 100);
+  EXPECT_FALSE(fresh.preparedGpu->acquire(false));
+  ASSERT_TRUE(await([&] { return bool(reconnect.preparedGpu->acquire(true)); }));
+}
+
 namespace {
 class PreparedStillDecoder final : public IStillImageDecoder {
  public:
