@@ -103,10 +103,12 @@ def main():
             'COREVIDEO_DELIVERY_TRACE': '1' if args.camera_receiver else '0',
         }, args.output/'native.stderr.log')
         with (args.output/'samples.jsonl').open('w', encoding='utf-8') as sample_file:
+            monitor_max = {k:0 for k in ("failed", "superseded")}
             def retain(snapshot):
                 nonlocal sample_count, latest, latest_sources, initial, trace_key, incident_bytes, ingredient_samples
                 if serving: serving.poll()
                 worker = dict(snapshot.get('realtimeEvidence',{}).get('monitorWorker',{}))
+                for key in monitor_max: monitor_max[key] = max(monitor_max[key], worker.get(key,0))
                 exported_display = worker.get('programDisplay',{})
                 display = dict(exported_display.get('latestReader',exported_display))
                 incident = display.pop('incidentTrace', [])
@@ -331,6 +333,8 @@ def main():
         report['beforeDemandCounters'] = dict(programBuffer=before_demand.get('programBuffer'),
             monitor={k:before_demand.get('realtimeEvidence',{}).get('monitorWorker',{}).get(k)
                 for k in ('submitted','completed','failed','superseded')})
+    report['monitorMaximumCounters'] = monitor_max
+    report['monitorWorkVerdict'] = 'FAIL' if any(monitor_max.values()) else 'PASS'
     required_reader_metrics = ('copies','completedCopies','gpuDeadlineCompletedReads','gpuReadinessDeadlineMisses',
         'refused','skipped','reordered','reused','lateSubmissions','traceCaptureFailures')
     report['workloadVerdict'] = 'INVALID' if failure else ('FAIL' if ingredient_errors else ('PASS' if ingredient_samples else 'UNVERIFIED'))
@@ -341,7 +345,7 @@ def main():
         coverage = latest['gpuDeadlineCompletedReads'] == latest['completedCopies']
         report['readerCounterVerdict'] = ('PASS' if report['workloadVerdict'] == 'PASS' else 'UNVERIFIED') if zero and coverage else 'FAIL'
     else: report['readerCounterVerdict'] = 'UNVERIFIED'
-    if report['readerCounterVerdict'] == 'FAIL' or report['workloadVerdict'] == 'FAIL':
+    if report['readerCounterVerdict'] == 'FAIL' or report['workloadVerdict'] == 'FAIL' or report['monitorWorkVerdict'] == 'FAIL':
         report['allOutputZeroMissVerdict'] = 'FAIL'
     if report.get('cameraPixels',{}).get('osCameraContinuityVerified') is False:
         report['allOutputZeroMissVerdict'] = 'FAIL'

@@ -418,3 +418,53 @@ rollback and do not change the installed app during plan review. Close #904 only
 after the issue's target path meets the identity/deadline criteria. Keep #517,
 #898 and the separate monitor counter issue #903 open until their own acceptance
 criteria are met; this plan closes none of them.
+
+
+## Deadline owner separation
+
+The retained `boundaries-d5a-depth3` run still failed one original GPU-readiness
+deadline (identity 251). Immediately before it, the same monitor owner spent
+5.056 ms mapping/copying/unmapping the actual 2560x1440 BGRA screen, 3.624 ms
+in Multiview export, and another 2.513 ms in Preview. The next request was
+submitted at target +1.453 ms but its copy was not submitted until +5.306 ms.
+The event query was still S_FALSE at +16.791 ms, beyond the original
+16.667 ms boundary. This is a real missed readiness deadline, not merely a late
+observation of a known completed copy. These CPU boundaries do not identify
+an internal driver/GPU scheduling cause; they establish the avoidable shared
+owner/context dependency. The earlier `combined-538-depth3` failure had the
+same dependency, with 17.475 ms inside the preceding Multiview pass.
+
+The isolated path now uses a dedicated `D3DProgramCopyOwner` device, context,
+and mailbox for scheduled copies. It refreshes only the exact publication and
+polls against the original deadline, with the existing two-query read limit.
+A separate monitor owner performs source uploads, exports, Multiview and
+Preview drawing. Neither monitor input-cache work nor those optional GPU
+commands runs on the critical copy context.
+
+The copy destination is a three-image immutable shared output pool. It is
+storage for in-flight ownership, not an additional timeline delay: the selected
+Program depth remains two or three frames. Each completed image carries its
+original delivery sequence, frame number and timeline observation. The monitor
+renders that exact image and retains it through its own GPU read query.
+Occupied output images cannot be overwritten; exhaustion is an attributed
+read-capacity refusal, never silent reuse. The output storage shares the existing
+256 MiB monitor residency ceiling. At 1080p it adds 24,883,200 bytes compared
+with the previous single 8,294,400-byte private image (a net 16,588,800 bytes).
+Reported allocation includes both the eight input publications and the private
+output images; selected depth, input capacity eight, and read limit two are
+unchanged. Unresolved writes quarantine their output lease as well as their
+input lease on shutdown.
+
+Both owners and every output image are prepared before anchoring Program's
+cadence. The initial two/three production slots have no delivered Program
+identity yet; they publish the monitor's actual empty startup state without
+waiting on or counting a nonexistent negative timeline slot. No admitted
+identity or failed trial is discarded.
+
+The regression test blocks the actual optional consumer for 24 consecutive
+60 Hz copies, then reads the first retained and latest images through a separate
+D3D device. It requires all original copy deadlines and identities, plus exact
+first/latest pixel values. Reader readiness remains distinct from monitor
+render/export health and physical shell presentation. A clean copy count cannot
+waive superseded monitor work, bad pixels, camera loss, or unmeasured display/audio
+continuity.
