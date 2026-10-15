@@ -36,7 +36,18 @@ def restore(lease):
     toggle(lease['api'],lease['originalCameraOn'])
     candidate=pathlib.Path(lease['candidate'])
     if candidate.is_file() and hashlib.sha256(candidate.read_bytes()).hexdigest()==lease['sha256']:
-        candidate.unlink()
+        # TerminateProcess can return before Windows releases the image section.
+        # Retain the exact path/hash gate and bound cleanup instead of racing it.
+        delete_deadline=time.monotonic()+10
+        while True:
+            try:
+                candidate.unlink()
+                break
+            except FileNotFoundError:
+                break  # The independent recovery guard already removed it.
+            except PermissionError:
+                if time.monotonic() >= delete_deadline: raise
+                time.sleep(.1)
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
