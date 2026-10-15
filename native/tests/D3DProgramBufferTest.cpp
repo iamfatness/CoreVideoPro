@@ -950,7 +950,12 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
           if (result && result->sequence >= n + 1) break;
           std::this_thread::sleep_for(std::chrono::microseconds(100));
         } while (std::chrono::steady_clock::now() < limit);
-        if (!result || result->sequence < n + 1) {
+        // A coarse Windows wake can jump over the final polling interval.
+        // Re-read the immutable result and judge its owner publication time,
+        // never the test observer's late wake or a freshly extended deadline.
+        result = compositor->latestMonitors();
+        const auto deadlineNs = std::chrono::duration_cast<std::chrono::nanoseconds>(limit.time_since_epoch()).count();
+        if (!result || result->sequence < n + 1 || result->completedAtNs > deadlineNs) {
           const auto now = std::chrono::steady_clock::now();
           const auto diagnostic = compositor->monitorDiagnostics();
           const auto us = [&](auto point) {
@@ -969,7 +974,7 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
               diagnostic.pending, static_cast<long long>(diagnostic.lastSequence), diagnostic.lastWorkMs,
               diagnostic.effectiveMode.c_str(), diagnostic.readiness.c_str(), diagnostic.failureReason.c_str());
         }
-        ASSERT_TRUE(result && result->sequence >= n + 1)
+        ASSERT_TRUE(result && result->sequence >= n + 1 && result->completedAtNs > 0 && result->completedAtNs <= deadlineNs)
             << "depth=" << depth << " phase_ms=" << phaseMs << " tick=" << n
             << " expected_sequence=" << n + 1 << " observed_sequence=" << (result ? result->sequence : -1);
         exported = result->multiview;

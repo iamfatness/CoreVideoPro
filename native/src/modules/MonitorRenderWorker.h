@@ -164,9 +164,12 @@ class MonitorRenderWorker {
         result->inputs = std::move(observation.inputs);
         result->sequence = job->sequence;
         result->workMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        std::shared_ptr<const MonitorRenderResult> immutable = std::move(result);
+        std::shared_ptr<const MonitorRenderResult> immutable;
         {
           std::lock_guard<std::mutex> lock(mutex_);
+          result->completedAtNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count();
+          immutable = std::move(result);
           result_.swap(immutable);
           ++completed_;
           readiness_ = "ready";
