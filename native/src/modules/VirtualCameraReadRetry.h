@@ -1,19 +1,24 @@
 #pragma once
 #include "modules/VirtualCameraDeliveryEvidence.h"
+#include <algorithm>
 
 namespace corevideo::modules {
 // The caller supplies the original sample deadline. A delayed worker must not
 // receive a fresh timeout; waiting never authorizes a third payload copy.
 template <typename Read, typename Now, typename Wait>
 bool readCameraUntilDeadline(Read read, Now nowUs, Wait wait, bool enabled,
-                            unsigned& retries, int64_t deadlineUs, unsigned maxRetries = 8) {
+                            unsigned& retries, int64_t deadlineUs, unsigned maxRetries = 8, int64_t recoveryBudgetUs = 2000) {
   retries = 0;
   auto result = read(true);
+  // Cold mapping/page faults and the first bounded payload copy can exceed
+  // 2 ms. They consume the original sample deadline, not the recovery window.
+  // A late first read still gets no time beyond that original deadline.
+  const auto retryDeadlineUs = (std::min)(deadlineUs, nowUs() + (std::max)(int64_t(0), recoveryBudgetUs));
   while (enabled && (result == VirtualCameraReadResult::Unchanged ||
                      result == VirtualCameraReadResult::Contended) &&
-         retries < maxRetries && nowUs() < deadlineUs) {
-    if (!wait(deadlineUs - nowUs())) break;
-    if (nowUs() >= deadlineUs) break;
+         retries < maxRetries && nowUs() < retryDeadlineUs) {
+    if (!wait(retryDeadlineUs - nowUs())) break;
+    if (nowUs() >= retryDeadlineUs) break;
     ++retries;
     result = read(false);
   }

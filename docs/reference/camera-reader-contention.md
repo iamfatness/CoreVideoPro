@@ -76,3 +76,26 @@ misses. These phases did not reproduce contention; retain the earlier actual
 collision recovery and failed phase alongside them. The QA aggregate treats
 clean direct-DLL pixels as unverified OS qualification, rather than a known
 camera continuity failure. It never promotes them to all-output PASS.
+
+
+### Cold first-sample recovery
+
+The interrupted `copy-owner-9c6-depth3-1800` trial retained 586.156 seconds of
+Program observations with no reader deadline failures, but the camera emitted
+one initial slate among the first 34,847 captured samples. Its first read saw
+both an active writer and a changed-during-copy publication, with one payload
+copy remaining, no original sample-deadline miss and no retry. This fails camera
+continuity; it is not a completed 30-minute qualification.
+
+The old caller capped recovery at entry time plus 2 ms, before opening/touching
+the mapping and making the first payload copy. That creates a recoverable hole:
+a cold first read can consume that entire short window while the original sample
+still has time available. The helper now starts the bounded 2 ms recovery window
+after the first read and caps it at the same original sample deadline. A delayed
+worker/overslept wait receives no extended sample deadline. The two-payload-copy
+budget, eight-retry limit and 2 ms delivery reserve remain unchanged. A controlled
+cold-read negative case fails under the old clamp and recovers under the new
+policy. Miss diagnostics expose first-read elapsed time, original time remaining,
+retry enablement and remaining copy budget; timer creation failure is counted.
+The retained log alone cannot exclude a transient timer-creation failure in that
+original initial slate, so it does not establish its exact internal timing.

@@ -468,3 +468,43 @@ first/latest pixel values. Reader readiness remains distinct from monitor
 render/export health and physical shell presentation. A clean copy count cannot
 waive superseded monitor work, bad pixels, camera loss, or unmeasured display/audio
 continuity.
+
+
+### Deadline waits and publication observation
+
+The critical event-query and exact-publication retries now use an owner-local
+high-resolution waitable timer, yielding for at most 100 microseconds and
+rechecking the original absolute deadline after signal or timeout. The previous
+sub-millisecond `sleep_for` could round up to a 1-2 ms Windows scheduler quantum.
+No priority escalation, busy spin, fresh timeout or additional read is used.
+If the high-resolution timer is unavailable, the prior bounded sleep remains
+and any actual deadline failure stays observable.
+
+The Multiview phase fixture also uses the high-resolution timer for its declared
+2/4/10/14 ms request phases. It formerly submitted a nominal 14 ms request at
+15.948 ms, leaving less than 0.72 ms for copy, completion and optional publication.
+It now judges the actual owner publication timestamp against the unchanged
+16.667 ms absolute boundary, instead of judging a late observer wake or starting
+a new relative 10 ms timeout. Immutable result publication is timestamped inside
+the owner's publication lock. Previous failures are retained separately.
+
+On the combined `9c6c998` Release build, all 16 combinations of buffer depth,
+inline/isolated mode and consumer phase passed the actual Multiview pixel test.
+Every stable-phase comparison advanced by one, with 100 changes, zero repeats
+and zero gaps per combination. All initial observations remain in the logs.
+This is GPU image / monitor-result evidence, not a physical scanout measurement.
+The separate blocked-owner pixel regression and 106 selected native checks also
+passed. Selected optional external-transport fixtures do not qualify unconfigured
+NDI/RTMP/SRT endpoints.
+
+The 90-second depth-two real-meeting run `copy-owner-9c6-depth2` completed 5,711
+Program reader copies with zero readiness deadline misses, refusals, skips,
+reorders, reuses, late submissions or diagnostic capture failures. The monitor
+reported zero failed or superseded jobs; all nine Program sources passed the
+sampled admission checks. The candidate direct-DLL camera receiver decoded
+5,401 samples with zero invalid, repeated, missing or reordered identities.
+Requested Zoom resolution was 1080; delivered feeds were mostly 640x360, plus
+an actual 2560x1440 WGC screen. This does not qualify eight simultaneous 1080p
+Zoom inputs. Camera registration, Windows Frame Server, physical display and
+audio continuity remain outside that direct-DLL evidence. Installed files and
+machine registration were not replaced.
