@@ -74,6 +74,7 @@ class ProgramSourceAdmissionPolicy {
     if (gpu && !identity) proof.reason = "gpu-identity-mismatch";
     if (identity && canRead(gpu)) {
       result.image.gpuPixels = gpu;
+      if (proof.requestedLifetime) result.image.preparedGpu = requested.preparedGpu;
       proof.state = "ready"; proof.reason = "gpu-completed-admitted";
       if (requested.preparedGpu) requested.preparedGpu->consumed.store(true);
       pending_.erase(requested.participantId);
