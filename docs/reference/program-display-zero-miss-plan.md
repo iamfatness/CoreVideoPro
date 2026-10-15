@@ -398,6 +398,20 @@ its measured workload and duration, never an unlimited zero-miss guarantee.
 
 ## Delivery and closure
 
+The October 14 combined depth-three trace retained a further cold-import
+boundary: identity 251 entered reader selection with about 12.5 ms remaining,
+no pending reads and no cached import, then refused after 17.1 ms inside that
+selection before any copy submission. This bounds the stall to cold import /
+private-resource setup or scheduling within that call, not GPU execution.
+Import entry/return stages 24/25 distinguish that boundary on a recurrence.
+Prepare all eight shared-slot imports for already-registered monitor devices
+during pool initialization, using thread-safe device calls without touching a
+foreign immediate context. Private surfaces/queries are already prewarmed.
+Late/unsupported consumers keep the explicit attributed fallback; preparation
+does not fabricate delivered pixels or enlarge the pool/read limits. The
+hardware test reads distinct pixels from every slot on an independent consumer
+while refusing any attempt to perform a cold import inside reader admission.
+
 Land attribution with its actual API/support consumer, the causal repair and its
 negative control, then installed qualification evidence under #904. Preserve
 rollback and do not change the installed app during plan review. Close #904 only
