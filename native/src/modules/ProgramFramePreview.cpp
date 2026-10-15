@@ -923,6 +923,7 @@ rpc::Json programSourceAdmissionJson(const ProgramFrame& frame) {
       {"requestedCapture100ns", static_cast<double>(source.requestedCapture100ns)},
       {"requestedLifetime", std::to_string(source.requestedLifetime)},
       {"actualLifetime", std::to_string(source.actualLifetime)},
+      {"formatTransitionAgeFrames", static_cast<double>(source.formatTransitionAgeFrames)},
       {"actualEpoch", source.actualFrameId >= 0 ? rpc::Json(static_cast<double>(source.actualEpoch)) : rpc::Json(nullptr)},
       {"actualFrameId", source.actualFrameId >= 0 ? rpc::Json(static_cast<double>(source.actualFrameId)) : rpc::Json(nullptr)},
       {"actualCapture100ns", source.actualFrameId >= 0 ? rpc::Json(static_cast<double>(source.actualCapture100ns)) : rpc::Json(nullptr)}});

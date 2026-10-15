@@ -161,7 +161,8 @@ def main():
                                  s.get('actualLifetime') == s.get('requestedLifetime') and
                                  str(s.get('actualLifetime','0')).isdigit() and int(s.get('actualLifetime','0')) > 0 and
                                  s.get('actualEpoch',0) < s.get('requestedEpoch',0) and
-                                 0 <= s.get('requestedCapture100ns',0) - s.get('actualCapture100ns',0) <= 1_000_000))}
+                                 0 <= s.get('formatTransitionAgeFrames',-1) <= 6 and
+                                 s.get('actualCapture100ns',0) <= s.get('requestedCapture100ns',0)))}
                         if admission.get('readyOnlyRequested') is not True or not expected_program_sources.issubset(selected):
                             ingredient_errors.add('Requested Program pixels lacked source-admission evidence')
                 if sample_file.tell() > 256*1024*1024: raise RuntimeError('sample artifact budget exhausted; incomplete evidence')

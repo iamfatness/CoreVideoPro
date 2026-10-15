@@ -42,6 +42,10 @@ class ProgramSourceAdmissionPolicy {
         previous->second.image.preparedGpu &&
         previous->second.image.preparedGpu->continuityLifetime == proof.requestedLifetime &&
         previous->second.image.sourceEpoch < requested.sourceEpoch;
+    if (formatTransition) {
+      if (previous->second.transitionTick < 0) previous->second.transitionTick = tick;
+      proof.formatTransitionAgeFrames = tick - previous->second.transitionTick;
+    }
     if (previous != held_.end() && (requested.sourceEpoch == 0 ||
         (!formatTransition && (previous->second.image.sourceEpoch != requested.sourceEpoch ||
         previous->second.image.gpuPixels->width != width || previous->second.image.gpuPixels->height != height)))) {
@@ -109,7 +113,7 @@ class ProgramSourceAdmissionPolicy {
       } else if (pending != pending_.end()) pending->second.tick = tick;
       if (proof.state != "held" && previous != held_.end() && (formatTransition || previous->second.image.frameId <= requested.frameId) &&
           previous->second.image.captureTimestamp100ns <= requested.captureTimestamp100ns &&
-          (!formatTransition || requested.captureTimestamp100ns - previous->second.image.captureTimestamp100ns <= 1'000'000) &&
+          (!formatTransition || (proof.formatTransitionAgeFrames >= 0 && proof.formatTransitionAgeFrames <= 6)) &&
           canRead(previous->second.image.gpuPixels)) {
         result.image = previous->second.image; previous->second.tick = tick; proof.state = "held";
         if (formatTransition) proof.reason = "same-lifetime-format-transition";
@@ -123,7 +127,7 @@ class ProgramSourceAdmissionPolicy {
     return result;
   }
  private:
-  struct Held { VideoFrame image; int64_t tick = 0; };
+  struct Held { VideoFrame image; int64_t tick = 0; int64_t transitionTick = -1; };
   struct Pending { VideoFrame image; std::shared_ptr<CpuSourceGpuView> token; int64_t tick = 0; };
   std::map<std::string, Held> held_;
   std::map<std::string, Pending> pending_;

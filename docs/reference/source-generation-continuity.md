@@ -26,8 +26,10 @@ Program may temporarily keep the exact old image only for a verified equal
 nonzero lifetime and a strictly newer requested epoch. The actual old epoch,
 frame, dimensions and capture timestamp remain attached to those pixels, with
 reason `same-lifetime-format-transition`; both lifetime IDs are exposed as
-decimal strings in admission JSON. The capture-time difference is bounded to
-100 ms so stalled preparation cannot masquerade as an indefinite transition.
+decimal strings in admission JSON. The transition is bounded to six Program
+frames (100 ms at 60 Hz) from the first successor selection, also exposed in
+admission JSON. This bounds replacement preparation without falsely treating
+a slow incoming camera's already-held source picture as a new preparation delay.
 Failed/stopped successors, future images, mismatched tokens and changed
 lifetimes never authorize this hold. The QA consumer validates this explicit
 transition rather than treating arbitrary cross-epoch images as available.

@@ -149,7 +149,8 @@ TEST(ProgramSourceAdmission, HoldsOnlyVerifiedSameLifetimeDuringFormatReadinessG
   EXPECT_EQ(held.image.gpuPixels, gpu); EXPECT_EQ(held.image.width, 64);
   auto tooOld = next; tooOld.captureTimestamp100ns = 1'001'001;
   tooOld.preparedGpu = tokenFor(tooOld, 44);
-  EXPECT_EQ(policy.select(tooOld, 3, [](const auto&) { return true; }).evidence.state, "unavailable");
+  EXPECT_EQ(policy.select(tooOld, 3, [](const auto&) { return true; }).evidence.state, "held");
+  EXPECT_EQ(policy.select(tooOld, 9, [](const auto&) { return true; }).evidence.state, "unavailable");
   next.preparedGpu->continuityLifetime = 45; // reconnect/reassignment may never retain old pixels
   EXPECT_EQ(policy.select(next, 3, [](const auto&) { return true; }).evidence.state, "unavailable");
   next.gpuPixels = gpu; next.width = next.height = 64; next.preparedGpu = tokenFor(next, 45);
