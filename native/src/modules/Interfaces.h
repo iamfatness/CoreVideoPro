@@ -1177,6 +1177,7 @@ struct ProgramDisplayObservation {
   std::string state = "unavailable";
 };
 struct MonitorRenderResult {
+  uint64_t exportRetirementPending = 0, exportRetirementBytes = 0, exportRetirementRefused = 0;
   int64_t sequence = 0;
   ProgramFrameSharedTexture multiview;
   ProgramFrameSharedTexture preview;

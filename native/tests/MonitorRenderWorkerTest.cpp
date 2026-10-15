@@ -1,11 +1,33 @@
 #include "modules/MonitorRenderWorker.h"
 #include "modules/MonitorFrameAdmission.h"
 #include "modules/MonitorInputEvidence.h"
+#include "modules/BoundedResourceRetirement.h"
 #include <gtest/gtest.h>
 #include <future>
 #include <atomic>
 
 using namespace corevideo::modules;
+
+TEST(BoundedResourceRetirement, BlockedDestructorDoesNotBlockAdmissionAndBoundsExecutingOwnership) {
+  struct Resource {
+    std::shared_future<void> release;
+    std::promise<void>* entered;
+    ~Resource() { entered->set_value(); release.wait(); }
+  };
+  std::promise<void> release, entered, secondEntered;
+  auto released = release.get_future().share(); auto started = entered.get_future();
+  BoundedResourceRetirement<Resource, 1> retirement(8);
+  auto first = std::unique_ptr<Resource>(new Resource{released, &entered});
+  const bool accepted = retirement.tryRetire(first, 8);
+  const bool executing = started.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  auto second = std::unique_ptr<Resource>(new Resource{released, &secondEntered});
+  const bool rejected = !retirement.tryRetire(second, 1);
+  const auto during = retirement.observation();
+  release.set_value();
+  EXPECT_TRUE(accepted); EXPECT_TRUE(executing); EXPECT_TRUE(rejected);
+  EXPECT_FALSE(first); EXPECT_TRUE(second);
+  EXPECT_EQ(during.pending, 1u); EXPECT_EQ(during.bytes, 8u); EXPECT_EQ(during.refused, 1u);
+}
 
 TEST(MonitorInputEvidence, UnobservedAndTruncatedResultsAreExplicit) {
   auto absent = monitorInputEvidence({});

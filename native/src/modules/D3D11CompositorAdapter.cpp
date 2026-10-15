@@ -36,6 +36,7 @@
 #include "modules/VirtualCameraFrame.h"  // nv12FrameSize (vcam tap NV12 buffer layout)
 #include "modules/D3DProgramBuffer.h"
 #include "modules/D3DDecoupledExport.h"
+#include "modules/BoundedResourceRetirement.h"
 #include "modules/MonitorRenderWorker.h"
 #include "modules/MonitorFrameAdmission.h"
 #include "modules/ProgramSourceAdmission.h"
@@ -672,6 +673,10 @@ class D3D11Compositor final : public ICompositor {
     context_->Flush();
     programDisplayReader_.flushed();
     result.programDisplayReader = programDisplayReader_.observation();
+    const auto retirement = exportRetirement_.observation();
+    result.exportRetirementPending = retirement.pending;
+    result.exportRetirementBytes = retirement.bytes;
+    result.exportRetirementRefused = retirement.refused;
     monitorProgramOwner_.reset();
     return result;
   }
@@ -2345,11 +2350,12 @@ class D3D11Compositor final : public ICompositor {
       const int height = admittedSource ? admittedSource->height : (useI420 ? f.i420Height : f.pixelHeight);
       auto& pt = participantTextures_[f.participantId];
       if (!pt.local || pt.width != width || pt.height != height) {
+        // resize()/destruction joins the export worker, including deferred D3D
+        // creation. Never do that on the Program/monitor owner during a frame.
+        if (!retireParticipantExporter(pt)) continue;
         const auto createStart = std::chrono::steady_clock::now();
         const int oldWidth = pt.width, oldHeight = pt.height;
-        auto exporter = std::move(pt.exporter);
         pt = ParticipantTex{};
-        pt.exporter = std::move(exporter);
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width = static_cast<UINT>(width);
         desc.Height = static_cast<UINT>(height);
@@ -2368,12 +2374,8 @@ class D3D11Compositor final : public ICompositor {
           continue;
         }
         // #724: a source's first export is created off the render thread.
-        if (!pt.exporter) pt.exporter = std::make_unique<D3DDecoupledExport>(
+        pt.exporter = std::make_unique<D3DDecoupledExport>(
             device_.get(), width, height, "participant", D3DDecoupledExport::Creation::Deferred);
-        if (!pt.exporter->resize(device_.get(), width, height)) {
-          participantTextures_.erase(f.participantId);
-          continue;
-        }
         pt.width = width;
         pt.height = height;
         ::corevideo::core::nativeLogf("[d3d-participant-create] source=%s old=%dx%d new=%dx%d cost_us=%lld\n",
@@ -2382,7 +2384,7 @@ class D3D11Compositor final : public ICompositor {
                 std::chrono::steady_clock::now() - createStart).count()));
       }
       if (!pt.exporter->valid()) {
-        participantTextures_.erase(f.participantId);  // creation failed: try again next frame
+        if (retireParticipantExporter(pt)) participantTextures_.erase(f.participantId);
         continue;
       }
       if (!pt.exporter->ready()) {
@@ -2463,8 +2465,9 @@ class D3D11Compositor final : public ICompositor {
           break;
         }
       }
-      if (!present) ::corevideo::core::nativeLogf("[d3d-participant-evict] source=%s\n", it->first.c_str());
-      it = present ? std::next(it) : participantTextures_.erase(it);
+      if (present || !retireParticipantExporter(it->second)) { ++it; continue; }
+      ::corevideo::core::nativeLogf("[d3d-participant-evict] source=%s\n", it->first.c_str());
+      it = participantTextures_.erase(it);
     }
     if (profileEnabled) {
       const auto total = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - profileStart).count();
@@ -2473,6 +2476,16 @@ class D3D11Compositor final : public ICompositor {
       ++stageProfileParticipantCalls_;
       logStageProfile();
     }
+  }
+  bool retireParticipantExporter(ParticipantTex& participant) {
+    return retireExporter(participant.exporter);
+  }
+  bool retireExporter(std::unique_ptr<D3DDecoupledExport>& exporter) {
+    // Three handoff slots, private staging and shell output; texture payload
+    // charge excludes driver/device overhead. Active entries remain separately owned.
+    const auto bytes = exporter ? uint64_t((std::max)(exporter->width(), 0)) *
+        uint64_t((std::max)(exporter->height(), 0)) * 4 * 5 : 0;
+    return exportRetirement_.tryRetire(exporter, bytes);
   }
 
   // Converts a participant's I420 frame to BGRA on the GPU by rendering a
@@ -2620,14 +2633,15 @@ class D3D11Compositor final : public ICompositor {
       return;
     }
     // #724: the exporter owns a D3D device, and creating one costs 13 to 21 ms. First
-    // creation runs on the exporter's own thread; a resize reuses that device.
+    // creation runs on the exporter's own thread. Retire resize ownership off
+    // this owner too: resize() itself synchronously joins the prior worker.
+    if (multiviewExport_ && !multiviewExport_->dimensions(multiviewWidth_, multiviewHeight_) &&
+        !retireExporter(multiviewExport_)) return;
     if (!multiviewExport_) {
       multiviewExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), multiviewWidth_, multiviewHeight_, "multiview",
                                                      D3DDecoupledExport::Creation::Deferred);
-    } else if (!multiviewExport_->dimensions(multiviewWidth_, multiviewHeight_)) {
-      multiviewExport_->resize(device_.get(), multiviewWidth_, multiviewHeight_);
     }
-    if (!multiviewExport_->valid()) { multiviewExport_.reset(); return; }  // creation failed: try again next pass
+    if (!multiviewExport_->valid()) { retireExporter(multiviewExport_); return; }
     if (!multiviewExport_->ready()) return;  // still being created: no handle for a pass or two
     multiviewExport_->submit(context_.get(), multiviewRenderTarget_.get(), frameNumber_);
     out.sharedHandleHex = handleToHex(multiviewExport_->handle());
@@ -2674,14 +2688,14 @@ class D3D11Compositor final : public ICompositor {
       return;
     }
     // #724: the exporter owns a D3D device, and creating one costs 13 to 21 ms. First
-    // creation runs on the exporter's own thread; a resize reuses that device.
+    // creation and retirement both stay off this owner's per-frame work.
+    if (previewExport_ && !previewExport_->dimensions(previewWidth_, previewHeight_) &&
+        !retireExporter(previewExport_)) return;
     if (!previewExport_) {
       previewExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), previewWidth_, previewHeight_, "preview",
                                                      D3DDecoupledExport::Creation::Deferred);
-    } else if (!previewExport_->dimensions(previewWidth_, previewHeight_)) {
-      previewExport_->resize(device_.get(), previewWidth_, previewHeight_);
     }
-    if (!previewExport_->valid()) { previewExport_.reset(); return; }  // creation failed: try again next pass
+    if (!previewExport_->valid()) { retireExporter(previewExport_); return; }
     if (!previewExport_->ready()) return;  // still being created: no handle for a pass or two
     previewExport_->submit(context_.get(), previewRenderTarget_.get(), frameNumber_);
     out.sharedHandleHex = handleToHex(previewExport_->handle());
@@ -3305,6 +3319,7 @@ class D3D11Compositor final : public ICompositor {
   std::unique_ptr<D3DDecoupledExport> encoderExport_;
   // Per-participant keyed-mutex shared textures for the GPU multiview tiles.
   // (ParticipantTex is declared near the top of the class.)
+  BoundedResourceRetirement<D3DDecoupledExport> exportRetirement_{128ull * 1024 * 1024};
   std::map<std::string, ParticipantTex> participantTextures_;
   // Per-source texture cache (SourceTex is declared near the top of the class):
   // one Y/U/V or BGRA texture set per stable source id, shared by every
