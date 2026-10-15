@@ -358,7 +358,7 @@ def main():
     else: report['readerCounterVerdict'] = 'UNVERIFIED'
     if report['readerCounterVerdict'] == 'FAIL' or report['workloadVerdict'] == 'FAIL':
         report['allOutputZeroMissVerdict'] = 'FAIL'
-    if report.get('cameraPixels',{}).get('osCameraContinuityVerified') is False:
+    if report.get('cameraPixels',{}).get('receiverPixelContinuityPassed') is False:
         report['allOutputZeroMissVerdict'] = 'FAIL'
     (args.output/'report.json').write_text(json.dumps(report, indent=2))
     print(json.dumps({k:v for k,v in report.items() if k!='latestDisplay'},indent=2))

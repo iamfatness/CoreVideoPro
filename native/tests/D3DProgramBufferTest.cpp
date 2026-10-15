@@ -45,6 +45,50 @@ struct D3DProgramBufferTestAccess {
 };
 }
 
+TEST(D3DProgramBuffer, DisplayReaderUsesSetupImportsForEverySlotWithoutCriticalDriverImport) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> producer, consumer;
+  ComPtrLite<ID3D11DeviceContext> producerContext, consumerContext;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, producer.put(), nullptr, producerContext.put())));
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, consumer.put(), nullptr, consumerContext.put())));
+  auto registration = D3DVideoConsumers::add(consumer.get(), true);
+  D3DProgramDisplaySnapshots pool; ASSERT_TRUE(pool.initialize(producer.get(), 64, 64, 945));
+  D3DProgramDisplayReader reader; reader.prewarm(consumer.get(), consumerContext.get(), 64, 64);
+  D3DProgramDisplayReaderTestAccess::fault(reader, [](ProgramDisplayReason reason) -> std::optional<HRESULT> {
+    return reason == ProgramDisplayReason::Import ? std::optional<HRESULT>(E_FAIL) : std::nullopt;
+  });
+  D3D11_TEXTURE2D_DESC desc{}; desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_STAGING; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  ComPtrLite<ID3D11Texture2D> staging;
+  ASSERT_TRUE(SUCCEEDED(consumer->CreateTexture2D(&desc, nullptr, staging.put())));
+  D3D11_QUERY_DESC queryDesc{D3D11_QUERY_EVENT, 0}; ComPtrLite<ID3D11Query> produced;
+  ASSERT_TRUE(SUCCEEDED(producer->CreateQuery(&queryDesc, produced.put())));
+  std::vector<std::shared_ptr<D3DProgramDisplaySnapshots::Snapshot>> leases;
+  for (size_t index = 0; index < D3DProgramDisplaySnapshots::Capacity; ++index) {
+    auto slot = pool.reserve(); ASSERT_TRUE(slot != nullptr); leases.push_back(slot);
+    std::vector<uint8_t> pixels(64 * 64 * 4, static_cast<uint8_t>(17 + index));
+    producerContext->UpdateSubresource(slot->texture.get(), 0, nullptr, pixels.data(), 64 * 4, 0);
+    producerContext->End(produced.get()); producerContext->Flush();
+    BOOL ready = FALSE; const auto limit = std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    while (producerContext->GetData(produced.get(), &ready, sizeof(ready), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_FALSE &&
+        std::chrono::steady_clock::now() < limit) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    ASSERT_TRUE(ready);
+    ProgramFrame frame; frame.deliverySequence = frame.frameNumber = index + 1; pool.stamp(slot, frame);
+    auto* view = reader.copy(consumer.get(), consumerContext.get(), slot); ASSERT_TRUE(view != nullptr);
+    ComPtrLite<ID3D11Resource> image; view->GetResource(image.put());
+    consumerContext->CopyResource(staging.get(), image.get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    ASSERT_TRUE(SUCCEEDED(consumerContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)));
+    EXPECT_EQ(static_cast<const uint8_t*>(mapped.pData)[0], static_cast<uint8_t>(17 + index));
+    consumerContext->Unmap(staging.get(), 0); reader.retire(consumerContext.get(), 0);
+  }
+  EXPECT_EQ(reader.observation().copies, D3DProgramDisplaySnapshots::Capacity);
+  EXPECT_EQ(reader.observation().refused, 0u);
+}
+
 TEST(D3DProgramBuffer, DisplayReaderAttributesEachResourceFailureAndExportsExactIncident) {
   using namespace corevideo::modules;
   ComPtrLite<ID3D11Device> device;
