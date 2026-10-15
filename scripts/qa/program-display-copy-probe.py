@@ -156,7 +156,12 @@ def main():
                         admission = snapshot.get('programSourceAdmission',{})
                         selected = {s.get('sourceId') for s in admission.get('sources',[])
                             if s.get('state') in ('ready','held') and isinstance(s.get('actualFrameId'),(int,float))
-                            and s['actualFrameId'] >= 0 and s.get('actualEpoch') == s.get('requestedEpoch')}
+                            and s['actualFrameId'] >= 0 and (s.get('actualEpoch') == s.get('requestedEpoch') or
+                                (s.get('state') == 'held' and s.get('reason') == 'same-lifetime-format-transition' and
+                                 s.get('actualLifetime') == s.get('requestedLifetime') and
+                                 str(s.get('actualLifetime','0')).isdigit() and int(s.get('actualLifetime','0')) > 0 and
+                                 s.get('actualEpoch',0) < s.get('requestedEpoch',0) and
+                                 0 <= s.get('requestedCapture100ns',0) - s.get('actualCapture100ns',0) <= 1_000_000))}
                         if admission.get('readyOnlyRequested') is not True or not expected_program_sources.issubset(selected):
                             ingredient_errors.add('Requested Program pixels lacked source-admission evidence')
                 if sample_file.tell() > 256*1024*1024: raise RuntimeError('sample artifact budget exhausted; incomplete evidence')

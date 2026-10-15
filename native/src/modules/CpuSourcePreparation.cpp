@@ -473,6 +473,7 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
     if (source->queued.size() >= kPendingPerSource) return refused(CpuPreparationCapacity::PendingTokens);
     auto token = std::make_shared<CpuSourceGpuView>();
     token->sourceId = id; token->sourceEpoch = epoch; token->frameId = frameId;
+    token->continuityLifetime = continuityLifetime;
     token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
     token->cpuStride = stride;
     token->cpu = cpu; token->demand = source->demand; source->queued.push_back(token);

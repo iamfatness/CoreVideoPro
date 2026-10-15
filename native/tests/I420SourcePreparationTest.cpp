@@ -122,6 +122,42 @@ TEST(ProgramSourceAdmission, HoldsExactOldImageWithoutCpuLeasesAndNeverHoldsFutu
   EXPECT_EQ(policy.select(newer, 6, [](const auto&) { return true; }).evidence.state, "unavailable");
 }
 
+TEST(ProgramSourceAdmission, HoldsOnlyVerifiedSameLifetimeDuringFormatReadinessGap) {
+  using namespace corevideo::modules;
+  ProgramSourceAdmissionPolicy policy;
+  VideoFrame old; old.participantId = "guest"; old.sourceEpoch = 1; old.frameId = 10;
+  old.captureTimestamp100ns = 1000; old.width = old.height = 64;
+  auto gpu = std::make_shared<GpuVideoFrame>(); gpu->width = gpu->height = 64; old.gpuPixels = gpu;
+  const auto tokenFor = [](const VideoFrame& f, uint64_t lifetime) {
+    auto t = std::make_shared<CpuSourceGpuView>(); t->sourceId = f.participantId;
+    t->sourceEpoch = f.sourceEpoch; t->frameId = f.frameId; t->captureTimestamp100ns = f.captureTimestamp100ns;
+    t->width = f.width; t->height = f.height; t->continuityLifetime = lifetime;
+    t->demand = std::make_shared<CpuSourceGpuDemand>(); return t;
+  };
+  old.preparedGpu = tokenFor(old, 44);
+  EXPECT_EQ(policy.select(old, 1, [](const auto&) { return true; }).evidence.state, "ready");
+  auto next = old; next.sourceEpoch = 2; next.frameId = 1; next.captureTimestamp100ns = 1100;
+  next.width = next.height = 128; next.gpuPixels.reset(); next.preparedGpu = tokenFor(next, 44);
+  auto held = policy.select(next, 2, [](const auto&) { return true; });
+  EXPECT_EQ(held.evidence.state, "held"); EXPECT_EQ(held.evidence.reason, "same-lifetime-format-transition");
+  EXPECT_EQ(held.evidence.actualEpoch, 1u); EXPECT_EQ(held.evidence.requestedEpoch, 2u);
+  EXPECT_EQ(held.evidence.actualLifetime, 44u); EXPECT_EQ(held.evidence.requestedLifetime, 44u);
+  ProgramFrame packet; packet.sourceAdmissions.push_back(held.evidence);
+  const auto json = programSourceAdmissionJson(packet);
+  const auto& row = json.get("sources")->asArray().front();
+  EXPECT_EQ(row.getString("requestedLifetime"), "44"); EXPECT_EQ(row.getString("actualLifetime"), "44");
+  EXPECT_EQ(held.image.gpuPixels, gpu); EXPECT_EQ(held.image.width, 64);
+  auto tooOld = next; tooOld.captureTimestamp100ns = 1'001'001;
+  tooOld.preparedGpu = tokenFor(tooOld, 44);
+  EXPECT_EQ(policy.select(tooOld, 3, [](const auto&) { return true; }).evidence.state, "unavailable");
+  next.preparedGpu->continuityLifetime = 45; // reconnect/reassignment may never retain old pixels
+  EXPECT_EQ(policy.select(next, 3, [](const auto&) { return true; }).evidence.state, "unavailable");
+  next.gpuPixels = gpu; next.width = next.height = 64; next.preparedGpu = tokenFor(next, 45);
+  EXPECT_EQ(policy.select(next, 4, [](const auto&) { return true; }).evidence.state, "ready");
+  auto invalid = next; invalid.sourceEpoch = 3; invalid.gpuPixels.reset();
+  EXPECT_EQ(policy.select(invalid, 5, [](const auto&) { return true; }).evidence.state, "unavailable");
+}
+
 TEST(ProgramSourceAdmission, RefusesWrongGpuIdentityConsumerAndExpiresUndemandedLeases) {
   using namespace corevideo::modules;
   ProgramSourceAdmissionPolicy policy;

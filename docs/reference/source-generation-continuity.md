@@ -18,8 +18,19 @@ predecessor as a draining generation. It can finish preparing exact old CPU
 selections until Program selects a token in the successor. That selection marks
 the predecessor stopped; its existing GPU owner drains leases before retirement.
 The existing generation, active-resource and memory caps still apply. No new
-CPU playout buffer, future-image substitution or cross-epoch held fallback is
-introduced. Capacity refusal remains attributable and fails acceptance.
+CPU playout buffer or future-image substitution is introduced. Capacity refusal
+remains attributable and fails acceptance.
+
+The first successor selection can precede that format's GPU resource readiness.
+Program may temporarily keep the exact old image only for a verified equal
+nonzero lifetime and a strictly newer requested epoch. The actual old epoch,
+frame, dimensions and capture timestamp remain attached to those pixels, with
+reason `same-lifetime-format-transition`; both lifetime IDs are exposed as
+decimal strings in admission JSON. The capture-time difference is bounded to
+100 ms so stalled preparation cannot masquerade as an indefinite transition.
+Failed/stopped successors, future images, mismatched tokens and changed
+lifetimes never authorize this hold. The QA consumer validates this explicit
+transition rather than treating arbitrary cross-epoch images as available.
 
 A reconnect, reassigned participant, restarted helper or failed preparation
 owner does not qualify as a format replacement. A changed lifetime invalidates

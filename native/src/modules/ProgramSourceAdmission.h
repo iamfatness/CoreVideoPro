@@ -24,6 +24,10 @@ class ProgramSourceAdmissionPolicy {
     result.image.gpuPixels.reset(); result.image.monitorGpuPixels.reset();
     const int width = requested.hasI420() ? requested.i420Width : requested.hasPixels() ? requested.pixelWidth : requested.width;
     const int height = requested.hasI420() ? requested.i420Height : requested.hasPixels() ? requested.pixelHeight : requested.height;
+    if (const auto& token = requested.preparedGpu; token && token->sourceId == requested.participantId &&
+        token->sourceEpoch == requested.sourceEpoch && token->frameId == requested.frameId &&
+        token->captureTimestamp100ns == requested.captureTimestamp100ns && token->width == width && token->height == height)
+      proof.requestedLifetime = token->continuityLifetime;
     auto pending = pending_.find(requested.participantId);
     if (pending != pending_.end() && (requested.sourceEpoch == 0 || pending->second.image.sourceEpoch != requested.sourceEpoch ||
         pending->second.token->width != width || pending->second.token->height != height ||
@@ -34,9 +38,13 @@ class ProgramSourceAdmissionPolicy {
       pending_.erase(pending); pending = pending_.end();
     }
     auto previous = held_.find(requested.participantId);
+    const bool formatTransition = previous != held_.end() && proof.requestedLifetime &&
+        previous->second.image.preparedGpu &&
+        previous->second.image.preparedGpu->continuityLifetime == proof.requestedLifetime &&
+        previous->second.image.sourceEpoch < requested.sourceEpoch;
     if (previous != held_.end() && (requested.sourceEpoch == 0 ||
-        previous->second.image.sourceEpoch != requested.sourceEpoch ||
-        previous->second.image.gpuPixels->width != width || previous->second.image.gpuPixels->height != height)) {
+        (!formatTransition && (previous->second.image.sourceEpoch != requested.sourceEpoch ||
+        previous->second.image.gpuPixels->width != width || previous->second.image.gpuPixels->height != height)))) {
       held_.erase(previous); previous = held_.end();
       proof.reason = "source-epoch-or-dimensions-changed";
     }
@@ -80,6 +88,7 @@ class ProgramSourceAdmissionPolicy {
         if (completed && !completed->monitorPrivate && pending->second.image.frameId <= requested.frameId &&
             pending->second.image.captureTimestamp100ns <= requested.captureTimestamp100ns && canRead(completed)) {
           result.image = pending->second.image; result.image.gpuPixels = std::move(completed);
+          result.image.preparedGpu = pending->second.token; // weak CPU payload; preserve verified lifetime
           pending->second.token->consumed.store(true);
           proof.state = "held"; proof.reason = "previous-selection-completed";
           if (previous != held_.end()) previous->second = {result.image, tick};
@@ -97,13 +106,17 @@ class ProgramSourceAdmissionPolicy {
         descriptor.monitorGpuPixels.reset(); descriptor.preparedGpu.reset();
         pending_.emplace(requested.participantId, Pending{std::move(descriptor), requested.preparedGpu, tick});
       } else if (pending != pending_.end()) pending->second.tick = tick;
-      if (proof.state != "held" && previous != held_.end() && previous->second.image.frameId <= requested.frameId &&
-          previous->second.image.captureTimestamp100ns <= requested.captureTimestamp100ns && canRead(previous->second.image.gpuPixels)) {
+      if (proof.state != "held" && previous != held_.end() && (formatTransition || previous->second.image.frameId <= requested.frameId) &&
+          previous->second.image.captureTimestamp100ns <= requested.captureTimestamp100ns &&
+          (!formatTransition || requested.captureTimestamp100ns - previous->second.image.captureTimestamp100ns <= 1'000'000) &&
+          canRead(previous->second.image.gpuPixels)) {
         result.image = previous->second.image; previous->second.tick = tick; proof.state = "held";
+        if (formatTransition) proof.reason = "same-lifetime-format-transition";
       }
     }
     if (result.image.gpuPixels) {
       proof.actualEpoch = result.image.sourceEpoch; proof.actualFrameId = result.image.frameId;
+      proof.actualLifetime = result.image.preparedGpu ? result.image.preparedGpu->continuityLifetime : 0;
       proof.actualCapture100ns = result.image.captureTimestamp100ns;
     }
     return result;
