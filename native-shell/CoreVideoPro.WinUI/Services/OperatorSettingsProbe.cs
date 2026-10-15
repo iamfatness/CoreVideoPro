@@ -55,7 +55,7 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             await CheckSourceOptions(window, checks);
             await CheckSourcesLayout(window, checks);
             await CheckLowerThirdText(window, checks);
-            await CheckAdjustmentControls(window,checks);
+            await CheckAdjustmentControls(window,checks,Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
             await SceneWorkspaceIntegrationProbe.CheckAsync(window,checks,Path.GetDirectoryName(Path.GetFullPath(reportPath)));
         }
         catch (Exception ex) { error = ex.ToString(); }
@@ -67,7 +67,7 @@ internal sealed class OperatorSettingsProbe(string reportPath)
             window.Close();
         }
     }
-    private static async Task CheckAdjustmentControls(Window window,List<string> checks)
+    private static async Task CheckAdjustmentControls(Window window,List<string> checks,string reviewDirectory)
     {
         var control=new SliderValueControl { Header="Precision",Minimum=0,Maximum=1,Value=.123456789,StepFrequency=.01 };
         var away=new Button { Content="Focus target" };var panel=new StackPanel();panel.Children.Add(control);panel.Children.Add(away);window.Content=panel;
@@ -94,10 +94,17 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         var designer=new LowerThirdDesignerControl();window.Content=new ScrollViewer { Content=designer };
         foreach(var id in new[] {"compact-solid","minimal-accent","broadcast"}) {
             designer.LoadReviewDraft(LowerThirdAppearance.FromPreset(id));await Eventually(()=>designer.IsLoaded);
+            foreach(var section in Descendants(designer).OfType<Expander>().Where(e=>e.Header?.ToString() is "Typography" or "Colors and plate" or "Size and placement" or "Source logo" or "Saved looks").ToArray()) section.IsExpanded=true;
+            await Task.Delay(50);
             Require(Descendants(designer).OfType<SliderValueControl>().Count()==9,"Designer adjustment controls missing");
         }
         window.AppWindow.Resize(new SizeInt32(500,760));designer.UpdateLayout();
         Require(Descendants(designer).OfType<Button>().Any(b=>b.Content?.ToString()=="Apply look"),"Designer Apply missing");
+        foreach(var section in Descendants(designer).OfType<Expander>().ToArray()) section.IsExpanded=false;
+        await Task.Delay(50);designer.UpdateLayout();
+        var applyLook=Descendants(designer).OfType<Button>().Single(b=>b.Content?.ToString()=="Apply look");
+        Require(applyLook.TransformToVisual(designer).TransformPoint(new(0,0)).Y<500,"Apply is buried below appearance settings");
+        await ReviewImageWriter.SaveAsync((FrameworkElement)window.Content,Path.Combine(reviewDirectory,"lower-third-designer.png"));
         checks.Add("lower-third designer presets, sliders, color selectors and Apply load in real UI at narrow width without live state");
     }
     private static async Task CheckLowerThirdText(Window window, List<string> checks)
