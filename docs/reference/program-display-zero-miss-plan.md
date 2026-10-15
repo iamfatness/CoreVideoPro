@@ -508,3 +508,19 @@ an actual 2560x1440 WGC screen. This does not qualify eight simultaneous 1080p
 Zoom inputs. Camera registration, Windows Frame Server, physical display and
 audio continuity remain outside that direct-DLL evidence. Installed files and
 machine registration were not replaced.
+
+
+### Startup intent coalescing versus admitted Program copies
+
+The `final-41c-depth2` stress passed every admitted Program-copy and camera-pixel
+check, including all 60 cold consumers, and its source admissions passed. Its
+auxiliary mailbox coalesced one request while the nine-source workload was still
+awaiting GPU readiness. That raw count remains retained; it does not identify an
+exported/presented image loss. The probe now reports initialization coalescing
+separately from coalescing after observed complete source readiness, using the
+same content-based boundary already used for source-workload qualification.
+Worker failures, all admitted Program-reader failures and all camera startup
+pixels still count from their first observation; none is reset or discarded.
+Physical display and full output continuity remain unverified. The original
+`final-41c-depth2/report.json` is unchanged and still carries its earlier strict
+aggregate failure; subsequent runs record both startup and qualified counters.
