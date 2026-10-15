@@ -682,6 +682,8 @@ class D3D11Compositor final : public ICompositor {
       const auto* view = image && gpuConsumer_ ? image->view(gpuConsumer_->id) : nullptr;
       if (request.multiviewActive && request.bufferedProgram && view && gpuReadLeases_ && gpuReadLeases_->hold(image))
         monitorDeliveredView_ = view->srv.Get();
+      if (request.multiviewActive && request.bufferedProgram && image && !monitorDeliveredView_)
+        throw std::runtime_error("completed Program monitor view unavailable");
     } else {
       monitorDeliveredView_ = request.multiviewActive && request.bufferedProgram
           ? (request.acquireDeliveredProgram && !monitorProgramOwner_
