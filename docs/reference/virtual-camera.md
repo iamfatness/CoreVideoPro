@@ -282,13 +282,21 @@ Build `corevideo-vcam-receiver` and run `corevideo-vcam-receiver 90 > receiver.n
 
 For boundary isolation, `corevideo-vcam-receiver 90 --dll <absolute-DLL-path>` instantiates that DLL's media source directly through Media Foundation without changing COM registration. Its evidence is marked `receiverMode=direct-dll`; the judge always reports `osCameraContinuityVerified=false` for that mode. This diagnostic distinguishes a candidate reader from an older DLL served by Frame Server. Registered paths alone do not prove the loaded module: a conflicting machine-wide CLSID can select a different DLL from the installer's per-user registration.
 
-`COREVIDEO_CAMERA_READ_RETRY=1`, set in the reader process, enables an experimental bounded publication wait. Unchanged or contended reads may wait for the next publication for at most one nominal frame period, with at most 64 high-resolution waits and two payload-copy attempts across the entire sample request. Missing or invalid mappings do not retry. Retry reads do not accelerate orphaned-mapping reopen cadence. Counters report attempted and recovered samples; held samples still count as held. The switch defaults off pending installed qualification and latency/audio evidence; a producer-process environment variable does not configure a separately hosted Frame Server process.
+The #517 reader repair enables bounded publication recovery by default. It
+waits at most 2 ms, eight high-resolution retries and two total payload copies,
+and never beyond the original next sample boundary minus delivery reserve.
+`COREVIDEO_CAMERA_READ_RETRY=0` in the reader process is a diagnostic negative
+control. Missing or invalid mappings do not retry. Retry reads do not accelerate
+orphaned-mapping reopen cadence. Serving logs distinguish writer-active and
+copy-change contention, recovered reads and original-deadline misses; held/slate
+pixels still fail continuity. See [the recovery contract and evidence limits](camera-reader-contention.md).
+A producer-process environment variable does not configure Frame Server.
 
 For controlled Windows Frame Server qualification, explicitly build the excluded
 `corevideo-virtualcam-retry-qa` target in Release. It produces a separately named
 diagnostic DLL with publication retry enabled and logs `[vcam-retry-qa]` when a
 stream initializes. Normal builds and release packaging continue to use the
-unchanged default-off `corevideo-virtualcam` target. This avoids changing the
+bounded-recovery `corevideo-virtualcam` target. This avoids changing the
 Windows service environment to inject a test flag. Record the diagnostic DLL
 hash and actual loaded module path; registering a path alone is not provenance.
 Preserve and restore the installed camera registration after the trial. An OS
