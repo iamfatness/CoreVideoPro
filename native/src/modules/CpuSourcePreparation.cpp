@@ -410,6 +410,7 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
       ++impl_->measured.refused;
       auto token = std::make_shared<CpuSourceGpuView>();
       token->sourceId = id; token->sourceEpoch = epoch; token->frameId = frameId;
+      token->continuityLifetime = continuityLifetime;
       token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
       token->cpuStride = stride; token->cpu = cpu;
       token->demand = std::make_shared<CpuSourceGpuDemand>();

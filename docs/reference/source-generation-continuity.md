@@ -65,3 +65,17 @@ registered Frame Server, physical presentation, audio or sustained qualification
 The aggregate judge in that retained report incorrectly treated unverified OS
 qualification as a known failure; the correction preserves direct-DLL results
 as unverified all-output qualification, never PASS. Raw counts are unchanged.
+
+
+### Transient retiring-generation refusal
+
+The `final-114-depth2` mixed cold-consumer stress retained one sampled source
+admission failure: `preparation-retiring-generation-capacity`. Its refused
+offer lost the caller's continuity lifetime (reported as zero), and its stopped
+request was treated as a stopped producer. Refused offers now preserve verified
+lifetime metadata without retaining CPU bytes. Only the specific retiring-
+generation capacity case may use the existing same-guest format transition
+hold, with the unchanged six-frame age bound and actual old epoch/dimensions.
+A different guest lifetime, failed producer, unknown/malformed token or unrelated
+capacity refusal still clears/refuses the old image. No capacity or hold interval
+was increased. The source's eventual successor still needs real GPU completion.

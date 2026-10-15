@@ -159,6 +159,40 @@ TEST(ProgramSourceAdmission, HoldsOnlyVerifiedSameLifetimeDuringFormatReadinessG
   EXPECT_EQ(policy.select(invalid, 5, [](const auto&) { return true; }).evidence.state, "unavailable");
 }
 
+TEST(ProgramSourceAdmission, RetiringCapacityKeepsOnlyBoundedVerifiedSameGuestFormatPixels) {
+  using namespace corevideo::modules;
+  const auto tokenFor = [](const VideoFrame& f, uint64_t lifetime) {
+    auto token = std::make_shared<CpuSourceGpuView>(); token->sourceId = f.participantId;
+    token->sourceEpoch = f.sourceEpoch; token->frameId = f.frameId; token->captureTimestamp100ns = f.captureTimestamp100ns;
+    token->width = f.width; token->height = f.height; token->continuityLifetime = lifetime;
+    token->demand = std::make_shared<CpuSourceGpuDemand>(); return token;
+  };
+  VideoFrame old; old.participantId = "guest"; old.sourceEpoch = 1; old.frameId = 10;
+  old.captureTimestamp100ns = 1000; old.width = old.height = 64;
+  auto image = std::make_shared<GpuVideoFrame>(); image->width = image->height = 64; old.gpuPixels = image;
+  old.preparedGpu = tokenFor(old, 44);
+  auto next = old; next.sourceEpoch = 2; next.frameId = 1; next.captureTimestamp100ns = 1100;
+  next.width = next.height = 128; next.gpuPixels.reset(); next.preparedGpu = tokenFor(next, 44);
+  next.preparedGpu->demand->capacity.store(CpuPreparationCapacity::RetiringGenerations);
+  next.preparedGpu->demand->stopped.store(true);
+  for (int rejection = 0; rejection < 4; ++rejection) {
+    ProgramSourceAdmissionPolicy policy; policy.select(old, 1, [](const auto&) { return true; });
+    auto selected = next; selected.preparedGpu = tokenFor(next, rejection == 1 ? 45 : 44);
+    selected.preparedGpu->demand->capacity.store(rejection == 2 ? CpuPreparationCapacity::Sources : CpuPreparationCapacity::RetiringGenerations);
+    selected.preparedGpu->demand->stopped.store(true);
+    if (rejection == 3) selected.preparedGpu->demand->failed.store(true);
+    const auto result = policy.select(selected, 2, [](const auto&) { return true; });
+    EXPECT_EQ(result.evidence.state, rejection ? "unavailable" : "held");
+    if (!rejection) {
+      EXPECT_EQ(result.image.gpuPixels, image); EXPECT_EQ(result.image.width, 64);
+      EXPECT_EQ(result.evidence.reason, "same-lifetime-format-transition");
+      EXPECT_EQ(result.evidence.actualEpoch, 1u); EXPECT_EQ(result.evidence.requestedEpoch, 2u);
+      EXPECT_EQ(policy.select(selected, 8, [](const auto&) { return true; }).evidence.state, "held");
+      EXPECT_EQ(policy.select(selected, 9, [](const auto&) { return true; }).evidence.state, "unavailable");
+    }
+  }
+}
+
 TEST(ProgramSourceAdmission, RefusesWrongGpuIdentityConsumerAndExpiresUndemandedLeases) {
   using namespace corevideo::modules;
   ProgramSourceAdmissionPolicy policy;
@@ -1300,11 +1334,12 @@ TEST(CpuSourcePreparation, SourceCapacityRefusalCarriesIdentityWithoutRetainingC
     ASSERT_TRUE(token); tokens.push_back(token);
   }
   frame.captureTimestamp100ns = 1000;
-  frame.preparedGpu = owner.offer(frame.participantId, 1, 1, 1000, 64, 64, frame.i420);
+  frame.preparedGpu = owner.offer(frame.participantId, 1, 1, 1000, 64, 64, frame.i420, 77);
   ASSERT_TRUE(frame.preparedGpu);
   ProgramSourceAdmissionPolicy policy;
   const auto result = policy.select(frame, 1, [](const auto&) { return true; });
   EXPECT_EQ(result.evidence.reason, "preparation-source-capacity");
+  EXPECT_EQ(result.evidence.requestedLifetime, 77u);
   EXPECT_EQ(result.evidence.requestedFrameId, 1);
   EXPECT_EQ(result.evidence.state, "unavailable");
   EXPECT_EQ(owner.stats().sources, CpuSourcePreparation::kMaxSources);

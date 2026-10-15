@@ -42,6 +42,12 @@ class ProgramSourceAdmissionPolicy {
         previous->second.image.preparedGpu &&
         previous->second.image.preparedGpu->continuityLifetime == proof.requestedLifetime &&
         previous->second.image.sourceEpoch < requested.sourceEpoch;
+    // A refused successor offer is stopped as a request, not as a guest.
+    // Preserve only the verified same-lifetime format transition while its
+    // older generation drains; all existing age/identity fences still apply.
+    const bool drainingCapacityTransition = formatTransition && requested.preparedGpu->demand &&
+        !requested.preparedGpu->demand->failed.load() &&
+        requested.preparedGpu->demand->capacity.load() == CpuPreparationCapacity::RetiringGenerations;
     if (formatTransition) {
       if (previous->second.transitionTick < 0) previous->second.transitionTick = tick;
       proof.formatTransitionAgeFrames = tick - previous->second.transitionTick;
@@ -66,8 +72,9 @@ class ProgramSourceAdmissionPolicy {
           proof.reason = cpuPreparationCapacityReason(token->demand->capacity.load());
       } else proof.reason = "preparation-identity-mismatch";
     }
-    if (proof.reason == "preparation-stopped" || proof.reason == "preparation-failed" ||
-        (requested.preparedGpu && requested.preparedGpu->demand && requested.preparedGpu->demand->stopped.load())) {
+    if (proof.reason == "preparation-failed" ||
+        (!drainingCapacityTransition && (proof.reason == "preparation-stopped" ||
+        (requested.preparedGpu && requested.preparedGpu->demand && requested.preparedGpu->demand->stopped.load())))) {
       if (previous != held_.end()) held_.erase(previous);
       pending_.erase(requested.participantId);
       return result; // A removed/failed producer cannot prove its held surface.
@@ -103,7 +110,7 @@ class ProgramSourceAdmissionPolicy {
       }
       // Keep one selected identity until its asynchronous completion is read.
       // The token holds weak CPU/GPU payloads; this never retains CPU/ISO pixels.
-      if (pending == pending_.end() && requested.preparedGpu && !requested.preparedGpu->superseded.load() && requested.sourceEpoch != 0 &&
+      if (pending == pending_.end() && !drainingCapacityTransition && requested.preparedGpu && !requested.preparedGpu->superseded.load() && requested.sourceEpoch != 0 &&
           requested.preparedGpu->sourceId == requested.participantId && requested.preparedGpu->sourceEpoch == requested.sourceEpoch &&
           requested.preparedGpu->frameId == requested.frameId && requested.preparedGpu->captureTimestamp100ns == requested.captureTimestamp100ns &&
           requested.preparedGpu->width == width && requested.preparedGpu->height == height && pending_.size() < kMaxSources) {
