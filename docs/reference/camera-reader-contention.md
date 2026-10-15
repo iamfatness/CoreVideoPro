@@ -99,3 +99,18 @@ policy. Miss diagnostics expose first-read elapsed time, original time remaining
 retry enablement and remaining copy budget; timer creation failure is counted.
 The retained log alone cannot exclude a transient timer-creation failure in that
 original initial slate, so it does not establish its exact internal timing.
+
+
+The follow-up `final-114` cold-start stress eliminated invalid first images but
+retained five repeated and one missing identity over 60 independent consumers
+(3,660 samples); the concurrent primary receiver had 5,401 clean samples. The
+miss logs show cheap unchanged reads with more than 14 ms of original window
+remaining, followed by the 2 ms elapsed cutoff. Therefore the current policy
+uses the original sample-read deadline as its sole elapsed-time boundary,
+including the unchanged 2 ms delivery reserve. It retains eight retry yields,
+the two-payload-copy cap and one permitted mapping reopen. A writer collision
+gets a 250 us first yield; subsequent waits are at most 2 ms and at most half the
+remaining original window. No new deadline or extra copy is granted. A controlled
+early-consumer/late-publication case fails under the old cutoff and succeeds
+before the same original sample boundary. This supersedes the intermediate
+post-first-read 2 ms recovery window described above.

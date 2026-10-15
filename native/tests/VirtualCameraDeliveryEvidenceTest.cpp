@@ -25,6 +25,20 @@ TEST(VirtualCameraReadRetry, ColdFirstPayloadCopyDoesNotConsumeTheBoundedRecover
   EXPECT_TRUE(run(false));
 }
 
+TEST(VirtualCameraReadRetry, EarlyUnchangedConsumerWaitsForPublicationWithinOriginalSampleWindow) {
+  const auto run = [](int64_t deadline) {
+    int64_t now = 0; unsigned retries = 0;
+    return readCameraUntilDeadline([&](bool) {
+      return now >= 3500 ? VirtualCameraReadResult::Fresh : VirtualCameraReadResult::Unchanged;
+    }, [&] { return now; }, [&](int64_t remaining) {
+      now += (std::min)(int64_t(retries ? 2000 : 250), (std::max)(int64_t(1), remaining / 2));
+      return true;
+    }, true, retries, deadline);
+  };
+  EXPECT_FALSE(run(2000));
+  EXPECT_TRUE(run(14000));
+}
+
 TEST(VirtualCameraReadRetry, OriginalDeadlineIsNotRenewedByLateEntryOrOversleptWait) {
   for (int64_t start : {int64_t{1990}, int64_t{2100}}) {
     int64_t now = start; unsigned retries = 0; int reads = 0, waits = 0;
