@@ -25,7 +25,15 @@ namespace {
 // of depending on a previously run server test to leave the timer configured.
 struct ProgramBufferTimerResolution {
   MMRESULT result = timeBeginPeriod(1);
-  ~ProgramBufferTimerResolution() { if (result == TIMERR_NOERROR) timeEndPeriod(1); }
+  HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  ~ProgramBufferTimerResolution() { if (timer) CloseHandle(timer); if (result == TIMERR_NOERROR) timeEndPeriod(1); }
+  void waitUntil(std::chrono::steady_clock::time_point target) {
+    const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(target - std::chrono::steady_clock::now()).count();
+    if (remaining <= 0) return;
+    LARGE_INTEGER due; due.QuadPart = -(std::max)(int64_t(1), (remaining + 99) / 100);
+    if (!timer || !SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE) || WaitForSingleObject(timer, 50) != WAIT_OBJECT_0)
+      throw std::runtime_error("phase fixture high-resolution wait failed");
+  }
 };
 }
 
@@ -918,7 +926,7 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
     const auto anchor = std::chrono::steady_clock::now();
     for (int n = 0; n < 120; ++n) {
       const auto tick = anchor + std::chrono::nanoseconds(n * 1000000000LL / 60);
-      std::this_thread::sleep_until(tick);
+      timer.waitUntil(tick);
       const auto tickStarted = std::chrono::steady_clock::now();
       compositor->setProgramProductionTiming(n,
           std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count());
@@ -930,7 +938,7 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
       source.pixels = std::move(sourcePixels);
       (void)compositor->render(program, {source});
       const auto productionReturned = std::chrono::steady_clock::now();
-      std::this_thread::sleep_until(tick + std::chrono::milliseconds(phaseMs));
+      timer.waitUntil(tick + std::chrono::milliseconds(phaseMs));
       auto monitorSubmitted = std::chrono::steady_clock::now();
       ProgramFrameSharedTexture exported;
       if (isolated) {
@@ -989,7 +997,7 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
       // Aim at the same consumer phase. The completion wait above and the
       // keyed-mutex/readback below can pass this deadline: report actual timing
       // so pixel continuity cannot be mistaken for on-time presentation proof.
-      std::this_thread::sleep_until(tick + std::chrono::milliseconds(16));
+      timer.waitUntil(tick + std::chrono::milliseconds(16));
       const auto consumerStarted = std::chrono::steady_clock::now();
       if (exported.sharedHandleHex.empty()) continue;
       ComPtrLite<ID3D11Texture2D> texture, staging;
