@@ -131,6 +131,7 @@ class D3DProgramDisplayReader {
       // new timeout: preserve their nonblocking admission policy.
       if (deadlineNs_ <= 0) return refuse(device, ProgramDisplayReason::ReadCapacity, S_FALSE);
       record(7, ProgramDisplayReason::ReadCapacity, S_FALSE); captureIncident(); postIncident_ = 8;
+      if (nowNs() >= deadlineNs_) return refuse(device, ProgramDisplayReason::Deadline, S_FALSE);
       const auto start = nowNs();
       const auto before = reads_.size();
       // Permit driver submission/progress once at actual pressure. Subsequent

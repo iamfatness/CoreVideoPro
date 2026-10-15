@@ -161,7 +161,7 @@ TEST(D3DProgramBuffer, DisplayReaderRetriesSameIdentityWithinOriginalDeadlineAnd
   // Functional clock, not a hardware timing qualification: the completion
   // seam controls observation availability; staging pixels independently prove
   // the real submitted copy. No simulated success releases a GPU-owned lease.
-  for (int mode = 0; mode < 4; ++mode) { // legacy one-poll, retry, expired, cancelled
+  for (int mode = 0; mode < 5; ++mode) { // legacy one-poll, delayed retry, expired, cancelled, immediate recheck
     D3DProgramDisplaySnapshots pool;
     ASSERT_TRUE(pool.initialize(device.get(), 64, 64, 1000 + mode));
     D3DProgramDisplayReader reader;
@@ -194,17 +194,19 @@ TEST(D3DProgramBuffer, DisplayReaderRetriesSameIdentityWithinOriginalDeadlineAnd
       if (polls > 2 && mode == 2) clock = deadline;
       if (polls > 2 && mode == 3) cancellation->stopped = true;
       if (mode == 1 && polls > 4) return {}; // Real GetData, after two held admission/recheck polls.
+      if (mode == 4 && polls > 2) return {}; // The pressure-only flushing recheck can retire real completed reads.
       return S_FALSE;
     });
     view = reader.copy(device.get(), context.get(), slots[2], target, mode == 0 ? 0 : deadline, &request);
     const auto evidence = reader.observation();
     EXPECT_EQ(evidence.capacityPressures, 1u);
     EXPECT_EQ(evidence.lateSubmissions, 0u);
-    if (mode == 1) {
+    if (mode == 1 || mode == 4) {
       EXPECT_EQ(reader.copied(), 3u); EXPECT_EQ(pixel(view), 180);
       EXPECT_EQ(evidence.refused, 0u); EXPECT_EQ(evidence.skipped, 0u);
       EXPECT_EQ(evidence.admittedAfterPressure, 1u);
       EXPECT_EQ(evidence.gpuReads, 1);
+      if (mode == 4) EXPECT_EQ(evidence.flushingPollRetirements, 2u);
     } else {
       EXPECT_EQ(reader.requested(), 3u); EXPECT_EQ(reader.copied(), 2u);
       EXPECT_EQ(pixel(view), 120); EXPECT_EQ(evidence.gpuReads, 2);

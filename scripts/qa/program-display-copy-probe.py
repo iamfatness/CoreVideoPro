@@ -64,6 +64,7 @@ def main():
     initial = None
     trace_key = None
     incident_files = []
+    incident_bytes = 0
     failure = None
     started = time.monotonic()
     try:
@@ -78,7 +79,7 @@ def main():
         }, args.output/'native.stderr.log')
         with (args.output/'samples.jsonl').open('w', encoding='utf-8') as sample_file:
             def retain(snapshot):
-                nonlocal sample_count, latest, latest_sources, initial, trace_key
+                nonlocal sample_count, latest, latest_sources, initial, trace_key, incident_bytes
                 worker = dict(snapshot.get('realtimeEvidence',{}).get('monitorWorker',{}))
                 exported_display = worker.get('programDisplay',{})
                 display = dict(exported_display.get('latestReader',exported_display))
@@ -86,16 +87,22 @@ def main():
                 if incident:
                     key = (display.get('readerEpoch'),display.get('traceOverwritten'),incident[-1].get('observedNs'))
                     if key != trace_key:
-                        if len(incident_files) >= 64: raise RuntimeError('incident artifact budget exhausted; incomplete evidence')
+                        if len(incident_files) >= 512: raise RuntimeError('incident artifact budget exhausted; incomplete evidence')
                         name = f'incident-{len(incident_files)+1:03}.json'
-                        (args.output/name).write_text(json.dumps(dict(reader=display,records=incident),indent=2))
+                        content = json.dumps(dict(reader=display,records=incident),indent=2)
+                        content_bytes = len(content.encode('utf-8'))
+                        if incident_bytes+content_bytes > 256*1024*1024:
+                            raise RuntimeError('incident byte budget exhausted; incomplete evidence')
+                        (args.output/name).write_text(content,encoding='utf-8')
+                        incident_bytes += content_bytes
                         incident_files.append(name); trace_key = key
                     display['incidentArtifact'] = incident_files[-1]
                 worker['programDisplay'] = display
                 row = dict(elapsedSeconds=time.monotonic()-started,
                     programBuffer=snapshot.get('programBuffer'),
                     realtimeEvidence=dict(monitorWorker=worker,
-                        render=snapshot.get('realtimeEvidence',{}).get('render')),
+                        render=snapshot.get('realtimeEvidence',{}).get('render'),
+                        capturePreparation=snapshot.get('realtimeEvidence',{}).get('capturePreparation')),
                     sources=[{k:s.get(k) for k in ('sourceId','kind','hasVideo','framesIngested','width','height')}
                         for s in snapshot.get('sources', [])])
                 if sample_file.tell() > 256*1024*1024: raise RuntimeError('sample artifact budget exhausted; incomplete evidence')
@@ -183,7 +190,8 @@ def main():
         failure = failure or 'eight producing Zoom sources were not observed; invalid trial'
     report = dict(manifest, samples=sample_count, actualSeconds=time.monotonic()-started,
         error=failure, latestDisplay=latest,
-        initial=initial, incidentArtifacts=incident_files,
+        initial=initial, incidentArtifacts=incident_files, incidentBytes=incident_bytes,
+        incidentFileLimit=512,incidentByteLimit=256*1024*1024,
         latestSources=latest_sources,
         observation='UNVERIFIED' if not latest.get('observed') else 'ATTRIBUTION_ONLY',
         presentationVerdict='UNVERIFIED', allOutputZeroMissVerdict='UNVERIFIED')

@@ -479,7 +479,8 @@ class D3D11Compositor final : public ICompositor {
 
     const auto layers = resolveLayers(deterministicPlan, frames);
     const bool bufferedProgram = monitorBatch_ ? monitorBufferedProgram_ : programBufferFrames() > 0;
-    auto* deliveredView = bufferedProgram ? retainedProgramForMultiview() : nullptr;
+    auto* deliveredView = bufferedProgram ?
+        (monitorBatch_ ? monitorDeliveredView_ : retainedProgramForMultiview()) : nullptr;
     bool programPlaced = false;
     const auto drawStart = profileEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto uploadBefore = stageProfileNs_[MvUpload];
@@ -605,6 +606,10 @@ class D3D11Compositor final : public ICompositor {
     monitorProgramDeadlineNs_ = request.programDisplayDeadlineNs;
     frameNumber_ = request.sequence;
     MonitorRenderResult result;
+    // The delivered Program identity has a fixed deadline. Admit its copy before
+    // source exports, uploads/conversions and other optional monitor GPU work.
+    monitorDeliveredView_ = request.multiviewActive && request.bufferedProgram
+        ? retainedProgramForMultiview() : nullptr;
     ProgramFrame sources;
     sources.frameNumber = request.sequence;
     std::vector<VideoFrame> sourceExports;
@@ -3355,6 +3360,7 @@ class D3D11Compositor final : public ICompositor {
   D3DProgramDisplayReader programDisplayReader_;
   int64_t monitorProgramTargetNs_ = 0, monitorProgramDeadlineNs_ = 0;
   const MonitorRenderRequest* monitorRequest_ = nullptr;
+  ID3D11ShaderResourceView* monitorDeliveredView_ = nullptr; // Reader-owned, this owner thread only.
   std::map<int64_t, ProgramDisplayObservation> programDisplayHistory_;
   enum ProfileStage { ParticipantAcquire, ParticipantConvert, ParticipantCopy, ParticipantRelease, ParticipantTotal,
                       MvUpload, MvDraw, MvShare, MvTotal, ProfileStageCount };
