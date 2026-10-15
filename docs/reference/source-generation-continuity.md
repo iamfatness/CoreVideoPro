@@ -46,3 +46,22 @@ old-lease retirement, plus reconnect fencing. Retain all historical #908 trials
 and repeat real-meeting resolution ramps with source admission evidence from
 the first required frame. Clean publication/copy counters alone do not pass
 source-content qualification; missing source evidence remains unverified.
+
+October 14 retained trials: the first combined revision removed observed
+`preparation-stopped` admissions but still had two first-successor readiness
+gaps. The initial transition-age implementation then rejected a source whose
+previous Zoom picture was already about 270 ms old. The six-frame bound now
+starts at successor selection rather than the source picture's capture age.
+These failed trials remain in the #904 artifact ledger.
+
+The `ffec019` API-only real-meeting depth-two run (`source-908-age-depth2`)
+passed the sampled source-content workload check throughout its 90-second
+required interval. It completed 5,719 Program copies with zero refusals, skips,
+repeats, late submissions or observed readiness misses. Independent direct-DLL
+receiver evidence decoded 5,401 samples with zero invalid/repeated/missing/
+reordered identities and zero camera read-deadline misses. Real Zoom sources
+were mostly 640x360 plus an actual 2560x1440 screen; this is not eight-HD input,
+registered Frame Server, physical presentation, audio or sustained qualification.
+The aggregate judge in that retained report incorrectly treated unverified OS
+qualification as a known failure; the correction preserves direct-DLL results
+as unverified all-output qualification, never PASS. Raw counts are unchanged.
