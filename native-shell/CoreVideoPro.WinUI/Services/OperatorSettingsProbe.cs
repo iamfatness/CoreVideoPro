@@ -82,7 +82,7 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         checks.Add("shared slider preserves untouched precision, rejects invalid entry and commits exact entry without step rounding");
         var compact = new SliderValueControl { Header="Opacity", Unit="%", DisplayScale=100, Minimum=0, Maximum=1, DefaultValue=1, Value=.4, Compact=true };
         window.Content=compact; await Eventually(()=>compact.IsLoaded);
-        var reset=Descendants(compact).OfType<Button>().Single();
+        var reset=Descendants(compact).OfType<Button>().Single(b=>b.Content?.ToString()=="↺");
         Require(Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(reset)=="Reset Opacity to 100 %", "Compact reset does not identify its setting and default");
         var starts=0;var ends=0;compact.EditStarted+=(_,_)=>starts++;compact.EditCompleted+=(_,_)=>ends++;
         var resetPeer=new Microsoft.UI.Xaml.Automation.Peers.ButtonAutomationPeer(reset);
