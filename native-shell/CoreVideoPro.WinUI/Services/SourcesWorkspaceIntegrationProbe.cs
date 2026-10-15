@@ -47,6 +47,29 @@ internal static class SourcesWorkspaceIntegrationProbe
         await Eventually(() => workspace.IsLoaded && Descendants(workspace).OfType<SourcesTableRowControl>().Count() == 10);
         var rows = Descendants(workspace).OfType<SourcesTableRowControl>().OrderBy(row => row.Input.SlotNumber).ToArray();
         Require(rows.Select(row => row.Input).SequenceEqual(slots), "Table changed slot object identity");
+        var quickPicker = Descendants(rows[0]).OfType<SourceAssignmentPicker>().Single();
+        Require(!workspace.State.InspectorOpen, "Overview unexpectedly requires Inspect");
+        var untouched = slots.Skip(1).Select(s => (s.SourceId, s.InShow, s.IsoEnabled)).ToArray();
+        var sceneBeforePatch = studio.ActiveSceneId;
+        Require(quickPicker.IsEnabled && (quickPicker.Content as TextBlock)?.Text == slots[0].OverviewName,
+            "Row source selector is disabled or lost its display identity");
+        quickPicker.PrepareMenu();
+        var staleChoice = Choices(quickPicker).Single(item => item.Text.Contains("Opening clip"));
+        var patchCamera = Choices(quickPicker).Single(item => item.Text.Contains("Studio camera"));
+        var originalItems = quickPicker.SourceMenu.Items.ToArray();
+        slots[0].RefreshSourceOptions([alice], [camera], mediaAssets: [clip]);
+        Require(originalItems.SequenceEqual(quickPicker.SourceMenu.Items), "Roster refresh rebuilt an open quick picker");
+        Require(slots[0].SourceId == "zoom:synthetic-a", "Picker hydration assigned a source");
+        InvokeChoice(patchCamera); await Task.Delay(30);
+        Require(slots[0].SourceId == "capture:synthetic-camera" && !workspace.State.InspectorOpen,
+            "Inline picker did not patch its row without opening Inspect");
+        InvokeChoice(staleChoice);
+        Require(slots[0].SourceId == "capture:synthetic-camera", "Stale menu choice patched a replacement source");
+        Require(untouched.SequenceEqual(slots.Skip(1).Select(s => (s.SourceId, s.InShow, s.IsoEnabled))) &&
+            studio.ActiveSceneId == sceneBeforePatch, "Quick patch changed another input or Program");
+        slots[0].SelectedUnifiedSourceId = "zoom:synthetic-a";
+        foreach (var input in slots) input.RefreshSourceOptions([alice], [camera], mediaAssets: [clip]);
+        checks.Add("inline categorized picker patches the retained row without Inspect, rejects stale choices and preserves other inputs/Program; roster refresh never rebuilds its open menu");
         var before = slots.Select(s => (s.SourceId, s.InShow, s.IsoEnabled)).ToArray();
         var program = studio.ActiveSceneId;
         Invoke(Descendants(rows[1]).OfType<Button>().Single(b => AutomationProperties.GetName(b) == "Inspect input 2"));
@@ -81,10 +104,10 @@ internal static class SourcesWorkspaceIntegrationProbe
         slots[0].RefreshSourceOptions([], []); await Task.Delay(40);
         Require(slots[0].OverviewName.Contains("Alice"), "Offline input lost its remembered identity");
         var picker = Descendants(workspace).OfType<DropDownButton>().Single(b => b.Name == "SelectedSourcePicker");
-        Require(picker.Content?.ToString() == sourceName + " · Offline", $"Inspector picker does not identify the offline binding: actual={picker.Content}; expected={sourceName} · Offline; model={slots[0].SelectedUnifiedSourceLabel}");
+        Require((picker.Content as TextBlock)?.Text == sourceName + " · Offline", $"Inspector picker does not identify the offline binding: actual={(picker.Content as TextBlock)?.Text}; expected={sourceName} · Offline; model={slots[0].SelectedUnifiedSourceLabel}");
         typeof(StudioViewModel).GetProperty(nameof(StudioViewModel.RoomParticipantsForInputs))!.SetValue(studio, new Participant[] { alice });
         slots[0].RefreshSourceOptions([alice], []); await Task.Delay(40);
-        Require(picker.Content?.ToString() == sourceName && ReferenceEquals(workspace.State.SelectedInput, slots[0]), "Reconnect changed selection or retained an offline label");
+        Require((picker.Content as TextBlock)?.Text == sourceName && ReferenceEquals(workspace.State.SelectedInput, slots[0]), "Reconnect changed selection or retained an offline label");
         checks.Add("compiled Sources table/inspector preserve a named offline Zoom binding and reconnect without substitution");
         var rename = Descendants(workspace).OfType<TextBox>().Single(t => t.Name == "SelectedSourceName");
         rename.Focus(FocusState.Programmatic); await Task.Delay(30); rename.Text = "Stale edit must not follow replacement";
@@ -114,6 +137,10 @@ internal static class SourcesWorkspaceIntegrationProbe
         Require(new[] { "CaptureCatalog", "SrtCatalog", "RtmpCatalog" }.All(catalogs.Contains), "Adapter setup catalog was removed");
         checks.Add("existing capture/browser, SRT and RTMP setup surfaces remain reachable in the Sources page");
     }
+    private static IEnumerable<MenuFlyoutItem> Choices(SourceAssignmentPicker picker) =>
+        picker.SourceMenu.Items.OfType<MenuFlyoutSubItem>().SelectMany(group => group.Items.OfType<MenuFlyoutItem>());
+    private static void InvokeChoice(MenuFlyoutItem item) =>
+        ((IInvokeProvider)new MenuFlyoutItemAutomationPeer(item).GetPattern(PatternInterface.Invoke)).Invoke();
     private static void Invoke(Button button) => ((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke();
     private static async Task Eventually(Func<bool> condition)
     { var timer = Stopwatch.StartNew(); while (!condition()) { if (timer.ElapsedMilliseconds > 5000) throw new InvalidOperationException("Sources integration condition timed out"); await Task.Delay(20); } }

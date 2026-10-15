@@ -16,6 +16,7 @@ internal sealed class SourcesTableRowControl : StackPanel, IDisposable
     private readonly Grid _grid = new() { ColumnSpacing = 6, Padding = new Thickness(8, 6, 8, 6) };
     private readonly FrameworkElement[] _cells;
     private readonly Border _thumbnail;
+    private readonly SourceAssignmentPicker _sourcePicker;
     private readonly Action _identityChanged;
     internal static readonly double[] WideWidths = [30, -1, 78, 100, 45, 90, 86, 40, 66, 108];
 
@@ -34,11 +35,12 @@ internal sealed class SourcesTableRowControl : StackPanel, IDisposable
         _thumbnail.BorderThickness = new(2); Bind(_thumbnail, Border.BorderBrushProperty, input, "Inspector.PreviewBorderBrush");
         _thumbnail.Child = surface; identity.Children.Add(_thumbnail);
         var names = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
-        var name = Text(""); name.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
-        Bind(name, TextBlock.TextProperty, input, "OverviewName");
+        _sourcePicker = new SourceAssignmentPicker(compact: true) { Input = input, Name = $"PatchInput{input.SlotNumber}" };
+        AutomationProperties.SetName(_sourcePicker, $"Choose source for input {input.SlotNumber}");
+        ToolTipService.SetToolTip(_sourcePicker, "Patch this input directly. Inspect is optional.");
         var description = Text(""); description.FontSize = 10; description.Foreground = Brush(163, 187, 200);
         Bind(description, TextBlock.TextProperty, input, "KindLabel");
-        names.Children.Add(name); names.Children.Add(description); Grid.SetColumn(names, 1); identity.Children.Add(names);
+        names.Children.Add(_sourcePicker); names.Children.Add(description); Grid.SetColumn(names, 1); identity.Children.Add(names);
         ToolTipService.SetToolTip(identity, input.SelectedUnifiedSourceLabel);
         var type = Text(""); Bind(type, TextBlock.TextProperty, input, "KindLabel");
         var resolution = Text(""); resolution.FontFamily = new("Consolas");
@@ -117,7 +119,7 @@ internal sealed class SourcesTableRowControl : StackPanel, IDisposable
          p.ShowSignal && width >= 750 ? Math.Max(86, width * .09) : 0,
          p.ShowAudio && width >= 1050 ? Math.Max(86, width * .12) : 0,
          Math.Max(36, width * .04), Math.Max(60, width * .06), 140];
-    public void Dispose() => Input.PropertyChanged -= OnInputChanged;
+    public void Dispose() { _sourcePicker.Retire(); Input.PropertyChanged -= OnInputChanged; }
     internal static SolidColorBrush Brush(byte r, byte g, byte b) => new(Windows.UI.Color.FromArgb(255, r, g, b));
     internal static TextBlock Text(string text, double size = 12) => new()
     { Text = text, FontSize = size, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
