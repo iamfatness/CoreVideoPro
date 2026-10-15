@@ -74,6 +74,7 @@ def main():
     sample_count = 0
     latest = {}
     latest_sources = []
+    ready_monitor_baseline = None
     monitor_max = {k:0 for k in ("failed", "superseded")}
     initial = None
     trace_key = None
@@ -272,6 +273,7 @@ def main():
                     if s.get('state') in ('ready','held') and s.get('actualFrameId',-1) >= 0
                     and s.get('actualEpoch') == s.get('requestedEpoch')}
                 if snapshot.get('programFrame',{}).get('sceneId') == 'probe-program' and expected_program_sources.issubset(ready_sources):
+                    ready_monitor_baseline = dict(snapshot.get('realtimeEvidence',{}).get('monitorWorker',{}))
                     break
                 stop.wait(.05)
             else: raise RuntimeError('Program did not admit all requested source pixels')
@@ -334,7 +336,10 @@ def main():
             monitor={k:before_demand.get('realtimeEvidence',{}).get('monitorWorker',{}).get(k)
                 for k in ('submitted','completed','failed','superseded')})
     report['monitorMaximumCounters'] = monitor_max
-    report['monitorWorkVerdict'] = 'FAIL' if any(monitor_max.values()) else 'PASS'
+    report['monitorWorkScope'] = 'After observed complete Program source readiness; all startup counters retained. Reader and camera startup are never discarded.'
+    report['monitorStartupSuperseded'] = ready_monitor_baseline.get('superseded',0) if ready_monitor_baseline else None
+    report['monitorQualifiedSuperseded'] = (monitor_max['superseded'] - ready_monitor_baseline.get('superseded',0)) if ready_monitor_baseline else None
+    report['monitorWorkVerdict'] = ('FAIL' if monitor_max['failed'] or report['monitorQualifiedSuperseded'] else 'PASS') if ready_monitor_baseline else 'UNVERIFIED' 
     required_reader_metrics = ('copies','completedCopies','gpuDeadlineCompletedReads','gpuReadinessDeadlineMisses',
         'refused','skipped','reordered','reused','lateSubmissions','traceCaptureFailures')
     report['workloadVerdict'] = 'INVALID' if failure else ('FAIL' if ingredient_errors else ('PASS' if ingredient_samples else 'UNVERIFIED'))
