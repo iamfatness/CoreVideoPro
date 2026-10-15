@@ -36,6 +36,7 @@
 #include "modules/VirtualCameraFrame.h"  // nv12FrameSize (vcam tap NV12 buffer layout)
 #include "modules/D3DProgramBuffer.h"
 #include "modules/D3DProgramCopyOwner.h"
+#include "modules/ProgramMonitorDispatch.h"
 #include "modules/D3DDecoupledExport.h"
 #include "modules/BoundedResourceRetirement.h"
 #include "modules/MonitorRenderWorker.h"
@@ -183,9 +184,14 @@ class D3D11Compositor final : public ICompositor {
         auto copyOwner = std::make_shared<std::unique_ptr<D3DProgramCopyOwner>>();
         auto* auxiliary = auxiliaryMonitorWorker_.get();
         monitorWorker_ = std::make_unique<MonitorRenderWorker>(
-            [copyOwner, auxiliary](const MonitorRenderRequest& request) {
+            [this, copyOwner, auxiliary](const MonitorRenderRequest& request) {
           if (!*copyOwner) throw std::runtime_error("Program copy owner unavailable");
-          auxiliary->submit((*copyOwner)->copy(request));
+          auto copied = (*copyOwner)->copy(request);
+          if (request.programCopyOnly && !request.cancelled()) {
+            auto joined = programMonitorDispatch_.offer(request.programCopySlot, std::move(copied), true);
+            if (joined.superseded) auxiliary->refuse();
+            if (joined.ready) auxiliary->submit(std::move(*joined.ready));
+          } else if (!request.programCopyOnly) auxiliary->submit(std::move(copied));
           MonitorRenderResult result;
           result.programDisplayReader = (*copyOwner)->observation();
           return result;
@@ -255,6 +261,33 @@ class D3D11Compositor final : public ICompositor {
     prepareMonitorFrames(request);
     request.producerPreparedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (earlyProgramCopySlot_ >= 0 && earlyProgramCopySlot_ == programProductionSlot_ && request.multiviewActive) {
+      request.bufferedProgram = programBufferFrames() > 0;
+      auto joined = programMonitorDispatch_.offer(earlyProgramCopyKey_, std::move(request), false);
+      if (joined.superseded) auxiliaryMonitorWorker_->refuse();
+      if (joined.ready) auxiliaryMonitorWorker_->submit(std::move(*joined.ready));
+    } else {
+      programMonitorDispatch_.discardThrough(earlyProgramCopyKey_);
+      prepareProgramCopy(request);
+      monitorWorker_->submit(std::move(request));
+    }
+  }
+  void beginMonitorTick(bool multiviewActive) override {
+    earlyProgramCopySlot_ = -1;
+    if (!multiviewActive) programMonitorDispatch_.discardThrough(earlyProgramCopyKey_);
+    if (!monitorWorker_ || !multiviewActive || programProductionSlot_ < programBufferFrames() + 1) return;
+    MonitorRenderRequest request;
+    request.sequence = programProductionSlot_;
+    request.programCopySlot = ++earlyProgramCopyKey_;
+    request.multiviewActive = request.programCopyOnly = true;
+    request.producerStartedNs = request.producerPreparedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    prepareProgramCopy(request);
+    if (!request.acquireDeliveredProgram) return;
+    earlyProgramCopySlot_ = programProductionSlot_;
+    monitorWorker_->submit(std::move(request));
+  }
+  void prepareProgramCopy(MonitorRenderRequest& request) {
     request.bufferedProgram = programBufferFrames() > 0;
     if (programProductionSlot_ >= 0 && programProductionAnchorNs_ > 0) {
       const int depth = programBufferFrames();
@@ -269,7 +302,6 @@ class D3D11Compositor final : public ICompositor {
           return buffer->multiview(texture, owner, slot, true);
         };
     }
-    monitorWorker_->submit(std::move(request));
   }
   std::shared_ptr<const MonitorRenderResult> latestMonitors() const override {
     auto result = auxiliaryMonitorWorker_ ? auxiliaryMonitorWorker_->latest() : nullptr;
@@ -870,6 +902,9 @@ class D3D11Compositor final : public ICompositor {
   std::map<int64_t,GradePreviewSurface> appearanceHistory_;
   std::map<std::string, GradeStamp> gradeStamps_;
   std::map<std::pair<std::string, int64_t>, GradePreviewSurface> gradeHistory_;
+  ProgramMonitorDispatch programMonitorDispatch_;
+  int64_t earlyProgramCopySlot_ = -1;
+  int64_t earlyProgramCopyKey_ = 0;
   std::unique_ptr<MonitorRenderWorker> monitorWorker_, auxiliaryMonitorWorker_, gradeWorker_;
   std::shared_ptr<D3DVideoConsumer> gpuConsumer_;
   std::unique_ptr<D3DVideoReadLeases> gpuReadLeases_;

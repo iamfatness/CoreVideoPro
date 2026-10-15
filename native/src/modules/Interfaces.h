@@ -1117,6 +1117,8 @@ struct ProgramDisplayObservation;
 struct MonitorRenderRequest {
   // Immutable completed copy passed from the deadline owner to the monitor renderer.
   bool programCopyPrepared = false;
+  bool programCopyOnly = false;
+  int64_t programCopySlot = -1;
   std::shared_ptr<const GpuVideoFrame> readyProgramImage;
   std::shared_ptr<const ProgramDisplayObservation> readyProgramObservation;
   int64_t submittedNs = 0, workerStartedNs = 0, inputsPreparedNs = 0;
@@ -1241,6 +1243,7 @@ class ICompositor {
   // delivery timestamps may be produced by this call. Resize stays on render.
   virtual void prepareProgramBuffer(int /*width*/, int /*height*/) {}
   virtual void setProgramProductionTiming(int64_t /*slot*/, int64_t /*anchorNs*/) {}
+  virtual void beginMonitorTick(bool /*multiviewActive*/) {}
   [[nodiscard]] virtual int programBufferFrames() const { return 0; }
   virtual bool latestDeliveredProgramFrame(ProgramFrame& /*out*/) const { return false; }
   virtual bool takeDeliveredProgramFrame(ProgramFrame& /*out*/, int /*timeoutMs*/) { return false; }

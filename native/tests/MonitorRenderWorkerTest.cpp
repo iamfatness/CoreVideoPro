@@ -2,11 +2,53 @@
 #include "modules/MonitorFrameAdmission.h"
 #include "modules/MonitorInputEvidence.h"
 #include "modules/BoundedResourceRetirement.h"
+#include "modules/ProgramMonitorDispatch.h"
 #include <gtest/gtest.h>
 #include <future>
 #include <atomic>
 
 using namespace corevideo::modules;
+
+TEST(ProgramMonitorDispatch, JoinsOnlySameSlotInEitherArrivalOrderWithoutChangingIdentityOrDeadline) {
+  for (bool copyFirst : {false, true}) {
+    ProgramMonitorDispatch dispatch;
+    MonitorRenderRequest copy, monitor;
+    copy.programDisplayTargetNs = 100; copy.programDisplayDeadlineNs = 200;
+    auto identity = std::make_shared<ProgramDisplayObservation>(); identity->copiedSequence = 77;
+    copy.readyProgramObservation = identity;
+    monitor.sequence = 91; monitor.programPlan.sceneId = "current-monitor-payload";
+    EXPECT_FALSE(dispatch.offer(5, copyFirst ? copy : monitor, copyFirst).ready);
+    auto joined = dispatch.offer(5, copyFirst ? monitor : copy, !copyFirst);
+    ASSERT_TRUE(joined.ready); EXPECT_FALSE(joined.superseded);
+    EXPECT_EQ(joined.ready->sequence, 91);
+    EXPECT_EQ(joined.ready->programPlan.sceneId, "current-monitor-payload");
+    EXPECT_EQ(joined.ready->readyProgramObservation->copiedSequence, 77u);
+    EXPECT_EQ(joined.ready->programDisplayTargetNs, 100);
+    EXPECT_EQ(joined.ready->programDisplayDeadlineNs, 200);
+    EXPECT_TRUE(joined.ready->programCopyPrepared);
+    EXPECT_FALSE(dispatch.offer(5, copy, true).ready); // stale completion cannot reopen a consumed slot
+  }
+}
+
+TEST(ProgramMonitorDispatch, BoundsPendingWorkAndReportsUnmatchedReplacement) {
+  ProgramMonitorDispatch dispatch;
+  EXPECT_FALSE(dispatch.offer(4, {}, true).ready);
+  auto next = dispatch.offer(5, {}, false);
+  EXPECT_TRUE(next.superseded); EXPECT_FALSE(next.ready);
+  auto stale = dispatch.offer(4, {}, true);
+  EXPECT_TRUE(stale.superseded); EXPECT_FALSE(stale.ready);
+  auto joined = dispatch.offer(5, {}, true);
+  EXPECT_FALSE(joined.superseded); EXPECT_TRUE(joined.ready);
+}
+
+TEST(ProgramMonitorDispatch, DisableFenceRejectsInFlightOldCopyAndAllowsNextLifetime) {
+  ProgramMonitorDispatch dispatch;
+  dispatch.offer(5, {}, false); dispatch.discardThrough(5);
+  EXPECT_FALSE(dispatch.offer(5, {}, true).ready);
+  EXPECT_FALSE(dispatch.offer(6, {}, true).ready);
+  auto joined = dispatch.offer(6, {}, false);
+  EXPECT_TRUE(joined.ready); EXPECT_FALSE(joined.superseded);
+}
 
 TEST(MonitorRenderWorker, StartupImportPreparationWaitsForInitializationWithoutChangingSubmit) {
   std::promise<void> release, entered;
