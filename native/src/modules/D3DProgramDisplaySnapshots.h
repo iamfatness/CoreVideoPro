@@ -119,7 +119,7 @@ class D3DProgramDisplayReader {
  public:
   static constexpr size_t ReadLimit = 2, TraceCapacity = 512;
   D3DProgramDisplayReader() : epoch_(nextEpoch_.fetch_add(1)) {}
-  void prewarm(ID3D11Device* device, ID3D11DeviceContext* context, UINT width, UINT height) {
+  void prewarm(ID3D11Device* device, ID3D11DeviceContext* context, UINT width, UINT height, bool sharedOutput = false) {
     if (copies_ || !reads_.empty()) throw std::runtime_error("Program reader prewarm must precede admission");
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = width; desc.Height = height; desc.MipLevels = desc.ArraySize = 1;
@@ -138,9 +138,16 @@ class D3DProgramDisplayReader {
     if (FAILED(device->CreateTexture2D(&desc, nullptr, scratch.put())) ||
         FAILED(device->CreateRenderTargetView(scratch.get(), nullptr, target.put())))
       throw std::runtime_error("Program reader prewarm target failed");
+    if (sharedOutput) {
+      outputPool_ = std::make_unique<D3DVideoFramePool>();
+      if (!outputPool_->initialize(device, width, height, epoch_, true))
+        throw std::runtime_error("Program shared output allocation failed");
+    }
     const float black[] = {0,0,0,1};
     context->ClearRenderTargetView(target.get(), black);
-    context->CopyResource(local_.get(), scratch.get()); context->End(ready.get()); context->Flush();
+    context->CopyResource(local_.get(), scratch.get());
+    if (outputPool_) outputPool_->prewarmOutputs(context, scratch.get());
+    context->End(ready.get()); context->Flush();
     const auto limit = std::chrono::steady_clock::now()+std::chrono::seconds(2);
     for (;;) {
       BOOL done = FALSE; const auto hr = context->GetData(ready.get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH);
@@ -149,11 +156,17 @@ class D3DProgramDisplayReader {
       std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
     width_ = width; height_ = height;
+    if (outputPool_) { local_ = {}; view_ = {}; }
   }
+  std::shared_ptr<const GpuVideoFrame> completedImage() const { return completedImage_; }
+  std::shared_ptr<const ProgramDisplayObservation> completedObservation() const { return completedObservation_; }
   ~D3DProgramDisplayReader() {
     // A stopped worker may have submitted a copy whose completion was never
     // polled. Quarantine before releasing its lease, even if the pool survives.
-    for (const auto& read : reads_) read.owner->quarantined = true;
+    for (const auto& read : reads_) {
+      read.owner->quarantined = true;
+      if (read.output) { std::lock_guard<std::mutex> lock(outputQuarantineMutex_); outputQuarantine_.push_back(read.output); }
+    }
   }
   ID3D11ShaderResourceView* copy(ID3D11Device* device, ID3D11DeviceContext* context,
       const std::shared_ptr<const void>& owner, int64_t targetNs = 0, int64_t deadlineNs = 0,
@@ -242,7 +255,7 @@ class D3DProgramDisplayReader {
       }
     }
     D3D11_TEXTURE2D_DESC desc{}; imported->GetDesc(&desc);
-    if (!local_ || width_ != desc.Width || height_ != desc.Height) {
+    if (!outputPool_ && (!local_ || width_ != desc.Width || height_ != desc.Height)) {
       ComPtrLite<ID3D11Texture2D> nextLocal;
       ComPtrLite<ID3D11ShaderResourceView> nextView;
       desc.MiscFlags = 0;
@@ -264,7 +277,18 @@ class D3DProgramDisplayReader {
       const bool busy = std::any_of(reads_.begin(), reads_.end(), [index](const Read& item) { return item.query == index; });
       if (!busy) { read.query = index; break; }
     }
-    context->CopyResource(local_.get(), imported.get());
+    if (outputPool_) {
+      if (!outputPool_->dimensions(desc.Width, desc.Height)) {
+        auto next = std::make_unique<D3DVideoFramePool>();
+        if (!next->initialize(device, desc.Width, desc.Height, epoch_, true))
+          return refuse(device, ProgramDisplayReason::TextureCreate, E_OUTOFMEMORY);
+        outputPool_ = std::move(next);
+        width_ = desc.Width; height_ = desc.Height;
+      }
+      read.output = outputPool_->reserveOutput();
+      if (!read.output) return refuse(device, ProgramDisplayReason::ReadCapacity, S_FALSE);
+    }
+    context->CopyResource(read.output ? read.output->producer.Get() : local_.get(), imported.get());
     context->End(queries_[read.query].get());
     const bool lateSubmission = deadlineNs_ > 0 && nowNs() >= deadlineNs_;
     if (lateSubmission) ++lateSubmissions_;
@@ -305,7 +329,23 @@ class D3DProgramDisplayReader {
         if (it->deadlineNs > 0) ++gpuDeadlineCompletedReads_;
         completionMaximumObservedAgeNs_ = (std::max)(completionMaximumObservedAgeNs_, observed - it->submittedNs);
         record(3, ProgramDisplayReason::None, hr, S_OK, &*it, observed);
-        ++completed_; it = reads_.erase(it);
+        ++completed_;
+        if (it->output) {
+          auto image = std::make_shared<D3DVideoImage>();
+          image->storage = it->output; image->producer = it->output->producer;
+          image->views = it->output->views; image->width = it->output->width; image->height = it->output->height;
+          image->monitorPrivate = true; image->generation = it->owner->generation;
+          image->sourceFrameId = it->owner->frame.deliverySequence;
+          image->sourceCaptureTimestamp100ns = it->owner->frame.timelineTimestamp100ns;
+          completedImage_ = std::move(image);
+          auto identity = observation();
+          identity.generation = it->owner->generation;
+          identity.copiedSequence = it->owner->frame.deliverySequence;
+          identity.frameNumber = it->owner->frame.frameNumber;
+          identity.timelineTimestamp100ns = it->owner->frame.timelineTimestamp100ns;
+          completedObservation_ = std::make_shared<const ProgramDisplayObservation>(std::move(identity));
+        }
+        it = reads_.erase(it);
       }
       else {
         if (FAILED(hr) && !failed_) {
@@ -360,7 +400,7 @@ class D3DProgramDisplayReader {
     result.copies = copies_; result.completedCopies = completed_; result.reused = reused_;
     result.refused = refused_; result.skipped = skipped_; result.reordered = reordered_;
     result.capacity = D3DProgramDisplaySnapshots::Capacity;
-    result.allocatedBytes = uint64_t(width_) * height_ * 4 * result.capacity;
+    result.allocatedBytes = uint64_t(width_) * height_ * 4 * (result.capacity + (outputPool_ ? 3 : 1));
     result.gpuReads = static_cast<int>(reads_.size());
     result.readerEpoch = epoch_; result.readerReadLimit = ReadLimit;
     result.refusalReasons = reasons_; result.notReadyPolls = notReadyPolls_;
@@ -387,6 +427,7 @@ class D3DProgramDisplayReader {
   }
   struct Read {
     std::shared_ptr<const D3DProgramDisplaySnapshots::Snapshot> owner;
+    std::shared_ptr<const D3DVideoImage> output;
     size_t query = 0;
     int64_t submittedNs = 0;
     int64_t targetNs = 0, deadlineNs = 0;
@@ -452,6 +493,8 @@ class D3DProgramDisplayReader {
     requestedSnapshot_ = nullptr;
     return copies_ ? view_.get() : nullptr; // Explicit terminal cancellation is not a capacity refusal.
   }
+  inline static std::mutex outputQuarantineMutex_;
+  inline static std::vector<std::shared_ptr<const D3DVideoImage>> outputQuarantine_;
   inline static std::atomic<uint64_t> nextEpoch_{1};
   uint64_t epoch_ = 0, traceWritten_ = 0, capturedOverwritten_ = 0, notReadyPolls_ = 0;
   uint64_t traceCaptureFailures_ = 0;
@@ -480,5 +523,8 @@ class D3DProgramDisplayReader {
   ComPtrLite<ID3D11ShaderResourceView> view_;
   std::array<ComPtrLite<ID3D11Query>, 2> queries_;
   std::deque<Read> reads_;
+  std::unique_ptr<D3DVideoFramePool> outputPool_;
+  std::shared_ptr<const GpuVideoFrame> completedImage_;
+  std::shared_ptr<const ProgramDisplayObservation> completedObservation_;
 };
 } // namespace corevideo::modules

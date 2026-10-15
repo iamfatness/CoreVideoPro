@@ -35,6 +35,7 @@
 #include "modules/ProgramFramePreview.h"
 #include "modules/VirtualCameraFrame.h"  // nv12FrameSize (vcam tap NV12 buffer layout)
 #include "modules/D3DProgramBuffer.h"
+#include "modules/D3DProgramCopyOwner.h"
 #include "modules/D3DDecoupledExport.h"
 #include "modules/BoundedResourceRetirement.h"
 #include "modules/MonitorRenderWorker.h"
@@ -153,7 +154,7 @@ class D3D11Compositor final : public ICompositor {
       // on this worker. Never fall back to synchronous monitor work on Program.
       auto backend = std::make_shared<std::unique_ptr<D3D11Compositor>>();
       MonitorRenderWorker::Render renderMonitor =
-          [adapter, backend, gpuIngress = gpuConsumer_ != nullptr](const MonitorRenderRequest& request) {
+          [adapter, backend, gpuIngress = gpuConsumer_ != nullptr || isolateMonitors](const MonitorRenderRequest& request) {
             if (!*backend) {
               ComPtrLite<ID3D11Device> device;
               ComPtrLite<ID3D11DeviceContext> context;
@@ -167,21 +168,34 @@ class D3D11Compositor final : public ICompositor {
       // Register the monitor device even before a capture has its first private
       // monitor copy; otherwise admission and device creation wait on each other.
       if (isolateMonitors) {
-        monitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor, backend] {
+        auxiliaryMonitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor] {
           MonitorRenderRequest warm;
           warm.sequence = -1; warm.multiviewActive = warm.previewActive = true;
+          warm.programCopyPrepared = true;
           warm.multiviewPlan.skipCpuReadback = warm.previewPlan.skipCpuReadback = true;
-          renderMonitor(warm); // prewarm targets/exporters; never publish this as a completed job
-          (*backend)->programDisplayReader_.prewarm((*backend)->device_.get(), (*backend)->context_.get(), 1920, 1080);
-        }, [backend] {
+          renderMonitor(warm);
+        });
+        auto copyOwner = std::make_shared<std::unique_ptr<D3DProgramCopyOwner>>();
+        auto* auxiliary = auxiliaryMonitorWorker_.get();
+        monitorWorker_ = std::make_unique<MonitorRenderWorker>(
+            [copyOwner, auxiliary](const MonitorRenderRequest& request) {
+          if (!*copyOwner) throw std::runtime_error("Program copy owner unavailable");
+          auxiliary->submit((*copyOwner)->copy(request));
+          MonitorRenderResult result;
+          result.programDisplayReader = (*copyOwner)->observation();
+          return result;
+        }, [copyOwner, adapter, auxiliary] {
+          if (!auxiliary->waitForInitialization(std::chrono::seconds(2)))
+            throw std::runtime_error("monitor renderer initialization failed");
+          *copyOwner = std::make_unique<D3DProgramCopyOwner>(adapter->get());
+        }, [copyOwner] {
           MonitorRenderWorker::MaintenanceResult result;
-          if (*backend) {
-            (*backend)->programDisplayReader_.retire((*backend)->context_.get());
-            result.programDisplay = (*backend)->programDisplayReader_.observation();
-            result.pending = (*backend)->programDisplayReader_.needsRetirement();
+          if (*copyOwner) {
+            result.pending = (*copyOwner)->retire();
+            result.programDisplay = (*copyOwner)->observation();
           }
           return result;
-        });
+        }, false);
         core::nativeLogf("[monitor-worker] isolation=enabled pending_capacity=1\n");
       }
       if (!monitorBackend) {
@@ -209,6 +223,7 @@ class D3D11Compositor final : public ICompositor {
   ~D3D11Compositor() override {
     gradeWorker_.reset();
     monitorWorker_.reset();
+    auxiliaryMonitorWorker_.reset();
     gpuReadLeases_.reset();
     { std::lock_guard<std::mutex> lock(programBufferMutex_); programBuffer_.reset(); }
     stopVcamTap();
@@ -244,7 +259,7 @@ class D3D11Compositor final : public ICompositor {
     }
     if (auto buffer = currentProgramBuffer(); buffer && request.multiviewActive) {
       buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner, programProductionSlot_);
-      if (programProductionSlot_ >= 0 && request.programDisplayDeadlineNs > 0)
+      if (programProductionSlot_ >= programBufferFrames() && request.programDisplayDeadlineNs > 0)
         request.acquireDeliveredProgram = [buffer, slot = programProductionSlot_](auto& texture, auto& owner) {
           return buffer->multiview(texture, owner, slot, true);
         };
@@ -252,10 +267,22 @@ class D3D11Compositor final : public ICompositor {
     monitorWorker_->submit(std::move(request));
   }
   std::shared_ptr<const MonitorRenderResult> latestMonitors() const override {
-    return monitorWorker_ ? monitorWorker_->latest() : nullptr;
+    auto result = auxiliaryMonitorWorker_ ? auxiliaryMonitorWorker_->latest() : nullptr;
+    const auto copy = monitorWorker_ ? monitorWorker_->latest() : nullptr;
+    if (result && copy) {
+      auto combined = std::make_shared<MonitorRenderResult>(*result);
+      combined->programDisplayReader = copy->programDisplayReader;
+      return combined;
+    }
+    return result;
   }
   MonitorRenderDiagnostics monitorDiagnostics() const override {
-    auto result = monitorWorker_ ? monitorWorker_->diagnostics() : MonitorRenderDiagnostics{};
+    auto result = auxiliaryMonitorWorker_ ? auxiliaryMonitorWorker_->diagnostics() : MonitorRenderDiagnostics{};
+    if (monitorWorker_) {
+      const auto copy = monitorWorker_->diagnostics();
+      result.failed += copy.failed;
+      if (copy.readiness != "ready") { result.readiness = copy.readiness; result.failureReason = copy.failureReason; }
+    }
     result.requestedMode = monitorRequestedMode_;
     result.effectiveMode = monitorWorker_ ? "isolated" : "inline";
     result.selectionSource = monitorSelectionSource_;
@@ -634,7 +661,7 @@ class D3D11Compositor final : public ICompositor {
     monitorProgramDeadlineNs_ = request.programDisplayDeadlineNs;
     frameNumber_ = request.sequence;
     MonitorRenderResult result;
-    if (request.multiviewActive && request.bufferedProgram && request.acquireDeliveredProgram) {
+    if (!request.programCopyPrepared && request.multiviewActive && request.bufferedProgram && request.acquireDeliveredProgram) {
       monitorProgram_ = {}; monitorProgramOwner_.reset();
       // The export branch can finish after producer dispatch but before this
       // request's deadline. Refresh this same timeline identity, not a newer one.
@@ -649,13 +676,21 @@ class D3D11Compositor final : public ICompositor {
     }
     // The delivered Program identity has a fixed deadline. Admit its copy before
     // source exports, uploads/conversions and other optional monitor GPU work.
-    monitorDeliveredView_ = request.multiviewActive && request.bufferedProgram
-        ? (request.acquireDeliveredProgram && !monitorProgramOwner_
-            ? programDisplayReader_.publicationUnavailable(device_.get(), request)
-            : retainedProgramForMultiview()) : nullptr;
-    programDisplayReader_.checkpoint(11);
-    if (request.multiviewActive && request.bufferedProgram)
-      programDisplayReader_.completeBeforeAuxiliary(context_.get(), request);
+    monitorDeliveredView_ = nullptr;
+    if (request.programCopyPrepared) {
+      const auto image = std::dynamic_pointer_cast<const D3DVideoImage>(request.readyProgramImage);
+      const auto* view = image && gpuConsumer_ ? image->view(gpuConsumer_->id) : nullptr;
+      if (request.multiviewActive && request.bufferedProgram && view && gpuReadLeases_ && gpuReadLeases_->hold(image))
+        monitorDeliveredView_ = view->srv.Get();
+    } else {
+      monitorDeliveredView_ = request.multiviewActive && request.bufferedProgram
+          ? (request.acquireDeliveredProgram && !monitorProgramOwner_
+              ? programDisplayReader_.publicationUnavailable(device_.get(), request)
+              : retainedProgramForMultiview()) : nullptr;
+      programDisplayReader_.checkpoint(11);
+      if (request.multiviewActive && request.bufferedProgram)
+        programDisplayReader_.completeBeforeAuxiliary(context_.get(), request);
+    }
     ProgramFrame sources;
     sources.frameNumber = request.sequence;
     std::vector<VideoFrame> sourceExports;
@@ -670,7 +705,9 @@ class D3D11Compositor final : public ICompositor {
     if (request.multiviewActive) {
       monitorTileHistory_[request.sequence] = request.tiles;
       result.multiview = renderMultiview(request.multiviewPlan, request.frames);
-      programDisplayHistory_[request.sequence] = programDisplayReader_.observation();
+      programDisplayHistory_[request.sequence] = request.programCopyPrepared
+          ? (request.readyProgramObservation ? *request.readyProgramObservation : ProgramDisplayObservation{})
+          : programDisplayReader_.observation();
       const auto displayMatch = programDisplayHistory_.find(result.multiview.frameNumber);
       if (displayMatch != programDisplayHistory_.end()) result.programDisplay = displayMatch->second;
       while (programDisplayHistory_.size() > 16) programDisplayHistory_.erase(programDisplayHistory_.begin());
@@ -826,7 +863,7 @@ class D3D11Compositor final : public ICompositor {
   std::map<int64_t,GradePreviewSurface> appearanceHistory_;
   std::map<std::string, GradeStamp> gradeStamps_;
   std::map<std::pair<std::string, int64_t>, GradePreviewSurface> gradeHistory_;
-  std::unique_ptr<MonitorRenderWorker> monitorWorker_, gradeWorker_;
+  std::unique_ptr<MonitorRenderWorker> monitorWorker_, auxiliaryMonitorWorker_, gradeWorker_;
   std::shared_ptr<D3DVideoConsumer> gpuConsumer_;
   std::unique_ptr<D3DVideoReadLeases> gpuReadLeases_;
   bool strictCpuSources_ = false;

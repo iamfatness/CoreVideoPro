@@ -15,6 +15,8 @@
 #include <dxgi.h>
 #include <mmsystem.h>
 #include "modules/D3DProgramBuffer.h"
+#include "modules/D3DProgramCopyOwner.h"
+#include "modules/MonitorRenderWorker.h"
 #include "modules/MonitorInputEvidence.h"
 
 namespace {
@@ -43,6 +45,83 @@ struct D3DProgramBufferTestAccess {
   }
   static void fail(D3DProgramBuffer& buffer) { buffer.fail("test-injected"); }
 };
+}
+
+TEST(D3DProgramBuffer, DeadlineCopiesContinueWhileOptionalOwnerIsBlockedAndKeepExactPixels) {
+  ProgramBufferTimerResolution timer;
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> producer, monitor;
+  ComPtrLite<ID3D11DeviceContext> producerContext, monitorContext;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, producer.put(), nullptr, producerContext.put())));
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, monitor.put(), nullptr, monitorContext.put())));
+  auto registration = D3DVideoConsumers::add(monitor.get(), true);
+  ComPtrLite<IDXGIDevice> dxgi; ComPtrLite<IDXGIAdapter> adapter;
+  ASSERT_TRUE(SUCCEEDED(producer->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(dxgi.put()))));
+  ASSERT_TRUE(SUCCEEDED(dxgi->GetAdapter(adapter.put())));
+  std::atomic<bool> entered{false}, released{false};
+  std::atomic<int> firstPixel{-1}, lastPixel{-1};
+  D3D11_TEXTURE2D_DESC desc{}; desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_STAGING; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  ComPtrLite<ID3D11Texture2D> staging;
+  ASSERT_TRUE(SUCCEEDED(monitor->CreateTexture2D(&desc, nullptr, staging.put())));
+  MonitorRenderWorker optional([&](const MonitorRenderRequest& request) {
+    if (!entered.exchange(true)) while (!released.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const auto image = std::dynamic_pointer_cast<const D3DVideoImage>(request.readyProgramImage);
+    const auto* view = image ? image->view(registration->id) : nullptr;
+    if (!view) throw std::runtime_error("completed Program view missing");
+    monitorContext->CopyResource(staging.get(), view->texture.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(monitorContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped))) throw std::runtime_error("pixel read failed");
+    const int pixel = static_cast<const uint8_t*>(mapped.pData)[0]; monitorContext->Unmap(staging.get(), 0);
+    if (firstPixel.load() < 0) firstPixel.store(pixel);
+    lastPixel.store(pixel);
+    return MonitorRenderResult{};
+  });
+  struct Release { std::atomic<bool>& gate; ~Release() { gate.store(true); } } release{released};
+  auto owner = std::make_shared<std::unique_ptr<D3DProgramCopyOwner>>();
+  MonitorRenderWorker critical([&optional, owner](const MonitorRenderRequest& request) {
+    optional.submit((*owner)->copy(request));
+    MonitorRenderResult result; result.programDisplayReader = (*owner)->observation(); return result;
+  }, [owner, &adapter] { *owner = std::make_unique<D3DProgramCopyOwner>(adapter.get(), 64, 64); }, {}, false);
+  ASSERT_TRUE(critical.waitForInitialization(std::chrono::seconds(2)));
+  D3DProgramDisplaySnapshots input; ASSERT_TRUE(input.initialize(producer.get(), 64, 64, 904));
+  D3D11_QUERY_DESC queryDesc{D3D11_QUERY_EVENT, 0}; ComPtrLite<ID3D11Query> produced;
+  ASSERT_TRUE(SUCCEEDED(producer->CreateQuery(&queryDesc, produced.put())));
+  const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(30);
+  for (int n = 1; n <= 24; ++n) {
+    const auto target = anchor + std::chrono::nanoseconds((n - 1) * 1000000000LL / 60);
+    std::this_thread::sleep_until(target);
+    auto slot = input.reserve(); ASSERT_TRUE(slot != nullptr);
+    std::vector<uint8_t> pixels(64 * 64 * 4, static_cast<uint8_t>(n));
+    producerContext->UpdateSubresource(slot->texture.get(), 0, nullptr, pixels.data(), 64 * 4, 0);
+    producerContext->End(produced.get()); producerContext->Flush();
+    BOOL ready = FALSE;
+    const auto deadline = target + std::chrono::nanoseconds(1000000000LL / 60);
+    while (producerContext->GetData(produced.get(), &ready, sizeof(ready), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_FALSE &&
+        std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::microseconds(100));
+    ASSERT_TRUE(ready);
+    ProgramFrame frame; frame.deliverySequence = frame.frameNumber = n;
+    frame.timelineTimestamp100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count()/100;
+    input.stamp(slot, frame);
+    MonitorRenderRequest request; request.sequence = n; request.multiviewActive = request.bufferedProgram = true;
+    request.programDisplayTargetNs = std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count();
+    request.programDisplayDeadlineNs = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline.time_since_epoch()).count();
+    request.deliveredProgramOwner = slot; critical.submit(std::move(request));
+    while ((!critical.latest() || critical.latest()->sequence < n) && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    ASSERT_TRUE(critical.latest() && critical.latest()->sequence == n);
+    const auto observed = critical.latest()->programDisplayReader;
+    EXPECT_EQ(observed.copies, static_cast<uint64_t>(n)); EXPECT_EQ(observed.completedCopies, static_cast<uint64_t>(n));
+    EXPECT_EQ(observed.refused, 0u); EXPECT_EQ(observed.skipped, 0u); EXPECT_EQ(observed.gpuReadinessDeadlineMisses, 0u);
+  }
+  ASSERT_TRUE(entered.load()); EXPECT_EQ(optional.diagnostics().completed, 0u);
+  released.store(true);
+  const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (lastPixel.load() != 24 && std::chrono::steady_clock::now() < limit) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_EQ(firstPixel.load(), 1); EXPECT_EQ(lastPixel.load(), 24); EXPECT_EQ(optional.diagnostics().failed, 0u);
 }
 
 TEST(D3DProgramBuffer, DisplayReaderUsesSetupImportsForEverySlotWithoutCriticalDriverImport) {
