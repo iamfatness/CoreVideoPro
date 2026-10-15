@@ -267,6 +267,7 @@ class D3D11Compositor final : public ICompositor {
   void prepareProgramBuffer(int width, int height) override {
     // Called before the display worker establishes its cadence anchor. Device,
     // texture and shader creation must not consume slot zero's delivery lead.
+    if (monitorWorker_) (void)monitorWorker_->waitForInitialization(std::chrono::seconds(2));
     if (width > 0 && height > 0 && ensureRenderTarget(width, height))
       (void)ensureProgramBuffer(width, height);
   }

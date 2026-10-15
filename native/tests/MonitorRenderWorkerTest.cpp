@@ -8,6 +8,20 @@
 
 using namespace corevideo::modules;
 
+TEST(MonitorRenderWorker, StartupImportPreparationWaitsForInitializationWithoutChangingSubmit) {
+  std::promise<void> release, entered;
+  auto gate = release.get_future().share(); auto started = entered.get_future();
+  MonitorRenderWorker worker([](const auto&) { return MonitorRenderResult{}; }, [&] {
+    entered.set_value(); gate.wait();
+  });
+  const bool initializing = started.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  const bool premature = worker.waitForInitialization(std::chrono::milliseconds(0));
+  MonitorRenderRequest request; worker.submit(request); // mailbox remains available during setup
+  release.set_value();
+  EXPECT_TRUE(initializing); EXPECT_FALSE(premature);
+  EXPECT_TRUE(worker.waitForInitialization(std::chrono::seconds(2)));
+}
+
 TEST(BoundedResourceRetirement, BlockedDestructorDoesNotBlockAdmissionAndBoundsExecutingOwnership) {
   struct Resource {
     std::shared_future<void> release;
