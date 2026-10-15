@@ -266,6 +266,44 @@ TEST(D3DProgramBuffer, DisplayReaderRetainsOneReadinessDeadlineFailureAfterLateR
   EXPECT_EQ(evidence.gpuReadinessDeadlineMisses, 1u); // Recovery cannot reset away the failed deadline.
 }
 
+TEST(D3DProgramBuffer, DisplayReaderCriticalCompletionUsesOriginalDeadlineAndHonorsCancellation) {
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, device.put(), nullptr, context.put())));
+  D3DProgramDisplaySnapshots pool;
+  ASSERT_TRUE(pool.initialize(device.get(), 64, 64, 931));
+  auto slot = pool.reserve(); ASSERT_TRUE(slot != nullptr);
+  ProgramFrame frame; frame.frameNumber = frame.deliverySequence = 10; pool.stamp(slot, frame);
+  D3DProgramDisplayReader reader;
+  int64_t clock = 1000000000;
+  D3DProgramDisplayReaderTestAccess::clock(reader, [&] { return clock; });
+  MonitorRenderRequest request; request.programDisplayDeadlineNs = clock + 16666667;
+  auto cancellation = std::make_shared<MonitorCancellationState>(); request.cancellation = cancellation;
+  ASSERT_TRUE(reader.copy(device.get(), context.get(), slot, clock, request.programDisplayDeadlineNs, &request) != nullptr);
+  int polls = 0;
+  D3DProgramDisplayReaderTestAccess::fault(reader, [&](ProgramDisplayReason reason) -> std::optional<HRESULT> {
+    if (reason != ProgramDisplayReason::QueryRead) return std::nullopt;
+    ++polls; clock += 1000000; return S_FALSE;
+  });
+  cancellation->stopped.store(true);
+  reader.completeBeforeAuxiliary(context.get(), request);
+  EXPECT_EQ(polls, 0); EXPECT_EQ(reader.observation().gpuReads, 1);
+  cancellation->stopped.store(false);
+  reader.completeBeforeAuxiliary(context.get(), request);
+  EXPECT_EQ(polls, 17); EXPECT_EQ(reader.observation().gpuReadinessDeadlineMisses, 1u);
+  EXPECT_EQ(reader.observation().completedCopies, 0u); EXPECT_EQ(reader.refused(), 0u);
+  EXPECT_EQ(request.programDisplayDeadlineNs, 1016666667);
+  D3DProgramDisplayReaderTestAccess::fault(reader, {});
+  const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (reader.needsRetirement() && std::chrono::steady_clock::now() < limit) {
+    reader.retire(context.get(), 0); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_EQ(reader.observation().gpuReads, 0);
+  EXPECT_EQ(reader.observation().gpuReadinessDeadlineMisses, 1u);
+}
+
 TEST(D3DProgramBuffer, ImmutableDisplayLeaseSurvivesUnreadPublicationAndPoolExhaustion) {
   using namespace corevideo::modules;
   ComPtrLite<ID3D11Device> device;

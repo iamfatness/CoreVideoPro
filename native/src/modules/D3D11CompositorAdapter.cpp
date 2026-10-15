@@ -620,6 +620,8 @@ class D3D11Compositor final : public ICompositor {
     monitorDeliveredView_ = request.multiviewActive && request.bufferedProgram
         ? retainedProgramForMultiview() : nullptr;
     programDisplayReader_.checkpoint(11);
+    if (request.multiviewActive && request.bufferedProgram)
+      programDisplayReader_.completeBeforeAuxiliary(context_.get(), request);
     ProgramFrame sources;
     sources.frameNumber = request.sequence;
     std::vector<VideoFrame> sourceExports;

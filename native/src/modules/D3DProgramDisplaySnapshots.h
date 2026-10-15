@@ -200,8 +200,9 @@ class D3DProgramDisplayReader {
     context->End(queries_[read.query].get());
     const bool lateSubmission = deadlineNs_ > 0 && nowNs() >= deadlineNs_;
     if (lateSubmission) ++lateSubmissions_;
-    // The enclosing monitor pass flushes. The copy precedes its draw on the same
-    // immediate context; completion retires source ownership, not presentation.
+    // The monitor may flush/observe this critical copy before auxiliary work;
+    // inline callers flush their enclosing pass. Completion retires source
+    // ownership and is not presentation proof.
     const bool identityGap = copiedGeneration_ == generation_ && copied_ && requested_ > copied_ + 1;
     if (identityGap) skipped_ += requested_ - copied_ - 1;
     if (copiedGeneration_ == generation_ && copied_ && requested_ < copied_) ++reordered_;
@@ -252,6 +253,21 @@ class D3DProgramDisplayReader {
     }
   }
   bool needsRetirement() const { return !failed_ && !reads_.empty(); }
+  void completeBeforeAuxiliary(ID3D11DeviceContext* context, const MonitorRenderRequest& request) {
+    if (request.programDisplayDeadlineNs <= 0 || !needsRetirement() || request.cancelled()) return;
+    // Submit this critical copy before unrelated CPU export/allocation work.
+    // Readiness must be observed within the original deadline, not only after
+    // that optional batch returns. Only this monitor owner waits; never Program.
+    record(16); context->Flush(); flushed();
+    retire(context);
+    while (needsRetirement() && !request.cancelled() && nowNs() < request.programDisplayDeadlineNs) {
+      const auto remaining = request.programDisplayDeadlineNs - nowNs();
+      if (remaining <= 0) break;
+      std::this_thread::sleep_for(std::chrono::nanoseconds((std::min)(remaining, int64_t(100000))));
+      retire(context);
+    }
+    record(17);
+  }
   uint64_t copied() const { return copied_; }
   uint64_t requested() const { return requested_; }
   uint64_t refused() const { return refused_; }
