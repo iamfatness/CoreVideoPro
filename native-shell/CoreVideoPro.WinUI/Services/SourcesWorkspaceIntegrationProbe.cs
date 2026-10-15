@@ -51,7 +51,7 @@ internal static class SourcesWorkspaceIntegrationProbe
         Require(!workspace.State.InspectorOpen, "Overview unexpectedly requires Inspect");
         var untouched = slots.Skip(1).Select(s => (s.SourceId, s.InShow, s.IsoEnabled)).ToArray();
         var sceneBeforePatch = studio.ActiveSceneId;
-        Require(quickPicker.IsEnabled && (quickPicker.Content as TextBlock)?.Text == slots[0].OverviewName,
+        Require(quickPicker.IsEnabled && quickPicker.DisplayLabel == slots[0].OverviewName,
             "Row source selector is disabled or lost its display identity");
         quickPicker.PrepareMenu();
         var staleChoice = Choices(quickPicker).Single(item => item.Text.Contains("Opening clip"));
@@ -103,11 +103,11 @@ internal static class SourcesWorkspaceIntegrationProbe
         typeof(StudioViewModel).GetProperty(nameof(StudioViewModel.RoomParticipantsForInputs))!.SetValue(studio, Array.Empty<Participant>());
         slots[0].RefreshSourceOptions([], []); await Task.Delay(40);
         Require(slots[0].OverviewName.Contains("Alice"), "Offline input lost its remembered identity");
-        var picker = Descendants(workspace).OfType<DropDownButton>().Single(b => b.Name == "SelectedSourcePicker");
-        Require((picker.Content as TextBlock)?.Text == sourceName + " · Offline", $"Inspector picker does not identify the offline binding: actual={(picker.Content as TextBlock)?.Text}; expected={sourceName} · Offline; model={slots[0].SelectedUnifiedSourceLabel}");
+        var picker = Descendants(workspace).OfType<SourceAssignmentPicker>().Single(b => b.Name == "SelectedSourcePicker");
+        Require(picker.DisplayLabel == sourceName + " · Offline", $"Inspector picker does not identify the offline binding: actual={picker.DisplayLabel}; expected={sourceName} · Offline; model={slots[0].SelectedUnifiedSourceLabel}");
         typeof(StudioViewModel).GetProperty(nameof(StudioViewModel.RoomParticipantsForInputs))!.SetValue(studio, new Participant[] { alice });
         slots[0].RefreshSourceOptions([alice], []); await Task.Delay(40);
-        Require((picker.Content as TextBlock)?.Text == sourceName && ReferenceEquals(workspace.State.SelectedInput, slots[0]), "Reconnect changed selection or retained an offline label");
+        Require(picker.DisplayLabel == sourceName && ReferenceEquals(workspace.State.SelectedInput, slots[0]), "Reconnect changed selection or retained an offline label");
         checks.Add("compiled Sources table/inspector preserve a named offline Zoom binding and reconnect without substitution");
         var rename = Descendants(workspace).OfType<TextBox>().Single(t => t.Name == "SelectedSourceName");
         rename.Focus(FocusState.Programmatic); await Task.Delay(30); rename.Text = "Stale edit must not follow replacement";

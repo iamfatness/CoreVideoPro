@@ -2,7 +2,6 @@ using CoreVideoPro.WinUI.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Data;
 
 namespace CoreVideoPro.WinUI.Controls;
 
@@ -20,6 +19,7 @@ internal sealed class SourceAssignmentPicker : DropDownButton
     private readonly bool _compact;
     private readonly TextBlock _label = SourcesTableRowControl.Text("");
     internal MenuFlyout SourceMenu { get; } = new();
+    internal string DisplayLabel => _label.Text;
 
     internal SourceAssignmentPicker(bool compact = false)
     {
@@ -30,7 +30,12 @@ internal sealed class SourceAssignmentPicker : DropDownButton
         HorizontalAlignment = HorizontalAlignment.Stretch;
         Background = SourcesTableRowControl.Brush(24, 39, 48);
         Foreground = SourcesTableRowControl.Brush(231, 240, 243);
-        Content = _label; IsEnabled = false;
+        var content = new Grid { ColumnSpacing = 8, HorizontalAlignment = HorizontalAlignment.Stretch };
+        content.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        content.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        content.Children.Add(_label);
+        var arrow = SourcesTableRowControl.Text("▾"); Grid.SetColumn(arrow, 1); content.Children.Add(arrow);
+        Content = content; IsEnabled = false;
         Flyout = SourceMenu;
         SourceMenu.Opening += (_, _) => PrepareMenu();
     }
