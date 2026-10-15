@@ -2350,6 +2350,10 @@ class D3D11Compositor final : public ICompositor {
       const bool useI420 = admittedSource ? admittedSource->isI420 : f.hasI420();
       const int width = admittedSource ? admittedSource->width : (useI420 ? f.i420Width : f.pixelWidth);
       const int height = admittedSource ? admittedSource->height : (useI420 ? f.i420Height : f.pixelHeight);
+      if (participantTextures_.find(f.participantId) == participantTextures_.end() &&
+          participantTextures_.size() >= MonitorRenderDiagnostics::InputCapacity) {
+        exportRetirement_.noteRefusal(); continue;
+      }
       auto& pt = participantTextures_[f.participantId];
       if (!pt.local || pt.width != width || pt.height != height) {
         // resize()/destruction joins the export worker, including deferred D3D
@@ -3321,7 +3325,7 @@ class D3D11Compositor final : public ICompositor {
   std::unique_ptr<D3DDecoupledExport> encoderExport_;
   // Per-participant keyed-mutex shared textures for the GPU multiview tiles.
   // (ParticipantTex is declared near the top of the class.)
-  BoundedResourceRetirement<D3DDecoupledExport> exportRetirement_{128ull * 1024 * 1024};
+  BoundedResourceRetirement<D3DDecoupledExport> exportRetirement_{256ull * 1024 * 1024};
   std::map<std::string, ParticipantTex> participantTextures_;
   // Per-source texture cache (SourceTex is declared near the top of the class):
   // one Y/U/V or BGRA texture set per stable source id, shared by every

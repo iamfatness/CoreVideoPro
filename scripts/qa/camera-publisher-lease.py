@@ -26,6 +26,8 @@ def toggle(api,on):
 
 def restore(lease):
     # Only the distinct, previously absent QA executable can be stopped here.
+    if pathlib.Path(lease['candidate']).resolve() != pathlib.Path(lease['ownerDirectory']).resolve()/'corevideo-904-validation.exe':
+        raise RuntimeError('Recovery target is outside the named installation directory')
     env={**os.environ,'COREVIDEO_QA_LEASE_EXE':lease['candidate']}
     command="Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $env:COREVIDEO_QA_LEASE_EXE } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
     subprocess.run(['powershell','-NoProfile','-Command',command],env=env,
@@ -77,7 +79,7 @@ def main():
         raise RuntimeError('Requested directory does not match registered owner')
     candidate=args.owner_directory.resolve()/'corevideo-904-validation.exe'
     if candidate.exists(): raise RuntimeError('QA executable already exists; inspect before reuse')
-    lease=dict(api=args.api,originalCameraOn=current['virtualCameraOn'],candidate=str(candidate),
+    lease=dict(api=args.api,originalCameraOn=current['virtualCameraOn'],candidate=str(candidate),ownerDirectory=str(args.owner_directory.resolve()),
         sha256=hashlib.sha256(args.core.read_bytes()).hexdigest(),parentPid=os.getpid())
     args.lease.parent.mkdir(parents=True,exist_ok=True)
     args.lease.write_text(json.dumps(lease,indent=2))

@@ -34,6 +34,7 @@ template<class T, size_t Capacity = 4> class BoundedResourceRetirement {
     changed_.notify_one(); return true;
   }
   Observation observation() const { std::lock_guard<std::mutex> lock(mutex_); return observation_; }
+  void noteRefusal() { std::lock_guard<std::mutex> lock(mutex_); ++observation_.refused; }
  private:
   struct Slot { std::unique_ptr<T> value; uint64_t bytes = 0; };
   void run() {

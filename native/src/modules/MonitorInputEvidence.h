@@ -72,7 +72,7 @@ inline rpc::Json programDisplayEvidence(const std::shared_ptr<const MonitorRende
   exported.emplace("latestReader", programDisplayObservationEvidence(
       result ? result->programDisplayReader : ProgramDisplayObservation{}, true));
   exported.emplace("optionalExportRetirement", rpc::Json::Object{
-      {"version", "bounded-export-retirement-v1"}, {"capacity", 4}, {"textureByteBudget", 128 * 1024 * 1024},
+      {"version", "bounded-export-retirement-v1"}, {"capacity", 4}, {"activeEntryCapacity", 64}, {"textureByteBudget", 256 * 1024 * 1024},
       {"pending", result ? static_cast<double>(result->exportRetirementPending) : 0},
       {"textureBytes", result ? static_cast<double>(result->exportRetirementBytes) : 0},
       {"refused", result ? static_cast<double>(result->exportRetirementRefused) : 0}});

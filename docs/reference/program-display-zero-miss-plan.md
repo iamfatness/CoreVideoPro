@@ -101,12 +101,37 @@ capacity-refusal branch. Observed completion ages include this CPU delay and
 are not GPU execution durations.
 
 The repair moves participant exporter eviction, failed creation and replacement
-to a separate bounded retirement owner. Its four-item / 128 MiB texture-payload
+to a separate bounded retirement owner. Its four-item / 256 MiB texture-payload
 charge includes the executing destructor. On saturation the original caller
 retains ownership and defers the optional replacement; it never joins the
 worker or allocates an overflow queue. Driver/device overhead is outside that
 texture charge. Shutdown still drains owned resources. Snapshot evidence
 reports pending count, charged bytes and refusals.
+The participant-export map also has a 64-entry admission bound, so an indefinitely
+stalled destructor cannot accumulate inactive caller-owned entries without limit.
+Preview and Multiview resize/failure retirement use the same owner; the existing
+encoder's separate readiness policy is unchanged.
+
+The first repaired 60-second depth-two repeat (`aea0ba8`) had 3,931 completed
+copies, zero refusals/skips and four observed readiness deadline misses. Its
+registered OS receiver decoded 3,600 identities without loss/repetition, with
+serving-module identity verified and no discarded warmup.
+The subsequent critical-copy progress change (`e2d58d6`) flushes and observes
+copy readiness before optional work, bounded by the same absolute deadline and
+cancellation state. Its 60-second depth-two trial completed 3,920 copies with
+zero refusals, skips, late submissions or observed readiness deadline misses.
+However its OS receiver found 41 repeats and 41 missing identities. This does
+not establish whether that variation was introduced by the critical-copy change;
+the prior longer combined trial had camera losses too. Do not promote either
+trial to full-output zero-miss acceptance.
+
+Both corrected real-source trials also retained unavailable source admissions
+(`preparation-stopped`) during SDK epoch changes, tracked in
+[#908](https://github.com/iamfatness/CoreVideoPro/issues/908). Their actual Zoom
+inputs were observed at 640x360, not eight 1080p feeds. Reader copy mechanics,
+source content, OS-camera pixels, physical presentation and audio have separate
+verdicts. The original app's camera state was restored after each owned test;
+the registered DLL and installed beta were not replaced.
 
 At sample elapsed 77.360 seconds, requested Program identity 4598 was rejected
 after both real `GetData(DONOTFLUSH)` calls returned `S_FALSE`. Outstanding

@@ -6,6 +6,7 @@ import json
 import math
 import mmap
 import pathlib
+import shutil
 import subprocess
 import struct
 import sys
@@ -51,6 +52,8 @@ def main():
         parser.error('real SDK probe requires a file containing the full authorized test URL')
     if args.camera_receiver and (not args.expected_camera_dll or not args.expected_camera_dll.is_file()):
         parser.error('camera receiver requires the expected installed camera DLL')
+    node = shutil.which('node')
+    if args.camera_receiver and not node: parser.error('camera pixel judge requires Node')
     args.output.mkdir(parents=True, exist_ok=False)
     manifest = dict(sourceCommit=args.source_commit,
         coreSha256=hashlib.sha256(args.core.read_bytes()).hexdigest(),
@@ -314,6 +317,16 @@ def main():
         report['cameraReceiverExitCode'] = receiver.returncode if receiver else None
         report['cameraReceiverSha256'] = hashlib.sha256(args.camera_receiver.read_bytes()).hexdigest()
         report['servingIdentity'] = serving_result
+        if receiver and receiver.returncode == 0:
+            code = 'import {readFileSync} from "node:fs"; const {judgeCameraPixels}=await import(process.argv[1]); console.log(JSON.stringify(judgeCameraPixels(readFileSync(process.argv[2],"utf8"),{warmupSeconds:0,minimumSeconds:30})));'
+            judged = subprocess.run([node,'--input-type=module','-e',code,
+                pathlib.Path(__file__).with_name('camera-pixel-receiver.mjs').resolve().as_uri(),
+                str((args.output/'receiver.ndjson').resolve())],capture_output=True,text=True,timeout=30,
+                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            if judged.returncode == 0:
+                report['cameraPixels'] = json.loads(judged.stdout)
+                (args.output/'camera-pixels.json').write_text(json.dumps(report['cameraPixels'],indent=2))
+            else: report['cameraJudgeError'] = 'Node pixel judge failed'
     if before_demand:
         report['beforeDemandCounters'] = dict(programBuffer=before_demand.get('programBuffer'),
             monitor={k:before_demand.get('realtimeEvidence',{}).get('monitorWorker',{}).get(k)
@@ -329,6 +342,8 @@ def main():
         report['readerCounterVerdict'] = ('PASS' if report['workloadVerdict'] == 'PASS' else 'UNVERIFIED') if zero and coverage else 'FAIL'
     else: report['readerCounterVerdict'] = 'UNVERIFIED'
     if report['readerCounterVerdict'] == 'FAIL' or report['workloadVerdict'] == 'FAIL':
+        report['allOutputZeroMissVerdict'] = 'FAIL'
+    if report.get('cameraPixels',{}).get('osCameraContinuityVerified') is False:
         report['allOutputZeroMissVerdict'] = 'FAIL'
     (args.output/'report.json').write_text(json.dumps(report, indent=2))
     print(json.dumps({k:v for k,v in report.items() if k!='latestDisplay'},indent=2))
