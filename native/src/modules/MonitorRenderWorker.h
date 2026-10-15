@@ -33,6 +33,8 @@ class MonitorRenderWorker {
     if (thread_.joinable()) thread_.join(); // compositor shutdown, never a render tick
   }
   void submit(MonitorRenderRequest request) {
+    request.submittedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     if (!request.multiviewActive) cancellation_->epoch.fetch_add(1, std::memory_order_relaxed);
     request.cancellation = cancellation_;
     request.cancellationEpoch = cancellation_->epoch.load(std::memory_order_relaxed);
@@ -139,8 +141,11 @@ class MonitorRenderWorker {
       const auto start = std::chrono::steady_clock::now();
       try {
         auto prepared = *job;
+        prepared.workerStartedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count();
         MonitorRenderResult observation;
         inputs.prepare(prepared, observation);
+        prepared.inputsPreparedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
         auto result = std::make_shared<MonitorRenderResult>(render(prepared));
         result->readyInputs = observation.readyInputs; result->heldInputs = observation.heldInputs;
         result->unavailableInputs = observation.unavailableInputs;

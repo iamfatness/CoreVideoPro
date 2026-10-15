@@ -226,7 +226,11 @@ class D3D11Compositor final : public ICompositor {
   bool hasIsolatedMonitors() const override { return monitorWorker_ != nullptr; }
   void submitMonitors(MonitorRenderRequest request) override {
     if (!monitorWorker_) return;
+    request.producerStartedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     prepareMonitorFrames(request);
+    request.producerPreparedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     request.bufferedProgram = programBufferFrames() > 0;
     if (programProductionSlot_ >= 0 && programProductionAnchorNs_ > 0) {
       const int depth = programBufferFrames();

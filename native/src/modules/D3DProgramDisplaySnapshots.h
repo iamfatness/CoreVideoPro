@@ -116,6 +116,13 @@ class D3DProgramDisplayReader {
     requested_ = snapshot->frame.deliverySequence;
     const auto cached = imports_.find(snapshot->slot);
     importCached_ = generation_ == snapshot->generation && cached != imports_.end() && !!cached->second;
+    if (request) {
+      if (request->producerStartedNs) record(21, ProgramDisplayReason::None, S_OK, S_OK, nullptr, request->producerStartedNs);
+      if (request->producerPreparedNs) record(22, ProgramDisplayReason::None, S_OK, S_OK, nullptr, request->producerPreparedNs);
+      if (request->submittedNs) record(18, ProgramDisplayReason::None, S_OK, S_OK, nullptr, request->submittedNs);
+      if (request->workerStartedNs) record(19, ProgramDisplayReason::None, S_OK, S_OK, nullptr, request->workerStartedNs);
+      if (request->inputsPreparedNs) record(20, ProgramDisplayReason::None, S_OK, S_OK, nullptr, request->inputsPreparedNs);
+    }
     record(1);
     const auto cancelled = [&] { return request && request->cancelled(); };
     if (cancelled()) return cancel();

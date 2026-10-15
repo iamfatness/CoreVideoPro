@@ -1112,6 +1112,8 @@ struct MonitorCancellationState {
   std::atomic<bool> stopped{false};
 };
 struct MonitorRenderRequest {
+  int64_t submittedNs = 0, workerStartedNs = 0, inputsPreparedNs = 0;
+  int64_t producerStartedNs = 0, producerPreparedNs = 0;
   int64_t sequence = 0;
   int64_t programDisplayTargetNs = 0, programDisplayDeadlineNs = 0;
   CompositorRenderPlan programPlan;
