@@ -7,6 +7,7 @@
 #include "modules/VirtualCameraSlate.h"
 #include "modules/VirtualCameraReadRetry.h"
 #include <chrono>
+#include <algorithm>
 
 using Microsoft::WRL::ComPtr;
 
@@ -27,7 +28,11 @@ HRESULT MediaStream::RuntimeClassInitialize(MediaSource* source, IMFStreamDescri
   fps_ = fps == 0 ? 30 : fps;
   frameDuration_ = 10000000LL / static_cast<LONGLONG>(fps_);
   wchar_t retryFlag[3]{};
-  retryTransientRead_ = GetEnvironmentVariableW(L"COREVIDEO_CAMERA_READ_RETRY", retryFlag, 3) == 1 && retryFlag[0] == L'1';
+  // Explicit off is a diagnostic negative control; recovery is bounded below.
+  retryTransientRead_ = !(GetEnvironmentVariableW(L"COREVIDEO_CAMERA_READ_RETRY", retryFlag, 3) == 1 && retryFlag[0] == L'0');
+#if defined(COREVIDEO_CAMERA_READ_RETRY_OFF_QA)
+  retryTransientRead_ = false;
+#endif
 #if defined(COREVIDEO_CAMERA_READ_RETRY_QA) && COREVIDEO_CAMERA_READ_RETRY_QA
   retryTransientRead_ = true;
   VcamServeLog("[vcam-retry-qa] diagnostic DLL: bounded publication wait enabled");
@@ -98,6 +103,9 @@ IFACEMETHODIMP MediaStream::RequestSample(IUnknown* token) {
       nextDueHns_ = now;  // first sample, or we fell behind: re-anchor, no catch-up burst
     }
     waitHns = nextDueHns_ - now;
+    // Capture before pacing/allocation. Never extend this if the request is
+    // scheduled late. Reserve the rest of the frame for copy/event delivery.
+    sampleReadDeadlineUs_ = (nextDueHns_ + 20000) / 10;
     nextDueHns_ += frameDuration_;
     // Lazy high-resolution timer: the process timer resolution is often 15.6ms,
     // which would quantize a plain Sleep and cap 60fps pacing at ~40fps.
@@ -165,8 +173,9 @@ void MediaStream::LogDeliveryEvidence() {
       static_cast<long long>(read.lastProgramSequence));
   VcamServeLog(b);
   if (retryTransientRead_) {
-    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu budgetUs=%lld maxRetries=64 maxPayloadCopies=2",
-        retriedSamples_, recoveredSamples_, frameDuration_ / 10);
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu readDeadlineMisses=%llu writerActive=%llu changedDuringCopy=%llu copyBudgetExhausted=%llu budgetUs=2000 maxRetries=8 maxPayloadCopies=2",
+        retriedSamples_, recoveredSamples_, readDeadlineMisses_, read.writerActiveObservations,
+        read.changedDuringCopy, read.copyBudgetExhaustions);
     VcamServeLog(b);
   }
 }
@@ -214,22 +223,21 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   int h = 0;
   unsigned retries = 0;
   unsigned copyBudget = 2;
-  const bool got = corevideo::modules::readCameraWithBoundedRetry(
+  const bool got = corevideo::modules::readCameraUntilDeadline(
       [&](bool allowReopen) {
         reader_.readLatest(scratch_, w, h, allowReopen, &copyBudget);
         return reader_.evidence().lastResult;
-      }, [] {
-        return std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-      }, [&] {
+      }, [] { return MFGetSystemTime() / 10; }, [&](int64_t remainingUs) {
         if (!copyBudget) return false;
+        if (remainingUs <= 0) return false;
         if (!pacerTimer_) pacerTimer_ = CreateWaitableTimerExW(nullptr, nullptr,
             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
         if (!pacerTimer_) return false;
-        LARGE_INTEGER due; due.QuadPart = -2500; // 250 us; never a coarse Sleep(1)
+        LARGE_INTEGER due; due.QuadPart = -std::min<int64_t>(250, remainingUs) * 10;
         return SetWaitableTimer(pacerTimer_, &due, 0, nullptr, nullptr, FALSE) &&
-            WaitForSingleObject(pacerTimer_, 3) == WAIT_OBJECT_0;
-      }, retryTransientRead_, retries, frameDuration_ / 10, 64);
+            WaitForSingleObject(pacerTimer_, 1) == WAIT_OBJECT_0;
+      }, retryTransientRead_, retries, sampleReadDeadlineUs_, 8);
+  if (MFGetSystemTime() / 10 > sampleReadDeadlineUs_) ++readDeadlineMisses_;
   if (retries) { ++retriedSamples_; if (got) ++recoveredSamples_; }
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
       scratch_.size() == dstLen) {

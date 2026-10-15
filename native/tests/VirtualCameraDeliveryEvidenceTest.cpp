@@ -5,6 +5,32 @@
 
 using namespace corevideo::modules;
 
+TEST(VirtualCameraReadRetry, OriginalDeadlineIsNotRenewedByLateEntryOrOversleptWait) {
+  for (int64_t start : {int64_t{1990}, int64_t{2100}}) {
+    int64_t now = start; unsigned retries = 0; int reads = 0, waits = 0;
+    EXPECT_FALSE(readCameraUntilDeadline([&](bool) {
+      ++reads; return VirtualCameraReadResult::Contended;
+    }, [&] { return now; }, [&](int64_t remaining) {
+      EXPECT_EQ(remaining, 10); ++waits; now += 100; return true;
+    }, true, retries, 2000));
+    EXPECT_EQ(reads, 1); EXPECT_EQ(retries, 0u);
+    EXPECT_EQ(waits, start < 2000 ? 1 : 0);
+  }
+}
+
+TEST(VirtualCameraReadRetry, DeadlineWaitRecoversWriteAndBoundsAttemptsWithoutReopen) {
+  int64_t now = 0; unsigned retries = 0; int reopen = 0;
+  EXPECT_TRUE(readCameraUntilDeadline([&](bool allowReopen) {
+    if (allowReopen) ++reopen;
+    return now < 750 ? VirtualCameraReadResult::Contended : VirtualCameraReadResult::Fresh;
+  }, [&] { return now; }, [&](int64_t) { now += 250; return true; }, true, retries, 2000));
+  EXPECT_EQ(reopen, 1); EXPECT_EQ(retries, 3u);
+  now = 0;
+  EXPECT_FALSE(readCameraUntilDeadline([](bool) { return VirtualCameraReadResult::Contended; },
+      [&] { return now; }, [&](int64_t) { ++now; return true; }, true, retries, 2000));
+  EXPECT_EQ(retries, 8u);
+}
+
 TEST(VirtualCameraDeliveryEvidence, FailedEventsNeverCountAsDeliveredOrAdvanceTheClock) {
   VirtualCameraDeliveryEvidence evidence;
   evidence.recordEmission(true, VirtualCameraSampleContent::Fresh, 100);

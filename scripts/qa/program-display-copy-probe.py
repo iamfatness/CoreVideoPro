@@ -40,6 +40,7 @@ def main():
     parser.add_argument('--program-scene', choices=('single','grid'), default='single')
     parser.add_argument('--camera-receiver', type=pathlib.Path, help='Registered OS-camera receiver; caller must lease the publisher first')
     parser.add_argument('--expected-camera-dll', type=pathlib.Path)
+    parser.add_argument('--direct-camera-dll', type=pathlib.Path, help='Diagnostic in-process receiver only; never qualifies Windows registration/Frame Server')
     args = parser.parse_args()
     if sys.platform == 'win32' and not sys.flags.utf8_mode:
         parser.error('Run with python -X utf8; native RPC is UTF-8 (existing harness issue #877)')
@@ -52,6 +53,8 @@ def main():
         parser.error('real SDK probe requires a file containing the full authorized test URL')
     if args.camera_receiver and (not args.expected_camera_dll or not args.expected_camera_dll.is_file()):
         parser.error('camera receiver requires the expected installed camera DLL')
+    if args.direct_camera_dll and (not args.camera_receiver or not args.direct_camera_dll.is_file()):
+        parser.error('direct DLL requires the receiver and an existing DLL')
     node = shutil.which('node')
     if args.camera_receiver and not node: parser.error('camera pixel judge requires Node')
     args.output.mkdir(parents=True, exist_ok=False)
@@ -66,6 +69,9 @@ def main():
             '; isolated 1080p60 monitors',
         synthetic=bool(args.fake),
         scope='Program reader attribution only. No shell presentation, camera receiver or audio qualification.')
+    if args.direct_camera_dll:
+        manifest['directCameraDllSha256'] = file_digest(args.direct_camera_dll)
+        manifest['cameraMode'] = 'direct-dll-diagnostic'
     (args.output/'manifest.json').write_text(json.dumps(manifest, indent=2))
     core = None
     stop = threading.Event()
@@ -243,7 +249,10 @@ def main():
                     stop.wait(.1)
                 else: raise RuntimeError('camera publisher did not become ready')
                 receiver_files = [(args.output/'receiver.ndjson').open('wb'),(args.output/'receiver.stderr.log').open('wb')]
-                receiver = subprocess.Popen([str(args.camera_receiver.resolve()),str(math.ceil(args.duration))],
+                receiver_command = [str(args.camera_receiver.resolve()),str(math.ceil(args.duration))]
+                if args.direct_camera_dll:
+                    receiver_command += ['--dll',str(args.direct_camera_dll.resolve())]
+                receiver = subprocess.Popen(receiver_command,
                     stdin=subprocess.DEVNULL,stdout=receiver_files[0],stderr=receiver_files[1],
                     creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             phase = 'monitor-demand-ack'
