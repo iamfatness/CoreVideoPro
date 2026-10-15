@@ -2,6 +2,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <thread>
 
 namespace corevideo::modules {
