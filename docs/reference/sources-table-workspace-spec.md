@@ -23,7 +23,11 @@ guidance. Unassigned inputs remain assignable and retain their numbers.
 
 ## Existing consumers, not web behavior
 
+Each row exposes a source picker for immediate patching without opening the inspector.
 Assignment uses the existing categorized unified picker and canonical source ID.
+Opening a menu never writes; its source identity is captured until the explicit
+choice. Roster refresh does not rebuild an open menu. Stale choices cannot patch
+a replacement source or an obsolete row.
 MV and ISO delegate to ShowInputSlotViewModel.InShow/IsoEnabled without inventing
 a new transport or eligibility policy. Writer state remains the observed
 MultiviewInputRow lifecycle value, not inferred from arming. Source format comes
@@ -48,7 +52,7 @@ drawn rectangle/circle scopes-only ROI and Apply/Cancel remain intact.
 | Per-source preview and audio meter | Existing source-specific surface and meter projection; never wall cropping |
 | MV inclusion and ISO eligibility/selection | Direct existing slot properties in row and inspector |
 | ISO arm versus recording lifecycle | Checkbox plus observed RecChipLabel |
-| Unified categorized assignment and unassign | Inspector; existing canonical picker/lifecycle |
+| Unified categorized assignment and unassign | Inline row picker plus inspector; existing canonical picker/lifecycle |
 | Display name and source-bound lower-third text | Inspector; existing name store and guarded flyout |
 | Guest role and dropout policy | Inspector; existing guarded SourcePolicyFlyout |
 | Paired microphone | Inspector; explicit source-bound audio selection |

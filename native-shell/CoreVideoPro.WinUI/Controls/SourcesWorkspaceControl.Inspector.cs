@@ -49,9 +49,8 @@ public sealed partial class SourcesWorkspaceControl
     {
         var panel = new StackPanel { Spacing = 8 };
         panel.Children.Add(Text("Assigned source", 11));
-        Bind(_picker, ContentControl.ContentProperty, State, "SelectedInput.SelectedUnifiedSourceLabel");
-        Bind(_picker, Microsoft.UI.Xaml.Controls.Control.IsEnabledProperty, State, "SelectedInput.IsSourcePickerEnabled");
-        var menu = new MenuFlyout(); menu.Opening += (_, _) => BuildSourceMenu(menu); _picker.Flyout = menu; panel.Children.Add(_picker);
+        Bind(_picker, SourceAssignmentPicker.InputProperty, State, "SelectedInput");
+        panel.Children.Add(_picker);
         panel.Children.Add(Text("Source changes use the existing live assignment behavior. Selecting an input alone never changes its assignment.", 11).Wrapped());
         _rename = new TextBox { Header = "Display name", Name = "SelectedSourceName" };
         Bind(_rename, TextBox.TextProperty, State, "SelectedInput.DisplayName");
@@ -124,23 +123,6 @@ public sealed partial class SourcesWorkspaceControl
         picker.Flyout = menu; panel.Children.Add(picker);
         panel.Children.Add(Text("Pairing feeds the existing source channel. Live gain/mute, processing and bus routing remain in Audio/Routing. Device sync offsets remain in the capture catalog.", 12).Wrapped());
         return panel;
-    }
-    private void BuildSourceMenu(MenuFlyout menu)
-    {
-        menu.Items.Clear(); if (State.SelectedInput is not { } input) return;
-        var identity = input.SourceId;
-        foreach (var group in ShowInputRosterService.UnifiedSourceGroups)
-        {
-            var options = input.UnifiedSourceOptions.Where(option => option.Group == group).ToArray(); if (options.Length == 0) continue;
-            var category = new MenuFlyoutSubItem { Text = group };
-            foreach (var option in options)
-            {
-                var item = new MenuFlyoutItem { Text = option.Label, IsEnabled = !ShowInputRosterService.IsHintSourceId(option.Value) };
-                item.Click += (_, _) => { if (ReferenceEquals(input, State.SelectedInput) && input.SourceId == identity) input.SelectedUnifiedSourceId = option.Value; };
-                category.Items.Add(item);
-            }
-            menu.Items.Add(category);
-        }
     }
     private void OpenSourceOptions(StackPanel panel)
     {

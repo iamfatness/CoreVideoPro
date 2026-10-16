@@ -27,8 +27,8 @@ public sealed partial class SourcesWorkspaceControl : UserControl
     private readonly Button _grade;
     private readonly TextBlock _empty = Text("No matching inputs. Choose All sources or clear the search to see empty slots.");
     private readonly TextBlock _summary = Text("");
-    private readonly TextBlock _status = Text("Select Inspect for details. Selection does not assign a source, change MV/ISO or Take.", 11);
-    private readonly DropDownButton _picker = new() { Name = "SelectedSourcePicker", HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly TextBlock _status = Text("Choose a source directly in its row to patch an input. Inspect opens optional detailed controls.", 11);
+    private readonly SourceAssignmentPicker _picker = new() { Name = "SelectedSourcePicker", HorizontalAlignment = HorizontalAlignment.Stretch };
     private StudioViewModel? _owner;
     private bool _queued;
     public event EventHandler? CatalogRequested;
