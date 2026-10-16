@@ -20,6 +20,21 @@ public sealed class CoreProtocolParserTests
         Assert.Equal(expected, parsed.Texture.SourceEpoch);
     }
 
+    [Theory]
+    [InlineData("", 0L)]
+    [InlineData(", \"sourceGeneration\": 4", 4L)]
+    [InlineData(", \"sourceGeneration\": -1", 0L)]
+    [InlineData(", \"sourceGeneration\": \"4\"", 0L)]
+    [InlineData(", \"sourceGeneration\": null", 0L)]
+    public void ParticipantTextureGenerationIsOptionalAndRequiresPositiveInteger(string field, long expected)
+    {
+        var line = "{\"type\":\"participant-shared-texture\",\"participantId\":\"42\"" + field +
+            ",\"texture\":{\"sharedHandleHex\":\"0x123400\",\"width\":64,\"height\":64}}";
+        var parsed = CoreProtocolParser.TryParseParticipantSharedTextureEvent(line);
+        Assert.NotNull(parsed);
+        Assert.Equal(expected, parsed.Texture.SourceGeneration);
+    }
+
     [Fact]
     public void DirectRosterFactUsesGeneratedRevisionContractAndUpdatesAudioSourceMute()
     {

@@ -243,6 +243,7 @@ class ZoomEngineRuntime {
     std::shared_ptr<const std::vector<std::uint8_t>> i420;
     std::shared_ptr<CpuSourceGpuView> preparedGpu;
     uint64_t sourceEpoch = 0;
+    uint64_t sourceGeneration = 0;
     int width = 0;   // luma width
     int height = 0;  // luma height
     std::int64_t frameId = 0;

@@ -2415,6 +2415,7 @@ class D3D11Compositor final : public ICompositor {
       ParticipantSharedTexture info;
       info.participantId = f.participantId;
       info.sourceEpoch = publication.sourceEpoch;
+      info.sourceGeneration = f.sourceGeneration;
       info.sharedHandleHex = handleToHex(publication.handle);
       info.width = pt.width;
       info.height = pt.height;

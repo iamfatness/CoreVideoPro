@@ -108,6 +108,10 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         set => SetValue(SourceCropRectProperty, value);
     }
 
+    internal long PresentedFramesForProbe => _direct3DInterop?.PresentedFramesForProbe ?? 0;
+    internal bool PictureVisibleForProbe => SwapChainHost.Visibility == Visibility.Visible;
+    internal uint? ReadPixelForProbe() => _direct3DInterop?.ReadPixelForProbe();
+
     public string SurfaceKey => SurfaceState?.SurfaceKey ?? "unknown";
 
     public string Title => SurfaceState?.Title ?? "Video";

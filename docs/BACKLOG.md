@@ -1,5 +1,8 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 15:** diagnose and fix #916 source video delay in
+Inspect using API/offscreen validation; preserve the running installed app.
+
 **Owner direction, October 15, approved Sources design:** implement #590 as the
 table-first workspace with inline quick source patching, an optional inspector and connected existing grade
 editor. Preserve every existing source, MV, ISO, audio, adapter and grading
@@ -169,6 +172,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner current — October 15 | B | [#916](https://github.com/iamfatness/CoreVideoPro/issues/916) | Diagnose select-to-first-present latency, reproduce the exact cause and fix it with API/offscreen evidence; keep the installed app/session untouched. |
 | 1 — October 15 UI/UX | B | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Finish stable-input scene creation and layout fallbacks, quick solo/two-person/share starters, preserved custom routes and fresh/upgraded profile evidence. |
 | 2 — October 15 UI/UX | B | [#590](https://github.com/iamfatness/CoreVideoPro/issues/590), [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) | Sources assignment/offline clarity and identity-safe thumbnail removal/reassignment acceptance. Count one primary development issue per focused PR. |
 | 3 — October 15 UI/UX | B | [#848](https://github.com/iamfatness/CoreVideoPro/issues/848) | Finish shared adjustment consistency and actual effect/persistence checks, followed by the approved existing lower-third, grading/ROI and navigation consumers. |
@@ -222,7 +226,6 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 
 | Issue | Remaining work |
 |---|---|
-| [#916](https://github.com/iamfatness/CoreVideoPro/issues/916) | Owner reports slow source video on opening Sources Inspect in beta 26350c0. Capture select-to-first-present evidence and distinguish export availability from UI presentation; exact cause unproven. Inline quick patching is restored separately under #590. |
 | [#915](https://github.com/iamfatness/CoreVideoPro/issues/915) | Node package fixture uses filenames rejected by the production validator. Repair the fixture contract without weakening validation; the actual October 15 beta archive passed. |
 | [#898](https://github.com/iamfatness/CoreVideoPro/issues/898) | Mode-correct Release GPU fixture exceeded its 10 ms isolated Program completion bound in a fixed-phase trial on the reference RTX 4090. Retain the failure and measure actual submission, completion and consumer deadlines; consecutive pixels alone do not prove on-time presentation. Unranked intake, separate from the merged #869 fixture repair. |
 | [#876](https://github.com/iamfatness/CoreVideoPro/issues/876) | The #870 development meeting interval had zero measured Program-buffer losses, but the Program clock continued emitting source-stage misses during owner teardown after production stopped. Audit the explicit output terminal/drain boundary; retain on-air failures and separate cleanup evidence. Unranked intake. |

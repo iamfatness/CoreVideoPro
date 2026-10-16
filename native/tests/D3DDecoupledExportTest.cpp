@@ -221,6 +221,7 @@ TEST(D3DDecoupledExport, ParticipantBgraExportCopiesCachedPixelsAcrossDevices) {
     for (const uint32_t color : {0xff112233u, 0xff774411u}) {
       VideoFrame input;
       input.participantId = "bgra-copy";
+      input.sourceEpoch = 17; input.sourceGeneration = 4;
       input.frameId = ++frameId;
       input.width = input.pixelWidth = kW;
       input.height = input.pixelHeight = kH;
@@ -254,6 +255,8 @@ TEST(D3DDecoupledExport, ParticipantBgraExportCopiesCachedPixelsAcrossDevices) {
         }
         ASSERT_EQ(exports.size(), size_t{1});
         EXPECT_EQ(exports[0].participantId, "bgra-copy");
+        EXPECT_EQ(exports[0].sourceEpoch, 17u);
+        EXPECT_EQ(exports[0].sourceGeneration, 4u);
         const auto handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(
             std::stoull(exports[0].sharedHandleHex, nullptr, 0)));
         uint32_t pixel = 0;

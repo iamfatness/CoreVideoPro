@@ -184,12 +184,14 @@ TEST(ProgramFramePreviewHealth, ParticipantExportEventPreservesNativeSourceIncar
   source.participantId = "capture:cam";
   source.sharedHandleHex = "0x123400";
   source.width = 1920; source.height = 1080;
-  source.sourceEpoch = 17; source.frameNumber = 3;
+  source.sourceEpoch = 17; source.sourceGeneration = 4; source.frameNumber = 3;
   frame.participantSharedTextures.push_back(source);
   const auto events = corevideo::modules::participantSharedTextureEvents(frame);
   ASSERT_EQ(events.size(), 1u);
   ASSERT_NE(events[0].get("sourceEpoch"), nullptr);
   EXPECT_EQ(events[0].get("sourceEpoch")->asNumber(), 17);
+  ASSERT_NE(events[0].get("sourceGeneration"), nullptr);
+  EXPECT_EQ(events[0].get("sourceGeneration")->asNumber(), 4);
   EXPECT_EQ(events[0].get("participantId")->asString(), "capture:cam");
 }
 

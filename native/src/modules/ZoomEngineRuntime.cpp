@@ -722,6 +722,7 @@ std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t time
     frame.i420Height = decoded.height;
     frame.frameId = decoded.frameId;
     frame.sourceEpoch = decoded.sourceEpoch;
+    frame.sourceGeneration = decoded.sourceGeneration;
     frame.captureTimestamp100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         decoded.observedAt.time_since_epoch()).count() / 100;
     frame.preparedGpu = decoded.preparedGpu;
@@ -1568,6 +1569,7 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
     incoming.height = static_cast<int>(frame.i420Height);
     incoming.frameId = static_cast<std::int64_t>(frame.frameId);
     incoming.sourceEpoch = ref.sourceEpoch;
+    incoming.sourceGeneration = ref.sourceGeneration;
     incoming.preparedGpu = std::move(preparedGpu);
 
     if (frameSyncEnabled_) {

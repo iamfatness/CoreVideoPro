@@ -50,6 +50,21 @@ epochs from different producer lifetimes must never be ordered. Missing epoch
 fields remain compatible as epoch zero. A changed roster incarnation clears the
 preview until a newer native epoch qualifies it (when epochs are supported).
 
+Zoom roster `sourceGeneration` and native image `sourceEpoch` are independent
+identities. The former identifies the roster incarnation; the latter also changes
+on native texture/resolution replacement. A participant texture additionally carries
+its optional positive `sourceGeneration`, captured with the decoded pixels. Never
+stamp an asynchronous publication with the latest roster generation. The exporter
+first qualifies the published native epoch against the frame carrying that generation.
+
+A fresh texture can arrive before its matching roster fact. The projection stages
+one future-generation descriptor without displaying it; when the matching roster
+arrives, it promotes that descriptor immediately. Clearing it and demanding an
+additional native epoch would indefinitely reject valid subsequent announcements
+until another resize/rejoin. Older-generation descriptors stay rejected even if
+their native epoch is higher. Legacy generation-zero producers keep the existing
+native-epoch fence. Engine/roster lifetime changes reset both identity domains.
+
 Regression coverage exercises stable row identity across removal/reassignment,
 wall changes independent of pixel identity, capture disconnect/reconnect, old
 incarnation rejection, producer reset, and legacy protocol parsing. The native
@@ -57,3 +72,30 @@ GPU exporter regression holds an old consumer key and reads the new incarnation'
 exact pixel from its new handle while checking device reuse. Packaged visual
 acceptance must exercise distinct moving feeds in the actual Sources page;
 projection tests alone cannot establish correct displayed pixels.
+
+
+The opt-in `--verify-inspect-video <report.json>` probe uses an offscreen Sources
+workspace, ten owned 1080p keyed-mutex GPU sources and actual swap-chain readback.
+It checks source switching, idle-UI presentation and changing pixels under a stable
+handle. `--verify-inspect-native <core.exe> <report.json>` exercises native BGRA
+exports and the sibling synthetic Zoom engine's I420 feeds, then the complete
+StudioWorkspace with live model callbacks. It refuses to run without the synthetic
+engine. These processes use isolated logs/in-memory production settings and do not
+connect to the installed core, camera or meeting. Readback is explicit QA only,
+never part of the production presentation loop. Backbuffer pixels and finite motion
+checks do not establish physical display cadence or sustained output acceptance.
+
+
+October 15 diagnostic limits (#916): the generation-order regression failed on
+old projection code and passes with typed pixel-generation qualification. Release
+checks passed 52 focused shell tests, 40 parser tests, 9 preview-health native tests,
+11 GPU exporter tests (inline and isolated), 38 Zoom runtime tests and 5 preview
+demand tests. Offscreen ten-source GPU/native probes observed changing pixels in
+both thumbnail and Inspect with stable handles. A complete StudioWorkspace fixture
+with synthetic Zoom 1080p60 observed 43 distinct sampled pixels in each view over
+6.08 seconds on the local RTX 4090. This is finite pixel-continuity evidence, not
+60fps display validation. It did not reproduce the owner's installed 5–10 second
+thumbnail updates. That symptom remains unresolved; do not close #916 or claim the
+running app is repaired from these probes. A live-shell sample trace did not capture
+a multi-second managed stall. Physical presentation tracing was denied by Windows
+without elevated trace rights; no elevation prompt or installed restart was issued.

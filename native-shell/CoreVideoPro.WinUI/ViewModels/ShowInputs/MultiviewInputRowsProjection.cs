@@ -24,6 +24,7 @@ public sealed class MultiviewInputRowsProjection
     private readonly object _previewGate = new();
     // At most one descriptor per currently assigned source (ten stable rows).
     private readonly Dictionary<string, VideoSurfaceState> _sourcePreviews = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _previewGenerations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ulong> _previewEpochs = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CoreVideoPro.MediaCore.Contracts.SourceInstanceIdentity> _previewInstances = new(StringComparer.Ordinal);
     private readonly HashSet<string> _previewBlockedIds = new(StringComparer.Ordinal);
@@ -90,6 +91,7 @@ public sealed class MultiviewInputRowsProjection
             {
                 _sourcePreviews.Clear();
                 _previewEpochs.Clear();
+                _previewGenerations.Clear();
                 _previewInstances.Clear();
                 _previewBlockedIds.Clear();
                 _previewNeedsNewEpoch.Clear();
@@ -168,6 +170,7 @@ public sealed class MultiviewInputRowsProjection
         {
             _sourcePreviews.Clear();
             _previewEpochs.Clear();
+            _previewGenerations.Clear();
             _previewInstances.Clear();
             _previewBlockedIds.Clear();
             _previewNeedsNewEpoch.Clear();
@@ -216,17 +219,25 @@ public sealed class MultiviewInputRowsProjection
         if (!handle.IsValid) return false;
         lock (_previewGate)
         {
-            if (!_previewConsumerActive || !_previewSourceIds.Contains(sourceId) || _previewBlockedIds.Contains(sourceId) || _engineStopped) return false;
+            if (!_previewConsumerActive || !_previewSourceIds.Contains(sourceId) || _engineStopped) return false;
+            var rosterGeneration = _previewInstances.TryGetValue(sourceId, out var instance) ? instance.Generation : 0;
+            if (texture.SourceGeneration > 0 && texture.SourceGeneration < rosterGeneration) return false;
+            // New pixels may outrun the roster lane. Stage their descriptor, but
+            // PatchPreview cannot expose it until that exact incarnation is accepted.
+            if (_previewBlockedIds.Contains(sourceId) &&
+                !(texture.SourceGeneration > 0 && texture.SourceGeneration > rosterGeneration)) return false;
             _previewEpochs.TryGetValue(sourceId, out var previousEpoch);
+            _previewGenerations.TryGetValue(sourceId, out var previousGeneration);
             if (texture.SourceEpoch < previousEpoch ||
                 (_previewNeedsNewEpoch.Contains(sourceId) && previousEpoch > 0 && texture.SourceEpoch <= previousEpoch)) return false;
             _previewNeedsNewEpoch.Remove(sourceId);
             _previewEpochs[sourceId] = texture.SourceEpoch;
+            _previewGenerations[sourceId] = texture.SourceGeneration;
             if (_sourcePreviews.TryGetValue(sourceId, out var existing) &&
                 existing.PendingSharedHandle is { } previous &&
                 previous.NtHandle == handle.NtHandle && previous.Width == handle.Width &&
                 previous.Height == handle.Height && previous.Format == handle.Format &&
-                previousEpoch == texture.SourceEpoch) return false;
+                previousEpoch == texture.SourceEpoch && previousGeneration == texture.SourceGeneration) return false;
             _sourcePreviews[sourceId] = VideoSurfaceState.Waiting(VideoSurfaceKind.Participant,
                 $"source-thumbnail:{sourceId}", sourceId) with
             {
@@ -267,7 +278,7 @@ public sealed class MultiviewInputRowsProjection
                 else
                 {
                     _previewBlockedIds.Add(currentSourceId);
-                    _sourcePreviews.Remove(currentSourceId);
+                    if (!IsFuturePreview(currentSourceId)) _sourcePreviews.Remove(currentSourceId);
                 }
             }
         if (_previewConsumerActive && !_engineStopped && row.SourceId is { } sourceId &&
@@ -276,7 +287,10 @@ public sealed class MultiviewInputRowsProjection
              sourceId.StartsWith("capture:", StringComparison.Ordinal) && row.StatusLabel == "LIVE" ||
              sourceId.StartsWith("zoom:", StringComparison.Ordinal) &&
                  row.StatusLabel is not ("VIDEO OFF" or "NO INCOMING" or "IDLE")))
-            lock (_previewGate) _sourcePreviews.TryGetValue(sourceId, out surface);
+            lock (_previewGate)
+                if (!_previewGenerations.TryGetValue(sourceId, out var generation) || generation == 0 ||
+                    _previewInstances.TryGetValue(sourceId, out var instance) && instance.Generation == generation)
+                    _sourcePreviews.TryGetValue(sourceId, out surface);
         // Clear before exposing another identity; an unavailable export is a placeholder.
         row.PreviewSurface = surface;
         row.HasPreviewTile = surface is not null;
@@ -285,6 +299,10 @@ public sealed class MultiviewInputRowsProjection
         row.PreviewTally = row.StatusLabel == "VIDEO OFF" ? "none" :
             MultiviewTileCropPolicy.Tally(tile, row.FormatStale);
     }
+
+    // Caller holds _previewGate. An early announcement is not a displayed image.
+    private bool IsFuturePreview(string id) => _previewGenerations.TryGetValue(id, out var generation) && generation > 0 &&
+        (!_previewInstances.TryGetValue(id, out var instance) || generation > instance.Generation);
 
     public void ApplyOutputLifecycleFact(IsoOutputLifecycleFact fact)
     {
@@ -329,11 +347,12 @@ public sealed class MultiviewInputRowsProjection
         {
             _previewSourceIds = Rows.Where(item => item.SourceId is not null)
                 .Select(item => item.SourceId!).ToHashSet(StringComparer.Ordinal);
-            foreach (var retired in _sourcePreviews.Keys.Concat(_previewEpochs.Keys).Concat(_previewBlockedIds).Concat(_previewInstances.Keys).Distinct()
+            foreach (var retired in _sourcePreviews.Keys.Concat(_previewGenerations.Keys).Concat(_previewEpochs.Keys).Concat(_previewBlockedIds).Concat(_previewInstances.Keys).Distinct()
                          .Where(id => !_previewSourceIds.Contains(id)).ToArray())
             {
                 _sourcePreviews.Remove(retired);
                 _previewEpochs.Remove(retired);
+                _previewGenerations.Remove(retired);
                 _previewInstances.Remove(retired);
                 _previewBlockedIds.Remove(retired);
                 _previewNeedsNewEpoch.Remove(retired);
@@ -407,8 +426,17 @@ public sealed class MultiviewInputRowsProjection
                 {
                     if (!_previewInstances.TryGetValue(sourceId, out var applied) || applied != currentInstance)
                     {
-                        _sourcePreviews.Remove(sourceId);
-                        if (_previewEpochs.ContainsKey(sourceId)) _previewNeedsNewEpoch.Add(sourceId);
+                        // The publication may already belong to this new roster
+                        // incarnation. Do not fence it behind an epoch that has
+                        // already arrived: that would wait until another resize/rejoin.
+                        var qualified = _previewGenerations.TryGetValue(sourceId, out var publishedGeneration) &&
+                            publishedGeneration == currentInstance.Generation && publishedGeneration > 0;
+                        if (qualified) _previewNeedsNewEpoch.Remove(sourceId);
+                        else if (!IsFuturePreview(sourceId))
+                        {
+                            _sourcePreviews.Remove(sourceId);
+                            if (_previewEpochs.ContainsKey(sourceId)) _previewNeedsNewEpoch.Add(sourceId);
+                        }
                         _previewInstances[sourceId] = currentInstance;
                     }
                 }
@@ -422,8 +450,11 @@ public sealed class MultiviewInputRowsProjection
             row.StatusLabel = "VIDEO OFF";
             lock (_previewGate)
             {
-                _sourcePreviews.Remove(sourceId);
-                if (_previewEpochs.ContainsKey(sourceId)) _previewNeedsNewEpoch.Add(sourceId);
+                if (!IsFuturePreview(sourceId))
+                {
+                    _sourcePreviews.Remove(sourceId);
+                    if (_previewEpochs.ContainsKey(sourceId)) _previewNeedsNewEpoch.Add(sourceId);
+                }
             }
             ResetFrame(row);
             PatchPreview(row);

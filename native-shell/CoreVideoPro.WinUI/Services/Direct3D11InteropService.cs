@@ -221,6 +221,21 @@ public sealed class Direct3D11InteropService : IDisposable
     private bool _disposed;
     private PresentationPath _path = PresentationPath.Uninitialized;
 
+    internal long PresentedFramesForProbe => _presentCount;
+    // Explicit offscreen QA only. Never used by the production presentation loop.
+    internal uint? ReadPixelForProbe()
+    {
+        if (s_sharedDevice is null || s_sharedContext is null || _backBuffer is null || _presentCount == 0) return null;
+        var desc = _backBuffer.Description;
+        desc.Usage = ResourceUsage.Staging; desc.BindFlags = BindFlags.None;
+        desc.CPUAccessFlags = CpuAccessFlags.Read; desc.MiscFlags = ResourceOptionFlags.None;
+        using var stage = s_sharedDevice.CreateTexture2D(desc);
+        s_sharedContext.CopyResource(stage, _backBuffer);
+        var mapped = s_sharedContext.Map(stage, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+        try { return unchecked((uint)Marshal.ReadInt32(mapped.DataPointer)); }
+        finally { s_sharedContext.Unmap(stage, 0); }
+    }
+
     public event Action? PresentationPathChanged;
 
     // DIAGNOSTIC (preview-freeze): a short label (the host's SurfaceKey) so the present

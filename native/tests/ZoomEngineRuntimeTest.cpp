@@ -861,6 +861,7 @@ struct ZoomEngineRuntimeTestAccess {
     stream.width = width;
     stream.height = height;
     stream.sourceEpoch = 5;
+    stream.sourceGeneration = 3;
     stream.lumaRangeProbed = true;
     runtime.frameSyncEnabled_ = false;
   }
@@ -1059,6 +1060,7 @@ TEST(ZoomEngineRuntime, ActualDecodedArrivalPreparesExactGpuViewWithoutRestampin
   ASSERT_EQ(frames.size(), 1u);
   ASSERT_TRUE(frames.front().preparedGpu);
   EXPECT_EQ(frames.front().sourceEpoch, 5u);
+  EXPECT_EQ(frames.front().sourceGeneration, 3u);
   EXPECT_GT(frames.front().captureTimestamp100ns, 0);
   const auto original = frames.front();
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);

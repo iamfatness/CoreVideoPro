@@ -18,15 +18,16 @@ public partial class App : Application
     private readonly AudioMeterStressProbe? _meterProbe;
     private readonly OperatorSettingsProbe? _settingsProbe;
     private readonly SourceGradeWorkspaceProbe? _gradeProbe;
+    private readonly SourceInspectVideoProbe? _inspectProbe;
 
     public App() : this(null) { }
 
-    internal App(AudioMeterStressProbe? meterProbe, OperatorSettingsProbe? settingsProbe = null, SourceGradeWorkspaceProbe? gradeProbe = null)
+    internal App(AudioMeterStressProbe? meterProbe, OperatorSettingsProbe? settingsProbe = null, SourceGradeWorkspaceProbe? gradeProbe = null, SourceInspectVideoProbe? inspectProbe = null)
     {
-        _meterProbe = meterProbe; _settingsProbe = settingsProbe; _gradeProbe = gradeProbe;
+        _meterProbe = meterProbe; _settingsProbe = settingsProbe; _gradeProbe = gradeProbe; _inspectProbe = inspectProbe;
         InitializeComponent();
         // Isolated probes use real resources without registering app activation.
-        if (_meterProbe is not null || _settingsProbe is not null || _gradeProbe is not null) return;
+        if (_meterProbe is not null || _settingsProbe is not null || _gradeProbe is not null || _inspectProbe is not null) return;
         ApplicationLifecycle.BindActivation(Activation);
         // DIAGNOSTIC (limited to 5 writes so it can't destabilize): the recurring
         // CoreMessagingXP 0xc000027b crash is a cross-thread UI access surfacing as
@@ -73,6 +74,7 @@ public partial class App : Application
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
+        if (_inspectProbe is not null) { await _inspectProbe.RunAsync(); Exit(); return; }
         if (_settingsProbe is not null)
         {
             await _settingsProbe.RunAsync();

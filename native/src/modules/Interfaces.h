@@ -73,6 +73,7 @@ struct VideoFrame {
   // Native capture identity/time, retained across independent representations.
   // Zero means a legacy source whose timeline is stamped at gather.
   uint64_t sourceEpoch = 0;
+  uint64_t sourceGeneration = 0;  // Zoom roster incarnation carried with these pixels.
   int64_t captureTimestamp100ns = 0;
   [[nodiscard]] bool hasGpuPixels() const {
     return gpuPixels && gpuPixels->width > 0 && gpuPixels->height > 0;
@@ -228,6 +229,7 @@ struct ParticipantSharedTexture {
   std::string format = "B8G8R8A8_UNORM";
   int64_t frameNumber = 0;
   uint64_t sourceEpoch = 0;
+  uint64_t sourceGeneration = 0;
 };
 
 // One tile of the core-composited multiview grid. Geometry (x,y,w,h) is
