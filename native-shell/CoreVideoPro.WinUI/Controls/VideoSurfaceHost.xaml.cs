@@ -48,7 +48,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         DependencyProperty.Register(nameof(SourceCropRect), typeof(Rect), typeof(VideoSurfaceHost),
             new PropertyMetadata(new Rect(0, 0, 1, 1), OnSourceFramingChanged));
 
-    private Direct3D11InteropService? _direct3DInterop;
+    private VideoSurfaceRenderPresenter? _renderPresenter;
     private readonly VideoSurfacePresentationLifecycle _presentationLifecycle;
     private nint _direct3DDevicePointer;
     private bool _refreshingPathBindings;
@@ -60,7 +60,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     // interop is a native fail-fast (CoreMessagingXP stowed exception 0xc000027b),
     // so every present entry point early-returns while disposed.
     private bool _disposed;
-    private long _lastTileCropPresentMs;
+    private readonly PresentationCadence _sourceCadence = new();
     private string? _lastPreviewSurfaceKey;
 
     public VideoSurfaceHost()
@@ -107,6 +107,22 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         get => (Rect)GetValue(SourceCropRectProperty);
         set => SetValue(SourceCropRectProperty, value);
     }
+
+    internal long PresentedFramesForProbe => _renderPresenter?.PresentedFrames ?? 0;
+    internal void BeginPresentationProbeInterval() => _renderPresenter?.BeginProbeInterval();
+    internal double MaximumPresentationProbeGapMs => _renderPresenter?.MaximumGapMs ?? 0;
+    internal object? DiagnosticsForProbe => _renderPresenter?.Diagnostics;
+    internal bool IsEffectivelyVisible
+    {
+        get
+        {
+            for (DependencyObject? current = this; current is not null; current = VisualTreeHelper.GetParent(current))
+                if (current is UIElement { Visibility: Visibility.Collapsed }) return false;
+            return XamlRoot?.IsHostVisible == true;
+        }
+    }
+    internal bool PictureVisibleForProbe => SwapChainHost.Visibility == Visibility.Visible;
+    internal uint? ReadPixelForProbe() => _renderPresenter?.ReadPixelForProbe();
 
     public string SurfaceKey => SurfaceState?.SurfaceKey ?? "unknown";
 
@@ -176,12 +192,12 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     public bool HasMediaAssetPreview => !string.IsNullOrWhiteSpace(SurfaceState?.MediaAssetPath);
 
-    public bool IsDirect3DReady => _direct3DInterop?.IsReady == true || _direct3DDevicePointer != 0;
+    public bool IsDirect3DReady => _renderPresenter?.IsReady == true || _direct3DDevicePointer != 0;
 
-    public bool IsGpuPathActive => _direct3DInterop?.IsGpuPresenting == true;
+    public bool IsGpuPathActive => SurfaceState?.PendingSharedHandle is { } handle &&
+        _renderPresenter?.IsPresenting(handle.NtHandle) == true;
 
     public bool IsCpuFallbackActive =>
-        _direct3DInterop?.IsCpuFallback == true ||
         (SurfaceState?.PendingSharedHandle is { IsValid: true } && !IsGpuPathActive && HasPreviewBitmap);
 
     public void UpdateMetadata(VideoFrameMetadata metadata, string statusLine, string? detailLine = null)
@@ -228,7 +244,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     public void SetDirect3DDevice(nint devicePointer)
     {
         _direct3DDevicePointer = devicePointer;
-        if (devicePointer != 0 || _direct3DInterop?.IsReady == true)
+        if (devicePointer != 0 || _renderPresenter?.IsReady == true)
         {
             SwapChainHost.Visibility = Visibility.Visible;
         }
@@ -236,22 +252,27 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     public bool PresentSharedHandle(SharedTextureHandle handle)
     {
-        if (_disposed || !handle.IsValid)
+        if (_disposed || !IsLoaded || !UsesGpuSharedTexture || !handle.IsValid)
         {
             return false;
         }
 
-        if (_direct3DInterop?.TryPresentSharedTexture(handle) == true)
+        if (_renderPresenter is null || _renderPresenter.HandleKey != handle.NtHandle || _renderPresenter.SourceKey != SurfaceKey)
+        {
+            RetireRenderPresenter();
+            _renderPresenter = new VideoSurfaceRenderPresenter(SwapChainHost, SurfaceKey, handle.NtHandle);
+            _renderPresenter.Changed += OnRenderPresenterChanged;
+        }
+        _renderPresenter.Submit(handle, SourceFit == "tile-crop");
+        if (IsGpuPathActive)
         {
             SwapChainHost.Visibility = Visibility.Visible;
             PreviewImage.Visibility = Visibility.Collapsed;
             PlaceholderPanel.Visibility = Visibility.Collapsed;
-            RefreshPathBindings();
             return true;
         }
 
         UpdatePreviewBitmap();
-        RefreshPathBindings();
         return false;
     }
 
@@ -321,31 +342,37 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private bool AttachGpuPresenter()
     {
-        // Unloaded controls may be loaded again. Never reuse a disposed interop.
-        _direct3DInterop = new Direct3D11InteropService();
-        _direct3DInterop.FillPanelForTileCrop = SourceFit == "tile-crop";
-        _direct3DInterop.PresentationPathChanged += OnPresentationPathChanged;
-        if (_direct3DInterop.TryAttachSwapChainPanel(SwapChainHost))
+        // Native render work and device retirement run on persistent workers.
+        // XAML publishes geometry/handles and attaches an AddRef'd chain only.
+        TryPresentPendingSharedHandle();
+        if (!_renderingHooked)
         {
-            _direct3DInterop.Label = SurfaceKey;
-            _direct3DDevicePointer = _direct3DInterop.DevicePointer;
-            SetDirect3DDevice(_direct3DDevicePointer);
-            TryPresentPendingSharedHandle();
-            RefreshPathBindings();
-
-            // Present the GPU program every vsync from the latest shared handle.
-            // The core updates the shared texture's content at ~60fps; re-presenting
-            // it on the composition tick shows that content smoothly without routing
-            // a UI refresh through the (heavy) surface-binding rebuild per frame.
-            if (!_renderingHooked)
-            {
-                Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += OnCompositionRendering;
-                _renderingHooked = true;
-            }
-            return true;
+            Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += OnCompositionRendering;
+            _renderingHooked = true;
         }
-        DetachGpuPresenter();
-        return false;
+        RefreshPathBindings();
+        return true;
+    }
+
+    private void RetireRenderPresenter()
+    {
+        if (_renderPresenter is not { } presenter) return;
+        _renderPresenter = null;
+        presenter.Changed -= OnRenderPresenterChanged;
+        presenter.Dispose();
+    }
+
+    private void OnRenderPresenterChanged()
+    {
+        if (_disposed) return;
+        if (IsGpuPathActive)
+        {
+            SwapChainHost.Visibility = Visibility.Visible;
+            PreviewImage.Visibility = Visibility.Collapsed;
+            PlaceholderPanel.Visibility = Visibility.Collapsed;
+        }
+        else UpdatePreviewBitmap();
+        RefreshPathBindings();
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -363,12 +390,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
             Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= OnCompositionRendering;
             _renderingHooked = false;
         }
-        if (_direct3DInterop is { } interop)
-        {
-            _direct3DInterop = null;
-            interop.PresentationPathChanged -= OnPresentationPathChanged;
-            interop.Dispose();
-        }
+        RetireRenderPresenter();
         _direct3DDevicePointer = 0;
     }
 
@@ -387,11 +409,11 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         RefreshSourceFraming();
     }
 
-    private void OnPresentationPathChanged() =>
-        UiDispatch.Run(DispatcherQueue, RefreshPathBindings, "VideoSurfaceHost.RefreshPathBindings");
-
     private void TryPresentPendingSharedHandle()
     {
+        // Visibility on this control alone misses a collapsed page ancestor.
+        // Hidden composites must not spend presentation credits or copy pixels.
+        if (!IsLoaded || ActualWidth <= 0 || ActualHeight <= 0 || !IsEffectivelyVisible) return;
         // Sources inspectors have ten stable full-source hosts. Keep hidden cells
         // off the D3D path and cap thumbnail presentation at 30 Hz. Duplicate
         // source views share one keyed-mutex ingest across all hosts.
@@ -399,9 +421,8 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         {
             if (Visibility != Visibility.Visible || ActualWidth <= 0 || ActualHeight <= 0)
                 return;
-            var now = Environment.TickCount64;
-            if (now - _lastTileCropPresentMs < 33) return;
-            _lastTileCropPresentMs = now;
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (!_sourceCadence.ShouldSubmit(now, System.Diagnostics.Stopwatch.Frequency, 30)) return;
         }
         if (_disposed || !UsesGpuSharedTexture || SurfaceState?.PendingSharedHandle is not { IsValid: true } handle)
         {

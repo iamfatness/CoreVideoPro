@@ -24,7 +24,7 @@ public sealed partial class SourcesWorkspaceControl
         var grade = Button("Grade…", () => Grade(State.SelectedInput)); grade.Name = "InspectorGradeSource"; Bind(grade, FrameworkElement.TagProperty, State, "SelectedInput.SourceColorGradeId");
         Bind(grade, Microsoft.UI.Xaml.Controls.Control.IsEnabledProperty, State, "SelectedInput.IsAssigned"); headingActions.Children.Add(grade);
         headingActions.Children.Add(Button("Close inspector", () => State.InspectorOpen = false)); panel.Children.Add(headingActions);
-        var surface = new VideoSurfaceHost { SourceFit = "fit", Height = 180, IsHitTestVisible = false };
+        var surface = new VideoSurfaceHost { Name = "InspectorSourcePreview", SourceFit = "fit", Height = 180, IsHitTestVisible = false };
         Bind(surface, VideoSurfaceHost.SurfaceStateProperty, State, "SelectedInput.Inspector.PreviewSurface");
         surface.SetBinding(UIElement.VisibilityProperty, new Binding {Source=State,Path=new PropertyPath("SelectedInput.Inspector.HasPreviewTile"),Converter=new Converters.BoolToVisibilityConverter()});
         panel.Children.Add(new Border { Child = surface, Background = Brush(11, 20, 27), CornerRadius = new(5) });

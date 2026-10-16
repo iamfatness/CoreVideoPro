@@ -447,6 +447,35 @@ public sealed class ShowInputsCoordinatorTests
     }
 
     [Fact]
+    public void NewTextureBeforeRosterDoesNotWaitForAnotherSourceEpoch()
+    {
+        var bridge = new FakeMediaCoreBridge(); var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        using var interest = new PreviewInterestScope(coordinator);
+        using (ShowInputWriteScope.Enter("test"))
+        { host.ShowInputs[0].Kind = ShowInputKind.ZoomParticipant; host.ShowInputs[0].ParticipantId = "guest"; host.ShowInputs[0].InShow = true; }
+        void Roster(long revision, long generation) => bridge.EmitRoster(new NativeMediaCoreStateSnapshot
+        { MeetingState = "in_meeting", RosterEpoch = "run:1", RosterRevision = revision,
+          Participants = [new RawParticipantEvent { UserId = "guest", DisplayName = "Guest", VideoOn = true, SourceGeneration = generation }] });
+        ParticipantSharedTexture Frame(string handle, ulong epoch, long generation) => new()
+        { ParticipantId = "guest", SharedHandleHex = handle, Width = 1920, Height = 1080, SourceEpoch = epoch, SourceGeneration = generation };
+        Roster(1, 1); bridge.EmitTexture(Frame("0x123400", 10, 1));
+        Assert.NotNull(coordinator.MultiviewInputRows.Rows[0].PreviewSurface);
+        bridge.EmitTexture(Frame("0x223400", 11, 2)); // Real pixel event outruns metadata delivery.
+        Assert.Null(coordinator.MultiviewInputRows.Rows[0].PreviewSurface); // Future pixels stay quarantined.
+        Roster(2, 2);
+        for (var i = 0; i < 100; i++) bridge.EmitTexture(Frame("0x223400", 11, 2));
+        Assert.Equal(0x223400UL, coordinator.MultiviewInputRows.Rows[0].PreviewSurface?.PendingSharedHandle?.NtHandle);
+        bridge.EmitTexture(Frame("0x323400", 12, 1)); // A higher native epoch cannot qualify old roster pixels.
+        Assert.Equal(0x223400UL, coordinator.MultiviewInputRows.Rows[0].PreviewSurface?.PendingSharedHandle?.NtHandle);
+        Roster(3, 3); // Roster first must also recover on the first matching descriptor.
+        Assert.Null(coordinator.MultiviewInputRows.Rows[0].PreviewSurface);
+        bridge.EmitTexture(Frame("0x423400", 13, 3));
+        Assert.Equal(0x423400UL, coordinator.MultiviewInputRows.Rows[0].PreviewSurface?.PendingSharedHandle?.NtHandle);
+        Assert.Equal(0, bridge.SyncCalls);
+    }
+
+    [Fact]
     public void SourceEpochFenceRejectsOldDescriptorsButResetsWithCoreLifetimeAndSupportsLegacy()
     {
         var bridge = new FakeMediaCoreBridge();

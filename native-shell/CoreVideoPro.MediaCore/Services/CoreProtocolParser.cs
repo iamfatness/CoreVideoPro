@@ -253,6 +253,7 @@ public static class CoreProtocolParser
                 {
                     ParticipantId = participantId,
                     SourceEpoch = root.TryGetProperty("sourceEpoch", out var sourceEpoch) && sourceEpoch.TryGetUInt64(out var epoch) ? epoch : 0,
+                    SourceGeneration = root.TryGetProperty("sourceGeneration", out var generationValue) && generationValue.ValueKind == JsonValueKind.Number && generationValue.TryGetInt64(out var generation) && generation > 0 ? generation : 0,
                     SharedHandleHex = texture.SharedHandleHex,
                     Width = texture.Width,
                     Height = texture.Height,
