@@ -1,5 +1,9 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 16:** implement [#922](https://github.com/iamfatness/CoreVideoPro/issues/922)
+validated RTMP/SRT destination control actions using isolated API tests. Preserve
+the installed app, meeting and production preferences; no restart or installation.
+
 **Owner direction, October 15:** diagnose and fix #916 source video delay in
 Inspect using API/offscreen validation; preserve the running installed app.
 
@@ -172,6 +176,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner current — October 16 | B | [#922](https://github.com/iamfatness/CoreVideoPro/issues/922) | Add validated, persisted RTMP/SRT control actions with no restart, secret echo, automatic stream start or change to an active output. |
 | Owner current — October 15 | B | [#916](https://github.com/iamfatness/CoreVideoPro/issues/916) | Diagnose select-to-first-present latency, reproduce the exact cause and fix it with API/offscreen evidence; keep the installed app/session untouched. |
 | 1 — October 15 UI/UX | B | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Finish stable-input scene creation and layout fallbacks, quick solo/two-person/share starters, preserved custom routes and fresh/upgraded profile evidence. |
 | 2 — October 15 UI/UX | B | [#590](https://github.com/iamfatness/CoreVideoPro/issues/590), [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) | Sources assignment/offline clarity and identity-safe thumbnail removal/reassignment acceptance. Count one primary development issue per focused PR. |

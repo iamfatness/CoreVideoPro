@@ -9938,6 +9938,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async void OnStreamOutputOptionChanged()
     {
+        if (_applyingStreamDestination) return;
         OnPropertyChanged(nameof(StreamDestinationSummary));
         OnPropertyChanged(nameof(StreamConfigurationSummary));
         OnPropertyChanged(nameof(StreamRtmpSummary));
