@@ -21,17 +21,17 @@ namespace CoreVideoPro.WinUI.Services;
 /// DXGI shared texture (producer acquires key 0 / writes / releases key 1; consumer
 /// acquires key 1 / copies / releases key 0 — a strict ping-pong that serves ONE
 /// consumer). When the SAME source is routed to two monitors (e.g. preview AND program),
-/// two hosts open the SAME NtHandle. Because all presents run serialized on the UI thread
-/// (CompositionTarget.Rendering), the first host to present each vsync always wins the
+/// two hosts open the SAME NtHandle. If they acquire independently, the first
+/// host to present each vsync always wins the
 /// key-1 acquire and the other host's non-blocking acquire perpetually fails -> it freezes.
 ///
 /// To make BOTH present smoothly we decouple keyed-mutex *acquisition* from *presentation*:
-/// a process-wide per-handle <see cref="HandleIngest"/> broker (on a single shared device)
+/// a per-handle <see cref="HandleIngest"/> broker on the handle's owning device
 /// acquires the producer's keyed mutex at most once per produced frame, copies the shared
 /// texture into a device-private "latest frame" texture, and releases the key immediately.
 /// Every host then presents from that private copy (a same-device CopyResource), so there is
 /// exactly ONE keyed-mutex consumer regardless of how many hosts show the source. All host
-/// swap chains live on the one shared device so the private->backbuffer copy is in-device.
+/// aliases are assigned to the same render group so copies stay on one device.
 /// </summary>
 public sealed class Direct3D11InteropService : IDisposable
 {
@@ -49,15 +49,47 @@ public sealed class Direct3D11InteropService : IDisposable
     // creation sees a stable state.
     private static readonly object CreationGate = new();
 
-    // The ONE D3D device shared by every interop instance. A single process-wide device
+    // Legacy/test calls retain the default group. Persistent render threads
+    // own separate groups: immediate-context and DXGI calls never
+    // run concurrently on the same device, including during resource retirement.
+    private sealed class DeviceGroup
+    {
+        public ID3D11Device? s_sharedDevice;
+        public ID3D11DeviceContext? s_sharedContext;
+        public IDirect3DDevice? s_sharedWinrtDevice;
+        public nint s_sharedDevicePointer;
+        public long s_deviceGeneration;
+        public DeviceLossPolicy.DeviceRecoveryPolicy s_recoveryPolicy = new();
+        public long s_deviceRetryAfterMs;
+        public bool s_recoveryAbandoned;
+        public int s_deviceLossCount;
+        public int s_deviceRecreateCount;
+        public int s_lastRemovedReason;
+        public string? s_lastLossUtc;
+        public string? s_lastRecoveryUtc;
+        public Dictionary<ulong, HandleIngest> s_ingests = new();
+    }
+    private static readonly DeviceGroup UiDeviceGroup = new();
+    private static readonly List<DeviceGroup> DeviceGroups = new() { UiDeviceGroup };
+    [ThreadStatic] private static DeviceGroup? t_workerDeviceGroup;
+    private static DeviceGroup CurrentDeviceGroup => t_workerDeviceGroup ?? UiDeviceGroup;
+    internal static void InitializeRenderThread()
+    {
+        var group = new DeviceGroup();
+        lock (CreationGate) DeviceGroups.Add(group);
+        t_workerDeviceGroup = group;
+    }
+
+
+    // One persistent device per render group, shared by its interop instances. It
     // (a) lets the per-handle ingest broker copy its private "latest frame" texture into any
     // host's swap-chain back buffer (same-device CopyResource), and (b) removes the per-host
     // device churn on tile load/unload that is itself a fail-fast vector. Created once and
     // kept for the app lifetime (never torn down per host) — device churn destabilizes WinUI.
-    private static ID3D11Device? s_sharedDevice;
-    private static ID3D11DeviceContext? s_sharedContext;
-    private static IDirect3DDevice? s_sharedWinrtDevice;
-    private static nint s_sharedDevicePointer;
+    private static ref ID3D11Device? s_sharedDevice => ref CurrentDeviceGroup.s_sharedDevice;
+    private static ref ID3D11DeviceContext? s_sharedContext => ref CurrentDeviceGroup.s_sharedContext;
+    private static ref IDirect3DDevice? s_sharedWinrtDevice => ref CurrentDeviceGroup.s_sharedWinrtDevice;
+    private static ref nint s_sharedDevicePointer => ref CurrentDeviceGroup.s_sharedDevicePointer;
 
     // ---- Device-loss retirement (beta slice, 2026-09-09) --------------------------------
     // The shared device can DIE under us: a TDR, a driver upgrade mid-show, a hardware
@@ -71,26 +103,26 @@ public sealed class Direct3D11InteropService : IDisposable
     // resurrect a retired device (RetireDevice is a no-op for a generation that is already
     // retired) and cannot make a stale host believe it is current.
     //
-    // THREADING: every present runs on the UI thread (VideoSurfaceHost hooks
-    // CompositionTarget.Rendering), and retirement only ever runs from a present or an
-    // attach — so retirement is serialized against presents by the UI thread itself, and
+    // THREADING: each group's present, copy, readback, resize and retirement run
+    // on its owning persistent render thread. Retirement is serialized against
+    // presents by that thread, and
     // against creation by CreationGate. Recreation is NOT done inline at loss time: the
     // failing frame drops to CPU fallback immediately and the next composition tick past the
     // backoff deadline creates the device. That keeps the UI thread free of a device-create
     // stall on the same frame that already failed.
-    private static long s_deviceGeneration;
-    private static readonly DeviceLossPolicy.DeviceRecoveryPolicy s_recoveryPolicy = new();
-    private static long s_deviceRetryAfterMs;
-    private static bool s_recoveryAbandoned;
+    private static ref long s_deviceGeneration => ref CurrentDeviceGroup.s_deviceGeneration;
+    private static ref DeviceLossPolicy.DeviceRecoveryPolicy s_recoveryPolicy => ref CurrentDeviceGroup.s_recoveryPolicy;
+    private static ref long s_deviceRetryAfterMs => ref CurrentDeviceGroup.s_deviceRetryAfterMs;
+    private static ref bool s_recoveryAbandoned => ref CurrentDeviceGroup.s_recoveryAbandoned;
 
     // Observability: what a tester's support bundle must be able to answer — did device loss
     // happen, how many times, what was the removed reason, did recovery work. Mirrored into
     // launch.log (which SupportBundleArchiveBuilder already collects) on every transition.
-    private static int s_deviceLossCount;
-    private static int s_deviceRecreateCount;
-    private static int s_lastRemovedReason;
-    private static string? s_lastLossUtc;
-    private static string? s_lastRecoveryUtc;
+    private static ref int s_deviceLossCount => ref CurrentDeviceGroup.s_deviceLossCount;
+    private static ref int s_deviceRecreateCount => ref CurrentDeviceGroup.s_deviceRecreateCount;
+    private static ref int s_lastRemovedReason => ref CurrentDeviceGroup.s_lastRemovedReason;
+    private static ref string? s_lastLossUtc => ref CurrentDeviceGroup.s_lastLossUtc;
+    private static ref string? s_lastRecoveryUtc => ref CurrentDeviceGroup.s_lastRecoveryUtc;
 
     /// <summary>Process-wide device-loss history, for logs/telemetry/support escalation.</summary>
     internal readonly record struct DeviceLossReport(
@@ -107,15 +139,19 @@ public sealed class Direct3D11InteropService : IDisposable
     {
         lock (CreationGate)
         {
+            // UI diagnostics include the render groups; a worker's local log
+            // still reports the generation it actually owns.
+            IEnumerable<DeviceGroup> groups = t_workerDeviceGroup is { } local ? new[] { local } : DeviceGroups;
+            var list = groups.ToArray();
+            var latestLoss = list.OrderByDescending(group => group.s_lastLossUtc, StringComparer.Ordinal).First();
             return new DeviceLossReport(
-                s_deviceGeneration,
-                s_deviceLossCount,
-                s_deviceRecreateCount,
-                s_lastRemovedReason,
-                s_lastLossUtc,
-                s_lastRecoveryUtc,
-                s_recoveryPolicy.ConsecutiveFailures,
-                s_recoveryAbandoned);
+                list.Max(group => group.s_deviceGeneration),
+                list.Sum(group => group.s_deviceLossCount),
+                list.Sum(group => group.s_deviceRecreateCount), latestLoss.s_lastRemovedReason,
+                latestLoss.s_lastLossUtc,
+                list.Select(group => group.s_lastRecoveryUtc).OrderByDescending(time => time, StringComparer.Ordinal).First(),
+                list.Max(group => group.s_recoveryPolicy.ConsecutiveFailures),
+                list.Any(group => group.s_recoveryAbandoned));
         }
     }
 
@@ -133,6 +169,8 @@ public sealed class Direct3D11InteropService : IDisposable
     /// restores process-wide state between cases).</summary>
     internal static void ResetDeviceRecoveryBudget()
     {
+        // Never have XAML mutate a worker's recovery state or wait for it.
+        if (t_workerDeviceGroup is null) VideoSurfaceRenderPresenter.ResetWorkerRecoveryBudgets();
         lock (CreationGate)
         {
             s_recoveryPolicy.Reset();
@@ -157,7 +195,7 @@ public sealed class Direct3D11InteropService : IDisposable
         public int RefCount;
     }
 
-    private static readonly Dictionary<ulong, HandleIngest> s_ingests = new();
+    private static ref Dictionary<ulong, HandleIngest> s_ingests => ref CurrentDeviceGroup.s_ingests;
 
     // After an EnsureSwapChain failure under resource pressure, don't retry every vsync
     // (~60x/s) — that churn is itself a crash vector. Back off and stay on the CPU
@@ -184,6 +222,30 @@ public sealed class Direct3D11InteropService : IDisposable
     private long _probeNotReady;
     private ID3D11Texture2D? _backBuffer;
     private SwapChainPanel? _panel;
+    private Action<IDXGISwapChain1, long>? _workerChainCreated;
+    private long _chainRevision;
+    internal long ChainRevision => _chainRevision;
+    internal ulong LastPresentedHandle => _lastPresentedHandle;
+    internal void AttachWorkerPresenter(Action<IDXGISwapChain1, long> chainCreated)
+    {
+        _workerChainCreated = chainCreated;
+    }
+    private double _workerPanelWidth, _workerPanelHeight;
+    internal void UpdateWorkerPanelSize(double width, double height, bool fillPanel)
+    {
+        if (_workerPanelWidth == width && _workerPanelHeight == height && FillPanelForTileCrop == fillPanel) return;
+        _workerPanelWidth = width; _workerPanelHeight = height;
+        _panelWidth = (int)Math.Ceiling(width); _panelHeight = (int)Math.Ceiling(height);
+        FillPanelForTileCrop = fillPanel;
+        ApplyPanelTransform();
+    }
+    internal void RejectWorkerChain(long revision)
+    {
+        if (revision != _chainRevision) return;
+        ResetSwapChain();
+        _swapChainRetryAfterMs = Environment.TickCount64 + SwapChainRetryCooldownMs;
+        SetPresentationPath(PresentationPath.CpuFallback);
+    }
     private int _surfaceWidth;
     private int _surfaceHeight;
     private int _panelWidth;
@@ -226,6 +288,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
     internal long PresentedFramesForProbe => _presentCount;
     internal static bool CollectProbeCounters { get; set; }
+    internal static int PresentDelayForProbeMs;
     private long _probeAttempts, _probePresentBusy;
     private long _probeLastCommit;
     private double _probeMaxGapMs;
@@ -456,7 +519,13 @@ public sealed class Direct3D11InteropService : IDisposable
                 PresentationFaultInjection.BeforePresent();
             }
             var presentStarted = CollectProbeCounters ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-            var result = _swapChain.Present(1, PresentFlags.DoNotWait);
+            if (CollectProbeCounters && System.Threading.Volatile.Read(ref PresentDelayForProbeMs) is var delay && delay > 0)
+                System.Threading.Thread.Sleep(delay);
+            // Source monitors show the latest available frame through DWM;
+            // they must not independently wait for eleven vsync intervals.
+            // Output monitors retain their established sync interval.
+            var result = _swapChain.Present(VideoSurfacePresentationRules.IsSourceThumbnail(Label) ? 0u : 1u,
+                PresentFlags.DoNotWait);
             if (CollectProbeCounters)
             {
                 var presentMs = System.Diagnostics.Stopwatch.GetElapsedTime(presentStarted).TotalMilliseconds;
@@ -835,13 +904,13 @@ public sealed class Direct3D11InteropService : IDisposable
     // fits without distortion.
     private void ApplyPanelTransform()
     {
-        if (_panel is null || _swapChain is null || _surfaceWidth <= 0 || _surfaceHeight <= 0)
+        if ((_panel is null && _workerChainCreated is null) || _swapChain is null || _surfaceWidth <= 0 || _surfaceHeight <= 0)
         {
             return;
         }
 
-        var panelWidth = _panel.ActualWidth;
-        var panelHeight = _panel.ActualHeight;
+        var panelWidth = _panel?.ActualWidth ?? _workerPanelWidth;
+        var panelHeight = _panel?.ActualHeight ?? _workerPanelHeight;
         if (panelWidth <= 0 || panelHeight <= 0)
         {
             return;
@@ -1072,7 +1141,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private bool EnsureSwapChain(int width = 0, int height = 0)
     {
-        if (_disposed || _panel is null || s_sharedDevice is null)
+        if (_disposed || (_panel is null && _workerChainCreated is null) || s_sharedDevice is null)
         {
             return false;
         }
@@ -1085,16 +1154,16 @@ public sealed class Direct3D11InteropService : IDisposable
             return false;
         }
 
-        var targetWidth = width > 0 ? width : Math.Max(1, (int)Math.Ceiling(_panel.ActualWidth));
-        var targetHeight = height > 0 ? height : Math.Max(1, (int)Math.Ceiling(_panel.ActualHeight));
+        var targetWidth = width > 0 ? width : Math.Max(1, (int)Math.Ceiling(_panel?.ActualWidth ?? _panelWidth));
+        var targetHeight = height > 0 ? height : Math.Max(1, (int)Math.Ceiling(_panel?.ActualHeight ?? _panelHeight));
         if (targetWidth <= 1 || targetHeight <= 1)
         {
             targetWidth = 1280;
             targetHeight = 720;
         }
 
-        _panelWidth = Math.Max(1, (int)Math.Ceiling(_panel.ActualWidth));
-        _panelHeight = Math.Max(1, (int)Math.Ceiling(_panel.ActualHeight));
+        _panelWidth = Math.Max(1, (int)Math.Ceiling(_panel?.ActualWidth ?? _panelWidth));
+        _panelHeight = Math.Max(1, (int)Math.Ceiling(_panel?.ActualHeight ?? _panelHeight));
 
         if (_swapChain is not null && _surfaceWidth == targetWidth && _surfaceHeight == targetHeight)
         {
@@ -1151,7 +1220,7 @@ public sealed class Direct3D11InteropService : IDisposable
                     latency.MaximumFrameLatency = 1;
                     _frameReady = latency.FrameLatencyWaitableObject;
                 }
-                if (!SwapChainPanelNativeInterop.TrySetSwapChain(_panel, _swapChain.NativePointer, out var attachFailure))
+                if (_panel is not null && !SwapChainPanelNativeInterop.TrySetSwapChain(_panel, _swapChain.NativePointer, out var attachFailure))
                 {
                     LaunchLog.Write($"d3d: panel attach failed: {attachFailure}");
                     ResetSwapChain();
@@ -1165,6 +1234,9 @@ public sealed class Direct3D11InteropService : IDisposable
                 _surfaceHeight = targetHeight;
                 _swapChainRetryAfterMs = 0;
                 ApplyPanelTransform();
+                // This callback transfers an AddRef, not a borrowed pointer.
+                // The UI attaches it asynchronously without waiting for DXGI.
+                _workerChainCreated?.Invoke(_swapChain.QueryInterface<IDXGISwapChain1>(), _chainRevision);
                 return true;
             }
         }
@@ -1179,6 +1251,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private void ResetSwapChain()
     {
+        _chainRevision++;
         // COM RCW disposes can throw E_NOINTERFACE during teardown — never let that
         // escape (it fail-fasts the app when a tile/host unloads). The shared device,
         // shared context and per-handle ingests are process-wide and NOT touched here.

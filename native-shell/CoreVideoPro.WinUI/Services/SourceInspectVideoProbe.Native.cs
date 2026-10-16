@@ -172,7 +172,16 @@ internal sealed partial class SourceInspectVideoProbe
             var allHosts = Descendants(root).OfType<VideoSurfaceHost>().ToArray();
             var initialCounts = allHosts.Select(h => h.PresentedFramesForProbe).ToArray();
             foreach (var host in allHosts) host.BeginPresentationProbeInterval();
-            await Task.Delay(6000); // No readback, layout call or QA UI update.
+            var uiGaps = new List<double>();
+            var uiTick = Stopwatch.GetTimestamp();
+            var heartbeat = window.DispatcherQueue.CreateTimer();
+            heartbeat.Interval = TimeSpan.FromMilliseconds(10); heartbeat.IsRepeating = true;
+            heartbeat.Tick += (_, _) => { uiGaps.Add(Stopwatch.GetElapsedTime(uiTick).TotalMilliseconds); uiTick = Stopwatch.GetTimestamp(); };
+            heartbeat.Start();
+            await Task.Delay(6000); // No readback or layout calls; heartbeat records UI dispatch only.
+            heartbeat.Stop();
+            samples.Add(new { phase = "UI dispatch under normal presentation", callbacks = uiGaps.Count,
+                maximumGapMs = uiGaps.DefaultIfEmpty().Max() });
             var quietInspectFrames = fullInspector.PresentedFramesForProbe - quietInspect;
             var quietThumbnailFrames = fullThumbnail.PresentedFramesForProbe - quietThumbnail;
             samples.Add(new { phase = "complete shell without QA readback", durationMs = 6000,
@@ -185,20 +194,44 @@ internal sealed partial class SourceInspectVideoProbe
             samples.Add(new { phase = "every host presentation", hosts = hostResults });
             if (hostResults.Any(h => !h.visible && h.frames != 0))
                 throw new InvalidOperationException("A hidden video host continued presenting");
-            if (hostResults.Any(h => h.visible && h.key.StartsWith("source-thumbnail:") && h.frames < 20))
-                throw new InvalidOperationException("At least one visible source row was starved");
-            if (hostResults.Any(h => h.visible && h.key.StartsWith("source-thumbnail:") && h.maxGapMs > 1000))
-                throw new InvalidOperationException("A visible source monitor had a presentation gap exceeding one second");
+            if (hostResults.Any(h => h.visible && h.key.StartsWith("source-thumbnail:") && h.frames < 150))
+                throw new InvalidOperationException("At least one visible source monitor was below 25 updates/second");
+            if (hostResults.Any(h => h.visible && h.key.StartsWith("source-thumbnail:") && h.maxGapMs > 250))
+                throw new InvalidOperationException("A visible source monitor had a presentation gap exceeding 250 ms");
             if (quietInspectFrames < 60 || quietThumbnailFrames < 60)
                 throw new InvalidOperationException("Complete shell stalled without QA readback");
             if (!completeMotionQualified)
                 throw new InvalidOperationException("Complete shell did not present continuous changing pixels in both views (later phases retained for diagnosis)");
             if (!syntheticMotionQualified)
                 throw new InvalidOperationException("Synthetic Zoom did not present continuous changing pixels in both views (later phases retained for diagnosis)");
+
+            // Deliberately block each native Present for 30ms. XAML must not
+            // inherit eleven sequential waits, even while source video is live.
+            uiGaps.Clear(); uiTick = Stopwatch.GetTimestamp(); heartbeat.Start();
+            Volatile.Write(ref Direct3D11InteropService.PresentDelayForProbeMs, 30);
+            try { await Task.Delay(2200); }
+            finally { Volatile.Write(ref Direct3D11InteropService.PresentDelayForProbeMs, 0); heartbeat.Stop(); }
+            var delayedUiGap = uiGaps.DefaultIfEmpty().Max();
+            samples.Add(new { phase = "UI dispatch with 30ms per-Present driver delay", callbacks = uiGaps.Count,
+                maximumGapMs = delayedUiGap });
+            if (uiGaps.Count < 50 || delayedUiGap > 150)
+                throw new InvalidOperationException("Driver stalls blocked the UI dispatcher");
+
+            root.Visibility = Visibility.Collapsed;
+            await Task.Delay(500); // Let already submitted work retire.
+            var hiddenCounts = allHosts.Select(h => h.PresentedFramesForProbe).ToArray();
+            await Task.Delay(800);
+            if (allHosts.Where((h, i) => h.PresentedFramesForProbe != hiddenCounts[i]).Any())
+                throw new InvalidOperationException("Hidden page continued submitting GPU work");
+            root.Visibility = Visibility.Visible;
+            await Until(() => allHosts.Where(h => h.IsEffectivelyVisible && h.SurfaceKey.StartsWith("source-thumbnail:"))
+                .All(h => h.PresentedFramesForProbe > hiddenCounts[Array.IndexOf(allHosts, h)] + 2), 3000);
+            samples.Add(new { phase = "hide and restore", passed = true });
         }
         catch (Exception ex) { error = ex.ToString(); }
         finally
         {
+            Volatile.Write(ref Direct3D11InteropService.PresentDelayForProbeMs, 0);
             stop.Cancel(); await publisher;
             if (fullStudio is not null) await fullStudio.DisposeAsync();
             var retiringRoot = window.Content as FrameworkElement;

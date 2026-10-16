@@ -84,10 +84,18 @@ internal sealed partial class SourceInspectVideoProbe(string reportPath, string?
         {
             var slot = studio.ShowInputEditors[0];
             var workspace = new SourcesWorkspaceControl(new Columns()) { Studio = studio };
-            window.Content = new Microsoft.UI.Xaml.Controls.ScrollViewer { Content = workspace,
+            var previewAlias = new VideoSurfaceHost { Width = 160, Height = 90,
+                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
+                SurfaceState = VideoSurfaceState.Waiting(VideoSurfaceKind.Preview, "preview", "Alias") with
+                    { PendingSharedHandle = red.Handle, NaturalSourceWidth = 1920, NaturalSourceHeight = 1080 } };
+            var container = new Microsoft.UI.Xaml.Controls.Grid();
+            container.Children.Add(new Microsoft.UI.Xaml.Controls.ScrollViewer { Content = workspace,
                 HorizontalScrollBarVisibility = Microsoft.UI.Xaml.Controls.ScrollBarVisibility.Disabled,
-                VerticalScrollBarVisibility = Microsoft.UI.Xaml.Controls.ScrollBarVisibility.Auto }; window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, 1600, 950)); window.AppWindow.Show(false);
+                VerticalScrollBarVisibility = Microsoft.UI.Xaml.Controls.ScrollBarVisibility.Auto });
+            container.Children.Add(previewAlias); window.Content = container;
+            window.AppWindow.MoveAndResize(new RectInt32(-20000, -20000, 1600, 950)); window.AppWindow.Show(false);
             await Until(() => workspace.IsLoaded, 3000);
+            await Until(() => previewAlias.ReadPixelForProbe() == 0xffff0000u, 3000);
             var inspector = Descendants(workspace).OfType<VideoSurfaceHost>().Single(host => host.Name == "InspectorSourcePreview");
             VideoSurfaceState State(string id, SharedTextureHandle handle) => VideoSurfaceState.Waiting(VideoSurfaceKind.Participant, "source-thumbnail:" + id, id) with { PendingSharedHandle = handle, NaturalSourceWidth = 1920, NaturalSourceHeight = 1080 };
             var a = State("probe-red", red.Handle); var b = State("probe-green", green.Handle);
@@ -126,7 +134,7 @@ internal sealed partial class SourceInspectVideoProbe(string reportPath, string?
                 var blue = i % 2 == 0;
                 Volatile.Write(ref redIsBlue, blue ? 1 : 0); // No binding, roster or format event.
                 var expected = blue ? 0xff0000ffu : 0xffff0000u;
-                await Until(() => inspector.PictureVisibleForProbe && inspector.ReadPixelForProbe() == expected, 1500);
+                await Until(() => inspector.PictureVisibleForProbe && inspector.ReadPixelForProbe() == expected && previewAlias.ReadPixelForProbe() == expected, 1500);
                 samples.Add(new { continuity = "stable handle changing pixels", trial = i,
                     pixelChangeMs = moving.Elapsed.TotalMilliseconds, framesAdvanced = inspector.PresentedFramesForProbe - startCount });
                 await Task.Delay(100);

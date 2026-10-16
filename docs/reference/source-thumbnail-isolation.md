@@ -16,7 +16,7 @@ stable operator rows. Multiple slots for one source share its descriptor.
 `VideoSurfaceHost` uses the GPU path for the `source-thumbnail:` namespace,
 keeps thumbnail presentation capped at 30 Hz, hides an old identity's backbuffer
 before rebinding, and releases the old ingest when its handle changes. No CPU
-pixel copy, second Zoom subscription, or new compositor device is involved.
+pixel copy or second Zoom subscription is involved; the native compositor is unchanged.
 Multiview metadata supplies tally only; wall removal/reordering cannot change
 which texture belongs to a thumbnail.
 
@@ -86,40 +86,76 @@ never part of the production presentation loop. Backbuffer pixels and finite mot
 checks do not establish physical display cadence or sustained output acceptance.
 
 
-October 15 presentation investigation (#916): the owner confirmed Sources was
-open and slow during a 15-second EventPipe sample of the installed shell. The
-presentation callback consumed 10.65 seconds, including 9.35 seconds in the D3D
-path, while API snapshots showed fresh incoming feeds. This places the measured
-bottleneck downstream of receipt; it does not identify every individual driver
-wait or prove physical scanout.
+## Presentation ownership and pacing (#916)
 
-Measure every source host. The original fixture watched only the first row and
-Inspect, masking row-order starvation: a six-second baseline committed 98 frames
-in the first row but only 5–11 in several later rows, with busy Present refusals.
-A collapsed Multiview also kept presenting. Source monitors now request
-per-swap-chain frame-latency credits rather than competing for the shared D3D
-device's default presentation budget. They poll their own readiness handle with
-a zero timeout before touching the backbuffer; the handle is closed when its
-chain retires. Program/Preview retain their established queue and Present policy.
-All hosts stop submission when a page ancestor is collapsed or the XAML host
-is hidden. Hidden views retain their resources for resumption.
+An owner-confirmed slow Sources view was traced for 15 seconds in the installed
+shell. `TryPresentPendingSharedHandle` consumed 10.65 seconds, including 9.35
+seconds in the D3D path, while incoming source frames kept advancing. The
+all-row fixture then exposed two independent presentation defects: later rows
+starved on shared-device credits, and collapsed pages kept submitting work.
+After those were corrected, serial driver Present waits still limited the
+complete page to about five updates/second. Queue depth alone did not fix this.
 
-Microsoft documents the shared-device presentation budget and recommends at
-most four simultaneously updated XAML swap chains:
+`VideoSurfaceRenderPresenter` now publishes immutable geometry/handle requests
+to four persistent render threads. XAML never creates devices, acquires video
+mutexes, copies pixels, waits for DXGI, reads pixels or joins a render thread.
+Each thread owns a stable device group and all its D3D/DXGI calls, including
+copy, presentation, resize, probe readback, loss recovery and resource retirement.
+`Direct3D11InteropService` retains a default group for legacy/test callers.
+There is no per-row device creation/destruction on view churn.
+
+`SharedTextureRenderAssignments` assigns by **shared handle**, not label.
+Thumbnail, Inspect and a Preview alias must share one consumer and its private
+latest-frame texture. Least-loaded assignment spreads distinct handles across
+persistent groups. Program/Preview retain sync interval 1 and their established
+queue flags; source monitors use independent one-frame credits and sync interval
+0 so DWM receives the latest image without serial source-vsync waits. Source
+requests are capped at 30 Hz using accumulated high-resolution deadlines;
+rounding each interval to milliseconds can accidentally reduce the rate on
+some display cadences. Native source dimensions and GPU quality are unchanged.
+
+Each host has a single pending mailbox. A newer request replaces the pending
+one instead of building a stale-frame queue. Close rejects further offers and
+native resources retire on their owning render thread. Swap-chain creation
+transfers an AddRef'd lease to a nonblocking UI callback. The callback checks
+host disposal and chain revision before attachment, then releases its lease.
+UI path visibility additionally checks the exact requested handle and attached
+revision: an old completion cannot reveal a retired source. Fractional panel
+geometry and tile-crop transforms travel with the request. Hidden ancestors or
+a hidden XAML host stop submissions; restoring the page resumes from live pixels.
+Device-loss reporting aggregates all groups; recovery reset is posted to each
+owning thread rather than mutating its state from XAML.
+
+Microsoft's threading contract is why moving only `Present` to `Task.Run` while
+leaving immediate-context work on XAML is unsafe:
+https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-render-multi-thread-intro
+https://learn.microsoft.com/en-us/windows/win32/direct3darticles/dxgi-best-practices
+The UI never waits for a render-thread DXGI call, avoiding the message-pump
+wait cycle described there. Microsoft also documents the shared-device queue
+budget and simultaneous XAML swap-chain performance limits:
 https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-multiple-swap-chains
 https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.swapchainpanel
-The Sources workspace currently has ten thumbnails and Inspect. Giving each
-chain credits removed the measured row-order starvation in isolated runs, but
-serial Present CPU stalls remain a qualification concern. Experiments increasing
-the global queue, changing sync interval, adding buffers or changing alpha mode
-are not product changes. None established complete recovery.
 
-The full-workspace probe records every host's commits and maximum commit gap,
-checks that hidden views submit nothing, and retains failing speed/motion checks.
-QA counters/readback are disabled in normal operation. GPU load varied up to 93%
-while another application was active during the later comparisons; those runs
-cannot isolate candidate frame-rate improvement. Do not downgrade source quality,
-relax acceptance thresholds, close #916, or claim the installed app is repaired
-from these results. Physical display cadence, sustained output acceptance and
-complete source-motion qualification remain open. The installed app/session and
-settings were preserved; no desktop input or elevation was used for this trace.
+## Finite validation and limits
+
+The all-row probe requires at least 150 committed images per visible source
+monitor over six seconds, maximum gaps below 250 ms, no hidden-view commits,
+and actual changing pixels in thumbnail and Inspect. It also checks hide/restore
+and adds a deliberate 30 ms delay to every Present for 2.2 seconds: UI dispatcher
+callbacks must continue with a maximum gap below 150 ms. A separate GPU probe
+checks source selection, idle-UI motion, exact red/green/blue identity and a
+Preview alias of the same GPU handle. Readback/timing/fault injection are QA-only.
+
+The narrowed predecessor failed with 29 commits/view in six seconds and a
+374 ms worst gap. The first strengthened worker run committed 169–170 images
+in every visible source monitor over six seconds; the dispatcher maximum gap
+was 80.4 ms normally and 65.0 ms with the injected driver delay. Hide/restore
+passed. These are local RTX 4090 backbuffer and dispatcher results under variable
+competing GPU load, not physical-scanout measurements or a fleet guarantee.
+A read-only NVAPI query also found a user global pre-render limit of 1; no driver
+settings were changed, and its independent causal effect was not A/B tested.
+
+No installed app, real meeting, camera registration or production setting is
+changed by these owned offscreen probes. Packaged visual review and sustained
+native-output zero-miss acceptance remain separate; do not infer them from
+source-monitor commit counts or close the issue before its merged acceptance.
