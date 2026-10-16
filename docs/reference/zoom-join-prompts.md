@@ -45,6 +45,22 @@ timeout. `ZoomEngineRuntime::retireTimedOutJoinLocked` quarantines it
 (`restartBeforeJoin_`) deliberately and the next explicit join terminates it
 outside the runtime lock. The comment at that site is the contract.
 
+A valid Join while already in a meeting must also retire the helper (#920).
+The SDK's implicit leave removes its raw-media subscriptions, while the core's
+deduplication ledger would otherwise suppress resubscribing identical routes.
+The old `in-meeting` state can also incorrectly satisfy the new Join's wait loop.
+Replacement now follows the existing explicit Leave/Join lifetime barrier: clear
+held media and subscription records, advance process identity, terminate outside
+the runtime mutex, then initialize and subscribe a fresh helper. Capture intent
+survives. Invalid meeting input is rejected before disturbing the live meeting.
+
+`scripts/validate-live-zoom.mjs --active-rejoin-probe` tests replacement without
+Leave/stop-capture, rejects a response carrying the old meeting's success, and
+requires fresh subscription frames in a new roster epoch. With the synthetic
+helper, disable auto-subscription (`COREVIDEO_FAKE_ENGINE_AUTOSUBSCRIBE=0`) so
+fresh frames require the runtime to send real subscribe commands. This is media
+lifecycle evidence, not displayed-frame or zero-miss acceptance.
+
 Tests: `ZoomEngineClient.TheTakeoverChoiceRidesTheJoinCommandAndDefaultsOff`,
 `ZoomEngineRuntimeState.ASameAccountCollisionReadsAsOperatorLanguage` /
 `AnUnmappedJoinFailureIsStillReported`, and

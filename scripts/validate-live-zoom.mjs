@@ -40,6 +40,7 @@ const maxFirstFrameMs = numberArg(args["max-first-frame-ms"], 1000);
 const observeMs = numberArg(args["observe-ms"], 0);
 const monitorControlProbeRequested = booleanArg(args["monitor-control-probe"]);
 const rejoinProbeRequested = booleanArg(args["rejoin-probe"]);
+const activeRejoinProbeRequested = booleanArg(args["active-rejoin-probe"]);
 const requireActiveSpeaker = !booleanArg(args["allow-no-active-speaker"]);
 const nativeCore = resolve(args["native-core"] ?? join(buildDir, `corevideo-native${exeSuffix}`));
 const zoomEngine = resolve(args["zoom-engine"] ?? process.env.COREVIDEO_ZOOM_ENGINE_PATH ?? join(buildDir, `corevideo-zoom-engine${exeSuffix}`));
@@ -146,6 +147,7 @@ try {
   console.log(`Join state  : ${normalizeMeetingState(latestSnapshot?.meetingState)} with ${participantCount(latestSnapshot)} participant(s)`);
 
   await validationLoop();
+  if (activeRejoinProbeRequested) rejoinProbe = await probeActiveRejoin(joinPayload);
   if (rejoinProbeRequested) rejoinProbe = await probeRejoin(joinPayload);
   const report = buildReport("passed");
   printReport(report);
@@ -154,6 +156,39 @@ try {
   const report = buildReport("failed", error instanceof Error ? error.message : String(error));
   printReport(report);
   cleanup(1);
+}
+
+async function probeActiveRejoin(joinPayload) {
+  const beforeEpoch = latestSnapshot?.rosterEpoch;
+  if (!beforeEpoch) throw new Error("active rejoin requires a versioned initial roster");
+  // No Leave and no stop-capture: reproduce the owner's exact replacement path.
+  const response = await send("zoom-join", { payload: joinPayload });
+  if (response.snapshot?.rosterEpoch === beforeEpoch &&
+      normalizeMeetingState(response.snapshot?.meetingState) === "in-meeting") {
+    throw new Error("active rejoin returned the old meeting's success");
+  }
+  const deadline = Date.now() + Math.max(30000, joinWaitMs);
+  while (Date.now() < deadline) {
+    latestSnapshot = (await send("zoom-snapshot")).snapshot;
+    recordSnapshot(latestSnapshot);
+    if (latestSnapshot?.rosterEpoch && latestSnapshot.rosterEpoch !== beforeEpoch &&
+        normalizeMeetingState(latestSnapshot.meetingState) === "in-meeting") {
+      const participants = usableParticipants(latestSnapshot);
+      latestSpineSnapshot = (await send("zoom-media-spine-sync", {
+        spinePayload: buildSpinePayload(participants), elapsedMs: Date.now() - startedAt,
+      })).spineSnapshot;
+      const videos = (latestSpineSnapshot?.subscriptions ?? []).filter(s =>
+        s.kind === "participant-video" && s.framesReceived > 1 &&
+        s.deliveredWidth > 0 && s.lastFrameAgeMs >= 0 && s.lastFrameAgeMs < 1000);
+      if (videos.length >= minVideoFeeds) return {
+        mode: "active-join-without-leave", beforeEpoch,
+        rejoinedEpoch: latestSnapshot.rosterEpoch, freshVideoFeeds: videos.length,
+        resumedMedia: true,
+      };
+    }
+    await sleep(300);
+  }
+  throw new Error("active rejoin did not deliver fresh subscribed video in a new helper lifetime");
 }
 
 async function probeRejoin(joinPayload) {

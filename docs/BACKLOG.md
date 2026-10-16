@@ -1,5 +1,8 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 15:** implement #920 alongside the #916 source-preview
+investigation; validate repeated active Join through API/isolated tests without desktop input.
+
 **Owner direction, October 15, approved Sources design:** implement #590 as the
 table-first workspace with an optional inspector and connected existing grade
 editor. Preserve every existing source, MV, ISO, audio, adapter and grading
@@ -169,6 +172,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner current — October 15 | B | [#920](https://github.com/iamfatness/CoreVideoPro/issues/920) | Fix repeated active Join retaining retired SDK subscriptions and held frames; test lifetime fences and fresh re-subscription without desktop input. |
 | 1 — October 15 UI/UX | B | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Finish stable-input scene creation and layout fallbacks, quick solo/two-person/share starters, preserved custom routes and fresh/upgraded profile evidence. |
 | 2 — October 15 UI/UX | B | [#590](https://github.com/iamfatness/CoreVideoPro/issues/590), [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) | Sources assignment/offline clarity and identity-safe thumbnail removal/reassignment acceptance. Count one primary development issue per focused PR. |
 | 3 — October 15 UI/UX | B | [#848](https://github.com/iamfatness/CoreVideoPro/issues/848) | Finish shared adjustment consistency and actual effect/persistence checks, followed by the approved existing lower-third, grading/ROI and navigation consumers. |

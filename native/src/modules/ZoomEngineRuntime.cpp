@@ -161,6 +161,32 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   }
 
   if (cancelled && cancelled()) return nullptr;
+  // Validate before retiring a live meeting: an invalid Join must not disconnect
+  // a show. In particular, do not reuse its existing in-meeting success below.
+  const auto meetingId = meetingIdFromJoinInput(
+      payload.getString("meetingNumber"), payload.getString("meetingUrl"));
+  if (meetingId.empty()) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (cancelled && cancelled()) return nullptr;
+    return rpc::Json::Object{
+        {"meetingState", "error"},
+        {"participants", rpc::Json::Array{}},
+        {"tick", ++fallbackTick_},
+        {"warnings", rpc::Json::Array{"Zoom join request did not include a numeric meeting id."}},
+    };
+  }
+  bool replacingActiveMeeting;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    replacingActiveMeeting = state_.snapshot().meetingState == "in-meeting";
+  }
+  if (replacingActiveMeeting) {
+    // The SDK's implicit Leave during Join unsubscribes every raw-video target.
+    // Treat replacement exactly like explicit Leave/Join: discard the old caches
+    // and subscription ledger, then fence callbacks by retiring the helper below.
+    // Keep captureRequested_ so Engine On re-arms media in the new meeting.
+    (void)leave();
+  }
   speakerEpoch_.fetch_add(1, std::memory_order_relaxed);  // a join is a new meeting
   bool restart;
   {
@@ -183,19 +209,6 @@ rpc::Json ZoomEngineRuntime::join(const rpc::Json& payload, const std::function<
   }
   if (cancelled && cancelled()) return nullptr;
   applyJoinCredentialsFromPayload(payload);
-
-  const auto meetingId = meetingIdFromJoinInput(
-      payload.getString("meetingNumber"), payload.getString("meetingUrl"));
-  if (meetingId.empty()) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (cancelled && cancelled()) return nullptr;
-    return rpc::Json::Object{
-        {"meetingState", "error"},
-        {"participants", rpc::Json::Array{}},
-        {"tick", ++fallbackTick_},
-        {"warnings", rpc::Json::Array{"Zoom join request did not include a numeric meeting id."}},
-    };
-  }
 
   // The preference is latched by a valid join, before subscriptions are built.
   // Sources edits never enter this path while the current meeting is live.
