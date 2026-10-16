@@ -170,9 +170,13 @@ internal sealed partial class SourceInspectVideoProbe
             window.Content = null;
             if (retiringRoot is not null) await Until(() => !retiringRoot.IsLoaded, 3000);
             // Let unload callbacks finish while their XAML window is still valid.
-            var drained = new TaskCompletionSource();
-            window.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => drained.SetResult());
-            await drained.Task;
+            // Participant-list clear schedules a second low-priority rebind.
+            for (var phase = 0; phase < 2; phase++)
+            {
+                var drained = new TaskCompletionSource();
+                window.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => drained.SetResult());
+                await drained.Task;
+            }
             window.Close();
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
             await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(new { passed = error is null,
