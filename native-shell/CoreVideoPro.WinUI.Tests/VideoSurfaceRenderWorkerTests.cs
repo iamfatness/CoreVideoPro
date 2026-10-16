@@ -5,6 +5,25 @@ namespace CoreVideoPro.WinUI.Tests;
 
 public sealed class VideoSurfaceRenderWorkerTests
 {
+    [Fact]
+    public void RenderClockKeepsSixtyHzWithoutUiWakeupsAndSkipsMissedDeadlines()
+    {
+        var cadence = new PresentationCadence();
+        const long frequency = 10_000_000;
+        long now = 1;
+        for (var frame = 0; frame < 600; frame++)
+        {
+            Assert.True(cadence.ShouldSubmit(now, frequency, 60));
+            Assert.False(cadence.ShouldSubmit(now + 1, frequency, 60));
+            now += cadence.Delay100ns(now, frequency);
+        }
+        Assert.InRange(now, 99_999_000, 100_001_000);
+        now += frequency; // A driver stall must not create a catch-up burst.
+        Assert.True(cadence.ShouldSubmit(now, frequency, 60));
+        Assert.False(cadence.ShouldSubmit(now + 1, frequency, 60));
+        Assert.InRange(cadence.Delay100ns(now, frequency), 166_665, 166_667);
+    }
+
     [Theory]
     [InlineData(60)]
     [InlineData(75)]

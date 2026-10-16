@@ -47,7 +47,7 @@ internal sealed class VideoSurfaceRenderPresenter : IDisposable
     private Request? _current; // render thread only
     private long _requestedHandle;
     private long _latestRevision, _attachedRevision;
-    private int _disposed, _readPixel, _resetProbe, _notificationQueued;
+    private int _disposed, _active, _readPixel, _resetProbe, _notificationQueued;
     private long _rejectedRevision;
     private long _retryAfter;
     internal string SourceKey { get; }
@@ -94,8 +94,14 @@ internal sealed class VideoSurfaceRenderPresenter : IDisposable
         if (Volatile.Read(ref _disposed) != 0) return;
         Volatile.Write(ref _requestedHandle, unchecked((long)handle.NtHandle));
         if (_requests.Offer(new(handle, Math.Max(1, _panel.ActualWidth),
-                Math.Max(1, _panel.ActualHeight), fillPanel))) _renderer.Wake();
+                Math.Max(1, _panel.ActualHeight), fillPanel)))
+        {
+            Volatile.Write(ref _active, 1);
+            _renderer.Wake();
+        }
     }
+    internal void Suspend() { Volatile.Write(ref _active, 0); _renderer.Wake(); }
+    private bool Active => Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _active) != 0;
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
@@ -154,15 +160,17 @@ internal sealed class VideoSurfaceRenderPresenter : IDisposable
             if (Environment.TickCount64 < _retryAfter) return true;
             if (_interop is not null && Interlocked.Exchange(ref _rejectedRevision, 0) is var rejected && rejected != 0)
                 _interop.RejectWorkerChain(rejected);
-            if (request is not null)
+            // The handle is stable while its producer publishes new GPU pixels.
+            // A fresh XAML request is configuration, not permission for one frame.
+            if (Active && _current is { } currentRequest)
             {
                 if (_interop is null)
                 {
                     _interop = new Direct3D11InteropService { Label = SourceKey };
                     _interop.AttachWorkerPresenter(AttachChain);
                 }
-                _interop.UpdateWorkerPanelSize(request.Width, request.Height, request.FillPanel);
-                _interop.TryPresentSharedTexture(request.Handle);
+                _interop.UpdateWorkerPanelSize(currentRequest.Width, currentRequest.Height, currentRequest.FillPanel);
+                _interop.TryPresentSharedTexture(currentRequest.Handle);
             }
             if (_interop is not null && Interlocked.Exchange(ref _readPixel, 0) != 0 && _current is { } current)
                 Volatile.Write(ref _pixel, new(current.Handle.NtHandle, _interop.ChainRevision, _interop.ReadPixelForProbe()));
@@ -214,12 +222,19 @@ internal sealed class VideoSurfaceRenderPresenter : IDisposable
         private void Run()
         {
             Direct3D11InteropService.InitializeRenderThread();
+            var cadence = new PresentationCadence();
+            using var timer = new MonitorRenderTimer(_wake);
             while (true)
             {
                 while (_commands.TryDequeue(out var command)) command();
-                for (var i = Hosts.Count - 1; i >= 0; i--)
-                    if (!Hosts[i].Pump()) Hosts.RemoveAt(i);
-                _wake.WaitOne(); // UI requests, QA work and retirement signal explicitly; idle views do not poll.
+                if (!Hosts.Any(host => host.Active) ||
+                    cadence.ShouldSubmit(Stopwatch.GetTimestamp(), Stopwatch.Frequency, 60))
+                    for (var i = Hosts.Count - 1; i >= 0; i--)
+                        if (!Hosts[i].Pump()) Hosts.RemoveAt(i);
+                if (Hosts.Any(host => host.Active))
+                    timer.Wait(cadence.Delay100ns(Stopwatch.GetTimestamp(), Stopwatch.Frequency));
+                else
+                    _wake.WaitOne(); // No active views: no polling or GPU work.
             }
         }
     }
