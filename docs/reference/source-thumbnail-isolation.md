@@ -86,16 +86,40 @@ never part of the production presentation loop. Backbuffer pixels and finite mot
 checks do not establish physical display cadence or sustained output acceptance.
 
 
-October 15 diagnostic limits (#916): the generation-order regression failed on
-old projection code and passes with typed pixel-generation qualification. Release
-checks passed 52 focused shell tests, 40 parser tests, 9 preview-health native tests,
-11 GPU exporter tests (inline and isolated), 38 Zoom runtime tests and 5 preview
-demand tests. Offscreen ten-source GPU/native probes observed changing pixels in
-both thumbnail and Inspect with stable handles. A complete StudioWorkspace fixture
-with synthetic Zoom 1080p60 observed 43 distinct sampled pixels in each view over
-6.08 seconds on the local RTX 4090. This is finite pixel-continuity evidence, not
-60fps display validation. It did not reproduce the owner's installed 5–10 second
-thumbnail updates. That symptom remains unresolved; do not close #916 or claim the
-running app is repaired from these probes. A live-shell sample trace did not capture
-a multi-second managed stall. Physical presentation tracing was denied by Windows
-without elevated trace rights; no elevation prompt or installed restart was issued.
+October 15 presentation investigation (#916): the owner confirmed Sources was
+open and slow during a 15-second EventPipe sample of the installed shell. The
+presentation callback consumed 10.65 seconds, including 9.35 seconds in the D3D
+path, while API snapshots showed fresh incoming feeds. This places the measured
+bottleneck downstream of receipt; it does not identify every individual driver
+wait or prove physical scanout.
+
+Measure every source host. The original fixture watched only the first row and
+Inspect, masking row-order starvation: a six-second baseline committed 98 frames
+in the first row but only 5–11 in several later rows, with busy Present refusals.
+A collapsed Multiview also kept presenting. Source monitors now request
+per-swap-chain frame-latency credits rather than competing for the shared D3D
+device's default presentation budget. They poll their own readiness handle with
+a zero timeout before touching the backbuffer; the handle is closed when its
+chain retires. Program/Preview retain their established queue and Present policy.
+All hosts stop submission when a page ancestor is collapsed or the XAML host
+is hidden. Hidden views retain their resources for resumption.
+
+Microsoft documents the shared-device presentation budget and recommends at
+most four simultaneously updated XAML swap chains:
+https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-multiple-swap-chains
+https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.swapchainpanel
+The Sources workspace currently has ten thumbnails and Inspect. Giving each
+chain credits removed the measured row-order starvation in isolated runs, but
+serial Present CPU stalls remain a qualification concern. Experiments increasing
+the global queue, changing sync interval, adding buffers or changing alpha mode
+are not product changes. None established complete recovery.
+
+The full-workspace probe records every host's commits and maximum commit gap,
+checks that hidden views submit nothing, and retains failing speed/motion checks.
+QA counters/readback are disabled in normal operation. GPU load varied up to 93%
+while another application was active during the later comparisons; those runs
+cannot isolate candidate frame-rate improvement. Do not downgrade source quality,
+relax acceptance thresholds, close #916, or claim the installed app is repaired
+from these results. Physical display cadence, sustained output acceptance and
+complete source-motion qualification remain open. The installed app/session and
+settings were preserved; no desktop input or elevation was used for this trace.

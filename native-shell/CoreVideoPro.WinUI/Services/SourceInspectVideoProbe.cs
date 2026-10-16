@@ -59,6 +59,7 @@ internal sealed partial class SourceInspectVideoProbe(string reportPath, string?
     }
     internal async Task RunAsync()
     {
+        Direct3D11InteropService.CollectProbeCounters = true;
         if (corePath is not null) { await RunNativeAsync(corePath); return; }
         string? error = null;
         var samples = new List<object>();

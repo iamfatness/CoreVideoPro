@@ -109,6 +109,18 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     }
 
     internal long PresentedFramesForProbe => _direct3DInterop?.PresentedFramesForProbe ?? 0;
+    internal void BeginPresentationProbeInterval() => _direct3DInterop?.BeginPresentationProbeInterval();
+    internal double MaximumPresentationProbeGapMs => _direct3DInterop?.MaximumPresentationProbeGapMs ?? 0;
+    internal object? DiagnosticsForProbe => _direct3DInterop?.DiagnosticsForProbe;
+    internal bool IsEffectivelyVisible
+    {
+        get
+        {
+            for (DependencyObject? current = this; current is not null; current = VisualTreeHelper.GetParent(current))
+                if (current is UIElement { Visibility: Visibility.Collapsed }) return false;
+            return XamlRoot?.IsHostVisible == true;
+        }
+    }
     internal bool PictureVisibleForProbe => SwapChainHost.Visibility == Visibility.Visible;
     internal uint? ReadPixelForProbe() => _direct3DInterop?.ReadPixelForProbe();
 
@@ -326,12 +338,11 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     private bool AttachGpuPresenter()
     {
         // Unloaded controls may be loaded again. Never reuse a disposed interop.
-        _direct3DInterop = new Direct3D11InteropService();
+        _direct3DInterop = new Direct3D11InteropService { Label = SurfaceKey };
         _direct3DInterop.FillPanelForTileCrop = SourceFit == "tile-crop";
         _direct3DInterop.PresentationPathChanged += OnPresentationPathChanged;
         if (_direct3DInterop.TryAttachSwapChainPanel(SwapChainHost))
         {
-            _direct3DInterop.Label = SurfaceKey;
             _direct3DDevicePointer = _direct3DInterop.DevicePointer;
             SetDirect3DDevice(_direct3DDevicePointer);
             TryPresentPendingSharedHandle();
@@ -396,6 +407,9 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void TryPresentPendingSharedHandle()
     {
+        // Visibility on this control alone misses a collapsed page ancestor.
+        // Hidden composites must not spend presentation credits or copy pixels.
+        if (!IsLoaded || ActualWidth <= 0 || ActualHeight <= 0 || !IsEffectivelyVisible) return;
         // Sources inspectors have ten stable full-source hosts. Keep hidden cells
         // off the D3D path and cap thumbnail presentation at 30 Hz. Duplicate
         // source views share one keyed-mutex ingest across all hosts.

@@ -153,6 +153,7 @@ public sealed class Direct3D11InteropService : IDisposable
         public int Width;
         public int Height;
         public long Generation;
+        public long ProbeAttempts, ProbeBusy;
         public int RefCount;
     }
 
@@ -179,6 +180,8 @@ public sealed class Direct3D11InteropService : IDisposable
     // -1 = never attached to any generation.
     private long _deviceGeneration = -1;
     private IDXGISwapChain1? _swapChain;
+    private nint _frameReady;
+    private long _probeNotReady;
     private ID3D11Texture2D? _backBuffer;
     private SwapChainPanel? _panel;
     private int _surfaceWidth;
@@ -222,6 +225,33 @@ public sealed class Direct3D11InteropService : IDisposable
     private PresentationPath _path = PresentationPath.Uninitialized;
 
     internal long PresentedFramesForProbe => _presentCount;
+    internal static bool CollectProbeCounters { get; set; }
+    private long _probeAttempts, _probePresentBusy;
+    private long _probeLastCommit;
+    private double _probeMaxGapMs;
+    internal void BeginPresentationProbeInterval()
+    {
+        _probeLastCommit = System.Diagnostics.Stopwatch.GetTimestamp();
+        _probeMaxGapMs = 0;
+    }
+    internal double MaximumPresentationProbeGapMs => _probeLastCommit == 0 ? 0 : Math.Max(_probeMaxGapMs,
+        System.Diagnostics.Stopwatch.GetElapsedTime(_probeLastCommit).TotalMilliseconds);
+    private double _probeCopyMs, _probeCopyMaxMs, _probePresentMs, _probePresentMaxMs, _probeIngestMs, _probeTotalMs;
+    internal object DiagnosticsForProbe
+    {
+        get
+        {
+            lock (CreationGate)
+            {
+                s_ingests.TryGetValue(_ingestHandle, out var ingest);
+                return new { label = Label, attempts = _probeAttempts, presents = _presentCount,
+                    maxGapMs = MaximumPresentationProbeGapMs, notReady = _probeNotReady, presentBusy = _probePresentBusy, presentMs = _probePresentMs, presentMaxMs = _probePresentMaxMs,
+                    ingestMs = _probeIngestMs, totalMs = _probeTotalMs,
+                    copyMs = _probeCopyMs, copyMaxMs = _probeCopyMaxMs, ingested = ingest?.Generation ?? 0,
+                    acquireAttempts = ingest?.ProbeAttempts ?? 0, acquireBusy = ingest?.ProbeBusy ?? 0 };
+            }
+        }
+    }
     // Explicit offscreen QA only. Never used by the production presentation loop.
     internal uint? ReadPixelForProbe()
     {
@@ -296,12 +326,18 @@ public sealed class Direct3D11InteropService : IDisposable
 
     public bool TryPresentSharedTexture(SharedTextureHandle handle)
     {
+        if (CollectProbeCounters) _probeAttempts++;
         if (_disposed || _presenting) return false;
         _presenting = true;
+        var probeStarted = CollectProbeCounters ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         _stageWatchdog ??= new PresentationStageWatchdog((stage, elapsed) =>
             LaunchLog.Write($"d3d: stalled presentation host={_diagnosticId} stage={stage} elapsedMs={elapsed}"));
         try { return TryPresentSharedTextureCore(handle); }
-        finally { _stageWatchdog.Mark(null); _presenting = false; }
+        finally
+        {
+            if (CollectProbeCounters) _probeTotalMs += System.Diagnostics.Stopwatch.GetElapsedTime(probeStarted).TotalMilliseconds;
+            _stageWatchdog.Mark(null); _presenting = false;
+        }
     }
 
     private bool TryPresentSharedTextureCore(SharedTextureHandle handle)
@@ -369,7 +405,9 @@ public sealed class Direct3D11InteropService : IDisposable
             // presents the private copy. So there is exactly ONE keyed-mutex consumer no
             // matter how many hosts show the source -> neither host starves.
             _stageWatchdog?.Mark("ingest-shared-copy");
+            var ingestStarted = CollectProbeCounters ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             PumpIngest(ingest);
+            if (CollectProbeCounters) _probeIngestMs += System.Diagnostics.Stopwatch.GetElapsedTime(ingestStarted).TotalMilliseconds;
 
             // Skip-present when this host already showed the current frame (idle source):
             // re-presenting the same backbuffer every vsync across N hosts destabilizes WinUI.
@@ -388,11 +426,25 @@ public sealed class Direct3D11InteropService : IDisposable
                 return false;
             }
 
+            // Poll rather than wait on XAML's thread. A ready signal belongs to
+            // this swap chain, not the other monitors sharing the D3D device.
+            if (_frameReady != 0 && WaitForSingleObject(_frameReady, 0) != 0)
+            {
+                if (CollectProbeCounters) _probeNotReady++;
+                return _path == PresentationPath.GpuActive;
+            }
+
             // Same-device copy from the ingest's private latest-frame texture into our back
             // buffer, then present. No keyed mutex is touched here, so two hosts presenting
             // the same source never contend.
             _stageWatchdog?.Mark("copy-back-buffer");
+            var copyStarted = CollectProbeCounters ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             s_sharedContext.CopyResource(_backBuffer, ingest.Private);
+            if (CollectProbeCounters)
+            {
+                var copyMs = System.Diagnostics.Stopwatch.GetElapsedTime(copyStarted).TotalMilliseconds;
+                _probeCopyMs += copyMs; _probeCopyMaxMs = Math.Max(_probeCopyMaxMs, copyMs);
+            }
             _stageWatchdog?.Mark("present");
             // Fault seam (test-only, inert in any shipped build — see
             // PresentationFaultInjection). ONE static bool read on the hot path; a device
@@ -403,13 +455,26 @@ public sealed class Direct3D11InteropService : IDisposable
             {
                 PresentationFaultInjection.BeforePresent();
             }
+            var presentStarted = CollectProbeCounters ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             var result = _swapChain.Present(1, PresentFlags.DoNotWait);
+            if (CollectProbeCounters)
+            {
+                var presentMs = System.Diagnostics.Stopwatch.GetElapsedTime(presentStarted).TotalMilliseconds;
+                _probePresentMs += presentMs; _probePresentMaxMs = Math.Max(_probePresentMaxMs, presentMs);
+            }
             if (!PresentationAttempt.Commit(result.Code, () =>
                 {
                     _lastPresentedHandle = handle.NtHandle;
                     _lastPresentedGeneration = ingest.Generation;
+                    if (CollectProbeCounters && _probeLastCommit != 0)
+                    {
+                        _probeMaxGapMs = Math.Max(_probeMaxGapMs,
+                            System.Diagnostics.Stopwatch.GetElapsedTime(_probeLastCommit).TotalMilliseconds);
+                        _probeLastCommit = System.Diagnostics.Stopwatch.GetTimestamp();
+                    }
                 }))
             {
+                if (CollectProbeCounters) _probePresentBusy++;
                 // Keep the prior GPU image if there is one, without claiming
                 // this newer generation was presented. Retry on the next tick.
                 return _path == PresentationPath.GpuActive;
@@ -606,8 +671,10 @@ public sealed class Direct3D11InteropService : IDisposable
         // otherwise look exactly like "no new frame" and freeze the surface silently. Throw
         // so it lands in the present catch and is handled as the device loss it is.
         var acquired = ingest.Acquire(ingest.Mutex.NativePointer, 1, 0);
+        if (CollectProbeCounters) ingest.ProbeAttempts++;
         if (acquired != 0)
         {
+            if (CollectProbeCounters) ingest.ProbeBusy++;
             if (DeviceLossPolicy.IsDeviceLoss(acquired))
             {
                 Marshal.ThrowExceptionForHR(acquired);
@@ -1070,10 +1137,20 @@ public sealed class Direct3D11InteropService : IDisposable
                     Scaling = Scaling.Stretch,
                     SwapEffect = SwapEffect.FlipSequential,
                     AlphaMode = AlphaMode.Premultiplied,
-                    Flags = SwapChainFlags.None
+                    // Otherwise every chain shares the device's presentation
+                    // limit, letting early rows starve later rows and Inspect.
+                    // One credit per chain bounds latency without a UI wait.
+                    Flags = VideoSurfacePresentationRules.IsSourceThumbnail(Label)
+                        ? SwapChainFlags.FrameLatencyWaitableObject : SwapChainFlags.None
                 };
 
                 _swapChain = factory.CreateSwapChainForComposition(s_sharedDevice, swapChainDesc);
+                if (VideoSurfacePresentationRules.IsSourceThumbnail(Label))
+                using (var latency = _swapChain.QueryInterface<IDXGISwapChain2>())
+                {
+                    latency.MaximumFrameLatency = 1;
+                    _frameReady = latency.FrameLatencyWaitableObject;
+                }
                 if (!SwapChainPanelNativeInterop.TrySetSwapChain(_panel, _swapChain.NativePointer, out var attachFailure))
                 {
                     LaunchLog.Write($"d3d: panel attach failed: {attachFailure}");
@@ -1105,6 +1182,7 @@ public sealed class Direct3D11InteropService : IDisposable
         // COM RCW disposes can throw E_NOINTERFACE during teardown — never let that
         // escape (it fail-fasts the app when a tile/host unloads). The shared device,
         // shared context and per-handle ingests are process-wide and NOT touched here.
+        if (_frameReady != 0) { CloseHandle(_frameReady); _frameReady = 0; }
         try { _backBuffer?.Dispose(); } catch { }
         try { _swapChain?.Dispose(); } catch { }
         _backBuffer = null;
@@ -1124,6 +1202,12 @@ public sealed class Direct3D11InteropService : IDisposable
         _path = path;
         PresentationPathChanged?.Invoke();
     }
+
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(nint handle);
 
     [DllImport("d3d11.dll", ExactSpelling = true, PreserveSig = true)]
     private static extern int CreateDirect3D11DeviceFromDXGIDevice(IntPtr dxgiDevice, out IntPtr graphicsDevice);

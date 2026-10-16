@@ -25,6 +25,7 @@ internal sealed partial class SourceInspectVideoProbe
             Command = Path.GetFullPath(nativePath), MaxRestarts = 0,
             Environment = new Dictionary<string, string> { ["COREVIDEO_ISOLATE_MONITORS"] = "1", ["COREVIDEO_GPU_CAPTURE"] = "0",
                 ["COREVIDEO_ZOOM_ENGINE_PATH"] = fakePath, ["COREVIDEO_FAKE_ENGINE_PARTICIPANTS"] = "10",
+                ["COREVIDEO_FAKE_NO_CHURN"] = "1",
                 ["COREVIDEO_FAKE_ENGINE_FPS"] = "60", ["COREVIDEO_FAKE_ENGINE_RES"] = "2" }
         });
         await using var bridge = new MediaCoreBridgeService(supervisor);
@@ -126,8 +127,7 @@ internal sealed partial class SourceInspectVideoProbe
             }
             samples.Add(new { phase = "synthetic Zoom I420 1080p60", durationMs = motion.Elapsed.TotalMilliseconds,
                 distinctInspectPixels = distinctInspect.Count, distinctThumbnailPixels = distinctThumbnail.Count });
-            if (distinctInspect.Count < 20 || distinctThumbnail.Count < 20)
-                throw new InvalidOperationException("Synthetic Zoom did not present continuous changing pixels in both views");
+            var syntheticMotionQualified = distinctInspect.Count >= 20 && distinctThumbnail.Count >= 20;
 
             fullShell = true;
             window.Content = null;
@@ -139,10 +139,14 @@ internal sealed partial class SourceInspectVideoProbe
                     fullStudio.ShowInputs[i].ParticipantId = (101 + i).ToString();
                     fullStudio.ShowInputs[i].InShow = true;
                 }
-            fullStudio.ActiveTab = StudioTab.Inputs;
             var root = new StudioWorkspace { ViewModel = fullStudio };
             window.Content = root;
             await Until(() => root.IsLoaded, 5000);
+            // Production opens Sources after the complete shell has loaded;
+            // preselecting Inputs before construction misses its visibility lease.
+            await Task.Delay(1000);
+            fullStudio.ActiveTab = StudioTab.Inputs;
+            await Until(() => Descendants(root).OfType<SourcesWorkspaceControl>().Any(control => control.IsLoaded), 5000);
             var fullWorkspace = Descendants(root).OfType<SourcesWorkspaceControl>().Single();
             fullWorkspace.State.Inspect(fullStudio.ShowInputEditors[0]);
             await bridge.SyncAsync([]);
@@ -158,8 +162,39 @@ internal sealed partial class SourceInspectVideoProbe
             }
             samples.Add(new { phase = "complete StudioWorkspace and live model", durationMs = motion.Elapsed.TotalMilliseconds,
                 distinctInspectPixels = distinctInspect.Count, distinctThumbnailPixels = distinctThumbnail.Count });
-            if (distinctInspect.Count < 20 || distinctThumbnail.Count < 20)
-                throw new InvalidOperationException("Complete shell did not present continuous changing pixels in both views");
+            var completeMotionQualified = distinctInspect.Count >= 20 && distinctThumbnail.Count >= 20;
+            var quietInspect = fullInspector.PresentedFramesForProbe;
+            var quietThumbnail = fullThumbnail.PresentedFramesForProbe;
+            samples.Add(new { phase = "before quiet interval", inspect = fullInspector.DiagnosticsForProbe,
+                thumbnail = fullThumbnail.DiagnosticsForProbe,
+                hosts = Descendants(root).OfType<VideoSurfaceHost>().Where(h => h.DiagnosticsForProbe is not null)
+                    .Select(h => new { key = h.SurfaceKey, visible = h.IsEffectivelyVisible, diagnostics = h.DiagnosticsForProbe }).ToArray() });
+            var allHosts = Descendants(root).OfType<VideoSurfaceHost>().ToArray();
+            var initialCounts = allHosts.Select(h => h.PresentedFramesForProbe).ToArray();
+            foreach (var host in allHosts) host.BeginPresentationProbeInterval();
+            await Task.Delay(6000); // No readback, layout call or QA UI update.
+            var quietInspectFrames = fullInspector.PresentedFramesForProbe - quietInspect;
+            var quietThumbnailFrames = fullThumbnail.PresentedFramesForProbe - quietThumbnail;
+            samples.Add(new { phase = "complete shell without QA readback", durationMs = 6000,
+                inspectFrames = quietInspectFrames, thumbnailFrames = quietThumbnailFrames,
+                inspect = fullInspector.DiagnosticsForProbe, thumbnail = fullThumbnail.DiagnosticsForProbe });
+            var hostResults = allHosts.Select((h, i) => new { key = h.SurfaceKey,
+                visible = h.IsEffectivelyVisible, frames = h.PresentedFramesForProbe - initialCounts[i],
+                maxGapMs = h.MaximumPresentationProbeGapMs,
+                diagnostics = h.DiagnosticsForProbe }).ToArray();
+            samples.Add(new { phase = "every host presentation", hosts = hostResults });
+            if (hostResults.Any(h => !h.visible && h.frames != 0))
+                throw new InvalidOperationException("A hidden video host continued presenting");
+            if (hostResults.Any(h => h.visible && h.key.StartsWith("source-thumbnail:") && h.frames < 20))
+                throw new InvalidOperationException("At least one visible source row was starved");
+            if (hostResults.Any(h => h.visible && h.key.StartsWith("source-thumbnail:") && h.maxGapMs > 1000))
+                throw new InvalidOperationException("A visible source monitor had a presentation gap exceeding one second");
+            if (quietInspectFrames < 60 || quietThumbnailFrames < 60)
+                throw new InvalidOperationException("Complete shell stalled without QA readback");
+            if (!completeMotionQualified)
+                throw new InvalidOperationException("Complete shell did not present continuous changing pixels in both views (later phases retained for diagnosis)");
+            if (!syntheticMotionQualified)
+                throw new InvalidOperationException("Synthetic Zoom did not present continuous changing pixels in both views (later phases retained for diagnosis)");
         }
         catch (Exception ex) { error = ex.ToString(); }
         finally
