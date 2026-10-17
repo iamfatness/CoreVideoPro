@@ -73,12 +73,18 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(cueList.Items.Count==7,"Current Program scope did not retain global cues and hide the other scene"); scope.SelectedIndex=0;
             Require(cueList.Items.Count==8 && studio.GraphicsWorkspace.SelectedId=="fixture-1","Clearing cue filters lost the selected cue");
             checks.Add("Cue search and Program-scene filtering retain the selected private draft and restore all cue rows");
+            using var control = new StudioControlSurface(studio, window.DispatcherQueue);
+            var hidden = await control.InvokeAsync("graphics.lowerThird.set", new object?[] { false });
+            Require(hidden.Ok,"Idempotent legacy Hide was rejected");
             Invoke(Button(workspace,"Use in Studio"));
             await Eventually(()=>studio.GraphicsLibrary.Document.StudioLowerThird is not null && !studio.GraphicsLibrary.Busy);
             Require(studio.StudioAssignedLowerThirdLabel=="Guest introduction","Assigned look label did not update after explicit assignment");
             studio.GraphicsWorkspace.Select("fixture-2");
             Require(studio.StudioAssignedLowerThirdLabel=="Guest introduction","Browsing changed the assigned look label");
             checks.Add("Use in Studio saves the selected look and updates the bound Studio label; later cue selection preserves assignment");
+            var unavailable = await control.InvokeAsync("graphics.lowerThird.set", new object?[] { true });
+            Require(!unavailable.Ok && unavailable.Error?.Contains("Native Graphics is unavailable",StringComparison.Ordinal)==true,"Assigned API Show fell through to a legacy cue or falsely reported success");
+            checks.Add("API Hide remains idempotent; assigned API Show refuses unavailable native Graphics without legacy fallback or false success");
         } finally { Environment.SetEnvironmentVariable("COREVIDEO_GRAPHICS_DOCUMENT_PATH",previousPath); }
     }
     private static Button Button(DependencyObject root,string name)=>Descendants(root).OfType<Button>().Single(b=>b.Content?.ToString()==name);
