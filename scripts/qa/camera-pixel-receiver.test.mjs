@@ -8,6 +8,17 @@ const fixture = () => [
 ];
 const judge = rows => judgeCameraPixels(rows.map(JSON.stringify).join('\n'), { warmupSeconds: 0, minimumSeconds: 2 });
 test('accepts a complete rational 60/1 identity sequence', () => assert.equal(judge(fixture()).receiverPixelContinuityPassed, true));
+
+test('coverage comes from actual receiver arrivals after warmup, not capture duration alone', () => {
+  const rows = fixture();
+  assert.equal(judge(rows).coverage.complete, false);
+  rows[0].startUnixUs = Date.parse('2026-10-16T12:00:00Z') * 1000;
+  const verdict = judgeCameraPixels(rows.map(JSON.stringify).join('\n'), { warmupSeconds: 1, minimumSeconds: 1 });
+  assert.deepEqual(verdict.coverage, { complete: true,
+    startTime: '2026-10-16T12:00:01.000Z', endTime: '2026-10-16T12:00:02.000Z' });
+  rows.pop();
+  assert.equal(judge(rows).coverage.complete, false);
+});
 test('direct DLL evidence never certifies the registered OS camera', () => {
   const rows = fixture(); rows[0].receiverMode = 'direct-dll';
   assert.equal(judge(rows).receiverPixelContinuityPassed, true);

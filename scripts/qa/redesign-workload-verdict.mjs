@@ -87,6 +87,13 @@ export function judgeRedesignWorkload(report) {
     errors.push('Frame evidence omits Preview or multiview display.');
   if (report?.cameraPixelVerdict?.osCameraContinuityVerified !== true)
     errors.push('Independent Windows camera pixel continuity did not pass.');
+  const cameraIdentity = report?.cameraInstallation;
+  if (cameraIdentity?.moduleInspection !== 'observed' ||
+      cameraIdentity?.loadedIdentityMatchesRegistration !== true ||
+      cameraIdentity?.registeredFileMatchesManifest !== true ||
+      !/^[a-f0-9]{64}$/i.test(report?.candidateCameraSha256 ?? '') ||
+      cameraIdentity?.registeredFileSha256?.toLowerCase() !== report?.candidateCameraSha256?.toLowerCase())
+    errors.push('The loaded Windows camera DLL was not verified as the tested candidate.');
   if (!(report?.cameraPixelVerdict?.durationSeconds >= durationSeconds))
     errors.push('Camera receiver does not cover the workload duration.');
   const cameraStart = Date.parse(report?.cameraPixelCoverage?.startTime);

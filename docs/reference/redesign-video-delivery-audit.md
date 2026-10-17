@@ -77,6 +77,11 @@ to the workload clock. A successful receiver run from another interval is not
 evidence for this workload. Do not count
 startup, failed recording preparation, a process restart, missing inputs, or
 disconnected outputs as simultaneous workload coverage. Preserve failed trials.
+The report must also supply `candidateCameraSha256` and the administrator
+inspection as `cameraInstallation`. Registration alone does not qualify a new
+DLL: Frame Server can retain a previously loaded image until its consumers close
+and the hosting service unloads it. Require observed loaded-module identity to
+match the candidate as well as the registered protected file.
 Each sample also records `displayState.visible` and `displayState.minimized`
 from the tested process's actual window. A hidden or minimized window cannot
 qualify a visible-monitor soak. This check does not establish absence of
@@ -103,3 +108,27 @@ Reopening an empty preparation writer must discard that unused container:
 Media Foundation reports `MF_E_SINK_NO_SAMPLES_PROCESSED` (`0xC00D4A44`) when
 asked to finalize it. Discard is forbidden once any media or pending video
 sample exists. Normal recording finalization retains all failure checks.
+
+## Preparation polling and receiver measurement
+
+Program's preparation worker uses its own high-resolution timer for short GPU
+Map/GetData polls. Condition-variable waits nominally lasting 100 microseconds
+are rounded by the Windows scheduler; repeated waits consume buffer lead. The
+timer is separate from the delivery clock, and no application lock spans its
+wait. NV12 staging and immutable snapshot copies are submitted together, with
+one GPU completion query before CPU readback. The approved Program buffer depth
+and pixel quality remain unchanged.
+Slow preparation logs split GPU completion from CPU readback for correlation
+with a missing frame; these logs alone are not GPU deadline acceptance.
+
+The full-size NV12 regression requires all 180 submitted identities, in order,
+with zero underruns/overflows. It drains the submitted tail instead of counting
+intentional idle time after the producer stops. It is still a short regression,
+not full-workload qualification.
+
+The independent receiver retains bounded observation records in memory during
+capture and writes NDJSON afterward. Synchronous diagnostic disk/pipe writes
+must not delay its next ReadSample. Original monotonic arrival times, sample
+timestamps and decoded pixel identities remain the evidence; buffering logs
+does not smooth timestamps or relax the continuity/interval judge. An interrupted
+capture without its completion record cannot pass.

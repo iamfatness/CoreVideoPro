@@ -342,8 +342,8 @@ if(COREVIDEO_WITH_VIRTUALCAM)
       mfplat mf mfuuid mfsensorgroup ole32 oleaut32 ksuser strmiids uuid)
   set_target_properties(corevideo-virtualcam PROPERTIES
       LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll/exports.def\"")
-  # Explicit diagnostic target: Frame Server does not inherit the producer's
-  # environment. Keep the retry experiment out of normal builds and packages.
+  # Explicit diagnostic identity retained for comparison with older builds.
+  # Production now also recovers bounded publication races by default.
   add_library(corevideo-virtualcam-retry-qa SHARED EXCLUDE_FROM_ALL
       virtualcam-dll/dllmain.cpp virtualcam-dll/Guids.cpp
       virtualcam-dll/MediaSource.cpp virtualcam-dll/MediaStream.cpp)

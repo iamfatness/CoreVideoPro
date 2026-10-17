@@ -45,6 +45,8 @@ class D3DProgramBuffer {
     // because condition_variable::wait_until is quantized to milliseconds and
     // was starting publication after the frame deadline.
     wakeEvent_ = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    prepareTimer_ = ::CreateWaitableTimerExW(nullptr, nullptr,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     try {
       prepareThread_ = std::thread([this] { try { prepareLoop(); } catch (...) { fail("prepare-worker"); } });
       shellThread_ = std::thread([this] { exportLoop(shellBranch_, true); });
@@ -66,6 +68,7 @@ class D3DProgramBuffer {
     if (shellThread_.joinable()) shellThread_.join();
     if (multiviewThread_.joinable()) multiviewThread_.join();
     if (wakeEvent_) ::CloseHandle(wakeEvent_);
+    if (prepareTimer_) ::CloseHandle(prepareTimer_);
   }
   bool valid() const { return initialized_; }
   bool dimensions(int width, int height, int depth) const {
@@ -293,7 +296,25 @@ class D3DProgramBuffer {
         SUCCEEDED(prepareDevice_->CreateRenderTargetView(y_.get(), nullptr, yView_.put())) &&
         SUCCEEDED(prepareDevice_->CreateRenderTargetView(uv_.get(), nullptr, uvView_.put()));
   }
-  bool prepareNv12(Slot& slot) {
+  bool waitForPreparationPoll() {
+    // A condition-variable 100 us wait is rounded to the system timer tick.
+    // Repeating it for Map and GetData consumed the small Program buffer lead.
+    // This timer belongs only to the preparation worker; never share a timer
+    // with delivery, where resetting it would change the playout deadline.
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stopped_) return false;
+    }
+    LARGE_INTEGER due; due.QuadPart = -1000;
+    if (prepareTimer_ && ::SetWaitableTimer(prepareTimer_, &due, 0, nullptr, nullptr, FALSE)) {
+      ::WaitForSingleObject(prepareTimer_, 3);
+      std::lock_guard<std::mutex> lock(mutex_);
+      return !stopped_;
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    return !changed_.wait_for(lock, std::chrono::microseconds(100), [&] { return stopped_; });
+  }
+  void submitNv12(Slot& slot) {
     auto* context = prepareContext_.get();
     context->IASetInputLayout(nullptr);
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -309,7 +330,9 @@ class D3DProgramBuffer {
     draw(yView_.get(), psY_.get(), 1920, 1080); draw(uvView_.get(), psUv_.get(), 960, 540);
     ID3D11ShaderResourceView* none[] = {nullptr}; context->PSSetShaderResources(0, 1, none);
     context->CopyResource(yRead_.get(), y_.get()); context->CopyResource(uvRead_.get(), uv_.get());
-    context->Flush(); // Submit once; the nonblocking Map polls never flush implicitly.
+  }
+  bool readNv12(Slot& slot) {
+    auto* context = prepareContext_.get();
     static core::FrameAllocationFailures allocationFailures("program-buffer-nv12");
     auto pixels = core::tryMakeFrameBuffer(1920u * 1080u * 3u / 2u);
     if (!pixels) {
@@ -332,8 +355,7 @@ class D3DProgramBuffer {
               result == DXGI_ERROR_WAS_STILL_DRAWING);
           return false;
         }
-        std::unique_lock<std::mutex> wait(mutex_);
-        if (changed_.wait_for(wait, std::chrono::microseconds(100), [&] { return stopped_; })) return false;
+        if (!waitForPreparationPoll()) return false;
       }
       for (int row = 0; row < rows; ++row) std::memcpy(pixels->data() + offset + static_cast<size_t>(row) * 1920,
           static_cast<const uint8_t*>(mapped.pData) + static_cast<size_t>(row) * mapped.RowPitch, 1920);
@@ -365,8 +387,7 @@ class D3DProgramBuffer {
             !FAILED(result));
         return false;
       }
-      std::unique_lock<std::mutex> wait(mutex_);
-      if (changed_.wait_for(wait, std::chrono::microseconds(100), [&] { return stopped_; })) return false;
+      if (!waitForPreparationPoll()) return false;
     }
   }
   void prepareLoop() {
@@ -423,13 +444,26 @@ class D3DProgramBuffer {
       }
       const auto prepareBegin = std::chrono::steady_clock::now();
       if (beforePrepare_) beforePrepare_(slot->productionSlot);
-      const bool pixelsReady = !slot->needsNv12 || prepareNv12(*slot);
+      if (slot->needsNv12) submitNv12(*slot);
       prepareContext_->CopyResource(slot->snapshot.get(), slot->prepareTexture.get());
       // Return the input key after all preparation reads. Ready still requires
       // actual GPU completion, and the slot cannot be rewritten until both
       // optional snapshot readers have completed.
       const bool released = slot->prepareMutex->ReleaseSync(0) == S_OK;
-      const bool ready = pixelsReady && released && completePreparation();
+      // One completion fence covers NV12 staging AND the immutable snapshot.
+      // Do not wait for staging first and then submit a second GPU round trip.
+      const bool gpuReady = released && completePreparation();
+      const auto gpuAt = std::chrono::steady_clock::now();
+      const bool ready = gpuReady && (!slot->needsNv12 || readNv12(*slot));
+      const auto completedAt = std::chrono::steady_clock::now();
+      if (completedAt - prepareBegin >= std::chrono::milliseconds(10) &&
+          completedAt - lastSlowPreparationLog_ >= std::chrono::seconds(1)) {
+        lastSlowPreparationLog_ = completedAt;
+        ::corevideo::core::nativeLogf("[program-buffer-prepare] slot=%lld gpu_completion_us=%lld readback_copy_us=%lld\n",
+            static_cast<long long>(slot->productionSlot),
+            static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(gpuAt - prepareBegin).count()),
+            static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(completedAt - gpuAt).count()));
+      }
       {
         std::lock_guard<std::mutex> lock(mutex_);
         diagnostics_.lastPreparationMs = std::chrono::duration<double, std::milli>(
@@ -692,6 +726,8 @@ class D3DProgramBuffer {
   std::function<void(const ProgramFrame&)> deliveredCallback_;
   std::thread prepareThread_, deliveryThread_, shellThread_, multiviewThread_;
   HANDLE wakeEvent_ = nullptr;
+  HANDLE prepareTimer_ = nullptr;
+  std::chrono::steady_clock::time_point lastSlowPreparationLog_{};
   std::chrono::steady_clock::time_point lastExpiredSkipLog_{};
   ComPtrLite<ID3D11Device> prepareDevice_;
   ComPtrLite<ID3D11DeviceContext> prepareContext_;

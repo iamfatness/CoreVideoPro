@@ -2,6 +2,11 @@
 #include "modules/VirtualCameraDeliveryEvidence.h"
 
 namespace corevideo::modules {
+// Frame Server does not inherit the publisher's environment. Recovery must be
+// the production default; an explicit reader-process "0" is an A/B diagnostic.
+inline bool cameraReadRetryEnabled(const wchar_t* overrideValue) {
+  return !(overrideValue && overrideValue[0] == L'0' && overrideValue[1] == L'\0');
+}
 // Retry only transient publication races. Bound both elapsed time and copy
 // attempts; an absent/broken publisher must not turn into a busy polling loop.
 template <typename Read, typename Now, typename Wait>

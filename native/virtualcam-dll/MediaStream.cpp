@@ -27,7 +27,12 @@ HRESULT MediaStream::RuntimeClassInitialize(MediaSource* source, IMFStreamDescri
   fps_ = fps == 0 ? 30 : fps;
   frameDuration_ = 10000000LL / static_cast<LONGLONG>(fps_);
   wchar_t retryFlag[3]{};
-  retryTransientRead_ = GetEnvironmentVariableW(L"COREVIDEO_CAMERA_READ_RETRY", retryFlag, 3) == 1 && retryFlag[0] == L'1';
+  if (GetEnvironmentVariableW(L"COREVIDEO_CAMERA_READ_RETRY", retryFlag, 3) != 1) retryFlag[0] = L'\0';
+  retryTransientRead_ = corevideo::modules::cameraReadRetryEnabled(retryFlag);
+#if defined(COREVIDEO_VCAM_ISOLATED_PUBLICATION_QA) && COREVIDEO_VCAM_ISOLATED_PUBLICATION_QA
+  // Preserve the explicitly named off/on experiment's baseline.
+  retryTransientRead_ = false;
+#endif
 #if defined(COREVIDEO_CAMERA_READ_RETRY_QA) && COREVIDEO_CAMERA_READ_RETRY_QA
   retryTransientRead_ = true;
   VcamServeLog("[vcam-retry-qa] diagnostic DLL: bounded publication wait enabled");

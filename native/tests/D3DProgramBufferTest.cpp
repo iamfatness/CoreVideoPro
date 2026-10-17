@@ -216,6 +216,7 @@ TEST(D3DProgramBuffer, SustainsFullSizeNv12PreparationAtSixtyHertz) {
   ASSERT_TRUE(buffer.valid());
   const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
   const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+  std::vector<int64_t> identities;
   for (int slot = 0; slot < 180; ++slot) {
     std::this_thread::sleep_until(anchor + std::chrono::nanoseconds(static_cast<int64_t>(slot) * 1'000'000'000 / 60));
     ProgramFrame frame; frame.frameNumber = slot + 1; frame.productionSlot = slot;
@@ -223,17 +224,22 @@ TEST(D3DProgramBuffer, SustainsFullSizeNv12PreparationAtSixtyHertz) {
     buffer.submit(context.get(), source.get(), std::move(frame), true);
     context->Flush();
     ProgramFrame delivered;
-    while (buffer.take(delivered, 0)) {}
+    while (buffer.take(delivered, 0)) identities.push_back(delivered.frameNumber);
   }
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  // Drain the actual tail, then inspect before an intentionally stopped
+  // producer creates idle underruns. Every submitted identity must arrive.
+  ProgramFrame tail;
+  while (identities.size() < 180 && buffer.take(tail, 100)) identities.push_back(tail.frameNumber);
   const auto diagnostics = buffer.diagnostics();
   std::cerr << "full-size Nv12 produced=" << diagnostics.produced
             << " delivered=" << diagnostics.delivered
             << " underruns=" << diagnostics.underruns
             << " overflows=" << diagnostics.overflows << '\n';
-  EXPECT_GE(diagnostics.delivered, 170u);
-  EXPECT_LE(diagnostics.underruns, 5u);
-  EXPECT_LE(diagnostics.overflows, 5u);
+  EXPECT_EQ(identities.size(), 180u);
+  for (size_t i = 0; i < identities.size(); ++i) EXPECT_EQ(identities[i], static_cast<int64_t>(i + 1));
+  EXPECT_EQ(diagnostics.delivered, 180u);
+  EXPECT_EQ(diagnostics.underruns, 0u);
+  EXPECT_EQ(diagnostics.overflows, 0u);
 }
 
 TEST(D3DProgramBuffer, LateReadyHeadDoesNotStealTheFollowingDeadline) {

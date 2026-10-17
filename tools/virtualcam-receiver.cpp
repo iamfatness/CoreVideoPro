@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 #include "modules/DeliveryCounterPattern.h"
 using Microsoft::WRL::ComPtr;
 using Clock = std::chrono::steady_clock;
@@ -34,7 +35,15 @@ int main(int argc, char** argv) {
     }
   });
   int result = 0;
+  struct Observation { uint64_t sample; int64_t arrival, host, pts, identity; };
+  // Keep evidence I/O off the capture thread. A redirected printf can block
+  // on disk/pipe backpressure and create the receiver stall we are measuring.
+  // The two-hour CLI limit bounds this at ~18 MiB; never overwrite old rows.
+  std::vector<Observation> observations;
+  const size_t maximumObservations = static_cast<size_t>(seconds) * 64 + 128;
+  bool captureComplete = false;
   try {
+    observations.reserve(maximumObservations);
     check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "CoInitializeEx");
     check(MFStartup(MF_VERSION), "MFStartup");
     {
@@ -87,8 +96,12 @@ int main(int argc, char** argv) {
       check(MFGetAttributeSize(actual.Get(), MF_MT_FRAME_SIZE, &width, &height), "actual size");
       check(MFGetAttributeRatio(actual.Get(), MF_MT_FRAME_RATE, &numerator, &denominator), "actual fps");
       if (width != 1920 || height != 1080 || numerator != 60 || denominator != 1) throw std::runtime_error("Negotiated format differs from 1080p60.");
-      std::printf("{\"schema\":\"camera-pixel-receiver-v1\",\"receiverMode\":\"%s\",\"width\":%u,\"height\":%u,\"fpsNumerator\":%u,\"fpsDenominator\":%u}\n", direct ? "direct-dll" : "os-camera", width, height, numerator, denominator);
       const auto start = Clock::now(); uint64_t samples = 0;
+      // Anchor receiver-monotonic arrivals to UTC so a different camera run
+      // cannot be substituted for the measured full-workload interval.
+      const auto startUnixUs = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count();
+      std::printf("{\"schema\":\"camera-pixel-receiver-v1\",\"receiverMode\":\"%s\",\"width\":%u,\"height\":%u,\"fpsNumerator\":%u,\"fpsDenominator\":%u,\"startUnixUs\":%lld}\n", direct ? "direct-dll" : "os-camera", width, height, numerator, denominator, startUnixUs);
       while (Clock::now() - start < std::chrono::seconds(seconds)) {
         DWORD flags = 0; LONGLONG pts = 0; ComPtr<IMFSample> sample;
         check(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &pts, &sample), "ReadSample");
@@ -106,15 +119,22 @@ int main(int argc, char** argv) {
         UINT32 rawStride = width; (void)actual->GetUINT32(MF_MT_DEFAULT_STRIDE, &rawStride);
         const auto identity = corevideo::modules::decodeDeliveryCounter(bytes, length, width, height, static_cast<LONG>(rawStride));
         check(buffer->Unlock(), "buffer unlock");
-        std::printf("{\"sample\":%llu,\"arrivalUs\":%lld,\"arrivalHostUs\":%lld,\"pts100ns\":%lld,\"identity\":", ++samples, arrival, arrivalHost, pts);
-        if (identity) std::printf("%u", *identity); else std::printf("null");
-        std::printf("}\n");
+        if (observations.size() == maximumObservations) throw std::runtime_error("Receiver evidence capacity exceeded; capture incomplete.");
+        observations.push_back({++samples, arrival, arrivalHost, pts, identity ? static_cast<int64_t>(*identity) : -1});
       }
-      std::printf("{\"complete\":true,\"samples\":%llu}\n", samples);
+      captureComplete = true;
       reader.Reset(); source->Shutdown(); source.Reset(); selected->ShutdownObject();
     }
     MFShutdown(); CoUninitialize();
   } catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); result = 2; }
+  for (const auto& row : observations) {
+    std::printf("{\"sample\":%llu,\"arrivalUs\":%lld,\"arrivalHostUs\":%lld,\"pts100ns\":%lld,\"identity\":",
+        row.sample, row.arrival, row.host, row.pts);
+    if (row.identity >= 0) std::printf("%lld", row.identity); else std::printf("null");
+    std::printf("}\n");
+  }
+  if (captureComplete && result == 0) std::printf("{\"complete\":true,\"samples\":%llu}\n", static_cast<uint64_t>(observations.size()));
+  if (std::fflush(stdout) != 0 || std::ferror(stdout)) result = 2;
   watchdog.request_stop();
   return result;
 }

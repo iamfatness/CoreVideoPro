@@ -9,6 +9,9 @@ function completeEvidence() {
   const enabledOutputs = ['recording:program', 'virtual-camera:program', ...requiredIsoIds.map(id => 'recording:iso:' + id)];
   const requiredPaths = ['cpu-submission', 'program-gpu', 'program-presentation', 'preview-presentation', 'multiview-presentation', ...enabledOutputs];
   return { startTime, endTime, requiredInputIds, requiredIsoIds, monitorProbeVerdict: { functionalPassed: true },
+    candidateCameraSha256: 'a'.repeat(64),
+    cameraInstallation: { moduleInspection: 'observed', loadedIdentityMatchesRegistration: true,
+      registeredFileMatchesManifest: true, registeredFileSha256: 'a'.repeat(64) },
     cameraPixelVerdict: { osCameraContinuityVerified: true, durationSeconds: 1800 },
     cameraPixelCoverage: { complete: true, startTime, endTime },
     samples: Array.from({ length: 181 }, (_, i) => ({ collectedAtMs: i * 10000, processGeneration: 'one',
@@ -29,6 +32,20 @@ function completeEvidence() {
     } },
   };
 }
+
+test('registration alone or a cached old DLL cannot qualify a camera fix', () => {
+  for (const change of [
+    r => { delete r.cameraInstallation; },
+    r => { r.cameraInstallation.moduleInspection = 'unavailable'; },
+    r => { r.cameraInstallation.loadedIdentityMatchesRegistration = false; },
+    r => { r.cameraInstallation.registeredFileSha256 = 'b'.repeat(64); },
+  ]) {
+    const report = completeEvidence(); change(report);
+    const verdict = judgeRedesignWorkload(report);
+    assert.equal(verdict.passed, false);
+    assert.ok(verdict.errors.some(x => x.includes('tested candidate')));
+  }
+});
 
 test('complete matching evidence can qualify, but one display stall cannot', () => {
   const evidence = completeEvidence();
