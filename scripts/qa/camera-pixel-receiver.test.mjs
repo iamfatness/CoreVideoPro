@@ -32,6 +32,16 @@ test('rejects repeated identities even at a perfect 60fps arrival rate', () => {
   const rows = fixture(); rows[50].identity = rows[49].identity;
   assert.equal(judge(rows).receiverPixelContinuityPassed, false); assert.equal(judge(rows).repeated, 1);
 });
+test('multimedia scheduling does not waive pixel loss or a late receiver interval', () => {
+  for (const failure of ['identity', 'arrival']) {
+    const rows = fixture(); rows[0].receiverScheduling = 'Playback';
+    if (failure === 'identity') rows[50].identity = rows[49].identity;
+    else rows[50].arrivalUs += 20000;
+    const verdict = judge(rows);
+    assert.equal(verdict.receiverScheduling, 'Playback');
+    assert.equal(verdict.receiverPixelContinuityPassed, false);
+  }
+});
 test('rejects missing, torn and reordered identities', () => {
   for (const value of [null, 1, 900]) { const rows = fixture(); rows[50].identity = value; assert.equal(judge(rows).receiverPixelContinuityPassed, false); }
 });

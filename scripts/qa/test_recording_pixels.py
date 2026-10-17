@@ -40,13 +40,20 @@ class RecordingPixelDecoderTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pixels.judge("unused.mp4", first_identity=first, last_identity=last)
 
+    def test_missing_or_invalid_source_time_base_is_rejected(self):
+        for clock in ('0', '-1/60000'):
+            probe = Mock(stdout='{"streams":[{"width":1920,"height":1080,"r_frame_rate":"60/1","time_base":"'+clock+'"}]}')
+            with patch.object(pixels.subprocess, "run", return_value=probe):
+                with self.assertRaises(ValueError):
+                    pixels.judge("unused.mp4")
+
     def verdict(self, identities):
         data = b"".join(self.pattern("".join(str((n >> bit) & 1) for bit in range(32)))
             if n is not None else bytes([128]) * 3840 for n in identities)
         decoder = Mock(stdout=io.BytesIO(data))
         decoder.wait.return_value = 0
         decoder.poll.return_value = 0
-        probe = Mock(stdout='{"streams":[{"width":1920,"height":1080,"r_frame_rate":"60/1"}]}')
+        probe = Mock(stdout='{"streams":[{"width":1920,"height":1080,"r_frame_rate":"60/1","time_base":"1/10000000"}]}')
         with patch.object(pixels.subprocess, "run", return_value=probe), \
              patch.object(pixels.subprocess, "Popen", return_value=decoder):
             return pixels.judge("test.mp4", minimum_seconds=1, first_identity=100, last_identity=159)

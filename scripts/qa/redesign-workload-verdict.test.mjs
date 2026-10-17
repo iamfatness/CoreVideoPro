@@ -18,7 +18,7 @@ function completeEvidence() {
       firstIdentity: 1, lastIdentity: 108001, samples: 108001 },
     cameraPixelCoverage: { complete: true, startTime, endTime },
     samples: Array.from({ length: 181 }, (_, i) => ({ collectedAtMs: i * 10000, processGeneration: 'one',
-      displayState: { visible: true, minimized: false }, snapshot: {
+      displayState: { visible: true, minimized: false, desktopUnlocked: true }, snapshot: {
       outputProfile: { width: 1920, height: 1080, fps: 60 }, meetingState: 'in_meeting',
       realtimeEvidence: { audio: { audioLostSamples: 0, pacerReanchors: 0 }, monitorWorker: { inputs: { sources: requiredInputIds.map(sourceId => ({ sourceId, state: 'ready', frameId: i * 600 + 1 })) } } },
       recording: { active: true, lifecycle: { state: 'producing' },
@@ -105,6 +105,15 @@ test('hidden, minimized or unobserved monitor windows cannot qualify a display s
     const verdict = judgeRedesignWorkload(evidence);
     assert.equal(verdict.passed, false);
     assert.ok(verdict.errors.some(x => x.includes('monitor window')));
+  }
+});
+test('a locked or unobserved desktop cannot qualify even with a visible window', () => {
+  for (const unlocked of [false, undefined]) {
+    const evidence = completeEvidence();
+    evidence.samples[90].displayState.desktopUnlocked = unlocked;
+    const verdict = judgeRedesignWorkload(evidence);
+    assert.equal(verdict.passed, false);
+    assert.ok(verdict.errors.some(x => x.includes('unlocked desktop')));
   }
 });
 

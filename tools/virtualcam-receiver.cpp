@@ -2,6 +2,7 @@
 // never the publisher mapping. stdout is bounded-duration NDJSON evidence.
 #define NOMINMAX
 #include <windows.h>
+#include <avrt.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -21,9 +22,18 @@ static void check(HRESULT hr, const char* operation) {
   if (FAILED(hr)) { char text[160]; std::snprintf(text, sizeof(text), "%s failed: 0x%08lx", operation, static_cast<unsigned long>(hr)); throw std::runtime_error(text); }
 }
 int main(int argc, char** argv) {
-  const bool direct = argc == 4 && std::string(argv[2]) == "--dll";
-  const int seconds = argc == 2 || direct ? std::atoi(argv[1]) : 0;
-  if (seconds < 1 || seconds > 7200) { std::fprintf(stderr, "Usage: corevideo-vcam-receiver SECONDS (1..7200) [--dll ABSOLUTE_PATH]\n"); return 2; }
+  bool failFast = false, multimediaScheduling = false, validOptions = true;
+  const char* dllPath = nullptr;
+  for (int i = 2; i < argc; ++i) {
+    const std::string option(argv[i]);
+    if (option == "--fail-fast") failFast = true;
+    else if (option == "--mmcss") multimediaScheduling = true;
+    else if (option == "--dll" && i + 1 < argc) dllPath = argv[++i];
+    else validOptions = false;
+  }
+  const bool direct = dllPath != nullptr;
+  const int seconds = argc >= 2 && validOptions ? std::atoi(argv[1]) : 0;
+  if (seconds < 1 || seconds > 7200) { std::fprintf(stderr, "Usage: corevideo-vcam-receiver SECONDS (1..7200) [--dll ABSOLUTE_PATH] [--fail-fast] [--mmcss]\n"); return 2; }
   const auto deadline = Clock::now() + std::chrono::seconds(seconds + 30);
   std::jthread watchdog([deadline](std::stop_token stop) {
     while (!stop.stop_requested()) {
@@ -42,7 +52,18 @@ int main(int argc, char** argv) {
   std::vector<Observation> observations;
   const size_t maximumObservations = static_cast<size_t>(seconds) * 64 + 128;
   bool captureComplete = false;
+  bool continuityFailed = false;
   try {
+    struct Scheduling {
+      HANDLE task = nullptr;
+      ~Scheduling() { if (task) AvRevertMmThreadCharacteristics(task); }
+    } scheduling;
+    if (multimediaScheduling) {
+      DWORD index = 0;
+      scheduling.task = AvSetMmThreadCharacteristicsW(L"Playback", &index);
+      check(scheduling.task ? S_OK : HRESULT_FROM_WIN32(GetLastError()), "receiver MMCSS registration");
+      check(AvSetMmThreadPriority(scheduling.task, AVRT_PRIORITY_HIGH) ? S_OK : HRESULT_FROM_WIN32(GetLastError()), "receiver MMCSS priority");
+    }
     observations.reserve(maximumObservations);
     struct StopEvent {
       HANDLE handle = nullptr;
@@ -57,7 +78,7 @@ int main(int argc, char** argv) {
       struct Library { HMODULE handle = nullptr; ~Library() { if (handle) FreeLibrary(handle); } } library;
       ComPtr<IMFActivate> selected;
       if (direct) {
-        library.handle = LoadLibraryExA(argv[3], nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+        library.handle = LoadLibraryExA(dllPath, nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!library.handle) throw std::runtime_error("Direct diagnostic DLL load failed; use an absolute path.");
         using GetFactory = HRESULT(STDAPICALLTYPE*)(REFCLSID, REFIID, void**);
         const auto factoryFunction = reinterpret_cast<GetFactory>(GetProcAddress(library.handle, "DllGetClassObject"));
@@ -108,7 +129,7 @@ int main(int argc, char** argv) {
       // cannot be substituted for the measured full-workload interval.
       const auto startUnixUs = std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::system_clock::now().time_since_epoch()).count();
-      std::printf("{\"schema\":\"camera-pixel-receiver-v1\",\"receiverMode\":\"%s\",\"width\":%u,\"height\":%u,\"fpsNumerator\":%u,\"fpsDenominator\":%u,\"startUnixUs\":%lld}\n", direct ? "direct-dll" : "os-camera", width, height, numerator, denominator, startUnixUs);
+      std::printf("{\"schema\":\"camera-pixel-receiver-v1\",\"receiverMode\":\"%s\",\"width\":%u,\"height\":%u,\"fpsNumerator\":%u,\"fpsDenominator\":%u,\"startUnixUs\":%lld,\"receiverScheduling\":\"%s\",\"receiverThreadId\":%lu,\"failFast\":%s}\n", direct ? "direct-dll" : "os-camera", width, height, numerator, denominator, startUnixUs, multimediaScheduling ? "Playback" : "ordinary", GetCurrentThreadId(), failFast ? "true" : "false");
       while (Clock::now() - start < std::chrono::seconds(seconds) &&
              WaitForSingleObject(stopEvent.handle, 0) != WAIT_OBJECT_0) {
         DWORD flags = 0; LONGLONG pts = 0; ComPtr<IMFSample> sample;
@@ -129,6 +150,21 @@ int main(int argc, char** argv) {
         check(buffer->Unlock(), "buffer unlock");
         if (observations.size() == maximumObservations) throw std::runtime_error("Receiver evidence capacity exceeded; capture incomplete.");
         observations.push_back({++samples, arrival, arrivalHost, pts, identity ? static_cast<int64_t>(*identity) : -1});
+        // Stop after preserving the first failed observation so an external
+        // controller can save circular ETW evidence before it rolls over.
+        // The ordinary pixel judge still rejects this short/failed capture.
+        if (failFast && observations.size() > 1 &&
+            observations[observations.size() - 2].arrival >= 30000000) {
+          const auto& previous = observations[observations.size() - 2];
+          const auto& current = observations.back();
+          if (current.identity < 0 || current.identity != previous.identity + 1 ||
+              current.arrival - previous.arrival > 33400) {
+            continuityFailed = true;
+            std::fprintf(stderr, "First receiver failure: sample=%llu identity=%lld previous=%lld intervalUs=%lld hostUs=%lld\n",
+                current.sample, current.identity, previous.identity, current.arrival - previous.arrival, current.host);
+            break;
+          }
+        }
       }
       captureComplete = true;
       reader.Reset(); source->Shutdown(); source.Reset(); selected->ShutdownObject();
@@ -144,5 +180,5 @@ int main(int argc, char** argv) {
   if (captureComplete && result == 0) std::printf("{\"complete\":true,\"samples\":%llu}\n", static_cast<uint64_t>(observations.size()));
   if (std::fflush(stdout) != 0 || std::ferror(stdout)) result = 2;
   watchdog.request_stop();
-  return result;
+  return result == 0 && continuityFailed ? 1 : result;
 }

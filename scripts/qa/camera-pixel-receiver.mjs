@@ -69,6 +69,7 @@ export function judgeCameraPixels(text, { warmupSeconds = 30, minimumSeconds = 3
     startTime: anchored ? new Date((header.startUnixUs + measured[0].arrivalUs) / 1000).toISOString() : null,
     endTime: anchored ? new Date((header.startUnixUs + measured.at(-1).arrivalUs) / 1000).toISOString() : null };
   return { schema: 'camera-pixel-verdict-v1', receiverPixelContinuityPassed: errors.length === 0,
+    receiverScheduling: header?.receiverScheduling ?? 'ordinary',
     receiverMode, osCameraContinuityVerified: errors.length === 0 && receiverMode === 'os-camera',
     physicalDisplayVerified: false, warmupSeconds, durationSeconds, samples: measured.length, coverage,
     firstIdentity: measured[0]?.identity ?? null, lastIdentity: measured.at(-1)?.identity ?? null,

@@ -39,6 +39,8 @@ export function judgeRedesignWorkload(report) {
     }
     if (row?.displayState?.visible !== true || row?.displayState?.minimized !== false)
       errors.push(`${index}: visible, restored monitor window was not observed.`);
+    if (row?.displayState?.desktopUnlocked !== true)
+      errors.push(`${index}: unlocked desktop was not observed.`);
     if (s.outputProfile?.width !== 1920 || s.outputProfile?.height !== 1080 || s.outputProfile?.fps !== 60)
       errors.push(`${index}: output is not 1080p60.`);
     if (s.meetingState !== 'in_meeting') errors.push(`${index}: real meeting is not connected.`);

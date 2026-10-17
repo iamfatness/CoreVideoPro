@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import tempfile
+from fractions import Fraction
 
 
 def decode_rows(pixels, width=1920):
@@ -34,11 +35,15 @@ def judge(path, ffmpeg="ffmpeg", ffprobe="ffprobe", minimum_seconds=1800, first_
     if first_identity is not None and not (0 <= first_identity <= last_identity <= 0xffffffff):
         raise ValueError("Invalid identity interval")
     probe = subprocess.run([ffprobe, "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,r_frame_rate", "-of", "json", path],
+        "-show_entries", "stream=width,height,r_frame_rate,time_base", "-of", "json", path],
         capture_output=True, text=True, check=True)
     streams = json.loads(probe.stdout).get("streams", [])
-    if len(streams) != 1 or streams[0] != {"width": 1920, "height": 1080, "r_frame_rate": "60/1"}:
+    if len(streams) != 1 or any(streams[0].get(key) != value for key, value in
+        {"width": 1920, "height": 1080, "r_frame_rate": "60/1"}.items()):
         raise ValueError("Expected a finalized 1920x1080 60/1 Program recording")
+    time_base = str(Fraction(streams[0].get("time_base", "0")))
+    if Fraction(time_base) <= 0:
+        raise ValueError("Missing recording time base")
     # Luma guard rows only; the decoder still observes every real encoded frame.
     filters = ("format=gray,split[t][b];[t]crop=1920:1:0:16[top];"
                "[b]crop=1920:1:0:1064[bottom];[top][bottom]vstack")
@@ -49,7 +54,9 @@ def judge(path, ffmpeg="ffmpeg", ffprobe="ffprobe", minimum_seconds=1800, first_
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen([ffmpeg, "-nostdin", "-v", "error", "-i", path,
             "-filter_complex", filters, "-an", "-fps_mode", "passthrough",
-            "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1"],
+            # Keep the source time base: rawvideo's default 1/60 encoder clock
+            # can round two distinct tail timestamps onto the same output DTS.
+            "-enc_time_base", time_base, "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1"],
             stdout=subprocess.PIPE, stderr=errors)
         try:
             while True:
@@ -99,6 +106,7 @@ def judge(path, ffmpeg="ffmpeg", ffprobe="ffprobe", minimum_seconds=1800, first_
         "rangeViolations": range_violations,
         "decoderComplete": result == 0, "decoderErrors": error_text,
         "minimumSeconds": minimum_seconds,
+        "sourceTimeBase": time_base,
         "limitation": "Finalized recording pixels only; does not establish real-time output deadlines, audio or display presentation."}
 
 

@@ -22,7 +22,7 @@ if(WIN32)
   add_executable(corevideo-vcam-receiver ../tools/virtualcam-receiver.cpp)
   target_compile_features(corevideo-vcam-receiver PRIVATE cxx_std_20)
   target_include_directories(corevideo-vcam-receiver PRIVATE src)
-  target_link_libraries(corevideo-vcam-receiver PRIVATE mfplat mfreadwrite mfuuid mf ole32)
+  target_link_libraries(corevideo-vcam-receiver PRIVATE mfplat mfreadwrite mfuuid mf ole32 avrt)
   set_target_properties(corevideo-vcam-receiver PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})

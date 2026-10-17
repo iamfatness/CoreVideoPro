@@ -150,6 +150,13 @@ timestamps and decoded pixel identities remain the evidence; buffering logs
 does not smooth timestamps or relax the continuity/interval judge. An interrupted
 capture without its completion record cannot pass.
 
+A visible HWND does not prove an available interactive desktop. Qualification
+requires an explicitly observed unlocked Windows session throughout the run.
+The collector refuses to start when locked and terminates measurement on lock
+or any required input whose identity stops advancing between observations.
+WGC can retain its last frame and report connected/ready on a locked desktop;
+that is not an active screen workload. Preserve such a run as partial evidence.
+
 The camera DLL likewise queues serve diagnostics outside `RequestSample`.
 A fixed 128-message queue uses a nonblocking producer lock; a blocked file sink
 drops diagnostics when the queue fills rather than delaying camera samples or
@@ -164,6 +171,16 @@ These tests establish isolation from diagnostic I/O, not live cadence acceptance
 The receiver's named stop event (`Local\CoreVideoPixelProbeStop-PID`) ends a
 diagnostic trial gracefully and preserves the buffered observations. Early
 completion does not satisfy the 30-minute coverage requirement.
+
+For receiver scheduling comparisons, `--mmcss` registers the capture caller
+under Windows `Playback` and records that mode and thread ID in the header.
+The default remains ordinary scheduling; report which was tested. A scheduled
+reference receiver does not qualify every third-party consumer. The identity,
+cadence, duration and maximum-arrival-interval gates are identical in both modes.
+`--fail-fast` preserves the first failing observation after the fixed warmup,
+then stops so a circular scheduling trace can be saved promptly. A short capture
+cannot pass the full-workload duration requirement. Do not discard a receiver
+failure merely because source emission counters remained clean.
 
 ## Meter work belongs within the audio budget
 
