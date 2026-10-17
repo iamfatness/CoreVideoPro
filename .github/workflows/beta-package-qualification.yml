@@ -19,8 +19,11 @@ jobs:
   installed-windows-beta:
     runs-on: windows-latest
     timeout-minutes: 20
+    # GitHub hides draft releases from read-only installation tokens. Keep the
+    # token scoped to the metadata/download step, not the installer process.
+    permissions:
+      contents: write
     env:
-      GH_TOKEN: ${{ github.token }}
       BETA_TAG: ${{ inputs.releaseTag }}
       BETA_COMMIT: ${{ inputs.expectedCommit }}
     steps:
@@ -29,6 +32,8 @@ jobs:
           ref: ${{ inputs.expectedCommit }}
           persist-credentials: false
       - name: Verify immutable release identity and asset hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
