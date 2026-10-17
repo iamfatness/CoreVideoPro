@@ -4,9 +4,12 @@
 namespace corevideo::graphics {
 using rpc::Json;
 GraphicsTemplateRegistry::GraphicsTemplateRegistry() {
-  auto builtin = GraphicsTemplate::corporateLowerThird();
-  definitions_[{builtin->id(), builtin->version()}] = builtin;
-  documentBytes_ = builtin->document().stringify().size();
+  for (const auto& builtin : GraphicsTemplate::curated()) {
+    definitions_[{builtin->id(), builtin->version()}] = builtin;
+    documentBytes_ += builtin->document().stringify().size();
+    for (const auto& entry : builtin->assets()) if (assetPool_.emplace(entry.second->sha256,entry.second->encoded).second)
+      assetBytes_ += entry.second->encoded->size();
+  }
   publishLocked();
 }
 GraphicsTemplateRegistry::~GraphicsTemplateRegistry() {

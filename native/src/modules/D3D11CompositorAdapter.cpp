@@ -693,6 +693,7 @@ class D3D11Compositor final : public ICompositor {
         if (key.overlay.keyPosition.find("upper")!=std::string::npos) key.rect.y=float(a.safeOffsetY);
         if (key.overlay.keyPosition.find("right")!=std::string::npos) key.rect.x=1.f-float(a.safeOffsetX)-w;
         if (!a.enabled) {const auto legacy=compositor::lowerThirdOverlay();key.rect={legacy.x,legacy.y,legacy.width,legacy.height};key.opacity=.92f;}
+        if (key.overlay.graphicsAuthoringRect) key.rect=*key.overlay.graphicsAuthoringRect;
         preview.layers.push_back(key);
         observation.sourceEpoch=1; observation.sourceFrameId=demand.revision; observation.status="ready";
         const auto image=renderPreview(preview,{});
@@ -1478,7 +1479,7 @@ class D3D11Compositor final : public ICompositor {
 
     // Overlay/lower-third/caption layers go through the raster stage.
     if (layer.plan.hasOverlayContent && compositorLayerIsOverlay(layer.plan)) {
-      const bool composited = drawOverlayLayer(layer, renderPlan, rect, layerAlpha);
+      const bool composited = drawOverlayLayer(layer, renderPlan, rect, layerAlpha, traceFrame);
       if (traceFrame && composited && !layer.plan.graphicsInstanceId.empty()) {
         const auto resource = overlayRaster_.preparedResource();
         if (resource && resource != layer.plan.graphicsPreparedResource)
@@ -1717,7 +1718,7 @@ class D3D11Compositor final : public ICompositor {
       const ResolvedLayer& layer,
       const CompositorRenderPlan& renderPlan,
       const compositor::LayerRect& rect,
-      float layerAlpha) {
+      float layerAlpha, ProgramFrame* traceFrame = nullptr) {
     if (layer.plan.graphicsBoundSourceGeneration && !hasGraphicsSourceDraw(layer.plan.graphicsBoundParticipantId,
         layer.plan.graphicsBoundSourceGeneration)) return false;
     bool composited = false;
@@ -1758,6 +1759,10 @@ class D3D11Compositor final : public ICompositor {
       overlayRaster_.refuseGpuLease(); overlayView = nullptr;
     }
     if (!layer.plan.graphicsInstanceId.empty() && !overlayView) return false;
+    if (layer.plan.graphicsAwaitingEntrance) {
+      if (traceFrame) traceFrame->graphicsFacts.push_back({layer.plan.graphicsInstanceId,layer.plan.graphicsRevision,"composition-eligible",""});
+      return false;
+    }
 
     // Brand-styled band background.
     context_->RSSetState(scissorRasterizerState_.get());

@@ -32,8 +32,8 @@ TEST(GraphicsCompositionPixel, VerifiedPackageImagePreservesAlphaAndAcceptedByte
   };
   ASSERT_TRUE(command("graphics-template-install", {{"manifest",graphicsTest::imageDocument(asset).stringify()},{"packageRoot",root}}));
   const auto importLimit = std::chrono::steady_clock::now()+std::chrono::seconds(5);
-  while (graphics.snapshot().get("templates")->asArray().size() != 5 && std::chrono::steady_clock::now()<importLimit) { render(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
-  ASSERT_EQ(5u,graphics.snapshot().get("templates")->asArray().size());
+  while (graphics.snapshot().get("templates")->asArray().size() != 10 && std::chrono::steady_clock::now()<importLimit) { render(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+  ASSERT_EQ(10u,graphics.snapshot().get("templates")->asArray().size());
   ASSERT_TRUE(command("graphics-instance-create", {{"templateId","packaged-logo"},{"templateVersion",1},{"scope","global"}}));
   ASSERT_TRUE(command("graphics-instance-trigger", {{"expectedRevision",1},{"action","show"}}));
   const auto limit = std::chrono::steady_clock::now()+std::chrono::seconds(5);
@@ -118,11 +118,11 @@ TEST(GraphicsRpcPixel, CommandsReachCoreStateAndActualProgramPixels) {
     if (!imports.empty() && imports.back().getString("state") == "installed") break;
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   } while (std::chrono::steady_clock::now() < importLimit);
-  ASSERT_EQ(5u, installed.get("graphics")->get("templates")->asArray().size());
+  ASSERT_EQ(10u, installed.get("graphics")->get("templates")->asArray().size());
   const auto generic = command("graphics-instance-create", {{"templateId", "rpc-imported-lower-third"}, {"templateVersion", 2}, {"scope", "global"},
       {"fields", Json::Object{{"name", "Corporate native — 日本語"}, {"title", ""}}},
       {"animations", Json::Object{{"in", Json::Object{{"type", "none"}}}, {"out", Json::Object{{"type", "none"}}}}}});
-  EXPECT_EQ(5u, generic.get("graphics")->get("templates")->asArray().size());
+  EXPECT_EQ(10u, generic.get("graphics")->get("templates")->asArray().size());
   EXPECT_EQ(2., generic.get("graphics")->get("instances")->asArray().front().getNumber("templateVersion"));
   command("graphics-instance-cue", {{"expectedRevision", 2}});
   const auto cueLimit = std::chrono::steady_clock::now() + std::chrono::seconds(5);

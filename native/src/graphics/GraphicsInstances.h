@@ -5,6 +5,7 @@
 #include "graphics/GraphicsTimeline.h"
 #include "graphics/GraphicsSourceCatalog.h"
 #include "graphics/GraphicsTemplateRegistry.h"
+#include "graphics/GraphicsPlacement.h"
 #include <functional>
 #include <map>
 #include <deque>
@@ -19,10 +20,11 @@ class GraphicsTemplate;
 // are the first consumer; unsupported template families are refused explicitly.
 class GraphicsInstances {
  public:
+  enum class ScopePass { All, Scene, Global };
   explicit GraphicsInstances(std::string epoch = {}, std::function<double()> monotonicMs = {});
   bool apply(const rpc::Json& command);
   void append(modules::CompositorRenderPlan& plan, bool preview,
-              const std::vector<modules::VideoFrame>& frames = {}) const;
+              const std::vector<modules::VideoFrame>& frames = {}, ScopePass scope = ScopePass::All) const;
   void observe(const modules::ProgramFrame& frame);
   void observeZoomSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
                           const std::vector<modules::VideoFrame>& frames = {});
@@ -42,6 +44,7 @@ class GraphicsInstances {
     std::shared_ptr<const GraphicsTemplate> definition;
     std::shared_ptr<const GraphicsTemplateInput> templateInput;
     rpc::Json templateFields;
+    std::optional<GraphicsPlacement> placement;
     bool fieldsReady = false;
   };
   struct Instance {
@@ -50,6 +53,7 @@ class GraphicsInstances {
     std::shared_ptr<const GraphicsPreparedResource> draftResource, cueResource, programResource;
     std::string cuePreparation = "unprepared", cueWarning;
     bool cued = false, showPending = false, updatePending = false;
+    bool awaitingEntrance = false, currentlyComposed = false;
     uint64_t readyRevision = 0;
     uint64_t cueRequestedRevision = 0;
     int64_t firstDrawSubmittedFrame = 0;
@@ -70,7 +74,7 @@ class GraphicsInstances {
   std::map<std::string, Instance> instances_;
   struct Operation { std::string clientId, requestId, fingerprint; rpc::Json result; };
   std::deque<Operation> operations_;
-  std::string epoch_, pendingClient_, pendingFingerprint_;
+  std::string epoch_, pendingClient_, pendingFingerprint_, pendingInstance_;
   std::optional<GraphicsSourceCatalog> sources_;
   uint64_t revisionClock_ = 0;
   rpc::Json lastResult_;

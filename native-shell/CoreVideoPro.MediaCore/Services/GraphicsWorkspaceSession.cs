@@ -14,6 +14,16 @@ public sealed class GraphicsWorkspaceSession
     private readonly List<NativeGraphicsDraft> _undo = [];
     private NativeGraphicsDraft? _gesture, _original;
     private string _statusSignature = "";
+    private long _draftBaseRevision;
+    private sealed record EditState(NativeGraphicsDraft Draft, NativeGraphicsDraft Original, long BaseRevision, NativeGraphicsDraft[] Undo);
+    private readonly Dictionary<string,EditState> _privateEdits = new(StringComparer.Ordinal);
+    private void RememberDraft()
+    {
+        if (SelectedId.Length != 0 && Draft is not null && _original is not null)
+            _privateEdits[SelectedId] = new(Draft,_original,_draftBaseRevision,_undo.ToArray());
+    }
+
+    private NativeGraphicsOperationResult? _lastOperation;
     public GraphicsWorkspaceSession(Func<string, string, CancellationToken, Task<NativeGraphicsOperationResult>> invoke,
         Func<NativeGraphicsState?> observe) => (_invoke, _observe) = (invoke, observe);
 
@@ -57,13 +67,13 @@ public sealed class GraphicsWorkspaceSession
         var epochChanged = State is not null && State.CoreEpoch != state.CoreEpoch;
         State = state;
         if (epochChanged) {
-            SelectedId = ""; Draft = _original = null; _undo.Clear(); _gesture = null;
+            SelectedId = ""; Draft = _original = null; _undo.Clear(); _gesture = null; _privateEdits.Clear();
             Status = "Native core restarted. Graphics remain hidden; choose a saved cue explicitly.";
             PreviewChanged?.Invoke(this, EventArgs.Empty);
         }
         // Preserve collection selection, focus and local drafts as frame facts advance.
         var signature = state.CoreEpoch + "|" + string.Join('|', state.Instances.Select(i =>
-            $"{i.InstanceId}:{i.Revision}:{i.CueRevision}:{i.CuePending}:{i.ProgramRevision}:{i.Preparation}:{i.Visibility}:{i.Warning}:{i.CueWarning}:{i.BindingState}")) +
+            $"{i.InstanceId}:{i.Revision}:{i.CueRevision}:{i.CuePending}:{i.ProgramRevision}:{i.Preparation}:{i.Visibility}:{i.CurrentlyComposed}:{i.Warning}:{i.CueWarning}:{i.BindingState}")) +
             "|" + string.Join('|', state.Templates.Select(t => $"{t.TemplateId}:{t.TemplateVersion}:{t.ManifestHash}")) +
             "|" + string.Join('|', state.TemplateInstalls.Select(i => $"{i.ClientId}:{i.RequestId}:{i.State}:{i.Reason}"));
         if (signature == _statusSignature && !epochChanged) return;
@@ -74,8 +84,11 @@ public sealed class GraphicsWorkspaceSession
     {
         var item = State?.Instances.FirstOrDefault(i => i.InstanceId == id);
         if (item is null || Busy) return;
+        RememberDraft();
         SelectedId = id; _undo.Clear(); _gesture = null; CompareOriginal = false;
+        _draftBaseRevision = item.Revision;
         Draft = From(item, false); _original = From(item, item.ProgramRevision > 0);
+        if (_privateEdits.TryGetValue(id,out var saved)) { Draft=saved.Draft; _original=saved.Original; _draftBaseRevision=saved.BaseRevision; _undo.AddRange(saved.Undo); }
         Status = item.ProgramRevision > 0 ? "Editing on-air instance — changes not yet applied." : "Private draft — Cue and Program are unchanged.";
         Changed?.Invoke(this, EventArgs.Empty); PreviewChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -93,6 +106,7 @@ public sealed class GraphicsWorkspaceSession
         var fields = Draft.Fields.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal);
         fields[field] = value.Clone(); Edit(Draft with { Fields = JsonSerializer.SerializeToElement(fields, Json) });
     }
+    public void SetPlacement(NativeGraphicsPlacement? placement) { if (Draft is not null && (placement is null || placement.IsValid)) Edit(Draft with { Placement = placement }); }
     public void SetStyle(LowerThirdAppearance style) { if (Draft is not null && style.IsValid) Edit(Draft with { Style = style }); }
     public void BeginGesture() { if (!Busy) _gesture ??= Draft; }
     public void EndGesture() { if (_gesture is { } before && Draft is { } after && !Same(before, after)) PushUndo(before); _gesture = null; }
@@ -104,30 +118,50 @@ public sealed class GraphicsWorkspaceSession
         if (_undo.Count == 0) return;
         Draft = _undo[^1]; _undo.RemoveAt(_undo.Count - 1); CompareOriginal = false; NotifyPreview();
     }
-    public void CancelDraft() { if (Busy || Selected is not { } selected) return; Select(selected.InstanceId); }
+    public void CancelDraft() {
+        if (Busy || Selected is not { } selected) return;
+        Draft = From(selected,false); _original=From(selected,selected.ProgramRevision>0); _draftBaseRevision=selected.Revision;
+        _privateEdits.Remove(selected.InstanceId); _undo.Clear(); _gesture=null; CompareOriginal=false; NotifyPreview();
+    }
     public void SetCompare(bool value) { CompareOriginal = value; NotifyPreview(); }
     private void NotifyPreview() { Changed?.Invoke(this, EventArgs.Empty); PreviewChanged?.Invoke(this, EventArgs.Empty); }
     private void PushUndo(NativeGraphicsDraft value) { if (_undo.Count == 64) _undo.RemoveAt(0); _undo.Add(value); }
 
+    private static NativeGraphicsDraft NewDraft(NativeGraphicsTemplate template)
+    {
+        var fields = template.Runtime == "declarative" ? template.Fields.ToDictionary(f => f.Id,
+            f => f.Default?.Clone() ?? JsonSerializer.SerializeToElement(""), StringComparer.Ordinal) :
+            new Dictionary<string,JsonElement> { ["name"] = JsonSerializer.SerializeToElement("Example guest"), ["title"] = JsonSerializer.SerializeToElement("Producer") };
+        foreach (var field in template.Fields.Where(f => f.Required && f.Type == "string"))
+            if (fields[field.Id].ValueKind == JsonValueKind.String && fields[field.Id].GetString() == "")
+                fields[field.Id] = JsonSerializer.SerializeToElement(field.Id == "name" ? "Example guest" : "Title");
+        return new(template.TemplateId,template.TemplateVersion,JsonSerializer.SerializeToElement(fields,Json),
+            LowerThirdAppearance.FromPreset(template.TemplateId),template.Animations,template.DefaultPlacement);
+    }
+    public void Browse(NativeGraphicsTemplate template)
+    {
+        if (Busy) return;
+        RememberDraft(); SelectedId=""; _undo.Clear(); _gesture=null; CompareOriginal=false; _draftBaseRevision=0;
+        Draft=_original=NewDraft(template);
+        Status="Private library preview — edit this look, then Create hidden cue. Program is unchanged."; NotifyPreview();
+    }
     public Task<bool> CreateAsync(NativeGraphicsTemplate template, string scope = "global", string sceneId = "", CancellationToken cancellation = default) =>
         Run(async () => {
-            var fields = template.Runtime == "declarative" ? template.Fields.ToDictionary(f => f.Id,
-                f => f.Default?.Clone() ?? JsonSerializer.SerializeToElement(""), StringComparer.Ordinal) :
-                new Dictionary<string, JsonElement> { ["name"] = JsonSerializer.SerializeToElement("Example guest"), ["title"] = JsonSerializer.SerializeToElement("Producer") };
-            // A useful new cue starts with representative copy; intentional blanks
-            // in an existing cue are never replaced by this creation-only sample.
-            foreach (var field in template.Fields.Where(f => f.Required && f.Type == "string"))
-                if (fields[field.Id].ValueKind == JsonValueKind.String && fields[field.Id].GetString() == "")
-                    fields[field.Id] = JsonSerializer.SerializeToElement(field.Id == "name" ? "Example guest" : "Title");
+            var draft = Selected is null && Draft?.TemplateId == template.TemplateId && Draft.TemplateVersion == template.TemplateVersion ? Draft : NewDraft(template);
             var id = "graphic-" + Guid.NewGuid().ToString("N");
             if (!await Send("graphics.instance.create", new() { ["instanceId"] = id, ["templateId"] = template.TemplateId,
-                ["templateVersion"] = template.TemplateVersion, ["scope"] = scope, ["sceneId"] = sceneId, ["fields"] = fields }, cancellation)) return false;
+                ["templateVersion"] = template.TemplateVersion, ["scope"] = scope, ["sceneId"] = sceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement }, cancellation)) return false;
             // Selection here is deliberate operator intent, not metadata refresh.
             Busy = false; Select(id); Busy = true; return true;
         });
 
-    public Task<bool> CueAsync(CancellationToken cancellation = default) => Run(async () =>
-        await CommitDraft("cue", cancellation) && await SelectedCommand("graphics.instance.cue", [], cancellation));
+    public Task<bool> CueAsync(CancellationToken cancellation = default) => Run(async () => {
+        if (!await CommitDraft("cue", cancellation)) return false;
+        // The commit result identifies the accepted revision. A newer snapshot
+        // may already contain another client's edit; never cue that edit.
+        return await Send("graphics.instance.cue", new() { ["instanceId"] = SelectedId,
+            ["expectedRevision"] = _draftBaseRevision }, cancellation);
+    });
     public Task<bool> UpdateProgramAsync(CancellationToken cancellation = default) => Run(() => {
         if (Selected is not { ProgramRevision: > 0 }) { Status = "Show a prepared Cue before updating it on air."; return Task.FromResult(false); }
         return CommitDraft("program", cancellation);
@@ -163,7 +197,7 @@ public sealed class GraphicsWorkspaceSession
         if (cue.SourceId.Length != 0 && binding is null) { Status = "Choose the current source explicitly before restoring this bound cue."; return false; }
         var id = "graphic-" + Guid.NewGuid().ToString("N");
         var body = new Dictionary<string, object?> { ["instanceId"] = id, ["templateId"] = draft.TemplateId, ["templateVersion"] = draft.TemplateVersion,
-            ["scope"] = cue.Scope, ["sceneId"] = cue.SceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations };
+            ["scope"] = cue.Scope, ["sceneId"] = cue.SceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement };
         if (binding is not null) body["binding"] = binding;
         if (!await Send("graphics.instance.create", body, cancellation)) return false;
         Busy = false; Select(id); Busy = true;
@@ -178,8 +212,11 @@ public sealed class GraphicsWorkspaceSession
     private async Task<bool> CommitDraft(string target, CancellationToken cancellation)
     {
         if (Draft is not { } draft || Selected is not { } selected) { Status = "Choose a cue first."; return false; }
-        return await Send("graphics.instance.update", new() { ["instanceId"] = selected.InstanceId, ["expectedRevision"] = selected.Revision,
-            ["target"] = target, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations }, cancellation);
+        var accepted = await Send("graphics.instance.update", new() { ["instanceId"] = selected.InstanceId, ["expectedRevision"] = _draftBaseRevision,
+            ["target"] = target, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement }, cancellation);
+        if (accepted && _lastOperation is { CurrentRevision: > 0 } result && result.InstanceId == selected.InstanceId)
+            _draftBaseRevision = result.CurrentRevision;
+        return accepted;
     }
     private Task<bool> SelectedCommand(string action, Dictionary<string, object?> extra, CancellationToken cancellation)
     {
@@ -194,6 +231,7 @@ public sealed class GraphicsWorkspaceSession
         body["schemaVersion"] = 1; body["coreEpoch"] = epoch; body["clientId"] = "graphics-workspace";
         body["requestId"] = "operator-" + Guid.NewGuid().ToString("N");
         var result = await _invoke(action, JsonSerializer.Serialize(body, Json), cancellation);
+        _lastOperation = result;
         Observe(_observe()); Status = result.Reason; return result.Accepted;
     }
     private async Task<bool> Run(Func<Task<bool>> action)
@@ -214,8 +252,8 @@ public sealed class GraphicsWorkspaceSession
                 .ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal), Json);
         }
         return new(item.TemplateId, item.TemplateVersion, fields, program ? item.ProgramStyle ?? item.Style : item.Style,
-            program ? item.ProgramAnimations ?? item.Animations : item.Animations);
+            program ? item.ProgramAnimations ?? item.Animations : item.Animations, program ? item.ProgramPlacement : item.Placement);
     }
     private static bool Same(NativeGraphicsDraft a, NativeGraphicsDraft b) =>
-        a.TemplateId == b.TemplateId && a.TemplateVersion == b.TemplateVersion && a.Style == b.Style && a.Animations == b.Animations && JsonElement.DeepEquals(a.Fields, b.Fields);
+        a.TemplateId == b.TemplateId && a.TemplateVersion == b.TemplateVersion && a.Style == b.Style && a.Animations == b.Animations && a.Placement == b.Placement && JsonElement.DeepEquals(a.Fields, b.Fields);
 }

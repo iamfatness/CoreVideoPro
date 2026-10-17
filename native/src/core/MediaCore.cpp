@@ -4347,8 +4347,9 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
                                       colorGrade_, overlayAssets_, captionEnabled_, captionText_, captionSpeaker_,
                                       videoFrames, tilesLayer_);
   plan.warnings.insert(plan.warnings.end(), sceneValidationWarnings_.begin(), sceneValidationWarnings_.end());
+  graphicsInstances_.append(plan, false, videoFrames, graphics::GraphicsInstances::ScopePass::Scene);
   plan = applyTakeTransition(std::move(plan), videoFrames);
-  graphicsInstances_.append(plan, false, videoFrames);
+  graphicsInstances_.append(plan, false, videoFrames, graphics::GraphicsInstances::ScopePass::Global);
   return plan;
 }
 
@@ -4356,7 +4357,7 @@ modules::CompositorRenderPlan MediaCore::applyTakeTransition(
     modules::CompositorRenderPlan incoming,
     const std::vector<modules::VideoFrame>& videoFrames) const {
   if (takeTransition_.waitingForColdMedia) {
-    return buildRenderPlanForScene(
+    auto outgoing = buildRenderPlanForScene(
         takeTransition_.outgoingSceneId,
         static_cast<int>(takeTransition_.outgoingRoutes.size()),
         static_cast<int>(takeTransition_.outgoingOverlays.size()),
@@ -4364,6 +4365,8 @@ modules::CompositorRenderPlan MediaCore::applyTakeTransition(
         takeTransition_.outgoingColorGrade, takeTransition_.outgoingOverlays,
         takeTransition_.outgoingCaptionEnabled, takeTransition_.outgoingCaptionText,
         takeTransition_.outgoingCaptionSpeaker, videoFrames, takeTransition_.outgoingTiles);
+    graphicsInstances_.append(outgoing, false, videoFrames, graphics::GraphicsInstances::ScopePass::Scene);
+    return outgoing;
   }
   if (!takeTransition_.active || takeTransition_.mode == "cut") {
     return incoming;
@@ -4386,6 +4389,8 @@ modules::CompositorRenderPlan MediaCore::applyTakeTransition(
       takeTransition_.outgoingCaptionSpeaker,
       videoFrames,
       takeTransition_.outgoingTiles);
+
+  graphicsInstances_.append(outgoing, false, videoFrames, graphics::GraphicsInstances::ScopePass::Scene);
 
   // One combined plan has one global grade. Bake each scene's global grade into
   // the layers that do not already carry a route-specific grade, then neutralize

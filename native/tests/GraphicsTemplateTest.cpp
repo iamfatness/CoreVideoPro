@@ -11,7 +11,7 @@ using corevideo::rpc::Json;
 namespace {
 Json::Object manifest() { return GraphicsTemplate::corporateLowerThird()->document().asObject(); }
 Json brand() { return Json::Object{{"brand.primary", "#10203080"}, {"brand.onPrimary", "#FFFFFF"},
-    {"brand.onPrimaryMuted", "#CCDDFF"}, {"brand.fontBody", "Segoe UI"}}; }
+    {"brand.onPrimaryMuted", "#CCDDFF"}, {"brand.accent", "#44C1A1"}, {"brand.fontBody", "Segoe UI"}}; }
 std::shared_ptr<const GraphicsTemplate> load(Json::Object object, std::string& error) {
   return GraphicsTemplate::load(Json(std::move(object)).stringify(), error);
 }
@@ -191,6 +191,7 @@ TEST(GraphicsTemplateRegistry, EncodedPackagePoolSharesVersionsAndFailedImportCa
   std::string error;
   const auto asset = corevideo::graphics::graphicsAssetFromBytes("logo", graphicsTest::png(), error); ASSERT_TRUE(asset);
   graphicsTest::Package package(asset); corevideo::graphics::GraphicsTemplateRegistry registry;
+  const auto baselineBytes=registry.poll()->encodedAssetBytes;
   const auto install = [&](const std::string& request, const Json& document) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     std::string admission;
@@ -210,15 +211,15 @@ TEST(GraphicsTemplateRegistry, EncodedPackagePoolSharesVersionsAndFailedImportCa
   auto document = graphicsTest::imageDocument(asset).asObject();
   EXPECT_EQ("installed",install("first",document));
   const auto first = registry.poll()->definitions.at({"packaged-logo",1})->assets().at("logo")->encoded;
-  EXPECT_EQ(asset->encoded->size(),registry.poll()->encodedAssetBytes);
+  EXPECT_EQ(baselineBytes+asset->encoded->size(),registry.poll()->encodedAssetBytes);
   document["templateVersion"] = 2; EXPECT_EQ("installed",install("second",document));
   EXPECT_EQ(first,registry.poll()->definitions.at({"packaged-logo",2})->assets().at("logo")->encoded);
-  EXPECT_EQ(asset->encoded->size(),registry.poll()->encodedAssetBytes);
+  EXPECT_EQ(baselineBytes+asset->encoded->size(),registry.poll()->encodedAssetBytes);
   { std::ofstream changed(package.file,std::ios::binary|std::ios::trunc); changed << "invalid replacement"; }
   document["templateVersion"] = 3; EXPECT_EQ("failed",install("corrupt",document));
   EXPECT_EQ(0u,registry.poll()->definitions.count({"packaged-logo",3}));
   EXPECT_EQ(first,registry.poll()->definitions.at({"packaged-logo",1})->assets().at("logo")->encoded);
-  EXPECT_EQ(asset->encoded->size(),registry.poll()->encodedAssetBytes);
+  EXPECT_EQ(baselineBytes+asset->encoded->size(),registry.poll()->encodedAssetBytes);
 }
 
 TEST(GraphicsTemplate, TypedNumericFieldsDriveActualLayoutAndTypographyWithoutMixedUnits) {
@@ -246,4 +247,18 @@ TEST(GraphicsTemplate, BooleanVisibilityHasAConsumerAndUnusedRequiredFieldsAreRe
   values["show-title"] = false; ASSERT_TRUE(definition->resolve(values,brand(),drawing,error)); EXPECT_EQ(2u,drawing.primitives.size());
   fields.emplace_back(Json::Object{{"id","unreachable"},{"type","string"},{"default",""},{"required",true}}); object["fields"] = fields;
   EXPECT_FALSE(load(object,error)); EXPECT_EQ("required-template-field-unused",error);
+}
+
+TEST(GraphicsTemplate, EveryCuratedLookResolvesToNativePrimitivesWithVerifiedLogoAndPlacement) {
+  const auto& looks=GraphicsTemplate::curated(); ASSERT_EQ(6u,looks.size());
+  std::string error;
+  for (const auto& definition : looks) {
+    auto fields=definition->defaultFields().asObject(); if (fields.count("name")) fields["name"]="Ada";
+    GraphicsDrawing drawing; ASSERT_TRUE(definition->resolve(fields,brand(),drawing,error)); EXPECT_FALSE(drawing.primitives.empty());
+    if (definition->id()!="corporate-lower-third") EXPECT_TRUE(definition->defaultPlacement().has_value());
+    if (definition->id()=="corner-logo" || definition->id()=="logo-accent") {
+      EXPECT_EQ(1u,definition->assets().size());
+      EXPECT_TRUE(std::any_of(drawing.primitives.begin(),drawing.primitives.end(),[](const auto& p){return p.image!=nullptr;}));
+    }
+  }
 }

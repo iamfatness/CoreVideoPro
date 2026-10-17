@@ -457,6 +457,7 @@ struct CompositorOverlayContent {
   std::string fontFamily = "Inter";
   std::array<uint8_t, 32> graphicsContentHash{};
   bool hasGraphicsContentHash = false;
+  std::optional<CompositorLayerRect> graphicsAuthoringRect;
   std::shared_ptr<const graphics::GraphicsTemplateInput> graphicsTemplate;
 };
 
@@ -532,6 +533,7 @@ struct CompositorRenderPlanLayer {
   std::string sourceDisplayName;
   std::string graphicsInstanceId;
   uint64_t graphicsRevision = 0;
+  bool graphicsAwaitingEntrance = false;
   std::shared_ptr<const graphics::GraphicsPreparedResource> graphicsPreparedResource;
   std::string graphicsBoundParticipantId;
   uint64_t graphicsBoundSourceGeneration = 0;

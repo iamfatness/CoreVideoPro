@@ -63,7 +63,7 @@ public sealed class GraphicsWorkspaceSessionTests
             using var json = JsonDocument.Parse(request); sent.Add(action);
             if (action == "graphics.instance.update") state = state with { Instances = [state.Instances[0] with { Revision = 4 }] };
             else Assert.Equal(4, json.RootElement.GetProperty("expectedRevision").GetInt32());
-            return Task.FromResult(new NativeGraphicsOperationResult { Accepted = true });
+            return Task.FromResult(new NativeGraphicsOperationResult { Accepted = true, InstanceId = "featured", CurrentRevision = 4 });
         }, () => state);
         workspace.Observe(state); workspace.Select("featured"); workspace.SetField("name", Value("New"));
         Assert.True(await workspace.CueAsync());
@@ -97,4 +97,42 @@ public sealed class GraphicsWorkspaceSessionTests
         workspace.SetField("name",Value(new string('界',100))); Assert.Contains("type and range",workspace.PreviewValidation);
         Assert.Equal(0,sends);
     }
+    [Fact]
+    public async Task OutOfBandChangesCannotOverwritePrivateDraftAndCueUsesCorrelatedCommit()
+    {
+        var state = Initial;
+        var sent = new List<JsonElement>();
+        var workspace = new GraphicsWorkspaceSession((action, request, _) => {
+            var body = JsonDocument.Parse(request).RootElement.Clone(); sent.Add(body);
+            if (action == "graphics.instance.update") {
+                Assert.Equal(3,body.GetProperty("expectedRevision").GetInt32());
+                // Revision 5 arrived from another client after our revision 4.
+                state = state with { Instances = [state.Instances[0] with { Revision = 5 }] };
+                return Task.FromResult(new NativeGraphicsOperationResult { Accepted = true, InstanceId = "featured", CurrentRevision = 4 });
+            }
+            Assert.Equal(4,body.GetProperty("expectedRevision").GetInt32());
+            return Task.FromResult(new NativeGraphicsOperationResult { Accepted = false, Reason = "revision-conflict" });
+        }, () => state);
+        workspace.Observe(state); workspace.Select("featured"); workspace.SetField("name",Value("My edit"));
+        state = state with { Instances = [state.Instances[0] with { Revision = 9 }] }; workspace.Observe(state);
+        Assert.False(await workspace.CueAsync()); Assert.Equal(2,sent.Count);
+        Assert.Equal("My edit",workspace.Draft!.Fields.GetProperty("name").GetString());
+        Assert.Equal("revision-conflict",workspace.Status);
+    }
+
+    [Fact]
+    public async Task BrowsingIsPrivateAndCreationUsesEditedDraftWithPlacement()
+    {
+        var template=new NativeGraphicsTemplate { TemplateId="centered-title",TemplateVersion=1,Runtime="declarative",DefaultPlacement=new() { Anchor="center",X=0,Y=0 },Fields=[new() { Id="heading",Type="string",Default=Value("Welcome") }] };
+        var state=Initial with { Templates=[template] }; JsonElement sent=default;
+        var workspace=new GraphicsWorkspaceSession((_,request,_) => { sent=JsonDocument.Parse(request).RootElement.Clone(); return Task.FromResult(new NativeGraphicsOperationResult { Accepted=true }); },()=>state);
+        workspace.Observe(state); workspace.Select("featured"); workspace.SetField("name",Value("Unsaved guest"));
+        workspace.Browse(template); Assert.Null(workspace.Selected); Assert.Equal("center",workspace.Draft!.Placement!.Anchor);
+        workspace.SetField("heading",Value("Tonight")); workspace.SetPlacement(workspace.Draft.Placement with { X=14 });
+        Assert.True(await workspace.CreateAsync(template));
+        Assert.Equal("Tonight",sent.GetProperty("fields").GetProperty("heading").GetString()); Assert.Equal(14,sent.GetProperty("placement").GetProperty("x").GetDouble());
+        workspace.Select("featured"); Assert.Equal("Unsaved guest",workspace.Draft!.Fields.GetProperty("name").GetString());
+        workspace.CancelDraft(); Assert.Equal("Private",workspace.Draft.Fields.GetProperty("name").GetString());
+    }
+
 }

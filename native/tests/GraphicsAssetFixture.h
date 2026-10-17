@@ -39,7 +39,7 @@ struct Package {
   std::filesystem::path root, file;
   explicit Package(const std::shared_ptr<const corevideo::graphics::GraphicsAsset>& asset) {
     static std::atomic<unsigned> next{0};
-    root = std::filesystem::temp_directory_path() / ("corevideo-graphics-asset-" +
+    root = std::filesystem::canonical(std::filesystem::temp_directory_path()) / ("corevideo-graphics-asset-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(++next));
     std::filesystem::create_directories(root/"assets"); file=root/"assets"/(asset->sha256+".png");
     std::ofstream out(file,std::ios::binary); out.write(reinterpret_cast<const char*>(asset->encoded->data()),std::streamsize(asset->encoded->size()));

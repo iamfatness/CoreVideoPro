@@ -71,8 +71,8 @@ public static class GraphicsCommandRequest
 {
     private static readonly IReadOnlyDictionary<string, string[]> Parameters = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
-        ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding"],
-        ["graphics.instance.update"] = ["target", "sourceId", "fields", "style", "animations", "binding"],
+        ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement"],
+        ["graphics.instance.update"] = ["target", "sourceId", "fields", "style", "animations", "binding", "placement"],
         ["graphics.instance.cue"] = [], ["graphics.instance.trigger"] = ["action", "target"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"],
         ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = []
@@ -107,7 +107,7 @@ public static class GraphicsCommandRequest
             {
                 if (!names.Add(property.Name) || (!Common.Contains(property.Name) && !specific.Contains(property.Name, StringComparer.Ordinal)))
                 { error = "unsupported-or-duplicate-request-field"; return false; }
-                if (property.Name is "fields" or "style" or "animations" or "binding") continue;
+                if (property.Name is "fields" or "style" or "animations" or "binding" or "placement") continue;
                 if (property.Name == "manifest")
                 {
                     if (property.Value.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(property.Value.GetString()) ||
@@ -160,6 +160,13 @@ public static class GraphicsCommandRequest
             else if (body.TryGetProperty("sourceId", out _) && Text(body, "sourceId").Length != 0 &&
                 observed.Instances.FirstOrDefault(i => i.InstanceId == Text(body, "instanceId"))?.Binding?.SourceId != Text(body, "sourceId"))
             { error = "source-binding-required"; return false; }
+            if (body.TryGetProperty("placement", out var placement) && placement.ValueKind != JsonValueKind.Null)
+            {
+                if (placement.ValueKind != JsonValueKind.Object || placement.EnumerateObject().Count() != 4 ||
+                    placement.EnumerateObject().Select(p => p.Name).Distinct(StringComparer.Ordinal).Count() != 4 ||
+                    placement.EnumerateObject().Any(p => p.Name is not ("anchor" or "x" or "y" or "scale")) ||
+                    placement.Deserialize<NativeGraphicsPlacement>(JsonOptions)?.IsValid != true) return false;
+            }
             if (body.TryGetProperty("animations", out var animations) && !ValidAnimations(animations)) return false;
             if (body.TryGetProperty("fields", out var fields))
             {

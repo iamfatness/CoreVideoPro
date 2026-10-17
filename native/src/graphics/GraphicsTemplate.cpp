@@ -295,12 +295,14 @@ std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::load(const std::string
   try {
     auto definition = std::shared_ptr<GraphicsTemplate>(new GraphicsTemplate);
     definition->document_ = DocumentParser(manifest).parse(); const auto& d = definition->document_;
-    keys(d, {"schemaVersion", "templateId", "templateVersion", "name", "family", "canvas", "bounds", "fields", "layers", "animations", "brandTokens", "assets", "metadata"});
+    keys(d, {"schemaVersion", "templateId", "templateVersion", "name", "family", "canvas", "bounds", "fields", "layers", "animations", "brandTokens", "assets", "metadata", "defaultPlacement"});
     need(number(d, "schemaVersion", 1, 1) == 1 && validTemplateId(d.getString("templateId")), "template-header");
     const auto version = number(d, "templateVersion", 1, 2147483647.); need(std::floor(version) == version, "template-version");
     need(!d.getString("name").empty() && d.getString("name").size() <= 128, "template-name");
     need(d.getString("family") == "lower-third" || d.getString("family") == "title" || d.getString("family") == "bug" || d.getString("family") == "clock" || d.getString("family") == "countdown", "template-family");
     const auto* canvas = d.get("canvas"); need(canvas, "template-canvas"); keys(*canvas, {"width", "height"}); number(*canvas, "width", 1920, 1920); number(*canvas, "height", 1080, 1080);
+    if (const auto* p = d.get("defaultPlacement")) { std::optional<GraphicsPlacement> placement; need(GraphicsPlacement::read(*p,placement),"template-placement"); }
+    if (const auto* p = d.get("defaultPlacement")) { std::optional<GraphicsPlacement> placement; need(GraphicsPlacement::read(*p,placement),"template-placement"); }
     const auto* bounds = d.get("bounds"); need(bounds, "template-bounds"); keys(*bounds, {"width", "height"}); number(*bounds, "width", 1, 8192); number(*bounds, "height", 1, 8192);
     const auto* fields = d.get("fields"); need(fields && fields->isArray() && fields->asArray().size() <= 32, "template-fields-limit"); std::set<std::string> ids;
     for (const auto& field : fields->asArray()) {

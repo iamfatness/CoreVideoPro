@@ -9,6 +9,13 @@ string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," WEBCAM_FRAMER_BYTES "${WEBCAM
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/WebcamFramerAsset.h"
   "#pragma once\nstatic constexpr unsigned char webcamFramerPng[] = {${WEBCAM_FRAMER_BYTES}};\n")
 
+set(VOLT_LOGO "${CMAKE_CURRENT_SOURCE_DIR}/../native-shell/CoreVideoPro.WinUI/Assets/StoreLogo.png")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${VOLT_LOGO}")
+file(READ "${VOLT_LOGO}" VOLT_LOGO_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," VOLT_LOGO_BYTES "${VOLT_LOGO_HEX}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/VoltLogoAsset.h"
+  "#pragma once\nstatic constexpr unsigned char voltLogoPng[] = {${VOLT_LOGO_BYTES}};\n")
+
 if(WIN32)
   add_executable(corevideo-vcam-publication-qa EXCLUDE_FROM_ALL ../tools/camera-publication-qa.cpp)
   target_compile_features(corevideo-vcam-publication-qa PRIVATE cxx_std_20)
@@ -103,6 +110,7 @@ add_library(corevideo_native
   src/graphics/GraphicsTemplate.cpp
   src/graphics/GraphicsTemplateRegistry.cpp
   src/graphics/GraphicsAssets.cpp
+  src/graphics/GraphicsCuratedTemplates.cpp
   src/core/MediaCore.cpp
   src/core/CoreStateCapture.cpp
   src/core/ComApartmentLifetime.cpp

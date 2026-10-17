@@ -107,6 +107,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
         Grid.SetColumn(inspectorDrawer, 2); Grid.SetRow(inspectorDrawer, 1); _body.Children.Add(inspectorDrawer);
         Content = _body;
         _search.TextChanged += (_, _) => RefreshLibrary(); _family.SelectionChanged += (_, _) => RefreshLibrary();
+        _library.SelectionChanged += (_, _) => { if (!_loading && _library.SelectedIndex >= 0 && _library.SelectedIndex < _templateRows.Count) _session?.Browse(_templateRows[_library.SelectedIndex]); };
         _cues.SelectionChanged += (_, _) => { if (!_loading && _session is not null && _cues.SelectedIndex >= 0 && _cues.SelectedIndex < _cueIds.Count) _session.Select(_cueIds[_cues.SelectedIndex]); };
         _compare.Toggled += (_, _) => { if (!_loading) _session?.SetCompare(_compare.IsOn); };
         Loaded += (_, _) => Attach(); Unloaded += (_, _) => Detach();
@@ -207,7 +208,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
             _deleteButton.IsEnabled &= item is { ProgramRevision: 0 }; _undoButton.IsEnabled &= _session.CanUndo;
             _compare.IsOn = _session.CompareOriginal;
             _facts.Text = item is null ? "Choose or create a cue. No Program action occurs while browsing." :
-                $"{item.TemplateId} v{item.TemplateVersion} · {item.Scope}\nDraft r{item.Revision} ({item.Preparation}) · Cue r{item.CueRevision}{(item.CuePending ? " preparing replacement" : "")} · Program r{item.ProgramRevision} ({item.Visibility})\n{item.SourceId} {item.BindingState} {item.Warning} {item.CueWarning}";
+                $"{item.TemplateId} v{item.TemplateVersion} · {item.Scope}\nDraft r{item.Revision} ({item.Preparation}) · Cue r{item.CueRevision}{(item.CuePending ? " preparing replacement" : "")} · Program r{item.ProgramRevision} ({item.Visibility}; {(item.CurrentlyComposed ? "draw submitted" : "not composed on latest frame")})\n{item.SourceId} {item.BindingState} {item.Warning} {item.CueWarning}";
             RefreshLibrary();
             var key = string.Join('|', _session.State?.Instances.Select(i => $"{i.InstanceId}:{i.TemplateId}:{i.Visibility}:{i.ProgramRevision}:{i.CueRevision}") ?? []);
             if (key != _cueKey) {
@@ -301,11 +302,15 @@ public sealed class GraphicsWorkspaceControl : UserControl
         font.LostFocus += (_, _) => { if (_session?.Draft is { } d) _session.SetStyle(d.Style with { FontFamily = font.Text }); }; _inspector.Children.Add(font);
         _refreshFields.Add(() => { if (font.FocusState == FocusState.Unfocused && _session?.Draft is { } d) font.Text = d.Style.FontFamily; });
         }
-        var anchor = new ComboBox { Header = "Anchor", ItemsSource = CaptionStyleHelper.LowerThirdPositionOptions, SelectedItem = draft.Style.Anchor, HorizontalAlignment = HorizontalAlignment.Stretch };
-        anchor.SelectionChanged += (_, _) => { if (!_loading && anchor.SelectedItem is string selected && _session?.Draft is { } d) _session.SetStyle(d.Style with { Anchor = selected }); }; _inspector.Children.Add(anchor);
-        _refreshFields.Add(() => { if (_session?.Draft is { } d) anchor.SelectedItem = d.Style.Anchor; });
-        AddStyle("Side safe offset", 0, .25, .05, .005, "%", 100, d => d.SafeOffsetX, (d, n) => d with { SafeOffsetX = n });
-        AddStyle("Top / bottom safe offset", 0, .25, .06, .005, "%", 100, d => d.SafeOffsetY, (d, n) => d with { SafeOffsetY = n });
+        var placement = draft.Placement ?? new NativeGraphicsPlacement {
+            Anchor=draft.Style.Anchor, X=draft.Style.Anchor.Contains("right",StringComparison.Ordinal) ? -draft.Style.SafeOffsetX*1920 : draft.Style.SafeOffsetX*1920,
+            Y=draft.Style.Anchor.Contains("upper",StringComparison.Ordinal) ? draft.Style.SafeOffsetY*1080 : -draft.Style.SafeOffsetY*1080 };
+        var anchor = new ComboBox { Header = "Canvas anchor", ItemsSource = NativeGraphicsPlacement.Anchors, SelectedItem = placement.Anchor, HorizontalAlignment = HorizontalAlignment.Stretch };
+        anchor.SelectionChanged += (_, _) => { if (!_loading && anchor.SelectedItem is string selected && _session?.Draft is { } d) _session.SetPlacement((d.Placement ?? placement) with { Anchor=selected }); }; _inspector.Children.Add(anchor);
+        _refreshFields.Add(() => { if (_session?.Draft is { } d) anchor.SelectedItem = (d.Placement ?? placement).Anchor; });
+        AddPlacement("Horizontal offset",-3840,3840,0,1,"px",1,placement,p=>p.X,(p,v)=>p with { X=v });
+        AddPlacement("Vertical offset",-2160,2160,0,1,"px",1,placement,p=>p.Y,(p,v)=>p with { Y=v });
+        AddPlacement("Scale",.1,4,1,.01,"%",100,placement,p=>p.Scale,(p,v)=>p with { Scale=v });
         if (_session.Template?.Runtime != "declarative") {
             AddStyle("Width", .15, .95, .6, .01, "%", 100, d => d.Width, (d, n) => d with { Width = n });
             AddStyle("Name size", 16, 120, 42, 1, "px", 1, d => d.NameSize, (d, n) => d with { NameSize = n });
@@ -319,6 +324,14 @@ public sealed class GraphicsWorkspaceControl : UserControl
         if (Compatibility || UsesToken("brand.primary") || UsesToken("brand.background")) AddColor("Plate", d => d.BackgroundColor, (d, c) => d with { BackgroundColor = c });
         if (Compatibility || UsesToken("brand.accent")) AddColor("Accent", d => d.AccentColor, (d, c) => d with { AccentColor = c });
         _inspector.Children.Add(Copy("Colors, fonts and placement affect this draft. Cue or Update on air sends an explicit native revision."));
+    }
+    private void AddPlacement(string label,double min,double max,double neutral,double step,string unit,double displayScale,
+        NativeGraphicsPlacement fallback,Func<NativeGraphicsPlacement,double> read,Func<NativeGraphicsPlacement,double,NativeGraphicsPlacement> update)
+    {
+        var slider=new SliderValueControl { Header=label,Minimum=min,Maximum=max,DefaultValue=neutral,StepFrequency=step,Unit=unit,DisplayScale=displayScale,Value=read(_session?.Draft?.Placement ?? fallback) };
+        slider.ValueChanged += (_,value) => { if (!_loading && _session?.Draft is { } d) _session.SetPlacement(update(d.Placement ?? fallback,value)); };
+        slider.EditStarted += (_,_)=>_session?.BeginGesture(); slider.EditCompleted += (_,_)=>_session?.EndGesture();
+        _inspector.Children.Add(slider); _refreshFields.Add(()=>slider.Value=read(_session?.Draft?.Placement ?? fallback));
     }
     private void AddStyle(string label, double min, double max, double neutral, double step, string unit, double scale,
         Func<LowerThirdAppearance, double> read, Func<LowerThirdAppearance, double, LowerThirdAppearance> update)

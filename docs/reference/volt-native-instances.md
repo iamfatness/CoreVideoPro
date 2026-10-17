@@ -306,3 +306,23 @@ families and automation remain requirements of the approved feature. Their absen
 by the compatibility instance capability. Metal does not announce this instance
 capability yet. No installed app/profile/camera ownership changes are part of
 this isolated development path.
+
+
+The native catalog includes the original compatibility looks, the pinned corporate
+reference, logo-accent and transparent-name lower thirds, centered title, corner
+logo bug and clock-panel design. The clock panel's timing controller is a separate
+capability; a static time field alone does not establish a working clock.
+
+`placement` is optional and independent of legacy appearance: nine anchors,
+reference-pixel offsets at 1920x1080, scale 0.1–4. Null restores legacy placement.
+The private native monitor and accepted Cue/Program use the same resolved rect.
+Scene graphics enter each scene before the video transition; global graphics are
+composed once downstream, with captions last. Animated entrances wait for a native
+`composition-eligible` observation. `currentlyComposed` means a draw was submitted
+for that revision on the latest observed Program frame, not receiver delivery.
+
+Operation results include the correlated instance/current revision. Private edits
+retain their captured base revision; an external edit conflicts rather than being
+silently overwritten or accidentally cued. Browsing a library look is private and
+creation preserves its edited values. Switching instances retains private edits;
+Cancel explicitly reloads the current accepted draft.

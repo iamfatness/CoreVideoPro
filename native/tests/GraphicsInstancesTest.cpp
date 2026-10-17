@@ -304,6 +304,7 @@ TEST(GraphicsInstances, NativeAnimationUsesMonotonicTimeAndReversesWithoutAnOpac
       {"fields", Json::Object{{"name", "Guest"}}}, {"animations", transitions}})));
   ready(state, 1);
   ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "show"}})));
+  ProgramFrame eligible; eligible.graphicsFacts.push_back({"featured",1,"composition-eligible",""}); state.observe(eligible);
   now = 600;
   CompositorRenderPlan plan; state.append(plan, false);
   ASSERT_EQ(1u, plan.layers.size());
@@ -334,6 +335,7 @@ TEST(GraphicsInstances, RepeatedShowAndContentUpdateDoNotRestartNativeEntrance) 
       {"animations", Json::Object{{"in", Json::Object{{"type", "fade"}, {"durationMs", 1000}}}}}})));
   ready(state, 2);
   ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"expectedRevision", 2}, {"action", "show"}})));
+  ProgramFrame eligible; eligible.graphicsFacts.push_back({"featured",2,"composition-eligible",""}); state.observe(eligible);
   now = 400;
   ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"expectedRevision", 2}, {"action", "show"}})));
   ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"expectedRevision", 2}, {"target", "program"},
@@ -645,8 +647,8 @@ TEST(GraphicsInstances, DeclarativeDefinitionIsPinnedAndCannotAcceptUnconsumedSt
   GraphicsInstances state{"test-core"};
   ASSERT_TRUE(state.apply(request("graphics-instance-create", {{"templateId", "corporate-lower-third"}, {"templateVersion", 1},
       {"scope", "global"}, {"fields", Json::Object{{"name", "Guest"}, {"title", ""}}}})));
-  ASSERT_EQ(4u, state.snapshot().get("templates")->asArray().size());
-  EXPECT_EQ(64u, state.snapshot().get("templates")->asArray().back().getString("manifestHash").size());
+  ASSERT_EQ(9u, state.snapshot().get("templates")->asArray().size());
+  EXPECT_EQ(64u, state.snapshot().get("templates")->asArray()[3].getString("manifestHash").size());
   EXPECT_EQ("slide", row(state).get("animations")->get("in")->getString("type"));
   EXPECT_EQ(400., row(state).get("animations")->get("in")->getNumber("durationMs"));
   EXPECT_FALSE(state.apply(request("graphics-instance-update", {{"target", "cue"}, {"style", Json::Object{{"width", .7}}}})));
@@ -657,4 +659,53 @@ TEST(GraphicsInstances, DeclarativeDefinitionIsPinnedAndCannotAcceptUnconsumedSt
   EXPECT_TRUE(plan.graphicsPreparations.front().overlay.graphicsTemplate != nullptr);
   EXPECT_TRUE(std::abs(plan.graphicsPreparations.front().rect.width - 1050. / 1920) < .0001);
   EXPECT_TRUE(std::abs(plan.graphicsPreparations.front().rect.height - 176. / 1080) < .0001);
+}
+
+TEST(GraphicsInstances, OperationResultPinsAcceptedRevisionAndScopePassesKeepCaptionsDownstream) {
+  GraphicsInstances state{"test-core"}; ASSERT_TRUE(create(state));
+  EXPECT_EQ(1,state.snapshot().get("lastResult")->getNumber("currentRevision"));
+  EXPECT_EQ("featured",state.snapshot().get("lastResult")->getString("instanceId"));
+  ready(state,1); ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+  CompositorRenderPlan plan; corevideo::modules::CompositorRenderPlanLayer video,caption;
+  video.order=100000; video.layerId="take-in:video";
+  caption.hasOverlayContent=true; caption.overlay.isCaption=true; caption.layerId="caption";
+  plan.layers={caption,video};
+  state.append(plan,false,{},GraphicsInstances::ScopePass::Scene);
+  EXPECT_EQ(2u,plan.layers.size()); EXPECT_TRUE(plan.graphicsPreparations.empty());
+  state.append(plan,false,{},GraphicsInstances::ScopePass::Global);
+  ASSERT_EQ(3u,plan.layers.size()); EXPECT_EQ("take-in:video",plan.layers[0].layerId);
+  EXPECT_EQ("graphics:featured",plan.layers[1].layerId); EXPECT_EQ("caption",plan.layers[2].layerId);
+  EXPECT_EQ(0,plan.layers[0].order); EXPECT_EQ(1,plan.layers[1].order); EXPECT_EQ(2,plan.layers[2].order);
+}
+
+TEST(GraphicsInstances, EntranceWaitsForEligibleCompositionAndReportsLatestDrawSeparately) {
+  double now=0; GraphicsInstances state{"test-core",[&]{return now;}};
+  ASSERT_TRUE(state.apply(request("graphics-instance-create",{{"templateId","centered-title"},{"templateVersion",1},{"scope","scene"},{"sceneId","interview"}})));
+  ready(state,1); ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+  now=60000; state.observe({}); EXPECT_EQ("awaiting-composition",row(state).getString("visibility"));
+  CompositorRenderPlan plan; plan.sceneId="other"; state.append(plan,false); EXPECT_TRUE(plan.layers.empty());
+  plan.sceneId="interview"; state.append(plan,false); ASSERT_EQ(1u,plan.layers.size());
+  EXPECT_TRUE(plan.layers[0].graphicsAwaitingEntrance);
+  EXPECT_NEAR(.125,plan.layers[0].rect.x,.00001); EXPECT_NEAR(396./1080,plan.layers[0].rect.y,.00001);
+  ProgramFrame eligible; eligible.frameNumber=10; eligible.graphicsFacts.push_back({"featured",1,"composition-eligible",""}); state.observe(eligible);
+  EXPECT_EQ("entering",row(state).getString("visibility")); EXPECT_FALSE(row(state).get("currentlyComposed")->asBool());
+  now+=125; plan.layers.clear(); state.append(plan,false); EXPECT_FALSE(plan.layers[0].graphicsAwaitingEntrance);
+  EXPECT_TRUE(plan.layers[0].opacity>0 && plan.layers[0].opacity<1);
+  ProgramFrame drawn; drawn.frameNumber=11; drawn.graphicsFacts.push_back({"featured",1,"draw-submitted",""}); state.observe(drawn);
+  EXPECT_TRUE(row(state).get("currentlyComposed")->asBool()); EXPECT_EQ(11,row(state).getNumber("firstDrawSubmittedFrame"));
+  drawn.frameNumber=12; drawn.graphicsFacts.clear(); state.observe(drawn); EXPECT_FALSE(row(state).get("currentlyComposed")->asBool());
+  EXPECT_EQ(11,row(state).getNumber("firstDrawSubmittedFrame"));
+}
+TEST(GraphicsInstances, PlacementIsAnExplicitAtomicTransformWithBoundsAndLegacyReset) {
+  GraphicsInstances state{"test-core"}; ASSERT_TRUE(create(state)); ready(state,1);
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+  const Json placement=Json::Object{{"anchor","center"},{"x",120},{"y",-60},{"scale",.5}};
+  ASSERT_TRUE(state.apply(request("graphics-instance-update",{{"target","program"},{"placement",placement}}))); ready(state,2);
+  CompositorRenderPlan plan; state.append(plan,false); ASSERT_EQ(1u,plan.layers.size());
+  EXPECT_NEAR((1-plan.layers[0].rect.width)*.5+120./1920,plan.layers[0].rect.x,.00001);
+  auto bad=placement.asObject(); bad["scale"]=0;
+  EXPECT_FALSE(state.apply(request("graphics-instance-update",{{"expectedRevision",2},{"target","program"},{"placement",bad}})));
+  EXPECT_EQ(2,row(state).getNumber("revision"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-update",{{"expectedRevision",2},{"target","cue"},{"placement",Json{}}})));
+  EXPECT_TRUE(row(state).get("placement")->isNull());
 }

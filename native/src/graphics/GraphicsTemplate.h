@@ -3,6 +3,7 @@
 #include "rpc/Json.h"
 #include "graphics/GraphicsTimeline.h"
 #include "graphics/GraphicsAssets.h"
+#include "graphics/GraphicsPlacement.h"
 #include <array>
 #include <memory>
 #include <string>
@@ -34,6 +35,7 @@ class GraphicsTemplate {
  public:
   static std::shared_ptr<const GraphicsTemplate> load(const std::string& manifest, std::string& error, GraphicsAssets assets = {});
   static std::shared_ptr<const GraphicsTemplate> corporateLowerThird();
+  static const std::vector<std::shared_ptr<const GraphicsTemplate>>& curated();
   const rpc::Json& document() const { return document_; }
   const std::array<uint8_t, 32>& hash() const { return hash_; }
   const GraphicsAssets& assets() const { return assets_; }
@@ -42,6 +44,7 @@ class GraphicsTemplate {
   double width() const { return document_.get("bounds")->getNumber("width"); }
   double height() const { return document_.get("bounds")->getNumber("height"); }
   rpc::Json defaultFields() const;
+  std::optional<GraphicsPlacement> defaultPlacement() const { std::optional<GraphicsPlacement> value; if (const auto* p = document_.get("defaultPlacement")) GraphicsPlacement::read(*p,value); return value; }
   bool validateFields(const rpc::Json& fields, bool requireValues, std::string& error) const;
   bool resolve(const rpc::Json& fields, const rpc::Json& brand, GraphicsDrawing& drawing, std::string& error) const;
  private:

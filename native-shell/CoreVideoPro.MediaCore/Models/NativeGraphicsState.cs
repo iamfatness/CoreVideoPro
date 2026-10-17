@@ -41,6 +41,7 @@ public sealed record NativeGraphicsTemplate
     public string PackageRoot { get; init; } = "";
     public JsonElement? Canvas { get; init; }
     public JsonElement? Bounds { get; init; }
+    public NativeGraphicsPlacement? DefaultPlacement { get; init; }
     public IReadOnlyList<NativeGraphicsTemplateField> Fields { get; init; } = [];
     public JsonElement? Layers { get; init; }
     public IReadOnlyList<string> BrandTokens { get; init; } = [];
@@ -120,10 +121,14 @@ public sealed record NativeGraphicsInstance
     public bool ShowPending { get; init; }
     /// <summary>First native draw submission. Does not establish receiver delivery.</summary>
     public long FirstDrawSubmittedFrame { get; init; }
+    public bool CurrentlyComposed { get; init; }
     public string Warning { get; init; } = "";
     public NativeGraphicsFields Fields { get; init; } = new();
     public LowerThirdAppearance Style { get; init; } = new();
     public NativeGraphicsAnimations Animations { get; init; } = new();
+    public NativeGraphicsPlacement? Placement { get; init; }
+    public NativeGraphicsPlacement? ProgramPlacement { get; init; }
+    public NativeGraphicsPlacement? CuePlacement { get; init; }
     public string ProgramSourceId { get; init; } = "";
     public NativeGraphicsFields? ProgramFields { get; init; }
     public LowerThirdAppearance? ProgramStyle { get; init; }
@@ -161,6 +166,8 @@ public sealed record NativeGraphicsFields
 
 public sealed record NativeGraphicsOperationResult
 {
+    public string InstanceId { get; init; } = "";
+    public long CurrentRevision { get; init; }
     public string RequestId { get; init; } = "";
     public bool Accepted { get; init; }
     public string Reason { get; init; } = "";
