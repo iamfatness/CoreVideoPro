@@ -959,6 +959,25 @@ struct InMemoryVideoRegion {
 };
 }
 
+TEST(ZoomEngineRuntime, DisablingUnusedCpuThumbnailsPreservesMediaAndFallbackCanResume) {
+  using namespace corevideo::modules;
+  ZoomEngineRuntime runtime;
+  auto region = std::make_shared<InMemoryVideoRegion>();
+  ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(region));
+  runtime.setThumbnailDemand(false);
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime);
+  EXPECT_EQ(ZoomEngineRuntimeTestAccess::decodedCount(runtime), 1u);
+  EXPECT_EQ(ZoomEngineRuntimeTestAccess::videoSequence(runtime), 2u);
+  auto events = runtime.drainFrameEvents();
+  EXPECT_FALSE(std::any_of(events.begin(), events.end(), [](const auto& e) { return e.getString("type") == "zoom-video-frame"; }));
+  runtime.setThumbnailDemand(true);
+  region->setHeader(4, 4, 4);
+  ZoomEngineRuntimeTestAccess::drainVideo(runtime);
+  events = runtime.drainFrameEvents();
+  EXPECT_TRUE(std::any_of(events.begin(), events.end(), [](const auto& e) { return e.getString("type") == "zoom-video-frame"; }));
+  EXPECT_EQ(ZoomEngineRuntimeTestAccess::videoSequence(runtime), 4u);
+}
+
 TEST(ZoomEngineRuntime, UnsubscribeRetiresHeldFrameAndFrameSyncQueue) {
   using namespace corevideo::modules;
   setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/fake/corevideo-zoom-engine.exe");

@@ -106,7 +106,9 @@ public sealed class ControlCatalog
 
             if (!TryCoerce(raw, param.Type, out var coerced))
             {
-                error = $"Action '{actionId}' parameter '{param.Name}' must be {param.Type} (got '{raw}').";
+                // Arguments can contain destination credentials, including malformed or
+                // misplaced values. Explain the schema without echoing caller data.
+                error = $"Action '{actionId}' parameter '{param.Name}' must be {param.Type}.";
                 return false;
             }
 

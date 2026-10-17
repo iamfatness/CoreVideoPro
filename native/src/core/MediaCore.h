@@ -1,5 +1,6 @@
 #pragma once
 #include "core/ResourceEventStaging.h"
+#include "graphics/GraphicsInstances.h"
 
 #include "core/SourcePreviewDemand.h"
 #include "compositor/TilesMembership.h"
@@ -784,6 +785,7 @@ class MediaCore {
   [[nodiscard]] bool hasPreviewScene() const;
   // Monotonic compositor animation clock (ms), advanced each render tick, that
   // drives overlay keyPhase progress deterministically.
+  graphics::GraphicsInstances graphicsInstances_;
   double overlayAnimationClockMs_ = 0.0;
   TakeTransitionState takeTransition_;
   std::string outputProfileId_ = "canvas-1080p60";
@@ -848,10 +850,7 @@ class MediaCore {
   bool previewStructureEmitted_ = false;
   int64_t mixedAudioFrameCount_ = 0;
   std::map<std::string, std::vector<float>> routedBusPcm_;
-  // Rolling deinterleaved program audio (<= 3 s) feeding the BS.1770 master
-  // meter, plus the gated running accumulation for integrated loudness.
-  std::vector<float> programMeterL_;
-  std::vector<float> programMeterR_;
+  // Continuous K-weighting and bounded rolling energies for the master meter.
   modules::Bs1770IntegratedMeter programIntegratedMeter_{48000.0};
   double programLufsMomentary_ = -120.0;
   double programLufsShortTerm_ = -120.0;

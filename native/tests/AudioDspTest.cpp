@@ -573,6 +573,44 @@ TEST(AudioDsp, RoutedBusMixExternalInsertCanFailOpenWithoutChangingAudio) {
 
 // --- BS.1770 integrated loudness meter ---------------------------------------
 
+TEST(AudioDsp, StreamingLoudnessWindowsMatchContinuousReferenceAcrossWraps) {
+  for (const double rate : {32000.0, 48000.0}) {
+    auto left = makeSine(997.0, 0.4, rate, static_cast<size_t>(rate * 7));
+    auto right = makeSine(107.0, 0.2, rate, left.size());
+    for (size_t i = left.size() / 2; i < left.size(); ++i) { left[i] *= 0.1f; right[i] *= 0.3f; }
+    Bs1770IntegratedMeter meter(rate);
+    size_t offset = 0;
+    while (offset < left.size()) {
+      const auto n = std::min<size_t>(1379, left.size() - offset);
+      meter.process(left.data() + offset, right.data() + offset, n);
+      offset += n;
+      if (offset % 7 == 0 || offset == left.size()) {
+        EXPECT_TRUE(std::abs(meter.momentaryLufs() - computeMomentaryLufs(left.data(), right.data(), offset, rate)) < 0.00001);
+        EXPECT_TRUE(std::abs(meter.shortTermLufs() - computeShortTermLufs(left.data(), right.data(), offset, rate)) < 0.00001);
+      }
+    }
+    EXPECT_TRUE(meter.shortTermReady());
+    EXPECT_EQ(meter.windowSamples(), static_cast<size_t>(rate * 3));
+    meter.reset(rate);
+    EXPECT_FALSE(meter.shortTermReady());
+    EXPECT_EQ(meter.windowSamples(), size_t{0});
+    EXPECT_EQ(meter.momentaryLufs(), kAudioDbfsFloor);
+    EXPECT_EQ(meter.shortTermLufs(), kAudioDbfsFloor);
+    EXPECT_EQ(meter.integratedLufs(), kAudioDbfsFloor);
+  }
+}
+
+TEST(AudioDsp, IntegratedLoudnessCacheInvalidatesAtNewGatingBlocks) {
+  auto quiet = makeSine(997.0, 0.01, 48000, 48000);
+  auto loud = makeSine(997.0, 0.5, 48000, 48000);
+  Bs1770IntegratedMeter meter;
+  meter.process(quiet.data(), quiet.data(), quiet.size());
+  const auto before = meter.integratedLufs();
+  EXPECT_EQ(before, meter.integratedLufs());
+  meter.process(loud.data(), loud.data(), loud.size());
+  EXPECT_TRUE(meter.integratedLufs() > before + 10);
+}
+
 TEST(AudioDsp, IntegratedLoudnessSilenceStaysBelowGate) {
   const double rate = 48000.0;
   std::vector<float> silence(static_cast<size_t>(rate * 1.5), 0.0f);

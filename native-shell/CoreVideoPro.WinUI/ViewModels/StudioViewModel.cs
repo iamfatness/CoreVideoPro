@@ -1588,6 +1588,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.RecoveryCompleted += OnBridgeRecoveryCompleted;
         _bridge.StatusChanged += OnBridgeStatusChanged;
         _bridge.ProfileChanged += OnBridgeProfileChanged;
+        _cpuPreviewDemand = new(_bridge);
+        _snapshotDelivery = new(action => _dispatcher.TryEnqueue(() =>
+            UiDispatch.Run(_dispatcher, action, "ApplySnapshotChanged")), ApplySnapshotChanged);
         _bridge.SnapshotChanged += OnSnapshotChanged;
         _bridge.ZoomVideoFrameReceived += OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
@@ -5470,61 +5473,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 RunOnUiThread(() => CommandStatus = ex.Message);  // catch runs off-thread (ConfigureAwait(false))
             }
         }
-    }
-
-    [RelayCommand]
-    private void ToggleProgramLowerThird()
-    {
-        if (ProgramLowerThirdKey.IsVisible || ProgramLowerThirdEnabled)
-        {
-            ProgramLowerThirdEnabled = false;
-            _programLowerThirdAutomationSuppressed = true;
-            foreach (var graphic in Graphics.Where(graphic =>
-                graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase)))
-            {
-                graphic.Enabled = false;
-            }
-
-            CommandStatus = "Lower third keyed out";
-        }
-        else
-        {
-            if (ResolveProgramLowerThirdSource(ProgramSceneRoutes) is null)
-            {
-                CommandStatus = "Lower third needs a program source";
-                OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
-                OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
-                OnPropertyChanged(nameof(StudioLowerThirdToolTip));
-                return;
-            }
-
-            _programLowerThirdAutomationSuppressed = false;
-            ProgramLowerThirdEnabled = true;
-            CommandStatus = "Lower third keyed in";
-        }
-
-        OnPropertyChanged(nameof(EnabledGraphics));
-        RefreshProgramLowerThirdKeyPosition();
-        _ = TrySyncMediaCoreAsync();
-    }
-
-    [RelayCommand]
-    private void RebuildProgramLowerThird()
-    {
-        if (ResolveProgramLowerThirdSource(ProgramSceneRoutes) is not { } source)
-        {
-            CommandStatus = "Lower third needs a program source";
-            OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
-            OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
-            OnPropertyChanged(nameof(StudioLowerThirdToolTip));
-            return;
-        }
-
-        _programLowerThirdAutomationSuppressed = false;
-        ProgramLowerThirdEnabled = true;
-        UpdateProgramLowerThirdKey(source, force: true);
-        CommandStatus = "Lower third rebuilt";
-        _ = TrySyncMediaCoreAsync();
     }
 
     public IReadOnlyList<GraphicOverlay> EnabledGraphics =>
@@ -9938,6 +9886,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async void OnStreamOutputOptionChanged()
     {
+        if (_applyingStreamDestination) return;
         OnPropertyChanged(nameof(StreamDestinationSummary));
         OnPropertyChanged(nameof(StreamConfigurationSummary));
         OnPropertyChanged(nameof(StreamRtmpSummary));
@@ -10328,8 +10277,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return destinations;
     }
 
-    private void OnSnapshotChanged(NativeMediaCoreStateSnapshot snapshot) =>
-        RunOnUiThread(() => ApplySnapshotChanged(snapshot));
+    private readonly LatestUiDelivery<NativeMediaCoreStateSnapshot> _snapshotDelivery;
+    private readonly CpuPreviewDemand _cpuPreviewDemand;
+    private void OnSnapshotChanged(NativeMediaCoreStateSnapshot snapshot) => _snapshotDelivery.Offer(snapshot);
 
     private int _screenDiscoveryAttempts;
     private DateTime _screenDiscoveryLastAttempt = DateTime.MinValue;
@@ -11019,6 +10969,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyGraphicsAndCaptionStateFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
+        ObserveGraphicsState(snapshot.Graphics);
         // A graphic's Enabled flag is the OPERATOR's desired state. It is never written
         // from a snapshot (#757): the old write-back read the active overlays from a
         // render-plan layer list a real core does not publish, so any overlay on air

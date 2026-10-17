@@ -226,6 +226,7 @@ CapabilityReport capabilityReport(const modules::ModuleSet& modules, bool zoomCo
   intrinsic("audio-mixer", modules.mixer != nullptr);
   intrinsic("scene-graph-rendering", modules.compositor != nullptr);
   intrinsic("dynamic-overlays", modules.compositor != nullptr);
+  intrinsic("graphics-instances", modules.compositor && modules.compositor->supportsGraphicsInstances());
   factory("gpu-compositor");
   const bool gpu = modules.compositor && modules.compositor->rendererName() != "software";
   intrinsic("chroma-key", gpu);
@@ -477,6 +478,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
       projectionMutex_(&core.snapshotProjectionMutex_) {
   ScopedLockHoldTimer captureTimer("rpc.metadata-capture", LockHoldGuardrail::kDefaultBudgetUs);
   appliedControlRevision_ = core.appliedControlRevision_;
+  graphicsState_ = core.graphicsInstances_.snapshot();
   resourceEventStaging_ = core.pendingResourceEvents_.facts();
   audioChannels_ = core.audioChannels_;
   audioCompGainReductionDbBySource_ = core.audioCompGainReductionDbBySource_;
@@ -670,7 +672,7 @@ CoreStateCapture::CoreStateCapture(const MediaCore& core)
   gradeEventsRefused_ = core.gradePreviews_.eventsRefused();
   previewComposite_ = core.hasPreviewScene();
   previewPlanLayerCount_ = core.audioWorkerActive_ ? core.lastPreviewPlanLayerCount_ :
-      core.previewSceneActive_ ? static_cast<int>(core.buildPreviewCompositorRenderPlan({}).layers.size()) : 0;
+      previewComposite_ ? static_cast<int>(core.buildPreviewCompositorRenderPlan({}).layers.size()) : 0;
   for (const auto& layer : core.lastRenderPlan_.layers) {
     if (layer.kind != "participant-video" || layer.layerId.rfind("tile:", 0) != 0) continue;
     modules::CompositorRenderPlanLayer item;
@@ -783,6 +785,7 @@ rpc::Json CoreStateCapture::sessionState() const {
       {"captionTrack", captionTrackState()},
       {"brandKit", brandKitState()},
       {"overlayState", overlayState()},
+      {"graphics", graphicsState_},
       {"mediaPlayback", mediaPlaybackState()},
       {"autoProduction", autoProductionState()},
       {"takeTransition", rpc::Json::Object{
@@ -1076,7 +1079,7 @@ rpc::Json CoreStateCapture::sessionState() const {
   // and tests see the composited preview scene structure without a GPU texture. `composite`
   // is whether the core runs the dedicated third composite (multi-layer) vs. leaving the
   // operator preview on the single-source fallback.
-  if (previewSceneActive_) {
+  if (previewSceneActive_ || previewComposite_) {
     const auto previewPlanLayers = previewPlanLayerCount_;
     state.emplace("previewScene", rpc::Json::Object{
                                       {"sceneId", previewSceneId_},

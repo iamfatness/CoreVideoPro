@@ -23,8 +23,8 @@ public sealed partial class OverlaysPage : UserControl
             typeof(StudioViewModel),
             typeof(OverlaysPage),
             new PropertyMetadata(null));
-    private void OnDesignerExpanding(Expander sender,ExpanderExpandingEventArgs args) => LowerThirdDesigner.ActivatePreview();
-    private void OnDesignerCollapsed(Expander sender,ExpanderCollapsedEventArgs args) => LowerThirdDesigner.DeactivatePreview();
+    private void OnDesignerExpanding(Expander sender,ExpanderExpandingEventArgs args) { GraphicsWorkspace.SuspendPreview(); LowerThirdDesigner.ActivatePreview(); }
+    private void OnDesignerCollapsed(Expander sender,ExpanderCollapsedEventArgs args) { LowerThirdDesigner.DeactivatePreview(); GraphicsWorkspace.ResumePreview(); }
 
     private void OnAddBrowserOverlayClick(object sender, RoutedEventArgs e)
     {

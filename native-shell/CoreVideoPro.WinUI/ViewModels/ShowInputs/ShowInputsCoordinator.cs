@@ -49,13 +49,14 @@ public sealed class ShowInputsCoordinator
             bridge is ISourcePreviewTransport transport
                 ? transport.SetSourcePreviewActiveAsync(enabled) : Task.CompletedTask);
         MultiviewInputRows = new MultiviewInputRowsProjection(host.ShowInputs, host.CaptureDevices);
-        _bridge.SnapshotChanged += snapshot =>
-            _host.RunOnUiThread(() =>
+        var snapshotDelivery = new LatestUiDelivery<CoreVideoPro.MediaCore.Models.NativeMediaCoreStateSnapshot>(
+            action => { _host.RunOnUiThread(action); return true; }, snapshot =>
             {
                 MultiviewInputRows.ApplyRosterFact(snapshot);
                 foreach (var source in _host.SrtIngestSources)
                     source.ApplyRuntimeStatus(snapshot.CaptureDevices.FirstOrDefault(device => device.Id == source.DeviceId));
             });
+        _bridge.SnapshotChanged += snapshotDelivery.Offer;
         _bridge.ZoomSourceFormatReceived += fact =>
             _host.RunOnUiThread(() => MultiviewInputRows.ApplySourceFormatFact(fact));
         _bridge.OutputLifecycleChanged += fact =>

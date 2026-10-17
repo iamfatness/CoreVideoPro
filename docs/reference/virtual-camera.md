@@ -276,15 +276,15 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
 
 For an explicitly selected synthetic QA run only, `COREVIDEO_QA_PROGRAM_COUNTER=1` adds complementary binary Program-sequence markers at the top and bottom of the Program image. This changes output pixels and must never be enabled for a live show. It defaults off. GPU ClearView writes the markers before the normal Program-buffer/NV12 path; a hardware test decodes the resulting delivered NV12 packet and matches its Program identity.
 
-Build `corevideo-vcam-receiver` and run `corevideo-vcam-receiver 90 > receiver.ndjson` while the candidate camera is enabled. The probe enumerates the OS camera and negotiates 1920x1080 NV12 at 60/1 through Media Foundation. It reads no publisher mapping. Each sample records monotonic arrival, media PTS and decoded pixel identity; malformed/complement-mismatched patterns are null. An independent watchdog ends a stalled receiver with incomplete evidence.
+Build `corevideo-vcam-receiver` and run `corevideo-vcam-receiver 90 > receiver.ndjson` while the candidate camera is enabled. The probe enumerates the OS camera and negotiates 1920x1080 NV12 at 60/1 through Media Foundation. It reads no publisher mapping. The header anchors receiver-monotonic arrivals to UTC with `startUnixUs`, and the judge derives post-warmup coverage from actual first/last measured arrivals. Each sample records monotonic arrival, media PTS and decoded pixel identity; malformed/complement-mismatched patterns are null. An independent watchdog ends a stalled receiver with incomplete evidence.
 
 `node scripts/qa/camera-pixel-receiver.mjs receiver.ndjson` excludes the first 30 seconds, requires at least 30 measured seconds, rejects incomplete captures, resets, duplicates, gaps, reordering, invalid markers and unexplained arrival intervals over 33.4 ms. This proves only the tested OS receiver pixels, not another application's presentation, audio alignment or the full-workload qualification.
 
 For boundary isolation, `corevideo-vcam-receiver 90 --dll <absolute-DLL-path>` instantiates that DLL's media source directly through Media Foundation without changing COM registration. Its evidence is marked `receiverMode=direct-dll`; the judge always reports `osCameraContinuityVerified=false` for that mode. This diagnostic distinguishes a candidate reader from an older DLL served by Frame Server. Registered paths alone do not prove the loaded module: a conflicting machine-wide CLSID can select a different DLL from the installer's per-user registration.
 
 The #517 reader repair enables bounded publication recovery by default. It
-waits at most 2 ms, eight high-resolution retries and two total payload copies,
-and never beyond the original next sample boundary minus delivery reserve.
+uses at most 64 high-resolution retries and two total payload copies,
+and never begins another wait beyond the original next sample boundary minus delivery reserve. A delayed wake permits one final read under the same copy budget; any original-deadline miss remains counted.
 `COREVIDEO_CAMERA_READ_RETRY=0` in the reader process is a diagnostic negative
 control. Missing or invalid mappings do not retry. Retry reads do not accelerate
 orphaned-mapping reopen cadence. Serving logs distinguish writer-active and

@@ -47,6 +47,7 @@ struct D3DProgramDisplayReaderTestAccess {
 struct D3DProgramBufferTestAccess {
   static void beforeExport(D3DProgramBuffer& buffer, std::function<void(bool)> hook) { buffer.beforeExport_ = std::move(hook); }
   static void beforePrepare(D3DProgramBuffer& buffer, std::function<void(int64_t)> hook) { buffer.beforePrepare_ = std::move(hook); }
+  static void deferPrepareCompletion(D3DProgramBuffer& buffer, std::function<bool(int64_t)> hook) { buffer.deferPrepareCompletion_ = std::move(hook); }
   static unsigned readLeases(D3DProgramBuffer& buffer) {
     std::lock_guard<std::mutex> lock(buffer.mutex_);
     unsigned leases = 0; for (const auto& slot : buffer.slots_) leases += slot->readers;
@@ -719,6 +720,53 @@ TEST(D3DProgramBuffer, DisplayReaderRetiresOldGenerationAndReusesItsImageAcrossS
   EXPECT_EQ(readPixel(newImage.get(), 128), 134);
 }
 
+TEST(D3DProgramBuffer, SubmitsNextFrameWhileEarlierGpuCompletionIsPending) {
+  ProgramBufferTimerResolution timer;
+  using namespace corevideo::modules;
+  ComPtrLite<ID3D11Device> device;
+  ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+      D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+      device.put(), nullptr, context.put())));
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = desc.Height = 64; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT; desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ComPtrLite<ID3D11Texture2D> source;
+  ComPtrLite<ID3D11RenderTargetView> target;
+  ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&desc, nullptr, source.put())));
+  ASSERT_TRUE(SUCCEEDED(device->CreateRenderTargetView(source.get(), nullptr, target.put())));
+  std::atomic<bool> secondSubmitted{false};
+  D3DProgramBuffer buffer(device.get(), 64, 64, 2, 1, {});
+  ASSERT_TRUE(buffer.valid());
+  D3DProgramBufferTestAccess::beforePrepare(buffer, [&](int64_t slot) {
+    if (slot == 1) secondSubmitted.store(true);
+  });
+  D3DProgramBufferTestAccess::deferPrepareCompletion(buffer, [&](int64_t slot) {
+    return slot == 0 && !secondSubmitted.load();
+  });
+  const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+  for (int slot = 0; slot < 2; ++slot) {
+    std::this_thread::sleep_until(anchor + std::chrono::nanoseconds(slot * 1'000'000'000LL / 60));
+    const float gray = (40.0f + slot * 80) / 255;
+    const float color[] = {gray, gray, gray, 1};
+    context->ClearRenderTargetView(target.get(), color);
+    ProgramFrame frame; frame.frameNumber = slot + 1; frame.productionSlot = slot;
+    frame.productionAnchorNs = anchorNs; frame.width = frame.height = 64;
+    buffer.submit(context.get(), source.get(), std::move(frame), true); context->Flush();
+  }
+  for (int slot = 0; slot < 2; ++slot) {
+    ProgramFrame frame; ASSERT_TRUE(buffer.take(frame, 100));
+    EXPECT_EQ(frame.frameNumber, slot + 1);
+    ASSERT_TRUE(frame.programNv12Shared != nullptr);
+    const auto expected = static_cast<int>(std::lround(16.0 + 220.0 * (40 + slot * 80) / 256.0));
+    EXPECT_TRUE(std::abs(static_cast<int>((*frame.programNv12Shared)[540 * 1920 + 960]) - expected) <= 2);
+  }
+  EXPECT_TRUE(secondSubmitted.load());
+  EXPECT_EQ(buffer.diagnostics().underruns, 0u);
+}
+
 TEST(D3DProgramBuffer, SustainsFullSizeNv12PreparationAtSixtyHertz) {
   ProgramBufferTimerResolution timer;
   using namespace corevideo::modules;
@@ -737,6 +785,7 @@ TEST(D3DProgramBuffer, SustainsFullSizeNv12PreparationAtSixtyHertz) {
   ASSERT_TRUE(buffer.valid());
   const auto anchor = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
   const auto anchorNs = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+  std::vector<int64_t> identities;
   for (int slot = 0; slot < 180; ++slot) {
     std::this_thread::sleep_until(anchor + std::chrono::nanoseconds(static_cast<int64_t>(slot) * 1'000'000'000 / 60));
     ProgramFrame frame; frame.frameNumber = slot + 1; frame.productionSlot = slot;
@@ -744,17 +793,22 @@ TEST(D3DProgramBuffer, SustainsFullSizeNv12PreparationAtSixtyHertz) {
     buffer.submit(context.get(), source.get(), std::move(frame), true);
     context->Flush();
     ProgramFrame delivered;
-    while (buffer.take(delivered, 0)) {}
+    while (buffer.take(delivered, 0)) identities.push_back(delivered.frameNumber);
   }
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  // Drain the actual tail, then inspect before an intentionally stopped
+  // producer creates idle underruns. Every submitted identity must arrive.
+  ProgramFrame tail;
+  while (identities.size() < 180 && buffer.take(tail, 100)) identities.push_back(tail.frameNumber);
   const auto diagnostics = buffer.diagnostics();
   std::cerr << "full-size Nv12 produced=" << diagnostics.produced
             << " delivered=" << diagnostics.delivered
             << " underruns=" << diagnostics.underruns
             << " overflows=" << diagnostics.overflows << '\n';
-  EXPECT_GE(diagnostics.delivered, 170u);
-  EXPECT_LE(diagnostics.underruns, 5u);
-  EXPECT_LE(diagnostics.overflows, 5u);
+  EXPECT_EQ(identities.size(), 180u);
+  for (size_t i = 0; i < identities.size(); ++i) EXPECT_EQ(identities[i], static_cast<int64_t>(i + 1));
+  EXPECT_EQ(diagnostics.delivered, 180u);
+  EXPECT_EQ(diagnostics.underruns, 0u);
+  EXPECT_EQ(diagnostics.overflows, 0u);
 }
 
 TEST(D3DProgramBuffer, LateReadyHeadDoesNotStealTheFollowingDeadline) {

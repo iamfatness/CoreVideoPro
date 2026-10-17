@@ -1754,3 +1754,83 @@ func validateDeliveryEvidenceObservation(_ value: [String: Any]) -> Bool {
   }
   return true;
 }
+struct GraphicsOperationIdentity: Codable {
+  var requestId: String
+  var clientId: String
+  var coreEpoch: String
+}
+func validateGraphicsOperationIdentity(_ value: [String: Any]) -> Bool {
+  if let raw = value["requestId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["clientId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["coreEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  return true;
+}
+struct GraphicsRevisionIdentity: Codable {
+  var instanceId: String
+  var coreEpoch: String
+  var revision: Int64
+}
+func validateGraphicsRevisionIdentity(_ value: [String: Any]) -> Bool {
+  if let raw = value["instanceId"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["coreEpoch"] {
+    guard let parsed = raw as? String else { return false }
+    if parsed.isEmpty { return false }
+  } else { return false }
+  if let raw = value["revision"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  return true;
+}
+struct GraphicsPreparationFact: Codable {
+  var identity: GraphicsRevisionIdentity
+  var state: String
+  var warning: String
+}
+func validateGraphicsPreparationFact(_ value: [String: Any]) -> Bool {
+  if let raw = value["identity"] {
+    guard let parsed0 = raw as? [String: Any], validateGraphicsRevisionIdentity(parsed0) else { return false }
+  } else { return false }
+  if let raw = value["state"] {
+    guard let parsed = raw as? String else { return false }
+    if !["unprepared","preparing","ready","failed"].contains(parsed) { return false }
+  } else { return false }
+  if let raw = value["warning"] {
+    guard let parsed = raw as? String else { return false }
+    _ = parsed
+  } else { return false }
+  return true;
+}
+struct GraphicsCompositionFact: Codable {
+  var identity: GraphicsRevisionIdentity
+  var frameNumber: Int64
+  var evidence: String
+}
+func validateGraphicsCompositionFact(_ value: [String: Any]) -> Bool {
+  if let raw = value["identity"] {
+    guard let parsed0 = raw as? [String: Any], validateGraphicsRevisionIdentity(parsed0) else { return false }
+  } else { return false }
+  if let raw = value["frameNumber"] {
+    guard let parsed = raw as? NSNumber else { return false }
+    if CFGetTypeID(parsed) == CFBooleanGetTypeID() { return false }
+    if parsed.doubleValue.rounded() != parsed.doubleValue || parsed.doubleValue < 1 || parsed.doubleValue > 9007199254740991 { return false }
+  } else { return false }
+  if let raw = value["evidence"] {
+    guard let parsed = raw as? String else { return false }
+    if !["draw-submitted"].contains(parsed) { return false }
+  } else { return false }
+  return true;
+}

@@ -140,6 +140,22 @@ TEST(GradePreviewControl, MatchesRevisionAndSourceIdentityAndDetectsHeldFrameRat
   control.tick({}, compositor, 101, now + std::chrono::milliseconds(1400));
   EXPECT_EQ(control.drain()[0].getString("status"), "preparing");
 }
+
+TEST(GradePreviewControl, AuthoredStillCanvasDoesNotBecomeAStalledLiveSource) {
+  core::GradePreviewController control; PreviewCompositor compositor;
+  const auto now = core::GradePreviewController::Clock::now();
+  const rpc::Json request = rpc::Json::Object{{"instanceId", "canvas"}, {"sourceId", "preview:lower-third"}, {"revision", 1},
+      {"lowerThirdPreview", rpc::Json::Object{{"appearance", rpc::Json{}}, {"name", "Example"}}}};
+  ASSERT_TRUE(control.configure(request, {}, true, now));
+  compositor.result = std::make_shared<modules::MonitorRenderResult>();
+  modules::GradePreviewSurface surface; surface.demand = {"canvas", "preview:lower-third", 1, {}};
+  surface.sourceEpoch = 1; surface.sourceFrameId = 1; surface.status = "ready";
+  compositor.result->gradePreviews.push_back(surface);
+  control.tick({}, compositor, 1, now); EXPECT_EQ("ready", control.drain()[0].getString("status"));
+  control.tick({}, compositor, 2, now + std::chrono::milliseconds(1500));
+  EXPECT_EQ("ready", control.drain()[0].getString("status"));
+  EXPECT_EQ(0, compositor.renders);
+}
 TEST(GradePreviewControl, InputCacheHoldsTrueIdentityAndReleasesOnClose) {
   modules::MonitorInputCache cache; modules::MonitorRenderRequest request;
   request.gradePreviews.push_back({"a", "p1", 1, {}});

@@ -1,3 +1,4 @@
+#include "graphics/GraphicsTemplateDraft.h"
 #include "compositor/AdvancedGrade.h"
 #include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
@@ -144,8 +145,10 @@ class D3D11Compositor final : public ICompositor {
     if (enableGpuIngress || (gpuCapture && std::string(gpuCapture) == "1") ||
         cpuPreparation) {
       gpuConsumer_ = D3DVideoConsumers::add(device_.get(), monitorBackend);
-      gpuReadLeases_ = std::make_unique<D3DVideoReadLeases>(device_.get(), context_.get());
     }
+    // Graphics read immutable textures even when source GPU ingress is off.
+    // Allocate completion queries before production, independently of ingest.
+    gpuReadLeases_ = std::make_unique<D3DVideoReadLeases>(device_.get(), context_.get());
     if (isolateMonitors || !monitorBackend) {
       ComPtrLite<IDXGIDevice> dxgi;
       auto adapter = std::make_shared<ComPtrLite<IDXGIAdapter>>();
@@ -241,6 +244,7 @@ class D3D11Compositor final : public ICompositor {
   }
 
   std::string rendererName() const override { return "d3d11"; }
+  bool supportsGraphicsInstances() const override { return true; }
   bool supportsGradePreview() const override { return gradeWorker_ != nullptr; }
   void submitGradePreviews(MonitorRenderRequest request) override {
     if (!gradeWorker_) return;
@@ -356,6 +360,7 @@ class D3D11Compositor final : public ICompositor {
   }
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
+    graphicsSourceDrawCount_ = 0;
     // Keep slow driver-stage evidence even when the operator has not enabled
     // verbose logging. CPU timestamps only; no GPU queries or extra flushes.
     const bool diagnosticTiming = true;
@@ -370,6 +375,7 @@ class D3D11Compositor final : public ICompositor {
       return static_cast<long long>(elapsed);
     };
     ++frameNumber_;
+    overlayRaster_.beginFrame();
     auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     ProgramFrame frame;
     frame.width = deterministicPlan.width;
@@ -392,6 +398,7 @@ class D3D11Compositor final : public ICompositor {
       return frame;
     }
 
+    overlayRaster_.beginFrame();
     const float background[4] = {0.047f, 0.067f, 0.094f, 1.f};
     ID3D11RenderTargetView* renderTargets[] = {renderTargetView_.get()};
     context_->OMSetRenderTargets(1, renderTargets, nullptr);
@@ -414,6 +421,20 @@ class D3D11Compositor final : public ICompositor {
     const auto drawUs = stageUs();
 
     frame.gpuComposed = true;
+    if (overlayRaster_.pendingThisFrame()) frame.warnings.push_back("graphics-preparing");
+    if (overlayRaster_.failedThisFrame()) frame.warnings.push_back("graphics-preparation-failed");
+    if (!frame.warnings.empty()) frame.health = "degraded";
+    // Admit accepted Program resource work before private/Cue requests. These
+    // nonblocking preparations do not turn a healthy Program into degradation.
+    for (const auto& candidate : deterministicPlan.graphicsPreparations) {
+      const auto& r = candidate.rect;
+      overlayRaster_.rasterOverlayTexture(device_.get(), context_.get(), candidate.overlay,
+          {r.x, r.y, r.width, r.height}, targetWidth_, targetHeight_, candidate.layerId, true,
+          candidate.graphicsPreparedResource);
+      frame.graphicsFacts.push_back({candidate.graphicsInstanceId, candidate.graphicsRevision,
+          overlayRaster_.preparationState(), overlayRaster_.lastWarning(), overlayRaster_.preparedResource(),candidate.overlay.graphicsContentHash,candidate.overlay.hasGraphicsContentHash});
+    }
+    overlayRaster_.beginFrame();
     // The pixel-signature and base64 preview both do a blocking GPU->CPU Map
     // readback. On the light ~60fps display tick we skip them — only the GPU shared
     // texture is needed for the on-screen program, and stalling the CPU on a Map
@@ -491,6 +512,7 @@ class D3D11Compositor final : public ICompositor {
       frame.renderPlanEvidence = std::make_shared<const CompositorRenderPlan>(std::move(deterministicPlan));
       buffer->submit(context_.get(), renderTarget_.get(), frame, renderPlan.fullProgramReadback);
     }
+    else if(renderPlan.observeGraphicsSubjects) frame.renderPlanEvidence=std::make_shared<const CompositorRenderPlan>(deterministicPlan);
     if (gpuReadLeases_) gpuReadLeases_->finish();
     context_->Flush();
     const auto flushUs = stageUs();
@@ -524,6 +546,7 @@ class D3D11Compositor final : public ICompositor {
   // members the draw helpers read (risk #1 — corruption, not a crash) so the
   // program pass is never affected.
   ProgramFrameSharedTexture renderMultiview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
+    graphicsSourceDrawCount_ = 0;
     ProgramFrameSharedTexture out;
     // G2 fault seam (test-only, inert in any shipped build — see
     // compositor/CompositorFaultInjection.h). One relaxed atomic bool per pass.
@@ -622,6 +645,7 @@ class D3D11Compositor final : public ICompositor {
   // each tick when a preview scene is set; saves/restores targetWidth_/Height_ so the
   // program pass is never affected.
   ProgramFrameSharedTexture renderPreview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
+    graphicsSourceDrawCount_ = 0;
     ProgramFrameSharedTexture out;
     // G2 fault seam (test-only, inert in any shipped build — see
     // compositor/CompositorFaultInjection.h). One relaxed atomic bool per pass.
@@ -800,6 +824,17 @@ class D3D11Compositor final : public ICompositor {
     for (const auto& demand : request.gradePreviews) {
       GradePreviewSurface observation; observation.demand = demand;
       if (demand.lowerThirdPreview) {
+        auto privateOverlay=*demand.lowerThirdPreview;
+        if(privateOverlay.graphicsTemplate && privateOverlay.graphicsTemplate->draft) {
+          std::string reason; auto resolved=graphics::resolveGraphicsTemplateInput(privateOverlay.graphicsTemplate,reason);
+          if(!resolved) {
+            observation.status=reason=="validating-private-template" ? "preparing" : "unavailable";
+            observation.reason=reason; result.gradePreviews.push_back(std::move(observation)); continue;
+          }
+          privateOverlay.graphicsTemplate=std::move(resolved);
+        }
+
+        overlayRaster_.beginFrame();
         CompositorRenderPlan preview; preview.width=1920; preview.height=1080; preview.skipCpuReadback=true;
         // Native sample canvas deliberately contains no live media. The same
         // cached DirectWrite/WIC raster and composition path serves program.
@@ -807,20 +842,35 @@ class D3D11Compositor final : public ICompositor {
           CompositorRenderPlanLayer bg; bg.layerId="appearance-bg-"+std::to_string(i); bg.kind="background"; bg.order=i;
           bg.rect={float(i)/3,0,1.f/3,1}; bg.hasFillColor=true; bg.fillColor=i==0?"#101828":i==1?"#60758C":"#B8C6D4"; preview.layers.push_back(bg);
         }
-        CompositorRenderPlanLayer key; key.layerId="appearance-preview"; key.kind="overlay"; key.order=3; key.hasOverlayContent=true; key.overlay=*demand.lowerThirdPreview;
-        const auto& a=key.overlay.appearance; const float h=float((a.nameSize+a.titleSize+a.padding*3)/1080.); const float w=float(std::min(a.width,1.-a.safeOffsetX));
+        CompositorRenderPlanLayer key; key.layerId="appearance-preview"; key.kind="overlay"; key.order=3; key.hasOverlayContent=true; key.overlay=std::move(privateOverlay);
+        const auto& a=key.overlay.appearance;
+        const auto& definition=key.overlay.graphicsTemplate;
+        const float h=definition ? float(definition->definition->height()/1080.) : float((a.nameSize+a.titleSize+a.padding*3)/1080.);
+        const float w=definition ? float(definition->definition->width()/1920.) : float(std::min(a.width,1.-a.safeOffsetX));
+        if (key.overlay.hasGraphicsContentHash) { key.graphicsInstanceId="authoring"; key.graphicsRevision=uint64_t(demand.revision)+1; }
         key.rect={float(a.safeOffsetX),1.f-float(a.safeOffsetY)-h,w,h};
         if (key.overlay.keyPosition.find("upper")!=std::string::npos) key.rect.y=float(a.safeOffsetY);
         if (key.overlay.keyPosition.find("right")!=std::string::npos) key.rect.x=1.f-float(a.safeOffsetX)-w;
         if (!a.enabled) {const auto legacy=compositor::lowerThirdOverlay();key.rect={legacy.x,legacy.y,legacy.width,legacy.height};key.opacity=.92f;}
+        if (key.overlay.graphicsAuthoringRect && !definition) key.rect=*key.overlay.graphicsAuthoringRect;
+        if (definition && definition->placement) {
+          const auto& p=*definition->placement;
+          const float ax=p.anchor.find("right")!=std::string::npos?1.f:p.anchor.find("left")!=std::string::npos?0.f:.5f;
+          const float ay=p.anchor.find("upper")!=std::string::npos?0.f:p.anchor.find("lower")!=std::string::npos?1.f:.5f;
+          key.rect.width*=float(p.scale); key.rect.height*=float(p.scale);
+          key.rect.x=ax*(1-key.rect.width)+float(p.x/1920.); key.rect.y=ay*(1-key.rect.height)+float(p.y/1080.);
+        }
         preview.layers.push_back(key);
         observation.sourceEpoch=1; observation.sourceFrameId=demand.revision; observation.status="ready";
+        const auto image=renderPreview(preview,{});
+        if (overlayRaster_.failedThisFrame()) { observation.status="unavailable"; observation.reason=overlayRaster_.lastWarning(); }
+        else if (overlayRaster_.pendingThisFrame()) { observation.status="preparing"; observation.reason="awaiting-native-appearance"; }
         appearanceHistory_[request.sequence]=observation;
-        const auto image=renderPreview(preview,{}); const auto stamp=appearanceHistory_.find(image.frameNumber);
+        const auto stamp=appearanceHistory_.find(image.frameNumber);
         if (image.width>0 && stamp!=appearanceHistory_.end() && stamp->second.demand.instanceId==demand.instanceId && stamp->second.demand.revision==demand.revision) {
+          observation=stamp->second;
           observation.texture.sharedHandleHex=image.sharedHandleHex; observation.texture.width=image.width; observation.texture.height=image.height;
           observation.texture.format=image.format; observation.texture.frameNumber=image.frameNumber;
-          observation.reason=overlayRaster_.lastWarning();
         } else { observation.status="preparing"; observation.reason="awaiting-native-appearance"; }
         while (appearanceHistory_.size()>32) appearanceHistory_.erase(appearanceHistory_.begin());
         result.gradePreviews.push_back(std::move(observation)); continue;
@@ -1531,7 +1581,24 @@ class D3D11Compositor final : public ICompositor {
     drawSolidQuad(layer, renderPlan, {rect.x + rect.width - strokeX, rect.y, strokeX, rect.height}, color, borderAlpha);
   }
 
-  void drawLayer(const ResolvedLayer& requestedLayer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr, ProgramFrame* admission = nullptr, const ProgramFrame* traceFrame = nullptr) {
+  void recordGraphicsSourceDraw(const VideoFrame& frame) {
+    if (frame.participantId.size() > 512) return;
+    for (size_t i = 0; i < graphicsSourceDrawCount_; ++i) {
+      if (graphicsSourceDraws_[i].id != frame.participantId) continue;
+      if (graphicsSourceDraws_[i].generation != frame.sourceGeneration) graphicsSourceDraws_[i].generation = 0;
+      return;
+    }
+    if (graphicsSourceDrawCount_ < graphicsSourceDraws_.size()) {
+      auto& draw = graphicsSourceDraws_[graphicsSourceDrawCount_++];
+      draw.id = frame.participantId; draw.generation = frame.sourceGeneration;
+    }
+  }
+  bool hasGraphicsSourceDraw(const std::string& id, uint64_t generation) const {
+    for (size_t i = 0; i < graphicsSourceDrawCount_; ++i)
+      if (graphicsSourceDraws_[i].id == id && graphicsSourceDraws_[i].generation == generation) return true;
+    return false;
+  }
+  void drawLayer(const ResolvedLayer& requestedLayer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr, ProgramFrame* admission = nullptr, ProgramFrame* traceFrame = nullptr) {
     auto layer = requestedLayer;
     VideoFrame admittedImage;
     core::DeliveryReason traceReason = core::DeliveryReason::Ready;
@@ -1583,7 +1650,13 @@ class D3D11Compositor final : public ICompositor {
 
     // Overlay/lower-third/caption layers go through the raster stage.
     if (layer.plan.hasOverlayContent && compositorLayerIsOverlay(layer.plan)) {
-      drawOverlayLayer(layer, renderPlan, rect, layerAlpha);
+      const bool composited = drawOverlayLayer(layer, renderPlan, rect, layerAlpha, traceFrame);
+      if (traceFrame && composited && !layer.plan.graphicsInstanceId.empty()) {
+        const auto resource = overlayRaster_.preparedResource();
+        if (resource && resource != layer.plan.graphicsPreparedResource)
+          traceFrame->graphicsFacts.push_back({layer.plan.graphicsInstanceId, layer.plan.graphicsRevision, "ready", "", resource});
+        traceFrame->graphicsFacts.push_back({layer.plan.graphicsInstanceId, layer.plan.graphicsRevision, "draw-submitted", ""});
+      }
       return;
     }
 
@@ -1693,6 +1766,15 @@ class D3D11Compositor final : public ICompositor {
       event.reason = textured ? traceReason : core::DeliveryReason::Unavailable;
       core::recordDeliveryTrace(event);
     }
+    if (textured && layer.frame && layer.frame->sourceGeneration && layer.plan.kind == "participant-video" && layerAlpha > 0)
+      recordGraphicsSourceDraw(*layer.frame);
+    if(traceFrame && renderPlan.observeGraphicsSubjects && textured && layer.frame && layerAlpha>0 &&
+        (layer.plan.kind=="participant-video"||layer.plan.kind=="screen-share") && traceFrame->graphicsFacts.size()<128) {
+      const auto state=layer.plan.kind=="screen-share"?"share-draw-submitted":"source-draw-submitted";
+      const auto identity="source:"+layer.frame->participantId;
+      if(std::none_of(traceFrame->graphicsFacts.begin(),traceFrame->graphicsFacts.end(),[&](const auto& fact){return fact.state==state&&fact.instanceId==identity&&fact.revision==layer.frame->sourceGeneration;}))
+        traceFrame->graphicsFacts.push_back({identity,layer.frame->sourceGeneration,state,""});
+    }
     context_->RSSetState(rasterizerState_.get());
     if (textured) {
       ID3D11ShaderResourceView* nullViews[] = {nullptr, nullptr, nullptr};
@@ -1773,8 +1855,9 @@ class D3D11Compositor final : public ICompositor {
 
     ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
         device_.get(), context_.get(), content, labelRect, targetWidth_, targetHeight_);
-    if (overlayView == nullptr) {
-      return;
+    if (overlayView == nullptr) return;
+    if (!gpuReadLeases_ || !gpuReadLeases_->hold(overlayRaster_.lease())) {
+      overlayRaster_.refuseGpuLease(); return;
     }
 
     const compositor::LayerRect clip = layer.plan.hasClipRect
@@ -1804,25 +1887,28 @@ class D3D11Compositor final : public ICompositor {
 
   // --- Item 9: overlay/lower-third/caption raster stage. ---
   // Rasters the overlay's real content (DirectWrite text + WIC image) into a
-  // GPU texture via a D2D DXGI-surface render target, then composites it with
+  // immutable GPU texture prepared on the WIC/DirectWrite owner, then composites it with
   // the animated keyPhase transform. The texture is cached by content signature
   // (see rasterOverlayTexture) so the raster cost is paid only when the text,
   // brand styling, or target size changes — never per frame. Falls back to the
   // deterministic band + accent draw if D2D/DirectWrite is unavailable.
-  void drawOverlayLayer(
+  bool drawOverlayLayer(
       const ResolvedLayer& layer,
       const CompositorRenderPlan& renderPlan,
       const compositor::LayerRect& rect,
-      float layerAlpha) {
+      float layerAlpha, ProgramFrame* traceFrame = nullptr) {
+    if (layer.plan.graphicsBoundSourceGeneration && !hasGraphicsSourceDraw(layer.plan.graphicsBoundParticipantId,
+        layer.plan.graphicsBoundSourceGeneration)) return false;
+    bool composited = false;
     const auto& overlay = layer.plan.overlay;
     const auto key = compositor::computeOverlayKeyTransform(
         overlay.keyPhase, overlay.keyProgress, overlay.keyPosition, rect.height);
     if (!key.visible || key.alpha <= 0.001f) {
-      return;
+      return false;
     }
     const float alpha = std::clamp(layerAlpha * key.alpha, 0.f, 1.f);
     if (alpha <= 0.f) {
-      return;
+      return false;
     }
 
     // Animated slide (and renderer-compatible scale) about the rect center.
@@ -1843,6 +1929,19 @@ class D3D11Compositor final : public ICompositor {
                                 layer.plan.clipRect.width, layer.plan.clipRect.height}
         : compositor::LayerRect{0.f, 0.f, 1.f, 1.f};
 
+    // Instance revisions become visible only after their complete raster exists.
+    // Legacy overlay fallback remains compatible while it prepares.
+    ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
+        device_.get(), context_.get(), overlay, rect, targetWidth_, targetHeight_, {}, !layer.plan.graphicsInstanceId.empty(), layer.plan.graphicsPreparedResource);
+    if (overlayView && (!gpuReadLeases_ || !gpuReadLeases_->hold(overlayRaster_.lease()))) {
+      overlayRaster_.refuseGpuLease(); overlayView = nullptr;
+    }
+    if (!layer.plan.graphicsInstanceId.empty() && !overlayView) return false;
+    if (layer.plan.graphicsAwaitingEntrance) {
+      if (traceFrame) traceFrame->graphicsFacts.push_back({layer.plan.graphicsInstanceId,layer.plan.graphicsRevision,"composition-eligible",""});
+      return false;
+    }
+
     // Brand-styled band background.
     context_->RSSetState(scissorRasterizerState_.get());
     setScissorFromRect(clip);
@@ -1854,8 +1953,7 @@ class D3D11Compositor final : public ICompositor {
     // Sizing/caching uses the un-animated rect so a build-in/out animation
     // scales the SAME cached texture (via the viewport) instead of re-rastering
     // every frame of the key transition.
-    if (ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
-            device_.get(), context_.get(), overlay, rect, targetWidth_, targetHeight_)) {
+    if (overlayView) {
       context_->RSSetState(scissorRasterizerState_.get());
       setScissorFromRect(clip);
       setViewportFromRect(animated);
@@ -1867,6 +1965,7 @@ class D3D11Compositor final : public ICompositor {
         context_->PSSetShaderResources(0, 1, views);
         context_->PSSetSamplers(0, 1, samplers);
         context_->Draw(3, 0);
+        composited = true;
         ID3D11ShaderResourceView* nullViews[] = {nullptr};
         context_->PSSetShaderResources(0, 1, nullViews);
         context_->PSSetShader(pixelShader_.get(), nullptr, 0);
@@ -1883,12 +1982,13 @@ class D3D11Compositor final : public ICompositor {
       }
     }
     context_->RSSetState(rasterizerState_.get());
+    return composited;
   }
 
   // The DirectWrite/WIC/D2D overlay-texture raster (ensureOverlayRasterFactories
   // / decodeOverlayImage / drawOverlayTextLine / rasterOverlayTexture) now lives
   // in compositor/CompositorOverlayRaster.{h,cpp}; drawOverlayLayer above calls
-  // overlayRaster_.rasterOverlayTexture(). Move-only, behavior unchanged.
+  // overlayRaster_.rasterOverlayTexture(). A GPU read lease fences cache retirement.
 
   bool uploadLayerTexture(const VideoFrame& frame) {
     CpuStageScope timing(profileMvActive_, stageProfileNs_[MvUpload]);
@@ -3377,6 +3477,9 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11BlendState> blendState_;
   ComPtrLite<ID3D11BlendState> premultipliedBlendState_;
   ComPtrLite<ID3D11RasterizerState> rasterizerState_;
+  struct GraphicsSourceDraw { std::string id; uint64_t generation = 0; };
+  std::array<GraphicsSourceDraw, 256> graphicsSourceDraws_;
+  size_t graphicsSourceDrawCount_ = 0;
   ComPtrLite<ID3D11RasterizerState> scissorRasterizerState_;
   ComPtrLite<ID3D11Texture2D> renderTarget_;
   ComPtrLite<ID3D11RenderTargetView> renderTargetView_;

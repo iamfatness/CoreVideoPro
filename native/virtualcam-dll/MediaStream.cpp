@@ -28,8 +28,8 @@ HRESULT MediaStream::RuntimeClassInitialize(MediaSource* source, IMFStreamDescri
   fps_ = fps == 0 ? 30 : fps;
   frameDuration_ = 10000000LL / static_cast<LONGLONG>(fps_);
   wchar_t retryFlag[3]{};
-  // Explicit off is a diagnostic negative control; recovery is bounded below.
-  retryTransientRead_ = !(GetEnvironmentVariableW(L"COREVIDEO_CAMERA_READ_RETRY", retryFlag, 3) == 1 && retryFlag[0] == L'0');
+  if (GetEnvironmentVariableW(L"COREVIDEO_CAMERA_READ_RETRY", retryFlag, 3) != 1) retryFlag[0] = L'\0';
+  retryTransientRead_ = corevideo::modules::cameraReadRetryEnabled(retryFlag);
 #if defined(COREVIDEO_CAMERA_READ_RETRY_OFF_QA)
   retryTransientRead_ = false;
 #endif
@@ -163,7 +163,7 @@ void MediaStream::LogDeliveryEvidence() {
       "invalidHeader=%llu publicationObserved=%d lastPublication=%llu lastSeq=%lu maxIntervalHns=%llu "
       "programIdentityVerified=%d receiverVerified=0 correlatedReads=%llu uncorrelatedReads=%llu "
       "unobservedProgramFrames=%llu programEpochChanges=%llu programRegressions=%llu "
-      "lastProgramSequence=%lld epoch=%016llx%016llx lastReadProgramSequence=%lld",
+      "lastProgramSequence=%lld epoch=%016llx%016llx lastReadProgramSequence=%lld logDropped=%llu logFailures=%llu",
       static_cast<void*>(this), deliveryRun_, delivery_.emitted, delivery_.fresh, delivery_.held, delivery_.slate,
       delivery_.failed, delivery_.formatMismatches, read.count(Result::Fresh), read.count(Result::Unchanged),
       read.count(Result::Contended), read.count(Result::Unavailable), read.count(Result::Uninitialized),
@@ -172,10 +172,10 @@ void MediaStream::LogDeliveryEvidence() {
       emittedIdentity_.verified ? 1 : 0, read.correlatedReads, read.uncorrelatedReads,
       read.unobservedProgramFrames, read.programEpochChanges, read.programRegressions,
       static_cast<long long>(emittedIdentity_.sequence), emittedIdentity_.epochHigh, emittedIdentity_.epochLow,
-      static_cast<long long>(read.lastProgramSequence));
+      static_cast<long long>(read.lastProgramSequence), VcamServeLogQueue().dropped(), VcamServeLogQueue().failures());
   VcamServeLog(b);
   if (retryTransientRead_) {
-    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu readDeadlineMisses=%llu writerActive=%llu changedDuringCopy=%llu copyBudgetExhausted=%llu timerTimeouts=%llu timerFailures=%llu unrecoveredTransientSamples=%llu waitMaxUs=2000 deadlineReserveUs=2000 maxRetries=8 maxPayloadCopies=2",
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu readDeadlineMisses=%llu writerActive=%llu changedDuringCopy=%llu copyBudgetExhausted=%llu timerTimeouts=%llu timerFailures=%llu unrecoveredTransientSamples=%llu waitMaxUs=250 deadlineReserveUs=2000 maxRetries=64 maxPayloadCopies=2",
         retriedSamples_, recoveredSamples_, readDeadlineMisses_, read.writerActiveObservations,
         read.changedDuringCopy, read.copyBudgetExhaustions, retryTimerTimeouts_, retryTimerFailures_, unrecoveredTransientSamples_);
     VcamServeLog(b);
@@ -244,9 +244,9 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
         if (!pacerTimer_) { ++retryTimerFailures_; return false; }
         // A warm writer collision gets a short first yield. An early
-        // consumer may need the next publication, so later waits can use the
+        // consumer may need the next publication, so bounded waits can use the
         // original sample window instead of holding after an arbitrary 2 ms.
-        const auto pauseUs = std::min<int64_t>(retries ? 2000 : 250, std::max<int64_t>(1, remainingUs / 2));
+        const auto pauseUs = std::min<int64_t>(250, std::max<int64_t>(1, remainingUs / 2));
         LARGE_INTEGER due; due.QuadPart = -pauseUs * 10;
         if (!SetWaitableTimer(pacerTimer_, &due, 0, nullptr, nullptr, FALSE)) {
           ++retryTimerFailures_; return false;
@@ -257,7 +257,7 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
         // A timeout still yielded the CPU. The original absolute deadline,
         // checked by the helper, decides whether another read is allowed.
         return true;
-      }, retryTransientRead_, retries, sampleReadDeadlineUs_, 8);
+      }, retryTransientRead_, retries, sampleReadDeadlineUs_, 64);
   if (MFGetSystemTime() / 10 > sampleReadDeadlineUs_) ++readDeadlineMisses_;
   const bool transientMiss = !got && (reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Contended ||
                reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Unchanged);

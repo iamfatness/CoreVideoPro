@@ -63,9 +63,16 @@ export function judgeCameraPixels(text, { warmupSeconds = 30, minimumSeconds = 3
   if (repeated || missing || reordered) errors.push(`Continuity failed: repeated=${repeated}, missing=${missing}, reordered=${reordered}.`);
   const maximumIntervalMs = intervals.at(-1) ?? null;
   if (maximumIntervalMs === null || maximumIntervalMs > 33.4) errors.push('Unexplained receiver interval above 33.4 ms or missing timing.');
+  const anchored = Number.isSafeInteger(header?.startUnixUs) && header.startUnixUs > 0 && measured.length > 1 &&
+    Number.isSafeInteger(header.startUnixUs + measured.at(-1).arrivalUs);
+  const coverage = { complete: anchored && errors.length === 0,
+    startTime: anchored ? new Date((header.startUnixUs + measured[0].arrivalUs) / 1000).toISOString() : null,
+    endTime: anchored ? new Date((header.startUnixUs + measured.at(-1).arrivalUs) / 1000).toISOString() : null };
   return { schema: 'camera-pixel-verdict-v1', receiverPixelContinuityPassed: errors.length === 0,
+    receiverScheduling: header?.receiverScheduling ?? 'ordinary',
     receiverMode, osCameraContinuityVerified: errors.length === 0 && receiverMode === 'os-camera',
-    physicalDisplayVerified: false, warmupSeconds, durationSeconds, samples: measured.length,
+    physicalDisplayVerified: false, warmupSeconds, durationSeconds, samples: measured.length, coverage,
+    firstIdentity: measured[0]?.identity ?? null, lastIdentity: measured.at(-1)?.identity ?? null,
     invalid, repeated, missing, reordered, p50IntervalMs: percentile(.5), p99IntervalMs: percentile(.99), maximumIntervalMs,
     errors: [...new Set(errors)], limitation: receiverMode === 'direct-dll'
       ? 'Direct DLL diagnostic pixels. Does not validate OS registration, Frame Server, Zoom display, audio synchronization or installed-camera qualification.'

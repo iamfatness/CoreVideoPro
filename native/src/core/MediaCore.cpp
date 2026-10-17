@@ -1127,8 +1127,13 @@ bool MediaCore::configureGradePreview(const rpc::Json& command, bool* overloaded
     if (!modules::readAdvancedGrade(*advanced, validated)) return false;
   }
   const auto refusedBefore = gradePreviews_.eventsRefused();
+  std::optional<modules::CompositorOverlayContent> graphicsDraft;
+  if (const auto* preview = command.get("lowerThirdPreview")) if (const auto* draft = preview->get("graphics"); draft && !draft->isNull()) {
+    graphicsDraft = graphicsInstances_.authoringPreview(*draft);
+    if (!graphicsDraft) return false;
+  }
   const bool accepted = gradePreviews_.configure(command, grade ? readColorGrade(*grade) : modules::CompositorColorGrade{},
-      modules_.compositor->supportsGradePreview());
+      modules_.compositor->supportsGradePreview(), GradePreviewController::Clock::now(), std::move(graphicsDraft));
   if (overloaded) *overloaded = !accepted && gradePreviews_.eventsRefused() != refusedBefore;
   return accepted;
 }
@@ -1159,7 +1164,11 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
   };
   if (!validate(validate, command)) { commandProtocolFailures_.push_back("invalid-advanced-grade"); return; }
   const std::string type = command.getString("type");
-  if (type == "begin-take-transition") {
+  if (type.rfind("graphics-", 0) == 0) {
+    if (!modules_.compositor->supportsGraphicsInstances()) {
+      commandProtocolFailures_.push_back("graphics-instance-backend-not-built");
+    } else if (!graphicsInstances_.apply(command)) commandProtocolFailures_.push_back("graphics-request-refused");
+  } else if (type == "begin-take-transition") {
     beginTakeTransition(command);
   } else if (type == "load-scene-graph") {
     loadSceneGraph(command);
@@ -1173,6 +1182,10 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setColorGrade(command);
   } else if (type == "set-source-preview-demand") {
     if (!configureSourcePreviewDemand(command)) commandProtocolFailures_.push_back("invalid-source-preview-demand");
+  } else if (type == "set-zoom-thumbnail-demand") {
+    const auto* enabled = command.get("enabled");
+    if (enabled && enabled->isBool()) zoomEngineRuntime_->setThumbnailDemand(enabled->asBool());
+    else commandProtocolFailures_.push_back("invalid-zoom-thumbnail-demand");
   } else if (type == "set-grade-preview") {
     bool overloaded = false;
     if (!configureGradePreview(command, &overloaded))
@@ -4201,23 +4214,10 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
   }
   programIntegratedMeter_.process(chunkL.data(), chunkR.data(), frames);
 
-  // Roll the windowed buffer and trim to the 3 s short-term window.
-  programMeterL_.insert(programMeterL_.end(), chunkL.begin(), chunkL.end());
-  programMeterR_.insert(programMeterR_.end(), chunkR.begin(), chunkR.end());
-  const size_t maxSamples = static_cast<size_t>(sampleRate) * 3u;
-  if (programMeterL_.size() > maxSamples) {
-    programMeterL_.erase(programMeterL_.begin(), programMeterL_.end() - static_cast<std::ptrdiff_t>(maxSamples));
-    programMeterR_.erase(programMeterR_.begin(), programMeterR_.end() - static_cast<std::ptrdiff_t>(maxSamples));
-  }
-
-  const size_t windowed = programMeterL_.size();
-  // Momentary (400 ms) / short-term (3 s) are single-pass K-weighted RMS; bound
-  // momentary to its 400 ms window so it isn't scanning the full 3 s buffer.
-  const size_t momentarySamples = std::min(windowed, static_cast<size_t>(rate * 0.4));
-  const size_t momentaryOffset = windowed - momentarySamples;
-  programLufsMomentary_ = modules::computeMomentaryLufs(programMeterL_.data() + momentaryOffset,
-                                                        programMeterR_.data() + momentaryOffset, momentarySamples, rate);
-  programLufsShortTerm_ = modules::computeShortTermLufs(programMeterL_.data(), programMeterR_.data(), windowed, rate);
+  // The continuous K-weighted stream already supplies both windows. Never
+  // re-filter three seconds of history on the 20 ms audio deadline for meters.
+  programLufsMomentary_ = programIntegratedMeter_.momentaryLufs();
+  programLufsShortTerm_ = programIntegratedMeter_.shortTermLufs();
   // True peak: STREAMING 4x-oversampled detector (B2). The old per-chunk
   // computeTruePeakDbfs zero-padded both block edges, so inter-sample peaks
   // near/straddling a 20ms boundary were misread (~+0.4 dB over-report on
@@ -4228,7 +4228,7 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
                modules::streamingTruePeakBlockDbfs(programTruePeakMeterR_, chunkR.data(), frames));
   programTruePeakDbfs_ = std::max(chunkTruePeak, programTruePeakDbfs_ - 0.5);
   programLufsIntegrated_ = programIntegratedMeter_.integratedLufs();
-  virtualCamera_->setProgramLoudness(programLufsShortTerm_, windowed >= maxSamples);
+  virtualCamera_->setProgramLoudness(programLufsShortTerm_, programIntegratedMeter_.shortTermReady());
 }
 
 
@@ -4338,14 +4338,17 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
                                       colorGrade_, overlayAssets_, captionEnabled_, captionText_, captionSpeaker_,
                                       videoFrames, tilesLayer_);
   plan.warnings.insert(plan.warnings.end(), sceneValidationWarnings_.begin(), sceneValidationWarnings_.end());
-  return applyTakeTransition(std::move(plan), videoFrames);
+  graphicsInstances_.append(plan, false, videoFrames, graphics::GraphicsInstances::ScopePass::Scene);
+  plan = applyTakeTransition(std::move(plan), videoFrames);
+  graphicsInstances_.append(plan, false, videoFrames, graphics::GraphicsInstances::ScopePass::Global);
+  return plan;
 }
 
 modules::CompositorRenderPlan MediaCore::applyTakeTransition(
     modules::CompositorRenderPlan incoming,
     const std::vector<modules::VideoFrame>& videoFrames) const {
   if (takeTransition_.waitingForColdMedia) {
-    return buildRenderPlanForScene(
+    auto outgoing = buildRenderPlanForScene(
         takeTransition_.outgoingSceneId,
         static_cast<int>(takeTransition_.outgoingRoutes.size()),
         static_cast<int>(takeTransition_.outgoingOverlays.size()),
@@ -4353,6 +4356,8 @@ modules::CompositorRenderPlan MediaCore::applyTakeTransition(
         takeTransition_.outgoingColorGrade, takeTransition_.outgoingOverlays,
         takeTransition_.outgoingCaptionEnabled, takeTransition_.outgoingCaptionText,
         takeTransition_.outgoingCaptionSpeaker, videoFrames, takeTransition_.outgoingTiles);
+    graphicsInstances_.append(outgoing, false, videoFrames, graphics::GraphicsInstances::ScopePass::Scene);
+    return outgoing;
   }
   if (!takeTransition_.active || takeTransition_.mode == "cut") {
     return incoming;
@@ -4375,6 +4380,8 @@ modules::CompositorRenderPlan MediaCore::applyTakeTransition(
       takeTransition_.outgoingCaptionSpeaker,
       videoFrames,
       takeTransition_.outgoingTiles);
+
+  graphicsInstances_.append(outgoing, false, videoFrames, graphics::GraphicsInstances::ScopePass::Scene);
 
   // One combined plan has one global grade. Bake each scene's global grade into
   // the layers that do not already carry a route-specific grade, then neutralize
@@ -4475,10 +4482,17 @@ void MediaCore::advanceTakeTransition(double frameIntervalMs) {
 modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
   // The preview scene composites its own routes/background/overlays/grade. Captions
   // are a program broadcast element, so the preview bus renders no caption band.
-  auto plan = buildRenderPlanForScene(previewSceneId_, previewRouteCount_, previewOverlayCount_,
+  auto plan = previewSceneActive_ ? buildRenderPlanForScene(previewSceneId_, previewRouteCount_, previewOverlayCount_,
                                       previewSceneBackground_, previewSceneRoutes_, previewColorGrade_,
                                       previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
-                                      videoFrames, previewTilesLayer_);
+                                      videoFrames, previewTilesLayer_) : modules::CompositorRenderPlan{};
+  if (!previewSceneActive_) {
+    // A standalone graphics cue must not turn the legacy default source gallery
+    // into a new preview subscription. Its canvas has no video reference until
+    // the operator selects a Preview scene.
+    plan.renderPlanId = "graphics-cue";
+    plan.width = outputWidth_; plan.height = outputHeight_; plan.fps = outputFps_;
+  }
   // PERSISTENT SOURCES (spec 2026-09-10 §2): Preview and Program address the
   // SAME media source, with NO exception since #535 slice 3b. The paused clip
   // cue used to keep a "preview:" namespace of its own, because the poster and
@@ -4488,6 +4502,7 @@ modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const 
   // the very source the slice exists to keep whole.
   // R3: preview keeps the held frame — never a black cut — regardless of the
   // stored per-source policy; only the real Program pass reads it.
+  graphicsInstances_.append(plan, true, videoFrames);
   holdDropoutForMonitoring(plan);
   return plan;
 }
@@ -4500,6 +4515,7 @@ bool MediaCore::hasPreviewScene() const {
   // (the preview-shared-texture event is structural-change-gated and never re-emits an
   // "off" state). Live video still requires a per-frame recomposite regardless, so gating
   // out the single-source case would not save the per-frame GPU pass anyway.
+  if (graphicsInstances_.hasCue()) return true;
   if (!previewSceneActive_) {
     return false;
   }
@@ -5278,7 +5294,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
           });
     };
     if (engineLive) {
+      const auto graphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
       const auto roster = zoomEngineRuntime_->floorParticipants();
+      const auto confirmedGraphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
+      graphicsInstances_.observeZoomSources(roster, graphicsSourceEpoch == confirmedGraphicsSourceEpoch ? graphicsSourceEpoch : 0, videoFrames);
       // A manual trim belongs to this participant incarnation, not to a
       // numeric SDK id that a later join could reuse inside the same meeting.
       if (!zoomGuestAvOffsets_.empty()) {
@@ -5304,6 +5323,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
             hasContent(id), participant.isTalking});
       }
     } else {
+      graphicsInstances_.observeZoomSources({}, 0);
       const auto capture = zoomSnapshot();
       const auto* roster = capture.get("participants");
       if (roster && roster->isArray()) for (const auto& participant : roster->asArray()) {
@@ -5737,6 +5757,8 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
+  graphicsInstances_.observe(producedFrame);
+  producedFrame.releaseGraphicsPreparationLeases();
   if (avSyncTraceEnabled() && hasWhiteClapSource(videoFrames, "101")) {
     avSyncWhiteProducedFrames_.push_back(producedFrame.frameNumber);
     if (avSyncWhiteProducedFrames_.size() > 32) avSyncWhiteProducedFrames_.pop_front();
@@ -6188,7 +6210,7 @@ void MediaCore::captureAudioObservation(AudioOutputObservation& observation, con
   observation.shortTermLufs = programLufsShortTerm_;
   observation.integratedLufs = programLufsIntegrated_;
   observation.truePeakDbfs = programTruePeakDbfs_;
-  observation.windowMs = static_cast<int>((programMeterL_.size() * 1000) / 48000);
+  observation.windowMs = static_cast<int>(programIntegratedMeter_.windowSamples() * 1000 / programIntegratedMeter_.sampleRateHz());
   observation.fallbackMonitorFrames = static_cast<int>(modules_.mixer->monitorBusPcm().size() /
       static_cast<size_t>(std::max(1, modules_.mixer->monitorBusChannels())));
 }

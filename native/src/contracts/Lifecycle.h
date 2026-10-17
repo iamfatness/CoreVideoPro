@@ -1478,4 +1478,92 @@ inline rpc::Json toJson(const DeliveryEvidenceObservation& value) {
   if (value.aggregate) result.emplace("aggregate", toJson(*value.aggregate));
   return result;
 }
+struct GraphicsOperationIdentity {
+  std::string requestId{};
+  std::string clientId{};
+  std::string coreEpoch{};
+};
+inline bool validateGraphicsOperationIdentity(const rpc::Json& value) {
+  if (!value.isObject()) return false;
+  const auto* requestId = value.get("requestId");
+  if (!requestId || !(requestId->isString() && requestId->asString().size() >= 1)) return false;
+  const auto* clientId = value.get("clientId");
+  if (!clientId || !(clientId->isString() && clientId->asString().size() >= 1)) return false;
+  const auto* coreEpoch = value.get("coreEpoch");
+  if (!coreEpoch || !(coreEpoch->isString() && coreEpoch->asString().size() >= 1)) return false;
+  return true;
+}
+inline rpc::Json toJson(const GraphicsOperationIdentity& value) {
+  rpc::Json::Object result;
+  result.emplace("requestId", value.requestId);
+  result.emplace("clientId", value.clientId);
+  result.emplace("coreEpoch", value.coreEpoch);
+  return result;
+}
+struct GraphicsRevisionIdentity {
+  std::string instanceId{};
+  std::string coreEpoch{};
+  std::int64_t revision{};
+};
+inline bool validateGraphicsRevisionIdentity(const rpc::Json& value) {
+  if (!value.isObject()) return false;
+  const auto* instanceId = value.get("instanceId");
+  if (!instanceId || !(instanceId->isString() && instanceId->asString().size() >= 1)) return false;
+  const auto* coreEpoch = value.get("coreEpoch");
+  if (!coreEpoch || !(coreEpoch->isString() && coreEpoch->asString().size() >= 1)) return false;
+  const auto* revision = value.get("revision");
+  if (!revision || !(revision->isNumber() && std::floor(revision->asNumber()) == revision->asNumber() && revision->asNumber() >= 1 && revision->asNumber() <= 9007199254740991)) return false;
+  return true;
+}
+inline rpc::Json toJson(const GraphicsRevisionIdentity& value) {
+  rpc::Json::Object result;
+  result.emplace("instanceId", value.instanceId);
+  result.emplace("coreEpoch", value.coreEpoch);
+  result.emplace("revision", static_cast<double>(value.revision));
+  return result;
+}
+struct GraphicsPreparationFact {
+  GraphicsRevisionIdentity identity{};
+  std::string state{};
+  std::string warning{};
+};
+inline bool validateGraphicsPreparationFact(const rpc::Json& value) {
+  if (!value.isObject()) return false;
+  const auto* identity = value.get("identity");
+  if (!identity || !(validateGraphicsRevisionIdentity(*identity))) return false;
+  const auto* state = value.get("state");
+  if (!state || !(state->isString() && (state->asString() == "unprepared" || state->asString() == "preparing" || state->asString() == "ready" || state->asString() == "failed"))) return false;
+  const auto* warning = value.get("warning");
+  if (!warning || !(warning->isString())) return false;
+  return true;
+}
+inline rpc::Json toJson(const GraphicsPreparationFact& value) {
+  rpc::Json::Object result;
+  result.emplace("identity", toJson(value.identity));
+  result.emplace("state", value.state);
+  result.emplace("warning", value.warning);
+  return result;
+}
+struct GraphicsCompositionFact {
+  GraphicsRevisionIdentity identity{};
+  std::int64_t frameNumber{};
+  std::string evidence{};
+};
+inline bool validateGraphicsCompositionFact(const rpc::Json& value) {
+  if (!value.isObject()) return false;
+  const auto* identity = value.get("identity");
+  if (!identity || !(validateGraphicsRevisionIdentity(*identity))) return false;
+  const auto* frameNumber = value.get("frameNumber");
+  if (!frameNumber || !(frameNumber->isNumber() && std::floor(frameNumber->asNumber()) == frameNumber->asNumber() && frameNumber->asNumber() >= 1 && frameNumber->asNumber() <= 9007199254740991)) return false;
+  const auto* evidence = value.get("evidence");
+  if (!evidence || !(evidence->isString() && (evidence->asString() == "draw-submitted"))) return false;
+  return true;
+}
+inline rpc::Json toJson(const GraphicsCompositionFact& value) {
+  rpc::Json::Object result;
+  result.emplace("identity", toJson(value.identity));
+  result.emplace("frameNumber", static_cast<double>(value.frameNumber));
+  result.emplace("evidence", value.evidence);
+  return result;
+}
 } // namespace corevideo::contracts

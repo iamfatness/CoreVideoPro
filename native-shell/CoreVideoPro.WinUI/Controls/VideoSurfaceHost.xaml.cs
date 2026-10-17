@@ -60,8 +60,17 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     // interop is a native fail-fast (CoreMessagingXP stowed exception 0xc000027b),
     // so every present entry point early-returns while disposed.
     private bool _disposed;
-    private readonly PresentationCadence _sourceCadence = new();
+    private XamlRoot? _observedRoot;
     private string? _lastPreviewSurfaceKey;
+    private bool _cpuPreviewRequired;
+
+    private void UpdateCpuPreviewDemand()
+    {
+        var required = !_disposed && IsLoaded && IsEffectivelyVisible && !IsGpuPathActive && !HasMediaAssetPreview;
+        if (required == _cpuPreviewRequired) return;
+        _cpuPreviewRequired = required;
+        CpuPreviewDemand.Consumers.Set(this, required);
+    }
 
     public VideoSurfaceHost()
     {
@@ -252,8 +261,9 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     public bool PresentSharedHandle(SharedTextureHandle handle)
     {
-        if (_disposed || !IsLoaded || !UsesGpuSharedTexture || !handle.IsValid)
+        if (_disposed || !IsLoaded || !UsesGpuSharedTexture || !handle.IsValid || !IsEffectivelyVisible)
         {
+            _renderPresenter?.Suspend();
             return false;
         }
 
@@ -336,8 +346,11 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         _disposed = false;
+        _observedRoot = XamlRoot;
+        if (_observedRoot is not null) _observedRoot.Changed += OnRootChanged;
         RefreshSourceFraming();
         _presentationLifecycle.Load(UsesGpuSharedTexture);
+        UpdateCpuPreviewDemand();
     }
 
     private bool AttachGpuPresenter()
@@ -380,7 +393,16 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         // Mark disposed FIRST so any in-flight/queued Rendering callback that races
         // teardown bails out before touching the interop being disposed.
         _disposed = true;
+        UpdateCpuPreviewDemand();
+        if (_observedRoot is not null) _observedRoot.Changed -= OnRootChanged;
+        _observedRoot = null;
         _presentationLifecycle.Unload();
+    }
+
+    private void OnRootChanged(XamlRoot sender, XamlRootChangedEventArgs args)
+    {
+        TryPresentPendingSharedHandle();
+        UpdateCpuPreviewDemand();
     }
 
     private void DetachGpuPresenter()
@@ -402,6 +424,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         }
 
         TryPresentPendingSharedHandle();
+        UpdateCpuPreviewDemand();
     }
 
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
@@ -413,19 +436,14 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     {
         // Visibility on this control alone misses a collapsed page ancestor.
         // Hidden composites must not spend presentation credits or copy pixels.
-        if (!IsLoaded || ActualWidth <= 0 || ActualHeight <= 0 || !IsEffectivelyVisible) return;
-        // Sources inspectors have ten stable full-source hosts. Keep hidden cells
-        // off the D3D path and cap thumbnail presentation at 30 Hz. Duplicate
-        // source views share one keyed-mutex ingest across all hosts.
-        if (SourceFit == "tile-crop" || VideoSurfacePresentationRules.IsSourceThumbnail(SurfaceKey))
+        if (!IsLoaded || ActualWidth <= 0 || ActualHeight <= 0 || !IsEffectivelyVisible)
         {
-            if (Visibility != Visibility.Visible || ActualWidth <= 0 || ActualHeight <= 0)
-                return;
-            var now = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (!_sourceCadence.ShouldSubmit(now, System.Diagnostics.Stopwatch.Frequency, 30)) return;
+            _renderPresenter?.Suspend();
+            return;
         }
         if (_disposed || !UsesGpuSharedTexture || SurfaceState?.PendingSharedHandle is not { IsValid: true } handle)
         {
+            _renderPresenter?.Suspend();
             return;
         }
 
@@ -555,6 +573,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void RefreshPathBindings()
     {
+        UpdateCpuPreviewDemand();
         if (_refreshingPathBindings)
         {
             return;

@@ -27,7 +27,8 @@ class GradePreviewController {
   }
 
   bool configure(const rpc::Json& command, modules::CompositorColorGrade grade,
-                 bool supported, Clock::time_point now = Clock::now()) {
+                 bool supported, Clock::time_point now = Clock::now(),
+                 std::optional<modules::CompositorOverlayContent> graphicsDraft = {}) {
     const auto id = command.getString("instanceId"), source = command.getString("sourceId");
     const auto number = command.getNumber("revision", -1);
     if (id.empty() || id.size() > 64 || source.empty() || source.size() > 256 ||
@@ -37,12 +38,16 @@ class GradePreviewController {
       const auto* style=preview->get("appearance");
       if (source!="preview:lower-third" || !style || (!style->isObject() && !style->isNull())) return false;
       modules::CompositorOverlayContent overlay;
+      if (const auto* graphics = preview->get("graphics"); graphics && !graphics->isNull() && !graphicsDraft) return false;
+      if (graphicsDraft) overlay = std::move(*graphicsDraft);
+      else {
       if (!style->isNull()) {overlay.appearance=compositor::LowerThirdAppearance::parse(*style);if (!overlay.appearance.valid()) return false;}
       overlay.text=preview->getString("name","Example guest"); overlay.title=preview->getString("title","Producer");
       overlay.brandColor=preview->getString("brandColor","#44C1A1"); overlay.brandBackgroundColor=preview->getString("backgroundColor","#0C1118");
       overlay.imageUri=preview->getString("imageUri"); overlay.keyPosition=preview->getString("position","lower-left");
       overlay.fontFamily=preview->getString("fontFamily","Inter");
       if (overlay.text.size()>256 || overlay.title.size()>256 || overlay.imageUri.size()>4096 || overlay.fontFamily.size()>128) return false;
+      }
       demand.lowerThirdPreview=std::move(overlay);
       demand.lowerThirdPreviewSignature=preview->stringify();
       for (const auto& [other,entry]:active_) if (other!=id && entry.demand.lowerThirdPreview) return false;
@@ -133,7 +138,9 @@ class GradePreviewController {
           entry.scopeObserved = true; entry.scopeEpoch = surface.scopes.sourceEpoch; entry.scopeFrame = surface.scopes.sourceFrameId; entry.scopeAdvanced = now;
         } else if (now-entry.scopeAdvanced >= std::chrono::seconds(1)) surface.scopes.status = "stale";
       }
-      if (surface.status == "ready") {
+      // An authored canvas is intentionally a still until the draft changes.
+      // Its stable revision is not a stalled live-video source.
+      if (surface.status == "ready" && !entry.demand.lowerThirdPreview) {
         if (!entry.observed || entry.epoch != surface.sourceEpoch || entry.frame != surface.sourceFrameId) {
           entry.observed = true; entry.epoch = surface.sourceEpoch; entry.frame = surface.sourceFrameId;
           entry.advanced = now;

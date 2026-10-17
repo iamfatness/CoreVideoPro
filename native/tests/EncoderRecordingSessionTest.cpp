@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -1562,6 +1563,52 @@ TEST(EncoderRecordingSession, MediaFoundationEightZoomIsoWritersSurviveEncoderCa
 
   encoder.reset();
   fs::remove_all(targetDir, ec);
+}
+
+TEST(EncoderRecordingSession, MediaFoundationIsoFormatChangeBeforeTakeDoesNotFinalizeEmptyMp4) {
+  const corevideo::testing::ForcedEncoderCapacity capacity(8);
+  auto encoder = corevideo::modules::createMediaFoundationEncoderSink();
+  ASSERT_TRUE(encoder);
+  encoder->enableIndependentIsoWriters();
+  const auto target = std::filesystem::temp_directory_path() /
+      ("corevideo-iso-prepare-resize-" + std::to_string(GetCurrentProcessId()));
+  corevideo::modules::RecordingSessionRequest request;
+  request.sessionId = "prepare-resize";
+  request.targetFolder = target.string(); request.filenamePrefix = "show";
+  request.format = "mp4"; request.width = 640; request.height = 360;
+  request.fps = 30; request.videoCodec = "h264"; request.audioCodec = "aac";
+  request.audioBitrateKbps = 128; request.targetBitrateMbps = 8;
+  request.isoSources = {{"zoom:1", "Changing", false}, {"zoom:2", "Late", false}};
+  encoder->configureRecording(request); encoder->start({"recording"}, {});
+  encoder->submitIsoVideo({makeIsoI420("zoom:1", 640, 360, 0, 40)});
+  bool firstReady = false;
+  for (int i = 0; i < 500 && !firstReady; ++i) {
+    const auto state = encoder->session();
+    firstReady = std::any_of(state.isoStreams.begin(), state.isoStreams.end(),
+        [](const auto& track) { return track.sourceId == "zoom:1" && track.trackOpen; });
+    if (!firstReady) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(firstReady);
+  // The second source is still absent: no take/epoch exists when Zoom changes size.
+  encoder->submitIsoVideo({makeIsoI420("zoom:1", 1280, 720, 1, 80)});
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  encoder->submitIsoVideo({makeIsoI420("zoom:2", 640, 360, 1, 120)});
+  corevideo::modules::ProgramFrame frame;
+  frame.width = frame.preview.width = 640; frame.height = frame.preview.height = 360;
+  frame.preview.bgra.assign(static_cast<size_t>(640) * 360 * 4, 0x40);
+  bool started = false;
+  for (int i = 0; i < 500 && !started; ++i) {
+    frame.frameNumber = i + 1; encoder->submit(frame);
+    const auto state = encoder->session();
+    ASSERT_TRUE(state.recordingError.empty()) << state.recordingError;
+    for (const auto& track : state.isoStreams) EXPECT_TRUE(track.warning.empty()) << track.warning;
+    started = state.recordingMuxEpoch100ns > 0;
+    if (!started) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(started);
+  encoder->stopRecording(); encoder.reset();
+  std::error_code cleanupError;
+  std::filesystem::remove_all(target, cleanupError);
 }
 
 TEST(EncoderRecordingSession, MediaFoundationIndependentIsoWritersDrainAudioVideoBeforeFinalize) {

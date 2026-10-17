@@ -2,6 +2,7 @@
 #include "modules/SourceVideoDemand.h"
 #include "compositor/ScopeRoi.h"
 #include "compositor/LowerThirdAppearance.h"
+#include "graphics/GraphicsPreparedResource.h"
 
 #include "contracts/Lifecycle.h"
 #include "modules/ProgramAacEncoder.h"
@@ -21,6 +22,7 @@
 #include <unordered_set>
 #include <vector>
 
+namespace corevideo::graphics { struct GraphicsTemplateInput; struct GraphicsAsset; }
 namespace corevideo::modules {
 class CpuSourcePreparation;
 
@@ -283,6 +285,17 @@ struct ProgramSourceAdmission {
   int64_t formatTransitionAgeFrames = -1;
 };
 
+// Graphics preparation/adoption evidence. "draw-submitted" records a native draw
+// submission, not GPU completion or physical receiver/display delivery.
+struct GraphicsFrameFact {
+  std::string instanceId;
+  uint64_t revision = 0;
+  std::string state, reason;
+  std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource;
+  std::array<uint8_t,32> requestedContentHash{};
+  bool hasRequestedContentHash=false;
+};
+
 struct ProgramFrame {
   int width = 1920;
   int height = 1080;
@@ -295,6 +308,10 @@ struct ProgramFrame {
   uint32_t programPixelSignature = 0;
   uint32_t renderPlanSignature = 0;
   std::vector<std::string> warnings;
+  std::vector<GraphicsFrameFact> graphicsFacts;
+  void releaseGraphicsPreparationLeases() {
+    for (auto& fact : graphicsFacts) fact.preparedResource.reset();
+  }
   ProgramFramePreviewPixels preview;
   // Full-resolution program BGRA (width x height) for the virtual camera, so it
   // serves native 1080p with no upscale. Populated only when the render plan
@@ -442,6 +459,11 @@ struct CompositorOverlayContent {
   std::string brandAccentColor = "#f0a85c";
   std::string brandBackgroundColor = "#0c1118";
   std::string fontFamily = "Inter";
+  std::array<uint8_t, 32> graphicsContentHash{};
+  bool hasGraphicsContentHash = false;
+  std::optional<CompositorLayerRect> graphicsAuthoringRect;
+  std::shared_ptr<const graphics::GraphicsTemplateInput> graphicsTemplate;
+  std::shared_ptr<const graphics::GraphicsAsset> graphicsImage;
 };
 
 // Canvas-pixel Tiles decoration; disabled for every ordinary scene layer.
@@ -514,9 +536,16 @@ struct CompositorRenderPlanLayer {
   std::string sourceHealth;
   std::string dropoutPolicy = "hold";
   std::string sourceDisplayName;
+  std::string graphicsInstanceId;
+  uint64_t graphicsRevision = 0;
+  bool graphicsAwaitingEntrance = false;
+  std::shared_ptr<const graphics::GraphicsPreparedResource> graphicsPreparedResource;
+  std::string graphicsBoundParticipantId;
+  uint64_t graphicsBoundSourceGeneration = 0;
 };
 
 struct CompositorRenderPlan {
+  bool observeGraphicsSubjects = false;
   std::map<std::string, CompositorColorGrade> sourceGrades;
   std::string renderPlanId;
   std::string sceneId;
@@ -525,6 +554,7 @@ struct CompositorRenderPlan {
   int fps = 30;
   CompositorColorGrade colorGrade;
   std::vector<CompositorRenderPlanLayer> layers;
+  std::vector<CompositorRenderPlanLayer> graphicsPreparations;
   std::vector<std::string> warnings;
   // When true, the compositor skips the blocking GPU->CPU readbacks (base64
   // preview + pixel signature) and only updates the GPU shared texture. Set for
@@ -1294,6 +1324,7 @@ class ICompositor {
   // Upload accounting for the per-source texture cache. Defaulted to zeros so
   // the software/stub compositor stays valid; only the GPU adapter tracks it.
   [[nodiscard]] virtual CompositorSourceTexStats sourceTexStats() const { return {}; }
+  [[nodiscard]] virtual bool supportsGraphicsInstances() const { return false; }
   // True when the encoder should receive the FULL-resolution program
   // (ProgramFrame::programFullBgra) while recording. Default false: on
   // Windows the D3D11 path serves recording from the vcam tap economics and

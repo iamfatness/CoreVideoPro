@@ -122,12 +122,15 @@ public static class TransportStatusFormatter
         }
         var detail = snapshot.OutputHealth
             .Where(item =>
-                item.Status is "failed" or "warning" &&
+                item.Status == "failed" &&
                 item.Destination.Equals("recording", StringComparison.OrdinalIgnoreCase))
             .Select(item => item.Message)
             .FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
 
-        detail ??= snapshot.Recording is { Active: true, Status: "failed" or "warning" } recording
+        // Capacity/fallback notices are warnings, not failed starts. Cancelling here
+        // can stop asynchronous writers before their first sample. Keep warnings in
+        // the read model; measured loss still fails delivery qualification.
+        detail ??= snapshot.Recording is { Active: true, Status: "failed" } recording
             ? recording.Error ?? recording.Warning
             : null;
 

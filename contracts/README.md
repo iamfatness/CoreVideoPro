@@ -1,4 +1,4 @@
-# Additive lifecycle and identity contract slices
+# Additive lifecycle, identity and graphics contract slices
 
 `lifecycle.schema.json` is the source of truth for protocol version, output
 lifecycle, asynchronous operation status and structured protocol failure objects.
@@ -222,3 +222,14 @@ uses `QualificationJson()`, and `ControlState.nativeObservation` uses
 redactor, including fields unknown to an older shell. The existing flat
 `ControlState` native fields remain for current HTTP, WebSocket, and OSC
 clients; new core evidence belongs in the generated observation view.
+
+## Graphics identity and preparation evidence
+
+`graphics.schema.json` adds operation/revision identities and preparation and
+composition observations without extending the existing lifecycle enums.
+`graphics.fixtures.json` runs through the native, managed and Swift validators.
+A graphics composition observation describes `draw-submitted` only. It does not
+claim GPU completion, OS-camera sample delivery, stream decoding or physical
+presentation. Acknowledged requests and prepared resources remain separate from
+that observation. The native instance owner also enforces bounded IDs, request
+replay protection, the current core epoch and optimistic revision checks.

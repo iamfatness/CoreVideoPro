@@ -1,7 +1,9 @@
+#include "modules/Sha256.h"
 #include "modules/Interfaces.h"
 #include "modules/DeliveryCounterPattern.h"
 #include "compositor/AdvancedGrade.h"
 #include "core/ComApartmentLifetime.h"
+#include "graphics/GraphicsInstances.h"
 #include <gtest/gtest.h>
 #include <chrono>
 #include <thread>
@@ -9,6 +11,7 @@
 #include <future>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 
 #if defined(_WIN32) && !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
@@ -103,15 +106,17 @@ MonitorRenderRequest requestAtSize(int size) {
 
 namespace {
 GradePreviewSurface awaitGrade(ICompositor& compositor, MonitorRenderRequest request, const std::string& id, int64_t revision) {
+  static std::atomic<int64_t> sequence{0};
   const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (std::chrono::steady_clock::now() < end) {
+    request.sequence = ++sequence;
     compositor.submitGradePreviews(request);
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     auto result = compositor.latestGradePreviews();
     if (!result) continue;
     for (const auto& surface : result->gradePreviews)
       if (surface.demand.instanceId == id && surface.demand.revision == revision &&
-          !surface.texture.sharedHandleHex.empty()) return surface;
+          (surface.status == "ready" || surface.status == "held") && !surface.texture.sharedHandleHex.empty()) return surface;
   }
   return {};
 }
@@ -323,6 +328,53 @@ TEST(GradePreviewPixels, LowerThirdDraftUsesNativeRasterWithoutChangingProgram) 
   const auto samples=consumeSamples(surface.texture,{{.6f,.9f}});ASSERT_EQ(samples.size(),1u);
   const auto pixel=samples[0];EXPECT_GT((pixel>>16)&255,220u);EXPECT_LT((pixel>>8)&255,20u);
   EXPECT_EQ(previewCenter(compositor->render(request.programPlan,request.frames)),before);compositor->submitGradePreviews({});
+}
+
+TEST(GradePreviewPixels, DeclarativeDraftAndCompareProduceIndependentNativePixelsWithoutCueOrProgramMutation) {
+  using J = corevideo::rpc::Json;
+  corevideo::graphics::GraphicsInstances graphics{"private-preview-core"};
+  const auto untouched = graphics.snapshot().stringify();
+  auto compositor = isolatedCompositor(); ASSERT_TRUE(compositor);
+  auto request = requestAtSize(64); request.programPlan.skipCpuReadback = false;
+  const auto before = previewCenter(compositor->render(request.programPlan, request.frames));
+  const auto sample = [&](const char* plate, int revision) {
+    auto content = graphics.authoringPreview(J::Object{{"templateId", "corporate-lower-third"}, {"templateVersion", 1},
+        {"fields", J::Object{{"name", "Private native — 日本語"}, {"title", ""}}},
+        {"style", J::Object{{"backgroundColor", plate}, {"backgroundOpacity", 1}}}});
+    ASSERT_TRUE(content.has_value());
+    GradePreviewDemand demand{"declarative-authoring", "preview:lower-third", revision, {}};
+    demand.lowerThirdPreview = *content; demand.lowerThirdPreviewSignature = plate;
+    request.gradePreviews = {demand};
+    const auto surface = awaitGrade(*compositor, request, demand.instanceId, revision);
+    ASSERT_FALSE(surface.texture.sharedHandleHex.empty());
+    const auto pixels = consumeSamples(surface.texture, {{.5f, .9f}});
+    ASSERT_EQ(1u, pixels.size());
+    return pixels[0];
+  };
+  const auto red = sample("#FF0000", 1), green = sample("#00FF00", 2);
+  EXPECT_GT((red >> 16) & 255, 220u); EXPECT_LT((red >> 8) & 255, 30u);
+  EXPECT_GT((green >> 8) & 255, 220u); EXPECT_LT((green >> 16) & 255, 30u);
+  EXPECT_NE(red, green);
+  EXPECT_EQ(before, previewCenter(compositor->render(request.programPlan, request.frames)));
+  EXPECT_EQ(untouched, graphics.snapshot().stringify()); EXPECT_FALSE(graphics.hasCue());
+  compositor->submitGradePreviews({});
+}
+
+TEST(GradePreviewPixels, ScratchLayerEditsProducePrivateNativePixelsWithoutInstallingOrChangingProgram) {
+  using J=corevideo::rpc::Json; corevideo::graphics::GraphicsInstances graphics{"scratch-core"};const auto unchanged=graphics.snapshot().stringify();
+  auto compositor=isolatedCompositor();ASSERT_TRUE(compositor);auto request=requestAtSize(64);request.programPlan.skipCpuReadback=false;
+  const auto before=previewCenter(compositor->render(request.programPlan,request.frames));
+  const auto sample=[&](const char* fill,int revision) {
+    auto document=corevideo::graphics::GraphicsTemplate::corporateLowerThird()->document().asObject();auto layers=document["layers"].asArray();auto plate=layers[0].asObject();plate["fill"]=fill;layers[0]=plate;document["layers"]=layers;
+    const auto manifest=J(document).stringify();const auto digest=corevideo::modules::hashing::sha256(reinterpret_cast<const uint8_t*>(manifest.data()),manifest.size());
+    std::string hash;static constexpr char hex[]="0123456789abcdef";for(auto b:digest) {hash+=hex[b>>4];hash+=hex[b&15];}
+    auto overlay=graphics.authoringPreview(J::Object{{"templateId","corporate-lower-third"},{"templateVersion",1},{"fields",J::Object{{"name","Private"},{"title",""}}},{"scratch",J::Object{{"manifest",manifest},{"hash",hash}}}});ASSERT_TRUE(overlay);
+    GradePreviewDemand demand{"scratch-authoring","preview:lower-third",revision,{}};demand.lowerThirdPreview=*overlay;demand.lowerThirdPreviewSignature=hash;request.gradePreviews={demand};
+    auto surface=awaitGrade(*compositor,request,demand.instanceId,revision);ASSERT_FALSE(surface.texture.sharedHandleHex.empty());return consumeSamples(surface.texture,{{.5f,.9f}})[0];
+  };
+  const auto red=sample("#FF0000",1),green=sample("#00FF00",2);
+  EXPECT_GT((red>>16)&255,220u);EXPECT_LT((red>>8)&255,30u);EXPECT_GT((green>>8)&255,220u);EXPECT_LT((green>>16)&255,30u);
+  EXPECT_EQ(before,previewCenter(compositor->render(request.programPlan,request.frames)));EXPECT_EQ(unchanged,graphics.snapshot().stringify());compositor->submitGradePreviews({});
 }
 
 TEST(AdvancedGradePixels, ExposurePrimariesStackOrderLutDomainAndGlobalIntensityHaveIndependentExpectedValues) {

@@ -1407,8 +1407,8 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
         continue;  // never written, mid-write, or unchanged: 16-byte cost
       }
       const auto nowMs = runtimeElapsedMs();
-      const bool buildThumbnail = ref.lastThumbnailEmitMs < 0 ||
-                                  nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs;
+      const bool buildThumbnail = thumbnailDemand_.load(std::memory_order_relaxed) &&
+          (ref.lastThumbnailEmitMs < 0 || nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs);
       jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
                       buildThumbnail, !ref.lumaRangeProbed, processGeneration_, ref.sourceEpoch, ref.preparationLifetime});
     }
