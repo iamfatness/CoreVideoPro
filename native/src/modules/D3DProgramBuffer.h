@@ -178,6 +178,9 @@ class D3DProgramBuffer {
     unsigned readers = 0;
     ProgramFrame frame;
     bool needsNv12 = false;
+    // Preparation owns this reusable allocation. A retained output lease makes
+    // it immutable, so replace it instead of overwriting a consumer's pixels.
+    core::SharedFrameBytes reusableNv12;
     int64_t productionSlot = 0;
     std::chrono::steady_clock::time_point submittedAt{};
     std::chrono::steady_clock::time_point preparingAt{};
@@ -334,7 +337,9 @@ class D3DProgramBuffer {
   bool readNv12(Slot& slot) {
     auto* context = prepareContext_.get();
     static core::FrameAllocationFailures allocationFailures("program-buffer-nv12");
-    auto pixels = core::tryMakeFrameBuffer(1920u * 1080u * 3u / 2u);
+    if (!slot.reusableNv12 || slot.reusableNv12.use_count() != 1)
+      slot.reusableNv12 = core::tryMakeFrameBuffer(1920u * 1080u * 3u / 2u);
+    auto pixels = slot.reusableNv12;
     if (!pixels) {
       // #728: no NV12 tap for this frame; the same outcome as a failed readback.
       allocationFailures.note(1920u * 1080u * 3u / 2u);

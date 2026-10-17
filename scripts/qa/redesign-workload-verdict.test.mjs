@@ -17,10 +17,10 @@ function completeEvidence() {
     samples: Array.from({ length: 181 }, (_, i) => ({ collectedAtMs: i * 10000, processGeneration: 'one',
       displayState: { visible: true, minimized: false }, snapshot: {
       outputProfile: { width: 1920, height: 1080, fps: 60 }, meetingState: 'in_meeting',
-      realtimeEvidence: { monitorWorker: { inputs: { sources: requiredInputIds.map(sourceId => ({ sourceId, state: 'ready', frameId: i * 600 + 1 })) } } },
+      realtimeEvidence: { audio: { audioLostSamples: 0, pacerReanchors: 0 }, monitorWorker: { inputs: { sources: requiredInputIds.map(sourceId => ({ sourceId, state: 'ready', frameId: i * 600 + 1 })) } } },
       recording: { active: true, lifecycle: { state: 'producing' },
         streams: [{ kind: 'program', framesWritten: i * 600 + 1 }, ...requiredIsoIds.map(sourceId => ({ sourceId, framesWritten: i * 600 + 1 }))],
-        proof: { programMissingFrames: 0, encoderQueueDroppedVideoFrames: 0 } },
+        proof: { programMissingFrames: 0, encoderQueueDroppedVideoFrames: 0, encoderQueueDroppedAudioPackets: 0 } },
       programBuffer: { underruns: 0 },
       virtualCamera: { enabled: true, status: 'live', framesPublished: i * 600 + 1, pendingFramesReplaced: 0, publicationExceptions: 0 },
     } })),
@@ -32,6 +32,17 @@ function completeEvidence() {
     } },
   };
 }
+
+test('clean video cannot conceal lost recording audio or a discarded audio clock interval', () => {
+  for (const change of [
+    s => { s.recording.proof.encoderQueueDroppedAudioPackets++; },
+    s => { s.realtimeEvidence.audio.audioLostSamples++; },
+    s => { s.realtimeEvidence.audio.pacerReanchors++; },
+  ]) {
+    const report = completeEvidence(); change(report.samples[10].snapshot);
+    assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
+});
 
 test('registration alone or a cached old DLL cannot qualify a camera fix', () => {
   for (const change of [
@@ -45,6 +56,17 @@ test('registration alone or a cached old DLL cannot qualify a camera fix', () =>
     assert.equal(verdict.passed, false);
     assert.ok(verdict.errors.some(x => x.includes('tested candidate')));
   }
+});
+
+test('a declared concurrent game must remain running throughout qualification', () => {
+  const report = completeEvidence();
+  report.requiredAdditionalProcesses = ['Overwatch'];
+  for (const row of report.samples) row.additionalProcesses = [{ name: 'Overwatch', processGeneration: 'game:one' }];
+  assert.equal(judgeRedesignWorkload(report).passed, true);
+  report.samples[90].additionalProcesses = [];
+  assert.equal(judgeRedesignWorkload(report).passed, false);
+  report.samples[90].additionalProcesses = [{ name: 'Overwatch', processGeneration: 'game:two' }];
+  assert.equal(judgeRedesignWorkload(report).passed, false);
 });
 
 test('complete matching evidence can qualify, but one display stall cannot', () => {

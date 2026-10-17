@@ -116,7 +116,16 @@ TEST(VirtualCameraReadRetry, BoundsElapsedTimeAttemptsAndUnavailablePublishers) 
   int reads = 0; int64_t now = 0; unsigned retries = 0;
   EXPECT_FALSE(readCameraWithBoundedRetry([&](bool) { ++reads; return VirtualCameraReadResult::Contended; },
       [&] { return now; }, [&] { now += 2000; return true; }, true, retries));
-  EXPECT_EQ(reads, 1); EXPECT_EQ(retries, 0u);
+  EXPECT_EQ(reads, 2); EXPECT_EQ(retries, 1u);
+}
+
+TEST(VirtualCameraReadRetry, LateWakeReadsThePublicationBeforeHoldingOldPixels) {
+  int64_t now = 0; unsigned retries = 0; int reads = 0;
+  EXPECT_TRUE(readCameraWithBoundedRetry([&](bool) {
+    ++reads;
+    return now >= 16666 ? VirtualCameraReadResult::Fresh : VirtualCameraReadResult::Unchanged;
+  }, [&] { return now; }, [&] { now += 16800; return true; }, true, retries, 16666, 64));
+  EXPECT_EQ(reads, 2); EXPECT_EQ(retries, 1u);
 }
 
 TEST(VirtualCameraReadRetry, DisabledModePreservesSingleRead) {

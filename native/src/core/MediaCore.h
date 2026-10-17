@@ -848,10 +848,7 @@ class MediaCore {
   bool previewStructureEmitted_ = false;
   int64_t mixedAudioFrameCount_ = 0;
   std::map<std::string, std::vector<float>> routedBusPcm_;
-  // Rolling deinterleaved program audio (<= 3 s) feeding the BS.1770 master
-  // meter, plus the gated running accumulation for integrated loudness.
-  std::vector<float> programMeterL_;
-  std::vector<float> programMeterR_;
+  // Continuous K-weighting and bounded rolling energies for the master meter.
   modules::Bs1770IntegratedMeter programIntegratedMeter_{48000.0};
   double programLufsMomentary_ = -120.0;
   double programLufsShortTerm_ = -120.0;

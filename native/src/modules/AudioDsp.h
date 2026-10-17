@@ -262,6 +262,11 @@ class Bs1770IntegratedMeter {
     blockSamples_ = std::max<size_t>(1, static_cast<size_t>(std::llround(0.400 * sampleRate_)));
     hopSamples_ = std::max<size_t>(1, static_cast<size_t>(std::llround(0.100 * sampleRate_)));
     ring_.assign(blockSamples_, 0.0);
+    shortRing_.assign(std::max<size_t>(1, static_cast<size_t>(std::llround(3.0 * sampleRate_))), 0.0);
+    shortPos_ = shortFilled_ = 0;
+    shortSum_ = 0.0;
+    integratedDirty_ = true;
+    integratedCached_ = kAudioDbfsFloor;
     ringPos_ = 0;
     ringFilled_ = 0;
     sinceHop_ = 0;
@@ -278,6 +283,10 @@ class Bs1770IntegratedMeter {
       const double weightedL = biquadProcessSample(stage2_, stateL2_, biquadProcessSample(stage1_, stateL1_, left ? static_cast<double>(left[index]) : 0.0));
       const double weightedR = biquadProcessSample(stage2_, stateR2_, biquadProcessSample(stage1_, stateR1_, right ? static_cast<double>(right[index]) : 0.0));
       const double energy = weightedL * weightedL + weightedR * weightedR;
+      shortSum_ += energy - shortRing_[shortPos_];
+      shortRing_[shortPos_] = energy;
+      shortPos_ = (shortPos_ + 1) % shortRing_.size();
+      if (shortFilled_ < shortRing_.size()) ++shortFilled_;
       // Sliding sum over the trailing 400 ms ring.
       runningSum_ += energy - ring_[ringPos_];
       ring_[ringPos_] = energy;
@@ -290,6 +299,7 @@ class Bs1770IntegratedMeter {
         if (ringFilled_ >= blockSamples_) {
           const double meanSquare = runningSum_ / static_cast<double>(blockSamples_);
           blocks_.push_back(meanSquare > 0.0 ? meanSquare : 0.0);
+          integratedDirty_ = true;
           if (blocks_.size() > kMaxBlocks) {
             blocks_.pop_front();
           }
@@ -298,18 +308,34 @@ class Bs1770IntegratedMeter {
     }
   }
 
+  [[nodiscard]] size_t windowSamples() const { return shortFilled_; }
+  [[nodiscard]] bool shortTermReady() const { return shortFilled_ == shortRing_.size(); }
+  [[nodiscard]] double momentaryLufs() const { return energyLufs(runningSum_, ringFilled_); }
+  [[nodiscard]] double shortTermLufs() const { return energyLufs(shortSum_, shortFilled_); }
+
   [[nodiscard]] double integratedLufs() const {
+    if (!integratedDirty_) return integratedCached_;
+    integratedDirty_ = false;
+    integratedCached_ = calculateIntegratedLufs();
+    return integratedCached_;
+  }
+
+ private:
+  static double energyLufs(double sum, size_t count) {
+    return count && sum > 0.0 ? std::max(kAudioDbfsFloor, -0.691 + 10.0 * std::log10(sum / count)) : kAudioDbfsFloor;
+  }
+  double calculateIntegratedLufs() const {
     if (blocks_.empty()) {
       return kAudioDbfsFloor;
     }
-    const auto blockLoudness = [](double meanSquare) {
-      return meanSquare > 0.0 ? -0.691 + 10.0 * std::log10(meanSquare) : kAudioDbfsFloor;
-    };
+    // Compare energy directly: applying log10 to every historical block on
+    // every audio tick made a display statistic increasingly expensive.
+    const double absoluteEnergy = std::pow(10.0, (-70.0 + 0.691) / 10.0);
     // Absolute gate at -70 LUFS.
     double absSum = 0.0;
     size_t absCount = 0;
     for (double meanSquare : blocks_) {
-      if (blockLoudness(meanSquare) >= -70.0) {
+      if (meanSquare >= absoluteEnergy) {
         absSum += meanSquare;
         ++absCount;
       }
@@ -318,12 +344,11 @@ class Bs1770IntegratedMeter {
       return kAudioDbfsFloor;
     }
     // Relative gate: -10 LU below the mean loudness of the absolute-gated blocks.
-    const double relativeThreshold = -0.691 + 10.0 * std::log10(absSum / static_cast<double>(absCount)) - 10.0;
+    const double relativeThreshold = absSum / static_cast<double>(absCount) * 0.1;
     double relSum = 0.0;
     size_t relCount = 0;
     for (double meanSquare : blocks_) {
-      const double loudness = blockLoudness(meanSquare);
-      if (loudness >= -70.0 && loudness >= relativeThreshold) {
+      if (meanSquare >= absoluteEnergy && meanSquare >= relativeThreshold) {
         relSum += meanSquare;
         ++relCount;
       }
@@ -351,6 +376,11 @@ class Bs1770IntegratedMeter {
   size_t sinceHop_ = 0;
   double runningSum_ = 0.0;
   std::deque<double> blocks_;
+  std::vector<double> shortRing_;
+  size_t shortPos_ = 0, shortFilled_ = 0;
+  double shortSum_ = 0.0;
+  mutable bool integratedDirty_ = true;
+  mutable double integratedCached_ = kAudioDbfsFloor;
 };
 
 // Short-term (3 s) loudness in LUFS for a stereo signal.

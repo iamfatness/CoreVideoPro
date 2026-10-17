@@ -44,6 +44,13 @@ int main(int argc, char** argv) {
   bool captureComplete = false;
   try {
     observations.reserve(maximumObservations);
+    struct StopEvent {
+      HANDLE handle = nullptr;
+      ~StopEvent() { if (handle) CloseHandle(handle); }
+    } stopEvent;
+    const auto stopName = L"Local\\CoreVideoPixelProbeStop-" + std::to_wstring(GetCurrentProcessId());
+    stopEvent.handle = CreateEventW(nullptr, TRUE, FALSE, stopName.c_str());
+    check(stopEvent.handle ? S_OK : HRESULT_FROM_WIN32(GetLastError()), "receiver stop event");
     check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "CoInitializeEx");
     check(MFStartup(MF_VERSION), "MFStartup");
     {
@@ -102,7 +109,8 @@ int main(int argc, char** argv) {
       const auto startUnixUs = std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::system_clock::now().time_since_epoch()).count();
       std::printf("{\"schema\":\"camera-pixel-receiver-v1\",\"receiverMode\":\"%s\",\"width\":%u,\"height\":%u,\"fpsNumerator\":%u,\"fpsDenominator\":%u,\"startUnixUs\":%lld}\n", direct ? "direct-dll" : "os-camera", width, height, numerator, denominator, startUnixUs);
-      while (Clock::now() - start < std::chrono::seconds(seconds)) {
+      while (Clock::now() - start < std::chrono::seconds(seconds) &&
+             WaitForSingleObject(stopEvent.handle, 0) != WAIT_OBJECT_0) {
         DWORD flags = 0; LONGLONG pts = 0; ComPtr<IMFSample> sample;
         check(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &pts, &sample), "ReadSample");
         if (flags & (MF_SOURCE_READERF_ERROR | MF_SOURCE_READERF_ENDOFSTREAM | MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED)) throw std::runtime_error("Receiver stream error, end or format change.");

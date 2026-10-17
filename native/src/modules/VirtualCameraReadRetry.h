@@ -19,7 +19,10 @@ bool readCameraWithBoundedRetry(Read read, Now nowUs, Wait wait, bool enabled,
                      result == VirtualCameraReadResult::Contended) &&
          retries < maxRetries && nowUs() < deadline) {
     if (!wait()) break;
-    if (nowUs() >= deadline) break;
+    // A scheduler wake can cross the deadline while the publication becomes
+    // ready. Always inspect once after the bounded wait: abandoning that ready
+    // frame manufactured a hold followed by a skipped identity. The deadline
+    // still forbids another wait; the shared copy budget bounds this final read.
     ++retries;
     result = read(false);
   }

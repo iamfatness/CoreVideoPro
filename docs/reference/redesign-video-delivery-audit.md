@@ -132,3 +132,23 @@ must not delay its next ReadSample. Original monotonic arrival times, sample
 timestamps and decoded pixel identities remain the evidence; buffering logs
 does not smooth timestamps or relax the continuity/interval judge. An interrupted
 capture without its completion record cannot pass.
+
+The receiver's named stop event (`Local\CoreVideoPixelProbeStop-PID`) ends a
+diagnostic trial gracefully and preserves the buffered observations. Early
+completion does not satisfy the 30-minute coverage requirement.
+
+## Meter work belongs within the audio budget
+
+Program loudness uses continuous K-weighting with rolling 400 ms and 3 s energy
+sums. Re-filtering the preceding three seconds on every 20 ms audio tick is
+display-derived work that can consume the audio deadline. The same continuous
+filter supplies integrated gating blocks. Integrated loudness is recomputed
+only when a gating block changes, using equivalent energy-domain thresholds.
+Tests compare both rolling windows against independently filtered full-history
+references across ring wraps, channel differences, level changes and rates.
+
+Full-workload qualification also rejects interval increases in audio loss,
+audio-clock reanchors and dropped recording audio packets. Good camera pixels
+cannot qualify a recording with lost audio. Concurrent applications explicitly
+included by the operator are declared with `-AdditionalProcessName` and must
+remain running with the same process identity throughout the measured interval.

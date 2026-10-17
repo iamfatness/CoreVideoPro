@@ -1,7 +1,8 @@
 param(
   [ValidateRange(30,7200)][int]$Seconds=1800,
   [Parameter(Mandatory=$true)][string]$OutputDirectory,
-  [Parameter(Mandatory=$true)][int]$AppProcessId
+  [Parameter(Mandatory=$true)][int]$AppProcessId,
+  [string[]]$AdditionalProcessName=@()
 )
 $ErrorActionPreference='Stop'
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
@@ -35,7 +36,12 @@ do {
     $app.Refresh()
     $window=$app.MainWindowHandle
     $display=[ordered]@{visible=($window -ne 0 -and [RedesignWindowObservation]::IsWindowVisible($window));minimized=[RedesignWindowObservation]::IsIconic($window)}
-    $row=[ordered]@{collectedAtMs=$clock.Elapsed.TotalMilliseconds;processGeneration=$generation;displayState=$display;snapshot=[ordered]@{
+    $additional=@(foreach($name in $AdditionalProcessName) {
+      Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
+        [ordered]@{name=$_.ProcessName;processGeneration="$($_.Id):$($_.StartTime.ToUniversalTime().ToString('o'))";cpuSeconds=$_.CPU}
+      }
+    })
+    $row=[ordered]@{collectedAtMs=$clock.Elapsed.TotalMilliseconds;processGeneration=$generation;displayState=$display;additionalProcesses=$additional;snapshot=[ordered]@{
       outputProfile=$s.outputProfile;meetingState=$s.meetingState;programBuffer=$s.programBuffer
       realtimeEvidence=$s.realtimeEvidence;encoderEvidence=$s.encoderEvidence;virtualCamera=$s.virtualCamera
       recording=[ordered]@{active=$s.recording.active;lifecycle=$s.recording.lifecycle;proof=$s.recording.proof;artifactPath=$s.recording.artifactPath
@@ -49,7 +55,7 @@ do {
   if ($clock.Elapsed.TotalSeconds -ge $Seconds) {break}
   Start-Sleep -Seconds 5
 } while ($true)
-$report=[ordered]@{startTime=$started;endTime=[DateTime]::UtcNow.ToString('o');appPath=$app.Path;requiredInputIds=$inputs;requiredIsoIds=$iso;samples=$rows
+$report=[ordered]@{startTime=$started;endTime=[DateTime]::UtcNow.ToString('o');appPath=$app.Path;requiredInputIds=$inputs;requiredIsoIds=$iso;requiredAdditionalProcesses=$AdditionalProcessName;samples=$rows
   errors=$errors;monitorProbeVerdict=$null;cameraPixelVerdict=$null
   framePerformanceReport=@{startTime=$started;endTime=[DateTime]::UtcNow.ToString('o');soakPassed=$false;errorMatches=$errors
     performanceEvidence=@{metricVersion='anchored-deadline-v1';targetFps=60;clock='monotonic'

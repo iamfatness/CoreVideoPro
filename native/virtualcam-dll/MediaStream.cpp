@@ -170,8 +170,8 @@ void MediaStream::LogDeliveryEvidence() {
       static_cast<long long>(read.lastProgramSequence));
   VcamServeLog(b);
   if (retryTransientRead_) {
-    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu budgetUs=%lld maxRetries=64 maxPayloadCopies=2",
-        retriedSamples_, recoveredSamples_, frameDuration_ / 10);
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu unchangedMisses=%llu contendedMisses=%llu copyBudgetMisses=%llu budgetUs=%lld maxRetries=64 maxPayloadCopies=2",
+        retriedSamples_, recoveredSamples_, retryUnchangedMisses_, retryContendedMisses_, retryCopyBudgetMisses_, frameDuration_ / 10);
     VcamServeLog(b);
   }
 }
@@ -236,6 +236,12 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
             WaitForSingleObject(pacerTimer_, 3) == WAIT_OBJECT_0;
       }, retryTransientRead_, retries, frameDuration_ / 10, 64);
   if (retries) { ++retriedSamples_; if (got) ++recoveredSamples_; }
+  if (!got && retryTransientRead_) {
+    using Result = corevideo::modules::VirtualCameraReadResult;
+    if (reader_.evidence().lastResult == Result::Unchanged) ++retryUnchangedMisses_;
+    if (reader_.evidence().lastResult == Result::Contended) ++retryContendedMisses_;
+    if (!copyBudget) ++retryCopyBudgetMisses_;
+  }
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
       scratch_.size() == dstLen) {
     memcpy(dst, scratch_.data(), dstLen);

@@ -8,6 +8,9 @@ export function judgeRedesignWorkload(report) {
   const rows = report?.samples;
   const inputs = report?.requiredInputIds;
   const iso = report?.requiredIsoIds;
+  const additional = report?.requiredAdditionalProcesses ?? [];
+  if (!Array.isArray(additional) || additional.some(x => typeof x !== 'string' || !x))
+    errors.push('Additional workload process names must be an array of nonempty names.');
   if (!Array.isArray(inputs) || inputs.length !== 10 || new Set(inputs).size !== 10)
     errors.push('Declare the eight remote inputs, webcam and screen source IDs.');
   if (!Array.isArray(iso) || new Set(iso).size !== iso.length)
@@ -17,6 +20,7 @@ export function judgeRedesignWorkload(report) {
   const samples = Array.isArray(rows) && rows.length <= 100000 ? rows : [];
   const counters = new Map();
   const progress = new Map();
+  const additionalGenerations = new Map();
   let previous;
   for (const [index, row] of samples.entries()) {
     const s = row?.snapshot ?? {};
@@ -26,6 +30,13 @@ export function judgeRedesignWorkload(report) {
         row?.collectedAtMs <= previous.collectedAtMs || row?.collectedAtMs - previous.collectedAtMs > 10000))
       errors.push(`${index}: process changed or telemetry coverage broke.`);
     previous = row ?? {};
+    for (const name of Array.isArray(additional) ? additional : []) {
+      const observed = Array.isArray(row?.additionalProcesses) ? row.additionalProcesses.filter(x => x?.name === name) : [];
+      if (observed.length !== 1 || !observed[0].processGeneration ||
+          (additionalGenerations.has(name) && additionalGenerations.get(name) !== observed[0].processGeneration))
+        errors.push(`${index}: required additional workload ${name} stopped or restarted.`);
+      else additionalGenerations.set(name, observed[0].processGeneration);
+    }
     if (row?.displayState?.visible !== true || row?.displayState?.minimized !== false)
       errors.push(`${index}: visible, restored monitor window was not observed.`);
     if (s.outputProfile?.width !== 1920 || s.outputProfile?.height !== 1080 || s.outputProfile?.fps !== 60)
@@ -57,6 +68,9 @@ export function judgeRedesignWorkload(report) {
     const metrics = {
       recordingMissing: s.recording?.proof?.programMissingFrames,
       recordingQueueDropped: s.recording?.proof?.encoderQueueDroppedVideoFrames,
+      recordingAudioDropped: s.recording?.proof?.encoderQueueDroppedAudioPackets,
+      audioLostSamples: s.realtimeEvidence?.audio?.audioLostSamples,
+      audioReanchors: s.realtimeEvidence?.audio?.pacerReanchors,
       bufferUnderruns: s.programBuffer?.underruns,
       cameraReplaced: s.virtualCamera?.pendingFramesReplaced,
       cameraExceptions: s.virtualCamera?.publicationExceptions,
