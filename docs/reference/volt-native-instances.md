@@ -116,6 +116,27 @@ Program revisions, separate field/style values, warnings and the first native
 it is not a GPU-completion, camera-reader, decoded-stream or physical-display
 continuity claim.
 
+## Subject identity integration boundary
+
+The current `sourceId` filter is insufficient for automatic subject binding.
+The existing Zoom ingest exposes two different lifetimes: `VideoFrame.sourceEpoch`
+changes when width/height or stream incarnation changes, while
+`ZoomEngineParticipant.sourceGeneration` identifies the roster incarnation and
+survives a resolution-only change. `ZoomEngineRuntime::registerVideoStream`
+and `ZoomEngineState`'s roster adoption are the authoritative producers.
+A graphics binding must not treat a resolution upgrade as a different guest,
+nor treat a reused numeric SDK participant ID as the same guest.
+
+The complete integration must carry a generation-qualified source identity from
+that authority through command validation, accepted revisions and the exact
+rendered frame. Helper/meeting process fencing must accompany the participant
+generation. Arbitrary 64-bit pixel epochs must not pass through JSON doubles
+or be substituted for a roster identity. Unsupported or unavailable identities
+must remain explicit; the compatibility filter is not evidence that this gate
+has passed. The native `SourceRegistry` currently registers composed Tiles
+sources; registering a real provider also requires truthful availability and
+subscription observations, not invented defaults.
+
 Scene/source-ID filtering is present. Source-generation-qualified bindings,
 native draft-authoring tap, package loading,
 legacy migration, the operator workspace, other graphic families and automation
