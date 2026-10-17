@@ -2,8 +2,9 @@
 
 #include <cctype>
 #include <cmath>
-#include <charconv>
 #include <limits>
+#include <iomanip>
+#include <locale>
 #include <sstream>
 #include <stdexcept>
 
@@ -182,8 +183,12 @@ class Parser {
       if (digits == pos_) throw std::runtime_error("Invalid JSON exponent.");
     }
     double number = 0;
-    const auto parsed = std::from_chars(input_.data() + start, input_.data() + pos_, number);
-    if (parsed.ec != std::errc{} || parsed.ptr != input_.data() + pos_ || !std::isfinite(number))
+    std::istringstream parsed(input_.substr(start, pos_ - start));
+    parsed.imbue(std::locale::classic()); parsed >> number;
+    // Some standard libraries report range failure for a representable
+    // subnormal. Preserve that finite result; reject overflow and underflow
+    // to zero rather than silently accepting an unrepresentable value.
+    if ((!parsed.eof()) || (parsed.fail() && std::fpclassify(number) != FP_SUBNORMAL) || !std::isfinite(number))
       throw std::runtime_error("Invalid or non-finite JSON number.");
     return number;
   }
@@ -297,18 +302,17 @@ std::string Json::stringify() const {
   if (isNumber()) {
     const double value = std::get<double>(value_);
     if (!std::isfinite(value)) return "null";
-    // Shortest round-trippable representation, independent of the process
+    // Round-trippable representation, independent of the process
     // locale. Six-digit stream formatting changed exact template definitions
     // and could give different revisions the same content/version hash.
-    char bytes[64];
     // Preserve ordinary integer tokens for typed Int64 receivers. A double at
     // LLONG_MAX rounds to 2^63, so the upper comparison must be exclusive.
     const bool integer = value >= double(std::numeric_limits<long long>::min()) &&
         value < -double(std::numeric_limits<long long>::min()) && std::trunc(value) == value;
-    const auto result = integer ? std::to_chars(bytes, bytes + sizeof(bytes), static_cast<long long>(value)) :
-        std::to_chars(bytes, bytes + sizeof(bytes), value, std::chars_format::general);
-    if (result.ec != std::errc{}) throw std::runtime_error("JSON number formatting failed.");
-    return std::string(bytes, result.ptr);
+    std::ostringstream out; out.imbue(std::locale::classic());
+    if (integer) out << static_cast<long long>(value);
+    else out << std::setprecision(std::numeric_limits<double>::max_digits10) << value;
+    return out.str();
   }
   if (isString()) return escapeString((*std::get<StringValue>(value_)));
   if (isArray()) {

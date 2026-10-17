@@ -237,7 +237,11 @@ bool GraphicsTemplate::validateFields(const Json& values, bool requireValues, st
   try {
     need(values.isObject(), "template-fields-required");
     const auto& fields = document_.get("fields")->asArray();
-    for (const auto& [key, value] : values.asObject()) {
+    for (const auto& entry : values.asObject()) {
+      // Apple's supported older Clang cannot capture a structured binding in
+      // this predicate even in C++20 mode. Ordinary references preserve it.
+      const auto& key = entry.first;
+      const auto& value = entry.second;
       const auto field = std::find_if(fields.begin(), fields.end(), [&](const auto& f) { return f.getString("id") == key; });
       need(field != fields.end(), "unknown-template-field"); typedValue(*field, value);
     }
