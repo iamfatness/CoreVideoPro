@@ -187,6 +187,7 @@ phrase they quote.
 | [`docs/reference/realtime-isolation-audit.md`](docs/reference/realtime-isolation-audit.md) | cross-subsystem evidence, owner/command/observer isolation contract, lock budgets and integrated fault qualification under #517/#870 |
 | [`docs/reference/source-thumbnail-isolation.md`](docs/reference/source-thumbnail-isolation.md) | Sources input thumbnails, per-source GPU export identity and source-epoch publication |
 | [`docs/reference/source-grading-spec.md`](docs/reference/source-grading-spec.md) | per-source grade compatibility, expanded editor, native preview and scopes |
+| [`docs/reference/volt-graphics-spec.md`](docs/reference/volt-graphics-spec.md) | proposed #924 graphics/template/automation contract; [reconciliation](docs/reference/volt-graphics-reconciliation.md) and [implementation dependencies](docs/reference/volt-graphics-implementation-plan.md) |
 | [`docs/reference/srt-ingest.md`](docs/reference/srt-ingest.md) | SRT contribution feeds in |
 | [`docs/reference/stream-failure-reasons.md`](docs/reference/stream-failure-reasons.md) | stream error surfacing |
 | [`docs/reference/studioviewmodel-strangler.md`](docs/reference/studioviewmodel-strangler.md) | adding anything to `StudioViewModel.cs` or extracting from it |

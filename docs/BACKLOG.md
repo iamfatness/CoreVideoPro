@@ -1,5 +1,13 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 16 — graphics review:** reconcile the supplied Volt
+proposal with #847/#764/#761/#592/#593 and deliver the complete specification and
+implementation plan under [#924](https://github.com/iamfatness/CoreVideoPro/issues/924).
+This authorizes documentation for review, not graphics implementation or an app
+restart. See [specification](reference/volt-graphics-spec.md),
+[reconciliation](reference/volt-graphics-reconciliation.md), and
+[implementation dependencies](reference/volt-graphics-implementation-plan.md).
+
 **Owner direction, October 15:** diagnose and fix #916 source video delay in
 Inspect using API/offscreen validation; preserve the running installed app.
 
@@ -172,6 +180,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner current — October 16, specification only | B | [#924](https://github.com/iamfatness/CoreVideoPro/issues/924) | Reconcile and specify the graphics/templates/styles/automation milestone for owner review; implementation order awaits that review. |
 | Owner current — October 15 | B | [#916](https://github.com/iamfatness/CoreVideoPro/issues/916) | Diagnose select-to-first-present latency, reproduce the exact cause and fix it with API/offscreen evidence; keep the installed app/session untouched. |
 | 1 — October 15 UI/UX | B | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Finish stable-input scene creation and layout fallbacks, quick solo/two-person/share starters, preserved custom routes and fresh/upgraded profile evidence. |
 | 2 — October 15 UI/UX | B | [#590](https://github.com/iamfatness/CoreVideoPro/issues/590), [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) | Sources assignment/offline clarity and identity-safe thumbnail removal/reassignment acceptance. Count one primary development issue per focused PR. |

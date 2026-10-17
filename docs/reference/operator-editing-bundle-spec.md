@@ -6,6 +6,13 @@ shared control usability (#848), grading and scope ROI (#835), and starter scene
 review candidate after their acceptance. Order remains in `docs/BACKLOG.md`;
 delivery and validation are described in [the implementation plan](operator-editing-bundle-plan.md).
 
+The proposed next graphics milestone is reconciled in the
+[Volt Graphics specification](volt-graphics-spec.md) and
+[source/issue inventory](volt-graphics-reconciliation.md), tracked by #924.
+It preserves this bundle's accepted lower-third controls and text semantics;
+its broader templates/automation scope awaits owner review and does not
+retroactively mark this bundle's acceptance complete.
+
 ## Operator experience
 
 Use a consistent inspector pattern: clear section title, visible current value,

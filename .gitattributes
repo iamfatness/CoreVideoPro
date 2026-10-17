@@ -1,2 +1,4 @@
 # Preserve upstream notice text, including its original whitespace.
 docs/alpha-third-party-inputs/** -whitespace
+# Preserve the owner-supplied design input verbatim, including Markdown hard breaks.
+docs/design-reference/volt-graphics-original-2026-10-16.md -text -whitespace
