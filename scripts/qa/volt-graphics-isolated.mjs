@@ -20,7 +20,7 @@ child.stdout.on('data',chunk=>{buffer+=chunk;let i;while((i=buffer.indexOf('\n')
 child.on('exit',()=>{ended=true;for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error('Private core exited'));}pending.clear();});child.stdin.on('error',()=>{});
 const send=(type,body={})=>new Promise((resolve,reject)=>{const id=++next,timer=setTimeout(()=>{pending.delete(id);reject(Error(type+' timed out'));},20000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({id,type,...body})+'\n');});
 const started=Date.now();const sync=async(commands=[])=>{const r=await send('media-core-sync',{elapsedMs:Date.now()-started,commands});if(r.ok===false) throw Error('Native sync failed');return r.snapshot;};
-const check=(value,reason)=>{if(!value)throw Error(reason);};let state,recordingArtifact;let editSequence=0;
+const check=(value,reason)=>{if(!value)throw Error(reason);};let state,recordingArtifact;let editSequence=0,lastColdRevision=0;
 const wait=async(predicate,reason,ms=15000)=>{const until=Date.now()+ms;do{state=await sync();if(predicate(state)) return state;await sleep(100);}while(Date.now()<until);throw Error(reason);};
 const operation=async(type,instanceId,extra={})=>{
  const body={...(type==='graphics-automation-control'&&['arm','enable-automatic'].includes(extra.action)?{expectedAutomationRevision:state.graphics.automation.revision,expectedActivationRevision:state.graphics.automation.activationRevision,mode:state.graphics.automation.mode}:{}),schemaVersion:1,coreEpoch:state.graphics.coreEpoch,clientId:'volt-isolated-qa',requestId:'qa-'+(++next),...(instanceId?{instanceId,expectedRevision:state.graphics.instances.find(i=>i.instanceId===instanceId)?.revision??1}:{}),...extra};
@@ -57,25 +57,26 @@ try{
  {type:'start-recording-session',sessionId:'volt-qa-'+Date.now(),targetFolder:out,filenamePrefix:'volt-isolated',format:'mp4',quality:'high',isoParticipantIds:[]}]);
  await wait(s=>s.recording?.lifecycle?.state==='producing','Isolated recording did not become producing');
  report.recordingSession=state.recording.lifecycle.sessionId;
+ await wait(s=>s.graphics.instances.length===instanceCount&&s.graphics.instances.every(i=>i.programRevision>0&&i.firstDrawSubmittedFrame>0),'Declared graphics instances did not reach native Program draw');
  await sleep(3000);state=await sync();const before=state;
  check(before.outputProfile?.width===1920 && before.outputProfile?.height===1080 && before.outputProfile?.fps===60,'1080p60 output profile not confirmed');
  check(before.programBuffer?.requestedFrames===bufferFrames,'Program buffer selection mismatch');
  check(before.programBuffer?.status==='running' && before.programBuffer.delivered>0,'Program buffer did not start');
  const keys=['underruns','overflows','deadlineMisses','gpuNotReady','outputSequenceGaps'];
- const samples=[];const begin=Date.now();let lastEditAt=0;
+ const samples=[];const begin=Date.now();let lastEditAt=0,minimumActiveInstances=instanceCount;
  while(Date.now()-begin<seconds*1000){state=await sync();
  if(v.edits && Date.now()-lastEditAt>=2000) {
   const id=instanceCount>3?'extra-3':'guest';
   await operation('graphics-instance-update',id,{target:'program',fields:{name:'Cold edit '+(++editSequence),title:'Off-thread preparation '+editSequence}});
-  lastEditAt=Date.now();
+  lastEditAt=Date.now();lastColdRevision=state.graphics.instances.find(i=>i.instanceId===id).revision;
  }
-samples.push({seconds:(Date.now()-begin)/1000,programBuffer:state.programBuffer,compositor:state.compositor,graphics:state.graphics.resourceBudgetAtStatePublication});check(!ended,'Core exited');await sleep(500);}
+minimumActiveInstances=Math.min(minimumActiveInstances,state.graphics.instances.filter(i=>i.programRevision>0).length);samples.push({seconds:(Date.now()-begin)/1000,programBuffer:state.programBuffer,compositor:state.compositor,graphics:state.graphics.resourceBudgetAtStatePublication});check(!ended,'Core exited');await sleep(500);}
  state=await sync();report.measuredSeconds=(Date.now()-begin)/1000;report.programBufferDeltas=Object.fromEntries(keys.map(k=>{check(Number.isFinite(state.programBuffer?.[k])&&Number.isFinite(before.programBuffer?.[k]),'Missing measured Program buffer counter '+k);return [k,state.programBuffer[k]-before.programBuffer[k]];}));
  report.renderDeltas=Object.fromEntries(['renderDeadlineMisses','droppedFrameCount','degradedFrameCount'].map(k=>[k,(state.compositor?.[k]??0)-(before.compositor?.[k]??0)]));
  report.programFrames=state.compositor.programFrameCount-before.compositor.programFrameCount;
  report.bufferDelivered=state.programBuffer.delivered-before.programBuffer.delivered;
  report.counterInterval={before:before.programBuffer,after:state.programBuffer};report.outputProfile=state.outputProfile;
- report.coldEditRequests=editSequence;report.finalProgramInstances=state.graphics.instances.map(i=>({id:i.instanceId,revision:i.programRevision,visibility:i.visibility,firstDrawSubmittedFrame:i.firstDrawSubmittedFrame}));
+ report.coldEditRequests=editSequence;report.minimumActiveInstances=minimumActiveInstances;report.lastColdRequestedRevision=lastColdRevision;report.finalProgramInstances=state.graphics.instances.map(i=>({id:i.instanceId,revision:i.programRevision,visibility:i.visibility,firstDrawSubmittedFrame:i.firstDrawSubmittedFrame}));
  report.bufferMeasurementAvailable=!!state.programBuffer;report.resources=state.graphics.resourceBudgetAtStatePublication;report.outputProfile=state.outputProfile;
  writeFileSync(join(out,'samples.json'),JSON.stringify(samples,null,2));
  state=await sync([{type:'stop-recording-session',reason:'Bounded isolated Volt validation complete'}]);
@@ -90,6 +91,7 @@ samples.push({seconds:(Date.now()-begin)/1000,programBuffer:state.programBuffer,
  report.recordingCadence={decodedFrames:pts.length,firstPts:pts[0],lastPts:pts.at(-1),maximumIntervalMs:intervals.reduce((a,b)=>Math.max(a,b),0)*1000,minimumInteriorIntervalMs:intervals.slice(0,-1).reduce((a,b)=>Math.min(a,b),Infinity)*1000,finalIntervalMs:intervals.at(-1)*1000,finalPartialFrame:intervals.at(-1)<1/60-.000002,gaps:intervals.flatMap((value,index)=>value>1/60+.000002?[{frame:index+1,previousPts:pts[index],pts:pts[index+1],intervalMs:value*1000}]:[]).slice(0,64)};
  check(intervals.length>0&&intervals.every(value=>Number.isFinite(value)&&value>0&&value<=1/60+.000002),'Decoded recording has non-advancing timestamps or a missed video slot');
  check(intervals.slice(0,-1).every(value=>Math.abs(value-1/60)<=.000002),'Decoded recording has an irregular interior video slot');
+ if(v.edits) { await wait(s=>s.graphics.instances.find(i=>i.instanceId===(instanceCount>3?'extra-3':'guest'))?.programRevision===lastColdRevision,'Final cold Program edit never adopted'); check(minimumActiveInstances===instanceCount,'Declared on-air graphics workload was not retained'); report.lastColdAdoptedRevision=lastColdRevision; }
  report.finalAutomationTrace=state.graphics.automation.trace;
  await operation('graphics-program-clear','',{channel:'all'});await sleep(500);state=await sync();check(state.graphics.instances.every(i=>i.programRevision===0&&!i.showPending),'Clear left managed graphics pending');
  report.clearInhibited=state.graphics.automation.inhibited;check(report.clearInhibited,'Clear did not inhibit rules');
@@ -103,4 +105,4 @@ finally{if(state)writeFileSync(join(out,'last-snapshot.json'),JSON.stringify(sta
  if(v['remove-recordings'] && recordingArtifact && report.recordingProbe && report.recordingCadence && existsSync(recordingArtifact)) {
   unlinkSync(recordingArtifact);report.recordingRemovedAfterAnalysis=true;persist();
  }
-} 
+}
