@@ -9,6 +9,33 @@ public sealed record NativeGraphicsState
     public string CoreEpoch { get; init; } = "";
     public IReadOnlyList<NativeGraphicsInstance> Instances { get; init; } = [];
     public NativeGraphicsOperationResult? LastResult { get; init; }
+    public IReadOnlyList<NativeGraphicsSource> Sources { get; init; } = [];
+    public string SourceBindingStatus { get; init; } = "unavailable";
+    public NativeGraphicsResourceBudget? ResourceBudgetAtStatePublication { get; init; }
+}
+
+/// <summary>Allocation-model counters sampled when native graphics state publishes.
+/// They do not measure driver overhead or output delivery.</summary>
+public sealed record NativeGraphicsResourceBudget
+{
+    public string Kind { get; init; } = "";
+    public long CpuBytes { get; init; }
+    public long GpuBytes { get; init; }
+    public long ActivePreparations { get; init; }
+    public long CpuHighWater { get; init; }
+    public long GpuHighWater { get; init; }
+    public long PreparationHighWater { get; init; }
+    public long Refused { get; init; }
+    public long CpuLimit { get; init; }
+    public long GpuLimit { get; init; }
+    public long PreparationLimit { get; init; }
+}
+
+public sealed record NativeGraphicsSource
+{
+    public SourceInstanceIdentity? Identity { get; init; }
+    public string DisplayName { get; init; } = "";
+    public bool VideoOn { get; init; }
 }
 
 public sealed record NativeGraphicsInstance
@@ -22,9 +49,14 @@ public sealed record NativeGraphicsInstance
     public string Scope { get; init; } = "";
     public string SceneId { get; init; } = "";
     public string SourceId { get; init; } = "";
+    public SourceInstanceIdentity? Binding { get; init; }
+    public SourceInstanceIdentity? ProgramBinding { get; init; }
+    public string BindingState { get; init; } = "unbound";
     public long Revision { get; init; }
     public long ProgramRevision { get; init; }
     public string Preparation { get; init; } = "unprepared";
+    public NativeGraphicsResource? PreparedResource { get; init; }
+    public NativeGraphicsResource? ProgramResource { get; init; }
     public string Visibility { get; init; } = "hidden";
     public bool Cued { get; init; }
     public bool ShowPending { get; init; }
@@ -38,6 +70,14 @@ public sealed record NativeGraphicsInstance
     public NativeGraphicsFields? ProgramFields { get; init; }
     public LowerThirdAppearance? ProgramStyle { get; init; }
     public NativeGraphicsAnimations? ProgramAnimations { get; init; }
+}
+
+public sealed record NativeGraphicsResource
+{
+    public string Backend { get; init; } = "";
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public string ContentKey { get; init; } = "";
 }
 
 public sealed record NativeGraphicsAnimations

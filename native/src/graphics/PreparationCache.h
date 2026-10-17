@@ -27,6 +27,7 @@ class PreparationCache {
     std::shared_ptr<const Asset> asset;
     uint64_t bytes = 0;
     std::string warning;
+    bool retryable = false;
   };
   struct Counters {
     uint64_t admitted = 0, completed = 0, refused = 0, failed = 0;
@@ -143,11 +144,14 @@ class PreparationCache {
       }
     };
     const auto retireLeastUsed = [&] {
-      auto oldest = std::min_element(results.begin(), results.end(), [](const auto& a, const auto& b) {
-        return a.second->lastUse.load(std::memory_order_relaxed) <
-               b.second->lastUse.load(std::memory_order_relaxed);
-      });
-      if (oldest != results.end()) retire(oldest->first);
+      auto oldest = results.end();
+      for (auto it = results.begin(); it != results.end(); ++it) {
+        if (it->second->result.use_count() != 1) continue;
+        if (oldest == results.end() || it->second->lastUse.load(std::memory_order_relaxed) <
+            oldest->second->lastUse.load(std::memory_order_relaxed)) oldest = it;
+      }
+      if (oldest == results.end()) return false;
+      retire(oldest->first); return true;
     };
     for (;;) {
       std::optional<Job> job;
@@ -165,7 +169,7 @@ class PreparationCache {
         // Reserve scratch + result space before running the producer.
         while (!results.empty() && (residentBytes_ + pendingBytes_ > budget_ ||
                                    results.size() + retired.size() >= residentCapacity_)) {
-          retireLeastUsed();
+          if (!retireLeastUsed()) break;
           std::atomic_store(&published_, std::make_shared<const Results>(results));
           sweepRetired();
         }
@@ -183,7 +187,7 @@ class PreparationCache {
       if (result.bytes > job->maximumBytes) {
         result.asset.reset(); result.bytes = 0; result.warning = "Graphics preparation exceeded its admitted budget.";
       }
-      if (!result.asset) { result.bytes = 0; failed_.fetch_add(1); }
+      if (!result.asset) { result.bytes = 0; if (!result.retryable) failed_.fetch_add(1); }
       {
         std::lock_guard lock(mutex_);
         pendingBytes_ -= job->maximumBytes; queued_.erase(job->key);
@@ -193,12 +197,15 @@ class PreparationCache {
         // Its reservation stays charged until completion, and a superseded
         // result is destroyed here on the owner without being published.
         if (activeSuperseded_) { superseded_.fetch_add(1); continue; }
+        // Temporary process-wide resource pressure is backpressure, not a
+        // sticky missing-font/asset result. A later render may request it again.
+        if (result.retryable && !result.asset) { refused_.fetch_add(1); continue; }
         residentBytes_ += result.bytes;
         results[job->key] = std::make_shared<Entry>(
             std::make_shared<const Result>(std::move(result)), ++useClock_);
         // Failed entries are bounded too, even though their GPU footprint is zero.
         while (results.size() > residentCapacity_) {
-          retireLeastUsed();
+          if (!retireLeastUsed()) break;
         }
         std::atomic_store(&published_, std::make_shared<const Results>(results));
         sweepRetired();

@@ -28,9 +28,11 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <compare>
 
 #include "compositor/ComPtrLite.h"
 #include "graphics/PreparationCache.h"
+#include "graphics/GraphicsResourceBudget.h"
 #include "compositor/CompositorLayout.h"
 #include "modules/Interfaces.h"
 
@@ -40,13 +42,17 @@ class CompositorOverlayRaster {
  public:
   CompositorOverlayRaster();
   ~CompositorOverlayRaster();
-  void beginFrame() { pendingThisFrame_ = failedThisFrame_ = false; }
+  void beginFrame() {
+    pendingThisFrame_ = failedThisFrame_ = false;
+    activeLease_.reset(); activeResource_.reset(); lastState_ = "unprepared";
+  }
   bool pendingThisFrame() const { return pendingThisFrame_; }
   bool failedThisFrame() const { return failedThisFrame_; }
   const char* preparationState() const {
     return lastState_;
   }
   std::shared_ptr<const void> lease() const { return activeLease_; }
+  std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource();
   void refuseGpuLease() { failedThisFrame_ = true; lastWarning_ = "Graphics GPU retirement capacity unavailable."; }
   const std::string& lastWarning() const { return lastWarning_; }
   // Rasters the overlay's accent bar + text (+ optional WIC image) into a GPU
@@ -69,18 +75,25 @@ class CompositorOverlayRaster {
       const compositor::LayerRect& rect,
       int targetWidth,
       int targetHeight,
-      const std::string& preparationSlot = {});
+      const std::string& preparationSlot = {},
+      bool strictResources = false,
+      std::shared_ptr<const graphics::GraphicsPreparedResource> prepared = {});
 
  private:
   // Lazily creates the D2D/DirectWrite (and best-effort WIC) factories used by
-  // the overlay raster. A failure latches so we don't retry per frame; the
-  // caller then keeps the band+accent fallback.
+  // the overlay raster. Failed content keys stay failed rather than retrying
+  // every frame; a repaired revision can retry without restarting the owner.
   bool ensureOverlayRasterFactories();
 
-  // Decodes `imageUri` (a local path or file:/// URI) via WIC into a D2D bitmap
-  // for the given render target. Returns an empty ComPtrLite on any failure —
-  // the raster then simply omits the image.
-  ComPtrLite<ID2D1Bitmap> decodeOverlayImage(ID2D1RenderTarget* target, const std::string& imageUri);
+  struct ImageInput {
+    ComPtrLite<IWICBitmapFrameDecode> frame;
+    uint64_t cpuBytes = 0;
+  };
+  // Probe and retain the same decoder frame before reserving conversion memory.
+  // No path is reopened between sizing and decode. Native instance assets will
+  // additionally use the versioned package importer; this preserves legacy URIs.
+  ImageInput openOverlayImage(const std::string& imageUri);
+  ComPtrLite<ID2D1Bitmap> decodeOverlayImage(ID2D1RenderTarget* target, IWICBitmapFrameDecode* frame);
 
   // Draws one line of text into `box`, vertically centered, trimmed with an
   // ellipsis when it overflows. Returns false only on factory/format failure.
@@ -97,6 +110,8 @@ class CompositorOverlayRaster {
   // text texture. Rasters happen only on content/size change; frames reuse the
   // SRV.
   struct OverlayRasterTex {
+    // Declared first so the texture/view release before their budget charge.
+    std::shared_ptr<graphics::GraphicsResourceBudget::Lease> budget;
     ComPtrLite<ID3D11Texture2D> texture;
     ComPtrLite<ID3D11ShaderResourceView> view;
   };
@@ -104,19 +119,31 @@ class CompositorOverlayRaster {
     std::shared_ptr<ID3D11Device> device;
     CompositorOverlayContent overlay;
     int width = 0, height = 0;
+    bool strictResources = false;
   };
-  using Key = std::pair<uintptr_t, uint64_t>;
+  struct Key {
+    uintptr_t device = 0;
+    uint64_t signature = 0;
+    std::array<uint8_t, 32> contentHash{};
+    bool hasContentHash = false;
+    auto operator<=>(const Key&) const = default;
+  };
   using Cache = graphics::PreparationCache<Key, Request, OverlayRasterTex>;
   Cache::Result prepareRaster(const Request& request);
   ComPtrLite<ID2D1Factory> d2dFactory_;
   ComPtrLite<IDWriteFactory> dwriteFactory_;
   ComPtrLite<IWICImagingFactory> wicFactory_;
-  bool overlayRasterUnavailable_ = false;
   std::string lastWarning_;
   std::string workerWarning_;
   bool pendingThisFrame_ = false, failedThisFrame_ = false;
   const char* lastState_ = "unprepared";
   std::shared_ptr<const Cache::Result> activeLease_;
+  std::shared_ptr<const graphics::GraphicsPreparedResource> activeResource_;
+  uintptr_t activeDevice_ = 0;
+  uint64_t activeSignature_ = 0;
+  int activeWidth_ = 0, activeHeight_ = 0;
+  std::array<uint8_t, 32> activeContentHash_{};
+  bool activeHasContentHash_ = false;
   // Last member: join the owner before destroying its factories or callback state.
   Cache cache_;
 };

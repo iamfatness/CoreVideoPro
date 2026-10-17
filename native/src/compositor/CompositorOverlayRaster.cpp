@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 
 #include "modules/OverlayTileRaster.h"
 #include "core/ComApartmentLifetime.h"
@@ -46,21 +47,16 @@ bool CompositorOverlayRaster::ensureOverlayRasterFactories() {
   if (d2dFactory_ && dwriteFactory_ && wicFactory_) {
     return true;
   }
-  if (overlayRasterUnavailable_) {
-    return false;
-  }
   if (!d2dFactory_ &&
       FAILED(D2D1CreateFactory(
           D2D1_FACTORY_TYPE_MULTI_THREADED, __uuidof(ID2D1Factory), nullptr,
           reinterpret_cast<void**>(d2dFactory_.put())))) {
-    overlayRasterUnavailable_ = true;
     return false;
   }
   if (!dwriteFactory_ &&
       FAILED(DWriteCreateFactory(
           DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
           reinterpret_cast<IUnknown**>(dwriteFactory_.put())))) {
-    overlayRasterUnavailable_ = true;
     return false;
   }
   // All prepared tiles use a CPU WIC target. The preparation owner has already
@@ -72,12 +68,8 @@ bool CompositorOverlayRaster::ensureOverlayRasterFactories() {
   return bool(wicFactory_);
 }
 
-ComPtrLite<ID2D1Bitmap> CompositorOverlayRaster::decodeOverlayImage(
-    ID2D1RenderTarget* target, const std::string& imageUri) {
-  ComPtrLite<ID2D1Bitmap> bitmap;
-  if (!wicFactory_ || !target || imageUri.empty()) {
-    return bitmap;
-  }
+CompositorOverlayRaster::ImageInput CompositorOverlayRaster::openOverlayImage(const std::string& imageUri) {
+  if (!wicFactory_ || imageUri.empty()) return {};
   std::string path = imageUri;
   if (path.rfind("file:///", 0) == 0) {
     path = path.substr(8);
@@ -86,27 +78,34 @@ ComPtrLite<ID2D1Bitmap> CompositorOverlayRaster::decodeOverlayImage(
   }
   const std::wstring widePath = widenUtf8(path);
   if (widePath.empty()) {
-    return bitmap;
+    return {};
   }
   ComPtrLite<IWICBitmapDecoder> decoder;
   if (FAILED(wicFactory_->CreateDecoderFromFilename(
           widePath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, decoder.put()))) {
-    return bitmap;
+    return {};
   }
   ComPtrLite<IWICBitmapFrameDecode> frame;
   if (FAILED(decoder->GetFrame(0, frame.put()))) {
-    return bitmap;
+    return {};
   }
   UINT imageWidth = 0, imageHeight = 0;
   if (FAILED(frame->GetSize(&imageWidth, &imageHeight)) || imageWidth == 0 || imageHeight == 0 || imageWidth > 4096 || imageHeight > 4096 ||
-      uint64_t(imageWidth) * imageHeight > 16ull * 1024 * 1024) return bitmap;
+      uint64_t(imageWidth) * imageHeight > 16ull * 1024 * 1024) return {};
+  return {std::move(frame), uint64_t(imageWidth) * imageHeight * 8};
+}
+
+ComPtrLite<ID2D1Bitmap> CompositorOverlayRaster::decodeOverlayImage(
+    ID2D1RenderTarget* target, IWICBitmapFrameDecode* frame) {
+  ComPtrLite<ID2D1Bitmap> bitmap;
+  if (!target || !frame) return bitmap;
   ComPtrLite<IWICFormatConverter> converter;
   if (FAILED(wicFactory_->CreateFormatConverter(converter.put()))) {
     return bitmap;
   }
   // 32bppPBGRA = premultiplied BGRA, D2D's native interchange format.
   if (FAILED(converter->Initialize(
-          frame.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+          frame, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
           nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
     return bitmap;
   }
@@ -169,7 +168,8 @@ CompositorOverlayRaster::~CompositorOverlayRaster() = default;
 ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     ID3D11Device* device, ID3D11DeviceContext*, const CompositorOverlayContent& overlay,
     const compositor::LayerRect& rect, int targetWidth, int targetHeight,
-    const std::string& preparationSlot) {
+    const std::string& preparationSlot, bool strictResources,
+    std::shared_ptr<const graphics::GraphicsPreparedResource> prepared) {
   // Bound metadata before hashing or copying it into the queue. In particular,
   // a legacy caller cannot amplify one oversized caption into 32 queued copies.
   size_t metadataBytes = 0;
@@ -194,19 +194,53 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     return nullptr;
   }
   const int width = int(std::lround(widthPixels)), height = int(std::lround(heightPixels));
-  const Key key{reinterpret_cast<uintptr_t>(device), overlayContentSignature(overlay, width, height)};
-  activeLease_ = cache_.find(key);
+  const Key key{reinterpret_cast<uintptr_t>(device), overlayContentSignature(overlay, width, height) ^
+      (strictResources ? 0xd9e94a8e64b5fc21ULL : 0ULL), overlay.graphicsContentHash, overlay.hasGraphicsContentHash};
+  const bool compatible = prepared && prepared->native && prepared->backend == graphics::GraphicsPreparedResource::Backend::D3D11 &&
+      prepared->deviceIdentity == key.device && prepared->width > 0 && prepared->height > 0 &&
+      prepared->hasContentHash == overlay.hasGraphicsContentHash && prepared->contentHash == overlay.graphicsContentHash &&
+      prepared->width <= 4096 && prepared->height <= 4096 && prepared->signature ==
+          (overlayContentSignature(overlay, prepared->width, prepared->height) ^ (strictResources ? 0xd9e94a8e64b5fc21ULL : 0ULL));
+  activeResource_.reset();
+  activeLease_.reset();
+  if (compatible && prepared->width == width && prepared->height == height) {
+    activeLease_ = std::static_pointer_cast<const Cache::Result>(prepared->native);
+    activeResource_ = prepared;
+  } else activeLease_ = cache_.find(key);
   if (!activeLease_) {
     device->AddRef();
-    Request request{std::shared_ptr<ID3D11Device>(device, [](ID3D11Device* value) { value->Release(); }), overlay, width, height};
+    Request request{std::shared_ptr<ID3D11Device>(device, [](ID3D11Device* value) { value->Release(); }), overlay, width, height, strictResources};
     activeLease_ = cache_.findOrRequest(key, std::move(request),
-        uint64_t(width) * height * 8 + (overlay.imageUri.empty() ? 0 : 64ull * 1024 * 1024), preparationSlot);
+        uint64_t(width) * height * 8 + (overlay.imageUri.empty() ? 0 : 128ull * 1024 * 1024), preparationSlot);
   }
-  lastState_ = !activeLease_ ? "preparing" : activeLease_->asset ? "ready" : "failed";
-  lastWarning_ = activeLease_ ? activeLease_->warning : "Graphics preparation pending.";
-  pendingThisFrame_ = pendingThisFrame_ || !activeLease_;
-  failedThisFrame_ = failedThisFrame_ || (activeLease_ && !activeLease_->asset);
+  const bool failedScale = activeLease_ && !activeLease_->asset && compatible;
+  const std::string scaleWarning = failedScale ? activeLease_->warning : "";
+  bool retainingScale = false;
+  if ((!activeLease_ || !activeLease_->asset) && compatible) {
+    activeLease_ = std::static_pointer_cast<const Cache::Result>(prepared->native);
+    activeResource_ = prepared; retainingScale = true;
+  }
+  activeDevice_ = key.device; activeSignature_ = key.signature;
+  activeContentHash_ = overlay.graphicsContentHash; activeHasContentHash_ = overlay.hasGraphicsContentHash;
+  activeWidth_ = width; activeHeight_ = height;
+  lastState_ = failedScale ? "failed" : retainingScale ? "preparing" : !activeLease_ ? "preparing" : activeLease_->asset ? "ready" : "failed";
+  lastWarning_ = failedScale ? scaleWarning + " Retaining the accepted raster." : retainingScale ? "Graphics scale preparation pending; retaining the accepted raster." :
+      activeLease_ ? activeLease_->warning : "Graphics preparation pending.";
+  pendingThisFrame_ = pendingThisFrame_ || (retainingScale && !failedScale) || !activeLease_;
+  failedThisFrame_ = failedThisFrame_ || failedScale || (activeLease_ && !activeLease_->asset);
   return activeLease_ && activeLease_->asset ? activeLease_->asset->view.get() : nullptr;
+}
+
+std::shared_ptr<const graphics::GraphicsPreparedResource> CompositorOverlayRaster::preparedResource() {
+  if (!activeLease_ || !activeLease_->asset || std::string_view(lastState_) != "ready") return {};
+  if (activeResource_) return activeResource_;
+  auto resource = std::make_shared<graphics::GraphicsPreparedResource>();
+  resource->backend = graphics::GraphicsPreparedResource::Backend::D3D11;
+  resource->deviceIdentity = activeDevice_; resource->signature = activeSignature_;
+  resource->width = activeWidth_; resource->height = activeHeight_; resource->native = activeLease_;
+  resource->contentHash = activeContentHash_; resource->hasContentHash = activeHasContentHash_;
+  activeResource_ = resource;
+  return resource;
 }
 
 CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(const Request& request) {
@@ -218,7 +252,16 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   if (!apartment.initialized() || !ensureOverlayRasterFactories() || !wicFactory_) {
     return {{}, 0, "Native graphics preparation unavailable."};
   }
+  auto layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
+  const auto imageInput = layout.hasImage ? openOverlayImage(overlay.imageUri) : ImageInput{};
+  const auto textureBytes = uint64_t(widthPx) * heightPx * 4;
+  auto& sharedBudget = graphics::GraphicsResourceBudget::process();
+  if (textureBytes + imageInput.cpuBytes > sharedBudget.counters().cpuLimit)
+    return {{}, 0, "Graphics assets exceed the shared CPU preparation capacity."};
+  auto budget = sharedBudget.tryReserve(textureBytes + imageInput.cpuBytes, textureBytes);
+  if (!budget) return {{}, 0, "Graphics preparation is waiting for shared resource capacity.", true};
   auto entry = std::make_shared<OverlayRasterTex>();
+  entry->budget = budget;
   ComPtrLite<IWICBitmap> bitmap;
   if (FAILED(wicFactory_->CreateBitmap(widthPx, heightPx, GUID_WICPixelFormat32bppPBGRA,
       WICBitmapCacheOnLoad, bitmap.put()))) return {{}, 0, "Graphics bitmap allocation failed."};
@@ -234,18 +277,21 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   // (rasterizeOverlayTileBgra) place identical content — preview and program
   // agree by construction. The band background is NOT painted here (it stays
   // a separate quad so its alpha animation matches the CPU mirror).
-  auto layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
   if (overlay.appearance.enabled) {
     ComPtrLite<IDWriteFontCollection> fonts;BOOL exists=FALSE;UINT32 index=0;
     const auto family=widenUtf8(layout.fontFamily);
-    if (SUCCEEDED(dwriteFactory_->GetSystemFontCollection(fonts.put())) &&
-        SUCCEEDED(fonts->FindFamilyName(family.c_str(),&index,&exists)) && !exists) {
+    const bool resolved = SUCCEEDED(dwriteFactory_->GetSystemFontCollection(fonts.put())) && fonts &&
+        SUCCEEDED(fonts->FindFamilyName(family.c_str(),&index,&exists));
+    if (request.strictResources && (!resolved || !exists))
+      return {{}, 0, resolved ? "Requested graphics font is unavailable; choose an installed font." : "Graphics font resolution failed."};
+    if (resolved && !exists) {
       layout.fontFamily="Segoe UI";workerWarning_="Font unavailable; using Segoe UI.";
     }
   }
 
   d2dTarget->BeginDraw();
   d2dTarget->Clear(D2D1::ColorF(0.f, 0.f, 0.f, 0.f));
+  bool resourcesComplete = true;
   ComPtrLite<ID2D1RoundedRectangleGeometry> rounded;
   bool clipped=false;
   if (overlay.appearance.enabled && !overlay.isCaption) {
@@ -253,8 +299,10 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
     if (layout.cornerRadius>0 && SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(band,rounded.put()))) {
       d2dTarget->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(),rounded.get()),nullptr); clipped=true;
     }
+    if (layout.cornerRadius > 0 && !rounded) resourcesComplete = false;
     ComPtrLite<ID2D1SolidColorBrush> bg;
     if (SUCCEEDED(d2dTarget->CreateSolidColorBrush(d2dColorFromArgb(layout.backgroundArgb),bg.put()))) d2dTarget->FillRoundedRectangle(band,bg.get());
+    else resourcesComplete = false;
   }
 
   ComPtrLite<ID2D1SolidColorBrush> accentBrush;
@@ -264,13 +312,13 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
                     layout.accentBar.x + layout.accentBar.width,
                     layout.accentBar.y + layout.accentBar.height),
         accentBrush.get());
-  }
+  } else resourcesComplete = false;
 
   // Real WIC decode aspect-fitted inside the layout's image slot (the CPU
   // tile draws its deterministic checker in the same slot).
   if (layout.hasImage) {
-    auto image=decodeOverlayImage(d2dTarget.get(),overlay.imageUri);
-    if (!image) workerWarning_ += " Logo unavailable; image omitted.";
+    auto image=decodeOverlayImage(d2dTarget.get(), imageInput.frame.get());
+    if (!image) { workerWarning_ += " Logo unavailable; image omitted."; resourcesComplete = false; }
     if (image) {
       const auto imageSize = image->GetSize();
       float drawWidth = layout.imageRect.width;
@@ -294,17 +342,19 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
     const auto& line = layout.textLines[lineIndex];
     const bool emphasis =
         lineIndex == 0 && (!overlay.isCaption || !overlay.speaker.empty());
-    drawOverlayTextLine(
+    if (!drawOverlayTextLine(
         d2dTarget.get(), line.text, layout.fontFamily,
         emphasis ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
         D2D1::RectF(line.rect.x, line.rect.y,
                     line.rect.x + line.rect.width, line.rect.y + line.rect.height),
-        d2dColorFromArgb(line.colorArgb),line.fontSize);
+        d2dColorFromArgb(line.colorArgb),line.fontSize)) resourcesComplete = false;
   }
 
   if (clipped) d2dTarget->PopLayer();
   const HRESULT endDrawResult = d2dTarget->EndDraw();
   if (FAILED(endDrawResult)) return {{}, 0, "Graphics rasterization failed."};
+  if (request.strictResources && !resourcesComplete)
+    return {{}, 0, "Graphics resources could not be prepared completely."};
   WICRect lockRect{0, 0, widthPx, heightPx};
   ComPtrLite<IWICBitmapLock> pixels;
   UINT stride = 0, length = 0; BYTE* data = nullptr;
@@ -319,7 +369,8 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   if (FAILED(device->CreateTexture2D(&desc, &initial, entry->texture.put())) ||
       FAILED(device->CreateShaderResourceView(entry->texture.get(), nullptr, entry->view.put())))
     return {{}, 0, "Graphics texture creation failed."};
-  return {std::move(entry), uint64_t(widthPx) * heightPx * 4, workerWarning_};
+  budget->finishPreparation();
+  return {std::move(entry), textureBytes, workerWarning_};
 }
 
 }  // namespace corevideo::modules

@@ -54,6 +54,11 @@ public sealed class GraphicsCommandGatewayTests
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"style\":{\"nameSize\":\"huge\"}")]
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"style\":{\"unknownSlider\":50}")]
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"bindings\":{}")]
+    [InlineData("graphics.instance.update", "\"target\":\"cue\",\"sourceId\":\"zoom:44\"")]
+    [InlineData("graphics.instance.update", "\"target\":\"cue\",\"binding\":{\"sourceId\":\"zoom:44\",\"instanceId\":\"source-one\",\"processEpoch\":2,\"generation\":1}")]
+    [InlineData("graphics.instance.update", "\"target\":\"cue\",\"binding\":{\"sourceId\":\"zoom:44\",\"instanceId\":\"source-one\",\"processEpoch\":\"epoch\",\"generation\":9007199254740992}")]
+    [InlineData("graphics.instance.update", "\"target\":\"cue\",\"binding\":{\"sourceId\":\"zoom:44\",\"instanceId\":\"source-one\",\"processEpoch\":\"epoch\",\"generation\":1,\"generation\":2}")]
+    [InlineData("graphics.instance.update", "\"target\":\"cue\",\"sourceId\":\"zoom:99\",\"binding\":{\"sourceId\":\"zoom:44\",\"instanceId\":\"source-one\",\"processEpoch\":\"epoch\",\"generation\":1}")]
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"animations\":{\"in\":{\"type\":\"script\"}}")]
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"animations\":{\"in\":{\"durationMs\":3001}}")]
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"animations\":{\"in\":{\"direction\":\"diagonal\"}}")]
@@ -89,6 +94,18 @@ public sealed class GraphicsCommandGatewayTests
         Assert.True(GraphicsCommandRequest.TryBuild("graphics.instance.update", request, Observed, out var command, out _, out _));
         Assert.Equal(250, command!.ExtensionData!["graphics"].GetProperty("animations").GetProperty("in").GetProperty("durationMs").GetInt32());
         Assert.Equal("fade", command.ExtensionData["graphics"].GetProperty("animations").GetProperty("out").GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void QualifiedBindingRoundTripsLosslesslyAndResetIsExplicit()
+    {
+        var request = Request("\"target\":\"cue\",\"binding\":{\"sourceId\":\"zoom:44\",\"instanceId\":\"source-one\",\"processEpoch\":\"native:18446744073709551615\",\"generation\":1.0}");
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.instance.update", request, Observed, out var command, out _, out _));
+        var binding = command!.ExtensionData!["graphics"].GetProperty("binding");
+        Assert.Equal("native:18446744073709551615", binding.GetProperty("processEpoch").GetString());
+        Assert.Equal("1.0", binding.GetProperty("generation").GetRawText());
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.instance.update", Request("\"target\":\"cue\",\"binding\":null"), Observed, out command, out _, out _));
+        Assert.Equal(JsonValueKind.Null, command!.ExtensionData!["graphics"].GetProperty("binding").ValueKind);
     }
 
     [Fact]

@@ -4343,7 +4343,7 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
                                       videoFrames, tilesLayer_);
   plan.warnings.insert(plan.warnings.end(), sceneValidationWarnings_.begin(), sceneValidationWarnings_.end());
   plan = applyTakeTransition(std::move(plan), videoFrames);
-  graphicsInstances_.append(plan, false);
+  graphicsInstances_.append(plan, false, videoFrames);
   return plan;
 }
 
@@ -4501,7 +4501,7 @@ modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const 
   // the very source the slice exists to keep whole.
   // R3: preview keeps the held frame — never a black cut — regardless of the
   // stored per-source policy; only the real Program pass reads it.
-  graphicsInstances_.append(plan, true);
+  graphicsInstances_.append(plan, true, videoFrames);
   holdDropoutForMonitoring(plan);
   return plan;
 }
@@ -5292,7 +5292,10 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
           });
     };
     if (engineLive) {
+      const auto graphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
       const auto roster = zoomEngineRuntime_->floorParticipants();
+      const auto confirmedGraphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
+      graphicsInstances_.observeZoomSources(roster, graphicsSourceEpoch == confirmedGraphicsSourceEpoch ? graphicsSourceEpoch : 0, videoFrames);
       // A manual trim belongs to this participant incarnation, not to a
       // numeric SDK id that a later join could reuse inside the same meeting.
       if (!zoomGuestAvOffsets_.empty()) {
@@ -5318,6 +5321,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
             hasContent(id), participant.isTalking});
       }
     } else {
+      graphicsInstances_.observeZoomSources({}, 0);
       const auto capture = zoomSnapshot();
       const auto* roster = capture.get("participants");
       if (roster && roster->isArray()) for (const auto& participant : roster->asArray()) {
@@ -5752,6 +5756,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
   graphicsInstances_.observe(producedFrame);
+  producedFrame.releaseGraphicsPreparationLeases();
   if (avSyncTraceEnabled() && hasWhiteClapSource(videoFrames, "101")) {
     avSyncWhiteProducedFrames_.push_back(producedFrame.frameNumber);
     if (avSyncWhiteProducedFrames_.size() > 32) avSyncWhiteProducedFrames_.pop_front();

@@ -7,6 +7,26 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class NativeGraphicsStateTests
 {
     [Fact]
+    public void ResourceBudgetRemainsAnAllocationModelObservationAtStatePublication()
+    {
+        using var response = JsonDocument.Parse("""
+            {"ok":true,"snapshot":{"health":null,"profile":null,"graphics":{
+              "schemaVersion":1,"coreEpoch":"test-core","instances":[],
+              "resourceBudgetAtStatePublication":{"kind":"allocation-model","cpuBytes":128,"gpuBytes":256,
+                "activePreparations":1,"cpuHighWater":512,"gpuHighWater":1024,"preparationHighWater":2,
+                "refused":3,"cpuLimit":134217728,"gpuLimit":268435456,"preparationLimit":2}}}}
+            """);
+        var wire = CoreProtocolParser.TryParseWireState(response);
+        Assert.NotNull(wire);
+        var budget = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(0, 0, wire).Graphics!.ResourceBudgetAtStatePublication!;
+        Assert.Equal("allocation-model", budget.Kind);
+        Assert.Equal(128, budget.CpuBytes); Assert.Equal(256, budget.GpuBytes);
+        Assert.Equal(134217728, budget.CpuLimit); Assert.Equal(268435456, budget.GpuLimit);
+        Assert.Equal(1, budget.ActivePreparations); Assert.Equal(2, budget.PreparationLimit);
+        Assert.Equal(512, budget.CpuHighWater); Assert.Equal(1024, budget.GpuHighWater);
+        Assert.Equal(2, budget.PreparationHighWater); Assert.Equal(3, budget.Refused);
+    }
+    [Fact]
     public void ActualWireParserAndMapperPreserveIndependentRevisionsAndBlankTitle()
     {
         using var response = JsonDocument.Parse("""
@@ -17,12 +37,19 @@ public sealed class NativeGraphicsStateTests
                 "preparation":"preparing","visibility":"on-air","firstDrawSubmittedFrame":99,
                 "cued":true,"showPending":false,"warning":"",
                 "identity":{"instanceId":"featured","coreEpoch":"native-epoch","revision":3},
+                "binding":{"sourceId":"zoom:44","instanceId":"subject-new","processEpoch":"native:18446744073709551615","generation":2},
+                "programBinding":{"sourceId":"zoom:44","instanceId":"subject-old","processEpoch":"native:18446744073709551615","generation":1},
+                "bindingState":"bound",
+                "preparedResource":{"backend":"d3d11","width":600,"height":96,"contentKey":"18446744073709551615"},
+                "programResource":{"backend":"d3d11","width":800,"height":128,"contentKey":"42"},
                 "preparationObservation":{"identity":{"instanceId":"featured","coreEpoch":"native-epoch","revision":3},"state":"preparing","warning":""},
                 "firstCompositionObservation":{"identity":{"instanceId":"featured","coreEpoch":"native-epoch","revision":2},"frameNumber":99,"evidence":"draw-submitted"},
                 "fields":{"name":"Guest","title":""},"style":{"nameSize":65,"titleSize":36},
                 "animations":{"in":{"type":"slide","direction":"up","durationMs":400,"easing":"ease-out"}},
                 "programAnimations":{"out":{"type":"fade","durationMs":300}},
                 "programFields":{"name":"On air","title":"Engineer"},"programStyle":{"nameSize":52}}],
+              "sources":[{"identity":{"sourceId":"zoom:44","instanceId":"subject-new","processEpoch":"native:18446744073709551615","generation":2},"displayName":"Guest","videoOn":true}],
+              "sourceBindingStatus":"available",
               "lastResult":{"requestId":"update-1","accepted":true,"reason":"revision-accepted"}}}}
             """);
         var wire = CoreProtocolParser.TryParseWireState(response);
@@ -32,6 +59,15 @@ public sealed class NativeGraphicsStateTests
         var instance = Assert.Single(snapshot.Graphics.Instances);
         Assert.Equal(3, instance.Revision);
         Assert.Equal(2, instance.ProgramRevision);
+        Assert.Equal(2, instance.Binding!.Generation);
+        Assert.Equal(1, instance.ProgramBinding!.Generation);
+        Assert.Equal("native:18446744073709551615", instance.Binding.ProcessEpoch);
+        Assert.Equal("bound", instance.BindingState);
+        Assert.Equal("zoom:44", Assert.Single(snapshot.Graphics.Sources).Identity!.SourceId);
+        Assert.Equal("available", snapshot.Graphics.SourceBindingStatus);
+        Assert.Equal("18446744073709551615", instance.PreparedResource!.ContentKey);
+        Assert.Equal(600, instance.PreparedResource.Width);
+        Assert.Equal(800, instance.ProgramResource!.Width);
         Assert.Equal("", instance.Fields.Title);
         Assert.Equal(65, instance.Style.NameSize);
         Assert.Equal(36, instance.Style.TitleSize);

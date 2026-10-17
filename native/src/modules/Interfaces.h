@@ -2,6 +2,7 @@
 #include "modules/SourceVideoDemand.h"
 #include "compositor/ScopeRoi.h"
 #include "compositor/LowerThirdAppearance.h"
+#include "graphics/GraphicsPreparedResource.h"
 
 #include "contracts/Lifecycle.h"
 #include "modules/ProgramAacEncoder.h"
@@ -11,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <atomic>
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -286,6 +288,7 @@ struct GraphicsFrameFact {
   std::string instanceId;
   uint64_t revision = 0;
   std::string state, reason;
+  std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource;
 };
 
 struct ProgramFrame {
@@ -301,6 +304,9 @@ struct ProgramFrame {
   uint32_t renderPlanSignature = 0;
   std::vector<std::string> warnings;
   std::vector<GraphicsFrameFact> graphicsFacts;
+  void releaseGraphicsPreparationLeases() {
+    for (auto& fact : graphicsFacts) fact.preparedResource.reset();
+  }
   ProgramFramePreviewPixels preview;
   // Full-resolution program BGRA (width x height) for the virtual camera, so it
   // serves native 1080p with no upscale. Populated only when the render plan
@@ -448,6 +454,8 @@ struct CompositorOverlayContent {
   std::string brandAccentColor = "#f0a85c";
   std::string brandBackgroundColor = "#0c1118";
   std::string fontFamily = "Inter";
+  std::array<uint8_t, 32> graphicsContentHash{};
+  bool hasGraphicsContentHash = false;
 };
 
 // Canvas-pixel Tiles decoration; disabled for every ordinary scene layer.
@@ -522,6 +530,9 @@ struct CompositorRenderPlanLayer {
   std::string sourceDisplayName;
   std::string graphicsInstanceId;
   uint64_t graphicsRevision = 0;
+  std::shared_ptr<const graphics::GraphicsPreparedResource> graphicsPreparedResource;
+  std::string graphicsBoundParticipantId;
+  uint64_t graphicsBoundSourceGeneration = 0;
 };
 
 struct CompositorRenderPlan {

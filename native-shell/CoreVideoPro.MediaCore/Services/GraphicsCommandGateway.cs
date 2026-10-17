@@ -54,8 +54,8 @@ public static class GraphicsCommandRequest
 {
     private static readonly IReadOnlyDictionary<string, string[]> Parameters = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
-        ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations"],
-        ["graphics.instance.update"] = ["target", "sourceId", "fields", "style", "animations"],
+        ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding"],
+        ["graphics.instance.update"] = ["target", "sourceId", "fields", "style", "animations", "binding"],
         ["graphics.instance.cue"] = [], ["graphics.instance.trigger"] = ["action"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"]
     };
@@ -88,7 +88,7 @@ public static class GraphicsCommandRequest
             {
                 if (!names.Add(property.Name) || (!Common.Contains(property.Name) && !specific.Contains(property.Name, StringComparer.Ordinal)))
                 { error = "unsupported-or-duplicate-request-field"; return false; }
-                if (property.Name is "fields" or "style" or "animations") continue;
+                if (property.Name is "fields" or "style" or "animations" or "binding") continue;
                 if (property.Name is "schemaVersion" or "expectedRevision" or "templateVersion")
                 {
                     if (!Integer(property.Value, 0)) return false;
@@ -108,6 +108,25 @@ public static class GraphicsCommandRequest
             if (action == "graphics.instance.update" && Text(body, "target") is not ("cue" or "program")) return false;
             if (action == "graphics.instance.trigger" && Text(body, "action") is not ("show" or "hide" or "clear")) return false;
             if (action == "graphics.program.clear" && Text(body, "channel") != "all") return false;
+            if (body.TryGetProperty("binding", out var binding))
+            {
+                if (binding.ValueKind == JsonValueKind.Null)
+                {
+                    if (Text(body, "sourceId").Length != 0) return false;
+                }
+                else
+                {
+                    if (!SourceInstanceIdentityContract.Validate(binding)) { error = "invalid-source-binding"; return false; }
+                    var bindingNames = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var value in binding.EnumerateObject())
+                        if (!bindingNames.Add(value.Name) || value.Name is not ("sourceId" or "instanceId" or "processEpoch" or "generation") ||
+                            (value.Value.ValueKind == JsonValueKind.String && Encoding.UTF8.GetByteCount(value.Value.GetString()!) > 512)) return false;
+                    if (body.TryGetProperty("sourceId", out _) && Text(body, "sourceId") != Text(binding, "sourceId")) return false;
+                }
+            }
+            else if (body.TryGetProperty("sourceId", out _) && Text(body, "sourceId").Length != 0 &&
+                observed.Instances.FirstOrDefault(i => i.InstanceId == Text(body, "instanceId"))?.Binding?.SourceId != Text(body, "sourceId"))
+            { error = "source-binding-required"; return false; }
             if (body.TryGetProperty("animations", out var animations) && !ValidAnimations(animations)) return false;
             if (body.TryGetProperty("fields", out var fields))
             {

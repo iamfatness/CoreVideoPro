@@ -1,8 +1,10 @@
 #include "graphics/PreparationCache.h"
+#include "graphics/GraphicsResourceBudget.h"
 #include "gtest/gtest.h"
 #include <chrono>
 #include <future>
 #include <stdexcept>
+#include <vector>
 
 using Cache = corevideo::graphics::PreparationCache<int, int, int>;
 namespace {
@@ -50,7 +52,7 @@ TEST(GraphicsPreparationCache, CallerNeverExecutesOrWaitsForBlockedProducer) {
   EXPECT_EQ(1, prepared.load());
 }
 
-TEST(GraphicsPreparationCache, RetiringLeasesStayChargedUntilTheirLastConsumerReleases) {
+TEST(GraphicsPreparationCache, ActiveLeasesStayChargedAndPreventUnsafeEviction) {
   std::atomic<int> prepared{0};
   Cache cache([&](int value) { prepared++; return Cache::Result{std::make_shared<int>(value), 40, ""}; }, 80, 4);
   admit(cache, 1, 10, 60);
@@ -61,6 +63,7 @@ TEST(GraphicsPreparationCache, RetiringLeasesStayChargedUntilTheirLastConsumerRe
   EXPECT_EQ(1, prepared.load());
   EXPECT_EQ(40u, cache.counters().residentBytes);
   EXPECT_EQ(10, *held->asset);
+  EXPECT_TRUE(cache.find(1));
   held.reset();
   admit(cache, 2, 20, 60);
   ASSERT_TRUE(eventually([&] { return bool(cache.find(2)); }));
@@ -256,4 +259,58 @@ TEST(GraphicsPreparationCache, AnotherCueProtectsSharedPreparationFromCancellati
     EXPECT_EQ(1, *cache.find(1)->asset);
     EXPECT_EQ(2, *cache.find(2)->asset);
   }
+}
+
+TEST(GraphicsPreparationCache, TemporaryBudgetRefusalDoesNotPoisonAContentKey) {
+  std::atomic<bool> available{false};
+  Cache cache([&](int value) {
+    if (!available) return Cache::Result{{}, 0, "capacity", true};
+    return Cache::Result{std::make_shared<int>(value), 4, ""};
+  });
+  admit(cache, 1, 10, 8);
+  ASSERT_TRUE(eventually([&] { return cache.counters().pendingBytes == 0; }));
+  EXPECT_FALSE(cache.find(1)); EXPECT_EQ(0u, cache.counters().failed);
+  available = true;
+  admit(cache, 1, 10, 8);
+  ASSERT_TRUE(eventually([&] { return bool(cache.find(1)); }));
+  EXPECT_EQ(10, *cache.find(1)->asset);
+}
+
+TEST(GraphicsResourceBudget, CpuScratchAndProducerSlotReleaseBeforeTheRetainedTextureCharge) {
+  corevideo::graphics::GraphicsResourceBudget budget{80, 120, 2};
+  auto first = budget.tryReserve(40, 60); ASSERT_NE(first, nullptr);
+  auto second = budget.tryReserve(40, 60); ASSERT_NE(second, nullptr);
+  EXPECT_FALSE(budget.tryReserve(1, 1));
+  first->finishPreparation();
+  EXPECT_EQ(40u, budget.counters().cpuBytes);
+  EXPECT_EQ(120u, budget.counters().gpuBytes);
+  EXPECT_EQ(1u, budget.counters().activePreparations);
+  EXPECT_FALSE(budget.tryReserve(1, 1)); // retiring GPU resource still charged
+  EXPECT_EQ(40u, budget.counters().cpuBytes); // failed GPU reservation rolled back
+  first.reset();
+  auto third = budget.tryReserve(40, 60); ASSERT_NE(third, nullptr);
+  second.reset(); third.reset();
+  const auto counters = budget.counters();
+  EXPECT_EQ(0u, counters.cpuBytes); EXPECT_EQ(0u, counters.gpuBytes); EXPECT_EQ(0u, counters.activePreparations);
+  EXPECT_EQ(80u, counters.cpuHighWater); EXPECT_EQ(120u, counters.gpuHighWater);
+  EXPECT_EQ(2u, counters.preparationHighWater); EXPECT_EQ(2u, counters.refused);
+}
+
+TEST(GraphicsResourceBudget, IndependentConcurrentOwnersShareTheSameLimitsAndReleaseEveryReservation) {
+  corevideo::graphics::GraphicsResourceBudget budget{128, 256, 2};
+  std::atomic<int> admitted{0};
+  std::vector<std::thread> owners;
+  for (int owner = 0; owner < 8; ++owner) owners.emplace_back([&] {
+    for (int attempt = 0; attempt < 500; ++attempt) {
+      auto lease = budget.tryReserve(64, 96);
+      if (!lease) { std::this_thread::yield(); continue; }
+      ++admitted; std::this_thread::yield(); lease->finishPreparation();
+    }
+  });
+  for (auto& owner : owners) owner.join();
+  const auto counters = budget.counters();
+  EXPECT_GT(admitted.load(), 0);
+  EXPECT_EQ(0u, counters.cpuBytes); EXPECT_EQ(0u, counters.gpuBytes); EXPECT_EQ(0u, counters.activePreparations);
+  EXPECT_LE(counters.cpuHighWater, 128u); EXPECT_LE(counters.gpuHighWater, 256u);
+  EXPECT_LE(counters.preparationHighWater, 2u);
 }

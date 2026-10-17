@@ -63,6 +63,16 @@ cancels an older pending Show instead of silently changing what that Show would
 air. Hide/Clear cancel pending reveals. Same-value updates do not increment the
 revision or replay the reveal. Revision numbers are not reused after removal.
 
+Ready facts must carry the actual immutable prepared resource. Accepted draft
+and Program revisions retain independent resource leases, so cache pressure or
+an unsuccessful edit cannot evict the raster currently needed by Program.
+Readiness without a resource fails and cancels pending reveals. Content keys
+include a SHA-256 of the accepted content/style/binding (excluding animation),
+the existing scale signature and the device identity. Internal resource handles
+never cross the control API; snapshots expose backend, dimensions and content
+key only. Frame metadata drops preparation leases after the state owner adopts
+them, rather than retaining textures in downstream encoder queues.
+
 The native timeline samples `steady_clock`, not render-call count or shell
 timers. An interrupted transition starts from its sampled opacity/position;
 Show during an exit reverses continuously and repeated Show cannot restart an
@@ -87,6 +97,25 @@ and a 16-entry live/retiring limit; referenced results cannot disappear from
 accounting through eviction. Lookup hits update eviction recency. Failed results
 are sticky until content/device keys change. These are enforced allocation
 model bounds, not measurements of driver overhead or fleet performance.
+
+All D3D11 raster owners additionally share `GraphicsResourceBudget` in the
+native process: 128 MiB modeled CPU pixel allocations, 256 MiB GPU textures,
+and at most two concurrent pixel preparation producers. The worker reserves
+capacity before allocating pixel storage. Image headers are probed once and
+the same WIC frame is retained through conversion; its conversion/destination
+pixel allowance is included. CPU scratch and the producer slot release at
+preparation completion. The GPU charge stays with the texture until its final
+cache/instance/read-completion lease releases. Device replacement therefore
+does not erase charges for the old device. Temporary pressure refuses the job
+without caching a permanent failure; permanently oversized assets fail with
+an explicit reason. This model excludes decoder/library/driver overhead and
+is not a claim about process working-set or VRAM telemetry.
+
+`resourceBudgetAtStatePublication` reports that allocation model, limits,
+high-water counters and refusals when graphics state publishes. It is explicitly
+a publication-time sample, not live driver memory or deadline evidence. Queued
+jobs have bounded metadata and each cache's conservative future-work reservation;
+the shared pixel budget is acquired when a producer starts allocating pixels.
 
 Each private cue uses one preparation slot. A newer admitted edit replaces
 older queued edits for that slot; an already executing producer keeps its
@@ -118,7 +147,6 @@ continuity claim.
 
 ## Subject identity integration boundary
 
-The current `sourceId` filter is insufficient for automatic subject binding.
 The existing Zoom ingest exposes two different lifetimes: `VideoFrame.sourceEpoch`
 changes when width/height or stream incarnation changes, while
 `ZoomEngineParticipant.sourceGeneration` identifies the roster incarnation and
@@ -127,17 +155,26 @@ and `ZoomEngineState`'s roster adoption are the authoritative producers.
 A graphics binding must not treat a resolution upgrade as a different guest,
 nor treat a reused numeric SDK participant ID as the same guest.
 
-The complete integration must carry a generation-qualified source identity from
-that authority through command validation, accepted revisions and the exact
-rendered frame. Helper/meeting process fencing must accompany the participant
-generation. Arbitrary 64-bit pixel epochs must not pass through JSON doubles
-or be substituted for a roster identity. Unsupported or unavailable identities
-must remain explicit; the compatibility filter is not evidence that this gate
-has passed. The native `SourceRegistry` currently registers composed Tiles
-sources; registering a real provider also requires truthful availability and
-subscription observations, not invented defaults.
+`GraphicsSourceCatalog` projects the authoritative Zoom roster and configured
+video frames into a bounded catalog. Bindings carry `sourceId`, `instanceId`,
+string `processEpoch` (core plus Zoom meeting/process epoch) and exact safe
+integer `generation`. The catalog does not invent source availability or
+subscription state, and does not create a second lifecycle registry. Create
+and Update accept this complete `binding`, or explicit null to unbind; a naked
+numeric/source ID is insufficient. Native validation remains authoritative
+when the shell snapshot is stale.
 
-Scene/source-ID filtering is present. Source-generation-qualified bindings,
+Roster reincarnation/session replacement cancels obsolete preparation and
+retires the prior subject's Program label before composition. Resolution-only
+pixel epochs do not revise the binding or overwrite manual text/blank titles.
+Composition requires the exact source generation, an explicit matching camera
+layer selector and actual textured source draw submission in the current pass;
+metadata alone, a slate, or a different routed participant does not qualify.
+This observes draw submission, not receiver continuity. Current source binding
+supports direct Zoom cameras; Tiles and nested scene membership remain to be
+qualified. There is no automatic participant reveal in this slice.
+
+Scene filtering and direct-camera bindings are present. A separate accepted Cue,
 native draft-authoring tap, package loading,
 legacy migration, the operator workspace, other graphic families and automation
 remain requirements of the approved feature. Their absence must not be hidden

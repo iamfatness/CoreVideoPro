@@ -111,6 +111,7 @@ inline int RUN_ALL_TESTS() {
       continue;
     }
     ++executed;
+    std::cout << "[ RUN      ] " << test.suite << "." << test.name << '\n' << std::flush;
     try {
       test.run();
       std::cout << "[  PASSED  ] " << test.suite << "." << test.name << '\n';

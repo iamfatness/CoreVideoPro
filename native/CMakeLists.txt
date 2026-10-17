@@ -904,6 +904,9 @@ if(BUILD_TESTING)
   else()
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests")
   endif()
+  # A stalled worker/teardown must fail with its last RUN marker, rather than
+  # occupying a CI runner indefinitely. Normal sanitizer runs take ~3 minutes.
+  set_tests_properties(corevideo-native-tests PROPERTIES TIMEOUT 900)
   if(COREVIDEO_WITH_ZOOM)
     set_tests_properties(corevideo-native-tests PROPERTIES ENVIRONMENT "PATH=${COREVIDEO_ZOOM_SDK_ROOT}/bin;$ENV{PATH}")
   endif()
