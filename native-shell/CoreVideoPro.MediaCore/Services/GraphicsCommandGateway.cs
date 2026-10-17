@@ -57,7 +57,8 @@ public static class GraphicsCommandRequest
         ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding"],
         ["graphics.instance.update"] = ["target", "sourceId", "fields", "style", "animations", "binding"],
         ["graphics.instance.cue"] = [], ["graphics.instance.trigger"] = ["action", "target"],
-        ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"]
+        ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"],
+        ["graphics.template.install"] = ["manifest"], ["graphics.template.list"] = []
     };
     private static readonly HashSet<string> Common = new(StringComparer.Ordinal)
         { "schemaVersion", "requestId", "clientId", "coreEpoch", "instanceId", "expectedRevision" };
@@ -74,7 +75,8 @@ public static class GraphicsCommandRequest
     {
         command = null; requestId = ""; error = "invalid-graphics-request";
         if (!Parameters.TryGetValue(action, out var specific)) { error = "unsupported-graphics-action"; return false; }
-        if (request.Length > 32768 || Encoding.UTF8.GetByteCount(request) > 32768) return false;
+        var limit = action == "graphics.template.install" ? 2 * 1024 * 1024 : 32768;
+        if (request.Length > limit || Encoding.UTF8.GetByteCount(request) > limit) return false;
         try
         {
             using var document = JsonDocument.Parse(request, new JsonDocumentOptions { MaxDepth = 4 });
@@ -89,6 +91,12 @@ public static class GraphicsCommandRequest
                 if (!names.Add(property.Name) || (!Common.Contains(property.Name) && !specific.Contains(property.Name, StringComparer.Ordinal)))
                 { error = "unsupported-or-duplicate-request-field"; return false; }
                 if (property.Name is "fields" or "style" or "animations" or "binding") continue;
+                if (property.Name == "manifest")
+                {
+                    if (property.Value.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(property.Value.GetString()) ||
+                        Encoding.UTF8.GetByteCount(property.Value.GetString()!) > 256 * 1024) return false;
+                    continue;
+                }
                 if (property.Name is "schemaVersion" or "expectedRevision" or "templateVersion")
                 {
                     if (!Integer(property.Value, 0)) return false;
@@ -96,12 +104,15 @@ public static class GraphicsCommandRequest
                 else if (property.Value.ValueKind != JsonValueKind.String || Encoding.UTF8.GetByteCount(property.Value.GetString()!) > 256)
                     return false;
             }
-            if (action != "graphics.program.clear" && (!body.TryGetProperty("instanceId", out var instanceId) || !Id(instanceId.GetString()!))) return false;
-            if (action is not ("graphics.instance.create" or "graphics.program.clear") &&
+            var libraryAction = action.StartsWith("graphics.template.", StringComparison.Ordinal);
+            if (action == "graphics.template.install" && !body.TryGetProperty("manifest", out _)) return false;
+            if (!libraryAction && action != "graphics.program.clear" && (!body.TryGetProperty("instanceId", out var instanceId) || !Id(instanceId.GetString()!))) return false;
+            if (!libraryAction && action is not ("graphics.instance.create" or "graphics.program.clear") &&
                 (!body.TryGetProperty("expectedRevision", out var revision) || !Integer(revision, 1))) return false;
             if (action == "graphics.instance.create")
             {
-                if (Number(body, "templateVersion") != 1 || !Template(Text(body, "templateId"))) return false;
+                if (!(Template(Text(body, "templateId")) && Number(body, "templateVersion") == 1) &&
+                    !observed.Templates.Any(t => t.TemplateId == Text(body, "templateId") && t.TemplateVersion == Number(body, "templateVersion") && t.Runtime == "declarative")) return false;
                 var scope = Text(body, "scope"); var scene = Text(body, "sceneId");
                 if ((scope != "global" && scope != "scene") || (scope == "scene" && scene.Length == 0) || (scope == "global" && scene.Length != 0)) return false;
             }
@@ -133,15 +144,29 @@ public static class GraphicsCommandRequest
             if (body.TryGetProperty("fields", out var fields))
             {
                 if (fields.ValueKind != JsonValueKind.Object) return false;
+                var instance = observed.Instances.FirstOrDefault(i => i.InstanceId == Text(body, "instanceId"));
+                var template = observed.Templates.FirstOrDefault(t => t.TemplateId ==
+                    (action == "graphics.instance.create" ? Text(body, "templateId") : instance?.TemplateId) &&
+                    t.TemplateVersion == (action == "graphics.instance.create" ? Number(body, "templateVersion") : instance?.TemplateVersion));
                 var fieldNames = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var field in fields.EnumerateObject())
-                    if (!fieldNames.Add(field.Name) || field.Value.ValueKind != JsonValueKind.String ||
-                        field.Name is not ("name" or "title") || Encoding.UTF8.GetByteCount(field.Value.GetString()!) > (field.Name == "name" ? 256 : 512))
-                        return false;
+                {
+                    if (!fieldNames.Add(field.Name)) return false;
+                    if (template?.Runtime == "declarative")
+                    {
+                        var descriptor = template.Fields.FirstOrDefault(f => f.Id == field.Name);
+                        if (descriptor is null || !ValidField(field.Value, descriptor)) return false;
+                    }
+                    else if (field.Value.ValueKind != JsonValueKind.String || field.Name is not ("name" or "title") ||
+                        Encoding.UTF8.GetByteCount(field.Value.GetString()!) > (field.Name == "name" ? 256 : 512)) return false;
+                }
             }
             if (body.TryGetProperty("style", out var style))
             {
                 if (style.ValueKind != JsonValueKind.Object) return false;
+                var templateId = action == "graphics.instance.create" ? Text(body, "templateId") :
+                    observed.Instances.FirstOrDefault(i => i.InstanceId == Text(body, "instanceId"))?.TemplateId;
+                var declarative = observed.Templates.Any(t => t.TemplateId == templateId && t.Runtime == "declarative");
                 var current = observed.Instances.FirstOrDefault(i => i.InstanceId == Text(body, "instanceId"))?.Style
                     ?? LowerThirdAppearance.FromPreset(Text(body, "templateId"));
                 var merged = JsonSerializer.SerializeToElement(current, JsonOptions).EnumerateObject()
@@ -150,6 +175,8 @@ public static class GraphicsCommandRequest
                 foreach (var value in style.EnumerateObject())
                 {
                     if (!styleNames.Add(value.Name)) return false;
+                    if (declarative && value.Name is not ("version" or "anchor" or "fontFamily" or "nameColor" or "titleColor" or
+                        "backgroundColor" or "accentColor" or "backgroundOpacity" or "safeOffsetX" or "safeOffsetY")) return false;
                     if (StyleStrings.Contains(value.Name)) { if (value.Value.ValueKind != JsonValueKind.String) return false; }
                     else if (StyleNumbers.Contains(value.Name)) { if (!value.Value.TryGetDouble(out var number) || !double.IsFinite(number)) return false; }
                     else if (value.Name == "showLogo") { if (value.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return false; }
@@ -171,6 +198,21 @@ public static class GraphicsCommandRequest
     }
 
     private static string Text(JsonElement value, string key) => value.TryGetProperty(key, out var item) && item.ValueKind == JsonValueKind.String ? item.GetString()! : "";
+    private static bool ValidField(JsonElement value, NativeGraphicsTemplateField field)
+    {
+        if (field.Choices.Count != 0 && !field.Choices.Any(choice => JsonElement.DeepEquals(value, choice))) return false;
+        return field.Type switch
+        {
+            "string" => value.ValueKind == JsonValueKind.String && Encoding.UTF8.GetByteCount(value.GetString()!) <= (field.MaxLength ?? 512),
+            "color" => value.ValueKind == JsonValueKind.String && value.GetString() is { } color &&
+                color.Length is 7 or 9 && color[0] == '#' && color.AsSpan(1).IndexOfAnyExcept("0123456789abcdefABCDEF") < 0,
+            "image" => value.ValueKind == JsonValueKind.String && (value.GetString() == "" || Id(value.GetString()!)),
+            "number" => value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number) && double.IsFinite(number) &&
+                number >= (field.Minimum ?? -1e9) && number <= (field.Maximum ?? 1e9),
+            "boolean" => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
+            _ => false
+        };
+    }
     private static bool ValidAnimations(JsonElement animations)
     {
         if (animations.ValueKind != JsonValueKind.Object) return false;

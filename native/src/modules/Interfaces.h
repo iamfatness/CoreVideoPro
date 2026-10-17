@@ -22,6 +22,7 @@
 #include <unordered_set>
 #include <vector>
 
+namespace corevideo::graphics { struct GraphicsTemplateInput; }
 namespace corevideo::modules {
 class CpuSourcePreparation;
 
@@ -456,6 +457,7 @@ struct CompositorOverlayContent {
   std::string fontFamily = "Inter";
   std::array<uint8_t, 32> graphicsContentHash{};
   bool hasGraphicsContentHash = false;
+  std::shared_ptr<const graphics::GraphicsTemplateInput> graphicsTemplate;
 };
 
 // Canvas-pixel Tiles decoration; disabled for every ordinary scene layer.

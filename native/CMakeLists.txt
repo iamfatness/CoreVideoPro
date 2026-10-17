@@ -100,6 +100,8 @@ add_library(corevideo_native
   src/core/DeliveryTrace.cpp
   src/core/LockHoldGuardrail.cpp
   src/graphics/GraphicsInstances.cpp
+  src/graphics/GraphicsTemplate.cpp
+  src/graphics/GraphicsTemplateRegistry.cpp
   src/core/MediaCore.cpp
   src/core/CoreStateCapture.cpp
   src/core/ComApartmentLifetime.cpp
@@ -714,6 +716,7 @@ if(BUILD_TESTING)
     tests/TestMain.cpp
     tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp
+    tests/GraphicsTemplateTest.cpp
     tests/GraphicsRpcPixelTest.cpp
     tests/DeliveryTraceTest.cpp
     tests/RenderWorkDistributionTest.cpp
@@ -900,6 +903,8 @@ if(BUILD_TESTING)
   add_executable(corevideo-graphics-tests EXCLUDE_FROM_ALL
     tests/TestMain.cpp tests/GraphicsPreparationCacheTest.cpp
     tests/GraphicsInstancesTest.cpp tests/GraphicsRpcPixelTest.cpp
+    tests/GraphicsTemplateTest.cpp
+    tests/GradePreviewTest.cpp tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp tests/OverlayTileRasterTest.cpp tests/ContractParityTest.cpp)
   target_link_libraries(corevideo-graphics-tests PRIVATE corevideo_native)
   target_compile_definitions(corevideo-graphics-tests PRIVATE

@@ -165,6 +165,66 @@ CompositorOverlayRaster::CompositorOverlayRaster()
              }, 64) {}
 CompositorOverlayRaster::~CompositorOverlayRaster() = default;
 
+bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
+    const graphics::GraphicsDrawing& drawing, int height) {
+  ComPtrLite<IDWriteFontCollection> fonts;
+  if (FAILED(dwriteFactory_->GetSystemFontCollection(fonts.put())) || !fonts) return false;
+  const float scale = float(height / drawing.height);
+  target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
+  bool complete = true;
+  for (const auto& p : drawing.primitives) {
+    const auto& b = p.box; const auto& c = p.clip;
+    target->PushAxisAlignedClip(D2D1::RectF(float(c.x), float(c.y), float(c.x + c.width), float(c.y + c.height)), D2D1_ANTIALIAS_MODE_ALIASED);
+    ComPtrLite<ID2D1SolidColorBrush> solid;
+    ComPtrLite<ID2D1LinearGradientBrush> gradient;
+    ID2D1Brush* brush = nullptr;
+    if (p.gradient) {
+      const D2D1_GRADIENT_STOP stops[] = {{0.f, d2dColorFromArgb(p.color)}, {1.f, d2dColorFromArgb(p.endColor)}};
+      ComPtrLite<ID2D1GradientStopCollection> collection;
+      if (SUCCEEDED(target->CreateGradientStopCollection(stops, 2, collection.put())) &&
+          SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(
+              D2D1::Point2F(float(b.x), float(b.y)), D2D1::Point2F(float(b.x + (p.verticalGradient ? 0 : b.width)),
+              float(b.y + (p.verticalGradient ? b.height : 0)))), collection.get(), gradient.put()))) brush = gradient.get();
+    } else if (SUCCEEDED(target->CreateSolidColorBrush(d2dColorFromArgb(p.color), solid.put()))) brush = solid.get();
+    if (!brush) complete = false;
+    else {
+      brush->SetOpacity(float(p.opacity));
+      if (p.type == "rect") target->FillRoundedRectangle(D2D1::RoundedRect(
+          D2D1::RectF(float(b.x), float(b.y), float(b.x + b.width), float(b.y + b.height)), float(p.cornerRadius), float(p.cornerRadius)), brush);
+      else if (p.type == "text" && !p.text.empty()) {
+        const auto family = widenUtf8(p.font), text = widenUtf8(p.text);
+        UINT32 fontIndex = 0; BOOL exists = FALSE;
+        ComPtrLite<IDWriteTextFormat> format;
+        ComPtrLite<IDWriteTextLayout> layout;
+        const bool ready = SUCCEEDED(fonts->FindFamilyName(family.c_str(), &fontIndex, &exists)) && exists &&
+            SUCCEEDED(dwriteFactory_->CreateTextFormat(family.c_str(), fonts.get(), DWRITE_FONT_WEIGHT(p.fontWeight),
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, float(p.fontSize), L"", format.put()));
+        if (!ready) { complete = false; workerWarning_ = "Requested graphics font is unavailable: " + p.font; }
+        else {
+          bool textReady = SUCCEEDED(format->SetTextAlignment(p.align == "center" ? DWRITE_TEXT_ALIGNMENT_CENTER : p.align == "right" ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING)) &&
+              SUCCEEDED(format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)) &&
+              SUCCEEDED(format->SetWordWrapping(p.overflow == "wrap-then-ellipsis" ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP));
+          const float lineHeight = float(p.fontSize * p.lineHeight);
+          textReady = textReady && SUCCEEDED(dwriteFactory_->CreateTextLayout(text.c_str(), UINT32(text.size()), format.get(),
+              float(b.width), float(std::min(b.height, double(lineHeight) * p.maxLines)), layout.put()));
+          if (textReady) {
+            ComPtrLite<IDWriteInlineObject> ellipsis;
+            DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+            textReady = SUCCEEDED(layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lineHeight, float(p.fontSize * .8))) &&
+                SUCCEEDED(dwriteFactory_->CreateEllipsisTrimmingSign(format.get(), ellipsis.put())) &&
+                SUCCEEDED(layout->SetTrimming(&trim, ellipsis.get()));
+          }
+          if (textReady) target->DrawTextLayout(D2D1::Point2F(float(b.x), float(b.y)), layout.get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+          else complete = false;
+        }
+      }
+    }
+    target->PopAxisAlignedClip();
+  }
+  target->SetTransform(D2D1::Matrix3x2F::Identity());
+  return complete;
+}
+
 ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     ID3D11Device* device, ID3D11DeviceContext*, const CompositorOverlayContent& overlay,
     const compositor::LayerRect& rect, int targetWidth, int targetHeight,
@@ -252,6 +312,12 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   if (!apartment.initialized() || !ensureOverlayRasterFactories() || !wicFactory_) {
     return {{}, 0, "Native graphics preparation unavailable."};
   }
+  graphics::GraphicsDrawing drawing;
+  if (overlay.graphicsTemplate) {
+    std::string error;
+    if (!overlay.graphicsTemplate->definition->resolve(overlay.graphicsTemplate->fields,
+        overlay.graphicsTemplate->brand, drawing, error)) return {{}, 0, error};
+  }
   auto layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
   const auto imageInput = layout.hasImage ? openOverlayImage(overlay.imageUri) : ImageInput{};
   const auto textureBytes = uint64_t(widthPx) * heightPx * 4;
@@ -277,7 +343,7 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   // (rasterizeOverlayTileBgra) place identical content — preview and program
   // agree by construction. The band background is NOT painted here (it stays
   // a separate quad so its alpha animation matches the CPU mirror).
-  if (overlay.appearance.enabled) {
+  if (!overlay.graphicsTemplate && overlay.appearance.enabled) {
     ComPtrLite<IDWriteFontCollection> fonts;BOOL exists=FALSE;UINT32 index=0;
     const auto family=widenUtf8(layout.fontFamily);
     const bool resolved = SUCCEEDED(dwriteFactory_->GetSystemFontCollection(fonts.put())) && fonts &&
@@ -292,6 +358,9 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   d2dTarget->BeginDraw();
   d2dTarget->Clear(D2D1::ColorF(0.f, 0.f, 0.f, 0.f));
   bool resourcesComplete = true;
+  if (overlay.graphicsTemplate) {
+    resourcesComplete = drawTemplate(d2dTarget.get(), drawing, heightPx);
+  } else {
   ComPtrLite<ID2D1RoundedRectangleGeometry> rounded;
   bool clipped=false;
   if (overlay.appearance.enabled && !overlay.isCaption) {
@@ -351,10 +420,11 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   }
 
   if (clipped) d2dTarget->PopLayer();
+  }
   const HRESULT endDrawResult = d2dTarget->EndDraw();
   if (FAILED(endDrawResult)) return {{}, 0, "Graphics rasterization failed."};
   if (request.strictResources && !resourcesComplete)
-    return {{}, 0, "Graphics resources could not be prepared completely."};
+    return {{}, 0, workerWarning_.empty() ? "Graphics resources could not be prepared completely." : workerWarning_};
   WICRect lockRect{0, 0, widthPx, heightPx};
   ComPtrLite<IWICBitmapLock> pixels;
   UINT stride = 0, length = 0; BYTE* data = nullptr;

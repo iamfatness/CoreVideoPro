@@ -1,4 +1,4 @@
-# Native graphics compatibility instances
+# Native graphics templates and instances
 
 Implementation reference for the first native consumer in #926. This is a
 technical slice of the approved [Volt specification](volt-graphics-spec.md),
@@ -13,15 +13,16 @@ feeds back native preparation/draw facts. It copies the published immutable JSON
 lease into `CoreStateCapture`; it does not assemble a graphics tree for every
 snapshot under the core mutex.
 
-Six native commands exist: `graphics-instance-create`, `graphics-instance-update`,
+Eight native commands exist: `graphics-instance-create`, `graphics-instance-update`,
 `graphics-instance-cue`, `graphics-instance-trigger`, `graphics-instance-remove`
-and `graphics-program-clear`. They work as JSON-line requests or entries in the
+`graphics-program-clear`, `graphics-template-install` and `graphics-template-list`. They work as JSON-line requests or entries in the
 existing `media-core-sync` batch. The shell registers the corresponding dotted
 HTTP/OSC actions with one required string argument, `request`, containing the
 JSON request object. `GraphicsCommandGateway` validates bounded shape, epoch,
 styles and fields, limits concurrent sends and checks the native result's
 request ID. It refuses an older/unavailable backend without launching it.
-The new operator workspace remains a separate integration requirement.
+The development workspace uses this same boundary; it does not maintain a second
+on-air state machine.
 
 Each command carries a `graphics` object with `schemaVersion:1`, `requestId`,
 `clientId` and the exact `coreEpoch` observed at `snapshot.graphics.coreEpoch`.
@@ -31,12 +32,69 @@ results are replay-protected per client. Read the correlated `lastResult`;
 the existing envelope/batch acknowledgement does not establish resource readiness
 or display delivery.
 
-Create requires `instanceId`, `templateId`, `templateVersion:1`, `scope` and,
-for scene scope, `sceneId`. The current catalog is the three compatibility
-lower thirds: compact-solid, minimal-accent and broadcast. Fields are `name`
+Create requires `instanceId`, `templateId`, an installed integer `templateVersion`, `scope` and,
+for scene scope, `sceneId`. The three compatibility lower thirds are compact-solid,
+minimal-accent and broadcast, all pinned at version 1. They retain `name`
 and `title`; empty secondary text remains explicitly empty. Style is a validated
 partial patch of the existing `LowerThirdAppearance` contract. Unsupported
 request/style/field keys fail rather than becoming ignored controls.
+
+The additional Corporate lower third uses the declarative loader, ordered native
+rect/text/group layout, typed fields, declared brand tokens, flow collapse,
+clipping, gradients and DirectWrite shaping. `graphics-template-install` takes a
+UTF-8 JSON manifest string of at most 256 KiB. A bounded persistent worker parses,
+validates, hashes and publishes definitions. Admission reports queued; inspect
+`templateInstalls` for installed/failed completion. It never changes an instance.
+Same ID/version with different content is refused. At most two imports are pending,
+16 immutable declarative versions and 256 KiB canonical document bytes are retained;
+the 16-entry result history is bounded. Catalog publication is an immutable lease.
+The catalog includes the exact definition and canonical SHA-256 for lossless
+save/export; shell reconstruction of omitted defaults is not authoritative.
+This is document import, not yet archive/asset import: image primitives, package
+asset validation and archive expansion remain incomplete.
+
+Declarative fields follow advertised types/ranges/choices. The style boundary
+accepts only consumed placement/color/font values; compatibility-only width,
+typography-size, padding and logo controls are not forwarded to these templates.
+The brand adapter supplies the declared color and font vocabulary. A field patch
+has at most 32 values, 4,096 UTF-8 bytes per string and a 32 KiB aggregate bound;
+the transport also bounds the complete non-import request. Required blank fields
+can remain private but cannot be cued or shown.
+
+## Private workspace and durable documents
+
+`GraphicsWorkspaceSession` owns private editing, Original/Edited comparison,
+bounded gesture undo and explicit Cue/Show/Hide/Update/Clear intents. Metadata
+refresh cannot replace a local edit. Show explicitly targets the accepted Cue;
+an on-air update uses the current optimistic draft revision. A core epoch change
+clears selection rather than replaying an old reveal. The WinUI workspace adds
+searchable template/cue lists and adaptive typed fields, shared slider/exact entry,
+color pickers and placement controls. Existing lower-third, caption, brand and
+browser controls remain available in a named section. This development UI is not
+the completed milestone; canvas/layer editing and remaining workflow parity still
+require integration and visual acceptance.
+
+`GraphicsWorkspaceLibrary` saves selected drafts/styles and exact template pins
+through `GraphicsDocumentStore`, separately from production preferences. Saves are
+atomic with backup, invalid-primary recovery, newer-schema read-only protection,
+external-write conflicts and unknown metadata preservation. Neither load nor save
+creates native instances or arms automation. Explicit Restore creates a new hidden
+instance, refuses a mismatched template hash and requires explicit rebinding of a
+saved source-bound cue. Loading a different native core never replays Show.
+The development profile can set `COREVIDEO_GRAPHICS_DOCUMENT_PATH`; the normal
+location is `CoreVideoPro/graphics/default.json` under local application data.
+Legacy authority/source-override migration remains incomplete.
+
+The private canvas reuses the leased isolated native authoring monitor. Its
+`set-grade-preview` demand carries `lowerThirdPreview.graphics` with installed
+template identity, private fields, consumed style and animations; it uses no Cue
+or Program slot. Validation resolves the installed immutable definition. Native
+preparation failure remains explicit; a generated still is not marked as stalled
+live video because its draft revision stays unchanged. Hidden Graphics pages
+release monitor demand, and the legacy designer shares the one authoring slot.
+Independent GPU samples verify native plate changes with unchanged Program pixels
+and untouched instance/Cue state. This is not physical-display or output-continuity
+evidence.
 
 Create/Update also accept an optional `animations` object with `in` and/or `out`
 definitions. Each definition accepts `type:none|fade|slide`,
@@ -170,7 +228,7 @@ Cue observations include accepted/requested revision, pending status, preparatio
 and warning, accepted fields/style/animations/binding and its immutable resource
 description. A late completion after a failed Cue is preparation only; another
 Cue is required before replacing Preview. These facts remain independent of the
-authoring tap, which is not implemented by this command/state slice.
+private authoring tap.
 
 ## Subject identity integration boundary
 
@@ -202,9 +260,8 @@ supports direct Zoom cameras; Tiles and nested scene membership remain to be
 qualified. There is no automatic participant reveal in this slice.
 
 Scene filtering, direct-camera bindings and independent accepted Cue are present.
-A native draft-authoring tap, package loading,
-legacy migration, the operator workspace, other graphic families and automation
-remain requirements of the approved feature. Their absence must not be hidden
+Archive/assets, complete legacy migration and workspace parity, other graphic
+families and automation remain requirements of the approved feature. Their absence must not be hidden
 by the compatibility instance capability. Metal does not announce this instance
 capability yet. No installed app/profile/camera ownership changes are part of
 this isolated development path.

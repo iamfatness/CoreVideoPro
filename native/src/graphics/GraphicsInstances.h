@@ -4,6 +4,7 @@
 #include "rpc/Json.h"
 #include "graphics/GraphicsTimeline.h"
 #include "graphics/GraphicsSourceCatalog.h"
+#include "graphics/GraphicsTemplateRegistry.h"
 #include <functional>
 #include <map>
 #include <deque>
@@ -11,6 +12,7 @@
 #include <string>
 
 namespace corevideo::graphics {
+class GraphicsTemplate;
 
 // Serialized by the core control owner. Render plans contain values/immutable
 // revisions only; raster workers never mutate this state. Compatibility looks
@@ -26,6 +28,8 @@ class GraphicsInstances {
                           const std::vector<modules::VideoFrame>& frames = {});
   const rpc::Json& snapshot() const { return snapshot_; }
   bool hasCue() const;
+  // Private monitor input, not an instance mutation, cue or Program revision.
+  std::optional<modules::CompositorOverlayContent> authoringPreview(const rpc::Json& draft);
 
  private:
   struct Revision {
@@ -35,6 +39,10 @@ class GraphicsInstances {
     GraphicsTransition entrance, exit;
     std::optional<contracts::SourceInstanceIdentity> binding;
     std::array<uint8_t, 32> contentHash{};
+    std::shared_ptr<const GraphicsTemplate> definition;
+    std::shared_ptr<const GraphicsTemplateInput> templateInput;
+    rpc::Json templateFields;
+    bool fieldsReady = false;
   };
   struct Instance {
     std::string id, templateId, scope, sceneId;
@@ -52,10 +60,11 @@ class GraphicsInstances {
   static bool validId(const std::string& value);
   static bool readRevision(const rpc::Json& request, Revision& revision);
   static void hashRevision(const std::string& templateId, Revision& revision);
-  modules::CompositorRenderPlanLayer layer(const Instance&, const Revision&) const;
+  modules::CompositorRenderPlanLayer layer(const Instance&, const Revision&, int width, int height) const;
   bool finish(const std::string& requestId, bool accepted, const std::string& reason);
   void publish();
   void show(Instance& instance, bool fromCue = false);
+  bool updateTemplates();
   bool advanceAnimations();
   std::function<double()> monotonicMs_;
   std::map<std::string, Instance> instances_;
@@ -65,6 +74,8 @@ class GraphicsInstances {
   std::optional<GraphicsSourceCatalog> sources_;
   uint64_t revisionClock_ = 0;
   rpc::Json lastResult_;
+  GraphicsTemplateRegistry templates_;
+  std::shared_ptr<const GraphicsTemplateRegistry::Publication> templatesPublication_;
   rpc::Json snapshot_ = rpc::Json::Object{{"schemaVersion", 1}, {"instances", rpc::Json::Array{}}};
 };
 }  // namespace corevideo::graphics

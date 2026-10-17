@@ -11019,6 +11019,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyGraphicsAndCaptionStateFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
+        _graphicsWorkspace?.Observe(snapshot.Graphics);
         // A graphic's Enabled flag is the OPERATOR's desired state. It is never written
         // from a snapshot (#757): the old write-back read the active overlays from a
         // render-plan layer list a real core does not publish, so any overlay on air

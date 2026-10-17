@@ -675,6 +675,7 @@ class D3D11Compositor final : public ICompositor {
     for (const auto& demand : request.gradePreviews) {
       GradePreviewSurface observation; observation.demand = demand;
       if (demand.lowerThirdPreview) {
+        overlayRaster_.beginFrame();
         CompositorRenderPlan preview; preview.width=1920; preview.height=1080; preview.skipCpuReadback=true;
         // Native sample canvas deliberately contains no live media. The same
         // cached DirectWrite/WIC raster and composition path serves program.
@@ -683,19 +684,26 @@ class D3D11Compositor final : public ICompositor {
           bg.rect={float(i)/3,0,1.f/3,1}; bg.hasFillColor=true; bg.fillColor=i==0?"#101828":i==1?"#60758C":"#B8C6D4"; preview.layers.push_back(bg);
         }
         CompositorRenderPlanLayer key; key.layerId="appearance-preview"; key.kind="overlay"; key.order=3; key.hasOverlayContent=true; key.overlay=*demand.lowerThirdPreview;
-        const auto& a=key.overlay.appearance; const float h=float((a.nameSize+a.titleSize+a.padding*3)/1080.); const float w=float(std::min(a.width,1.-a.safeOffsetX));
+        const auto& a=key.overlay.appearance;
+        const auto& definition=key.overlay.graphicsTemplate;
+        const float h=definition ? float(definition->definition->height()/1080.) : float((a.nameSize+a.titleSize+a.padding*3)/1080.);
+        const float w=definition ? float(definition->definition->width()/1920.) : float(std::min(a.width,1.-a.safeOffsetX));
+        if (key.overlay.hasGraphicsContentHash) { key.graphicsInstanceId="authoring"; key.graphicsRevision=uint64_t(demand.revision)+1; }
         key.rect={float(a.safeOffsetX),1.f-float(a.safeOffsetY)-h,w,h};
         if (key.overlay.keyPosition.find("upper")!=std::string::npos) key.rect.y=float(a.safeOffsetY);
         if (key.overlay.keyPosition.find("right")!=std::string::npos) key.rect.x=1.f-float(a.safeOffsetX)-w;
         if (!a.enabled) {const auto legacy=compositor::lowerThirdOverlay();key.rect={legacy.x,legacy.y,legacy.width,legacy.height};key.opacity=.92f;}
         preview.layers.push_back(key);
         observation.sourceEpoch=1; observation.sourceFrameId=demand.revision; observation.status="ready";
+        const auto image=renderPreview(preview,{});
+        if (overlayRaster_.failedThisFrame()) { observation.status="unavailable"; observation.reason=overlayRaster_.lastWarning(); }
+        else if (overlayRaster_.pendingThisFrame()) { observation.status="preparing"; observation.reason="awaiting-native-appearance"; }
         appearanceHistory_[request.sequence]=observation;
-        const auto image=renderPreview(preview,{}); const auto stamp=appearanceHistory_.find(image.frameNumber);
+        const auto stamp=appearanceHistory_.find(image.frameNumber);
         if (image.width>0 && stamp!=appearanceHistory_.end() && stamp->second.demand.instanceId==demand.instanceId && stamp->second.demand.revision==demand.revision) {
+          observation=stamp->second;
           observation.texture.sharedHandleHex=image.sharedHandleHex; observation.texture.width=image.width; observation.texture.height=image.height;
           observation.texture.format=image.format; observation.texture.frameNumber=image.frameNumber;
-          observation.reason=overlayRaster_.lastWarning();
         } else { observation.status="preparing"; observation.reason="awaiting-native-appearance"; }
         while (appearanceHistory_.size()>32) appearanceHistory_.erase(appearanceHistory_.begin());
         result.gradePreviews.push_back(std::move(observation)); continue;

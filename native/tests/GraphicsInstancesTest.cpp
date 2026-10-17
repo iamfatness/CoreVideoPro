@@ -17,6 +17,31 @@ Json request(const std::string& type, Json::Object fields = {}) {
   if (!fields.count("expectedRevision")) fields["expectedRevision"] = 1;
   return Json::Object{{"type", type}, {"graphics", std::move(fields)}};
 }
+
+TEST(GraphicsInstances, AuthoringPreviewUsesInstalledDefinitionWithoutCreatingOrCuingAnInstance) {
+  GraphicsInstances state{"test-core"};
+  const auto before = state.snapshot().stringify();
+  const auto draft = Json::Object{{"templateId", "corporate-lower-third"}, {"templateVersion", 1},
+      {"fields", Json::Object{{"name", "Private Unicode — 日本語"}, {"title", ""}}}};
+  const auto content = state.authoringPreview(draft);
+  ASSERT_TRUE(content.has_value()); ASSERT_NE(content->graphicsTemplate, nullptr);
+  EXPECT_TRUE(content->hasGraphicsContentHash);
+  EXPECT_EQ(before, state.snapshot().stringify());
+  EXPECT_FALSE(state.hasCue());
+  auto invalid = draft; invalid["templateVersion"] = 2; EXPECT_FALSE(state.authoringPreview(invalid));
+  invalid = draft; invalid["style"] = Json::Object{{"width", .8}}; EXPECT_FALSE(state.authoringPreview(invalid));
+}
+
+TEST(GraphicsInstances, TypedExactEntryScientificNumbersReachTheNativeCommandWithoutWireLoss) {
+  GraphicsInstances state{"test-core"};
+  const auto command = Json::parse(R"({"type":"graphics-instance-create","graphics":{"schemaVersion":1e0,
+    "requestId":"scientific-entry","clientId":"operator","coreEpoch":"test-core","instanceId":"small-offset",
+    "templateId":"compact-solid","templateVersion":1E+0,"scope":"global","fields":{"name":"Guest"},"style":{"safeOffsetX":1E-5}}})");
+  ASSERT_TRUE(command.has_value()); ASSERT_TRUE(state.apply(*command));
+  const auto& instance = state.snapshot().get("instances")->asArray().front();
+  EXPECT_NEAR(1e-5, instance.get("style")->getNumber("safeOffsetX"), 1e-12);
+  for (const auto* bad : {"1e", "1e+", "1E-", "1e999"}) EXPECT_FALSE(Json::parse(bad));
+}
 bool create(GraphicsInstances& state) {
   return state.apply(request("graphics-instance-create", {
       {"templateId", "compact-solid"}, {"templateVersion", 1}, {"scope", "global"},
@@ -614,4 +639,22 @@ TEST(GraphicsInstances, RetiringAnOldSubjectCannotCancelAnExplicitPendingCueForA
   ready(state, 2);
   EXPECT_EQ(2., row(state).getNumber("cueRevision"));
   EXPECT_EQ("zoom:55", row(state).get("cueBinding")->getString("sourceId"));
+}
+
+TEST(GraphicsInstances, DeclarativeDefinitionIsPinnedAndCannotAcceptUnconsumedStyleProperties) {
+  GraphicsInstances state{"test-core"};
+  ASSERT_TRUE(state.apply(request("graphics-instance-create", {{"templateId", "corporate-lower-third"}, {"templateVersion", 1},
+      {"scope", "global"}, {"fields", Json::Object{{"name", "Guest"}, {"title", ""}}}})));
+  ASSERT_EQ(4u, state.snapshot().get("templates")->asArray().size());
+  EXPECT_EQ(64u, state.snapshot().get("templates")->asArray().back().getString("manifestHash").size());
+  EXPECT_EQ("slide", row(state).get("animations")->get("in")->getString("type"));
+  EXPECT_EQ(400., row(state).get("animations")->get("in")->getNumber("durationMs"));
+  EXPECT_FALSE(state.apply(request("graphics-instance-update", {{"target", "cue"}, {"style", Json::Object{{"width", .7}}}})));
+  EXPECT_EQ(1., row(state).getNumber("revision"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue")));
+  CompositorRenderPlan plan; plan.width = 320; plan.height = 180; state.append(plan, false);
+  ASSERT_EQ(1u, plan.graphicsPreparations.size());
+  EXPECT_TRUE(plan.graphicsPreparations.front().overlay.graphicsTemplate != nullptr);
+  EXPECT_TRUE(std::abs(plan.graphicsPreparations.front().rect.width - 1050. / 1920) < .0001);
+  EXPECT_TRUE(std::abs(plan.graphicsPreparations.front().rect.height - 176. / 1080) < .0001);
 }

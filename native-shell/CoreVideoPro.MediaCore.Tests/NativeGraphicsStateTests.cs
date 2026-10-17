@@ -7,6 +7,27 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class NativeGraphicsStateTests
 {
     [Fact]
+    public void NativeTemplateCatalogRetainsTypedFieldsLayersAndAdditiveMetadata()
+    {
+        using var response = JsonDocument.Parse("""
+            {"ok":true,"snapshot":{"health":null,"profile":null,"graphics":{
+              "schemaVersion":1,"coreEpoch":"test-core","instances":[],"templates":[{
+                "schemaVersion":1,"templateId":"corporate-lower-third","templateVersion":1,"name":"Corporate",
+                "family":"lower-third","runtime":"declarative","manifestHash":"content-hash",
+                "canvas":{"width":1920,"height":1080},"bounds":{"width":1050,"height":176},
+                "fields":[{"id":"name","type":"string","default":"","required":true,"bindable":true,"maxLength":256}],
+                "layers":[{"id":"plate","type":"rect"}],"brandTokens":["brand.primary"],
+                "animations":{"in":{"type":"slide","durationMs":400}},"metadata":{"publisher":"Example"}}]}}}
+            """);
+        var wire = CoreProtocolParser.TryParseWireState(response); Assert.NotNull(wire);
+        var template = Assert.Single(NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(0, 0, wire).Graphics!.Templates);
+        Assert.Equal("declarative", template.Runtime); Assert.Equal(1050, template.Bounds!.Value.GetProperty("width").GetInt32());
+        var field = Assert.Single(template.Fields); Assert.Equal("", field.Default!.Value.GetString());
+        Assert.True(field.Required); Assert.True(field.Bindable); Assert.Equal(256, field.MaxLength);
+        Assert.Equal("rect", template.Layers!.Value[0].GetProperty("type").GetString());
+        Assert.Equal("Example", template.ExtensionData!["metadata"].GetProperty("publisher").GetString());
+    }
+    [Fact]
     public void DraftAcceptedCuePendingCueAndProgramStayDistinctAcrossTheActualWireMapper()
     {
         using var response = JsonDocument.Parse("""

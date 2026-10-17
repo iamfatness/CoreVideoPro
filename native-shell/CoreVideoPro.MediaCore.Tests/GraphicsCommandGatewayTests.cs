@@ -7,6 +7,41 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class GraphicsCommandGatewayTests
 {
+    [Fact]
+    public void DeclarativeTemplateMustBeAdvertisedAndCannotAcceptIgnoredCompatibilitySliders()
+    {
+        var request = Request("\"templateId\":\"corporate-lower-third\",\"templateVersion\":1,\"scope\":\"global\",\"fields\":{\"name\":\"Guest\",\"title\":\"\"}");
+        Assert.False(GraphicsCommandRequest.TryBuild("graphics.instance.create", request, Observed, out _, out _, out _));
+        var advertised = Observed with { Templates = [new() { TemplateId = "corporate-lower-third", TemplateVersion = 1, Runtime = "declarative",
+            Fields = [new() { Id = "name", Type = "string", MaxLength = 256 }, new() { Id = "title", Type = "string" }] }] };
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.instance.create", request, advertised, out var command, out _, out _));
+        Assert.Equal("", command!.ExtensionData!["graphics"].GetProperty("fields").GetProperty("title").GetString());
+        var patch = advertised with { Instances = [new() { InstanceId = "featured", TemplateId = "corporate-lower-third", Revision = 1 }] };
+        Assert.False(GraphicsCommandRequest.TryBuild("graphics.instance.update", Request("\"target\":\"cue\",\"style\":{\"width\":0.7}"), patch, out _, out _, out _));
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.instance.update", Request("\"target\":\"cue\",\"style\":{\"fontFamily\":\"Segoe UI\",\"safeOffsetX\":0.1}"), patch, out _, out _, out _));
+    }
+
+    [Fact]
+    public void ImportsAreBoundedOpaqueNativeWorkAndInstalledVersionsUseTypedFields()
+    {
+        var request = JsonSerializer.Serialize(new { schemaVersion = 1, requestId = "import-one", clientId = "operator",
+            coreEpoch = "test-core", manifest = "{\"schemaVersion\":1}" });
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.template.install", request, Observed, out var install, out _, out _));
+        Assert.Equal("graphics-template-install", install!.Type);
+        Assert.Equal("{\"schemaVersion\":1}", install.ExtensionData!["graphics"].GetProperty("manifest").GetString());
+        Assert.False(GraphicsCommandRequest.TryBuild("graphics.template.install", Request(), Observed, out _, out _, out _));
+        request = JsonSerializer.Serialize(new { schemaVersion = 1, requestId = "large", clientId = "operator",
+            coreEpoch = "test-core", manifest = new string('x', 256 * 1024 + 1) });
+        Assert.False(GraphicsCommandRequest.TryBuild("graphics.template.install", request, Observed, out _, out _, out _));
+        var advertised = Observed with { Templates = [new() { TemplateId = "interview", TemplateVersion = 2, Runtime = "declarative",
+            Fields = [new() { Id = "value", Type = "number", Minimum = 0, Maximum = 100 }, new() { Id = "enabled", Type = "boolean" }] }] };
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.instance.create",
+            Request("\"templateId\":\"interview\",\"templateVersion\":2,\"scope\":\"global\",\"fields\":{\"value\":42,\"enabled\":true}"), advertised, out _, out _, out _));
+        Assert.False(GraphicsCommandRequest.TryBuild("graphics.instance.create",
+            Request("\"templateId\":\"interview\",\"templateVersion\":2,\"scope\":\"global\",\"fields\":{\"value\":101}"), advertised, out _, out _, out _));
+        Assert.False(GraphicsCommandRequest.TryBuild("graphics.instance.create",
+            Request("\"templateId\":\"interview\",\"templateVersion\":3,\"scope\":\"global\""), advertised, out _, out _, out _));
+    }
     private static NativeGraphicsState Observed => new()
     {
         SchemaVersion = 1, CoreEpoch = "test-core",

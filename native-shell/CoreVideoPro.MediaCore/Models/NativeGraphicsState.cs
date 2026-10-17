@@ -1,4 +1,6 @@
 using CoreVideoPro.MediaCore.Contracts;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CoreVideoPro.MediaCore.Models;
 
@@ -12,6 +14,49 @@ public sealed record NativeGraphicsState
     public IReadOnlyList<NativeGraphicsSource> Sources { get; init; } = [];
     public string SourceBindingStatus { get; init; } = "unavailable";
     public NativeGraphicsResourceBudget? ResourceBudgetAtStatePublication { get; init; }
+    public IReadOnlyList<NativeGraphicsTemplate> Templates { get; init; } = [];
+    public IReadOnlyList<NativeGraphicsTemplateInstall> TemplateInstalls { get; init; } = [];
+}
+
+public sealed record NativeGraphicsTemplateInstall
+{
+    public string ClientId { get; init; } = "";
+    public string RequestId { get; init; } = "";
+    public string State { get; init; } = "";
+    public string Reason { get; init; } = "";
+}
+
+public sealed record NativeGraphicsTemplate
+{
+    public int SchemaVersion { get; init; }
+    public string TemplateId { get; init; } = "";
+    public int TemplateVersion { get; init; }
+    public string Name { get; init; } = "";
+    public string Family { get; init; } = "";
+    public string Runtime { get; init; } = "";
+    public string ManifestHash { get; init; } = "";
+    public JsonElement? Definition { get; init; }
+    public JsonElement? Canvas { get; init; }
+    public JsonElement? Bounds { get; init; }
+    public IReadOnlyList<NativeGraphicsTemplateField> Fields { get; init; } = [];
+    public JsonElement? Layers { get; init; }
+    public IReadOnlyList<string> BrandTokens { get; init; } = [];
+    public NativeGraphicsAnimations Animations { get; init; } = new();
+    [JsonExtensionData] public Dictionary<string, JsonElement>? ExtensionData { get; init; }
+}
+
+public sealed record NativeGraphicsTemplateField
+{
+    public string Id { get; init; } = "";
+    public string Type { get; init; } = "";
+    public JsonElement? Default { get; init; }
+    public bool Required { get; init; }
+    public bool Bindable { get; init; }
+    public int? MaxLength { get; init; }
+    public double? Minimum { get; init; }
+    public double? Maximum { get; init; }
+    public IReadOnlyList<JsonElement> Choices { get; init; } = [];
+    [JsonExtensionData] public Dictionary<string, JsonElement>? ExtensionData { get; init; }
 }
 
 /// <summary>Allocation-model counters sampled when native graphics state publishes.
@@ -108,6 +153,7 @@ public sealed record NativeGraphicsFields
 {
     public string Name { get; init; } = "";
     public string Title { get; init; } = "";
+    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalFields { get; init; }
 }
 
 public sealed record NativeGraphicsOperationResult

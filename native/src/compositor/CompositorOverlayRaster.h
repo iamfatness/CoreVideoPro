@@ -33,6 +33,7 @@
 #include "compositor/ComPtrLite.h"
 #include "graphics/PreparationCache.h"
 #include "graphics/GraphicsResourceBudget.h"
+#include "graphics/GraphicsTemplate.h"
 #include "compositor/CompositorLayout.h"
 #include "modules/Interfaces.h"
 
@@ -104,6 +105,7 @@ class CompositorOverlayRaster {
       DWRITE_FONT_WEIGHT weight,
       const D2D1_RECT_F& box,
       const D2D1_COLOR_F& color, float explicitFontSize = 0.f);
+  bool drawTemplate(ID2D1RenderTarget* target, const graphics::GraphicsDrawing& drawing, int height);
 
   // DirectWrite/D2D overlay raster cache: overlayContentSignature (FNV-1a over
   // text/brand/font/size, deliberately excluding animation state) -> rendered

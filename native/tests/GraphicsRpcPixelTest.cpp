@@ -3,6 +3,7 @@
 #include "gtest/gtest.h"
 #include "contracts/Lifecycle.h"
 #include "graphics/GraphicsResourceBudget.h"
+#include "graphics/GraphicsTemplate.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -66,6 +67,65 @@ TEST(GraphicsRpcPixel, CommandsReachCoreStateAndActualProgramPixels) {
   EXPECT_EQ("hidden", cleared.get("graphics")->get("instances")->asArray().front().getString("visibility"));
   ASSERT_NE(cleared.get("programFramePreview"), nullptr);
   EXPECT_NE(pixels, cleared.get("programFramePreview")->getString("bgraBase64"));
+
+  command("graphics-instance-remove", {{"expectedRevision", 1}});
+  auto importedManifest = corevideo::graphics::GraphicsTemplate::corporateLowerThird()->document().asObject();
+  importedManifest["templateId"] = "rpc-imported-lower-third"; importedManifest["templateVersion"] = 2;
+  command("graphics-template-install", {{"manifest", Json(importedManifest).stringify()}});
+  Json installed;
+  const auto importLimit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  do {
+    installed = state();
+    const auto& imports = installed.get("graphics")->get("templateInstalls")->asArray();
+    if (!imports.empty() && imports.back().getString("state") == "installed") break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  } while (std::chrono::steady_clock::now() < importLimit);
+  ASSERT_EQ(5u, installed.get("graphics")->get("templates")->asArray().size());
+  const auto generic = command("graphics-instance-create", {{"templateId", "rpc-imported-lower-third"}, {"templateVersion", 2}, {"scope", "global"},
+      {"fields", Json::Object{{"name", "Corporate native — 日本語"}, {"title", ""}}},
+      {"animations", Json::Object{{"in", Json::Object{{"type", "none"}}}, {"out", Json::Object{{"type", "none"}}}}}});
+  EXPECT_EQ(5u, generic.get("graphics")->get("templates")->asArray().size());
+  EXPECT_EQ(2., generic.get("graphics")->get("instances")->asArray().front().getNumber("templateVersion"));
+  command("graphics-instance-cue", {{"expectedRevision", 2}});
+  const auto cueLimit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  Json cued;
+  while (std::chrono::steady_clock::now() < cueLimit) {
+    cued = state();
+    if (cued.get("graphics")->get("instances")->asArray().front().getNumber("cueRevision") == 2) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ(2., cued.get("graphics")->get("instances")->asArray().front().getNumber("cueRevision"));
+  auto shown = command("graphics-instance-trigger", {{"expectedRevision", 2}, {"target", "cue"}, {"action", "show"}});
+  const auto drawLimit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (shown.get("graphics")->get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame") == 0 &&
+      std::chrono::steady_clock::now() < drawLimit) shown = state();
+  const auto& genericRow = shown.get("graphics")->get("instances")->asArray().front();
+  EXPECT_GT(genericRow.getNumber("firstDrawSubmittedFrame"), 0.);
+  EXPECT_EQ("Corporate native — 日本語", genericRow.get("programFields")->getString("name"));
+  EXPECT_EQ("", genericRow.get("programFields")->getString("title"));
+  EXPECT_NE(cleared.get("programFramePreview")->getString("bgraBase64"), shown.get("programFramePreview")->getString("bgraBase64"));
+  const auto firstGenericPixels = shown.get("programFramePreview")->getString("bgraBase64");
+  auto glyphChange = command("graphics-instance-update", {{"expectedRevision", 2}, {"target", "program"},
+      {"fields", Json::Object{{"name", "Different glyphs — العربية"}}}});
+  const auto glyphLimit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((glyphChange.get("graphics")->get("instances")->asArray().front().getNumber("programRevision") != 3 ||
+      glyphChange.get("graphics")->get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame") == 0) &&
+      std::chrono::steady_clock::now() < glyphLimit) {
+    glyphChange = state(); std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ(3., glyphChange.get("graphics")->get("instances")->asArray().front().getNumber("programRevision"));
+  EXPECT_NE(firstGenericPixels, glyphChange.get("programFramePreview")->getString("bgraBase64")); // text, not just a plate
+  const auto validGlyphPixels = glyphChange.get("programFramePreview")->getString("bgraBase64");
+  auto fontFailure = command("graphics-instance-update", {{"expectedRevision", 3}, {"target", "program"},
+      {"style", Json::Object{{"fontFamily", "Missing Corporate Font 9c2a8f77"}}}});
+  const auto fontLimit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (fontFailure.get("graphics")->get("instances")->asArray().front().getString("preparation") != "failed" &&
+      std::chrono::steady_clock::now() < fontLimit) {
+    fontFailure = state(); std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ("failed", fontFailure.get("graphics")->get("instances")->asArray().front().getString("preparation"));
+  EXPECT_EQ(3., fontFailure.get("graphics")->get("instances")->asArray().front().getNumber("programRevision"));
+  EXPECT_EQ(validGlyphPixels, fontFailure.get("programFramePreview")->getString("bgraBase64"));
 }
 
 TEST(GraphicsCompositionPixel, NativeFadeAndReversalReachActualGpuPixels) {
