@@ -73,6 +73,37 @@ jobs:
             [IO.Compression.ZipFileExtensions]::ExtractToFile($node, (Join-Path $PWD 'artifacts/beta-package/node.exe'))
           } finally { $zip.Dispose() }
           & scripts/alpha/Test-AlphaNodePackaging.ps1 -NodeExe artifacts/beta-package/node.exe
+      - name: Prepare and verify silent-install prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Silent camera setup requires an elevated clean runner.'
+          }
+          $installer = "artifacts/beta-package/CoreVideoPro-Setup-$env:BETA_TAG.exe"
+          $setup = Get-Content ($installer + '.manifest.json') -Raw | ConvertFrom-Json
+          $manifest = Get-Content artifacts/beta-package/build-manifest.json -Raw | ConvertFrom-Json
+          $destination = Join-Path $PWD 'artifacts/beta-prerequisites'
+          New-Item -ItemType Directory $destination -Force | Out-Null
+          # Use the exact Microsoft-signed prerequisite embedded in this asset.
+          & 7z x $installer "-o$destination" '*vc_redist.x64.exe' -r -y
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot extract bundled VC runtime.' }
+          $redist = @(Get-ChildItem $destination -Recurse -File -Filter vc_redist.x64.exe)
+          if ($redist.Count -ne 1) { throw 'Expected exactly one embedded VC runtime.' }
+          if ((Get-FileHash $redist[0].FullName).Hash -ne $setup.vcRedistSha256) { throw 'Embedded runtime hash mismatch.' }
+          $signature = Get-AuthenticodeSignature $redist[0].FullName
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|, )O=Microsoft Corporation(,|$)') {
+            throw 'Bundled VC runtime has no valid Microsoft signature.'
+          }
+          $log = Join-Path $destination 'vc-runtime.log'
+          $process = Start-Process $redist[0].FullName -ArgumentList @('/install','/quiet','/norestart','/log', ('"' + $log + '"')) -WindowStyle Hidden -PassThru -Wait
+          if ($process.ExitCode -notin @(0,3010,1638)) { throw "VC runtime preparation failed: $($process.ExitCode)" }
+          $runtime = Get-ItemProperty 'HKLM:/SOFTWARE/Microsoft/VisualStudio/14.0/VC/Runtimes/x64'
+          $runtime | ConvertTo-Json | Set-Content (Join-Path $destination 'runtime.json')
+          if ($runtime.Installed -ne 1 -or [version]($runtime.Version.TrimStart('v')) -lt [version]$manifest.vcRuntimeVersion) {
+            throw 'Required VC runtime is not installed; installer safety tests would be inconclusive.'
+          }
       - name: Install, probe and uninstall on the clean runner
         shell: pwsh
         run: |
@@ -83,6 +114,8 @@ jobs:
           name: beta-installed-qualification
           path: |
             artifacts/installer-validation/
+            artifacts/beta-prerequisites/*.log
+            artifacts/beta-prerequisites/*.json
             artifacts/beta-package/*.json
             artifacts/beta-package/*.sha256
           retention-days: 14
