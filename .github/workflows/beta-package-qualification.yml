@@ -38,6 +38,8 @@ jobs:
           $release = gh release view $env:BETA_TAG --repo $env:GITHUB_REPOSITORY --json tagName,targetCommitish,isDraft | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $release.targetCommitish -ne $env:BETA_COMMIT -or
               -not $release.isDraft) { throw 'Expected an exact-commit draft release.' }
+          $tagCommit = gh api "repos/$env:GITHUB_REPOSITORY/commits/$env:BETA_TAG" --jq .sha
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $env:BETA_COMMIT) { throw 'Tag target mismatch.' }
           New-Item -ItemType Directory artifacts/beta-package -Force | Out-Null
           gh release download $env:BETA_TAG --repo $env:GITHUB_REPOSITORY --dir artifacts/beta-package
           if ($LASTEXITCODE -ne 0) { throw 'Asset download failed.' }
