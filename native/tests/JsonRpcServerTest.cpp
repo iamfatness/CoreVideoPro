@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <cstdlib>
 
 #include <optional>
 #include <sstream>
@@ -336,6 +337,75 @@ TEST(JsonRpcServer, ParsesLineDelimitedJsonRequests) {
   EXPECT_EQ(health->get("zoom")->get("readiness")->getString("status"), "ready");
   EXPECT_EQ(health->get("zoom")->get("readiness")->getString("mode"), "stub");
   EXPECT_TRUE(health->get("zoom")->get("evidence")->get("synthetic")->asBool());
+}
+
+TEST(JsonRpcServer, WriterStopCannotBeLostBetweenPredicateAndWait) {
+  corevideo::core::MediaCore mediaCore(corevideo::modules::createStubModules());
+  std::atomic<std::condition_variable*> wake{nullptr};
+  std::atomic<bool> arm{false}, paused{false}, reachedRace{false};
+  std::latch beforeWait{1}, releaseWait{1}, stopAttempted{1}, stopPublished{1};
+  const auto await = [](std::latch& signal, std::chrono::milliseconds limit) {
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (!signal.try_wait() && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return signal.try_wait();
+  };
+  corevideo::rpc::JsonRpcServer::WriterWaitTestHooks hooks;
+  hooks.beforeWait = [&](std::condition_variable& cv) {
+    wake.store(&cv);
+    if (arm.load() && !paused.exchange(true)) {
+      // The writer already saw a false predicate and still owns outMx here.
+      beforeWait.count_down();
+      releaseWait.wait();
+    }
+  };
+  hooks.stop = [&](bool published) {
+    if (published) { stopPublished.count_down(); return; }
+    arm.store(true);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!beforeWait.try_wait() && std::chrono::steady_clock::now() < deadline) {
+      if (auto* cv = wake.load()) cv->notify_all();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    reachedRace.store(beforeWait.try_wait());
+    stopAttempted.count_down();
+  };
+  corevideo::rpc::JsonRpcServer server(mediaCore, {}, {}, {}, std::move(hooks));
+  std::istringstream input("{\"id\":\"shutdown-race\",\"type\":\"get-output-health\"}\n");
+  std::ostringstream output;
+  auto run = std::async(std::launch::async, [&] { server.run(input, output); });
+  const bool attempted = await(stopAttempted, std::chrono::seconds(4));
+  // Correct publication must wait for the writer's mutex. With the old code,
+  // stop+notify finish while it is paused and that notification is lost.
+  const bool publishedBeforeWaitReleased = await(stopPublished, std::chrono::milliseconds(250));
+  releaseWait.count_down();
+  const bool exitedWithoutRescue = run.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  if (!exitedWithoutRescue) {
+    // Negative-control builds can report the regression without hanging the
+    // entire native suite. This is diagnostic cleanup, never a passing exit.
+    if (auto* cv = wake.load()) cv->notify_all();
+    if (run.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+      std::fprintf(stderr, "RPC writer shutdown regression could not be rescued.\n");
+      std::abort();
+    }
+  }
+  run.get();
+  EXPECT_TRUE(attempted);
+  EXPECT_TRUE(reachedRace.load());
+  EXPECT_FALSE(publishedBeforeWaitReleased);
+  EXPECT_TRUE(exitedWithoutRescue);
+  std::istringstream lines(output.str());
+  std::string line;
+  bool responseFound = false;
+  while (std::getline(lines, line)) {
+    auto response = corevideo::rpc::Json::parse(line);
+    if (response && response->getString("id") == "shutdown-race") {
+      responseFound = true;
+      EXPECT_TRUE(response->get("ok")->asBool());
+      ASSERT_NE(response->get("health"), nullptr);
+    }
+  }
+  EXPECT_TRUE(responseFound);
 }
 
 TEST(JsonRpcServer, HandlesZoomMediaSpineSyncRequest) {

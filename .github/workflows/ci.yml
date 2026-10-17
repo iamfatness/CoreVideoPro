@@ -298,6 +298,13 @@ jobs:
           dotnet build native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -p:Platform=x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/test-audio-meter-stability.ps1 -Seconds 60 -Report artifacts/test-results/meter-stability.json
+      - name: Retain native test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-test-diagnostics
+          path: native/build/Testing/Temporary/**
+          if-no-files-found: warn
       - name: Upload Windows test results
         if: always()
         uses: actions/upload-artifact@v4
