@@ -59,7 +59,15 @@ jobs:
       - name: Verify packaged payload
         shell: pwsh
         run: |
-          & scripts/alpha/Test-AlphaPackage.ps1 -Archive "artifacts/beta-package/CoreVideoPro-win-x64-$env:BETA_TAG.zip"
+          $archive = "artifacts/beta-package/CoreVideoPro-win-x64-$env:BETA_TAG.zip"
+          & scripts/alpha/Test-AlphaPackage.ps1 -Archive $archive
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $archive))
+          try {
+            $node = $zip.GetEntry('CoreVideoPro-Beta/node/node.exe')
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($node, (Join-Path $PWD 'artifacts/beta-package/node.exe'))
+          } finally { $zip.Dispose() }
+          & scripts/alpha/Test-AlphaNodePackaging.ps1 -NodeExe artifacts/beta-package/node.exe
       - name: Install, probe and uninstall on the clean runner
         shell: pwsh
         run: |

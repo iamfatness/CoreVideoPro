@@ -20,6 +20,12 @@ beta path. Steps:
      The copy in Downloads is too old.
    - `scripts/alpha/Test-AlphaPackage.ps1` and `Test-AlphaInstaller.ps1`, which does a real silent
      install, runs the startup probe, then uninstalls.
+   On a workstation with existing CoreVideo shortcuts, this test deliberately
+   refuses to overwrite them. Upload the six assets to a draft release and run
+   the `Beta package qualification` workflow with its tag and full source SHA.
+   The clean Windows runner verifies tag/manifest/hash identity, exercises the
+   real package validator's negative fixtures, installs, probes and uninstalls
+   those exact assets. Publish only after that job and main CI pass.
 5. **Publish.** `gh release create <tag> --prerelease --target <sha>` with the six assets: the zip,
    the Setup .exe, their `.sha256` files, their manifests, and the top-level manifest.
 

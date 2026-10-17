@@ -14,7 +14,11 @@ $required = @('CoreVideoPro.WinUI.exe','coreclr.dll','hostfxr.dll','Microsoft.UI
     'Assets/AppIcon.ico','README.md','zoom-runtime/windows/x64/lib/sdk.lib','zoom-runtime/windows/x64/h/zoom_sdk.h',
     'zoom-runtime/windows/x64/h/meeting_service_interface.h','zoom-runtime/windows/x64/h/rawdata/zoom_rawdata_api.h',
     'zoom-runtime/windows/x64/h/rawdata/rawdata_renderer_interface.h','zoom-runtime/windows/x64/h/rawdata/rawdata_audio_helper_interface.h',
-    'StartCoreVideo.cmd','Install-MediaRuntime.ps1','msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.dll','vcruntime140_1.dll',
+    'StartCoreVideo.cmd','Install-MediaRuntime.ps1',
+    'corevideo-virtualcam.dll','Install-VirtualCamera.ps1','VirtualCameraRegistration.psm1',
+    'Register-VirtualCamera.cmd','Unregister-VirtualCamera.cmd','Remove-OwnedShortcuts.ps1',
+    'Remove-PreviousInstallations.ps1','PreviousInstallations.psm1',
+    'msvcp140.dll','msvcp140_atomic_wait.dll','vcruntime140.dll','vcruntime140_1.dll',
     'show-engine/dist/host/main.js','show-engine/package.json',"notices/$($pin.license)",'App.xbf','Assets/Fonts/Test.ttf')
 $cases = @(
     @{ name='valid'; error='' },
@@ -45,8 +49,9 @@ try {
             finally { $sha.Dispose() }
             @{path=$_; bytes=$files[$_].Length; sha256=$hash}
         })
-        $files['build-manifest.json'] = $utf8.GetBytes((@{channel='alpha'; framePerformanceAccepted=$false; files=$inventory} | ConvertTo-Json -Depth 6))
-        $archive = Join-Path $testRoot ($case.name + '.zip')
+        $releaseId = 'alpha-2000-01-01-0000000'
+        $files['build-manifest.json'] = $utf8.GetBytes((@{releaseId=$releaseId; channel='alpha'; framePerformanceAccepted=$false; files=$inventory} | ConvertTo-Json -Depth 6))
+        $archive = Join-Path $testRoot ("CoreVideoPro-win-x64-$releaseId.zip")
         $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Create)
         try {
             foreach ($name in $files.Keys) {
