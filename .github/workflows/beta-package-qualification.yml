@@ -1,0 +1,73 @@
+name: Beta package qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      releaseTag:
+        description: Existing draft beta release containing the immutable assets
+        required: true
+        type: string
+      expectedCommit:
+        description: Full main commit SHA used to build the assets
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  installed-windows-beta:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BETA_TAG: ${{ inputs.releaseTag }}
+      BETA_COMMIT: ${{ inputs.expectedCommit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expectedCommit }}
+          persist-credentials: false
+      - name: Verify immutable release identity and asset hashes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BETA_TAG -notmatch '^beta-[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-f0-9]{7}$' -or
+              $env:BETA_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Invalid beta identity.' }
+          if ((git rev-parse HEAD).Trim() -ne $env:BETA_COMMIT) { throw 'Checkout identity mismatch.' }
+          $release = gh release view $env:BETA_TAG --repo $env:GITHUB_REPOSITORY --json tagName,targetCommitish,isDraft | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $release.targetCommitish -ne $env:BETA_COMMIT -or
+              -not $release.isDraft) { throw 'Expected an exact-commit draft release.' }
+          New-Item -ItemType Directory artifacts/beta-package -Force | Out-Null
+          gh release download $env:BETA_TAG --repo $env:GITHUB_REPOSITORY --dir artifacts/beta-package
+          if ($LASTEXITCODE -ne 0) { throw 'Asset download failed.' }
+          $archive = "artifacts/beta-package/CoreVideoPro-win-x64-$env:BETA_TAG.zip"
+          $installer = "artifacts/beta-package/CoreVideoPro-Setup-$env:BETA_TAG.exe"
+          foreach ($asset in @($archive, $installer)) {
+            $expected = ((Get-Content -LiteralPath ($asset + '.sha256') -Raw).Trim() -split '\s+')[0]
+            if ((Get-FileHash -LiteralPath $asset).Hash -ne $expected) { throw "Hash mismatch: $asset" }
+          }
+          $manifest = Get-Content artifacts/beta-package/build-manifest.json -Raw | ConvertFrom-Json
+          $setup = Get-Content ($installer + '.manifest.json') -Raw | ConvertFrom-Json
+          if ($manifest.sourceCommit -ne $env:BETA_COMMIT -or $manifest.releaseId -ne $env:BETA_TAG -or
+              $manifest.framePerformanceAccepted -ne $false -or
+              $setup.applicationCommit -ne $env:BETA_COMMIT -or $setup.packagingCommit -ne $env:BETA_COMMIT -or
+              $setup.archiveSha256 -ne (Get-FileHash $archive).Hash -or
+              $setup.installerSha256 -ne (Get-FileHash $installer).Hash) { throw 'Asset provenance mismatch.' }
+      - name: Verify packaged payload
+        shell: pwsh
+        run: |
+          & scripts/alpha/Test-AlphaPackage.ps1 -Archive "artifacts/beta-package/CoreVideoPro-win-x64-$env:BETA_TAG.zip"
+      - name: Install, probe and uninstall on the clean runner
+        shell: pwsh
+        run: |
+          & scripts/alpha/Test-AlphaInstaller.ps1 -Installer "artifacts/beta-package/CoreVideoPro-Setup-$env:BETA_TAG.exe"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: beta-installed-qualification
+          path: |
+            artifacts/installer-validation/
+            artifacts/beta-package/*.json
+            artifacts/beta-package/*.sha256
+          retention-days: 14
