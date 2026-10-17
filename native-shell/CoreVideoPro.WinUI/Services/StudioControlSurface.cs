@@ -405,6 +405,10 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 _vm.AutomationAutoAssignInputsEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
             case "automation.lowerThirds.set":
+                if(_vm.ManagedLowerThirdAuthority) {
+                    var result=await _vm.ApplyManagedGraphicsAutomationAsync(Bool(args,0));
+                    return result.Accepted?ControlInvokeResult.Success:ControlInvokeResult.Fail(result.Reason);
+                }
                 _vm.AutomationLowerThirdsEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
             case "automation.captions.set":

@@ -21,6 +21,11 @@ Json request(const std::string& type, Json::Object fields = {}) {
   return Json::Object{{"type", type}, {"graphics", std::move(fields)}};
 }
 
+Json armRequest(const GraphicsInstances& state) {
+ const auto* automation=state.snapshot().get("automation");
+ return request("graphics-automation-control",{{"action","arm"},{"mode",automation->getString("mode")},{"expectedAutomationRevision",automation->getNumber("revision")},{"expectedActivationRevision",automation->getNumber("activationRevision")}});
+}
+
 TEST(GraphicsInstances, AuthoringPreviewUsesInstalledDefinitionWithoutCreatingOrCuingAnInstance) {
   GraphicsInstances state{"test-core"};
   const auto before = state.snapshot().stringify();
@@ -855,7 +860,7 @@ TEST(GraphicsInstances, AutomaticRequestsRequireNativeSubjectDrawAndClearCancels
   Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"},{"dwellMs",0}}}}};
   ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
   ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","set-mode"},{"mode","automatic"}})));
-  ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","arm"}})));
+  ASSERT_TRUE(state.apply(armRequest(state)));
   CompositorRenderPlan plan=sourcePlan();state.append(plan,false,sourceFrames());EXPECT_TRUE(plan.observeGraphicsSubjects);
   ProgramFrame frame;frame.frameNumber=1;frame.gpuComposed=true;state.observe(frame);EXPECT_FALSE(row(state).get("showPending")->asBool());
   frame.graphicsFacts.push_back({"source:44",1,"source-draw-submitted",""});state.observe(frame);
@@ -888,4 +893,36 @@ TEST(GraphicsInstances, RackMetadataChangesNativeOrderWithoutRasterRevisionAndIn
  const auto& rows=state.snapshot().get("instances")->asArray();ASSERT_EQ(rows.size(),2u);EXPECT_EQ(rows[0].getString("instanceId"),"second");EXPECT_EQ(rows[1].getString("label"),"Featured guest");EXPECT_EQ(rows[1].getNumber("revision"),1);
  EXPECT_FALSE(state.apply(request("graphics-instance-update",{{"target","cue"},{"label","Invalid change"},{"fields",Json::Object{{"name","Mix"}}}})));
  EXPECT_EQ(state.snapshot().get("instances")->asArray()[1].getString("label"),"Featured guest");
+}
+
+TEST(GraphicsInstances, DelayedArmCannotActivateAChangedRuleConfigurationOrMode) {
+ GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeZoomSources({guest()},7,sourceFrames());
+ Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"}}}}};
+ ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
+ ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","set-mode"},{"mode","automatic"}})));
+ EXPECT_FALSE(state.apply(request("graphics-automation-control",{{"action","arm"},{"expectedAutomationRevision",1},{"expectedActivationRevision",state.snapshot().get("automation")->getNumber("activationRevision")},{"mode","automatic"}})));
+ EXPECT_FALSE(state.apply(request("graphics-automation-control",{{"action","arm"},{"expectedAutomationRevision",2},{"expectedActivationRevision",state.snapshot().get("automation")->getNumber("activationRevision")},{"mode","rehearsal"}})));
+ EXPECT_FALSE(state.snapshot().get("automation")->get("armed")->asBool());
+ ASSERT_TRUE(state.apply(armRequest(state)));
+ EXPECT_TRUE(state.snapshot().get("automation")->get("armed")->asBool());
+}
+
+TEST(GraphicsInstances, ClearRevokesAnUnsentArmIntentEvenWhenConfigurationAndModeStayTheSame) {
+ GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeZoomSources({guest()},7,sourceFrames());
+ Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"}}}}};
+ ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
+ ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","set-mode"},{"mode","automatic"}})));
+ const auto delayed=armRequest(state);ASSERT_TRUE(state.apply(request("graphics-program-clear",{{"channel","all"}})));
+ EXPECT_FALSE(state.apply(delayed));EXPECT_FALSE(state.snapshot().get("automation")->get("armed")->asBool());
+ ASSERT_TRUE(state.apply(armRequest(state)));EXPECT_TRUE(state.snapshot().get("automation")->get("armed")->asBool());
+}
+
+TEST(GraphicsInstances, CompatibilityAutomaticEnableIsAtomicAndClearRevokesItsEarlierIntent) {
+ GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeZoomSources({guest()},7,sourceFrames());
+ Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"}}}}};
+ ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
+ const auto enable=[&] {return request("graphics-automation-control",{{"action","enable-automatic"},{"mode","automatic"},{"expectedAutomationRevision",state.snapshot().get("automation")->getNumber("revision")},{"expectedActivationRevision",state.snapshot().get("automation")->getNumber("activationRevision")}});};
+ const auto delayed=enable();ASSERT_TRUE(state.apply(request("graphics-program-clear",{{"channel","all"}})));
+ EXPECT_FALSE(state.apply(delayed));EXPECT_EQ(state.snapshot().get("automation")->getString("mode"),"manual");
+ ASSERT_TRUE(state.apply(enable()));EXPECT_EQ(state.snapshot().get("automation")->getString("mode"),"automatic");EXPECT_TRUE(state.snapshot().get("automation")->get("armed")->asBool());
 }

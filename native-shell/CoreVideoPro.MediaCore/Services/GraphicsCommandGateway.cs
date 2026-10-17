@@ -72,7 +72,7 @@ public static class GraphicsCommandRequest
 {
     private static readonly IReadOnlyDictionary<string, string[]> Parameters = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
-        ["graphics.automation.configure"] = ["configuration","expectedAutomationRevision"], ["graphics.automation.control"] = ["action","mode"],
+        ["graphics.automation.configure"] = ["configuration","expectedAutomationRevision"], ["graphics.automation.control"] = ["action","mode","expectedAutomationRevision","expectedActivationRevision"],
         ["graphics.authority.set"] = ["family", "authority"],
         ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement", "image"],
         ["graphics.instance.update"] = ["label","rackOrder","templateVersion", "target", "sourceId", "fields", "style", "animations", "binding", "placement", "image"],
@@ -119,7 +119,7 @@ public static class GraphicsCommandRequest
                         Encoding.UTF8.GetByteCount(property.Value.GetString()!) > 256 * 1024) return false;
                     continue;
                 }
-                if (property.Name is "rackOrder" or "schemaVersion" or "expectedRevision" or "expectedClockRevision" or "expectedAutomationRevision" or "templateVersion")
+                if (property.Name is "rackOrder" or "schemaVersion" or "expectedRevision" or "expectedClockRevision" or "expectedAutomationRevision" or "expectedActivationRevision" or "templateVersion")
                 {
                     if (!Integer(property.Value, 0)) return false;
                 }
@@ -127,10 +127,13 @@ public static class GraphicsCommandRequest
                     return false;
             }
             var libraryAction = action.StartsWith("graphics.automation.",StringComparison.Ordinal) || action=="graphics.authority.set" || action.StartsWith("graphics.template.", StringComparison.Ordinal);
+            if(action=="graphics.automation.control" && (Text(body,"action") is "arm" or "enable-automatic") &&
+                (!body.TryGetProperty("expectedAutomationRevision",out var armRevision) || !Integer(armRevision,1) || !body.TryGetProperty("expectedActivationRevision",out var activationRevision) || !Integer(activationRevision,1) || Text(body,"mode") is not ("automatic" or "rehearsal"))) return false;
+            if(action=="graphics.automation.control" && Text(body,"action")=="enable-automatic" && Text(body,"mode")!="automatic") return false;
             if(action=="graphics.automation.configure") {
                 if(!body.TryGetProperty("expectedAutomationRevision",out var ar) || !Integer(ar,1) || !body.TryGetProperty("configuration",out var config) || !ValidAutomationConfiguration(config)) return false;
             }
-            if(action=="graphics.automation.control" && (Text(body,"action") is not ("set-mode" or "arm" or "disarm" or "hold" or "resume" or "hide-automatic") ||
+            if(action=="graphics.automation.control" && (Text(body,"action") is not ("set-mode" or "arm" or "enable-automatic" or "disarm" or "hold" or "resume" or "hide-automatic") ||
                 (Text(body,"action")=="set-mode" && Text(body,"mode") is not ("manual" or "suggest" or "rehearsal" or "automatic")))) return false;
             if(action=="graphics.authority.set" && (Text(body,"family") is not ("lower-third" or "bug") || Text(body,"authority") is not ("legacy" or "instances"))) return false;
             if (action == "graphics.template.install") {

@@ -23,6 +23,8 @@ class GraphicsAutomation {
   bool owns(const std::string& instanceId) const;
   const std::vector<Rule>& rules() const {return rules_;}
   uint64_t revision() const {return revision_;}
+  bool acceptsActivation(uint64_t revision,uint64_t activation) const {return revision==revision_ && activation==activationRevision_;}
+  bool acceptsArming(uint64_t revision,uint64_t activation,const std::string& mode) const {return acceptsActivation(revision,activation) && mode==mode_;}
   std::vector<Decision> tick(const std::vector<Subject>&,const std::string& sceneId,bool sharing,double nowMs);
   void result(const Decision&,bool accepted,const std::string& reason,uint64_t revision,double nowMs);
   void composed(const std::string& instanceId,uint64_t revision,double nowMs);
@@ -40,6 +42,6 @@ class GraphicsAutomation {
   rpc::Json::Array trace_;
   std::string mode_="manual";
   bool armed_=false,inhibited_=false,globalHold_=false;
-  uint64_t revision_=1,sourceEpoch_=0,traceSequence_=0,droppedTrace_=0,suggestionVersion_=0;
+  uint64_t revision_=1,activationRevision_=1,sourceEpoch_=0,traceSequence_=0,droppedTrace_=0,suggestionVersion_=0;
 };
 }

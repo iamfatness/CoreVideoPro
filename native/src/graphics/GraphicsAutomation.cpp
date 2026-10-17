@@ -55,10 +55,16 @@ bool GraphicsAutomation::configure(const Json& config,uint64_t expected,std::str
     if(previous!=rules_.end()) if(const auto state=states_.find(rule.id);state!=states_.end()) retained.emplace(rule.id,state->second);
     if(manualHolds_.count(rule.instanceId)) holds.insert(rule.instanceId);
   }
-  suggestions_.clear();states_=std::move(retained);manualHolds_=std::move(holds);rules_=std::move(rules);sourceTexts_=std::move(texts);armed_=false;++revision_;return true;
+  suggestions_.clear();states_=std::move(retained);manualHolds_=std::move(holds);rules_=std::move(rules);sourceTexts_=std::move(texts);armed_=false;++activationRevision_;++revision_;return true;
 }
 bool GraphicsAutomation::control(const std::string& action,const std::string& mode,const std::string& instanceId,bool available,std::string& error) {
-  if(action=="set-mode") {
+  if(action=="enable-automatic") {
+    if(!available || std::none_of(rules_.begin(),rules_.end(),[](const auto& rule){return rule.enabled;})) {error="graphics-automation-not-qualified";return false;}
+    if(globalHold_ || std::all_of(rules_.begin(),rules_.end(),[&](const auto& rule){return !rule.enabled || manualHolds_.count(rule.instanceId);})) {error="graphics-automation-manual-hold";return false;}
+    if(mode_=="automatic" && armed_ && !inhibited_) {error.clear();return true;}
+    if(mode_!="automatic") for(auto& entry:states_) {entry.second.fired.clear();entry.second.lastFired=-1;}
+    mode_="automatic";armed_=true;inhibited_=false;suggestions_.clear();
+  } else if(action=="set-mode") {
     if(mode!="manual"&&mode!="suggest"&&mode!="rehearsal"&&mode!="automatic") {error="invalid-graphics-automation-mode";return false;}
     if(mode_==mode) {error.clear();return true;}
     mode_=mode;armed_=false;suggestions_.clear();
@@ -75,19 +81,19 @@ bool GraphicsAutomation::control(const std::string& action,const std::string& mo
   else {error="invalid-graphics-automation-action";return false;}
   // A fresh dwell is required after every explicit mode/arming transition.
   for(auto& entry:states_) {entry.second.candidate.clear();entry.second.lastNotice.clear();}
-  error.clear();return true;
+  ++activationRevision_;error.clear();return true;
 }
 void GraphicsAutomation::manual(const std::string& instanceId) {
   if(std::none_of(rules_.begin(),rules_.end(),[&](const auto& rule){return rule.instanceId==instanceId;})) return;
-  forgetSuggestion(instanceId);
+  ++activationRevision_;forgetSuggestion(instanceId);
   if(manualHolds_.size()<8) manualHolds_.insert(instanceId);
   for(const auto& rule:rules_) if(rule.instanceId==instanceId) {auto& state=states_[rule.id];state.owned=false;state.candidate.clear();state.lastNotice.clear();}
 }
 bool GraphicsAutomation::owns(const std::string& id) const {
   for(const auto& rule:rules_) if(rule.instanceId==id) {const auto found=states_.find(rule.id);if(found!=states_.end()&&found->second.owned) return true;}return false;
 }
-void GraphicsAutomation::clear() {suggestions_.clear();armed_=false;inhibited_=true;for(auto& entry:states_) {entry.second.owned=false;entry.second.candidate.clear();entry.second.lastNotice.clear();}}
-void GraphicsAutomation::observeEpoch(uint64_t epoch) {if(sourceEpoch_==epoch) return;const bool reconnect=sourceEpoch_!=0;sourceEpoch_=epoch;if(reconnect) {clear();states_.clear();}}
+void GraphicsAutomation::clear() {++activationRevision_;suggestions_.clear();armed_=false;inhibited_=true;for(auto& entry:states_) {entry.second.owned=false;entry.second.candidate.clear();entry.second.lastNotice.clear();}}
+void GraphicsAutomation::observeEpoch(uint64_t epoch) {if(sourceEpoch_==epoch) return;const bool reconnect=sourceEpoch_!=0;sourceEpoch_=epoch;armed_=false;++activationRevision_;if(reconnect) clear();states_.clear();}
 void GraphicsAutomation::forgetSuggestion(const std::string& id) {if(suggestions_.erase(id)) ++suggestionVersion_;}
 void GraphicsAutomation::suggest(const Decision& value) {
  const auto found=suggestions_.find(value.instanceId);
@@ -152,6 +158,6 @@ void GraphicsAutomation::composed(const std::string& instanceId,uint64_t revisio
 Json GraphicsAutomation::snapshot() const {
   Json::Array rules,holds;for(const auto& rule:rules_) rules.push_back(rule.document);for(const auto& id:manualHolds_) holds.emplace_back(id);
   Json::Array suggestions;for(const auto& [_,decision]:suggestions_) suggestions.emplace_back(Json::Object{{"ruleId",decision.ruleId},{"instanceId",decision.instanceId},{"name",decision.name},{"secondary",decision.secondary},{"binding",decision.binding?contracts::toJson(*decision.binding):Json{}}});
-  return Json::Object{{"suggestions",suggestions},{"droppedHistory",double(droppedTrace_)},{"revision",double(revision_)},{"mode",mode_},{"armed",armed_},{"inhibited",inhibited_},{"manualHold",globalHold_},{"heldInstances",holds},{"configuration",Json::Object{{"rules",rules},{"sourceTexts",sourceTexts_}}},{"trace",trace_}};
+  return Json::Object{{"activationRevision",double(activationRevision_)},{"suggestions",suggestions},{"droppedHistory",double(droppedTrace_)},{"revision",double(revision_)},{"mode",mode_},{"armed",armed_},{"inhibited",inhibited_},{"manualHold",globalHold_},{"heldInstances",holds},{"configuration",Json::Object{{"rules",rules},{"sourceTexts",sourceTexts_}}},{"trace",trace_}};
 }
 }

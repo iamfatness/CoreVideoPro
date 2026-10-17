@@ -5,15 +5,25 @@ namespace CoreVideoPro.WinUI.ViewModels;
 
 public sealed partial class StudioViewModel
 {
-    private bool _lastManagedGraphicsAuthority,_lastManagedGraphicsVisible;
+    private bool _lastManagedGraphicsAuthority,_lastManagedGraphicsVisible,_lastManagedGraphicsAutomation;
     private void ObserveGraphicsState(NativeGraphicsState? state)
     {
         _graphicsWorkspace?.Observe(state);
         var authority=state?.FamilyAuthorities.GetValueOrDefault("lower-third")=="instances";
         var visible=authority && ManagedLowerThirdVisible;
+        var authorityChanged=authority!=_lastManagedGraphicsAuthority;
         if(authority!=_lastManagedGraphicsAuthority) {_lastManagedGraphicsAuthority=authority;OnPropertyChanged(nameof(ManagedLowerThirdAuthority));}
         if(visible!=_lastManagedGraphicsVisible) {_lastManagedGraphicsVisible=visible;OnPropertyChanged(nameof(ManagedLowerThirdVisible));}
+        var automatic=CoreVideoPro.MediaCore.Services.GraphicsCompatibilityPolicy.AutomationEnabled(state);
+        if(authorityChanged || automatic!=_lastManagedGraphicsAutomation) {
+            _lastManagedGraphicsAutomation=automatic;OnPropertyChanged(nameof(AutomationLowerThirdsEnabled));OnPropertyChanged(nameof(AutomationOverlayPolicySummary));
+        }
         if(authority) ProgramLowerThirdEnabled=visible;
+    }
+    public async Task<NativeGraphicsOperationResult> ApplyManagedGraphicsAutomationAsync(bool enabled)
+    {
+        var result=await CoreVideoPro.MediaCore.Services.GraphicsCompatibilityPolicy.SetAutomationEnabledAsync(GraphicsWorkspace,enabled);
+        CommandStatus=result.Reason;OnPropertyChanged(nameof(AutomationLowerThirdsEnabled));OnPropertyChanged(nameof(AutomationOverlayPolicySummary));return result;
     }
     public Task<bool> SaveGraphicsCueAsync(string name)=>GraphicsLibrary.SaveCueAsync(name,
         JsonSerializer.SerializeToElement(new {names=_sourceDisplayNames,secondaryLines=_sourceSecondaryLines}),JsonSerializer.SerializeToElement(BrandKit));

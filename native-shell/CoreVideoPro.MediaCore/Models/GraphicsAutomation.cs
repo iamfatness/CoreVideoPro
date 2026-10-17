@@ -31,6 +31,7 @@ public sealed record NativeGraphicsAutomation
 {
     public long DroppedHistory {get;init;}
     public IReadOnlyList<NativeGraphicsSuggestion> Suggestions {get;init;}=[];
+    public long ActivationRevision {get;init;}=1;
     public long Revision {get;init;}=1;
     public string Mode {get;init;}="manual";
     public bool Armed {get;init;}

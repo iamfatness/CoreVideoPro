@@ -105,7 +105,7 @@ public sealed class GraphicsAutomationControl : UserControl
                 _source.SelectedIndex=Math.Max(0,_sources.IndexOf(priorSource));
             }
             if(_loadedTarget!=Target || _loadedRevision!=(automation?.Revision ?? 0)) LoadRule();
-            _state.Text=automation is null?"Native automation is unavailable in this core.":$"Native: {automation.Mode} · {(automation.Armed?"armed":"disarmed")} · {(automation.Inhibited?"Clear inhibited":automation.ManualHold?"all held":automation.HeldInstances.Count+" cue holds")}";
+            _state.Text=automation is null?"Native automation is unavailable in this core.":$"Native: {automation.Mode} · {(automation.Armed?"armed":"disarmed")} · {(automation.Inhibited?"Inhibited — explicit Arm required":automation.ManualHold?"all held":automation.HeldInstances.Count+" cue holds")}";
             _trace.Text=automation?.Trace.Count>0?string.Join("\n",automation.Trace.TakeLast(12).Reverse().Select(t=>$"{t.Sequence} · {t.RuleId} · {t.State} · {t.Reason} · r{t.Revision}")):"No native decisions observed. Accepted requests and native draw submission are separate facts; neither proves receiver delivery.";
             RefreshEnabled();
         } finally {_loading=false;}

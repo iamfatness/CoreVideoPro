@@ -291,7 +291,11 @@ public sealed class GraphicsWorkspaceSession
     public Task<bool> MoveCueAsync(int direction,CancellationToken cancellation=default)=>Run(()=>Selected is { } selected && State is { } state && selected.RackOrder+Math.Sign(direction)>=0 && selected.RackOrder+Math.Sign(direction)<state.Instances.Count
         ?SelectedCommand("graphics.instance.update",new() {["target"]="cue",["rackOrder"]=selected.RackOrder+Math.Sign(direction)},cancellation):Task.FromResult(false));
     public Task<bool> ConfigureAutomationAsync(GraphicsAutomationConfiguration configuration,CancellationToken cancellation=default)=>Run(()=>Send("graphics.automation.configure",new() {["configuration"]=configuration,["expectedAutomationRevision"]=State?.Automation?.Revision ?? 1},cancellation));
-    public Task<bool> AutomationControlAsync(string action,string mode="",string instanceId="",CancellationToken cancellation=default)=>Run(()=>Send("graphics.automation.control",new() {["action"]=action,["mode"]=mode,["instanceId"]=instanceId},cancellation));
+    public Task<bool> AutomationControlAsync(string action,string mode="",string instanceId="",CancellationToken cancellation=default)=>Run(()=> {
+        var request=new Dictionary<string,object?> {["action"]=action,["mode"]=mode,["instanceId"]=instanceId};
+        if(action is "arm" or "enable-automatic") {request["expectedActivationRevision"]=State?.Automation?.ActivationRevision ?? 0;request["expectedAutomationRevision"]=State?.Automation?.Revision ?? 0;request["mode"]=action=="enable-automatic"?"automatic":State?.Automation?.Mode ?? "manual";}
+        return Send("graphics.automation.control",request,cancellation);
+    });
     public Task<bool> SetAuthorityAsync(string family,string authority,CancellationToken cancellation=default)=>Run(()=>Send("graphics.authority.set",new() {["family"]=family,["authority"]=authority},cancellation));
     public Task<bool> ClearAsync(CancellationToken cancellation = default) => Run(() => Send("graphics.program.clear", new() { ["channel"] = "all" }, cancellation));
     public Task<bool> RemoveAsync(CancellationToken cancellation = default) => Run(async () => {

@@ -84,6 +84,14 @@ public sealed class GraphicsCommandGatewayTests
         Assert.True(GraphicsCommandRequest.TryBuild("graphics.automation.configure",good,Observed,out var command,out _,out _));
         Assert.Equal("",command!.ExtensionData!["graphics"].GetProperty("configuration").GetProperty("sourceTexts").GetProperty("zoom:7").GetProperty("secondary").GetString());
     }
+    [Fact]
+    public void AtomicAutomaticEnableRequiresCurrentConfigurationAndActivationFences()
+    {
+        const string intent="\"action\":\"enable-automatic\",\"mode\":\"automatic\",\"expectedAutomationRevision\":2";
+        Assert.False(GraphicsCommandRequest.TryBuild("graphics.automation.control",Request(intent),Observed,out _,out _,out _));
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.automation.control",Request(intent+",\"expectedActivationRevision\":5"),Observed,out _,out _,out _));
+        Assert.False(GraphicsCommandRequest.TryBuild("graphics.automation.control",Request(intent.Replace("\"mode\":\"automatic\"", "\"mode\":\"rehearsal\"")+",\"expectedActivationRevision\":5"),Observed,out _,out _,out _));
+    }
     private static NativeGraphicsState Observed => new()
     {
         SchemaVersion = 1, CoreEpoch = "test-core",

@@ -5,6 +5,27 @@ using Xunit;
 namespace CoreVideoPro.MediaCore.Tests;
 public sealed class GraphicsCompatibilityPolicyTests
 {
+    [Fact] public async Task ExplicitLegacyAutomaticIntentUsesNativeArmingAndHideWithoutEnablingSceneTake()
+    {
+        var state=new NativeGraphicsState {SchemaVersion=1,CoreEpoch="core",Automation=new() {Configuration=new() {Rules=[new() {Id="intro",InstanceId="guest"}]}}};
+        var actions=new List<string>();
+        var session=new GraphicsWorkspaceSession((_,body,_)=>{
+            var input=JsonDocument.Parse(body).RootElement;var action=input.GetProperty("action").GetString()!;actions.Add(action);
+            state=state with {Automation=action switch {"enable-automatic"=>state.Automation! with {Mode="automatic",Armed=true},_=>state.Automation! with {Armed=false}}};
+            return Task.FromResult(new NativeGraphicsOperationResult {Accepted=true});
+        },()=>state);session.Observe(state);
+        Assert.True((await GraphicsCompatibilityPolicy.SetAutomationEnabledAsync(session,true)).Accepted);Assert.True(GraphicsCompatibilityPolicy.AutomationEnabled(state));
+        Assert.Equal(new[] {"enable-automatic"},actions);
+        Assert.True((await GraphicsCompatibilityPolicy.SetAutomationEnabledAsync(session,false)).Accepted);Assert.False(GraphicsCompatibilityPolicy.AutomationEnabled(state));Assert.Equal("hide-automatic",actions[^1]);
+    }
+    [Fact] public async Task MissingRulesAndManualHoldsCannotBeMistakenForEnabledAutomation()
+    {
+        var state=new NativeGraphicsState {SchemaVersion=1,CoreEpoch="core",Automation=new()};var sends=0;
+        var session=new GraphicsWorkspaceSession((_,_,_)=>{sends++;throw new InvalidOperationException("No command should be sent");},()=>state);session.Observe(state);
+        Assert.False((await GraphicsCompatibilityPolicy.SetAutomationEnabledAsync(session,true)).Accepted);
+        state=state with {Automation=new() {Mode="automatic",Armed=true,HeldInstances=["guest"],Configuration=new() {Rules=[new() {Id="intro",InstanceId="guest"}]}}};session.Observe(state);
+        Assert.False(GraphicsCompatibilityPolicy.AutomationEnabled(state));Assert.False((await GraphicsCompatibilityPolicy.SetAutomationEnabledAsync(session,true)).Accepted);Assert.Equal(0,sends);
+    }
     [Fact] public void ExistingShowControlsOnlyChooseCurrentSceneLowerThirds()
     {
         NativeGraphicsInstance Cue(string id,string scene)=>new() {InstanceId=id,Scope=scene.Length==0?"global":"scene",SceneId=scene,TemplateId="compact-solid"};

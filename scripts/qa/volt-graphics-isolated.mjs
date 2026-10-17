@@ -22,7 +22,7 @@ const started=Date.now();const sync=async(commands=[])=>{const r=await send('med
 const check=(value,reason)=>{if(!value)throw Error(reason);};let state;
 const wait=async(predicate,reason,ms=15000)=>{const until=Date.now()+ms;do{state=await sync();if(predicate(state)) return state;await sleep(100);}while(Date.now()<until);throw Error(reason);};
 const operation=async(type,instanceId,extra={})=>{
- const body={schemaVersion:1,coreEpoch:state.graphics.coreEpoch,clientId:'volt-isolated-qa',requestId:'qa-'+(++next),...(instanceId?{instanceId,expectedRevision:state.graphics.instances.find(i=>i.instanceId===instanceId)?.revision??1}:{}),...extra};
+ const body={...(type==='graphics-automation-control'&&['arm','enable-automatic'].includes(extra.action)?{expectedAutomationRevision:state.graphics.automation.revision,expectedActivationRevision:state.graphics.automation.activationRevision,mode:state.graphics.automation.mode}:{}),schemaVersion:1,coreEpoch:state.graphics.coreEpoch,clientId:'volt-isolated-qa',requestId:'qa-'+(++next),...(instanceId?{instanceId,expectedRevision:state.graphics.instances.find(i=>i.instanceId===instanceId)?.revision??1}:{}),...extra};
  state=await sync([{type,graphics:body}]);const result=state.graphics.operations?.find(r=>r.requestId===body.requestId)??state.graphics.lastResult;check(result?.accepted,`${type}: ${result?.reason??'uncorrelated'}`);return result;
 };
 try{
@@ -42,8 +42,7 @@ try{
  await wait(s=>s.graphics.instances.find(i=>i.instanceId==='clock')?.preparation!=='waiting-clock','Clock did not prepare');
  await operation('graphics-instance-trigger','clock',{action:'show'});
  await operation('graphics-automation-configure','',{expectedAutomationRevision:state.graphics.automation.revision,configuration:{rules:[{id:'intro',instanceId:'guest',sourceId:'zoom:'+raw,dwellMs:1500,durationMs:8000}],sourceTexts:{}}});
- await operation('graphics-automation-control','',{action:'set-mode',mode:'automatic'});
- await operation('graphics-automation-control','',{action:'arm'});
+ await operation('graphics-automation-control','',{action:'enable-automatic',mode:'automatic'});
  await wait(s=>s.graphics.automation.trace.some(t=>t.instanceId==='guest'&&t.state==='draw-submitted'),'Automatic guest never reached a native draw',20000);
  report.automaticTrace=state.graphics.automation.trace;report.programInstances=state.graphics.instances.map(i=>({id:i.instanceId,revision:i.programRevision,firstDrawSubmittedFrame:i.firstDrawSubmittedFrame,visibility:i.visibility}));
  check(state.virtualCamera?.enabled!==true,'Private test unexpectedly enabled webcam');

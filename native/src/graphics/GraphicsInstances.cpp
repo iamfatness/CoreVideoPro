@@ -314,7 +314,7 @@ bool GraphicsInstances::apply(const Json& command) {
       {"graphics-instance-cue", {}}, {"graphics-instance-trigger", {"action", "target"}},
       {"graphics-clock-control", {"action","configuration","expectedClockRevision"}},
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}},
-      {"graphics-automation-configure", {"configuration", "expectedAutomationRevision"}}, {"graphics-automation-control", {"action", "mode"}},
+      {"graphics-automation-configure", {"configuration", "expectedAutomationRevision"}}, {"graphics-automation-control", {"action", "mode", "expectedAutomationRevision", "expectedActivationRevision"}},
       {"graphics-authority-set", {"family", "authority"}},
       {"graphics-template-install", {"manifest", "packageRoot"}}, {"graphics-template-list", {"includeThumbnails"}}};
   const auto allowed = actionKeys.find(type);
@@ -351,7 +351,7 @@ bool GraphicsInstances::apply(const Json& command) {
             (item.isString() ? item.asString().size() > (key == "fields" ? 4096 : 512) :
             !(item.isBool() || (item.isNumber() && std::isfinite(item.asNumber())))))
           return finish(requestId, false, "invalid-fields-or-style");
-    } else if (key == "schemaVersion" || key == "rackOrder" || key == "expectedRevision" || key == "expectedClockRevision" || key == "expectedAutomationRevision" || key == "templateVersion") {
+    } else if (key == "schemaVersion" || key == "rackOrder" || key == "expectedRevision" || key == "expectedClockRevision" || key == "expectedAutomationRevision" || key == "expectedActivationRevision" || key == "templateVersion") {
       if (!value.isNumber() || !std::isfinite(value.asNumber()) || std::floor(value.asNumber()) != value.asNumber() ||
           value.asNumber() < 0 || value.asNumber() > 9007199254740991.)
         return finish(requestId, false, "invalid-revision");
@@ -398,6 +398,8 @@ bool GraphicsInstances::apply(const Json& command) {
   }
   if(type == "graphics-automation-control") {
     std::string error;const auto action=body->getString("action");
+    if(action=="arm" && !automation_.acceptsArming(uint64_t(body->getNumber("expectedAutomationRevision",0)),uint64_t(body->getNumber("expectedActivationRevision",0)),body->getString("mode"))) return finish(requestId,false,"graphics-automation-arming-conflict");
+    if(action=="enable-automatic" && (body->getString("mode")!="automatic" || !automation_.acceptsActivation(uint64_t(body->getNumber("expectedAutomationRevision",0)),uint64_t(body->getNumber("expectedActivationRevision",0))))) return finish(requestId,false,"graphics-automation-arming-conflict");
     const auto requestedId=body->getString("instanceId");
     if(!requestedId.empty() && std::none_of(automation_.rules().begin(),automation_.rules().end(),[&](const auto& rule){return rule.instanceId==requestedId;})) return finish(requestId,false,"graphics-automation-target-missing");
     std::vector<std::string> owned;for(const auto& [id,_]:instances_) if(automation_.owns(id) && (requestedId.empty()||requestedId==id)) owned.push_back(id);

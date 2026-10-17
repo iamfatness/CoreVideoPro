@@ -342,7 +342,7 @@ TEST(GraphicsCompositionPixel, AutomaticIntroductionUsesActualSourceDrawAndClear
   Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"},{"dwellMs",100},{"durationMs",0}}}}};
   ASSERT_TRUE(command("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}}));
   ASSERT_TRUE(command("graphics-automation-control",{{"action","set-mode"},{"mode","automatic"}}));
-  ASSERT_TRUE(command("graphics-automation-control",{{"action","arm"}}));
+  ASSERT_TRUE(command("graphics-automation-control",{{"action","arm"},{"mode","automatic"},{"expectedAutomationRevision",2},{"expectedActivationRevision",graphics.snapshot().get("automation")->getNumber("activationRevision")}}));
   render();EXPECT_EQ(row().getNumber("programRevision"),0);now=101;render();
   const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(5);
   while(row().getNumber("firstDrawSubmittedFrame")==0 && std::chrono::steady_clock::now()<until) {render();std::this_thread::sleep_for(std::chrono::milliseconds(2));}
