@@ -4,6 +4,10 @@ param([ValidateSet('Install','Uninstall','Rollback','Inspect')][string]$Action =
     [switch]$MachineOnly,
     [string]$OwnerSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
 $ErrorActionPreference = 'Stop'
+# A PowerShell 7 parent can export its module path to NSIS's Windows PowerShell
+# child. Load the host's built-in ACL commands explicitly, rather than finding
+# an incompatible Microsoft.PowerShell.Security module through that path.
+Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 Import-Module (Join-Path $PSScriptRoot 'VirtualCameraRegistration.psm1') -Force
 $app = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $AppDirectory).Path).TrimEnd('\')
 $serverKey = 'SOFTWARE\Classes\CLSID\{8B4B2C9E-2C4A-4E1D-9C7A-CDEF01234567}\InprocServer32'
