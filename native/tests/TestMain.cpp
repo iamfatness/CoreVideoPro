@@ -22,12 +22,14 @@ int main(int argc, char** argv) {
     return 1;
   }
 #endif
-  const auto result = testing::RUN_ALL_TESTS();
 #ifdef COREVIDEO_USE_SYSTEM_GTEST
+  const auto result = testing::UnitTest::GetInstance()->Run();
   if (testing::UnitTest::GetInstance()->test_to_run_count() == 0) {
     std::fprintf(stderr, "No native tests matched the requested filter; validation is incomplete.\n");
     return 1;
   }
+#else
+  const auto result = testing::RUN_ALL_TESTS();
 #endif
   return result;
 }
