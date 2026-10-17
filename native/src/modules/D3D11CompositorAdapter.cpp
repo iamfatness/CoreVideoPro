@@ -141,8 +141,10 @@ class D3D11Compositor final : public ICompositor {
     if (enableGpuIngress || (gpuCapture && std::string(gpuCapture) == "1") ||
         cpuPreparation) {
       gpuConsumer_ = D3DVideoConsumers::add(device_.get(), monitorBackend);
-      gpuReadLeases_ = std::make_unique<D3DVideoReadLeases>(device_.get(), context_.get());
     }
+    // Graphics read immutable textures even when source GPU ingress is off.
+    // Allocate completion queries before production, independently of ingest.
+    gpuReadLeases_ = std::make_unique<D3DVideoReadLeases>(device_.get(), context_.get());
     if (isolateMonitors || !monitorBackend) {
       ComPtrLite<IDXGIDevice> dxgi;
       auto adapter = std::make_shared<ComPtrLite<IDXGIAdapter>>();
@@ -202,6 +204,7 @@ class D3D11Compositor final : public ICompositor {
   }
 
   std::string rendererName() const override { return "d3d11"; }
+  bool supportsGraphicsInstances() const override { return true; }
   bool supportsGradePreview() const override { return gradeWorker_ != nullptr; }
   void submitGradePreviews(MonitorRenderRequest request) override {
     if (!gradeWorker_) return;
@@ -277,6 +280,7 @@ class D3D11Compositor final : public ICompositor {
       return static_cast<long long>(elapsed);
     };
     ++frameNumber_;
+    overlayRaster_.beginFrame();
     auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     ProgramFrame frame;
     frame.width = deterministicPlan.width;
@@ -299,6 +303,15 @@ class D3D11Compositor final : public ICompositor {
       return frame;
     }
 
+    for (const auto& candidate : deterministicPlan.graphicsPreparations) {
+      const auto& r = candidate.rect;
+      overlayRaster_.rasterOverlayTexture(device_.get(), context_.get(), candidate.overlay,
+          {r.x, r.y, r.width, r.height}, targetWidth_, targetHeight_);
+      frame.graphicsFacts.push_back({candidate.graphicsInstanceId, candidate.graphicsRevision,
+          overlayRaster_.preparationState(), overlayRaster_.lastWarning()});
+    }
+    // Hidden/cued preparation is not an output degradation.
+    overlayRaster_.beginFrame();
     const float background[4] = {0.047f, 0.067f, 0.094f, 1.f};
     ID3D11RenderTargetView* renderTargets[] = {renderTargetView_.get()};
     context_->OMSetRenderTargets(1, renderTargets, nullptr);
@@ -321,6 +334,9 @@ class D3D11Compositor final : public ICompositor {
     const auto drawUs = stageUs();
 
     frame.gpuComposed = true;
+    if (overlayRaster_.pendingThisFrame()) frame.warnings.push_back("graphics-preparing");
+    if (overlayRaster_.failedThisFrame()) frame.warnings.push_back("graphics-preparation-failed");
+    if (!frame.warnings.empty()) frame.health = "degraded";
     // The pixel-signature and base64 preview both do a blocking GPU->CPU Map
     // readback. On the light ~60fps display tick we skip them — only the GPU shared
     // texture is needed for the on-screen program, and stalling the CPU on a Map
@@ -1379,7 +1395,7 @@ class D3D11Compositor final : public ICompositor {
     drawSolidQuad(layer, renderPlan, {rect.x + rect.width - strokeX, rect.y, strokeX, rect.height}, color, borderAlpha);
   }
 
-  void drawLayer(const ResolvedLayer& requestedLayer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr, ProgramFrame* admission = nullptr, const ProgramFrame* traceFrame = nullptr) {
+  void drawLayer(const ResolvedLayer& requestedLayer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr, ProgramFrame* admission = nullptr, ProgramFrame* traceFrame = nullptr) {
     auto layer = requestedLayer;
     VideoFrame admittedImage;
     core::DeliveryReason traceReason = core::DeliveryReason::Ready;
@@ -1431,7 +1447,9 @@ class D3D11Compositor final : public ICompositor {
 
     // Overlay/lower-third/caption layers go through the raster stage.
     if (layer.plan.hasOverlayContent && compositorLayerIsOverlay(layer.plan)) {
-      drawOverlayLayer(layer, renderPlan, rect, layerAlpha);
+      const bool composited = drawOverlayLayer(layer, renderPlan, rect, layerAlpha);
+      if (traceFrame && composited && !layer.plan.graphicsInstanceId.empty())
+        traceFrame->graphicsFacts.push_back({layer.plan.graphicsInstanceId, layer.plan.graphicsRevision, "draw-submitted", ""});
       return;
     }
 
@@ -1621,8 +1639,9 @@ class D3D11Compositor final : public ICompositor {
 
     ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
         device_.get(), context_.get(), content, labelRect, targetWidth_, targetHeight_);
-    if (overlayView == nullptr) {
-      return;
+    if (overlayView == nullptr) return;
+    if (!gpuReadLeases_ || !gpuReadLeases_->hold(overlayRaster_.lease())) {
+      overlayRaster_.refuseGpuLease(); return;
     }
 
     const compositor::LayerRect clip = layer.plan.hasClipRect
@@ -1652,25 +1671,26 @@ class D3D11Compositor final : public ICompositor {
 
   // --- Item 9: overlay/lower-third/caption raster stage. ---
   // Rasters the overlay's real content (DirectWrite text + WIC image) into a
-  // GPU texture via a D2D DXGI-surface render target, then composites it with
+  // immutable GPU texture prepared on the WIC/DirectWrite owner, then composites it with
   // the animated keyPhase transform. The texture is cached by content signature
   // (see rasterOverlayTexture) so the raster cost is paid only when the text,
   // brand styling, or target size changes — never per frame. Falls back to the
   // deterministic band + accent draw if D2D/DirectWrite is unavailable.
-  void drawOverlayLayer(
+  bool drawOverlayLayer(
       const ResolvedLayer& layer,
       const CompositorRenderPlan& renderPlan,
       const compositor::LayerRect& rect,
       float layerAlpha) {
+    bool composited = false;
     const auto& overlay = layer.plan.overlay;
     const auto key = compositor::computeOverlayKeyTransform(
         overlay.keyPhase, overlay.keyProgress, overlay.keyPosition, rect.height);
     if (!key.visible || key.alpha <= 0.001f) {
-      return;
+      return false;
     }
     const float alpha = std::clamp(layerAlpha * key.alpha, 0.f, 1.f);
     if (alpha <= 0.f) {
-      return;
+      return false;
     }
 
     // Animated slide (and renderer-compatible scale) about the rect center.
@@ -1691,6 +1711,15 @@ class D3D11Compositor final : public ICompositor {
                                 layer.plan.clipRect.width, layer.plan.clipRect.height}
         : compositor::LayerRect{0.f, 0.f, 1.f, 1.f};
 
+    // Instance revisions become visible only after their complete raster exists.
+    // Legacy overlay fallback remains compatible while it prepares.
+    ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
+        device_.get(), context_.get(), overlay, rect, targetWidth_, targetHeight_);
+    if (overlayView && (!gpuReadLeases_ || !gpuReadLeases_->hold(overlayRaster_.lease()))) {
+      overlayRaster_.refuseGpuLease(); overlayView = nullptr;
+    }
+    if (!layer.plan.graphicsInstanceId.empty() && !overlayView) return false;
+
     // Brand-styled band background.
     context_->RSSetState(scissorRasterizerState_.get());
     setScissorFromRect(clip);
@@ -1702,8 +1731,7 @@ class D3D11Compositor final : public ICompositor {
     // Sizing/caching uses the un-animated rect so a build-in/out animation
     // scales the SAME cached texture (via the viewport) instead of re-rastering
     // every frame of the key transition.
-    if (ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
-            device_.get(), context_.get(), overlay, rect, targetWidth_, targetHeight_)) {
+    if (overlayView) {
       context_->RSSetState(scissorRasterizerState_.get());
       setScissorFromRect(clip);
       setViewportFromRect(animated);
@@ -1715,6 +1743,7 @@ class D3D11Compositor final : public ICompositor {
         context_->PSSetShaderResources(0, 1, views);
         context_->PSSetSamplers(0, 1, samplers);
         context_->Draw(3, 0);
+        composited = true;
         ID3D11ShaderResourceView* nullViews[] = {nullptr};
         context_->PSSetShaderResources(0, 1, nullViews);
         context_->PSSetShader(pixelShader_.get(), nullptr, 0);
@@ -1731,12 +1760,13 @@ class D3D11Compositor final : public ICompositor {
       }
     }
     context_->RSSetState(rasterizerState_.get());
+    return composited;
   }
 
   // The DirectWrite/WIC/D2D overlay-texture raster (ensureOverlayRasterFactories
   // / decodeOverlayImage / drawOverlayTextLine / rasterOverlayTexture) now lives
   // in compositor/CompositorOverlayRaster.{h,cpp}; drawOverlayLayer above calls
-  // overlayRaster_.rasterOverlayTexture(). Move-only, behavior unchanged.
+  // overlayRaster_.rasterOverlayTexture(). A GPU read lease fences cache retirement.
 
   bool uploadLayerTexture(const VideoFrame& frame) {
     CpuStageScope timing(profileMvActive_, stageProfileNs_[MvUpload]);

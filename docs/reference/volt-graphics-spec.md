@@ -403,7 +403,7 @@ Native example (the payload field values are illustrative):
 
 ```json
 {
-  "cmd": "graphics-instance-update",
+  "type": "graphics-instance-update",
   "graphics": {
     "schemaVersion": 1,
     "requestId": "update-42",

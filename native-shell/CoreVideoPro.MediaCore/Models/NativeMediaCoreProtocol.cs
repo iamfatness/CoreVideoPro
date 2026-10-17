@@ -961,6 +961,7 @@ public sealed record NativeMediaCoreStateSnapshot
     public IReadOnlyList<string> LastCommandTypes { get; init; } = [];
     public IReadOnlyList<string> Warnings { get; init; } = [];
     /// <summary>Deterministic on-device AI director scene recommendation from the native core.</summary>
+    public NativeGraphicsState? Graphics { get; init; }
     public NativeMediaCoreAutoProduction? AutoProduction { get; init; }
     /// <summary>Optional wire field: Zoom meeting state (e.g. in_meeting, idle). Stub until native core publishes it.</summary>
     public string? MeetingState { get; init; }

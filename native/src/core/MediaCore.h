@@ -1,5 +1,6 @@
 #pragma once
 #include "core/ResourceEventStaging.h"
+#include "graphics/GraphicsInstances.h"
 
 #include "core/SourcePreviewDemand.h"
 #include "compositor/TilesMembership.h"
@@ -784,6 +785,7 @@ class MediaCore {
   [[nodiscard]] bool hasPreviewScene() const;
   // Monotonic compositor animation clock (ms), advanced each render tick, that
   // drives overlay keyPhase progress deterministically.
+  graphics::GraphicsInstances graphicsInstances_;
   double overlayAnimationClockMs_ = 0.0;
   TakeTransitionState takeTransition_;
   std::string outputProfileId_ = "canvas-1080p60";

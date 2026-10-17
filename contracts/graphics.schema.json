@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corevideopro.local/contracts/graphics/v1",
+  "title": "Additive native graphics identity and evidence contracts",
+  "$defs": {
+    "GraphicsOperationIdentity": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "requestId",
+        "clientId",
+        "coreEpoch"
+      ],
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "coreEpoch": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "GraphicsRevisionIdentity": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "instanceId",
+        "coreEpoch",
+        "revision"
+      ],
+      "properties": {
+        "instanceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "coreEpoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "GraphicsPreparationFact": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "identity",
+        "state",
+        "warning"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/GraphicsRevisionIdentity"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "unprepared",
+            "preparing",
+            "ready",
+            "failed"
+          ]
+        },
+        "warning": {
+          "type": "string"
+        }
+      }
+    },
+    "GraphicsCompositionFact": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "identity",
+        "frameNumber",
+        "evidence"
+      ],
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/GraphicsRevisionIdentity"
+        },
+        "frameNumber": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "evidence": {
+          "type": "string",
+          "enum": [
+            "draw-submitted"
+          ]
+        }
+      }
+    }
+  }
+}

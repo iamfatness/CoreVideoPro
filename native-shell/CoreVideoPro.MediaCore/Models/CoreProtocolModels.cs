@@ -380,6 +380,7 @@ public sealed class NativeMediaCoreWireState
     public NativeMediaCoreCaptionTrack? CaptionTrack { get; init; }
     public NativeMediaCoreBrandKit? BrandKit { get; init; }
     public NativeMediaCoreOverlayState? OverlayState { get; init; }
+    public NativeGraphicsState? Graphics { get; init; }
     public NativeMediaCoreMediaPlaybackState? MediaPlayback { get; init; }
     /// <summary>The core's per-source media transport rows (#535 slice 3b, snapshot node
     /// "mediaSources"). Published unconditionally by the core, so null here means an OLD core,

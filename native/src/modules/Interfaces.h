@@ -280,6 +280,14 @@ struct ProgramSourceAdmission {
   int64_t requestedCapture100ns = 0, actualCapture100ns = 0;
 };
 
+// Graphics preparation/adoption evidence. "draw-submitted" records a native draw
+// submission, not GPU completion or physical receiver/display delivery.
+struct GraphicsFrameFact {
+  std::string instanceId;
+  uint64_t revision = 0;
+  std::string state, reason;
+};
+
 struct ProgramFrame {
   int width = 1920;
   int height = 1080;
@@ -292,6 +300,7 @@ struct ProgramFrame {
   uint32_t programPixelSignature = 0;
   uint32_t renderPlanSignature = 0;
   std::vector<std::string> warnings;
+  std::vector<GraphicsFrameFact> graphicsFacts;
   ProgramFramePreviewPixels preview;
   // Full-resolution program BGRA (width x height) for the virtual camera, so it
   // serves native 1080p with no upscale. Populated only when the render plan
@@ -511,6 +520,8 @@ struct CompositorRenderPlanLayer {
   std::string sourceHealth;
   std::string dropoutPolicy = "hold";
   std::string sourceDisplayName;
+  std::string graphicsInstanceId;
+  uint64_t graphicsRevision = 0;
 };
 
 struct CompositorRenderPlan {
@@ -522,6 +533,7 @@ struct CompositorRenderPlan {
   int fps = 30;
   CompositorColorGrade colorGrade;
   std::vector<CompositorRenderPlanLayer> layers;
+  std::vector<CompositorRenderPlanLayer> graphicsPreparations;
   std::vector<std::string> warnings;
   // When true, the compositor skips the blocking GPU->CPU readbacks (base64
   // preview + pixel signature) and only updates the GPU shared texture. Set for
@@ -1238,6 +1250,7 @@ class ICompositor {
   // Upload accounting for the per-source texture cache. Defaulted to zeros so
   // the software/stub compositor stays valid; only the GPU adapter tracks it.
   [[nodiscard]] virtual CompositorSourceTexStats sourceTexStats() const { return {}; }
+  [[nodiscard]] virtual bool supportsGraphicsInstances() const { return false; }
   // True when the encoder should receive the FULL-resolution program
   // (ProgramFrame::programFullBgra) while recording. Default false: on
   // Windows the D3D11 path serves recording from the vcam tap economics and

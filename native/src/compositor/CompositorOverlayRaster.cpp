@@ -11,6 +11,7 @@
 #include <cmath>
 
 #include "modules/OverlayTileRaster.h"
+#include "core/ComApartmentLifetime.h"
 
 namespace corevideo::modules {
 namespace {
@@ -42,7 +43,7 @@ D2D1_COLOR_F d2dColorFromArgb(uint32_t argb) {
 }  // namespace
 
 bool CompositorOverlayRaster::ensureOverlayRasterFactories() {
-  if (d2dFactory_ && dwriteFactory_) {
+  if (d2dFactory_ && dwriteFactory_ && wicFactory_) {
     return true;
   }
   if (overlayRasterUnavailable_) {
@@ -62,15 +63,13 @@ bool CompositorOverlayRaster::ensureOverlayRasterFactories() {
     overlayRasterUnavailable_ = true;
     return false;
   }
-  // WIC is optional (image overlays only). CoInitializeEx may return S_FALSE
-  // (already initialized) or RPC_E_CHANGED_MODE (STA thread) — CoCreateInstance
-  // still works in both cases, so only the factory failure disables images.
+  // All prepared tiles use a CPU WIC target. The preparation owner has already
+  // initialized its COM apartment; optional image decoding uses this factory too.
   if (!wicFactory_) {
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                      IID_PPV_ARGS(wicFactory_.put()));
   }
-  return true;
+  return bool(wicFactory_);
 }
 
 ComPtrLite<ID2D1Bitmap> CompositorOverlayRaster::decodeOverlayImage(
@@ -98,6 +97,9 @@ ComPtrLite<ID2D1Bitmap> CompositorOverlayRaster::decodeOverlayImage(
   if (FAILED(decoder->GetFrame(0, frame.put()))) {
     return bitmap;
   }
+  UINT imageWidth = 0, imageHeight = 0;
+  if (FAILED(frame->GetSize(&imageWidth, &imageHeight)) || imageWidth == 0 || imageHeight == 0 || imageWidth > 4096 || imageHeight > 4096 ||
+      uint64_t(imageWidth) * imageHeight > 16ull * 1024 * 1024) return bitmap;
   ComPtrLite<IWICFormatConverter> converter;
   if (FAILED(wicFactory_->CreateFormatConverter(converter.put()))) {
     return bitmap;
@@ -155,95 +157,75 @@ bool CompositorOverlayRaster::drawOverlayTextLine(
   return true;
 }
 
+CompositorOverlayRaster::CompositorOverlayRaster()
+    : cache_([this](const Request& request) { return prepareRaster(request); },
+             256ull * 1024 * 1024, 32, [this] {
+               // Release apartment-owned factories before the owner's thread-local
+               // COM lifetime ends, including tests with no process-wide MTA.
+               wicFactory_ = {}; dwriteFactory_ = {}; d2dFactory_ = {};
+             }, 16) {}
+CompositorOverlayRaster::~CompositorOverlayRaster() = default;
+
 ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
-    ID3D11Device* device,
-    ID3D11DeviceContext* context,
-    const CompositorOverlayContent& overlay,
-    const compositor::LayerRect& rect,
-    int targetWidth,
-    int targetHeight) {
-  const bool hasText = !overlay.title.empty() || !overlay.org.empty() ||
-                       !overlay.text.empty() || !overlay.speaker.empty();
-  if (!hasText && overlay.imageUri.empty()) {
-    return nullptr;
-  }
-  const int widthPx = std::clamp(
-      static_cast<int>(std::lround(rect.width * static_cast<float>(targetWidth))), 0, 4096);
-  const int heightPx = std::clamp(
-      static_cast<int>(std::lround(rect.height * static_cast<float>(targetHeight))), 0, 4096);
-  if (widthPx < 8 || heightPx < 8) {
-    return nullptr;
-  }
-  if (!ensureOverlayRasterFactories()) {
-    lastWarning_="Native text/image renderer unavailable.";
-    return nullptr;
-  }
-
-  const uint64_t signature = overlayContentSignature(overlay, widthPx, heightPx);
-  lastWarning_.clear();
-
-  ++overlayRasterClock_;
-  if (auto existing = overlayTextTextures_.find(signature); existing != overlayTextTextures_.end()) {
-    lastWarning_=existing->second.warning;
-    existing->second.lastUsed = overlayRasterClock_;
-    return existing->second.view.get();
-  }
-
-  OverlayRasterTex entry;
-  D3D11_TEXTURE2D_DESC textureDesc{};
-  textureDesc.Width = static_cast<UINT>(widthPx);
-  textureDesc.Height = static_cast<UINT>(heightPx);
-  textureDesc.MipLevels = 1;
-  textureDesc.ArraySize = 1;
-  textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-  textureDesc.SampleDesc.Count = 1;
-  textureDesc.Usage = D3D11_USAGE_DEFAULT;
-  textureDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-  if (FAILED(device->CreateTexture2D(&textureDesc, nullptr, entry.texture.put()))) {
-    return nullptr;
-  }
-  ComPtrLite<IDXGISurface> surface;
-  if (FAILED(entry.texture->QueryInterface(__uuidof(IDXGISurface), reinterpret_cast<void**>(surface.put())))) {
-    return nullptr;
-  }
-  const auto targetProperties = D2D1::RenderTargetProperties(
-      D2D1_RENDER_TARGET_TYPE_DEFAULT,
-      D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-      96.f, 96.f);
-  ComPtrLite<ID2D1RenderTarget> d2dTarget;
-  if (FAILED(d2dFactory_->CreateDxgiSurfaceRenderTarget(surface.get(), &targetProperties, d2dTarget.put()))) {
-    return nullptr;
-  }
-
-  // D2D's EndDraw flushes through the shared device and can clobber the
-  // immediate context's bound state mid-pass. Rasters only happen on content
-  // change, so snapshot + restore the pipeline state we depend on.
-  ComPtrLite<ID3D11RenderTargetView> savedRtv;
-  context->OMGetRenderTargets(1, savedRtv.put(), nullptr);
-  ComPtrLite<ID3D11BlendState> savedBlend;
-  FLOAT savedBlendFactor[4] = {0.f, 0.f, 0.f, 0.f};
-  UINT savedSampleMask = 0xffffffffu;
-  context->OMGetBlendState(savedBlend.put(), savedBlendFactor, &savedSampleMask);
-  ComPtrLite<ID3D11RasterizerState> savedRasterizer;
-  context->RSGetState(savedRasterizer.put());
-  D3D11_VIEWPORT savedViewport{};
-  UINT viewportCount = 1;
-  context->RSGetViewports(&viewportCount, &savedViewport);
-  D3D11_PRIMITIVE_TOPOLOGY savedTopology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-  context->IAGetPrimitiveTopology(&savedTopology);
-  ComPtrLite<ID3D11VertexShader> savedVs;
-  context->VSGetShader(savedVs.put(), nullptr, nullptr);
-  const auto restorePipelineState = [&]() {
-    ID3D11RenderTargetView* rtvs[] = {savedRtv.get()};
-    context->OMSetRenderTargets(1, rtvs, nullptr);
-    context->OMSetBlendState(savedBlend.get(), savedBlendFactor, savedSampleMask);
-    context->RSSetState(savedRasterizer.get());
-    if (viewportCount > 0) {
-      context->RSSetViewports(1, &savedViewport);
+    ID3D11Device* device, ID3D11DeviceContext*, const CompositorOverlayContent& overlay,
+    const compositor::LayerRect& rect, int targetWidth, int targetHeight) {
+  // Bound metadata before hashing or copying it into the queue. In particular,
+  // a legacy caller cannot amplify one oversized caption into 32 queued copies.
+  size_t metadataBytes = 0;
+  const auto& a = overlay.appearance;
+  for (const auto* value : {&overlay.title, &overlay.org, &overlay.text, &overlay.speaker,
+      &overlay.imageUri, &overlay.fontFamily, &overlay.keyPosition, &overlay.keyPhase, &overlay.keyer,
+      &overlay.brandColor, &overlay.brandAccentColor, &overlay.brandBackgroundColor,
+      &a.preset, &a.anchor, &a.fontFamily, &a.nameColor, &a.titleColor, &a.backgroundColor, &a.accentColor}) {
+    if (value->size() > 65536 - metadataBytes) {
+      activeLease_.reset(); lastState_ = "failed"; failedThisFrame_ = true;
+      lastWarning_ = "Graphics content exceeds preparation metadata budget.";
+      return nullptr;
     }
-    context->IASetPrimitiveTopology(savedTopology);
-    context->VSSetShader(savedVs.get(), nullptr, 0);
-  };
+    metadataBytes += value->size();
+  }
+  const double widthPixels = double(rect.width) * targetWidth;
+  const double heightPixels = double(rect.height) * targetHeight;
+  if (!device || !std::isfinite(widthPixels) || !std::isfinite(heightPixels) ||
+      widthPixels < 1 || heightPixels < 1 || widthPixels > 4096 || heightPixels > 4096) {
+    activeLease_.reset(); lastState_ = "failed"; failedThisFrame_ = true;
+    lastWarning_ = "Invalid graphics raster dimensions.";
+    return nullptr;
+  }
+  const int width = int(std::lround(widthPixels)), height = int(std::lround(heightPixels));
+  const Key key{reinterpret_cast<uintptr_t>(device), overlayContentSignature(overlay, width, height)};
+  activeLease_ = cache_.find(key);
+  if (!activeLease_) {
+    device->AddRef();
+    Request request{std::shared_ptr<ID3D11Device>(device, [](ID3D11Device* value) { value->Release(); }), overlay, width, height};
+    activeLease_ = cache_.findOrRequest(key, std::move(request), uint64_t(width) * height * 8 + (overlay.imageUri.empty() ? 0 : 64ull * 1024 * 1024));
+  }
+  lastState_ = !activeLease_ ? "preparing" : activeLease_->asset ? "ready" : "failed";
+  lastWarning_ = activeLease_ ? activeLease_->warning : "Graphics preparation pending.";
+  pendingThisFrame_ = pendingThisFrame_ || !activeLease_;
+  failedThisFrame_ = failedThisFrame_ || (activeLease_ && !activeLease_->asset);
+  return activeLease_ && activeLease_->asset ? activeLease_->asset->view.get() : nullptr;
+}
+
+CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(const Request& request) {
+  thread_local core::ComApartmentLifetime apartment;
+  const auto& overlay = request.overlay;
+  const int widthPx = request.width, heightPx = request.height;
+  auto* device = request.device.get();
+  workerWarning_.clear();
+  if (!apartment.initialized() || !ensureOverlayRasterFactories() || !wicFactory_) {
+    return {{}, 0, "Native graphics preparation unavailable."};
+  }
+  auto entry = std::make_shared<OverlayRasterTex>();
+  ComPtrLite<IWICBitmap> bitmap;
+  if (FAILED(wicFactory_->CreateBitmap(widthPx, heightPx, GUID_WICPixelFormat32bppPBGRA,
+      WICBitmapCacheOnLoad, bitmap.put()))) return {{}, 0, "Graphics bitmap allocation failed."};
+  const auto targetProperties = D2D1::RenderTargetProperties(
+      D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+      D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.f, 96.f);
+  ComPtrLite<ID2D1RenderTarget> d2dTarget;
+  if (FAILED(d2dFactory_->CreateWicBitmapRenderTarget(bitmap.get(), &targetProperties, d2dTarget.put())))
+    return {{}, 0, "Graphics raster target creation failed."};
 
   // Geometry + per-line colors come from the shared layout resolver, so this
   // DirectWrite raster and the portable CPU bitmap-font tile
@@ -256,7 +238,7 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     const auto family=widenUtf8(layout.fontFamily);
     if (SUCCEEDED(dwriteFactory_->GetSystemFontCollection(fonts.put())) &&
         SUCCEEDED(fonts->FindFamilyName(family.c_str(),&index,&exists)) && !exists) {
-      layout.fontFamily="Segoe UI";lastWarning_="Font unavailable; using Segoe UI.";
+      layout.fontFamily="Segoe UI";workerWarning_="Font unavailable; using Segoe UI.";
     }
   }
 
@@ -286,7 +268,7 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   // tile draws its deterministic checker in the same slot).
   if (layout.hasImage) {
     auto image=decodeOverlayImage(d2dTarget.get(),overlay.imageUri);
-    if (!image) lastWarning_ += " Logo unavailable; image omitted.";
+    if (!image) workerWarning_ += " Logo unavailable; image omitted.";
     if (image) {
       const auto imageSize = image->GetSize();
       float drawWidth = layout.imageRect.width;
@@ -320,29 +302,22 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
 
   if (clipped) d2dTarget->PopLayer();
   const HRESULT endDrawResult = d2dTarget->EndDraw();
-  restorePipelineState();
-  if (FAILED(endDrawResult)) {
-    return nullptr;
-  }
-  if (FAILED(device->CreateShaderResourceView(entry.texture.get(), nullptr, entry.view.put()))) {
-    return nullptr;
-  }
-  entry.lastUsed = overlayRasterClock_;
-
-  // Bounded cache: evict the least-recently-used raster beyond 8 entries
-  // (program + preview + multiview lower-third/caption variants all fit).
-  while (overlayTextTextures_.size() >= 8) {
-    auto oldest = overlayTextTextures_.begin();
-    for (auto it = overlayTextTextures_.begin(); it != overlayTextTextures_.end(); ++it) {
-      if (it->second.lastUsed < oldest->second.lastUsed) {
-        oldest = it;
-      }
-    }
-    overlayTextTextures_.erase(oldest);
-  }
-  entry.warning=lastWarning_;
-  const auto inserted = overlayTextTextures_.emplace(signature, std::move(entry));
-  return inserted.first->second.view.get();
+  if (FAILED(endDrawResult)) return {{}, 0, "Graphics rasterization failed."};
+  WICRect lockRect{0, 0, widthPx, heightPx};
+  ComPtrLite<IWICBitmapLock> pixels;
+  UINT stride = 0, length = 0; BYTE* data = nullptr;
+  if (FAILED(bitmap->Lock(&lockRect, WICBitmapLockRead, pixels.put())) ||
+      FAILED(pixels->GetStride(&stride)) || FAILED(pixels->GetDataPointer(&length, &data)))
+    return {{}, 0, "Graphics pixels unavailable."};
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = widthPx; desc.Height = heightPx; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_IMMUTABLE; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  D3D11_SUBRESOURCE_DATA initial{data, stride, 0};
+  if (FAILED(device->CreateTexture2D(&desc, &initial, entry->texture.put())) ||
+      FAILED(device->CreateShaderResourceView(entry->texture.get(), nullptr, entry->view.put())))
+    return {{}, 0, "Graphics texture creation failed."};
+  return {std::move(entry), uint64_t(widthPx) * heightPx * 4, workerWarning_};
 }
 
 }  // namespace corevideo::modules

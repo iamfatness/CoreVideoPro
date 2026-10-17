@@ -275,7 +275,9 @@ enum ShellTests {
             let evidenceData = try Data(contentsOf: root.appendingPathComponent("contracts/evidence.fixtures.json"))
             let evidenceRows = try JSONSerialization.jsonObject(with: evidenceData) as! [[String: Any]]
             let identityRows = try JSONSerialization.jsonObject(with: identityData) as! [[String: Any]]
-            let data = try JSONSerialization.data(withJSONObject: lifecycleRows + identityRows + evidenceRows)
+            let graphicsData = try Data(contentsOf: root.appendingPathComponent("contracts/graphics.fixtures.json"))
+            let graphicsRows = try JSONSerialization.jsonObject(with: graphicsData) as! [[String: Any]]
+            let data = try JSONSerialization.data(withJSONObject: lifecycleRows + identityRows + evidenceRows + graphicsRows)
             guard let fixtures = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
                 expect(false, "lifecycle fixtures must be an array"); return
             }
@@ -289,6 +291,10 @@ enum ShellTests {
                 let value = try JSONSerialization.jsonObject(with: payloadData, options: [.fragmentsAllowed])
                 let validate: ([String: Any]) -> Bool
                 switch contract {
+                case "GraphicsOperationIdentity": validate = validateGraphicsOperationIdentity
+                case "GraphicsRevisionIdentity": validate = validateGraphicsRevisionIdentity
+                case "GraphicsPreparationFact": validate = validateGraphicsPreparationFact
+                case "GraphicsCompositionFact": validate = validateGraphicsCompositionFact
                 case "ProtocolVersion": validate = validateProtocolVersion
                 case "OutputLifecycle": validate = validateOutputLifecycle
                 case "OperationStatus": validate = validateOperationStatus
@@ -320,6 +326,10 @@ enum ShellTests {
                 if accepted {
                     let encoded: Data
                     switch contract {
+                    case "GraphicsOperationIdentity": encoded = try JSONEncoder().encode(JSONDecoder().decode(GraphicsOperationIdentity.self, from: payloadData))
+                    case "GraphicsRevisionIdentity": encoded = try JSONEncoder().encode(JSONDecoder().decode(GraphicsRevisionIdentity.self, from: payloadData))
+                    case "GraphicsPreparationFact": encoded = try JSONEncoder().encode(JSONDecoder().decode(GraphicsPreparationFact.self, from: payloadData))
+                    case "GraphicsCompositionFact": encoded = try JSONEncoder().encode(JSONDecoder().decode(GraphicsCompositionFact.self, from: payloadData))
                     case "ProtocolVersion": encoded = try JSONEncoder().encode(JSONDecoder().decode(ProtocolVersion.self, from: payloadData))
                     case "OutputLifecycle": encoded = try JSONEncoder().encode(JSONDecoder().decode(OutputLifecycle.self, from: payloadData))
                     case "OperationStatus": encoded = try JSONEncoder().encode(JSONDecoder().decode(OperationStatus.self, from: payloadData))

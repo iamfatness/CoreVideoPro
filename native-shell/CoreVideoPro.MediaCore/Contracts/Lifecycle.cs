@@ -1309,3 +1309,73 @@ public static class DeliveryEvidenceObservationContract {
     return true;
   }
 }
+public sealed record GraphicsOperationIdentity {
+  [JsonPropertyName("requestId")] public required string RequestId { get; init; }
+  [JsonPropertyName("clientId")] public required string ClientId { get; init; }
+  [JsonPropertyName("coreEpoch")] public required string CoreEpoch { get; init; }
+}
+public static class GraphicsOperationIdentityContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasRequestId = value.TryGetProperty("requestId", out var requestId);
+    if (!hasRequestId || !(requestId.ValueKind == JsonValueKind.String && requestId.GetString()!.Length >= 1)) return false;
+    var hasClientId = value.TryGetProperty("clientId", out var clientId);
+    if (!hasClientId || !(clientId.ValueKind == JsonValueKind.String && clientId.GetString()!.Length >= 1)) return false;
+    var hasCoreEpoch = value.TryGetProperty("coreEpoch", out var coreEpoch);
+    if (!hasCoreEpoch || !(coreEpoch.ValueKind == JsonValueKind.String && coreEpoch.GetString()!.Length >= 1)) return false;
+    return true;
+  }
+}
+public sealed record GraphicsRevisionIdentity {
+  [JsonPropertyName("instanceId")] public required string InstanceId { get; init; }
+  [JsonPropertyName("coreEpoch")] public required string CoreEpoch { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("revision")] public required long Revision { get; init; }
+}
+public static class GraphicsRevisionIdentityContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasInstanceId = value.TryGetProperty("instanceId", out var instanceId);
+    if (!hasInstanceId || !(instanceId.ValueKind == JsonValueKind.String && instanceId.GetString()!.Length >= 1)) return false;
+    var hasCoreEpoch = value.TryGetProperty("coreEpoch", out var coreEpoch);
+    if (!hasCoreEpoch || !(coreEpoch.ValueKind == JsonValueKind.String && coreEpoch.GetString()!.Length >= 1)) return false;
+    var hasRevision = value.TryGetProperty("revision", out var revision);
+    if (!hasRevision || !(revision.ValueKind == JsonValueKind.Number && revision.TryGetDouble(out var revisionNumber) && double.IsFinite(revisionNumber) && Math.Truncate(revisionNumber) == revisionNumber && revisionNumber >= 1 && revisionNumber <= 9007199254740991)) return false;
+    return true;
+  }
+}
+public sealed record GraphicsPreparationFact {
+  [JsonPropertyName("identity")] public required GraphicsRevisionIdentity Identity { get; init; }
+  [JsonPropertyName("state")] public required string State { get; init; }
+  [JsonPropertyName("warning")] public required string Warning { get; init; }
+}
+public static class GraphicsPreparationFactContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasIdentity = value.TryGetProperty("identity", out var identity);
+    if (!hasIdentity || !(GraphicsRevisionIdentityContract.Validate(identity))) return false;
+    var hasState = value.TryGetProperty("state", out var state);
+    if (!hasState || !(state.ValueKind == JsonValueKind.String && (state.GetString() == "unprepared" || state.GetString() == "preparing" || state.GetString() == "ready" || state.GetString() == "failed"))) return false;
+    var hasWarning = value.TryGetProperty("warning", out var warning);
+    if (!hasWarning || !(warning.ValueKind == JsonValueKind.String)) return false;
+    return true;
+  }
+}
+public sealed record GraphicsCompositionFact {
+  [JsonPropertyName("identity")] public required GraphicsRevisionIdentity Identity { get; init; }
+  [JsonConverter(typeof(ContractSafeIntegerConverter))]
+  [JsonPropertyName("frameNumber")] public required long FrameNumber { get; init; }
+  [JsonPropertyName("evidence")] public required string Evidence { get; init; }
+}
+public static class GraphicsCompositionFactContract {
+  public static bool Validate(JsonElement value) {
+    if (value.ValueKind != JsonValueKind.Object) return false;
+    var hasIdentity = value.TryGetProperty("identity", out var identity);
+    if (!hasIdentity || !(GraphicsRevisionIdentityContract.Validate(identity))) return false;
+    var hasFrameNumber = value.TryGetProperty("frameNumber", out var frameNumber);
+    if (!hasFrameNumber || !(frameNumber.ValueKind == JsonValueKind.Number && frameNumber.TryGetDouble(out var frameNumberNumber) && double.IsFinite(frameNumberNumber) && Math.Truncate(frameNumberNumber) == frameNumberNumber && frameNumberNumber >= 1 && frameNumberNumber <= 9007199254740991)) return false;
+    var hasEvidence = value.TryGetProperty("evidence", out var evidence);
+    if (!hasEvidence || !(evidence.ValueKind == JsonValueKind.String && (evidence.GetString() == "draw-submitted"))) return false;
+    return true;
+  }
+}

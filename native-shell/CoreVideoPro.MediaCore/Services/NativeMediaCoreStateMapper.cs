@@ -202,6 +202,7 @@ public static class NativeMediaCoreStateMapper
             CaptionTrack = captionTrack,
             BrandKit = brandKit,
             OverlayState = overlayState,
+            Graphics = wire.Graphics,
             MediaPlayback = mediaPlayback,
             MediaSources = mediaSources,
             Diagnostics = diagnostics,

@@ -1,17 +1,13 @@
 #pragma once
 
-// DirectWrite/WIC/D2D overlay-texture rasterization, extracted VERBATIM from
-// D3D11CompositorAdapter.cpp (move-only refactor, no behavior change). This is
-// the self-contained overlay-raster cluster: it owns the D2D/DirectWrite/WIC
+// DirectWrite/WIC/D2D overlay-texture preparation. This owner manages the
 // factories and the content-signature texture cache, and turns overlay content
 // (lower-third / caption text + optional image) into a cached GPU texture whose
 // SRV the compositor composites over the brand band.
 //
-// Ownership/threading unchanged: this runs ONLY on the render thread, driven by
-// D3D11Compositor::drawOverlayLayer. It touches no locks. The render device and
-// immediate context are passed in per call (the compositor owns them); the
-// state save/restore around D2D EndDraw lives inside rasterOverlayTexture,
-// exactly as before.
+// Cache misses run on a persistent preparation owner using a CPU WIC/D2D target.
+// It never borrows the compositor's immediate context. The render thread only
+// adopts immutable prepared textures; pending content uses the existing fallback.
 
 // Only meaningful in the real D3D11 dev build; the stub build compiles this to
 // nothing (same gate as D3D11CompositorAdapter.cpp).
@@ -34,6 +30,7 @@
 #include <string>
 
 #include "compositor/ComPtrLite.h"
+#include "graphics/PreparationCache.h"
 #include "compositor/CompositorLayout.h"
 #include "modules/Interfaces.h"
 
@@ -41,6 +38,16 @@ namespace corevideo::modules {
 
 class CompositorOverlayRaster {
  public:
+  CompositorOverlayRaster();
+  ~CompositorOverlayRaster();
+  void beginFrame() { pendingThisFrame_ = failedThisFrame_ = false; }
+  bool pendingThisFrame() const { return pendingThisFrame_; }
+  bool failedThisFrame() const { return failedThisFrame_; }
+  const char* preparationState() const {
+    return lastState_;
+  }
+  std::shared_ptr<const void> lease() const { return activeLease_; }
+  void refuseGpuLease() { failedThisFrame_ = true; lastWarning_ = "Graphics GPU retirement capacity unavailable."; }
   const std::string& lastWarning() const { return lastWarning_; }
   // Rasters the overlay's accent bar + text (+ optional WIC image) into a GPU
   // texture using DirectWrite/D2D and returns its SRV, or nullptr to fall back
@@ -52,10 +59,9 @@ class CompositorOverlayRaster {
   // same resolver the portable CPU tile rasters — so preview and program agree
   // on placement by construction.
   //
-  // `device`/`context` are the compositor's render device + immediate context;
-  // `targetWidth`/`targetHeight` are the current render-target dimensions (the
-  // former targetWidth_/targetHeight_ members). Behavior is identical to the
-  // former D3D11Compositor::rasterOverlayTexture.
+  // `device` supplies free-threaded immutable texture creation. `context` is
+  // retained in the call signature for compatibility and is never accessed.
+  // Target dimensions select the raster scale; cold content returns pending.
   ID3D11ShaderResourceView* rasterOverlayTexture(
       ID3D11Device* device,
       ID3D11DeviceContext* context,
@@ -92,16 +98,26 @@ class CompositorOverlayRaster {
   struct OverlayRasterTex {
     ComPtrLite<ID3D11Texture2D> texture;
     ComPtrLite<ID3D11ShaderResourceView> view;
-    uint64_t lastUsed = 0;
-    std::string warning;
   };
-  std::map<uint64_t, OverlayRasterTex> overlayTextTextures_;
-  uint64_t overlayRasterClock_ = 0;
+  struct Request {
+    std::shared_ptr<ID3D11Device> device;
+    CompositorOverlayContent overlay;
+    int width = 0, height = 0;
+  };
+  using Key = std::pair<uintptr_t, uint64_t>;
+  using Cache = graphics::PreparationCache<Key, Request, OverlayRasterTex>;
+  Cache::Result prepareRaster(const Request& request);
   ComPtrLite<ID2D1Factory> d2dFactory_;
   ComPtrLite<IDWriteFactory> dwriteFactory_;
   ComPtrLite<IWICImagingFactory> wicFactory_;
   bool overlayRasterUnavailable_ = false;
   std::string lastWarning_;
+  std::string workerWarning_;
+  bool pendingThisFrame_ = false, failedThisFrame_ = false;
+  const char* lastState_ = "unprepared";
+  std::shared_ptr<const Cache::Result> activeLease_;
+  // Last member: join the owner before destroying its factories or callback state.
+  Cache cache_;
 };
 
 }  // namespace corevideo::modules

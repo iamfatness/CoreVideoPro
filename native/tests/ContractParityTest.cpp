@@ -161,9 +161,31 @@ TEST(ContractParity, EvidenceGoldenMessagesMatchSchema) {
   }
 }
 
+
+TEST(ContractParity, GraphicsGoldenMessagesMatchSchema) {
+  const auto fixtures = corevideo::rpc::Json::parse(readRepoFile("contracts/graphics.fixtures.json"));
+  ASSERT_TRUE(fixtures && fixtures->isArray());
+  ASSERT_FALSE(fixtures->asArray().empty());
+  for (const auto& fixture : fixtures->asArray()) {
+    const auto payload = corevideo::rpc::Json::parse(fixture.getString("json"));
+    ASSERT_TRUE(payload);
+    const auto name = fixture.getString("contract");
+    bool valid = false;
+    using namespace corevideo::contracts;
+    if (name == "GraphicsOperationIdentity") valid = validateGraphicsOperationIdentity(*payload);
+    else if (name == "GraphicsRevisionIdentity") valid = validateGraphicsRevisionIdentity(*payload);
+    else if (name == "GraphicsPreparationFact") valid = validateGraphicsPreparationFact(*payload);
+    else if (name == "GraphicsCompositionFact") valid = validateGraphicsCompositionFact(*payload);
+    else ASSERT_TRUE(false) << "Unknown graphics contract: " << name;
+    EXPECT_EQ(valid, fixture.get("accepted")->asBool()) << fixture.getString("id");
+  }
+}
+
 TEST(ContractParity, ProductionBuilderCommandsAreInTheLiveDispatcher) {
   const std::string builder = readRepoFile("native-shell/CoreVideoPro.MediaCore/Services/MediaCoreCommandBuilder.cs");
-  const std::string dispatcher = readRepoFile("native/src/core/MediaCore.cpp");
+  const auto graphicsDispatcher = readRepoFile("native/src/graphics/GraphicsInstances.cpp");
+  ASSERT_FALSE(graphicsDispatcher.empty());
+  const std::string dispatcher = readRepoFile("native/src/core/MediaCore.cpp") + "\n" + graphicsDispatcher;
   ASSERT_FALSE(builder.empty());
   ASSERT_FALSE(dispatcher.empty());
   // Extract the executable branch names from the shipping C++ dispatcher.

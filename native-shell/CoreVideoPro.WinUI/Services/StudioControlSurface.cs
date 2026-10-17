@@ -58,6 +58,8 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "scene.select", "scene.dynamicGallery.create", "view.setMode",
         "input.assign", "input.name", "input.inShow.set", "source.dropout.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
+        "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
+        "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "multiview.layout.set", "multiview.tileCount.set",
@@ -294,6 +296,16 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             }
 
             // ---- Graphics -----------------------------------------------------------
+            case "graphics.instance.create":
+            case "graphics.instance.update":
+            case "graphics.instance.cue":
+            case "graphics.instance.trigger":
+            case "graphics.instance.remove":
+            case "graphics.program.clear":
+            {
+                var result = await _vm.InvokeGraphicsActionAsync(actionId, Str(args, 0)).ConfigureAwait(true);
+                return result.Accepted ? ControlInvokeResult.Success : ControlInvokeResult.Fail(result.Reason);
+            }
             case "graphics.lowerThird.toggle":
                 return ApplyLowerThirdIntent(
                     !(_vm.ProgramLowerThirdEnabled || _vm.ProgramLowerThirdKey.IsVisible), true,

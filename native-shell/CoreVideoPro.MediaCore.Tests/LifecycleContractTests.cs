@@ -20,7 +20,7 @@ public sealed class LifecycleContractTests
 
     public static IEnumerable<object[]> Fixtures()
     {
-        foreach (var name in new[] { "lifecycle.fixtures.json", "identity.fixtures.json", "evidence.fixtures.json" })
+        foreach (var name in new[] { "lifecycle.fixtures.json", "identity.fixtures.json", "evidence.fixtures.json", "graphics.fixtures.json" })
         {
             using var file = JsonDocument.Parse(File.ReadAllText(FixturesPath(name)));
             foreach (var item in file.RootElement.EnumerateArray()) yield return new object[] {
@@ -62,6 +62,10 @@ public sealed class LifecycleContractTests
             "DestinationProgress" => DestinationProgressContract.Validate,
             "DeliveryEvidenceObservation" => DeliveryEvidenceObservationContract.Validate,
             "ArtifactValidationResult" => ArtifactValidationResultContract.Validate,
+            "GraphicsOperationIdentity" => GraphicsOperationIdentityContract.Validate,
+            "GraphicsRevisionIdentity" => GraphicsRevisionIdentityContract.Validate,
+            "GraphicsPreparationFact" => GraphicsPreparationFactContract.Validate,
+            "GraphicsCompositionFact" => GraphicsCompositionFactContract.Validate,
             _ => throw new ArgumentException(contract)
         };
         Assert.True(validate(document.RootElement) == accepted, id);
@@ -91,6 +95,10 @@ public sealed class LifecycleContractTests
             "DestinationProgress" => typeof(DestinationProgress),
             "DeliveryEvidenceObservation" => typeof(DeliveryEvidenceObservation),
             "ArtifactValidationResult" => typeof(ArtifactValidationResult),
+            "GraphicsOperationIdentity" => typeof(GraphicsOperationIdentity),
+            "GraphicsRevisionIdentity" => typeof(GraphicsRevisionIdentity),
+            "GraphicsPreparationFact" => typeof(GraphicsPreparationFact),
+            "GraphicsCompositionFact" => typeof(GraphicsCompositionFact),
             _ => throw new ArgumentException(contract)
         };
         var model = JsonSerializer.Deserialize(json, type);

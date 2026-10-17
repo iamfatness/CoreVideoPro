@@ -1,5 +1,17 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner approval, October 16 — first Volt milestone:** execute the approved
+graphics specification through [#926](https://github.com/iamfatness/CoreVideoPro/issues/926)
+(native first consumer), [#927](https://github.com/iamfatness/CoreVideoPro/issues/927)
+(complete workspace/migration), [#928](https://github.com/iamfatness/CoreVideoPro/issues/928)
+(title/bug/clock consumers), then [#929](https://github.com/iamfatness/CoreVideoPro/issues/929)
+(qualified graphics automation, dependent on #761). Work sequentially through
+the dependency gates, with at most three active issues. This implementation
+priority supersedes earlier documentation-only restrictions. Preserve the
+installed app, camera registration and production profile until the complete
+feature is ready for review; use isolated API/offscreen tests. Data graphics
+remains outside this first milestone. Parent/spec: #924.
+
 **Owner direction, October 16 — graphics review:** reconcile the supplied Volt
 proposal with #847/#764/#761/#592/#593 and deliver the complete specification and
 implementation plan under [#924](https://github.com/iamfatness/CoreVideoPro/issues/924).
@@ -180,6 +192,9 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner current — Volt implementation | A | [#926](https://github.com/iamfatness/CoreVideoPro/issues/926) | Native template/instance consumer and bounded preparation with compatibility lower-third pixels. |
+| Volt dependent — after #926 | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927), [#928](https://github.com/iamfatness/CoreVideoPro/issues/928) | Complete workspace/migration and actual title/bug/clock consumers; activate only as dependency gates pass. |
+| Volt dependent — after consumers/#761 | B | [#929](https://github.com/iamfatness/CoreVideoPro/issues/929) | Scoped participant automation, rehearsal and manual override with native outcome evidence. |
 | Owner current — October 16, specification only | B | [#924](https://github.com/iamfatness/CoreVideoPro/issues/924) | Reconcile and specify the graphics/templates/styles/automation milestone for owner review; implementation order awaits that review. |
 | Owner current — October 15 | B | [#916](https://github.com/iamfatness/CoreVideoPro/issues/916) | Diagnose select-to-first-present latency, reproduce the exact cause and fix it with API/offscreen evidence; keep the installed app/session untouched. |
 | 1 — October 15 UI/UX | B | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Finish stable-input scene creation and layout fallbacks, quick solo/two-person/share starters, preserved custom routes and fresh/upgraded profile evidence. |

@@ -352,7 +352,10 @@ Json JsonRpcServer::handle(const Json& request) {
   // set-vst-state have their own cheap-ack routes above.)
   if (hasType(request, "start-program-output") || hasType(request, "load-scene-graph") ||
       hasType(request, "set-participant-transform") || hasType(request, "set-overlay-asset") ||
-      hasType(request, "open-vst-editor") || hasType(request, "scan-vst-plugins")) {
+      hasType(request, "open-vst-editor") || hasType(request, "scan-vst-plugins") ||
+      hasType(request, "graphics-instance-create") || hasType(request, "graphics-instance-update") ||
+      hasType(request, "graphics-instance-cue") || hasType(request, "graphics-instance-trigger") ||
+      hasType(request, "graphics-instance-remove") || hasType(request, "graphics-program-clear")) {
     return success(id, Json::Object{{"snapshot", mediaCore_.applyCommands(commandBatch(request))}});
   }
 

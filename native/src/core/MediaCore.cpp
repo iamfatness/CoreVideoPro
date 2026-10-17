@@ -1159,7 +1159,11 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
   };
   if (!validate(validate, command)) { commandProtocolFailures_.push_back("invalid-advanced-grade"); return; }
   const std::string type = command.getString("type");
-  if (type == "begin-take-transition") {
+  if (type.rfind("graphics-", 0) == 0) {
+    if (!modules_.compositor->supportsGraphicsInstances()) {
+      commandProtocolFailures_.push_back("graphics-instance-backend-not-built");
+    } else if (!graphicsInstances_.apply(command)) commandProtocolFailures_.push_back("graphics-request-refused");
+  } else if (type == "begin-take-transition") {
     beginTakeTransition(command);
   } else if (type == "load-scene-graph") {
     loadSceneGraph(command);
@@ -4338,7 +4342,9 @@ modules::CompositorRenderPlan MediaCore::buildCompositorRenderPlan(const std::ve
                                       colorGrade_, overlayAssets_, captionEnabled_, captionText_, captionSpeaker_,
                                       videoFrames, tilesLayer_);
   plan.warnings.insert(plan.warnings.end(), sceneValidationWarnings_.begin(), sceneValidationWarnings_.end());
-  return applyTakeTransition(std::move(plan), videoFrames);
+  plan = applyTakeTransition(std::move(plan), videoFrames);
+  graphicsInstances_.append(plan, false);
+  return plan;
 }
 
 modules::CompositorRenderPlan MediaCore::applyTakeTransition(
@@ -4475,10 +4481,17 @@ void MediaCore::advanceTakeTransition(double frameIntervalMs) {
 modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const {
   // The preview scene composites its own routes/background/overlays/grade. Captions
   // are a program broadcast element, so the preview bus renders no caption band.
-  auto plan = buildRenderPlanForScene(previewSceneId_, previewRouteCount_, previewOverlayCount_,
+  auto plan = previewSceneActive_ ? buildRenderPlanForScene(previewSceneId_, previewRouteCount_, previewOverlayCount_,
                                       previewSceneBackground_, previewSceneRoutes_, previewColorGrade_,
                                       previewOverlayAssets_, /*captionEnabled=*/false, std::string{}, std::string{},
-                                      videoFrames, previewTilesLayer_);
+                                      videoFrames, previewTilesLayer_) : modules::CompositorRenderPlan{};
+  if (!previewSceneActive_) {
+    // A standalone graphics cue must not turn the legacy default source gallery
+    // into a new preview subscription. Its canvas has no video reference until
+    // the operator selects a Preview scene.
+    plan.renderPlanId = "graphics-cue";
+    plan.width = outputWidth_; plan.height = outputHeight_; plan.fps = outputFps_;
+  }
   // PERSISTENT SOURCES (spec 2026-09-10 §2): Preview and Program address the
   // SAME media source, with NO exception since #535 slice 3b. The paused clip
   // cue used to keep a "preview:" namespace of its own, because the poster and
@@ -4488,6 +4501,7 @@ modules::CompositorRenderPlan MediaCore::buildPreviewCompositorRenderPlan(const 
   // the very source the slice exists to keep whole.
   // R3: preview keeps the held frame — never a black cut — regardless of the
   // stored per-source policy; only the real Program pass reads it.
+  graphicsInstances_.append(plan, true);
   holdDropoutForMonitoring(plan);
   return plan;
 }
@@ -4500,6 +4514,7 @@ bool MediaCore::hasPreviewScene() const {
   // (the preview-shared-texture event is structural-change-gated and never re-emits an
   // "off" state). Live video still requires a per-frame recomposite regardless, so gating
   // out the single-source case would not save the per-frame GPU pass anyway.
+  if (graphicsInstances_.hasCue()) return true;
   if (!previewSceneActive_) {
     return false;
   }
@@ -5736,6 +5751,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   }
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
+  graphicsInstances_.observe(producedFrame);
   if (avSyncTraceEnabled() && hasWhiteClapSource(videoFrames, "101")) {
     avSyncWhiteProducedFrames_.push_back(producedFrame.frameNumber);
     if (avSyncWhiteProducedFrames_.size() > 32) avSyncWhiteProducedFrames_.pop_front();

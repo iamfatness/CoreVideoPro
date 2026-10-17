@@ -99,6 +99,7 @@ add_library(corevideo_native
   src/core/BoundedAsyncLog.cpp
   src/core/DeliveryTrace.cpp
   src/core/LockHoldGuardrail.cpp
+  src/graphics/GraphicsInstances.cpp
   src/core/MediaCore.cpp
   src/core/CoreStateCapture.cpp
   src/core/ComApartmentLifetime.cpp
@@ -711,6 +712,9 @@ if(BUILD_TESTING)
 
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
+    tests/GraphicsPreparationCacheTest.cpp
+    tests/GraphicsInstancesTest.cpp
+    tests/GraphicsRpcPixelTest.cpp
     tests/DeliveryTraceTest.cpp
     tests/RenderWorkDistributionTest.cpp
     tests/AsyncEncoderSinkTest.cpp

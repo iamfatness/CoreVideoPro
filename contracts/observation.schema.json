@@ -330,6 +330,11 @@
       "typed": "include",
       "qualification": "include",
       "control": "include"
+    },
+    "graphics": {
+      "typed": "include",
+      "qualification": "include",
+      "control": "include"
     }
   }
 }

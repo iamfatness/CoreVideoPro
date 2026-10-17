@@ -3,6 +3,7 @@
 #include "core/ComApartmentLifetime.h"
 #include "core/ZoomBusRoster.h"
 #include "modules/Interfaces.h"
+#include "graphics/GraphicsInstances.h"
 #include "MonitorTestMode.h"
 
 #include <chrono>
@@ -17,8 +18,21 @@
 #include <string>
 #include <vector>
 #include <thread>
+#include <stdexcept>
 
 namespace {
+// Readiness is asynchronous; never make the render call block to satisfy a test.
+corevideo::modules::ProgramFrame renderPrepared(corevideo::modules::ICompositor& compositor,
+    const corevideo::modules::CompositorRenderPlan& plan,
+    const std::vector<corevideo::modules::VideoFrame>& sources = {}) {
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  for (;;) {
+    auto frame = compositor.render(plan, sources);
+    if (std::find(frame.warnings.begin(), frame.warnings.end(), "graphics-preparing") == frame.warnings.end()) return frame;
+    if (std::chrono::steady_clock::now() >= end) throw std::runtime_error("Native graphics preparation timed out");
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+}
 
 uint32_t previewPixelRgba(const corevideo::modules::ProgramFramePreviewPixels& preview, int x, int y) {
   if (preview.width <= 0 || preview.height <= 0 || preview.bgra.empty()) {
@@ -762,7 +776,7 @@ TEST(D3D11Compositor, OverlayFactoriesSurviveRenderWorkerExit) {
   overlay.overlay.keyProgress = 1.f;
   plan.layers.push_back(overlay);
   corevideo::modules::ProgramFrame frame;
-  std::thread worker([&] { frame = compositor->render(plan, {}); });
+  std::thread worker([&] { frame = renderPrepared(*compositor, plan, {}); });
   worker.join();
   EXPECT_FALSE(frame.preview.bgra.empty());
   // Same ownership order as JsonRpcServer: worker exits before core modules.
@@ -837,7 +851,7 @@ TEST(D3D11Compositor, FailedSlateNameRendersAsASmallBottomLeftLabelNotAFullBand)
   layer.sourceDisplayName = "Camera 1";
   renderPlan.layers.push_back(layer);
 
-  const auto frame = compositor->render(renderPlan, {});
+  const auto frame = renderPrepared(*compositor, renderPlan, {});
   ASSERT_EQ(frame.preview.width, 320);
   ASSERT_EQ(frame.preview.height, 180);
 
@@ -928,7 +942,7 @@ TEST(D3D11Compositor, LowerThirdOverlayRastersDirectWriteTextOnGpu) {
   overlay.overlay.brandColor = "#44c1a1";
   renderPlan.layers.push_back(overlay);
 
-  const auto frame = compositor->render(renderPlan, {});
+  const auto frame = renderPrepared(*compositor, renderPlan, {});
   EXPECT_TRUE(frame.gpuComposed);
   const size_t distinct = gpuDistinctColorsInRegion(frame.preview, 0.05f, 0.78f, 0.9f, 0.16f);
   EXPECT_TRUE(distinct > 3u) << "distinct overlay colors = " << distinct;
@@ -954,8 +968,8 @@ TEST(D3D11Compositor, OverlayTextContentChangesPixelsOnGpu) {
     return plan;
   };
 
-  const auto frameA = compositor->render(buildPlan("AAAA TITLE"), {});
-  const auto frameB = compositor->render(buildPlan("OOOO OTHER"), {});
+  const auto frameA = renderPrepared(*compositor, buildPlan("AAAA TITLE"), {});
+  const auto frameB = renderPrepared(*compositor, buildPlan("OOOO OTHER"), {});
   ASSERT_FALSE(frameA.preview.bgra.empty());
   EXPECT_NE(frameA.preview.bgra, frameB.preview.bgra);
 }
@@ -970,7 +984,7 @@ TEST(D3D11Compositor, AnimatedOverlayHonorsCompositeClipRect) {
   baselinePlan.renderPlanId = "overlay-clip-baseline";
   baselinePlan.width = 640;
   baselinePlan.height = 360;
-  const auto baseline = compositor->render(baselinePlan, {});
+  const auto baseline = renderPrepared(*compositor, baselinePlan, {});
 
   auto clippedPlan = baselinePlan;
   clippedPlan.renderPlanId = "overlay-clip-building-out";
@@ -981,7 +995,7 @@ TEST(D3D11Compositor, AnimatedOverlayHonorsCompositeClipRect) {
   overlay.overlay.keyPhase = "building-out";
   overlay.overlay.keyProgress = 0.5f;
   clippedPlan.layers.push_back(overlay);
-  const auto clipped = compositor->render(clippedPlan, {});
+  const auto clipped = renderPrepared(*compositor, clippedPlan, {});
 
   ASSERT_EQ(baseline.preview.width, clipped.preview.width);
   ASSERT_EQ(baseline.preview.height, clipped.preview.height);
@@ -1010,7 +1024,7 @@ TEST(D3D11Compositor, CaptionRastersSpeakerAndBodyOnGpu) {
   overlay.overlay.keyProgress = 1.f;
   renderPlan.layers.push_back(overlay);
 
-  const auto frame = compositor->render(renderPlan, {});
+  const auto frame = renderPrepared(*compositor, renderPlan, {});
   EXPECT_TRUE(frame.gpuComposed);
   const size_t distinct = gpuDistinctColorsInRegion(frame.preview, 0.08f, 0.86f, 0.84f, 0.10f);
   EXPECT_TRUE(distinct > 3u) << "distinct caption colors = " << distinct;
@@ -1036,12 +1050,84 @@ TEST(D3D11Compositor, OverlayRasterCacheReusesAndInvalidates) {
     return plan;
   };
 
-  const auto first = compositor->render(buildPlan("#44c1a1"), {});
-  const auto second = compositor->render(buildPlan("#44c1a1"), {});
-  const auto recolored = compositor->render(buildPlan("#d04040"), {});
+  const auto first = renderPrepared(*compositor, buildPlan("#44c1a1"), {});
+  const auto second = renderPrepared(*compositor, buildPlan("#44c1a1"), {});
+  const auto recolored = renderPrepared(*compositor, buildPlan("#d04040"), {});
   EXPECT_EQ(first.preview.bgra, second.preview.bgra);
   EXPECT_NE(first.preview.bgra, recolored.preview.bgra);
 }
+
+TEST(D3D11Compositor, OversizedGraphicsAreRefusedAndValidContentRecovers) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  corevideo::modules::CompositorRenderPlan plan;
+  plan.width = 640; plan.height = 360;
+  auto overlay = makeGpuOverlayLayer("bounded-caption", .05f, .78f, .9f, .16f);
+  overlay.overlay.title = std::string(65537, 'x');
+  plan.layers.push_back(overlay);
+  const auto refused = compositor->render(plan, {});
+  EXPECT_TRUE(refused.gpuComposed);
+  EXPECT_EQ("degraded", refused.health);
+  EXPECT_TRUE(std::find(refused.warnings.begin(), refused.warnings.end(), "graphics-preparation-failed") != refused.warnings.end());
+  plan.layers[0].overlay.title = "Recovered without restarting";
+  const auto recovered = renderPrepared(*compositor, plan);
+  EXPECT_TRUE(recovered.gpuComposed);
+  EXPECT_TRUE(std::find(recovered.warnings.begin(), recovered.warnings.end(), "graphics-preparation-failed") == recovered.warnings.end());
+  EXPECT_GT(gpuDistinctColorsInRegion(recovered.preview, .05f, .78f, .9f, .16f), 3u);
+}
+
+TEST(D3D11Compositor, GraphicsCueAndProgramAdoptCompleteNativeRevisionsIndependently) {
+  auto compositor = corevideo::modules::createD3D11Compositor();
+  ASSERT_NE(compositor, nullptr);
+  corevideo::graphics::GraphicsInstances graphics{"test-core"};
+  using corevideo::rpc::Json;
+  int sequence = 0;
+  const auto command = [&](const std::string& type, Json::Object payload) {
+    payload["schemaVersion"] = 1; payload["requestId"] = "request-" + std::to_string(++sequence);
+    payload["clientId"] = "gpu-qa"; payload["coreEpoch"] = "test-core"; payload["instanceId"] = "featured";
+    return graphics.apply(Json::Object{{"type", type}, {"graphics", std::move(payload)}});
+  };
+  ASSERT_TRUE(command("graphics-instance-create", {{"scope", "global"}, {"templateId", "compact-solid"},
+      {"templateVersion", 1}, {"fields", Json::Object{{"name", "First speaker"}, {"title", "Engineer"}}}}));
+  ASSERT_TRUE(command("graphics-instance-cue", {{"expectedRevision", 1}}));
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"expectedRevision", 1}, {"action", "show"}}));
+  const auto render = [&](bool preview = false) {
+    corevideo::modules::CompositorRenderPlan plan;
+    plan.width = 320; plan.height = 180;
+    graphics.append(plan, preview);
+    auto frame = compositor->render(plan, {});
+    if (!preview) graphics.observe(frame);
+    return frame;
+  };
+  const auto pumpUntil = [&](const auto& ready) {
+    const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!ready() && std::chrono::steady_clock::now() < limit) {
+      render(); std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return ready();
+  };
+  const auto row = [&]() -> const Json& { return graphics.snapshot().get("instances")->asArray().front(); };
+  ASSERT_TRUE(pumpUntil([&] { return row().getNumber("firstDrawSubmittedFrame") > 0; }));
+  const auto first = render();
+  EXPECT_GT(gpuDistinctColorsInRegion(first.preview, .05f, .80f, .60f, .14f), 3u);
+  ASSERT_TRUE(command("graphics-instance-update", {{"expectedRevision", 1}, {"target", "cue"},
+      {"fields", Json::Object{{"name", "Second speaker"}, {"title", ""}}}}));
+  ASSERT_TRUE(pumpUntil([&] { return row().getString("preparation") == "ready"; }));
+  EXPECT_EQ(1., row().getNumber("programRevision"));
+  EXPECT_EQ(first.preview.bgra, render().preview.bgra);
+  const auto cue = render(true);
+  EXPECT_NE(first.preview.bgra, cue.preview.bgra);
+  ASSERT_TRUE(command("graphics-instance-update", {{"expectedRevision", 2}, {"target", "program"}}));
+  EXPECT_EQ(2., row().getNumber("programRevision"));
+  const auto updated = render();
+  EXPECT_EQ(cue.preview.bgra, updated.preview.bgra);
+  EXPECT_GT(row().getNumber("firstDrawSubmittedFrame"), 0.);
+  ASSERT_TRUE(command("graphics-program-clear", {{"channel", "all"}}));
+  const auto cleared = render();
+  EXPECT_NE(updated.preview.bgra, cleared.preview.bgra);
+  EXPECT_EQ("hidden", row().getString("visibility"));
+}
+
 
 namespace {
 

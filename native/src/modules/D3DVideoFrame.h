@@ -222,7 +222,7 @@ class D3DVideoReadLeases {
       core::nativeLogf("[gpu-ingress] read retirement timed out; leases quarantined\n");
     }
   }
-  bool hold(std::shared_ptr<const GpuVideoFrame> image) {
+  bool hold(std::shared_ptr<const void> image) {
     if (active_ < 0) {
       poll();
       for (size_t i = 0; i < slots_.size(); ++i)
@@ -236,7 +236,9 @@ class D3DVideoReadLeases {
     return true;
   }
   void finish() {
-    if (active_ < 0) return;
+    // Empty passes must retire earlier reads too. Otherwise hiding the last
+    // source/graphic can strand leases and prevent a new cue from preparing.
+    if (active_ < 0) { poll(); return; }
     auto& slot = slots_[active_];
     context_->End(slot.query.Get()); slot.pending = true; active_ = -1;
   }
@@ -250,11 +252,11 @@ class D3DVideoReadLeases {
       }
     }
   }
-  struct Slot { ComPtr<ID3D11Query> query; std::vector<std::shared_ptr<const GpuVideoFrame>> images; bool pending = false; };
+  struct Slot { ComPtr<ID3D11Query> query; std::vector<std::shared_ptr<const void>> images; bool pending = false; };
   ComPtr<ID3D11DeviceContext> context_;
   std::array<Slot, 16> slots_;
   int active_ = -1;
   inline static std::mutex quarantineMutex_;
-  inline static std::vector<std::shared_ptr<const GpuVideoFrame>> quarantine_;
+  inline static std::vector<std::shared_ptr<const void>> quarantine_;
 };
 }

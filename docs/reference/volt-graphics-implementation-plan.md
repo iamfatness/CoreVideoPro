@@ -1,16 +1,17 @@
 # Volt Graphics implementation plan
 
-Proposed technical sequence for [#924](https://github.com/iamfatness/CoreVideoPro/issues/924),
+Technical sequence for [#924](https://github.com/iamfatness/CoreVideoPro/issues/924),
 October 16, 2026. Companion documents:
 [specification](volt-graphics-spec.md) and
 [reconciliation](volt-graphics-reconciliation.md).
 
-This is a dependency/review plan, not a second ranked backlog or authorization
-to implement. `../BACKLOG.md` alone selects work. The current request authorizes
-the documents and their review PR. After owner review, record approved scope and
-rank before opening implementation. Maximum three active implementation issues;
-each PR has one primary issue. A reusable foundation merges only with its first
-working consumer and measurable native output.
+The owner approved the first product milestone on October 16, 2026. Its
+implementation is ranked under #926–#929 in `../BACKLOG.md`; later data gates
+remain separate. This document describes dependencies and review gates, not a
+second work queue. Maximum three active implementation issues; each PR has one
+primary issue. A reusable foundation merges only with its first working
+consumer and measurable native output. Keep the installed app unchanged until
+the complete feature is ready for owner review.
 
 ## 1. Delivery structure
 

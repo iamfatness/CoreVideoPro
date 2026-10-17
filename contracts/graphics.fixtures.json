@@ -1,0 +1,248 @@
+[
+  {
+    "id": "GraphicsOperationIdentity-valid",
+    "contract": "GraphicsOperationIdentity",
+    "accepted": true,
+    "json": "{\"requestId\":\"request-1\",\"clientId\":\"operator\",\"coreEpoch\":\"core-1\"}"
+  },
+  {
+    "id": "GraphicsOperationIdentity-additive",
+    "contract": "GraphicsOperationIdentity",
+    "accepted": true,
+    "json": "{\"requestId\":\"request-1\",\"clientId\":\"operator\",\"coreEpoch\":\"core-1\",\"future\":{\"v\":1}}"
+  },
+  {
+    "id": "GraphicsOperationIdentity-array",
+    "contract": "GraphicsOperationIdentity",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "GraphicsOperationIdentity-missing-requestId",
+    "contract": "GraphicsOperationIdentity",
+    "accepted": false,
+    "json": "{\"clientId\":\"operator\",\"coreEpoch\":\"core-1\"}"
+  },
+  {
+    "id": "GraphicsOperationIdentity-null-requestId",
+    "contract": "GraphicsOperationIdentity",
+    "accepted": false,
+    "json": "{\"requestId\":null,\"clientId\":\"operator\",\"coreEpoch\":\"core-1\"}"
+  },
+  {
+    "id": "GraphicsOperationIdentity-missing-clientId",
+    "contract": "GraphicsOperationIdentity",
+    "accepted": false,
+    "json": "{\"requestId\":\"request-1\",\"coreEpoch\":\"core-1\"}"
+  },
+  {
+    "id": "GraphicsOperationIdentity-null-clientId",
+    "contract": "GraphicsOperationIdentity",
+    "accepted": false,
+    "json": "{\"requestId\":\"request-1\",\"clientId\":null,\"coreEpoch\":\"core-1\"}"
+  },
+  {
+    "id": "GraphicsOperationIdentity-missing-coreEpoch",
+    "contract": "GraphicsOperationIdentity",
+    "accepted": false,
+    "json": "{\"requestId\":\"request-1\",\"clientId\":\"operator\"}"
+  },
+  {
+    "id": "GraphicsOperationIdentity-null-coreEpoch",
+    "contract": "GraphicsOperationIdentity",
+    "accepted": false,
+    "json": "{\"requestId\":\"request-1\",\"clientId\":\"operator\",\"coreEpoch\":null}"
+  },
+  {
+    "id": "GraphicsRevisionIdentity-valid",
+    "contract": "GraphicsRevisionIdentity",
+    "accepted": true,
+    "json": "{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2}"
+  },
+  {
+    "id": "GraphicsRevisionIdentity-additive",
+    "contract": "GraphicsRevisionIdentity",
+    "accepted": true,
+    "json": "{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2,\"future\":{\"v\":1}}"
+  },
+  {
+    "id": "GraphicsRevisionIdentity-array",
+    "contract": "GraphicsRevisionIdentity",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "GraphicsRevisionIdentity-missing-instanceId",
+    "contract": "GraphicsRevisionIdentity",
+    "accepted": false,
+    "json": "{\"coreEpoch\":\"core-1\",\"revision\":2}"
+  },
+  {
+    "id": "GraphicsRevisionIdentity-null-instanceId",
+    "contract": "GraphicsRevisionIdentity",
+    "accepted": false,
+    "json": "{\"instanceId\":null,\"coreEpoch\":\"core-1\",\"revision\":2}"
+  },
+  {
+    "id": "GraphicsRevisionIdentity-missing-coreEpoch",
+    "contract": "GraphicsRevisionIdentity",
+    "accepted": false,
+    "json": "{\"instanceId\":\"featured\",\"revision\":2}"
+  },
+  {
+    "id": "GraphicsRevisionIdentity-null-coreEpoch",
+    "contract": "GraphicsRevisionIdentity",
+    "accepted": false,
+    "json": "{\"instanceId\":\"featured\",\"coreEpoch\":null,\"revision\":2}"
+  },
+  {
+    "id": "GraphicsRevisionIdentity-missing-revision",
+    "contract": "GraphicsRevisionIdentity",
+    "accepted": false,
+    "json": "{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\"}"
+  },
+  {
+    "id": "GraphicsRevisionIdentity-null-revision",
+    "contract": "GraphicsRevisionIdentity",
+    "accepted": false,
+    "json": "{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":null}"
+  },
+  {
+    "id": "GraphicsPreparationFact-valid",
+    "contract": "GraphicsPreparationFact",
+    "accepted": true,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"state\":\"ready\",\"warning\":\"\"}"
+  },
+  {
+    "id": "GraphicsPreparationFact-additive",
+    "contract": "GraphicsPreparationFact",
+    "accepted": true,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"state\":\"ready\",\"warning\":\"\",\"future\":{\"v\":1}}"
+  },
+  {
+    "id": "GraphicsPreparationFact-array",
+    "contract": "GraphicsPreparationFact",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "GraphicsPreparationFact-missing-identity",
+    "contract": "GraphicsPreparationFact",
+    "accepted": false,
+    "json": "{\"state\":\"ready\",\"warning\":\"\"}"
+  },
+  {
+    "id": "GraphicsPreparationFact-null-identity",
+    "contract": "GraphicsPreparationFact",
+    "accepted": false,
+    "json": "{\"identity\":null,\"state\":\"ready\",\"warning\":\"\"}"
+  },
+  {
+    "id": "GraphicsPreparationFact-missing-state",
+    "contract": "GraphicsPreparationFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"warning\":\"\"}"
+  },
+  {
+    "id": "GraphicsPreparationFact-null-state",
+    "contract": "GraphicsPreparationFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"state\":null,\"warning\":\"\"}"
+  },
+  {
+    "id": "GraphicsPreparationFact-missing-warning",
+    "contract": "GraphicsPreparationFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"state\":\"ready\"}"
+  },
+  {
+    "id": "GraphicsPreparationFact-null-warning",
+    "contract": "GraphicsPreparationFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"state\":\"ready\",\"warning\":null}"
+  },
+  {
+    "id": "GraphicsPreparationFact-not-visibility",
+    "contract": "GraphicsPreparationFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"state\":\"on-air\",\"warning\":\"\"}"
+  },
+  {
+    "id": "GraphicsCompositionFact-valid",
+    "contract": "GraphicsCompositionFact",
+    "accepted": true,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"frameNumber\":100,\"evidence\":\"draw-submitted\"}"
+  },
+  {
+    "id": "GraphicsCompositionFact-additive",
+    "contract": "GraphicsCompositionFact",
+    "accepted": true,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"frameNumber\":100,\"evidence\":\"draw-submitted\",\"future\":{\"v\":1}}"
+  },
+  {
+    "id": "GraphicsCompositionFact-array",
+    "contract": "GraphicsCompositionFact",
+    "accepted": false,
+    "json": "[]"
+  },
+  {
+    "id": "GraphicsCompositionFact-missing-identity",
+    "contract": "GraphicsCompositionFact",
+    "accepted": false,
+    "json": "{\"frameNumber\":100,\"evidence\":\"draw-submitted\"}"
+  },
+  {
+    "id": "GraphicsCompositionFact-null-identity",
+    "contract": "GraphicsCompositionFact",
+    "accepted": false,
+    "json": "{\"identity\":null,\"frameNumber\":100,\"evidence\":\"draw-submitted\"}"
+  },
+  {
+    "id": "GraphicsCompositionFact-missing-frameNumber",
+    "contract": "GraphicsCompositionFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"evidence\":\"draw-submitted\"}"
+  },
+  {
+    "id": "GraphicsCompositionFact-null-frameNumber",
+    "contract": "GraphicsCompositionFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"frameNumber\":null,\"evidence\":\"draw-submitted\"}"
+  },
+  {
+    "id": "GraphicsCompositionFact-missing-evidence",
+    "contract": "GraphicsCompositionFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"frameNumber\":100}"
+  },
+  {
+    "id": "GraphicsCompositionFact-null-evidence",
+    "contract": "GraphicsCompositionFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"frameNumber\":100,\"evidence\":null}"
+  },
+  {
+    "id": "GraphicsCompositionFact-zero",
+    "contract": "GraphicsCompositionFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"frameNumber\":0,\"evidence\":\"draw-submitted\"}"
+  },
+  {
+    "id": "GraphicsCompositionFact-fraction",
+    "contract": "GraphicsCompositionFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"frameNumber\":1.5,\"evidence\":\"draw-submitted\"}"
+  },
+  {
+    "id": "GraphicsCompositionFact-unsafe",
+    "contract": "GraphicsCompositionFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"frameNumber\":9007199254740992,\"evidence\":\"draw-submitted\"}"
+  },
+  {
+    "id": "GraphicsCompositionFact-not-delivery",
+    "contract": "GraphicsCompositionFact",
+    "accepted": false,
+    "json": "{\"identity\":{\"instanceId\":\"featured\",\"coreEpoch\":\"core-1\",\"revision\":2},\"frameNumber\":100,\"evidence\":\"delivered\"}"
+  }
+]

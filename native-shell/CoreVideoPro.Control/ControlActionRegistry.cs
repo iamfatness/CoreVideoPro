@@ -132,6 +132,18 @@ public static class ControlActionRegistry
                 }),
             new("graphics.graphic.toggle", "Toggle graphic", "Toggle a graphic/overlay by id.",
                 new[] { new ControlParam("graphicId", s, true) }),
+            new("graphics.instance.create", "Create graphic instance", "Create a hidden native graphic; admission is separate from preparation.",
+                new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
+            new("graphics.instance.update", "Update graphic instance", "Prepare a cue or explicitly update Program without replaying the reveal.",
+                new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
+            new("graphics.instance.cue", "Cue graphic instance", "Prepare the accepted revision for Preview without changing Program.",
+                new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
+            new("graphics.instance.trigger", "Trigger graphic instance", "Show after readiness, hide, or clear an accepted native revision.",
+                new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
+            new("graphics.instance.remove", "Remove graphic instance", "Remove a hidden native graphic instance.",
+                new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
+            new("graphics.program.clear", "Clear native graphic instances", "Cancel pending native instance reveals and hide their Program layers.",
+                new[] { new ControlParam("request", s, true, "Versioned JSON graphics request; explicit channel all") }),
 
             // ---- Audio ------------------------------------------------------------------
             new("audio.zoomMode.set", "Zoom audio mode", "Choose independently routed ISO stems or Zoom's combined fallback mix.",
