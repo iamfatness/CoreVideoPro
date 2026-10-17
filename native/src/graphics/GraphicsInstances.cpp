@@ -10,6 +10,7 @@
 #include "modules/Sha256.h"
 #include "graphics/GraphicsResourceBudget.h"
 #include "graphics/GraphicsTemplate.h"
+#include "graphics/GraphicsTemplateDraft.h"
 
 namespace corevideo::graphics {
 using rpc::Json;
@@ -21,6 +22,19 @@ bool resourceMatches(const std::shared_ptr<const GraphicsPreparedResource>& reso
   if (resource->backend == GraphicsPreparedResource::Backend::Test) return true;
   return resource->deviceIdentity && resource->width > 0 && resource->height > 0 &&
       resource->hasContentHash && resource->contentHash == contentHash;
+}
+bool sameDefinition(const std::shared_ptr<const GraphicsTemplate>& a,const std::shared_ptr<const GraphicsTemplate>& b) {
+  if(a==b) return true;
+  if(!a || !b || a->hash()!=b->hash() || a->assets().size()!=b->assets().size()) return false;
+  for(const auto& entry:a->assets()) {const auto found=b->assets().find(entry.first);if(found==b->assets().end() || found->second->sha256!=entry.second->sha256) return false;}
+  return true;
+}
+compositor::LowerThirdAppearance defaultAppearance(const std::string& templateId) {
+  compositor::LowerThirdAppearance a;a.enabled=true;
+  a.preset=templateId=="minimal-accent" || templateId=="broadcast" ? templateId : "compact-solid";
+  if(templateId=="minimal-accent") {a.backgroundOpacity=0;a.nameSize=40;a.titleSize=26;a.cornerRadius=0;}
+  else if(templateId=="broadcast") {a.nameSize=52;a.titleSize=32;a.padding=24;a.width=.75;a.cornerRadius=0;a.backgroundOpacity=1;}
+  return a;
 }
 Json styleState(const compositor::LowerThirdAppearance& a) {
   return Json::Object{{"version", 1}, {"preset", a.preset}, {"anchor", a.anchor}, {"fontFamily", a.fontFamily},
@@ -75,23 +89,45 @@ bool GraphicsInstances::validId(const std::string& value) {
 
 std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPreview(const Json& draft) {
   updateTemplates();
-  if (!draft.isObject() || draft.asObject().size() > 6) return {};
+  if (!draft.isObject() || draft.asObject().size() > 7) return {};
   for (const auto& [key, _] : draft.asObject())
-    if (key != "templateId" && key != "templateVersion" && key != "fields" && key != "style" && key != "animations" && key != "placement") return {};
+    if (key != "templateId" && key != "templateVersion" && key != "fields" && key != "style" && key != "animations" && key != "placement" && key != "scratch") return {};
   const auto templateId = draft.getString("templateId");
   const auto version = draft.getNumber("templateVersion", 0);
   if (!std::isfinite(version) || std::floor(version) != version || version < 1 || version > 2147483647.) return {};
   const bool compatibility = templateId == "compact-solid" || templateId == "minimal-accent" || templateId == "broadcast";
   auto found = templatesPublication_->definitions.find({templateId, int(version)});
   if ((!compatibility && found == templatesPublication_->definitions.end()) || (compatibility && version != 1)) return {};
-  Revision revision; revision.appearance.enabled = true;
-  revision.appearance.preset = compatibility ? templateId : "compact-solid";
+  Revision revision; revision.appearance=defaultAppearance(templateId);
   if (!compatibility) {
     revision.definition = found->second; revision.templateFields = revision.definition->defaultFields(); revision.placement = revision.definition->defaultPlacement(); revision.placement = revision.definition->defaultPlacement();
     revision.appearance.backgroundOpacity = 1;
   }
   if (!readRevision(draft, revision) || !revision.fieldsReady) return {};
   hashRevision(templateId, revision);
+  if(revision.definition) {
+    const auto* scratch=draft.get("scratch"); std::string manifest,expected;
+    if(scratch && !scratch->isNull()) {
+      if(!scratch->isObject() || scratch->asObject().size()!=2 || !scratch->get("manifest") || !scratch->get("manifest")->isString() || !scratch->get("hash") || !scratch->get("hash")->isString()) return {};
+      manifest=scratch->getString("manifest");expected=scratch->getString("hash");
+    } else {
+      manifest=revision.definition->document().stringify(); static constexpr char hex[]="0123456789abcdef";
+      for(auto byte:revision.definition->hash()) {expected+=hex[byte>>4];expected+=hex[byte&15];}
+    }
+    if(!authoringCompiler_) authoringCompiler_=std::make_shared<GraphicsTemplateDraft>();
+    std::string key;
+    if(!authoringCompiler_->submit(std::move(manifest),expected,revision.definition,key,revision.templateFields,revision.templateInput->brand)) return {};
+    authoringKey_=key;
+    authoringInput_=Json::Object{{"templateId",templateId},{"templateVersion",int(version)},{"manifestHash",expected},{"fields",revision.templateFields},
+      {"style",draft.get("style") ? *draft.get("style") : Json{Json::Object{}}}};
+    auto input=std::make_shared<GraphicsTemplateInput>(); input->definition=revision.definition;
+    input->fields=revision.templateInput->fields; input->brand=revision.templateInput->brand; input->placement=revision.placement;
+    input->draft=authoringCompiler_; input->draftKey=key; revision.templateInput=std::move(input);
+    if(scratch && !scratch->isNull()) {
+      auto identity=std::string(reinterpret_cast<const char*>(revision.contentHash.data()),revision.contentHash.size())+key;
+      revision.contentHash=modules::hashing::sha256(reinterpret_cast<const uint8_t*>(identity.data()),identity.size());
+    }
+  }
   Instance placeholder; placeholder.id = "authoring";
   auto result = layer(placeholder, revision, 1920, 1080);
   result.overlay.graphicsAuthoringRect = result.rect;
@@ -170,6 +206,7 @@ bool GraphicsInstances::readRevision(const Json& request, Revision& revision) {
     }
   }
   std::string error;
+  if(revision.definition && !revision.definition->validateFields(revision.templateFields,false,error)) return false;
   revision.fieldsReady = revision.definition ? revision.definition->validateFields(revision.templateFields, true, error) : !revision.name.empty();
   return revision.sourceId.empty() || (revision.binding && revision.binding->sourceId == revision.sourceId);
 }
@@ -193,7 +230,7 @@ void GraphicsInstances::hashRevision(const std::string& templateId, Revision& re
     const auto& a = revision.appearance;
     const auto alpha = unsigned(std::lround(a.backgroundOpacity * 255)); static constexpr char hex[] = "0123456789ABCDEF";
     const auto background = a.backgroundColor + hex[alpha >> 4] + hex[alpha & 15];
-    auto input = std::make_shared<GraphicsTemplateInput>(); input->definition = revision.definition; input->fields = revision.templateFields;
+    auto input = std::make_shared<GraphicsTemplateInput>(); input->definition = revision.definition; input->fields = revision.templateFields; input->placement=revision.placement;
     input->brand = Json::Object{{"brand.primary", background}, {"brand.onPrimary", a.nameColor},
         {"brand.onPrimaryMuted", a.titleColor}, {"brand.fontBody", a.fontFamily},
         {"brand.secondary", a.titleColor}, {"brand.accent", a.accentColor},
@@ -237,7 +274,7 @@ bool GraphicsInstances::apply(const Json& command) {
   static const std::set<std::string> common{"schemaVersion", "requestId", "clientId", "coreEpoch", "instanceId", "expectedRevision"};
   static const std::map<std::string, std::set<std::string>> actionKeys{
       {"graphics-instance-create", {"templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement"}},
-      {"graphics-instance-update", {"sourceId", "fields", "style", "target", "animations", "binding", "placement"}},
+      {"graphics-instance-update", {"templateVersion", "sourceId", "fields", "style", "target", "animations", "binding", "placement"}},
       {"graphics-instance-cue", {}}, {"graphics-instance-trigger", {"action", "target"}},
       {"graphics-clock-control", {"action","configuration","expectedClockRevision"}},
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}},
@@ -326,20 +363,12 @@ bool GraphicsInstances::apply(const Json& command) {
       return finish(requestId, false, "invalid-scope");
     Revision revision;
     revision.number = revisionClock_ + 1;
-    revision.appearance.enabled = true; revision.appearance.preset = compatibility ? templateId : "compact-solid";
+    revision.appearance=defaultAppearance(templateId);
     if (!compatibility) {
       revision.definition = definition->second; revision.templateFields = revision.definition->defaultFields(); revision.placement = revision.definition->defaultPlacement(); revision.placement = revision.definition->defaultPlacement(); revision.appearance.backgroundOpacity = 1;
       if (const auto* animations = revision.definition->document().get("animations"))
         for (const auto& [phase, value] : animations->asObject())
           GraphicsTransition::read(value, phase == "in" ? revision.entrance : revision.exit);
-    }
-    if (templateId == "minimal-accent") {
-      revision.appearance.backgroundOpacity = 0; revision.appearance.nameSize = 40;
-      revision.appearance.titleSize = 26; revision.appearance.cornerRadius = 0;
-    } else if (templateId == "broadcast") {
-      revision.appearance.nameSize = 52; revision.appearance.titleSize = 32;
-      revision.appearance.padding = 24; revision.appearance.width = .75;
-      revision.appearance.cornerRadius = 0; revision.appearance.backgroundOpacity = 1;
     }
     if (!readRevision(*body, revision)) return finish(requestId, false, "invalid-fields-or-style");
     if (revision.binding && !sources_->contains(*revision.binding)) return finish(requestId, false, "source-identity-changed");
@@ -387,6 +416,16 @@ bool GraphicsInstances::apply(const Json& command) {
     if(instance.clock) if(const auto* fields=body->get("fields")) if(const auto* time=fields->get("time"))
       if(time->stringify()!=instance.draft->templateFields.get("time")->stringify()) return finish(requestId,false,"clock-time-controlled");
     Revision revision = *instance.draft;
+    if(const auto* version=body->get("templateVersion")) {
+      const auto value=version->asNumber();
+      if(value<1 || value>2147483647.) return finish(requestId,false,"template-version-not-installed");
+      if(!revision.definition) { if(value!=1) return finish(requestId,false,"template-version-not-installed"); }
+      else {
+        const auto found=templatesPublication_->definitions.find({instance.templateId,int(value)});
+        if(found==templatesPublication_->definitions.end()) return finish(requestId,false,"template-version-not-installed");
+        revision.definition=found->second;
+      }
+    }
     if (!readRevision(*body, revision)) return finish(requestId, false, "invalid-fields-or-style");
     if (revision.binding && !sources_->contains(*revision.binding)) return finish(requestId, false, "source-identity-changed");
     if (target == "program" && !revision.fieldsReady) return finish(requestId, false, "required-field-empty");
@@ -402,7 +441,7 @@ bool GraphicsInstances::apply(const Json& command) {
     const bool sameBinding = revision.binding.has_value() == old.binding.has_value() &&
         (!revision.binding || GraphicsSourceCatalog::same(*revision.binding, *old.binding));
     if (revision.name == old.name && revision.title == old.title && revision.sourceId == old.sourceId && sameStyle && sameBinding &&
-        revision.placement == old.placement && revision.entrance == old.entrance && revision.exit == old.exit && revision.templateFields.stringify() == old.templateFields.stringify()) {
+        sameDefinition(revision.definition,old.definition) && revision.placement == old.placement && revision.entrance == old.entrance && revision.exit == old.exit && revision.templateFields.stringify() == old.templateFields.stringify()) {
       if (target == "program" && instance.program && instance.program != instance.draft) {
         instance.updatePending = true;
         if (instance.readyRevision == instance.draft->number) {
@@ -618,6 +657,7 @@ void GraphicsInstances::observeZoomSources(const std::vector<modules::ZoomEngine
 
 void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
   bool changed = updateTemplates();
+  changed = updateAuthoring() || changed;
   changed = updateClocks() || changed;
   changed = advanceAnimations() || changed;
   if (frame.frameNumber > 0) for (auto& entry : instances_) {
@@ -713,6 +753,15 @@ void GraphicsInstances::show(Instance& instance, bool fromCue) {
   instance.showPending = instance.updatePending = false;
 }
 
+bool GraphicsInstances::updateAuthoring() {
+  if(!authoringCompiler_) return false;
+  auto publication=authoringCompiler_->poll();
+  if(!publication || publication->key!=authoringKey_ || publication==authoringPublication_) return false;
+  authoringPublication_=publication;
+  authoringState_=Json::Object{{"key",publication->key},{"input",authoringInput_},{"state",publication->definition ? "validated" : "invalid"},{"reason",publication->error},{"layout",publication->layout}};
+  return true;
+}
+
 bool GraphicsInstances::updateClocks() {
   bool changed=false;
   for (auto& entry:instances_) {
@@ -781,6 +830,8 @@ void GraphicsInstances::publish() {
       {"clockRequestedConfiguration",instance.clockRequestedConfiguration},
       {"revision", double(instance.draft->number)}, {"programRevision", instance.program ? double(instance.program->number) : 0.},
       {"cueRevision", instance.cue ? double(instance.cue->number) : 0.},
+      {"cueTemplateVersion",instance.cue && instance.cue->definition ? instance.cue->definition->version() : 1},
+      {"programTemplateVersion",instance.program && instance.program->definition ? instance.program->definition->version() : 1},
       {"cueRequestedRevision", double(instance.cueRequestedRevision)},
       {"cuePending", instance.pendingCue != nullptr}, {"cuePreparation", instance.cuePreparation}, {"cueWarning", instance.cueWarning},
       {"cueFields", instance.cue ? (instance.cue->definition ? instance.cue->templateFields : Json{Json::Object{{"name", instance.cue->name}, {"title", instance.cue->title}}}) : Json{}},
@@ -809,7 +860,7 @@ void GraphicsInstances::publish() {
       {"programStyle", instance.program ? styleState(instance.program->appearance) : Json{}}});
   }
   const auto budget = GraphicsResourceBudget::process().counters();
-  snapshot_ = Json::Object{{"schemaVersion", 1}, {"coreEpoch", epoch_}, {"instances", std::move(rows)},
+  snapshot_ = Json::Object{{"schemaVersion", 1}, {"coreEpoch", epoch_}, {"authoring",authoringState_}, {"instances", std::move(rows)},
       {"resourceBudgetAtStatePublication", Json::Object{{"kind", "allocation-model"},
           {"cpuBytes", double(budget.cpuBytes)}, {"gpuBytes", double(budget.gpuBytes)},
           {"activePreparations", double(budget.activePreparations)}, {"cpuHighWater", double(budget.cpuHighWater)},

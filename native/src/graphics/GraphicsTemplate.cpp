@@ -180,7 +180,7 @@ class Layout {
     need(scalar.isNumber() && std::isfinite(scalar.asNumber()) && scalar.asNumber() >= minimum && scalar.asNumber() <= maximum, "template-geometry-or-number");
     return scalar.asNumber();
   }
-  bool visit(const Json& node, double originX, double originY, GraphicsBox clip, double opacity, int depth, bool flowChild, bool parentVisible = true) {
+  bool visit(const Json& node, double originX, double originY, GraphicsBox clip, double opacity, int depth, bool flowChild, bool parentVisible = true, const std::string& parentId = {}) {
     need(depth <= 8 && ++nodes_ <= 64, "template-layer-limit");
     const auto nodeId = node.getString("id"), type = node.getString("type"); need(validTemplateId(nodeId) && ids_.insert(nodeId).second, "template-layer-id");
     std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata"};
@@ -199,6 +199,7 @@ class Layout {
     p.box = {originX + quantity(node, "x", 0, 8192, flowChild ? 0 : -1), originY + quantity(node, "y", 0, 8192, flowChild ? 0 : -1),
         quantity(node, "width", 1, 8192), quantity(node, "height", 1, 8192)};
     p.clip = intersect(clip, p.box); p.opacity = opacity * quantity(node, "opacity", 0, 1, 1);
+    draw_->nodes.push_back({nodeId,parentId,type,p.box,p.clip,visible && p.opacity>0});
     if (type == "group") {
       const auto flow = stringProperty(node, "flow", "none"); need(flow == "none" || flow == "vertical" || flow == "horizontal", "template-flow");
       const auto padding = quantity(node, "padding", 0, 256, 0), gap = quantity(node, "gap", 0, 256, 0);
@@ -208,7 +209,7 @@ class Layout {
         const auto before = draw_->primitives.size();
         const double step = offset + (populated && flow != "none" ? gap : 0);
         if (visit(child, p.box.x + padding + (flow == "horizontal" ? step : 0), p.box.y + padding + (flow == "vertical" ? step : 0),
-            intersect(p.clip, {p.box.x + padding, p.box.y + padding, std::max(0., p.box.width - padding * 2), std::max(0., p.box.height - padding * 2)}), p.opacity, depth + 1, flow != "none", visible)) {
+            intersect(p.clip, {p.box.x + padding, p.box.y + padding, std::max(0., p.box.width - padding * 2), std::max(0., p.box.height - padding * 2)}), p.opacity, depth + 1, flow != "none", visible, nodeId)) {
           if (flow != "none") offset = step + quantity(child, flow == "vertical" ? "height" : "width", 1, 8192);
           populated = populated || draw_->primitives.size() > before;
         }
@@ -231,7 +232,7 @@ class Layout {
       need((p.fit == "contain" || p.fit == "cover") && (p.imageAlign == "left" || p.imageAlign == "center" || p.imageAlign == "right") &&
           (p.imageVerticalAlign == "top" || p.imageVerticalAlign == "center" || p.imageVerticalAlign == "bottom") && (missing == "error" || missing == "hide"), "template-image-layout");
       const bool collapse = boolean(node, "collapseWhenEmpty");
-      if (assetId.empty()) { need(validate_ || collapse || !visible, "template-image-required"); return false; }
+      if (assetId.empty()) { need(validate_ || collapse || !visible, "template-image-required"); draw_->nodes.back().visible=false; return false; }
       need(validTemplateId(assetId), "template-image-id-required");
       const auto* declarations = document_.get("assets"); need(declarations && declarations->isArray(), "template-image-undeclared");
       const auto declared = std::find_if(declarations->asArray().begin(), declarations->asArray().end(), [&](const auto& d) { return d.getString("id") == assetId; });
@@ -239,7 +240,7 @@ class Layout {
       const auto asset = assets_.find(assetId);
       if (!validate_ && asset == assets_.end()) {
         need(!visible || (boolean(*declared, "optional") && missing == "hide"), "template-image-asset-missing");
-        if (visible) draw_->warnings.push_back("Optional graphics asset omitted: " + assetId); return false;
+        if (visible) draw_->warnings.push_back("Optional graphics asset omitted: " + assetId); draw_->nodes.back().visible=false; return false;
       }
       if (asset != assets_.end()) p.image = asset->second;
     } else {
@@ -251,7 +252,7 @@ class Layout {
       const auto lines = quantity(node, "maxLines", 1, 3, 1); need(std::floor(lines) == lines, "template-max-lines"); p.maxLines = int(lines);
       p.align = stringProperty(node, "align", "left"); need(p.align == "left" || p.align == "center" || p.align == "right", "template-text-alignment");
       p.overflow = stringProperty(node, "overflow", "ellipsis"); need(p.overflow == "ellipsis" || p.overflow == "wrap-then-ellipsis", "template-text-overflow");
-      if (boolean(node, "collapseWhenEmpty") && p.text.empty()) return false;
+      if (boolean(node, "collapseWhenEmpty") && p.text.empty()) {draw_->nodes.back().visible=false;return false;}
     }
     if (!visible) return false;
     draw_->primitives.push_back(std::move(p)); return true;

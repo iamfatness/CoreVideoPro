@@ -74,7 +74,21 @@ void GraphicsTemplateRegistry::run() {
     std::string error;
     auto definition = GraphicsTemplate::load(job->manifest, error);
     GraphicsAssets assets;
-    if (definition && !loadGraphicsAssets(definition->document(), job->packageRoot, assets, error)) definition.reset();
+    if (definition && job->packageRoot.empty() && definition->document().get("assets")) {
+      for(const auto& declaration:definition->document().get("assets")->asArray()) {
+        const auto found=assetPool_.find(declaration.getString("sha256"));
+        if(found==assetPool_.end()) {
+          if(declaration.get("optional") && declaration.get("optional")->asBool()) continue;
+          error="graphics-package-root-required"; definition.reset(); break;
+        }
+        auto asset=graphicsAssetFromBytes(declaration.getString("id"),found->second,error);
+        if(!asset) {definition.reset();break;}
+        const auto file=declaration.getString("file"); const bool png=file.size()>=4 && file.substr(file.size()-4)==".png";
+        const auto& bytes=*asset->encoded; const bool jpeg=bytes.size()>=2 && bytes[0]==0xff && bytes[1]==0xd8;
+        if(png==jpeg) {error="graphics-asset-extension-mismatch";definition.reset();break;}
+        assets.emplace(asset->id,std::move(asset));
+      }
+    } else if (definition && !loadGraphicsAssets(definition->document(), job->packageRoot, assets, error)) definition.reset();
     // Reuse verified immutable bytes across IDs and versions. Only this worker
     // touches the pool; failed/colliding imports never publish new pool entries.
     std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> newAssets;

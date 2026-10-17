@@ -11,6 +11,7 @@
 #include <set>
 
 namespace corevideo::graphics {
+class GraphicsTemplateDraft;
 struct GraphicsBox { double x = 0, y = 0, width = 0, height = 0; };
 struct GraphicsPrimitive {
   std::string id, type, text, font, align, overflow;
@@ -22,11 +23,13 @@ struct GraphicsPrimitive {
   std::shared_ptr<const GraphicsAsset> image;
   std::string fit = "contain", imageAlign = "center", imageVerticalAlign = "center";
 };
+struct GraphicsNodeGeometry { std::string id,parent,type; GraphicsBox box,clip; bool visible=true; };
 struct GraphicsDrawing {
   double width = 0, height = 0;
   std::vector<GraphicsPrimitive> primitives;
   std::vector<std::string> warnings;
   std::set<std::string> usedFields;
+  std::vector<GraphicsNodeGeometry> nodes;
 };
 
 // Immutable, bounded declarative definitions. Parsing/installation never occurs
@@ -56,5 +59,9 @@ class GraphicsTemplate {
 struct GraphicsTemplateInput {
   std::shared_ptr<const GraphicsTemplate> definition;
   rpc::Json fields, brand;
+  std::optional<GraphicsPlacement> placement;
+  std::shared_ptr<GraphicsTemplateDraft> draft;
+  std::string draftKey;
+  mutable std::shared_ptr<const GraphicsTemplateInput> resolvedDraft;
 };
 } // namespace corevideo::graphics

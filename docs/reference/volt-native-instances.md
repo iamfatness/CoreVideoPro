@@ -110,9 +110,16 @@ an on-air update uses the current optimistic draft revision. A core epoch change
 clears selection rather than replaying an old reveal. The WinUI workspace adds
 searchable template/cue lists and adaptive typed fields, shared slider/exact entry,
 color pickers and placement controls. Existing lower-third, caption, brand and
-browser controls remain available in a named section. This development UI is not
-the completed milestone; canvas/layer editing and remaining workflow parity still
-require integration and visual acceptance.
+browser controls remain available in a named section. The private layer editor supports selection, move/resize/nudge, grouping/order,
+visibility/locks, text/font/fill/gradient and verified package image references.
+Native resolved layout boxes drive hit-testing; the shell never reflows text or
+renders the actual graphic. Whole-graphic placement is separate from node edits.
+Scratch changes compile on one latest-only worker without installing a template
+or changing Cue/Program. Saving creates a new immutable version, adopted only by
+explicit Cue/Update. Short/long/blank-secondary/Unicode probes replace private
+text consumers only and cannot be committed as sample copy. The complete
+milestone still requires remaining library, authority/migration and automation
+integration plus output and operator acceptance.
 
 `GraphicsWorkspaceLibrary` saves selected drafts/styles and exact template pins
 through `GraphicsDocumentStore`, separately from production preferences. Saves are
@@ -124,7 +131,15 @@ saved source-bound cue. Loading a different native core never replays Show.
 The development profile can set `COREVIDEO_GRAPHICS_DOCUMENT_PATH` and
 `COREVIDEO_GRAPHICS_ASSET_ROOT`; the normal
 location is `CoreVideoPro/graphics/default.json` under local application data.
-Legacy authority/source-override migration remains incomplete.
+Document schema 2 persists unfinished private scratch edits with the exact parent
+pin, not runtime source generations or arming. Schema 1 loads in memory and is
+upgraded only on explicit save, retaining its backup. Template style presets
+persist non-content typed fields; applying a style validates the installed
+contract and retains copy, intentional blanks, clock values and image choices.
+New cues choose global or scene scope. Subject selection edits only the draft,
+checks the live native source generation, and is undoable. Explicit source text
+copy uses existing operator-name and secondary-line overrides. Legacy
+authority/source-override migration remains incomplete.
 
 The private canvas reuses the leased isolated native authoring monitor. Its
 `set-grade-preview` demand carries `lowerThirdPreview.graphics` with installed

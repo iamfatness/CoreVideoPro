@@ -257,4 +257,16 @@ public sealed class GraphicsCommandGatewayTests
         Assert.True(GraphicsCommandRequest.TryBuild("graphics.clock.control",Request("\"action\":\"pause\""),Observed,out _,out _,out _));
     }
 
+    [Theory]
+    [InlineData("compact-solid")] [InlineData("minimal-accent")] [InlineData("broadcast")]
+    public void ExistingLooksSendOnlyNativeStylePropertiesAndPreserveAnExplicitBlank(string preset)
+    {
+        var fields=JsonSerializer.SerializeToElement(new {name="Ada",title=""});var draft=new NativeGraphicsDraft(preset,1,fields,LowerThirdAppearance.FromPreset(preset),new());
+        var wire=draft.StyleWire();Assert.False(wire.TryGetProperty("isValid",out _));
+        var request=Request("\"templateId\":\""+preset+"\",\"templateVersion\":1,\"scope\":\"global\",\"fields\":"+fields.GetRawText()+",\"style\":"+wire.GetRawText());
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.instance.create",request,Observed,out var command,out _,out _));
+        Assert.Equal("",command!.ExtensionData!["graphics"].GetProperty("fields").GetProperty("title").GetString());
+        Assert.Equal(preset,draft.ForPreview().Style.GetProperty("preset").GetString());
+    }
+
 }

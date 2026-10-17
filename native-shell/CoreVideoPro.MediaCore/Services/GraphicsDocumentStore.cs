@@ -24,12 +24,13 @@ public sealed record GraphicsSavedTemplate(string TemplateId, int TemplateVersio
 /// preferences belong here. Runtime visibility/arming is deliberately absent.</summary>
 public sealed record GraphicsShowDocument
 {
-    public int SchemaVersion { get; init; } = 1;
+    public int SchemaVersion { get; init; } = 2;
     public string ShowId { get; init; } = "default";
     public string Authority { get; init; } = "legacy";
     public IReadOnlyList<GraphicsSavedCue> Cues { get; init; } = [];
     public IReadOnlyList<GraphicsSavedTemplate> Templates { get; init; } = [];
     public IReadOnlyDictionary<string, LowerThirdAppearance> StylePresets { get; init; } = new Dictionary<string, LowerThirdAppearance>();
+    public IReadOnlyDictionary<string, GraphicsSavedStyle> TemplateStyles { get; init; } = new Dictionary<string, GraphicsSavedStyle>();
     public JsonElement? Brand { get; init; }
     public JsonElement? SourceOverrides { get; init; }
     [JsonExtensionData] public Dictionary<string, JsonElement>? Metadata { get; init; }
@@ -41,6 +42,7 @@ public sealed record GraphicsDocumentLoad(GraphicsShowDocument Document, bool Re
 /// enables isolated profiles/tests. Never reads or rewrites production preferences.</summary>
 public sealed class GraphicsDocumentStore
 {
+    public const int CurrentSchemaVersion=2;
     public const int ByteLimit = 2 * 1024 * 1024;
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { WriteIndented = true, MaxDepth = 32 };
     private readonly string _path;
@@ -78,12 +80,13 @@ public sealed class GraphicsDocumentStore
         using var json = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 32 });
         UniqueKeys(json.RootElement);
         if (!json.RootElement.TryGetProperty("schemaVersion", out var schema) || !schema.TryGetInt32(out var version)) throw new InvalidDataException("Missing graphics schema.");
-        if (version > 1) {
+        if (version > CurrentSchemaVersion) {
             _readOnly = true;
             return new(new(), true, backup, $"Graphics schema {version} is newer than this build. Read-only; the original document is preserved.");
         }
-        if (version != 1) throw new InvalidDataException("Unsupported graphics schema.");
+        if (version is not (1 or CurrentSchemaVersion)) throw new InvalidDataException("Unsupported graphics schema.");
         var document = JsonSerializer.Deserialize<GraphicsShowDocument>(bytes, Options) ?? throw new InvalidDataException("Empty graphics document.");
+        if(version==1) document=document with {SchemaVersion=CurrentSchemaVersion};
         Validate(document);
         return new(document, false, backup, backup ? "Recovered the last complete graphics backup. Graphics remain hidden and automation unarmed." : "Graphics workspace loaded. Restore cues explicitly; automation is unarmed.");
     }
@@ -129,7 +132,7 @@ public sealed class GraphicsDocumentStore
     }
     private static void Validate(GraphicsShowDocument document)
     {
-        if (document.SchemaVersion != 1 || string.IsNullOrWhiteSpace(document.ShowId) || document.ShowId.Length > 64 ||
+        if (document.SchemaVersion != CurrentSchemaVersion || string.IsNullOrWhiteSpace(document.ShowId) || document.ShowId.Length > 64 ||
             document.Authority is not ("legacy" or "volt") || document.Cues is null || document.Cues.Count > 64 ||
             document.Templates is null || document.Templates.Count > 16 || document.StylePresets is null || document.StylePresets.Count > 64)
             throw new InvalidDataException("Invalid or oversized graphics workspace.");
@@ -142,9 +145,24 @@ public sealed class GraphicsDocumentStore
                 (cue.ClockConfiguration is not null && !cue.ClockConfiguration.IsValid) || draft.Animations?.In is null || draft.Animations.Out is null || (draft.Placement is not null && !draft.Placement.IsValid) ||
                 draft.Fields.ValueKind != JsonValueKind.Object || draft.Fields.EnumerateObject().Count() > 32)
                 throw new InvalidDataException("Invalid saved graphics cue.");
+            if(draft.Scratch is { } scratch) {
+                if(scratch.Manifest is null || scratch.Hash is not {Length:64} || Encoding.UTF8.GetByteCount(scratch.Manifest)>256*1024 ||
+                    !string.Equals(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(scratch.Manifest))),scratch.Hash,StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Invalid private template checksum.");
+                using var edited=JsonDocument.Parse(scratch.Manifest,new JsonDocumentOptions {MaxDepth=32});UniqueKeys(edited.RootElement);
+                var root=edited.RootElement;
+                if(root.ValueKind!=JsonValueKind.Object || !root.TryGetProperty("templateId",out var id) || id.ValueKind!=JsonValueKind.String || id.GetString()!=draft.TemplateId ||
+                    !root.TryGetProperty("templateVersion",out var version) || version.ValueKind!=JsonValueKind.Number || !version.TryGetInt32(out var number) || number!=draft.TemplateVersion || GraphicsTemplateEditor.Layers(scratch).Count>64)
+                    throw new InvalidDataException("Private template does not match its pinned parent.");
+            }
         }
         foreach (var preset in document.StylePresets)
             if (string.IsNullOrWhiteSpace(preset.Key) || preset.Key.Length > 80 || preset.Value?.IsValid != true) throw new InvalidDataException("Invalid saved graphics style.");
+        if(document.TemplateStyles is null || document.TemplateStyles.Count>64) throw new InvalidDataException("Too many saved template styles.");
+        foreach(var preset in document.TemplateStyles)
+            if(string.IsNullOrWhiteSpace(preset.Key) || preset.Key.Length>80 || preset.Value is not {Appearance.IsValid:true} style ||
+                string.IsNullOrEmpty(style.TemplateId) || style.TemplateId.Length>64 || style.Fields.ValueKind!=JsonValueKind.Object ||
+                Encoding.UTF8.GetByteCount(style.Fields.GetRawText())>65536 || style.Fields.EnumerateObject().Count()>32)
+                throw new InvalidDataException("Invalid saved template style.");
         foreach (var template in document.Templates)
             if (template is null || string.IsNullOrEmpty(template.TemplateId) || template.TemplateId.Length > 64 || template.TemplateVersion < 1 ||
                 template.ManifestHash is not { Length: 64 } || !template.ManifestHash.All(Uri.IsHexDigit) ||

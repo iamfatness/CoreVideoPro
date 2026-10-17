@@ -26,7 +26,7 @@ public sealed class GraphicsWorkspaceLibrary
         if (_session.Draft is not { } draft || _session.Selected is not { } selected) return Fail("Select a cue before saving.");
         if (string.IsNullOrWhiteSpace(name) || name.Length > 128) return Fail("Use a cue name of 1–128 characters.");
         var cues = Document.Cues.ToList(); var index = cues.FindIndex(c => c.Id == selected.InstanceId);
-        var saved = new GraphicsSavedCue { Id = selected.InstanceId, Name = name.Trim(), Scope = selected.Scope, SceneId = selected.SceneId, SourceId = selected.SourceId, Draft = draft, ClockConfiguration=selected.Clock is { } clock ? clock.Configuration with { RestoreRemainingSeconds=clock.Configuration.Mode=="countdown" ? clock.RemainingSeconds : null } : null };
+        var saved = new GraphicsSavedCue { Id = selected.InstanceId, Name = name.Trim(), Scope = selected.Scope, SceneId = selected.SceneId, SourceId = draft.Binding?.SourceId ?? "", Draft = draft, ClockConfiguration=selected.Clock is { } clock ? clock.Configuration with { RestoreRemainingSeconds=clock.Configuration.Mode=="countdown" ? clock.RemainingSeconds : null } : null };
         if (index < 0) cues.Add(saved); else cues[index] = saved;
         var templates = Document.Templates.ToList();
         if (draft.Declarative) {
@@ -44,11 +44,21 @@ public sealed class GraphicsWorkspaceLibrary
     {
         await LoadAsync();
         if (_session.Draft is not { } draft || string.IsNullOrWhiteSpace(name) || name.Length > 80) return Fail("Select a cue and use a style name of 1–80 characters.");
+        if(draft.Declarative) {
+            if(_session.Template is not { } template) return Fail("The installed template is unavailable.");
+            var presets=Document.TemplateStyles.ToDictionary(p=>p.Key,p=>p.Value,StringComparer.Ordinal);
+            presets[name.Trim()]=GraphicsTemplateStyle.Capture(draft,template);
+            return await Save(Document with {TemplateStyles=presets},"Template style saved without name, title, clock or image copy. Program is unchanged.");
+        }
         var styles = Document.StylePresets.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal); styles[name.Trim()] = draft.Style;
         return await Save(Document with { StylePresets = styles }, "Style preset saved. Draft, Cue and Program are unchanged.");
     }
     public void ApplyStyle(string name)
     {
+        if(_session.Draft is {Declarative:true} draft && Document.TemplateStyles.TryGetValue(name,out var saved)) {
+            if(_session.Template is not { } template || !GraphicsTemplateStyle.TryApply(draft,template,saved,out var edited)) {Fail("This style is incompatible with the selected template version. Your draft is retained.");return;}
+            _session.Edit(edited);Status="Template style loaded privately. Copy and intentional blanks are retained.";Changed?.Invoke(this,EventArgs.Empty);return;
+        }
         if (Document.StylePresets.TryGetValue(name, out var style)) { _session.SetStyle(style); Status = "Style loaded into the private draft. Cue or Update remains explicit."; Changed?.Invoke(this, EventArgs.Empty); }
     }
     public async Task<bool> RemoveSavedAsync(string id) {

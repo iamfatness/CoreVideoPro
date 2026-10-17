@@ -76,6 +76,7 @@ class GraphicsInstances {
   bool updateTemplates();
   bool advanceAnimations();
   bool updateClocks();
+  bool updateAuthoring();
   std::function<double()> monotonicMs_;
   std::map<std::string, Instance> instances_;
   struct Operation { std::string clientId, requestId, fingerprint; rpc::Json result; };
@@ -85,6 +86,10 @@ class GraphicsInstances {
   uint64_t revisionClock_ = 0;
   rpc::Json lastResult_;
   GraphicsTemplateRegistry templates_;
+  std::shared_ptr<GraphicsTemplateDraft> authoringCompiler_;
+  std::shared_ptr<const void> authoringPublication_;
+  std::string authoringKey_;
+  rpc::Json authoringInput_,authoringState_;
   std::shared_ptr<const GraphicsTemplateRegistry::Publication> templatesPublication_;
   rpc::Json snapshot_ = rpc::Json::Object{{"schemaVersion", 1}, {"instances", rpc::Json::Array{}}};
 };

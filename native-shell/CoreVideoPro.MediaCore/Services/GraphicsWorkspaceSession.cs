@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.MediaCore.Services;
@@ -15,12 +16,14 @@ public sealed class GraphicsWorkspaceSession
     private NativeGraphicsDraft? _gesture, _original;
     private string _statusSignature = "";
     private long _draftBaseRevision;
-    private sealed record EditState(NativeGraphicsDraft Draft, NativeGraphicsDraft Original, long BaseRevision, NativeGraphicsDraft[] Undo);
+    private sealed record EditState(NativeGraphicsDraft Draft, NativeGraphicsDraft Original, long BaseRevision, NativeGraphicsDraft[] Undo,string SelectedLayer="");
     private readonly Dictionary<string,EditState> _privateEdits = new(StringComparer.Ordinal);
+    private readonly Dictionary<(string,int),EditState> _browseEdits=[];
     private void RememberDraft()
     {
         if (SelectedId.Length != 0 && Draft is not null && _original is not null)
-            _privateEdits[SelectedId] = new(Draft,_original,_draftBaseRevision,_undo.ToArray());
+            _privateEdits[SelectedId] = new(Draft,_original,_draftBaseRevision,_undo.ToArray(),SelectedLayerId);
+        else if(Draft is not null && _original is not null) _browseEdits[(Draft.TemplateId,Draft.TemplateVersion)]=new(Draft,_original,0,_undo.ToArray(),SelectedLayerId);
     }
 
     private NativeGraphicsOperationResult? _lastOperation;
@@ -31,10 +34,41 @@ public sealed class GraphicsWorkspaceSession
     public event EventHandler? PreviewChanged;
     public NativeGraphicsState? State { get; private set; }
     public string SelectedId { get; private set; } = "";
+    public string SelectedLayerId { get; private set; } = "";
+    public void SelectLayer(string id) { if(Busy || id==SelectedLayerId) return;EndGesture();SelectedLayerId=id;Changed?.Invoke(this,EventArgs.Empty); }
     public NativeGraphicsInstance? Selected => State?.Instances.FirstOrDefault(i => i.InstanceId == SelectedId);
     public NativeGraphicsTemplate? Template => State?.Templates.FirstOrDefault(t => t.TemplateId == Draft?.TemplateId && t.TemplateVersion == Draft.TemplateVersion);
     public NativeGraphicsDraft? Draft { get; private set; }
-    public NativeGraphicsDraft? Preview => CompareOriginal ? _original : Draft;
+    public NativeGraphicsDraft? Preview {
+        get {
+            var preview=CompareOriginal?_original:Draft;
+            if(preview is not null && Selected?.Clock is { } clock) {
+                var fields=preview.Fields.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone());fields["time"]=JsonSerializer.SerializeToElement(clock.Text);
+                preview=preview with {Fields=JsonSerializer.SerializeToElement(fields,Json)};
+            }
+            if(preview is not null && PreviewSample!="current") {
+                var template=State?.Templates.FirstOrDefault(t=>t.TemplateId==preview.TemplateId && t.TemplateVersion==preview.TemplateVersion);
+                var sampled=GraphicsPreviewSamples.Apply(preview,template,PreviewSample);
+                var values=sampled.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone());
+                preview=preview with {Fields=JsonSerializer.SerializeToElement(values,Json)};
+            }
+            return preview;
+        }
+    }
+    public NativeGraphicsLayout? AuthoringLayout {
+        get {
+            if(Preview is not { } preview || State?.Authoring is not {State:"validated",Input:{ } input,Layout:{ } layout}) return null;
+            var template=State.Templates.FirstOrDefault(t=>t.TemplateId==preview.TemplateId && t.TemplateVersion==preview.TemplateVersion);
+            if(input.TemplateId!=preview.TemplateId || input.TemplateVersion!=preview.TemplateVersion || input.ManifestHash!=(preview.Scratch?.Hash ?? template?.ManifestHash) ||
+                input.Fields.ValueKind!=JsonValueKind.Object || !JsonElement.DeepEquals(input.Fields,preview.Fields) ||
+                layout.Nodes.Count>64 || layout.Width is <1 or >8192 || layout.Height is <1 or >8192 || !double.IsFinite(layout.Width) || !double.IsFinite(layout.Height)) return null;
+            if(input.Style.ValueKind==JsonValueKind.Object && input.Style.TryGetProperty("fontFamily",out var font) && font.GetString()!=preview.Style.FontFamily) return null;
+            if(layout.Nodes.Any(n=>new[] {n.X,n.Y,n.Width,n.Height,n.ClipX,n.ClipY,n.ClipWidth,n.ClipHeight}.Any(v=>!double.IsFinite(v)) || n.Width<0 || n.Height<0 || n.ClipWidth<0 || n.ClipHeight<0)) return null;
+            return layout;
+        }
+    }
+    public string PreviewSample { get; private set; }="current";
+    public void SetPreviewSample(string sample) {if(sample is not ("current" or "short" or "long" or "blank" or "unicode")) return;PreviewSample=sample;NotifyPreview();}
     public bool CompareOriginal { get; private set; }
     public bool Busy { get; private set; }
     public bool ImportBusy { get; private set; }
@@ -67,14 +101,15 @@ public sealed class GraphicsWorkspaceSession
         var epochChanged = State is not null && State.CoreEpoch != state.CoreEpoch;
         var clockTextChanged = Selected?.Clock?.Text != state.Instances.FirstOrDefault(i=>i.InstanceId==SelectedId)?.Clock?.Text;
         State = state;
+        foreach(var key in _browseEdits.Keys.Where(key=>!state.Templates.Any(t=>t.TemplateId==key.Item1 && t.TemplateVersion==key.Item2)).ToArray()) _browseEdits.Remove(key);
         foreach (var id in _privateEdits.Keys.Where(id=>!state.Instances.Any(i=>i.InstanceId==id)).ToArray()) _privateEdits.Remove(id);
         if (epochChanged) {
-            SelectedId = ""; Draft = _original = null; _undo.Clear(); _gesture = null; _privateEdits.Clear();
+            SelectedId = ""; SelectedLayerId=""; Draft = _original = null; _undo.Clear(); _gesture = null; _privateEdits.Clear(); _browseEdits.Clear();
             Status = "Native core restarted. Graphics remain hidden; choose a saved cue explicitly.";
             PreviewChanged?.Invoke(this, EventArgs.Empty);
         }
         // Preserve collection selection, focus and local drafts as frame facts advance.
-        var signature = state.CoreEpoch + "|" + string.Join('|', state.Instances.Select(i =>
+        var signature = state.CoreEpoch + "|" + string.Join('|',state.Sources.Select(s=>$"{s.Identity}:{s.DisplayName}:{s.VideoOn}")) + "|" + state.Authoring?.Key + "|" + string.Join('|', state.Instances.Select(i =>
             $"{i.InstanceId}:{i.Revision}:{i.CueRevision}:{i.CuePending}:{i.ProgramRevision}:{i.Preparation}:{i.Visibility}:{i.CurrentlyComposed}:{i.Warning}:{i.CueWarning}:{i.BindingState}:{i.Clock?.State}:{i.Clock?.Text}:{i.ClockConfigurationRevision}")) +
             "|" + string.Join('|', state.Templates.Select(t => $"{t.TemplateId}:{t.TemplateVersion}:{t.ManifestHash}")) +
             "|" + string.Join('|', state.TemplateInstalls.Select(i => $"{i.ClientId}:{i.RequestId}:{i.State}:{i.Reason}"));
@@ -87,11 +122,11 @@ public sealed class GraphicsWorkspaceSession
     {
         var item = State?.Instances.FirstOrDefault(i => i.InstanceId == id);
         if (item is null || Busy) return;
-        RememberDraft();
-        SelectedId = id; _undo.Clear(); _gesture = null; CompareOriginal = false;
+        EndGesture();RememberDraft();
+        SelectedId = id; SelectedLayerId=""; PreviewSample="current"; _undo.Clear(); _gesture = null; CompareOriginal = false;
         _draftBaseRevision = item.Revision;
         Draft = From(item, false); _original = From(item, item.ProgramRevision > 0);
-        if (_privateEdits.TryGetValue(id,out var saved)) { Draft=saved.Draft; _original=saved.Original; _draftBaseRevision=saved.BaseRevision; _undo.AddRange(saved.Undo); }
+        if (_privateEdits.TryGetValue(id,out var saved)) { Draft=saved.Draft; _original=saved.Original; _draftBaseRevision=saved.BaseRevision; _undo.AddRange(saved.Undo); SelectedLayerId=saved.SelectedLayer; }
         Status = item.ProgramRevision > 0 ? "Editing on-air instance — changes not yet applied." : "Private draft — Cue and Program are unchanged.";
         Changed?.Invoke(this, EventArgs.Empty); PreviewChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -103,9 +138,49 @@ public sealed class GraphicsWorkspaceSession
         Status = "Private draft — use Cue to Preview or Update on air to apply.";
         Changed?.Invoke(this, EventArgs.Empty); PreviewChanged?.Invoke(this, EventArgs.Empty);
     }
+    private NativeGraphicsScratch? _parentDocument;
+    private string _parentDocumentHash="";
+    public NativeGraphicsScratch? TemplateDocument {
+        get {
+            if(Draft?.Scratch is { } edited) return edited;
+            if(Template is not { Definition: { } definition } template) return null;
+            if(_parentDocument is null || _parentDocumentHash!=template.ManifestHash) { _parentDocument=NativeGraphicsScratch.From(definition); _parentDocumentHash=template.ManifestHash; }
+            return _parentDocument;
+        }
+    }
+    public void EditTemplate(Func<NativeGraphicsScratch,NativeGraphicsScratch> change)
+    {
+        if(Busy || Draft is not { Declarative:true } draft || TemplateDocument is not { } document) return;
+        try {
+            var edited=change(document);
+            Edit(draft with { Scratch=edited.Hash==Template?.ManifestHash ? null : edited });
+        } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) {
+            Status=ex.Message; Changed?.Invoke(this,EventArgs.Empty);
+        }
+    }
+    public void SetLayerNumber(string id,string property,double value)=>SetLayerNumbers(id,new Dictionary<string,double> {[property]=value});
+    public void SetLayerNumbers(string id,IReadOnlyDictionary<string,double> values)
+    {
+        if(Busy || Draft is not { } draft || TemplateDocument is not { } document) return;
+        if(GraphicsTemplateEditor.Layers(document).FirstOrDefault(l=>l.Id==id)?.Locked==true) {Status="Unlock the layer or its parent before editing.";Changed?.Invoke(this,EventArgs.Empty);return;}
+        try {
+            var layer=GraphicsTemplateEditor.Layer(document,id);
+            var fields=draft.Fields.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone());
+            foreach(var pair in values) {
+                if(!double.IsFinite(pair.Value)) throw new InvalidDataException("Layer values must be finite.");
+                if(layer.TryGetProperty(pair.Key,out var current) && current.ValueKind==JsonValueKind.Object && current.TryGetProperty("field",out var field)) {
+                    var fieldId=field.GetString()!;var descriptor=Template?.Fields.FirstOrDefault(f=>f.Id==fieldId);
+                    var value=Math.Clamp(pair.Value,descriptor?.Minimum ?? -1e9,descriptor?.Maximum ?? 1e9);
+                    fields[fieldId]=JsonSerializer.SerializeToElement(value);
+                } else document=GraphicsTemplateEditor.Set(document,id,pair.Key,JsonSerializer.SerializeToElement(pair.Value));
+            }
+            Edit(draft with {Fields=JsonSerializer.SerializeToElement(fields,Json),Scratch=document.Hash==Template?.ManifestHash?null:document});
+        } catch(Exception ex) when(ex is InvalidDataException or InvalidOperationException or JsonException or ArgumentException) {Status=ex.Message;Changed?.Invoke(this,EventArgs.Empty);}
+    }
     public void SetField(string field, JsonElement value)
     {
         if (Draft is null) return;
+        PreviewSample="current";
         var fields = Draft.Fields.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal);
         fields[field] = value.Clone(); Edit(Draft with { Fields = JsonSerializer.SerializeToElement(fields, Json) });
     }
@@ -126,6 +201,21 @@ public sealed class GraphicsWorkspaceSession
         Draft = From(selected,false); _original=From(selected,selected.ProgramRevision>0); _draftBaseRevision=selected.Revision;
         _privateEdits.Remove(selected.InstanceId); _undo.Clear(); _gesture=null; CompareOriginal=false; NotifyPreview();
     }
+    public void SetBinding(CoreVideoPro.MediaCore.Contracts.SourceInstanceIdentity? binding)
+    {
+        if(Draft is not { } draft) return;
+        if(binding is not null && State?.Sources.Any(s=>s.Identity==binding && s.VideoOn)!=true) {Status="This source generation is unavailable. Choose a current source.";Changed?.Invoke(this,EventArgs.Empty);return;}
+        Edit(draft with {Binding=binding});
+    }
+    public void CopySourceText(string name,string title)
+    {
+        if(Draft is not { } draft) return;
+        var fields=draft.Fields.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone());
+        var available=Template?.Fields;
+        if(!draft.Declarative || available?.Any(f=>f.Id=="name" && f.Type=="string")==true) fields["name"]=JsonSerializer.SerializeToElement(name);
+        if(!draft.Declarative || available?.Any(f=>f.Id=="title" && f.Type=="string")==true) fields["title"]=JsonSerializer.SerializeToElement(title);
+        Edit(draft with {Fields=JsonSerializer.SerializeToElement(fields,Json)});
+    }
     public void SetCompare(bool value) { CompareOriginal = value; NotifyPreview(); }
     private void NotifyPreview() { Changed?.Invoke(this, EventArgs.Empty); PreviewChanged?.Invoke(this, EventArgs.Empty); }
     private void PushUndo(NativeGraphicsDraft value) { if (_undo.Count == 64) _undo.RemoveAt(0); _undo.Add(value); }
@@ -143,9 +233,10 @@ public sealed class GraphicsWorkspaceSession
     }
     public void Browse(NativeGraphicsTemplate template)
     {
-        if (Busy) return;
-        RememberDraft(); SelectedId=""; _undo.Clear(); _gesture=null; CompareOriginal=false; _draftBaseRevision=0;
+        if (Busy || (Selected is null && Draft?.TemplateId==template.TemplateId && Draft.TemplateVersion==template.TemplateVersion)) return;
+        EndGesture();RememberDraft(); SelectedId=""; SelectedLayerId=""; PreviewSample="current"; _undo.Clear(); _gesture=null; CompareOriginal=false; _draftBaseRevision=0;
         Draft=_original=NewDraft(template);
+        if(_browseEdits.TryGetValue((template.TemplateId,template.TemplateVersion),out var saved)) {Draft=saved.Draft;_original=saved.Original;_undo.AddRange(saved.Undo);SelectedLayerId=saved.SelectedLayer;}
         Status="Private library preview — edit this look, then Create hidden cue. Program is unchanged."; NotifyPreview();
     }
     public Task<bool> CreateAsync(NativeGraphicsTemplate template, string scope = "global", string sceneId = "", CancellationToken cancellation = default) =>
@@ -153,12 +244,13 @@ public sealed class GraphicsWorkspaceSession
             var draft = Selected is null && Draft?.TemplateId == template.TemplateId && Draft.TemplateVersion == template.TemplateVersion ? Draft : NewDraft(template);
             var id = "graphic-" + Guid.NewGuid().ToString("N");
             if (!await Send("graphics.instance.create", new() { ["instanceId"] = id, ["templateId"] = template.TemplateId,
-                ["templateVersion"] = template.TemplateVersion, ["scope"] = scope, ["sceneId"] = sceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement }, cancellation)) return false;
+                ["templateVersion"] = template.TemplateVersion, ["scope"] = scope, ["sceneId"] = sceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["binding"] = draft.Binding }, cancellation)) return false;
             // Selection here is deliberate operator intent, not metadata refresh.
-            Busy = false; Select(id); Busy = true; return true;
+            Busy = false; Select(id); Busy = true; if(draft.Scratch is not null) {Draft=draft;NotifyPreview();} return true;
         });
 
     public Task<bool> CueAsync(CancellationToken cancellation = default) => Run(async () => {
+        if(PreviewSample!="current") {Status="Return to your draft values before cueing; samples never change accepted copy.";return false;}
         if (!await CommitDraft("cue", cancellation)) return false;
         // The commit result identifies the accepted revision. A newer snapshot
         // may already contain another client's edit; never cue that edit.
@@ -166,6 +258,7 @@ public sealed class GraphicsWorkspaceSession
             ["expectedRevision"] = _draftBaseRevision }, cancellation);
     });
     public Task<bool> UpdateProgramAsync(CancellationToken cancellation = default) => Run(() => {
+        if(PreviewSample!="current") {Status="Return to your draft values before updating on air.";return Task.FromResult(false);}
         if (Selected is not { ProgramRevision: > 0 }) { Status = "Show a prepared Cue before updating it on air."; return Task.FromResult(false); }
         return CommitDraft("program", cancellation);
     });
@@ -187,6 +280,34 @@ public sealed class GraphicsWorkspaceSession
         if (result) { SelectedId = ""; Draft = _original = null; _undo.Clear(); PreviewChanged?.Invoke(this, EventArgs.Empty); }
         return result;
     });
+    public bool TemplateSaveBusy { get; private set; }
+    public async Task<bool> SaveTemplateVersionAsync(CancellationToken cancellation=default)
+    {
+        if(TemplateSaveBusy || Draft is not { Scratch: { } scratch } before || Template is not { } parent) return false;
+        var epoch=State?.CoreEpoch; var selectedId=SelectedId; TemplateSaveBusy=true; Changed?.Invoke(this,EventArgs.Empty);
+        try {
+            var document=System.Text.Json.Nodes.JsonNode.Parse(scratch.Manifest)!.AsObject();
+            var version=checked((State?.Templates.Where(t=>t.TemplateId==parent.TemplateId).Select(t=>t.TemplateVersion).DefaultIfEmpty(parent.TemplateVersion).Max() ?? parent.TemplateVersion)+1);
+            document["templateVersion"]=version;
+            if(!await Send("graphics.template.install",new() { ["manifest"]=document.ToJsonString(),["packageRoot"]=parent.PackageRoot },cancellation)) return false;
+            var until=DateTime.UtcNow.AddSeconds(5); NativeGraphicsTemplate? installed=null;
+            do {
+                await Task.Delay(100,cancellation); await Send("graphics.template.list",[],cancellation);
+                if(State?.CoreEpoch!=epoch) {Status="Native core restarted. Template save did not change Program.";return false;}
+                installed=State?.Templates.FirstOrDefault(t=>t.TemplateId==parent.TemplateId && t.TemplateVersion==version);
+            } while(installed is null && DateTime.UtcNow<until);
+            if(installed is null) {Status="The template version is not installed. Check import diagnostics; the previous version and Program are retained.";return false;}
+            if(installed.Definition is not { } actual || !JsonElement.DeepEquals(JsonSerializer.SerializeToElement(document),actual)) {
+                Status="Another import owns that template version. Your private edits and Program were retained. Save again as a new version.";return false;
+            }
+            if(SelectedId==selectedId && Draft?.Scratch?.Hash==scratch.Hash && Draft.TemplateId==before.TemplateId && Draft.TemplateVersion==before.TemplateVersion) {
+                Draft=Draft with { TemplateVersion=version,Scratch=null }; _gesture=null; CompareOriginal=false;
+                Status="Template version saved. Cue or Update explicitly adopts it; the on-air version is unchanged."; NotifyPreview();
+            } else Status="Template version saved. Your newer private edits were retained.";
+            return true;
+        } catch(Exception ex) when(ex is not OutOfMemoryException) {Status=ex.Message;return false;}
+        finally {TemplateSaveBusy=false;Changed?.Invoke(this,EventArgs.Empty);}
+    }
     public Task<bool> ImportAsync(string manifest, CancellationToken cancellation = default, string packageRoot = "") => Run(() => Send("graphics.template.install", new() { ["manifest"] = manifest, ["packageRoot"] = packageRoot }, cancellation));
     public async Task<bool> ImportPackageAsync(string path, CancellationToken cancellation = default)
     {
@@ -209,6 +330,7 @@ public sealed class GraphicsWorkspaceSession
         if (binding is not null) body["binding"] = binding;
         if (!await Send("graphics.instance.create", body, cancellation)) return false;
         Busy = false; Select(id); Busy = true;
+        Draft=draft with {Binding=binding};NotifyPreview();
         if (cue.ClockConfiguration is { } clock && !await SelectedCommand("graphics.clock.control",new() { ["action"]="configure",["configuration"]=clock,["expectedClockRevision"]=Selected?.ClockConfigurationRevision },cancellation)) return false;
         Status = "Restored hidden. Cue and Show remain explicit; automation is unarmed."; return true;
     });
@@ -221,9 +343,10 @@ public sealed class GraphicsWorkspaceSession
     private async Task<bool> CommitDraft(string target, CancellationToken cancellation)
     {
         if (Draft is not { } draft || Selected is not { } selected) { Status = "Choose a cue first."; return false; }
+        if(draft.Scratch is not null) { Status="Save the edited template as an immutable version before Cue or Update."; return false; }
         var fields = selected.Clock is null ? draft.Fields : JsonSerializer.SerializeToElement(draft.Fields.EnumerateObject().Where(p=>p.Name!="time").ToDictionary(p=>p.Name,p=>p.Value.Clone()),Json);
         var accepted = await Send("graphics.instance.update", new() { ["instanceId"] = selected.InstanceId, ["expectedRevision"] = _draftBaseRevision,
-            ["target"] = target, ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement }, cancellation);
+            ["target"] = target, ["templateVersion"] = draft.TemplateVersion, ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["binding"] = draft.Binding }, cancellation);
         if (accepted && _lastOperation is { CurrentRevision: > 0 } result && result.InstanceId == selected.InstanceId)
             _draftBaseRevision = result.CurrentRevision;
         return accepted;
@@ -255,15 +378,15 @@ public sealed class GraphicsWorkspaceSession
     private NativeGraphicsDraft From(NativeGraphicsInstance item, bool program)
     {
         var fields = JsonSerializer.SerializeToElement(program ? item.ProgramFields ?? item.Fields : item.Fields, Json);
-        var template = State?.Templates.FirstOrDefault(t => t.TemplateId == item.TemplateId && t.TemplateVersion == item.TemplateVersion);
+        var template = State?.Templates.FirstOrDefault(t => t.TemplateId == item.TemplateId && t.TemplateVersion == (program && item.ProgramTemplateVersion>0 ? item.ProgramTemplateVersion : item.TemplateVersion));
         if (template?.Runtime == "declarative") {
             var names = template.Fields.Select(f => f.Id).ToHashSet(StringComparer.Ordinal);
             fields = JsonSerializer.SerializeToElement(fields.EnumerateObject().Where(p => names.Contains(p.Name))
                 .ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal), Json);
         }
-        return new(item.TemplateId, item.TemplateVersion, fields, program ? item.ProgramStyle ?? item.Style : item.Style,
-            program ? item.ProgramAnimations ?? item.Animations : item.Animations, program ? item.ProgramPlacement : item.Placement);
+        return new(item.TemplateId, program && item.ProgramTemplateVersion > 0 ? item.ProgramTemplateVersion : item.TemplateVersion, fields, program ? item.ProgramStyle ?? item.Style : item.Style,
+            program ? item.ProgramAnimations ?? item.Animations : item.Animations, program ? item.ProgramPlacement : item.Placement) {Binding=program ? item.ProgramBinding : item.Binding};
     }
     private static bool Same(NativeGraphicsDraft a, NativeGraphicsDraft b) =>
-        a.TemplateId == b.TemplateId && a.TemplateVersion == b.TemplateVersion && a.Style == b.Style && a.Animations == b.Animations && a.Placement == b.Placement && JsonElement.DeepEquals(a.Fields, b.Fields);
+        a.Binding == b.Binding && a.TemplateId == b.TemplateId && a.TemplateVersion == b.TemplateVersion && a.Style == b.Style && a.Animations == b.Animations && a.Placement == b.Placement && a.Scratch?.Hash==b.Scratch?.Hash && JsonElement.DeepEquals(a.Fields, b.Fields);
 }

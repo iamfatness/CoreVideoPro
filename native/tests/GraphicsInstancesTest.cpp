@@ -1,4 +1,5 @@
 #include "graphics/GraphicsInstances.h"
+#include "graphics/GraphicsTemplate.h"
 #include "gtest/gtest.h"
 #include <chrono>
 #include <thread>
@@ -769,4 +770,50 @@ TEST(GraphicsInstances, EmptyAndOtherScopePassesPreserveAuthoredOrderExactly) {
   ASSERT_TRUE(create(state)); ready(state,1); ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
   state.append(plan,false,{},GraphicsInstances::ScopePass::Scene);
   ASSERT_EQ(2u,plan.layers.size()); EXPECT_EQ(91,plan.layers[0].order); EXPECT_EQ(-5,plan.layers[1].order);
+}
+
+TEST(GraphicsInstances, AuthoringGeometryUsesNativeFlowAndPublishesNoAcceptedInstance) {
+  GraphicsInstances state{"test-core"};
+  auto input=Json::Object{{"templateId","corporate-lower-third"},{"templateVersion",1},{"fields",Json::Object{{"name","Ada"},{"title",""}}}};
+  ASSERT_TRUE(state.authoringPreview(input));
+  const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+  while((!state.snapshot().get("authoring") || state.snapshot().get("authoring")->isNull()) && std::chrono::steady_clock::now()<until) {state.observe({});std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+  const auto* authoring=state.snapshot().get("authoring");ASSERT_TRUE(authoring);EXPECT_EQ("validated",authoring->getString("state"));
+  const auto* layout=authoring->get("layout");ASSERT_TRUE(layout);EXPECT_EQ(1050,layout->getNumber("width"));
+  const auto& nodes=layout->get("nodes")->asArray();ASSERT_EQ(4u,nodes.size());
+  const auto name=std::find_if(nodes.begin(),nodes.end(),[](const auto& n){return n.getString("id")=="name-text";});
+  const auto title=std::find_if(nodes.begin(),nodes.end(),[](const auto& n){return n.getString("id")=="title-text";});
+  ASSERT_NE(nodes.end(),name);ASSERT_NE(nodes.end(),title);EXPECT_EQ("text-stack",name->getString("parent"));EXPECT_EQ(24,name->getNumber("x"));EXPECT_EQ(20,name->getNumber("y"));
+  EXPECT_EQ(90,title->getNumber("y"));EXPECT_FALSE(title->get("visible")->asBool());
+  EXPECT_TRUE(state.snapshot().get("instances")->asArray().empty());EXPECT_FALSE(state.hasCue());
+}
+
+TEST(GraphicsInstances, NewTemplateVersionAdoptsOnlyOnExplicitPreparedUpdateAndReusesVerifiedBuiltinAssets) {
+  GraphicsInstances state{"test-core"};
+  ASSERT_TRUE(state.apply(request("graphics-instance-create",{{"templateId","logo-accent"},{"templateVersion",1},{"scope","global"},{"animations",Json::Object{{"in",Json::Object{{"type","none"}}}}}})));
+  ready(state,1);ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+  auto publication=std::find_if(corevideo::graphics::GraphicsTemplate::curated().begin(),corevideo::graphics::GraphicsTemplate::curated().end(),[](const auto& d){return d->id()=="logo-accent";});
+  ASSERT_NE(corevideo::graphics::GraphicsTemplate::curated().end(),publication);
+  auto document=(*publication)->document().asObject();document["templateVersion"]=2;
+  ASSERT_TRUE(state.apply(request("graphics-template-install",{{"manifest",Json(document).stringify()}})));
+  const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(3);bool installed=false;
+  do {state.observe({});for(const auto& item:state.snapshot().get("templates")->asArray()) if(item.getString("templateId")=="logo-accent" && item.getNumber("templateVersion")==2) installed=true;
+    if(!installed) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  } while(!installed && std::chrono::steady_clock::now()<until);
+  ASSERT_TRUE(installed);EXPECT_EQ(1,row(state).getNumber("programTemplateVersion"));EXPECT_EQ(1,row(state).getNumber("templateVersion"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-update",{{"target","program"},{"templateVersion",2}})));
+  EXPECT_EQ(1,row(state).getNumber("programTemplateVersion"));EXPECT_EQ(2,row(state).getNumber("templateVersion"));
+  ready(state,2);EXPECT_EQ(2,row(state).getNumber("programTemplateVersion"));
+}
+
+TEST(GraphicsInstances, PrivatePreviewAndProgramShareTheDefaultsOfEveryExistingLook) {
+  for(const auto* preset:{"compact-solid","minimal-accent","broadcast"}) {
+    GraphicsInstances state{"test-core"};const Json fields=Json::Object{{"name","Ada"},{"title",""}};
+    ASSERT_TRUE(state.apply(request("graphics-instance-create",{{"templateId",preset},{"templateVersion",1},{"scope","global"},{"fields",fields}})));
+    ready(state,1);ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+    CompositorRenderPlan plan;state.append(plan,false);ASSERT_EQ(1u,plan.layers.size());
+    const auto preview=state.authoringPreview(Json::Object{{"templateId",preset},{"templateVersion",1},{"fields",fields}});ASSERT_TRUE(preview);
+    EXPECT_EQ(plan.layers[0].overlay.graphicsContentHash,preview->graphicsContentHash);ASSERT_TRUE(preview->graphicsAuthoringRect);
+    EXPECT_EQ(plan.layers[0].rect.width,preview->graphicsAuthoringRect->width);EXPECT_EQ(plan.layers[0].rect.height,preview->graphicsAuthoringRect->height);
+  }
 }

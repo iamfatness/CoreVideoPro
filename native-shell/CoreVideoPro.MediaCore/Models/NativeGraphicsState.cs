@@ -7,6 +7,7 @@ namespace CoreVideoPro.MediaCore.Models;
 /// <summary>Native accepted graphics revisions; no shell-derived on-air state.</summary>
 public sealed record NativeGraphicsState
 {
+    public NativeGraphicsAuthoring? Authoring { get; init; }
     public int SchemaVersion { get; init; }
     public string CoreEpoch { get; init; } = "";
     public IReadOnlyList<NativeGraphicsInstance> Instances { get; init; } = [];
@@ -107,6 +108,8 @@ public sealed record NativeGraphicsInstance
     public long Revision { get; init; }
     public long ProgramRevision { get; init; }
     public long CueRevision { get; init; }
+    public int CueTemplateVersion { get; init; }
+    public int ProgramTemplateVersion { get; init; }
     public long CueRequestedRevision { get; init; }
     public bool CuePending { get; init; }
     public string CuePreparation { get; init; } = "unprepared";
@@ -195,4 +198,42 @@ public sealed record NativeGraphicsClockConfiguration
     public double? RestoreRemainingSeconds { get; init; }
     [JsonIgnore] public bool IsValid => Mode is "wall" or "countdown" && Zone is "local" or "utc" or "fixed" && Format is "hms" or "hm" &&
         Finish is "hold-zero" or "hide" or "suggest-next" && OffsetMinutes is >=-840 and <=840 && DurationSeconds is >=1 and <=86400 && (RestoreRemainingSeconds is null || double.IsFinite(RestoreRemainingSeconds.Value) && RestoreRemainingSeconds >= 0 && RestoreRemainingSeconds <= DurationSeconds);
+}
+
+public sealed record NativeGraphicsAuthoring
+{
+    public string Key { get; init; } = "";
+    public string State { get; init; } = "";
+    public string Reason { get; init; } = "";
+    public NativeGraphicsAuthoringInput? Input { get; init; }
+    public NativeGraphicsLayout? Layout { get; init; }
+}
+public sealed record NativeGraphicsAuthoringInput
+{
+    public string TemplateId { get; init; } = "";
+    public int TemplateVersion { get; init; }
+    public string ManifestHash { get; init; } = "";
+    public JsonElement Fields { get; init; }
+    public JsonElement Style { get; init; }
+}
+public sealed record NativeGraphicsLayout
+{
+    public double Width { get; init; }
+    public double Height { get; init; }
+    public IReadOnlyList<NativeGraphicsNodeGeometry> Nodes { get; init; } = [];
+}
+public sealed record NativeGraphicsNodeGeometry
+{
+    public string Id { get; init; } = "";
+    public string Parent { get; init; } = "";
+    public string Type { get; init; } = "";
+    public double X { get; init; }
+    public double Y { get; init; }
+    public double Width { get; init; }
+    public double Height { get; init; }
+    public double ClipX { get; init; }
+    public double ClipY { get; init; }
+    public double ClipWidth { get; init; }
+    public double ClipHeight { get; init; }
+    public bool Visible { get; init; }
 }

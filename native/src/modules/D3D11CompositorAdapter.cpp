@@ -1,3 +1,4 @@
+#include "graphics/GraphicsTemplateDraft.h"
 #include "compositor/AdvancedGrade.h"
 #include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
@@ -675,6 +676,16 @@ class D3D11Compositor final : public ICompositor {
     for (const auto& demand : request.gradePreviews) {
       GradePreviewSurface observation; observation.demand = demand;
       if (demand.lowerThirdPreview) {
+        auto privateOverlay=*demand.lowerThirdPreview;
+        if(privateOverlay.graphicsTemplate && privateOverlay.graphicsTemplate->draft) {
+          std::string reason; auto resolved=graphics::resolveGraphicsTemplateInput(privateOverlay.graphicsTemplate,reason);
+          if(!resolved) {
+            observation.status=reason=="validating-private-template" ? "preparing" : "unavailable";
+            observation.reason=reason; result.gradePreviews.push_back(std::move(observation)); continue;
+          }
+          privateOverlay.graphicsTemplate=std::move(resolved);
+        }
+
         overlayRaster_.beginFrame();
         CompositorRenderPlan preview; preview.width=1920; preview.height=1080; preview.skipCpuReadback=true;
         // Native sample canvas deliberately contains no live media. The same
@@ -683,7 +694,7 @@ class D3D11Compositor final : public ICompositor {
           CompositorRenderPlanLayer bg; bg.layerId="appearance-bg-"+std::to_string(i); bg.kind="background"; bg.order=i;
           bg.rect={float(i)/3,0,1.f/3,1}; bg.hasFillColor=true; bg.fillColor=i==0?"#101828":i==1?"#60758C":"#B8C6D4"; preview.layers.push_back(bg);
         }
-        CompositorRenderPlanLayer key; key.layerId="appearance-preview"; key.kind="overlay"; key.order=3; key.hasOverlayContent=true; key.overlay=*demand.lowerThirdPreview;
+        CompositorRenderPlanLayer key; key.layerId="appearance-preview"; key.kind="overlay"; key.order=3; key.hasOverlayContent=true; key.overlay=std::move(privateOverlay);
         const auto& a=key.overlay.appearance;
         const auto& definition=key.overlay.graphicsTemplate;
         const float h=definition ? float(definition->definition->height()/1080.) : float((a.nameSize+a.titleSize+a.padding*3)/1080.);
@@ -693,7 +704,14 @@ class D3D11Compositor final : public ICompositor {
         if (key.overlay.keyPosition.find("upper")!=std::string::npos) key.rect.y=float(a.safeOffsetY);
         if (key.overlay.keyPosition.find("right")!=std::string::npos) key.rect.x=1.f-float(a.safeOffsetX)-w;
         if (!a.enabled) {const auto legacy=compositor::lowerThirdOverlay();key.rect={legacy.x,legacy.y,legacy.width,legacy.height};key.opacity=.92f;}
-        if (key.overlay.graphicsAuthoringRect) key.rect=*key.overlay.graphicsAuthoringRect;
+        if (key.overlay.graphicsAuthoringRect && !definition) key.rect=*key.overlay.graphicsAuthoringRect;
+        if (definition && definition->placement) {
+          const auto& p=*definition->placement;
+          const float ax=p.anchor.find("right")!=std::string::npos?1.f:p.anchor.find("left")!=std::string::npos?0.f:.5f;
+          const float ay=p.anchor.find("upper")!=std::string::npos?0.f:p.anchor.find("lower")!=std::string::npos?1.f:.5f;
+          key.rect.width*=float(p.scale); key.rect.height*=float(p.scale);
+          key.rect.x=ax*(1-key.rect.width)+float(p.x/1920.); key.rect.y=ay*(1-key.rect.height)+float(p.y/1080.);
+        }
         preview.layers.push_back(key);
         observation.sourceEpoch=1; observation.sourceFrameId=demand.revision; observation.status="ready";
         const auto image=renderPreview(preview,{});

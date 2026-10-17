@@ -1,3 +1,4 @@
+#include "modules/Sha256.h"
 #include "modules/Interfaces.h"
 #include "modules/DeliveryCounterPattern.h"
 #include "compositor/AdvancedGrade.h"
@@ -357,6 +358,23 @@ TEST(GradePreviewPixels, DeclarativeDraftAndCompareProduceIndependentNativePixel
   EXPECT_EQ(before, previewCenter(compositor->render(request.programPlan, request.frames)));
   EXPECT_EQ(untouched, graphics.snapshot().stringify()); EXPECT_FALSE(graphics.hasCue());
   compositor->submitGradePreviews({});
+}
+
+TEST(GradePreviewPixels, ScratchLayerEditsProducePrivateNativePixelsWithoutInstallingOrChangingProgram) {
+  using J=corevideo::rpc::Json; corevideo::graphics::GraphicsInstances graphics{"scratch-core"};const auto unchanged=graphics.snapshot().stringify();
+  auto compositor=isolatedCompositor();ASSERT_TRUE(compositor);auto request=requestAtSize(64);request.programPlan.skipCpuReadback=false;
+  const auto before=previewCenter(compositor->render(request.programPlan,request.frames));
+  const auto sample=[&](const char* fill,int revision) {
+    auto document=corevideo::graphics::GraphicsTemplate::corporateLowerThird()->document().asObject();auto layers=document["layers"].asArray();auto plate=layers[0].asObject();plate["fill"]=fill;layers[0]=plate;document["layers"]=layers;
+    const auto manifest=J(document).stringify();const auto digest=corevideo::modules::hashing::sha256(reinterpret_cast<const uint8_t*>(manifest.data()),manifest.size());
+    std::string hash;static constexpr char hex[]="0123456789abcdef";for(auto b:digest) {hash+=hex[b>>4];hash+=hex[b&15];}
+    auto overlay=graphics.authoringPreview(J::Object{{"templateId","corporate-lower-third"},{"templateVersion",1},{"fields",J::Object{{"name","Private"},{"title",""}}},{"scratch",J::Object{{"manifest",manifest},{"hash",hash}}}});ASSERT_TRUE(overlay);
+    GradePreviewDemand demand{"scratch-authoring","preview:lower-third",revision,{}};demand.lowerThirdPreview=*overlay;demand.lowerThirdPreviewSignature=hash;request.gradePreviews={demand};
+    auto surface=awaitGrade(*compositor,request,demand.instanceId,revision);ASSERT_FALSE(surface.texture.sharedHandleHex.empty());return consumeSamples(surface.texture,{{.5f,.9f}})[0];
+  };
+  const auto red=sample("#FF0000",1),green=sample("#00FF00",2);
+  EXPECT_GT((red>>16)&255,220u);EXPECT_LT((red>>8)&255,30u);EXPECT_GT((green>>8)&255,220u);EXPECT_LT((green>>16)&255,30u);
+  EXPECT_EQ(before,previewCenter(compositor->render(request.programPlan,request.frames)));EXPECT_EQ(unchanged,graphics.snapshot().stringify());compositor->submitGradePreviews({});
 }
 
 TEST(AdvancedGradePixels, ExposurePrimariesStackOrderLutDomainAndGlobalIntensityHaveIndependentExpectedValues) {

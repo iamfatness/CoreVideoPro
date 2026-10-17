@@ -24,11 +24,14 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private GradePreviewCoordinator? _previewOwner;
     private readonly Grid _body = new() { ColumnSpacing = 12, RowSpacing = 12 };
     private readonly StackPanel _libraryPanel = new() { Spacing = 8 }, _inspector = new() { Spacing = 10 };
-    private readonly ListView _library = new() { MaxHeight = 260, SelectionMode = ListViewSelectionMode.Single }, _cues = new() { MaxHeight = 230, SelectionMode = ListViewSelectionMode.Single };
+    private readonly ListView _library = new() { MaxHeight = 260, SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled=true }, _cues = new() { MaxHeight = 230, SelectionMode = ListViewSelectionMode.Single };
     private readonly TextBox _search = new() { PlaceholderText = "Search looks" };
+    private readonly ComboBox _scope=new() {Header="New cue scope",HorizontalAlignment=HorizontalAlignment.Stretch};
     private readonly ComboBox _family = new() { ItemsSource = new[] { "All", "lower-third", "title", "bug", "clock", "countdown" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly GraphicsTemplateLayerEditor _layersEditor=new();
     private readonly GraphicsAuthoringCanvas _canvas = new() { Height = 330 };
     private readonly TextBlock _status = Copy("Choose a look, create a cue, then edit privately."), _native = Copy("Native authoring canvas"), _facts = Copy("");
+    private readonly ComboBox _samples=new() {Header="Private preview copy",ItemsSource=new[] {"Your draft","Short text","Long text","Blank secondary","Unicode example"},SelectedIndex=0,HorizontalAlignment=HorizontalAlignment.Stretch};
     private readonly ToggleSwitch _compare = new() { Header = "Compare Original / Edited" };
     private readonly List<Button> _actions = [], _inspectorActions = [];
     private readonly Button _cueButton, _showButton, _updateButton, _hideButton, _deleteButton, _undoButton;
@@ -58,7 +61,8 @@ public sealed class GraphicsWorkspaceControl : UserControl
         heading.Children.Add(_status); Grid.SetColumnSpan(heading, 3); _body.Children.Add(heading);
         _libraryPanel.Children.Add(new TextBlock { Text = "LIBRARY", FontSize = 11, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         _libraryPanel.Children.Add(_search); _libraryPanel.Children.Add(_family); _libraryPanel.Children.Add(_library);
-        _libraryPanel.Children.Add(Action("Create hidden cue", async () => { if (_library.SelectedIndex >= 0 && _session is not null) await _session.CreateAsync(_templateRows[_library.SelectedIndex]); }));
+        _libraryPanel.Children.Add(_scope);
+        _libraryPanel.Children.Add(Action("Create hidden cue", async () => { if (_library.SelectedIndex >= 0 && _session is not null && _scope.SelectedItem is ComboBoxItem {Tag:string scene}) await _session.CreateAsync(_session.Selected is null && _session.Template is { } draftTemplate ? draftTemplate : _templateRows[_library.SelectedIndex],scene.Length==0?"global":"scene",scene); }));
         _libraryPanel.Children.Add(new TextBlock { Text = "CUE RACK", FontSize = 11, Margin = new Thickness(0, 12, 0, 0) });
         _libraryPanel.Children.Add(_cues); _deleteButton = Action("Delete hidden cue", async () => { if (_session is not null) await _session.RemoveAsync(); }); _libraryPanel.Children.Add(_deleteButton);
         _libraryPanel.Children.Add(Action("Duplicate into hidden cue", async () => { if (_session is not null) await _session.DuplicateAsync(); }));
@@ -83,7 +87,9 @@ public sealed class GraphicsWorkspaceControl : UserControl
         var libraryDrawer = new Expander { Header = "Library and cue rack", Content = libraryScroll, IsExpanded = true, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
         Grid.SetRow(libraryDrawer, 1); _body.Children.Add(libraryDrawer);
         var center = new StackPanel { Spacing = 10 };
-        center.Children.Add(_facts); center.Children.Add(_canvas); center.Children.Add(_native); center.Children.Add(_compare);
+        var wholeGraphic=new ToggleSwitch {Header="Move or scale whole graphic"};wholeGraphic.Toggled+=(_,_)=>_canvas.WholeGraphic=wholeGraphic.IsOn;center.Children.Add(wholeGraphic);
+        center.Children.Add(_samples);center.Children.Add(Copy("Samples change only the private preview. Return to Your draft before Cue or Update."));
+        center.Children.Add(_facts); center.Children.Add(_canvas); center.Children.Add(_native); center.Children.Add(_compare); center.Children.Add(_layersEditor);
         var transport = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         _cueButton = Action("Cue to Preview", async () => { if (_session is not null) await _session.CueAsync(); });
         _showButton = Action("Show on Program", async () => { if (_session is not null) await _session.ShowAsync(); });
@@ -107,8 +113,10 @@ public sealed class GraphicsWorkspaceControl : UserControl
         Grid.SetColumn(inspectorDrawer, 2); Grid.SetRow(inspectorDrawer, 1); _body.Children.Add(inspectorDrawer);
         Content = _body;
         _search.TextChanged += (_, _) => RefreshLibrary(); _family.SelectionChanged += (_, _) => RefreshLibrary();
+        _library.ItemClick += (_,e)=>{var index=_library.Items.IndexOf(e.ClickedItem);if(!_loading && index>=0 && index<_templateRows.Count) _session?.Browse(_templateRows[index]);};
         _library.SelectionChanged += (_, _) => { if (!_loading && _library.SelectedIndex >= 0 && _library.SelectedIndex < _templateRows.Count) _session?.Browse(_templateRows[_library.SelectedIndex]); };
         _cues.SelectionChanged += (_, _) => { if (!_loading && _session is not null && _cues.SelectedIndex >= 0 && _cues.SelectedIndex < _cueIds.Count) _session.Select(_cueIds[_cues.SelectedIndex]); };
+        _samples.SelectionChanged+=(_,_)=>{if(!_loading && _samples.SelectedIndex>=0) _session?.SetPreviewSample(new[] {"current","short","long","blank","unicode"}[_samples.SelectedIndex]);};
         _compare.Toggled += (_, _) => { if (!_loading) _session?.SetCompare(_compare.IsOn); };
         Loaded += (_, _) => Attach(); Unloaded += (_, _) => Detach();
         bool? wasNarrow = null;
@@ -130,7 +138,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private void Attach()
     {
         if (Studio is null || !IsLoaded || _session == Studio.GraphicsWorkspace) return;
-        Detach(); _session = Studio.GraphicsWorkspace; _canvas.Session=_session;
+        Detach(); _session = Studio.GraphicsWorkspace; _canvas.Session=_session; _layersEditor.Session=_session;
         _attachedStudio = Studio; _attachedStudio.PropertyChanged += OnStudioProperty;
         _savedLibrary = Studio.GraphicsLibrary; _savedLibrary.Changed += OnLibraryChanged; _ = _savedLibrary.LoadAsync();
         _session.Changed += OnChanged; _session.PreviewChanged += OnPreviewChanged;
@@ -145,7 +153,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
         if (_attachedStudio is not null) _attachedStudio.PropertyChanged -= OnStudioProperty;
         _previewOwner?.Dispose(); _previewOwner = null;
         if (_editor is not null) _editor.PropertyChanged -= OnPreviewProperty;
-        _canvas.Session=null;
+        _canvas.Session=null; _layersEditor.Session=null;
         _session = null; _editor = null; _savedLibrary = null; _attachedStudio = null;
     }
     private void OnPreviewProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -172,13 +180,13 @@ public sealed class GraphicsWorkspaceControl : UserControl
     {
         if (_savedLibrary is null) return;
         _saveStatus.Text = _savedLibrary.Status;
-        var key = string.Join('|', _savedLibrary.Document.Cues.Select(c => c.Id + ":" + c.Name)) + ":" + string.Join('|', _savedLibrary.Document.StylePresets.Keys);
+        var key = string.Join('|', _savedLibrary.Document.Cues.Select(c => c.Id + ":" + c.Name)) + ":" + string.Join('|', _savedLibrary.Document.StylePresets.Keys.Concat(_savedLibrary.Document.TemplateStyles.Keys).Distinct(StringComparer.Ordinal));
         if (_savedKey == key) return;
         var selected = _savedCues.SelectedIndex >= 0 && _savedCues.SelectedIndex < _savedIds.Count ? _savedIds[_savedCues.SelectedIndex] : "";
         _savedKey = key; _savedCues.Items.Clear(); _savedIds.Clear();
         foreach (var cue in _savedLibrary.Document.Cues) { _savedIds.Add(cue.Id); _savedCues.Items.Add($"{cue.Name}\n{cue.Draft?.TemplateId} v{cue.Draft?.TemplateVersion} · {cue.Scope}"); }
         _savedCues.SelectedIndex = _savedLibrary.Document.Cues.ToList().FindIndex(c => c.Id == selected);
-        _styles.ItemsSource = _savedLibrary.Document.StylePresets.Keys.ToArray();
+        _styles.ItemsSource = _savedLibrary.Document.StylePresets.Keys.Concat(_savedLibrary.Document.TemplateStyles.Keys).Distinct(StringComparer.Ordinal).ToArray();
     }
     private void OnPreviewChanged(object? sender, EventArgs e) { Refresh(); UpdatePreview(); }
     private void UpdatePreview()
@@ -189,10 +197,6 @@ public sealed class GraphicsWorkspaceControl : UserControl
         }
         if (_session.PreviewValidation is { Length: > 0 } invalid) {
             _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable(invalid); return;
-        }
-        if (_session?.Selected?.Clock is { } clock) {
-            var fields=draft.Fields.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone());
-            fields["time"]=JsonSerializer.SerializeToElement(clock.Text); draft=draft with { Fields=JsonSerializer.SerializeToElement(fields) };
         }
         _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview()));
         UpdatePreviewLease();
@@ -208,12 +212,20 @@ public sealed class GraphicsWorkspaceControl : UserControl
             _importStatus.Text = _session.ImportBusy ? _session.ImportStatus : string.Join("\n", (_session.State?.TemplateInstalls ?? []).TakeLast(3)
                 .Select(i => "Template import: " + i.State + (i.Reason.Length == 0 ? "" : " — " + i.Reason.Replace('-', ' '))));
             var item = _session.Selected;
-            _cueButton.IsEnabled &= item is not null; _showButton.IsEnabled &= item is { CueRevision: > 0 };
-            _hideButton.IsEnabled &= item is { ProgramRevision: > 0 }; _updateButton.IsEnabled &= item is { ProgramRevision: > 0 };
+            _cueButton.IsEnabled &= item is not null && _session.PreviewSample=="current"; _showButton.IsEnabled &= item is { CueRevision: > 0 };
+            _hideButton.IsEnabled &= item is { ProgramRevision: > 0 }; _updateButton.IsEnabled &= item is { ProgramRevision: > 0 } && _session.PreviewSample=="current";
             _deleteButton.IsEnabled &= item is { ProgramRevision: 0 }; _undoButton.IsEnabled &= _session.CanUndo;
             _compare.IsOn = _session.CompareOriginal;
+            _samples.SelectedIndex=Array.IndexOf(new[] {"current","short","long","blank","unicode"},_session.PreviewSample);
             _facts.Text = item is null ? "Choose or create a cue. No Program action occurs while browsing." :
-                $"{item.TemplateId} v{item.TemplateVersion} · {item.Scope}\nDraft r{item.Revision} ({item.Preparation}) · Cue r{item.CueRevision}{(item.CuePending ? " preparing replacement" : "")} · Program r{item.ProgramRevision} ({item.Visibility}; {(item.CurrentlyComposed ? "draw submitted" : "not composed on latest frame")})\n{item.SourceId} {item.BindingState} {item.Warning} {item.CueWarning}";
+                $"{item.TemplateId} v{item.TemplateVersion} · {item.Scope}\nDraft r{item.Revision} / look v{item.TemplateVersion} ({item.Preparation}) · Cue r{item.CueRevision} / look v{item.CueTemplateVersion}{(item.CuePending ? " preparing replacement" : "")} · Program r{item.ProgramRevision} / look v{item.ProgramTemplateVersion} ({item.Visibility}; {(item.CurrentlyComposed ? "draw submitted" : "not composed on latest frame")})\n{item.SourceId} {item.BindingState} {item.Warning} {item.CueWarning}";
+            var scopeKey=string.Join('|',Studio?.Scenes.Select(s=>s.Id+":"+s.Name) ?? []);
+            if(_scope.Tag as string!=scopeKey || _scope.Items.Count==0) {
+                var prior=(_scope.SelectedItem as ComboBoxItem)?.Tag as string;_scope.Tag=scopeKey;_scope.Items.Clear();
+                _scope.Items.Add(new ComboBoxItem {Content="Global — across scenes",Tag=""});
+                foreach(var scene in Studio?.Scenes ?? []) _scope.Items.Add(new ComboBoxItem {Content="Scene · "+scene.Name,Tag=scene.Id});
+                _scope.SelectedItem=_scope.Items.OfType<ComboBoxItem>().FirstOrDefault(i=>i.Tag as string==prior) ?? _scope.Items[0];
+            }
             RefreshLibrary();
             var key = string.Join('|', _session.State?.Instances.Select(i => $"{i.InstanceId}:{i.TemplateId}:{i.Visibility}:{i.ProgramRevision}:{i.CueRevision}") ?? []);
             if (key != _cueKey) {
@@ -230,15 +242,21 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private void RefreshLibrary()
     {
         if (_session is null) return;
-        var family = _family.SelectedItem as string ?? "All";
-        var templates = (_session.State?.Templates ?? []).Where(t => (family == "All" || t.Family == family) &&
-            (t.Name.Contains(_search.Text, StringComparison.OrdinalIgnoreCase) || t.TemplateId.Contains(_search.Text, StringComparison.OrdinalIgnoreCase))).ToArray();
-        var key = string.Join('|', templates.Select(t => $"{t.TemplateId}:{t.TemplateVersion}"));
-        if (key == _libraryKey) return;
-        var selected = _library.SelectedIndex >= 0 && _library.SelectedIndex < _templateRows.Count ? _templateRows[_library.SelectedIndex] : null;
-        _libraryKey = key; _library.Items.Clear(); _templateRows.Clear();
-        foreach (var template in templates) { _templateRows.Add(template); _library.Items.Add($"{template.Name}\n{template.Family} · v{template.TemplateVersion}"); }
-        _library.SelectedIndex = selected is null ? (templates.Length > 0 ? 0 : -1) : Array.FindIndex(templates, t => t.TemplateId == selected.TemplateId && t.TemplateVersion == selected.TemplateVersion);
+        var loading=_loading;_loading=true;
+        try {
+            var family=_family.SelectedItem as string ?? "All";
+            var templates=(_session.State?.Templates ?? []).Where(t=>(family=="All" || t.Family==family) && (t.Name.Contains(_search.Text,StringComparison.OrdinalIgnoreCase) || t.TemplateId.Contains(_search.Text,StringComparison.OrdinalIgnoreCase))).ToArray();
+            var key=string.Join('|',templates.Select(t=>$"{t.TemplateId}:{t.TemplateVersion}"));
+            var selected=_library.SelectedIndex>=0 && _library.SelectedIndex<_templateRows.Count?_templateRows[_library.SelectedIndex]:null;
+            if(key!=_libraryKey) {
+                _libraryKey=key;_library.Items.Clear();_templateRows.Clear();
+                foreach(var template in templates) {_templateRows.Add(template);_library.Items.Add($"{template.Name}\n{template.Family} · v{template.TemplateVersion}");}
+            }
+            var draft=_session.Selected is null?_session.Draft:null;
+            var index=draft is not null?Array.FindIndex(templates,t=>t.TemplateId==draft.TemplateId && t.TemplateVersion==draft.TemplateVersion):-1;
+            if(index<0 && selected is not null) index=Array.FindIndex(templates,t=>t.TemplateId==selected.TemplateId && t.TemplateVersion==selected.TemplateVersion);
+            _library.SelectedIndex=index;
+        } finally {_loading=loading;}
     }
     private void BuildInspector()
     {
@@ -246,6 +264,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
         _inspector.Children.Clear();
         _refreshFields.Clear();
         if (_session?.Draft is not { } draft) { _inspector.Children.Add(Copy("Select a cue to edit its private fields and style.")); return; }
+        if(Studio is not null) {var binding=new GraphicsSourceBindingControl(_session,Studio);_inspector.Children.Add(binding);_refreshFields.Add(binding.Refresh);}
         _inspector.Children.Add(new TextBlock { Text = "FIELDS", FontSize = 11 });
         var fields = _session.Template?.Fields ?? [];
         if (fields.Count == 0) fields = [new() { Id = "name", Type = "string", MaxLength = 256 }, new() { Id = "title", Type = "string", MaxLength = 512 }];
@@ -397,9 +416,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private static Windows.UI.Color FieldColor(JsonElement value)
     {
         var text = value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
-        if (text.Length is 7 or 9 && text[0] == '#' && uint.TryParse(text.AsSpan(1),System.Globalization.NumberStyles.HexNumber,System.Globalization.CultureInfo.InvariantCulture,out var rgba))
-            return text.Length == 9 ? Windows.UI.Color.FromArgb((byte)rgba,(byte)(rgba>>24),(byte)(rgba>>16),(byte)(rgba>>8)) : Windows.UI.Color.FromArgb(255,(byte)(rgba>>16),(byte)(rgba>>8),(byte)rgba);
-        return Windows.UI.Color.FromArgb(255,255,255,255);
+        return GraphicsColor.Parse(text,Windows.UI.Color.FromArgb(255,255,255,255));
     }
     private static string FieldLabel(NativeGraphicsTemplateField field)
     {

@@ -72,7 +72,7 @@ public static class GraphicsCommandRequest
     private static readonly IReadOnlyDictionary<string, string[]> Parameters = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
         ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement"],
-        ["graphics.instance.update"] = ["target", "sourceId", "fields", "style", "animations", "binding", "placement"],
+        ["graphics.instance.update"] = ["templateVersion", "target", "sourceId", "fields", "style", "animations", "binding", "placement"],
         ["graphics.instance.cue"] = [], ["graphics.instance.trigger"] = ["action", "target"],
         ["graphics.clock.control"] = ["action","configuration","expectedClockRevision"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"],
@@ -187,7 +187,7 @@ public static class GraphicsCommandRequest
                 var instance = observed.Instances.FirstOrDefault(i => i.InstanceId == Text(body, "instanceId"));
                 var template = observed.Templates.FirstOrDefault(t => t.TemplateId ==
                     (action == "graphics.instance.create" ? Text(body, "templateId") : instance?.TemplateId) &&
-                    t.TemplateVersion == (action == "graphics.instance.create" ? Number(body, "templateVersion") : instance?.TemplateVersion));
+                    t.TemplateVersion == (body.TryGetProperty("templateVersion",out _) ? Number(body,"templateVersion") : instance?.TemplateVersion));
                 var fieldNames = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var field in fields.EnumerateObject())
                 {

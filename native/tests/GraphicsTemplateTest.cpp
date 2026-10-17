@@ -1,5 +1,7 @@
 #include "graphics/GraphicsTemplate.h"
 #include "graphics/GraphicsTemplateRegistry.h"
+#include "graphics/GraphicsTemplateDraft.h"
+#include "modules/Sha256.h"
 #include "gtest/gtest.h"
 #include "GraphicsAssetFixture.h"
 #include <chrono>
@@ -261,4 +263,25 @@ TEST(GraphicsTemplate, EveryCuratedLookResolvesToNativePrimitivesWithVerifiedLog
       EXPECT_TRUE(std::any_of(drawing.primitives.begin(),drawing.primitives.end(),[](const auto& p){return p.image!=nullptr;}));
     }
   }
+}
+
+TEST(GraphicsTemplateDraft, PrivateCompilerCoalescesWithoutInstallingAndFencesHashes) {
+  corevideo::graphics::GraphicsTemplateRegistry installed; const auto initial=installed.poll();
+  auto compiler=std::make_shared<corevideo::graphics::GraphicsTemplateDraft>(); std::string key;
+  auto object=manifest(); auto layers=object["layers"].asArray(); auto plate=layers[0].asObject(); plate["fill"]="#FF0000"; layers[0]=plate; object["layers"]=layers;
+  const auto source=Json(object).stringify(); const auto bytes=corevideo::modules::hashing::sha256(reinterpret_cast<const uint8_t*>(source.data()),source.size());
+  std::string hash;static constexpr char digits[]="0123456789abcdef";for(auto b:bytes) {hash+=digits[b>>4];hash+=digits[b&15];}
+  ASSERT_TRUE(compiler->submit(source,hash,GraphicsTemplate::corporateLowerThird(),key));
+  const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  while((!compiler->poll() || compiler->poll()->key!=key) && std::chrono::steady_clock::now()<until) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  auto publication=compiler->poll(); ASSERT_TRUE(publication);ASSERT_TRUE(publication->definition); EXPECT_TRUE(publication->error.empty());
+  auto input=std::make_shared<corevideo::graphics::GraphicsTemplateInput>(); input->definition=GraphicsTemplate::corporateLowerThird();input->draft=compiler;input->draftKey=key;
+  auto fields=input->definition->defaultFields().asObject();fields["name"]="Guest";input->fields=fields;input->brand=brand();
+  std::string reason;auto resolved=corevideo::graphics::resolveGraphicsTemplateInput(input,reason);ASSERT_TRUE(resolved);
+  GraphicsDrawing drawing;ASSERT_TRUE(resolved->definition->resolve(resolved->fields,resolved->brand,drawing,reason)); EXPECT_EQ(0xffff0000u,drawing.primitives[0].color);
+  EXPECT_EQ(resolved,corevideo::graphics::resolveGraphicsTemplateInput(input,reason));
+  ASSERT_TRUE(compiler->submit(source,std::string(64,'0'),GraphicsTemplate::corporateLowerThird(),key));
+  while((!compiler->poll() || compiler->poll()->key!=key) && std::chrono::steady_clock::now()<until) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(compiler->poll());EXPECT_EQ("private-template-hash-mismatch",compiler->poll()->error);
+  EXPECT_EQ(initial,installed.poll());
 }

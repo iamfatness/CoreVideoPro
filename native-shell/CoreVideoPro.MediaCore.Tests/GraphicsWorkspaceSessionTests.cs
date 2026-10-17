@@ -12,6 +12,48 @@ public sealed class GraphicsWorkspaceSessionTests
             CueFields = new() { Name = "Accepted cue" }, ProgramFields = new() { Name = "On air" } }] };
     private static JsonElement Value(string text) => JsonSerializer.SerializeToElement(text);
     [Fact]
+    public async Task BindingEditsRemainPrivateAndStaleGenerationCannotReplaceSubject()
+    {
+        var identity=new CoreVideoPro.MediaCore.Contracts.SourceInstanceIdentity {SourceId="zoom:7",InstanceId="participant",ProcessEpoch="meeting-one",Generation=1};
+        var state=Initial with {Sources=[new() {Identity=identity,DisplayName="Ada",VideoOn=true}]};
+        var sent=new List<JsonElement>();
+        var session=new GraphicsWorkspaceSession((_,request,_)=> {sent.Add(JsonDocument.Parse(request).RootElement.Clone());return Task.FromResult(new NativeGraphicsOperationResult {Accepted=true});},()=>state);
+        session.Observe(state);session.Select("featured");session.SetBinding(identity);session.CopySourceText("Ada","");
+        Assert.Empty(sent);Assert.Equal(identity,session.Draft!.Binding);
+        Assert.Equal("",session.Draft.Fields.GetProperty("title").GetString());
+        var persisted=JsonSerializer.SerializeToElement(session.Draft,new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.False(persisted.TryGetProperty("binding",out _));
+        session.SetBinding(identity with {Generation=2});Assert.Equal(identity,session.Draft.Binding);
+        await session.UpdateProgramAsync();Assert.Equal(1,sent[0].GetProperty("binding").GetProperty("generation").GetInt64());
+        session.SetBinding(null);session.Undo();Assert.Equal(identity,session.Draft.Binding);
+    }
+    [Fact]
+    public async Task SampleCopyIsPrivateForCompatibilityLooksAndCannotBeCommitted()
+    {
+        var sends = 0;
+        var session = new GraphicsWorkspaceSession((_,_,_) => { sends++; return Task.FromResult(new NativeGraphicsOperationResult()); }, () => Initial);
+        session.Observe(Initial); session.Select("featured");
+        session.SetPreviewSample("long");
+        Assert.StartsWith("Dr. Alexandra", session.Preview!.Fields.GetProperty("name").GetString());
+        Assert.Equal("Private", session.Draft!.Fields.GetProperty("name").GetString());
+        Assert.False(await session.CueAsync()); Assert.False(await session.UpdateProgramAsync());
+        Assert.Equal(0, sends);
+        session.SetPreviewSample("current");
+        Assert.Equal("Private", session.Preview.Fields.GetProperty("name").GetString());
+    }
+    [Fact]
+    public void SamplesOnlyReplaceConsumedTextAndRespectUnicodeByteLimits()
+    {
+        var template = new NativeGraphicsTemplate { Runtime="declarative", Fields=[new() {Id="heading",Type="string",MaxLength=7},new() {Id="font",Type="string"},new() {Id="time",Type="string"}],
+            Layers=JsonDocument.Parse("[{\"type\":\"text\",\"text\":{\"field\":\"heading\"}},{\"type\":\"text\",\"text\":{\"field\":\"time\"}}]").RootElement.Clone() };
+        var draft = new NativeGraphicsDraft("custom",1,JsonSerializer.SerializeToElement(new {heading="Actual",font="Segoe UI",time="01:02"}),new(),new());
+        var result = GraphicsPreviewSamples.Apply(draft,template,"unicode");
+        Assert.Equal("Zoë ·",result.GetProperty("heading").GetString());
+        Assert.Equal("Segoe UI",result.GetProperty("font").GetString());
+        Assert.Equal("01:02",result.GetProperty("time").GetString());
+        Assert.Equal("Actual",draft.Fields.GetProperty("heading").GetString());
+    }
+    [Fact]
     public void DraftCompareUndoAndMetadataRefreshNeverSendCommandsOrLoseEdits()
     {
         var state = Initial; var sends = 0;

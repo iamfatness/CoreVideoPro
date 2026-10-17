@@ -25,6 +25,17 @@ public sealed class GraphicsDocumentStoreTests : IDisposable
         Assert.DoesNotContain("armed", await File.ReadAllTextAsync(DocumentPath));
     }
     [Fact]
+    public async Task SchemaOneMigratesInMemoryAndPrivateScratchRoundTripsWithoutAiringState()
+    {
+        Directory.CreateDirectory(_directory);var old=JsonSerializer.Serialize(Example with {SchemaVersion=1},new JsonSerializerOptions(JsonSerializerDefaults.Web));await File.WriteAllTextAsync(DocumentPath,old);
+        var store=new GraphicsDocumentStore(DocumentPath);var loaded=await store.LoadAsync();Assert.Equal(2,loaded.Document.SchemaVersion);Assert.Equal(old,await File.ReadAllTextAsync(DocumentPath));
+        var definition=JsonSerializer.SerializeToElement(new {templateId="card",templateVersion=1,layers=new[] {new {id="plate",type="rect",x=0,y=0,width=640,height=200,fill="#123456"}}});
+        var scratch=NativeGraphicsScratch.From(definition);var cue=Example.Cues[0] with {Draft=new("card",1,JsonSerializer.SerializeToElement(new {name="Ada"}),new(),new(),Scratch:scratch)};
+        await store.SaveAsync(loaded.Document with {Cues=[cue]});var restored=await new GraphicsDocumentStore(DocumentPath).LoadAsync();
+        Assert.False(restored.ReadOnly);Assert.Equal(scratch,restored.Document.Cues[0].Draft!.Scratch);Assert.DoesNotContain("visibility",await File.ReadAllTextAsync(DocumentPath));
+        Assert.Equal(old,await File.ReadAllTextAsync(DocumentPath+".bak"));
+    }
+    [Fact]
     public async Task CorruptedPrimaryRecoversBackupAndPreservesBothBeforeSavingAgain()
     {
         var store = new GraphicsDocumentStore(DocumentPath);
@@ -39,7 +50,7 @@ public sealed class GraphicsDocumentStoreTests : IDisposable
     [Fact]
     public async Task NewerSchemaStaysReadOnlyAndExternalEditsCannotBeOverwritten()
     {
-        Directory.CreateDirectory(_directory); var newer = "{\"schemaVersion\":2,\"future\":true}";
+        Directory.CreateDirectory(_directory); var newer = "{\"schemaVersion\":3,\"future\":true}";
         await File.WriteAllTextAsync(DocumentPath, newer);
         var store = new GraphicsDocumentStore(DocumentPath);
         Assert.True((await store.LoadAsync()).ReadOnly);
