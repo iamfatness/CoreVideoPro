@@ -60,8 +60,8 @@ Json::Array commandBatch(const Json& request) {
 
 }  // namespace
 
-JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler, SnapshotAssembler assembler, ResourceFormatter formatter)
-    : mediaCore_(mediaCore), joinHandler_(std::move(joinHandler)), snapshotAssembler_(std::move(assembler)), resourceFormatter_(std::move(formatter)) {
+JsonRpcServer::JsonRpcServer(core::MediaCore& mediaCore, JoinHandler joinHandler, SnapshotAssembler assembler, ResourceFormatter formatter, WriterWaitTestHooks writerWaitHooks)
+    : mediaCore_(mediaCore), joinHandler_(std::move(joinHandler)), snapshotAssembler_(std::move(assembler)), resourceFormatter_(std::move(formatter)), writerWaitHooks_(std::move(writerWaitHooks)) {
   std::random_device random;
   processEpoch_ = std::to_string(random()) + "-" + std::to_string(random());
 }
@@ -478,7 +478,11 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   std::thread writer([&] {
     std::unique_lock<std::mutex> lock(outMx);
     for (;;) {
-      outCv.wait(lock, [&] { return !outHi.empty() || !outResources.empty() || !outLo.empty() || writerStopping.load(); });
+      outCv.wait(lock, [&] {
+        const bool ready = !outHi.empty() || !outResources.empty() || !outLo.empty() || writerStopping.load();
+        if (!ready && writerWaitHooks_.beforeWait) writerWaitHooks_.beforeWait(outCv);
+        return ready;
+      });
       while (!outHi.empty() || !outResources.empty() || !outLo.empty()) {
         std::string message;
         Stamp enqueuedAt;
@@ -571,7 +575,10 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       }
       inCv.notify_one();
     }
-    inputClosed.store(true);
+    {
+      std::lock_guard<std::mutex> lock(inMx);
+      inputClosed.store(true);
+    }
     inCv.notify_one();
   });
 
@@ -1238,7 +1245,12 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   joinCv.notify_one();
   joinWorker.join(); // waits only for cancellation-aware spawn/auth teardown, never coreMutex
   assembly.finish(); // drain accepted responses while media owners still exist
-  stopping.store(true);
+  {
+    // outResources waits on this predicate under outMx. Atomicity alone does
+    // not prevent a notification being lost between its check and its wait.
+    std::lock_guard<std::mutex> lock(outMx);
+    stopping.store(true);
+  }
   coreHandoff.notify_all();
   outCv.notify_all();
   if (renderThread.joinable()) {
@@ -1276,8 +1288,15 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
       static_cast<unsigned long long>(resourceFormatted), static_cast<unsigned long long>(formatTotalUs),
       static_cast<unsigned long long>(formatMaxUs), static_cast<unsigned long long>(admissionTotalUs),
       static_cast<unsigned long long>(admissionMaxUs));
-  writerStopping.store(true);
+  if (writerWaitHooks_.stop) writerWaitHooks_.stop(false);
+  {
+    // Publish the terminal predicate under the writer's wait mutex. Otherwise
+    // notify can land after a false predicate check but before wait releases it.
+    std::lock_guard<std::mutex> lock(outMx);
+    writerStopping.store(true);
+  }
   outCv.notify_all();
+  if (writerWaitHooks_.stop) writerWaitHooks_.stop(true);
   if (writer.joinable()) {
     writer.join();
   }
