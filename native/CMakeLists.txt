@@ -239,6 +239,26 @@ if(COREVIDEO_WITH_D3D11)
   # d2d1/dwrite raster real overlay text into a GPU texture; windowscodecs (WIC)
   # decodes overlay images; ole32 provides CoInitializeEx for the WIC factory.
   target_link_libraries(corevideo_native PUBLIC d3d11 dxgi d3dcompiler d2d1 dwrite windowscodecs ole32)
+
+  # Fixed webcam shader: compile once at build time, preserving the runtime
+  # shader's cs_5_0/O3 settings. Cold HLSL compilation must not delay camera
+  # framing every time its isolated preparation worker starts.
+  get_filename_component(corevideo_sdk_tools "${CMAKE_RC_COMPILER}" DIRECTORY)
+  find_program(COREVIDEO_FXC NAMES fxc.exe HINTS
+    "${corevideo_sdk_tools}"
+    "$ENV{WindowsSdkVerBinPath}/x64"
+    "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
+    REQUIRED)
+  set(webcam_shader_header "${CMAKE_CURRENT_BINARY_DIR}/generated/WebcamFramerShader.h")
+  add_custom_command(OUTPUT "${webcam_shader_header}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    COMMAND "${COREVIDEO_FXC}" /nologo /T cs_5_0 /E main /O3
+      /Vn webcamFramerShaderBytecode /Fh "${webcam_shader_header}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/shaders/WebcamFramer.hlsl"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/WebcamFramer.hlsl"
+    COMMENT "Compile the fixed webcam framer shader"
+    VERBATIM)
+  target_sources(corevideo_native PRIVATE "${webcam_shader_header}")
 endif()
 
 if(COREVIDEO_WITH_METAL)
