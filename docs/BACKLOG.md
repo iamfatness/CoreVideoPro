@@ -1,5 +1,11 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 16, live stutter incident:** audit and fix hidden UI
+dependencies under [#930](https://github.com/iamfatness/CoreVideoPro/issues/930).
+Validate eight remote feeds, webcam, screen capture, multiview/Preview, local
+recording and virtual camera. Restarts and administrator tracing are authorized
+for this incident. Functional success cannot close frame-performance acceptance.
+
 **Owner direction, October 16:** implement [#922](https://github.com/iamfatness/CoreVideoPro/issues/922)
 validated RTMP/SRT destination control actions using isolated API tests. Preserve
 the installed app, meeting and production preferences; no restart or installation.
@@ -176,6 +182,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner current — October 16 incident | B | [#930](https://github.com/iamfatness/CoreVideoPro/issues/930) | Remove UI-paced media dependencies and reject false performance passes; validate all requested live inputs with recording and virtual camera. |
 | Owner current — October 16 | B | [#922](https://github.com/iamfatness/CoreVideoPro/issues/922) | Add validated, persisted RTMP/SRT control actions with no restart, secret echo, automatic stream start or change to an active output. |
 | Owner current — October 15 | B | [#916](https://github.com/iamfatness/CoreVideoPro/issues/916) | Diagnose select-to-first-present latency, reproduce the exact cause and fix it with API/offscreen evidence; keep the installed app/session untouched. |
 | 1 — October 15 UI/UX | B | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Finish stable-input scene creation and layout fallbacks, quick solo/two-person/share starters, preserved custom routes and fresh/upgraded profile evidence. |

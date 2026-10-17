@@ -62,6 +62,15 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
     private bool _disposed;
     private XamlRoot? _observedRoot;
     private string? _lastPreviewSurfaceKey;
+    private bool _cpuPreviewRequired;
+
+    private void UpdateCpuPreviewDemand()
+    {
+        var required = !_disposed && IsLoaded && IsEffectivelyVisible && !IsGpuPathActive && !HasMediaAssetPreview;
+        if (required == _cpuPreviewRequired) return;
+        _cpuPreviewRequired = required;
+        CpuPreviewDemand.Consumers.Set(this, required);
+    }
 
     public VideoSurfaceHost()
     {
@@ -341,6 +350,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         if (_observedRoot is not null) _observedRoot.Changed += OnRootChanged;
         RefreshSourceFraming();
         _presentationLifecycle.Load(UsesGpuSharedTexture);
+        UpdateCpuPreviewDemand();
     }
 
     private bool AttachGpuPresenter()
@@ -383,12 +393,17 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         // Mark disposed FIRST so any in-flight/queued Rendering callback that races
         // teardown bails out before touching the interop being disposed.
         _disposed = true;
+        UpdateCpuPreviewDemand();
         if (_observedRoot is not null) _observedRoot.Changed -= OnRootChanged;
         _observedRoot = null;
         _presentationLifecycle.Unload();
     }
 
-    private void OnRootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => TryPresentPendingSharedHandle();
+    private void OnRootChanged(XamlRoot sender, XamlRootChangedEventArgs args)
+    {
+        TryPresentPendingSharedHandle();
+        UpdateCpuPreviewDemand();
+    }
 
     private void DetachGpuPresenter()
     {
@@ -409,6 +424,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
         }
 
         TryPresentPendingSharedHandle();
+        UpdateCpuPreviewDemand();
     }
 
     private void OnSizeChanged(object sender, SizeChangedEventArgs e)
@@ -557,6 +573,7 @@ public sealed partial class VideoSurfaceHost : UserControl, IVideoSurfacePresent
 
     private void RefreshPathBindings()
     {
+        UpdateCpuPreviewDemand();
         if (_refreshingPathBindings)
         {
             return;

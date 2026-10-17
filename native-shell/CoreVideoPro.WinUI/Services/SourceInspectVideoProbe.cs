@@ -158,8 +158,10 @@ internal sealed partial class SourceInspectVideoProbe(string reportPath, string?
             producerStop.Cancel(); await producer; window.Content = null; window.Close();
             foreach (var other in others) other.Dispose();
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
-            await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(new { passed = error is null, samples, physicalDisplayVerified = false, error }, new JsonSerializerOptions { WriteIndented = true }));
-            if (error is not null) Environment.ExitCode = 1;
+            await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(new { passed = false,
+                functionalPassed = error is null, framePerformancePassed = false,
+                status = error is null ? "unverified-display-delivery" : "failed", samples, physicalDisplayVerified = false, error }, new JsonSerializerOptions { WriteIndented = true }));
+            Environment.ExitCode = 1; // Functional/pixel checks alone cannot qualify frame delivery.
         }
     }
     private static async Task Until(Func<bool> condition, int timeout)

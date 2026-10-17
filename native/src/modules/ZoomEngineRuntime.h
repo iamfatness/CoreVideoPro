@@ -67,6 +67,8 @@ class ZoomEngineRuntime {
     return speakerEpoch_.load(std::memory_order_relaxed);
   }
   [[nodiscard]] std::vector<rpc::Json> drainFrameEvents();
+  // Optional CPU UI images are independent of full-resolution media ingestion.
+  void setThumbnailDemand(bool enabled) { thumbnailDemand_.store(enabled, std::memory_order_relaxed); }
   // Returns the latest decoded BGRA frame per participant, carrying real pixels,
   // WITHOUT consuming the pending stdout/event queue (drainFrameEvents) that
   // feeds the WinUI multiview tiles. Used by the compositor tick to ingest real
@@ -91,6 +93,7 @@ class ZoomEngineRuntime {
   void applyEngineEventForTest(const ZoomEngineEvent& event);
 
  private:
+  std::atomic<bool> thumbnailDemand_{true}; // legacy clients retain CPU previews
   friend struct ZoomEngineRuntimeTestAccess;
   // A new engine process, join or capture cycle starts a new subscription set;
   // the ledger describes THAT set, so it is cleared with the dedup map.

@@ -219,6 +219,7 @@ public sealed class Direct3D11InteropService : IDisposable
     private long _deviceGeneration = -1;
     private IDXGISwapChain1? _swapChain;
     private nint _frameReady;
+    private readonly PresentationCredit _presentationCredit = new();
     private long _probeNotReady;
     private ID3D11Texture2D? _backBuffer;
     private SwapChainPanel? _panel;
@@ -287,11 +288,15 @@ public sealed class Direct3D11InteropService : IDisposable
     private PresentationPath _path = PresentationPath.Uninitialized;
 
     internal long PresentedFramesForProbe => _presentCount;
-    internal static bool CollectProbeCounters { get; set; }
+    internal static bool MonitorDiagnosticsEnabled { get; } =
+        Environment.GetEnvironmentVariable("COREVIDEO_MONITOR_DIAGNOSTICS") == "1";
+    internal static bool CollectProbeCounters { get; set; } = MonitorDiagnosticsEnabled;
+    private long _nextDiagnosticLog;
     internal static int PresentDelayForProbeMs;
     private long _probeAttempts, _probePresentBusy;
     private long _probeLastCommit;
     private double _probeMaxGapMs;
+    internal long LastPresentationProbeCommit => _probeLastCommit;
     internal void BeginPresentationProbeInterval()
     {
         _probeLastCommit = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -399,6 +404,11 @@ public sealed class Direct3D11InteropService : IDisposable
         finally
         {
             if (CollectProbeCounters) _probeTotalMs += System.Diagnostics.Stopwatch.GetElapsedTime(probeStarted).TotalMilliseconds;
+            if (MonitorDiagnosticsEnabled && Environment.TickCount64 >= _nextDiagnosticLog)
+            {
+                _nextDiagnosticLog = Environment.TickCount64 + 5000;
+                LaunchLog.Write("monitor-diagnostic: " + System.Text.Json.JsonSerializer.Serialize(DiagnosticsForProbe));
+            }
             _stageWatchdog.Mark(null); _presenting = false;
         }
     }
@@ -491,7 +501,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
             // Poll rather than wait on XAML's thread. A ready signal belongs to
             // this swap chain, not the other monitors sharing the D3D device.
-            if (_frameReady != 0 && WaitForSingleObject(_frameReady, 0) != 0)
+            if (_frameReady != 0 && !_presentationCredit.TryAcquire(() => WaitForSingleObject(_frameReady, 0) == 0))
             {
                 if (CollectProbeCounters) _probeNotReady++;
                 return _path == PresentationPath.GpuActive;
@@ -521,11 +531,10 @@ public sealed class Direct3D11InteropService : IDisposable
             var presentStarted = CollectProbeCounters ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             if (CollectProbeCounters && System.Threading.Volatile.Read(ref PresentDelayForProbeMs) is var delay && delay > 0)
                 System.Threading.Thread.Sleep(delay);
-            // Source monitors show the latest available frame through DWM;
-            // they must not independently wait for eleven vsync intervals.
-            // Output monitors retain their established sync interval.
-            var result = _swapChain.Present(VideoSurfacePresentationRules.IsSourceThumbnail(Label) ? 0u : 1u,
-                PresentFlags.DoNotWait);
+            // These are UI monitors, not scheduled output devices. A Program or
+            // Preview monitor must not wait for vsync and delay the other hosts
+            // on its owning worker. Every chain has its own bounded latency credit.
+            var result = _swapChain.Present(0, PresentFlags.DoNotWait);
             if (CollectProbeCounters)
             {
                 var presentMs = System.Diagnostics.Stopwatch.GetElapsedTime(presentStarted).TotalMilliseconds;
@@ -533,12 +542,14 @@ public sealed class Direct3D11InteropService : IDisposable
             }
             if (!PresentationAttempt.Commit(result.Code, () =>
                 {
+                    _presentationCredit.Commit();
                     _lastPresentedHandle = handle.NtHandle;
                     _lastPresentedGeneration = ingest.Generation;
-                    if (CollectProbeCounters && _probeLastCommit != 0)
+                    if (CollectProbeCounters)
                     {
-                        _probeMaxGapMs = Math.Max(_probeMaxGapMs,
-                            System.Diagnostics.Stopwatch.GetElapsedTime(_probeLastCommit).TotalMilliseconds);
+                        if (_probeLastCommit != 0)
+                            _probeMaxGapMs = Math.Max(_probeMaxGapMs,
+                                System.Diagnostics.Stopwatch.GetElapsedTime(_probeLastCommit).TotalMilliseconds);
                         _probeLastCommit = System.Diagnostics.Stopwatch.GetTimestamp();
                     }
                 }))
@@ -1209,12 +1220,10 @@ public sealed class Direct3D11InteropService : IDisposable
                     // Otherwise every chain shares the device's presentation
                     // limit, letting early rows starve later rows and Inspect.
                     // One credit per chain bounds latency without a UI wait.
-                    Flags = VideoSurfacePresentationRules.IsSourceThumbnail(Label)
-                        ? SwapChainFlags.FrameLatencyWaitableObject : SwapChainFlags.None
+                    Flags = SwapChainFlags.FrameLatencyWaitableObject
                 };
 
                 _swapChain = factory.CreateSwapChainForComposition(s_sharedDevice, swapChainDesc);
-                if (VideoSurfacePresentationRules.IsSourceThumbnail(Label))
                 using (var latency = _swapChain.QueryInterface<IDXGISwapChain2>())
                 {
                     latency.MaximumFrameLatency = 1;
@@ -1256,6 +1265,7 @@ public sealed class Direct3D11InteropService : IDisposable
         // escape (it fail-fasts the app when a tile/host unloads). The shared device,
         // shared context and per-handle ingests are process-wide and NOT touched here.
         if (_frameReady != 0) { CloseHandle(_frameReady); _frameReady = 0; }
+        _presentationCredit.Reset();
         try { _backBuffer?.Dispose(); } catch { }
         try { _swapChain?.Dispose(); } catch { }
         _backBuffer = null;

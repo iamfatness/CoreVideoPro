@@ -1173,6 +1173,10 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setColorGrade(command);
   } else if (type == "set-source-preview-demand") {
     if (!configureSourcePreviewDemand(command)) commandProtocolFailures_.push_back("invalid-source-preview-demand");
+  } else if (type == "set-zoom-thumbnail-demand") {
+    const auto* enabled = command.get("enabled");
+    if (enabled && enabled->isBool()) zoomEngineRuntime_->setThumbnailDemand(enabled->asBool());
+    else commandProtocolFailures_.push_back("invalid-zoom-thumbnail-demand");
   } else if (type == "set-grade-preview") {
     bool overloaded = false;
     if (!configureGradePreview(command, &overloaded))

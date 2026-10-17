@@ -1588,6 +1588,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         _bridge.RecoveryCompleted += OnBridgeRecoveryCompleted;
         _bridge.StatusChanged += OnBridgeStatusChanged;
         _bridge.ProfileChanged += OnBridgeProfileChanged;
+        _cpuPreviewDemand = new(_bridge);
+        _snapshotDelivery = new(action => _dispatcher.TryEnqueue(() =>
+            UiDispatch.Run(_dispatcher, action, "ApplySnapshotChanged")), ApplySnapshotChanged);
         _bridge.SnapshotChanged += OnSnapshotChanged;
         _bridge.ZoomVideoFrameReceived += OnZoomVideoFrameReceived;
         _bridge.ProgramFramePreviewReceived += OnProgramFramePreviewReceived;
@@ -10329,8 +10332,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return destinations;
     }
 
-    private void OnSnapshotChanged(NativeMediaCoreStateSnapshot snapshot) =>
-        RunOnUiThread(() => ApplySnapshotChanged(snapshot));
+    private readonly LatestUiDelivery<NativeMediaCoreStateSnapshot> _snapshotDelivery;
+    private readonly CpuPreviewDemand _cpuPreviewDemand;
+    private void OnSnapshotChanged(NativeMediaCoreStateSnapshot snapshot) => _snapshotDelivery.Offer(snapshot);
 
     private int _screenDiscoveryAttempts;
     private DateTime _screenDiscoveryLastAttempt = DateTime.MinValue;

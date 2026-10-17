@@ -22,6 +22,26 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class ShowInputsCoordinatorTests
 {
     [Fact]
+    public void SnapshotFloodWhileUiIsBlockedAppliesOnlyLatestSourceHealth()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var callbacks = new Queue<Action>();
+        var source = new SrtIngestSource { Id = "srt-source-01", Number = 1 };
+        host.SrtIngestSources.Add(source);
+        _ = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        host.Dispatch = callbacks.Enqueue;
+        for (var i = 0; i < 1000; i++)
+            bridge.EmitRoster(new NativeMediaCoreStateSnapshot { CaptureDevices = [new NativeCaptureDeviceStatus {
+                Id = source.DeviceId, Vendor = "srt", ConnectionState = "receiving", LastFrameAgeMs = i
+            }] });
+        Assert.Single(callbacks);
+        callbacks.Dequeue()();
+        Assert.Contains("last frame 999 ms", source.RuntimeHealthLabel);
+        Assert.Empty(callbacks);
+    }
+
+    [Fact]
     public void SrtHealthFactUpdatesSourceWithoutSceneSyncOrTake()
     {
         var bridge = new FakeMediaCoreBridge();
@@ -1090,7 +1110,8 @@ public sealed class ShowInputsCoordinatorTests
 
         public void SaveProductionOutputPreferences() { }
 
-        public void RunOnUiThread(Action action) => action();
+        public Action<Action>? Dispatch { get; set; }
+        public void RunOnUiThread(Action action) { if (Dispatch is { } dispatch) dispatch(action); else action(); }
     }
 
     private sealed class FakeMediaCoreBridge : IMediaCoreBridge

@@ -78,7 +78,8 @@ internal sealed class VideoSurfaceRenderPresenter : IDisposable
         get
         {
             var state = Volatile.Read(ref _state);
-            return state is null ? 0 : state.MaxGapMs + Stopwatch.GetElapsedTime(state.SampleTime).TotalMilliseconds;
+            return state is null || state.SampleTime == 0 ? 0 : Math.Max(state.MaxGapMs,
+                Stopwatch.GetElapsedTime(state.SampleTime).TotalMilliseconds);
         }
     }
     internal void BeginProbeInterval() { Interlocked.Exchange(ref _resetProbe, 1); _renderer.Wake(); }
@@ -96,11 +97,17 @@ internal sealed class VideoSurfaceRenderPresenter : IDisposable
         if (_requests.Offer(new(handle, Math.Max(1, _panel.ActualWidth),
                 Math.Max(1, _panel.ActualHeight), fillPanel)))
         {
-            Volatile.Write(ref _active, 1);
+            if (Interlocked.Exchange(ref _active, 1) == 0 && Direct3D11InteropService.MonitorDiagnosticsEnabled)
+                LaunchLog.Write($"monitor-activity: active [{SourceKey}]");
             _renderer.Wake();
         }
     }
-    internal void Suspend() { Volatile.Write(ref _active, 0); _renderer.Wake(); }
+    internal void Suspend()
+    {
+        if (Interlocked.Exchange(ref _active, 0) != 0 && Direct3D11InteropService.MonitorDiagnosticsEnabled)
+            LaunchLog.Write($"monitor-activity: suspended [{SourceKey}]");
+        _renderer.Wake();
+    }
     private bool Active => Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _active) != 0;
     public void Dispose()
     {
@@ -180,7 +187,7 @@ internal sealed class VideoSurfaceRenderPresenter : IDisposable
                 var state = new FrameState(_interop.PresentedFramesForProbe, _interop.LastPresentedHandle,
                     _interop.ChainRevision, _interop.IsReady, _interop.IsGpuPresenting,
                     Direct3D11InteropService.CollectProbeCounters ? _interop.DiagnosticsForProbe : null,
-                    _interop.MaximumPresentationProbeGapMs, Stopwatch.GetTimestamp());
+                    _interop.MaximumPresentationProbeGapMs, _interop.LastPresentationProbeCommit);
                 Volatile.Write(ref _state, state);
                 if (old is null || old.Revision != state.Revision || old.Handle != state.Handle || old.Active != state.Active)
                     NotifyUi();

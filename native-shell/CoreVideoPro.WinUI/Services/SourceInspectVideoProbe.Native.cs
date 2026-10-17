@@ -18,6 +18,7 @@ internal sealed partial class SourceInspectVideoProbe
     {
         string? error = null;
         var samples = new List<object>();
+        var monitorIntervals = new List<MonitorInterval>();
         var fakePath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(nativePath))!, "corevideo-zoom-engine-fake.exe");
         if (!File.Exists(fakePath)) throw new FileNotFoundException("Synthetic engine required; this probe must never join real Zoom", fakePath);
         var supervisor = new MediaCoreSupervisor(new()
@@ -114,6 +115,7 @@ internal sealed partial class SourceInspectVideoProbe
                 await Task.Delay(50);
             }
             zoomPhase = true;
+            await bridge.SyncAsync([Command("set-output-profile", new { width = 1920, height = 1080, fps = 60 })]);
             await bridge.JoinZoomAsync("https://zoom.us/j/1234567890", "Owned synthetic Inspect QA", false, sdkJwt: "synthetic");
             await Until(() => latest.ContainsKey("101"), 15000);
             await Until(() => inspector.ReadPixelForProbe() is { } pixel && pixel != 0xffff0000u, 3000);
@@ -178,7 +180,9 @@ internal sealed partial class SourceInspectVideoProbe
             heartbeat.Interval = TimeSpan.FromMilliseconds(10); heartbeat.IsRepeating = true;
             heartbeat.Tick += (_, _) => { uiGaps.Add(Stopwatch.GetElapsedTime(uiTick).TotalMilliseconds); uiTick = Stopwatch.GetTimestamp(); };
             heartbeat.Start();
+            var quietClock = Stopwatch.StartNew();
             await Task.Delay(6000); // No readback or layout calls; heartbeat records UI dispatch only.
+            var quietSeconds = quietClock.Elapsed.TotalSeconds;
             heartbeat.Stop();
             samples.Add(new { phase = "UI dispatch under normal presentation", callbacks = uiGaps.Count,
                 maximumGapMs = uiGaps.DefaultIfEmpty().Max() });
@@ -192,14 +196,25 @@ internal sealed partial class SourceInspectVideoProbe
                 maxGapMs = h.MaximumPresentationProbeGapMs,
                 diagnostics = h.DiagnosticsForProbe }).ToArray();
             samples.Add(new { phase = "every host presentation", hosts = hostResults });
+            monitorIntervals.AddRange(hostResults.Where(h => h.visible && h.key.StartsWith("source-thumbnail:"))
+                .Select(h => new MonitorInterval(h.key, quietSeconds, h.frames, h.maxGapMs)));
             if (hostResults.Any(h => !h.visible && h.frames != 0))
                 throw new InvalidOperationException("A hidden video host continued presenting");
-            if (hostResults.Any(h => h.visible && h.key.StartsWith("source-thumbnail:") && h.frames < 150))
-                throw new InvalidOperationException("At least one visible source monitor was below 25 updates/second");
-            if (hostResults.Any(h => h.visible && h.key.StartsWith("source-thumbnail:") && h.maxGapMs > 250))
-                throw new InvalidOperationException("A visible source monitor had a presentation gap exceeding 250 ms");
-            if (quietInspectFrames < 60 || quietThumbnailFrames < 60)
-                throw new InvalidOperationException("Complete shell stalled without QA readback");
+            // Preserve later functional diagnostics even when cadence fails. The
+            // final strict verdict rejects every over-budget interval, not only >250ms.
+            var visibleHosts = allHosts.Where(h => h.IsEffectivelyVisible && h.SurfaceKey.StartsWith("source-thumbnail:")).ToArray();
+            var beforeBlock = visibleHosts.Select(h => h.PresentedFramesForProbe).ToArray();
+            foreach (var host in visibleHosts) host.BeginPresentationProbeInterval();
+            await Task.Delay(100); // Allow the workers to reset their measurement interval.
+            beforeBlock = visibleHosts.Select(h => h.PresentedFramesForProbe).ToArray();
+            var blockedClock = Stopwatch.StartNew();
+            Thread.Sleep(750); // The complete UI is unavailable; native producers continue.
+            var blockedSeconds = blockedClock.Elapsed.TotalSeconds;
+            var blocked = visibleHosts.Select((h, i) => new MonitorInterval(h.SurfaceKey, blockedSeconds,
+                h.PresentedFramesForProbe - beforeBlock[i], h.MaximumPresentationProbeGapMs)).ToArray();
+            monitorIntervals.AddRange(blocked);
+            samples.Add(new { phase = "complete shell UI blocked", intervals = blocked });
+            if (blocked.Any(h => h.Frames == 0)) throw new InvalidOperationException("A visible source stopped while XAML was blocked.");
             if (!completeMotionQualified)
                 throw new InvalidOperationException("Complete shell did not present continuous changing pixels in both views (later phases retained for diagnosis)");
             if (!syntheticMotionQualified)
@@ -227,6 +242,29 @@ internal sealed partial class SourceInspectVideoProbe
             await Until(() => allHosts.Where(h => h.IsEffectivelyVisible && h.SurfaceKey.StartsWith("source-thumbnail:"))
                 .All(h => h.PresentedFramesForProbe > hiddenCounts[Array.IndexOf(allHosts, h)] + 2), 3000);
             samples.Add(new { phase = "hide and restore", passed = true });
+
+            // Exercise the operator monitors too, not only the Sources workspace.
+            fullStudio.ActiveTab = StudioTab.Studio;
+            foreach (var mode in new[] { StudioViewMode.ProgramPreview, StudioViewMode.Multiview })
+            {
+                fullStudio.ViewMode = mode;
+                await Task.Delay(1500);
+                var monitors = Descendants(root).OfType<VideoSurfaceHost>()
+                    .Where(h => h.IsEffectivelyVisible && h.DiagnosticsForProbe is not null).ToArray();
+                if (monitors.Length == 0) throw new InvalidOperationException(mode + ": no live monitor was measured");
+                foreach (var host in monitors) host.BeginPresentationProbeInterval();
+                await Task.Delay(100);
+                var before = monitors.Select(h => h.PresentedFramesForProbe).ToArray();
+                var clock = Stopwatch.StartNew();
+                Thread.Sleep(750);
+                var seconds = clock.Elapsed.TotalSeconds;
+                var intervals = monitors.Select((h, i) => new MonitorInterval(h.SurfaceKey, seconds,
+                    h.PresentedFramesForProbe - before[i], h.MaximumPresentationProbeGapMs)).ToArray();
+                monitorIntervals.AddRange(intervals);
+                samples.Add(new { phase = "operator monitor UI blocked", mode = mode.ToString(), intervals });
+                if (intervals.Any(i => i.Frames == 0))
+                    throw new InvalidOperationException(mode + ": video stopped while XAML was blocked");
+            }
         }
         catch (Exception ex) { error = ex.ToString(); }
         finally
@@ -247,9 +285,11 @@ internal sealed partial class SourceInspectVideoProbe
             }
             window.Close();
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
-            await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(new { passed = error is null,
-                samples, sourceCount = latest.Count, received, physicalDisplayVerified = false, error }, new JsonSerializerOptions { WriteIndented = true }));
-            if (error is not null) Environment.ExitCode = 1;
+            var performance = MonitorPerformanceVerdict.Evaluate(error is null, monitorIntervals);
+            await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(new { passed = performance.FramePerformancePassed,
+                functionalPassed = error is null, performance, samples, sourceCount = latest.Count, received,
+                physicalDisplayVerified = false, error }, new JsonSerializerOptions { WriteIndented = true }));
+            if (!performance.FramePerformancePassed) Environment.ExitCode = 1;
         }
     }
 }
