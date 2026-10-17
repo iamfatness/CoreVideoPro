@@ -318,19 +318,13 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 var result = await _vm.InvokeGraphicsActionAsync(actionId, Str(args, 0)).ConfigureAwait(true);
                 return result.Accepted ? ControlInvokeResult.Success : ControlInvokeResult.Fail(result.Reason);
             }
-            case "graphics.lowerThird.toggle" when _vm.ManagedLowerThirdAuthority:
-                return await _vm.ApplyManagedLowerThirdIntentAsync(!_vm.ManagedLowerThirdVisible).ConfigureAwait(true) is {Accepted:true} ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);
-            case "graphics.lowerThird.set" when _vm.ManagedLowerThirdAuthority:
-                return await _vm.ApplyManagedLowerThirdIntentAsync(Bool(args,0)).ConfigureAwait(true) is {Accepted:true} ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);
             case "graphics.lowerThird.toggle":
-                return ApplyLowerThirdIntent(
-                    !(_vm.ProgramLowerThirdEnabled || _vm.ProgramLowerThirdKey.IsVisible), true,
-                    () => _vm.ProgramLowerThirdEnabled,
-                    () => _vm.ToggleProgramLowerThirdCommand.Execute(null), () => _vm.CommandStatus);
             case "graphics.lowerThird.set":
-                return ApplyLowerThirdIntent(Bool(args, 0), false,
-                    () => _vm.ProgramLowerThirdEnabled,
-                    () => _vm.ToggleProgramLowerThirdCommand.Execute(null), () => _vm.CommandStatus);
+            {
+                var visible = _vm.ManagedLowerThirdAuthority ? _vm.ManagedLowerThirdVisible : _vm.ProgramLowerThirdEnabled || _vm.ProgramLowerThirdKey.IsVisible;
+                var result = await _vm.ApplyStudioLowerThirdIntentAsync(actionId.EndsWith("toggle", StringComparison.Ordinal) ? !visible : Bool(args,0)).ConfigureAwait(true);
+                return result.Accepted ? ControlInvokeResult.Success : ControlInvokeResult.Fail(result.Reason);
+            }
             case "graphics.caption.set":
                 _vm.CaptionText = Str(args, 0);
                 if (args.Count > 1 && args[1] is string speaker)

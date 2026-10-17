@@ -1,5 +1,13 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner approval, October 17 — #942:** implement the approved 1080p/100%
+Graphics workspace and explicit Use in Studio assignment. In Studio, add only
+the assigned-look label beside the existing lower-third toggle; preserve all
+other Studio layout and controls. Use isolated API/offscreen validation and
+leave the installed app, camera registration and production profile alone.
+This is the current UI implementation priority; existing output acceptance
+gates and the separate release-blocking #943 remain open.
+
 **Owner direction, October 17 — merge and cut beta:** integrate the seven open
 PRs and qualify the immutable Windows assets. Release blocker
 [#940](https://github.com/iamfatness/CoreVideoPro/issues/940): camera setup must
@@ -222,6 +230,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner current — approved Graphics redesign | B | [#942](https://github.com/iamfatness/CoreVideoPro/issues/942) | Bounded Graphics workspace, explicit pinned Studio look, existing Studio toggle/label only; isolated 1080p validation. |
 | Owner current — Volt implementation | A | [#926](https://github.com/iamfatness/CoreVideoPro/issues/926) | Native template/instance consumer and bounded preparation with compatibility lower-third pixels. |
 | Volt dependent — after #926 | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927), [#928](https://github.com/iamfatness/CoreVideoPro/issues/928) | Complete workspace/migration and actual title/bug/clock consumers; activate only as dependency gates pass. |
 | Volt dependent — after consumers/#761 | B | [#929](https://github.com/iamfatness/CoreVideoPro/issues/929) | Scoped participant automation, rehearsal and manual override with native outcome evidence. |

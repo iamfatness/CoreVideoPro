@@ -20,6 +20,8 @@ public sealed record GraphicsSavedCue
 
 public sealed record GraphicsSavedTemplate(string TemplateId, int TemplateVersion, string ManifestHash, JsonElement Definition, string PackageRoot = "");
 
+public sealed record GraphicsStudioLowerThird(GraphicsSavedCue Cue, bool FollowProgramSource);
+
 /// <summary>Separate graphics document. No stream, recording, camera or media
 /// preferences belong here. Runtime visibility/arming is deliberately absent.</summary>
 public sealed record GraphicsShowDocument
@@ -29,6 +31,7 @@ public sealed record GraphicsShowDocument
     public string Authority { get; init; } = "legacy";
     public IReadOnlyList<GraphicsSavedCue> Cues { get; init; } = [];
     public IReadOnlyList<GraphicsSavedTemplate> Templates { get; init; } = [];
+    public GraphicsStudioLowerThird? StudioLowerThird { get; init; }
     public IReadOnlyDictionary<string, LowerThirdAppearance> StylePresets { get; init; } = new Dictionary<string, LowerThirdAppearance>();
     public IReadOnlyDictionary<string, GraphicsSavedStyle> TemplateStyles { get; init; } = new Dictionary<string, GraphicsSavedStyle>();
     public JsonElement? Brand { get; init; }
@@ -135,6 +138,11 @@ public sealed class GraphicsDocumentStore
     }
     private static void Validate(GraphicsShowDocument document)
     {
+        if (document.StudioLowerThird is { } assigned) {
+            if (assigned.Cue is null || assigned.Cue.Draft?.Binding is not null)
+                throw new InvalidDataException("Studio look must not persist a live source generation.");
+            Validate(document with { StudioLowerThird = null, Cues = [assigned.Cue], AutomationRules = [] });
+        }
         if (document.SchemaVersion != CurrentSchemaVersion || string.IsNullOrWhiteSpace(document.ShowId) || document.ShowId.Length > 64 ||
             document.Authority is not ("legacy" or "volt") || document.Cues is null || document.Cues.Count > 64 ||
             document.Templates is null || document.Templates.Count > 16 || document.StylePresets is null || document.StylePresets.Count > 64)

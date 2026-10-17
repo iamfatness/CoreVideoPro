@@ -4,9 +4,14 @@ namespace CoreVideoPro.WinUI.ViewModels;
 public sealed partial class StudioViewModel
 {
     [RelayCommand]
-    private void ToggleProgramLowerThird()
+    private async Task ToggleProgramLowerThirdAsync()
     {
-        if(ManagedLowerThirdAuthority) {_ = ApplyManagedLowerThirdIntentAsync(!ManagedLowerThirdVisible);return;}
+        var visible = ManagedLowerThirdAuthority ? ManagedLowerThirdVisible : ProgramLowerThirdKey.IsVisible || ProgramLowerThirdEnabled;
+        await ApplyStudioLowerThirdIntentAsync(!visible);
+    }
+
+    private void ToggleLegacyProgramLowerThird()
+    {
         if (ProgramLowerThirdKey.IsVisible || ProgramLowerThirdEnabled)
         {
             ProgramLowerThirdEnabled = false;
