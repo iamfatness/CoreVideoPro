@@ -394,3 +394,14 @@ Independent preparation owners receive lifetime-safe pressure notifications. The
 
 
 Explicit arming is fenced by the configuration revision, current mode and an independent `activationRevision`. Clear, disarm, hold, source-session change and mode transitions revoke earlier activation intents without changing saved rule configuration. An old request cannot rearm after Clear just because its rules stayed unchanged. `graphics.automation.control` requests for `arm` carry `expectedAutomationRevision`, `expectedActivationRevision` and the expected mode. The `enable-automatic` control action is the atomic mode/arm adapter for the existing `automation.lowerThirds.set` UI/API intent; it requires both revision fences and `mode:"automatic"`. It validates rules, current source qualification and manual holds before changing either mode or arming. No shell set-mode/await/arm sequence can adopt a later Clear token. Restored configuration never emits this intent. Old Show/Hide controls select only global/current-scene lower thirds and preserve custom declarative fields without injecting an undeclared secondary field.
+
+For sustained Windows qualification, an explicit `COREVIDEO_DELIVERY_TRACE_PATH`
+may be paired with `COREVIDEO_DELIVERY_TRACE_STAGES=program-only`. This retains
+every Program submission, GPU-ready, delivery and miss event within the existing
+16 MiB ring / 256 MiB export bounds; source events are intentionally excluded,
+counted separately from loss and remain unverified by that capture. The default
+`all` selection is unchanged. Snapshots expose selection and intentional exclusions.
+The capture also exposes an epoch-specific local `stopEvent`; signaling it drains
+and finalizes the trace while media stays running, avoiding reliance on the shell's
+exit grace. `captureComplete` and the finalized header must both be observed before
+decoding. Neither mode measures camera or physical display completion.

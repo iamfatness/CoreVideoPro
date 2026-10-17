@@ -9,6 +9,12 @@
 #include <set>
 #include <thread>
 #include <vector>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 using namespace corevideo::core;
@@ -198,3 +204,54 @@ TEST(DeliveryTrace, ConcurrentDiagnosticReadersSeeCompleteCachedObservationsThro
   EXPECT_TRUE(closed); EXPECT_EQ(invalid.load(), 0u); EXPECT_GT(reads.load(), 100u);
   EXPECT_EQ(capture.trace.snapshot().get("aggregate")->get("stages")->asArray()[4].getNumber("exportedEvents"), 100);
 }
+
+TEST(DeliveryTrace, ProgramOnlyRetainsAllProgramBoundariesWithoutCallingSourceExclusionsLoss) {
+  const auto path = newPath();
+  DeliveryTraceCapture trace(path.string(), {}, DeliveryTraceSelection::ProgramOnly);
+  for (int stage = 1; stage <= 10; ++stage) {
+    DeliveryTraceEvent event; event.stage = static_cast<DeliveryStage>(stage);
+    EXPECT_EQ(trace.record(event), stage >= 3 && stage <= 6);
+  }
+  ASSERT_TRUE(trace.close());
+  const auto header = readHeader(path);
+  EXPECT_EQ(header.exported, 4u); EXPECT_EQ(header.lost, 0u); EXPECT_EQ(header.complete, 1u);
+  const auto snapshot = trace.snapshot();
+  EXPECT_EQ(snapshot.getString("stageSelection"), "program-only");
+  EXPECT_EQ(snapshot.getNumber("intentionallyFilteredEvents"), 6);
+  EXPECT_TRUE(snapshot.get("captureComplete")->asBool());
+  const auto& stages = snapshot.get("aggregate")->get("stages")->asArray();
+  for (std::size_t index = 0; index < stages.size(); ++index)
+    EXPECT_EQ(stages[index].get("observed")->asBool(), index >= 2 && index <= 5);
+  std::error_code error; std::filesystem::remove(path, error);
+}
+
+TEST(DeliveryTrace, ExplicitStopFinalizesEvidenceWhileItsOwnerRemainsAlive) {
+  Capture capture;
+  ASSERT_TRUE(capture.trace.record({}));
+  capture.trace.requestStop();
+  EXPECT_FALSE(capture.trace.record({}));
+  ASSERT_TRUE(capture.trace.close());
+  const auto header = readHeader(capture.path);
+  EXPECT_EQ(header.exported, 1u); EXPECT_EQ(header.complete, 1u); EXPECT_EQ(header.lost, 0u);
+  EXPECT_FALSE(capture.trace.snapshot().get("accepting")->asBool());
+  EXPECT_TRUE(capture.trace.snapshot().get("captureComplete")->asBool());
+}
+
+#if defined(_WIN32)
+TEST(DeliveryTrace, NamedStopEventFinalizesWithoutTerminatingTheMediaProcess) {
+  Capture capture;
+  ASSERT_TRUE(capture.trace.record({}));
+  const auto stopName = capture.trace.snapshot().getString("stopEvent");
+  const HANDLE signal = OpenEventA(EVENT_MODIFY_STATE, FALSE, stopName.c_str());
+  ASSERT_NE(signal, nullptr);
+  const bool signaled = SetEvent(signal) != FALSE;
+  CloseHandle(signal); ASSERT_TRUE(signaled);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!capture.trace.snapshot().get("captureComplete")->asBool() && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(capture.trace.snapshot().get("captureComplete")->asBool());
+  EXPECT_EQ(readHeader(capture.path).complete, 1u);
+  EXPECT_FALSE(capture.trace.record({}));
+  EXPECT_EQ(capture.trace.snapshot().getNumber("lost"), 0);
+}
+#endif

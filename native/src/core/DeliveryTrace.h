@@ -33,16 +33,19 @@ struct DeliveryTraceHeader {
   std::int64_t started = 0, ended = 0;
 };
 static_assert(sizeof(DeliveryTraceHeader) == 80);
+enum class DeliveryTraceSelection { All, ProgramOnly };
 class DeliveryTraceCapture {
  public:
   static constexpr std::size_t kStorageBytes = 16 * 1024 * 1024;
   // Constructor-only fault seam; no operator command/environment binding.
-  explicit DeliveryTraceCapture(const std::string& path, std::function<void()> beforeExport = {});
+  explicit DeliveryTraceCapture(const std::string& path, std::function<void()> beforeExport = {},
+      DeliveryTraceSelection selection = DeliveryTraceSelection::All);
   ~DeliveryTraceCapture();
   DeliveryTraceCapture(const DeliveryTraceCapture&) = delete;
   DeliveryTraceCapture& operator=(const DeliveryTraceCapture&) = delete;
   // At most sixteen head/slot attempts: contention/full storage drops diagnostics only.
   bool record(DeliveryTraceEvent event) noexcept;
+  void requestStop() noexcept; // Finalize diagnostics without stopping media.
   bool close(); // At most two seconds; a blocked sink retains its owned state.
   std::uint64_t tag(std::string_view identity) const noexcept;
   rpc::Json snapshot() const;
