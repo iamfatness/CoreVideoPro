@@ -68,7 +68,8 @@ class CompositorOverlayRaster {
       const CompositorOverlayContent& overlay,
       const compositor::LayerRect& rect,
       int targetWidth,
-      int targetHeight);
+      int targetHeight,
+      const std::string& preparationSlot = {});
 
  private:
   // Lazily creates the D2D/DirectWrite (and best-effort WIC) factories used by

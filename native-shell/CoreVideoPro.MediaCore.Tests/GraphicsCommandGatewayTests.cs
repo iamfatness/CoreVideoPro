@@ -54,6 +54,11 @@ public sealed class GraphicsCommandGatewayTests
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"style\":{\"nameSize\":\"huge\"}")]
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"style\":{\"unknownSlider\":50}")]
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"bindings\":{}")]
+    [InlineData("graphics.instance.update", "\"target\":\"cue\",\"animations\":{\"in\":{\"type\":\"script\"}}")]
+    [InlineData("graphics.instance.update", "\"target\":\"cue\",\"animations\":{\"in\":{\"durationMs\":3001}}")]
+    [InlineData("graphics.instance.update", "\"target\":\"cue\",\"animations\":{\"in\":{\"direction\":\"diagonal\"}}")]
+    [InlineData("graphics.instance.update", "\"target\":\"cue\",\"animations\":{\"in\":{\"type\":\"fade\",\"type\":\"slide\"}}")]
+    [InlineData("graphics.instance.update", "\"target\":\"cue\",\"animations\":{\"in\":{},\"in\":{}}")]
     [InlineData("graphics.program.clear", "\"channel\":\"unknown\"")]
     public async Task InvalidOrIgnoredLookingControlsNeverReachTheCore(string action, string extra)
     {
@@ -75,6 +80,15 @@ public sealed class GraphicsCommandGatewayTests
         Assert.True(GraphicsCommandRequest.TryBuild("graphics.instance.update", request, Observed, out var command, out _, out _));
         Assert.Equal("1.0", command!.ExtensionData!["graphics"].GetProperty("expectedRevision").GetRawText());
         Assert.Equal(65, command.ExtensionData["graphics"].GetProperty("style").GetProperty("nameSize").GetInt32());
+    }
+
+    [Fact]
+    public void ValidNativeTransitionsRoundTripWithoutShellTiming()
+    {
+        var request = Request("\"target\":\"cue\",\"animations\":{\"in\":{\"type\":\"slide\",\"direction\":\"up\",\"durationMs\":250,\"easing\":\"ease-out\"},\"out\":{\"type\":\"fade\",\"durationMs\":300}}");
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.instance.update", request, Observed, out var command, out _, out _));
+        Assert.Equal(250, command!.ExtensionData!["graphics"].GetProperty("animations").GetProperty("in").GetProperty("durationMs").GetInt32());
+        Assert.Equal("fade", command.ExtensionData["graphics"].GetProperty("animations").GetProperty("out").GetProperty("type").GetString());
     }
 
     [Fact]

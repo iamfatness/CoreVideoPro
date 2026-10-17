@@ -20,6 +20,8 @@ public sealed class NativeGraphicsStateTests
                 "preparationObservation":{"identity":{"instanceId":"featured","coreEpoch":"native-epoch","revision":3},"state":"preparing","warning":""},
                 "firstCompositionObservation":{"identity":{"instanceId":"featured","coreEpoch":"native-epoch","revision":2},"frameNumber":99,"evidence":"draw-submitted"},
                 "fields":{"name":"Guest","title":""},"style":{"nameSize":65,"titleSize":36},
+                "animations":{"in":{"type":"slide","direction":"up","durationMs":400,"easing":"ease-out"}},
+                "programAnimations":{"out":{"type":"fade","durationMs":300}},
                 "programFields":{"name":"On air","title":"Engineer"},"programStyle":{"nameSize":52}}],
               "lastResult":{"requestId":"update-1","accepted":true,"reason":"revision-accepted"}}}}
             """);
@@ -35,6 +37,12 @@ public sealed class NativeGraphicsStateTests
         Assert.Equal(36, instance.Style.TitleSize);
         Assert.Equal("On air", instance.ProgramFields!.Name);
         Assert.Equal(52, instance.ProgramStyle!.NameSize);
+        Assert.Equal("slide", instance.Animations.In.Type);
+        Assert.Equal("up", instance.Animations.In.Direction);
+        Assert.Equal(400, instance.Animations.In.DurationMs);
+        Assert.Equal("ease-out", instance.Animations.In.Easing);
+        Assert.Equal("fade", instance.ProgramAnimations!.Out.Type);
+        Assert.Equal(300, instance.ProgramAnimations.Out.DurationMs);
         Assert.Equal("preparing", instance.Preparation);
         Assert.Equal(3, instance.Identity!.Revision);
         Assert.Equal(3, instance.PreparationObservation!.Identity.Revision);

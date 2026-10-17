@@ -235,3 +235,96 @@ TEST(GraphicsInstances, MissingRequiredPrimaryTextCannotReplaceAValidProgramRevi
   ASSERT_EQ(1u, plan.layers.size());
   EXPECT_EQ("Guest", plan.layers[0].overlay.title);
 }
+
+TEST(GraphicsInstances, NativeAnimationUsesMonotonicTimeAndReversesWithoutAnOpacityJump) {
+  double now = 100;
+  GraphicsInstances state{"test-core", [&] { return now; }};
+  const Json transitions = Json::Object{
+      {"in", Json::Object{{"type", "slide"}, {"direction", "left"}, {"durationMs", 1000}, {"easing", "linear"}}},
+      {"out", Json::Object{{"type", "fade"}, {"durationMs", 1000}}}};
+  ASSERT_TRUE(state.apply(request("graphics-instance-create", {
+      {"templateId", "compact-solid"}, {"templateVersion", 1}, {"scope", "global"},
+      {"fields", Json::Object{{"name", "Guest"}}}, {"animations", transitions}})));
+  ready(state, 1);
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "show"}})));
+  now = 600;
+  CompositorRenderPlan plan; state.append(plan, false);
+  ASSERT_EQ(1u, plan.layers.size());
+  EXPECT_EQ(.5f, plan.layers[0].opacity);
+  const auto midwayX = plan.layers[0].rect.x;
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "hide"}})));
+  plan = {}; state.append(plan, false);
+  EXPECT_EQ(.5f, plan.layers[0].opacity); EXPECT_EQ(midwayX, plan.layers[0].rect.x);
+  EXPECT_EQ("exiting", row(state).getString("visibility"));
+  now = 850;
+  plan = {}; state.append(plan, false);
+  const auto exitX = plan.layers[0].rect.x;
+  EXPECT_EQ(.375f, plan.layers[0].opacity);
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"action", "show"}})));
+  plan = {}; state.append(plan, false);
+  EXPECT_EQ(.375f, plan.layers[0].opacity); EXPECT_EQ(exitX, plan.layers[0].rect.x);
+  now = 1850; state.observe({});
+  plan = {}; state.append(plan, false);
+  EXPECT_EQ(1.f, plan.layers[0].opacity);
+  EXPECT_EQ(1., row(state).getNumber("revision")); // reversing is not a content edit
+}
+
+TEST(GraphicsInstances, RepeatedShowAndContentUpdateDoNotRestartNativeEntrance) {
+  double now = 0;
+  GraphicsInstances state{"test-core", [&] { return now; }};
+  ASSERT_TRUE(create(state));
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"target", "cue"},
+      {"animations", Json::Object{{"in", Json::Object{{"type", "fade"}, {"durationMs", 1000}}}}}})));
+  ready(state, 2);
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"expectedRevision", 2}, {"action", "show"}})));
+  now = 400;
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"expectedRevision", 2}, {"action", "show"}})));
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"expectedRevision", 2}, {"target", "program"},
+      {"fields", Json::Object{{"title", "Updated"}}}})));
+  ready(state, 3);
+  now = 500;
+  CompositorRenderPlan plan; state.append(plan, false);
+  EXPECT_EQ(.5f, plan.layers[0].opacity);
+  EXPECT_EQ("Updated", plan.layers[0].overlay.org);
+  now = 1000; state.observe({});
+  plan = {}; state.append(plan, false);
+  EXPECT_EQ(1.f, plan.layers[0].opacity);
+}
+
+TEST(GraphicsInstances, HideRetiresAtNativeTransitionEndWhileClearCutsImmediately) {
+  double now = 0;
+  GraphicsInstances state{"test-core", [&] { return now; }};
+  ASSERT_TRUE(create(state));
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"target", "cue"},
+      {"animations", Json::Object{{"out", Json::Object{{"type", "fade"}, {"durationMs", 1000}}}}}})));
+  ready(state, 2);
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"expectedRevision", 2}, {"action", "show"}})));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"expectedRevision", 2}, {"action", "hide"}})));
+  now = 999; state.observe({});
+  EXPECT_EQ("exiting", row(state).getString("visibility"));
+  EXPECT_EQ(2., row(state).getNumber("programRevision"));
+  now = 1000; state.observe({});
+  EXPECT_EQ("hidden", row(state).getString("visibility"));
+  EXPECT_EQ(0., row(state).getNumber("programRevision"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"expectedRevision", 2}, {"action", "show"}})));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"expectedRevision", 2}, {"action", "clear"}})));
+  CompositorRenderPlan plan; state.append(plan, false);
+  EXPECT_TRUE(plan.layers.empty());
+  now = 2000; ready(state, 2);
+  plan = {}; state.append(plan, false);
+  EXPECT_TRUE(plan.layers.empty());
+}
+
+TEST(GraphicsInstances, InvalidTransitionCannotMutateTheAcceptedRevision) {
+  GraphicsInstances state{"test-core"};
+  ASSERT_TRUE(create(state));
+  for (const auto& transition : std::vector<Json>{
+      Json::Object{{"type", "script"}}, Json::Object{{"type", "fade"}, {"durationMs", 3001}},
+      Json::Object{{"type", "fade"}, {"easing", "bounce"}}, Json::Object{{"type", "slide"}, {"direction", "diagonal"}},
+      Json::Object{{"type", "fade"}, {"durationMs", -1}}, Json::Object{{"type", "fade"}, {"customCurve", true}}}) {
+    EXPECT_FALSE(state.apply(request("graphics-instance-update", {{"target", "cue"},
+        {"animations", Json::Object{{"in", transition}}}, {"fields", Json::Object{{"name", "Must not leak"}}}})));
+    EXPECT_EQ(1., row(state).getNumber("revision"));
+    EXPECT_EQ("Guest", row(state).get("fields")->getString("name"));
+  }
+}

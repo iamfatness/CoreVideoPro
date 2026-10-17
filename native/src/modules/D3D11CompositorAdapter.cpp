@@ -306,7 +306,7 @@ class D3D11Compositor final : public ICompositor {
     for (const auto& candidate : deterministicPlan.graphicsPreparations) {
       const auto& r = candidate.rect;
       overlayRaster_.rasterOverlayTexture(device_.get(), context_.get(), candidate.overlay,
-          {r.x, r.y, r.width, r.height}, targetWidth_, targetHeight_);
+          {r.x, r.y, r.width, r.height}, targetWidth_, targetHeight_, "cue:" + candidate.graphicsInstanceId);
       frame.graphicsFacts.push_back({candidate.graphicsInstanceId, candidate.graphicsRevision,
           overlayRaster_.preparationState(), overlayRaster_.lastWarning()});
     }

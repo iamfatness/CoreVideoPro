@@ -38,6 +38,14 @@ and `title`; empty secondary text remains explicitly empty. Style is a validated
 partial patch of the existing `LowerThirdAppearance` contract. Unsupported
 request/style/field keys fail rather than becoming ignored controls.
 
+Create/Update also accept an optional `animations` object with `in` and/or `out`
+definitions. Each definition accepts `type:none|fade|slide`,
+`direction:left|right|up|down`, `durationMs:0..3000`, and
+`easing:linear|ease-in|ease-out|ease-in-out`. An omitted phase retains its
+previous definition; an omitted property within a supplied phase uses the V1
+default (none/left/0/linear). The three compatibility templates default to cuts.
+Definitions remain part of the private revision until explicitly adopted.
+
 Update requires `expectedRevision` and an explicit `target:cue|program`. Cue,
 Trigger and Remove require the same optimistic revision. Trigger uses
 `action:show|hide|clear`. Program Clear requires explicit `channel:all` and
@@ -55,6 +63,16 @@ cancels an older pending Show instead of silently changing what that Show would
 air. Hide/Clear cancel pending reveals. Same-value updates do not increment the
 revision or replay the reveal. Revision numbers are not reused after removal.
 
+The native timeline samples `steady_clock`, not render-call count or shell
+timers. An interrupted transition starts from its sampled opacity/position;
+Show during an exit reverses continuously and repeated Show cannot restart an
+entrance. Updating on-air content preserves the running transition. Hide
+retires the Program revision when its out transition finishes; Clear cuts on
+the next composition boundary. Snapshot visibility distinguishes entering,
+on-air, exiting and hidden; the independent draw observation is still required
+before reporting a composed on-air graphic. These control/timeline tests do
+not establish scheduled-output timing qualification.
+
 The Program render plan carries private preparation candidates independently
 from visible layers. D3D11 prepares DirectWrite/WIC/D2D software rasters on one
 persistent worker, creates immutable textures through the free-threaded device,
@@ -69,6 +87,19 @@ and a 16-entry live/retiring limit; referenced results cannot disappear from
 accounting through eviction. Lookup hits update eviction recency. Failed results
 are sticky until content/device keys change. These are enforced allocation
 model bounds, not measurements of driver overhead or fleet performance.
+
+Each private cue uses one preparation slot. A newer admitted edit replaces
+older queued edits for that slot; an already executing producer keeps its
+reservation until completion but its superseded result is not published.
+Other slots and the accepted Program revision are independent. An oversized
+or otherwise refused request cannot cancel valid admitted work. Slot metadata
+is bounded by queued/in-flight jobs rather than a growing revision history.
+Shared content jobs remain valid while another slot needs them. Canceled
+request metadata/device leases move to a bounded disposal queue (at most the
+pending capacity) and are destroyed on the preparation owner; when that queue
+is full, further replacements are refused until the owner drains it. Refusal
+is observable backpressure, not successful admission. Tests retry transient
+try-lock refusal before asserting an admitted job's completion.
 
 The compositor retains raster results through its existing preallocated GPU
 read-completion query leases. Empty passes poll retirement too, preventing Hide
@@ -86,7 +117,7 @@ it is not a GPU-completion, camera-reader, decoded-stream or physical-display
 continuity claim.
 
 Scene/source-ID filtering is present. Source-generation-qualified bindings,
-full interruptible animation, native draft-authoring tap, package loading,
+native draft-authoring tap, package loading,
 legacy migration, the operator workspace, other graphic families and automation
 remain requirements of the approved feature. Their absence must not be hidden
 by the compatibility instance capability. Metal does not announce this instance

@@ -31,6 +31,7 @@ class PreparationCache {
   struct Counters {
     uint64_t admitted = 0, completed = 0, refused = 0, failed = 0;
     uint64_t residentBytes = 0, pendingBytes = 0, highWaterBytes = 0;
+    uint64_t superseded = 0;
   };
   using Prepare = std::function<Result(const Request&)>;
   explicit PreparationCache(Prepare prepare, uint64_t byteBudget = 256ull * 1024 * 1024,
@@ -54,18 +55,53 @@ class PreparationCache {
     return found->second->result;
   }
 
-  std::shared_ptr<const Result> findOrRequest(const Key& key, Request request, uint64_t maximumBytes) {
+  std::shared_ptr<const Result> findOrRequest(const Key& key, Request request, uint64_t maximumBytes,
+                                            const std::string& slot = {}) {
     if (auto result = find(key)) return result;
     std::unique_lock lock(mutex_, std::try_to_lock);
     if (!lock || stopping_) { refused_.fetch_add(1); return {}; }
     // Completion can publish between the first lookup and admission. A second
     // check prevents duplicate allocation and resident-byte double accounting.
     if (auto result = find(key)) return result;
-    if (queued_.count(key)) return {};
-    if (maximumBytes == 0 || maximumBytes > budget_ || pending_.size() >= capacity_ ||
-        pendingBytes_ > budget_ - maximumBytes) { refused_.fetch_add(1); return {}; }
+    if (queued_.count(key)) {
+      // A content key can serve more than one consumer. Once another slot
+      // needs it, one editor cannot cancel that shared preparation.
+      if (activeKey_ && *activeKey_ == key && activeSlot_ != slot) {
+        activeShared_ = true; activeSuperseded_ = false;
+      }
+      for (auto& job : pending_) if (job.key == key && job.slot != slot) job.shared = true;
+      return {};
+    }
+    // A slot is a private preparation consumer, never its visible Program
+    // revision. Validate before superseding so a refused edit cannot cancel
+    // otherwise valid work. Metadata remains bounded by the pending jobs;
+    // there is no unbounded latest-key map or retained request history.
+    if (maximumBytes == 0 || maximumBytes > budget_ || slot.size() > 128) {
+      refused_.fetch_add(1); return {};
+    }
+    uint64_t replacedBytes = 0;
+    size_t replacedCount = 0;
+    if (!slot.empty()) for (const auto& job : pending_) if (job.slot == slot && !job.shared) {
+      replacedBytes += job.maximumBytes; ++replacedCount;
+    }
+    if (pending_.size() - replacedCount >= capacity_ ||
+        pendingBytes_ - replacedBytes > budget_ - maximumBytes ||
+        retiredRequests_.size() + replacedCount > capacity_) {
+      refused_.fetch_add(1); return {};
+    }
+    if (!slot.empty()) {
+      for (auto it = pending_.begin(); it != pending_.end();) {
+        if (it->slot != slot || it->shared) { ++it; continue; }
+        queued_.erase(it->key); pendingBytes_ -= it->maximumBytes;
+        // Request payloads can hold an old device lease. Their final release
+        // belongs on the preparation owner too, never the render caller.
+        retiredRequests_.push_back(std::move(*it));
+        it = pending_.erase(it); superseded_.fetch_add(1);
+      }
+      if (activeSlot_ == slot && !activeShared_) activeSuperseded_ = true;
+    }
     queued_.insert(key);
-    pending_.push_back({key, std::move(request), maximumBytes});
+    pending_.push_back({key, std::move(request), maximumBytes, slot});
     pendingBytes_ += maximumBytes;
     admitted_.fetch_add(1);
     lock.unlock(); wake_.notify_one();
@@ -75,7 +111,7 @@ class PreparationCache {
   Counters counters() const {
     std::lock_guard lock(mutex_);
     return {admitted_.load(), completed_.load(), refused_.load(), failed_.load(),
-            residentBytes_, pendingBytes_, highWaterBytes_};
+            residentBytes_, pendingBytes_, highWaterBytes_, superseded_.load()};
   }
 
  private:
@@ -86,7 +122,7 @@ class PreparationCache {
         : result(std::move(value)), lastUse(use) {}
   };
   using Results = std::map<Key, std::shared_ptr<Entry>>;
-  struct Job { Key key; Request request; uint64_t maximumBytes; };
+  struct Job { Key key; Request request; uint64_t maximumBytes; std::string slot; bool shared = false; };
   void run() {
     struct Cleanup {
       std::function<void()>& action;
@@ -115,11 +151,15 @@ class PreparationCache {
     };
     for (;;) {
       std::optional<Job> job;
+      std::deque<Job> retiredRequests;
       {
         std::unique_lock lock(mutex_);
         wake_.wait(lock, [this] { return stopping_ || !pending_.empty(); });
         if (stopping_) return;
+        retiredRequests.swap(retiredRequests_);
         job.emplace(std::move(pending_.front())); pending_.pop_front();
+        activeSlot_ = job->slot; activeKey_ = job->key;
+        activeShared_ = job->shared; activeSuperseded_ = false;
         sweepRetired();
         // Only the owner evicts; leases held by render callers survive safely.
         // Reserve scratch + result space before running the producer.
@@ -131,10 +171,11 @@ class PreparationCache {
         }
         if (residentBytes_ + pendingBytes_ > budget_ || results.size() + retired.size() >= residentCapacity_) {
           pendingBytes_ -= job->maximumBytes; queued_.erase(job->key);
-          refused_.fetch_add(1); job.reset();
+          refused_.fetch_add(1); job.reset(); activeSlot_.clear(); activeKey_.reset();
         } else highWaterBytes_ = std::max(highWaterBytes_, residentBytes_ + pendingBytes_);
         std::atomic_store(&published_, std::make_shared<const Results>(results));
       }
+      retiredRequests.clear(); // release canceled requests off-lock on owner
       if (!job) continue;
       Result result;
       try { result = prepare_(job->request); }
@@ -146,7 +187,12 @@ class PreparationCache {
       {
         std::lock_guard lock(mutex_);
         pendingBytes_ -= job->maximumBytes; queued_.erase(job->key);
+        activeSlot_.clear(); activeKey_.reset();
         if (stopping_) return;
+        // The in-flight CPU producer cannot be forcibly interrupted safely.
+        // Its reservation stays charged until completion, and a superseded
+        // result is destroyed here on the owner without being published.
+        if (activeSuperseded_) { superseded_.fetch_add(1); continue; }
         residentBytes_ += result.bytes;
         results[job->key] = std::make_shared<Entry>(
             std::make_shared<const Result>(std::move(result)), ++useClock_);
@@ -168,10 +214,17 @@ class PreparationCache {
   mutable std::mutex mutex_;
   std::condition_variable wake_;
   std::deque<Job> pending_;
+  // Bounded separately by capacity_; canceled intents no longer reserve raster
+  // scratch, but keep their bounded metadata/device lease until owner disposal.
+  std::deque<Job> retiredRequests_;
   std::set<Key> queued_;
   bool stopping_ = false;
+  std::string activeSlot_;
+  std::optional<Key> activeKey_;
+  bool activeSuperseded_ = false, activeShared_ = false;
   uint64_t residentBytes_ = 0, pendingBytes_ = 0, highWaterBytes_ = 0;
   std::atomic<uint64_t> admitted_{0}, completed_{0}, refused_{0}, failed_{0};
+  std::atomic<uint64_t> superseded_{0};
   mutable std::atomic<uint64_t> useClock_{0};
   std::shared_ptr<const Results> published_;
   std::thread worker_;

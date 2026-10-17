@@ -168,7 +168,8 @@ CompositorOverlayRaster::~CompositorOverlayRaster() = default;
 
 ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     ID3D11Device* device, ID3D11DeviceContext*, const CompositorOverlayContent& overlay,
-    const compositor::LayerRect& rect, int targetWidth, int targetHeight) {
+    const compositor::LayerRect& rect, int targetWidth, int targetHeight,
+    const std::string& preparationSlot) {
   // Bound metadata before hashing or copying it into the queue. In particular,
   // a legacy caller cannot amplify one oversized caption into 32 queued copies.
   size_t metadataBytes = 0;
@@ -198,7 +199,8 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   if (!activeLease_) {
     device->AddRef();
     Request request{std::shared_ptr<ID3D11Device>(device, [](ID3D11Device* value) { value->Release(); }), overlay, width, height};
-    activeLease_ = cache_.findOrRequest(key, std::move(request), uint64_t(width) * height * 8 + (overlay.imageUri.empty() ? 0 : 64ull * 1024 * 1024));
+    activeLease_ = cache_.findOrRequest(key, std::move(request),
+        uint64_t(width) * height * 8 + (overlay.imageUri.empty() ? 0 : 64ull * 1024 * 1024), preparationSlot);
   }
   lastState_ = !activeLease_ ? "preparing" : activeLease_->asset ? "ready" : "failed";
   lastWarning_ = activeLease_ ? activeLease_->warning : "Graphics preparation pending.";

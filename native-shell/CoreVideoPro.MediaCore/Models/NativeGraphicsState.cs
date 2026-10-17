@@ -33,9 +33,25 @@ public sealed record NativeGraphicsInstance
     public string Warning { get; init; } = "";
     public NativeGraphicsFields Fields { get; init; } = new();
     public LowerThirdAppearance Style { get; init; } = new();
+    public NativeGraphicsAnimations Animations { get; init; } = new();
     public string ProgramSourceId { get; init; } = "";
     public NativeGraphicsFields? ProgramFields { get; init; }
     public LowerThirdAppearance? ProgramStyle { get; init; }
+    public NativeGraphicsAnimations? ProgramAnimations { get; init; }
+}
+
+public sealed record NativeGraphicsAnimations
+{
+    public NativeGraphicsTransition In { get; init; } = new();
+    public NativeGraphicsTransition Out { get; init; } = new();
+}
+
+public sealed record NativeGraphicsTransition
+{
+    public string Type { get; init; } = "none";
+    public string Direction { get; init; } = "left";
+    public string Easing { get; init; } = "linear";
+    public double DurationMs { get; init; }
 }
 
 public sealed record NativeGraphicsFields

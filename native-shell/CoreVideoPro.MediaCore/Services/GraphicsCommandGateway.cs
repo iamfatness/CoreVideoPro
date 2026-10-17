@@ -54,8 +54,8 @@ public static class GraphicsCommandRequest
 {
     private static readonly IReadOnlyDictionary<string, string[]> Parameters = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
-        ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style"],
-        ["graphics.instance.update"] = ["target", "sourceId", "fields", "style"],
+        ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations"],
+        ["graphics.instance.update"] = ["target", "sourceId", "fields", "style", "animations"],
         ["graphics.instance.cue"] = [], ["graphics.instance.trigger"] = ["action"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"]
     };
@@ -88,7 +88,7 @@ public static class GraphicsCommandRequest
             {
                 if (!names.Add(property.Name) || (!Common.Contains(property.Name) && !specific.Contains(property.Name, StringComparer.Ordinal)))
                 { error = "unsupported-or-duplicate-request-field"; return false; }
-                if (property.Name is "fields" or "style") continue;
+                if (property.Name is "fields" or "style" or "animations") continue;
                 if (property.Name is "schemaVersion" or "expectedRevision" or "templateVersion")
                 {
                     if (!Integer(property.Value, 0)) return false;
@@ -108,6 +108,7 @@ public static class GraphicsCommandRequest
             if (action == "graphics.instance.update" && Text(body, "target") is not ("cue" or "program")) return false;
             if (action == "graphics.instance.trigger" && Text(body, "action") is not ("show" or "hide" or "clear")) return false;
             if (action == "graphics.program.clear" && Text(body, "channel") != "all") return false;
+            if (body.TryGetProperty("animations", out var animations) && !ValidAnimations(animations)) return false;
             if (body.TryGetProperty("fields", out var fields))
             {
                 if (fields.ValueKind != JsonValueKind.Object) return false;
@@ -149,6 +150,34 @@ public static class GraphicsCommandRequest
     }
 
     private static string Text(JsonElement value, string key) => value.TryGetProperty(key, out var item) && item.ValueKind == JsonValueKind.String ? item.GetString()! : "";
+    private static bool ValidAnimations(JsonElement animations)
+    {
+        if (animations.ValueKind != JsonValueKind.Object) return false;
+        var phases = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var phase in animations.EnumerateObject())
+        {
+            if (phase.Name is not ("in" or "out") || !phases.Add(phase.Name) || phase.Value.ValueKind != JsonValueKind.Object) return false;
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var item in phase.Value.EnumerateObject())
+            {
+                if (!names.Add(item.Name)) return false;
+                if (item.Name == "durationMs")
+                {
+                    if (!item.Value.TryGetDouble(out var ms) || !double.IsFinite(ms) || ms < 0 || ms > 3000) return false;
+                }
+                else
+                {
+                    if (item.Value.ValueKind != JsonValueKind.String) return false;
+                    var text = item.Value.GetString();
+                    if (item.Name == "type") { if (text is not ("none" or "fade" or "slide")) return false; }
+                    else if (item.Name == "direction") { if (text is not ("left" or "right" or "up" or "down")) return false; }
+                    else if (item.Name == "easing") { if (text is not ("linear" or "ease-in" or "ease-out" or "ease-in-out")) return false; }
+                    else return false;
+                }
+            }
+        }
+        return true;
+    }
     private static double Number(JsonElement value, string key) => value.TryGetProperty(key, out var item) && item.ValueKind == JsonValueKind.Number && item.TryGetDouble(out var number) ? number : -1;
     private static bool Integer(JsonElement value, double minimum) => value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number) &&
         double.IsFinite(number) && Math.Truncate(number) == number && number >= minimum && number <= 9007199254740991d;

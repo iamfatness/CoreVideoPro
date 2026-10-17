@@ -6,6 +6,7 @@
 #include <random>
 #include <sstream>
 #include <set>
+#include <chrono>
 
 namespace corevideo::graphics {
 using rpc::Json;
@@ -22,7 +23,10 @@ Json styleState(const compositor::LowerThirdAppearance& a) {
 }
 
 
-GraphicsInstances::GraphicsInstances(std::string epoch) : epoch_(std::move(epoch)) {
+GraphicsInstances::GraphicsInstances(std::string epoch, std::function<double()> monotonicMs)
+    : monotonicMs_(monotonicMs ? std::move(monotonicMs) : [] {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+      }), epoch_(std::move(epoch)) {
   if (epoch_.empty()) {
     std::random_device random;
     std::ostringstream value;
@@ -40,6 +44,14 @@ bool GraphicsInstances::validId(const std::string& value) {
 }
 
 bool GraphicsInstances::readRevision(const Json& request, Revision& revision) {
+  if (const auto* animations = request.get("animations")) {
+    if (!animations->isObject()) return false;
+    for (const auto& [key, value] : animations->asObject()) {
+      if (key == "in") { if (!GraphicsTransition::read(value, revision.entrance)) return false; }
+      else if (key == "out") { if (!GraphicsTransition::read(value, revision.exit)) return false; }
+      else return false;
+    }
+  }
   if (const auto* fields = request.get("fields")) {
     if (!fields->isObject()) return false;
     for (const auto& [key, value] : fields->asObject()) {
@@ -92,6 +104,7 @@ bool GraphicsInstances::finish(const std::string& id, bool accepted, const std::
 }
 
 bool GraphicsInstances::apply(const Json& command) {
+  advanceAnimations();
   pendingFingerprint_.clear(); pendingClient_.clear();
   const auto type = command.getString("type");
   const auto* body = command.get("graphics");
@@ -105,15 +118,22 @@ bool GraphicsInstances::apply(const Json& command) {
   // Bound before serializing a dedup fingerprint, and refuse unsupported knobs.
   static const std::set<std::string> common{"schemaVersion", "requestId", "clientId", "coreEpoch", "instanceId", "expectedRevision"};
   static const std::map<std::string, std::set<std::string>> actionKeys{
-      {"graphics-instance-create", {"templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style"}},
-      {"graphics-instance-update", {"sourceId", "fields", "style", "target"}},
+      {"graphics-instance-create", {"templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations"}},
+      {"graphics-instance-update", {"sourceId", "fields", "style", "target", "animations"}},
       {"graphics-instance-cue", {}}, {"graphics-instance-trigger", {"action"}},
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}}};
   const auto allowed = actionKeys.find(type);
   if (allowed == actionKeys.end()) return finish(requestId, false, "unsupported-graphics-command");
   for (const auto& [key, value] : body->asObject()) {
     if (!common.count(key) && !allowed->second.count(key)) return finish(requestId, false, "unsupported-request-field");
-    if (key == "fields" || key == "style") {
+    if (key == "animations") {
+      if (!value.isObject() || value.asObject().size() > 2) return finish(requestId, false, "invalid-animations");
+      for (const auto& [phase, transition] : value.asObject()) {
+        GraphicsTransition parsed;
+        if ((phase != "in" && phase != "out") || !GraphicsTransition::read(transition, parsed))
+          return finish(requestId, false, "invalid-animations");
+      }
+    } else if (key == "fields" || key == "style") {
       if (!value.isObject() || value.asObject().size() > 24) return finish(requestId, false, "invalid-fields-or-style");
       for (const auto& [field, item] : value.asObject())
         if (field.size() > 64 || (item.isString() ? item.asString().size() > 512 :
@@ -139,6 +159,7 @@ bool GraphicsInstances::apply(const Json& command) {
     for (auto& [_, instance] : instances_) {
       instance.program.reset(); instance.showPending = instance.updatePending = false;
       instance.firstDrawSubmittedFrame = 0;
+      instance.timeline.clear(); instance.visibility = "hidden";
     }
     return finish(requestId, true, "cleared");
   }
@@ -194,7 +215,8 @@ bool GraphicsInstances::apply(const Json& command) {
         a.backgroundOpacity == b.backgroundOpacity && a.padding == b.padding && a.width == b.width &&
         a.cornerRadius == b.cornerRadius && a.safeOffsetX == b.safeOffsetX && a.safeOffsetY == b.safeOffsetY &&
         a.logoScale == b.logoScale && a.showLogo == b.showLogo;
-    if (revision.name == old.name && revision.title == old.title && revision.sourceId == old.sourceId && sameStyle) {
+    if (revision.name == old.name && revision.title == old.title && revision.sourceId == old.sourceId && sameStyle &&
+        revision.entrance == old.entrance && revision.exit == old.exit) {
       if (target == "program" && instance.program && instance.program != instance.draft) {
         instance.updatePending = true;
         if (instance.readyRevision == instance.draft->number) {
@@ -226,14 +248,20 @@ bool GraphicsInstances::apply(const Json& command) {
       if (instance.draft->name.empty()) return finish(requestId, false, "required-field-empty");
       if (instance.readyRevision == instance.draft->number) {
         if (instance.program != instance.draft) instance.firstDrawSubmittedFrame = 0;
-        instance.program = instance.draft; instance.showPending = false;
+        show(instance);
       } else instance.showPending = true;
       return finish(requestId, true, "show-accepted");
     }
     if (action != "hide" && action != "clear") return finish(requestId, false, "invalid-trigger");
-    instance.program.reset(); instance.showPending = instance.updatePending = false;
-    instance.firstDrawSubmittedFrame = 0;
-    return finish(requestId, true, "hidden");
+    instance.showPending = instance.updatePending = false;
+    if (action == "clear") {
+      instance.program.reset(); instance.timeline.clear(); instance.visibility = "hidden";
+      instance.firstDrawSubmittedFrame = 0;
+    } else if (instance.program) {
+      instance.timeline.hide(instance.program->exit, monotonicMs_());
+      advanceAnimations();
+    }
+    return finish(requestId, true, instance.program ? "hide-accepted" : "hidden");
   }
   if (type == "graphics-instance-remove") {
     if (instance.program || instance.showPending) return finish(requestId, false, "instance-visible");
@@ -261,6 +289,7 @@ modules::CompositorRenderPlanLayer GraphicsInstances::layer(const Instance& inst
 }
 
 void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview) const {
+  const auto now = monotonicMs_();
   for (const auto& [_, instance] : instances_) {
     // Preparation is private even when the cue belongs to another scene.
     // Program rendering returns readiness; Preview never needs to mutate core.
@@ -276,13 +305,20 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
           (video.sourceId == revision->sourceId || video.participantId == revision->sourceId);
     })) continue;
     auto content = layer(instance, *revision);
+    if (!preview) {
+      if (instance.timeline.phase(now) == "hidden") continue;
+      const auto motion = instance.timeline.sample(now);
+      content.opacity = static_cast<float>(motion.alpha);
+      content.rect.x += static_cast<float>(motion.x) * content.rect.width;
+      content.rect.y += static_cast<float>(motion.y) * content.rect.height;
+    }
     content.order = static_cast<int>(plan.layers.size());
     plan.layers.push_back(std::move(content));
   }
 }
 
 void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
-  bool changed = false;
+  bool changed = advanceAnimations();
   for (const auto& fact : frame.graphicsFacts) {
     auto found = instances_.find(fact.instanceId);
     if (found == instances_.end()) continue;
@@ -298,12 +334,36 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
     instance.preparation = fact.state; instance.warning = fact.reason;
     if (fact.state != "ready") continue;
     instance.readyRevision = fact.revision;
-    if (instance.showPending || instance.updatePending) {
+    if (instance.showPending) {
+      show(instance); changed = true;
+    } else if (instance.updatePending) {
       instance.program = instance.draft; instance.firstDrawSubmittedFrame = 0;
-      instance.showPending = instance.updatePending = false; changed = true;
+      instance.updatePending = false; changed = true;
     }
   }
   if (changed) publish();
+}
+
+void GraphicsInstances::show(Instance& instance) {
+  if (instance.program != instance.draft) instance.firstDrawSubmittedFrame = 0;
+  instance.program = instance.draft;
+  instance.timeline.show(instance.program->entrance, monotonicMs_());
+  instance.visibility = instance.timeline.phase(monotonicMs_());
+  instance.showPending = instance.updatePending = false;
+}
+
+bool GraphicsInstances::advanceAnimations() {
+  bool changed = false;
+  const auto now = monotonicMs_();
+  for (auto& [_, instance] : instances_) {
+    const auto phase = instance.timeline.phase(now);
+    if (phase != instance.visibility) { instance.visibility = phase; changed = true; }
+    if (phase == "hidden" && instance.program) {
+      instance.program.reset(); instance.updatePending = false;
+      instance.firstDrawSubmittedFrame = 0; changed = true;
+    }
+  }
+  return changed;
 }
 
 bool GraphicsInstances::hasCue() const {
@@ -327,10 +387,13 @@ void GraphicsInstances::publish() {
       {"scope", instance.scope}, {"sceneId", instance.sceneId},
       {"revision", double(instance.draft->number)}, {"programRevision", instance.program ? double(instance.program->number) : 0.},
       {"preparation", instance.preparation}, {"cued", instance.cued}, {"showPending", instance.showPending},
-      {"visibility", instance.program ? (instance.firstDrawSubmittedFrame ? "on-air" : "entering") : "hidden"}, {"firstDrawSubmittedFrame", double(instance.firstDrawSubmittedFrame)},
+      {"visibility", instance.program ? (instance.visibility == "on-air" && instance.firstDrawSubmittedFrame == 0 ? "entering" : instance.visibility) : "hidden"},
+      {"firstDrawSubmittedFrame", double(instance.firstDrawSubmittedFrame)},
       {"warning", instance.warning}, {"sourceId", instance.draft->sourceId},
       {"fields", Json::Object{{"name", instance.draft->name}, {"title", instance.draft->title}}},
       {"style", styleState(a)},
+      {"animations", Json::Object{{"in", instance.draft->entrance.json()}, {"out", instance.draft->exit.json()}}},
+      {"programAnimations", instance.program ? Json{Json::Object{{"in", instance.program->entrance.json()}, {"out", instance.program->exit.json()}}} : Json{}},
       {"programSourceId", instance.program ? instance.program->sourceId : ""},
       {"programFields", instance.program ? Json{Json::Object{{"name", instance.program->name}, {"title", instance.program->title}}} : Json{}},
       {"programStyle", instance.program ? styleState(instance.program->appearance) : Json{}}});
