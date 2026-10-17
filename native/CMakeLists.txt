@@ -973,6 +973,11 @@ if(BUILD_TESTING)
   # A stalled worker/teardown must fail with its last RUN marker, rather than
   # occupying a CI runner indefinitely. Normal sanitizer runs take ~3 minutes.
   set_tests_properties(corevideo-native-tests PROPERTIES TIMEOUT 900)
+  add_test(NAME corevideo-native-tests-reject-empty-filter
+    COMMAND "$<TARGET_FILE:corevideo-native-tests>"
+      "--gtest_filter=NoCoreVideoTestShouldMatchThisFilter.*")
+  set_tests_properties(corevideo-native-tests-reject-empty-filter PROPERTIES
+    WILL_FAIL TRUE TIMEOUT 30)
   if(COREVIDEO_WITH_ZOOM)
     set_tests_properties(corevideo-native-tests PROPERTIES ENVIRONMENT "PATH=${COREVIDEO_ZOOM_SDK_ROOT}/bin;$ENV{PATH}")
   endif()
