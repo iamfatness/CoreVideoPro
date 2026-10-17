@@ -32,8 +32,7 @@ public sealed partial class StudioViewModel
             JsonSerializer.SerializeToElement(BrandKit),Overlays.LowerThirdPresets,appearance.ShowLogo?BrandKit.LogoAssetPath ?? "":"");
     }
     public bool ManagedLowerThirdAuthority => _bridge.LastSnapshot?.Graphics?.FamilyAuthorities.GetValueOrDefault("lower-third")=="instances";
-    private IEnumerable<NativeGraphicsInstance> ManagedLowerThirds => (_bridge.LastSnapshot?.Graphics?.Instances ?? []).Where(i =>
-        i.TemplateId is "compact-solid" or "minimal-accent" or "broadcast" || _bridge.LastSnapshot?.Graphics?.Templates.Any(t=>t.TemplateId==i.TemplateId && t.TemplateVersion==i.TemplateVersion && t.Family=="lower-third")==true);
+    private IEnumerable<NativeGraphicsInstance> ManagedLowerThirds => CoreVideoPro.MediaCore.Services.GraphicsCompatibilityPolicy.LowerThirdsForScene(_bridge.LastSnapshot?.Graphics,ActiveSceneId);
     public bool ManagedLowerThirdVisible => ManagedLowerThirds.Any(i=>i.ProgramRevision>0 && i.Visibility is not ("hidden" or "building-out"));
     public async Task<NativeGraphicsOperationResult> ApplyManagedLowerThirdIntentAsync(bool visible,bool rebuild=false)
     {
@@ -52,15 +51,15 @@ public sealed partial class StudioViewModel
             }
         } else if(!rebuild && ManagedLowerThirdVisible) result=new() {Accepted=true,Reason="Managed lower third is already on air."};
         else {
-            var item=targets.OrderByDescending(i=>i.ProgramRevision>0).ThenByDescending(i=>i.CueRevision).FirstOrDefault();
+            var item=targets.OrderByDescending(i=>i.ProgramRevision>0).ThenByDescending(i=>i.InstanceId==GraphicsWorkspace.SelectedId).ThenByDescending(i=>i.CueRevision).FirstOrDefault();
             if(item is not null && rebuild) {
                 var source=ResolveProgramLowerThirdSource(ProgramSceneRoutes);
                 var binding=state.Sources.FirstOrDefault(s=>s.VideoOn && s.Identity?.SourceId==source?.SourceId)?.Identity;
                 if(source is null || binding is null) result=new() {Reason="The rendered subject is not qualified for a managed lower third. Choose a current supported source."};
                 else {
-                    var fields=JsonSerializer.SerializeToElement(item.Fields,new JsonSerializerOptions(JsonSerializerDefaults.Web)).EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone());
-                    fields["name"]=JsonSerializer.SerializeToElement(source.SourceName);
-                    fields["title"]=JsonSerializer.SerializeToElement(Services.SourceLowerThirdText.Preview(source.Title,source.Org));
+                    var definition=state.Templates.FirstOrDefault(t=>t.TemplateId==item.TemplateId && t.TemplateVersion==item.TemplateVersion);
+                    var fields=CoreVideoPro.MediaCore.Services.GraphicsCompatibilityPolicy.SubjectFields(item,definition,source.SourceName,Services.SourceLowerThirdText.Preview(source.Title,source.Org));
+                    if(fields is null) {CommandStatus="This template has no standard name field. Use its selected cue controls to edit the copy.";return new() {Reason=CommandStatus};}
                     result=await Send("graphics.instance.update",new() {["instanceId"]=item.InstanceId,["expectedRevision"]=item.Revision,["target"]=item.ProgramRevision>0?"program":"cue",["fields"]=fields,["binding"]=binding});
                     if(result.Accepted && item.ProgramRevision==0) result=await Send("graphics.instance.trigger",new() {["instanceId"]=item.InstanceId,["expectedRevision"]=result.CurrentRevision,["action"]="show"});
                 }

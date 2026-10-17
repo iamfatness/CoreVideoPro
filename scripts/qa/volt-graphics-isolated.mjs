@@ -69,8 +69,13 @@ try{
  check(state.recording.lifecycle.finalized && state.recording.lifecycle.sessionId===report.recordingSession,'Recording completion identity mismatch');
  const artifact=resolve(dirname(core),state.recording.artifactPath??'');check(artifact.toLowerCase().startsWith(out.toLowerCase()+'\\')||artifact.startsWith(out+'/'),'Recording escaped isolated directory');
  report.recording=state.recording;
- report.recordingProbe=JSON.parse(execFileSync('ffprobe',['-v','error','-count_frames','-show_entries','stream=codec_type,codec_name,width,height,avg_frame_rate,nb_read_frames,duration','-of','json',artifact],{windowsHide:true,encoding:'utf8',timeout:120000}));
- const video=report.recordingProbe.streams.find(s=>s.codec_type==='video');check(video?.width===1920&&video?.height===1080&&video?.avg_frame_rate==='60/1'&&Number(video.nb_read_frames)>0,'Finalized recording is not decoded 1080p60');
+ report.recordingProbe=JSON.parse(execFileSync('ffprobe',['-v','error','-count_frames','-show_entries','stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,nb_read_frames,duration','-of','json',artifact],{windowsHide:true,encoding:'utf8',timeout:120000}));
+ const video=report.recordingProbe.streams.find(s=>s.codec_type==='video');check(video?.width===1920&&video?.height===1080&&video?.r_frame_rate==='60/1'&&Number(video.nb_read_frames)>0,'Finalized recording is not decoded 1080p60');
+ const decoded=JSON.parse(execFileSync('ffprobe',['-v','error','-select_streams','v:0','-show_entries','frame=best_effort_timestamp_time','-of','json',artifact],{windowsHide:true,encoding:'utf8',timeout:120000,maxBuffer:8*1024*1024}));
+ const pts=decoded.frames.map(f=>Number(f.best_effort_timestamp_time));const intervals=pts.slice(1).map((value,index)=>value-pts[index]);
+ check(intervals.length>0&&intervals.every(value=>Number.isFinite(value)&&value>0&&value<=1/60+.000002),'Decoded recording has non-advancing timestamps or a missed video slot');
+ check(intervals.slice(0,-1).every(value=>Math.abs(value-1/60)<=.000002),'Decoded recording has an irregular interior video slot');
+ report.recordingCadence={decodedFrames:pts.length,firstPts:pts[0],lastPts:pts.at(-1),maximumIntervalMs:Math.max(...intervals)*1000,minimumInteriorIntervalMs:Math.min(...intervals.slice(0,-1))*1000,finalIntervalMs:intervals.at(-1)*1000,finalPartialFrame:intervals.at(-1)<1/60-.000002};
  report.finalAutomationTrace=state.graphics.automation.trace;
  await operation('graphics-program-clear','',{channel:'all'});await sleep(500);state=await sync();check(state.graphics.instances.every(i=>i.programRevision===0&&!i.showPending),'Clear left managed graphics pending');
  report.clearInhibited=state.graphics.automation.inhibited;check(report.clearInhibited,'Clear did not inhibit rules');
