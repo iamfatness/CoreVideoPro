@@ -1,11 +1,89 @@
 #include "modules/MonitorRenderWorker.h"
 #include "modules/MonitorFrameAdmission.h"
 #include "modules/MonitorInputEvidence.h"
+#include "modules/BoundedResourceRetirement.h"
+#include "modules/ProgramMonitorDispatch.h"
 #include <gtest/gtest.h>
 #include <future>
 #include <atomic>
 
 using namespace corevideo::modules;
+
+TEST(ProgramMonitorDispatch, JoinsOnlySameSlotInEitherArrivalOrderWithoutChangingIdentityOrDeadline) {
+  for (bool copyFirst : {false, true}) {
+    ProgramMonitorDispatch dispatch;
+    MonitorRenderRequest copy, monitor;
+    copy.programDisplayTargetNs = 100; copy.programDisplayDeadlineNs = 200;
+    auto identity = std::make_shared<ProgramDisplayObservation>(); identity->copiedSequence = 77;
+    copy.readyProgramObservation = identity;
+    monitor.sequence = 91; monitor.programPlan.sceneId = "current-monitor-payload";
+    EXPECT_FALSE(dispatch.offer(5, copyFirst ? copy : monitor, copyFirst).ready);
+    auto joined = dispatch.offer(5, copyFirst ? monitor : copy, !copyFirst);
+    ASSERT_TRUE(joined.ready); EXPECT_FALSE(joined.superseded);
+    EXPECT_EQ(joined.ready->sequence, 91);
+    EXPECT_EQ(joined.ready->programPlan.sceneId, "current-monitor-payload");
+    EXPECT_EQ(joined.ready->readyProgramObservation->copiedSequence, 77u);
+    EXPECT_EQ(joined.ready->programDisplayTargetNs, 100);
+    EXPECT_EQ(joined.ready->programDisplayDeadlineNs, 200);
+    EXPECT_TRUE(joined.ready->programCopyPrepared);
+    EXPECT_FALSE(dispatch.offer(5, copy, true).ready); // stale completion cannot reopen a consumed slot
+  }
+}
+
+TEST(ProgramMonitorDispatch, BoundsPendingWorkAndReportsUnmatchedReplacement) {
+  ProgramMonitorDispatch dispatch;
+  EXPECT_FALSE(dispatch.offer(4, {}, true).ready);
+  auto next = dispatch.offer(5, {}, false);
+  EXPECT_TRUE(next.superseded); EXPECT_FALSE(next.ready);
+  auto stale = dispatch.offer(4, {}, true);
+  EXPECT_TRUE(stale.superseded); EXPECT_FALSE(stale.ready);
+  auto joined = dispatch.offer(5, {}, true);
+  EXPECT_FALSE(joined.superseded); EXPECT_TRUE(joined.ready);
+}
+
+TEST(ProgramMonitorDispatch, DisableFenceRejectsInFlightOldCopyAndAllowsNextLifetime) {
+  ProgramMonitorDispatch dispatch;
+  dispatch.offer(5, {}, false); dispatch.discardThrough(5);
+  EXPECT_FALSE(dispatch.offer(5, {}, true).ready);
+  EXPECT_FALSE(dispatch.offer(6, {}, true).ready);
+  auto joined = dispatch.offer(6, {}, false);
+  EXPECT_TRUE(joined.ready); EXPECT_FALSE(joined.superseded);
+}
+
+TEST(MonitorRenderWorker, StartupImportPreparationWaitsForInitializationWithoutChangingSubmit) {
+  std::promise<void> release, entered;
+  auto gate = release.get_future().share(); auto started = entered.get_future();
+  MonitorRenderWorker worker([](const auto&) { return MonitorRenderResult{}; }, [&] {
+    entered.set_value(); gate.wait();
+  });
+  const bool initializing = started.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  const bool premature = worker.waitForInitialization(std::chrono::milliseconds(0));
+  MonitorRenderRequest request; worker.submit(request); // mailbox remains available during setup
+  release.set_value();
+  EXPECT_TRUE(initializing); EXPECT_FALSE(premature);
+  EXPECT_TRUE(worker.waitForInitialization(std::chrono::seconds(2)));
+}
+
+TEST(BoundedResourceRetirement, BlockedDestructorDoesNotBlockAdmissionAndBoundsExecutingOwnership) {
+  struct Resource {
+    std::shared_future<void> release;
+    std::promise<void>* entered;
+    ~Resource() { entered->set_value(); release.wait(); }
+  };
+  std::promise<void> release, entered, secondEntered;
+  auto released = release.get_future().share(); auto started = entered.get_future();
+  BoundedResourceRetirement<Resource, 1> retirement(8);
+  auto first = std::unique_ptr<Resource>(new Resource{released, &entered});
+  const bool accepted = retirement.tryRetire(first, 8);
+  const bool executing = started.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  auto second = std::unique_ptr<Resource>(new Resource{released, &secondEntered});
+  const bool rejected = !retirement.tryRetire(second, 1);
+  const auto during = retirement.observation();
+  release.set_value();
+  EXPECT_TRUE(accepted); EXPECT_TRUE(executing); EXPECT_TRUE(rejected);
+  EXPECT_FALSE(first); EXPECT_TRUE(second);
+  EXPECT_EQ(during.pending, 1u); EXPECT_EQ(during.bytes, 8u); EXPECT_EQ(during.refused, 1u);
+}
 
 TEST(MonitorInputEvidence, UnobservedAndTruncatedResultsAreExplicit) {
   auto absent = monitorInputEvidence({});
@@ -242,6 +320,87 @@ TEST(MonitorRenderWorker, ReplacesPendingWorkWithoutWaitingForTheActiveMonitor) 
   EXPECT_EQ(worker.latest()->sequence, 30);
   EXPECT_EQ(worker.latest()->preview.width, 130);
   EXPECT_EQ(calls.load(), 2);
+}
+
+TEST(MonitorRenderWorker, DisableAndShutdownCancelActiveDeadlineWorkWithoutDanglingState) {
+  for (const bool disable : {false, true}) {
+    std::promise<void> entered, cancelled;
+    auto cancelledFuture = cancelled.get_future();
+    MonitorRenderRequest retained;
+    std::atomic<bool> cancellationSeen{false};
+    auto worker = std::make_unique<MonitorRenderWorker>([&](const MonitorRenderRequest& request) {
+      if (request.sequence == 1) {
+        retained = request; entered.set_value();
+        const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!request.cancelled() && std::chrono::steady_clock::now() < limit)
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        cancellationSeen = request.cancelled(); cancelled.set_value();
+      }
+      return MonitorRenderResult{};
+    });
+    MonitorRenderRequest request; request.sequence = 1; request.multiviewActive = true;
+    worker->submit(std::move(request));
+    ASSERT_TRUE(entered.get_future().wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+    EXPECT_FALSE(retained.cancelled());
+    if (disable) {
+      MonitorRenderRequest inactive; inactive.sequence = 2; inactive.multiviewActive = false;
+      worker->submit(std::move(inactive));
+      EXPECT_TRUE(cancelledFuture.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+    }
+    worker.reset();
+    EXPECT_TRUE(cancellationSeen.load());
+    EXPECT_TRUE(retained.cancelled()); // The copied request safely outlives its worker.
+  }
+}
+
+TEST(MonitorRenderWorker, IdleRetirementPublishesImmutableReaderEvidenceOnItsOwnerAndThenSleeps) {
+  std::promise<void> rendered;
+  std::atomic<bool> gpuDone{false};
+  std::atomic<unsigned> polls{0};
+  std::thread::id renderOwner, maintenanceOwner, destroyedOn;
+  struct Marker {
+    std::thread::id& destination;
+    explicit Marker(std::thread::id& value) : destination(value) {}
+    ~Marker() { destination = std::this_thread::get_id(); }
+  };
+  auto marker = std::make_shared<Marker>(destroyedOn);
+  auto worker = std::make_unique<MonitorRenderWorker>([&, marker](const MonitorRenderRequest&) {
+    renderOwner = std::this_thread::get_id();
+    MonitorRenderResult result;
+    result.programDisplay.copiedSequence = 7; // Older exported canvas attribution stays immutable.
+    result.programDisplayReader.readerEpoch = 9; result.programDisplayReader.copies = 1;
+    result.programDisplayReader.state = "copied";
+    rendered.set_value(); return result;
+  }, std::function<void()>{}, [&, marker] {
+    maintenanceOwner = std::this_thread::get_id(); ++polls;
+    MonitorRenderWorker::MaintenanceResult result;
+    ProgramDisplayObservation reader;
+    reader.readerEpoch = 9; reader.copies = 1; reader.state = "copied";
+    reader.completedCopies = gpuDone ? 1 : 0;
+    result.pending = !gpuDone; result.programDisplay = reader;
+    return result;
+  });
+  marker.reset(); // Backend ownership now belongs only to worker callbacks.
+  MonitorRenderRequest request; request.sequence = 1; request.multiviewActive = true;
+  worker->submit(std::move(request));
+  ASSERT_TRUE(rendered.get_future().wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+  const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!worker->latest() && std::chrono::steady_clock::now() < limit)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const auto old = worker->latest(); ASSERT_TRUE(old != nullptr);
+  gpuDone = true;
+  while (worker->latest()->programDisplayReader.completedCopies == 0 && std::chrono::steady_clock::now() < limit)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_EQ(worker->latest()->programDisplayReader.completedCopies, 1u);
+  EXPECT_EQ(worker->latest()->programDisplay.copiedSequence, 7u);
+  EXPECT_EQ(old->programDisplayReader.completedCopies, 0u);
+  EXPECT_EQ(worker->diagnostics().completed, 1u);
+  const auto settled = polls.load();
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_EQ(polls.load(), settled);
+  EXPECT_TRUE(maintenanceOwner == renderOwner);
+  worker.reset();
+  EXPECT_TRUE(destroyedOn == renderOwner);
 }
 
 TEST(MonitorRenderWorker, FailedWorkDoesNotPublishSuccessfulMetadataAndLaterWorkRecovers) {

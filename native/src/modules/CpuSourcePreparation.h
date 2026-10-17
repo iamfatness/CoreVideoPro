@@ -18,7 +18,7 @@ class CpuSourcePreparation {
   ~CpuSourcePreparation();
   std::shared_ptr<CpuSourceGpuView> offer(const std::string& sourceId, uint64_t epoch, int64_t frameId,
       int64_t captureTimestamp100ns, int width, int height,
-      const std::shared_ptr<const std::vector<uint8_t>>& cpu);
+      const std::shared_ptr<const std::vector<uint8_t>>& cpu, uint64_t continuityLifetime = 0);
   Stats stats() const;
   std::shared_ptr<CpuSourceGpuView> offerBgra(const std::string& sourceId, uint64_t epoch, int64_t frameId,
       int64_t captureTimestamp100ns, int width, int height, int stride,
@@ -26,7 +26,7 @@ class CpuSourcePreparation {
  private:
   std::shared_ptr<CpuSourceGpuView> offerCpu(const std::string& sourceId, uint64_t epoch, int64_t frameId,
       int64_t captureTimestamp100ns, int width, int height, int stride, bool bgra,
-      const std::shared_ptr<const std::vector<uint8_t>>& cpu);
+      const std::shared_ptr<const std::vector<uint8_t>>& cpu, uint64_t continuityLifetime = 0);
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

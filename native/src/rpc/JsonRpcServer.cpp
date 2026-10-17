@@ -7,6 +7,7 @@
 #include "rpc/JsonRpcServer.h"
 
 #include "core/LockHoldGuardrail.h"
+#include "core/ScopedVideoScheduling.h"
 #include "core/AnchoredFrameDeadlineTracker.h"
 #include "rpc/CommandMailbox.h"
 #include "contracts/Lifecycle.h"
@@ -352,7 +353,11 @@ Json JsonRpcServer::handle(const Json& request) {
   // set-vst-state have their own cheap-ack routes above.)
   if (hasType(request, "start-program-output") || hasType(request, "load-scene-graph") ||
       hasType(request, "set-participant-transform") || hasType(request, "set-overlay-asset") ||
-      hasType(request, "open-vst-editor") || hasType(request, "scan-vst-plugins")) {
+      hasType(request, "open-vst-editor") || hasType(request, "scan-vst-plugins") ||
+      hasType(request, "graphics-instance-create") || hasType(request, "graphics-instance-update") ||
+      hasType(request, "graphics-instance-cue") || hasType(request, "graphics-instance-trigger") ||
+      hasType(request, "graphics-automation-configure") || hasType(request, "graphics-automation-control") || hasType(request, "graphics-authority-set") || hasType(request, "graphics-instance-remove") || hasType(request, "graphics-program-clear") ||
+      hasType(request, "graphics-clock-control") || hasType(request, "graphics-template-install") || hasType(request, "graphics-template-list")) {
     return success(id, Json::Object{{"snapshot", mediaCore_.applyCommands(commandBatch(request))}});
   }
 
@@ -612,6 +617,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // path so neither can stall the on-screen program. The blocking GPU readback is
   // already skipped on this path, so the lock is held only ~1ms per frame.
   std::thread renderThread([&] {
+    core::ScopedVideoScheduling scheduling("program-render");
     mediaCore_.reportRenderWorkerStarted();
     long long frames = 0;
     long long lockWaitUs = 0;

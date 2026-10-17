@@ -15,7 +15,7 @@ namespace CoreVideoPro.WinUI.Services;
 
 // Real compiled-XAML check. Owns an offscreen window, never starts a media core
 // or attempts a real meeting. Only synthetic URL/ID values are used.
-internal sealed class OperatorSettingsProbe(string reportPath)
+internal sealed class OperatorSettingsProbe(string reportPath, bool streamDestinationsOnly = false)
 {
     internal async Task RunAsync()
     {
@@ -24,6 +24,11 @@ internal sealed class OperatorSettingsProbe(string reportPath)
         await using var bridge = new MediaCoreBridgeService();
         try
         {
+            if (streamDestinationsOnly)
+            {
+                await StreamDestinationIntegrationProbe.CheckAsync(checks);
+                return;
+            }
             var editor = new SettingsViewModel(bridge, () => false);
             var page = new SettingsPage { ViewModel = editor };
             window.Content = page;

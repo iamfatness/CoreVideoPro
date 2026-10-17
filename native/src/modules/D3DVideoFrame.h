@@ -167,6 +167,16 @@ class D3DVideoFramePool {
     }
     return -1;
   }
+  void prewarmOutputs(ID3D11DeviceContext* context, ID3D11Texture2D* source) {
+    for (auto& slot : slots_) context->CopyResource(slot.image->producer.Get(), source);
+  }
+  // External event-query owners may reserve immutable storage directly. The
+  // returned lease must cover both the GPU write and every downstream read.
+  std::shared_ptr<const D3DVideoImage> reserveOutput() {
+    for (auto& slot : slots_)
+      if (!slot.pending && slot.image && slot.image.use_count() == 1) return slot.image;
+    return {};
+  }
   std::shared_ptr<const GpuVideoFrame> completed(ID3D11DeviceContext* context, int index) {
     if (index < 0) return {};
     poll(context);
@@ -222,7 +232,7 @@ class D3DVideoReadLeases {
       core::nativeLogf("[gpu-ingress] read retirement timed out; leases quarantined\n");
     }
   }
-  bool hold(std::shared_ptr<const GpuVideoFrame> image) {
+  bool hold(std::shared_ptr<const void> image) {
     if (active_ < 0) {
       poll();
       for (size_t i = 0; i < slots_.size(); ++i)
@@ -236,10 +246,14 @@ class D3DVideoReadLeases {
     return true;
   }
   void finish() {
-    if (active_ < 0) return;
+    // Empty passes must retire earlier reads too. Otherwise hiding the last
+    // source/graphic can strand leases and prevent a new cue from preparing.
+    if (active_ < 0) { poll(); return; }
     auto& slot = slots_[active_];
     context_->End(slot.query.Get()); slot.pending = true; active_ = -1;
   }
+  // Completion must release upstream storage even when no new image arrives.
+  bool retire() { poll(); return pending(); }
  private:
   bool pending() const { for (const auto& slot : slots_) if (slot.pending) return true; return false; }
   void poll() {
@@ -250,11 +264,11 @@ class D3DVideoReadLeases {
       }
     }
   }
-  struct Slot { ComPtr<ID3D11Query> query; std::vector<std::shared_ptr<const GpuVideoFrame>> images; bool pending = false; };
+  struct Slot { ComPtr<ID3D11Query> query; std::vector<std::shared_ptr<const void>> images; bool pending = false; };
   ComPtr<ID3D11DeviceContext> context_;
   std::array<Slot, 16> slots_;
   int active_ = -1;
   inline static std::mutex quarantineMutex_;
-  inline static std::vector<std::shared_ptr<const GpuVideoFrame>> quarantine_;
+  inline static std::vector<std::shared_ptr<const void>> quarantine_;
 };
 }

@@ -805,9 +805,17 @@ class Mp4Writer {
     return true;
   }
 
-  bool finalize(std::string* errorOut = nullptr) {
+  bool finalize(std::string* errorOut = nullptr, bool discardEmptyPreparation = false) {
+    // A source may change format before the common recording epoch exists.
+    // Such a writer contains no take samples; MF cannot finalize an empty MP4.
+    // Only that explicit preparation reset may discard it. A real take keeps
+    // the normal finalize/error path, including a failed empty recording.
+    if (discardEmptyPreparation && (videoFrameCount_ != 0 || audioPacketCount_ != 0 || pendingVideoSample_)) {
+      if (errorOut) *errorOut = "cannot discard preparation after media was accepted";
+      return false;
+    }
     HRESULT finalizeResult = S_OK;
-    if (writing_ && sinkWriter_) {
+    if (writing_ && sinkWriter_ && !discardEmptyPreparation) {
       finalizeResult = flushPendingVideoSample();
       // Finalize is documented to place end-of-segment markers itself, but
       // several concurrent hardware H.264 transforms returned files whose
@@ -1140,7 +1148,7 @@ bool prepareIsoWriter(IsoWriterEntry& entry, int w, int h, VideoInput input,
   if (entry.opened && resetPreparationFormat) {
     // Still Preparing: no take samples have entered this file. Refresh a source
     // whose native geometry changed while another selected source was unready.
-    if (!entry.writer.finalize(&error)) {
+    if (!entry.writer.finalize(&error, true)) {
       entry.failed = true;
       entry.warning = "ISO preparation reset failed for " + entry.displayName + ": " + error;
       return false;

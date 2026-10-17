@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 
 #include "modules/OverlayTileRaster.h"
+#include "core/ComApartmentLifetime.h"
 
 namespace corevideo::modules {
 namespace {
@@ -42,43 +44,32 @@ D2D1_COLOR_F d2dColorFromArgb(uint32_t argb) {
 }  // namespace
 
 bool CompositorOverlayRaster::ensureOverlayRasterFactories() {
-  if (d2dFactory_ && dwriteFactory_) {
+  if (d2dFactory_ && dwriteFactory_ && wicFactory_) {
     return true;
-  }
-  if (overlayRasterUnavailable_) {
-    return false;
   }
   if (!d2dFactory_ &&
       FAILED(D2D1CreateFactory(
           D2D1_FACTORY_TYPE_MULTI_THREADED, __uuidof(ID2D1Factory), nullptr,
           reinterpret_cast<void**>(d2dFactory_.put())))) {
-    overlayRasterUnavailable_ = true;
     return false;
   }
   if (!dwriteFactory_ &&
       FAILED(DWriteCreateFactory(
           DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
           reinterpret_cast<IUnknown**>(dwriteFactory_.put())))) {
-    overlayRasterUnavailable_ = true;
     return false;
   }
-  // WIC is optional (image overlays only). CoInitializeEx may return S_FALSE
-  // (already initialized) or RPC_E_CHANGED_MODE (STA thread) — CoCreateInstance
-  // still works in both cases, so only the factory failure disables images.
+  // All prepared tiles use a CPU WIC target. The preparation owner has already
+  // initialized its COM apartment; optional image decoding uses this factory too.
   if (!wicFactory_) {
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                      IID_PPV_ARGS(wicFactory_.put()));
   }
-  return true;
+  return bool(wicFactory_);
 }
 
-ComPtrLite<ID2D1Bitmap> CompositorOverlayRaster::decodeOverlayImage(
-    ID2D1RenderTarget* target, const std::string& imageUri) {
-  ComPtrLite<ID2D1Bitmap> bitmap;
-  if (!wicFactory_ || !target || imageUri.empty()) {
-    return bitmap;
-  }
+CompositorOverlayRaster::ImageInput CompositorOverlayRaster::openOverlayImage(const std::string& imageUri) {
+  if (!wicFactory_ || imageUri.empty()) return {};
   std::string path = imageUri;
   if (path.rfind("file:///", 0) == 0) {
     path = path.substr(8);
@@ -87,31 +78,58 @@ ComPtrLite<ID2D1Bitmap> CompositorOverlayRaster::decodeOverlayImage(
   }
   const std::wstring widePath = widenUtf8(path);
   if (widePath.empty()) {
-    return bitmap;
+    return {};
   }
   ComPtrLite<IWICBitmapDecoder> decoder;
   if (FAILED(wicFactory_->CreateDecoderFromFilename(
           widePath.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, decoder.put()))) {
-    return bitmap;
+    return {};
   }
   ComPtrLite<IWICBitmapFrameDecode> frame;
   if (FAILED(decoder->GetFrame(0, frame.put()))) {
-    return bitmap;
+    return {};
   }
+  UINT imageWidth = 0, imageHeight = 0;
+  if (FAILED(frame->GetSize(&imageWidth, &imageHeight)) || imageWidth == 0 || imageHeight == 0 || imageWidth > 4096 || imageHeight > 4096 ||
+      uint64_t(imageWidth) * imageHeight > 16ull * 1024 * 1024) return {};
+  return {std::move(frame), uint64_t(imageWidth) * imageHeight * 8};
+}
+
+ComPtrLite<ID2D1Bitmap> CompositorOverlayRaster::decodeOverlayImage(
+    ID2D1RenderTarget* target, IWICBitmapFrameDecode* frame, bool referenceDpi) {
+  ComPtrLite<ID2D1Bitmap> bitmap;
+  if (!target || !frame) return bitmap;
   ComPtrLite<IWICFormatConverter> converter;
   if (FAILED(wicFactory_->CreateFormatConverter(converter.put()))) {
     return bitmap;
   }
   // 32bppPBGRA = premultiplied BGRA, D2D's native interchange format.
   if (FAILED(converter->Initialize(
-          frame.get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+          frame, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
           nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
     return bitmap;
   }
-  if (FAILED(target->CreateBitmapFromWicBitmap(converter.get(), nullptr, bitmap.put()))) {
+  const auto properties = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
+  if (FAILED(target->CreateBitmapFromWicBitmap(converter.get(), referenceDpi ? &properties : nullptr, bitmap.put()))) {
     bitmap = {};
   }
   return bitmap;
+}
+
+CompositorOverlayRaster::ImageInput CompositorOverlayRaster::openPackagedImage(const graphics::GraphicsAsset& asset) {
+  if (!wicFactory_ || !asset.encoded || asset.encoded->empty() || asset.encoded->size() > 32 * 1024 * 1024) return {};
+  ComPtrLite<IWICStream> stream;
+  ComPtrLite<IWICBitmapDecoder> decoder;
+  ComPtrLite<IWICBitmapFrameDecode> frame;
+  if (FAILED(wicFactory_->CreateStream(stream.put())) ||
+      FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(asset.encoded->data()), DWORD(asset.encoded->size()))) ||
+      FAILED(wicFactory_->CreateDecoderFromStream(stream.get(), nullptr, WICDecodeMetadataCacheOnDemand, decoder.put())) ||
+      FAILED(decoder->GetFrame(0, frame.put()))) return {};
+  UINT width = 0, height = 0;
+  if (FAILED(frame->GetSize(&width, &height)) || width != UINT(asset.width) || height != UINT(asset.height)) return {};
+  // Decoder, format-conversion and D2D destination allowance. It is charged
+  // before decoding any full-resolution pixels, and shared across workers.
+  return {std::move(frame), uint64_t(width) * height * 12};
 }
 
 bool CompositorOverlayRaster::drawOverlayTextLine(
@@ -155,113 +173,256 @@ bool CompositorOverlayRaster::drawOverlayTextLine(
   return true;
 }
 
-ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
-    ID3D11Device* device,
-    ID3D11DeviceContext* context,
-    const CompositorOverlayContent& overlay,
-    const compositor::LayerRect& rect,
-    int targetWidth,
-    int targetHeight) {
-  const bool hasText = !overlay.title.empty() || !overlay.org.empty() ||
-                       !overlay.text.empty() || !overlay.speaker.empty();
-  if (!hasText && overlay.imageUri.empty()) {
-    return nullptr;
-  }
-  const int widthPx = std::clamp(
-      static_cast<int>(std::lround(rect.width * static_cast<float>(targetWidth))), 0, 4096);
-  const int heightPx = std::clamp(
-      static_cast<int>(std::lround(rect.height * static_cast<float>(targetHeight))), 0, 4096);
-  if (widthPx < 8 || heightPx < 8) {
-    return nullptr;
-  }
-  if (!ensureOverlayRasterFactories()) {
-    lastWarning_="Native text/image renderer unavailable.";
-    return nullptr;
-  }
+CompositorOverlayRaster::CompositorOverlayRaster()
+    : cache_([this](const Request& request) { return prepareRaster(request); },
+             256ull * 1024 * 1024, 32, [this] {
+               // Release apartment-owned factories before the owner's thread-local
+               // COM lifetime ends, including tests with no process-wide MTA.
+               wicFactory_ = {}; dwriteFactory_ = {}; d2dFactory_ = {};
+             }, 64) {}
+CompositorOverlayRaster::~CompositorOverlayRaster() = default;
 
-  const uint64_t signature = overlayContentSignature(overlay, widthPx, heightPx);
-  lastWarning_.clear();
-
-  ++overlayRasterClock_;
-  if (auto existing = overlayTextTextures_.find(signature); existing != overlayTextTextures_.end()) {
-    lastWarning_=existing->second.warning;
-    existing->second.lastUsed = overlayRasterClock_;
-    return existing->second.view.get();
-  }
-
-  OverlayRasterTex entry;
-  D3D11_TEXTURE2D_DESC textureDesc{};
-  textureDesc.Width = static_cast<UINT>(widthPx);
-  textureDesc.Height = static_cast<UINT>(heightPx);
-  textureDesc.MipLevels = 1;
-  textureDesc.ArraySize = 1;
-  textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-  textureDesc.SampleDesc.Count = 1;
-  textureDesc.Usage = D3D11_USAGE_DEFAULT;
-  textureDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-  if (FAILED(device->CreateTexture2D(&textureDesc, nullptr, entry.texture.put()))) {
-    return nullptr;
-  }
-  ComPtrLite<IDXGISurface> surface;
-  if (FAILED(entry.texture->QueryInterface(__uuidof(IDXGISurface), reinterpret_cast<void**>(surface.put())))) {
-    return nullptr;
-  }
-  const auto targetProperties = D2D1::RenderTargetProperties(
-      D2D1_RENDER_TARGET_TYPE_DEFAULT,
-      D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-      96.f, 96.f);
-  ComPtrLite<ID2D1RenderTarget> d2dTarget;
-  if (FAILED(d2dFactory_->CreateDxgiSurfaceRenderTarget(surface.get(), &targetProperties, d2dTarget.put()))) {
-    return nullptr;
-  }
-
-  // D2D's EndDraw flushes through the shared device and can clobber the
-  // immediate context's bound state mid-pass. Rasters only happen on content
-  // change, so snapshot + restore the pipeline state we depend on.
-  ComPtrLite<ID3D11RenderTargetView> savedRtv;
-  context->OMGetRenderTargets(1, savedRtv.put(), nullptr);
-  ComPtrLite<ID3D11BlendState> savedBlend;
-  FLOAT savedBlendFactor[4] = {0.f, 0.f, 0.f, 0.f};
-  UINT savedSampleMask = 0xffffffffu;
-  context->OMGetBlendState(savedBlend.put(), savedBlendFactor, &savedSampleMask);
-  ComPtrLite<ID3D11RasterizerState> savedRasterizer;
-  context->RSGetState(savedRasterizer.put());
-  D3D11_VIEWPORT savedViewport{};
-  UINT viewportCount = 1;
-  context->RSGetViewports(&viewportCount, &savedViewport);
-  D3D11_PRIMITIVE_TOPOLOGY savedTopology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-  context->IAGetPrimitiveTopology(&savedTopology);
-  ComPtrLite<ID3D11VertexShader> savedVs;
-  context->VSGetShader(savedVs.put(), nullptr, nullptr);
-  const auto restorePipelineState = [&]() {
-    ID3D11RenderTargetView* rtvs[] = {savedRtv.get()};
-    context->OMSetRenderTargets(1, rtvs, nullptr);
-    context->OMSetBlendState(savedBlend.get(), savedBlendFactor, savedSampleMask);
-    context->RSSetState(savedRasterizer.get());
-    if (viewportCount > 0) {
-      context->RSSetViewports(1, &savedViewport);
+bool CompositorOverlayRaster::drawTemplate(ID2D1RenderTarget* target,
+    const graphics::GraphicsDrawing& drawing, int height, const std::map<std::string, ImageInput>& images) {
+  ComPtrLite<IDWriteFontCollection> fonts;
+  if (FAILED(dwriteFactory_->GetSystemFontCollection(fonts.put())) || !fonts) return false;
+  const float scale = float(height / drawing.height);
+  target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
+  bool complete = true;
+  std::map<std::string, ComPtrLite<ID2D1Bitmap>> bitmaps;
+  for (const auto& p : drawing.primitives) {
+    const auto& b = p.box; const auto& c = p.clip;
+    target->PushAxisAlignedClip(D2D1::RectF(float(c.x), float(c.y), float(c.x + c.width), float(c.y + c.height)), D2D1_ANTIALIAS_MODE_ALIASED);
+    if (p.type == "image") {
+      if (!p.image) complete = false;
+      else {
+        auto bitmap = bitmaps.find(p.image->id);
+        if (bitmap == bitmaps.end()) {
+          const auto source = images.find(p.image->id);
+          if (source != images.end()) {
+            auto decoded = decodeOverlayImage(target, source->second.frame.get(), true);
+            if (decoded) bitmap = bitmaps.emplace(p.image->id, std::move(decoded)).first;
+          }
+        }
+        if (bitmap == bitmaps.end()) { complete = false; workerWarning_ = "Graphics image could not be decoded: " + p.image->id; }
+        else {
+          const double sx = b.width / p.image->width, sy = b.height / p.image->height;
+          const auto factor = p.fit == "cover" ? std::max(sx, sy) : std::min(sx, sy);
+          const auto width = p.image->width * factor, imageHeight = p.image->height * factor;
+          const auto x = b.x + (p.imageAlign == "right" ? b.width - width : p.imageAlign == "center" ? (b.width - width) / 2 : 0);
+          const auto y = b.y + (p.imageVerticalAlign == "bottom" ? b.height - imageHeight : p.imageVerticalAlign == "center" ? (b.height - imageHeight) / 2 : 0);
+          target->DrawBitmap(bitmap->second.get(), D2D1::RectF(float(x), float(y), float(x + width), float(y + imageHeight)), float(p.opacity), D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+      }
+      target->PopAxisAlignedClip(); continue;
     }
-    context->IASetPrimitiveTopology(savedTopology);
-    context->VSSetShader(savedVs.get(), nullptr, 0);
-  };
+    ComPtrLite<ID2D1SolidColorBrush> solid;
+    ComPtrLite<ID2D1LinearGradientBrush> gradient;
+    ID2D1Brush* brush = nullptr;
+    if (p.gradient) {
+      const D2D1_GRADIENT_STOP stops[] = {{0.f, d2dColorFromArgb(p.color)}, {1.f, d2dColorFromArgb(p.endColor)}};
+      ComPtrLite<ID2D1GradientStopCollection> collection;
+      if (SUCCEEDED(target->CreateGradientStopCollection(stops, 2, collection.put())) &&
+          SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(
+              D2D1::Point2F(float(b.x), float(b.y)), D2D1::Point2F(float(b.x + (p.verticalGradient ? 0 : b.width)),
+              float(b.y + (p.verticalGradient ? b.height : 0)))), collection.get(), gradient.put()))) brush = gradient.get();
+    } else if (SUCCEEDED(target->CreateSolidColorBrush(d2dColorFromArgb(p.color), solid.put()))) brush = solid.get();
+    if (!brush) complete = false;
+    else {
+      brush->SetOpacity(float(p.opacity));
+      if (p.type == "rect") target->FillRoundedRectangle(D2D1::RoundedRect(
+          D2D1::RectF(float(b.x), float(b.y), float(b.x + b.width), float(b.y + b.height)), float(p.cornerRadius), float(p.cornerRadius)), brush);
+      else if (p.type == "text" && !p.text.empty()) {
+        const auto family = widenUtf8(p.font), text = widenUtf8(p.text);
+        UINT32 fontIndex = 0; BOOL exists = FALSE;
+        ComPtrLite<IDWriteTextFormat> format;
+        ComPtrLite<IDWriteTextLayout> layout;
+        const bool ready = SUCCEEDED(fonts->FindFamilyName(family.c_str(), &fontIndex, &exists)) && exists &&
+            SUCCEEDED(dwriteFactory_->CreateTextFormat(family.c_str(), fonts.get(), DWRITE_FONT_WEIGHT(p.fontWeight),
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, float(p.fontSize), L"", format.put()));
+        if (!ready) { complete = false; workerWarning_ = "Requested graphics font is unavailable: " + p.font; }
+        else {
+          bool textReady = SUCCEEDED(format->SetTextAlignment(p.align == "center" ? DWRITE_TEXT_ALIGNMENT_CENTER : p.align == "right" ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING)) &&
+              SUCCEEDED(format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)) &&
+              SUCCEEDED(format->SetWordWrapping(p.overflow == "wrap-then-ellipsis" ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP));
+          const float lineHeight = float(p.fontSize * p.lineHeight);
+          textReady = textReady && SUCCEEDED(dwriteFactory_->CreateTextLayout(text.c_str(), UINT32(text.size()), format.get(),
+              float(b.width), float(std::min(b.height, double(lineHeight) * p.maxLines)), layout.put()));
+          if (textReady) {
+            ComPtrLite<IDWriteInlineObject> ellipsis;
+            DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+            textReady = SUCCEEDED(layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lineHeight, float(p.fontSize * .8))) &&
+                SUCCEEDED(dwriteFactory_->CreateEllipsisTrimmingSign(format.get(), ellipsis.put())) &&
+                SUCCEEDED(layout->SetTrimming(&trim, ellipsis.get()));
+          }
+          if (textReady) target->DrawTextLayout(D2D1::Point2F(float(b.x), float(b.y)), layout.get(), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+          else complete = false;
+        }
+      }
+    }
+    target->PopAxisAlignedClip();
+  }
+  target->SetTransform(D2D1::Matrix3x2F::Identity());
+  return complete;
+}
+
+ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
+    ID3D11Device* device, ID3D11DeviceContext*, const CompositorOverlayContent& overlay,
+    const compositor::LayerRect& rect, int targetWidth, int targetHeight,
+    const std::string& preparationSlot, bool strictResources,
+    std::shared_ptr<const graphics::GraphicsPreparedResource> prepared) {
+  // Bound metadata before hashing or copying it into the queue. In particular,
+  // a legacy caller cannot amplify one oversized caption into 32 queued copies.
+  size_t metadataBytes = 0;
+  const auto& a = overlay.appearance;
+  for (const auto* value : {&overlay.title, &overlay.org, &overlay.text, &overlay.speaker,
+      &overlay.imageUri, &overlay.fontFamily, &overlay.keyPosition, &overlay.keyPhase, &overlay.keyer,
+      &overlay.brandColor, &overlay.brandAccentColor, &overlay.brandBackgroundColor,
+      &a.preset, &a.anchor, &a.fontFamily, &a.nameColor, &a.titleColor, &a.backgroundColor, &a.accentColor}) {
+    if (value->size() > 65536 - metadataBytes) {
+      activeLease_.reset(); lastState_ = "failed"; failedThisFrame_ = true;
+      lastWarning_ = "Graphics content exceeds preparation metadata budget.";
+      return nullptr;
+    }
+    metadataBytes += value->size();
+  }
+  const double widthPixels = double(rect.width) * targetWidth;
+  const double heightPixels = double(rect.height) * targetHeight;
+  if (!device || !std::isfinite(widthPixels) || !std::isfinite(heightPixels) ||
+      widthPixels < 1 || heightPixels < 1 || widthPixels > 4096 || heightPixels > 4096) {
+    activeLease_.reset(); lastState_ = "failed"; failedThisFrame_ = true;
+    lastWarning_ = "Invalid graphics raster dimensions.";
+    return nullptr;
+  }
+  const int width = int(std::lround(widthPixels)), height = int(std::lround(heightPixels));
+  const Key key{reinterpret_cast<uintptr_t>(device), overlayContentSignature(overlay, width, height) ^
+      (strictResources ? 0xd9e94a8e64b5fc21ULL : 0ULL), overlay.graphicsContentHash, overlay.hasGraphicsContentHash};
+  const bool compatible = prepared && prepared->native && prepared->backend == graphics::GraphicsPreparedResource::Backend::D3D11 &&
+      prepared->deviceIdentity == key.device && prepared->width > 0 && prepared->height > 0 &&
+      prepared->hasContentHash == overlay.hasGraphicsContentHash && prepared->contentHash == overlay.graphicsContentHash &&
+      prepared->width <= 4096 && prepared->height <= 4096 && prepared->signature ==
+          (overlayContentSignature(overlay, prepared->width, prepared->height) ^ (strictResources ? 0xd9e94a8e64b5fc21ULL : 0ULL));
+  activeResource_.reset();
+  activeLease_.reset();
+  if (compatible && prepared->width == width && prepared->height == height) {
+    activeLease_ = std::static_pointer_cast<const Cache::Result>(prepared->native);
+    activeResource_ = prepared;
+  } else activeLease_ = cache_.find(key);
+  if (!activeLease_) {
+    device->AddRef();
+    Request request{std::shared_ptr<ID3D11Device>(device, [](ID3D11Device* value) { value->Release(); }), overlay, width, height, strictResources};
+    activeLease_ = cache_.findOrRequest(key, std::move(request),
+        uint64_t(width) * height * 8 + (overlay.imageUri.empty() ? 0 : 128ull * 1024 * 1024), preparationSlot);
+  }
+  const bool failedScale = activeLease_ && !activeLease_->asset && compatible;
+  const std::string scaleWarning = failedScale ? activeLease_->warning : "";
+  bool retainingScale = false;
+  if ((!activeLease_ || !activeLease_->asset) && compatible) {
+    activeLease_ = std::static_pointer_cast<const Cache::Result>(prepared->native);
+    activeResource_ = prepared; retainingScale = true;
+  }
+  activeDevice_ = key.device; activeSignature_ = key.signature;
+  activeContentHash_ = overlay.graphicsContentHash; activeHasContentHash_ = overlay.hasGraphicsContentHash;
+  activeWidth_ = width; activeHeight_ = height;
+  lastState_ = failedScale ? "failed" : retainingScale ? "preparing" : !activeLease_ ? "preparing" : activeLease_->asset ? "ready" : "failed";
+  lastWarning_ = failedScale ? scaleWarning + " Retaining the accepted raster." : retainingScale ? "Graphics scale preparation pending; retaining the accepted raster." :
+      activeLease_ ? activeLease_->warning : "Graphics preparation pending.";
+  if(!activeLease_ && overlay.hasGraphicsContentHash) {
+    const auto capacity=graphics::GraphicsResourceBudget::process().counters();
+    if(capacity.residentResources>=capacity.residentLimit) lastWarning_="Graphics preparation pending at the shared 16-revision capacity limit.";
+  }
+  pendingThisFrame_ = pendingThisFrame_ || (retainingScale && !failedScale) || !activeLease_;
+  failedThisFrame_ = failedThisFrame_ || failedScale || (activeLease_ && !activeLease_->asset);
+  return activeLease_ && activeLease_->asset ? activeLease_->asset->view.get() : nullptr;
+}
+
+std::shared_ptr<const graphics::GraphicsPreparedResource> CompositorOverlayRaster::preparedResource() {
+  if (!activeLease_ || !activeLease_->asset || std::string_view(lastState_) != "ready") return {};
+  if (activeResource_) return activeResource_;
+  auto resource = std::make_shared<graphics::GraphicsPreparedResource>();
+  resource->backend = graphics::GraphicsPreparedResource::Backend::D3D11;
+  resource->deviceIdentity = activeDevice_; resource->signature = activeSignature_;
+  resource->width = activeWidth_; resource->height = activeHeight_; resource->native = activeLease_;
+  resource->contentHash = activeContentHash_; resource->hasContentHash = activeHasContentHash_;
+  activeResource_ = resource;
+  return resource;
+}
+
+std::vector<uint8_t> CompositorOverlayRaster::thumbnailPng(const CompositorOverlayContent& overlay,int width,int height,std::string& warning) {
+  if(width<1 || height<1 || width>320 || height>180) {warning="Invalid thumbnail dimensions.";return {};}
+  Request request;request.overlay=overlay;request.width=width;request.height=height;request.strictResources=true;request.thumbnail=true;
+  const auto result=prepareRaster(request);warning=result.warning;
+  return result.asset ? result.asset->thumbnail : std::vector<uint8_t>{};
+}
+CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(const Request& request) {
+  thread_local core::ComApartmentLifetime apartment;
+  const auto& overlay = request.overlay;
+  const int widthPx = request.width, heightPx = request.height;
+  auto* device = request.device.get();
+  workerWarning_.clear();
+  if (!apartment.initialized() || !ensureOverlayRasterFactories() || !wicFactory_) {
+    return {{}, 0, "Native graphics preparation unavailable."};
+  }
+  graphics::GraphicsDrawing drawing;
+  std::map<std::string, ImageInput> images;
+  uint64_t packagedImageBytes = 0;
+  if (overlay.graphicsTemplate) {
+    std::string error;
+    if (!overlay.graphicsTemplate->definition->resolve(overlay.graphicsTemplate->fields,
+        overlay.graphicsTemplate->brand, drawing, error)) return {{}, 0, error};
+    if (!drawing.warnings.empty()) workerWarning_ = drawing.warnings.front();
+    for (const auto& primitive : drawing.primitives) if (primitive.image && !images.count(primitive.image->id)) {
+      auto image = openPackagedImage(*primitive.image);
+      if (!image.frame) return {{}, 0, "Graphics image header could not be decoded: " + primitive.image->id};
+      packagedImageBytes += image.cpuBytes; images.emplace(primitive.image->id, std::move(image));
+    }
+  }
+  auto layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
+  auto imageInput = layout.hasImage && !overlay.graphicsTemplate ? (overlay.graphicsImage ? openPackagedImage(*overlay.graphicsImage) : openOverlayImage(overlay.imageUri)) : ImageInput{};
+  const auto textureBytes = uint64_t(widthPx) * heightPx * 4;
+  auto& sharedBudget = graphics::GraphicsResourceBudget::process();
+  if (textureBytes + imageInput.cpuBytes + packagedImageBytes > sharedBudget.counters().cpuLimit)
+    return {{}, 0, "Graphics assets exceed the shared CPU preparation capacity."};
+  std::string revisionKey;
+  if(overlay.hasGraphicsContentHash) {static constexpr char hex[]="0123456789abcdef";revisionKey="graphics:";for(auto byte:overlay.graphicsContentHash) {revisionKey+=hex[byte>>4];revisionKey+=hex[byte&15];}}
+  else revisionKey="legacy:"+std::to_string(overlayContentSignature(overlay,1920,1080));
+  auto budget = sharedBudget.tryReserve(textureBytes + imageInput.cpuBytes + packagedImageBytes, textureBytes,revisionKey,overlay.hasGraphicsContentHash);
+  if (!budget) return {{}, 0, "Graphics preparation is waiting for shared resource capacity.", true};
+  auto entry = std::make_shared<OverlayRasterTex>();
+  entry->budget = budget;
+  ComPtrLite<IWICBitmap> bitmap;
+  if (FAILED(wicFactory_->CreateBitmap(widthPx, heightPx, GUID_WICPixelFormat32bppPBGRA,
+      WICBitmapCacheOnLoad, bitmap.put()))) return {{}, 0, "Graphics bitmap allocation failed."};
+  const auto targetProperties = D2D1::RenderTargetProperties(
+      D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+      D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.f, 96.f);
+  ComPtrLite<ID2D1RenderTarget> d2dTarget;
+  if (FAILED(d2dFactory_->CreateWicBitmapRenderTarget(bitmap.get(), &targetProperties, d2dTarget.put())))
+    return {{}, 0, "Graphics raster target creation failed."};
 
   // Geometry + per-line colors come from the shared layout resolver, so this
   // DirectWrite raster and the portable CPU bitmap-font tile
   // (rasterizeOverlayTileBgra) place identical content — preview and program
   // agree by construction. The band background is NOT painted here (it stays
   // a separate quad so its alpha animation matches the CPU mirror).
-  auto layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
-  if (overlay.appearance.enabled) {
+  if (!overlay.graphicsTemplate && overlay.appearance.enabled) {
     ComPtrLite<IDWriteFontCollection> fonts;BOOL exists=FALSE;UINT32 index=0;
     const auto family=widenUtf8(layout.fontFamily);
-    if (SUCCEEDED(dwriteFactory_->GetSystemFontCollection(fonts.put())) &&
-        SUCCEEDED(fonts->FindFamilyName(family.c_str(),&index,&exists)) && !exists) {
-      layout.fontFamily="Segoe UI";lastWarning_="Font unavailable; using Segoe UI.";
+    const bool resolved = SUCCEEDED(dwriteFactory_->GetSystemFontCollection(fonts.put())) && fonts &&
+        SUCCEEDED(fonts->FindFamilyName(family.c_str(),&index,&exists));
+    if (request.strictResources && (!resolved || !exists))
+      return {{}, 0, resolved ? "Requested graphics font is unavailable; choose an installed font." : "Graphics font resolution failed."};
+    if (resolved && !exists) {
+      layout.fontFamily="Segoe UI";workerWarning_="Font unavailable; using Segoe UI.";
     }
   }
 
   d2dTarget->BeginDraw();
   d2dTarget->Clear(D2D1::ColorF(0.f, 0.f, 0.f, 0.f));
+  bool resourcesComplete = true;
+  if (overlay.graphicsTemplate) {
+    resourcesComplete = drawTemplate(d2dTarget.get(), drawing, heightPx, images);
+  } else {
   ComPtrLite<ID2D1RoundedRectangleGeometry> rounded;
   bool clipped=false;
   if (overlay.appearance.enabled && !overlay.isCaption) {
@@ -269,8 +430,10 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     if (layout.cornerRadius>0 && SUCCEEDED(d2dFactory_->CreateRoundedRectangleGeometry(band,rounded.put()))) {
       d2dTarget->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(),rounded.get()),nullptr); clipped=true;
     }
+    if (layout.cornerRadius > 0 && !rounded) resourcesComplete = false;
     ComPtrLite<ID2D1SolidColorBrush> bg;
     if (SUCCEEDED(d2dTarget->CreateSolidColorBrush(d2dColorFromArgb(layout.backgroundArgb),bg.put()))) d2dTarget->FillRoundedRectangle(band,bg.get());
+    else resourcesComplete = false;
   }
 
   ComPtrLite<ID2D1SolidColorBrush> accentBrush;
@@ -280,13 +443,13 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
                     layout.accentBar.x + layout.accentBar.width,
                     layout.accentBar.y + layout.accentBar.height),
         accentBrush.get());
-  }
+  } else resourcesComplete = false;
 
   // Real WIC decode aspect-fitted inside the layout's image slot (the CPU
   // tile draws its deterministic checker in the same slot).
   if (layout.hasImage) {
-    auto image=decodeOverlayImage(d2dTarget.get(),overlay.imageUri);
-    if (!image) lastWarning_ += " Logo unavailable; image omitted.";
+    auto image=decodeOverlayImage(d2dTarget.get(), imageInput.frame.get());
+    if (!image) { workerWarning_ += " Logo unavailable; image omitted."; resourcesComplete = false; }
     if (image) {
       const auto imageSize = image->GetSize();
       float drawWidth = layout.imageRect.width;
@@ -310,39 +473,65 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
     const auto& line = layout.textLines[lineIndex];
     const bool emphasis =
         lineIndex == 0 && (!overlay.isCaption || !overlay.speaker.empty());
-    drawOverlayTextLine(
+    if (!drawOverlayTextLine(
         d2dTarget.get(), line.text, layout.fontFamily,
         emphasis ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
         D2D1::RectF(line.rect.x, line.rect.y,
                     line.rect.x + line.rect.width, line.rect.y + line.rect.height),
-        d2dColorFromArgb(line.colorArgb),line.fontSize);
+        d2dColorFromArgb(line.colorArgb),line.fontSize)) resourcesComplete = false;
   }
 
   if (clipped) d2dTarget->PopLayer();
+  }
   const HRESULT endDrawResult = d2dTarget->EndDraw();
-  restorePipelineState();
-  if (FAILED(endDrawResult)) {
-    return nullptr;
+  if (FAILED(endDrawResult)) return {{}, 0, "Graphics rasterization failed."};
+  if (request.strictResources && !resourcesComplete)
+    return {{}, 0, workerWarning_.empty() ? "Graphics resources could not be prepared completely." : workerWarning_};
+  if(request.thumbnail) {
+    // Release the drawing target before WIC reads the completed bitmap. PNG
+    // stores straight alpha; the native raster remains premultiplied internally.
+    d2dTarget={};
+    ComPtrLite<IStream> stream;
+    ComPtrLite<IWICBitmapEncoder> encoder;
+    ComPtrLite<IWICBitmapFrameEncode> frame;
+    ComPtrLite<IWICFormatConverter> converter;
+    WICPixelFormatGUID format=GUID_WICPixelFormat32bppBGRA;
+    if(FAILED(CreateStreamOnHGlobal(nullptr,TRUE,stream.put())) ||
+        FAILED(wicFactory_->CreateEncoder(GUID_ContainerFormatPng,nullptr,encoder.put())) ||
+        FAILED(encoder->Initialize(stream.get(),WICBitmapEncoderNoCache)) ||
+        FAILED(encoder->CreateNewFrame(frame.put(),nullptr)) || FAILED(frame->Initialize(nullptr)) ||
+        FAILED(frame->SetSize(widthPx,heightPx)) || FAILED(frame->SetPixelFormat(&format)) ||
+        FAILED(wicFactory_->CreateFormatConverter(converter.put())) ||
+        FAILED(converter->Initialize(bitmap.get(),format,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom)) ||
+        FAILED(frame->WriteSource(converter.get(),nullptr)) || FAILED(frame->Commit()) || FAILED(encoder->Commit()))
+      return {{},0,"Native thumbnail PNG encoding failed."};
+    STATSTG size{};if(FAILED(stream->Stat(&size,STATFLAG_NONAME)) || size.cbSize.QuadPart>256*1024 || !size.cbSize.QuadPart)
+      return {{},0,"Native thumbnail exceeds its encoded limit."};
+    LARGE_INTEGER start{};if(FAILED(stream->Seek(start,STREAM_SEEK_SET,nullptr))) return {{},0,"Native thumbnail stream unavailable."};
+    entry->thumbnail.resize(size_t(size.cbSize.QuadPart));ULONG read=0;
+    if(FAILED(stream->Read(entry->thumbnail.data(),ULONG(entry->thumbnail.size()),&read)) || read!=entry->thumbnail.size()) return {{},0,"Native thumbnail stream incomplete."};
+    bitmap={};images.clear();imageInput.frame={};budget->finishPreparation();
+    return {std::move(entry),0,workerWarning_};
   }
-  if (FAILED(device->CreateShaderResourceView(entry.texture.get(), nullptr, entry.view.put()))) {
-    return nullptr;
-  }
-  entry.lastUsed = overlayRasterClock_;
-
-  // Bounded cache: evict the least-recently-used raster beyond 8 entries
-  // (program + preview + multiview lower-third/caption variants all fit).
-  while (overlayTextTextures_.size() >= 8) {
-    auto oldest = overlayTextTextures_.begin();
-    for (auto it = overlayTextTextures_.begin(); it != overlayTextTextures_.end(); ++it) {
-      if (it->second.lastUsed < oldest->second.lastUsed) {
-        oldest = it;
-      }
-    }
-    overlayTextTextures_.erase(oldest);
-  }
-  entry.warning=lastWarning_;
-  const auto inserted = overlayTextTextures_.emplace(signature, std::move(entry));
-  return inserted.first->second.view.get();
+  WICRect lockRect{0, 0, widthPx, heightPx};
+  ComPtrLite<IWICBitmapLock> pixels;
+  UINT stride = 0, length = 0; BYTE* data = nullptr;
+  if (FAILED(bitmap->Lock(&lockRect, WICBitmapLockRead, pixels.put())) ||
+      FAILED(pixels->GetStride(&stride)) || FAILED(pixels->GetDataPointer(&length, &data)))
+    return {{}, 0, "Graphics pixels unavailable."};
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = widthPx; desc.Height = heightPx; desc.MipLevels = desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_IMMUTABLE; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  D3D11_SUBRESOURCE_DATA initial{data, stride, 0};
+  if (FAILED(device->CreateTexture2D(&desc, &initial, entry->texture.put())) ||
+      FAILED(device->CreateShaderResourceView(entry->texture.get(), nullptr, entry->view.put())))
+    return {{}, 0, "Graphics texture creation failed."};
+  // Drop CPU owners before returning their shared admission charge. GPU views
+  // retain their own charge through cache/device retirement.
+  pixels = {}; d2dTarget = {}; bitmap = {}; images.clear(); imageInput.frame = {};
+  budget->finishPreparation();
+  return {std::move(entry), textureBytes, workerWarning_};
 }
 
 }  // namespace corevideo::modules

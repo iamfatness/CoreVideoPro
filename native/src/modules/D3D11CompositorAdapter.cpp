@@ -1,3 +1,4 @@
+#include "graphics/GraphicsTemplateDraft.h"
 #include "compositor/AdvancedGrade.h"
 #include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
@@ -35,7 +36,10 @@
 #include "modules/ProgramFramePreview.h"
 #include "modules/VirtualCameraFrame.h"  // nv12FrameSize (vcam tap NV12 buffer layout)
 #include "modules/D3DProgramBuffer.h"
+#include "modules/D3DProgramCopyOwner.h"
+#include "modules/ProgramMonitorDispatch.h"
 #include "modules/D3DDecoupledExport.h"
+#include "modules/BoundedResourceRetirement.h"
 #include "modules/MonitorRenderWorker.h"
 #include "modules/MonitorFrameAdmission.h"
 #include "modules/ProgramSourceAdmission.h"
@@ -141,8 +145,10 @@ class D3D11Compositor final : public ICompositor {
     if (enableGpuIngress || (gpuCapture && std::string(gpuCapture) == "1") ||
         cpuPreparation) {
       gpuConsumer_ = D3DVideoConsumers::add(device_.get(), monitorBackend);
-      gpuReadLeases_ = std::make_unique<D3DVideoReadLeases>(device_.get(), context_.get());
     }
+    // Graphics read immutable textures even when source GPU ingress is off.
+    // Allocate completion queries before production, independently of ingest.
+    gpuReadLeases_ = std::make_unique<D3DVideoReadLeases>(device_.get(), context_.get());
     if (isolateMonitors || !monitorBackend) {
       ComPtrLite<IDXGIDevice> dxgi;
       auto adapter = std::make_shared<ComPtrLite<IDXGIAdapter>>();
@@ -152,7 +158,7 @@ class D3D11Compositor final : public ICompositor {
       // on this worker. Never fall back to synchronous monitor work on Program.
       auto backend = std::make_shared<std::unique_ptr<D3D11Compositor>>();
       MonitorRenderWorker::Render renderMonitor =
-          [adapter, backend, gpuIngress = gpuConsumer_ != nullptr](const MonitorRenderRequest& request) {
+          [adapter, backend, gpuIngress = gpuConsumer_ != nullptr || isolateMonitors](const MonitorRenderRequest& request) {
             if (!*backend) {
               ComPtrLite<ID3D11Device> device;
               ComPtrLite<ID3D11DeviceContext> context;
@@ -166,9 +172,44 @@ class D3D11Compositor final : public ICompositor {
       // Register the monitor device even before a capture has its first private
       // monitor copy; otherwise admission and device creation wait on each other.
       if (isolateMonitors) {
-        monitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor] {
-          renderMonitor({}); // initialize on the owner without publishing a completed job
+        auxiliaryMonitorWorker_ = std::make_unique<MonitorRenderWorker>(renderMonitor, [renderMonitor] {
+          MonitorRenderRequest warm;
+          warm.sequence = -1; warm.multiviewActive = warm.previewActive = true;
+          warm.programCopyPrepared = true;
+          warm.multiviewPlan.skipCpuReadback = warm.previewPlan.skipCpuReadback = true;
+          renderMonitor(warm);
+        }, [backend] {
+          MonitorRenderWorker::MaintenanceResult result;
+          if (*backend && (*backend)->gpuReadLeases_)
+            result.pending = (*backend)->gpuReadLeases_->retire();
+          return result;
         });
+        auto copyOwner = std::make_shared<std::unique_ptr<D3DProgramCopyOwner>>();
+        auto* auxiliary = auxiliaryMonitorWorker_.get();
+        monitorWorker_ = std::make_unique<MonitorRenderWorker>(
+            [this, copyOwner, auxiliary](const MonitorRenderRequest& request) {
+          if (!*copyOwner) throw std::runtime_error("Program copy owner unavailable");
+          auto copied = (*copyOwner)->copy(request);
+          if (request.programCopyOnly && !request.cancelled()) {
+            auto joined = programMonitorDispatch_.offer(request.programCopySlot, std::move(copied), true);
+            if (joined.superseded) auxiliary->refuse();
+            if (joined.ready) auxiliary->submit(std::move(*joined.ready));
+          } else if (!request.programCopyOnly) auxiliary->submit(std::move(copied));
+          MonitorRenderResult result;
+          result.programDisplayReader = (*copyOwner)->observation();
+          return result;
+        }, [copyOwner, adapter, auxiliary] {
+          if (!auxiliary->waitForInitialization(std::chrono::seconds(2)))
+            throw std::runtime_error("monitor renderer initialization failed");
+          *copyOwner = std::make_unique<D3DProgramCopyOwner>(adapter->get());
+        }, [copyOwner] {
+          MonitorRenderWorker::MaintenanceResult result;
+          if (*copyOwner) {
+            result.pending = (*copyOwner)->retire();
+            result.programDisplay = (*copyOwner)->observation();
+          }
+          return result;
+        }, false);
         core::nativeLogf("[monitor-worker] isolation=enabled pending_capacity=1\n");
       }
       if (!monitorBackend) {
@@ -196,12 +237,14 @@ class D3D11Compositor final : public ICompositor {
   ~D3D11Compositor() override {
     gradeWorker_.reset();
     monitorWorker_.reset();
+    auxiliaryMonitorWorker_.reset();
     gpuReadLeases_.reset();
     { std::lock_guard<std::mutex> lock(programBufferMutex_); programBuffer_.reset(); }
     stopVcamTap();
   }
 
   std::string rendererName() const override { return "d3d11"; }
+  bool supportsGraphicsInstances() const override { return true; }
   bool supportsGradePreview() const override { return gradeWorker_ != nullptr; }
   void submitGradePreviews(MonitorRenderRequest request) override {
     if (!gradeWorker_) return;
@@ -217,17 +260,70 @@ class D3D11Compositor final : public ICompositor {
   bool hasIsolatedMonitors() const override { return monitorWorker_ != nullptr; }
   void submitMonitors(MonitorRenderRequest request) override {
     if (!monitorWorker_) return;
+    request.producerStartedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     prepareMonitorFrames(request);
-    request.bufferedProgram = programBufferFrames() > 0;
-    if (auto buffer = currentProgramBuffer())
-      buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner, programProductionSlot_);
+    request.producerPreparedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (earlyProgramCopySlot_ >= 0 && earlyProgramCopySlot_ == programProductionSlot_ && request.multiviewActive) {
+      request.bufferedProgram = programBufferFrames() > 0;
+      auto joined = programMonitorDispatch_.offer(earlyProgramCopyKey_, std::move(request), false);
+      if (joined.superseded) auxiliaryMonitorWorker_->refuse();
+      if (joined.ready) auxiliaryMonitorWorker_->submit(std::move(*joined.ready));
+    } else {
+      programMonitorDispatch_.discardThrough(earlyProgramCopyKey_);
+      prepareProgramCopy(request);
+      monitorWorker_->submit(std::move(request));
+    }
+  }
+  void beginMonitorTick(bool multiviewActive) override {
+    earlyProgramCopySlot_ = -1;
+    if (!multiviewActive) programMonitorDispatch_.discardThrough(earlyProgramCopyKey_);
+    if (!monitorWorker_ || !multiviewActive || programProductionSlot_ < programBufferFrames() + 1) return;
+    MonitorRenderRequest request;
+    request.sequence = programProductionSlot_;
+    request.programCopySlot = ++earlyProgramCopyKey_;
+    request.multiviewActive = request.programCopyOnly = true;
+    request.producerStartedNs = request.producerPreparedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    prepareProgramCopy(request);
+    if (!request.acquireDeliveredProgram) return;
+    earlyProgramCopySlot_ = programProductionSlot_;
     monitorWorker_->submit(std::move(request));
   }
+  void prepareProgramCopy(MonitorRenderRequest& request) {
+    request.bufferedProgram = programBufferFrames() > 0;
+    if (programProductionSlot_ >= 0 && programProductionAnchorNs_ > 0) {
+      const int depth = programBufferFrames();
+      const core::ProgramPlayoutTimeline timeline(depth, programProductionAnchorNs_);
+      request.programDisplayTargetNs = timeline.deadlineNs(programProductionSlot_ - depth);
+      request.programDisplayDeadlineNs = timeline.deadlineNs(programProductionSlot_ - depth + 1);
+    }
+    if (auto buffer = currentProgramBuffer(); buffer && request.multiviewActive) {
+      buffer->multiview(request.deliveredProgram, request.deliveredProgramOwner, programProductionSlot_);
+      if (programProductionSlot_ >= programBufferFrames() + 1 && request.programDisplayDeadlineNs > 0)
+        request.acquireDeliveredProgram = [buffer, slot = programProductionSlot_](auto& texture, auto& owner) {
+          return buffer->multiview(texture, owner, slot, true);
+        };
+    }
+  }
   std::shared_ptr<const MonitorRenderResult> latestMonitors() const override {
-    return monitorWorker_ ? monitorWorker_->latest() : nullptr;
+    auto result = auxiliaryMonitorWorker_ ? auxiliaryMonitorWorker_->latest() : nullptr;
+    const auto copy = monitorWorker_ ? monitorWorker_->latest() : nullptr;
+    if (result && copy) {
+      auto combined = std::make_shared<MonitorRenderResult>(*result);
+      combined->programDisplayReader = copy->programDisplayReader;
+      return combined;
+    }
+    return result;
   }
   MonitorRenderDiagnostics monitorDiagnostics() const override {
-    auto result = monitorWorker_ ? monitorWorker_->diagnostics() : MonitorRenderDiagnostics{};
+    auto result = auxiliaryMonitorWorker_ ? auxiliaryMonitorWorker_->diagnostics() : MonitorRenderDiagnostics{};
+    if (monitorWorker_) {
+      const auto copy = monitorWorker_->diagnostics();
+      result.failed += copy.failed;
+      if (copy.readiness != "ready") { result.readiness = copy.readiness; result.failureReason = copy.failureReason; }
+    }
     result.requestedMode = monitorRequestedMode_;
     result.effectiveMode = monitorWorker_ ? "isolated" : "inline";
     result.selectionSource = monitorSelectionSource_;
@@ -239,6 +335,7 @@ class D3D11Compositor final : public ICompositor {
   void prepareProgramBuffer(int width, int height) override {
     // Called before the display worker establishes its cadence anchor. Device,
     // texture and shader creation must not consume slot zero's delivery lead.
+    if (monitorWorker_) (void)monitorWorker_->waitForInitialization(std::chrono::seconds(2));
     if (width > 0 && height > 0 && ensureRenderTarget(width, height))
       (void)ensureProgramBuffer(width, height);
   }
@@ -263,6 +360,7 @@ class D3D11Compositor final : public ICompositor {
   }
 
   ProgramFrame render(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
+    graphicsSourceDrawCount_ = 0;
     // Keep slow driver-stage evidence even when the operator has not enabled
     // verbose logging. CPU timestamps only; no GPU queries or extra flushes.
     const bool diagnosticTiming = true;
@@ -277,6 +375,7 @@ class D3D11Compositor final : public ICompositor {
       return static_cast<long long>(elapsed);
     };
     ++frameNumber_;
+    overlayRaster_.beginFrame();
     auto deterministicPlan = sortCompositorRenderPlan(renderPlan);
     ProgramFrame frame;
     frame.width = deterministicPlan.width;
@@ -299,6 +398,7 @@ class D3D11Compositor final : public ICompositor {
       return frame;
     }
 
+    overlayRaster_.beginFrame();
     const float background[4] = {0.047f, 0.067f, 0.094f, 1.f};
     ID3D11RenderTargetView* renderTargets[] = {renderTargetView_.get()};
     context_->OMSetRenderTargets(1, renderTargets, nullptr);
@@ -321,6 +421,20 @@ class D3D11Compositor final : public ICompositor {
     const auto drawUs = stageUs();
 
     frame.gpuComposed = true;
+    if (overlayRaster_.pendingThisFrame()) frame.warnings.push_back("graphics-preparing");
+    if (overlayRaster_.failedThisFrame()) frame.warnings.push_back("graphics-preparation-failed");
+    if (!frame.warnings.empty()) frame.health = "degraded";
+    // Admit accepted Program resource work before private/Cue requests. These
+    // nonblocking preparations do not turn a healthy Program into degradation.
+    for (const auto& candidate : deterministicPlan.graphicsPreparations) {
+      const auto& r = candidate.rect;
+      overlayRaster_.rasterOverlayTexture(device_.get(), context_.get(), candidate.overlay,
+          {r.x, r.y, r.width, r.height}, targetWidth_, targetHeight_, candidate.layerId, true,
+          candidate.graphicsPreparedResource);
+      frame.graphicsFacts.push_back({candidate.graphicsInstanceId, candidate.graphicsRevision,
+          overlayRaster_.preparationState(), overlayRaster_.lastWarning(), overlayRaster_.preparedResource(),candidate.overlay.graphicsContentHash,candidate.overlay.hasGraphicsContentHash});
+    }
+    overlayRaster_.beginFrame();
     // The pixel-signature and base64 preview both do a blocking GPU->CPU Map
     // readback. On the light ~60fps display tick we skip them — only the GPU shared
     // texture is needed for the on-screen program, and stalling the CPU on a Map
@@ -398,6 +512,7 @@ class D3D11Compositor final : public ICompositor {
       frame.renderPlanEvidence = std::make_shared<const CompositorRenderPlan>(std::move(deterministicPlan));
       buffer->submit(context_.get(), renderTarget_.get(), frame, renderPlan.fullProgramReadback);
     }
+    else if(renderPlan.observeGraphicsSubjects) frame.renderPlanEvidence=std::make_shared<const CompositorRenderPlan>(deterministicPlan);
     if (gpuReadLeases_) gpuReadLeases_->finish();
     context_->Flush();
     const auto flushUs = stageUs();
@@ -431,6 +546,7 @@ class D3D11Compositor final : public ICompositor {
   // members the draw helpers read (risk #1 — corruption, not a crash) so the
   // program pass is never affected.
   ProgramFrameSharedTexture renderMultiview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
+    graphicsSourceDrawCount_ = 0;
     ProgramFrameSharedTexture out;
     // G2 fault seam (test-only, inert in any shipped build — see
     // compositor/CompositorFaultInjection.h). One relaxed atomic bool per pass.
@@ -448,9 +564,12 @@ class D3D11Compositor final : public ICompositor {
     if (width <= 0 || height <= 0) {
       return out;
     }
+    if (monitorBatch_) programDisplayReader_.checkpoint(26);
     if (!ensureMultiviewRenderTarget(width, height)) {
       return out;
     }
+
+    if (monitorBatch_) programDisplayReader_.checkpoint(27);
 
     // Save the program pass's target dims and point the draw helpers at the
     // multiview canvas. Restored before returning so the next program render()
@@ -473,7 +592,8 @@ class D3D11Compositor final : public ICompositor {
 
     const auto layers = resolveLayers(deterministicPlan, frames);
     const bool bufferedProgram = monitorBatch_ ? monitorBufferedProgram_ : programBufferFrames() > 0;
-    auto* deliveredView = bufferedProgram ? retainedProgramForMultiview() : nullptr;
+    auto* deliveredView = bufferedProgram ?
+        (monitorBatch_ ? monitorDeliveredView_ : retainedProgramForMultiview()) : nullptr;
     bool programPlaced = false;
     const auto drawStart = profileEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto uploadBefore = stageProfileNs_[MvUpload];
@@ -501,7 +621,9 @@ class D3D11Compositor final : public ICompositor {
       const auto drawNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - drawStart).count();
       stageProfileNs_[MvDraw] += std::max(0LL, static_cast<long long>(drawNs) - (stageProfileNs_[MvUpload] - uploadBefore));
     }
+    if (monitorBatch_) programDisplayReader_.checkpoint(34);
     { CpuStageScope timing(profileEnabled, stageProfileNs_[MvShare]); exportMultiviewSharedTexture(out); }
+    if (monitorBatch_) programDisplayReader_.checkpoint(35);
 
     targetWidth_ = savedWidth;
     targetHeight_ = savedHeight;
@@ -523,6 +645,7 @@ class D3D11Compositor final : public ICompositor {
   // each tick when a preview scene is set; saves/restores targetWidth_/Height_ so the
   // program pass is never affected.
   ProgramFrameSharedTexture renderPreview(const CompositorRenderPlan& renderPlan, const std::vector<VideoFrame>& frames) override {
+    graphicsSourceDrawCount_ = 0;
     ProgramFrameSharedTexture out;
     // G2 fault seam (test-only, inert in any shipped build — see
     // compositor/CompositorFaultInjection.h). One relaxed atomic bool per pass.
@@ -593,8 +716,44 @@ class D3D11Compositor final : public ICompositor {
     monitorBufferedProgram_ = request.bufferedProgram;
     monitorProgram_ = request.deliveredProgram;
     monitorProgramOwner_ = request.deliveredProgramOwner;
+    monitorRequest_ = &request;
+    struct ClearRequest { const MonitorRenderRequest*& request; ~ClearRequest() { request = nullptr; } } clearRequest{monitorRequest_};
+    monitorProgramTargetNs_ = request.programDisplayTargetNs;
+    monitorProgramDeadlineNs_ = request.programDisplayDeadlineNs;
     frameNumber_ = request.sequence;
     MonitorRenderResult result;
+    if (!request.programCopyPrepared && request.multiviewActive && request.bufferedProgram && request.acquireDeliveredProgram) {
+      monitorProgram_ = {}; monitorProgramOwner_.reset();
+      // The export branch can finish after producer dispatch but before this
+      // request's deadline. Refresh this same timeline identity, not a newer one.
+      for (;;) {
+        if (request.cancelled()) break;
+        if (request.acquireDeliveredProgram(monitorProgram_, monitorProgramOwner_)) break;
+        const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (now >= request.programDisplayDeadlineNs) break;
+        std::this_thread::sleep_for(std::chrono::nanoseconds((std::min)(int64_t(100000), request.programDisplayDeadlineNs - now)));
+      }
+    }
+    // The delivered Program identity has a fixed deadline. Admit its copy before
+    // source exports, uploads/conversions and other optional monitor GPU work.
+    monitorDeliveredView_ = nullptr;
+    if (request.programCopyPrepared) {
+      const auto image = std::dynamic_pointer_cast<const D3DVideoImage>(request.readyProgramImage);
+      const auto* view = image && gpuConsumer_ ? image->view(gpuConsumer_->id) : nullptr;
+      if (request.multiviewActive && request.bufferedProgram && view && gpuReadLeases_ && gpuReadLeases_->hold(image))
+        monitorDeliveredView_ = view->srv.Get();
+      if (request.multiviewActive && request.bufferedProgram && image && !monitorDeliveredView_)
+        throw std::runtime_error("completed Program monitor view unavailable");
+    } else {
+      monitorDeliveredView_ = request.multiviewActive && request.bufferedProgram
+          ? (request.acquireDeliveredProgram && !monitorProgramOwner_
+              ? programDisplayReader_.publicationUnavailable(device_.get(), request)
+              : retainedProgramForMultiview()) : nullptr;
+      programDisplayReader_.checkpoint(11);
+      if (request.multiviewActive && request.bufferedProgram)
+        programDisplayReader_.completeBeforeAuxiliary(context_.get(), request);
+    }
     ProgramFrame sources;
     sources.frameNumber = request.sequence;
     std::vector<VideoFrame> sourceExports;
@@ -605,10 +764,13 @@ class D3D11Compositor final : public ICompositor {
     }
     exportParticipantTextures(request.programPlan, sourceExports, sources);
     result.sources = std::move(sources.participantSharedTextures);
+    programDisplayReader_.checkpoint(12);
     if (request.multiviewActive) {
       monitorTileHistory_[request.sequence] = request.tiles;
       result.multiview = renderMultiview(request.multiviewPlan, request.frames);
-      programDisplayHistory_[request.sequence] = programDisplayReader_.observation();
+      programDisplayHistory_[request.sequence] = request.programCopyPrepared
+          ? (request.readyProgramObservation ? *request.readyProgramObservation : ProgramDisplayObservation{})
+          : programDisplayReader_.observation();
       const auto displayMatch = programDisplayHistory_.find(result.multiview.frameNumber);
       if (displayMatch != programDisplayHistory_.end()) result.programDisplay = displayMatch->second;
       while (programDisplayHistory_.size() > 16) programDisplayHistory_.erase(programDisplayHistory_.begin());
@@ -631,7 +793,9 @@ class D3D11Compositor final : public ICompositor {
       lastMonitorTiles_.clear();
       lastMonitorTileSequence_ = -1;
     }
+    programDisplayReader_.checkpoint(13);
     if (request.previewActive) result.preview = renderPreview(request.previewPlan, request.frames);
+    programDisplayReader_.checkpoint(14);
     for (auto it = sourceTextures_.begin(); it != sourceTextures_.end();) {
       const bool demanded = std::any_of(request.frames.begin(), request.frames.end(),
           [&](const auto& frame) { return frame.participantId == it->first; });
@@ -641,7 +805,14 @@ class D3D11Compositor final : public ICompositor {
           ? sourceTextures_.erase(it) : std::next(it);
     }
     if (gpuReadLeases_) gpuReadLeases_->finish();
+    programDisplayReader_.checkpoint(15);
     context_->Flush();
+    programDisplayReader_.flushed();
+    result.programDisplayReader = programDisplayReader_.observation();
+    const auto retirement = exportRetirement_.observation();
+    result.exportRetirementPending = retirement.pending;
+    result.exportRetirementBytes = retirement.bytes;
+    result.exportRetirementRefused = retirement.refused;
     monitorProgramOwner_.reset();
     return result;
   }
@@ -653,6 +824,17 @@ class D3D11Compositor final : public ICompositor {
     for (const auto& demand : request.gradePreviews) {
       GradePreviewSurface observation; observation.demand = demand;
       if (demand.lowerThirdPreview) {
+        auto privateOverlay=*demand.lowerThirdPreview;
+        if(privateOverlay.graphicsTemplate && privateOverlay.graphicsTemplate->draft) {
+          std::string reason; auto resolved=graphics::resolveGraphicsTemplateInput(privateOverlay.graphicsTemplate,reason);
+          if(!resolved) {
+            observation.status=reason=="validating-private-template" ? "preparing" : "unavailable";
+            observation.reason=reason; result.gradePreviews.push_back(std::move(observation)); continue;
+          }
+          privateOverlay.graphicsTemplate=std::move(resolved);
+        }
+
+        overlayRaster_.beginFrame();
         CompositorRenderPlan preview; preview.width=1920; preview.height=1080; preview.skipCpuReadback=true;
         // Native sample canvas deliberately contains no live media. The same
         // cached DirectWrite/WIC raster and composition path serves program.
@@ -660,20 +842,35 @@ class D3D11Compositor final : public ICompositor {
           CompositorRenderPlanLayer bg; bg.layerId="appearance-bg-"+std::to_string(i); bg.kind="background"; bg.order=i;
           bg.rect={float(i)/3,0,1.f/3,1}; bg.hasFillColor=true; bg.fillColor=i==0?"#101828":i==1?"#60758C":"#B8C6D4"; preview.layers.push_back(bg);
         }
-        CompositorRenderPlanLayer key; key.layerId="appearance-preview"; key.kind="overlay"; key.order=3; key.hasOverlayContent=true; key.overlay=*demand.lowerThirdPreview;
-        const auto& a=key.overlay.appearance; const float h=float((a.nameSize+a.titleSize+a.padding*3)/1080.); const float w=float(std::min(a.width,1.-a.safeOffsetX));
+        CompositorRenderPlanLayer key; key.layerId="appearance-preview"; key.kind="overlay"; key.order=3; key.hasOverlayContent=true; key.overlay=std::move(privateOverlay);
+        const auto& a=key.overlay.appearance;
+        const auto& definition=key.overlay.graphicsTemplate;
+        const float h=definition ? float(definition->definition->height()/1080.) : float((a.nameSize+a.titleSize+a.padding*3)/1080.);
+        const float w=definition ? float(definition->definition->width()/1920.) : float(std::min(a.width,1.-a.safeOffsetX));
+        if (key.overlay.hasGraphicsContentHash) { key.graphicsInstanceId="authoring"; key.graphicsRevision=uint64_t(demand.revision)+1; }
         key.rect={float(a.safeOffsetX),1.f-float(a.safeOffsetY)-h,w,h};
         if (key.overlay.keyPosition.find("upper")!=std::string::npos) key.rect.y=float(a.safeOffsetY);
         if (key.overlay.keyPosition.find("right")!=std::string::npos) key.rect.x=1.f-float(a.safeOffsetX)-w;
         if (!a.enabled) {const auto legacy=compositor::lowerThirdOverlay();key.rect={legacy.x,legacy.y,legacy.width,legacy.height};key.opacity=.92f;}
+        if (key.overlay.graphicsAuthoringRect && !definition) key.rect=*key.overlay.graphicsAuthoringRect;
+        if (definition && definition->placement) {
+          const auto& p=*definition->placement;
+          const float ax=p.anchor.find("right")!=std::string::npos?1.f:p.anchor.find("left")!=std::string::npos?0.f:.5f;
+          const float ay=p.anchor.find("upper")!=std::string::npos?0.f:p.anchor.find("lower")!=std::string::npos?1.f:.5f;
+          key.rect.width*=float(p.scale); key.rect.height*=float(p.scale);
+          key.rect.x=ax*(1-key.rect.width)+float(p.x/1920.); key.rect.y=ay*(1-key.rect.height)+float(p.y/1080.);
+        }
         preview.layers.push_back(key);
         observation.sourceEpoch=1; observation.sourceFrameId=demand.revision; observation.status="ready";
+        const auto image=renderPreview(preview,{});
+        if (overlayRaster_.failedThisFrame()) { observation.status="unavailable"; observation.reason=overlayRaster_.lastWarning(); }
+        else if (overlayRaster_.pendingThisFrame()) { observation.status="preparing"; observation.reason="awaiting-native-appearance"; }
         appearanceHistory_[request.sequence]=observation;
-        const auto image=renderPreview(preview,{}); const auto stamp=appearanceHistory_.find(image.frameNumber);
+        const auto stamp=appearanceHistory_.find(image.frameNumber);
         if (image.width>0 && stamp!=appearanceHistory_.end() && stamp->second.demand.instanceId==demand.instanceId && stamp->second.demand.revision==demand.revision) {
+          observation=stamp->second;
           observation.texture.sharedHandleHex=image.sharedHandleHex; observation.texture.width=image.width; observation.texture.height=image.height;
           observation.texture.format=image.format; observation.texture.frameNumber=image.frameNumber;
-          observation.reason=overlayRaster_.lastWarning();
         } else { observation.status="preparing"; observation.reason="awaiting-native-appearance"; }
         while (appearanceHistory_.size()>32) appearanceHistory_.erase(appearanceHistory_.begin());
         result.gradePreviews.push_back(std::move(observation)); continue;
@@ -755,7 +952,10 @@ class D3D11Compositor final : public ICompositor {
   std::map<int64_t,GradePreviewSurface> appearanceHistory_;
   std::map<std::string, GradeStamp> gradeStamps_;
   std::map<std::pair<std::string, int64_t>, GradePreviewSurface> gradeHistory_;
-  std::unique_ptr<MonitorRenderWorker> monitorWorker_, gradeWorker_;
+  ProgramMonitorDispatch programMonitorDispatch_;
+  int64_t earlyProgramCopySlot_ = -1;
+  int64_t earlyProgramCopyKey_ = 0;
+  std::unique_ptr<MonitorRenderWorker> monitorWorker_, auxiliaryMonitorWorker_, gradeWorker_;
   std::shared_ptr<D3DVideoConsumer> gpuConsumer_;
   std::unique_ptr<D3DVideoReadLeases> gpuReadLeases_;
   bool strictCpuSources_ = false;
@@ -799,7 +999,9 @@ class D3D11Compositor final : public ICompositor {
       owner = monitorProgramOwner_;
       if (exported.sharedHandleHex.empty()) owner.reset();
     } else if (buffer) buffer->multiview(exported, owner, programProductionSlot_);
-    return programDisplayReader_.copy(device_.get(), context_.get(), owner);
+    return programDisplayReader_.copy(device_.get(), context_.get(), owner,
+        monitorBatch_ ? monitorProgramTargetNs_ : 0, monitorBatch_ ? monitorProgramDeadlineNs_ : 0,
+        monitorBatch_ ? monitorRequest_ : nullptr);
   }
 
   // Per-participant keyed-mutex shared texture for the GPU multiview tiles.
@@ -1379,7 +1581,24 @@ class D3D11Compositor final : public ICompositor {
     drawSolidQuad(layer, renderPlan, {rect.x + rect.width - strokeX, rect.y, strokeX, rect.height}, color, borderAlpha);
   }
 
-  void drawLayer(const ResolvedLayer& requestedLayer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr, ProgramFrame* admission = nullptr, const ProgramFrame* traceFrame = nullptr) {
+  void recordGraphicsSourceDraw(const VideoFrame& frame) {
+    if (frame.participantId.size() > 512) return;
+    for (size_t i = 0; i < graphicsSourceDrawCount_; ++i) {
+      if (graphicsSourceDraws_[i].id != frame.participantId) continue;
+      if (graphicsSourceDraws_[i].generation != frame.sourceGeneration) graphicsSourceDraws_[i].generation = 0;
+      return;
+    }
+    if (graphicsSourceDrawCount_ < graphicsSourceDraws_.size()) {
+      auto& draw = graphicsSourceDraws_[graphicsSourceDrawCount_++];
+      draw.id = frame.participantId; draw.generation = frame.sourceGeneration;
+    }
+  }
+  bool hasGraphicsSourceDraw(const std::string& id, uint64_t generation) const {
+    for (size_t i = 0; i < graphicsSourceDrawCount_; ++i)
+      if (graphicsSourceDraws_[i].id == id && graphicsSourceDraws_[i].generation == generation) return true;
+    return false;
+  }
+  void drawLayer(const ResolvedLayer& requestedLayer, const CompositorRenderPlan& renderPlan, long long* uploadUs = nullptr, ProgramFrame* admission = nullptr, ProgramFrame* traceFrame = nullptr) {
     auto layer = requestedLayer;
     VideoFrame admittedImage;
     core::DeliveryReason traceReason = core::DeliveryReason::Ready;
@@ -1431,7 +1650,13 @@ class D3D11Compositor final : public ICompositor {
 
     // Overlay/lower-third/caption layers go through the raster stage.
     if (layer.plan.hasOverlayContent && compositorLayerIsOverlay(layer.plan)) {
-      drawOverlayLayer(layer, renderPlan, rect, layerAlpha);
+      const bool composited = drawOverlayLayer(layer, renderPlan, rect, layerAlpha, traceFrame);
+      if (traceFrame && composited && !layer.plan.graphicsInstanceId.empty()) {
+        const auto resource = overlayRaster_.preparedResource();
+        if (resource && resource != layer.plan.graphicsPreparedResource)
+          traceFrame->graphicsFacts.push_back({layer.plan.graphicsInstanceId, layer.plan.graphicsRevision, "ready", "", resource});
+        traceFrame->graphicsFacts.push_back({layer.plan.graphicsInstanceId, layer.plan.graphicsRevision, "draw-submitted", ""});
+      }
       return;
     }
 
@@ -1541,6 +1766,15 @@ class D3D11Compositor final : public ICompositor {
       event.reason = textured ? traceReason : core::DeliveryReason::Unavailable;
       core::recordDeliveryTrace(event);
     }
+    if (textured && layer.frame && layer.frame->sourceGeneration && layer.plan.kind == "participant-video" && layerAlpha > 0)
+      recordGraphicsSourceDraw(*layer.frame);
+    if(traceFrame && renderPlan.observeGraphicsSubjects && textured && layer.frame && layerAlpha>0 &&
+        (layer.plan.kind=="participant-video"||layer.plan.kind=="screen-share") && traceFrame->graphicsFacts.size()<128) {
+      const auto state=layer.plan.kind=="screen-share"?"share-draw-submitted":"source-draw-submitted";
+      const auto identity="source:"+layer.frame->participantId;
+      if(std::none_of(traceFrame->graphicsFacts.begin(),traceFrame->graphicsFacts.end(),[&](const auto& fact){return fact.state==state&&fact.instanceId==identity&&fact.revision==layer.frame->sourceGeneration;}))
+        traceFrame->graphicsFacts.push_back({identity,layer.frame->sourceGeneration,state,""});
+    }
     context_->RSSetState(rasterizerState_.get());
     if (textured) {
       ID3D11ShaderResourceView* nullViews[] = {nullptr, nullptr, nullptr};
@@ -1621,8 +1855,9 @@ class D3D11Compositor final : public ICompositor {
 
     ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
         device_.get(), context_.get(), content, labelRect, targetWidth_, targetHeight_);
-    if (overlayView == nullptr) {
-      return;
+    if (overlayView == nullptr) return;
+    if (!gpuReadLeases_ || !gpuReadLeases_->hold(overlayRaster_.lease())) {
+      overlayRaster_.refuseGpuLease(); return;
     }
 
     const compositor::LayerRect clip = layer.plan.hasClipRect
@@ -1652,25 +1887,28 @@ class D3D11Compositor final : public ICompositor {
 
   // --- Item 9: overlay/lower-third/caption raster stage. ---
   // Rasters the overlay's real content (DirectWrite text + WIC image) into a
-  // GPU texture via a D2D DXGI-surface render target, then composites it with
+  // immutable GPU texture prepared on the WIC/DirectWrite owner, then composites it with
   // the animated keyPhase transform. The texture is cached by content signature
   // (see rasterOverlayTexture) so the raster cost is paid only when the text,
   // brand styling, or target size changes — never per frame. Falls back to the
   // deterministic band + accent draw if D2D/DirectWrite is unavailable.
-  void drawOverlayLayer(
+  bool drawOverlayLayer(
       const ResolvedLayer& layer,
       const CompositorRenderPlan& renderPlan,
       const compositor::LayerRect& rect,
-      float layerAlpha) {
+      float layerAlpha, ProgramFrame* traceFrame = nullptr) {
+    if (layer.plan.graphicsBoundSourceGeneration && !hasGraphicsSourceDraw(layer.plan.graphicsBoundParticipantId,
+        layer.plan.graphicsBoundSourceGeneration)) return false;
+    bool composited = false;
     const auto& overlay = layer.plan.overlay;
     const auto key = compositor::computeOverlayKeyTransform(
         overlay.keyPhase, overlay.keyProgress, overlay.keyPosition, rect.height);
     if (!key.visible || key.alpha <= 0.001f) {
-      return;
+      return false;
     }
     const float alpha = std::clamp(layerAlpha * key.alpha, 0.f, 1.f);
     if (alpha <= 0.f) {
-      return;
+      return false;
     }
 
     // Animated slide (and renderer-compatible scale) about the rect center.
@@ -1691,6 +1929,19 @@ class D3D11Compositor final : public ICompositor {
                                 layer.plan.clipRect.width, layer.plan.clipRect.height}
         : compositor::LayerRect{0.f, 0.f, 1.f, 1.f};
 
+    // Instance revisions become visible only after their complete raster exists.
+    // Legacy overlay fallback remains compatible while it prepares.
+    ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
+        device_.get(), context_.get(), overlay, rect, targetWidth_, targetHeight_, {}, !layer.plan.graphicsInstanceId.empty(), layer.plan.graphicsPreparedResource);
+    if (overlayView && (!gpuReadLeases_ || !gpuReadLeases_->hold(overlayRaster_.lease()))) {
+      overlayRaster_.refuseGpuLease(); overlayView = nullptr;
+    }
+    if (!layer.plan.graphicsInstanceId.empty() && !overlayView) return false;
+    if (layer.plan.graphicsAwaitingEntrance) {
+      if (traceFrame) traceFrame->graphicsFacts.push_back({layer.plan.graphicsInstanceId,layer.plan.graphicsRevision,"composition-eligible",""});
+      return false;
+    }
+
     // Brand-styled band background.
     context_->RSSetState(scissorRasterizerState_.get());
     setScissorFromRect(clip);
@@ -1702,8 +1953,7 @@ class D3D11Compositor final : public ICompositor {
     // Sizing/caching uses the un-animated rect so a build-in/out animation
     // scales the SAME cached texture (via the viewport) instead of re-rastering
     // every frame of the key transition.
-    if (ID3D11ShaderResourceView* overlayView = overlayRaster_.rasterOverlayTexture(
-            device_.get(), context_.get(), overlay, rect, targetWidth_, targetHeight_)) {
+    if (overlayView) {
       context_->RSSetState(scissorRasterizerState_.get());
       setScissorFromRect(clip);
       setViewportFromRect(animated);
@@ -1715,6 +1965,7 @@ class D3D11Compositor final : public ICompositor {
         context_->PSSetShaderResources(0, 1, views);
         context_->PSSetSamplers(0, 1, samplers);
         context_->Draw(3, 0);
+        composited = true;
         ID3D11ShaderResourceView* nullViews[] = {nullptr};
         context_->PSSetShaderResources(0, 1, nullViews);
         context_->PSSetShader(pixelShader_.get(), nullptr, 0);
@@ -1731,12 +1982,13 @@ class D3D11Compositor final : public ICompositor {
       }
     }
     context_->RSSetState(rasterizerState_.get());
+    return composited;
   }
 
   // The DirectWrite/WIC/D2D overlay-texture raster (ensureOverlayRasterFactories
   // / decodeOverlayImage / drawOverlayTextLine / rasterOverlayTexture) now lives
   // in compositor/CompositorOverlayRaster.{h,cpp}; drawOverlayLayer above calls
-  // overlayRaster_.rasterOverlayTexture(). Move-only, behavior unchanged.
+  // overlayRaster_.rasterOverlayTexture(). A GPU read lease fences cache retirement.
 
   bool uploadLayerTexture(const VideoFrame& frame) {
     CpuStageScope timing(profileMvActive_, stageProfileNs_[MvUpload]);
@@ -1793,10 +2045,12 @@ class D3D11Compositor final : public ICompositor {
   // the source stride and the mapped RowPitch).
   bool uploadBgraPixels(ID3D11Texture2D* texture, const VideoFrame& frame) {
     const auto uploadStart = std::chrono::steady_clock::now();
+    if (monitorBatch_) programDisplayReader_.checkpoint(30);
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(context_->Map(texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
       return false;
     }
+    if (monitorBatch_) programDisplayReader_.checkpoint(31);
     const auto mapEnd = std::chrono::steady_clock::now();
     const auto* source = frame.pixels->data();
     const auto sourceStride = static_cast<size_t>(frame.pixelStride);
@@ -1805,7 +2059,9 @@ class D3D11Compositor final : public ICompositor {
     for (int y = 0; y < frame.pixelHeight; ++y) {
       std::memcpy(destination + static_cast<size_t>(y) * mapped.RowPitch, source + static_cast<size_t>(y) * sourceStride, rowBytes);
     }
+    if (monitorBatch_) programDisplayReader_.checkpoint(32);
     context_->Unmap(texture, 0);
+    if (monitorBatch_) programDisplayReader_.checkpoint(33);
     const auto uploadEnd = std::chrono::steady_clock::now();
     if (uploadEnd - uploadStart >= std::chrono::milliseconds(4) &&
         uploadEnd - lastSlowUploadLog_ >= std::chrono::seconds(1)) {
@@ -2311,13 +2567,18 @@ class D3D11Compositor final : public ICompositor {
       const bool useI420 = admittedSource ? admittedSource->isI420 : f.hasI420();
       const int width = admittedSource ? admittedSource->width : (useI420 ? f.i420Width : f.pixelWidth);
       const int height = admittedSource ? admittedSource->height : (useI420 ? f.i420Height : f.pixelHeight);
+      if (participantTextures_.find(f.participantId) == participantTextures_.end() &&
+          participantTextures_.size() >= MonitorRenderDiagnostics::InputCapacity) {
+        exportRetirement_.noteRefusal(); continue;
+      }
       auto& pt = participantTextures_[f.participantId];
       if (!pt.local || pt.width != width || pt.height != height) {
+        // resize()/destruction joins the export worker, including deferred D3D
+        // creation. Never do that on the Program/monitor owner during a frame.
+        if (!retireParticipantExporter(pt)) continue;
         const auto createStart = std::chrono::steady_clock::now();
         const int oldWidth = pt.width, oldHeight = pt.height;
-        auto exporter = std::move(pt.exporter);
         pt = ParticipantTex{};
-        pt.exporter = std::move(exporter);
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width = static_cast<UINT>(width);
         desc.Height = static_cast<UINT>(height);
@@ -2336,12 +2597,8 @@ class D3D11Compositor final : public ICompositor {
           continue;
         }
         // #724: a source's first export is created off the render thread.
-        if (!pt.exporter) pt.exporter = std::make_unique<D3DDecoupledExport>(
+        pt.exporter = std::make_unique<D3DDecoupledExport>(
             device_.get(), width, height, "participant", D3DDecoupledExport::Creation::Deferred);
-        if (!pt.exporter->resize(device_.get(), width, height)) {
-          participantTextures_.erase(f.participantId);
-          continue;
-        }
         pt.width = width;
         pt.height = height;
         ::corevideo::core::nativeLogf("[d3d-participant-create] source=%s old=%dx%d new=%dx%d cost_us=%lld\n",
@@ -2350,7 +2607,7 @@ class D3D11Compositor final : public ICompositor {
                 std::chrono::steady_clock::now() - createStart).count()));
       }
       if (!pt.exporter->valid()) {
-        participantTextures_.erase(f.participantId);  // creation failed: try again next frame
+        if (retireParticipantExporter(pt)) participantTextures_.erase(f.participantId);
         continue;
       }
       if (!pt.exporter->ready()) {
@@ -2432,8 +2689,9 @@ class D3D11Compositor final : public ICompositor {
           break;
         }
       }
-      if (!present) ::corevideo::core::nativeLogf("[d3d-participant-evict] source=%s\n", it->first.c_str());
-      it = present ? std::next(it) : participantTextures_.erase(it);
+      if (present || !retireParticipantExporter(it->second)) { ++it; continue; }
+      ::corevideo::core::nativeLogf("[d3d-participant-evict] source=%s\n", it->first.c_str());
+      it = participantTextures_.erase(it);
     }
     if (profileEnabled) {
       const auto total = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - profileStart).count();
@@ -2442,6 +2700,16 @@ class D3D11Compositor final : public ICompositor {
       ++stageProfileParticipantCalls_;
       logStageProfile();
     }
+  }
+  bool retireParticipantExporter(ParticipantTex& participant) {
+    return retireExporter(participant.exporter);
+  }
+  bool retireExporter(std::unique_ptr<D3DDecoupledExport>& exporter) {
+    // Three handoff slots, private staging and shell output; texture payload
+    // charge excludes driver/device overhead. Active entries remain separately owned.
+    const auto bytes = exporter ? uint64_t((std::max)(exporter->width(), 0)) *
+        uint64_t((std::max)(exporter->height(), 0)) * 4 * 5 : 0;
+    return exportRetirement_.tryRetire(exporter, bytes);
   }
 
   // Converts a participant's I420 frame to BGRA on the GPU by rendering a
@@ -2589,14 +2857,15 @@ class D3D11Compositor final : public ICompositor {
       return;
     }
     // #724: the exporter owns a D3D device, and creating one costs 13 to 21 ms. First
-    // creation runs on the exporter's own thread; a resize reuses that device.
+    // creation runs on the exporter's own thread. Retire resize ownership off
+    // this owner too: resize() itself synchronously joins the prior worker.
+    if (multiviewExport_ && !multiviewExport_->dimensions(multiviewWidth_, multiviewHeight_) &&
+        !retireExporter(multiviewExport_)) return;
     if (!multiviewExport_) {
       multiviewExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), multiviewWidth_, multiviewHeight_, "multiview",
                                                      D3DDecoupledExport::Creation::Deferred);
-    } else if (!multiviewExport_->dimensions(multiviewWidth_, multiviewHeight_)) {
-      multiviewExport_->resize(device_.get(), multiviewWidth_, multiviewHeight_);
     }
-    if (!multiviewExport_->valid()) { multiviewExport_.reset(); return; }  // creation failed: try again next pass
+    if (!multiviewExport_->valid()) { retireExporter(multiviewExport_); return; }
     if (!multiviewExport_->ready()) return;  // still being created: no handle for a pass or two
     multiviewExport_->submit(context_.get(), multiviewRenderTarget_.get(), frameNumber_);
     out.sharedHandleHex = handleToHex(multiviewExport_->handle());
@@ -2643,14 +2912,14 @@ class D3D11Compositor final : public ICompositor {
       return;
     }
     // #724: the exporter owns a D3D device, and creating one costs 13 to 21 ms. First
-    // creation runs on the exporter's own thread; a resize reuses that device.
+    // creation and retirement both stay off this owner's per-frame work.
+    if (previewExport_ && !previewExport_->dimensions(previewWidth_, previewHeight_) &&
+        !retireExporter(previewExport_)) return;
     if (!previewExport_) {
       previewExport_ = std::make_unique<D3DDecoupledExport>(device_.get(), previewWidth_, previewHeight_, "preview",
                                                      D3DDecoupledExport::Creation::Deferred);
-    } else if (!previewExport_->dimensions(previewWidth_, previewHeight_)) {
-      previewExport_->resize(device_.get(), previewWidth_, previewHeight_);
     }
-    if (!previewExport_->valid()) { previewExport_.reset(); return; }  // creation failed: try again next pass
+    if (!previewExport_->valid()) { retireExporter(previewExport_); return; }
     if (!previewExport_->ready()) return;  // still being created: no handle for a pass or two
     previewExport_->submit(context_.get(), previewRenderTarget_.get(), frameNumber_);
     out.sharedHandleHex = handleToHex(previewExport_->handle());
@@ -3208,6 +3477,9 @@ class D3D11Compositor final : public ICompositor {
   ComPtrLite<ID3D11BlendState> blendState_;
   ComPtrLite<ID3D11BlendState> premultipliedBlendState_;
   ComPtrLite<ID3D11RasterizerState> rasterizerState_;
+  struct GraphicsSourceDraw { std::string id; uint64_t generation = 0; };
+  std::array<GraphicsSourceDraw, 256> graphicsSourceDraws_;
+  size_t graphicsSourceDrawCount_ = 0;
   ComPtrLite<ID3D11RasterizerState> scissorRasterizerState_;
   ComPtrLite<ID3D11Texture2D> renderTarget_;
   ComPtrLite<ID3D11RenderTargetView> renderTargetView_;
@@ -3274,6 +3546,7 @@ class D3D11Compositor final : public ICompositor {
   std::unique_ptr<D3DDecoupledExport> encoderExport_;
   // Per-participant keyed-mutex shared textures for the GPU multiview tiles.
   // (ParticipantTex is declared near the top of the class.)
+  BoundedResourceRetirement<D3DDecoupledExport> exportRetirement_{256ull * 1024 * 1024};
   std::map<std::string, ParticipantTex> participantTextures_;
   // Per-source texture cache (SourceTex is declared near the top of the class):
   // one Y/U/V or BGRA texture set per stable source id, shared by every
@@ -3340,6 +3613,9 @@ class D3D11Compositor final : public ICompositor {
   const bool profileGpuSubmission_ = GpuSubmissionCpuScope::requested();
   uint64_t programBufferGeneration_ = 0;
   D3DProgramDisplayReader programDisplayReader_;
+  int64_t monitorProgramTargetNs_ = 0, monitorProgramDeadlineNs_ = 0;
+  const MonitorRenderRequest* monitorRequest_ = nullptr;
+  ID3D11ShaderResourceView* monitorDeliveredView_ = nullptr; // Reader-owned, this owner thread only.
   std::map<int64_t, ProgramDisplayObservation> programDisplayHistory_;
   enum ProfileStage { ParticipantAcquire, ParticipantConvert, ParticipantCopy, ParticipantRelease, ParticipantTotal,
                       MvUpload, MvDraw, MvShare, MvTotal, ProfileStageCount };

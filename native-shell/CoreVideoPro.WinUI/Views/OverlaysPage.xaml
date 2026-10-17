@@ -15,6 +15,9 @@
     </UserControl.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Spacing="16">
+        <controls:GraphicsWorkspaceControl x:Name="GraphicsWorkspace" Studio="{x:Bind ViewModel, Mode=OneWay}" />
+        <Expander Header="Existing lower thirds, captions, brand and browser overlays" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
         <Grid Padding="0,0,8,16" ColumnSpacing="12" RowSpacing="12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.05*" MinWidth="360" />
@@ -553,5 +556,7 @@
                 </StackPanel>
             </Border>
         </Grid>
+        </Expander>
+      </StackPanel>
     </ScrollViewer>
 </UserControl>

@@ -2,6 +2,7 @@
 #include "modules/SourceVideoDemand.h"
 #include "compositor/ScopeRoi.h"
 #include "compositor/LowerThirdAppearance.h"
+#include "graphics/GraphicsPreparedResource.h"
 
 #include "contracts/Lifecycle.h"
 #include "modules/ProgramAacEncoder.h"
@@ -11,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <atomic>
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -20,6 +22,7 @@
 #include <unordered_set>
 #include <vector>
 
+namespace corevideo::graphics { struct GraphicsTemplateInput; struct GraphicsAsset; }
 namespace corevideo::modules {
 class CpuSourcePreparation;
 
@@ -274,10 +277,23 @@ struct ProgramBufferDiagnostics {
 };
 
 struct ProgramSourceAdmission {
+  uint64_t requestedLifetime = 0, actualLifetime = 0;
   std::string sourceId, state, reason;
   uint64_t requestedEpoch = 0, actualEpoch = 0;
   int64_t requestedFrameId = 0, actualFrameId = -1;
   int64_t requestedCapture100ns = 0, actualCapture100ns = 0;
+  int64_t formatTransitionAgeFrames = -1;
+};
+
+// Graphics preparation/adoption evidence. "draw-submitted" records a native draw
+// submission, not GPU completion or physical receiver/display delivery.
+struct GraphicsFrameFact {
+  std::string instanceId;
+  uint64_t revision = 0;
+  std::string state, reason;
+  std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource;
+  std::array<uint8_t,32> requestedContentHash{};
+  bool hasRequestedContentHash=false;
 };
 
 struct ProgramFrame {
@@ -292,6 +308,10 @@ struct ProgramFrame {
   uint32_t programPixelSignature = 0;
   uint32_t renderPlanSignature = 0;
   std::vector<std::string> warnings;
+  std::vector<GraphicsFrameFact> graphicsFacts;
+  void releaseGraphicsPreparationLeases() {
+    for (auto& fact : graphicsFacts) fact.preparedResource.reset();
+  }
   ProgramFramePreviewPixels preview;
   // Full-resolution program BGRA (width x height) for the virtual camera, so it
   // serves native 1080p with no upscale. Populated only when the render plan
@@ -439,6 +459,11 @@ struct CompositorOverlayContent {
   std::string brandAccentColor = "#f0a85c";
   std::string brandBackgroundColor = "#0c1118";
   std::string fontFamily = "Inter";
+  std::array<uint8_t, 32> graphicsContentHash{};
+  bool hasGraphicsContentHash = false;
+  std::optional<CompositorLayerRect> graphicsAuthoringRect;
+  std::shared_ptr<const graphics::GraphicsTemplateInput> graphicsTemplate;
+  std::shared_ptr<const graphics::GraphicsAsset> graphicsImage;
 };
 
 // Canvas-pixel Tiles decoration; disabled for every ordinary scene layer.
@@ -511,9 +536,16 @@ struct CompositorRenderPlanLayer {
   std::string sourceHealth;
   std::string dropoutPolicy = "hold";
   std::string sourceDisplayName;
+  std::string graphicsInstanceId;
+  uint64_t graphicsRevision = 0;
+  bool graphicsAwaitingEntrance = false;
+  std::shared_ptr<const graphics::GraphicsPreparedResource> graphicsPreparedResource;
+  std::string graphicsBoundParticipantId;
+  uint64_t graphicsBoundSourceGeneration = 0;
 };
 
 struct CompositorRenderPlan {
+  bool observeGraphicsSubjects = false;
   std::map<std::string, CompositorColorGrade> sourceGrades;
   std::string renderPlanId;
   std::string sceneId;
@@ -522,6 +554,7 @@ struct CompositorRenderPlan {
   int fps = 30;
   CompositorColorGrade colorGrade;
   std::vector<CompositorRenderPlanLayer> layers;
+  std::vector<CompositorRenderPlanLayer> graphicsPreparations;
   std::vector<std::string> warnings;
   // When true, the compositor skips the blocking GPU->CPU readbacks (base64
   // preview + pixel signature) and only updates the GPU shared texture. Set for
@@ -1108,8 +1141,23 @@ struct GradePreviewSurface {
     std::string status = "preparing";
   } scopes;
 };
+struct MonitorCancellationState {
+  std::atomic<uint64_t> epoch{0};
+  std::atomic<bool> stopped{false};
+};
+struct ProgramDisplayObservation;
 struct MonitorRenderRequest {
+  // Immutable completed copy passed from the deadline owner to the monitor renderer.
+  bool programCopyPrepared = false;
+  bool programCopyOnly = false;
+  int64_t programCopySlot = -1;
+  std::shared_ptr<const GpuVideoFrame> readyProgramImage;
+  std::shared_ptr<const ProgramDisplayObservation> readyProgramObservation;
+  int64_t submittedNs = 0, workerStartedNs = 0, inputsPreparedNs = 0;
+  int64_t producerStartedNs = 0, producerPreparedNs = 0;
+  std::function<bool(ProgramFrameSharedTexture&, std::shared_ptr<const void>&)> acquireDeliveredProgram;
   int64_t sequence = 0;
+  int64_t programDisplayTargetNs = 0, programDisplayDeadlineNs = 0;
   CompositorRenderPlan programPlan;
   CompositorRenderPlan multiviewPlan;
   CompositorRenderPlan previewPlan;
@@ -1123,12 +1171,35 @@ struct MonitorRenderRequest {
   bool bufferedProgram = false;
   ProgramFrameSharedTexture deliveredProgram;
   std::shared_ptr<const void> deliveredProgramOwner;
+  std::shared_ptr<const MonitorCancellationState> cancellation;
+  uint64_t cancellationEpoch = 0;
+  bool cancelled() const {
+    return cancellation && (cancellation->stopped.load(std::memory_order_relaxed) ||
+        cancellation->epoch.load(std::memory_order_relaxed) != cancellationEpoch);
+  }
 };
 
 struct MonitorInputObservation {
   std::string sourceId, state, reason;
   uint64_t sourceEpoch = 0, requestedEpoch = 0;
   int64_t frameId = 0, captureTimestamp100ns = 0;
+};
+enum class ProgramDisplayReason : uint32_t {
+  None, ReadCapacity, QueryCreate, QueryRead, Import, TextureCreate, SrvCreate, FailedReader, Deadline, Cancelled
+};
+struct ProgramDisplayIncident {
+  int64_t observedNs = 0, oldestReadAgeNs = 0;
+  int64_t targetNs = 0, deadlineNs = 0;
+  uint64_t requested = 0, copied = 0, generation = 0, completedSequence = 0;
+  uint64_t pendingSequences[2] = {};
+  uint64_t pendingGenerations[2] = {}, completedGeneration = 0;
+  uint64_t subjectSequence = 0, subjectGeneration = 0;
+  int64_t pendingAgesNs[2] = {};
+  int64_t hresult = 0, deviceHresult = 0;
+  uint32_t stage = 0, slot = 0, width = 0, height = 0, pending = 0;
+  uint32_t pollFlags = 0;
+  ProgramDisplayReason reason = ProgramDisplayReason::None;
+  bool importCached = false;
 };
 struct ProgramDisplayObservation {
   bool observed = false;
@@ -1137,9 +1208,21 @@ struct ProgramDisplayObservation {
   uint64_t copies = 0, completedCopies = 0, reused = 0, refused = 0, skipped = 0, reordered = 0;
   int capacity = 0, gpuReads = 0;
   uint64_t allocatedBytes = 0;
+  uint64_t readerEpoch = 0;
+  int readerReadLimit = 2;
+  std::array<uint64_t, 10> refusalReasons{};
+  uint64_t capacityPressures = 0, admittedAfterPressure = 0, flushingPollRetirements = 0, lateSubmissions = 0;
+  uint64_t gpuDeadlineCompletedReads = 0, gpuReadinessDeadlineMisses = 0;
+  int64_t completionMaximumObservedAgeNs = 0;
+  int64_t retryTotalNs = 0, retryMaximumNs = 0;
+  uint64_t notReadyPolls = 0, traceOverwritten = 0, traceCaptureFailures = 0;
+  int64_t lastHresult = 0;
+  std::shared_ptr<const std::vector<ProgramDisplayIncident>> incidentTrace;
   std::string state = "unavailable";
 };
 struct MonitorRenderResult {
+  int64_t completedAtNs = 0; // Actual immutable result publication, not observer wake time.
+  uint64_t exportRetirementPending = 0, exportRetirementBytes = 0, exportRetirementRefused = 0;
   int64_t sequence = 0;
   ProgramFrameSharedTexture multiview;
   ProgramFrameSharedTexture preview;
@@ -1151,6 +1234,8 @@ struct MonitorRenderResult {
   uint64_t retainedInputs = 0, retainedInputBytes = 0, retentionRefusals = 0;
   std::vector<MonitorInputObservation> inputs;
   ProgramDisplayObservation programDisplay;
+  // Live reader diagnosis is independent of the older exported canvas identity.
+  ProgramDisplayObservation programDisplayReader;
 };
 
 struct MonitorRenderDiagnostics {
@@ -1190,6 +1275,7 @@ class ICompositor {
   // delivery timestamps may be produced by this call. Resize stays on render.
   virtual void prepareProgramBuffer(int /*width*/, int /*height*/) {}
   virtual void setProgramProductionTiming(int64_t /*slot*/, int64_t /*anchorNs*/) {}
+  virtual void beginMonitorTick(bool /*multiviewActive*/) {}
   [[nodiscard]] virtual int programBufferFrames() const { return 0; }
   virtual bool latestDeliveredProgramFrame(ProgramFrame& /*out*/) const { return false; }
   virtual bool takeDeliveredProgramFrame(ProgramFrame& /*out*/, int /*timeoutMs*/) { return false; }
@@ -1238,6 +1324,7 @@ class ICompositor {
   // Upload accounting for the per-source texture cache. Defaulted to zeros so
   // the software/stub compositor stays valid; only the GPU adapter tracks it.
   [[nodiscard]] virtual CompositorSourceTexStats sourceTexStats() const { return {}; }
+  [[nodiscard]] virtual bool supportsGraphicsInstances() const { return false; }
   // True when the encoder should receive the FULL-resolution program
   // (ProgramFrame::programFullBgra) while recording. Default false: on
   // Windows the D3D11 path serves recording from the vcam tap economics and

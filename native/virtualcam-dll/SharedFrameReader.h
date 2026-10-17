@@ -139,6 +139,7 @@ class SharedFrameReader {
       const bool haveBefore = correlation_.read(before);
       const std::uint32_t seq1 = header_->seq;
       if ((seq1 & 1u) != 0u) {
+        ++evidence_.writerActiveObservations;
         continue;  // writer mid-update
       }
       ::MemoryBarrier();
@@ -152,7 +153,10 @@ class SharedFrameReader {
         if (header_->seq != seq1) continue;
         return miss(Result::InvalidHeader);
       }
-      if (copyBudget && *copyBudget == 0) return miss(Result::Contended);
+      if (copyBudget && *copyBudget == 0) {
+        ++evidence_.copyBudgetExhaustions;
+        return miss(Result::Contended);
+      }
       if (copyBudget) --*copyBudget;
       out.resize(bytes);
       std::memcpy(out.data(), payload, bytes);
@@ -168,6 +172,7 @@ class SharedFrameReader {
         evidence_.recordCorrelation(verified, after.epochHigh, after.epochLow, after.programSequence);
         return true;
       }
+      ++evidence_.changedDuringCopy;
     }
     return miss(Result::Contended);
   }

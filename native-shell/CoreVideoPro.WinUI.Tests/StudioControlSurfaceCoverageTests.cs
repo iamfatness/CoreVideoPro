@@ -6,6 +6,19 @@ namespace CoreVideoPro.WinUI.Tests;
 
 public sealed class StudioControlSurfaceCoverageTests
 {
+    [Fact]
+    public void NativeGraphicsActionsUseTheSharedBoundedRequestGateway()
+    {
+        foreach (var action in CoreVideoPro.MediaCore.Services.GraphicsCommandRequest.Actions)
+        {
+            Assert.True(ControlActionRegistry.TryGet(action, out var descriptor));
+            Assert.Contains(action, StudioControlSurface.SupportedActionIds);
+            var parameter = Assert.Single(descriptor.Params);
+            Assert.Equal("request", parameter.Name);
+            Assert.Equal(ControlParamType.String, parameter.Type);
+            Assert.True(parameter.Required);
+        }
+    }
     // The WinUI adapter must handle every action declared in the transport-agnostic registry,
     // otherwise a remote client could invoke a documented action that returns "not implemented".
     [Fact]

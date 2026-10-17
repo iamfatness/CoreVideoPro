@@ -7,6 +7,7 @@
 #include "modules/VirtualCameraSlate.h"
 #include "modules/VirtualCameraReadRetry.h"
 #include <chrono>
+#include <algorithm>
 
 using Microsoft::WRL::ComPtr;
 
@@ -27,7 +28,11 @@ HRESULT MediaStream::RuntimeClassInitialize(MediaSource* source, IMFStreamDescri
   fps_ = fps == 0 ? 30 : fps;
   frameDuration_ = 10000000LL / static_cast<LONGLONG>(fps_);
   wchar_t retryFlag[3]{};
-  retryTransientRead_ = GetEnvironmentVariableW(L"COREVIDEO_CAMERA_READ_RETRY", retryFlag, 3) == 1 && retryFlag[0] == L'1';
+  if (GetEnvironmentVariableW(L"COREVIDEO_CAMERA_READ_RETRY", retryFlag, 3) != 1) retryFlag[0] = L'\0';
+  retryTransientRead_ = corevideo::modules::cameraReadRetryEnabled(retryFlag);
+#if defined(COREVIDEO_CAMERA_READ_RETRY_OFF_QA)
+  retryTransientRead_ = false;
+#endif
 #if defined(COREVIDEO_CAMERA_READ_RETRY_QA) && COREVIDEO_CAMERA_READ_RETRY_QA
   retryTransientRead_ = true;
   VcamServeLog("[vcam-retry-qa] diagnostic DLL: bounded publication wait enabled");
@@ -96,9 +101,14 @@ IFACEMETHODIMP MediaStream::RequestSample(IUnknown* token) {
     const LONGLONG now = MFGetSystemTime();
     if (nextDueHns_ == 0 || now >= nextDueHns_ + frameDuration_) {
       nextDueHns_ = now;  // first sample, or we fell behind: re-anchor, no catch-up burst
+      cadence_.reset(fps_);
     }
     waitHns = nextDueHns_ - now;
-    nextDueHns_ += frameDuration_;
+    // Capture before pacing/allocation. Never extend this if the request is
+    // scheduled late. Reserve the rest of the frame for copy/event delivery.
+    const auto intervalHns = cadence_.nextInterval100ns();
+    sampleReadDeadlineUs_ = (nextDueHns_ + intervalHns - 20000) / 10;
+    nextDueHns_ += intervalHns;
     // Lazy high-resolution timer: the process timer resolution is often 15.6ms,
     // which would quantize a plain Sleep and cap 60fps pacing at ~40fps.
     if (waitHns > 0 && pacerTimer_ == nullptr) {
@@ -153,7 +163,7 @@ void MediaStream::LogDeliveryEvidence() {
       "invalidHeader=%llu publicationObserved=%d lastPublication=%llu lastSeq=%lu maxIntervalHns=%llu "
       "programIdentityVerified=%d receiverVerified=0 correlatedReads=%llu uncorrelatedReads=%llu "
       "unobservedProgramFrames=%llu programEpochChanges=%llu programRegressions=%llu "
-      "lastProgramSequence=%lld epoch=%016llx%016llx lastReadProgramSequence=%lld",
+      "lastProgramSequence=%lld epoch=%016llx%016llx lastReadProgramSequence=%lld logDropped=%llu logFailures=%llu",
       static_cast<void*>(this), deliveryRun_, delivery_.emitted, delivery_.fresh, delivery_.held, delivery_.slate,
       delivery_.failed, delivery_.formatMismatches, read.count(Result::Fresh), read.count(Result::Unchanged),
       read.count(Result::Contended), read.count(Result::Unavailable), read.count(Result::Uninitialized),
@@ -162,11 +172,12 @@ void MediaStream::LogDeliveryEvidence() {
       emittedIdentity_.verified ? 1 : 0, read.correlatedReads, read.uncorrelatedReads,
       read.unobservedProgramFrames, read.programEpochChanges, read.programRegressions,
       static_cast<long long>(emittedIdentity_.sequence), emittedIdentity_.epochHigh, emittedIdentity_.epochLow,
-      static_cast<long long>(read.lastProgramSequence));
+      static_cast<long long>(read.lastProgramSequence), VcamServeLogQueue().dropped(), VcamServeLogQueue().failures());
   VcamServeLog(b);
   if (retryTransientRead_) {
-    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu budgetUs=%lld maxRetries=64 maxPayloadCopies=2",
-        retriedSamples_, recoveredSamples_, frameDuration_ / 10);
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu readDeadlineMisses=%llu writerActive=%llu changedDuringCopy=%llu copyBudgetExhausted=%llu timerTimeouts=%llu timerFailures=%llu unrecoveredTransientSamples=%llu waitMaxUs=250 deadlineReserveUs=2000 maxRetries=64 maxPayloadCopies=2",
+        retriedSamples_, recoveredSamples_, readDeadlineMisses_, read.writerActiveObservations,
+        read.changedDuringCopy, read.copyBudgetExhaustions, retryTimerTimeouts_, retryTimerFailures_, unrecoveredTransientSamples_);
     VcamServeLog(b);
   }
 }
@@ -214,23 +225,53 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
   int h = 0;
   unsigned retries = 0;
   unsigned copyBudget = 2;
-  const bool got = corevideo::modules::readCameraWithBoundedRetry(
+  const auto readEnteredUs = MFGetSystemTime() / 10;
+  int64_t firstReadElapsedUs = 0;
+  int64_t firstReadRemainingUs = 0;
+  const bool got = corevideo::modules::readCameraUntilDeadline(
       [&](bool allowReopen) {
         reader_.readLatest(scratch_, w, h, allowReopen, &copyBudget);
+        if (allowReopen) {
+          const auto firstDoneUs = MFGetSystemTime() / 10;
+          firstReadElapsedUs = firstDoneUs - readEnteredUs;
+          firstReadRemainingUs = sampleReadDeadlineUs_ - firstDoneUs;
+        }
         return reader_.evidence().lastResult;
-      }, [] {
-        return std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-      }, [&] {
+      }, [] { return MFGetSystemTime() / 10; }, [&](int64_t remainingUs) {
         if (!copyBudget) return false;
+        if (remainingUs <= 0) return false;
         if (!pacerTimer_) pacerTimer_ = CreateWaitableTimerExW(nullptr, nullptr,
             CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-        if (!pacerTimer_) return false;
-        LARGE_INTEGER due; due.QuadPart = -2500; // 250 us; never a coarse Sleep(1)
-        return SetWaitableTimer(pacerTimer_, &due, 0, nullptr, nullptr, FALSE) &&
-            WaitForSingleObject(pacerTimer_, 3) == WAIT_OBJECT_0;
-      }, retryTransientRead_, retries, frameDuration_ / 10, 64);
+        if (!pacerTimer_) { ++retryTimerFailures_; return false; }
+        // A warm writer collision gets a short first yield. An early
+        // consumer may need the next publication, so bounded waits can use the
+        // original sample window instead of holding after an arbitrary 2 ms.
+        const auto pauseUs = std::min<int64_t>(250, std::max<int64_t>(1, remainingUs / 2));
+        LARGE_INTEGER due; due.QuadPart = -pauseUs * 10;
+        if (!SetWaitableTimer(pacerTimer_, &due, 0, nullptr, nullptr, FALSE)) {
+          ++retryTimerFailures_; return false;
+        }
+        const auto waited = WaitForSingleObject(pacerTimer_, static_cast<DWORD>((pauseUs + 999) / 1000 + 1));
+        if (waited == WAIT_TIMEOUT) ++retryTimerTimeouts_;
+        else if (waited != WAIT_OBJECT_0) { ++retryTimerFailures_; return false; }
+        // A timeout still yielded the CPU. The original absolute deadline,
+        // checked by the helper, decides whether another read is allowed.
+        return true;
+      }, retryTransientRead_, retries, sampleReadDeadlineUs_, 64);
+  if (MFGetSystemTime() / 10 > sampleReadDeadlineUs_) ++readDeadlineMisses_;
+  const bool transientMiss = !got && (reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Contended ||
+               reader_.evidence().lastResult == corevideo::modules::VirtualCameraReadResult::Unchanged);
+  if (transientMiss) ++unrecoveredTransientSamples_;
   if (retries) { ++retriedSamples_; if (got) ++recoveredSamples_; }
+  // Bounded miss diagnosis; never log pixels or identity credentials.
+  if ((transientMiss && (unrecoveredTransientSamples_ == 1 || unrecoveredTransientSamples_ % 120 == 0)) ||
+      (got && retries && (recoveredSamples_ == 1 || recoveredSamples_ % 120 == 0))) {
+    char timing[512];
+    _snprintf_s(timing, sizeof(timing), _TRUNCATE,
+        "[vcam-read-window] recovered=%d retryEnabled=%d firstReadUs=%lld originalRemainingAfterFirstUs=%lld retries=%u remainingPayloadCopies=%u",
+        got ? 1 : 0, retryTransientRead_ ? 1 : 0, firstReadElapsedUs, firstReadRemainingUs, retries, copyBudget);
+    VcamServeLog(timing);
+  }
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
       scratch_.size() == dstLen) {
     memcpy(dst, scratch_.data(), dstLen);

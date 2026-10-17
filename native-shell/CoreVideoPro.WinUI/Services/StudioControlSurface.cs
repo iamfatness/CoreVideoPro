@@ -52,12 +52,16 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "transport.take", "transport.transition.set",
         "transport.record.toggle", "transport.record.set",
         "transport.stream.toggle", "transport.stream.set",
+        "transport.stream.rtmp.configure", "transport.stream.srt.configure",
         "transport.engine.toggle", "transport.engine.set",
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
         "transport.virtualcam.name.set",
         "scene.select", "scene.dynamicGallery.create", "view.setMode",
         "input.assign", "input.name", "input.inShow.set", "source.dropout.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
+        "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
+        "graphics.clock.control", "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
+        "graphics.template.install", "graphics.template.list", "graphics.authority.set", "graphics.automation.configure", "graphics.automation.control",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "multiview.layout.set", "multiview.tileCount.set",
@@ -219,6 +223,10 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 return await RunOutputSet(_vm.RecordingRequested, _vm.Recording, Bool(args, 0), _vm.CanSetRecording, _vm.SetRecordingAsync, "recording").ConfigureAwait(true);
             case "transport.stream.toggle":
                 return await RunTransportToggle(_vm.ToggleStreamingCommand, "streaming").ConfigureAwait(true);
+            case "transport.stream.rtmp.configure":
+                return _vm.ConfigureStreamDestination(false, args);
+            case "transport.stream.srt.configure":
+                return _vm.ConfigureStreamDestination(true, args);
             case "transport.stream.set":
                 return await RunOutputSet(_vm.StreamingRequested, _vm.Streaming, Bool(args, 0), _vm.CanSetStreaming, _vm.SetStreamingAsync, "streaming").ConfigureAwait(true);
             case "transport.engine.toggle":
@@ -294,6 +302,26 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             }
 
             // ---- Graphics -----------------------------------------------------------
+            case "graphics.instance.create":
+            case "graphics.instance.update":
+            case "graphics.instance.cue":
+            case "graphics.instance.trigger":
+            case "graphics.clock.control":
+            case "graphics.instance.remove":
+            case "graphics.program.clear":
+            case "graphics.template.install":
+            case "graphics.automation.configure":
+            case "graphics.automation.control":
+            case "graphics.authority.set":
+            case "graphics.template.list":
+            {
+                var result = await _vm.InvokeGraphicsActionAsync(actionId, Str(args, 0)).ConfigureAwait(true);
+                return result.Accepted ? ControlInvokeResult.Success : ControlInvokeResult.Fail(result.Reason);
+            }
+            case "graphics.lowerThird.toggle" when _vm.ManagedLowerThirdAuthority:
+                return await _vm.ApplyManagedLowerThirdIntentAsync(!_vm.ManagedLowerThirdVisible).ConfigureAwait(true) is {Accepted:true} ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);
+            case "graphics.lowerThird.set" when _vm.ManagedLowerThirdAuthority:
+                return await _vm.ApplyManagedLowerThirdIntentAsync(Bool(args,0)).ConfigureAwait(true) is {Accepted:true} ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);
             case "graphics.lowerThird.toggle":
                 return ApplyLowerThirdIntent(
                     !(_vm.ProgramLowerThirdEnabled || _vm.ProgramLowerThirdKey.IsVisible), true,
@@ -382,6 +410,10 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 _vm.AutomationAutoAssignInputsEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
             case "automation.lowerThirds.set":
+                if(_vm.ManagedLowerThirdAuthority) {
+                    var result=await _vm.ApplyManagedGraphicsAutomationAsync(Bool(args,0));
+                    return result.Accepted?ControlInvokeResult.Success:ControlInvokeResult.Fail(result.Reason);
+                }
                 _vm.AutomationLowerThirdsEnabled = Bool(args, 0);
                 return ControlInvokeResult.Success;
             case "automation.captions.set":

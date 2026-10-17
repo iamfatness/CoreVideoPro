@@ -8,12 +8,13 @@ namespace corevideo::core {
 // Exactly the capability names MediaCore::profile() reports in capabilityStates.
 // ContractParity compares this with a constructed core in both directions, so a
 // name the core never reports cannot sit here looking supported.
-inline constexpr std::array<std::string_view, 23> kNativeMediaCoreCapabilities = {
+inline constexpr std::array<std::string_view, 24> kNativeMediaCoreCapabilities = {
     "zoom-raw-video",
     "zoom-raw-audio",
     "gpu-compositor",
     "scene-graph-rendering",
     "dynamic-overlays",
+    "graphics-instances",
     "chroma-key",
     "smart-framing",
     "source-grade-preview",
@@ -53,7 +54,19 @@ inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
 // Contract view of the live MediaCore::applyCommandMutation branches. The
 // dispatcher itself decides admission; ContractParity checks this view and the
 // production builder against every branch in both directions.
-inline constexpr std::array<std::string_view, 50> kNativeMediaCoreCommandTypes = {
+inline constexpr std::array<std::string_view, 63> kNativeMediaCoreCommandTypes = {
+    "graphics-automation-configure",
+    "graphics-automation-control",
+    "graphics-authority-set",
+    "graphics-template-install",
+    "graphics-template-list",
+    "graphics-clock-control",
+    "graphics-instance-create",
+    "graphics-instance-update",
+    "graphics-instance-cue",
+    "graphics-instance-trigger",
+    "graphics-instance-remove",
+    "graphics-program-clear",
     "begin-take-transition",
     "load-scene-graph",
     "set-preview-scene",
@@ -62,6 +75,7 @@ inline constexpr std::array<std::string_view, 50> kNativeMediaCoreCommandTypes =
     "set-color-grade",
     "set-grade-preview",
     "set-source-preview-demand",
+    "set-zoom-thumbnail-demand",
     "set-source-policy",
     "set-output-profile",
     "start-program-output",
@@ -109,7 +123,19 @@ inline constexpr std::array<std::string_view, 50> kNativeMediaCoreCommandTypes =
 // Every request type JsonRpcServer dispatches on. ContractParity compares this
 // with the dispatcher in both directions and checks that each request the C#
 // and Swift shells send is in it.
-inline constexpr std::array<std::string_view, 37> kCoreRequestTypes = {
+inline constexpr std::array<std::string_view, 49> kCoreRequestTypes = {
+    "graphics-automation-configure",
+    "graphics-automation-control",
+    "graphics-authority-set",
+    "graphics-template-install",
+    "graphics-template-list",
+    "graphics-clock-control",
+    "graphics-instance-create",
+    "graphics-instance-update",
+    "graphics-instance-cue",
+    "graphics-instance-trigger",
+    "graphics-instance-remove",
+    "graphics-program-clear",
     "handshake",
     "register-grade-document",
     "set-source-grade",

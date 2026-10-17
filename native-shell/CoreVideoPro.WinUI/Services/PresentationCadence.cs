@@ -4,6 +4,8 @@ namespace CoreVideoPro.WinUI.Services;
 internal sealed class PresentationCadence
 {
     private long _next;
+    internal long Delay100ns(long now, long frequency) =>
+        Math.Max(1, (long)Math.Ceiling((_next - now) * (10_000_000d / frequency)));
     internal bool ShouldSubmit(long now, long frequency, int fps)
     {
         if (now < _next) return false;

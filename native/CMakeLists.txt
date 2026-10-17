@@ -9,6 +9,13 @@ string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," WEBCAM_FRAMER_BYTES "${WEBCAM
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/WebcamFramerAsset.h"
   "#pragma once\nstatic constexpr unsigned char webcamFramerPng[] = {${WEBCAM_FRAMER_BYTES}};\n")
 
+set(VOLT_LOGO "${CMAKE_CURRENT_SOURCE_DIR}/../native-shell/CoreVideoPro.WinUI/Assets/StoreLogo.png")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${VOLT_LOGO}")
+file(READ "${VOLT_LOGO}" VOLT_LOGO_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," VOLT_LOGO_BYTES "${VOLT_LOGO_HEX}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/VoltLogoAsset.h"
+  "#pragma once\nstatic constexpr unsigned char voltLogoPng[] = {${VOLT_LOGO_BYTES}};\n")
+
 if(WIN32)
   add_executable(corevideo-vcam-publication-qa EXCLUDE_FROM_ALL ../tools/camera-publication-qa.cpp)
   target_compile_features(corevideo-vcam-publication-qa PRIVATE cxx_std_20)
@@ -22,7 +29,7 @@ if(WIN32)
   add_executable(corevideo-vcam-receiver ../tools/virtualcam-receiver.cpp)
   target_compile_features(corevideo-vcam-receiver PRIVATE cxx_std_20)
   target_include_directories(corevideo-vcam-receiver PRIVATE src)
-  target_link_libraries(corevideo-vcam-receiver PRIVATE mfplat mfreadwrite mfuuid mf ole32)
+  target_link_libraries(corevideo-vcam-receiver PRIVATE mfplat mfreadwrite mfuuid mf ole32 avrt)
   set_target_properties(corevideo-vcam-receiver PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
@@ -99,6 +106,15 @@ add_library(corevideo_native
   src/core/BoundedAsyncLog.cpp
   src/core/DeliveryTrace.cpp
   src/core/LockHoldGuardrail.cpp
+  src/graphics/GraphicsInstances.cpp
+  src/graphics/GraphicsTemplate.cpp
+  src/graphics/GraphicsTemplateRegistry.cpp
+  src/graphics/GraphicsAssets.cpp
+  src/graphics/GraphicsCuratedTemplates.cpp
+  src/graphics/GraphicsTemplateDraft.cpp
+  src/graphics/GraphicsThumbnail.cpp
+  src/graphics/GraphicsAutomation.cpp
+  src/graphics/GraphicsClock.cpp
   src/core/MediaCore.cpp
   src/core/CoreStateCapture.cpp
   src/core/ComApartmentLifetime.cpp
@@ -223,6 +239,37 @@ if(COREVIDEO_WITH_D3D11)
   # d2d1/dwrite raster real overlay text into a GPU texture; windowscodecs (WIC)
   # decodes overlay images; ole32 provides CoInitializeEx for the WIC factory.
   target_link_libraries(corevideo_native PUBLIC d3d11 dxgi d3dcompiler d2d1 dwrite windowscodecs ole32)
+
+  # Fixed webcam shader: compile once at build time, preserving the runtime
+  # shader's cs_5_0/O3 settings. Cold HLSL compilation must not delay camera
+  # framing every time its isolated preparation worker starts.
+  get_filename_component(corevideo_sdk_tools "${CMAKE_RC_COMPILER}" DIRECTORY)
+  # A CXX-only VS configure can run without RC or a developer-shell SDK env.
+  # Resolve an installed SDK tool explicitly on clean hosted Windows runners.
+  file(GLOB corevideo_sdk_fxc_candidates
+    "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/*/x64/fxc.exe"
+    "$ENV{ProgramFiles}/Windows Kits/10/bin/*/x64/fxc.exe")
+  list(SORT corevideo_sdk_fxc_candidates COMPARE NATURAL ORDER DESCENDING)
+  set(corevideo_sdk_fxc_paths "${corevideo_sdk_tools}")
+  foreach(corevideo_fxc_candidate IN LISTS corevideo_sdk_fxc_candidates)
+    get_filename_component(corevideo_fxc_directory "${corevideo_fxc_candidate}" DIRECTORY)
+    list(APPEND corevideo_sdk_fxc_paths "${corevideo_fxc_directory}")
+  endforeach()
+  find_program(COREVIDEO_FXC NAMES fxc.exe HINTS
+    ${corevideo_sdk_fxc_paths}
+    "$ENV{WindowsSdkVerBinPath}/x64"
+    "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
+    REQUIRED)
+  set(webcam_shader_header "${CMAKE_CURRENT_BINARY_DIR}/generated/WebcamFramerShader.h")
+  add_custom_command(OUTPUT "${webcam_shader_header}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    COMMAND "${COREVIDEO_FXC}" /nologo /T cs_5_0 /E main /O3
+      /Vn webcamFramerShaderBytecode /Fh "${webcam_shader_header}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/shaders/WebcamFramer.hlsl"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/WebcamFramer.hlsl"
+    COMMENT "Compile the fixed webcam framer shader"
+    VERBATIM)
+  target_sources(corevideo_native PRIVATE "${webcam_shader_header}")
 endif()
 
 if(COREVIDEO_WITH_METAL)
@@ -342,8 +389,8 @@ if(COREVIDEO_WITH_VIRTUALCAM)
       mfplat mf mfuuid mfsensorgroup ole32 oleaut32 ksuser strmiids uuid)
   set_target_properties(corevideo-virtualcam PROPERTIES
       LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll/exports.def\"")
-  # Explicit diagnostic target: Frame Server does not inherit the producer's
-  # environment. Keep the retry experiment out of normal builds and packages.
+  # Explicit diagnostic identity retained for comparison with older builds.
+  # Production now also recovers bounded publication races by default.
   add_library(corevideo-virtualcam-retry-qa SHARED EXCLUDE_FROM_ALL
       virtualcam-dll/dllmain.cpp virtualcam-dll/Guids.cpp
       virtualcam-dll/MediaSource.cpp virtualcam-dll/MediaStream.cpp)
@@ -368,6 +415,8 @@ if(COREVIDEO_WITH_VIRTUALCAM)
       COREVIDEO_VCAM_ISOLATED_PUBLICATION_QA=1)
     if(mode STREQUAL "on")
       target_compile_definitions(${qa_target} PRIVATE COREVIDEO_CAMERA_READ_RETRY_QA=1)
+    else()
+      target_compile_definitions(${qa_target} PRIVATE COREVIDEO_CAMERA_READ_RETRY_OFF_QA=1)
     endif()
     target_include_directories(${qa_target} PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll)
@@ -711,6 +760,10 @@ if(BUILD_TESTING)
 
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
+    tests/GraphicsPreparationCacheTest.cpp
+    tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
+    tests/GraphicsTemplateTest.cpp
+    tests/GraphicsRpcPixelTest.cpp
     tests/DeliveryTraceTest.cpp
     tests/RenderWorkDistributionTest.cpp
     tests/AsyncEncoderSinkTest.cpp
@@ -793,6 +846,7 @@ if(BUILD_TESTING)
     tests/JsonRpcServerTest.cpp
     tests/LockHoldGuardrailTest.cpp
     tests/BoundedAsyncLogTest.cpp
+    tests/VcamLogQueueTest.cpp
     tests/LumaRangeProbeTest.cpp
     tests/MediaFrameSourceCompatibilityTest.cpp
     tests/MediaPlaybackTimelineTest.cpp
@@ -891,6 +945,22 @@ if(BUILD_TESTING)
   else()
     target_include_directories(corevideo-native-tests PRIVATE tests)
   endif()
+  # Opt-in iteration target for the graphics vertical slice. The full native
+  # target remains the CI gate; share its exact compile contract and fixtures.
+  add_executable(corevideo-graphics-tests EXCLUDE_FROM_ALL
+    tests/TestMain.cpp tests/GraphicsPreparationCacheTest.cpp
+    tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp tests/GraphicsRpcPixelTest.cpp
+    tests/GraphicsTemplateTest.cpp
+    tests/GradePreviewTest.cpp tests/IsolatedMonitorPixelTest.cpp
+    tests/D3D11CompositorTest.cpp tests/OverlayTileRasterTest.cpp tests/ContractParityTest.cpp)
+  target_link_libraries(corevideo-graphics-tests PRIVATE corevideo_native)
+  target_compile_definitions(corevideo-graphics-tests PRIVATE
+    $<TARGET_PROPERTY:corevideo-native-tests,COMPILE_DEFINITIONS>)
+  target_include_directories(corevideo-graphics-tests PRIVATE
+    $<TARGET_PROPERTY:corevideo-native-tests,INCLUDE_DIRECTORIES>)
+  if(GTest_FOUND)
+    target_link_libraries(corevideo-graphics-tests PRIVATE GTest::gtest)
+  endif()
   if(WIN32)
     # PluginHostTransport launches this companion executable from beside the
     # test binary. Keep it protocol-compatible whenever the test target is
@@ -900,6 +970,14 @@ if(BUILD_TESTING)
   else()
     add_test(NAME corevideo-native-tests COMMAND "${CMAKE_BINARY_DIR}/corevideo-native-tests")
   endif()
+  # A stalled worker/teardown must fail with its last RUN marker, rather than
+  # occupying a CI runner indefinitely. Normal sanitizer runs take ~3 minutes.
+  set_tests_properties(corevideo-native-tests PROPERTIES TIMEOUT 900)
+  add_test(NAME corevideo-native-tests-reject-empty-filter
+    COMMAND "$<TARGET_FILE:corevideo-native-tests>"
+      "--gtest_filter=NoCoreVideoTestShouldMatchThisFilter.*")
+  set_tests_properties(corevideo-native-tests-reject-empty-filter PROPERTIES
+    WILL_FAIL TRUE TIMEOUT 30)
   if(COREVIDEO_WITH_ZOOM)
     set_tests_properties(corevideo-native-tests PROPERTIES ENVIRONMENT "PATH=${COREVIDEO_ZOOM_SDK_ROOT}/bin;$ENV{PATH}")
   endif()

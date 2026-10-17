@@ -1161,6 +1161,42 @@ public sealed class StudioViewModelAudioStatusTests
     }
 
     [Fact]
+    public void TryFormatRecordingStartHealthFailure_DoesNotCancelForSoftwareIsoCapacityNotice()
+    {
+        const string notice = "1 ISO source will record on the CPU software encoder, not the GPU (7 on hardware).";
+        var snapshot = new NativeMediaCoreStateSnapshot
+        {
+            Recording = new NativeMediaCoreRecordingSession
+            {
+                SessionId = "capacity-notice-session",
+                Active = true,
+                Status = "warning",
+                WriterStatus = "preparing",
+                TargetFolder = @"C:\recordings",
+                FilenamePrefix = "show",
+                Format = "mp4",
+                Quality = "high",
+                ProgramPath = @"C:\recordings\show.mp4",
+                Warning = notice
+            },
+            OutputHealth =
+            [
+                new NativeMediaCoreOutputHealth
+                {
+                    Destination = "recording",
+                    Status = "warning",
+                    Message = notice
+                }
+            ]
+        };
+
+        Assert.False(TransportStatusFormatter.TryFormatRecordingStartHealthFailure(snapshot, out var failureStatus));
+        Assert.Equal(string.Empty, failureStatus);
+        Assert.Equal(notice, snapshot.Recording.Warning);
+        Assert.Equal(notice, snapshot.OutputHealth[0].Message);
+    }
+
+    [Fact]
     public void TryFormatStreamingStartHealthFailure_IgnoresIdleOutputSnapshot()
     {
         var snapshot = new NativeMediaCoreStateSnapshot

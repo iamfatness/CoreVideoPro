@@ -127,6 +127,17 @@ internal sealed partial class SourceInspectVideoProbe(string reportPath, string?
             var idleFrames = inspector.PresentedFramesForProbe - idleStart;
             samples.Add(new { continuity = "idle UI with independent producer", durationMs = 2200, presented = idleFrames });
             if (idleFrames < 20) throw new InvalidOperationException("Inspect presentation stopped when UI was idle: " + idleFrames + " frames in 2200ms");
+            var blockedStart = inspector.PresentedFramesForProbe;
+            var aliasStart = previewAlias.PresentedFramesForProbe;
+            // Deliberately occupy XAML while the independent GPU producer keeps running.
+            // Presentation workers must not need another UI callback for each frame.
+            Thread.Sleep(750);
+            var blockedFrames = inspector.PresentedFramesForProbe - blockedStart;
+            var aliasFrames = previewAlias.PresentedFramesForProbe - aliasStart;
+            samples.Add(new { continuity = "blocked UI with independent producer", durationMs = 750,
+                presented = blockedFrames, previewPresented = aliasFrames });
+            if (blockedFrames < 20 || aliasFrames < 20)
+                throw new InvalidOperationException("Video presentation depended on UI callbacks during a 750ms stall");
             for (var i = 0; i < 20; i++)
             {
                 var startCount = inspector.PresentedFramesForProbe;
@@ -147,8 +158,10 @@ internal sealed partial class SourceInspectVideoProbe(string reportPath, string?
             producerStop.Cancel(); await producer; window.Content = null; window.Close();
             foreach (var other in others) other.Dispose();
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
-            await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(new { passed = error is null, samples, physicalDisplayVerified = false, error }, new JsonSerializerOptions { WriteIndented = true }));
-            if (error is not null) Environment.ExitCode = 1;
+            await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(new { passed = false,
+                functionalPassed = error is null, framePerformancePassed = false,
+                status = error is null ? "unverified-display-delivery" : "failed", samples, physicalDisplayVerified = false, error }, new JsonSerializerOptions { WriteIndented = true }));
+            Environment.ExitCode = 1; // Functional/pixel checks alone cannot qualify frame delivery.
         }
     }
     private static async Task Until(Func<bool> condition, int timeout)

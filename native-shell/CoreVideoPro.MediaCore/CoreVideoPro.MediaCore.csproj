@@ -5,4 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../CoreVideoPro.WinUI/Assets/StoreLogo.png" LogicalName="CoreVideoPro.Graphics.BuiltinLogo.png" />
+  </ItemGroup>
 </Project>

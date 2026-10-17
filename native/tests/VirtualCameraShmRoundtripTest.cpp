@@ -21,6 +21,7 @@
 
 #include "SharedFrameReader.h"  // native/virtualcam-dll (on the test include path)
 #include "modules/VirtualCameraPublisher.h"
+#include "modules/VirtualCameraReadRetry.h"
 #include "modules/VirtualCameraShm.h"
 
 using corevideo::modules::VirtualCameraShmHeader;
@@ -234,6 +235,35 @@ TEST(VirtualCameraShmRoundtrip, PublicationWaitSharesOnePayloadCopyBudgetAcrossR
   EXPECT_EQ(reader.evidence().lastResult, corevideo::modules::VirtualCameraReadResult::Contended);
 }
 
+TEST(VirtualCameraShmRoundtrip, OriginalDeadlineWaitRecoversActualOddMappedPublication) {
+  using namespace corevideo::modules;
+  ShmWriter writer;
+  ASSERT_TRUE(writer.open());
+  std::vector<uint8_t> pixels(1920 * 1080 * 3 / 2, 42), out;
+  writer.write(pixels, 1920, 1080);
+  SharedFrameReader reader;
+  int w = 0, h = 0; unsigned budget = 2, retries = 0; int64_t now = 0;
+  ++writer.header->seq;
+  const auto read = [&](bool reopen) {
+    reader.readLatest(out, w, h, reopen, &budget);
+    return reader.evidence().lastResult;
+  };
+  // Exact same mapped write window: the immediate negative control cannot
+  // obtain pixels; the bounded wait succeeds only when the writer completes.
+  EXPECT_FALSE(readCameraUntilDeadline(read, [&] { return now; },
+      [&](int64_t) { return false; }, false, retries, 2000));
+  EXPECT_EQ(reader.evidence().writerActiveObservations, 2u);
+  EXPECT_EQ(budget, 2u);
+  EXPECT_TRUE(readCameraUntilDeadline(read, [&] { return now; }, [&](int64_t) {
+    now += 250;
+    ++writer.header->seq; // controlled publisher completes while yielding
+    return true;
+  }, true, retries, 2000));
+  EXPECT_EQ(retries, 1u); EXPECT_EQ(budget, 1u);
+  EXPECT_EQ(out, pixels); EXPECT_EQ(w, 1920); EXPECT_EQ(h, 1080);
+  EXPECT_EQ(reader.evidence().changedDuringCopy, 0u);
+}
+
 #if COREVIDEO_WITH_VIRTUALCAM
 // Load this build's DLL directly. No camera registration or Frame Server restart;
 // both pixels and diagnostics remain in the isolated per-test-process directory.
@@ -321,13 +351,38 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
     ASSERT_GE(observed, 0);
     if (i <= 30) EXPECT_EQ(observed, 42);
   }
-  std::ifstream log(logPath, std::ios::binary);
-  ASSERT_TRUE(log.good());
-  log.seekg(logOffset);
-  const std::string emittedLog((std::istreambuf_iterator<char>(log)), {});
-  log.close(); // Windows readers can deny the DLL's subsequent append opens.
-  EXPECT_NE(emittedLog.find("emitted=61 fresh=1 held=30 slate=30 failed=0"), std::string::npos);
-  EXPECT_NE(emittedLog.find("readFresh=1 unchanged=60 contended=0"), std::string::npos);
+  // Delivery must not wait for diagnostic disk writes. Observe the asynchronous
+  // log with a bounded wait and read sharing that cannot deny its append opens.
+  const auto waitForLog = [&](const char* expected) {
+    const auto deadline = GetTickCount64() + 2000;
+    std::string text;
+    do {
+      HANDLE file = CreateFileA(logPath.c_str(), GENERIC_READ,
+          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+      if (file != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER offset; offset.QuadPart = static_cast<LONGLONG>(logOffset);
+        SetFilePointerEx(file, offset, nullptr, FILE_BEGIN);
+        text.resize(256 * 1024); DWORD read = 0;
+        if (!ReadFile(file, text.data(), static_cast<DWORD>(text.size()), &read, nullptr)) read = 0;
+        text.resize(read); CloseHandle(file);
+        if (text.find(expected) != std::string::npos) break;
+      }
+      Sleep(5);
+    } while (GetTickCount64() < deadline);
+    return text;
+  };
+  const auto emittedLog = waitForLog("emitted=61 fresh=1 held=30 slate=30 failed=0");
+  EXPECT_NE(emittedLog.find("emitted=61 fresh=1 held=30 slate=30 failed=0"), std::string::npos) << emittedLog;
+  const auto emittedRecord = emittedLog.rfind("[vcam-delivery-v2]");
+  ASSERT_NE(emittedRecord, std::string::npos);
+  const auto emittedLine = emittedLog.substr(emittedRecord);
+  EXPECT_NE(emittedLine.find("readFresh=1 unchanged="), std::string::npos);
+  const auto unchanged = emittedLine.find(" unchanged=");
+  ASSERT_NE(unchanged, std::string::npos);
+  // Default bounded retries may observe the same publication more than once
+  // per request. The exact emitted fresh/held/slate counts remain strict above.
+  EXPECT_GE(std::stoull(emittedLine.substr(unchanged + 11)), 60u);
+  EXPECT_NE(emittedLine.find(" contended=0 "), std::string::npos);
   EXPECT_NE(emittedLog.find("programIdentityVerified=0 receiverVerified=0"), std::string::npos);
   // Resume with a changing synthetic identity. This catches held/duplicated
   // sample contents despite successful requests and advancing event counters.
@@ -340,10 +395,7 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
     trace.finish(writer.header->seq, writer.header->frameNumber, identity, identity * 166666LL);
     EXPECT_EQ(receive(), identity);
   }
-  std::ifstream correlatedLog(logPath, std::ios::binary);
-  correlatedLog.seekg(logOffset);
-  const std::string correlationText((std::istreambuf_iterator<char>(correlatedLog)), {});
-  correlatedLog.close();
+  const auto correlationText = waitForLog("lastProgramSequence=179");
   EXPECT_NE(correlationText.find("programIdentityVerified=1 receiverVerified=0 correlatedReads=120 uncorrelatedReads=1"), std::string::npos) << correlationText;
   EXPECT_NE(correlationText.find("lastProgramSequence=179"), std::string::npos) << correlationText;
   // A correctly correlated read with the wrong negotiated dimensions is NOT
@@ -358,8 +410,7 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
   writer.write(std::vector<uint8_t>(8 * 8 * 3 / 2, 200), 8, 8);
   trace.finish(writer.header->seq, writer.header->frameNumber, 999, 999 * 166666LL);
   EXPECT_EQ(receive(), 238);
-  std::ifstream mismatchLog(logPath, std::ios::binary);
-  const std::string mismatchText((std::istreambuf_iterator<char>(mismatchLog)), {});
+  const auto mismatchText = waitForLog("lastReadProgramSequence=999");
   const auto lastRecord = mismatchText.rfind("[vcam-delivery-v2]");
   ASSERT_NE(lastRecord, std::string::npos);
   const auto lastLine = mismatchText.substr(lastRecord);

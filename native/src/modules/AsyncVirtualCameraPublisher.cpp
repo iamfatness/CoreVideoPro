@@ -1,4 +1,5 @@
 #include "modules/AsyncVirtualCameraPublisher.h"
+#include "core/ScopedVideoScheduling.h"
 #include "modules/GpuWebcamFramer.h"
 #include "modules/VirtualCameraCompose.h"
 #include "modules/ImageResize.h"
@@ -100,6 +101,7 @@ void AsyncVirtualCameraPublisher::publishNv12Identified(std::shared_ptr<const st
   wake_.notify_one();
 }
 void AsyncVirtualCameraPublisher::run() {
+  core::ScopedVideoScheduling scheduling("virtual-camera-publication");
 #if defined(_WIN32)
   const auto comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 #endif

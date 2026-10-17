@@ -66,8 +66,11 @@ public sealed partial class StudioViewModel : IMagicSceneHost
 
     public bool AutomationLowerThirdsEnabled
     {
-        get => MagicScene.AutomationLowerThirdsEnabled;
-        set => MagicScene.AutomationLowerThirdsEnabled = value;
+        get => ManagedLowerThirdAuthority?CoreVideoPro.MediaCore.Services.GraphicsCompatibilityPolicy.AutomationEnabled(_bridge.LastSnapshot?.Graphics):MagicScene.AutomationLowerThirdsEnabled;
+        set {
+            if(ManagedLowerThirdAuthority) {if(value!=AutomationLowerThirdsEnabled) _=ApplyManagedGraphicsAutomationAsync(value);}
+            else MagicScene.AutomationLowerThirdsEnabled=value;
+        }
     }
 
     public bool AutomationAutoAssignInputsEnabled
