@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
   }
   const bool direct = dllPath != nullptr;
   const int seconds = argc >= 2 && validOptions ? std::atoi(argv[1]) : 0;
-  if (seconds < 1 || seconds > 7200) { std::fprintf(stderr, "Usage: corevideo-vcam-receiver SECONDS (1..7200) [--dll ABSOLUTE_PATH] [--fail-fast] [--mmcss]\n"); return 2; }
+  if (seconds < 1 || seconds > 7500) { std::fprintf(stderr, "Usage: corevideo-vcam-receiver SECONDS (1..7500) [--dll ABSOLUTE_PATH] [--fail-fast] [--mmcss]\n"); return 2; }
   const auto deadline = Clock::now() + std::chrono::seconds(seconds + 30);
   std::jthread watchdog([deadline](std::stop_token stop) {
     while (!stop.stop_requested()) {
@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
   struct Observation { uint64_t sample; int64_t arrival, host, pts, identity; };
   // Keep evidence I/O off the capture thread. A redirected printf can block
   // on disk/pipe backpressure and create the receiver stall we are measuring.
-  // The two-hour CLI limit bounds this at ~18 MiB; never overwrite old rows.
+  // The two-hour plus warmup CLI limit bounds this at ~19 MiB; never overwrite old rows.
   std::vector<Observation> observations;
   const size_t maximumObservations = static_cast<size_t>(seconds) * 64 + 128;
   bool captureComplete = false;
