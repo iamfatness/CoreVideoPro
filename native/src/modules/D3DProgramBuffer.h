@@ -128,14 +128,14 @@ class D3DProgramBuffer {
     frame = std::move(delivered_.front()); delivered_.pop_front(); return true;
   }
   bool multiview(ProgramFrameSharedTexture& texture, std::shared_ptr<const void>& owner,
-      int64_t productionSlot = -1) const {
+      int64_t productionSlot = -1, bool exact = false) const {
     std::lock_guard<std::mutex> lock(mutex_);
     // Target the submitting render's scheduled slot, not its variable CPU
     // arrival time. One explicit display frame behind the delivery timeline.
     const auto target = productionSlot >= 0 && timeline_
         ? timeline_->deadlineNs(productionSlot - depth_ - 1) / 100
         : now100ns() - D3DProgramDisplaySnapshots::PresentationOffset100ns;
-    return displaySnapshots_.select(target, texture, owner);
+    return displaySnapshots_.select(target, texture, owner, exact);
   }
   ProgramBufferDiagnostics diagnostics() const {
     std::lock_guard<std::mutex> lock(mutex_);

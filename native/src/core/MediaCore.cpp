@@ -5072,6 +5072,7 @@ modules::CompositorRenderPlan MediaCore::buildRenderPlanForScene(
 
 void MediaCore::renderDisplayTick(int64_t productionSlot, int64_t productionAnchorNs) {
   modules_.compositor->setProgramProductionTiming(productionSlot, productionAnchorNs);
+  modules_.compositor->beginMonitorTick(!multiviewSources_.empty() || multiviewLayoutMode_ != "grid");
   // Sample file media on the scheduled content slot, before Program buffering.
   // Work earlier in the render tick must not move source-frame selection.
   const auto mediaPresentationTime100ns = productionSlot >= 0 && productionAnchorNs > 0

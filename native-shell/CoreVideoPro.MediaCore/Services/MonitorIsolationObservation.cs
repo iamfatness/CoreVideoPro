@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Globalization;
 using CoreVideoPro.MediaCore.Models;
 
 namespace CoreVideoPro.MediaCore.Services;
@@ -24,6 +25,23 @@ public sealed record MonitorIsolationObservation
     public long? ProgramSkipped { get; init; }
     public long? ProgramRefused { get; init; }
     public string ProgramDisplayState { get; init; } = "unavailable";
+    public long? ProgramReaderReadLimit { get; init; }
+    public string? ProgramReaderEpoch { get; init; }
+    public long? ProgramReadCapacityRefusals { get; init; }
+    public long? ProgramQueryCreateFailures { get; init; }
+    public long? ProgramQueryReadFailures { get; init; }
+    public long? ProgramImportFailures { get; init; }
+    public long? ProgramTextureCreateFailures { get; init; }
+    public long? ProgramSrvCreateFailures { get; init; }
+    public long? ProgramFailedReaderRefusals { get; init; }
+    public long? ProgramNotReadyPolls { get; init; }
+    public long? ProgramCapacityPressures { get; init; }
+    public long? ProgramAdmittedAfterPressure { get; init; }
+    public long? ProgramDeadlineRefusals { get; init; }
+    public long? ProgramCancelledRequests { get; init; }
+    public long? ProgramLateSubmissions { get; init; }
+    public long? ProgramGpuDeadlineCompletedReads { get; init; }
+    public long? ProgramGpuReadinessDeadlineMisses { get; init; }
 
     public static MonitorIsolationObservation FromSnapshot(NativeMediaCoreStateSnapshot? snapshot)
     {
@@ -43,6 +61,13 @@ public sealed record MonitorIsolationObservation
                 display.ValueKind == JsonValueKind.Object &&
                 Known(display, "observationVersion", "unknown", "program-display-snapshot-v1") == "program-display-snapshot-v1" &&
                 display.TryGetProperty("observed", out var displayPresent) && displayPresent.ValueKind == JsonValueKind.True;
+            var reader = display;
+            if (display.ValueKind == JsonValueKind.Object && display.TryGetProperty("latestReader", out var latestReader)
+                && latestReader.ValueKind == JsonValueKind.Object) reader = latestReader;
+            var readerObserved = reader.ValueKind == JsonValueKind.Object &&
+                Known(reader, "refusalObservationVersion", "unknown", "program-display-refusal-v1") == "program-display-refusal-v1" &&
+                reader.TryGetProperty("readerEpoch", out var readerEpoch) && readerEpoch.ValueKind == JsonValueKind.String &&
+                ulong.TryParse(readerEpoch.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out var readerEpochValue) && readerEpochValue > 0;
             return new()
             {
                 ProgramCopiedSequence = displayObserved ? Count(display, "copiedSequence") : null,
@@ -50,6 +75,23 @@ public sealed record MonitorIsolationObservation
                 ProgramSkipped = displayObserved ? Count(display, "skipped") : null,
                 ProgramRefused = displayObserved ? Count(display, "refused") : null,
                 ProgramDisplayState = displayObserved ? Known(display, "state", "unavailable", "copied", "held", "failed", "preparing") : "unavailable",
+                ProgramReaderEpoch = readerObserved ? reader.GetProperty("readerEpoch").GetString() : null,
+                ProgramReaderReadLimit = readerObserved ? Count(reader, "readerReadLimit") : null,
+                ProgramReadCapacityRefusals = readerObserved ? Reason(reader, "read-capacity") : null,
+                ProgramQueryCreateFailures = readerObserved ? Reason(reader, "query-create") : null,
+                ProgramQueryReadFailures = readerObserved ? Reason(reader, "query-read-failed") : null,
+                ProgramImportFailures = readerObserved ? Reason(reader, "import") : null,
+                ProgramTextureCreateFailures = readerObserved ? Reason(reader, "texture-create") : null,
+                ProgramSrvCreateFailures = readerObserved ? Reason(reader, "srv-create") : null,
+                ProgramFailedReaderRefusals = readerObserved ? Reason(reader, "failed-reader") : null,
+                ProgramNotReadyPolls = readerObserved ? Count(reader, "notReadyPolls") : null,
+                ProgramCapacityPressures = readerObserved ? Count(reader, "capacityPressures") : null,
+                ProgramAdmittedAfterPressure = readerObserved ? Count(reader, "admittedAfterPressure") : null,
+                ProgramDeadlineRefusals = readerObserved ? Reason(reader, "deadline") : null,
+                ProgramCancelledRequests = readerObserved ? Reason(reader, "cancelled") : null,
+                ProgramLateSubmissions = readerObserved ? Count(reader, "lateSubmissions") : null,
+                ProgramGpuDeadlineCompletedReads = readerObserved ? Count(reader, "gpuDeadlineCompletedReads") : null,
+                ProgramGpuReadinessDeadlineMisses = readerObserved ? Count(reader, "gpuReadinessDeadlineMisses") : null,
                 ReadyInputs = inputObserved ? Count(worker, "readyInputs") : null,
                 HeldInputs = inputObserved ? Count(worker, "heldInputs") : null,
                 UnavailableInputs = inputObserved ? Count(worker, "unavailableInputs") : null,
@@ -60,13 +102,17 @@ public sealed record MonitorIsolationObservation
                 EffectiveMode = Known(worker, "effectiveMode", "unknown", "inline", "isolated"),
                 SelectionSource = Known(worker, "selectionSource", "unknown", "default", "override", "constructor"),
                 Readiness = Known(worker, "readiness", "unavailable", "starting", "ready", "degraded"),
-                FailureReason = Known(worker, "failureReason", "unknown", "", "monitor-initialization", "monitor-render", "monitor-frame-admission", "invalid-monitor-override"),
+                FailureReason = Known(worker, "failureReason", "unknown", "", "monitor-initialization", "monitor-render", "monitor-retirement", "monitor-frame-admission", "invalid-monitor-override"),
                 DeliveryEpoch = worker.TryGetProperty("deliveryEpoch", out var epoch) && epoch.ValueKind == JsonValueKind.Number && epoch.TryGetInt64(out var number) && number >= 0 ? number : null,
                 WorkerExists = worker.TryGetProperty("enabled", out var enabled) && enabled.ValueKind is JsonValueKind.True or JsonValueKind.False ? enabled.GetBoolean() : null
             };
         }
         catch (JsonException) { return new(); }
     }
+
+    private static long? Reason(JsonElement node, string key) =>
+        node.TryGetProperty("refusalReasons", out var reasons) && reasons.ValueKind == JsonValueKind.Object
+            ? Count(reasons, key) : null;
 
     private static long? Count(JsonElement node, string key) =>
         node.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Number &&

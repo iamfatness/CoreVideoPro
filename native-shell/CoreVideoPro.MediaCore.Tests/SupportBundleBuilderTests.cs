@@ -61,6 +61,41 @@ public sealed class SupportBundleBuilderTests
     }
 
     [Theory]
+    [InlineData("{}", null)]
+    [InlineData("{\"read-capacity\":3,\"import\":0}", 3L)]
+    [InlineData("{\"read-capacity\":-1}", null)]
+    [InlineData("{\"read-capacity\":\"credential SECRET\"}", null)]
+    public void ProgramDisplay_RefusalReasonsRemainTypedAndOlderPeersUnknown(string reasons, long? expected)
+    {
+        var raw = "{\"realtimeEvidence\":{\"monitorWorker\":{\"programDisplay\":{" +
+            "\"observationVersion\":\"program-display-snapshot-v1\",\"observed\":true,\"refusalObservationVersion\":\"program-display-refusal-v1\",\"readerEpoch\":\"904\",\"readerReadLimit\":2,\"refusalReasons\":" + reasons + "}}}}";
+        var observation = MonitorIsolationObservation.FromSnapshot(BuildSampleSnapshot() with { RawJson = raw });
+        Assert.Equal(expected, observation.ProgramReadCapacityRefusals);
+        Assert.Equal(2, observation.ProgramReaderReadLimit);
+        Assert.DoesNotContain("SECRET", System.Text.Json.JsonSerializer.Serialize(observation));
+        Assert.Null(MonitorIsolationObservation.FromSnapshot(BuildSampleSnapshot() with { RawJson = "{}" }).ProgramReadCapacityRefusals);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ProgramDisplay_LiveReaderFailureSurvivesStaleOrAbsentExport(bool exported)
+    {
+        var raw = """
+            {"realtimeEvidence":{"monitorWorker":{"programDisplay":{
+            "observationVersion":"program-display-snapshot-v1","observed":EXPORTED,
+            "state":"copied","copiedSequence":7,"refused":0,
+            "latestReader":{"refusalObservationVersion":"program-display-refusal-v1","readerEpoch":"2",
+            "observed":false,"readerReadLimit":2,"refusalReasons":{"import":1}}}}}}
+            """.Replace("EXPORTED", exported.ToString().ToLowerInvariant());
+        var observation = MonitorIsolationObservation.FromSnapshot(BuildSampleSnapshot() with { RawJson = raw });
+        Assert.Equal("2", observation.ProgramReaderEpoch);
+        Assert.Equal(1, observation.ProgramImportFailures);
+        Assert.Equal(exported ? 7L : (long?)null, observation.ProgramCopiedSequence);
+        Assert.Equal(exported ? 0L : (long?)null, observation.ProgramRefused);
+    }
+
+    [Theory]
     [InlineData("bad json")]
     [InlineData("{}")]
     [InlineData("{\"realtimeEvidence\":{\"capturePreparation\":{\"enabled\":true,\"state\":\"ready\"}}}")]

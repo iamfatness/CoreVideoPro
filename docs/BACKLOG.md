@@ -25,6 +25,17 @@ three-item limit. Use API/offscreen dev processes and isolated profiles; leave t
 installed app, production settings, camera registration and desktop alone. Deliver
 one coherent review candidate with focused PRs and honest acceptance evidence.
 This development priority supersedes October 14; media acceptance remains open.
+**Owner priority, October 14:** investigate [#904](https://github.com/iamfatness/CoreVideoPro/issues/904)
+and build the [Program display zero-miss repair plan](reference/program-display-zero-miss-plan.md).
+Use API-only control while the owner uses the PC. Preserve the original three
+copy skips and distinguish a confirmed loss boundary from an unproven refusal
+reason. This owner-directed investigation takes the active delivery lane;
+the other merged-code acceptance gates remain open.
+
+**Owner-ranked continuation, October 14:** after the implemented #904 copy
+repairs, address the camera reader under #517 first, then source-generation
+continuity under #908. These are the next two items in the active delivery lane;
+API-only control and the existing zero-miss acceptance criteria still apply.
 
 **Owner-approved bundle, October 14:** work three parallel development tracks:
 [#872](https://github.com/iamfatness/CoreVideoPro/issues/872) audio monitor lifecycle,
@@ -185,6 +196,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 | 1 — October 15 UI/UX | B | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Finish stable-input scene creation and layout fallbacks, quick solo/two-person/share starters, preserved custom routes and fresh/upgraded profile evidence. |
 | 2 — October 15 UI/UX | B | [#590](https://github.com/iamfatness/CoreVideoPro/issues/590), [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) | Sources assignment/offline clarity and identity-safe thumbnail removal/reassignment acceptance. Count one primary development issue per focused PR. |
 | 3 — October 15 UI/UX | B | [#848](https://github.com/iamfatness/CoreVideoPro/issues/848) | Finish shared adjustment consistency and actual effect/persistence checks, followed by the approved existing lower-third, grading/ROI and navigation consumers. |
+| 1 — October 14 owner priority | A | [#904](https://github.com/iamfatness/CoreVideoPro/issues/904) | Attribute the real-meeting Program-to-Multiview copy refusals, repair the demonstrated GPU admission/progress path, and qualify per-frame identity/deadline continuity. [Cause analysis and repair gates](reference/program-display-zero-miss-plan.md). API-only control; no buffer/quality tradeoff or unsupported zero-miss claim. |
 | Acceptance | A | [#872](https://github.com/iamfatness/CoreVideoPro/issues/872) | Stale device-start fence merged in #896 with green exact-head CI and deterministic stalled-stop tests. Physical device continuity and installed zero-miss acceptance remain open. |
 | 2 — October 14 | B | [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) | Per-source GPU publication, incarnation fencing and visible-page bounded export demand merged in #899. Native and managed regression coverage passed; actual packaged Sources-page removal, reorder, reassignment and reconnect acceptance remains open. |
 | Follow-through — October 14 | C | [#873](https://github.com/iamfatness/CoreVideoPro/issues/873) | Bounded pre-drain resource staging and off-lock grade annotation are staged in #901, including admitted barrier ordering, explicit exhaustion, stalled-pump and shutdown coverage. Merge/CI and installed full-load delivery acceptance remain open. |
@@ -231,6 +243,11 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 ## Unranked — show survival and operator findings
 
+| [#908](https://github.com/iamfatness/CoreVideoPro/issues/908) | Owner-ranked October 14: follows the #517 camera-reader repair in the active delivery lane. Retained Program frames report unavailable/preparation-stopped source pixels during real SDK epoch transitions; preserve pixels through replacement readiness without retaining removed/reassigned guests. |
+
+| [#906](https://github.com/iamfatness/CoreVideoPro/issues/906) | Attribute the Windows GradePreviewCoordinator disposal-test timeout; preserve the failed gate and verify the initiating condition. Owner rank pending. |
+| [#907](https://github.com/iamfatness/CoreVideoPro/issues/907) | Identify the native stub TSan gate hang with bounded per-test progress; timeout is not a reported race. Owner rank pending. |
+
 These can preempt Next on a show night. They do not jump the ranked Now item until the owner says so.
 
 | Issue | Remaining work |
@@ -238,6 +255,7 @@ These can preempt Next on a show night. They do not jump the ranked Now item unt
 | [#915](https://github.com/iamfatness/CoreVideoPro/issues/915) | Node package fixture uses filenames rejected by the production validator. Repair the fixture contract without weakening validation; the actual October 15 beta archive passed. |
 | [#920](https://github.com/iamfatness/CoreVideoPro/issues/920) | Repeated active Zoom Join can retain stale subscription bookkeeping and held video; explicit Leave/Join/Engine On restored eight inputs in API reproduction. Needs owner rank and causal ordering regression. |
 | [#919](https://github.com/iamfatness/CoreVideoPro/issues/919) | Deferred participant-list clear/rebind can access XAML after its window closes; caught during isolated #916 teardown, unrelated to proven live-video cause. Needs owner rank. |
+| [#903](https://github.com/iamfatness/CoreVideoPro/issues/903) | Preserve truthful monitor underrun totals across mute/disable/reenable and distinguish intentional suppression from starvation. Packaged and installed control trials retained; physical continuity remains unverified. Owner rank pending. |
 | [#898](https://github.com/iamfatness/CoreVideoPro/issues/898) | Mode-correct Release GPU fixture exceeded its 10 ms isolated Program completion bound in a fixed-phase trial on the reference RTX 4090. Retain the failure and measure actual submission, completion and consumer deadlines; consecutive pixels alone do not prove on-time presentation. Unranked intake, separate from the merged #869 fixture repair. |
 | [#876](https://github.com/iamfatness/CoreVideoPro/issues/876) | The #870 development meeting interval had zero measured Program-buffer losses, but the Program clock continued emitting source-stage misses during owner teardown after production stopped. Audit the explicit output terminal/drain boundary; retain on-air failures and separate cleanup evidence. Unranked intake. |
 | [#877](https://github.com/iamfatness/CoreVideoPro/issues/877) | Native QA's Python JSON-line driver selected Windows cp1252 and failed on valid UTF-8 output. Make protocol decoding explicitly UTF-8 and preserve bounded reads/cleanup. Harness defect; not evidence of an SDK crash. Unranked intake. |

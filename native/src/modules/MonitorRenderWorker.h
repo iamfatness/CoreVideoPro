@@ -17,16 +17,35 @@ namespace corevideo::modules {
 class MonitorRenderWorker {
  public:
   using Render = std::function<MonitorRenderResult(const MonitorRenderRequest&)>;
-  explicit MonitorRenderWorker(Render render, std::function<void()> initialize = {})
-      : thread_([this, render = std::move(render), initialize = std::move(initialize)]() mutable {
-          run(render, initialize);
+  struct MaintenanceResult {
+    bool pending = false;
+    std::optional<ProgramDisplayObservation> programDisplay;
+  };
+  using Maintenance = std::function<MaintenanceResult()>;
+  explicit MonitorRenderWorker(Render render, std::function<void()> initialize = {}, Maintenance maintenance = {}, bool prepareInputs = true)
+      : thread_([this, render = std::move(render), initialize = std::move(initialize), maintenance = std::move(maintenance), prepareInputs]() mutable {
+          run(render, initialize, maintenance, prepareInputs);
         }) {}
   ~MonitorRenderWorker() {
+    cancellation_->stopped.store(true, std::memory_order_relaxed);
     { std::lock_guard<std::mutex> lock(mutex_); stopping_ = true; }
     changed_.notify_one();
+    initialized_.notify_all();
     if (thread_.joinable()) thread_.join(); // compositor shutdown, never a render tick
   }
+  // Startup only, before the production cadence is anchored. submit() never
+  // waits. The monitor device must exist before pools prepare its imports.
+  bool waitForInitialization(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return initialized_.wait_for(lock, timeout, [this] { return initializationComplete_ || stopping_; }) &&
+        initializationComplete_ && readiness_ == "ready";
+  }
   void submit(MonitorRenderRequest request) {
+    request.submittedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (!request.multiviewActive) cancellation_->epoch.fetch_add(1, std::memory_order_relaxed);
+    request.cancellation = cancellation_;
+    request.cancellationEpoch = cancellation_->epoch.load(std::memory_order_relaxed);
     auto next = std::make_shared<const MonitorRenderRequest>(std::move(request));
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -64,9 +83,38 @@ class MonitorRenderWorker {
     return result;
   }
  private:
-  void run(Render& render, std::function<void()>& initialize) {
+  bool maintain(Maintenance& maintenance) {
+    if (!maintenance) return false;
+    try {
+      auto observation = maintenance(); // GPU owner only, never under the mailbox mutex.
+      auto previous = latest();
+      if (observation.programDisplay && previous) {
+        const auto& old = previous->programDisplayReader;
+        const auto& current = *observation.programDisplay;
+        if (old.readerEpoch != current.readerEpoch || old.completedCopies != current.completedCopies ||
+            old.gpuReadinessDeadlineMisses != current.gpuReadinessDeadlineMisses ||
+            old.traceCaptureFailures != current.traceCaptureFailures ||
+            old.state != current.state || old.incidentTrace != current.incidentTrace) {
+          auto updated = std::make_shared<MonitorRenderResult>(*previous);
+          updated->programDisplayReader = std::move(*observation.programDisplay);
+          std::shared_ptr<const MonitorRenderResult> immutable = std::move(updated);
+          { std::lock_guard<std::mutex> lock(mutex_); result_.swap(immutable); }
+          // Previous metadata/leases are released outside the mailbox lock.
+        }
+      }
+      return observation.pending;
+    } catch (...) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      ++failed_; readiness_ = "degraded"; failureReason_ = "monitor-retirement";
+      return false;
+    }
+  }
+  void run(Render& render, std::function<void()>& initialize, Maintenance& maintenance, bool prepareInputs) {
     core::ComApartmentLifetime apartment;
-    struct ReleaseBackend { Render& render; ~ReleaseBackend() { render = {}; } } release{render};
+    struct ReleaseBackend {
+      Render& render; Maintenance& maintenance;
+      ~ReleaseBackend() { maintenance = {}; render = {}; }
+    } release{render, maintenance};
     if (initialize) {
       try {
         initialize();
@@ -84,21 +132,30 @@ class MonitorRenderWorker {
       std::lock_guard<std::mutex> lock(mutex_);
       if (failed_ == 0) readiness_ = "ready";
     }
+    { std::lock_guard<std::mutex> lock(mutex_); initializationComplete_ = true; }
+    initialized_.notify_all();
     auto lastLog = std::chrono::steady_clock::now();
     MonitorInputCache inputs;
+    bool retirementPending = false;
     for (;;) {
       std::shared_ptr<const MonitorRenderRequest> job;
       {
         std::unique_lock<std::mutex> lock(mutex_);
-        changed_.wait(lock, [this] { return stopping_ || pending_; });
+        if (retirementPending)
+          changed_.wait_for(lock, std::chrono::milliseconds(1), [this] { return stopping_ || pending_; });
+        else changed_.wait(lock, [this] { return stopping_ || pending_; });
         if (stopping_) return;
         job.swap(pending_);
       }
+      if (!job) { retirementPending = maintain(maintenance); continue; }
       const auto start = std::chrono::steady_clock::now();
       try {
         auto prepared = *job;
+        prepared.workerStartedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count();
         MonitorRenderResult observation;
-        inputs.prepare(prepared, observation);
+        if (prepareInputs) inputs.prepare(prepared, observation);
+        prepared.inputsPreparedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
         auto result = std::make_shared<MonitorRenderResult>(render(prepared));
         result->readyInputs = observation.readyInputs; result->heldInputs = observation.heldInputs;
         result->unavailableInputs = observation.unavailableInputs;
@@ -107,9 +164,12 @@ class MonitorRenderWorker {
         result->inputs = std::move(observation.inputs);
         result->sequence = job->sequence;
         result->workMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        std::shared_ptr<const MonitorRenderResult> immutable = std::move(result);
+        std::shared_ptr<const MonitorRenderResult> immutable;
         {
           std::lock_guard<std::mutex> lock(mutex_);
+          result->completedAtNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count();
+          immutable = std::move(result);
           result_.swap(immutable);
           ++completed_;
           readiness_ = "ready";
@@ -121,6 +181,7 @@ class MonitorRenderWorker {
         readiness_ = "degraded";
         failureReason_ = "monitor-render";
       }
+      retirementPending = maintain(maintenance);
       const auto now = std::chrono::steady_clock::now();
       if (now - lastLog >= std::chrono::seconds(2)) {
         uint64_t submitted, superseded, completed, failed;
@@ -140,11 +201,14 @@ class MonitorRenderWorker {
   }
   mutable std::mutex mutex_;
   std::condition_variable changed_;
+  std::condition_variable initialized_;
+  bool initializationComplete_ = false;
   std::shared_ptr<const MonitorRenderRequest> pending_;
   std::shared_ptr<const MonitorRenderResult> result_;
   bool stopping_ = false;
   uint64_t submitted_ = 0, superseded_ = 0, completed_ = 0, failed_ = 0;
   std::string readiness_ = "starting", failureReason_;
+  std::shared_ptr<MonitorCancellationState> cancellation_ = std::make_shared<MonitorCancellationState>();
   std::thread thread_;
 };
 
