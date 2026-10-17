@@ -177,6 +177,7 @@ phrase they quote.
 | [`docs/reference/operator-stutter-snapshot-apply.md`](docs/reference/operator-stutter-snapshot-apply.md) | shell lag/stutter, snapshot apply cost |
 | [`docs/reference/output-supervisor.md`](docs/reference/output-supervisor.md) | stream/record destinations, restarts, the output supervisor |
 | [`docs/reference/performance-profiling.md`](docs/reference/performance-profiling.md) | measuring lag/stutter/crash: PresentMon, perf.log, dumps |
+| [`docs/reference/redesign-video-delivery-audit.md`](docs/reference/redesign-video-delivery-audit.md) | UI-independent video, blocked-UI probes and combined workload qualification |
 | [`docs/reference/persistent-media-source.md`](docs/reference/persistent-media-source.md) | media/clip/still sources, cue/live/pause transport |
 | [`docs/reference/cpu-source-preparation.md`](docs/reference/cpu-source-preparation.md) | bounded CPU arrival preparation, GPU identity and held-frame refresh |
 | [`docs/reference/recording-output-location.md`](docs/reference/recording-output-location.md) | recording output paths |

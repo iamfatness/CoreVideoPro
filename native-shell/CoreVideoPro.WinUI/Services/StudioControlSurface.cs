@@ -52,6 +52,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "transport.take", "transport.transition.set",
         "transport.record.toggle", "transport.record.set",
         "transport.stream.toggle", "transport.stream.set",
+        "transport.stream.rtmp.configure", "transport.stream.srt.configure",
         "transport.engine.toggle", "transport.engine.set",
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
         "transport.virtualcam.name.set",
@@ -222,6 +223,10 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 return await RunOutputSet(_vm.RecordingRequested, _vm.Recording, Bool(args, 0), _vm.CanSetRecording, _vm.SetRecordingAsync, "recording").ConfigureAwait(true);
             case "transport.stream.toggle":
                 return await RunTransportToggle(_vm.ToggleStreamingCommand, "streaming").ConfigureAwait(true);
+            case "transport.stream.rtmp.configure":
+                return _vm.ConfigureStreamDestination(false, args);
+            case "transport.stream.srt.configure":
+                return _vm.ConfigureStreamDestination(true, args);
             case "transport.stream.set":
                 return await RunOutputSet(_vm.StreamingRequested, _vm.Streaming, Bool(args, 0), _vm.CanSetStreaming, _vm.SetStreamingAsync, "streaming").ConfigureAwait(true);
             case "transport.engine.toggle":

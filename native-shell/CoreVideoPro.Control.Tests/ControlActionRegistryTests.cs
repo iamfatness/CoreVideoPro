@@ -6,6 +6,15 @@ namespace CoreVideoPro.Control.Tests;
 public sealed class ControlActionRegistryTests
 {
     [Fact]
+    public void InvalidDestinationBindingDoesNotEchoMisplacedCredentials()
+    {
+        Assert.False(ControlActionRegistry.TryBind("transport.stream.rtmp.configure",
+            ["secret-sentinel", "rtmps", "rtmps://example.test/live", "key-sentinel"], out _, out var error));
+        Assert.Contains("enabled", error);
+        Assert.DoesNotContain("sentinel", error);
+    }
+
+    [Fact]
     public void Actions_HaveUniqueDotNamespacedIds()
     {
         var ids = ControlActionRegistry.Actions.Select(a => a.Id).ToList();

@@ -88,6 +88,7 @@ class MediaStream
   bool shutdown_ = false;
   bool retryTransientRead_ = false;
   uint64_t retriedSamples_ = 0, recoveredSamples_ = 0;
+  uint64_t retryUnchangedMisses_ = 0, retryContendedMisses_ = 0, retryCopyBudgetMisses_ = 0;
 };
 
 }  // namespace corevideo::virtualcam

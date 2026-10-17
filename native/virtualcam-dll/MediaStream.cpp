@@ -27,7 +27,12 @@ HRESULT MediaStream::RuntimeClassInitialize(MediaSource* source, IMFStreamDescri
   fps_ = fps == 0 ? 30 : fps;
   frameDuration_ = 10000000LL / static_cast<LONGLONG>(fps_);
   wchar_t retryFlag[3]{};
-  retryTransientRead_ = GetEnvironmentVariableW(L"COREVIDEO_CAMERA_READ_RETRY", retryFlag, 3) == 1 && retryFlag[0] == L'1';
+  if (GetEnvironmentVariableW(L"COREVIDEO_CAMERA_READ_RETRY", retryFlag, 3) != 1) retryFlag[0] = L'\0';
+  retryTransientRead_ = corevideo::modules::cameraReadRetryEnabled(retryFlag);
+#if defined(COREVIDEO_VCAM_ISOLATED_PUBLICATION_QA) && COREVIDEO_VCAM_ISOLATED_PUBLICATION_QA
+  // Preserve the explicitly named off/on experiment's baseline.
+  retryTransientRead_ = false;
+#endif
 #if defined(COREVIDEO_CAMERA_READ_RETRY_QA) && COREVIDEO_CAMERA_READ_RETRY_QA
   retryTransientRead_ = true;
   VcamServeLog("[vcam-retry-qa] diagnostic DLL: bounded publication wait enabled");
@@ -153,7 +158,7 @@ void MediaStream::LogDeliveryEvidence() {
       "invalidHeader=%llu publicationObserved=%d lastPublication=%llu lastSeq=%lu maxIntervalHns=%llu "
       "programIdentityVerified=%d receiverVerified=0 correlatedReads=%llu uncorrelatedReads=%llu "
       "unobservedProgramFrames=%llu programEpochChanges=%llu programRegressions=%llu "
-      "lastProgramSequence=%lld epoch=%016llx%016llx lastReadProgramSequence=%lld",
+      "lastProgramSequence=%lld epoch=%016llx%016llx lastReadProgramSequence=%lld logDropped=%llu logFailures=%llu",
       static_cast<void*>(this), deliveryRun_, delivery_.emitted, delivery_.fresh, delivery_.held, delivery_.slate,
       delivery_.failed, delivery_.formatMismatches, read.count(Result::Fresh), read.count(Result::Unchanged),
       read.count(Result::Contended), read.count(Result::Unavailable), read.count(Result::Uninitialized),
@@ -162,11 +167,11 @@ void MediaStream::LogDeliveryEvidence() {
       emittedIdentity_.verified ? 1 : 0, read.correlatedReads, read.uncorrelatedReads,
       read.unobservedProgramFrames, read.programEpochChanges, read.programRegressions,
       static_cast<long long>(emittedIdentity_.sequence), emittedIdentity_.epochHigh, emittedIdentity_.epochLow,
-      static_cast<long long>(read.lastProgramSequence));
+      static_cast<long long>(read.lastProgramSequence), VcamServeLogQueue().dropped(), VcamServeLogQueue().failures());
   VcamServeLog(b);
   if (retryTransientRead_) {
-    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu budgetUs=%lld maxRetries=64 maxPayloadCopies=2",
-        retriedSamples_, recoveredSamples_, frameDuration_ / 10);
+    _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu unchangedMisses=%llu contendedMisses=%llu copyBudgetMisses=%llu budgetUs=%lld maxRetries=64 maxPayloadCopies=2",
+        retriedSamples_, recoveredSamples_, retryUnchangedMisses_, retryContendedMisses_, retryCopyBudgetMisses_, frameDuration_ / 10);
     VcamServeLog(b);
   }
 }
@@ -231,6 +236,12 @@ HRESULT MediaStream::FillFromSharedMemoryOrSlate(BYTE* dst, DWORD dstLen) {
             WaitForSingleObject(pacerTimer_, 3) == WAIT_OBJECT_0;
       }, retryTransientRead_, retries, frameDuration_ / 10, 64);
   if (retries) { ++retriedSamples_; if (got) ++recoveredSamples_; }
+  if (!got && retryTransientRead_) {
+    using Result = corevideo::modules::VirtualCameraReadResult;
+    if (reader_.evidence().lastResult == Result::Unchanged) ++retryUnchangedMisses_;
+    if (reader_.evidence().lastResult == Result::Contended) ++retryContendedMisses_;
+    if (!copyBudget) ++retryCopyBudgetMisses_;
+  }
   if (got && static_cast<UINT32>(w) == width_ && static_cast<UINT32>(h) == height_ &&
       scratch_.size() == dstLen) {
     memcpy(dst, scratch_.data(), dstLen);

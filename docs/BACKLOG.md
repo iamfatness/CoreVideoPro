@@ -20,6 +20,16 @@ restart. See [specification](reference/volt-graphics-spec.md),
 [reconciliation](reference/volt-graphics-reconciliation.md), and
 [implementation dependencies](reference/volt-graphics-implementation-plan.md).
 
+**Owner direction, October 16, live stutter incident:** audit and fix hidden UI
+dependencies under [#930](https://github.com/iamfatness/CoreVideoPro/issues/930).
+Validate eight remote feeds, webcam, screen capture, multiview/Preview, local
+recording and virtual camera. Restarts and administrator tracing are authorized
+for this incident. Functional success cannot close frame-performance acceptance.
+
+**Owner direction, October 16:** implement [#922](https://github.com/iamfatness/CoreVideoPro/issues/922)
+validated RTMP/SRT destination control actions using isolated API tests. Preserve
+the installed app, meeting and production preferences; no restart or installation.
+
 **Owner direction, October 15:** diagnose and fix #916 source video delay in
 Inspect using API/offscreen validation; preserve the running installed app.
 
@@ -196,6 +206,9 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 | Volt dependent — after #926 | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927), [#928](https://github.com/iamfatness/CoreVideoPro/issues/928) | Complete workspace/migration and actual title/bug/clock consumers; activate only as dependency gates pass. |
 | Volt dependent — after consumers/#761 | B | [#929](https://github.com/iamfatness/CoreVideoPro/issues/929) | Scoped participant automation, rehearsal and manual override with native outcome evidence. |
 | Specification merged; implementation ranked above | B | [#924](https://github.com/iamfatness/CoreVideoPro/issues/924) | Approved graphics specification merged through #925; implementation follows #926–#929 and their individual acceptance gates. |
+
+| Owner current — October 16 incident | B | [#930](https://github.com/iamfatness/CoreVideoPro/issues/930) | Remove UI-paced media dependencies and reject false performance passes; validate all requested live inputs with recording and virtual camera. |
+| Owner current — October 16 | B | [#922](https://github.com/iamfatness/CoreVideoPro/issues/922) | Add validated, persisted RTMP/SRT control actions with no restart, secret echo, automatic stream start or change to an active output. |
 | Owner current — October 15 | B | [#916](https://github.com/iamfatness/CoreVideoPro/issues/916) | Diagnose select-to-first-present latency, reproduce the exact cause and fix it with API/offscreen evidence; keep the installed app/session untouched. |
 | 1 — October 15 UI/UX | B | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Finish stable-input scene creation and layout fallbacks, quick solo/two-person/share starters, preserved custom routes and fresh/upgraded profile evidence. |
 | 2 — October 15 UI/UX | B | [#590](https://github.com/iamfatness/CoreVideoPro/issues/590), [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) | Sources assignment/offline clarity and identity-safe thumbnail removal/reassignment acceptance. Count one primary development issue per focused PR. |

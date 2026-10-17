@@ -1182,6 +1182,10 @@ void MediaCore::applyCommandMutation(const rpc::Json& command) {
     setColorGrade(command);
   } else if (type == "set-source-preview-demand") {
     if (!configureSourcePreviewDemand(command)) commandProtocolFailures_.push_back("invalid-source-preview-demand");
+  } else if (type == "set-zoom-thumbnail-demand") {
+    const auto* enabled = command.get("enabled");
+    if (enabled && enabled->isBool()) zoomEngineRuntime_->setThumbnailDemand(enabled->asBool());
+    else commandProtocolFailures_.push_back("invalid-zoom-thumbnail-demand");
   } else if (type == "set-grade-preview") {
     bool overloaded = false;
     if (!configureGradePreview(command, &overloaded))
@@ -4210,23 +4214,10 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
   }
   programIntegratedMeter_.process(chunkL.data(), chunkR.data(), frames);
 
-  // Roll the windowed buffer and trim to the 3 s short-term window.
-  programMeterL_.insert(programMeterL_.end(), chunkL.begin(), chunkL.end());
-  programMeterR_.insert(programMeterR_.end(), chunkR.begin(), chunkR.end());
-  const size_t maxSamples = static_cast<size_t>(sampleRate) * 3u;
-  if (programMeterL_.size() > maxSamples) {
-    programMeterL_.erase(programMeterL_.begin(), programMeterL_.end() - static_cast<std::ptrdiff_t>(maxSamples));
-    programMeterR_.erase(programMeterR_.begin(), programMeterR_.end() - static_cast<std::ptrdiff_t>(maxSamples));
-  }
-
-  const size_t windowed = programMeterL_.size();
-  // Momentary (400 ms) / short-term (3 s) are single-pass K-weighted RMS; bound
-  // momentary to its 400 ms window so it isn't scanning the full 3 s buffer.
-  const size_t momentarySamples = std::min(windowed, static_cast<size_t>(rate * 0.4));
-  const size_t momentaryOffset = windowed - momentarySamples;
-  programLufsMomentary_ = modules::computeMomentaryLufs(programMeterL_.data() + momentaryOffset,
-                                                        programMeterR_.data() + momentaryOffset, momentarySamples, rate);
-  programLufsShortTerm_ = modules::computeShortTermLufs(programMeterL_.data(), programMeterR_.data(), windowed, rate);
+  // The continuous K-weighted stream already supplies both windows. Never
+  // re-filter three seconds of history on the 20 ms audio deadline for meters.
+  programLufsMomentary_ = programIntegratedMeter_.momentaryLufs();
+  programLufsShortTerm_ = programIntegratedMeter_.shortTermLufs();
   // True peak: STREAMING 4x-oversampled detector (B2). The old per-chunk
   // computeTruePeakDbfs zero-padded both block edges, so inter-sample peaks
   // near/straddling a 20ms boundary were misread (~+0.4 dB over-report on
@@ -4237,7 +4228,7 @@ void MediaCore::updateProgramLoudnessMeter(const std::vector<float>& interleaved
                modules::streamingTruePeakBlockDbfs(programTruePeakMeterR_, chunkR.data(), frames));
   programTruePeakDbfs_ = std::max(chunkTruePeak, programTruePeakDbfs_ - 0.5);
   programLufsIntegrated_ = programIntegratedMeter_.integratedLufs();
-  virtualCamera_->setProgramLoudness(programLufsShortTerm_, windowed >= maxSamples);
+  virtualCamera_->setProgramLoudness(programLufsShortTerm_, programIntegratedMeter_.shortTermReady());
 }
 
 
@@ -6218,7 +6209,7 @@ void MediaCore::captureAudioObservation(AudioOutputObservation& observation, con
   observation.shortTermLufs = programLufsShortTerm_;
   observation.integratedLufs = programLufsIntegrated_;
   observation.truePeakDbfs = programTruePeakDbfs_;
-  observation.windowMs = static_cast<int>((programMeterL_.size() * 1000) / 48000);
+  observation.windowMs = static_cast<int>(programIntegratedMeter_.windowSamples() * 1000 / programIntegratedMeter_.sampleRateHz());
   observation.fallbackMonitorFrames = static_cast<int>(modules_.mixer->monitorBusPcm().size() /
       static_cast<size_t>(std::max(1, modules_.mixer->monitorBusChannels())));
 }

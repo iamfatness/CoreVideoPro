@@ -29,7 +29,7 @@ if(WIN32)
   add_executable(corevideo-vcam-receiver ../tools/virtualcam-receiver.cpp)
   target_compile_features(corevideo-vcam-receiver PRIVATE cxx_std_20)
   target_include_directories(corevideo-vcam-receiver PRIVATE src)
-  target_link_libraries(corevideo-vcam-receiver PRIVATE mfplat mfreadwrite mfuuid mf ole32)
+  target_link_libraries(corevideo-vcam-receiver PRIVATE mfplat mfreadwrite mfuuid mf ole32 avrt)
   set_target_properties(corevideo-vcam-receiver PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
@@ -358,8 +358,8 @@ if(COREVIDEO_WITH_VIRTUALCAM)
       mfplat mf mfuuid mfsensorgroup ole32 oleaut32 ksuser strmiids uuid)
   set_target_properties(corevideo-virtualcam PROPERTIES
       LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll/exports.def\"")
-  # Explicit diagnostic target: Frame Server does not inherit the producer's
-  # environment. Keep the retry experiment out of normal builds and packages.
+  # Explicit diagnostic identity retained for comparison with older builds.
+  # Production now also recovers bounded publication races by default.
   add_library(corevideo-virtualcam-retry-qa SHARED EXCLUDE_FROM_ALL
       virtualcam-dll/dllmain.cpp virtualcam-dll/Guids.cpp
       virtualcam-dll/MediaSource.cpp virtualcam-dll/MediaStream.cpp)
@@ -813,6 +813,7 @@ if(BUILD_TESTING)
     tests/JsonRpcServerTest.cpp
     tests/LockHoldGuardrailTest.cpp
     tests/BoundedAsyncLogTest.cpp
+    tests/VcamLogQueueTest.cpp
     tests/LumaRangeProbeTest.cpp
     tests/MediaFrameSourceCompatibilityTest.cpp
     tests/MediaPlaybackTimelineTest.cpp

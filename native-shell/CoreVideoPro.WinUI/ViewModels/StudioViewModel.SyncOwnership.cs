@@ -25,6 +25,7 @@ public sealed partial class StudioViewModel
         Prepare("grading previews", StopGradePreviewsForShutdown);
         Prepare("lower third", () => _lowerThirdKeyTransitionCts?.Cancel());
         Prepare("capture state", () => _surfaces.SetZoomCaptureSubscribed(false));
+        Prepare("CPU preview demand", _cpuPreviewDemand.Dispose);
         Prepare("event subscriptions", () =>
         {
             _bridge.HealthChanged -= OnBridgeHealthChanged;
