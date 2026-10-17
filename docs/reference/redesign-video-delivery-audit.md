@@ -118,6 +118,14 @@ timer is separate from the delivery clock, and no application lock spans its
 wait. NV12 staging and immutable snapshot copies are submitted together, with
 one GPU completion query before CPU readback. The approved Program buffer depth
 and pixel quality remain unchanged.
+Each retained frame owns its staging textures and completion query. While an
+earlier query is pending, the preparation worker can submit subsequent retained
+frames on the same ordered context. Readback and retirement remain ordered;
+in-flight resources cannot be recycled just because their deadline expired.
+The regression defers the first completion until the second frame is submitted,
+then checks both frames' distinct NV12 pixels and delivery order. This prevents
+an accidental return to serial submit/wait preparation, but does not prove a
+given live workload meets every deadline.
 Slow preparation logs split GPU completion from CPU readback for correlation
 with a missing frame; these logs alone are not GPU deadline acceptance.
 
@@ -152,3 +160,17 @@ audio-clock reanchors and dropped recording audio packets. Good camera pixels
 cannot qualify a recording with lost audio. Concurrent applications explicitly
 included by the operator are declared with `-AdditionalProcessName` and must
 remain running with the same process identity throughout the measured interval.
+
+## Finalized Program pixels
+
+After the live interval, `scripts/qa/recording-pixel-verdict.py` decodes every
+encoded Program frame with FFmpeg's passthrough frame mode and reads both QA
+counter guard rows. It rejects corrupt, repeated, missing and reordered pixel
+identities. Optional first/last identities must come from the measured receiver
+interval; both endpoints and every identity between them must be present.
+Keep that interval explicit rather than dropping known failures from a result.
+This is independent confirmation of recorded content, not evidence of physical
+display or real-time delivery deadlines. Run decoding after the live capture.
+Supply its result as `recordingPixelVerdict` in the combined report. Its first
+and last identities and sample count must match the camera receiver's measured
+interval; an unrelated clean recording cannot qualify the run.

@@ -181,6 +181,8 @@ class D3DProgramBuffer {
     // Preparation owns this reusable allocation. A retained output lease makes
     // it immutable, so replace it instead of overwriting a consumer's pixels.
     core::SharedFrameBytes reusableNv12;
+    ComPtrLite<ID3D11Texture2D> yRead, uvRead;
+    ComPtrLite<ID3D11Query> prepareComplete;
     int64_t productionSlot = 0;
     std::chrono::steady_clock::time_point submittedAt{};
     std::chrono::steady_clock::time_point preparingAt{};
@@ -207,6 +209,7 @@ class D3DProgramBuffer {
   // Installed only before submission by hardware fault tests.
   std::function<void(bool)> beforeExport_;
   std::function<void(int64_t)> beforePrepare_; // Hardware fault tests, before submission only.
+  std::function<bool(int64_t)> deferPrepareCompletion_; // Fault test; never supplies fake GPU completion.
   static int64_t now100ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count() / 100;
@@ -262,7 +265,8 @@ class D3DProgramBuffer {
     if (!displaySnapshots_.initialize(multiviewBranch_.device.get(), width_, height_, diagnostics_.generation)) return false;
     if (!initializeNv12()) return false;
     D3D11_QUERY_DESC complete{D3D11_QUERY_EVENT, 0};
-    if (FAILED(prepareDevice_->CreateQuery(&complete, prepareComplete_.put()))) return false;
+    for (auto& slot : slots_)
+      if (FAILED(prepareDevice_->CreateQuery(&complete, slot->prepareComplete.put()))) return false;
     if (FAILED(shellBranch_.device->CreateQuery(&complete, shellBranch_.complete.put())) ||
         FAILED(multiviewBranch_.device->CreateQuery(&complete, multiviewBranch_.complete.put()))) return false;
     initialized_ = true;
@@ -292,10 +296,12 @@ class D3DProgramBuffer {
     };
     // Same 1080p GPU NV12 tap as the existing output path; Program export keeps
     // its native resolution, and GPU sampling scales only the output tap.
+    for (auto& slot : slots_) {
+      if (!make(1920, 1080, DXGI_FORMAT_R8_UNORM, true, slot->yRead) ||
+          !make(960, 540, DXGI_FORMAT_R8G8_UNORM, true, slot->uvRead)) return false;
+    }
     return make(1920, 1080, DXGI_FORMAT_R8_UNORM, false, y_) &&
         make(960, 540, DXGI_FORMAT_R8G8_UNORM, false, uv_) &&
-        make(1920, 1080, DXGI_FORMAT_R8_UNORM, true, yRead_) &&
-        make(960, 540, DXGI_FORMAT_R8G8_UNORM, true, uvRead_) &&
         SUCCEEDED(prepareDevice_->CreateRenderTargetView(y_.get(), nullptr, yView_.put())) &&
         SUCCEEDED(prepareDevice_->CreateRenderTargetView(uv_.get(), nullptr, uvView_.put()));
   }
@@ -332,7 +338,7 @@ class D3DProgramBuffer {
     };
     draw(yView_.get(), psY_.get(), 1920, 1080); draw(uvView_.get(), psUv_.get(), 960, 540);
     ID3D11ShaderResourceView* none[] = {nullptr}; context->PSSetShaderResources(0, 1, none);
-    context->CopyResource(yRead_.get(), y_.get()); context->CopyResource(uvRead_.get(), uv_.get());
+    context->CopyResource(slot.yRead.get(), y_.get()); context->CopyResource(slot.uvRead.get(), uv_.get());
   }
   bool readNv12(Slot& slot) {
     auto* context = prepareContext_.get();
@@ -366,32 +372,62 @@ class D3DProgramBuffer {
           static_cast<const uint8_t*>(mapped.pData) + static_cast<size_t>(row) * mapped.RowPitch, 1920);
       context->Unmap(texture, 0); return true;
     };
-    if (!copy(yRead_.get(), 1080, 0) || !copy(uvRead_.get(), 540, 1920u * 1080u)) return false;
+    if (!copy(slot.yRead.get(), 1080, 0) || !copy(slot.uvRead.get(), 540, 1920u * 1080u)) return false;
     slot.frame.programNv12Shared = std::move(pixels);
     slot.frame.programNv12Width = 1920; slot.frame.programNv12Height = 1080;
     return true;
   }
-  bool completePreparation() {
-    // AcquireSync on the retained source orders the producer's writes before
-    // this context. Verify completion here, while the whole buffer lead is
-    // available, rather than copying the same immutable image again at playout.
-    prepareContext_->End(prepareComplete_.get());
+  bool submitPreparation(Slot& slot) {
+    if (slot.prepareMutex->AcquireSync(1, 0) != S_OK) return false;
+    if (beforePrepare_) beforePrepare_(slot.productionSlot);
+    if (slot.needsNv12) submitNv12(slot);
+    prepareContext_->CopyResource(slot.snapshot.get(), slot.prepareTexture.get());
+    if (slot.prepareMutex->ReleaseSync(0) != S_OK) { fail("prepare-release"); return false; }
+    prepareContext_->End(slot.prepareComplete.get());
     prepareContext_->Flush();
-    const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    return true;
+  }
+  void submitFollowingPreparation() {
+    Slot* following = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stopped_) return;
+      for (auto* candidate : submitted_) {
+        if (candidate->state == State::Submitted && !timeline_->isExpired(candidate->productionSlot)) {
+          following = candidate;
+          following->state = State::Preparing;
+          following->preparingAt = std::chrono::steady_clock::now();
+          break;
+        }
+      }
+    }
+    if (following && !submitPreparation(*following)) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      following->state = State::Submitted;
+      ++diagnostics_.gpuNotReady;
+    }
+  }
+  bool completePreparation(Slot& slot) {
+    const auto limit = slot.preparingAt + std::chrono::seconds(2);
     for (;;) {
       BOOL complete = FALSE;
       // Allow GetData to flush this preparation-only context. On the NVIDIA
       // keyed handoff path an explicit Flush alone did not make a DONOTFLUSH
       // event observable; hardware tests stalled until the query could flush.
-      const auto result = prepareContext_->GetData(prepareComplete_.get(), &complete,
+      const auto result = prepareContext_->GetData(slot.prepareComplete.get(), &complete,
           sizeof(complete), 0);
-      if (result == S_OK && complete) return true;
+      if (result == S_OK && complete &&
+          (!deferPrepareCompletion_ || !deferPrepareCompletion_(slot.productionSlot))) return true;
       if (FAILED(result) || std::chrono::steady_clock::now() >= limit) {
         ::corevideo::core::nativeLogf("[program-buffer-failure] stage=prepare-query hr=0x%08lx device_hr=0x%08lx timeout=%d\n",
             static_cast<unsigned long>(result), static_cast<unsigned long>(prepareDevice_->GetDeviceRemovedReason()),
             !FAILED(result));
         return false;
       }
+      // Submit the next retained frame while this GPU query is pending. Each
+      // slot owns its staging resources and fence, so this cannot overwrite
+      // unread pixels. Completion/readback still retires strictly in order.
+      submitFollowingPreparation();
       if (!waitForPreparationPoll()) return false;
     }
   }
@@ -407,7 +443,7 @@ class D3DProgramBuffer {
         // the NV12 readback on it is what kept the next, still-viable frame
         // behind after a single miss: retirement used to happen only once this
         // slot reached Ready. Hand the key back and move on.
-        if (timeline_->isExpired(slot->productionSlot)) {
+        if (slot->state == State::Submitted && timeline_->isExpired(slot->productionSlot)) {
           lock.unlock();
           const bool held = slot->prepareMutex->AcquireSync(1, 0) == S_OK;
           if (held) slot->prepareMutex->ReleaseSync(0);
@@ -435,29 +471,26 @@ class D3DProgramBuffer {
           notifyChanged();
           continue;
         }
-        slot->preparingAt = std::chrono::steady_clock::now();
-        slot->state = State::Preparing;
+        if (slot->state == State::Submitted) slot->preparingAt = std::chrono::steady_clock::now();
         diagnostics_.lastQueueWaitMs = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - slot->submittedAt).count();
+            slot->preparingAt - slot->submittedAt).count();
         diagnostics_.maxQueueWaitMs = (std::max)(diagnostics_.maxQueueWaitMs, diagnostics_.lastQueueWaitMs);
       }
-      if (slot->prepareMutex->AcquireSync(1, 0) != S_OK) {
+      bool alreadyQueued;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        alreadyQueued = slot->state == State::Preparing;
+        slot->state = State::Preparing;
+      }
+      if (!alreadyQueued && !submitPreparation(*slot)) {
         std::unique_lock<std::mutex> lock(mutex_); ++diagnostics_.gpuNotReady;
+        slot->state = State::Submitted;
         changed_.wait_for(lock, std::chrono::milliseconds(1), [&] { return stopped_; });
         if (stopped_) return;
         continue;
       }
-      const auto prepareBegin = std::chrono::steady_clock::now();
-      if (beforePrepare_) beforePrepare_(slot->productionSlot);
-      if (slot->needsNv12) submitNv12(*slot);
-      prepareContext_->CopyResource(slot->snapshot.get(), slot->prepareTexture.get());
-      // Return the input key after all preparation reads. Ready still requires
-      // actual GPU completion, and the slot cannot be rewritten until both
-      // optional snapshot readers have completed.
-      const bool released = slot->prepareMutex->ReleaseSync(0) == S_OK;
-      // One completion fence covers NV12 staging AND the immutable snapshot.
-      // Do not wait for staging first and then submit a second GPU round trip.
-      const bool gpuReady = released && completePreparation();
+      const auto prepareBegin = slot->preparingAt;
+      const bool gpuReady = completePreparation(*slot);
       const auto gpuAt = std::chrono::steady_clock::now();
       const bool ready = gpuReady && (!slot->needsNv12 || readNv12(*slot));
       const auto completedAt = std::chrono::steady_clock::now();
@@ -727,7 +760,6 @@ class D3DProgramBuffer {
   ExportBranch shellBranch_, multiviewBranch_;
   std::shared_ptr<Output> output_;
   D3DProgramDisplaySnapshots displaySnapshots_;
-  ComPtrLite<ID3D11Query> prepareComplete_;
   std::function<void(const ProgramFrame&)> deliveredCallback_;
   std::thread prepareThread_, deliveryThread_, shellThread_, multiviewThread_;
   HANDLE wakeEvent_ = nullptr;
@@ -739,7 +771,7 @@ class D3DProgramBuffer {
   ComPtrLite<ID3D11VertexShader> vs_;
   ComPtrLite<ID3D11PixelShader> psY_, psUv_;
   ComPtrLite<ID3D11SamplerState> sampler_;
-  ComPtrLite<ID3D11Texture2D> y_, uv_, yRead_, uvRead_;
+  ComPtrLite<ID3D11Texture2D> y_, uv_;
   ComPtrLite<ID3D11RenderTargetView> yView_, uvView_;
 };
 }  // namespace corevideo::modules

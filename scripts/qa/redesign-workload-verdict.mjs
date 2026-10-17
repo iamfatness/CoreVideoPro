@@ -101,6 +101,12 @@ export function judgeRedesignWorkload(report) {
     errors.push('Frame evidence omits Preview or multiview display.');
   if (report?.cameraPixelVerdict?.osCameraContinuityVerified !== true)
     errors.push('Independent Windows camera pixel continuity did not pass.');
+  const recorded = report?.recordingPixelVerdict, camera = report?.cameraPixelVerdict;
+  if (recorded?.recordedPixelContinuityPassed !== true || recorded?.identityRangeComplete !== true ||
+      !Number.isSafeInteger(camera?.firstIdentity) || !Number.isSafeInteger(camera?.lastIdentity) ||
+      recorded?.firstIdentity !== camera?.firstIdentity || recorded?.lastIdentity !== camera?.lastIdentity ||
+      recorded?.samples !== camera?.samples)
+    errors.push('Finalized Program pixels do not verify the same camera identity interval.');
   const cameraIdentity = report?.cameraInstallation;
   if (cameraIdentity?.moduleInspection !== 'observed' ||
       cameraIdentity?.loadedIdentityMatchesRegistration !== true ||

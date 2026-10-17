@@ -71,6 +71,7 @@ export function judgeCameraPixels(text, { warmupSeconds = 30, minimumSeconds = 3
   return { schema: 'camera-pixel-verdict-v1', receiverPixelContinuityPassed: errors.length === 0,
     receiverMode, osCameraContinuityVerified: errors.length === 0 && receiverMode === 'os-camera',
     physicalDisplayVerified: false, warmupSeconds, durationSeconds, samples: measured.length, coverage,
+    firstIdentity: measured[0]?.identity ?? null, lastIdentity: measured.at(-1)?.identity ?? null,
     invalid, repeated, missing, reordered, p50IntervalMs: percentile(.5), p99IntervalMs: percentile(.99), maximumIntervalMs,
     errors: [...new Set(errors)], limitation: receiverMode === 'direct-dll'
       ? 'Direct DLL diagnostic pixels. Does not validate OS registration, Frame Server, Zoom display, audio synchronization or installed-camera qualification.'

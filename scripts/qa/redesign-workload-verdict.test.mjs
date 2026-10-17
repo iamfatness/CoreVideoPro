@@ -12,7 +12,10 @@ function completeEvidence() {
     candidateCameraSha256: 'a'.repeat(64),
     cameraInstallation: { moduleInspection: 'observed', loadedIdentityMatchesRegistration: true,
       registeredFileMatchesManifest: true, registeredFileSha256: 'a'.repeat(64) },
-    cameraPixelVerdict: { osCameraContinuityVerified: true, durationSeconds: 1800 },
+    cameraPixelVerdict: { osCameraContinuityVerified: true, durationSeconds: 1800,
+      firstIdentity: 1, lastIdentity: 108001, samples: 108001 },
+    recordingPixelVerdict: { recordedPixelContinuityPassed: true, identityRangeComplete: true,
+      firstIdentity: 1, lastIdentity: 108001, samples: 108001 },
     cameraPixelCoverage: { complete: true, startTime, endTime },
     samples: Array.from({ length: 181 }, (_, i) => ({ collectedAtMs: i * 10000, processGeneration: 'one',
       displayState: { visible: true, minimized: false }, snapshot: {
@@ -32,6 +35,19 @@ function completeEvidence() {
     } },
   };
 }
+
+test('recording counters cannot replace finalized pixels or pixels from the measured interval', () => {
+  for (const change of [
+    r => { delete r.recordingPixelVerdict; },
+    r => { r.recordingPixelVerdict.recordedPixelContinuityPassed = false; },
+    r => { r.recordingPixelVerdict.firstIdentity++; },
+    r => { r.recordingPixelVerdict.lastIdentity++; },
+    r => { r.recordingPixelVerdict.samples--; },
+  ]) {
+    const report = completeEvidence(); change(report);
+    assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
+});
 
 test('clean video cannot conceal lost recording audio or a discarded audio clock interval', () => {
   for (const change of [
