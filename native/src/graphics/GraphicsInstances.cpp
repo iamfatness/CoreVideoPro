@@ -160,7 +160,7 @@ bool GraphicsInstances::apply(const Json& command) {
   static const std::map<std::string, std::set<std::string>> actionKeys{
       {"graphics-instance-create", {"templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding"}},
       {"graphics-instance-update", {"sourceId", "fields", "style", "target", "animations", "binding"}},
-      {"graphics-instance-cue", {}}, {"graphics-instance-trigger", {"action"}},
+      {"graphics-instance-cue", {}}, {"graphics-instance-trigger", {"action", "target"}},
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}}};
   const auto allowed = actionKeys.find(type);
   if (allowed == actionKeys.end()) return finish(requestId, false, "unsupported-graphics-command");
@@ -243,8 +243,13 @@ bool GraphicsInstances::apply(const Json& command) {
   }
   if (found == instances_.end()) return finish(requestId, false, "instance-not-found");
   auto& instance = found->second;
+  const auto triggerTarget = type == "graphics-instance-trigger" ? body->getString("target") : "";
+  if (type == "graphics-instance-trigger" && body->get("target") && (triggerTarget != "cue" || body->getString("action") != "show"))
+    return finish(requestId, false, "invalid-trigger-target");
+  if (triggerTarget == "cue" && !instance.cue) return finish(requestId, false, "cue-not-ready");
   const double expected = body->getNumber("expectedRevision", -1);
-  if (expected != static_cast<double>(instance.draft->number)) return finish(requestId, false, "revision-conflict");
+  const auto expectedIdentity = triggerTarget == "cue" ? instance.cue : instance.draft;
+  if (expected != static_cast<double>(expectedIdentity->number)) return finish(requestId, false, "revision-conflict");
   if (type == "graphics-instance-update") {
     const auto target = body->getString("target");
     if (target != "cue" && target != "program") return finish(requestId, false, "invalid-target");
@@ -291,12 +296,27 @@ bool GraphicsInstances::apply(const Json& command) {
   if (type == "graphics-instance-cue") {
     if (instance.draft->binding && !sources_->contains(*instance.draft->binding)) return finish(requestId, false, "source-identity-changed");
     if (instance.draft->name.empty()) return finish(requestId, false, "required-field-empty");
+    if (instance.preparation == "failed") return finish(requestId, false, "graphics-preparation-failed");
     instance.cued = true;
+    instance.cueRequestedRevision = instance.draft->number;
+    instance.cueWarning.clear();
+    if (instance.readyRevision == instance.draft->number && instance.draftResource) {
+      instance.cue = instance.draft; instance.cueResource = instance.draftResource;
+      instance.pendingCue.reset(); instance.cuePreparation = "ready";
+    } else {
+      instance.pendingCue = instance.draft; instance.cuePreparation = "preparing";
+    }
     return finish(requestId, true, "cue-accepted");
   }
   if (type == "graphics-instance-trigger") {
     const auto action = body->getString("action");
     if (action == "show") {
+      if (triggerTarget == "cue") {
+        if (instance.cue->binding && !sources_->contains(*instance.cue->binding)) return finish(requestId, false, "source-identity-changed");
+        if (!resourceMatches(instance.cueResource, instance.cue->contentHash)) return finish(requestId, false, "cue-not-ready");
+        show(instance, true);
+        return finish(requestId, true, "cue-show-accepted");
+      }
       if (instance.draft->binding && !sources_->contains(*instance.draft->binding)) return finish(requestId, false, "source-identity-changed");
       if (instance.draft->name.empty()) return finish(requestId, false, "required-field-empty");
       if (instance.preparation == "failed") return finish(requestId, false, "graphics-preparation-failed");
@@ -352,9 +372,26 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
                                const std::vector<modules::VideoFrame>& frames) const {
   const auto now = monotonicMs_();
   for (const auto& [_, instance] : instances_) {
+    if (!preview) {
+      // The retained handle validates device/scale on the actual renderer. A
+      // ready Cue must remain recoverable even while a different Cue is pending.
+      if (instance.cue && (!instance.cue->binding || sources_->contains(*instance.cue->binding))) {
+        auto candidate = layer(instance, *instance.cue);
+        candidate.layerId = "accepted-cue:" + instance.id;
+        candidate.graphicsPreparedResource = instance.cueResource;
+        plan.graphicsPreparations.push_back(std::move(candidate));
+      }
+      if (instance.pendingCue && instance.cuePreparation != "failed" &&
+          (!instance.pendingCue->binding || sources_->contains(*instance.pendingCue->binding))) {
+        auto candidate = layer(instance, *instance.pendingCue);
+        candidate.layerId = "pending-cue:" + instance.id;
+        plan.graphicsPreparations.push_back(std::move(candidate));
+      }
+    }
     // Preparation is private even when the cue belongs to another scene.
     // Program rendering returns readiness; Preview never needs to mutate core.
-    if (!preview && !instance.draft->name.empty() && (!instance.draft->binding || sources_->contains(*instance.draft->binding)) &&
+    if (!preview && instance.pendingCue != instance.draft && instance.cue != instance.draft &&
+        !instance.draft->name.empty() && (!instance.draft->binding || sources_->contains(*instance.draft->binding)) &&
         (instance.cued || instance.showPending || instance.updatePending)) {
       const auto candidate = layer(instance, *instance.draft);
       const int width = int(std::lround(double(candidate.rect.width) * plan.width)), height = int(std::lround(double(candidate.rect.height) * plan.height));
@@ -362,8 +399,7 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
         plan.graphicsPreparations.push_back(candidate);
     }
     if (instance.scope == "scene" && instance.sceneId != plan.sceneId) continue;
-    const auto revision = preview ? (instance.cued && instance.readyRevision == instance.draft->number ? instance.draft : nullptr)
-                                  : instance.program;
+    const auto revision = preview ? instance.cue : instance.program;
     if (!revision) continue;
     if (revision->binding) {
       if (!sources_->contains(*revision->binding)) continue;
@@ -381,7 +417,7 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
       })) continue;
     }
     auto content = layer(instance, *revision);
-    content.graphicsPreparedResource = preview ? instance.draftResource : instance.programResource;
+    content.graphicsPreparedResource = preview ? instance.cueResource : instance.programResource;
     if (!preview) {
       if (instance.timeline.phase(now) == "hidden") continue;
       const auto motion = instance.timeline.sample(now);
@@ -398,6 +434,13 @@ void GraphicsInstances::observeZoomSources(const std::vector<modules::ZoomEngine
                                          const std::vector<modules::VideoFrame>& frames) {
   if (!sources_->observeZoom(roster, sessionEpoch, frames)) return;
   for (auto& [_, instance] : instances_) {
+    if (instance.pendingCue && instance.pendingCue->binding && !sources_->contains(*instance.pendingCue->binding)) {
+      instance.pendingCue.reset(); instance.cuePreparation = "failed"; instance.cueWarning = "source-identity-changed";
+    }
+    if (instance.cue && instance.cue->binding && !sources_->contains(*instance.cue->binding)) {
+      instance.cue.reset(); instance.cueResource.reset();
+      if (!instance.pendingCue) { instance.cuePreparation = "failed"; instance.cueWarning = "source-identity-changed"; }
+    }
     const bool draftValid = !instance.draft->binding || sources_->contains(*instance.draft->binding);
     if (!draftValid) {
       instance.showPending = instance.updatePending = false;
@@ -425,6 +468,22 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
         instance.firstDrawSubmittedFrame = frame.frameNumber; changed = true;
       }
       continue;
+    }
+    if (fact.state == "ready" && instance.cue && instance.cue->number == fact.revision &&
+        resourceMatches(fact.preparedResource, instance.cue->contentHash)) {
+      if (instance.cueResource != fact.preparedResource) changed = true;
+      instance.cueResource = fact.preparedResource;
+    }
+    if (instance.pendingCue && instance.pendingCue->number == fact.revision) {
+      const bool ready = fact.state == "ready" && resourceMatches(fact.preparedResource, instance.pendingCue->contentHash);
+      const auto state = fact.state == "ready" && !ready ? "failed" : fact.state;
+      const auto warning = fact.state == "ready" && !ready ? "Graphics preparation reported ready without a matching resource." : fact.reason;
+      if (instance.cuePreparation != state || instance.cueWarning != warning) changed = true;
+      instance.cuePreparation = state; instance.cueWarning = warning;
+      if (ready) {
+        instance.cue = instance.pendingCue; instance.cueResource = fact.preparedResource;
+        instance.pendingCue.reset(); changed = true;
+      } else if (state == "failed") { instance.pendingCue.reset(); changed = true; }
     }
     if (fact.state == "ready" && instance.program && instance.program->number == fact.revision &&
         resourceMatches(fact.preparedResource, instance.program->contentHash)) {
@@ -454,10 +513,11 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
   if (changed) publish();
 }
 
-void GraphicsInstances::show(Instance& instance) {
-  if (instance.program != instance.draft) instance.firstDrawSubmittedFrame = 0;
-  instance.program = instance.draft;
-  instance.programResource = instance.draftResource;
+void GraphicsInstances::show(Instance& instance, bool fromCue) {
+  const auto revision = fromCue ? instance.cue : instance.draft;
+  if (instance.program != revision) instance.firstDrawSubmittedFrame = 0;
+  instance.program = revision;
+  instance.programResource = fromCue ? instance.cueResource : instance.draftResource;
   instance.timeline.show(instance.program->entrance, monotonicMs_());
   instance.visibility = instance.timeline.phase(monotonicMs_());
   instance.showPending = instance.updatePending = false;
@@ -497,6 +557,14 @@ void GraphicsInstances::publish() {
       {"instanceId", instance.id}, {"templateId", instance.templateId}, {"templateVersion", 1},
       {"scope", instance.scope}, {"sceneId", instance.sceneId},
       {"revision", double(instance.draft->number)}, {"programRevision", instance.program ? double(instance.program->number) : 0.},
+      {"cueRevision", instance.cue ? double(instance.cue->number) : 0.},
+      {"cueRequestedRevision", double(instance.cueRequestedRevision)},
+      {"cuePending", instance.pendingCue != nullptr}, {"cuePreparation", instance.cuePreparation}, {"cueWarning", instance.cueWarning},
+      {"cueFields", instance.cue ? Json{Json::Object{{"name", instance.cue->name}, {"title", instance.cue->title}}} : Json{}},
+      {"cueStyle", instance.cue ? styleState(instance.cue->appearance) : Json{}},
+      {"cueBinding", instance.cue && instance.cue->binding ? contracts::toJson(*instance.cue->binding) : Json{}},
+      {"cueAnimations", instance.cue ? Json{Json::Object{{"in", instance.cue->entrance.json()}, {"out", instance.cue->exit.json()}}} : Json{}},
+      {"cueResource", resourceState(instance.cueResource)},
       {"preparation", instance.preparation}, {"cued", instance.cued}, {"showPending", instance.showPending},
       {"preparedResource", resourceState(instance.draftResource)}, {"programResource", resourceState(instance.programResource)},
       {"visibility", instance.program ? (instance.visibility == "on-air" && instance.firstDrawSubmittedFrame == 0 ? "entering" : instance.visibility) : "hidden"},

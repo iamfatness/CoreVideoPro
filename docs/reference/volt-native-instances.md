@@ -46,25 +46,36 @@ previous definition; an omitted property within a supplied phase uses the V1
 default (none/left/0/linear). The three compatibility templates default to cuts.
 Definitions remain part of the private revision until explicitly adopted.
 
-Update requires `expectedRevision` and an explicit `target:cue|program`. Cue,
-Trigger and Remove require the same optimistic revision. Trigger uses
-`action:show|hide|clear`. Program Clear requires explicit `channel:all` and
+Update requires `expectedRevision` and an explicit `target:cue|program`. A cue
+target edits the private revision; the separate Cue action accepts that exact
+revision for Preview when preparation completes. Later private edits cannot
+retarget a pending Cue or replace the accepted Cue. A failed replacement leaves
+the prior Cue visible and exposes its warning independently of draft/Program.
+
+Cue, direct Trigger and Remove require the private optimistic revision. Trigger
+uses `action:show|hide|clear`. Show also accepts explicit `target:cue`; its
+`expectedRevision` must name the accepted Cue, even if the private draft is newer.
+That form refuses an absent/unprepared Cue and never airs private edits. A Show
+without a target preserves the existing explicit private-revision API behavior.
+Hide/Clear cannot carry a Cue target. Program Clear requires `channel:all` and
 cancels pending reveals in this instance authority. The legacy overlay authority
 has not yet migrated to these instances; complete-feature integration must
 establish one authority before general operator use.
 
 ## Preparation and adoption
 
-The instance limit is eight, with at most one draft and one accepted Program
-revision each. Cue never changes Program. Show waits for the complete prepared
+The instance limit is eight, with one private draft, one accepted Cue, one
+pending Cue intent and one accepted Program revision each. Cue never changes
+Program. Superseding a pending Cue requires another explicit Cue action. Show
+waits for the complete prepared
 revision. An explicit Program update keeps the previous valid revision until
 replacement readiness; a failed replacement retains it. A newer cue edit
 cancels an older pending Show instead of silently changing what that Show would
 air. Hide/Clear cancel pending reveals. Same-value updates do not increment the
 revision or replay the reveal. Revision numbers are not reused after removal.
 
-Ready facts must carry the actual immutable prepared resource. Accepted draft
-and Program revisions retain independent resource leases, so cache pressure or
+Ready facts must carry the actual immutable prepared resource. Draft, accepted
+Cue and Program revisions retain independent resource leases, so cache pressure or
 an unsuccessful edit cannot evict the raster currently needed by Program.
 Readiness without a resource fails and cancels pending reveals. Content keys
 include a SHA-256 of the accepted content/style/binding (excluding animation),
@@ -93,10 +104,14 @@ queue admission; a busy owner does not make it wait.
 The preparation cache reserves an estimated scratch/result allocation before
 running work. Its 256 MiB accounting includes published and retired texture
 leases plus queued/in-flight preparation reservations. It has 32 pending slots
-and a 16-entry live/retiring limit; referenced results cannot disappear from
+and a 64-entry live/retiring limit; referenced results cannot disappear from
 accounting through eviction. Lookup hits update eviction recency. Failed results
 are sticky until content/device keys change. These are enforced allocation
 model bounds, not measurements of driver overhead or fleet performance.
+The count accommodates independent Program, accepted Cue, pending Cue and
+private resources for eight instances plus bounded GPU retirement. A 16-entry
+limit would pin eight Program plus eight Cue resources and prevent any private
+edit from preparing even when the byte budget has ample room.
 
 All D3D11 raster owners additionally share `GraphicsResourceBudget` in the
 native process: 128 MiB modeled CPU pixel allocations, 256 MiB GPU textures,
@@ -130,6 +145,12 @@ is full, further replacements are refused until the owner drains it. Refusal
 is observable backpressure, not successful admission. Tests retry transient
 try-lock refusal before asserting an admitted job's completion.
 
+Accepted Cue intents and private authoring edits use distinct bounded preparation
+slots; editing privately cannot cancel the revision previously requested by Cue.
+Program resource requests are admitted before private/Cue preparation requests
+in each D3D composition pass. A changed source incarnation invalidates obsolete
+accepted/pending Cue bindings as well as Program, without replaying a reveal.
+
 The compositor retains raster results through its existing preallocated GPU
 read-completion query leases. Empty passes poll retirement too, preventing Hide
 from stranding a lease. Query exhaustion refuses a new graphics draw and reports
@@ -144,6 +165,12 @@ Program revisions, separate field/style values, warnings and the first native
 `draw-submitted` frame. That observation proves a native draw submission only;
 it is not a GPU-completion, camera-reader, decoded-stream or physical-display
 continuity claim.
+
+Cue observations include accepted/requested revision, pending status, preparation
+and warning, accepted fields/style/animations/binding and its immutable resource
+description. A late completion after a failed Cue is preparation only; another
+Cue is required before replacing Preview. These facts remain independent of the
+authoring tap, which is not implemented by this command/state slice.
 
 ## Subject identity integration boundary
 
@@ -174,8 +201,8 @@ This observes draw submission, not receiver continuity. Current source binding
 supports direct Zoom cameras; Tiles and nested scene membership remain to be
 qualified. There is no automatic participant reveal in this slice.
 
-Scene filtering and direct-camera bindings are present. A separate accepted Cue,
-native draft-authoring tap, package loading,
+Scene filtering, direct-camera bindings and independent accepted Cue are present.
+A native draft-authoring tap, package loading,
 legacy migration, the operator workspace, other graphic families and automation
 remain requirements of the approved feature. Their absence must not be hidden
 by the compatibility instance capability. Metal does not announce this instance

@@ -7,6 +7,31 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class NativeGraphicsStateTests
 {
     [Fact]
+    public void DraftAcceptedCuePendingCueAndProgramStayDistinctAcrossTheActualWireMapper()
+    {
+        using var response = JsonDocument.Parse("""
+            {"ok":true,"snapshot":{"health":null,"profile":null,"graphics":{
+              "schemaVersion":1,"coreEpoch":"test-core","instances":[{
+                "instanceId":"featured","revision":4,"cueRevision":2,"programRevision":1,
+                "cueRequestedRevision":3,"cuePending":true,"cuePreparation":"preparing","cueWarning":"",
+                "fields":{"name":"Private edit","title":""},"cueFields":{"name":"Accepted Cue","title":"Presenter"},
+                "programFields":{"name":"Program","title":"Engineer"},
+                "cueStyle":{"nameSize":52},"cueAnimations":{"in":{"type":"fade","durationMs":400}},
+                "cueBinding":{"sourceId":"zoom:44","instanceId":"guest-one","processEpoch":"meeting-one","generation":1},
+                "cueResource":{"backend":"d3d11","width":320,"height":64,"contentKey":"cue-content"}}]}}}
+            """);
+        var wire = CoreProtocolParser.TryParseWireState(response);
+        Assert.NotNull(wire);
+        var instance = Assert.Single(NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(0, 0, wire).Graphics!.Instances);
+        Assert.Equal(4, instance.Revision); Assert.Equal(2, instance.CueRevision); Assert.Equal(1, instance.ProgramRevision);
+        Assert.Equal(3, instance.CueRequestedRevision); Assert.True(instance.CuePending);
+        Assert.Equal("preparing", instance.CuePreparation); Assert.Equal("", instance.CueWarning);
+        Assert.Equal("", instance.Fields.Title); Assert.Equal("Accepted Cue", instance.CueFields!.Name);
+        Assert.Equal("Program", instance.ProgramFields!.Name); Assert.Equal(52, instance.CueStyle!.NameSize);
+        Assert.Equal("fade", instance.CueAnimations!.In.Type); Assert.Equal(400, instance.CueAnimations.In.DurationMs);
+        Assert.Equal("guest-one", instance.CueBinding!.InstanceId); Assert.Equal("cue-content", instance.CueResource!.ContentKey);
+    }
+    [Fact]
     public void ResourceBudgetRemainsAnAllocationModelObservationAtStatePublication()
     {
         using var response = JsonDocument.Parse("""

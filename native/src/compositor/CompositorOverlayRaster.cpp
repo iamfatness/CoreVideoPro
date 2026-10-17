@@ -162,7 +162,7 @@ CompositorOverlayRaster::CompositorOverlayRaster()
                // Release apartment-owned factories before the owner's thread-local
                // COM lifetime ends, including tests with no process-wide MTA.
                wicFactory_ = {}; dwriteFactory_ = {}; d2dFactory_ = {};
-             }, 16) {}
+             }, 64) {}
 CompositorOverlayRaster::~CompositorOverlayRaster() = default;
 
 ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(

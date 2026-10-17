@@ -56,7 +56,7 @@ public static class GraphicsCommandRequest
     {
         ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding"],
         ["graphics.instance.update"] = ["target", "sourceId", "fields", "style", "animations", "binding"],
-        ["graphics.instance.cue"] = [], ["graphics.instance.trigger"] = ["action"],
+        ["graphics.instance.cue"] = [], ["graphics.instance.trigger"] = ["action", "target"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"]
     };
     private static readonly HashSet<string> Common = new(StringComparer.Ordinal)
@@ -107,6 +107,8 @@ public static class GraphicsCommandRequest
             }
             if (action == "graphics.instance.update" && Text(body, "target") is not ("cue" or "program")) return false;
             if (action == "graphics.instance.trigger" && Text(body, "action") is not ("show" or "hide" or "clear")) return false;
+            if (action == "graphics.instance.trigger" && body.TryGetProperty("target", out _) &&
+                (Text(body, "target") != "cue" || Text(body, "action") != "show")) return false;
             if (action == "graphics.program.clear" && Text(body, "channel") != "all") return false;
             if (body.TryGetProperty("binding", out var binding))
             {

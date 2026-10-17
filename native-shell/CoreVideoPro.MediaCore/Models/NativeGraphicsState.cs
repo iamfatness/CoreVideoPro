@@ -54,6 +54,16 @@ public sealed record NativeGraphicsInstance
     public string BindingState { get; init; } = "unbound";
     public long Revision { get; init; }
     public long ProgramRevision { get; init; }
+    public long CueRevision { get; init; }
+    public long CueRequestedRevision { get; init; }
+    public bool CuePending { get; init; }
+    public string CuePreparation { get; init; } = "unprepared";
+    public string CueWarning { get; init; } = "";
+    public NativeGraphicsFields? CueFields { get; init; }
+    public LowerThirdAppearance? CueStyle { get; init; }
+    public NativeGraphicsAnimations? CueAnimations { get; init; }
+    public SourceInstanceIdentity? CueBinding { get; init; }
+    public NativeGraphicsResource? CueResource { get; init; }
     public string Preparation { get; init; } = "unprepared";
     public NativeGraphicsResource? PreparedResource { get; init; }
     public NativeGraphicsResource? ProgramResource { get; init; }

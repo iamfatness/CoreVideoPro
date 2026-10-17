@@ -895,6 +895,20 @@ if(BUILD_TESTING)
   else()
     target_include_directories(corevideo-native-tests PRIVATE tests)
   endif()
+  # Opt-in iteration target for the graphics vertical slice. The full native
+  # target remains the CI gate; share its exact compile contract and fixtures.
+  add_executable(corevideo-graphics-tests EXCLUDE_FROM_ALL
+    tests/TestMain.cpp tests/GraphicsPreparationCacheTest.cpp
+    tests/GraphicsInstancesTest.cpp tests/GraphicsRpcPixelTest.cpp
+    tests/D3D11CompositorTest.cpp tests/OverlayTileRasterTest.cpp tests/ContractParityTest.cpp)
+  target_link_libraries(corevideo-graphics-tests PRIVATE corevideo_native)
+  target_compile_definitions(corevideo-graphics-tests PRIVATE
+    $<TARGET_PROPERTY:corevideo-native-tests,COMPILE_DEFINITIONS>)
+  target_include_directories(corevideo-graphics-tests PRIVATE
+    $<TARGET_PROPERTY:corevideo-native-tests,INCLUDE_DIRECTORIES>)
+  if(GTest_FOUND)
+    target_link_libraries(corevideo-graphics-tests PRIVATE GTest::gtest)
+  endif()
   if(WIN32)
     # PluginHostTransport launches this companion executable from beside the
     # test binary. Keep it protocol-compatible whenever the test target is

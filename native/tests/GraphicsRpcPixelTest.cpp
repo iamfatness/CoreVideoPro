@@ -2,6 +2,9 @@
 #include "rpc/JsonRpcServer.h"
 #include "gtest/gtest.h"
 #include "contracts/Lifecycle.h"
+#include "graphics/GraphicsResourceBudget.h"
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <thread>
 
@@ -267,8 +270,9 @@ TEST(GraphicsCompositionPixel, AcceptedRasterSurvivesDraftCachePressureAndANewRe
   const auto accepted = render(*compositor); ASSERT_FALSE(accepted.empty());
   const auto acceptedKey = row().get("programResource")->getString("contentKey");
   ASSERT_EQ(64u, acceptedKey.size());
-  // More distinct fully prepared private revisions than the 16-entry cache.
-  for (int revision = 2; revision <= 24; ++revision) {
+  // More distinct fully prepared private revisions than the 64-entry cache.
+  constexpr int latestRevision = 80;
+  for (int revision = 2; revision <= latestRevision; ++revision) {
     ASSERT_TRUE(command("graphics-instance-update", {{"expectedRevision", revision - 1}, {"target", "cue"},
         {"fields", Json::Object{{"name", "Private revision " + std::to_string(revision)}}}}));
     ASSERT_TRUE(until([&] { return row().getString("preparation") == "ready"; }, *compositor));
@@ -287,10 +291,129 @@ TEST(GraphicsCompositionPixel, AcceptedRasterSurvivesDraftCachePressureAndANewRe
   ASSERT_EQ(1u, recovered.layers.size());
   EXPECT_NE(oldDevice, recovered.layers.front().graphicsPreparedResource->deviceIdentity);
   EXPECT_EQ(1., row().getNumber("programRevision"));
-  EXPECT_EQ(24., row().getNumber("revision"));
+  EXPECT_EQ(double(latestRevision), row().getNumber("revision"));
   EXPECT_EQ("Accepted Program", row().get("programFields")->getString("name"));
   EXPECT_EQ(acceptedKey, row().get("programResource")->getString("contentKey"));
   // This proves eventual pixel recovery only, not continuity during device replacement.
+}
+
+TEST(GraphicsCompositionPixel, AcceptedCuePixelsStaySeparateFromPrivateEditsAndProgramUntilExplicitShow) {
+  using corevideo::rpc::Json;
+  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_NE(compositor, nullptr);
+  corevideo::graphics::GraphicsInstances graphics{"test-core"};
+  int sequence = 0;
+  const auto command = [&](const std::string& type, Json::Object payload) {
+    payload["schemaVersion"] = 1; payload["requestId"] = "operation-" + std::to_string(++sequence);
+    payload["clientId"] = "cue-gpu-qa"; payload["coreEpoch"] = "test-core"; payload["instanceId"] = "featured";
+    return graphics.apply(Json::Object{{"type", type}, {"graphics", std::move(payload)}});
+  };
+  const auto row = [&]() -> const Json& { return graphics.snapshot().get("instances")->asArray().front(); };
+  const auto pixels = [&](bool cue) {
+    corevideo::modules::CompositorRenderPlan plan; plan.width = 320; plan.height = 180;
+    graphics.append(plan, cue);
+    auto frame = compositor->render(plan, {});
+    if (!cue) graphics.observe(frame);
+    return frame.preview.bgra;
+  };
+  const auto untilReady = [&] {
+    const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (row().getString("preparation") != "ready" && std::chrono::steady_clock::now() < limit) {
+      pixels(false); std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return row().getString("preparation") == "ready";
+  };
+  const auto blank = pixels(false); ASSERT_FALSE(blank.empty());
+  ASSERT_TRUE(command("graphics-instance-create", {{"templateId", "compact-solid"}, {"templateVersion", 1},
+      {"scope", "global"}, {"fields", Json::Object{{"name", "Accepted Cue"}, {"title", "Presenter"}}}}));
+  ASSERT_TRUE(command("graphics-instance-cue", {{"expectedRevision", 1}})); ASSERT_TRUE(untilReady());
+  const auto firstCue = pixels(true); EXPECT_NE(blank, firstCue); EXPECT_EQ(blank, pixels(false));
+  ASSERT_TRUE(command("graphics-instance-update", {{"expectedRevision", 1}, {"target", "cue"},
+      {"fields", Json::Object{{"name", "Private edit"}, {"title", ""}}}}));
+  ASSERT_TRUE(untilReady());
+  EXPECT_EQ(firstCue, pixels(true)); EXPECT_EQ(blank, pixels(false));
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"expectedRevision", 1}, {"target", "cue"}, {"action", "show"}}));
+  EXPECT_EQ(firstCue, pixels(false));
+  ASSERT_TRUE(command("graphics-instance-cue", {{"expectedRevision", 2}}));
+  const auto secondCue = pixels(true); EXPECT_NE(firstCue, secondCue); EXPECT_EQ(firstCue, pixels(false));
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"expectedRevision", 2}, {"target", "cue"}, {"action", "show"}}));
+  EXPECT_EQ(secondCue, pixels(false));
+}
+
+TEST(GraphicsCompositionPixel, EightProgramAndCueInstancesStillAdmitIndependentPrivateEdits) {
+  using corevideo::rpc::Json;
+  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_NE(compositor, nullptr);
+  corevideo::graphics::GraphicsInstances graphics{"test-core"};
+  int operation = 0, revisionClock = 0;
+  std::array<int, 8> revisions{};
+  const auto id = [](int index) { return "graphic-" + std::to_string(index + 1); };
+  const auto command = [&](const std::string& type, int index, Json::Object payload) {
+    payload["schemaVersion"] = 1; payload["requestId"] = "operation-" + std::to_string(++operation);
+    payload["clientId"] = "eight-instance-gpu-qa"; payload["coreEpoch"] = "test-core"; payload["instanceId"] = id(index);
+    if (type != "graphics-instance-create") payload["expectedRevision"] = revisions[index];
+    return graphics.apply(Json::Object{{"type", type}, {"graphics", std::move(payload)}});
+  };
+  const auto rows = [&]() -> const Json::Array& { return graphics.snapshot().get("instances")->asArray(); };
+  const auto render = [&](bool cue = false) {
+    corevideo::modules::CompositorRenderPlan plan; plan.width = 320; plan.height = 180;
+    graphics.append(plan, cue);
+    auto frame = compositor->render(plan, {});
+    if (!cue) graphics.observe(frame);
+    return frame.preview.bgra;
+  };
+  const auto until = [&](const auto& predicate) {
+    const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!predicate() && std::chrono::steady_clock::now() < limit) {
+      render(); std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return predicate();
+  };
+  for (int index = 0; index < 8; ++index) {
+    ASSERT_TRUE(command("graphics-instance-create", index, {{"templateId", "compact-solid"}, {"templateVersion", 1},
+        {"scope", "global"}, {"fields", Json::Object{{"name", "Program " + std::to_string(index + 1)}}}}));
+    revisions[index] = ++revisionClock;
+    ASSERT_TRUE(command("graphics-instance-trigger", index, {{"action", "show"}}));
+  }
+  ASSERT_TRUE(until([&] { return std::all_of(rows().begin(), rows().end(), [](const auto& row) {
+    return row.getNumber("firstDrawSubmittedFrame") > 0;
+  }); }));
+  const auto program = render(); ASSERT_FALSE(program.empty());
+  for (int index = 0; index < 8; ++index) {
+    ASSERT_TRUE(command("graphics-instance-update", index, {{"target", "cue"},
+        {"fields", Json::Object{{"name", "Cue " + std::to_string(index + 1)}}}}));
+    revisions[index] = ++revisionClock;
+    ASSERT_TRUE(command("graphics-instance-cue", index, {}));
+  }
+  ASSERT_TRUE(until([&] { return std::all_of(rows().begin(), rows().end(), [](const auto& row) {
+    return row.getNumber("cueRevision") == row.getNumber("revision");
+  }); }));
+  const auto cue = render(true); EXPECT_NE(program, cue);
+  for (int index = 0; index < 8; ++index) {
+    ASSERT_TRUE(command("graphics-instance-update", index, {{"target", "cue"},
+        {"fields", Json::Object{{"name", "Private " + std::to_string(index + 1)}}}}));
+    revisions[index] = ++revisionClock;
+  }
+  // A 16-entry pinned cache could never finish this, despite ample byte capacity.
+  ASSERT_TRUE(until([&] { return std::all_of(rows().begin(), rows().end(), [](const auto& row) {
+    return row.getString("preparation") == "ready";
+  }); }));
+  ASSERT_EQ(8u, rows().size());
+  for (size_t index = 0; index < rows().size(); ++index) {
+    const auto& row = rows()[index];
+    EXPECT_EQ(double(index + 1), row.getNumber("programRevision"));
+    EXPECT_EQ(double(index + 9), row.getNumber("cueRevision"));
+    EXPECT_EQ(double(index + 17), row.getNumber("revision"));
+    EXPECT_EQ("Program " + std::to_string(index + 1), row.get("programFields")->getString("name"));
+    EXPECT_EQ("Cue " + std::to_string(index + 1), row.get("cueFields")->getString("name"));
+    EXPECT_EQ("Private " + std::to_string(index + 1), row.get("fields")->getString("name"));
+    EXPECT_TRUE(row.get("programResource")->isObject());
+    EXPECT_TRUE(row.get("cueResource")->isObject());
+    EXPECT_TRUE(row.get("preparedResource")->isObject());
+  }
+  EXPECT_EQ(program, render()); EXPECT_EQ(cue, render(true));
+  const auto budget = corevideo::graphics::GraphicsResourceBudget::process().counters();
+  EXPECT_LE(budget.gpuBytes, budget.gpuLimit); EXPECT_LE(budget.cpuHighWater, budget.cpuLimit);
+  EXPECT_LE(budget.preparationHighWater, 2u);
+  // Offscreen 320x180 composition/identity coverage, not full-output delivery acceptance.
 }
 
 #endif

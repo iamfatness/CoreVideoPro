@@ -38,10 +38,12 @@ class GraphicsInstances {
   };
   struct Instance {
     std::string id, templateId, scope, sceneId;
-    std::shared_ptr<const Revision> draft, program;
-    std::shared_ptr<const GraphicsPreparedResource> draftResource, programResource;
+    std::shared_ptr<const Revision> draft, cue, pendingCue, program;
+    std::shared_ptr<const GraphicsPreparedResource> draftResource, cueResource, programResource;
+    std::string cuePreparation = "unprepared", cueWarning;
     bool cued = false, showPending = false, updatePending = false;
     uint64_t readyRevision = 0;
+    uint64_t cueRequestedRevision = 0;
     int64_t firstDrawSubmittedFrame = 0;
     std::string preparation = "unprepared", warning;
     GraphicsTimeline timeline;
@@ -53,7 +55,7 @@ class GraphicsInstances {
   modules::CompositorRenderPlanLayer layer(const Instance&, const Revision&) const;
   bool finish(const std::string& requestId, bool accepted, const std::string& reason);
   void publish();
-  void show(Instance& instance);
+  void show(Instance& instance, bool fromCue = false);
   bool advanceAnimations();
   std::function<double()> monotonicMs_;
   std::map<std::string, Instance> instances_;

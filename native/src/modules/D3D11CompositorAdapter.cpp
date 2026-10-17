@@ -304,14 +304,6 @@ class D3D11Compositor final : public ICompositor {
       return frame;
     }
 
-    for (const auto& candidate : deterministicPlan.graphicsPreparations) {
-      const auto& r = candidate.rect;
-      overlayRaster_.rasterOverlayTexture(device_.get(), context_.get(), candidate.overlay,
-          {r.x, r.y, r.width, r.height}, targetWidth_, targetHeight_, "cue:" + candidate.graphicsInstanceId, true);
-      frame.graphicsFacts.push_back({candidate.graphicsInstanceId, candidate.graphicsRevision,
-          overlayRaster_.preparationState(), overlayRaster_.lastWarning(), overlayRaster_.preparedResource()});
-    }
-    // Hidden/cued preparation is not an output degradation.
     overlayRaster_.beginFrame();
     const float background[4] = {0.047f, 0.067f, 0.094f, 1.f};
     ID3D11RenderTargetView* renderTargets[] = {renderTargetView_.get()};
@@ -338,6 +330,17 @@ class D3D11Compositor final : public ICompositor {
     if (overlayRaster_.pendingThisFrame()) frame.warnings.push_back("graphics-preparing");
     if (overlayRaster_.failedThisFrame()) frame.warnings.push_back("graphics-preparation-failed");
     if (!frame.warnings.empty()) frame.health = "degraded";
+    // Admit accepted Program resource work before private/Cue requests. These
+    // nonblocking preparations do not turn a healthy Program into degradation.
+    for (const auto& candidate : deterministicPlan.graphicsPreparations) {
+      const auto& r = candidate.rect;
+      overlayRaster_.rasterOverlayTexture(device_.get(), context_.get(), candidate.overlay,
+          {r.x, r.y, r.width, r.height}, targetWidth_, targetHeight_, candidate.layerId, true,
+          candidate.graphicsPreparedResource);
+      frame.graphicsFacts.push_back({candidate.graphicsInstanceId, candidate.graphicsRevision,
+          overlayRaster_.preparationState(), overlayRaster_.lastWarning(), overlayRaster_.preparedResource()});
+    }
+    overlayRaster_.beginFrame();
     // The pixel-signature and base64 preview both do a blocking GPU->CPU Map
     // readback. On the light ~60fps display tick we skip them — only the GPU shared
     // texture is needed for the on-screen program, and stalling the CPU on a Map

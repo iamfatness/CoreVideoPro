@@ -241,14 +241,14 @@ TEST(GraphicsInstances, EditingCueCannotRetargetAnEarlierPendingProgramShow) {
   EXPECT_EQ("hidden", row(state).getString("visibility"));
 }
 
-TEST(GraphicsInstances, UnsupportedPreviewTargetOnProgramTriggerCannotBeIgnored) {
+TEST(GraphicsInstances, UnsupportedTargetOnProgramTriggerCannotBeIgnored) {
   GraphicsInstances state{"test-core"};
   ASSERT_TRUE(create(state)); ready(state, 1);
-  EXPECT_FALSE(state.apply(request("graphics-instance-trigger", {{"action", "show"}, {"target", "cue"}})));
+  EXPECT_FALSE(state.apply(request("graphics-instance-trigger", {{"action", "show"}, {"target", "preview"}})));
   CompositorRenderPlan plan;
   state.append(plan, false);
   EXPECT_TRUE(plan.layers.empty());
-  EXPECT_EQ("unsupported-request-field", state.snapshot().get("lastResult")->getString("reason"));
+  EXPECT_EQ("invalid-trigger-target", state.snapshot().get("lastResult")->getString("reason"));
 }
 
 TEST(GraphicsInstances, MissingRequiredPrimaryTextCannotReplaceAValidProgramRevision) {
@@ -518,4 +518,100 @@ TEST(GraphicsInstances, AResourceForDifferentContentCannotSatisfyReadinessOrRepl
   CompositorRenderPlan current; state.append(current, false);
   ASSERT_EQ(1u, current.layers.size());
   EXPECT_TRUE(accepted == current.layers.front().graphicsPreparedResource);
+}
+
+TEST(GraphicsInstances, PrivateEditsDoNotReplaceAcceptedCueAndShowFromCueNamesItsExactRevision) {
+  GraphicsInstances state{"test-core"}; ASSERT_TRUE(create(state)); ready(state, 1);
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue")));
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"target", "cue"},
+      {"fields", Json::Object{{"name", "Private edit"}, {"title", ""}}}})));
+  ready(state, 2);
+  CompositorRenderPlan preview; state.append(preview, true);
+  ASSERT_EQ(1u, preview.layers.size()); EXPECT_EQ("Guest", preview.layers.front().overlay.title);
+  EXPECT_EQ(1., row(state).getNumber("cueRevision")); EXPECT_EQ(2., row(state).getNumber("revision"));
+  EXPECT_EQ("Private edit", row(state).get("fields")->getString("name"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"target", "cue"}, {"action", "show"}})));
+  EXPECT_EQ(1., row(state).getNumber("programRevision"));
+  EXPECT_EQ("Guest", row(state).get("programFields")->getString("name"));
+  EXPECT_FALSE(state.apply(request("graphics-instance-trigger", {{"target", "cue"}, {"action", "show"}, {"expectedRevision", 2}})));
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue", {{"expectedRevision", 2}})));
+  EXPECT_EQ(2., row(state).getNumber("cueRevision"));
+  EXPECT_EQ(1., row(state).getNumber("programRevision"));
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger", {{"target", "cue"}, {"action", "show"}, {"expectedRevision", 2}})));
+  EXPECT_EQ("", row(state).get("programFields")->getString("title"));
+}
+
+TEST(GraphicsInstances, PendingCueRetainsItsExplicitRevisionAcrossNewPrivateEdits) {
+  GraphicsInstances state{"test-core"}; ASSERT_TRUE(create(state));
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue")));
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"target", "cue"},
+      {"fields", Json::Object{{"name", "Later private edit"}}}})));
+  CompositorRenderPlan program; state.append(program, false);
+  ASSERT_EQ(2u, program.graphicsPreparations.size());
+  EXPECT_NE(program.graphicsPreparations[0].layerId, program.graphicsPreparations[1].layerId);
+  ready(state, 2);
+  EXPECT_EQ(0., row(state).getNumber("cueRevision"));
+  EXPECT_TRUE(row(state).get("cuePending")->asBool());
+  EXPECT_FALSE(state.apply(request("graphics-instance-trigger", {{"target", "cue"}, {"action", "show"}})));
+  ready(state, 1);
+  EXPECT_EQ(1., row(state).getNumber("cueRevision"));
+  EXPECT_EQ(2., row(state).getNumber("revision"));
+  EXPECT_FALSE(row(state).get("cuePending")->asBool());
+  EXPECT_EQ("Guest", row(state).get("cueFields")->getString("name"));
+}
+
+TEST(GraphicsInstances, FailedCueReplacementKeepsAcceptedCueAndLateReadinessCannotRecueIt) {
+  GraphicsInstances state{"test-core"}; ASSERT_TRUE(create(state)); ready(state, 1);
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue")));
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"target", "cue"},
+      {"fields", Json::Object{{"name", "Replacement"}}}})));
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue", {{"expectedRevision", 2}})));
+  ProgramFrame failed; failed.graphicsFacts.push_back({"featured", 2, "failed", "font-unavailable"});
+  state.observe(failed);
+  EXPECT_EQ(1., row(state).getNumber("cueRevision"));
+  EXPECT_EQ(2., row(state).getNumber("cueRequestedRevision"));
+  EXPECT_EQ("failed", row(state).getString("cuePreparation"));
+  EXPECT_FALSE(row(state).get("cuePending")->asBool());
+  ready(state, 2);
+  EXPECT_EQ(1., row(state).getNumber("cueRevision")); // completion is not another Cue action
+  CompositorRenderPlan preview; state.append(preview, true);
+  ASSERT_EQ(1u, preview.layers.size()); EXPECT_EQ("Guest", preview.layers.front().overlay.title);
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue", {{"expectedRevision", 2}})));
+  EXPECT_EQ(2., row(state).getNumber("cueRevision"));
+}
+
+TEST(GraphicsInstances, SubjectReplacementInvalidatesAcceptedCueWithoutAReplay) {
+  GraphicsInstances state{"test-core"}; auto frames = sourceFrames();
+  state.observeZoomSources({guest()}, 7, frames);
+  ASSERT_TRUE(createBound(state)); ready(state, 1);
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue")));
+  EXPECT_EQ(1., row(state).getNumber("cueRevision"));
+  state.observeZoomSources({guest(2)}, 7, sourceFrames(2));
+  EXPECT_EQ(0., row(state).getNumber("cueRevision"));
+  EXPECT_EQ("source-identity-changed", row(state).getString("cueWarning"));
+  ready(state, 1);
+  EXPECT_EQ(0., row(state).getNumber("cueRevision"));
+  EXPECT_FALSE(state.apply(request("graphics-instance-trigger", {{"target", "cue"}, {"action", "show"}})));
+}
+
+TEST(GraphicsInstances, RetiringAnOldSubjectCannotCancelAnExplicitPendingCueForAnotherValidSubject) {
+  GraphicsInstances state{"test-core"};
+  auto other = guest(); other.id = 55;
+  auto otherFrame = sourceFrames().front(); otherFrame.participantId = "55";
+  auto frames = sourceFrames(); frames.push_back(otherFrame);
+  state.observeZoomSources({guest(), other}, 7, frames);
+  ASSERT_TRUE(createBound(state)); ready(state, 1);
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue")));
+  const auto nextBinding = *state.snapshot().get("sources")->asArray()[1].get("identity");
+  ASSERT_TRUE(state.apply(request("graphics-instance-update", {{"target", "cue"}, {"binding", nextBinding},
+      {"fields", Json::Object{{"name", "Other guest"}}}})));
+  ASSERT_TRUE(state.apply(request("graphics-instance-cue", {{"expectedRevision", 2}})));
+  frames = sourceFrames(2); frames.push_back(otherFrame);
+  state.observeZoomSources({guest(2), other}, 7, frames);
+  EXPECT_EQ(0., row(state).getNumber("cueRevision"));
+  EXPECT_TRUE(row(state).get("cuePending")->asBool());
+  EXPECT_EQ("preparing", row(state).getString("cuePreparation"));
+  ready(state, 2);
+  EXPECT_EQ(2., row(state).getNumber("cueRevision"));
+  EXPECT_EQ("zoom:55", row(state).get("cueBinding")->getString("sourceId"));
 }

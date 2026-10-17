@@ -48,7 +48,10 @@ public sealed class GraphicsCommandGatewayTests
     }
 
     [Theory]
-    [InlineData("graphics.instance.trigger", "\"action\":\"show\",\"target\":\"cue\"")]
+    [InlineData("graphics.instance.trigger", "\"action\":\"show\",\"target\":\"preview\"")]
+    [InlineData("graphics.instance.trigger", "\"action\":\"hide\",\"target\":\"cue\"")]
+    [InlineData("graphics.instance.trigger", "\"action\":\"clear\",\"target\":\"cue\"")]
+    [InlineData("graphics.instance.trigger", "\"action\":\"show\",\"target\":\"\"")]
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"target\":\"program\"")]
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"fields\":{\"name\":\"One\",\"name\":\"Two\"}")]
     [InlineData("graphics.instance.update", "\"target\":\"cue\",\"style\":{\"nameSize\":\"huge\"}")]
@@ -85,6 +88,15 @@ public sealed class GraphicsCommandGatewayTests
         Assert.True(GraphicsCommandRequest.TryBuild("graphics.instance.update", request, Observed, out var command, out _, out _));
         Assert.Equal("1.0", command!.ExtensionData!["graphics"].GetProperty("expectedRevision").GetRawText());
         Assert.Equal(65, command.ExtensionData["graphics"].GetProperty("style").GetProperty("nameSize").GetInt32());
+    }
+
+    [Fact]
+    public void ShowFromCueKeepsItsExplicitTargetAndRevisionForNativeValidation()
+    {
+        var request = Request("\"target\":\"cue\",\"action\":\"show\"");
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.instance.trigger", request, Observed, out var command, out _, out _));
+        Assert.Equal("cue", command!.ExtensionData!["graphics"].GetProperty("target").GetString());
+        Assert.Equal(1, command.ExtensionData["graphics"].GetProperty("expectedRevision").GetInt32());
     }
 
     [Fact]

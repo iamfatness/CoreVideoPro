@@ -1115,6 +1115,8 @@ TEST(D3D11Compositor, GraphicsCueAndProgramAdoptCompleteNativeRevisionsIndepende
   ASSERT_TRUE(pumpUntil([&] { return row().getString("preparation") == "ready"; }));
   EXPECT_EQ(1., row().getNumber("programRevision"));
   EXPECT_EQ(first.preview.bgra, render().preview.bgra);
+  EXPECT_EQ(first.preview.bgra, render(true).preview.bgra);
+  ASSERT_TRUE(command("graphics-instance-cue", {{"expectedRevision", 2}}));
   const auto cue = render(true);
   EXPECT_NE(first.preview.bgra, cue.preview.bgra);
   ASSERT_TRUE(command("graphics-instance-update", {{"expectedRevision", 2}, {"target", "program"}}));
