@@ -14,6 +14,9 @@ PRs and qualify the immutable Windows assets. Release blocker
 hash its payload without optional PowerShell command discovery; require actual
 clean-runner install/probe/uninstall before publication. Full-workload frame
 acceptance remains governed by #930.
+Post-merge release gate [#943](https://github.com/iamfatness/CoreVideoPro/issues/943):
+eliminate RPC writer shutdown lost wakes; retain the 900-second failed native
+run and require a forced-race regression plus fresh beta qualification.
 
 **Owner approval, October 16 — first Volt milestone:** execute the approved
 graphics specification through [#926](https://github.com/iamfatness/CoreVideoPro/issues/926)
