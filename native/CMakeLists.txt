@@ -244,8 +244,19 @@ if(COREVIDEO_WITH_D3D11)
   # shader's cs_5_0/O3 settings. Cold HLSL compilation must not delay camera
   # framing every time its isolated preparation worker starts.
   get_filename_component(corevideo_sdk_tools "${CMAKE_RC_COMPILER}" DIRECTORY)
+  # A CXX-only VS configure can run without RC or a developer-shell SDK env.
+  # Resolve an installed SDK tool explicitly on clean hosted Windows runners.
+  file(GLOB corevideo_sdk_fxc_candidates
+    "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/*/x64/fxc.exe"
+    "$ENV{ProgramFiles}/Windows Kits/10/bin/*/x64/fxc.exe")
+  list(SORT corevideo_sdk_fxc_candidates COMPARE NATURAL ORDER DESCENDING)
+  set(corevideo_sdk_fxc_paths "${corevideo_sdk_tools}")
+  foreach(corevideo_fxc_candidate IN LISTS corevideo_sdk_fxc_candidates)
+    get_filename_component(corevideo_fxc_directory "${corevideo_fxc_candidate}" DIRECTORY)
+    list(APPEND corevideo_sdk_fxc_paths "${corevideo_fxc_directory}")
+  endforeach()
   find_program(COREVIDEO_FXC NAMES fxc.exe HINTS
-    "${corevideo_sdk_tools}"
+    ${corevideo_sdk_fxc_paths}
     "$ENV{WindowsSdkVerBinPath}/x64"
     "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
     REQUIRED)
