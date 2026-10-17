@@ -1,4 +1,6 @@
 $ErrorActionPreference = 'Stop'
+# Reproduce the installer's module-resolution failure for all identity checks.
+function Get-FileHash { throw 'Get-FileHash must not be required by camera setup.' }
 Import-Module (Join-Path $PSScriptRoot 'VirtualCameraRegistration.psm1') -Force
 $count = 0
 function Assert-Decision([string]$Expected, [hashtable]$Arguments) {
@@ -45,7 +47,13 @@ New-Item -ItemType Directory -Path $transactions -Force | Out-Null
 $ownerDll = Join-Path $temporary 'corevideo-virtualcam.dll'
 $bytes = [byte[]]@(1,2,3,4)
 [IO.File]::WriteAllBytes($ownerDll, $bytes)
-$hash = (Get-FileHash -LiteralPath $ownerDll).Hash.ToLowerInvariant()
+$hash = Get-CameraPayloadSha256 $ownerDll
+if ($hash -ne '9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a') { throw 'Camera payload SHA256 differs from known byte vector.' }
+$count++
+$missingRejected = $false
+try { Get-CameraPayloadSha256 (Join-Path $temporary 'missing.dll') | Out-Null } catch { $missingRejected = $true }
+if (-not $missingRejected) { throw 'Missing camera payload received a usable identity.' }
+$count++
 $version = Join-Path $temporary $hash
 New-Item -ItemType Directory -Path $version | Out-Null
 $runtime = Join-Path $version 'corevideo-virtualcam.dll'

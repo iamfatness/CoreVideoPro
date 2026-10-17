@@ -4,6 +4,10 @@ param([ValidateSet('Install','Uninstall','Rollback','Inspect')][string]$Action =
     [switch]$MachineOnly,
     [string]$OwnerSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
 $ErrorActionPreference = 'Stop'
+# A PowerShell 7 parent can export its module path to NSIS's Windows PowerShell
+# child. Load the host's built-in ACL commands explicitly, rather than finding
+# an incompatible Microsoft.PowerShell.Security module through that path.
+Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 Import-Module (Join-Path $PSScriptRoot 'VirtualCameraRegistration.psm1') -Force
 $app = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $AppDirectory).Path).TrimEnd('\')
 $serverKey = 'SOFTWARE\Classes\CLSID\{8B4B2C9E-2C4A-4E1D-9C7A-CDEF01234567}\InprocServer32'
@@ -25,7 +29,7 @@ if ($Action -eq 'Install' -and -not $MachineOnly) {
     } finally { $currentUser.Dispose() }
 }
 if ($Action -eq 'Inspect') {
-    $actualHash = if ($machine.Path -and (Test-Path -LiteralPath $machine.Path -PathType Leaf)) { (Get-FileHash -LiteralPath $machine.Path).Hash.ToLowerInvariant() } else { '' }
+    $actualHash = if ($machine.Path -and (Test-Path -LiteralPath $machine.Path -PathType Leaf)) { (Get-CameraPayloadSha256 $machine.Path) } else { '' }
     $loaded = @()
     $moduleInspection = 'unverified'
     try {
@@ -91,7 +95,7 @@ if (-not $admin -and $machineChangeNeeded) {
     try {
         if ($Action -eq 'Install') {
             $source = Join-Path $app 'corevideo-virtualcam.dll'
-            $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+            $hash = (Get-CameraPayloadSha256 $source)
             $destination = Join-Path (Join-Path $root $hash) 'corevideo-virtualcam.dll'
             Assert-CameraRuntimePath $root $destination
             New-Item -ItemType Directory -Path $root -Force | Out-Null
@@ -99,16 +103,16 @@ if (-not $admin -and $machineChangeNeeded) {
             New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
             Set-Acl -LiteralPath (Split-Path -Parent $destination) -AclObject (New-CameraRuntimeAcl $true)
             if (Test-Path -LiteralPath $destination) {
-                if ((Get-FileHash -LiteralPath $destination).Hash.ToLowerInvariant() -ne $hash) { throw 'Protected camera DLL hash does not match its version directory.' }
+                if ((Get-CameraPayloadSha256 $destination) -ne $hash) { throw 'Protected camera DLL hash does not match its version directory.' }
             } else { Copy-Item -LiteralPath $source -Destination $destination }
-            if ((Get-FileHash -LiteralPath $destination).Hash.ToLowerInvariant() -ne $hash) { throw 'Camera DLL changed during installation.' }
+            if ((Get-CameraPayloadSha256 $destination) -ne $hash) { throw 'Camera DLL changed during installation.' }
             # Only our own machine runtime directories/DLL receive these ACLs.
             # Administrators own them; users and LocalService can read/execute.
             Set-Acl -LiteralPath $destination -AclObject (New-CameraRuntimeAcl $false)
             New-Item -ItemType Directory -Path (Split-Path -Parent $backupPath) -Force | Out-Null
             Set-Acl -LiteralPath (Split-Path -Parent $backupPath) -AclObject (New-CameraRuntimeAcl $true)
             if ($machine.AppDirectory -ne $app -or $machine.Path -ne $destination) {
-                $previousHash = if ($machine.Path -and (Test-Path -LiteralPath $machine.Path -PathType Leaf)) { (Get-FileHash -LiteralPath $machine.Path).Hash } else { '' }
+                $previousHash = if ($machine.Path -and (Test-Path -LiteralPath $machine.Path -PathType Leaf)) { (Get-CameraPayloadSha256 $machine.Path) } else { '' }
                 $backup = [ordered]@{ previous=$machine; previousHash=$previousHash; installed=$destination; owner=$app }
                 $backup | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $backupPath
                 Set-Acl -LiteralPath $backupPath -AclObject (New-CameraRuntimeAcl $false)
@@ -125,7 +129,7 @@ if (-not $admin -and $machineChangeNeeded) {
             if ($backup.owner -ne $app -or $backup.installed -ne $machine.Path) { throw 'Rollback ownership mismatch.' }
             if ($backup.previous.Path) {
                 if (-not (Test-Path -LiteralPath $backup.previous.Path -PathType Leaf)) { throw 'Previous camera DLL is missing; rollback cannot be completed.' }
-                if ((Get-FileHash -LiteralPath $backup.previous.Path).Hash -ne $backup.previousHash) { throw 'Previous camera DLL changed; rollback cannot be completed.' }
+                if ((Get-CameraPayloadSha256 $backup.previous.Path) -ne $backup.previousHash) { throw 'Previous camera DLL changed; rollback cannot be completed.' }
                 if ($backup.previous.Role -eq 'CoreVideoPro.VirtualCamera.v1' -and -not (Test-Path -LiteralPath (Join-Path $backup.previous.AppDirectory 'corevideo-virtualcam.dll') -PathType Leaf)) { throw 'Previous owning installation was removed; rollback cannot restore that owner.' }
             }
             Set-CameraMachineRegistration $backup.previous

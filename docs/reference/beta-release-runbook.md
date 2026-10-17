@@ -26,6 +26,10 @@ beta path. Steps:
    The clean Windows runner verifies tag/manifest/hash identity, exercises the
    real package validator's negative fixtures, installs, probes and uninstalls
    those exact assets. Publish only after that job and main CI pass.
+   Silent setup requires an administrator context and the manifest's VC runtime
+   minimum already installed. The workflow verifies and installs the exact
+   Microsoft-signed redistributable embedded in the installer before exercising
+   failure cases; a prerequisite rejection must not count as an ownership test.
 5. **Publish.** `gh release create <tag> --prerelease --target <sha>` with the six assets: the zip,
    the Setup .exe, their `.sha256` files, their manifests, and the top-level manifest.
 
