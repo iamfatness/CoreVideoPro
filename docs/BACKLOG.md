@@ -10,6 +10,8 @@ restart. See [specification](reference/volt-graphics-spec.md),
 
 **Owner direction, October 15:** diagnose and fix #916 source video delay in
 Inspect using API/offscreen validation; preserve the running installed app.
+**Owner direction, October 15:** implement #920 alongside the #916 source-preview
+investigation; validate repeated active Join through API/isolated tests without desktop input.
 
 **Owner direction, October 15, approved Sources design:** implement #590 as the
 table-first workspace with inline quick source patching, an optional inspector and connected existing grade
@@ -193,6 +195,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 |---|---|---|---|
 | Owner current — October 16, specification only | B | [#924](https://github.com/iamfatness/CoreVideoPro/issues/924) | Reconcile and specify the graphics/templates/styles/automation milestone for owner review; implementation order awaits that review. |
 | Owner current — October 15 | B | [#916](https://github.com/iamfatness/CoreVideoPro/issues/916) | Diagnose select-to-first-present latency, reproduce the exact cause and fix it with API/offscreen evidence; keep the installed app/session untouched. |
+| Owner current — October 15 | B | [#920](https://github.com/iamfatness/CoreVideoPro/issues/920) | Fix repeated active Join retaining retired SDK subscriptions and held frames; test lifetime fences and fresh re-subscription without desktop input. |
 | 1 — October 15 UI/UX | B | [#591](https://github.com/iamfatness/CoreVideoPro/issues/591) | Finish stable-input scene creation and layout fallbacks, quick solo/two-person/share starters, preserved custom routes and fresh/upgraded profile evidence. |
 | 2 — October 15 UI/UX | B | [#590](https://github.com/iamfatness/CoreVideoPro/issues/590), [#882](https://github.com/iamfatness/CoreVideoPro/issues/882) | Sources assignment/offline clarity and identity-safe thumbnail removal/reassignment acceptance. Count one primary development issue per focused PR. |
 | 3 — October 15 UI/UX | B | [#848](https://github.com/iamfatness/CoreVideoPro/issues/848) | Finish shared adjustment consistency and actual effect/persistence checks, followed by the approved existing lower-third, grading/ROI and navigation consumers. |

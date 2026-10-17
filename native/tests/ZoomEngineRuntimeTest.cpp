@@ -1120,6 +1120,51 @@ TEST(ZoomEngineRuntime, AuthAndJoinTimeoutsRetireHelperAndRejectLateEvents) {
   unsetEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS");
 }
 
+TEST(ZoomEngineRuntime, ActiveJoinRetiresOldHelperInsteadOfReturningItsJoinedState) {
+  using namespace corevideo::modules;
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/missing/corevideo-zoom-engine.exe");
+  setEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS", "0");
+  {
+    ZoomEngineRuntime runtime;
+    auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+    runtime.installEngineProcessForTest(fake);
+    runtime.applyEngineEventForTest({ZoomEngineEventKind::Joined});
+    ZoomEngineRuntimeTestAccess::seedSubscribedVideoCaches(runtime, "old-camera", 42);
+    const auto oldGeneration = ZoomEngineRuntimeTestAccess::generation(runtime);
+    const auto result = runtime.join(corevideo::rpc::Json::Object{{"meetingNumber", "987654321"}});
+    // Replacement deliberately cannot launch. Success here can only have come
+    // from the previous meeting, and its SDK must not remain alive/subscribed.
+    EXPECT_FALSE(fake->running());
+    EXPECT_EQ(result.getString("meetingState"), "error");
+    EXPECT_FALSE(ZoomEngineRuntimeTestAccess::hasVideoCaches(runtime, "old-camera", 42));
+    EXPECT_GT(ZoomEngineRuntimeTestAccess::generation(runtime), oldGeneration);
+    ZoomEngineRuntimeTestAccess::applyFromGeneration(runtime, {ZoomEngineEventKind::Joined}, oldGeneration);
+    EXPECT_EQ(runtime.snapshot().getString("meetingState"), "error");
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+  unsetEnv("COREVIDEO_ZOOM_JOIN_WAIT_MS");
+}
+
+TEST(ZoomEngineRuntime, InvalidJoinDoesNotRetireAnActiveMeeting) {
+  using namespace corevideo::modules;
+  setEnv("COREVIDEO_ZOOM_ENGINE_PATH", "C:/missing/corevideo-zoom-engine.exe");
+  {
+    ZoomEngineRuntime runtime;
+    auto fake = std::make_shared<FakeZoomEngineProcessClient>();
+    runtime.installEngineProcessForTest(fake);
+    runtime.applyEngineEventForTest({ZoomEngineEventKind::Joined});
+    ZoomEngineRuntimeTestAccess::seedSubscribedVideoCaches(runtime, "old-camera", 42);
+    const auto generation = ZoomEngineRuntimeTestAccess::generation(runtime);
+    const auto result = runtime.join(corevideo::rpc::Json::Object{{"meetingUrl", "https://zoom.us/j/invalid"}});
+    EXPECT_EQ(result.getString("meetingState"), "error");
+    EXPECT_EQ(runtime.snapshot().getString("meetingState"), "in_meeting");
+    EXPECT_TRUE(fake->running());
+    EXPECT_TRUE(ZoomEngineRuntimeTestAccess::hasVideoCaches(runtime, "old-camera", 42));
+    EXPECT_EQ(ZoomEngineRuntimeTestAccess::generation(runtime), generation);
+  }
+  unsetEnv("COREVIDEO_ZOOM_ENGINE_PATH");
+}
+
 TEST(ZoomEngineRuntime, LateFrameDuringShutdownCannotReplaceJoinableIngestThread) {
   using namespace corevideo::modules;
   ZoomEngineRuntime runtime;
