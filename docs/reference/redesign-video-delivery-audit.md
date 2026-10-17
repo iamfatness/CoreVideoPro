@@ -134,6 +134,15 @@ with zero underruns/overflows. It drains the submitted tail instead of counting
 intentional idle time after the producer stops. It is still a short regression,
 not full-workload qualification.
 
+Program preparation, scheduled delivery and asynchronous camera publication
+register their own threads with Windows MMCSS under `Playback`. Audio retains
+its existing `Pro Audio` registration. The video registration is scoped to the
+worker lifetime and logs success/failure; it does not change process priority,
+registry policy or optional display-worker priority. A high-resolution timer
+alone does not guarantee that an ordinary-priority delivery worker runs when
+its timer fires. Keep readiness failures separate from late publication of an
+already GPU-ready frame when interpreting a trace.
+
 The independent receiver retains bounded observation records in memory during
 capture and writes NDJSON afterward. Synchronous diagnostic disk/pipe writes
 must not delay its next ReadSample. Original monotonic arrival times, sample

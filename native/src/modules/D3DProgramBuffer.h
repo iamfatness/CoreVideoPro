@@ -3,6 +3,7 @@
 #include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
 #include "core/DeliveryTrace.h"
+#include "core/ScopedVideoScheduling.h"
 
 // Windows-only implementation, included by the D3D adapter after the SDK headers.
 #include "compositor/ComPtrLite.h"
@@ -432,6 +433,7 @@ class D3DProgramBuffer {
     }
   }
   void prepareLoop() {
+    core::ScopedVideoScheduling scheduling("program-preparation");
     for (;;) {
       Slot* slot;
       {
@@ -550,6 +552,7 @@ class D3DProgramBuffer {
     }
   }
   void deliveryLoop() {
+    core::ScopedVideoScheduling scheduling("program-delivery");
     const HANDLE timer = ::CreateWaitableTimerExW(
         nullptr, nullptr,
         CREATE_WAITABLE_TIMER_HIGH_RESOLUTION | CREATE_WAITABLE_TIMER_MANUAL_RESET,
