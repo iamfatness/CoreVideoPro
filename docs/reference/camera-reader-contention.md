@@ -20,14 +20,18 @@ invalidate the failure.
 
 Capture an absolute read deadline before pacing or sample allocation: the
 original next sample boundary minus 2 ms for copy/event delivery. Recovery may
-wait at most 2 ms and may never exceed that original deadline. A late request
-gets no renewed frame budget.
+not begin another wait after that original deadline. A late request gets no
+renewed frame budget. After a delayed wake, one final read can recover pixels
+that became ready during the wait; finishing late remains observable as a miss.
 Retry only unchanged/contended publication, yielding through a high-resolution
-timer for at most 250 microseconds per attempt, eight attempts, and two payload
+timer for at most 250 microseconds per attempt, 64 attempts, and two payload
 copies shared across all attempts. Missing or invalid publishers do not retry.
 Never count held/slate pixels as fresh. Never reset failure totals for acceptance.
 The existing sample pacing, SHM layout, output resolution and buffer depth stay
-unchanged. An explicit retry-off environment setting is a diagnostic control.
+unchanged, with rational fractional-tick pacing retained. An explicit retry-off
+environment setting is a diagnostic control. This combined contract retains the
+original-deadline fence from #909 and late-wake recovery from #932; historical
+trials below qualify their original binaries, not this integration.
 
 The serving log exposes writer-active observations, changes during copy, payload
 budget exhaustion, recovery attempts/successes and reads finishing beyond their
@@ -39,7 +43,8 @@ Deadline misses remain failures even if usable pixels are eventually obtained.
 Release tests use the actual mapped reader at 1920x1080. Holding its sequence
 odd makes the immediate negative control fail without consuming payload copies;
 completing the write during the bounded wait returns the exact payload. Deadline
-tests reject retries after late entry or an overslept wait. Actual DLL tests
+tests reject renewed waits after late entry or an overslept wait, and require
+the final read to recover an already-ready publication. Actual DLL tests
 retain fresh/held/slate sample counts, pixels and timestamps across recovery.
 
 The API probe can load an explicit DLL in its diagnostic receiver process.
