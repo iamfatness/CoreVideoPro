@@ -16,6 +16,8 @@ public sealed record NativeGraphicsState
     public NativeGraphicsResourceBudget? ResourceBudgetAtStatePublication { get; init; }
     public IReadOnlyList<NativeGraphicsTemplate> Templates { get; init; } = [];
     public IReadOnlyList<NativeGraphicsTemplateInstall> TemplateInstalls { get; init; } = [];
+    public long EncodedTemplateAssetBytes { get; init; }
+    public long EncodedTemplateAssetLimit { get; init; }
 }
 
 public sealed record NativeGraphicsTemplateInstall
@@ -36,6 +38,7 @@ public sealed record NativeGraphicsTemplate
     public string Runtime { get; init; } = "";
     public string ManifestHash { get; init; } = "";
     public JsonElement? Definition { get; init; }
+    public string PackageRoot { get; init; } = "";
     public JsonElement? Canvas { get; init; }
     public JsonElement? Bounds { get; init; }
     public IReadOnlyList<NativeGraphicsTemplateField> Fields { get; init; } = [];

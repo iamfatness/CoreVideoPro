@@ -50,8 +50,48 @@ Same ID/version with different content is refused. At most two imports are pendi
 the 16-entry result history is bounded. Catalog publication is an immutable lease.
 The catalog includes the exact definition and canonical SHA-256 for lossless
 save/export; shell reconstruction of omitted defaults is not authoritative.
-This is document import, not yet archive/asset import: image primitives, package
-asset validation and archive expansion remain incomplete.
+
+`graphics.template.install` also accepts a local `packagePath` ZIP/`.cvgraphics`
+archive through the shell/API gateway. A separate bounded input worker validates
+32 MiB compressed, 128 MiB expanded and 128 files, unique paths, declared inert
+PNG/JPEG members, hashes and metadata. It refuses traversal, case aliases, links,
+special files, nested archives and executable/undeclared members. Archive validation
+cannot hold the short native command gate: manual Hide/Clear remain available.
+The native worker independently validates the manifest, package root, local file
+paths, hashes and bounded image headers before installing a version. Raw native
+clients can supply `manifest` plus `packageRoot` instead of an archive.
+
+Images use `asset` IDs or typed image-field references, contain/cover alignment,
+clipping and premultiplied transparency. Actual package files have the exact path
+`assets/<lowercase-sha256>.png|jpg|jpeg`. No ID is interpreted as a file/URL.
+The native owner retains verified immutable encoded bytes; later file changes
+cannot change an accepted graphic. Identical asset hashes share bytes across
+versions. The encoded pool is bounded at 128 MiB, with at most one 128 MiB package
+read in progress per registry; it is separate from the decoded pixel budget.
+Published `encodedTemplateAssetBytes/Limit` describe that pool. The inert disk
+cache admits at most 512 MiB / 2,048 files and refuses when full rather than
+deleting pinned assets. Explicit re-import can repair future instances without
+mutating accepted Program/Cue revisions.
+
+Native WIC header/decode/raster work runs on the preparation owner. New image
+decoding reserves a decoder/conversion/destination allowance of 12 bytes per
+source pixel in the shared CPU budget before full pixel conversion; source
+headers are limited to 4,096 per edge / 16 megapixels. CPU owners release before
+their admission charge. Driver/library overhead is not measured by this model.
+An independent source fixture proves opaque red and half-alpha green over blue
+Program pixels, including unchanged accepted output after the package file is
+replaced. JPEG header and WIC paths are implemented; that pixel trial qualifies
+PNG, not every JPEG/ICC/profile combination or output backend.
+
+Missing required images block readiness. Optional omissions require both an
+optional asset declaration and an image node's explicit `missing:"hide"` policy;
+the resulting warning remains visible. Numeric field references drive geometry,
+opacity and typography in reference units. Boolean `visible` references remove
+the hidden node from layout while still validating its schema. Required fields
+with no native layer consumer are refused. The editor uses image choices,
+color/alpha pickers and declared choices; it does not enable an unused field or
+unconsumed brand/style control. Incomplete private fields do not repeatedly submit
+invalid preview requests.
 
 Declarative fields follow advertised types/ranges/choices. The style boundary
 accepts only consumed placement/color/font values; compatibility-only width,
@@ -81,7 +121,8 @@ external-write conflicts and unknown metadata preservation. Neither load nor sav
 creates native instances or arms automation. Explicit Restore creates a new hidden
 instance, refuses a mismatched template hash and requires explicit rebinding of a
 saved source-bound cue. Loading a different native core never replays Show.
-The development profile can set `COREVIDEO_GRAPHICS_DOCUMENT_PATH`; the normal
+The development profile can set `COREVIDEO_GRAPHICS_DOCUMENT_PATH` and
+`COREVIDEO_GRAPHICS_ASSET_ROOT`; the normal
 location is `CoreVideoPro/graphics/default.json` under local application data.
 Legacy authority/source-override migration remains incomplete.
 
@@ -260,7 +301,7 @@ supports direct Zoom cameras; Tiles and nested scene membership remain to be
 qualified. There is no automatic participant reveal in this slice.
 
 Scene filtering, direct-camera bindings and independent accepted Cue are present.
-Archive/assets, complete legacy migration and workspace parity, other graphic
+Complete legacy migration and workspace parity, other graphic
 families and automation remain requirements of the approved feature. Their absence must not be hidden
 by the compatibility instance capability. Metal does not announce this instance
 capability yet. No installed app/profile/camera ownership changes are part of

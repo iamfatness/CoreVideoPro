@@ -17,18 +17,19 @@ GraphicsTemplateRegistry::~GraphicsTemplateRegistry() {
 std::shared_ptr<const GraphicsTemplateRegistry::Publication> GraphicsTemplateRegistry::poll() const {
   return std::atomic_load(&publication_);
 }
-std::string GraphicsTemplateRegistry::submit(const std::string& client, const std::string& request, const std::string& manifest) {
+std::string GraphicsTemplateRegistry::submit(const std::string& client, const std::string& request, const std::string& manifest, const std::string& packageRoot) {
   if (manifest.empty() || manifest.size() > 256 * 1024) return "template-manifest-size";
+  if (packageRoot.size() > 2048 || packageRoot.find('\0') != std::string::npos) return "graphics-package-root-invalid";
   // Never wait for validation/catalog publication. Contention is retryable.
   std::unique_lock lock(mutex_, std::try_to_lock);
   if (!lock.owns_lock()) return "template-import-busy";
   for (const auto& old : history_) if (old->client == client && old->request == request)
-    return old->manifest == manifest ? "template-install-queued" : "request-id-reused";
+    return old->manifest == manifest && old->packageRoot == packageRoot ? "template-install-queued" : "request-id-reused";
   size_t pending = 0;
   for (const auto& old : history_) if (old->state == "queued" || old->state == "validating") ++pending;
   if (pending >= 2) return "template-import-busy";
   // No work/status construction under the deadline: wake the owner to publish.
-  auto job = std::make_shared<Job>(Job{client, request, manifest, "queued", ""});
+  auto job = std::make_shared<Job>(Job{client, request, manifest, "queued", "", packageRoot});
   if (history_.size() == 16) {
     if (history_.front()->state == "queued" || history_.front()->state == "validating") return "template-import-busy";
     history_.pop_front();
@@ -48,6 +49,7 @@ void GraphicsTemplateRegistry::publishLocked() {
     // Exact package document for save/export. Typed UI descriptors cannot
     // reconstruct omitted defaults or round-trip arbitrary metadata faithfully.
     row["definition"] = definition->document();
+    const auto origin = origins_.find(key); if (origin != origins_.end()) row["packageRoot"] = origin->second;
     std::string hash; static constexpr char hex[] = "0123456789abcdef";
     for (auto byte : definition->hash()) { hash += hex[byte >> 4]; hash += hex[byte & 15]; }
     row["manifestHash"] = std::move(hash); catalog.emplace_back(std::move(row));
@@ -55,6 +57,7 @@ void GraphicsTemplateRegistry::publishLocked() {
   for (const auto& job : history_) installs.emplace_back(Json::Object{
     {"clientId", job->client}, {"requestId", job->request}, {"state", job->state}, {"reason", job->reason}});
   publication->definitions = definitions_; publication->catalog = std::move(catalog); publication->installs = std::move(installs);
+  publication->encodedAssetBytes = assetBytes_;
   std::atomic_store(&publication_, std::shared_ptr<const Publication>(std::move(publication)));
 }
 void GraphicsTemplateRegistry::run() {
@@ -67,6 +70,26 @@ void GraphicsTemplateRegistry::run() {
     }
     std::string error;
     auto definition = GraphicsTemplate::load(job->manifest, error);
+    GraphicsAssets assets;
+    if (definition && !loadGraphicsAssets(definition->document(), job->packageRoot, assets, error)) definition.reset();
+    // Reuse verified immutable bytes across IDs and versions. Only this worker
+    // touches the pool; failed/colliding imports never publish new pool entries.
+    std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> newAssets;
+    uint64_t addedBytes = 0;
+    if (definition) {
+      for (auto& entry : assets) {
+        auto asset = std::make_shared<GraphicsAsset>(*entry.second);
+        const auto existing = assetPool_.find(asset->sha256);
+        if (existing != assetPool_.end()) asset->encoded = existing->second;
+        else {
+          const auto [found, inserted] = newAssets.emplace(asset->sha256, asset->encoded);
+          if (inserted) addedBytes += asset->encoded->size(); else asset->encoded = found->second;
+        }
+        entry.second = std::move(asset);
+      }
+      if (addedBytes > 128ull * 1024 * 1024 - assetBytes_) { error = "graphics-encoded-asset-capacity"; definition.reset(); }
+      else definition = GraphicsTemplate::load(job->manifest, error, std::move(assets));
+    }
     const auto bytes = definition ? definition->document().stringify().size() : 0;
     {
       std::lock_guard lock(mutex_);
@@ -77,8 +100,14 @@ void GraphicsTemplateRegistry::run() {
         if (key.first == "compact-solid" || key.first == "minimal-accent" || key.first == "broadcast") error = "template-id-reserved";
         else if (found != definitions_.end()) {
           if (found->second->hash() != definition->hash()) error = "template-version-immutable";
+          else definitions_[key] = definition; // explicit repair affects future instances only
         } else if (definitions_.size() >= 16 || documentBytes_ + bytes > 256 * 1024) error = "template-library-capacity";
         else { definitions_[key] = definition; documentBytes_ += bytes; }
+        if (error.empty()) {
+          for (auto& asset : newAssets) assetPool_.emplace(std::move(asset));
+          assetBytes_ += addedBytes;
+          origins_[key] = job->packageRoot;
+        }
       }
       job->state = error.empty() && definition ? "installed" : "failed";
       job->reason = error;

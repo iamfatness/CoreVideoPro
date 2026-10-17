@@ -1,6 +1,7 @@
 #include "graphics/GraphicsTemplate.h"
 #include "graphics/GraphicsTemplateRegistry.h"
 #include "gtest/gtest.h"
+#include "GraphicsAssetFixture.h"
 #include <chrono>
 #include <thread>
 
@@ -146,4 +147,103 @@ TEST(GraphicsTemplate, MetadataRoundTripsAndChangesContentIdentityWithoutMutable
   EXPECT_NE(GraphicsTemplate::corporateLowerThird()->hash(), definition->hash());
   const auto again = GraphicsTemplate::load(definition->document().stringify(), error); ASSERT_NE(again, nullptr);
   EXPECT_EQ(definition->hash(), again->hash());
+}
+
+TEST(GraphicsAssets, PackageRootHashesHeadersAndImmutableBytesAreValidatedBeforeRendering) {
+  std::string error;
+  const auto asset = corevideo::graphics::graphicsAssetFromBytes("logo", graphicsTest::png(), error); ASSERT_TRUE(asset);
+  EXPECT_EQ(2, asset->width); EXPECT_EQ(1, asset->height);
+  const auto document = graphicsTest::imageDocument(asset);
+  corevideo::graphics::GraphicsAssets assets;
+  EXPECT_FALSE(corevideo::graphics::loadGraphicsAssets(document, "", assets, error));
+  graphicsTest::Package package(asset);
+  ASSERT_TRUE(corevideo::graphics::loadGraphicsAssets(document, package.root.string(), assets, error));
+  ASSERT_EQ(1u, assets.size()); EXPECT_EQ(asset->sha256, assets.at("logo")->sha256);
+  auto definition = GraphicsTemplate::load(document.stringify(), error, assets); ASSERT_TRUE(definition);
+  GraphicsDrawing drawing; ASSERT_TRUE(definition->resolve(Json::Object{}, Json::Object{}, drawing, error));
+  ASSERT_EQ(1u, drawing.primitives.size()); ASSERT_TRUE(drawing.primitives[0].image);
+  EXPECT_EQ(*asset->encoded, *drawing.primitives[0].image->encoded);
+  { std::ofstream changed(package.file, std::ios::binary | std::ios::trunc); changed << "not an image"; }
+  EXPECT_FALSE(corevideo::graphics::loadGraphicsAssets(document, package.root.string(), assets, error));
+  EXPECT_FALSE(error.empty());
+  EXPECT_EQ(*asset->encoded, *definition->assets().at("logo")->encoded); // accepted bytes cannot change under a raster
+  auto bad = document.asObject(); auto declarations = bad["assets"].asArray(); auto first = declarations[0].asObject();
+  first["file"] = "../outside.png"; declarations[0] = first; bad["assets"] = declarations;
+  EXPECT_FALSE(GraphicsTemplate::load(Json(bad).stringify(), error));
+}
+
+TEST(GraphicsAssets, OptionalImageHasExplicitFallbackAndWarningWhileRequiredImageBlocksReadiness) {
+  std::string error;
+  const auto asset = corevideo::graphics::graphicsAssetFromBytes("logo", graphicsTest::png(), error); ASSERT_TRUE(asset);
+  auto document = graphicsTest::imageDocument(asset).asObject();
+  auto definition = GraphicsTemplate::load(Json(document).stringify(), error); ASSERT_TRUE(definition);
+  GraphicsDrawing drawing; EXPECT_FALSE(definition->resolve(Json::Object{}, Json::Object{}, drawing, error));
+  auto declarations = document["assets"].asArray(); auto declaration = declarations[0].asObject(); declaration["optional"] = true;
+  declarations[0] = declaration; document["assets"] = declarations;
+  auto layers = document["layers"].asArray(); auto node = layers[0].asObject(); node["missing"] = "hide"; layers[0] = node; document["layers"] = layers;
+  definition = GraphicsTemplate::load(Json(document).stringify(), error); ASSERT_TRUE(definition);
+  ASSERT_TRUE(definition->resolve(Json::Object{}, Json::Object{}, drawing, error));
+  EXPECT_TRUE(drawing.primitives.empty()); ASSERT_EQ(1u, drawing.warnings.size());
+  EXPECT_NE(std::string::npos, drawing.warnings[0].find("logo"));
+}
+
+TEST(GraphicsTemplateRegistry, EncodedPackagePoolSharesVersionsAndFailedImportCannotReplaceAcceptedBytes) {
+  std::string error;
+  const auto asset = corevideo::graphics::graphicsAssetFromBytes("logo", graphicsTest::png(), error); ASSERT_TRUE(asset);
+  graphicsTest::Package package(asset); corevideo::graphics::GraphicsTemplateRegistry registry;
+  const auto install = [&](const std::string& request, const Json& document) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    std::string admission;
+    do { admission = registry.submit("package-qa",request,document.stringify(),package.root.string());
+      if (admission != "template-import-busy") break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < deadline);
+    EXPECT_EQ("template-install-queued",admission);
+    while (std::chrono::steady_clock::now() < deadline) {
+      auto publication = registry.poll();
+      for (const auto& row : publication->installs.asArray())
+        if (row.getString("requestId") == request && (row.getString("state") == "installed" || row.getString("state") == "failed")) return row.getString("state");
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return std::string("timed-out");
+  };
+  auto document = graphicsTest::imageDocument(asset).asObject();
+  EXPECT_EQ("installed",install("first",document));
+  const auto first = registry.poll()->definitions.at({"packaged-logo",1})->assets().at("logo")->encoded;
+  EXPECT_EQ(asset->encoded->size(),registry.poll()->encodedAssetBytes);
+  document["templateVersion"] = 2; EXPECT_EQ("installed",install("second",document));
+  EXPECT_EQ(first,registry.poll()->definitions.at({"packaged-logo",2})->assets().at("logo")->encoded);
+  EXPECT_EQ(asset->encoded->size(),registry.poll()->encodedAssetBytes);
+  { std::ofstream changed(package.file,std::ios::binary|std::ios::trunc); changed << "invalid replacement"; }
+  document["templateVersion"] = 3; EXPECT_EQ("failed",install("corrupt",document));
+  EXPECT_EQ(0u,registry.poll()->definitions.count({"packaged-logo",3}));
+  EXPECT_EQ(first,registry.poll()->definitions.at({"packaged-logo",1})->assets().at("logo")->encoded);
+  EXPECT_EQ(asset->encoded->size(),registry.poll()->encodedAssetBytes);
+}
+
+TEST(GraphicsTemplate, TypedNumericFieldsDriveActualLayoutAndTypographyWithoutMixedUnits) {
+  auto object = manifest(); auto fields = object["fields"].asArray();
+  fields.emplace_back(Json::Object{{"id","size"},{"type","number"},{"default",42},{"minimum",16},{"maximum",120}}); object["fields"] = fields;
+  auto layers = object["layers"].asArray(); auto group = layers[1].asObject(); auto children = group["children"].asArray();
+  auto name = children[0].asObject(); name["fontSize"] = Json::Object{{"field","size"}}; children[0] = name;
+  group["children"] = children; layers[1] = group; object["layers"] = layers;
+  std::string error; auto definition = load(object,error); ASSERT_TRUE(definition);
+  auto values = definition->defaultFields().asObject(); values["name"] = "Guest"; values["size"] = 63.123456789;
+  GraphicsDrawing drawing; ASSERT_TRUE(definition->resolve(values,brand(),drawing,error));
+  EXPECT_EQ(63.123456789,drawing.primitives[1].fontSize);
+  values["size"] = 121; EXPECT_FALSE(definition->resolve(values,brand(),drawing,error));
+}
+
+TEST(GraphicsTemplate, BooleanVisibilityHasAConsumerAndUnusedRequiredFieldsAreRefused) {
+  auto object = manifest(); auto fields = object["fields"].asArray();
+  fields.emplace_back(Json::Object{{"id","show-title"},{"type","boolean"},{"default",true}}); object["fields"] = fields;
+  auto layers = object["layers"].asArray(); auto group = layers[1].asObject(); auto children = group["children"].asArray();
+  auto title = children[1].asObject(); title["visible"] = Json::Object{{"field","show-title"}}; children[1] = title;
+  group["children"] = children; layers[1] = group; object["layers"] = layers;
+  std::string error; auto definition = load(object,error); ASSERT_TRUE(definition);
+  auto values = definition->defaultFields().asObject(); values["name"] = "Guest"; values["title"] = "Engineer";
+  GraphicsDrawing drawing; ASSERT_TRUE(definition->resolve(values,brand(),drawing,error)); EXPECT_EQ(3u,drawing.primitives.size());
+  values["show-title"] = false; ASSERT_TRUE(definition->resolve(values,brand(),drawing,error)); EXPECT_EQ(2u,drawing.primitives.size());
+  fields.emplace_back(Json::Object{{"id","unreachable"},{"type","string"},{"default",""},{"required",true}}); object["fields"] = fields;
+  EXPECT_FALSE(load(object,error)); EXPECT_EQ("required-template-field-unused",error);
 }

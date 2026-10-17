@@ -17,7 +17,7 @@ public sealed record GraphicsSavedCue
     [JsonExtensionData] public Dictionary<string, JsonElement>? Metadata { get; init; }
 }
 
-public sealed record GraphicsSavedTemplate(string TemplateId, int TemplateVersion, string ManifestHash, JsonElement Definition);
+public sealed record GraphicsSavedTemplate(string TemplateId, int TemplateVersion, string ManifestHash, JsonElement Definition, string PackageRoot = "");
 
 /// <summary>Separate graphics document. No stream, recording, camera or media
 /// preferences belong here. Runtime visibility/arming is deliberately absent.</summary>
@@ -147,6 +147,7 @@ public sealed class GraphicsDocumentStore
         foreach (var template in document.Templates)
             if (template is null || string.IsNullOrEmpty(template.TemplateId) || template.TemplateId.Length > 64 || template.TemplateVersion < 1 ||
                 template.ManifestHash is not { Length: 64 } || !template.ManifestHash.All(Uri.IsHexDigit) ||
+                template.PackageRoot is null || template.PackageRoot.Length > 2048 || template.PackageRoot.Contains('\0') ||
                 template.Definition.ValueKind != JsonValueKind.Object || Encoding.UTF8.GetByteCount(template.Definition.GetRawText()) > 256 * 1024)
                 throw new InvalidDataException("Invalid saved template document.");
     }

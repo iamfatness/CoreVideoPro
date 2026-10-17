@@ -171,14 +171,17 @@ bool GraphicsInstances::readRevision(const Json& request, Revision& revision) {
 
 void GraphicsInstances::hashRevision(const std::string& templateId, Revision& revision) {
   std::string definitionHash;
+  Json::Array availableAssets;
   if (revision.definition) {
     static constexpr char hex[] = "0123456789abcdef";
     for (const auto byte : revision.definition->hash()) { definitionHash += hex[byte >> 4]; definitionHash += hex[byte & 15]; }
+    for (const auto& asset : revision.definition->assets()) availableAssets.emplace_back(asset.first + ":" + asset.second->sha256);
   }
   const auto serialized = Json{Json::Object{{"templateId", templateId}, {"templateVersion", revision.definition ? revision.definition->version() : 1},
       {"name", revision.name}, {"title", revision.title}, {"style", styleState(revision.appearance)},
       {"binding", revision.binding ? contracts::toJson(*revision.binding) : Json{}},
       {"definitionHash", definitionHash},
+      {"availableAssets", std::move(availableAssets)},
       {"templateFields", revision.templateFields}}}.stringify();
   revision.contentHash = modules::hashing::sha256(reinterpret_cast<const uint8_t*>(serialized.data()), serialized.size());
   if (revision.definition) {
@@ -189,7 +192,8 @@ void GraphicsInstances::hashRevision(const std::string& templateId, Revision& re
     input->brand = Json::Object{{"brand.primary", background}, {"brand.onPrimary", a.nameColor},
         {"brand.onPrimaryMuted", a.titleColor}, {"brand.fontBody", a.fontFamily},
         {"brand.secondary", a.titleColor}, {"brand.accent", a.accentColor},
-        {"brand.background", a.backgroundColor}, {"brand.foreground", a.nameColor}, {"brand.fontHeading", a.fontFamily}};
+        {"brand.background", a.backgroundColor}, {"brand.foreground", a.nameColor}, {"brand.fontHeading", a.fontFamily},
+        {"brand.logo", revision.definition->assets().count("logo") ? "logo" : ""}};
     revision.templateInput = std::move(input);
   }
 }
@@ -224,7 +228,7 @@ bool GraphicsInstances::apply(const Json& command) {
       {"graphics-instance-update", {"sourceId", "fields", "style", "target", "animations", "binding"}},
       {"graphics-instance-cue", {}}, {"graphics-instance-trigger", {"action", "target"}},
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}},
-      {"graphics-template-install", {"manifest"}}, {"graphics-template-list", {}}};
+      {"graphics-template-install", {"manifest", "packageRoot"}}, {"graphics-template-list", {}}};
   const auto allowed = actionKeys.find(type);
   if (allowed == actionKeys.end()) return finish(requestId, false, "unsupported-graphics-command");
   for (const auto& [key, value] : body->asObject()) {
@@ -232,6 +236,9 @@ bool GraphicsInstances::apply(const Json& command) {
     if (key == "manifest") {
       if (!value.isString() || value.asString().empty() || value.asString().size() > 256 * 1024)
         return finish(requestId, false, "template-manifest-size");
+    } else if (key == "packageRoot") {
+      if (!value.isString() || value.asString().size() > 2048 || value.asString().find('\0') != std::string::npos)
+        return finish(requestId, false, "graphics-package-root-invalid");
     } else if (key == "binding") {
       if (!value.isNull() && !GraphicsSourceCatalog::read(value)) return finish(requestId, false, "invalid-source-binding");
     } else if (key == "animations") {
@@ -257,7 +264,7 @@ bool GraphicsInstances::apply(const Json& command) {
   }
   // Install bytes are copied once for bounded retry identity, never parsed,
   // hashed or re-escaped on the frame/control owner.
-  const auto fingerprint = type + ":" + (type == "graphics-template-install" ? body->getString("manifest") : body->stringify());
+  const auto fingerprint = type + ":" + (type == "graphics-template-install" ? body->getString("manifest") + '\0' + body->getString("packageRoot") : body->stringify());
   for (const auto& previous : operations_) if (previous.clientId == pendingClient_ && previous.requestId == requestId) {
     if (previous.fingerprint != fingerprint) return finish(requestId, false, "request-id-reused");
     lastResult_ = previous.result; publish();
@@ -266,7 +273,7 @@ bool GraphicsInstances::apply(const Json& command) {
   pendingFingerprint_ = fingerprint;
   if (type == "graphics-template-list") return finish(requestId, true, "template-catalog-observed");
   if (type == "graphics-template-install") {
-    const auto reason = templates_.submit(pendingClient_, requestId, body->getString("manifest"));
+    const auto reason = templates_.submit(pendingClient_, requestId, body->getString("manifest"), body->getString("packageRoot"));
     return finish(requestId, reason == "template-install-queued", reason);
   }
   if (type == "graphics-program-clear") {
@@ -676,6 +683,7 @@ void GraphicsInstances::publish() {
           {"refused", double(budget.refused)}, {"cpuLimit", double(budget.cpuLimit)},
           {"gpuLimit", double(budget.gpuLimit)}, {"preparationLimit", double(budget.preparationLimit)}}},
       {"templates", templatesPublication_->catalog}, {"templateInstalls", templatesPublication_->installs},
+      {"encodedTemplateAssetBytes", double(templatesPublication_->encodedAssetBytes)}, {"encodedTemplateAssetLimit", 128 * 1024 * 1024},
       {"sources", sources_->rows()}, {"sourceBindingStatus", sources_->status()}, {"lastResult", lastResult_}};
 }
 }  // namespace corevideo::graphics

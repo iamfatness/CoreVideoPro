@@ -145,8 +145,8 @@ GraphicsBox intersect(GraphicsBox a, GraphicsBox b) {
 }
 class Layout {
  public:
-  Layout(const Json& document, const Json& fields, const Json& brand, bool validate = false)
-      : document_(document), fields_(fields), brand_(brand), validate_(validate) {
+  Layout(const Json& document, const Json& fields, const Json& brand, const GraphicsAssets& assets, bool validate = false)
+      : document_(document), fields_(fields), brand_(brand), assets_(assets), validate_(validate) {
     for (const auto& item : document.get("brandTokens")->asArray()) declared_.insert(item.asString());
   }
   GraphicsDrawing run() {
@@ -165,38 +165,51 @@ class Layout {
       const auto& definitions = document_.get("fields")->asArray();
       const auto found = std::find_if(definitions.begin(), definitions.end(), [&](const auto& f) { return f.getString("id") == field->asString(); });
       need(found != definitions.end() && found->getString("type") == type, "template-field-reference-type");
+      draw_->usedFields.insert(field->asString());
       const auto* supplied = fields_.get(field->asString()); need(supplied, "template-field-reference"); return *supplied;
     }
     const auto token = value->getString("token"); need(tokens.count(token) && declared_.count(token), "template-brand-reference");
     need((type == "string" && (token == "brand.fontBody" || token == "brand.fontHeading")) ||
-        (type == "color" && token != "brand.fontBody" && token != "brand.fontHeading" && token != "brand.logo"), "template-brand-reference-type");
-    if (validate_) return type == "color" ? Json("#FFFFFF") : Json("Segoe UI");
+        (type == "color" && token != "brand.fontBody" && token != "brand.fontHeading" && token != "brand.logo") ||
+        (type == "image" && token == "brand.logo"), "template-brand-reference-type");
+    if (validate_) return type == "color" ? Json("#FFFFFF") : type == "image" ? Json("") : Json("Segoe UI");
     const auto* supplied = brand_.get(token); need(supplied && supplied->isString(), "template-brand-value-missing"); return *supplied;
   }
-  bool visit(const Json& node, double originX, double originY, GraphicsBox clip, double opacity, int depth, bool flowChild) {
+  double quantity(const Json& node, const std::string& key, double minimum, double maximum, double fallback = -1) {
+    const auto* value = node.get(key); const auto scalar = value ? resolve(value, "number") : Json(fallback);
+    need(scalar.isNumber() && std::isfinite(scalar.asNumber()) && scalar.asNumber() >= minimum && scalar.asNumber() <= maximum, "template-geometry-or-number");
+    return scalar.asNumber();
+  }
+  bool visit(const Json& node, double originX, double originY, GraphicsBox clip, double opacity, int depth, bool flowChild, bool parentVisible = true) {
     need(depth <= 8 && ++nodes_ <= 64, "template-layer-limit");
     const auto nodeId = node.getString("id"), type = node.getString("type"); need(validTemplateId(nodeId) && ids_.insert(nodeId).second, "template-layer-id");
-    std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "metadata"};
+    std::set<std::string> allowed{"id", "type", "x", "y", "width", "height", "opacity", "visible", "metadata"};
     if (type == "group") allowed.insert({"children", "flow", "gap", "padding"});
     else if (type == "rect") allowed.insert({"fill", "cornerRadius"});
     else if (type == "text") allowed.insert({"text", "font", "fontWeight", "fontSize", "lineHeight", "color", "align", "maxLines", "overflow", "collapseWhenEmpty"});
+    else if (type == "image") allowed.insert({"asset", "fit", "align", "verticalAlign", "collapseWhenEmpty", "missing"});
     else need(false, "unsupported-template-node-type");
     keys(node, allowed);
+    bool visible = parentVisible;
+    if (const auto* property = node.get("visible")) {
+      const auto value = resolve(property,"boolean"); need(value.isBool(),"template-visible-boolean"); visible = visible && value.asBool();
+    }
+    if (validate_) visible = true;
     GraphicsPrimitive p; p.id = nodeId; p.type = type;
-    p.box = {originX + number(node, "x", 0, 8192, flowChild ? 0 : -1), originY + number(node, "y", 0, 8192, flowChild ? 0 : -1),
-        number(node, "width", 1, 8192), number(node, "height", 1, 8192)};
-    p.clip = intersect(clip, p.box); p.opacity = opacity * number(node, "opacity", 0, 1, 1);
+    p.box = {originX + quantity(node, "x", 0, 8192, flowChild ? 0 : -1), originY + quantity(node, "y", 0, 8192, flowChild ? 0 : -1),
+        quantity(node, "width", 1, 8192), quantity(node, "height", 1, 8192)};
+    p.clip = intersect(clip, p.box); p.opacity = opacity * quantity(node, "opacity", 0, 1, 1);
     if (type == "group") {
       const auto flow = stringProperty(node, "flow", "none"); need(flow == "none" || flow == "vertical" || flow == "horizontal", "template-flow");
-      const auto padding = number(node, "padding", 0, 256, 0), gap = number(node, "gap", 0, 256, 0);
+      const auto padding = quantity(node, "padding", 0, 256, 0), gap = quantity(node, "gap", 0, 256, 0);
       const auto* children = node.get("children"); need(children && children->isArray() && children->asArray().size() <= 64, "template-children");
       double offset = 0; bool populated = false;
       for (const auto& child : children->asArray()) {
         const auto before = draw_->primitives.size();
         const double step = offset + (populated && flow != "none" ? gap : 0);
         if (visit(child, p.box.x + padding + (flow == "horizontal" ? step : 0), p.box.y + padding + (flow == "vertical" ? step : 0),
-            intersect(p.clip, {p.box.x + padding, p.box.y + padding, std::max(0., p.box.width - padding * 2), std::max(0., p.box.height - padding * 2)}), p.opacity, depth + 1, flow != "none")) {
-          if (flow != "none") offset = step + number(child, flow == "vertical" ? "height" : "width", 1, 8192);
+            intersect(p.clip, {p.box.x + padding, p.box.y + padding, std::max(0., p.box.width - padding * 2), std::max(0., p.box.height - padding * 2)}), p.opacity, depth + 1, flow != "none", visible)) {
+          if (flow != "none") offset = step + quantity(child, flow == "vertical" ? "height" : "width", 1, 8192);
           populated = populated || draw_->primitives.size() > before;
         }
       }
@@ -209,21 +222,41 @@ class Layout {
         p.color = color(resolve(&stops[0], "color").asString()); p.endColor = color(resolve(&stops[1], "color").asString()); p.gradient = true;
         const auto direction = stringProperty(*fill, "direction", "horizontal"); need(direction == "horizontal" || direction == "vertical", "template-gradient-direction"); p.verticalGradient = direction == "vertical";
       } else p.color = color(resolve(fill, "color").asString());
-      p.cornerRadius = std::min(number(node, "cornerRadius", 0, 4096, 0), std::min(p.box.width, p.box.height) / 2);
+      p.cornerRadius = std::min(quantity(node, "cornerRadius", 0, 4096, 0), std::min(p.box.width, p.box.height) / 2);
+    } else if (type == "image") {
+      const auto source = resolve(node.get("asset"), "image"); need(source.isString(), "template-image-reference");
+      const auto assetId = source.asString();
+      p.fit = stringProperty(node, "fit", "contain"); p.imageAlign = stringProperty(node, "align", "center"); p.imageVerticalAlign = stringProperty(node, "verticalAlign", "center");
+      const auto missing = stringProperty(node, "missing", "error");
+      need((p.fit == "contain" || p.fit == "cover") && (p.imageAlign == "left" || p.imageAlign == "center" || p.imageAlign == "right") &&
+          (p.imageVerticalAlign == "top" || p.imageVerticalAlign == "center" || p.imageVerticalAlign == "bottom") && (missing == "error" || missing == "hide"), "template-image-layout");
+      const bool collapse = boolean(node, "collapseWhenEmpty");
+      if (assetId.empty()) { need(validate_ || collapse || !visible, "template-image-required"); return false; }
+      need(validTemplateId(assetId), "template-image-id-required");
+      const auto* declarations = document_.get("assets"); need(declarations && declarations->isArray(), "template-image-undeclared");
+      const auto declared = std::find_if(declarations->asArray().begin(), declarations->asArray().end(), [&](const auto& d) { return d.getString("id") == assetId; });
+      need(declared != declarations->asArray().end(), "template-image-undeclared");
+      const auto asset = assets_.find(assetId);
+      if (!validate_ && asset == assets_.end()) {
+        need(!visible || (boolean(*declared, "optional") && missing == "hide"), "template-image-asset-missing");
+        if (visible) draw_->warnings.push_back("Optional graphics asset omitted: " + assetId); return false;
+      }
+      if (asset != assets_.end()) p.image = asset->second;
     } else {
       const auto text = resolve(node.get("text"), "string"), font = resolve(node.get("font"), "string");
       need(text.isString() && font.isString() && text.asString().size() <= 4096 && !font.asString().empty() && font.asString().size() <= 128 && utf8(font.asString()), "template-text-or-font");
       p.text = text.asString(); p.font = font.asString(); p.color = color(resolve(node.get("color"), "color").asString());
-      p.fontSize = number(node, "fontSize", 1, 512); p.lineHeight = number(node, "lineHeight", .5, 3, 1.2);
-      const auto weight = number(node, "fontWeight", 400, 700, 400); need(weight == 400 || weight == 500 || weight == 600 || weight == 700, "template-font-weight"); p.fontWeight = int(weight);
-      const auto lines = number(node, "maxLines", 1, 3, 1); need(std::floor(lines) == lines, "template-max-lines"); p.maxLines = int(lines);
+      p.fontSize = quantity(node, "fontSize", 1, 512); p.lineHeight = quantity(node, "lineHeight", .5, 3, 1.2);
+      const auto weight = quantity(node, "fontWeight", 400, 700, 400); need(weight == 400 || weight == 500 || weight == 600 || weight == 700, "template-font-weight"); p.fontWeight = int(weight);
+      const auto lines = quantity(node, "maxLines", 1, 3, 1); need(std::floor(lines) == lines, "template-max-lines"); p.maxLines = int(lines);
       p.align = stringProperty(node, "align", "left"); need(p.align == "left" || p.align == "center" || p.align == "right", "template-text-alignment");
       p.overflow = stringProperty(node, "overflow", "ellipsis"); need(p.overflow == "ellipsis" || p.overflow == "wrap-then-ellipsis", "template-text-overflow");
       if (boolean(node, "collapseWhenEmpty") && p.text.empty()) return false;
     }
+    if (!visible) return false;
     draw_->primitives.push_back(std::move(p)); return true;
   }
-  const Json& document_; const Json& fields_; const Json& brand_; bool validate_;
+  const Json& document_; const Json& fields_; const Json& brand_; const GraphicsAssets& assets_; bool validate_;
   std::set<std::string> declared_, ids_; size_t nodes_ = 0; GraphicsDrawing* draw_ = nullptr;
 };
 } // namespace
@@ -255,14 +288,14 @@ bool GraphicsTemplate::validateFields(const Json& values, bool requireValues, st
 bool GraphicsTemplate::resolve(const Json& fields, const Json& brand, GraphicsDrawing& drawing, std::string& error) const {
   try {
     if (!validateFields(fields, true, error)) throw std::runtime_error(error);
-    need(brand.isObject(), "template-brand-required"); drawing = Layout(document_, fields, brand).run(); error.clear(); return true;
+    need(brand.isObject(), "template-brand-required"); drawing = Layout(document_, fields, brand, assets_).run(); error.clear(); return true;
   } catch (const std::exception& e) { error = e.what(); return false; }
 }
-std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::load(const std::string& manifest, std::string& error) {
+std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::load(const std::string& manifest, std::string& error, GraphicsAssets assets) {
   try {
     auto definition = std::shared_ptr<GraphicsTemplate>(new GraphicsTemplate);
     definition->document_ = DocumentParser(manifest).parse(); const auto& d = definition->document_;
-    keys(d, {"schemaVersion", "templateId", "templateVersion", "name", "family", "canvas", "bounds", "fields", "layers", "animations", "brandTokens", "metadata"});
+    keys(d, {"schemaVersion", "templateId", "templateVersion", "name", "family", "canvas", "bounds", "fields", "layers", "animations", "brandTokens", "assets", "metadata"});
     need(number(d, "schemaVersion", 1, 1) == 1 && validTemplateId(d.getString("templateId")), "template-header");
     const auto version = number(d, "templateVersion", 1, 2147483647.); need(std::floor(version) == version, "template-version");
     need(!d.getString("name").empty() && d.getString("name").size() <= 128, "template-name");
@@ -285,9 +318,25 @@ std::shared_ptr<const GraphicsTemplate> GraphicsTemplate::load(const std::string
     const auto* brands = d.get("brandTokens"); need(brands && brands->isArray() && brands->asArray().size() <= 10, "template-brand-limit"); ids.clear();
     for (const auto& token : brands->asArray()) need(token.isString() && tokens.count(token.asString()) && ids.insert(token.asString()).second, "template-brand-token");
     const auto* layers = d.get("layers"); need(layers && layers->isArray() && !layers->asArray().empty() && layers->asArray().size() <= 64, "template-layers-limit");
+    ids.clear(); std::set<std::string> paths;
+    if (const auto* declarations = d.get("assets")) {
+      need(declarations->isArray() && declarations->asArray().size() <= 127, "graphics-assets-limit");
+      for (const auto& declaration : declarations->asArray()) {
+        keys(declaration, {"id", "file", "sha256", "optional", "metadata"});
+        const auto assetId = declaration.getString("id"), digest = declaration.getString("sha256"), file = declaration.getString("file");
+        need(validTemplateId(assetId) && ids.insert(assetId).second && digest.size() == 64 && std::all_of(digest.begin(), digest.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }), "graphics-asset-id-or-hash");
+        need((file == "assets/" + digest + ".png" || file == "assets/" + digest + ".jpg" || file == "assets/" + digest + ".jpeg") && paths.insert(file).second, "graphics-asset-path");
+        boolean(declaration, "optional");
+        if (const auto found = assets.find(assetId); found != assets.end()) need(found->second && found->second->sha256 == digest && found->second->encoded, "graphics-asset-hash-mismatch");
+      }
+    }
+    for (const auto& asset : assets) need(ids.count(asset.first) != 0, "graphics-asset-undeclared");
+    definition->assets_ = std::move(assets);
     const auto* animations = d.get("animations"); need(animations, "template-animations"); keys(*animations, {"in", "out"});
     for (const auto& [_, transition] : animations->asObject()) { GraphicsTransition parsed; need(GraphicsTransition::read(transition, parsed), "template-animation"); }
-    Layout(d, definition->defaultFields(), Json::Object{}, true).run();
+    const auto analysis = Layout(d, definition->defaultFields(), Json::Object{}, definition->assets_, true).run();
+    for (const auto& field : fields->asArray()) if (boolean(field,"required"))
+      need(analysis.usedFields.count(field.getString("id")) != 0,"required-template-field-unused");
     const auto canonical = d.stringify(); definition->hash_ = modules::hashing::sha256(reinterpret_cast<const uint8_t*>(canonical.data()), canonical.size());
     error.clear(); return definition;
   } catch (const std::exception& e) { error = e.what(); return {}; }

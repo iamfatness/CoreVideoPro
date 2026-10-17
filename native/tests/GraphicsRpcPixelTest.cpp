@@ -4,12 +4,50 @@
 #include "contracts/Lifecycle.h"
 #include "graphics/GraphicsResourceBudget.h"
 #include "graphics/GraphicsTemplate.h"
+#include "GraphicsAssetFixture.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <thread>
 
 #if COREVIDEO_WITH_D3D11
+TEST(GraphicsCompositionPixel, VerifiedPackageImagePreservesAlphaAndAcceptedBytesAfterFileChanges) {
+  using corevideo::rpc::Json;
+  std::string error;
+  const auto asset = corevideo::graphics::graphicsAssetFromBytes("logo", graphicsTest::png(), error); ASSERT_TRUE(asset);
+  graphicsTest::Package package(asset); const auto rootBytes = package.root.u8string(); const std::string root(rootBytes.begin(),rootBytes.end());
+  corevideo::graphics::GraphicsInstances graphics{"test-core"};
+  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor);
+  int sequence = 0;
+  const auto command = [&](const std::string& type, Json::Object payload) {
+    payload["schemaVersion"] = 1; payload["requestId"] = "image-request-" + std::to_string(++sequence);
+    payload["clientId"] = "image-qa"; payload["coreEpoch"] = "test-core"; payload["instanceId"] = "logo";
+    return graphics.apply(Json::Object{{"type",type},{"graphics",std::move(payload)}});
+  };
+  const auto render = [&] {
+    corevideo::modules::CompositorRenderPlan plan; plan.width = 320; plan.height = 180;
+    corevideo::modules::CompositorRenderPlanLayer background; background.kind = "background"; background.hasFillColor = true; background.fillColor = "#0000FF";
+    plan.layers.push_back(background); graphics.append(plan,false);
+    auto frame = compositor->render(plan,{}); graphics.observe(frame); return frame.preview.bgra;
+  };
+  ASSERT_TRUE(command("graphics-template-install", {{"manifest",graphicsTest::imageDocument(asset).stringify()},{"packageRoot",root}}));
+  const auto importLimit = std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  while (graphics.snapshot().get("templates")->asArray().size() != 5 && std::chrono::steady_clock::now()<importLimit) { render(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+  ASSERT_EQ(5u,graphics.snapshot().get("templates")->asArray().size());
+  ASSERT_TRUE(command("graphics-instance-create", {{"templateId","packaged-logo"},{"templateVersion",1},{"scope","global"}}));
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"expectedRevision",1},{"action","show"}}));
+  const auto limit = std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  while (graphics.snapshot().get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame") == 0 && std::chrono::steady_clock::now()<limit) { render(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+  ASSERT_GT(graphics.snapshot().get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame"),0.);
+  const auto pixels = render(); ASSERT_EQ(size_t(320*180*4),pixels.size());
+  const auto left = (154*320+23)*4, right = (154*320+68)*4;
+  EXPECT_GT(unsigned(pixels[left+2]),240u); EXPECT_LT(unsigned(pixels[left]),20u);
+  EXPECT_LT(unsigned(pixels[right+2]),20u); EXPECT_NEAR(128.,double(pixels[right+1]),8.); EXPECT_NEAR(127.,double(pixels[right]),8.);
+  { std::ofstream changed(package.file,std::ios::binary|std::ios::trunc); changed << "invalid replacement"; }
+  EXPECT_EQ(pixels,render());
+  EXPECT_GT(graphics.snapshot().getNumber("encodedTemplateAssetBytes"),0.);
+}
+
 TEST(GraphicsRpcPixel, CommandsReachCoreStateAndActualProgramPixels) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = corevideo::modules::createD3D11Compositor();

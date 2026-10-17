@@ -32,6 +32,8 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private readonly ToggleSwitch _compare = new() { Header = "Compare Original / Edited" };
     private readonly List<Button> _actions = [];
     private readonly Button _cueButton, _showButton, _updateButton, _hideButton, _deleteButton, _undoButton;
+    private readonly Button _packageImportButton;
+    private readonly TextBlock _importStatus = Copy("");
     private readonly List<NativeGraphicsTemplate> _templateRows = [];
     private readonly List<string> _cueIds = [];
     private readonly List<string> _savedIds = [];
@@ -76,6 +78,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
         importPanel.Children.Add(Copy("Local declarations only. Validation is asynchronous; the previous version and on-air graphics remain intact."));
         importPanel.Children.Add(Action("Validate and import", async () => { if (_session is not null) await _session.ImportAsync(import.Text); }));
         _libraryPanel.Children.Add(new Expander { Header = "Import template", Content = importPanel, HorizontalAlignment = HorizontalAlignment.Stretch });
+        _packageImportButton = Action("Import graphics package…", PickPackageAsync); _libraryPanel.Children.Add(_packageImportButton); _libraryPanel.Children.Add(_importStatus);
         var libraryScroll = new ScrollViewer { Content = _libraryPanel, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = 780 };
         var libraryDrawer = new Expander { Header = "Library and cue rack", Content = libraryScroll, IsExpanded = true, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
         Grid.SetRow(libraryDrawer, 1); _body.Children.Add(libraryDrawer);
@@ -158,7 +161,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
     public void ResumePreview() { _previewSuspended = false; UpdatePreviewLease(); }
     private void UpdatePreviewLease()
     {
-        if (!_previewSuspended && Studio?.IsOverlaysTab == true && _session?.Preview is not null && _editor is not null) {
+        if (!_previewSuspended && Studio?.IsOverlaysTab == true && _session?.Preview is not null && _session.PreviewValidation.Length == 0 && _editor is not null) {
             _previewOwner ??= Studio.CreateAppearancePreview(_editor);
         } else { _previewOwner?.Dispose(); _previewOwner = null; }
     }
@@ -178,7 +181,13 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private void OnPreviewChanged(object? sender, EventArgs e) { Refresh(); UpdatePreview(); }
     private void UpdatePreview()
     {
-        if (_editor is null || _session?.Preview is not { } draft) return;
+        if (_editor is null) return;
+        if (_session?.Preview is not { } draft) {
+            _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable("Choose a look or cue to preview."); return;
+        }
+        if (_session.PreviewValidation is { Length: > 0 } invalid) {
+            _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable(invalid); return;
+        }
         _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview()));
         UpdatePreviewLease();
     }
@@ -188,7 +197,10 @@ public sealed class GraphicsWorkspaceControl : UserControl
         _loading = true;
         try {
             _status.Text = _session.Status;
-            foreach (var button in _actions) button.IsEnabled = !_session.Busy && _savedLibrary?.Busy != true;
+            foreach (var button in _actions) button.IsEnabled = !_session.Busy;
+            _packageImportButton.IsEnabled &= !_session.ImportBusy;
+            _importStatus.Text = _session.ImportBusy ? _session.ImportStatus : string.Join("\n", (_session.State?.TemplateInstalls ?? []).TakeLast(3)
+                .Select(i => "Template import: " + i.State + (i.Reason.Length == 0 ? "" : " — " + i.Reason.Replace('-', ' '))));
             var item = _session.Selected;
             _cueButton.IsEnabled &= item is not null; _showButton.IsEnabled &= item is { CueRevision: > 0 };
             _hideButton.IsEnabled &= item is { ProgramRevision: > 0 }; _updateButton.IsEnabled &= item is { ProgramRevision: > 0 };
@@ -232,28 +244,63 @@ public sealed class GraphicsWorkspaceControl : UserControl
         if (fields.Count == 0) fields = [new() { Id = "name", Type = "string", MaxLength = 256 }, new() { Id = "title", Type = "string", MaxLength = 512 }];
         foreach (var field in fields) {
             var value = draft.Fields.TryGetProperty(field.Id, out var v) ? v : field.Default ?? JsonSerializer.SerializeToElement("");
-            if (field.Type == "boolean") {
-                var check = new CheckBox { Content = field.Id, IsChecked = value.ValueKind == JsonValueKind.True };
+            if (!Compatibility && _session.Template?.Layers is { } layers && !HasReference(layers,"field",field.Id)) {
+                _inspector.Children.Add(Copy(field.Id + " — this field is not used by the template's layers.")); continue;
+            }
+            var usages = _session.Template?.Layers is { } numericLayers ? NumericUsages(numericLayers,field.Id) : [];
+            IReadOnlyList<JsonElement> choices = field.Choices;
+            if (choices.Count == 0 && field.Type == "number") {
+                var nativeChoices = usages.Contains("fontWeight") ? new[] {400,500,600,700} : usages.Contains("maxLines") ? new[] {1,2,3} : [];
+                choices = nativeChoices.Where(n => n >= (field.Minimum ?? -1e9) && n <= (field.Maximum ?? 1e9)).Select(n => JsonSerializer.SerializeToElement(n)).ToArray();
+            }
+            if (choices.Count > 0) {
+                var choice = new ComboBox { Header = FieldLabel(field), ItemsSource = choices.Select(c => c.ValueKind == JsonValueKind.String ? c.GetString() : c.GetRawText()).ToArray(),
+                    SelectedIndex = choices.ToList().FindIndex(c => JsonElement.DeepEquals(c,value)), HorizontalAlignment = HorizontalAlignment.Stretch };
+                choice.SelectionChanged += (_,_) => { if (!_loading && choice.SelectedIndex >= 0) _session?.SetField(field.Id,choices[choice.SelectedIndex]); }; _inspector.Children.Add(choice);
+                _refreshFields.Add(() => { if (_session?.Draft?.Fields.TryGetProperty(field.Id,out var current) == true) choice.SelectedIndex = choices.ToList().FindIndex(c => JsonElement.DeepEquals(c,current)); });
+            } else if (field.Type == "image") {
+                var ids = new List<string>(); if (!field.Required) ids.Add("");
+                if (_session.Template?.Definition is { } definition && definition.TryGetProperty("assets",out var assets))
+                    foreach (var asset in assets.EnumerateArray()) ids.Add(asset.GetProperty("id").GetString()!);
+                var image = new ComboBox { Header = FieldLabel(field), ItemsSource = ids.Select(id => id.Length == 0 ? "None" : id).ToArray(),
+                    SelectedIndex = ids.IndexOf(value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : ""), HorizontalAlignment = HorizontalAlignment.Stretch };
+                image.SelectionChanged += (_,_) => { if (!_loading && image.SelectedIndex >= 0) _session?.SetField(field.Id,JsonSerializer.SerializeToElement(ids[image.SelectedIndex])); }; _inspector.Children.Add(image);
+                _refreshFields.Add(() => { if (_session?.Draft?.Fields.TryGetProperty(field.Id,out var current) == true && current.ValueKind == JsonValueKind.String) image.SelectedIndex = ids.IndexOf(current.GetString() ?? ""); });
+            } else if (field.Type == "color") {
+                var picker = new ColorPicker { IsAlphaEnabled = field.MaxLength != 7, Color = FieldColor(value) };
+                picker.ColorChanged += (_,e) => { if (!_loading) _session?.SetField(field.Id,JsonSerializer.SerializeToElement(HexColor.ToHex(e.NewColor) + (picker.IsAlphaEnabled ? e.NewColor.A.ToString("X2") : ""))); };
+                _inspector.Children.Add(new Expander { Header = FieldLabel(field), Content = picker, HorizontalAlignment = HorizontalAlignment.Stretch });
+                _refreshFields.Add(() => { if (_session?.Draft?.Fields.TryGetProperty(field.Id,out var current) == true) picker.Color = FieldColor(current); });
+            } else if (field.Type == "boolean") {
+                var check = new CheckBox { Content = FieldLabel(field), IsChecked = value.ValueKind == JsonValueKind.True };
                 check.Click += (_, _) => _session?.SetField(field.Id, JsonSerializer.SerializeToElement(check.IsChecked == true)); _inspector.Children.Add(check);
                 _refreshFields.Add(() => { if (_session?.Draft?.Fields.TryGetProperty(field.Id, out var current) == true) check.IsChecked = current.ValueKind == JsonValueKind.True; });
             } else if (field.Type == "number") {
-                var slider = new SliderValueControl { Header = field.Id, Minimum = field.Minimum ?? 0, Maximum = field.Maximum ?? 100,
-                    DefaultValue = field.Default is { ValueKind: JsonValueKind.Number } dv ? dv.GetDouble() : 0, StepFrequency = 1,
+                var limits = usages.Select(NumericLimits).ToArray();
+                var minimum = Math.Max(field.Minimum ?? -1e9,limits.Length == 0 ? 0 : limits.Max(l => l.Min));
+                var maximum = Math.Min(field.Maximum ?? 1e9,limits.Length == 0 ? 100 : limits.Min(l => l.Max));
+                var percent = usages.SetEquals(["opacity"]);
+                var pixels = usages.Count > 0 && usages.All(u => u is "x" or "y" or "width" or "height" or "padding" or "gap" or "fontSize" or "cornerRadius");
+                var slider = new SliderValueControl { Header = FieldLabel(field), Minimum = minimum, Maximum = maximum,
+                    Unit = percent ? "%" : pixels ? "px" : usages.SetEquals(["lineHeight"]) ? "×" : "", DisplayScale = percent ? 100 : 1,
+                    DefaultValue = field.Default is { ValueKind: JsonValueKind.Number } dv ? dv.GetDouble() : 0, StepFrequency = maximum-minimum <= 1 ? .01 : maximum-minimum <= 10 ? .05 : 1,
                     Value = value.ValueKind == JsonValueKind.Number ? value.GetDouble() : 0 };
                 slider.ValueChanged += (_, number) => _session?.SetField(field.Id, JsonSerializer.SerializeToElement(number)); _inspector.Children.Add(slider);
                 slider.EditStarted += (_, _) => _session?.BeginGesture(); slider.EditCompleted += (_, _) => _session?.EndGesture();
                 _refreshFields.Add(() => { if (_session?.Draft?.Fields.TryGetProperty(field.Id, out var current) == true && current.ValueKind == JsonValueKind.Number) slider.Value = current.GetDouble(); });
             } else {
-                var text = new TextBox { Header = field.Id + (field.Required ? " *" : ""), Text = value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "", MaxLength = field.MaxLength ?? 512 };
+                var text = new TextBox { Header = FieldLabel(field) + (field.Required ? " *" : ""), Text = value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "", MaxLength = field.MaxLength ?? 512 };
                 text.TextChanged += (_, _) => { if (!_loading) _session?.SetField(field.Id, JsonSerializer.SerializeToElement(text.Text)); }; _inspector.Children.Add(text);
                 text.GotFocus += (_, _) => _session?.BeginGesture(); text.LostFocus += (_, _) => _session?.EndGesture();
                 _refreshFields.Add(() => { if (text.FocusState == FocusState.Unfocused && _session?.Draft?.Fields.TryGetProperty(field.Id, out var current) == true && current.ValueKind == JsonValueKind.String) text.Text = current.GetString() ?? ""; });
             }
         }
         _inspector.Children.Add(Copy("An empty secondary line stays empty. Source text remains available in Sources."));
+        if (Compatibility || UsesToken("brand.fontBody") || UsesToken("brand.fontHeading")) {
         var font = new TextBox { Header = "Font family", Text = draft.Style.FontFamily, MaxLength = 128 };
         font.LostFocus += (_, _) => { if (_session?.Draft is { } d) _session.SetStyle(d.Style with { FontFamily = font.Text }); }; _inspector.Children.Add(font);
         _refreshFields.Add(() => { if (font.FocusState == FocusState.Unfocused && _session?.Draft is { } d) font.Text = d.Style.FontFamily; });
+        }
         var anchor = new ComboBox { Header = "Anchor", ItemsSource = CaptionStyleHelper.LowerThirdPositionOptions, SelectedItem = draft.Style.Anchor, HorizontalAlignment = HorizontalAlignment.Stretch };
         anchor.SelectionChanged += (_, _) => { if (!_loading && anchor.SelectedItem is string selected && _session?.Draft is { } d) _session.SetStyle(d.Style with { Anchor = selected }); }; _inspector.Children.Add(anchor);
         _refreshFields.Add(() => { if (_session?.Draft is { } d) anchor.SelectedItem = d.Style.Anchor; });
@@ -266,11 +313,11 @@ public sealed class GraphicsWorkspaceControl : UserControl
             AddStyle("Padding", 0, 64, 20, 1, "px", 1, d => d.Padding, (d, n) => d with { Padding = n });
             AddStyle("Corners", 0, 60, 8, 1, "px", 1, d => d.CornerRadius, (d, n) => d with { CornerRadius = n });
         }
-        AddStyle("Background opacity", 0, 1, .9, .01, "%", 100, d => d.BackgroundOpacity, (d, n) => d with { BackgroundOpacity = n });
-        AddColor("Name / foreground", draft.Style.NameColor, (d, c) => d with { NameColor = c });
-        AddColor("Secondary foreground", draft.Style.TitleColor, (d, c) => d with { TitleColor = c });
-        AddColor("Plate", draft.Style.BackgroundColor, (d, c) => d with { BackgroundColor = c });
-        AddColor("Accent", draft.Style.AccentColor, (d, c) => d with { AccentColor = c });
+        if (Compatibility || UsesToken("brand.primary")) AddStyle("Background opacity", 0, 1, .9, .01, "%", 100, d => d.BackgroundOpacity, (d, n) => d with { BackgroundOpacity = n });
+        if (Compatibility || UsesToken("brand.onPrimary") || UsesToken("brand.foreground")) AddColor("Name / foreground", d => d.NameColor, (d, c) => d with { NameColor = c });
+        if (Compatibility || UsesToken("brand.onPrimaryMuted") || UsesToken("brand.secondary")) AddColor("Secondary foreground", d => d.TitleColor, (d, c) => d with { TitleColor = c });
+        if (Compatibility || UsesToken("brand.primary") || UsesToken("brand.background")) AddColor("Plate", d => d.BackgroundColor, (d, c) => d with { BackgroundColor = c });
+        if (Compatibility || UsesToken("brand.accent")) AddColor("Accent", d => d.AccentColor, (d, c) => d with { AccentColor = c });
         _inspector.Children.Add(Copy("Colors, fonts and placement affect this draft. Cue or Update on air sends an explicit native revision."));
     }
     private void AddStyle(string label, double min, double max, double neutral, double step, string unit, double scale,
@@ -282,15 +329,64 @@ public sealed class GraphicsWorkspaceControl : UserControl
         slider.EditStarted += (_, _) => _session?.BeginGesture(); slider.EditCompleted += (_, _) => _session?.EndGesture();
         _refreshFields.Add(() => { if (_session?.Draft is { } d) slider.Value = read(d.Style); });
     }
-    private void AddColor(string label, string color, Func<LowerThirdAppearance, string, LowerThirdAppearance> update)
+    private void AddColor(string label, Func<LowerThirdAppearance,string> read, Func<LowerThirdAppearance, string, LowerThirdAppearance> update)
     {
+        var color = _session?.Draft is { } draft ? read(draft.Style) : "#FFFFFF";
         var picker = new ColorPicker { IsAlphaEnabled = false, Color = HexColor.ParseOrDefault(color, Windows.UI.Color.FromArgb(255, 255, 255, 255)) };
         picker.ColorChanged += (_, e) => { if (!_loading && _session?.Draft is { } d) _session.SetStyle(update(d.Style, HexColor.ToHex(e.NewColor))); };
         _inspector.Children.Add(new Expander { Header = label, Content = picker, HorizontalAlignment = HorizontalAlignment.Stretch });
+        _refreshFields.Add(() => { if (_session?.Draft is { } d) picker.Color = HexColor.ParseOrDefault(read(d.Style),picker.Color); });
     }
+    private bool Compatibility => _session?.Template?.Runtime != "declarative";
+    private bool UsesToken(string token) => _session?.Template?.Layers is { } layers && HasReference(layers,"token",token);
+    private static bool HasReference(JsonElement node,string key,string value)
+    {
+        if (node.ValueKind == JsonValueKind.Object) return (node.TryGetProperty(key,out var field) && field.ValueKind == JsonValueKind.String && field.GetString() == value) || node.EnumerateObject().Any(p => p.Name != "metadata" && HasReference(p.Value,key,value));
+        return node.ValueKind == JsonValueKind.Array && node.EnumerateArray().Any(child => HasReference(child,key,value));
+    }
+    private static Windows.UI.Color FieldColor(JsonElement value)
+    {
+        var text = value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
+        if (text.Length is 7 or 9 && text[0] == '#' && uint.TryParse(text.AsSpan(1),System.Globalization.NumberStyles.HexNumber,System.Globalization.CultureInfo.InvariantCulture,out var rgba))
+            return text.Length == 9 ? Windows.UI.Color.FromArgb((byte)rgba,(byte)(rgba>>24),(byte)(rgba>>16),(byte)(rgba>>8)) : Windows.UI.Color.FromArgb(255,(byte)(rgba>>16),(byte)(rgba>>8),(byte)rgba);
+        return Windows.UI.Color.FromArgb(255,255,255,255);
+    }
+    private static string FieldLabel(NativeGraphicsTemplateField field)
+    {
+        if (field.ExtensionData?.TryGetValue("metadata",out var metadata) == true && metadata.ValueKind == JsonValueKind.Object &&
+            metadata.TryGetProperty("label",out var label) && label.ValueKind == JsonValueKind.String && label.GetString() is { Length: > 0 and <= 128 } friendly) return friendly;
+        var text = field.Id.Replace('-',' '); return text.Length == 0 ? text : char.ToUpperInvariant(text[0])+text[1..];
+    }
+    private static HashSet<string> NumericUsages(JsonElement node,string field)
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        void Visit(JsonElement value) {
+            if (value.ValueKind == JsonValueKind.Object) foreach (var property in value.EnumerateObject()) {
+                if (property.Name == "metadata") continue;
+                if (property.Value.ValueKind == JsonValueKind.Object && property.Value.TryGetProperty("field",out var reference) && reference.ValueKind == JsonValueKind.String && reference.GetString() == field) result.Add(property.Name);
+                Visit(property.Value);
+            } else if (value.ValueKind == JsonValueKind.Array) foreach (var child in value.EnumerateArray()) Visit(child);
+        }
+        Visit(node); return result;
+    }
+    private static (double Min,double Max) NumericLimits(string property) => property switch {
+        "x" or "y" => (0,8192), "width" or "height" => (1,8192), "opacity" => (0,1), "padding" or "gap" => (0,256),
+        "fontSize" => (1,512), "lineHeight" => (.5,3), "cornerRadius" => (0,4096), _ => (-1e9,1e9)
+    };
     private Button Action(string label, Func<Task> action)
     {
         var button = new Button { Content = label }; button.Click += async (_, _) => await action(); _actions.Add(button); return button;
+    }
+    private async Task PickPackageAsync()
+    {
+        var session = _session; if (session is null) return;
+        try {
+            var picker = new Windows.Storage.Pickers.FileOpenPicker();
+            picker.FileTypeFilter.Add(".zip"); picker.FileTypeFilter.Add(".cvgraphics");
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, App.MainWindowHandle);
+            var file = await picker.PickSingleFileAsync();
+            if (file is not null) await session.ImportPackageAsync(file.Path);
+        } catch (Exception ex) when (ex is not OutOfMemoryException) { _importStatus.Text = "Package import unavailable: " + ex.Message; }
     }
     private static TextBlock Copy(string value) => new() { Text = value, TextWrapping = TextWrapping.Wrap, FontSize = 12 };
 }

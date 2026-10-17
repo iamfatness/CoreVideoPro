@@ -83,4 +83,18 @@ public sealed class GraphicsWorkspaceSessionTests
         Assert.Equal("Welcome", workspace.Draft!.Fields.GetProperty("heading").GetString());
         Assert.False(workspace.Draft.Fields.TryGetProperty("name", out _)); Assert.False(workspace.Draft.Fields.TryGetProperty("title", out _));
     }
+    [Fact]
+    public void RequiredAndUtf8BoundsValidatePrivatePreviewWithoutReplacingExplicitBlankSecondaryText()
+    {
+        var state = Initial with { Templates = [new() { TemplateId = "interview", TemplateVersion = 1, Runtime = "declarative",
+            Fields = [new() { Id = "name", Type = "string", Required = true, MaxLength = 256 }, new() { Id = "title", Type = "string", MaxLength = 512 }] }],
+            Instances = [new() { InstanceId = "one", TemplateId = "interview", TemplateVersion = 1, Revision = 1, Fields = new() { Name = "", Title = "" } }] };
+        var sends = 0;
+        var workspace = new GraphicsWorkspaceSession((_,_,_) => { sends++; return Task.FromResult(new NativeGraphicsOperationResult()); },() => state);
+        workspace.Observe(state); workspace.Select("one"); Assert.Contains("required",workspace.PreviewValidation);
+        workspace.SetField("name",Value("Ada")); Assert.Equal("",workspace.PreviewValidation);
+        Assert.Equal("",workspace.Draft!.Fields.GetProperty("title").GetString());
+        workspace.SetField("name",Value(new string('界',100))); Assert.Contains("type and range",workspace.PreviewValidation);
+        Assert.Equal(0,sends);
+    }
 }

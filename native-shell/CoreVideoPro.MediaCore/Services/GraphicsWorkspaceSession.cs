@@ -27,9 +27,29 @@ public sealed class GraphicsWorkspaceSession
     public NativeGraphicsDraft? Preview => CompareOriginal ? _original : Draft;
     public bool CompareOriginal { get; private set; }
     public bool Busy { get; private set; }
+    public bool ImportBusy { get; private set; }
+    public string ImportStatus { get; private set; } = "";
     public bool CanUndo => _undo.Count != 0 || _gesture is not null;
     public bool Dirty => Draft is not null && _original is not null && !Same(Draft, _original);
     public string Status { get; private set; } = "Waiting for native Graphics state.";
+    public string PreviewValidation
+    {
+        get {
+            if (Preview is not { } draft) return "Choose a look or cue to preview.";
+            if (draft.Fields.ValueKind != JsonValueKind.Object) return "The draft fields are not a valid template object.";
+            var template = State?.Templates.FirstOrDefault(t => t.TemplateId == draft.TemplateId && t.TemplateVersion == draft.TemplateVersion);
+            if (draft.Declarative && template is null) return "This template version is unavailable. Re-import its exact version before previewing.";
+            if (template?.Runtime == "declarative") {
+                foreach (var field in template.Fields) {
+                    if (!draft.Fields.TryGetProperty(field.Id, out var value) || !GraphicsCommandRequest.ValidField(value,field))
+                        return $"{field.Id}: enter a value within this template's type and range.";
+                    if (field.Required && value.ValueKind == JsonValueKind.String && value.GetString() == "") return $"{field.Id} is required before previewing or cueing.";
+                }
+            } else if (!draft.Fields.TryGetProperty("name",out var name) || name.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(name.GetString()) || System.Text.Encoding.UTF8.GetByteCount(name.GetString()!) > 256)
+                return "Enter a name of up to 256 UTF-8 bytes to preview this lower third.";
+            return "";
+        }
+    }
 
     public void Observe(NativeGraphicsState? state)
     {
@@ -125,7 +145,18 @@ public sealed class GraphicsWorkspaceSession
         if (result) { SelectedId = ""; Draft = _original = null; _undo.Clear(); PreviewChanged?.Invoke(this, EventArgs.Empty); }
         return result;
     });
-    public Task<bool> ImportAsync(string manifest, CancellationToken cancellation = default) => Run(() => Send("graphics.template.install", new() { ["manifest"] = manifest }, cancellation));
+    public Task<bool> ImportAsync(string manifest, CancellationToken cancellation = default, string packageRoot = "") => Run(() => Send("graphics.template.install", new() { ["manifest"] = manifest, ["packageRoot"] = packageRoot }, cancellation));
+    public async Task<bool> ImportPackageAsync(string path, CancellationToken cancellation = default)
+    {
+        if (ImportBusy) return false;
+        ImportBusy = true; ImportStatus = "Validating local graphics package. Live graphic controls remain available."; Changed?.Invoke(this, EventArgs.Empty);
+        try {
+            var result = await Send("graphics.template.install", new() { ["packagePath"] = path }, cancellation);
+            ImportStatus = Status; return result;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { ImportStatus = ex.Message; return false; }
+        finally { ImportBusy = false; Changed?.Invoke(this, EventArgs.Empty); }
+    }
     public Task<bool> RefreshCatalogAsync(CancellationToken cancellation = default) => Run(() => Send("graphics.template.list", [], cancellation));
     public Task<bool> RestoreAsync(GraphicsSavedCue cue, CoreVideoPro.MediaCore.Contracts.SourceInstanceIdentity? binding = null, CancellationToken cancellation = default) => Run(async () => {
         if (cue.Draft is not { } draft) { Status = "Saved cue has no valid draft."; return false; }

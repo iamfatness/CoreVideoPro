@@ -94,7 +94,8 @@ class CompositorOverlayRaster {
   // No path is reopened between sizing and decode. Native instance assets will
   // additionally use the versioned package importer; this preserves legacy URIs.
   ImageInput openOverlayImage(const std::string& imageUri);
-  ComPtrLite<ID2D1Bitmap> decodeOverlayImage(ID2D1RenderTarget* target, IWICBitmapFrameDecode* frame);
+  ImageInput openPackagedImage(const graphics::GraphicsAsset& asset);
+  ComPtrLite<ID2D1Bitmap> decodeOverlayImage(ID2D1RenderTarget* target, IWICBitmapFrameDecode* frame, bool referenceDpi = false);
 
   // Draws one line of text into `box`, vertically centered, trimmed with an
   // ellipsis when it overflows. Returns false only on factory/format failure.
@@ -105,7 +106,8 @@ class CompositorOverlayRaster {
       DWRITE_FONT_WEIGHT weight,
       const D2D1_RECT_F& box,
       const D2D1_COLOR_F& color, float explicitFontSize = 0.f);
-  bool drawTemplate(ID2D1RenderTarget* target, const graphics::GraphicsDrawing& drawing, int height);
+  bool drawTemplate(ID2D1RenderTarget* target, const graphics::GraphicsDrawing& drawing, int height,
+                    const std::map<std::string, ImageInput>& images);
 
   // DirectWrite/D2D overlay raster cache: overlayContentSignature (FNV-1a over
   // text/brand/font/size, deliberately excluding animation state) -> rendered

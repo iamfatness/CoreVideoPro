@@ -12,15 +12,18 @@ public sealed class GraphicsCommandGateway
     private readonly Func<bool> _running;
     private readonly Func<NativeMediaCoreStateSnapshot?> _observe;
     private readonly Func<IReadOnlyList<NativeMediaCoreCommand>, CancellationToken, Task<NativeMediaCoreStateSnapshot>> _send;
+    private readonly IGraphicsPackageReader? _packages;
     private int _sending;
 
     public GraphicsCommandGateway(IMediaCoreBridge bridge)
         : this(() => bridge.Running && bridge.Profile?.HasAvailableCapability("graphics-instances") == true, () => bridge.LastSnapshot,
-            (commands, cancellation) => bridge.SyncAsync(commands, cancellationToken: cancellation)) { }
+            (commands, cancellation) => bridge.SyncAsync(commands, cancellationToken: cancellation),
+            new GraphicsPackageReader(Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_ASSET_ROOT") ?? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CoreVideoPro", "graphics"))) { }
 
     public GraphicsCommandGateway(Func<bool> running, Func<NativeMediaCoreStateSnapshot?> observe,
-        Func<IReadOnlyList<NativeMediaCoreCommand>, CancellationToken, Task<NativeMediaCoreStateSnapshot>> send)
-        => (_running, _observe, _send) = (running, observe, send);
+        Func<IReadOnlyList<NativeMediaCoreCommand>, CancellationToken, Task<NativeMediaCoreStateSnapshot>> send, IGraphicsPackageReader? packages = null)
+        => (_running, _observe, _send, _packages) = (running, observe, send, packages);
 
     public async Task<NativeGraphicsOperationResult> InvokeAsync(string action, string request,
         CancellationToken cancellationToken = default)
@@ -31,6 +34,20 @@ public sealed class GraphicsCommandGateway
             return Refuse("", "graphics-native-state-unavailable");
         if (!GraphicsCommandRequest.TryBuild(action, request, observed, out var command, out var requestId, out var error))
             return Refuse(requestId, error);
+        // File expansion is independent of the short command admission gate:
+        // importing a package cannot block an operator's Hide or Clear.
+            if (action == "graphics.template.install" && command!.ExtensionData!["graphics"].TryGetProperty("packagePath", out var packagePath))
+            {
+                if (_packages is null) return Refuse(requestId, "graphics-package-import-unavailable");
+                GraphicsPackageInput input;
+                try { input = await _packages.ReadAsync(packagePath.GetString()!, cancellationToken).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or ArgumentException or InvalidOperationException)
+                { return Refuse(requestId, "graphics-package-invalid: " + ex.Message); }
+                var body = command.ExtensionData["graphics"].EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal);
+                body.Remove("packagePath"); body["manifest"] = JsonSerializer.SerializeToElement(input.Manifest);
+                body["packageRoot"] = JsonSerializer.SerializeToElement(input.PackageRoot);
+                if (!GraphicsCommandRequest.TryBuild(action, JsonSerializer.Serialize(body), observed, out command, out requestId, out error)) return Refuse(requestId, error);
+            }
         if (Interlocked.CompareExchange(ref _sending, 1, 0) != 0) return Refuse(requestId, "graphics-command-overloaded");
         try
         {
@@ -58,7 +75,7 @@ public static class GraphicsCommandRequest
         ["graphics.instance.update"] = ["target", "sourceId", "fields", "style", "animations", "binding"],
         ["graphics.instance.cue"] = [], ["graphics.instance.trigger"] = ["action", "target"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"],
-        ["graphics.template.install"] = ["manifest"], ["graphics.template.list"] = []
+        ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = []
     };
     private static readonly HashSet<string> Common = new(StringComparer.Ordinal)
         { "schemaVersion", "requestId", "clientId", "coreEpoch", "instanceId", "expectedRevision" };
@@ -101,11 +118,14 @@ public static class GraphicsCommandRequest
                 {
                     if (!Integer(property.Value, 0)) return false;
                 }
-                else if (property.Value.ValueKind != JsonValueKind.String || Encoding.UTF8.GetByteCount(property.Value.GetString()!) > 256)
+                else if (property.Value.ValueKind != JsonValueKind.String || Encoding.UTF8.GetByteCount(property.Value.GetString()!) > (property.Name is "packagePath" or "packageRoot" ? 2048 : 256) || property.Value.GetString()!.Contains('\0'))
                     return false;
             }
             var libraryAction = action.StartsWith("graphics.template.", StringComparison.Ordinal);
-            if (action == "graphics.template.install" && !body.TryGetProperty("manifest", out _)) return false;
+            if (action == "graphics.template.install") {
+                var manifest = body.TryGetProperty("manifest", out _); var path = body.TryGetProperty("packagePath", out var archive);
+                if (manifest == path || (path && (string.IsNullOrWhiteSpace(archive.GetString()) || body.TryGetProperty("packageRoot", out _)))) return false;
+            }
             if (!libraryAction && action != "graphics.program.clear" && (!body.TryGetProperty("instanceId", out var instanceId) || !Id(instanceId.GetString()!))) return false;
             if (!libraryAction && action is not ("graphics.instance.create" or "graphics.program.clear") &&
                 (!body.TryGetProperty("expectedRevision", out var revision) || !Integer(revision, 1))) return false;
@@ -198,7 +218,7 @@ public static class GraphicsCommandRequest
     }
 
     private static string Text(JsonElement value, string key) => value.TryGetProperty(key, out var item) && item.ValueKind == JsonValueKind.String ? item.GetString()! : "";
-    private static bool ValidField(JsonElement value, NativeGraphicsTemplateField field)
+    internal static bool ValidField(JsonElement value, NativeGraphicsTemplateField field)
     {
         if (field.Choices.Count != 0 && !field.Choices.Any(choice => JsonElement.DeepEquals(value, choice))) return false;
         return field.Type switch

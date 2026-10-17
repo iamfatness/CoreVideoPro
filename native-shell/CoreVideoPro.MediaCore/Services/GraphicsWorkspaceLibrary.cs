@@ -33,9 +33,10 @@ public sealed class GraphicsWorkspaceLibrary
             var definition = _session.State?.Templates.FirstOrDefault(t => t.TemplateId == draft.TemplateId && t.TemplateVersion == draft.TemplateVersion);
             if (definition?.Definition is not { } document) return Fail("The exact native template document is unavailable. The previous saved cue is retained.");
             var previous = templates.FindIndex(t => t.TemplateId == draft.TemplateId && t.TemplateVersion == draft.TemplateVersion);
-            var pin = new GraphicsSavedTemplate(definition.TemplateId, definition.TemplateVersion, definition.ManifestHash, document.Clone());
+            var pin = new GraphicsSavedTemplate(definition.TemplateId, definition.TemplateVersion, definition.ManifestHash, document.Clone(), definition.PackageRoot);
             if (previous < 0) templates.Add(pin);
             else if (templates[previous].ManifestHash != definition.ManifestHash) return Fail("Saved template version conflicts with the current native definition. Import a new version explicitly.");
+            else templates[previous] = pin;
         }
         return await Save(Document with { Cues = cues.ToArray(), Templates = templates.ToArray() }, "Cue and template pin saved. Program is unchanged.");
     }
@@ -71,7 +72,7 @@ public sealed class GraphicsWorkspaceLibrary
         if (draft.Declarative && pin is null) return Fail("The pinned template is missing. Import its exact version before restoring.");
         var installed = _session.State?.Templates.FirstOrDefault(t => t.TemplateId == draft.TemplateId && t.TemplateVersion == draft.TemplateVersion);
         if (installed is null && pin is not null) {
-            if (!await _session.ImportAsync(pin.Definition.GetRawText(), cancellation)) return Fail(_session.Status);
+            if (!await _session.ImportAsync(pin.Definition.GetRawText(), cancellation, pin.PackageRoot)) return Fail(_session.Status);
             var limit = DateTime.UtcNow.AddSeconds(5);
             do {
                 await Task.Delay(100, cancellation); await _session.RefreshCatalogAsync(cancellation);

@@ -7,6 +7,29 @@ namespace CoreVideoPro.MediaCore.Tests;
 
 public sealed class GraphicsCommandGatewayTests
 {
+    private sealed class HeldPackageReader : IGraphicsPackageReader
+    {
+        public TaskCompletionSource<GraphicsPackageInput> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<GraphicsPackageInput> ReadAsync(string archivePath, CancellationToken cancellation = default) => Completion.Task.WaitAsync(cancellation);
+    }
+    [Fact]
+    public async Task PackageExpansionCannotBlockManualClearAndOnlyVerifiedManifestReachesNative()
+    {
+        var packages = new HeldPackageReader(); var sent = new List<NativeMediaCoreCommand>();
+        var gateway = new GraphicsCommandGateway(() => true, () => new() { Graphics = Observed }, (commands, _) => {
+            sent.Add(commands[0]); return Task.FromResult(Ack(commands[0]));
+        }, packages);
+        var imported = gateway.InvokeAsync("graphics.template.install", Request("\"packagePath\":\"C:/package.zip\"", "import-package"));
+        Assert.False(imported.IsCompleted);
+        Assert.True((await gateway.InvokeAsync("graphics.program.clear", Request("\"channel\":\"all\"", "clear-now"))).Accepted);
+        Assert.Single(sent); Assert.Equal("graphics-program-clear", sent[0].Type);
+        packages.Completion.SetResult(new("{\"schemaVersion\":1}", "C:/verified-cache"));
+        Assert.True((await imported).Accepted);
+        var input = sent[1].ExtensionData!["graphics"];
+        Assert.False(input.TryGetProperty("packagePath", out _));
+        Assert.Equal("C:/verified-cache", input.GetProperty("packageRoot").GetString());
+        Assert.Equal("{\"schemaVersion\":1}", input.GetProperty("manifest").GetString());
+    }
     [Fact]
     public void DeclarativeTemplateMustBeAdvertisedAndCannotAcceptIgnoredCompatibilitySliders()
     {

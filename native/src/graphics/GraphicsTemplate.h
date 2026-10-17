@@ -2,10 +2,12 @@
 
 #include "rpc/Json.h"
 #include "graphics/GraphicsTimeline.h"
+#include "graphics/GraphicsAssets.h"
 #include <array>
 #include <memory>
 #include <string>
 #include <vector>
+#include <set>
 
 namespace corevideo::graphics {
 struct GraphicsBox { double x = 0, y = 0, width = 0, height = 0; };
@@ -16,20 +18,25 @@ struct GraphicsPrimitive {
   double opacity = 1, cornerRadius = 0, fontSize = 28, lineHeight = 1.2;
   bool gradient = false, verticalGradient = false;
   int fontWeight = 400, maxLines = 1;
+  std::shared_ptr<const GraphicsAsset> image;
+  std::string fit = "contain", imageAlign = "center", imageVerticalAlign = "center";
 };
 struct GraphicsDrawing {
   double width = 0, height = 0;
   std::vector<GraphicsPrimitive> primitives;
+  std::vector<std::string> warnings;
+  std::set<std::string> usedFields;
 };
 
 // Immutable, bounded declarative definitions. Parsing/installation never occurs
 // on a render caller; field/brand resolution and layout run on the raster owner.
 class GraphicsTemplate {
  public:
-  static std::shared_ptr<const GraphicsTemplate> load(const std::string& manifest, std::string& error);
+  static std::shared_ptr<const GraphicsTemplate> load(const std::string& manifest, std::string& error, GraphicsAssets assets = {});
   static std::shared_ptr<const GraphicsTemplate> corporateLowerThird();
   const rpc::Json& document() const { return document_; }
   const std::array<uint8_t, 32>& hash() const { return hash_; }
+  const GraphicsAssets& assets() const { return assets_; }
   std::string id() const { return document_.getString("templateId"); }
   int version() const { return int(document_.getNumber("templateVersion")); }
   double width() const { return document_.get("bounds")->getNumber("width"); }
@@ -40,6 +47,7 @@ class GraphicsTemplate {
  private:
   rpc::Json document_;
   std::array<uint8_t, 32> hash_{};
+  GraphicsAssets assets_;
 };
 
 struct GraphicsTemplateInput {
