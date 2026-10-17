@@ -24,6 +24,9 @@ public sealed class TelemetryEventService : IDisposable
     // Shutdown must stay prompt (MainWindow force-exits at ~6 s): a tight cap.
     private static readonly TimeSpan SessionEndSendTimeout = TimeSpan.FromSeconds(2);
 
+    private Task _sessionEndCompletion = Task.CompletedTask;
+    internal Task SessionEndCompletion { get { lock (_gate) return _sessionEndCompletion; } }
+
     private readonly Func<NativeMediaCoreStateSnapshot?> _snapshotAccessor;
     private readonly TelemetryConsentStore _consentStore;
     private readonly CrashReportingConfig _config;
@@ -145,22 +148,23 @@ public sealed class TelemetryEventService : IDisposable
             }
 
             _sessionEndSent = true;
+            _sessionEndCompletion = Task.Run(SendSessionEndAsync);
         }
+    }
 
-        _ = Task.Run(async () =>
+    private async Task SendSessionEndAsync()
+    {
+        try
         {
-            try
-            {
-                using var cts = new CancellationTokenSource(SessionEndSendTimeout);
-                // Session-end NEVER honors Retry-After (spec §S3.4): the caller
-                // ignores the result and the app closes regardless.
-                await SendAsync(TelemetryEventNames.SessionEnd, cts.Token).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                SafeLog($"telemetry: session-end send failed silently ({ex.GetType().Name}: {ex.Message})");
-            }
-        });
+            using var cts = new CancellationTokenSource(SessionEndSendTimeout);
+            // Session-end NEVER honors Retry-After (spec §S3.4): the caller
+            // ignores the result and the app closes regardless.
+            await SendAsync(TelemetryEventNames.SessionEnd, cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            SafeLog($"telemetry: session-end send failed silently ({ex.GetType().Name}: {ex.Message})");
+        }
     }
 
     private void OnHeartbeat()

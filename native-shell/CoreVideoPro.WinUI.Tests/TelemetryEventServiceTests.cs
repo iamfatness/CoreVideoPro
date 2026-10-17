@@ -30,6 +30,7 @@ public sealed class TelemetryEventServiceTests : IDisposable
         public int Calls;
         public string? LastWire;
         public Uri? LastEndpoint;
+        public Task<TelemetrySendResult>? Completion;
         public readonly TaskCompletionSource Called = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task<TelemetrySendResult> SendAsync(Uri endpoint, string apiKey, string wire, CancellationToken ct)
@@ -38,7 +39,7 @@ public sealed class TelemetryEventServiceTests : IDisposable
             LastWire = wire;
             LastEndpoint = endpoint;
             Called.TrySetResult();
-            return Task.FromResult(new TelemetrySendResult
+            return Completion ?? Task.FromResult(new TelemetrySendResult
             {
                 Status = TelemetrySendStatus.Accepted,
                 ReportId = "cv-test-1",
@@ -110,18 +111,10 @@ public sealed class TelemetryEventServiceTests : IDisposable
         Assert.Contains("\"version\":\"1.2.3\"", transport.LastWire);
         Assert.Contains("outputConfigShape", transport.LastWire);
 
-        // Accepted send updates the last-sent watermark (crash-count baseline).
-        // MarkSent runs just AFTER the transport returns, so poll briefly.
-        DateTimeOffset? lastSent = null;
-        for (var i = 0; i < 50 && lastSent is null; i++)
-        {
-            lastSent = new TelemetryConsentStore(ConsentPath).Load().LastSentUtc;
-            if (lastSent is null)
-            {
-                await Task.Delay(20);
-            }
-        }
-
+        // Transport acceptance precedes persistence. Await the whole send instead
+        // of racing its write with repeated File.ReadAllText opens on Windows.
+        await service.SessionEndCompletion.WaitAsync(TimeSpan.FromSeconds(5));
+        var lastSent = new TelemetryConsentStore(ConsentPath).Load().LastSentUtc;
         Assert.NotNull(lastSent);
     }
 
@@ -139,6 +132,25 @@ public sealed class TelemetryEventServiceTests : IDisposable
 
         await transport.Called.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await Task.Delay(200);
+        Assert.Equal(1, transport.Calls);
+    }
+
+    [Fact]
+    public async Task SessionEndCompletion_IncludesAcceptedSendWatermarkPersistence()
+    {
+        new TelemetryConsentStore(ConsentPath).SetEnabled(true);
+        var accepted = new TaskCompletionSource<TelemetrySendResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new FakeTransport { Completion = accepted.Task };
+        using var service = NewService(transport);
+        service.Start();
+        service.FireSessionEnd();
+        await transport.Called.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(service.SessionEndCompletion.IsCompleted);
+        Assert.Null(new TelemetryConsentStore(ConsentPath).Load().LastSentUtc);
+
+        accepted.SetResult(new TelemetrySendResult { Status = TelemetrySendStatus.Accepted, HttpStatus = 202 });
+        await service.SessionEndCompletion.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.NotNull(new TelemetryConsentStore(ConsentPath).Load().LastSentUtc);
         Assert.Equal(1, transport.Calls);
     }
 
