@@ -381,13 +381,13 @@ TEST(JsonRpcServer, WriterStopCannotBeLostBetweenPredicateAndWait) {
   releaseWait.count_down();
   const bool exitedWithoutRescue = run.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
   if (!exitedWithoutRescue) {
-    // Negative-control builds can report the regression without hanging the
-    // entire native suite. This is diagnostic cleanup, never a passing exit.
-    if (auto* cv = wake.load()) cv->notify_all();
-    if (run.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
-      std::fprintf(stderr, "RPC writer shutdown regression could not be rescued.\n");
-      std::abort();
-    }
+    // A stuck async future cannot unwind safely. Fail this owned test process
+    // promptly, without touching a condition variable whose scope might end.
+    // _Exit also avoids CRT crash dialogs and destructors joining the hang.
+    std::fprintf(stderr, "RPC writer shutdown test exceeded two seconds; premature_stop_publication=%u.\n",
+        publishedBeforeWaitReleased ? 1u : 0u);
+    std::fflush(stderr);
+    std::_Exit(1);
   }
   run.get();
   EXPECT_TRUE(attempted);
