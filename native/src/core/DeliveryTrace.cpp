@@ -44,7 +44,13 @@ struct DeliveryTraceCapture::State {
   static constexpr std::uint64_t maxExportBytes = 256 * 1024 * 1024;
   std::unique_ptr<Slot[]> slots = std::make_unique<Slot[]>(capacity);
   std::atomic<std::uint64_t> head{0}, tail{0}, lost{0}, exported{0}, failures{0}, writers{0};
-  std::atomic<bool> accepting{true};
+  std::atomic<bool> accepting{true}, completed{false};
+  const DeliveryTraceSelection selection;
+  std::atomic<std::uint64_t> filtered{0};
+#if defined(_WIN32)
+  HANDLE stopEvent = nullptr;
+  std::string stopEventName;
+#endif
   std::mutex doneMutex;
   std::condition_variable doneChanged;
   bool done = false;
@@ -59,12 +65,23 @@ struct DeliveryTraceCapture::State {
   std::shared_ptr<const rpc::Json> aggregateSnapshot;
   std::int64_t lastAggregateAt = 0;
   std::uint64_t aggregateRevision = 0;
-  explicit State(std::string value, std::function<void()> hook) : path(std::move(value)), beforeExport(std::move(hook)) {
+  explicit State(std::string value, std::function<void()> hook, DeliveryTraceSelection selected) : selection(selected), path(std::move(value)), beforeExport(std::move(hook)) {
     header.clockFrequency = frequency(); header.started = deliveryTraceNow();
     header.sessionEpoch = static_cast<std::uint64_t>(header.started);
+
     aggregateSnapshot = std::make_shared<const rpc::Json>(aggregate.snapshot(header.started, header.clockFrequency, 0));
     lastAggregateAt = header.started;
     for (std::size_t i = 0; i < capacity; ++i) slots[i].sequence.store(i);
+#if defined(_WIN32)
+    stopEventName = "Local\\CoreVideoDeliveryTraceStop-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(header.sessionEpoch);
+    stopEvent = CreateEventA(nullptr, TRUE, FALSE, stopEventName.c_str());
+    if (!stopEvent) throw std::runtime_error("trace stop event");
+#endif
+  }
+  ~State() {
+#if defined(_WIN32)
+    if (stopEvent) CloseHandle(stopEvent);
+#endif
   }
   void publishAggregate(bool final = false) {
     const auto now = deliveryTraceNow();
@@ -96,6 +113,9 @@ struct DeliveryTraceCapture::State {
       output.write(reinterpret_cast<const char*>(&header), sizeof(header));
       std::array<DeliveryTraceEvent, 128> batch;
       while (accepting.load() || writers.load() || tail.load() < head.load()) {
+#if defined(_WIN32)
+        if (WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) accepting.store(false);
+#endif
         std::size_t count = 0;
         while (count < batch.size() && pop(batch[count])) ++count;
         if (!count) { publishAggregate(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue; }
@@ -113,14 +133,15 @@ struct DeliveryTraceCapture::State {
       header.failures = failures.load(); header.ended = deliveryTraceNow(); header.complete = 1;
       output.seekp(0); output.write(reinterpret_cast<const char*>(&header), sizeof(header)); output.flush();
       if (!output) throw std::runtime_error("trace finalize");
+      completed.store(true);
       publishAggregate(true); // Explicit stopped final observation may precede the next live refresh.
     } catch (...) { ++failures; accepting.store(false); }
     { std::lock_guard<std::mutex> lock(doneMutex); done = true; }
     doneChanged.notify_all();
   }
 };
-DeliveryTraceCapture::DeliveryTraceCapture(const std::string& path, std::function<void()> beforeExport)
-    : state_(std::make_shared<State>(path, std::move(beforeExport))) {
+DeliveryTraceCapture::DeliveryTraceCapture(const std::string& path, std::function<void()> beforeExport, DeliveryTraceSelection selection)
+    : state_(std::make_shared<State>(path, std::move(beforeExport), selection)) {
   const auto state = state_;
   state_->worker = std::thread([state] { state->run(); });
 }
@@ -131,6 +152,11 @@ DeliveryTraceCapture::~DeliveryTraceCapture() {
 }
 bool DeliveryTraceCapture::record(DeliveryTraceEvent event) noexcept {
   auto& state = *state_;
+  if (!state.accepting.load()) return false;
+  if (state.selection == DeliveryTraceSelection::ProgramOnly &&
+      (event.stage < DeliveryStage::ProgramSubmitted || event.stage > DeliveryStage::ProgramMiss)) {
+    ++state.filtered; return false;
+  }
   ++state.writers;
   if (!state.accepting.load()) { --state.writers; return false; }
   for (int attempt = 0; attempt < 16; ++attempt) {
@@ -152,6 +178,7 @@ bool DeliveryTraceCapture::record(DeliveryTraceEvent event) noexcept {
   }
   ++state.lost; --state.writers; return false;
 }
+void DeliveryTraceCapture::requestStop() noexcept { state_->accepting.store(false); }
 bool DeliveryTraceCapture::close() {
   if (!state_->worker.joinable()) return state_->failures.load() == 0;
   state_->accepting.store(false);
@@ -165,6 +192,12 @@ bool DeliveryTraceCapture::close() {
 rpc::Json DeliveryTraceCapture::snapshot() const {
   return rpc::Json::Object{{"schemaVersion", "delivery-evidence-v1"}, {"enabled", true},
     {"sessionEpoch", std::to_string(state_->header.sessionEpoch)},
+    {"stageSelection", state_->selection == DeliveryTraceSelection::ProgramOnly ? "program-only" : "all"},
+    {"intentionallyFilteredEvents", static_cast<double>(state_->filtered.load())},
+    {"accepting", state_->accepting.load()}, {"captureComplete", state_->completed.load()},
+#if defined(_WIN32)
+    {"stopEvent", state_->stopEventName},
+#endif
     {"observedAtTicks", std::to_string(deliveryTraceNow())},
     {"clock", 
 #if defined(_WIN32)
@@ -181,12 +214,19 @@ rpc::Json DeliveryTraceCapture::snapshot() const {
     {"exportFailures", static_cast<double>(state_->failures.load())},
     {"aggregate", *state_->readAggregate()},
     {"cameraReaderObserved", false}, {"displayObserved", false}, {"sourceAcquisitionObserved", false},
-    {"boundaries", "source-gpu-ready/source-requested/source-draw-submitted/program-submitted/program-gpu-ready/program-delivered"}};
+    {"boundaries", state_->selection == DeliveryTraceSelection::ProgramOnly
+        ? "program-submitted/program-gpu-ready/program-delivered/program-miss"
+        : "source-gpu-ready/source-requested/source-draw-submitted/program-submitted/program-gpu-ready/program-delivered"}};
 }
 std::unique_ptr<DeliveryTraceCapture> startDeliveryTraceFromEnvironment() {
   const char* path = std::getenv("COREVIDEO_DELIVERY_TRACE_PATH");
   if (!path || !*path) return {};
-  auto capture = std::make_unique<DeliveryTraceCapture>(path);
+  const char* selected = std::getenv("COREVIDEO_DELIVERY_TRACE_STAGES");
+  if (selected && *selected && std::string_view(selected) != "all" && std::string_view(selected) != "program-only")
+    throw std::runtime_error("trace stages must be all or program-only");
+  const auto selection = selected && std::string_view(selected) == "program-only"
+      ? DeliveryTraceSelection::ProgramOnly : DeliveryTraceSelection::All;
+  auto capture = std::make_unique<DeliveryTraceCapture>(path, std::function<void()>{}, selection);
   active.store(capture.get()); return capture;
 }
 void recordDeliveryTrace(DeliveryTraceEvent event) noexcept {
