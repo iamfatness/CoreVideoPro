@@ -65,6 +65,25 @@ public sealed class GraphicsCommandGatewayTests
         Assert.False(GraphicsCommandRequest.TryBuild("graphics.instance.create",
             Request("\"templateId\":\"interview\",\"templateVersion\":3,\"scope\":\"global\""), advertised, out _, out _, out _));
     }
+    [Fact]
+    public async Task InterveningClientResultDoesNotLoseCorrelatedResultHistory()
+    {
+        var gateway=new GraphicsCommandGateway(()=>true,()=>new() {Graphics=Observed},(commands,_)=>Task.FromResult(new NativeMediaCoreStateSnapshot {Graphics=Observed with {
+            LastResult=new() {RequestId="other-client",Accepted=true},Operations=[new() {ClientId="operator",RequestId="request-one",Accepted=true,Reason="queued"}]}}));
+        var result=await gateway.InvokeAsync("graphics.program.clear",Request("\"channel\":\"all\""));
+        Assert.True(result.Accepted);Assert.Equal("queued",result.Reason);
+    }
+    [Fact]
+    public void AutomationRejectsUnqualifiedOverridesAndPreservesExplicitBlankSecondary()
+    {
+        var identity=new CoreVideoPro.MediaCore.Contracts.SourceInstanceIdentity {SourceId="zoom:7",InstanceId="guest",ProcessEpoch="meeting",Generation=2};
+        string Input(object configuration)=>JsonSerializer.Serialize(new {schemaVersion=1,requestId="rules",clientId="operator",coreEpoch="test-core",expectedAutomationRevision=1,configuration},new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var rules=new[] {new GraphicsAutomationRule {Id="intro",InstanceId="featured"}};
+        Assert.False(GraphicsCommandRequest.TryBuild("graphics.automation.configure",Input(new {rules,sourceTexts=new Dictionary<string,object>{{"zoom:7",new {name="Old"}}}}),Observed,out _,out _,out _));
+        var good=Input(new GraphicsAutomationConfiguration {Rules=rules,SourceTexts=new Dictionary<string,GraphicsAutomationSourceText>{{"zoom:7",new() {Binding=identity,Secondary=""}}}});
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.automation.configure",good,Observed,out var command,out _,out _));
+        Assert.Equal("",command!.ExtensionData!["graphics"].GetProperty("configuration").GetProperty("sourceTexts").GetProperty("zoom:7").GetProperty("secondary").GetString());
+    }
     private static NativeGraphicsState Observed => new()
     {
         SchemaVersion = 1, CoreEpoch = "test-core",

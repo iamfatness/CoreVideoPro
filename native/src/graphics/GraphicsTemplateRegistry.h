@@ -22,6 +22,7 @@ class GraphicsTemplateRegistry {
   std::string submit(const std::string& client, const std::string& request, const std::string& manifest, const std::string& packageRoot = {});
   // A shared immutable lease: a stalled worker cannot stall a frame.
   std::shared_ptr<const Publication> poll() const;
+  bool requestThumbnails();
  private:
   struct Job { std::string client, request, manifest, state, reason, packageRoot; };
   void run();
@@ -34,6 +35,8 @@ class GraphicsTemplateRegistry {
   std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> assetPool_;
   std::map<std::pair<std::string, int>, std::string> origins_;
   uint64_t assetBytes_ = 0;
+  bool thumbnailsRequested_=false,thumbnailsPending_=false;
+  std::map<std::pair<std::string,int>,rpc::Json> thumbnails_;
   bool stopping_ = false;
   std::thread worker_;
   std::shared_ptr<const Publication> publication_;

@@ -1,4 +1,5 @@
 #include "graphics/GraphicsTemplateRegistry.h"
+#include "graphics/GraphicsThumbnail.h"
 #include <atomic>
 
 namespace corevideo::graphics {
@@ -19,6 +20,12 @@ GraphicsTemplateRegistry::~GraphicsTemplateRegistry() {
 }
 std::shared_ptr<const GraphicsTemplateRegistry::Publication> GraphicsTemplateRegistry::poll() const {
   return std::atomic_load(&publication_);
+}
+bool GraphicsTemplateRegistry::requestThumbnails() {
+  std::unique_lock lock(mutex_,std::try_to_lock);if(!lock.owns_lock() || stopping_) return false;
+  if(thumbnailsRequested_) return true;
+  thumbnailsRequested_=thumbnailsPending_=true;
+  if(!worker_.joinable()) worker_=std::thread([this]{run();});wake_.notify_one();return true;
 }
 std::string GraphicsTemplateRegistry::submit(const std::string& client, const std::string& request, const std::string& manifest, const std::string& packageRoot) {
   if (manifest.empty() || manifest.size() > 256 * 1024) return "template-manifest-size";
@@ -45,13 +52,15 @@ std::string GraphicsTemplateRegistry::submit(const std::string& client, const st
 void GraphicsTemplateRegistry::publishLocked() {
   auto publication = std::make_shared<Publication>();
   Json::Array catalog, installs;
+  const auto thumbnail=[&](const std::pair<std::string,int>& key)->Json {const auto found=thumbnails_.find(key);return found==thumbnails_.end()?Json::Object{{"state",thumbnailsRequested_?"pending":"not-requested"}}:found->second;};
   for (const auto& preset : {"compact-solid", "minimal-accent", "broadcast"})
-    catalog.emplace_back(Json::Object{{"templateId", preset}, {"templateVersion", 1}, {"name", preset}, {"family", "lower-third"}, {"runtime", "compatibility"}});
+    catalog.emplace_back(Json::Object{{"templateId", preset}, {"templateVersion", 1}, {"name", preset}, {"family", "lower-third"}, {"runtime", "compatibility"},{"thumbnail",thumbnail({preset,1})}});
   for (const auto& [key, definition] : definitions_) {
     auto row = definition->document().asObject(); row["runtime"] = "declarative";
     // Exact package document for save/export. Typed UI descriptors cannot
     // reconstruct omitted defaults or round-trip arbitrary metadata faithfully.
     row["definition"] = definition->document();
+    row["thumbnail"]=thumbnail(key);
     const auto origin = origins_.find(key); if (origin != origins_.end()) row["packageRoot"] = origin->second;
     std::string hash; static constexpr char hex[] = "0123456789abcdef";
     for (auto byte : definition->hash()) { hash += hex[byte >> 4]; hash += hex[byte & 15]; }
@@ -66,10 +75,22 @@ void GraphicsTemplateRegistry::publishLocked() {
 void GraphicsTemplateRegistry::run() {
   for (;;) {
     std::shared_ptr<Job> job;
+    std::map<std::pair<std::string,int>,std::shared_ptr<const GraphicsTemplate>> thumbnailWork;
     {
-      std::unique_lock lock(mutex_); wake_.wait(lock, [&] { return stopping_ || !jobs_.empty(); });
+      std::unique_lock lock(mutex_); wake_.wait(lock, [&] { return stopping_ || !jobs_.empty() || thumbnailsPending_; });
       if (stopping_) return;
-      job = jobs_.front(); jobs_.pop_front(); job->state = "validating"; publishLocked();
+      if(thumbnailsPending_) {
+        thumbnailsPending_=false;
+        for(const auto& preset:{"compact-solid","minimal-accent","broadcast"}) if(!thumbnails_.contains({preset,1})) thumbnailWork[{preset,1}]={};
+        for(const auto& item:definitions_) if(!thumbnails_.contains(item.first)) thumbnailWork.emplace(item);
+      } else {job = jobs_.front(); jobs_.pop_front(); job->state = "validating"; publishLocked();}
+    }
+    if(!job) {
+      for(const auto& [key,definition]:thumbnailWork) {
+        auto result=renderGraphicsThumbnail(key.first,definition);
+        std::lock_guard lock(mutex_);if(stopping_) return;thumbnails_[key]=std::move(result);publishLocked();
+      }
+      continue;
     }
     std::string error;
     auto definition = GraphicsTemplate::load(job->manifest, error);
@@ -124,6 +145,7 @@ void GraphicsTemplateRegistry::run() {
           for (auto& asset : newAssets) assetPool_.emplace(std::move(asset));
           assetBytes_ += addedBytes;
           origins_[key] = job->packageRoot;
+          if(thumbnailsRequested_) {thumbnails_.erase(key);thumbnailsPending_=true;}
         }
       }
       job->state = error.empty() && definition ? "installed" : "failed";

@@ -10,7 +10,29 @@ public sealed class GraphicsWorkspaceSessionTests
         SchemaVersion = 1, CoreEpoch = "core-one", Instances = [new() { InstanceId = "featured", TemplateId = "compact-solid", TemplateVersion = 1,
             Revision = 3, ProgramRevision = 1, CueRevision = 2, Preparation = "ready", Fields = new() { Name = "Private", Title = "" },
             CueFields = new() { Name = "Accepted cue" }, ProgramFields = new() { Name = "On air" } }] };
+    [Fact]
+    public async Task ExplicitSuggestionCuesQualifiedCopyWithoutShowingOrOverwritingPrivateDraft()
+    {
+        var identity=new CoreVideoPro.MediaCore.Contracts.SourceInstanceIdentity {SourceId="zoom:7",InstanceId="guest",ProcessEpoch="meeting",Generation=1};
+        var state=Initial with {Sources=[new() {Identity=identity,DisplayName="Guest",VideoOn=true}],Automation=new() {Mode="suggest",Suggestions=[new() {InstanceId="featured",Name="Guest",Secondary="",Binding=identity}]}};
+        var sent=new List<(string Action,JsonElement Body)>();
+        var session=new GraphicsWorkspaceSession((action,body,_)=>{sent.Add((action,JsonDocument.Parse(body).RootElement.Clone()));return Task.FromResult(new NativeGraphicsOperationResult {Accepted=true,CurrentRevision=4});},()=>state);
+        session.Observe(state);session.Select("featured");var draft=session.Draft;
+        Assert.True(await session.CueSuggestionAsync("featured"));Assert.Equal(draft,session.Draft);
+        Assert.Equal(new[] {"graphics.instance.update","graphics.instance.cue"},sent.Select(s=>s.Action));
+        Assert.Equal("",sent[0].Body.GetProperty("fields").GetProperty("title").GetString());Assert.Equal(4,sent[1].Body.GetProperty("expectedRevision").GetInt32());
+        state=state with {Sources=[]};session.Observe(state);Assert.False(await session.CueSuggestionAsync("featured"));Assert.Equal(2,sent.Count);
+    }
     private static JsonElement Value(string text) => JsonSerializer.SerializeToElement(text);
+    [Fact]
+    public async Task EpochChangeDuringAcceptedCommitNeverReplaysCueIntoTheNewCore()
+    {
+        var state=Initial;var actions=new List<string>();
+        var session=new GraphicsWorkspaceSession((action,_,_)=>{actions.Add(action);state=state with {CoreEpoch="replacement-core"};return Task.FromResult(new NativeGraphicsOperationResult {Accepted=true,CurrentRevision=4,InstanceId="featured"});},()=>state);
+        session.Observe(state);session.Select("featured");
+        Assert.False(await session.CueAsync());Assert.Equal(new[] {"graphics.instance.update"},actions);
+        Assert.Null(session.Draft);
+    }
     [Fact]
     public async Task BindingEditsRemainPrivateAndStaleGenerationCannotReplaceSubject()
     {

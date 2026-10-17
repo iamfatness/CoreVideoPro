@@ -13,7 +13,7 @@ feeds back native preparation/draw facts. It copies the published immutable JSON
 lease into `CoreStateCapture`; it does not assemble a graphics tree for every
 snapshot under the core mutex.
 
-Eight native commands exist: `graphics-instance-create`, `graphics-instance-update`,
+The base native commands are: `graphics-instance-create`, `graphics-instance-update`,
 `graphics-instance-cue`, `graphics-instance-trigger`, `graphics-instance-remove`
 `graphics-program-clear`, `graphics-template-install` and `graphics-template-list`. They work as JSON-line requests or entries in the
 existing `media-core-sync` batch. The shell registers the corresponding dotted
@@ -27,8 +27,8 @@ on-air state machine.
 Each command carries a `graphics` object with `schemaVersion:1`, `requestId`,
 `clientId` and the exact `coreEpoch` observed at `snapshot.graphics.coreEpoch`.
 IDs use lowercase letters/digits/hyphens with a leading letter, at most 64 bytes.
-A request ID cannot be reused with different content. The last 32 operation
-results are replay-protected per client. Read the correlated `lastResult`;
+A request ID cannot be reused with different content. The last 256 operation
+results are replay-protected per client for five minutes (expired entries retire on the next admission). Read the matching `clientId/requestId` in `operations`, with `lastResult` retained for older consumers;
 the existing envelope/batch acknowledgement does not establish resource readiness
 or display delivery.
 
@@ -313,12 +313,10 @@ layer selector and actual textured source draw submission in the current pass;
 metadata alone, a slate, or a different routed participant does not qualify.
 This observes draw submission, not receiver continuity. Current source binding
 supports direct Zoom cameras; Tiles and nested scene membership remain to be
-qualified. There is no automatic participant reveal in this slice.
+qualified. Automatic introductions consume these native source-draw facts, rather than roster names or director recommendations.
 
 Scene filtering, direct-camera bindings and independent accepted Cue are present.
-Complete legacy migration and workspace parity, other graphic
-families and automation remain requirements of the approved feature. Their absence must not be hidden
-by the compatibility instance capability. Metal does not announce this instance
+The workspace, verified image migration, title/bug/clock consumers and qualified introduction controller use this authority. Functional implementation does not establish complete output/installed acceptance. Metal does not announce this instance
 capability yet. No installed app/profile/camera ownership changes are part of
 this isolated development path.
 
@@ -364,3 +362,32 @@ The private canvas adds reference-pixel drag/nudge and proportional corner scali
 Its selection/safe-region guides are editor chrome over the native shared texture,
 not a second graphic renderer. Escape cancels one gesture and one gesture is one
 Undo. The same 10 Hz preview coordinator coalesces canvas edits and inspector edits.
+
+
+## Catalog, compatibility and operator arbitration
+
+`graphics.template.list` accepts `includeThumbnails:true`. This is explicit worker demand, not work performed by reading a snapshot. The catalog publishes bounded 320×180 PNGs made by the same native DirectWrite/D2D/WIC renderer; thumbnails are labeled reference appearances rather than current Program. Card and compact views share the same catalog and selection. Invalid PNG dimensions/encoding are refused before shell decoding.
+
+Compatibility appearances can refer to a verified `image:{templateId,templateVersion,assetId}`. Neither the renderer nor a cue interprets this as a path. Explicit image import stages content-addressed inert assets and submits the ordinary native package validator. Package export copies the exact installed declaration and verified asset bytes into an atomic ZIP/`.cvgraphics` result. Scratch declarations remain private until explicit import/version installation.
+
+Showing a lower third or bug selects its managed family authority and strips that family's legacy key layers before drawing. Hide and Clear do not silently reveal an older retained key. `graphics.authority.set` explicitly selects `legacy` or `instances`; returning lower thirds to legacy clears managed lower thirds and inhibits their automation. Captions remain independent. Existing lower-third Show/Hide/rebuild actions route to the native managed instances while that authority is selected. Rebuild uses the current qualified subject and preserves an intentionally blank secondary line.
+
+Rack labels and order are metadata on `graphics.instance.update` (`label`, `rackOrder`, `target:"cue"`). This update is separate from content changes, conflict-fenced and does not allocate a raster revision. Rack order is native composition order within the existing scene/global scope boundary. Saved cue names, template/image pins, source overrides and unknown brand metadata survive explicit saves; loading a document does not activate an authority or replay visibility.
+
+## Native introduction controller
+
+`graphics.automation.configure` takes `expectedAutomationRevision` and a bounded `configuration:{rules,sourceTexts}`. At most eight unique rules target existing lower-third instances. The rule contains `id`, `instanceId`, `enabled`, optional scene/source filters, `dwellMs`, `durationMs`, `cooldownMs` and `suppressScreenShare`. Default dwell is 1,500 ms and auto-hide is 8,000 ms; duration zero explicitly holds. Unqualified/ambiguous subjects, screen sharing, wrong scope or disabled rules do not reveal a label. Source text overrides include the exact `SourceInstanceIdentity`; recycled IDs cannot inherit another generation's copy.
+
+`graphics.automation.control` provides `set-mode`, `arm`, `disarm`, `hold`, `resume` and `hide-automatic`. Modes are Manual, Suggest, Rehearsal and Automatic. Setting a mode/configuration does not arm. Suggest publishes a current qualified suggestion; the explicit shell Cue action applies it through the ordinary revision-fenced update/Cue commands and never Shows it. Rehearsal prepares native Cue only. Automatic requires explicit arming and actual qualifying native source draw. Multiple visible guests require an explicit source filter.
+
+One reveal is admitted per subject incarnation. Metadata updates of an owned, on-air introduction use Update without replaying entrance. Auto-hide begins at the matching native first draw, rather than at request admission. Manual content/Cue/Show/Hide/Remove intent holds that rule for the session. Resume is explicit; Clear inhibits and cancels pending automatic reveals. Reconnect disarms; saved documents retain rules only, never source generations, modes or arming. Restored rule targets must resolve to explicitly restored hidden cue IDs in the current core epoch.
+
+The bounded trace retains 256 decisions and a dropped-history count. Requested/accepted/refused and native draw-submitted facts remain separate; they do not prove physical display or receiver delivery. #761 retains its own director acceptance; this controller does not execute its recommendations or enable scene auto-take.
+
+## Resource capacity and isolated qualification
+
+The process budget separately accounts CPU scratch (128 MiB), GPU reservations including retiring leases (256 MiB), two active preparers, and sixteen distinct managed content revisions including authoring. The same immutable content on another device/scale shares a revision slot but its GPU bytes remain fully charged. Existing caption/legacy resources remain byte bounded and do not consume managed revision slots. A seventeenth pinned native revision is refused atomically with `graphics-resident-revision-capacity`; accepted Program/Cue remain intact. Nodes are conservatively bounded at 256 across retained native instance content, preserving the per-bus maximum.
+
+Independent preparation owners receive lifetime-safe pressure notifications. Their own workers trim disposable entries, never accepted leases, so an idle old renderer's obsolete cache cannot permanently starve a new private owner. Reclamation does not wait on the render caller. A full revision limit is named in pending preparation diagnostics.
+
+`scripts/qa/volt-graphics-isolated.mjs` launches only a supplied native executable and an explicitly named synthetic helper. It uses native JSON-line commands, never the installed API, OS camera or desktop. Evidence separates exact binary hash, synthetic roster, native rule admission/draw, measured Program-buffer interval, recording finalization and decoded file format. Neither zero counter deltas nor a decoded 60 fps file establishes webcam/display continuity or a real-meeting bake. The output directory contains full bounded evidence and private native logs.

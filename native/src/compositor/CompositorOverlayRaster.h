@@ -56,6 +56,9 @@ class CompositorOverlayRaster {
   std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource();
   void refuseGpuLease() { failedThisFrame_ = true; lastWarning_ = "Graphics GPU retirement capacity unavailable."; }
   const std::string& lastWarning() const { return lastWarning_; }
+  // Called by the package/library worker only. Uses the exact native typography,
+  // layout and image decoder, never a shell approximation or Program texture.
+  std::vector<uint8_t> thumbnailPng(const CompositorOverlayContent& overlay, int width, int height, std::string& warning);
   // Rasters the overlay's accent bar + text (+ optional WIC image) into a GPU
   // texture using DirectWrite/D2D and returns its SRV, or nullptr to fall back
   // to the accent-bar draw. The texture holds PREMULTIPLIED alpha over a
@@ -114,6 +117,7 @@ class CompositorOverlayRaster {
   // text texture. Rasters happen only on content/size change; frames reuse the
   // SRV.
   struct OverlayRasterTex {
+    std::vector<uint8_t> thumbnail;
     // Declared first so the texture/view release before their budget charge.
     std::shared_ptr<graphics::GraphicsResourceBudget::Lease> budget;
     ComPtrLite<ID3D11Texture2D> texture;
@@ -124,6 +128,7 @@ class CompositorOverlayRaster {
     CompositorOverlayContent overlay;
     int width = 0, height = 0;
     bool strictResources = false;
+    bool thumbnail = false;
   };
   struct Key {
     uintptr_t device = 0;

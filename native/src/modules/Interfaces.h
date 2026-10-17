@@ -22,7 +22,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace corevideo::graphics { struct GraphicsTemplateInput; }
+namespace corevideo::graphics { struct GraphicsTemplateInput; struct GraphicsAsset; }
 namespace corevideo::modules {
 class CpuSourcePreparation;
 
@@ -461,6 +461,7 @@ struct CompositorOverlayContent {
   bool hasGraphicsContentHash = false;
   std::optional<CompositorLayerRect> graphicsAuthoringRect;
   std::shared_ptr<const graphics::GraphicsTemplateInput> graphicsTemplate;
+  std::shared_ptr<const graphics::GraphicsAsset> graphicsImage;
 };
 
 // Canvas-pixel Tiles decoration; disabled for every ordinary scene layer.
@@ -542,6 +543,7 @@ struct CompositorRenderPlanLayer {
 };
 
 struct CompositorRenderPlan {
+  bool observeGraphicsSubjects = false;
   std::map<std::string, CompositorColorGrade> sourceGrades;
   std::string renderPlanId;
   std::string sceneId;

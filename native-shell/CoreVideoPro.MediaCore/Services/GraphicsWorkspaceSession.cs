@@ -26,7 +26,6 @@ public sealed class GraphicsWorkspaceSession
         else if(Draft is not null && _original is not null) _browseEdits[(Draft.TemplateId,Draft.TemplateVersion)]=new(Draft,_original,0,_undo.ToArray(),SelectedLayerId);
     }
 
-    private NativeGraphicsOperationResult? _lastOperation;
     public GraphicsWorkspaceSession(Func<string, string, CancellationToken, Task<NativeGraphicsOperationResult>> invoke,
         Func<NativeGraphicsState?> observe) => (_invoke, _observe) = (invoke, observe);
 
@@ -109,9 +108,9 @@ public sealed class GraphicsWorkspaceSession
             PreviewChanged?.Invoke(this, EventArgs.Empty);
         }
         // Preserve collection selection, focus and local drafts as frame facts advance.
-        var signature = state.CoreEpoch + "|" + string.Join('|',state.Sources.Select(s=>$"{s.Identity}:{s.DisplayName}:{s.VideoOn}")) + "|" + state.Authoring?.Key + "|" + string.Join('|', state.Instances.Select(i =>
-            $"{i.InstanceId}:{i.Revision}:{i.CueRevision}:{i.CuePending}:{i.ProgramRevision}:{i.Preparation}:{i.Visibility}:{i.CurrentlyComposed}:{i.Warning}:{i.CueWarning}:{i.BindingState}:{i.Clock?.State}:{i.Clock?.Text}:{i.ClockConfigurationRevision}")) +
-            "|" + string.Join('|', state.Templates.Select(t => $"{t.TemplateId}:{t.TemplateVersion}:{t.ManifestHash}")) +
+        var signature = state.CoreEpoch + "|" + (state.Automation is { } automation ? $"{automation.Revision}:{automation.Mode}:{automation.Armed}:{automation.Inhibited}:{automation.ManualHold}:{string.Join(',',automation.HeldInstances)}:{automation.Trace.LastOrDefault()?.Sequence}" : "") + "|" + string.Join('|',state.FamilyAuthorities.Select(p=>p.Key+":"+p.Value)) + "|" + string.Join('|',state.Sources.Select(s=>$"{s.Identity}:{s.DisplayName}:{s.VideoOn}")) + "|" + state.Authoring?.Key + "|" + string.Join('|', state.Instances.Select(i =>
+            $"{i.InstanceId}:{i.Label}:{i.RackOrder}:{i.Revision}:{i.CueRevision}:{i.CuePending}:{i.ProgramRevision}:{i.Preparation}:{i.Visibility}:{i.CurrentlyComposed}:{i.Warning}:{i.CueWarning}:{i.BindingState}:{i.Clock?.State}:{i.Clock?.Text}:{i.ClockConfigurationRevision}")) +
+            "|" + string.Join('|', state.Templates.Select(t => $"{t.TemplateId}:{t.TemplateVersion}:{t.ManifestHash}:{t.Thumbnail?.State}")) +
             "|" + string.Join('|', state.TemplateInstalls.Select(i => $"{i.ClientId}:{i.RequestId}:{i.State}:{i.Reason}"));
         if (signature == _statusSignature && !epochChanged) return;
         _statusSignature = signature;
@@ -244,7 +243,7 @@ public sealed class GraphicsWorkspaceSession
             var draft = Selected is null && Draft?.TemplateId == template.TemplateId && Draft.TemplateVersion == template.TemplateVersion ? Draft : NewDraft(template);
             var id = "graphic-" + Guid.NewGuid().ToString("N");
             if (!await Send("graphics.instance.create", new() { ["instanceId"] = id, ["templateId"] = template.TemplateId,
-                ["templateVersion"] = template.TemplateVersion, ["scope"] = scope, ["sceneId"] = sceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["binding"] = draft.Binding }, cancellation)) return false;
+                ["templateVersion"] = template.TemplateVersion, ["scope"] = scope, ["sceneId"] = sceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["image"] = draft.Image, ["binding"] = draft.Binding }, cancellation)) return false;
             // Selection here is deliberate operator intent, not metadata refresh.
             Busy = false; Select(id); Busy = true; if(draft.Scratch is not null) {Draft=draft;NotifyPreview();} return true;
         });
@@ -273,6 +272,27 @@ public sealed class GraphicsWorkspaceSession
         if(config is not null) { extra["configuration"]=config; extra["expectedClockRevision"]=expectedClockRevision ?? Selected?.ClockConfigurationRevision; }
         return SelectedCommand("graphics.clock.control",extra,cancellation);
     });
+    public Task<bool> CueSuggestionAsync(string instanceId,CancellationToken cancellation=default)=>Run(async()=> {
+        var suggestion=State?.Automation?.Suggestions.FirstOrDefault(s=>s.InstanceId==instanceId);
+        var target=State?.Instances.FirstOrDefault(i=>i.InstanceId==instanceId);
+        if(State?.Automation is not {Mode:"suggest",Inhibited:false,ManualHold:false} automation || suggestion?.Binding is not { } binding || target is null ||
+            automation.HeldInstances.Contains(instanceId) || State.Sources.All(s=>s.Identity!=binding || !s.VideoOn)) {Status="The suggestion is no longer qualified. Wait for a current rendered subject.";return false;}
+        var fields=new Dictionary<string,string> { ["name"]=suggestion.Name,["title"]=suggestion.Secondary };
+        var template=State.Templates.FirstOrDefault(t=>t.TemplateId==target.TemplateId && t.TemplateVersion==target.TemplateVersion);
+        if(template?.Runtime=="declarative") {
+            foreach(var key in fields.Keys.ToArray()) if(!template.Fields.Any(f=>f.Id==key && f.Type=="string" && f.Bindable)) fields.Remove(key);
+            if(!fields.ContainsKey("name")) {Status="The target has no bindable name field.";return false;}
+        }
+        var result=await SendOperation("graphics.instance.update",new() {["instanceId"]=instanceId,["expectedRevision"]=target.Revision,["target"]="cue",["fields"]=fields,["binding"]=binding},cancellation);
+        if(!result.Accepted) return false;
+        return await Send("graphics.instance.cue",new() {["instanceId"]=instanceId,["expectedRevision"]=result.CurrentRevision>0?result.CurrentRevision:target.Revision},cancellation);
+    });
+    public Task<bool> RenameCueAsync(string label,CancellationToken cancellation=default)=>Run(()=>SelectedCommand("graphics.instance.update",new() {["target"]="cue",["label"]=label},cancellation));
+    public Task<bool> MoveCueAsync(int direction,CancellationToken cancellation=default)=>Run(()=>Selected is { } selected && State is { } state && selected.RackOrder+Math.Sign(direction)>=0 && selected.RackOrder+Math.Sign(direction)<state.Instances.Count
+        ?SelectedCommand("graphics.instance.update",new() {["target"]="cue",["rackOrder"]=selected.RackOrder+Math.Sign(direction)},cancellation):Task.FromResult(false));
+    public Task<bool> ConfigureAutomationAsync(GraphicsAutomationConfiguration configuration,CancellationToken cancellation=default)=>Run(()=>Send("graphics.automation.configure",new() {["configuration"]=configuration,["expectedAutomationRevision"]=State?.Automation?.Revision ?? 1},cancellation));
+    public Task<bool> AutomationControlAsync(string action,string mode="",string instanceId="",CancellationToken cancellation=default)=>Run(()=>Send("graphics.automation.control",new() {["action"]=action,["mode"]=mode,["instanceId"]=instanceId},cancellation));
+    public Task<bool> SetAuthorityAsync(string family,string authority,CancellationToken cancellation=default)=>Run(()=>Send("graphics.authority.set",new() {["family"]=family,["authority"]=authority},cancellation));
     public Task<bool> ClearAsync(CancellationToken cancellation = default) => Run(() => Send("graphics.program.clear", new() { ["channel"] = "all" }, cancellation));
     public Task<bool> RemoveAsync(CancellationToken cancellation = default) => Run(async () => {
         if (Selected is not { ProgramRevision: 0 }) { Status = "Hide the on-air cue before deleting it."; return false; }
@@ -320,17 +340,39 @@ public sealed class GraphicsWorkspaceSession
         catch (Exception ex) when (ex is not OutOfMemoryException) { ImportStatus = ex.Message; return false; }
         finally { ImportBusy = false; Changed?.Invoke(this, EventArgs.Empty); }
     }
-    public Task<bool> RefreshCatalogAsync(CancellationToken cancellation = default) => Run(() => Send("graphics.template.list", [], cancellation));
+    public async Task<NativeGraphicsImageReference?> ImportImageAsync(string path,CancellationToken cancellation=default)
+    {
+        if(ImportBusy) return null;ImportBusy=true;ImportStatus="Verifying local image package. Program is unchanged.";Changed?.Invoke(this,EventArgs.Empty);
+        var epoch=State?.CoreEpoch;
+        try {
+            var root=Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_ASSET_ROOT") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CoreVideoPro","graphics");
+            var staged=await GraphicsImageImport.StageAsync(path,root,cancellation);
+            if(State?.CoreEpoch!=epoch) {ImportStatus="Native core restarted; image import cancelled.";return null;}
+            if(!await Send("graphics.template.install",new() {["manifest"]=staged.Package.Manifest,["packageRoot"]=staged.Package.PackageRoot},cancellation)) {ImportStatus=Status;return null;}
+            var until=DateTime.UtcNow.AddSeconds(5);
+            do {
+                await Task.Delay(100,cancellation);await Send("graphics.template.list",[],cancellation);
+                if(State?.CoreEpoch!=epoch) {ImportStatus="Native core restarted; no image was applied.";return null;}
+                if(State?.Templates.Any(t=>t.TemplateId==staged.Reference.TemplateId && t.TemplateVersion==staged.Reference.TemplateVersion)==true) {
+                    ImportStatus="Verified image package ready. Applying it to a private draft remains explicit.";return staged.Reference;
+                }
+            } while(DateTime.UtcNow<until);
+            ImportStatus="Native image validation did not install the package. Check import diagnostics; previous look retained.";return null;
+        } catch(Exception ex) when(ex is not OutOfMemoryException) {ImportStatus=ex.Message;return null;}
+        finally {ImportBusy=false;Changed?.Invoke(this,EventArgs.Empty);}
+    }
+    public Task<bool> RefreshCatalogAsync(CancellationToken cancellation = default) => Run(() => Send("graphics.template.list", new() {["includeThumbnails"]=true}, cancellation));
     public Task<bool> RestoreAsync(GraphicsSavedCue cue, CoreVideoPro.MediaCore.Contracts.SourceInstanceIdentity? binding = null, CancellationToken cancellation = default) => Run(async () => {
         if (cue.Draft is not { } draft) { Status = "Saved cue has no valid draft."; return false; }
         if (cue.SourceId.Length != 0 && binding is null) { Status = "Choose the current source explicitly before restoring this bound cue."; return false; }
         var id = "graphic-" + Guid.NewGuid().ToString("N");
         var body = new Dictionary<string, object?> { ["instanceId"] = id, ["templateId"] = draft.TemplateId, ["templateVersion"] = draft.TemplateVersion,
-            ["scope"] = cue.Scope, ["sceneId"] = cue.SceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement };
+            ["scope"] = cue.Scope, ["sceneId"] = cue.SceneId, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["image"] = draft.Image };
         if (binding is not null) body["binding"] = binding;
         if (!await Send("graphics.instance.create", body, cancellation)) return false;
         Busy = false; Select(id); Busy = true;
         Draft=draft with {Binding=binding};NotifyPreview();
+        if(cue.Name.Length>0 && !await SelectedCommand("graphics.instance.update",new() {["target"]="cue",["label"]=cue.Name},cancellation)) return false;
         if (cue.ClockConfiguration is { } clock && !await SelectedCommand("graphics.clock.control",new() { ["action"]="configure",["configuration"]=clock,["expectedClockRevision"]=Selected?.ClockConfigurationRevision },cancellation)) return false;
         Status = "Restored hidden. Cue and Show remain explicit; automation is unarmed."; return true;
     });
@@ -345,11 +387,11 @@ public sealed class GraphicsWorkspaceSession
         if (Draft is not { } draft || Selected is not { } selected) { Status = "Choose a cue first."; return false; }
         if(draft.Scratch is not null) { Status="Save the edited template as an immutable version before Cue or Update."; return false; }
         var fields = selected.Clock is null ? draft.Fields : JsonSerializer.SerializeToElement(draft.Fields.EnumerateObject().Where(p=>p.Name!="time").ToDictionary(p=>p.Name,p=>p.Value.Clone()),Json);
-        var accepted = await Send("graphics.instance.update", new() { ["instanceId"] = selected.InstanceId, ["expectedRevision"] = _draftBaseRevision,
-            ["target"] = target, ["templateVersion"] = draft.TemplateVersion, ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["binding"] = draft.Binding }, cancellation);
-        if (accepted && _lastOperation is { CurrentRevision: > 0 } result && result.InstanceId == selected.InstanceId)
+        var result = await SendOperation("graphics.instance.update", new() { ["instanceId"] = selected.InstanceId, ["expectedRevision"] = _draftBaseRevision,
+            ["target"] = target, ["templateVersion"] = draft.TemplateVersion, ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement, ["image"] = draft.Image, ["binding"] = draft.Binding }, cancellation);
+        if (result is {Accepted:true,CurrentRevision:>0} && result.InstanceId == selected.InstanceId)
             _draftBaseRevision = result.CurrentRevision;
-        return accepted;
+        return result.Accepted;
     }
     private Task<bool> SelectedCommand(string action, Dictionary<string, object?> extra, CancellationToken cancellation)
     {
@@ -357,15 +399,17 @@ public sealed class GraphicsWorkspaceSession
         extra["instanceId"] = selected.InstanceId; extra["expectedRevision"] = selected.Revision;
         return Send(action, extra, cancellation);
     }
-    private async Task<bool> Send(string action, Dictionary<string, object?> body, CancellationToken cancellation)
+    private async Task<bool> Send(string action,Dictionary<string,object?> body,CancellationToken cancellation)=>(await SendOperation(action,body,cancellation)).Accepted;
+    private async Task<NativeGraphicsOperationResult> SendOperation(string action, Dictionary<string, object?> body, CancellationToken cancellation)
     {
         var epoch = State?.CoreEpoch;
-        if (string.IsNullOrEmpty(epoch)) { Status = "Native Graphics is unavailable."; return false; }
+        if (string.IsNullOrEmpty(epoch)) { Status = "Native Graphics is unavailable."; return new() {Reason=Status}; }
         body["schemaVersion"] = 1; body["coreEpoch"] = epoch; body["clientId"] = "graphics-workspace";
         body["requestId"] = "operator-" + Guid.NewGuid().ToString("N");
         var result = await _invoke(action, JsonSerializer.Serialize(body, Json), cancellation);
-        _lastOperation = result;
-        Observe(_observe()); Status = result.Reason; return result.Accepted;
+        Observe(_observe());
+        if(State?.CoreEpoch!=epoch) result=new() {RequestId=result.RequestId,Reason="Native core restarted. The old operation was not replayed."};
+        Status = result.Reason; return result;
     }
     private async Task<bool> Run(Func<Task<bool>> action)
     {
@@ -385,8 +429,8 @@ public sealed class GraphicsWorkspaceSession
                 .ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal), Json);
         }
         return new(item.TemplateId, program && item.ProgramTemplateVersion > 0 ? item.ProgramTemplateVersion : item.TemplateVersion, fields, program ? item.ProgramStyle ?? item.Style : item.Style,
-            program ? item.ProgramAnimations ?? item.Animations : item.Animations, program ? item.ProgramPlacement : item.Placement) {Binding=program ? item.ProgramBinding : item.Binding};
+            program ? item.ProgramAnimations ?? item.Animations : item.Animations, program ? item.ProgramPlacement : item.Placement) {Binding=program ? item.ProgramBinding : item.Binding,Image=program?item.ProgramImage:item.Image};
     }
     private static bool Same(NativeGraphicsDraft a, NativeGraphicsDraft b) =>
-        a.Binding == b.Binding && a.TemplateId == b.TemplateId && a.TemplateVersion == b.TemplateVersion && a.Style == b.Style && a.Animations == b.Animations && a.Placement == b.Placement && a.Scratch?.Hash==b.Scratch?.Hash && JsonElement.DeepEquals(a.Fields, b.Fields);
+        a.Image == b.Image && a.Binding == b.Binding && a.TemplateId == b.TemplateId && a.TemplateVersion == b.TemplateVersion && a.Style == b.Style && a.Animations == b.Animations && a.Placement == b.Placement && a.Scratch?.Hash==b.Scratch?.Hash && JsonElement.DeepEquals(a.Fields, b.Fields);
 }

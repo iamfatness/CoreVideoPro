@@ -355,7 +355,7 @@ Json JsonRpcServer::handle(const Json& request) {
       hasType(request, "open-vst-editor") || hasType(request, "scan-vst-plugins") ||
       hasType(request, "graphics-instance-create") || hasType(request, "graphics-instance-update") ||
       hasType(request, "graphics-instance-cue") || hasType(request, "graphics-instance-trigger") ||
-      hasType(request, "graphics-instance-remove") || hasType(request, "graphics-program-clear") ||
+      hasType(request, "graphics-automation-configure") || hasType(request, "graphics-automation-control") || hasType(request, "graphics-authority-set") || hasType(request, "graphics-instance-remove") || hasType(request, "graphics-program-clear") ||
       hasType(request, "graphics-clock-control") || hasType(request, "graphics-template-install") || hasType(request, "graphics-template-list")) {
     return success(id, Json::Object{{"snapshot", mediaCore_.applyCommands(commandBatch(request))}});
   }

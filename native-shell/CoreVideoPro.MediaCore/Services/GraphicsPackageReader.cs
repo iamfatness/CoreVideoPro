@@ -128,7 +128,7 @@ public sealed class GraphicsPackageReader : IGraphicsPackageReader
         }
         return total;
     }
-    private static void NoReparse(string path)
+    internal static void NoReparse(string path)
     {
         for (var current = path; !string.IsNullOrEmpty(current); current = Path.GetDirectoryName(current)) {
             try { if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("Graphics imports cannot follow links or reparse points."); }

@@ -12,6 +12,31 @@ public sealed class GraphicsPackageReaderTests : IDisposable
     private string Cache => Path.Combine(_directory, "cache");
     private static readonly byte[] Image = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==");
     private static string Hash => Convert.ToHexString(SHA256.HashData(Image)).ToLowerInvariant();
+    [Fact]
+    public async Task VerifiedPackageExportRoundTripsAndFailedRepairRetainsExistingDestination()
+    {
+        var source=Package(("template.json",Encoding.UTF8.GetBytes(Manifest),0),("assets/"+Hash+".png",Image,0));
+        var imported=await new GraphicsPackageReader(Cache).ReadAsync(source);
+        var template=new CoreVideoPro.MediaCore.Models.NativeGraphicsTemplate {Runtime="declarative",PackageRoot=Cache,Definition=JsonDocument.Parse(imported.Manifest).RootElement.Clone()};
+        var target=Path.Combine(_directory,"export.cvgraphics");await GraphicsPackageWriter.WriteAsync(template,target);
+        var roundtrip=await new GraphicsPackageReader(Path.Combine(_directory,"roundtrip")).ReadAsync(target);Assert.Equal(Manifest,roundtrip.Manifest);
+        Assert.Equal(Image,await File.ReadAllBytesAsync(Path.Combine(roundtrip.PackageRoot,"assets",Hash+".png")));
+        var before=await File.ReadAllBytesAsync(target);await File.WriteAllBytesAsync(Path.Combine(Cache,"assets",Hash+".png"),new byte[32]);
+        await Assert.ThrowsAsync<InvalidDataException>(()=>GraphicsPackageWriter.WriteAsync(template,target));Assert.Equal(before,await File.ReadAllBytesAsync(target));
+        Assert.Empty(Directory.GetFiles(_directory,".cvgraphics-*.tmp"));
+    }
+    [Fact]
+    public async Task LocalImageStagingIsContentAddressedAndNameIndependentWithoutReplacingCorruptCache()
+    {
+        Directory.CreateDirectory(_directory);var first=Path.Combine(_directory,"first.png");var second=Path.Combine(_directory,"second.png");
+        await File.WriteAllBytesAsync(first,Image);await File.WriteAllBytesAsync(second,Image);
+        var a=await GraphicsImageImport.StageAsync(first,Cache);var b=await GraphicsImageImport.StageAsync(second,Cache);
+        Assert.Equal(a,b);Assert.Single(Directory.GetFiles(Path.Combine(Cache,"assets")));
+        using var manifest=JsonDocument.Parse(a.Package.Manifest);
+        Assert.Equal(Hash,manifest.RootElement.GetProperty("assets")[0].GetProperty("sha256").GetString());
+        await File.WriteAllBytesAsync(Path.Combine(Cache,"assets",Hash+".png"),new byte[32]);
+        await Assert.ThrowsAsync<InvalidDataException>(()=>GraphicsImageImport.StageAsync(first,Cache));
+    }
     private static string Manifest => JsonSerializer.Serialize(new { schemaVersion = 1, metadata = new { note = "Keep me" }, assets = new[] { new { id = "logo", file = "assets/" + Hash + ".png", sha256 = Hash } } });
     private string Package(params (string Name, byte[] Bytes, int Attributes)[] entries)
     {

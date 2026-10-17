@@ -6,6 +6,8 @@
 #include "GraphicsAssetFixture.h"
 #include <chrono>
 #include <thread>
+#include <fstream>
+#include <cstdlib>
 
 using corevideo::graphics::GraphicsTemplate;
 using corevideo::graphics::GraphicsDrawing;
@@ -284,4 +286,32 @@ TEST(GraphicsTemplateDraft, PrivateCompilerCoalescesWithoutInstallingAndFencesHa
   while((!compiler->poll() || compiler->poll()->key!=key) && std::chrono::steady_clock::now()<until) std::this_thread::sleep_for(std::chrono::milliseconds(1));
   ASSERT_TRUE(compiler->poll());EXPECT_EQ("private-template-hash-mismatch",compiler->poll()->error);
   EXPECT_EQ(initial,installed.poll());
+}
+
+TEST(GraphicsTemplateRegistry, ThumbnailsAreExplicitWorkerProductsWithoutInstallingVersions) {
+  corevideo::graphics::GraphicsTemplateRegistry registry;
+  const auto before=registry.poll();
+  ASSERT_TRUE(registry.requestThumbnails());
+  const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(20);
+  std::shared_ptr<const corevideo::graphics::GraphicsTemplateRegistry::Publication> result;
+  bool complete=false;
+  do {
+    result=registry.poll();complete=true;
+    for(const auto& row:result->catalog.asArray()) if(!row.get("thumbnail") || row.get("thumbnail")->getString("state")=="not-requested" || row.get("thumbnail")->getString("state")=="pending") complete=false;
+    if(!complete) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  } while(!complete && std::chrono::steady_clock::now()<until);
+  ASSERT_TRUE(complete);EXPECT_EQ(before->definitions,result->definitions);EXPECT_EQ(before->encodedAssetBytes,result->encodedAssetBytes);
+  if(const auto* exportPath=std::getenv("COREVIDEO_GRAPHICS_CATALOG_EXPORT");exportPath && *exportPath) {
+    std::ofstream artifact(exportPath,std::ios::binary);ASSERT_TRUE(artifact.good());artifact<<result->catalog.stringify();artifact.flush();ASSERT_TRUE(artifact.good());
+  }
+  for(const auto& row:result->catalog.asArray()) {
+    const auto* thumb=row.get("thumbnail");ASSERT_TRUE(thumb);
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS && COREVIDEO_WITH_D3D11
+    EXPECT_EQ(thumb->getString("state"),"ready") << row.getString("templateId") << ": " << thumb->getString("reason");
+    EXPECT_EQ(thumb->getString("backend"),"d3d11-native");EXPECT_TRUE(thumb->getString("pngBase64").rfind("iVBORw0KGgo",0)==0);
+    EXPECT_TRUE(thumb->getNumber("width")<=320);EXPECT_TRUE(thumb->getNumber("height")<=180);
+#else
+    EXPECT_EQ(thumb->getString("state"),"unsupported");
+#endif
+  }
 }

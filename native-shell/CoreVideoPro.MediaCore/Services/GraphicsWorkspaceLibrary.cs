@@ -1,4 +1,5 @@
 using CoreVideoPro.MediaCore.Models;
+using System.Text.Json;
 
 namespace CoreVideoPro.MediaCore.Services;
 
@@ -9,6 +10,8 @@ public sealed class GraphicsWorkspaceLibrary
     private readonly GraphicsDocumentStore _store;
     private readonly GraphicsWorkspaceSession _session;
     private Task? _load;
+    private readonly Dictionary<string,string> _restoredCueIds=new(StringComparer.Ordinal);
+    private string _restoredEpoch="";
     public GraphicsShowDocument Document { get; private set; } = new();
     public bool ReadOnly { get; private set; }
     public bool Busy { get; private set; }
@@ -20,7 +23,7 @@ public sealed class GraphicsWorkspaceLibrary
     {
         var result = await _store.LoadAsync(); Document = result.Document; ReadOnly = result.ReadOnly; Status = result.Status; Changed?.Invoke(this, EventArgs.Empty);
     }
-    public async Task<bool> SaveCueAsync(string name)
+    public async Task<bool> SaveCueAsync(string name,JsonElement? sourceOverrides=null,JsonElement? brand=null)
     {
         await LoadAsync();
         if (_session.Draft is not { } draft || _session.Selected is not { } selected) return Fail("Select a cue before saving.");
@@ -29,16 +32,67 @@ public sealed class GraphicsWorkspaceLibrary
         var saved = new GraphicsSavedCue { Id = selected.InstanceId, Name = name.Trim(), Scope = selected.Scope, SceneId = selected.SceneId, SourceId = draft.Binding?.SourceId ?? "", Draft = draft, ClockConfiguration=selected.Clock is { } clock ? clock.Configuration with { RestoreRemainingSeconds=clock.Configuration.Mode=="countdown" ? clock.RemainingSeconds : null } : null };
         if (index < 0) cues.Add(saved); else cues[index] = saved;
         var templates = Document.Templates.ToList();
-        if (draft.Declarative) {
-            var definition = _session.State?.Templates.FirstOrDefault(t => t.TemplateId == draft.TemplateId && t.TemplateVersion == draft.TemplateVersion);
-            if (definition?.Definition is not { } document) return Fail("The exact native template document is unavailable. The previous saved cue is retained.");
-            var previous = templates.FindIndex(t => t.TemplateId == draft.TemplateId && t.TemplateVersion == draft.TemplateVersion);
-            var pin = new GraphicsSavedTemplate(definition.TemplateId, definition.TemplateVersion, definition.ManifestHash, document.Clone(), definition.PackageRoot);
-            if (previous < 0) templates.Add(pin);
-            else if (templates[previous].ManifestHash != definition.ManifestHash) return Fail("Saved template version conflicts with the current native definition. Import a new version explicitly.");
-            else templates[previous] = pin;
+        var pins=new HashSet<(string Id,int Version)>();
+        if(draft.Declarative) pins.Add((draft.TemplateId,draft.TemplateVersion));
+        if(draft.Image is { } image) pins.Add((image.TemplateId,image.TemplateVersion));
+        foreach(var key in pins) {
+            var definition=_session.State?.Templates.FirstOrDefault(t=>t.TemplateId==key.Id && t.TemplateVersion==key.Version);
+            if(definition?.Definition is not { } document) return Fail("The exact native template or image package is unavailable. Previous saved cue retained.");
+            var previous=templates.FindIndex(t=>t.TemplateId==key.Id && t.TemplateVersion==key.Version);
+            var pin=new GraphicsSavedTemplate(key.Id,key.Version,definition.ManifestHash,document.Clone(),definition.PackageRoot);
+            if(previous<0) templates.Add(pin);
+            else if(templates[previous].ManifestHash!=definition.ManifestHash) return Fail("The saved template pin conflicts with the native version. Import a new version explicitly.");
+            else templates[previous]=pin;
         }
-        return await Save(Document with { Cues = cues.ToArray(), Templates = templates.ToArray() }, "Cue and template pin saved. Program is unchanged.");
+        return await Save(Document with { Cues = cues.ToArray(), Templates = templates.ToArray(),Authority=_session.State?.FamilyAuthorities.GetValueOrDefault("lower-third")=="instances"?"volt":Document.Authority,SourceOverrides=Merge(Document.SourceOverrides,sourceOverrides),Brand=Merge(Document.Brand,brand) }, "Cue and template pin saved. Program is unchanged.");
+    }
+    private static JsonElement? Merge(JsonElement? previous,JsonElement? current)
+    {
+        if(current is not {ValueKind:JsonValueKind.Object} fresh) return previous;
+        var values=previous is {ValueKind:JsonValueKind.Object} old?old.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone(),StringComparer.Ordinal):new Dictionary<string,JsonElement>(StringComparer.Ordinal);
+        foreach(var value in fresh.EnumerateObject()) values[value.Name]=value.Value.Clone();return JsonSerializer.SerializeToElement(values);
+    }
+    public async Task<bool> ImportLegacyAsync(NativeGraphicsDraft draft,string sourceId,JsonElement sourceOverrides,JsonElement brand,
+        IReadOnlyDictionary<string,LowerThirdAppearance> styles,string logoReference="")
+    {
+        await LoadAsync();
+        if(draft.Declarative || !draft.Style.IsValid || sourceOverrides.ValueKind!=JsonValueKind.Object || brand.ValueKind!=JsonValueKind.Object)
+            return Fail("The legacy graphics snapshot is invalid. Original preferences retained.");
+        if(Document.Cues.Any(c=>c.Id=="legacy-lower-third")) return Fail("The existing legacy import is retained. Duplicate or edit its saved copy instead of overwriting it.");
+        var metadata=new Dictionary<string,JsonElement>(StringComparer.Ordinal) { ["legacyImageReference"]=JsonSerializer.SerializeToElement(logoReference),["migration"]=JsonSerializer.SerializeToElement("copied-hidden-v1") };
+        var cue=new GraphicsSavedCue {Id="legacy-lower-third",Name="Existing lower third",SourceId=sourceId,Draft=draft,Metadata=metadata};
+        var presets=Document.StylePresets.ToDictionary(p=>p.Key,p=>p.Value,StringComparer.Ordinal);
+        foreach(var pair in styles) {if(!presets.ContainsKey(pair.Key)) presets[pair.Key]=pair.Value;}
+        var pins=Document.Templates.ToList();
+        if(draft.Image is { } logo) {
+            var installed=_session.State?.Templates.FirstOrDefault(t=>t.TemplateId==logo.TemplateId && t.TemplateVersion==logo.TemplateVersion);
+            if(installed?.Definition is not { } definition) return Fail("The verified logo package is not installed. Original legacy look retained.");
+            if(!pins.Any(p=>p.TemplateId==logo.TemplateId && p.TemplateVersion==logo.TemplateVersion)) pins.Add(new(logo.TemplateId,logo.TemplateVersion,installed.ManifestHash,definition.Clone(),installed.PackageRoot));
+        }
+        return await Save(Document with {Cues=[..Document.Cues,cue],Templates=pins,StylePresets=presets,SourceOverrides=Document.SourceOverrides ?? sourceOverrides.Clone(),Brand=Document.Brand ?? brand.Clone()},
+            "Existing text, appearance, timings, styles and source overrides copied to a hidden saved cue. Original preferences and Program are unchanged. Restore, inspect, Cue and Show explicitly.");
+    }
+    public async Task<bool> SaveAutomationRulesAsync()
+    {
+        await LoadAsync();
+        if(_session.State?.Automation is not { } automation) return Fail("Native automation is unavailable.");
+        var rules=automation.Configuration.Rules;
+        if(rules.Any(r=>!Document.Cues.Any(c=>c.Id==r.InstanceId))) return Fail("Save each rule's target cue before saving its rules. Previous saved rules retained.");
+        return await Save(Document with {AutomationRules=rules.ToArray()},"Rule configuration saved. Activation, source generations and holds are never restored.");
+    }
+    public async Task<bool> RestoreAutomationRulesAsync(Func<IReadOnlyList<GraphicsAutomationRule>,GraphicsAutomationConfiguration> qualify)
+    {
+        await LoadAsync();var state=_session.State;
+        if(state is null) return Fail("Native graphics is unavailable.");
+        var rules=new List<GraphicsAutomationRule>();
+        foreach(var rule in Document.AutomationRules) {
+            var id=state.Instances.Any(i=>i.InstanceId==rule.InstanceId)?rule.InstanceId:
+                _restoredEpoch==state.CoreEpoch?_restoredCueIds.GetValueOrDefault(rule.InstanceId):null;
+            if(id is null || !state.Instances.Any(i=>i.InstanceId==id)) return Fail("Restore every saved rule target as a hidden cue in this core session before restoring rules. Nothing was armed.");
+            rules.Add(rule with {InstanceId=id});
+        }
+        var restored=await _session.ConfigureAutomationAsync(qualify(rules));
+        Status=restored?"Rules restored with current source identities. Mode and Arm remain explicit.":_session.Status;Changed?.Invoke(this,EventArgs.Empty);return restored;
     }
     public async Task<bool> SaveStyleAsync(string name)
     {
@@ -77,22 +131,35 @@ public sealed class GraphicsWorkspaceLibrary
     {
         await LoadAsync();
         if (cue.Draft is not { } draft) return Fail("The saved cue needs repair.");
-        var epoch = _session.State?.CoreEpoch;
-        var pin = Document.Templates.FirstOrDefault(t => t.TemplateId == draft.TemplateId && t.TemplateVersion == draft.TemplateVersion);
-        if (draft.Declarative && pin is null) return Fail("The pinned template is missing. Import its exact version before restoring.");
-        var installed = _session.State?.Templates.FirstOrDefault(t => t.TemplateId == draft.TemplateId && t.TemplateVersion == draft.TemplateVersion);
-        if (installed is null && pin is not null) {
-            if (!await _session.ImportAsync(pin.Definition.GetRawText(), cancellation, pin.PackageRoot)) return Fail(_session.Status);
-            var limit = DateTime.UtcNow.AddSeconds(5);
-            do {
-                await Task.Delay(100, cancellation); await _session.RefreshCatalogAsync(cancellation);
-                installed = _session.State?.Templates.FirstOrDefault(t => t.TemplateId == draft.TemplateId && t.TemplateVersion == draft.TemplateVersion);
-                if (_session.State?.CoreEpoch != epoch) return Fail("Native core restarted. Restore cancelled; nothing was shown.");
-            } while (installed is null && DateTime.UtcNow < limit);
+        if(cue.Metadata?.TryGetValue("legacyImageReference",out var image)==true && image.ValueKind==JsonValueKind.String && !string.IsNullOrEmpty(image.GetString()) && draft.Image is null)
+            return Fail("This legacy cue retains a logo reference that needs verified package import before managed restore. The existing legacy look is retained; no logo was silently dropped.");
+        var epoch=_session.State?.CoreEpoch;
+        var required=new HashSet<(string Id,int Version)>();
+        if(draft.Declarative) required.Add((draft.TemplateId,draft.TemplateVersion));
+        if(draft.Image is { } imageReference) required.Add((imageReference.TemplateId,imageReference.TemplateVersion));
+        foreach(var key in required) {
+            var pin=Document.Templates.FirstOrDefault(t=>t.TemplateId==key.Id && t.TemplateVersion==key.Version);
+            if(pin is null) return Fail("The pinned template or logo package is missing. Import its exact version before restoring.");
+            var installed=_session.State?.Templates.FirstOrDefault(t=>t.TemplateId==key.Id && t.TemplateVersion==key.Version);
+            if(installed is null) {
+                if(!await _session.ImportAsync(pin.Definition.GetRawText(),cancellation,pin.PackageRoot)) return Fail(_session.Status);
+                var limit=DateTime.UtcNow.AddSeconds(5);
+                do {
+                    await Task.Delay(100,cancellation);await _session.RefreshCatalogAsync(cancellation);
+                    installed=_session.State?.Templates.FirstOrDefault(t=>t.TemplateId==key.Id && t.TemplateVersion==key.Version);
+                    if(_session.State?.CoreEpoch!=epoch) return Fail("Native core restarted. Restore cancelled; nothing was shown.");
+                } while(installed is null && DateTime.UtcNow<limit);
+            }
+            if(installed is null) return Fail("The native template or logo is not ready. Check import diagnostics and retry Restore.");
+            if(pin.ManifestHash!=installed.ManifestHash) return Fail("Installed template differs from the saved version pin. Program is unchanged.");
         }
-        if (installed is null) return Fail("The native template is not ready. Check the import result and retry Restore.");
-        if (pin is not null && pin.ManifestHash != installed.ManifestHash) return Fail("Installed template differs from the saved version pin. Restore refused; Program is unchanged.");
-        var restored = await _session.RestoreAsync(cue, binding, cancellation); Status = _session.Status; Changed?.Invoke(this, EventArgs.Empty); return restored;
+        if(!draft.Declarative && !_session.State!.Templates.Any(t=>t.TemplateId==draft.TemplateId && t.TemplateVersion==draft.TemplateVersion)) return Fail("The compatibility look is unavailable.");
+        var restored = await _session.RestoreAsync(cue, binding, cancellation);
+        if(restored && _session.Selected is { } selected) {
+            if(_restoredEpoch!=_session.State?.CoreEpoch) {_restoredCueIds.Clear();_restoredEpoch=_session.State?.CoreEpoch ?? "";}
+            _restoredCueIds[cue.Id]=selected.InstanceId;
+        }
+        Status = _session.Status; Changed?.Invoke(this, EventArgs.Empty); return restored;
     }
     private async Task<bool> Save(GraphicsShowDocument document, string success)
     {

@@ -7,6 +7,7 @@
 #include "graphics/GraphicsTemplateRegistry.h"
 #include "graphics/GraphicsPlacement.h"
 #include "graphics/GraphicsClock.h"
+#include "graphics/GraphicsAutomation.h"
 #include <functional>
 #include <map>
 #include <deque>
@@ -44,12 +45,14 @@ class GraphicsInstances {
     std::array<uint8_t, 32> contentHash{};
     std::shared_ptr<const GraphicsTemplate> definition;
     std::shared_ptr<const GraphicsTemplateInput> templateInput;
-    rpc::Json templateFields;
+    rpc::Json templateFields,imageReference;
+    std::shared_ptr<const GraphicsAsset> image;
     std::optional<GraphicsPlacement> placement;
     bool fieldsReady = false;
   };
   struct Instance {
-    std::string id, templateId, scope, sceneId;
+    std::string id, templateId, scope, sceneId, label;
+    int rackOrder=0;
     std::shared_ptr<const Revision> draft, cue, pendingCue, program, clockProgramPending;
     std::shared_ptr<GraphicsClockController> clock;
     uint64_t clockConfigurationRevision=1;
@@ -67,7 +70,10 @@ class GraphicsInstances {
     std::string visibility = "hidden";
   };
   static bool validId(const std::string& value);
-  static bool readRevision(const rpc::Json& request, Revision& revision);
+  std::vector<const Instance*> orderedInstances() const;
+  bool revisionCapacity(const std::string& instanceId,const Revision&) const;
+  bool nodeCapacity(const std::string& instanceId,const Revision&) const;
+  bool readRevision(const rpc::Json& request, Revision& revision);
   static void hashRevision(const std::string& templateId, Revision& revision);
   modules::CompositorRenderPlanLayer layer(const Instance&, const Revision&, int width, int height) const;
   bool finish(const std::string& requestId, bool accepted, const std::string& reason);
@@ -77,11 +83,16 @@ class GraphicsInstances {
   bool advanceAnimations();
   bool updateClocks();
   bool updateAuthoring();
+  bool applyAutomation(const modules::ProgramFrame&);
+  GraphicsAutomation automation_;
+  bool automationApplying_=false;
+  uint64_t automationSequence_=0;
   std::function<double()> monotonicMs_;
   std::map<std::string, Instance> instances_;
-  struct Operation { std::string clientId, requestId, fingerprint; rpc::Json result; };
+  struct Operation { std::string clientId, requestId, fingerprint; rpc::Json result; double admittedMs=0; };
   std::deque<Operation> operations_;
   std::string epoch_, pendingClient_, pendingFingerprint_, pendingInstance_;
+  std::set<std::string> managedFamilies_;
   std::optional<GraphicsSourceCatalog> sources_;
   uint64_t revisionClock_ = 0;
   rpc::Json lastResult_;

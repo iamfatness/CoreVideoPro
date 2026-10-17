@@ -327,6 +327,10 @@ ID3D11ShaderResourceView* CompositorOverlayRaster::rasterOverlayTexture(
   lastState_ = failedScale ? "failed" : retainingScale ? "preparing" : !activeLease_ ? "preparing" : activeLease_->asset ? "ready" : "failed";
   lastWarning_ = failedScale ? scaleWarning + " Retaining the accepted raster." : retainingScale ? "Graphics scale preparation pending; retaining the accepted raster." :
       activeLease_ ? activeLease_->warning : "Graphics preparation pending.";
+  if(!activeLease_ && overlay.hasGraphicsContentHash) {
+    const auto capacity=graphics::GraphicsResourceBudget::process().counters();
+    if(capacity.residentResources>=capacity.residentLimit) lastWarning_="Graphics preparation pending at the shared 16-revision capacity limit.";
+  }
   pendingThisFrame_ = pendingThisFrame_ || (retainingScale && !failedScale) || !activeLease_;
   failedThisFrame_ = failedThisFrame_ || failedScale || (activeLease_ && !activeLease_->asset);
   return activeLease_ && activeLease_->asset ? activeLease_->asset->view.get() : nullptr;
@@ -344,6 +348,12 @@ std::shared_ptr<const graphics::GraphicsPreparedResource> CompositorOverlayRaste
   return resource;
 }
 
+std::vector<uint8_t> CompositorOverlayRaster::thumbnailPng(const CompositorOverlayContent& overlay,int width,int height,std::string& warning) {
+  if(width<1 || height<1 || width>320 || height>180) {warning="Invalid thumbnail dimensions.";return {};}
+  Request request;request.overlay=overlay;request.width=width;request.height=height;request.strictResources=true;request.thumbnail=true;
+  const auto result=prepareRaster(request);warning=result.warning;
+  return result.asset ? result.asset->thumbnail : std::vector<uint8_t>{};
+}
 CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(const Request& request) {
   thread_local core::ComApartmentLifetime apartment;
   const auto& overlay = request.overlay;
@@ -368,12 +378,15 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
     }
   }
   auto layout = computeOverlayTileLayout(overlay, widthPx, heightPx);
-  auto imageInput = layout.hasImage && !overlay.graphicsTemplate ? openOverlayImage(overlay.imageUri) : ImageInput{};
+  auto imageInput = layout.hasImage && !overlay.graphicsTemplate ? (overlay.graphicsImage ? openPackagedImage(*overlay.graphicsImage) : openOverlayImage(overlay.imageUri)) : ImageInput{};
   const auto textureBytes = uint64_t(widthPx) * heightPx * 4;
   auto& sharedBudget = graphics::GraphicsResourceBudget::process();
   if (textureBytes + imageInput.cpuBytes + packagedImageBytes > sharedBudget.counters().cpuLimit)
     return {{}, 0, "Graphics assets exceed the shared CPU preparation capacity."};
-  auto budget = sharedBudget.tryReserve(textureBytes + imageInput.cpuBytes + packagedImageBytes, textureBytes);
+  std::string revisionKey;
+  if(overlay.hasGraphicsContentHash) {static constexpr char hex[]="0123456789abcdef";revisionKey="graphics:";for(auto byte:overlay.graphicsContentHash) {revisionKey+=hex[byte>>4];revisionKey+=hex[byte&15];}}
+  else revisionKey="legacy:"+std::to_string(overlayContentSignature(overlay,1920,1080));
+  auto budget = sharedBudget.tryReserve(textureBytes + imageInput.cpuBytes + packagedImageBytes, textureBytes,revisionKey,overlay.hasGraphicsContentHash);
   if (!budget) return {{}, 0, "Graphics preparation is waiting for shared resource capacity.", true};
   auto entry = std::make_shared<OverlayRasterTex>();
   entry->budget = budget;
@@ -474,6 +487,32 @@ CompositorOverlayRaster::Cache::Result CompositorOverlayRaster::prepareRaster(co
   if (FAILED(endDrawResult)) return {{}, 0, "Graphics rasterization failed."};
   if (request.strictResources && !resourcesComplete)
     return {{}, 0, workerWarning_.empty() ? "Graphics resources could not be prepared completely." : workerWarning_};
+  if(request.thumbnail) {
+    // Release the drawing target before WIC reads the completed bitmap. PNG
+    // stores straight alpha; the native raster remains premultiplied internally.
+    d2dTarget={};
+    ComPtrLite<IStream> stream;
+    ComPtrLite<IWICBitmapEncoder> encoder;
+    ComPtrLite<IWICBitmapFrameEncode> frame;
+    ComPtrLite<IWICFormatConverter> converter;
+    WICPixelFormatGUID format=GUID_WICPixelFormat32bppBGRA;
+    if(FAILED(CreateStreamOnHGlobal(nullptr,TRUE,stream.put())) ||
+        FAILED(wicFactory_->CreateEncoder(GUID_ContainerFormatPng,nullptr,encoder.put())) ||
+        FAILED(encoder->Initialize(stream.get(),WICBitmapEncoderNoCache)) ||
+        FAILED(encoder->CreateNewFrame(frame.put(),nullptr)) || FAILED(frame->Initialize(nullptr)) ||
+        FAILED(frame->SetSize(widthPx,heightPx)) || FAILED(frame->SetPixelFormat(&format)) ||
+        FAILED(wicFactory_->CreateFormatConverter(converter.put())) ||
+        FAILED(converter->Initialize(bitmap.get(),format,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom)) ||
+        FAILED(frame->WriteSource(converter.get(),nullptr)) || FAILED(frame->Commit()) || FAILED(encoder->Commit()))
+      return {{},0,"Native thumbnail PNG encoding failed."};
+    STATSTG size{};if(FAILED(stream->Stat(&size,STATFLAG_NONAME)) || size.cbSize.QuadPart>256*1024 || !size.cbSize.QuadPart)
+      return {{},0,"Native thumbnail exceeds its encoded limit."};
+    LARGE_INTEGER start{};if(FAILED(stream->Seek(start,STREAM_SEEK_SET,nullptr))) return {{},0,"Native thumbnail stream unavailable."};
+    entry->thumbnail.resize(size_t(size.cbSize.QuadPart));ULONG read=0;
+    if(FAILED(stream->Read(entry->thumbnail.data(),ULONG(entry->thumbnail.size()),&read)) || read!=entry->thumbnail.size()) return {{},0,"Native thumbnail stream incomplete."};
+    bitmap={};images.clear();imageInput.frame={};budget->finishPreparation();
+    return {std::move(entry),0,workerWarning_};
+  }
   WICRect lockRect{0, 0, widthPx, heightPx};
   ComPtrLite<IWICBitmapLock> pixels;
   UINT stride = 0, length = 0; BYTE* data = nullptr;

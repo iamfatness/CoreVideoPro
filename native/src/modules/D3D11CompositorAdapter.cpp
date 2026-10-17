@@ -419,6 +419,7 @@ class D3D11Compositor final : public ICompositor {
       frame.renderPlanEvidence = std::make_shared<const CompositorRenderPlan>(std::move(deterministicPlan));
       buffer->submit(context_.get(), renderTarget_.get(), frame, renderPlan.fullProgramReadback);
     }
+    else if(renderPlan.observeGraphicsSubjects) frame.renderPlanEvidence=std::make_shared<const CompositorRenderPlan>(deterministicPlan);
     if (gpuReadLeases_) gpuReadLeases_->finish();
     context_->Flush();
     const auto flushUs = stageUs();
@@ -1615,6 +1616,13 @@ class D3D11Compositor final : public ICompositor {
     }
     if (textured && layer.frame && layer.frame->sourceGeneration && layer.plan.kind == "participant-video" && layerAlpha > 0)
       recordGraphicsSourceDraw(*layer.frame);
+    if(traceFrame && renderPlan.observeGraphicsSubjects && textured && layer.frame && layerAlpha>0 &&
+        (layer.plan.kind=="participant-video"||layer.plan.kind=="screen-share") && traceFrame->graphicsFacts.size()<128) {
+      const auto state=layer.plan.kind=="screen-share"?"share-draw-submitted":"source-draw-submitted";
+      const auto identity="source:"+layer.frame->participantId;
+      if(std::none_of(traceFrame->graphicsFacts.begin(),traceFrame->graphicsFacts.end(),[&](const auto& fact){return fact.state==state&&fact.instanceId==identity&&fact.revision==layer.frame->sourceGeneration;}))
+        traceFrame->graphicsFacts.push_back({identity,layer.frame->sourceGeneration,state,""});
+    }
     context_->RSSetState(rasterizerState_.get());
     if (textured) {
       ID3D11ShaderResourceView* nullViews[] = {nullptr, nullptr, nullptr};

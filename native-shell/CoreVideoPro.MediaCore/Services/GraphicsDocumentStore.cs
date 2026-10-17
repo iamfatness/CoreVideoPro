@@ -33,6 +33,9 @@ public sealed record GraphicsShowDocument
     public IReadOnlyDictionary<string, GraphicsSavedStyle> TemplateStyles { get; init; } = new Dictionary<string, GraphicsSavedStyle>();
     public JsonElement? Brand { get; init; }
     public JsonElement? SourceOverrides { get; init; }
+    // Configuration only. Native source generations, mode, holds, and arming
+    // never survive a restart or an imported document.
+    public IReadOnlyList<GraphicsAutomationRule> AutomationRules {get;init;}=[];
     [JsonExtensionData] public Dictionary<string, JsonElement>? Metadata { get; init; }
 }
 
@@ -145,6 +148,7 @@ public sealed class GraphicsDocumentStore
                 (cue.ClockConfiguration is not null && !cue.ClockConfiguration.IsValid) || draft.Animations?.In is null || draft.Animations.Out is null || (draft.Placement is not null && !draft.Placement.IsValid) ||
                 draft.Fields.ValueKind != JsonValueKind.Object || draft.Fields.EnumerateObject().Count() > 32)
                 throw new InvalidDataException("Invalid saved graphics cue.");
+            if(draft.Image is { } image && (string.IsNullOrEmpty(image.TemplateId) || image.TemplateId.Length>64 || image.TemplateVersion<1 || string.IsNullOrEmpty(image.AssetId) || image.AssetId.Length>64)) throw new InvalidDataException("Invalid saved image package reference.");
             if(draft.Scratch is { } scratch) {
                 if(scratch.Manifest is null || scratch.Hash is not {Length:64} || Encoding.UTF8.GetByteCount(scratch.Manifest)>256*1024 ||
                     !string.Equals(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(scratch.Manifest))),scratch.Hash,StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Invalid private template checksum.");
@@ -158,6 +162,7 @@ public sealed class GraphicsDocumentStore
         foreach (var preset in document.StylePresets)
             if (string.IsNullOrWhiteSpace(preset.Key) || preset.Key.Length > 80 || preset.Value?.IsValid != true) throw new InvalidDataException("Invalid saved graphics style.");
         if(document.TemplateStyles is null || document.TemplateStyles.Count>64) throw new InvalidDataException("Too many saved template styles.");
+        if(document.AutomationRules is null || document.AutomationRules.Count>8 || document.AutomationRules.Any(r=>r is null||!r.IsValid) || document.AutomationRules.Select(r=>r.Id).Distinct(StringComparer.Ordinal).Count()!=document.AutomationRules.Count || document.AutomationRules.Select(r=>r.InstanceId).Distinct(StringComparer.Ordinal).Count()!=document.AutomationRules.Count) throw new InvalidDataException("Invalid saved automation rule configuration.");
         foreach(var preset in document.TemplateStyles)
             if(string.IsNullOrWhiteSpace(preset.Key) || preset.Key.Length>80 || preset.Value is not {Appearance.IsValid:true} style ||
                 string.IsNullOrEmpty(style.TemplateId) || style.TemplateId.Length>64 || style.Fields.ValueKind!=JsonValueKind.Object ||

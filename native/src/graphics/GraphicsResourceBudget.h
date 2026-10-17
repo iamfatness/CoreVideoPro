@@ -1,9 +1,13 @@
 #pragma once
 
 #include <algorithm>
+#include "graphics/GraphicsCachePressure.h"
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <map>
+#include <mutex>
+#include <string>
 
 namespace corevideo::graphics {
 
@@ -12,24 +16,29 @@ namespace corevideo::graphics {
 // GPU retirement leases. Driver/library overhead is not measured by this model.
 class GraphicsResourceBudget {
   struct State {
-    const uint64_t cpuLimit, gpuLimit, preparationLimit;
-    std::atomic<uint64_t> cpu{0}, gpu{0}, preparations{0};
+    const uint64_t cpuLimit, gpuLimit, preparationLimit, residentLimit;
+    std::atomic<uint64_t> cpu{0}, gpu{0}, preparations{0}, residents{0},residentsHigh{0};
+    std::mutex residentMutex;std::map<std::string,uint64_t> residentKeys;uint64_t nextKey=0;
     std::atomic<uint64_t> cpuHigh{0}, gpuHigh{0}, preparationsHigh{0}, refused{0};
-    State(uint64_t cpuBytes, uint64_t gpuBytes, uint64_t producers)
-        : cpuLimit(cpuBytes), gpuLimit(gpuBytes), preparationLimit(producers) {}
+    State(uint64_t cpuBytes, uint64_t gpuBytes, uint64_t producers,uint64_t residentCount)
+        : cpuLimit(cpuBytes), gpuLimit(gpuBytes), preparationLimit(producers),residentLimit(residentCount) {}
   };
  public:
   struct Counters {
+    uint64_t residentResources,residentHighWater;
     uint64_t cpuBytes, gpuBytes, activePreparations, cpuHighWater, gpuHighWater, preparationHighWater, refused;
-    uint64_t cpuLimit, gpuLimit, preparationLimit;
+    uint64_t cpuLimit, gpuLimit, preparationLimit, residentLimit;
   };
   class Lease {
    public:
-    Lease(std::shared_ptr<State> state, uint64_t cpu, uint64_t gpu)
-        : state_(std::move(state)), cpu_(cpu), gpu_(gpu) {}
+    Lease(std::shared_ptr<State> state, uint64_t cpu, uint64_t gpu,std::string key)
+        : state_(std::move(state)), cpu_(cpu), gpu_(gpu),key_(std::move(key)) {}
     ~Lease() {
       finishPreparation();
       state_->gpu.fetch_sub(gpu_, std::memory_order_relaxed);
+      if(key_.empty()) return;
+      std::lock_guard lock(state_->residentMutex);
+      auto found=state_->residentKeys.find(key_);if(found!=state_->residentKeys.end() && --found->second==0) {state_->residentKeys.erase(found);--state_->residents;}
     }
     Lease(const Lease&) = delete;
     Lease& operator=(const Lease&) = delete;
@@ -43,34 +52,47 @@ class GraphicsResourceBudget {
     }
    private:
     std::shared_ptr<State> state_;
-    uint64_t cpu_, gpu_;
+    uint64_t cpu_, gpu_;std::string key_;
     bool preparing_ = true;
   };
   explicit GraphicsResourceBudget(uint64_t cpuBytes = 128ull * 1024 * 1024,
-      uint64_t gpuBytes = 256ull * 1024 * 1024, uint64_t producers = 2)
-      : state_(std::make_shared<State>(cpuBytes, gpuBytes, producers)) {}
+      uint64_t gpuBytes = 256ull * 1024 * 1024, uint64_t producers = 2,uint64_t residentCount=16)
+      : state_(std::make_shared<State>(cpuBytes, gpuBytes, producers,residentCount)) {}
 
-  std::shared_ptr<Lease> tryReserve(uint64_t cpuBytes, uint64_t gpuBytes) {
+  std::shared_ptr<Lease> tryReserve(uint64_t cpuBytes, uint64_t gpuBytes,std::string resourceKey={},bool countResident=true) {
     const auto refuse = [&]() -> std::shared_ptr<Lease> { ++state_->refused; return {}; };
     if (!cpuBytes || !gpuBytes || !take(state_->preparations, 1, state_->preparationLimit, state_->preparationsHigh)) return refuse();
     if (!take(state_->cpu, cpuBytes, state_->cpuLimit, state_->cpuHigh)) {
       --state_->preparations; return refuse();
     }
     if (!take(state_->gpu, gpuBytes, state_->gpuLimit, state_->gpuHigh)) {
-      state_->cpu.fetch_sub(cpuBytes); --state_->preparations; return refuse();
+      state_->cpu.fetch_sub(cpuBytes); --state_->preparations;GraphicsCachePressure::requestTrim();return refuse();
     }
+    if(countResident) {
+      std::lock_guard lock(state_->residentMutex);
+      if(resourceKey.empty()) resourceKey="anonymous:"+std::to_string(++state_->nextKey);
+      auto found=state_->residentKeys.find(resourceKey);
+      if(found==state_->residentKeys.end()) {
+        if(state_->residentKeys.size()>=state_->residentLimit) {
+          state_->cpu.fetch_sub(cpuBytes);state_->gpu.fetch_sub(gpuBytes);--state_->preparations;GraphicsCachePressure::requestTrim();return refuse();
+        }
+        state_->residentKeys.emplace(resourceKey,1);++state_->residents;high(state_->residentsHigh,state_->residents.load());
+      } else ++found->second;
+    }
+    if(!countResident) resourceKey.clear();
     std::shared_ptr<Lease> lease;
-    try { lease = std::make_shared<Lease>(state_, cpuBytes, gpuBytes); }
-    catch (...) {
-      state_->cpu.fetch_sub(cpuBytes); state_->gpu.fetch_sub(gpuBytes); --state_->preparations;
-      throw;
+    try {lease=std::make_shared<Lease>(state_,cpuBytes,gpuBytes,resourceKey);}
+    catch(...) {
+      state_->cpu.fetch_sub(cpuBytes);state_->gpu.fetch_sub(gpuBytes);--state_->preparations;
+      if(countResident) {std::lock_guard lock(state_->residentMutex);auto found=state_->residentKeys.find(resourceKey);
+      if(--found->second==0) {state_->residentKeys.erase(found);--state_->residents;}}throw;
     }
     return lease;
   }
   Counters counters() const {
-    return {state_->cpu.load(), state_->gpu.load(), state_->preparations.load(), state_->cpuHigh.load(),
+    return {state_->residents.load(),state_->residentsHigh.load(),state_->cpu.load(), state_->gpu.load(), state_->preparations.load(), state_->cpuHigh.load(),
         state_->gpuHigh.load(), state_->preparationsHigh.load(), state_->refused.load(),
-        state_->cpuLimit, state_->gpuLimit, state_->preparationLimit};
+        state_->cpuLimit, state_->gpuLimit, state_->preparationLimit,state_->residentLimit};
   }
   static GraphicsResourceBudget& process() {
     static GraphicsResourceBudget value;

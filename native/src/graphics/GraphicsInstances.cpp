@@ -11,6 +11,7 @@
 #include "graphics/GraphicsResourceBudget.h"
 #include "graphics/GraphicsTemplate.h"
 #include "graphics/GraphicsTemplateDraft.h"
+#include "graphics/GraphicsCompatibility.h"
 
 namespace corevideo::graphics {
 using rpc::Json;
@@ -28,13 +29,6 @@ bool sameDefinition(const std::shared_ptr<const GraphicsTemplate>& a,const std::
   if(!a || !b || a->hash()!=b->hash() || a->assets().size()!=b->assets().size()) return false;
   for(const auto& entry:a->assets()) {const auto found=b->assets().find(entry.first);if(found==b->assets().end() || found->second->sha256!=entry.second->sha256) return false;}
   return true;
-}
-compositor::LowerThirdAppearance defaultAppearance(const std::string& templateId) {
-  compositor::LowerThirdAppearance a;a.enabled=true;
-  a.preset=templateId=="minimal-accent" || templateId=="broadcast" ? templateId : "compact-solid";
-  if(templateId=="minimal-accent") {a.backgroundOpacity=0;a.nameSize=40;a.titleSize=26;a.cornerRadius=0;}
-  else if(templateId=="broadcast") {a.nameSize=52;a.titleSize=32;a.padding=24;a.width=.75;a.cornerRadius=0;a.backgroundOpacity=1;}
-  return a;
 }
 Json styleState(const compositor::LowerThirdAppearance& a) {
   return Json::Object{{"version", 1}, {"preset", a.preset}, {"anchor", a.anchor}, {"fontFamily", a.fontFamily},
@@ -89,9 +83,9 @@ bool GraphicsInstances::validId(const std::string& value) {
 
 std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPreview(const Json& draft) {
   updateTemplates();
-  if (!draft.isObject() || draft.asObject().size() > 7) return {};
+  if (!draft.isObject() || draft.asObject().size() > 8) return {};
   for (const auto& [key, _] : draft.asObject())
-    if (key != "templateId" && key != "templateVersion" && key != "fields" && key != "style" && key != "animations" && key != "placement" && key != "scratch") return {};
+    if (key != "templateId" && key != "templateVersion" && key != "fields" && key != "style" && key != "animations" && key != "placement" && key != "scratch" && key != "image") return {};
   const auto templateId = draft.getString("templateId");
   const auto version = draft.getNumber("templateVersion", 0);
   if (!std::isfinite(version) || std::floor(version) != version || version < 1 || version > 2147483647.) return {};
@@ -135,6 +129,19 @@ std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPre
 }
 
 bool GraphicsInstances::readRevision(const Json& request, Revision& revision) {
+  if(const auto* image=request.get("image")) {
+    if(image->isNull()) {revision.image.reset();revision.imageReference=Json{};}
+    else {
+      if(revision.definition || !image->isObject() || image->asObject().size()!=3) return false;
+      const auto version=image->getNumber("templateVersion");
+      if(version<1 || version>std::numeric_limits<int>::max() || std::floor(version)!=version) return false;
+      const auto package=templatesPublication_->definitions.find({image->getString("templateId"),int(version)});
+      if(package==templatesPublication_->definitions.end()) return false;
+      const auto asset=package->second->assets().find(image->getString("assetId"));
+      if(asset==package->second->assets().end()) return false;
+      revision.image=asset->second;revision.imageReference=*image;
+    }
+  }
   if (const auto* placement = request.get("placement")) {
     if (!GraphicsPlacement::read(*placement,revision.placement)) return false;
   }
@@ -223,7 +230,7 @@ void GraphicsInstances::hashRevision(const std::string& templateId, Revision& re
       {"name", revision.name}, {"title", revision.title}, {"style", styleState(revision.appearance)},
       {"binding", revision.binding ? contracts::toJson(*revision.binding) : Json{}},
       {"definitionHash", definitionHash},
-      {"availableAssets", std::move(availableAssets)},
+      {"availableAssets", std::move(availableAssets)},{"imageHash",revision.image?revision.image->sha256:""},
       {"templateFields", revision.templateFields}}}.stringify();
   revision.contentHash = modules::hashing::sha256(reinterpret_cast<const uint8_t*>(serialized.data()), serialized.size());
   if (revision.definition) {
@@ -240,16 +247,45 @@ void GraphicsInstances::hashRevision(const std::string& templateId, Revision& re
   }
 }
 
+bool GraphicsInstances::revisionCapacity(const std::string& id,const Revision& candidate) const {
+  std::set<std::array<uint8_t,32>> keys;keys.insert(candidate.contentHash);
+  for(const auto& [instanceId,instance]:instances_) {
+    if(instanceId!=id) keys.insert(instance.draft->contentHash);
+    for(const auto& revision:{instance.cue,instance.pendingCue,instance.program,instance.clockProgramPending}) if(revision) keys.insert(revision->contentHash);
+  }
+  return keys.size()<=16;
+}
+
+bool GraphicsInstances::nodeCapacity(const std::string& id,const Revision& candidate) const {
+  const auto count=[](const Revision& revision) -> size_t {
+    if(!revision.definition) return 8; // conservative legacy primitive bound
+    size_t total=0;
+    const auto visit=[&](const auto& self,const Json& layers)->void {
+      for(const auto& layer:layers.asArray()) {++total;if(const auto* children=layer.get("children")) self(self,*children);}
+    };
+    visit(visit,*revision.definition->document().get("layers"));return total;
+  };
+  size_t total=0;bool found=false;
+  for(const auto& [instanceId,instance]:instances_) {
+    size_t maximum=count(*instance.draft);
+    for(const auto& revision:{instance.cue,instance.pendingCue,instance.program}) if(revision) maximum=std::max(maximum,count(*revision));
+    if(instanceId==id) {maximum=std::max(maximum,count(candidate));found=true;}
+    total+=maximum;
+  }
+  if(!found) total+=count(candidate);
+  return total<=256;
+}
+
 bool GraphicsInstances::finish(const std::string& id, bool accepted, const std::string& reason) {
-  lastResult_ = Json::Object{{"requestId", id}, {"accepted", accepted}, {"reason", reason}};
+  lastResult_ = Json::Object{{"clientId",pendingClient_},{"requestId", id}, {"accepted", accepted}, {"reason", reason}};
   if (const auto found = instances_.find(pendingInstance_); found != instances_.end()) {
     auto result = lastResult_.asObject(); result["instanceId"] = found->first;
     result["currentRevision"] = double(found->second.draft->number);
     lastResult_ = std::move(result);
   }
   if (!pendingFingerprint_.empty()) {
-    operations_.push_back({pendingClient_, id, std::move(pendingFingerprint_), lastResult_});
-    if (operations_.size() > 32) operations_.pop_front();
+    operations_.push_back({pendingClient_, id, std::move(pendingFingerprint_), lastResult_,monotonicMs_()});
+    if (operations_.size() > 256) operations_.pop_front();
   }
   publish();
   return accepted;
@@ -273,24 +309,29 @@ bool GraphicsInstances::apply(const Json& command) {
   // Bound before serializing a dedup fingerprint, and refuse unsupported knobs.
   static const std::set<std::string> common{"schemaVersion", "requestId", "clientId", "coreEpoch", "instanceId", "expectedRevision"};
   static const std::map<std::string, std::set<std::string>> actionKeys{
-      {"graphics-instance-create", {"templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement"}},
-      {"graphics-instance-update", {"templateVersion", "sourceId", "fields", "style", "target", "animations", "binding", "placement"}},
+      {"graphics-instance-create", {"templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement", "image"}},
+      {"graphics-instance-update", {"label", "rackOrder", "templateVersion", "sourceId", "fields", "style", "target", "animations", "binding", "placement", "image"}},
       {"graphics-instance-cue", {}}, {"graphics-instance-trigger", {"action", "target"}},
       {"graphics-clock-control", {"action","configuration","expectedClockRevision"}},
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}},
-      {"graphics-template-install", {"manifest", "packageRoot"}}, {"graphics-template-list", {}}};
+      {"graphics-automation-configure", {"configuration", "expectedAutomationRevision"}}, {"graphics-automation-control", {"action", "mode"}},
+      {"graphics-authority-set", {"family", "authority"}},
+      {"graphics-template-install", {"manifest", "packageRoot"}}, {"graphics-template-list", {"includeThumbnails"}}};
   const auto allowed = actionKeys.find(type);
   if (allowed == actionKeys.end()) return finish(requestId, false, "unsupported-graphics-command");
   for (const auto& [key, value] : body->asObject()) {
     if (!common.count(key) && !allowed->second.count(key)) return finish(requestId, false, "unsupported-request-field");
-    if (key == "manifest") {
+    if(key=="includeThumbnails") {if(!value.isBool()) return finish(requestId,false,"invalid-thumbnail-demand");}
+    else if (key == "manifest") {
       if (!value.isString() || value.asString().empty() || value.asString().size() > 256 * 1024)
         return finish(requestId, false, "template-manifest-size");
     } else if (key == "packageRoot") {
       if (!value.isString() || value.asString().size() > 2048 || value.asString().find('\0') != std::string::npos)
         return finish(requestId, false, "graphics-package-root-invalid");
-    } else if (key == "configuration") {
-      GraphicsClockConfig config; if (!GraphicsClockConfig::read(value,config)) return finish(requestId,false,"invalid-clock-configuration");
+    } else if(key=="image") {if(!value.isNull() && (!value.isObject() || value.asObject().size()!=3)) return finish(requestId,false,"invalid-graphics-image");}
+    else if (key == "configuration") {
+      if(type=="graphics-automation-configure") {std::vector<GraphicsAutomation::Rule> rules;Json texts;std::string error;if(!GraphicsAutomation::readConfiguration(value,rules,texts,error)) return finish(requestId,false,error);}
+      else {GraphicsClockConfig config;if(!GraphicsClockConfig::read(value,config)) return finish(requestId,false,"invalid-clock-configuration");}
     } else if (key == "placement") {
       std::optional<GraphicsPlacement> parsed; if (!GraphicsPlacement::read(value,parsed)) return finish(requestId,false,"invalid-placement");
     } else if (key == "binding") {
@@ -310,7 +351,7 @@ bool GraphicsInstances::apply(const Json& command) {
             (item.isString() ? item.asString().size() > (key == "fields" ? 4096 : 512) :
             !(item.isBool() || (item.isNumber() && std::isfinite(item.asNumber())))))
           return finish(requestId, false, "invalid-fields-or-style");
-    } else if (key == "schemaVersion" || key == "expectedRevision" || key == "expectedClockRevision" || key == "templateVersion") {
+    } else if (key == "schemaVersion" || key == "rackOrder" || key == "expectedRevision" || key == "expectedClockRevision" || key == "expectedAutomationRevision" || key == "templateVersion") {
       if (!value.isNumber() || !std::isfinite(value.asNumber()) || std::floor(value.asNumber()) != value.asNumber() ||
           value.asNumber() < 0 || value.asNumber() > 9007199254740991.)
         return finish(requestId, false, "invalid-revision");
@@ -318,6 +359,7 @@ bool GraphicsInstances::apply(const Json& command) {
   }
   // Install bytes are copied once for bounded retry identity, never parsed,
   // hashed or re-escaped on the frame/control owner.
+  while(!operations_.empty() && monotonicMs_()-operations_.front().admittedMs>300000) operations_.pop_front();
   const auto fingerprint = type + ":" + (type == "graphics-template-install" ? body->getString("manifest") + '\0' + body->getString("packageRoot") : body->stringify());
   for (const auto& previous : operations_) if (previous.clientId == pendingClient_ && previous.requestId == requestId) {
     if (previous.fingerprint != fingerprint) return finish(requestId, false, "request-id-reused");
@@ -325,12 +367,68 @@ bool GraphicsInstances::apply(const Json& command) {
     return lastResult_.get("accepted")->asBool();
   }
   pendingFingerprint_ = fingerprint;
-  if (type == "graphics-template-list") return finish(requestId, true, "template-catalog-observed");
+  if (type == "graphics-template-list") {
+    if(const auto* demand=body->get("includeThumbnails");demand && demand->asBool() && !templates_.requestThumbnails()) return finish(requestId,false,"template-library-busy");
+    return finish(requestId, true, "template-catalog-observed");
+  }
   if (type == "graphics-template-install") {
     const auto reason = templates_.submit(pendingClient_, requestId, body->getString("manifest"), body->getString("packageRoot"));
     return finish(requestId, reason == "template-install-queued", reason);
   }
+  if(type == "graphics-automation-configure") {
+    const auto* config=body->get("configuration");if(!config) return finish(requestId,false,"missing-graphics-automation-configuration");
+    std::vector<GraphicsAutomation::Rule> rules;Json texts;std::string error;
+    if(!GraphicsAutomation::readConfiguration(*config,rules,texts,error)) return finish(requestId,false,error);
+    for(const auto& rule:rules) {
+      const auto target=instances_.find(rule.instanceId);
+      if(target==instances_.end()) return finish(requestId,false,"graphics-automation-target-missing");
+      const auto& instance=target->second;
+      const auto family=instance.draft->definition?instance.draft->definition->document().getString("family"):"lower-third";
+      if(family!="lower-third" || (instance.scope=="scene" && instance.sceneId!=rule.sceneId)) return finish(requestId,false,"graphics-automation-scope-or-family-conflict");
+    }
+    for(const auto& [_,value]:texts.asObject()) {
+      auto binding=GraphicsSourceCatalog::read(*value.get("binding"));
+      if(!binding || !sources_->contains(*binding)) return finish(requestId,false,"graphics-automation-source-text-generation-mismatch");
+    }
+    std::vector<std::string> owned;for(const auto& [id,_]:instances_) if(automation_.owns(id)) owned.push_back(id);
+    const auto previousRevision=automation_.revision();
+    const bool accepted=automation_.configure(*config,uint64_t(body->getNumber("expectedAutomationRevision",0)),error);
+    if(accepted && automation_.revision()!=previousRevision) for(const auto& id:owned) instances_.at(id).showPending=instances_.at(id).updatePending=false;
+    return finish(requestId,accepted,accepted?"graphics-automation-configured-unarmed":error);
+  }
+  if(type == "graphics-automation-control") {
+    std::string error;const auto action=body->getString("action");
+    const auto requestedId=body->getString("instanceId");
+    if(!requestedId.empty() && std::none_of(automation_.rules().begin(),automation_.rules().end(),[&](const auto& rule){return rule.instanceId==requestedId;})) return finish(requestId,false,"graphics-automation-target-missing");
+    std::vector<std::string> owned;for(const auto& [id,_]:instances_) if(automation_.owns(id) && (requestedId.empty()||requestedId==id)) owned.push_back(id);
+    const bool accepted=automation_.control(action,body->getString("mode"),body->getString("instanceId"),sources_->status()=="available",error);
+    if(accepted && (action=="disarm" || action=="hold" || action=="set-mode" || action=="hide-automatic")) {
+      for(const auto& id:owned) {
+        auto& instance=instances_.at(id);instance.showPending=instance.updatePending=false;
+        if(action=="hide-automatic") {instance.timeline.clear();instance.program.reset();instance.programResource.reset();instance.currentlyComposed=false;instance.visibility="hidden";}
+      }
+      if(action=="hide-automatic") automation_.clear();
+    }
+    return finish(requestId,accepted,accepted?"graphics-automation-control-accepted":error);
+  }
+  if(type == "graphics-authority-set") {
+    const auto family=body->getString("family"),authority=body->getString("authority");
+    if((family!="lower-third" && family!="bug") || (authority!="legacy" && authority!="instances")) return finish(requestId,false,"invalid-graphics-authority");
+    if(authority=="instances") managedFamilies_.insert(family);
+    else {
+      for(auto& [_,instance]:instances_) {
+        const auto definition=instance.draft->definition;
+        if((definition?definition->document().getString("family"):"lower-third")!=family) continue;
+        instance.program.reset();instance.clockProgramPending.reset();instance.programResource.reset();instance.timeline.clear();
+        instance.awaitingEntrance=instance.showPending=instance.updatePending=instance.currentlyComposed=false;instance.visibility="hidden";instance.firstDrawSubmittedFrame=0;
+      }
+      if(family=="lower-third") automation_.clear();
+      managedFamilies_.erase(family);
+    }
+    return finish(requestId,true,"graphics-authority-selected");
+  }
   if (type == "graphics-program-clear") {
+    if(body->getString("channel")=="all") automation_.clear();
     // This compatibility slice supports an explicit all-graphics clear only.
     // Do not silently interpret a selective channel request as clearing all.
     if (body->getString("channel") != "all") return finish(requestId, false, "unsupported-channel");
@@ -355,7 +453,7 @@ bool GraphicsInstances::apply(const Json& command) {
     if (!compatibility && definition == templatesPublication_->definitions.end()) return finish(requestId, false, "template-version-not-installed");
     if (compatibility && version != 1) return finish(requestId, false, "template-version-not-installed");
     Instance instance;
-    instance.id = id; instance.templateId = templateId;
+    instance.id = id; instance.templateId = templateId;instance.label=templateId;instance.rackOrder=int(instances_.size());
     instance.scope = body->getString("scope"); instance.sceneId = body->getString("sceneId");
     if ((instance.scope != "global" && instance.scope != "scene") ||
         (instance.scope == "scene" && (instance.sceneId.empty() || instance.sceneId.size() > 256)) ||
@@ -372,7 +470,9 @@ bool GraphicsInstances::apply(const Json& command) {
     }
     if (!readRevision(*body, revision)) return finish(requestId, false, "invalid-fields-or-style");
     if (revision.binding && !sources_->contains(*revision.binding)) return finish(requestId, false, "source-identity-changed");
+    if(!nodeCapacity(id,revision)) return finish(requestId,false,"graphics-bus-node-capacity");
     hashRevision(templateId, revision);
+    if(!revisionCapacity(id,revision)) return finish(requestId,false,"graphics-resident-revision-capacity");
     revisionClock_ = revision.number;
     instance.draft = std::make_shared<const Revision>(std::move(revision));
     if (instance.draft->definition && (instance.draft->definition->document().getString("family")=="clock" || instance.draft->definition->document().getString("family")=="countdown") && instance.draft->templateFields.get("time")) {
@@ -395,6 +495,22 @@ bool GraphicsInstances::apply(const Json& command) {
   const double expected = body->getNumber("expectedRevision", -1);
   const auto expectedIdentity = triggerTarget == "cue" ? instance.cue : instance.draft;
   if (expected != static_cast<double>(expectedIdentity->number)) return finish(requestId, false, "revision-conflict");
+  if(type=="graphics-instance-update" && (body->get("label") || body->get("rackOrder"))) {
+    static const std::set<std::string> metadataKeys{"schemaVersion","requestId","clientId","coreEpoch","instanceId","expectedRevision","target","label","rackOrder"};
+    for(const auto& [key,_]:body->asObject()) if(!metadataKeys.count(key)) return finish(requestId,false,"graphics-rack-metadata-must-be-separate");
+    const auto label=body->getString("label",instance.label);const auto order=body->getNumber("rackOrder",instance.rackOrder);
+    if(body->getString("target")!="cue" || label.empty() || label.size()>128 || order<0 || order>=instances_.size()) return finish(requestId,false,"invalid-graphics-rack-metadata");
+    const auto previous=instance.rackOrder;
+    for(auto& [otherId,other]:instances_) if(otherId!=id) {
+      if(previous<order && other.rackOrder>previous && other.rackOrder<=order) --other.rackOrder;
+      else if(previous>order && other.rackOrder>=order && other.rackOrder<previous) ++other.rackOrder;
+    }
+    instance.label=label;instance.rackOrder=int(order);return finish(requestId,true,"graphics-rack-metadata-updated");
+  }
+  if(!automationApplying_ && (type=="graphics-instance-update" || type=="graphics-instance-cue" || type=="graphics-instance-trigger" || type=="graphics-instance-remove")) {
+    if(automation_.owns(id)) instance.showPending=instance.updatePending=false;
+    automation_.manual(id);
+  }
   if (type == "graphics-clock-control") {
     if (!instance.clock) return finish(requestId,false,"instance-has-no-clock");
     const auto action=body->getString("action");
@@ -423,6 +539,7 @@ bool GraphicsInstances::apply(const Json& command) {
       else {
         const auto found=templatesPublication_->definitions.find({instance.templateId,int(value)});
         if(found==templatesPublication_->definitions.end()) return finish(requestId,false,"template-version-not-installed");
+        if(found->second->document().getString("family")!=revision.definition->document().getString("family")) return finish(requestId,false,"template-family-change-requires-new-instance");
         revision.definition=found->second;
       }
     }
@@ -440,7 +557,7 @@ bool GraphicsInstances::apply(const Json& command) {
         a.logoScale == b.logoScale && a.showLogo == b.showLogo;
     const bool sameBinding = revision.binding.has_value() == old.binding.has_value() &&
         (!revision.binding || GraphicsSourceCatalog::same(*revision.binding, *old.binding));
-    if (revision.name == old.name && revision.title == old.title && revision.sourceId == old.sourceId && sameStyle && sameBinding &&
+    if (revision.imageReference.stringify()==old.imageReference.stringify() && revision.name == old.name && revision.title == old.title && revision.sourceId == old.sourceId && sameStyle && sameBinding &&
         sameDefinition(revision.definition,old.definition) && revision.placement == old.placement && revision.entrance == old.entrance && revision.exit == old.exit && revision.templateFields.stringify() == old.templateFields.stringify()) {
       if (target == "program" && instance.program && instance.program != instance.draft) {
         instance.updatePending = true;
@@ -452,8 +569,10 @@ bool GraphicsInstances::apply(const Json& command) {
       }
       return finish(requestId, true, "unchanged");
     }
-    revision.number = ++revisionClock_;
+    if(!nodeCapacity(id,revision)) return finish(requestId,false,"graphics-bus-node-capacity");
     hashRevision(instance.templateId, revision);
+    if(!revisionCapacity(id,revision)) return finish(requestId,false,"graphics-resident-revision-capacity");
+    revision.number = ++revisionClock_;
     // A pending Show names the accepted revision at trigger time. Editing the
     // cue cannot silently retarget that request to a different revision.
     instance.showPending = false;
@@ -512,7 +631,8 @@ bool GraphicsInstances::apply(const Json& command) {
   }
   if (type == "graphics-instance-remove") {
     if (instance.program || instance.showPending) return finish(requestId, false, "instance-visible");
-    instances_.erase(found);
+    const auto removedOrder=found->second.rackOrder;instances_.erase(found);
+    for(auto& [_,other]:instances_) if(other.rackOrder>removedOrder) --other.rackOrder;
     return finish(requestId, true, "removed");
   }
   return finish(requestId, false, "unsupported-graphics-command");
@@ -529,6 +649,8 @@ modules::CompositorRenderPlanLayer GraphicsInstances::layer(const Instance& inst
   layer.overlay.graphicsContentHash = revision.contentHash;
   layer.overlay.hasGraphicsContentHash = true;
   layer.overlay.graphicsTemplate = revision.templateInput;
+  layer.overlay.graphicsImage=revision.image;
+  if(revision.image) layer.overlay.imageUri="graphics-asset:"+revision.image->sha256;
   if (revision.binding) {
     layer.graphicsBoundParticipantId = revision.binding->sourceId.substr(5);
     layer.graphicsBoundSourceGeneration = uint64_t(revision.binding->generation);
@@ -550,11 +672,25 @@ modules::CompositorRenderPlanLayer GraphicsInstances::layer(const Instance& inst
   return layer;
 }
 
+std::vector<const GraphicsInstances::Instance*> GraphicsInstances::orderedInstances() const {
+  std::vector<const Instance*> rows;rows.reserve(instances_.size());for(const auto& [_,instance]:instances_) rows.push_back(&instance);
+  std::stable_sort(rows.begin(),rows.end(),[](const auto* a,const auto* b){return a->rackOrder<b->rackOrder;});return rows;
+}
+
 void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview,
                                const std::vector<modules::VideoFrame>& frames, ScopePass scope) const {
+  if(!preview && automation_.observing()) plan.observeGraphicsSubjects=true;
+
+  plan.layers.erase(std::remove_if(plan.layers.begin(),plan.layers.end(),[&](const auto& item) {
+    if(item.layerId.rfind("overlay:",0)!=0) return false;
+    return (managedFamilies_.count("lower-third") && (item.layerId=="overlay:lower-third" || item.layerId.ends_with(":lower-third"))) ||
+      (managedFamilies_.count("bug") && (item.layerId=="overlay:brand-bug" || item.layerId.ends_with(":bug")));
+  }),plan.layers.end());
+
   const auto now = monotonicMs_();
   bool inserted=false;
-  for (const auto& [_, instance] : instances_) {
+  for (const auto* item : orderedInstances()) {
+    const auto& instance=*item;
     if (!preview && scope != ScopePass::Scene) {
       // The retained handle validates device/scale on the actual renderer. A
       // ready Cue must remain recoverable even while a different Cue is pending.
@@ -630,6 +766,8 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
 
 void GraphicsInstances::observeZoomSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
                                          const std::vector<modules::VideoFrame>& frames) {
+  automation_.observeEpoch(sessionEpoch);
+
   if (!sources_->observeZoom(roster, sessionEpoch, frames)) return;
   for (auto& [_, instance] : instances_) {
     if (instance.pendingCue && instance.pendingCue->binding && !sources_->contains(*instance.pendingCue->binding)) {
@@ -680,7 +818,7 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
     }
     if (fact.state == "draw-submitted") {
       if (instance.program && instance.program->number == fact.revision && instance.firstDrawSubmittedFrame == 0) {
-        instance.firstDrawSubmittedFrame = frame.frameNumber; changed = true;
+        instance.firstDrawSubmittedFrame = frame.frameNumber;automation_.composed(instance.id,fact.revision,monotonicMs_()); changed = true;
       }
       continue;
     }
@@ -737,7 +875,56 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
       instance.updatePending = false; changed = true;
     }
   }
+  changed=applyAutomation(frame)||changed;
   if (changed) publish();
+}
+
+bool GraphicsInstances::applyAutomation(const modules::ProgramFrame& frame) {
+  if(!automation_.observing() || frame.frameNumber<=0 || !frame.gpuComposed) return false;
+  const auto before=automation_.traceSequence();
+  std::vector<GraphicsAutomation::Subject> subjects;bool sharing=false;
+  for(const auto& fact:frame.graphicsFacts) {
+    if(fact.state=="share-draw-submitted") {sharing=true;continue;}
+    if(fact.state!="source-draw-submitted" || fact.instanceId.rfind("source:",0)!=0 || !fact.revision) continue;
+    const auto sourceId="zoom:"+fact.instanceId.substr(7);
+    for(const auto& source:sources_->rows().asArray()) {
+      const auto* identity=source.get("identity");if(!identity || !source.get("videoOn")->asBool()) continue;
+      auto binding=GraphicsSourceCatalog::read(*identity);
+      if(binding && binding->sourceId==sourceId && binding->generation==int64_t(fact.revision)) {subjects.push_back({*binding,source.getString("displayName")});break;}
+    }
+  }
+  const auto decisions=automation_.tick(subjects,frame.renderPlanEvidence?frame.renderPlanEvidence->sceneId:"",sharing,monotonicMs_());
+  const auto savedResult=lastResult_;
+  for(const auto& decision:decisions) {
+    auto target=instances_.find(decision.instanceId);if(target==instances_.end()) {automation_.result(decision,false,"graphics-automation-target-missing",0,monotonicMs_());continue;}
+    const auto send=[&](const std::string& type,Json::Object body) {
+      body["schemaVersion"]=1;body["coreEpoch"]=epoch_;body["clientId"]="native-graphics-rules";body["instanceId"]=decision.instanceId;
+      body["requestId"]="rule-"+std::to_string(++automationSequence_);body["expectedRevision"]=double(target->second.draft->number);
+      const bool previous=automationApplying_;automationApplying_=true;
+      bool accepted=false;try {accepted=apply(Json::Object{{"type",type},{"graphics",std::move(body)}});} catch(...) {automationApplying_=previous;throw;}
+      automationApplying_=previous;return accepted;
+    };
+    bool accepted;
+    if(decision.action=="hide") accepted=send("graphics-instance-trigger",{{"action","hide"}});
+    else {
+      Json::Object fields{{"name",decision.name},{"title",decision.secondary}};
+      const auto definition=target->second.draft->definition;
+      if(definition) {
+        const auto* declared=definition->document().get("fields");
+        for(auto field=fields.begin();field!=fields.end();) {
+          if(std::none_of(declared->asArray().begin(),declared->asArray().end(),[&](const auto& d){return d.getString("id")==field->first && d.getString("type")=="string" && d.get("bindable") && d.get("bindable")->asBool();})) field=fields.erase(field);else ++field;
+        }
+        if(!fields.count("name")) {automation_.result(decision,false,"graphics-automation-name-field-not-bindable",target->second.draft->number,monotonicMs_());continue;}
+      }
+      accepted=send("graphics-instance-update",{{"target",decision.action=="update"?"program":"cue"},{"fields",fields},{"binding",decision.binding?contracts::toJson(*decision.binding):Json{}}});
+      if(accepted && decision.action=="cue") accepted=send("graphics-instance-cue",{});
+      else if(accepted && decision.action=="show") accepted=send("graphics-instance-trigger",{{"action","show"}});
+    }
+    automation_.result(decision,accepted,lastResult_.getString("reason"),target->second.draft->number,monotonicMs_());
+  }
+  // Rule acknowledgements cannot replace the last external operator result.
+  lastResult_=savedResult;
+  return before!=automation_.traceSequence() || !decisions.empty();
 }
 
 void GraphicsInstances::show(Instance& instance, bool fromCue) {
@@ -746,6 +933,8 @@ void GraphicsInstances::show(Instance& instance, bool fromCue) {
   if (instance.program != revision) instance.firstDrawSubmittedFrame = 0;
   instance.clockProgramPending.reset();
   instance.program = revision;
+  const auto family=revision->definition?revision->definition->document().getString("family"):"lower-third";
+  if(family=="lower-third" || family=="bug") managedFamilies_.insert(family);
   instance.programResource = fromCue ? instance.cueResource : instance.draftResource;
   if (starting && instance.program->entrance.type != "none" && instance.program->entrance.durationMs > 0) instance.awaitingEntrance=true;
   if (!instance.awaitingEntrance) instance.timeline.show(instance.program->entrance, monotonicMs_());
@@ -812,7 +1001,8 @@ bool GraphicsInstances::hasCue() const {
 
 void GraphicsInstances::publish() {
   Json::Array rows;
-  for (const auto& [_, instance] : instances_) {
+  for (const auto* item : orderedInstances()) {
+    const auto& instance=*item;
     const auto& a = instance.draft->appearance;
     const contracts::GraphicsRevisionIdentity identity{instance.id, epoch_, static_cast<int64_t>(instance.draft->number)};
     const auto firstComposition = instance.program && instance.firstDrawSubmittedFrame > 0
@@ -823,7 +1013,7 @@ void GraphicsInstances::publish() {
       {"identity", contracts::toJson(identity)},
       {"preparationObservation", contracts::toJson(contracts::GraphicsPreparationFact{identity, instance.preparation, instance.warning})},
       {"firstCompositionObservation", firstComposition},
-      {"instanceId", instance.id}, {"templateId", instance.templateId}, {"templateVersion", instance.draft->definition ? instance.draft->definition->version() : 1},
+      {"label",instance.label},{"rackOrder",instance.rackOrder},{"instanceId", instance.id}, {"templateId", instance.templateId}, {"templateVersion", instance.draft->definition ? instance.draft->definition->version() : 1},
       {"scope", instance.scope}, {"sceneId", instance.sceneId},
       {"clock",instance.clockSample ? *instance.clockSample : Json{}},
       {"clockConfigurationRevision",instance.clock ? double(instance.clockConfigurationRevision) : 0.},
@@ -848,6 +1038,7 @@ void GraphicsInstances::publish() {
       {"binding", instance.draft->binding ? contracts::toJson(*instance.draft->binding) : Json{}},
       {"bindingState", !instance.draft->binding ? "unbound" : sources_->contains(*instance.draft->binding) ? "bound" : "source-identity-changed"},
       {"programBinding", instance.program && instance.program->binding ? contracts::toJson(*instance.program->binding) : Json{}},
+      {"image",instance.draft->imageReference},{"cueImage",instance.cue?instance.cue->imageReference:Json{}},{"programImage",instance.program?instance.program->imageReference:Json{}},
       {"fields", instance.draft->definition ? instance.draft->templateFields : Json{Json::Object{{"name", instance.draft->name}, {"title", instance.draft->title}}}},
       {"style", styleState(a)},
       {"placement",instance.draft->placement ? instance.draft->placement->json() : Json{}},
@@ -860,8 +1051,9 @@ void GraphicsInstances::publish() {
       {"programStyle", instance.program ? styleState(instance.program->appearance) : Json{}}});
   }
   const auto budget = GraphicsResourceBudget::process().counters();
-  snapshot_ = Json::Object{{"schemaVersion", 1}, {"coreEpoch", epoch_}, {"authoring",authoringState_}, {"instances", std::move(rows)},
-      {"resourceBudgetAtStatePublication", Json::Object{{"kind", "allocation-model"},
+  Json::Array operations;for(const auto& operation:operations_) operations.push_back(operation.result);
+  snapshot_ = Json::Object{{"operations",operations},{"automation",automation_.snapshot()},{"familyAuthorities",Json::Object{{"lower-third",managedFamilies_.count("lower-third")?"instances":"legacy"},{"bug",managedFamilies_.count("bug")?"instances":"legacy"}}},{"schemaVersion", 1}, {"coreEpoch", epoch_}, {"authoring",authoringState_}, {"instances", std::move(rows)},
+      {"resourceBudgetAtStatePublication", Json::Object{{"kind", "allocation-model"},{"residentResources",double(budget.residentResources)},{"residentHighWater",double(budget.residentHighWater)},{"residentLimit",double(budget.residentLimit)},
           {"cpuBytes", double(budget.cpuBytes)}, {"gpuBytes", double(budget.gpuBytes)},
           {"activePreparations", double(budget.activePreparations)}, {"cpuHighWater", double(budget.cpuHighWater)},
           {"gpuHighWater", double(budget.gpuHighWater)}, {"preparationHighWater", double(budget.preparationHighWater)},

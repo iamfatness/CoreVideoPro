@@ -5472,61 +5472,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         }
     }
 
-    [RelayCommand]
-    private void ToggleProgramLowerThird()
-    {
-        if (ProgramLowerThirdKey.IsVisible || ProgramLowerThirdEnabled)
-        {
-            ProgramLowerThirdEnabled = false;
-            _programLowerThirdAutomationSuppressed = true;
-            foreach (var graphic in Graphics.Where(graphic =>
-                graphic.Kind.Equals("lower-third", StringComparison.OrdinalIgnoreCase)))
-            {
-                graphic.Enabled = false;
-            }
-
-            CommandStatus = "Lower third keyed out";
-        }
-        else
-        {
-            if (ResolveProgramLowerThirdSource(ProgramSceneRoutes) is null)
-            {
-                CommandStatus = "Lower third needs a program source";
-                OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
-                OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
-                OnPropertyChanged(nameof(StudioLowerThirdToolTip));
-                return;
-            }
-
-            _programLowerThirdAutomationSuppressed = false;
-            ProgramLowerThirdEnabled = true;
-            CommandStatus = "Lower third keyed in";
-        }
-
-        OnPropertyChanged(nameof(EnabledGraphics));
-        RefreshProgramLowerThirdKeyPosition();
-        _ = TrySyncMediaCoreAsync();
-    }
-
-    [RelayCommand]
-    private void RebuildProgramLowerThird()
-    {
-        if (ResolveProgramLowerThirdSource(ProgramSceneRoutes) is not { } source)
-        {
-            CommandStatus = "Lower third needs a program source";
-            OnPropertyChanged(nameof(StudioLowerThirdCompactStatus));
-            OnPropertyChanged(nameof(StudioLowerThirdSourceLabel));
-            OnPropertyChanged(nameof(StudioLowerThirdToolTip));
-            return;
-        }
-
-        _programLowerThirdAutomationSuppressed = false;
-        ProgramLowerThirdEnabled = true;
-        UpdateProgramLowerThirdKey(source, force: true);
-        CommandStatus = "Lower third rebuilt";
-        _ = TrySyncMediaCoreAsync();
-    }
-
     public IReadOnlyList<GraphicOverlay> EnabledGraphics =>
         Graphics.Where(graphic => graphic.Enabled).ToList();
 
@@ -11019,7 +10964,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ApplyGraphicsAndCaptionStateFromSnapshot(NativeMediaCoreStateSnapshot snapshot)
     {
-        _graphicsWorkspace?.Observe(snapshot.Graphics);
+        ObserveGraphicsState(snapshot.Graphics);
         // A graphic's Enabled flag is the OPERATOR's desired state. It is never written
         // from a snapshot (#757): the old write-back read the active overlays from a
         // render-plan layer list a real core does not publish, so any overlay on air

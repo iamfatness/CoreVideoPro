@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include "graphics/GraphicsCachePressure.h"
 #include <algorithm>
 #include <condition_variable>
 #include <cstdint>
@@ -42,7 +43,7 @@ class PreparationCache {
         published_(std::make_shared<const Results>()), worker_([this] { run(); }) {}
   ~PreparationCache() {
     { std::lock_guard lock(mutex_); stopping_ = true; pending_.clear(); }
-    wake_.notify_one();
+    pressure_->wake.notify_one();
     if (worker_.joinable()) worker_.join();
   }
   PreparationCache(const PreparationCache&) = delete;
@@ -105,7 +106,7 @@ class PreparationCache {
     pending_.push_back({key, std::move(request), maximumBytes, slot});
     pendingBytes_ += maximumBytes;
     admitted_.fetch_add(1);
-    lock.unlock(); wake_.notify_one();
+    lock.unlock(); pressure_->wake.notify_one();
     return {};
   }
 
@@ -158,8 +159,13 @@ class PreparationCache {
       std::deque<Job> retiredRequests;
       {
         std::unique_lock lock(mutex_);
-        wake_.wait(lock, [this] { return stopping_ || !pending_.empty(); });
+        pressure_->wake.wait(lock, [this] { return stopping_ || !pending_.empty() || pressure_->requested.load(); });
         if (stopping_) return;
+        if(pressure_->requested.exchange(false)) {
+          sweepRetired();
+          if(retireLeastUsed()) {std::atomic_store(&published_,std::make_shared<const Results>(results));sweepRetired();}
+        }
+        if(pending_.empty()) continue;
         retiredRequests.swap(retiredRequests_);
         job.emplace(std::move(pending_.front())); pending_.pop_front();
         activeSlot_ = job->slot; activeKey_ = job->key;
@@ -199,7 +205,13 @@ class PreparationCache {
         if (activeSuperseded_) { superseded_.fetch_add(1); continue; }
         // Temporary process-wide resource pressure is backpressure, not a
         // sticky missing-font/asset result. A later render may request it again.
-        if (result.retryable && !result.asset) { refused_.fetch_add(1); continue; }
+        if (result.retryable && !result.asset) {
+          refused_.fetch_add(1);
+          // Process-wide pressure can come from another cache/device. Retire a
+          // disposable local result before retry; active GPU leases remain charged.
+          if(retireLeastUsed()) {std::atomic_store(&published_,std::make_shared<const Results>(results));sweepRetired();}
+          continue;
+        }
         residentBytes_ += result.bytes;
         results[job->key] = std::make_shared<Entry>(
             std::make_shared<const Result>(std::move(result)), ++useClock_);
@@ -219,7 +231,7 @@ class PreparationCache {
   const size_t capacity_;
   const size_t residentCapacity_;
   mutable std::mutex mutex_;
-  std::condition_variable wake_;
+  std::shared_ptr<GraphicsCachePressure::Signal> pressure_=GraphicsCachePressure::subscribe();
   std::deque<Job> pending_;
   // Bounded separately by capacity_; canceled intents no longer reserve raster
   // scratch, but keep their bounded metadata/device lease until owner disposal.

@@ -52,8 +52,9 @@ public sealed class GraphicsCommandGateway
         try
         {
             var response = await _send([command!], cancellationToken).ConfigureAwait(false);
-            var result = response.Graphics?.LastResult;
-            if (response.Graphics?.CoreEpoch != observed.CoreEpoch || result?.RequestId != requestId)
+            var clientId=command!.ExtensionData!["graphics"].GetProperty("clientId").GetString();
+            var result = response.Graphics?.Operations.LastOrDefault(r=>r.RequestId==requestId && r.ClientId==clientId) ?? response.Graphics?.LastResult;
+            if (response.Graphics?.CoreEpoch != observed.CoreEpoch || result?.RequestId != requestId || (result.ClientId.Length>0 && result.ClientId!=clientId))
                 return Refuse(requestId, "graphics-result-not-correlated");
             return result;
         }
@@ -71,12 +72,14 @@ public static class GraphicsCommandRequest
 {
     private static readonly IReadOnlyDictionary<string, string[]> Parameters = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
-        ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement"],
-        ["graphics.instance.update"] = ["templateVersion", "target", "sourceId", "fields", "style", "animations", "binding", "placement"],
+        ["graphics.automation.configure"] = ["configuration","expectedAutomationRevision"], ["graphics.automation.control"] = ["action","mode"],
+        ["graphics.authority.set"] = ["family", "authority"],
+        ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement", "image"],
+        ["graphics.instance.update"] = ["label","rackOrder","templateVersion", "target", "sourceId", "fields", "style", "animations", "binding", "placement", "image"],
         ["graphics.instance.cue"] = [], ["graphics.instance.trigger"] = ["action", "target"],
         ["graphics.clock.control"] = ["action","configuration","expectedClockRevision"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"],
-        ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = []
+        ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = ["includeThumbnails"]
     };
     private static readonly HashSet<string> Common = new(StringComparer.Ordinal)
         { "schemaVersion", "requestId", "clientId", "coreEpoch", "instanceId", "expectedRevision" };
@@ -93,11 +96,11 @@ public static class GraphicsCommandRequest
     {
         command = null; requestId = ""; error = "invalid-graphics-request";
         if (!Parameters.TryGetValue(action, out var specific)) { error = "unsupported-graphics-action"; return false; }
-        var limit = action == "graphics.template.install" ? 2 * 1024 * 1024 : 32768;
+        var limit = action == "graphics.template.install" ? 2 * 1024 * 1024 : action=="graphics.automation.configure"?65536:32768;
         if (request.Length > limit || Encoding.UTF8.GetByteCount(request) > limit) return false;
         try
         {
-            using var document = JsonDocument.Parse(request, new JsonDocumentOptions { MaxDepth = 4 });
+            using var document = JsonDocument.Parse(request, new JsonDocumentOptions { MaxDepth = action=="graphics.automation.configure"?8:4 });
             var body = document.RootElement;
             if (!GraphicsOperationIdentityContract.Validate(body) || Number(body, "schemaVersion") != 1) return false;
             requestId = body.GetProperty("requestId").GetString()!;
@@ -108,21 +111,28 @@ public static class GraphicsCommandRequest
             {
                 if (!names.Add(property.Name) || (!Common.Contains(property.Name) && !specific.Contains(property.Name, StringComparer.Ordinal)))
                 { error = "unsupported-or-duplicate-request-field"; return false; }
-                if (property.Name is "fields" or "style" or "animations" or "binding" or "placement" or "configuration") continue;
+                if(property.Name=="includeThumbnails") {if(property.Value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return false;continue;}
+                if (property.Name is "fields" or "style" or "animations" or "binding" or "placement" or "configuration" or "image") continue;
                 if (property.Name == "manifest")
                 {
                     if (property.Value.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(property.Value.GetString()) ||
                         Encoding.UTF8.GetByteCount(property.Value.GetString()!) > 256 * 1024) return false;
                     continue;
                 }
-                if (property.Name is "schemaVersion" or "expectedRevision" or "expectedClockRevision" or "templateVersion")
+                if (property.Name is "rackOrder" or "schemaVersion" or "expectedRevision" or "expectedClockRevision" or "expectedAutomationRevision" or "templateVersion")
                 {
                     if (!Integer(property.Value, 0)) return false;
                 }
                 else if (property.Value.ValueKind != JsonValueKind.String || Encoding.UTF8.GetByteCount(property.Value.GetString()!) > (property.Name is "packagePath" or "packageRoot" ? 2048 : 256) || property.Value.GetString()!.Contains('\0'))
                     return false;
             }
-            var libraryAction = action.StartsWith("graphics.template.", StringComparison.Ordinal);
+            var libraryAction = action.StartsWith("graphics.automation.",StringComparison.Ordinal) || action=="graphics.authority.set" || action.StartsWith("graphics.template.", StringComparison.Ordinal);
+            if(action=="graphics.automation.configure") {
+                if(!body.TryGetProperty("expectedAutomationRevision",out var ar) || !Integer(ar,1) || !body.TryGetProperty("configuration",out var config) || !ValidAutomationConfiguration(config)) return false;
+            }
+            if(action=="graphics.automation.control" && (Text(body,"action") is not ("set-mode" or "arm" or "disarm" or "hold" or "resume" or "hide-automatic") ||
+                (Text(body,"action")=="set-mode" && Text(body,"mode") is not ("manual" or "suggest" or "rehearsal" or "automatic")))) return false;
+            if(action=="graphics.authority.set" && (Text(body,"family") is not ("lower-third" or "bug") || Text(body,"authority") is not ("legacy" or "instances"))) return false;
             if (action == "graphics.template.install") {
                 var manifest = body.TryGetProperty("manifest", out _); var path = body.TryGetProperty("packagePath", out var archive);
                 if (manifest == path || (path && (string.IsNullOrWhiteSpace(archive.GetString()) || body.TryGetProperty("packageRoot", out _)))) return false;
@@ -142,6 +152,13 @@ public static class GraphicsCommandRequest
             if (action == "graphics.instance.trigger" && body.TryGetProperty("target", out _) &&
                 (Text(body, "target") != "cue" || Text(body, "action") != "show")) return false;
             if (action == "graphics.program.clear" && Text(body, "channel") != "all") return false;
+            if(body.TryGetProperty("image",out var image) && image.ValueKind!=JsonValueKind.Null) {
+                if(image.ValueKind!=JsonValueKind.Object || image.EnumerateObject().Count()!=3 || !image.TryGetProperty("templateId",out var imageId) || imageId.ValueKind!=JsonValueKind.String ||
+                    !image.TryGetProperty("templateVersion",out var imageVersion) || !Integer(imageVersion,1) || imageVersion.GetDouble()>int.MaxValue ||
+                    !image.TryGetProperty("assetId",out var asset) || asset.ValueKind!=JsonValueKind.String) return false;
+                var package=observed.Templates.FirstOrDefault(t=>t.TemplateId==imageId.GetString() && t.TemplateVersion==imageVersion.GetDouble());
+                if(package?.Definition is not { } definition || !definition.TryGetProperty("assets",out var assets) || !assets.EnumerateArray().Any(a=>a.GetProperty("id").GetString()==asset.GetString())) {error="graphics-image-package-unavailable";return false;}
+            }
             if (body.TryGetProperty("binding", out var binding))
             {
                 if (binding.ValueKind == JsonValueKind.Null)
@@ -252,6 +269,24 @@ public static class GraphicsCommandRequest
             "boolean" => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
             _ => false
         };
+    }
+    private static bool ValidAutomationConfiguration(JsonElement config)
+    {
+        if(config.ValueKind!=JsonValueKind.Object || config.EnumerateObject().Count()>2 || config.EnumerateObject().Any(p=>p.Name is not ("rules" or "sourceTexts")) || !config.TryGetProperty("rules",out var rules) || rules.ValueKind!=JsonValueKind.Array || rules.GetArrayLength()>8) return false;
+        var ids=new HashSet<string>(StringComparer.Ordinal);var targets=new HashSet<string>(StringComparer.Ordinal);
+        foreach(var rule in rules.EnumerateArray()) {
+            if(rule.ValueKind!=JsonValueKind.Object || rule.EnumerateObject().Any(p=>p.Name is not ("id" or "instanceId" or "enabled" or "sceneId" or "sourceId" or "dwellMs" or "durationMs" or "cooldownMs" or "suppressScreenShare"))) return false;
+            var value=JsonSerializer.Deserialize<GraphicsAutomationRule>(rule,JsonOptions);if(value?.IsValid!=true || !ids.Add(value.Id)||!targets.Add(value.InstanceId)) return false;
+        }
+        if(config.TryGetProperty("sourceTexts",out var texts)) {
+            if(texts.ValueKind!=JsonValueKind.Object || texts.EnumerateObject().Count()>32 || Encoding.UTF8.GetByteCount(texts.GetRawText())>32768) return false;
+            foreach(var text in texts.EnumerateObject()) {
+                if(text.Name.Length is <1 or >256 || text.Value.ValueKind!=JsonValueKind.Object || text.Value.EnumerateObject().Any(p=>p.Name is not ("binding" or "name" or "secondary")) ||
+                    !text.Value.TryGetProperty("binding",out var binding) || !SourceInstanceIdentityContract.Validate(binding) || Text(binding,"sourceId")!=text.Name) return false;
+                foreach(var property in text.Value.EnumerateObject().Where(p=>p.Name!="binding")) if(property.Value.ValueKind!=JsonValueKind.String || Encoding.UTF8.GetByteCount(property.Value.GetString()!)>(property.Name=="name"?256:512) || (property.Name=="name"&&property.Value.GetString()=="")) return false;
+            }
+        }
+        return true;
     }
     private static bool ValidAnimations(JsonElement animations)
     {

@@ -60,6 +60,37 @@ void ready(GraphicsInstances& state, uint64_t revision) {
 const Json& row(const GraphicsInstances& state) {
   return state.snapshot().get("instances")->asArray().front();
 }
+
+TEST(GraphicsInstances, ManagedFamilySuppressesLegacyAndClearNeverRevealsTheOldKey) {
+  GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));ready(state,1);
+  CompositorRenderPlan plan;plan.width=1920;plan.height=1080;
+  corevideo::modules::CompositorRenderPlanLayer legacy;legacy.layerId="overlay:old:lower-third";legacy.kind="overlay";legacy.hasOverlayContent=true;
+  auto caption=legacy;caption.layerId="overlay:caption";caption.overlay.isCaption=true;plan.layers={legacy,caption};
+  state.append(plan,false);EXPECT_EQ(plan.layers.size(),2u);
+  ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+  plan.layers={legacy,caption};state.append(plan,false);ASSERT_EQ(plan.layers.size(),2u);
+  EXPECT_TRUE(std::none_of(plan.layers.begin(),plan.layers.end(),[](const auto& l){return l.layerId=="overlay:old:lower-third";}));
+  EXPECT_EQ(state.snapshot().get("familyAuthorities")->getString("lower-third"),"instances");
+  ASSERT_TRUE(state.apply(request("graphics-program-clear",{{"channel","all"}})));
+  plan.layers={legacy,caption};state.append(plan,false);ASSERT_EQ(plan.layers.size(),1u);EXPECT_EQ(plan.layers[0].layerId,"overlay:caption");
+  ASSERT_TRUE(state.apply(request("graphics-authority-set",{{"family","lower-third"},{"authority","legacy"}})));
+  plan.layers={legacy,caption};state.append(plan,false);EXPECT_EQ(plan.layers.size(),2u);
+  EXPECT_EQ(row(state).getNumber("programRevision"),0);
+}
+TEST(GraphicsInstances, CompatibilityImageUsesOnlyVerifiedPackageBytesAndPrivatePreviewMatches) {
+  GraphicsInstances state{"test-core"};
+  const auto image=Json::Object{{"templateId","corner-logo"},{"templateVersion",1},{"assetId","logo"}};
+  ASSERT_TRUE(state.apply(request("graphics-instance-create",{{"templateId","compact-solid"},{"templateVersion",1},{"scope","global"},{"fields",Json::Object{{"name","Ada"}}},{"image",image}})));
+  ready(state,1);ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+  CompositorRenderPlan plan;plan.width=1920;plan.height=1080;state.append(plan,false);ASSERT_EQ(plan.layers.size(),1u);
+  ASSERT_TRUE(plan.layers[0].overlay.graphicsImage);EXPECT_FALSE(plan.layers[0].overlay.graphicsImage->encoded->empty());
+  const auto preview=state.authoringPreview(Json::Object{{"templateId","compact-solid"},{"templateVersion",1},{"fields",Json::Object{{"name","Ada"}}},{"image",image}});
+  ASSERT_TRUE(preview);EXPECT_EQ(preview->graphicsImage,plan.layers[0].overlay.graphicsImage);
+  auto missing=image;missing["assetId"]="absent";
+  EXPECT_FALSE(state.apply(request("graphics-instance-update",{{"target","program"},{"image",missing}})));
+  EXPECT_EQ(row(state).getNumber("programRevision"),1);
+  EXPECT_EQ(row(state).get("programImage")->getString("assetId"),"logo");
+}
 corevideo::modules::ZoomEngineParticipant guest(uint64_t generation = 1) {
   corevideo::modules::ZoomEngineParticipant participant;
   participant.id = 44; participant.displayName = "Guest"; participant.hasVideo = true;
@@ -816,4 +847,45 @@ TEST(GraphicsInstances, PrivatePreviewAndProgramShareTheDefaultsOfEveryExistingL
     EXPECT_EQ(plan.layers[0].overlay.graphicsContentHash,preview->graphicsContentHash);ASSERT_TRUE(preview->graphicsAuthoringRect);
     EXPECT_EQ(plan.layers[0].rect.width,preview->graphicsAuthoringRect->width);EXPECT_EQ(plan.layers[0].rect.height,preview->graphicsAuthoringRect->height);
   }
+}
+
+TEST(GraphicsInstances, AutomaticRequestsRequireNativeSubjectDrawAndClearCancelsPendingReveal) {
+  double now=0;GraphicsInstances state{"test-core",[&]{return now;}};ASSERT_TRUE(create(state));
+  state.observeZoomSources({guest()},7,sourceFrames());
+  Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"},{"dwellMs",0}}}}};
+  ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
+  ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","set-mode"},{"mode","automatic"}})));
+  ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","arm"}})));
+  CompositorRenderPlan plan=sourcePlan();state.append(plan,false,sourceFrames());EXPECT_TRUE(plan.observeGraphicsSubjects);
+  ProgramFrame frame;frame.frameNumber=1;frame.gpuComposed=true;state.observe(frame);EXPECT_FALSE(row(state).get("showPending")->asBool());
+  frame.graphicsFacts.push_back({"source:44",1,"source-draw-submitted",""});state.observe(frame);
+  EXPECT_TRUE(row(state).get("showPending")->asBool());EXPECT_EQ(row(state).get("fields")->getString("name"),"Guest");
+  EXPECT_EQ(row(state).get("binding")->getNumber("generation"),1);
+  ASSERT_TRUE(state.apply(request("graphics-program-clear",{{"channel","all"}})));ready(state,uint64_t(row(state).getNumber("revision")));
+  now=1000;state.observe(frame);EXPECT_EQ(row(state).getNumber("programRevision"),0);EXPECT_FALSE(row(state).get("showPending")->asBool());
+}
+TEST(GraphicsInstances, AutomaticConfigurationCannotBindRecycledSourceOverride) {
+  GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));state.observeZoomSources({guest()},7,sourceFrames());auto old=binding(state);
+  state.observeZoomSources({guest(2)},7,sourceFrames(2));
+  Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"}}}},
+    {"sourceTexts",Json::Object{{"zoom:44",Json::Object{{"binding",old},{"name","Old name"}}}}}};
+  EXPECT_FALSE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
+  EXPECT_EQ(state.snapshot().get("lastResult")->getString("reason"),"graphics-automation-source-text-generation-mismatch");
+}
+TEST(GraphicsInstances, ResultHistorySurvivesInterveningClientsAndExpiresAfterFiveMinutes) {
+ double now=0;GraphicsInstances state{"test-core",[&]{return now;}};auto original=request("graphics-template-list");ASSERT_TRUE(state.apply(original));
+ const auto id=original.get("graphics")->getString("requestId");
+ for(int i=0;i<100;++i) ASSERT_TRUE(state.apply(request("graphics-template-list")));
+ EXPECT_EQ(state.snapshot().get("operations")->asArray().size(),101u);ASSERT_TRUE(state.apply(original));EXPECT_EQ(state.snapshot().get("lastResult")->getString("requestId"),id);
+ now=300001;ASSERT_TRUE(state.apply(request("graphics-template-list")));EXPECT_EQ(state.snapshot().get("operations")->asArray().size(),1u);
+}
+
+TEST(GraphicsInstances, RackMetadataChangesNativeOrderWithoutRasterRevisionAndInvalidMixIsAtomic) {
+ GraphicsInstances state{"test-core"};ASSERT_TRUE(create(state));
+ auto second=request("graphics-instance-create",{{"templateId","compact-solid"},{"templateVersion",1},{"scope","global"},{"fields",Json::Object{{"name","Second"}}}}).asObject();
+ auto secondBody=second.at("graphics").asObject();secondBody["instanceId"]="second";second["graphics"]=secondBody;ASSERT_TRUE(state.apply(second));
+ ASSERT_TRUE(state.apply(request("graphics-instance-update",{{"target","cue"},{"label","Featured guest"},{"rackOrder",1}})));
+ const auto& rows=state.snapshot().get("instances")->asArray();ASSERT_EQ(rows.size(),2u);EXPECT_EQ(rows[0].getString("instanceId"),"second");EXPECT_EQ(rows[1].getString("label"),"Featured guest");EXPECT_EQ(rows[1].getNumber("revision"),1);
+ EXPECT_FALSE(state.apply(request("graphics-instance-update",{{"target","cue"},{"label","Invalid change"},{"fields",Json::Object{{"name","Mix"}}}})));
+ EXPECT_EQ(state.snapshot().get("instances")->asArray()[1].getString("label"),"Featured guest");
 }

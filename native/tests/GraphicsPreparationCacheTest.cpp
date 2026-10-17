@@ -314,3 +314,42 @@ TEST(GraphicsResourceBudget, IndependentConcurrentOwnersShareTheSameLimitsAndRel
   EXPECT_LE(counters.cpuHighWater, 128u); EXPECT_LE(counters.gpuHighWater, 256u);
   EXPECT_LE(counters.preparationHighWater, 2u);
 }
+
+TEST(GraphicsResourceBudget, ResidentRevisionLimitIncludesRetiringAndPrivateOwnerLeases) {
+ corevideo::graphics::GraphicsResourceBudget budget{1024,1024,2,2};
+ auto first=budget.tryReserve(1,1);ASSERT_TRUE(first);first->finishPreparation();
+ auto second=budget.tryReserve(1,1);ASSERT_TRUE(second);second->finishPreparation();
+ EXPECT_FALSE(budget.tryReserve(1,1));EXPECT_EQ(budget.counters().residentResources,2u);
+ first.reset();auto third=budget.tryReserve(1,1);ASSERT_TRUE(third);third->finishPreparation();
+ EXPECT_EQ(budget.counters().residentHighWater,2u);second.reset();third.reset();EXPECT_EQ(budget.counters().residentResources,0u);
+}
+
+TEST(GraphicsResourceBudget, TheSameRevisionAcrossDevicesSharesOneResidentSlotButAllGpuBytesStayCharged) {
+ corevideo::graphics::GraphicsResourceBudget budget{100,100,2,1};
+ auto first=budget.tryReserve(1,10,"revision");ASSERT_TRUE(first);first->finishPreparation();
+ auto replacement=budget.tryReserve(1,10,"revision");ASSERT_TRUE(replacement);replacement->finishPreparation();
+ EXPECT_EQ(budget.counters().residentResources,1u);EXPECT_EQ(budget.counters().gpuBytes,20u);EXPECT_FALSE(budget.tryReserve(1,1,"different"));
+ first.reset();EXPECT_EQ(budget.counters().residentResources,1u);replacement.reset();EXPECT_EQ(budget.counters().residentResources,0u);
+}
+
+TEST(GraphicsPreparationCache, ProcessPressureRetiresIdleOwnersWithoutWaitingForANewLocalRequest) {
+ Cache old([](int value){return Cache::Result{std::make_shared<int>(value),4,""};});admit(old,1,1,8);
+ ASSERT_TRUE(eventually([&]{return bool(old.find(1));}));
+ corevideo::graphics::GraphicsCachePressure::requestTrim();ASSERT_TRUE(eventually([&]{return !old.find(1);}));
+}
+TEST(GraphicsResourceBudget, LegacyCaptionResourcesRemainByteBoundedWithoutConsumingManagedRevisionSlots) {
+ corevideo::graphics::GraphicsResourceBudget budget{100,100,2,1};auto managed=budget.tryReserve(1,10,"managed");ASSERT_TRUE(managed);managed->finishPreparation();
+ auto caption=budget.tryReserve(1,10,"",false);ASSERT_TRUE(caption);caption->finishPreparation();EXPECT_EQ(budget.counters().residentResources,1u);EXPECT_EQ(budget.counters().gpuBytes,20u);
+}
+
+TEST(GraphicsPreparationCache, NewOwnerReclaimsObsoleteRevisionsFromIdleOldOwnerWithoutEvictingAcceptedLease) {
+ using Budget=corevideo::graphics::GraphicsResourceBudget;
+ struct Texture {std::shared_ptr<Budget::Lease> lease;};using Owner=corevideo::graphics::PreparationCache<int,int,Texture>;
+ Budget budget{100,100,2,2};
+ const auto prepare=[&](int key)->Owner::Result {auto lease=budget.tryReserve(1,1,"revision-"+std::to_string(key));if(!lease)return {{},0,"capacity",true};lease->finishPreparation();return {std::make_shared<Texture>(Texture{lease}),1,""};};
+ Owner old(prepare),current(prepare);
+ ASSERT_TRUE(eventually([&]{old.findOrRequest(1,1,2);return bool(old.find(1));}));auto accepted=old.find(1);
+ ASSERT_TRUE(eventually([&]{old.findOrRequest(2,2,2);return bool(old.find(2));}));
+ ASSERT_TRUE(eventually([&]{current.findOrRequest(3,3,2);return bool(current.find(3));}));
+ EXPECT_TRUE(old.find(1));EXPECT_TRUE(accepted->asset);EXPECT_FALSE(old.find(2));EXPECT_LE(budget.counters().residentHighWater,2u);
+}

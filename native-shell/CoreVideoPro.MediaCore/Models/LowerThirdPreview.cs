@@ -4,7 +4,7 @@ public sealed record LowerThirdPreview(LowerThirdAppearance? Appearance,string N
     NativeGraphicsPreview? Graphics=null);
 
 public sealed record NativeGraphicsDraft(string TemplateId, int TemplateVersion,
-    System.Text.Json.JsonElement Fields, LowerThirdAppearance Style, NativeGraphicsAnimations Animations, NativeGraphicsPlacement? Placement = null, NativeGraphicsScratch? Scratch = null)
+    System.Text.Json.JsonElement Fields, LowerThirdAppearance Style, NativeGraphicsAnimations Animations, NativeGraphicsPlacement? Placement = null, NativeGraphicsScratch? Scratch = null, NativeGraphicsImageReference? Image = null)
 {
     // Live generations are process-local and must be explicitly rebound on restore.
     [System.Text.Json.Serialization.JsonIgnore]
@@ -20,10 +20,10 @@ public sealed record NativeGraphicsDraft(string TemplateId, int TemplateVersion,
         return System.Text.Json.JsonSerializer.SerializeToElement(style.EnumerateObject().Where(p => consumed.Contains(p.Name))
             .ToDictionary(p => p.Name, p => p.Value.Clone(), StringComparer.Ordinal), options);
     }
-    public NativeGraphicsPreview ForPreview() => new(TemplateId, TemplateVersion, Fields, StyleWire(), Animations, Placement, Scratch);
+    public NativeGraphicsPreview ForPreview() => new(TemplateId, TemplateVersion, Fields, StyleWire(), Animations, Placement, Scratch, Image);
 }
 public sealed record NativeGraphicsPreview(string TemplateId, int TemplateVersion,
-    System.Text.Json.JsonElement Fields, System.Text.Json.JsonElement Style, NativeGraphicsAnimations Animations, NativeGraphicsPlacement? Placement = null, NativeGraphicsScratch? Scratch = null);
+    System.Text.Json.JsonElement Fields, System.Text.Json.JsonElement Style, NativeGraphicsAnimations Animations, NativeGraphicsPlacement? Placement = null, NativeGraphicsScratch? Scratch = null, NativeGraphicsImageReference? Image = null);
 
 public sealed record NativeGraphicsPlacement
 {
@@ -45,3 +45,5 @@ public sealed record NativeGraphicsScratch(string Manifest,string Hash)
         return new(manifest,Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant());
     }
 }
+
+public sealed record NativeGraphicsImageReference(string TemplateId,int TemplateVersion,string AssetId);

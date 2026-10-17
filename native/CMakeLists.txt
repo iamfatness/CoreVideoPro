@@ -112,6 +112,8 @@ add_library(corevideo_native
   src/graphics/GraphicsAssets.cpp
   src/graphics/GraphicsCuratedTemplates.cpp
   src/graphics/GraphicsTemplateDraft.cpp
+  src/graphics/GraphicsThumbnail.cpp
+  src/graphics/GraphicsAutomation.cpp
   src/graphics/GraphicsClock.cpp
   src/core/MediaCore.cpp
   src/core/CoreStateCapture.cpp
@@ -726,7 +728,7 @@ if(BUILD_TESTING)
   add_executable(corevideo-native-tests
     tests/TestMain.cpp
     tests/GraphicsPreparationCacheTest.cpp
-    tests/GraphicsInstancesTest.cpp
+    tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp
     tests/GraphicsTemplateTest.cpp
     tests/GraphicsRpcPixelTest.cpp
     tests/DeliveryTraceTest.cpp
@@ -913,7 +915,7 @@ if(BUILD_TESTING)
   # target remains the CI gate; share its exact compile contract and fixtures.
   add_executable(corevideo-graphics-tests EXCLUDE_FROM_ALL
     tests/TestMain.cpp tests/GraphicsPreparationCacheTest.cpp
-    tests/GraphicsInstancesTest.cpp tests/GraphicsRpcPixelTest.cpp
+    tests/GraphicsInstancesTest.cpp tests/GraphicsAutomationTest.cpp tests/GraphicsRpcPixelTest.cpp
     tests/GraphicsTemplateTest.cpp
     tests/GradePreviewTest.cpp tests/IsolatedMonitorPixelTest.cpp
     tests/D3D11CompositorTest.cpp tests/OverlayTileRasterTest.cpp tests/ContractParityTest.cpp)

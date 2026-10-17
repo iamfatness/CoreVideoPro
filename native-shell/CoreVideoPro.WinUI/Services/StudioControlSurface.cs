@@ -60,7 +60,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
         "graphics.clock.control", "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
-        "graphics.template.install", "graphics.template.list",
+        "graphics.template.install", "graphics.template.list", "graphics.authority.set", "graphics.automation.configure", "graphics.automation.control",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
         "multiview.layout.set", "multiview.tileCount.set",
@@ -305,11 +305,18 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             case "graphics.instance.remove":
             case "graphics.program.clear":
             case "graphics.template.install":
+            case "graphics.automation.configure":
+            case "graphics.automation.control":
+            case "graphics.authority.set":
             case "graphics.template.list":
             {
                 var result = await _vm.InvokeGraphicsActionAsync(actionId, Str(args, 0)).ConfigureAwait(true);
                 return result.Accepted ? ControlInvokeResult.Success : ControlInvokeResult.Fail(result.Reason);
             }
+            case "graphics.lowerThird.toggle" when _vm.ManagedLowerThirdAuthority:
+                return await _vm.ApplyManagedLowerThirdIntentAsync(!_vm.ManagedLowerThirdVisible).ConfigureAwait(true) is {Accepted:true} ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);
+            case "graphics.lowerThird.set" when _vm.ManagedLowerThirdAuthority:
+                return await _vm.ApplyManagedLowerThirdIntentAsync(Bool(args,0)).ConfigureAwait(true) is {Accepted:true} ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);
             case "graphics.lowerThird.toggle":
                 return ApplyLowerThirdIntent(
                     !(_vm.ProgramLowerThirdEnabled || _vm.ProgramLowerThirdKey.IsVisible), true,

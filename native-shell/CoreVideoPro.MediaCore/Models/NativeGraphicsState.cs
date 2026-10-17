@@ -7,10 +7,13 @@ namespace CoreVideoPro.MediaCore.Models;
 /// <summary>Native accepted graphics revisions; no shell-derived on-air state.</summary>
 public sealed record NativeGraphicsState
 {
+    public IReadOnlyDictionary<string,string> FamilyAuthorities {get;init;}=new Dictionary<string,string>();
     public NativeGraphicsAuthoring? Authoring { get; init; }
+    public NativeGraphicsAutomation? Automation {get;init;}
     public int SchemaVersion { get; init; }
     public string CoreEpoch { get; init; } = "";
     public IReadOnlyList<NativeGraphicsInstance> Instances { get; init; } = [];
+    public IReadOnlyList<NativeGraphicsOperationResult> Operations {get;init;}=[];
     public NativeGraphicsOperationResult? LastResult { get; init; }
     public IReadOnlyList<NativeGraphicsSource> Sources { get; init; } = [];
     public string SourceBindingStatus { get; init; } = "unavailable";
@@ -31,6 +34,7 @@ public sealed record NativeGraphicsTemplateInstall
 
 public sealed record NativeGraphicsTemplate
 {
+    public NativeGraphicsThumbnail? Thumbnail { get; init; }
     public int SchemaVersion { get; init; }
     public string TemplateId { get; init; } = "";
     public int TemplateVersion { get; init; }
@@ -48,6 +52,16 @@ public sealed record NativeGraphicsTemplate
     public IReadOnlyList<string> BrandTokens { get; init; } = [];
     public NativeGraphicsAnimations Animations { get; init; } = new();
     [JsonExtensionData] public Dictionary<string, JsonElement>? ExtensionData { get; init; }
+}
+public sealed record NativeGraphicsThumbnail
+{
+    public string State { get; init; }="not-requested";
+    public string Reason { get; init; }="";
+    public string Backend { get; init; }="";
+    public string Appearance { get; init; }="";
+    public int Width { get; init; }
+    public int Height { get; init; }
+    public string PngBase64 { get; init; }="";
 }
 
 public sealed record NativeGraphicsTemplateField
@@ -68,6 +82,9 @@ public sealed record NativeGraphicsTemplateField
 /// They do not measure driver overhead or output delivery.</summary>
 public sealed record NativeGraphicsResourceBudget
 {
+    public long ResidentResources {get;init;}
+    public long ResidentHighWater {get;init;}
+    public long ResidentLimit {get;init;}
     public string Kind { get; init; } = "";
     public long CpuBytes { get; init; }
     public long GpuBytes { get; init; }
@@ -90,12 +107,17 @@ public sealed record NativeGraphicsSource
 
 public sealed record NativeGraphicsInstance
 {
+    public string Label {get;init;}="";
+    public int RackOrder {get;init;}
     public GraphicsRevisionIdentity? Identity { get; init; }
     public GraphicsPreparationFact? PreparationObservation { get; init; }
     public GraphicsCompositionFact? FirstCompositionObservation { get; init; }
     public string InstanceId { get; init; } = "";
     public string TemplateId { get; init; } = "";
     public int TemplateVersion { get; init; }
+    public NativeGraphicsImageReference? Image {get;init;}
+    public NativeGraphicsImageReference? CueImage {get;init;}
+    public NativeGraphicsImageReference? ProgramImage {get;init;}
     public NativeGraphicsClock? Clock { get; init; }
     public long ClockConfigurationRevision { get; init; }
     public NativeGraphicsClockConfiguration? ClockRequestedConfiguration { get; init; }
@@ -172,6 +194,7 @@ public sealed record NativeGraphicsFields
 
 public sealed record NativeGraphicsOperationResult
 {
+    public string ClientId {get;init;}="";
     public string InstanceId { get; init; } = "";
     public long CurrentRevision { get; init; }
     public string RequestId { get; init; } = "";
