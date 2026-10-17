@@ -290,6 +290,8 @@ struct GraphicsFrameFact {
   uint64_t revision = 0;
   std::string state, reason;
   std::shared_ptr<const graphics::GraphicsPreparedResource> preparedResource;
+  std::array<uint8_t,32> requestedContentHash{};
+  bool hasRequestedContentHash=false;
 };
 
 struct ProgramFrame {

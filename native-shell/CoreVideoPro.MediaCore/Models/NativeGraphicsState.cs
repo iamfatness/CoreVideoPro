@@ -95,6 +95,9 @@ public sealed record NativeGraphicsInstance
     public string InstanceId { get; init; } = "";
     public string TemplateId { get; init; } = "";
     public int TemplateVersion { get; init; }
+    public NativeGraphicsClock? Clock { get; init; }
+    public long ClockConfigurationRevision { get; init; }
+    public NativeGraphicsClockConfiguration? ClockRequestedConfiguration { get; init; }
     public string Scope { get; init; } = "";
     public string SceneId { get; init; } = "";
     public string SourceId { get; init; } = "";
@@ -171,4 +174,25 @@ public sealed record NativeGraphicsOperationResult
     public string RequestId { get; init; } = "";
     public bool Accepted { get; init; }
     public string Reason { get; init; } = "";
+}
+
+public sealed record NativeGraphicsClock
+{
+    public string Text { get; init; } = "";
+    public string State { get; init; } = "";
+    public string FinishAction { get; init; } = "";
+    public double RemainingSeconds { get; init; }
+    public NativeGraphicsClockConfiguration Configuration { get; init; } = new();
+}
+public sealed record NativeGraphicsClockConfiguration
+{
+    public string Mode { get; init; } = "wall";
+    public string Zone { get; init; } = "local";
+    public string Format { get; init; } = "hms";
+    public string Finish { get; init; } = "hold-zero";
+    public int OffsetMinutes { get; init; }
+    public int DurationSeconds { get; init; } = 300;
+    public double? RestoreRemainingSeconds { get; init; }
+    [JsonIgnore] public bool IsValid => Mode is "wall" or "countdown" && Zone is "local" or "utc" or "fixed" && Format is "hms" or "hm" &&
+        Finish is "hold-zero" or "hide" or "suggest-next" && OffsetMinutes is >=-840 and <=840 && DurationSeconds is >=1 and <=86400 && (RestoreRemainingSeconds is null || double.IsFinite(RestoreRemainingSeconds.Value) && RestoreRemainingSeconds >= 0 && RestoreRemainingSeconds <= DurationSeconds);
 }

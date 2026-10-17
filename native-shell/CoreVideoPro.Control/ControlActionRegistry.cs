@@ -140,6 +140,8 @@ public static class ControlActionRegistry
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
             new("graphics.instance.trigger", "Trigger graphic instance", "Show after readiness, hide, or clear an accepted native revision.",
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
+            new("graphics.clock.control", "Control graphics clock", "Configure, start, pause, resume or reset the native clock without showing it.",
+                new[] { new ControlParam("request", s, true, "Versioned JSON graphics clock request") }),
             new("graphics.instance.remove", "Remove graphic instance", "Remove a hidden native graphic instance.",
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
             new("graphics.program.clear", "Clear native graphic instances", "Cancel pending native instance reveals and hide their Program layers.",

@@ -26,7 +26,7 @@ public sealed class GraphicsWorkspaceLibrary
         if (_session.Draft is not { } draft || _session.Selected is not { } selected) return Fail("Select a cue before saving.");
         if (string.IsNullOrWhiteSpace(name) || name.Length > 128) return Fail("Use a cue name of 1–128 characters.");
         var cues = Document.Cues.ToList(); var index = cues.FindIndex(c => c.Id == selected.InstanceId);
-        var saved = new GraphicsSavedCue { Id = selected.InstanceId, Name = name.Trim(), Scope = selected.Scope, SceneId = selected.SceneId, SourceId = selected.SourceId, Draft = draft };
+        var saved = new GraphicsSavedCue { Id = selected.InstanceId, Name = name.Trim(), Scope = selected.Scope, SceneId = selected.SceneId, SourceId = selected.SourceId, Draft = draft, ClockConfiguration=selected.Clock is { } clock ? clock.Configuration with { RestoreRemainingSeconds=clock.Configuration.Mode=="countdown" ? clock.RemainingSeconds : null } : null };
         if (index < 0) cues.Add(saved); else cues[index] = saved;
         var templates = Document.Templates.ToList();
         if (draft.Declarative) {

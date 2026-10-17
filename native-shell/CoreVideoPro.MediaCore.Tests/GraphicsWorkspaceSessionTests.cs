@@ -135,4 +135,17 @@ public sealed class GraphicsWorkspaceSessionTests
         workspace.CancelDraft(); Assert.Equal("Private",workspace.Draft.Fields.GetProperty("name").GetString());
     }
 
+    [Fact]
+    public async Task ClockUsesSameApiBoundaryAndPrivateEditsCannotWriteGeneratedTime()
+    {
+        var state=Initial with { Instances=[Initial.Instances[0] with { TemplateId="clock-panel",Clock=new() { Text="12:00:00",State="wall" },Fields=new() { AdditionalFields=new() { ["label"]=Value("LIVE"),["time"]=Value("12:00:00") } } }] };
+        var sent=new List<(string Action,JsonElement Body)>();
+        var workspace=new GraphicsWorkspaceSession((action,request,_) => { sent.Add((action,JsonDocument.Parse(request).RootElement.Clone())); return Task.FromResult(new NativeGraphicsOperationResult { Accepted=true }); },()=>state);
+        workspace.Observe(state); workspace.Select("featured");
+        Assert.True(await workspace.ClockAsync("configure",new() { Mode="countdown",DurationSeconds=90 }));
+        Assert.Equal("graphics.clock.control",sent[0].Action); Assert.Equal(90,sent[0].Body.GetProperty("configuration").GetProperty("durationSeconds").GetInt32());
+        Assert.True(await workspace.UpdateProgramAsync()); Assert.False(sent[1].Body.GetProperty("fields").TryGetProperty("time",out _));
+        Assert.DoesNotContain(sent,s=>s.Action=="graphics.instance.trigger");
+    }
+
 }

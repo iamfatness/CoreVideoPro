@@ -220,6 +220,7 @@ bool GraphicsInstances::finish(const std::string& id, bool accepted, const std::
 
 bool GraphicsInstances::apply(const Json& command) {
   updateTemplates();
+  updateClocks();
   advanceAnimations();
   pendingFingerprint_.clear(); pendingClient_.clear(); pendingInstance_.clear();
   const auto type = command.getString("type");
@@ -238,6 +239,7 @@ bool GraphicsInstances::apply(const Json& command) {
       {"graphics-instance-create", {"templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement"}},
       {"graphics-instance-update", {"sourceId", "fields", "style", "target", "animations", "binding", "placement"}},
       {"graphics-instance-cue", {}}, {"graphics-instance-trigger", {"action", "target"}},
+      {"graphics-clock-control", {"action","configuration","expectedClockRevision"}},
       {"graphics-instance-remove", {}}, {"graphics-program-clear", {"channel"}},
       {"graphics-template-install", {"manifest", "packageRoot"}}, {"graphics-template-list", {}}};
   const auto allowed = actionKeys.find(type);
@@ -250,6 +252,8 @@ bool GraphicsInstances::apply(const Json& command) {
     } else if (key == "packageRoot") {
       if (!value.isString() || value.asString().size() > 2048 || value.asString().find('\0') != std::string::npos)
         return finish(requestId, false, "graphics-package-root-invalid");
+    } else if (key == "configuration") {
+      GraphicsClockConfig config; if (!GraphicsClockConfig::read(value,config)) return finish(requestId,false,"invalid-clock-configuration");
     } else if (key == "placement") {
       std::optional<GraphicsPlacement> parsed; if (!GraphicsPlacement::read(value,parsed)) return finish(requestId,false,"invalid-placement");
     } else if (key == "binding") {
@@ -269,7 +273,7 @@ bool GraphicsInstances::apply(const Json& command) {
             (item.isString() ? item.asString().size() > (key == "fields" ? 4096 : 512) :
             !(item.isBool() || (item.isNumber() && std::isfinite(item.asNumber())))))
           return finish(requestId, false, "invalid-fields-or-style");
-    } else if (key == "schemaVersion" || key == "expectedRevision" || key == "templateVersion") {
+    } else if (key == "schemaVersion" || key == "expectedRevision" || key == "expectedClockRevision" || key == "templateVersion") {
       if (!value.isNumber() || !std::isfinite(value.asNumber()) || std::floor(value.asNumber()) != value.asNumber() ||
           value.asNumber() < 0 || value.asNumber() > 9007199254740991.)
         return finish(requestId, false, "invalid-revision");
@@ -294,7 +298,7 @@ bool GraphicsInstances::apply(const Json& command) {
     // Do not silently interpret a selective channel request as clearing all.
     if (body->getString("channel") != "all") return finish(requestId, false, "unsupported-channel");
     for (auto& [_, instance] : instances_) {
-      instance.program.reset(); instance.awaitingEntrance=false; instance.programResource.reset(); instance.showPending = instance.updatePending = false;
+      instance.program.reset(); instance.clockProgramPending.reset(); instance.awaitingEntrance=false; instance.programResource.reset(); instance.showPending = instance.updatePending = false;
       instance.firstDrawSubmittedFrame = 0;
       instance.timeline.clear(); instance.awaitingEntrance=false; instance.visibility = "hidden";
     }
@@ -342,6 +346,14 @@ bool GraphicsInstances::apply(const Json& command) {
     hashRevision(templateId, revision);
     revisionClock_ = revision.number;
     instance.draft = std::make_shared<const Revision>(std::move(revision));
+    if (instance.draft->definition && (instance.draft->definition->document().getString("family")=="clock" || instance.draft->definition->document().getString("family")=="countdown") && instance.draft->templateFields.get("time")) {
+      GraphicsClockConfig config;
+      if (instance.draft->definition->document().getString("family")=="countdown") config.mode="countdown";
+      instance.clockRequestedConfiguration=config.json();
+      instance.clock=std::make_shared<GraphicsClockController>(config);
+      auto waiting=std::make_shared<Revision>(*instance.draft); waiting->fieldsReady=false; instance.draft=waiting;
+      instance.preparation="waiting-clock";
+    }
     instances_.emplace(id, std::move(instance));
     return finish(requestId, true, "created-hidden");
   }
@@ -354,9 +366,26 @@ bool GraphicsInstances::apply(const Json& command) {
   const double expected = body->getNumber("expectedRevision", -1);
   const auto expectedIdentity = triggerTarget == "cue" ? instance.cue : instance.draft;
   if (expected != static_cast<double>(expectedIdentity->number)) return finish(requestId, false, "revision-conflict");
+  if (type == "graphics-clock-control") {
+    if (!instance.clock) return finish(requestId,false,"instance-has-no-clock");
+    const auto action=body->getString("action");
+    if (action!="configure" && action!="start" && action!="pause" && action!="resume" && action!="reset") return finish(requestId,false,"invalid-clock-action");
+    GraphicsClockConfig config;
+    if (action=="configure") {
+      if(body->getNumber("expectedClockRevision",-1)!=double(instance.clockConfigurationRevision)) return finish(requestId,false,"clock-configuration-conflict");
+      const auto* value=body->get("configuration"); if(!value || !GraphicsClockConfig::read(*value,config)) return finish(requestId,false,"invalid-clock-configuration");
+      if(!config.restoreRemainingSeconds && config.json().stringify()==instance.clockRequestedConfiguration.stringify()) return finish(requestId,true,"unchanged");
+    }
+    else if(body->get("configuration")) return finish(requestId,false,"unexpected-clock-configuration");
+    const bool admitted=instance.clock->submit(action,config);
+    if(admitted && action=="configure") { ++instance.clockConfigurationRevision; instance.clockRequestedConfiguration=config.json(); }
+    return finish(requestId,admitted,admitted ? "clock-control-queued" : "clock-controller-busy");
+  }
   if (type == "graphics-instance-update") {
     const auto target = body->getString("target");
     if (target != "cue" && target != "program") return finish(requestId, false, "invalid-target");
+    if(instance.clock) if(const auto* fields=body->get("fields")) if(const auto* time=fields->get("time"))
+      if(time->stringify()!=instance.draft->templateFields.get("time")->stringify()) return finish(requestId,false,"clock-time-controlled");
     Revision revision = *instance.draft;
     if (!readRevision(*body, revision)) return finish(requestId, false, "invalid-fields-or-style");
     if (revision.binding && !sources_->contains(*revision.binding)) return finish(requestId, false, "source-identity-changed");
@@ -433,7 +462,7 @@ bool GraphicsInstances::apply(const Json& command) {
     if (action != "hide" && action != "clear") return finish(requestId, false, "invalid-trigger");
     instance.showPending = instance.updatePending = false;
     if (action == "clear") {
-      instance.program.reset(); instance.awaitingEntrance=false; instance.programResource.reset(); instance.timeline.clear(); instance.awaitingEntrance=false; instance.visibility = "hidden";
+      instance.program.reset(); instance.clockProgramPending.reset(); instance.awaitingEntrance=false; instance.programResource.reset(); instance.timeline.clear(); instance.awaitingEntrance=false; instance.visibility = "hidden";
       instance.firstDrawSubmittedFrame = 0;
     } else if (instance.program) {
       instance.awaitingEntrance=false;
@@ -485,7 +514,7 @@ modules::CompositorRenderPlanLayer GraphicsInstances::layer(const Instance& inst
 void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview,
                                const std::vector<modules::VideoFrame>& frames, ScopePass scope) const {
   const auto now = monotonicMs_();
-  std::stable_partition(plan.layers.begin(), plan.layers.end(), [](const auto& l) { return !l.hasOverlayContent || !l.overlay.isCaption; });
+  bool inserted=false;
   for (const auto& [_, instance] : instances_) {
     if (!preview && scope != ScopePass::Scene) {
       // The retained handle validates device/scale on the actual renderer. A
@@ -496,6 +525,7 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
         candidate.graphicsPreparedResource = instance.cueResource;
         plan.graphicsPreparations.push_back(std::move(candidate));
       }
+      if (instance.clockProgramPending) plan.graphicsPreparations.push_back(layer(instance,*instance.clockProgramPending,plan.width,plan.height));
       if (instance.pendingCue && instance.cuePreparation != "failed" &&
           (!instance.pendingCue->binding || sources_->contains(*instance.pendingCue->binding))) {
         auto candidate = layer(instance, *instance.pendingCue, plan.width, plan.height);
@@ -547,10 +577,16 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
     }
     // Captions are downstream of graphics. Existing scene transition order can
     // contain large offsets, so a vector size is not a safe z-order.
-    const auto caption = std::find_if(plan.layers.begin(), plan.layers.end(), [](const auto& l) { return l.hasOverlayContent && l.overlay.isCaption; });
-    plan.layers.insert(caption, std::move(content));
+    int highest=-1;
+    for (const auto& existing:plan.layers) if(!existing.hasOverlayContent || !existing.overlay.isCaption) highest=std::max(highest,existing.order);
+    content.order=highest+1;
+    plan.layers.push_back(std::move(content)); inserted=true;
   }
-  for (size_t index = 0; index < plan.layers.size(); ++index) plan.layers[index].order = int(index);
+  if(inserted) {
+    int highest=-1;
+    for(const auto& layer:plan.layers) if(!layer.hasOverlayContent || !layer.overlay.isCaption) highest=std::max(highest,layer.order);
+    for(auto& layer:plan.layers) if(layer.hasOverlayContent && layer.overlay.isCaption) layer.order=++highest;
+  }
 }
 
 void GraphicsInstances::observeZoomSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
@@ -573,7 +609,7 @@ void GraphicsInstances::observeZoomSources(const std::vector<modules::ZoomEngine
       // Retire an obsolete subject before composing the changed video. A prior
       // explicit update to a valid replacement remains an explicit reveal intent.
       instance.showPending = instance.showPending || (instance.updatePending && draftValid);
-      instance.updatePending = false; instance.program.reset(); instance.awaitingEntrance=false; instance.programResource.reset(); instance.timeline.clear();
+      instance.updatePending = false; instance.program.reset(); instance.clockProgramPending.reset(); instance.awaitingEntrance=false; instance.programResource.reset(); instance.timeline.clear();
       instance.visibility = "hidden"; instance.firstDrawSubmittedFrame = 0;
     }
   }
@@ -582,6 +618,7 @@ void GraphicsInstances::observeZoomSources(const std::vector<modules::ZoomEngine
 
 void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
   bool changed = updateTemplates();
+  changed = updateClocks() || changed;
   changed = advanceAnimations() || changed;
   if (frame.frameNumber > 0) for (auto& entry : instances_) {
     auto& instance=entry.second;
@@ -607,12 +644,21 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
       }
       continue;
     }
+    const auto matchesFact=[&](const std::shared_ptr<const Revision>& revision) {
+      return revision && (!fact.hasRequestedContentHash || revision->contentHash==fact.requestedContentHash);
+    };
+    if (instance.clockProgramPending && instance.program && instance.clockProgramPending->number==instance.program->number && instance.clockProgramPending->number==fact.revision && matchesFact(instance.clockProgramPending)) {
+      if(fact.state=="ready" && resourceMatches(fact.preparedResource,instance.clockProgramPending->contentHash)) {
+        instance.program=instance.clockProgramPending; instance.programResource=fact.preparedResource;
+        instance.clockProgramPending.reset(); changed=true;
+      } else if(fact.state=="failed") { instance.warning=fact.reason; instance.clockProgramPending.reset(); changed=true; }
+    }
     if (fact.state == "ready" && instance.cue && instance.cue->number == fact.revision &&
         resourceMatches(fact.preparedResource, instance.cue->contentHash)) {
       if (instance.cueResource != fact.preparedResource) changed = true;
       instance.cueResource = fact.preparedResource;
     }
-    if (instance.pendingCue && instance.pendingCue->number == fact.revision) {
+    if (instance.pendingCue && instance.pendingCue->number == fact.revision && matchesFact(instance.pendingCue)) {
       const bool ready = fact.state == "ready" && resourceMatches(fact.preparedResource, instance.pendingCue->contentHash);
       const auto state = fact.state == "ready" && !ready ? "failed" : fact.state;
       const auto warning = fact.state == "ready" && !ready ? "Graphics preparation reported ready without a matching resource." : fact.reason;
@@ -628,7 +674,10 @@ void GraphicsInstances::observe(const modules::ProgramFrame& frame) {
       if (instance.programResource != fact.preparedResource) changed = true;
       instance.programResource = fact.preparedResource;
     }
-    if (instance.draft->number != fact.revision) continue;
+    if (instance.draft->number != fact.revision || !matchesFact(instance.draft)) continue;
+    // Clock ticks retain the logical edit revision. A completion for previous
+    // digits must never fail or replace the latest requested text.
+    if (instance.clock && fact.state=="ready" && !resourceMatches(fact.preparedResource,instance.draft->contentHash)) continue;
     if (instance.draft->binding && !sources_->contains(*instance.draft->binding)) continue;
     if (fact.state == "ready" && !resourceMatches(fact.preparedResource, instance.draft->contentHash)) {
       instance.preparation = "failed"; instance.warning = "Graphics preparation reported ready without a matching resource.";
@@ -655,12 +704,42 @@ void GraphicsInstances::show(Instance& instance, bool fromCue) {
   const auto revision = fromCue ? instance.cue : instance.draft;
   const bool starting = !instance.program;
   if (instance.program != revision) instance.firstDrawSubmittedFrame = 0;
+  instance.clockProgramPending.reset();
   instance.program = revision;
   instance.programResource = fromCue ? instance.cueResource : instance.draftResource;
   if (starting && instance.program->entrance.type != "none" && instance.program->entrance.durationMs > 0) instance.awaitingEntrance=true;
   if (!instance.awaitingEntrance) instance.timeline.show(instance.program->entrance, monotonicMs_());
   instance.visibility = instance.awaitingEntrance ? "awaiting-composition" : instance.timeline.phase(monotonicMs_());
   instance.showPending = instance.updatePending = false;
+}
+
+bool GraphicsInstances::updateClocks() {
+  bool changed=false;
+  for (auto& entry:instances_) {
+    auto& instance=entry.second; if(!instance.clock) continue;
+    auto sample=instance.clock->sample(); if(!sample || sample==instance.clockSample) continue;
+    instance.clockSample=sample; changed=true;
+    const auto text=sample->getString("text");
+    const auto revise=[&](const std::shared_ptr<const Revision>& before) -> std::shared_ptr<const Revision> {
+      if(!before || (before->fieldsReady && before->templateFields.getString("time")==text)) return before;
+      auto revision=std::make_shared<Revision>(*before); revision->fieldsReady=true; auto fields=revision->templateFields.asObject(); fields["time"]=text;
+      revision->templateFields=std::move(fields); hashRevision(instance.templateId,*revision); return revision;
+    };
+    const auto draft=revise(instance.draft);
+    if(draft!=instance.draft) {
+      instance.draft=draft; instance.draftResource.reset(); instance.readyRevision=0; instance.preparation="unprepared";
+    }
+    if(instance.pendingCue) instance.pendingCue=revise(instance.pendingCue);
+    else if(instance.cue && instance.cue->templateFields.getString("time")!=text) {
+      instance.pendingCue=revise(instance.cue); instance.cuePreparation="unprepared";
+    }
+    if(instance.program && instance.program->templateFields.getString("time")!=text) instance.clockProgramPending=revise(instance.program);
+    if(sample->getString("finishAction")=="hide") {
+      instance.program.reset(); instance.clockProgramPending.reset(); instance.programResource.reset(); instance.timeline.clear();
+      instance.awaitingEntrance=false; instance.visibility="hidden"; instance.showPending=instance.updatePending=false;
+    }
+  }
+  return changed;
 }
 
 bool GraphicsInstances::advanceAnimations() {
@@ -671,7 +750,7 @@ bool GraphicsInstances::advanceAnimations() {
     const auto phase = instance.timeline.phase(now);
     if (phase != instance.visibility) { instance.visibility = phase; changed = true; }
     if (phase == "hidden" && instance.program) {
-      instance.program.reset(); instance.awaitingEntrance=false; instance.programResource.reset(); instance.updatePending = false;
+      instance.program.reset(); instance.clockProgramPending.reset(); instance.awaitingEntrance=false; instance.programResource.reset(); instance.updatePending = false;
       instance.firstDrawSubmittedFrame = 0; changed = true;
     }
   }
@@ -697,6 +776,9 @@ void GraphicsInstances::publish() {
       {"firstCompositionObservation", firstComposition},
       {"instanceId", instance.id}, {"templateId", instance.templateId}, {"templateVersion", instance.draft->definition ? instance.draft->definition->version() : 1},
       {"scope", instance.scope}, {"sceneId", instance.sceneId},
+      {"clock",instance.clockSample ? *instance.clockSample : Json{}},
+      {"clockConfigurationRevision",instance.clock ? double(instance.clockConfigurationRevision) : 0.},
+      {"clockRequestedConfiguration",instance.clockRequestedConfiguration},
       {"revision", double(instance.draft->number)}, {"programRevision", instance.program ? double(instance.program->number) : 0.},
       {"cueRevision", instance.cue ? double(instance.cue->number) : 0.},
       {"cueRequestedRevision", double(instance.cueRequestedRevision)},

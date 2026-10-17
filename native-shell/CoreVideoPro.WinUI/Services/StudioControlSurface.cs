@@ -59,7 +59,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "input.assign", "input.name", "input.inShow.set", "source.dropout.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
-        "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
+        "graphics.clock.control", "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
         "graphics.template.install", "graphics.template.list",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
@@ -301,6 +301,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             case "graphics.instance.update":
             case "graphics.instance.cue":
             case "graphics.instance.trigger":
+            case "graphics.clock.control":
             case "graphics.instance.remove":
             case "graphics.program.clear":
             case "graphics.template.install":

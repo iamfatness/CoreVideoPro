@@ -1,5 +1,7 @@
 #include "graphics/GraphicsInstances.h"
 #include "gtest/gtest.h"
+#include <chrono>
+#include <thread>
 
 using corevideo::graphics::GraphicsInstances;
 using corevideo::rpc::Json;
@@ -673,9 +675,10 @@ TEST(GraphicsInstances, OperationResultPinsAcceptedRevisionAndScopePassesKeepCap
   state.append(plan,false,{},GraphicsInstances::ScopePass::Scene);
   EXPECT_EQ(2u,plan.layers.size()); EXPECT_TRUE(plan.graphicsPreparations.empty());
   state.append(plan,false,{},GraphicsInstances::ScopePass::Global);
+  std::stable_sort(plan.layers.begin(),plan.layers.end(),[](const auto& a,const auto& b){return a.order<b.order;});
   ASSERT_EQ(3u,plan.layers.size()); EXPECT_EQ("take-in:video",plan.layers[0].layerId);
   EXPECT_EQ("graphics:featured",plan.layers[1].layerId); EXPECT_EQ("caption",plan.layers[2].layerId);
-  EXPECT_EQ(0,plan.layers[0].order); EXPECT_EQ(1,plan.layers[1].order); EXPECT_EQ(2,plan.layers[2].order);
+  EXPECT_EQ(100000,plan.layers[0].order); EXPECT_EQ(100001,plan.layers[1].order); EXPECT_EQ(100002,plan.layers[2].order);
 }
 
 TEST(GraphicsInstances, EntranceWaitsForEligibleCompositionAndReportsLatestDrawSeparately) {
@@ -708,4 +711,62 @@ TEST(GraphicsInstances, PlacementIsAnExplicitAtomicTransformWithBoundsAndLegacyR
   EXPECT_EQ(2,row(state).getNumber("revision"));
   ASSERT_TRUE(state.apply(request("graphics-instance-update",{{"expectedRevision",2},{"target","cue"},{"placement",Json{}}})));
   EXPECT_TRUE(row(state).get("placement")->isNull());
+}
+
+TEST(GraphicsClock, CountdownUsesMonotonicAnchorsAndRestoreStaysPaused) {
+  corevideo::graphics::GraphicsClock clock; corevideo::graphics::GraphicsClockConfig config;
+  config.mode="countdown"; config.durationSeconds=60; config.restoreRemainingSeconds=12.5;
+  clock.control("configure",1000,&config);
+  EXPECT_EQ("00:00:13",clock.sample(999999,0).getString("text")); EXPECT_EQ("paused",clock.sample(999999,0).getString("state"));
+  clock.control("resume",1000); EXPECT_EQ("00:00:12",clock.sample(1500,999999999).getString("text"));
+  clock.control("pause",2500); EXPECT_EQ("00:00:11",clock.sample(999999,-999999999).getString("text"));
+  clock.control("resume",3000); EXPECT_EQ("finished",clock.sample(14000,0).getString("state"));
+  EXPECT_EQ("hold-zero",clock.sample(14000,0).getString("finishAction"));
+  clock.control("start",15000); EXPECT_EQ("finished",clock.sample(15000,0).getString("state"));
+  clock.control("reset",16000); EXPECT_EQ("00:01:00",clock.sample(16000,0).getString("text")); EXPECT_EQ("paused",clock.sample(16000,0).getString("state"));
+}
+TEST(GraphicsClock, WallClockTimezoneAndFormatAreExplicitAndConfigurationIsStrict) {
+  corevideo::graphics::GraphicsClock clock; corevideo::graphics::GraphicsClockConfig config;
+  config.zone="utc"; clock.control("configure",0,&config); EXPECT_EQ("00:00:00",clock.sample(123,0).getString("text"));
+  config.zone="fixed"; config.offsetMinutes=330; config.format="hm"; clock.control("configure",0,&config);
+  EXPECT_EQ("05:30",clock.sample(99999,0).getString("text"));
+  auto bad=config.json().asObject(); bad["offsetMinutes"]=841;
+  EXPECT_FALSE(corevideo::graphics::GraphicsClockConfig::read(bad,config));
+  bad=config.json().asObject(); bad.erase("mode"); bad["restoreRemainingSeconds"]=2;
+  EXPECT_FALSE(corevideo::graphics::GraphicsClockConfig::read(bad,config));
+}
+TEST(GraphicsInstances, ClockControlIsQualifiedAndDoesNotRevealOrDriftLogicalRevision) {
+  GraphicsInstances state{"test-core"};
+  ASSERT_TRUE(state.apply(request("graphics-instance-create",{{"templateId","clock-panel"},{"templateVersion",1},{"scope","global"}})));
+  corevideo::graphics::GraphicsClockConfig config; config.mode="countdown"; config.durationSeconds=3;
+  ASSERT_TRUE(state.apply(request("graphics-clock-control",{{"action","configure"},{"configuration",config.json()},{"expectedClockRevision",1}})));
+  const auto wait=[&](const std::string& expected) {
+    const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    do { state.observe({}); const auto* clock=row(state).get("clock"); if(clock && clock->getString("state")==expected) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    } while(std::chrono::steady_clock::now()<until); return false;
+  };
+  ASSERT_TRUE(wait("paused")); EXPECT_EQ("00:00:03",row(state).get("fields")->getString("time"));
+  EXPECT_EQ(2,row(state).getNumber("clockConfigurationRevision"));
+  EXPECT_FALSE(state.apply(request("graphics-clock-control",{{"action","configure"},{"configuration",config.json()},{"expectedClockRevision",1}})));
+  EXPECT_EQ("clock-configuration-conflict",state.snapshot().get("lastResult")->getString("reason"));
+  ASSERT_TRUE(state.apply(request("graphics-clock-control",{{"action","start"}}))); ASSERT_TRUE(wait("running"));
+  EXPECT_EQ(1,row(state).getNumber("revision")); EXPECT_EQ(0,row(state).getNumber("programRevision"));
+  ASSERT_TRUE(state.apply(request("graphics-clock-control",{{"action","configure"},{"configuration",config.json()},{"expectedClockRevision",2}})));
+  EXPECT_EQ("unchanged",state.snapshot().get("lastResult")->getString("reason"));
+  EXPECT_EQ(2,row(state).getNumber("clockConfigurationRevision")); ASSERT_TRUE(wait("running"));
+  ASSERT_TRUE(state.apply(request("graphics-clock-control",{{"action","pause"}}))); ASSERT_TRUE(wait("paused"));
+  EXPECT_FALSE(state.apply(request("graphics-instance-update",{{"target","cue"},{"fields",Json::Object{{"time","FAKE"}}}})));
+  EXPECT_EQ("clock-time-controlled",state.snapshot().get("lastResult")->getString("reason"));
+}
+
+TEST(GraphicsInstances, EmptyAndOtherScopePassesPreserveAuthoredOrderExactly) {
+  GraphicsInstances state{"test-core"}; CompositorRenderPlan plan;
+  corevideo::modules::CompositorRenderPlanLayer first,second;
+  first.layerId="first"; first.order=91; second.layerId="second"; second.order=-5;
+  plan.layers={first,second}; state.append(plan,false);
+  EXPECT_EQ(91,plan.layers[0].order); EXPECT_EQ(-5,plan.layers[1].order);
+  ASSERT_TRUE(create(state)); ready(state,1); ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+  state.append(plan,false,{},GraphicsInstances::ScopePass::Scene);
+  ASSERT_EQ(2u,plan.layers.size()); EXPECT_EQ(91,plan.layers[0].order); EXPECT_EQ(-5,plan.layers[1].order);
 }

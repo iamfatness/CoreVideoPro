@@ -338,7 +338,7 @@ class D3D11Compositor final : public ICompositor {
           {r.x, r.y, r.width, r.height}, targetWidth_, targetHeight_, candidate.layerId, true,
           candidate.graphicsPreparedResource);
       frame.graphicsFacts.push_back({candidate.graphicsInstanceId, candidate.graphicsRevision,
-          overlayRaster_.preparationState(), overlayRaster_.lastWarning(), overlayRaster_.preparedResource()});
+          overlayRaster_.preparationState(), overlayRaster_.lastWarning(), overlayRaster_.preparedResource(),candidate.overlay.graphicsContentHash,candidate.overlay.hasGraphicsContentHash});
     }
     overlayRaster_.beginFrame();
     // The pixel-signature and base64 preview both do a blocking GPU->CPU Map

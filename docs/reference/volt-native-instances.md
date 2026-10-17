@@ -310,8 +310,8 @@ this isolated development path.
 
 The native catalog includes the original compatibility looks, the pinned corporate
 reference, logo-accent and transparent-name lower thirds, centered title, corner
-logo bug and clock-panel design. The clock panel's timing controller is a separate
-capability; a static time field alone does not establish a working clock.
+logo bug and clock-panel design. The clock panel uses a native timing controller; static text is not used as a
+substitute for clock progress.
 
 `placement` is optional and independent of legacy appearance: nine anchors,
 reference-pixel offsets at 1920x1080, scale 0.1–4. Null restores legacy placement.
@@ -326,3 +326,26 @@ retain their captured base revision; an external edit conflicts rather than bein
 silently overwritten or accidentally cued. Browsing a library look is private and
 creation preserves its edited values. Switching instances retains private edits;
 Cancel explicitly reloads the current accepted draft.
+
+
+`graphics.clock.control` / `graphics-clock-control` configures the clock attached
+to an instance. It shares epoch, request-id and expected-revision admission with
+other graphics commands. Configuration writes additionally require the observed
+`expectedClockRevision`; this revision advances on changed configuration, never
+on a tick. Identical configuration is a no-op; use Reset explicitly. Actions are configure/start/pause/resume/reset; none
+reveals the instance. Configuration names mode (wall/countdown), zone
+(local/utc/fixed), format (hms/hm), fixed offset minutes, duration seconds and
+finish (hold-zero/hide/suggest-next). Suggest-next publishes status only.
+
+Formatting runs on a bounded native clock controller, not the compositor.
+Countdowns use monotonic anchors; wall clocks use system wall time. Clock digits
+have a separate content identity while the logical edit revision stays stable.
+The accepted Program texture remains pinned while replacement digits prepare;
+requested-content hashes fence old completions. Generated time is read-only.
+Saved and duplicated countdowns restore paused from their sampled remaining time;
+reset restores the original configured duration. Restore never sends Start/Show.
+
+The private canvas adds reference-pixel drag/nudge and proportional corner scaling.
+Its selection/safe-region guides are editor chrome over the native shared texture,
+not a second graphic renderer. Escape cancels one gesture and one gesture is one
+Undo. The same 10 Hz preview coordinator coalesces canvas edits and inspector edits.

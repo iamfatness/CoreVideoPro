@@ -6,6 +6,7 @@
 #include "graphics/GraphicsSourceCatalog.h"
 #include "graphics/GraphicsTemplateRegistry.h"
 #include "graphics/GraphicsPlacement.h"
+#include "graphics/GraphicsClock.h"
 #include <functional>
 #include <map>
 #include <deque>
@@ -49,7 +50,11 @@ class GraphicsInstances {
   };
   struct Instance {
     std::string id, templateId, scope, sceneId;
-    std::shared_ptr<const Revision> draft, cue, pendingCue, program;
+    std::shared_ptr<const Revision> draft, cue, pendingCue, program, clockProgramPending;
+    std::shared_ptr<GraphicsClockController> clock;
+    uint64_t clockConfigurationRevision=1;
+    rpc::Json clockRequestedConfiguration;
+    std::shared_ptr<const rpc::Json> clockSample;
     std::shared_ptr<const GraphicsPreparedResource> draftResource, cueResource, programResource;
     std::string cuePreparation = "unprepared", cueWarning;
     bool cued = false, showPending = false, updatePending = false;
@@ -70,6 +75,7 @@ class GraphicsInstances {
   void show(Instance& instance, bool fromCue = false);
   bool updateTemplates();
   bool advanceAnimations();
+  bool updateClocks();
   std::function<double()> monotonicMs_;
   std::map<std::string, Instance> instances_;
   struct Operation { std::string clientId, requestId, fingerprint; rpc::Json result; };

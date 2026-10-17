@@ -74,6 +74,7 @@ public static class GraphicsCommandRequest
         ["graphics.instance.create"] = ["templateId", "templateVersion", "scope", "sceneId", "sourceId", "fields", "style", "animations", "binding", "placement"],
         ["graphics.instance.update"] = ["target", "sourceId", "fields", "style", "animations", "binding", "placement"],
         ["graphics.instance.cue"] = [], ["graphics.instance.trigger"] = ["action", "target"],
+        ["graphics.clock.control"] = ["action","configuration","expectedClockRevision"],
         ["graphics.instance.remove"] = [], ["graphics.program.clear"] = ["channel"],
         ["graphics.template.install"] = ["manifest", "packageRoot", "packagePath"], ["graphics.template.list"] = []
     };
@@ -107,14 +108,14 @@ public static class GraphicsCommandRequest
             {
                 if (!names.Add(property.Name) || (!Common.Contains(property.Name) && !specific.Contains(property.Name, StringComparer.Ordinal)))
                 { error = "unsupported-or-duplicate-request-field"; return false; }
-                if (property.Name is "fields" or "style" or "animations" or "binding" or "placement") continue;
+                if (property.Name is "fields" or "style" or "animations" or "binding" or "placement" or "configuration") continue;
                 if (property.Name == "manifest")
                 {
                     if (property.Value.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(property.Value.GetString()) ||
                         Encoding.UTF8.GetByteCount(property.Value.GetString()!) > 256 * 1024) return false;
                     continue;
                 }
-                if (property.Name is "schemaVersion" or "expectedRevision" or "templateVersion")
+                if (property.Name is "schemaVersion" or "expectedRevision" or "expectedClockRevision" or "templateVersion")
                 {
                     if (!Integer(property.Value, 0)) return false;
                 }
@@ -160,6 +161,18 @@ public static class GraphicsCommandRequest
             else if (body.TryGetProperty("sourceId", out _) && Text(body, "sourceId").Length != 0 &&
                 observed.Instances.FirstOrDefault(i => i.InstanceId == Text(body, "instanceId"))?.Binding?.SourceId != Text(body, "sourceId"))
             { error = "source-binding-required"; return false; }
+            if (action == "graphics.clock.control") {
+                var operation = Text(body,"action");
+                if (operation is not ("configure" or "start" or "pause" or "resume" or "reset")) return false;
+                if (operation == "configure") {
+                    if(!body.TryGetProperty("expectedClockRevision",out var clockRevision) || !Integer(clockRevision,1)) return false;
+                    if (!body.TryGetProperty("configuration",out var config) || config.ValueKind != JsonValueKind.Object || config.EnumerateObject().Count() is <6 or >7 ||
+                        config.EnumerateObject().Select(p=>p.Name).Distinct(StringComparer.Ordinal).Count()!=config.EnumerateObject().Count() ||
+                        config.EnumerateObject().Any(p=>p.Name is not ("mode" or "zone" or "format" or "finish" or "offsetMinutes" or "durationSeconds" or "restoreRemainingSeconds")) ||
+                        new[] { "mode","zone","format","finish","offsetMinutes","durationSeconds" }.Any(key=>!config.TryGetProperty(key,out _)) ||
+                        config.Deserialize<NativeGraphicsClockConfiguration>(JsonOptions)?.IsValid!=true) return false;
+                } else if (body.TryGetProperty("configuration",out _)) return false;
+            }
             if (body.TryGetProperty("placement", out var placement) && placement.ValueKind != JsonValueKind.Null)
             {
                 if (placement.ValueKind != JsonValueKind.Object || placement.EnumerateObject().Count() != 4 ||

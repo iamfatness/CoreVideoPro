@@ -54,9 +54,10 @@ inline constexpr std::array<std::string_view, 13> kRequiredMvpCapabilities = {
 // Contract view of the live MediaCore::applyCommandMutation branches. The
 // dispatcher itself decides admission; ContractParity checks this view and the
 // production builder against every branch in both directions.
-inline constexpr std::array<std::string_view, 58> kNativeMediaCoreCommandTypes = {
+inline constexpr std::array<std::string_view, 59> kNativeMediaCoreCommandTypes = {
     "graphics-template-install",
     "graphics-template-list",
+    "graphics-clock-control",
     "graphics-instance-create",
     "graphics-instance-update",
     "graphics-instance-cue",
@@ -118,9 +119,10 @@ inline constexpr std::array<std::string_view, 58> kNativeMediaCoreCommandTypes =
 // Every request type JsonRpcServer dispatches on. ContractParity compares this
 // with the dispatcher in both directions and checks that each request the C#
 // and Swift shells send is in it.
-inline constexpr std::array<std::string_view, 45> kCoreRequestTypes = {
+inline constexpr std::array<std::string_view, 46> kCoreRequestTypes = {
     "graphics-template-install",
     "graphics-template-list",
+    "graphics-clock-control",
     "graphics-instance-create",
     "graphics-instance-update",
     "graphics-instance-cue",

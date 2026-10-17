@@ -27,10 +27,10 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private readonly ListView _library = new() { MaxHeight = 260, SelectionMode = ListViewSelectionMode.Single }, _cues = new() { MaxHeight = 230, SelectionMode = ListViewSelectionMode.Single };
     private readonly TextBox _search = new() { PlaceholderText = "Search looks" };
     private readonly ComboBox _family = new() { ItemsSource = new[] { "All", "lower-third", "title", "bug", "clock", "countdown" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly VideoSurfaceHost _canvas = new() { Height = 330 };
+    private readonly GraphicsAuthoringCanvas _canvas = new() { Height = 330 };
     private readonly TextBlock _status = Copy("Choose a look, create a cue, then edit privately."), _native = Copy("Native authoring canvas"), _facts = Copy("");
     private readonly ToggleSwitch _compare = new() { Header = "Compare Original / Edited" };
-    private readonly List<Button> _actions = [];
+    private readonly List<Button> _actions = [], _inspectorActions = [];
     private readonly Button _cueButton, _showButton, _updateButton, _hideButton, _deleteButton, _undoButton;
     private readonly Button _packageImportButton;
     private readonly TextBlock _importStatus = Copy("");
@@ -130,7 +130,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private void Attach()
     {
         if (Studio is null || !IsLoaded || _session == Studio.GraphicsWorkspace) return;
-        Detach(); _session = Studio.GraphicsWorkspace;
+        Detach(); _session = Studio.GraphicsWorkspace; _canvas.Session=_session;
         _attachedStudio = Studio; _attachedStudio.PropertyChanged += OnStudioProperty;
         _savedLibrary = Studio.GraphicsLibrary; _savedLibrary.Changed += OnLibraryChanged; _ = _savedLibrary.LoadAsync();
         _session.Changed += OnChanged; _session.PreviewChanged += OnPreviewChanged;
@@ -145,6 +145,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
         if (_attachedStudio is not null) _attachedStudio.PropertyChanged -= OnStudioProperty;
         _previewOwner?.Dispose(); _previewOwner = null;
         if (_editor is not null) _editor.PropertyChanged -= OnPreviewProperty;
+        _canvas.Session=null;
         _session = null; _editor = null; _savedLibrary = null; _attachedStudio = null;
     }
     private void OnPreviewProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -189,6 +190,10 @@ public sealed class GraphicsWorkspaceControl : UserControl
         if (_session.PreviewValidation is { Length: > 0 } invalid) {
             _previewOwner?.Dispose(); _previewOwner = null; _editor.SetNativeUnavailable(invalid); return;
         }
+        if (_session?.Selected?.Clock is { } clock) {
+            var fields=draft.Fields.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone());
+            fields["time"]=JsonSerializer.SerializeToElement(clock.Text); draft=draft with { Fields=JsonSerializer.SerializeToElement(fields) };
+        }
         _editor.SetLowerThirdPreview(new(null, Graphics: draft.ForPreview()));
         UpdatePreviewLease();
     }
@@ -216,7 +221,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
                 foreach (var cue in _session.State?.Instances ?? []) { _cueIds.Add(cue.InstanceId); _cues.Items.Add($"{cue.TemplateId} · {cue.Fields.Name}\n{cue.Visibility} · Cue {cue.CueRevision} / Program {cue.ProgramRevision}"); }
                 _cues.SelectedIndex = _cueIds.IndexOf(_session.SelectedId);
             }
-            var inspectorKey = _session.SelectedId + ":" + _session.Draft?.TemplateId + ":" + _session.Draft?.TemplateVersion;
+            var inspectorKey = _session.Selected?.ClockConfigurationRevision + ":" + _session.SelectedId + ":" + _session.Draft?.TemplateId + ":" + _session.Draft?.TemplateVersion;
             if (_inspectorKey != inspectorKey) { _inspectorKey = inspectorKey; BuildInspector(); }
             foreach (var refresh in _refreshFields) refresh();
             foreach (var child in _inspector.Children.OfType<Microsoft.UI.Xaml.Controls.Control>()) child.IsEnabled = !_session.Busy;
@@ -237,6 +242,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
     }
     private void BuildInspector()
     {
+        foreach(var button in _inspectorActions) _actions.Remove(button); _inspectorActions.Clear();
         _inspector.Children.Clear();
         _refreshFields.Clear();
         if (_session?.Draft is not { } draft) { _inspector.Children.Add(Copy("Select a cue to edit its private fields and style.")); return; }
@@ -244,6 +250,12 @@ public sealed class GraphicsWorkspaceControl : UserControl
         var fields = _session.Template?.Fields ?? [];
         if (fields.Count == 0) fields = [new() { Id = "name", Type = "string", MaxLength = 256 }, new() { Id = "title", Type = "string", MaxLength = 512 }];
         foreach (var field in fields) {
+            if (field.Id=="time" && _session.Template?.Family is "clock" or "countdown") {
+                var live=Copy("Clock time is generated by the native controller. Configure and start it below."); _inspector.Children.Add(live);
+                _refreshFields.Add(()=>live.Text=_session?.Selected?.Clock is { } clock ? $"{clock.Text} · {clock.State}" : "Create a hidden cue to configure its native clock.");
+                continue;
+            }
+
             var value = draft.Fields.TryGetProperty(field.Id, out var v) ? v : field.Default ?? JsonSerializer.SerializeToElement("");
             if (!Compatibility && _session.Template?.Layers is { } layers && !HasReference(layers,"field",field.Id)) {
                 _inspector.Children.Add(Copy(field.Id + " — this field is not used by the template's layers.")); continue;
@@ -296,6 +308,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
                 _refreshFields.Add(() => { if (text.FocusState == FocusState.Unfocused && _session?.Draft?.Fields.TryGetProperty(field.Id, out var current) == true && current.ValueKind == JsonValueKind.String) text.Text = current.GetString() ?? ""; });
             }
         }
+        BuildClockControls();
         _inspector.Children.Add(Copy("An empty secondary line stays empty. Source text remains available in Sources."));
         if (Compatibility || UsesToken("brand.fontBody") || UsesToken("brand.fontHeading")) {
         var font = new TextBox { Header = "Font family", Text = draft.Style.FontFamily, MaxLength = 128 };
@@ -324,6 +337,30 @@ public sealed class GraphicsWorkspaceControl : UserControl
         if (Compatibility || UsesToken("brand.primary") || UsesToken("brand.background")) AddColor("Plate", d => d.BackgroundColor, (d, c) => d with { BackgroundColor = c });
         if (Compatibility || UsesToken("brand.accent")) AddColor("Accent", d => d.AccentColor, (d, c) => d with { AccentColor = c });
         _inspector.Children.Add(Copy("Colors, fonts and placement affect this draft. Cue or Update on air sends an explicit native revision."));
+    }
+    private static ComboBox ClockChoice(string header,string value,params (string Id,string Label)[] choices)
+    {
+        var box=new ComboBox { Header=header,HorizontalAlignment=HorizontalAlignment.Stretch,SelectedValuePath="Tag" };
+        foreach(var choice in choices) box.Items.Add(new ComboBoxItem { Content=choice.Label,Tag=choice.Id });
+        box.SelectedValue=value; return box;
+    }
+    private void BuildClockControls()
+    {
+        if (_session?.Selected is not { } item || _session.Template?.Family is not ("clock" or "countdown")) return;
+        var current=item.ClockRequestedConfiguration ?? item.Clock?.Configuration ?? new NativeGraphicsClockConfiguration();
+        var panel=new StackPanel { Spacing=8 };
+        var mode=ClockChoice("Clock mode",current.Mode,("wall","Wall clock"),("countdown","Countdown"));
+        var zone=ClockChoice("Wall-clock timezone",current.Zone,("local","Computer local time"),("utc","UTC"),("fixed","UTC with fixed offset"));
+        var format=ClockChoice("Wall-clock display",current.Format,("hms","Hours : minutes : seconds"),("hm","Hours : minutes"));
+        var offset=new SliderValueControl { Header="UTC offset",Minimum=-840,Maximum=840,StepFrequency=15,Unit="min",Value=current.OffsetMinutes };
+        var duration=new SliderValueControl { Header="Countdown duration",Minimum=1,Maximum=86400,StepFrequency=1,Unit="s",Value=current.DurationSeconds };
+        var finish=ClockChoice("At zero",current.Finish,("hold-zero","Hold at zero"),("hide","Hide graphic"),("suggest-next","Suggest next cue"));
+        foreach(var control in new UIElement[] { mode,zone,format,offset,duration,finish }) panel.Children.Add(control);
+        panel.Children.Add(Copy("Applying configuration pauses and resets the countdown. Start never shows the graphic. Suggest next is a status, never an automatic Take."));
+        panel.Children.Add(InspectorAction("Apply clock settings",async()=>{ if(_session is not null) await _session.ClockAsync("configure",new() { Mode=mode.SelectedValue as string ?? "wall",Zone=zone.SelectedValue as string ?? "local",Format=format.SelectedValue as string ?? "hms",Finish=finish.SelectedValue as string ?? "hold-zero",OffsetMinutes=(int)offset.Value,DurationSeconds=(int)duration.Value },expectedClockRevision:item.ClockConfigurationRevision); }));
+        var transport=new StackPanel { Orientation=Orientation.Horizontal,Spacing=6 };
+        foreach(var command in new[] { "start","pause","resume","reset" }) transport.Children.Add(InspectorAction(char.ToUpperInvariant(command[0])+command[1..],async()=>{if(_session is not null) await _session.ClockAsync(command);}));
+        panel.Children.Add(transport); _inspector.Children.Add(new Expander { Header="Native clock / countdown",Content=panel,HorizontalAlignment=HorizontalAlignment.Stretch });
     }
     private void AddPlacement(string label,double min,double max,double neutral,double step,string unit,double displayScale,
         NativeGraphicsPlacement fallback,Func<NativeGraphicsPlacement,double> read,Func<NativeGraphicsPlacement,double,NativeGraphicsPlacement> update)
@@ -386,6 +423,10 @@ public sealed class GraphicsWorkspaceControl : UserControl
         "x" or "y" => (0,8192), "width" or "height" => (1,8192), "opacity" => (0,1), "padding" or "gap" => (0,256),
         "fontSize" => (1,512), "lineHeight" => (.5,3), "cornerRadius" => (0,4096), _ => (-1e9,1e9)
     };
+    private Button InspectorAction(string label,Func<Task> action)
+    {
+        var button=Action(label,action); _inspectorActions.Add(button); return button;
+    }
     private Button Action(string label, Func<Task> action)
     {
         var button = new Button { Content = label }; button.Click += async (_, _) => await action(); _actions.Add(button); return button;

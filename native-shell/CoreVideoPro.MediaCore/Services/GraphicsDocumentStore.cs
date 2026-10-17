@@ -14,6 +14,7 @@ public sealed record GraphicsSavedCue
     public string SceneId { get; init; } = "";
     public string SourceId { get; init; } = "";
     public NativeGraphicsDraft? Draft { get; init; }
+    public NativeGraphicsClockConfiguration? ClockConfiguration { get; init; }
     [JsonExtensionData] public Dictionary<string, JsonElement>? Metadata { get; init; }
 }
 
@@ -138,7 +139,7 @@ public sealed class GraphicsDocumentStore
                 cue.Scope is not ("global" or "scene") || (cue.Scope == "scene" && string.IsNullOrEmpty(cue.SceneId)) ||
                 cue.SceneId is null || cue.SceneId.Length > 256 || cue.SourceId is null || cue.SourceId.Length > 256 || cue.Draft is not { } draft ||
                 string.IsNullOrEmpty(draft.TemplateId) || draft.TemplateId.Length > 64 || draft.TemplateVersion < 1 || draft.Style?.IsValid != true ||
-                draft.Animations?.In is null || draft.Animations.Out is null || (draft.Placement is not null && !draft.Placement.IsValid) ||
+                (cue.ClockConfiguration is not null && !cue.ClockConfiguration.IsValid) || draft.Animations?.In is null || draft.Animations.Out is null || (draft.Placement is not null && !draft.Placement.IsValid) ||
                 draft.Fields.ValueKind != JsonValueKind.Object || draft.Fields.EnumerateObject().Count() > 32)
                 throw new InvalidDataException("Invalid saved graphics cue.");
         }

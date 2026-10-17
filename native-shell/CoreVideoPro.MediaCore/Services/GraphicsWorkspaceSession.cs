@@ -65,7 +65,9 @@ public sealed class GraphicsWorkspaceSession
     {
         if (state is null) return;
         var epochChanged = State is not null && State.CoreEpoch != state.CoreEpoch;
+        var clockTextChanged = Selected?.Clock?.Text != state.Instances.FirstOrDefault(i=>i.InstanceId==SelectedId)?.Clock?.Text;
         State = state;
+        foreach (var id in _privateEdits.Keys.Where(id=>!state.Instances.Any(i=>i.InstanceId==id)).ToArray()) _privateEdits.Remove(id);
         if (epochChanged) {
             SelectedId = ""; Draft = _original = null; _undo.Clear(); _gesture = null; _privateEdits.Clear();
             Status = "Native core restarted. Graphics remain hidden; choose a saved cue explicitly.";
@@ -73,11 +75,12 @@ public sealed class GraphicsWorkspaceSession
         }
         // Preserve collection selection, focus and local drafts as frame facts advance.
         var signature = state.CoreEpoch + "|" + string.Join('|', state.Instances.Select(i =>
-            $"{i.InstanceId}:{i.Revision}:{i.CueRevision}:{i.CuePending}:{i.ProgramRevision}:{i.Preparation}:{i.Visibility}:{i.CurrentlyComposed}:{i.Warning}:{i.CueWarning}:{i.BindingState}")) +
+            $"{i.InstanceId}:{i.Revision}:{i.CueRevision}:{i.CuePending}:{i.ProgramRevision}:{i.Preparation}:{i.Visibility}:{i.CurrentlyComposed}:{i.Warning}:{i.CueWarning}:{i.BindingState}:{i.Clock?.State}:{i.Clock?.Text}:{i.ClockConfigurationRevision}")) +
             "|" + string.Join('|', state.Templates.Select(t => $"{t.TemplateId}:{t.TemplateVersion}:{t.ManifestHash}")) +
             "|" + string.Join('|', state.TemplateInstalls.Select(i => $"{i.ClientId}:{i.RequestId}:{i.State}:{i.Reason}"));
         if (signature == _statusSignature && !epochChanged) return;
         _statusSignature = signature;
+        if(clockTextChanged) PreviewChanged?.Invoke(this,EventArgs.Empty);
         Changed?.Invoke(this, EventArgs.Empty);
     }
     public void Select(string id)
@@ -172,6 +175,11 @@ public sealed class GraphicsWorkspaceSession
             ["target"] = "cue", ["action"] = "show" }, cancellation);
     });
     public Task<bool> HideAsync(CancellationToken cancellation = default) => Run(() => SelectedCommand("graphics.instance.trigger", new() { ["action"] = "hide" }, cancellation));
+    public Task<bool> ClockAsync(string action,NativeGraphicsClockConfiguration? config=null,CancellationToken cancellation=default,long? expectedClockRevision=null) => Run(() => {
+        var extra=new Dictionary<string,object?> { ["action"]=action };
+        if(config is not null) { extra["configuration"]=config; extra["expectedClockRevision"]=expectedClockRevision ?? Selected?.ClockConfigurationRevision; }
+        return SelectedCommand("graphics.clock.control",extra,cancellation);
+    });
     public Task<bool> ClearAsync(CancellationToken cancellation = default) => Run(() => Send("graphics.program.clear", new() { ["channel"] = "all" }, cancellation));
     public Task<bool> RemoveAsync(CancellationToken cancellation = default) => Run(async () => {
         if (Selected is not { ProgramRevision: 0 }) { Status = "Hide the on-air cue before deleting it."; return false; }
@@ -201,19 +209,21 @@ public sealed class GraphicsWorkspaceSession
         if (binding is not null) body["binding"] = binding;
         if (!await Send("graphics.instance.create", body, cancellation)) return false;
         Busy = false; Select(id); Busy = true;
+        if (cue.ClockConfiguration is { } clock && !await SelectedCommand("graphics.clock.control",new() { ["action"]="configure",["configuration"]=clock,["expectedClockRevision"]=Selected?.ClockConfigurationRevision },cancellation)) return false;
         Status = "Restored hidden. Cue and Show remain explicit; automation is unarmed."; return true;
     });
     public Task<bool> DuplicateAsync(CancellationToken cancellation = default)
     {
         if (Selected is not { } selected || Draft is not { } draft) return Task.FromResult(false);
-        return RestoreAsync(new() { Id = selected.InstanceId, Draft = draft, Scope = selected.Scope, SceneId = selected.SceneId, SourceId = selected.SourceId }, selected.Binding, cancellation);
+        return RestoreAsync(new() { Id = selected.InstanceId, Draft = draft, Scope = selected.Scope, SceneId = selected.SceneId, SourceId = selected.SourceId, ClockConfiguration=selected.Clock is { } clock ? clock.Configuration with { RestoreRemainingSeconds=clock.Configuration.Mode=="countdown" ? clock.RemainingSeconds : null } : null }, selected.Binding, cancellation);
     }
 
     private async Task<bool> CommitDraft(string target, CancellationToken cancellation)
     {
         if (Draft is not { } draft || Selected is not { } selected) { Status = "Choose a cue first."; return false; }
+        var fields = selected.Clock is null ? draft.Fields : JsonSerializer.SerializeToElement(draft.Fields.EnumerateObject().Where(p=>p.Name!="time").ToDictionary(p=>p.Name,p=>p.Value.Clone()),Json);
         var accepted = await Send("graphics.instance.update", new() { ["instanceId"] = selected.InstanceId, ["expectedRevision"] = _draftBaseRevision,
-            ["target"] = target, ["fields"] = draft.Fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement }, cancellation);
+            ["target"] = target, ["fields"] = fields, ["style"] = draft.StyleWire(), ["animations"] = draft.Animations, ["placement"] = draft.Placement }, cancellation);
         if (accepted && _lastOperation is { CurrentRevision: > 0 } result && result.InstanceId == selected.InstanceId)
             _draftBaseRevision = result.CurrentRevision;
         return accepted;

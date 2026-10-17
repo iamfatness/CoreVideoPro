@@ -111,6 +111,7 @@ add_library(corevideo_native
   src/graphics/GraphicsTemplateRegistry.cpp
   src/graphics/GraphicsAssets.cpp
   src/graphics/GraphicsCuratedTemplates.cpp
+  src/graphics/GraphicsClock.cpp
   src/core/MediaCore.cpp
   src/core/CoreStateCapture.cpp
   src/core/ComApartmentLifetime.cpp

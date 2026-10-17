@@ -11,6 +11,74 @@
 #include <thread>
 
 #if COREVIDEO_WITH_D3D11
+TEST(GraphicsCompositionPixel, EveryCuratedLookReachesActualNativeProgramPixels) {
+  using corevideo::rpc::Json;
+  for (const auto& definition:corevideo::graphics::GraphicsTemplate::curated()) {
+    double now=0; corevideo::graphics::GraphicsInstances state{"test-core",[&]{return now;}};
+    auto compositor=corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor); int sequence=0;
+    const auto command=[&](const std::string& type,Json::Object fields) {
+      fields["schemaVersion"]=1; fields["coreEpoch"]="test-core"; fields["clientId"]="curated-qa"; fields["instanceId"]="featured";
+      fields["requestId"]="curated-"+std::to_string(++sequence); fields["expectedRevision"]=1;
+      return state.apply(Json::Object{{"type",type},{"graphics",std::move(fields)}});
+    };
+    const auto render=[&] {
+      corevideo::modules::CompositorRenderPlan plan; plan.width=640; plan.height=360;
+      corevideo::modules::CompositorRenderPlanLayer background; background.kind="background"; background.hasFillColor=true; background.fillColor="#203060";
+      plan.layers.push_back(background); state.append(plan,false); auto frame=compositor->render(plan,{}); state.observe(frame); return frame.preview.bgra;
+    };
+    const auto baseline=render();
+    ASSERT_TRUE(command("graphics-instance-create",{{"templateId",definition->id()},{"templateVersion",1},{"scope","global"},{"fields",definition->id()=="corporate-lower-third" ? Json{Json::Object{{"name","Ada"},{"title","Engineer"}}} : definition->defaultFields()}}));
+    const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    bool requested=false; std::vector<uint8_t> pixels;
+    do {
+      render(); const auto row=state.snapshot().get("instances")->asArray().front();
+      if(!requested && row.getString("preparation")!="waiting-clock") { ASSERT_TRUE(command("graphics-instance-trigger",{{"action","show"}})); requested=true; }
+      now+=16.667; pixels=render();
+      if(row.getNumber("firstDrawSubmittedFrame")>0 && now>1500) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    } while(std::chrono::steady_clock::now()<until);
+    ASSERT_EQ(baseline.size(),pixels.size()); ASSERT_FALSE(pixels.empty());
+    size_t changed=0; for(size_t i=0;i<pixels.size();i+=4) if(!std::equal(pixels.begin()+i,pixels.begin()+i+3,baseline.begin()+i)) ++changed;
+    EXPECT_GT(changed,32u); EXPECT_GT(state.snapshot().get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame"),0.);
+  }
+}
+
+TEST(GraphicsCompositionPixel, ClockTicksAdoptPreparedDigitsWithoutBlankingProgramOrChangingEditRevision) {
+  using corevideo::rpc::Json;
+  double now=0; corevideo::graphics::GraphicsInstances state{"test-core",[&]{return now;}};
+  auto compositor=corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor); int sequence=0;
+  const auto command=[&](const std::string& type,Json::Object fields) {
+    fields["schemaVersion"]=1; fields["coreEpoch"]="test-core"; fields["clientId"]="clock-pixel-qa"; fields["instanceId"]="clock";
+    fields["requestId"]="clock-pixel-"+std::to_string(++sequence); fields["expectedRevision"]=1;
+    return state.apply(Json::Object{{"type",type},{"graphics",std::move(fields)}});
+  };
+  const auto render=[&] {
+    corevideo::modules::CompositorRenderPlan plan; plan.width=640; plan.height=360;
+    corevideo::modules::CompositorRenderPlanLayer background; background.kind="background"; background.hasFillColor=true; background.fillColor="#203060";
+    plan.layers.push_back(background); state.append(plan,false); auto frame=compositor->render(plan,{}); state.observe(frame); now+=16.667; return frame.preview.bgra;
+  };
+  const auto baseline=render(); ASSERT_TRUE(command("graphics-instance-create",{{"templateId","clock-panel"},{"templateVersion",1},{"scope","global"}}));
+  const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(8);
+  bool requested=false;
+  while(std::chrono::steady_clock::now()<until) {
+    render(); const auto item=state.snapshot().get("instances")->asArray().front();
+    if(!requested && item.getString("preparation")!="waiting-clock") { ASSERT_TRUE(command("graphics-instance-trigger",{{"action","show"}})); requested=true; }
+    if(item.getNumber("firstDrawSubmittedFrame")>0 && now>=1000) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  const auto first=state.snapshot().get("instances")->asArray().front(); ASSERT_GT(first.getNumber("firstDrawSubmittedFrame"),0.);
+  const auto initialTime=first.get("programFields")->getString("time");
+  const auto end=std::chrono::steady_clock::now()+std::chrono::milliseconds(1600); bool changed=false; int measured=0;
+  while(std::chrono::steady_clock::now()<end) {
+    const auto pixels=render(); ASSERT_EQ(baseline.size(),pixels.size()); EXPECT_NE(baseline,pixels);
+    const auto item=state.snapshot().get("instances")->asArray().front();
+    EXPECT_TRUE(item.get("currentlyComposed")->asBool()); EXPECT_EQ(1,item.getNumber("revision")); EXPECT_EQ(1,item.getNumber("programRevision"));
+    changed=changed || item.get("programFields")->getString("time")!=initialTime; ++measured;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(changed); EXPECT_GT(measured,20);
+}
+
 TEST(GraphicsCompositionPixel, VerifiedPackageImagePreservesAlphaAndAcceptedBytesAfterFileChanges) {
   using corevideo::rpc::Json;
   std::string error;

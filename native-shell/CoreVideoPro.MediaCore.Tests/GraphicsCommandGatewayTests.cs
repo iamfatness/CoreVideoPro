@@ -242,4 +242,19 @@ public sealed class GraphicsCommandGatewayTests
         Assert.False((await old.InvokeAsync("graphics.instance.cue", Request())).Accepted);
         Assert.Equal(0, sends);
     }
+    [Fact]
+    public void ClockConfigurationRequiresAllTypedFieldsAndRejectsUnknownOrUnsafeValues()
+    {
+        var config=new NativeGraphicsClockConfiguration { Mode="countdown",DurationSeconds=90,RestoreRemainingSeconds=12.5 };
+        var options=new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        string Input(NativeGraphicsClockConfiguration value)=>Request("\"action\":\"configure\",\"expectedClockRevision\":1,\"configuration\":"+JsonSerializer.Serialize(value,options));
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.clock.control",Input(config),Observed,out var command,out _,out _));
+        Assert.Equal("graphics-clock-control",command!.Type);
+        foreach(var invalid in new[] { config with { DurationSeconds=0 },config with { OffsetMinutes=841 },config with { RestoreRemainingSeconds=100 },config with { Mode="script" } })
+            Assert.False(GraphicsCommandRequest.TryBuild("graphics.clock.control",Input(invalid),Observed,out _,out _,out _));
+        var missing=JsonSerializer.SerializeToNode(config,options)!.AsObject(); missing.Remove("mode");
+        Assert.False(GraphicsCommandRequest.TryBuild("graphics.clock.control",Request("\"action\":\"configure\",\"expectedClockRevision\":1,\"configuration\":"+missing.ToJsonString()),Observed,out _,out _,out _));
+        Assert.True(GraphicsCommandRequest.TryBuild("graphics.clock.control",Request("\"action\":\"pause\""),Observed,out _,out _,out _));
+    }
+
 }
