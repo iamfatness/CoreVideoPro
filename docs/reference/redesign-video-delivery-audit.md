@@ -150,6 +150,17 @@ timestamps and decoded pixel identities remain the evidence; buffering logs
 does not smooth timestamps or relax the continuity/interval judge. An interrupted
 capture without its completion record cannot pass.
 
+The camera DLL likewise queues serve diagnostics outside `RequestSample`.
+A fixed 128-message queue uses a nonblocking producer lock; a blocked file sink
+drops diagnostics when the queue fills rather than delaying camera samples or
+growing memory. Drop/write-failure counters remain visible in delivery records.
+Windows thread-pool callbacks retain the DLL before submission and release it
+only after returning, including when the last COM source closes with logs queued.
+The file sink permits concurrent diagnostic readers. A blocked-sink regression
+checks bounded memory and continued producer progress, while real-DLL tests
+still check actual fresh, held and slate pixels and wait separately for logs.
+These tests establish isolation from diagnostic I/O, not live cadence acceptance.
+
 The receiver's named stop event (`Local\CoreVideoPixelProbeStop-PID`) ends a
 diagnostic trial gracefully and preserves the buffered observations. Early
 completion does not satisfy the 30-minute coverage requirement.

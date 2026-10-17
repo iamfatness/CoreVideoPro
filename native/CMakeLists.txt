@@ -793,6 +793,7 @@ if(BUILD_TESTING)
     tests/JsonRpcServerTest.cpp
     tests/LockHoldGuardrailTest.cpp
     tests/BoundedAsyncLogTest.cpp
+    tests/VcamLogQueueTest.cpp
     tests/LumaRangeProbeTest.cpp
     tests/MediaFrameSourceCompatibilityTest.cpp
     tests/MediaPlaybackTimelineTest.cpp
