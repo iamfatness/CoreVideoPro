@@ -1,5 +1,12 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 17 — merge and cut beta:** integrate the seven open
+PRs and qualify the immutable Windows assets. Release blocker
+[#940](https://github.com/iamfatness/CoreVideoPro/issues/940): camera setup must
+hash its payload without optional PowerShell command discovery; require actual
+clean-runner install/probe/uninstall before publication. Full-workload frame
+acceptance remains governed by #930.
+
 **Owner approval, October 16 — first Volt milestone:** execute the approved
 graphics specification through [#926](https://github.com/iamfatness/CoreVideoPro/issues/926)
 (native first consumer), [#927](https://github.com/iamfatness/CoreVideoPro/issues/927)

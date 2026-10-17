@@ -104,6 +104,8 @@ jobs:
           if ($runtime.Installed -ne 1 -or [version]($runtime.Version.TrimStart('v')) -lt [version]$manifest.vcRuntimeVersion) {
             throw 'Required VC runtime is not installed; installer safety tests would be inconclusive.'
           }
+          & "$env:WINDIR/SysWOW64/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File scripts/alpha/Test-VirtualCameraOwnership.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Camera ownership/hash checks failed in the installer host.' }
       - name: Install, probe and uninstall on the clean runner
         shell: pwsh
         run: |

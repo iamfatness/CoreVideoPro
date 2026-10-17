@@ -1,5 +1,20 @@
 Set-StrictMode -Version Latest
 
+function Get-CameraPayloadSha256 {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    # NSIS can inherit a PowerShell module path without Get-FileHash. Keep every
+    # install/inspect/rollback identity check independent of module discovery.
+    $hash = [Security.Cryptography.SHA256]::Create()
+    $stream = $null
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        return [BitConverter]::ToString($hash.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        $hash.Dispose()
+    }
+}
+
 function Get-CameraOwnershipDecision {
     param([ValidateSet('Install','Uninstall')][string]$Action,
         [string]$RegisteredPath, [string]$OwnerRole, [string]$OwnerAppDirectory,
@@ -141,4 +156,4 @@ function Remove-UnreferencedCameraRuntime {
         return 'removed'
     } catch { return 'retained_in_use_or_unverified' }
 }
-Export-ModuleMember -Function Get-CameraOwnershipDecision,Get-CameraMachineRegistration,Set-CameraMachineRegistration,Get-CameraTransactionName,Test-OwnedLegacyCamera,Get-CameraRuntimeRoot,Assert-CameraRuntimePath,New-CameraRuntimeAcl,Remove-UnreferencedCameraRuntime
+Export-ModuleMember -Function Get-CameraPayloadSha256,Get-CameraOwnershipDecision,Get-CameraMachineRegistration,Set-CameraMachineRegistration,Get-CameraTransactionName,Test-OwnedLegacyCamera,Get-CameraRuntimeRoot,Assert-CameraRuntimePath,New-CameraRuntimeAcl,Remove-UnreferencedCameraRuntime
