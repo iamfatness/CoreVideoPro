@@ -33,7 +33,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             page.Width = 1840; page.Height = 820; page.HorizontalAlignment = HorizontalAlignment.Left; page.VerticalAlignment = VerticalAlignment.Top;
             var template = new NativeGraphicsTemplate { TemplateId="compact-solid", TemplateVersion=1, Name="Compact solid", Family="lower-third", Runtime="compatibility" };
             var state = new NativeGraphicsState { CoreEpoch="isolated-layout", SchemaVersion=1, Templates=[template],
-                Instances=Enumerable.Range(1,8).Select(n=>new NativeGraphicsInstance { InstanceId=$"fixture-{n}", Label=n==1?"Guest introduction":$"Show cue {n}", TemplateId=template.TemplateId, TemplateVersion=1, Scope="global", Revision=1, Fields=new() { Name="Alex Rivera",Title="Producer · Office Hours" } }).ToArray() };
+                Instances=Enumerable.Range(1,8).Select(n=>new NativeGraphicsInstance { InstanceId=$"fixture-{n}", Label=n==1?"Guest introduction":$"Show cue {n}", TemplateId=template.TemplateId, TemplateVersion=1, Scope=n==8?"scene":"global", SceneId=n==8?"other-scene":"", Revision=1, Fields=new() { Name="Alex Rivera",Title="Producer · Office Hours" } }).ToArray() };
             studio.GraphicsWorkspace.Observe(state); studio.GraphicsWorkspace.Select("fixture-1");
             await Task.Delay(250); page.UpdateLayout();
             var workspace = Descendants(page).OfType<GraphicsWorkspaceControl>().Single();
@@ -65,6 +65,14 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(studio.GraphicsWorkspace.SelectedId=="fixture-1" && studio.GraphicsWorkspace.Draft?.Fields.GetProperty("name").GetString()=="Alex Rivera", "Navigation mutated the cue draft");
             Require(studio.GraphicsLibrary.Document.StudioLowerThird is null,"Rendering assigned a look implicitly");
             checks.Add("Tab/drawer navigation preserves selection and draft and never assigns a Studio look");
+            var cueList=Descendants(workspace).OfType<ListView>().Single(l=>Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(l)=="Graphics show cues");
+            var search=Descendants(workspace).OfType<TextBox>().Single(t=>t.PlaceholderText=="Find a cue");
+            search.Text="Show cue 2"; await Task.Delay(50);
+            Require(cueList.Items.Count==1 && studio.GraphicsWorkspace.SelectedId=="fixture-1","Cue filtering changed selection or returned the wrong cue");
+            search.Text=""; var scope=Descendants(workspace).OfType<ComboBox>().Single(c=>c.Header?.ToString()=="Scope"); scope.SelectedIndex=1; await Task.Delay(50);
+            Require(cueList.Items.Count==7,"Current Program scope did not retain global cues and hide the other scene"); scope.SelectedIndex=0;
+            Require(cueList.Items.Count==8 && studio.GraphicsWorkspace.SelectedId=="fixture-1","Clearing cue filters lost the selected cue");
+            checks.Add("Cue search and Program-scene filtering retain the selected private draft and restore all cue rows");
             Invoke(Button(workspace,"Use in Studio"));
             await Eventually(()=>studio.GraphicsLibrary.Document.StudioLowerThird is not null && !studio.GraphicsLibrary.Busy);
             Require(studio.StudioAssignedLowerThirdLabel=="Guest introduction","Assigned look label did not update after explicit assignment");

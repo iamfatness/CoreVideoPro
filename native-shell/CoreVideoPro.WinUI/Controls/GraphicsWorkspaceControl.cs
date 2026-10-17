@@ -103,7 +103,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
     private void OnStudioProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(StudioViewModel.IsOverlaysTab)) UpdatePreviewLease();
-        if (e.PropertyName is nameof(StudioViewModel.StudioAssignedLowerThirdLabel) or nameof(StudioViewModel.StudioLowerThirdBusy)) Refresh();
+        if (e.PropertyName is nameof(StudioViewModel.ActiveSceneId) or nameof(StudioViewModel.StudioAssignedLowerThirdLabel) or nameof(StudioViewModel.StudioLowerThirdBusy)) Refresh();
     }
     public void SuspendPreview() { _previewSuspended = true; UpdatePreviewLease(); }
     public void ResumePreview() { _previewSuspended = false; UpdatePreviewLease(); }
@@ -166,10 +166,13 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
                 _scope.SelectedItem=_scope.Items.OfType<ComboBoxItem>().FirstOrDefault(i=>i.Tag as string==prior) ?? _scope.Items[0];
             }
             RefreshLibrary();
-            var key = string.Join('|', _session.State?.Instances.Select(i => $"{i.InstanceId}:{i.Label}:{i.RackOrder}:{i.TemplateId}:{i.Visibility}:{i.ProgramRevision}:{i.CueRevision}") ?? []);
+            var cueRows = (_session.State?.Instances ?? []).Where(i =>
+                (_cueScopeFilter.SelectedIndex != 1 || i.Scope == "global" || i.SceneId == Studio?.ActiveSceneId) &&
+                (_cueSearch.Text.Length == 0 || (i.Label + " " + i.Fields.Name + " " + i.TemplateId).Contains(_cueSearch.Text, StringComparison.OrdinalIgnoreCase))).ToArray();
+            var key = string.Join('|', cueRows.Select(i => $"{i.InstanceId}:{i.Label}:{i.Fields.Name}:{i.Revision}:{i.RackOrder}:{i.TemplateId}:{i.Visibility}:{i.ProgramRevision}:{i.CueRevision}"));
             if (key != _cueKey) {
                 _cueKey = key; _cueIds.Clear(); _cues.Items.Clear();
-                foreach (var cue in _session.State?.Instances ?? []) { _cueIds.Add(cue.InstanceId); _cues.Items.Add($"{(cue.Label.Length>0?cue.Label:cue.TemplateId)}\n{cue.Fields.Name} · {(cue.ProgramRevision>0?"On air":cue.CueRevision>0?"Cued":"Draft")}"); }
+                foreach (var cue in cueRows) { _cueIds.Add(cue.InstanceId); _cues.Items.Add($"{(cue.Label.Length>0?cue.Label:cue.TemplateId)}\n{cue.Fields.Name} - {(cue.ProgramRevision>0?"On air":cue.CueRevision>0?"Cued":"Draft")}"); }
                 _cues.SelectedIndex = _cueIds.IndexOf(_session.SelectedId);
             }
             var inspectorKey = _session.Selected?.ClockConfigurationRevision + ":" + _session.SelectedId + ":" + _session.Draft?.TemplateId + ":" + _session.Draft?.TemplateVersion;
@@ -395,7 +398,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
     }
     private Button Action(string label, Func<Task> action)
     {
-        var button = new Button { Content = label }; button.Click += async (_, _) => await action(); _actions.Add(button); return button;
+        var button = ChromeButton(label); button.Click += async (_, _) => await action(); _actions.Add(button); return button;
     }
     private async Task PickPackageAsync()
     {

@@ -22,6 +22,8 @@ public sealed partial class GraphicsWorkspaceControl
         _layerHeading = new() { Text = "LAYERS · top is front", FontSize = 11 };
     private readonly Dictionary<string, FrameworkElement> _toolPanels = new(StringComparer.Ordinal);
     private readonly CheckBox _studioFollowSource = new() { Content = "Use Program source text in Studio", IsChecked = true };
+    private readonly TextBox _cueSearch = new() { PlaceholderText = "Find a cue" };
+    private readonly ComboBox _cueScopeFilter = new() { Header="Scope", ItemsSource=new[] {"All scenes","Current Program scene"}, SelectedIndex=0, HorizontalAlignment=HorizontalAlignment.Stretch };
     private readonly ListView _layerList = new() { SelectionMode = ListViewSelectionMode.Single };
     private IReadOnlyList<GraphicsEditorLayer> _layerRows = [];
     private string _layerStructure = "";
@@ -40,7 +42,7 @@ public sealed partial class GraphicsWorkspaceControl
         _body.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         _body.ColumnDefinitions.Add(new() { Width = new GridLength(340) });
 
-        var root = new Grid { RowSpacing = 10 };
+        var root = new Grid { RowSpacing = 10, Background = Brush(0x10,0x14,0x18) };
         root.RowDefinitions.Add(new() { Height = GridLength.Auto });
         root.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new() { Height = GridLength.Auto });
@@ -56,12 +58,14 @@ public sealed partial class GraphicsWorkspaceControl
         Grid.SetColumn(headerActions, 1); heading.Children.Add(headerActions); root.Children.Add(heading);
 
         var rack = new Grid { RowSpacing = 10, Padding = new Thickness(12) };
-        rack.RowDefinitions.Add(new() { Height = GridLength.Auto }); rack.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); rack.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        rack.RowDefinitions.Add(new() { Height = GridLength.Auto }); rack.RowDefinitions.Add(new() { Height = GridLength.Auto }); rack.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); rack.RowDefinitions.Add(new() { Height = GridLength.Auto });
         rack.Children.Add(new TextBlock { Text = "Show cues", FontSize = 16 });
         _cues.MaxHeight = double.PositiveInfinity; _cues.HorizontalContentAlignment = HorizontalAlignment.Stretch;
-        AutomationProperties.SetName(_cues, "Graphics show cues"); Grid.SetRow(_cues, 1); rack.Children.Add(_cues);
+        Grid.SetRow(_cueSearch,1); rack.Children.Add(_cueSearch);
+        _cueSearch.TextChanged += (_,_) => Refresh(); _cueScopeFilter.SelectionChanged += (_,_) => Refresh();
+        AutomationProperties.SetName(_cues, "Graphics show cues"); Grid.SetRow(_cues, 2); rack.Children.Add(_cues);
         var browse = Action("Templates and saved cues", () => { OpenTools("library", "Templates and saved cues"); return Task.CompletedTask; });
-        Grid.SetRow(browse, 2); rack.Children.Add(browse); _body.Children.Add(Panel(rack));
+        var cueFooter = new StackPanel { Spacing=8 }; cueFooter.Children.Add(_cueScopeFilter); cueFooter.Children.Add(browse); Grid.SetRow(cueFooter, 3); rack.Children.Add(cueFooter); _body.Children.Add(Panel(rack));
 
         var center = new Grid { RowSpacing = 8 };
         center.RowDefinitions.Add(new() { Height = GridLength.Auto });
@@ -90,7 +94,7 @@ public sealed partial class GraphicsWorkspaceControl
         var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
         var panels = new[] { _contentControls, _styleControls, _layoutControls, _motionControls };
         foreach (var (name, index) in new[] { ("Content", 0), ("Style", 1), ("Layout", 2), ("Motion", 3) }) {
-            var button = new Button { Content = name, Padding = new Thickness(9, 6, 9, 6) }; button.Click += (_, _) => SelectInspectorTab(index); tabs.Children.Add(button); _inspectorTabs.Add(button);
+            var button = ChromeButton(name); button.Padding = new Thickness(9, 6, 9, 6); button.Click += (_, _) => SelectInspectorTab(index); tabs.Children.Add(button); _inspectorTabs.Add(button);
             var scroll = new ScrollViewer { Content = panels[index], VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
             _inspectorBodies.Children.Add(scroll); _inspectorScrolls.Add(scroll);
         }
@@ -112,7 +116,8 @@ public sealed partial class GraphicsWorkspaceControl
         _updateButton = Action("Update on air", async () => { if (_session is not null) await _session.UpdateProgramAsync(); });
         var cancel = Action("Cancel draft", () => { _session?.CancelDraft(); return Task.CompletedTask; });
         var clear = Action("Clear graphics", async () => { if (_session is not null) await _session.ClearAsync(); });
-        clear.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 170, 170));
+        _showButton.Background = Brush(0x91,0xE3,0xBC); _showButton.Foreground = Brush(0x10,0x23,0x1A);
+        clear.Foreground = Brush(0xFF,0x99,0x99); clear.Background = Brush(0x32,0x20,0x24); clear.BorderBrush = Brush(0x63,0x40,0x46);
         foreach (var button in new[] { _cueButton, _showButton, _hideButton, _updateButton, cancel, clear }) { _transport.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); Grid.SetColumn(button, _transport.ColumnDefinitions.Count - 1); _transport.Children.Add(button); }
         var footer = Panel(_transport); Grid.SetRow(footer, 2); root.Children.Add(footer);
 
@@ -134,11 +139,13 @@ public sealed partial class GraphicsWorkspaceControl
         help.Children.Add(Copy("Native revision and resource details")); help.Children.Add(_facts); _toolPanels["help"] = help;
         var pane = new Grid { Padding = new Thickness(16), RowSpacing = 12 }; pane.RowDefinitions.Add(new() { Height = GridLength.Auto }); pane.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         var drawerHeader = new Grid(); drawerHeader.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); drawerHeader.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); drawerHeader.Children.Add(_toolTitle);
-        var close = new Button { Content = "Close" }; close.Click += (_, _) => _tools.IsPaneOpen = false; Grid.SetColumn(close, 1); drawerHeader.Children.Add(close); pane.Children.Add(drawerHeader);
+        var close = ChromeButton("Close"); close.Click += (_, _) => _tools.IsPaneOpen = false; Grid.SetColumn(close, 1); drawerHeader.Children.Add(close); pane.Children.Add(drawerHeader);
         Grid.SetRow(_toolScroll, 1); pane.Children.Add(_toolScroll); _tools.Pane = Panel(pane); _tools.Content = root; Content = _tools;
     }
 
-    private static Border Panel(UIElement content) => new() { Child = content, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(7), BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 48, 59, 70)) };
+    private static SolidColorBrush Brush(byte r, byte g, byte b) => new(Windows.UI.Color.FromArgb(255,r,g,b));
+    private static Button ChromeButton(string label) => new() { Content=label, FontSize=13, Padding=new Thickness(12,8,12,8), CornerRadius=new CornerRadius(6), Background=Brush(0x20,0x28,0x30), Foreground=Brush(0xED,0xF2,0xF7), BorderBrush=Brush(0x30,0x3B,0x46), BorderThickness=new Thickness(1) };
+    private static Border Panel(UIElement content) => new() { Child = content, Background=Brush(0x17,0x1D,0x23), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(7), BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 48, 59, 70)) };
     private void OpenTools(string key, string title) { _toolTitle.Text = title; _toolScroll.Content = null; _toolScroll.Content = _toolPanels[key]; _tools.IsPaneOpen = true; }
     private void SelectInspectorTab(int index)
     {
