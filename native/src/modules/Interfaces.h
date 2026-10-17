@@ -275,10 +275,12 @@ struct ProgramBufferDiagnostics {
 };
 
 struct ProgramSourceAdmission {
+  uint64_t requestedLifetime = 0, actualLifetime = 0;
   std::string sourceId, state, reason;
   uint64_t requestedEpoch = 0, actualEpoch = 0;
   int64_t requestedFrameId = 0, actualFrameId = -1;
   int64_t requestedCapture100ns = 0, actualCapture100ns = 0;
+  int64_t formatTransitionAgeFrames = -1;
 };
 
 struct ProgramFrame {

@@ -17,6 +17,7 @@ struct VirtualCameraReadEvidence {
   std::uint64_t lastPublication = 0;
   std::uint32_t lastSequence = 0;
   bool identityObserved = false;
+  uint64_t writerActiveObservations = 0, changedDuringCopy = 0, copyBudgetExhaustions = 0;
   uint64_t correlatedReads = 0, uncorrelatedReads = 0, unobservedProgramFrames = 0;
   uint64_t programEpochChanges = 0, programRegressions = 0;
   uint64_t lastEpochHigh = 0, lastEpochLow = 0;

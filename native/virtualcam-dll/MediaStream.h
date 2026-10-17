@@ -6,6 +6,7 @@
 // sample from the shared-memory slot (or a standby slate when the core is not
 // publishing), timestamped on a fixed frame cadence.
 
+#include "modules/VirtualCameraCadence.h"
 #include <windows.h>
 #include <mfapi.h>
 #include <mfidl.h>
@@ -83,11 +84,15 @@ class MediaStream
   // Delivery pacing (see RequestSample): when the NEXT sample is due, in
   // MFGetSystemTime units. 0 = un-anchored (first sample delivers immediately).
   LONGLONG nextDueHns_ = 0;
+  corevideo::modules::VirtualCameraCadence cadence_;
   HANDLE pacerTimer_ = nullptr;  // high-resolution waitable timer (lazy)
   bool running_ = false;
   bool shutdown_ = false;
-  bool retryTransientRead_ = false;
+  bool retryTransientRead_ = true;
   uint64_t retriedSamples_ = 0, recoveredSamples_ = 0;
+  uint64_t readDeadlineMisses_ = 0;
+  uint64_t retryTimerTimeouts_ = 0, retryTimerFailures_ = 0, unrecoveredTransientSamples_ = 0;
+  LONGLONG sampleReadDeadlineUs_ = 0;
 };
 
 }  // namespace corevideo::virtualcam

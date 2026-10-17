@@ -40,6 +40,7 @@ def main():
     parser.add_argument('--program-scene', choices=('single','grid'), default='single')
     parser.add_argument('--camera-receiver', type=pathlib.Path, help='Registered OS-camera receiver; caller must lease the publisher first')
     parser.add_argument('--expected-camera-dll', type=pathlib.Path)
+    parser.add_argument('--direct-camera-dll', type=pathlib.Path, help='Diagnostic in-process receiver only; never qualifies Windows registration/Frame Server')
     args = parser.parse_args()
     if sys.platform == 'win32' and not sys.flags.utf8_mode:
         parser.error('Run with python -X utf8; native RPC is UTF-8 (existing harness issue #877)')
@@ -52,6 +53,8 @@ def main():
         parser.error('real SDK probe requires a file containing the full authorized test URL')
     if args.camera_receiver and (not args.expected_camera_dll or not args.expected_camera_dll.is_file()):
         parser.error('camera receiver requires the expected installed camera DLL')
+    if args.direct_camera_dll and (not args.camera_receiver or not args.direct_camera_dll.is_file()):
+        parser.error('direct DLL requires the receiver and an existing DLL')
     node = shutil.which('node')
     if args.camera_receiver and not node: parser.error('camera pixel judge requires Node')
     args.output.mkdir(parents=True, exist_ok=False)
@@ -66,6 +69,9 @@ def main():
             '; isolated 1080p60 monitors',
         synthetic=bool(args.fake),
         scope='Program reader attribution only. No shell presentation, camera receiver or audio qualification.')
+    if args.direct_camera_dll:
+        manifest['directCameraDllSha256'] = file_digest(args.direct_camera_dll)
+        manifest['cameraMode'] = 'direct-dll-diagnostic'
     (args.output/'manifest.json').write_text(json.dumps(manifest, indent=2))
     core = None
     stop = threading.Event()
@@ -153,7 +159,13 @@ def main():
                         admission = snapshot.get('programSourceAdmission',{})
                         selected = {s.get('sourceId') for s in admission.get('sources',[])
                             if s.get('state') in ('ready','held') and isinstance(s.get('actualFrameId'),(int,float))
-                            and s['actualFrameId'] >= 0 and s.get('actualEpoch') == s.get('requestedEpoch')}
+                            and s['actualFrameId'] >= 0 and (s.get('actualEpoch') == s.get('requestedEpoch') or
+                                (s.get('state') == 'held' and s.get('reason') == 'same-lifetime-format-transition' and
+                                 s.get('actualLifetime') == s.get('requestedLifetime') and
+                                 str(s.get('actualLifetime','0')).isdigit() and int(s.get('actualLifetime','0')) > 0 and
+                                 s.get('actualEpoch',0) < s.get('requestedEpoch',0) and
+                                 0 <= s.get('formatTransitionAgeFrames',-1) <= 6 and
+                                 s.get('actualCapture100ns',0) <= s.get('requestedCapture100ns',0)))}
                         if admission.get('readyOnlyRequested') is not True or not expected_program_sources.issubset(selected):
                             ingredient_errors.add('Requested Program pixels lacked source-admission evidence')
                 if sample_file.tell() > 256*1024*1024: raise RuntimeError('sample artifact budget exhausted; incomplete evidence')
@@ -246,7 +258,10 @@ def main():
                     stop.wait(.1)
                 else: raise RuntimeError('camera publisher did not become ready')
                 receiver_files = [(args.output/'receiver.ndjson').open('wb'),(args.output/'receiver.stderr.log').open('wb')]
-                receiver = subprocess.Popen([str(args.camera_receiver.resolve()),str(math.ceil(args.duration))],
+                receiver_command = [str(args.camera_receiver.resolve()),str(math.ceil(args.duration))]
+                if args.direct_camera_dll:
+                    receiver_command += ['--dll',str(args.direct_camera_dll.resolve())]
+                receiver = subprocess.Popen(receiver_command,
                     stdin=subprocess.DEVNULL,stdout=receiver_files[0],stderr=receiver_files[1],
                     creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             phase = 'monitor-demand-ack'
@@ -352,7 +367,7 @@ def main():
     else: report['readerCounterVerdict'] = 'UNVERIFIED'
     if report['readerCounterVerdict'] == 'FAIL' or report['workloadVerdict'] == 'FAIL' or report['monitorWorkVerdict'] == 'FAIL':
         report['allOutputZeroMissVerdict'] = 'FAIL'
-    if report.get('cameraPixels',{}).get('osCameraContinuityVerified') is False:
+    if report.get('cameraPixels',{}).get('receiverPixelContinuityPassed') is False:
         report['allOutputZeroMissVerdict'] = 'FAIL'
     (args.output/'report.json').write_text(json.dumps(report, indent=2))
     print(json.dumps({k:v for k,v in report.items() if k!='latestDisplay'},indent=2))

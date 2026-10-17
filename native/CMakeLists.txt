@@ -368,6 +368,8 @@ if(COREVIDEO_WITH_VIRTUALCAM)
       COREVIDEO_VCAM_ISOLATED_PUBLICATION_QA=1)
     if(mode STREQUAL "on")
       target_compile_definitions(${qa_target} PRIVATE COREVIDEO_CAMERA_READ_RETRY_QA=1)
+    else()
+      target_compile_definitions(${qa_target} PRIVATE COREVIDEO_CAMERA_READ_RETRY_OFF_QA=1)
     endif()
     target_include_directories(${qa_target} PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/virtualcam-dll)

@@ -1297,6 +1297,8 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
   // (zoom-media-spine-sync queueWait 3.7s in soak run 10).
   auto& ref = videoStreams_[event.sourceUuid];
   const auto sourceGeneration = state_.sourceGenerationForParticipant(event.participantId);
+  if (!ref.preparationLifetime || ref.sourceGeneration != sourceGeneration || ref.participantId != event.participantId)
+    ref.preparationLifetime = nextVideoSourceEpoch.fetch_add(1);
   if (ref.width != event.width || ref.height != event.height ||
       ref.sourceGeneration != sourceGeneration || ref.participantId != event.participantId) {
     ref.regionOpaque.reset();  // shared_ptr deleter closes the mapping
@@ -1351,6 +1353,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     bool probeLumaRange = false;
     std::uint64_t generation = 0;
     std::uint64_t sourceEpoch = 0;
+    std::uint64_t preparationLifetime = 0;
   };
   // Thumbnail-event pace: ~2/s per participant is plenty for the shell's roster
   // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
@@ -1394,7 +1397,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
       const bool buildThumbnail = ref.lastThumbnailEmitMs < 0 ||
                                   nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs;
       jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
-                      buildThumbnail, !ref.lumaRangeProbed, processGeneration_, ref.sourceEpoch});
+                      buildThumbnail, !ref.lumaRangeProbed, processGeneration_, ref.sourceEpoch, ref.preparationLifetime});
     }
   }
 
@@ -1446,7 +1449,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
       if (i420Preparation_) result.preparedGpu = i420Preparation_->offer(result.frame->participantId,
           job.sourceEpoch, result.frame->frameId,
           std::chrono::duration_cast<std::chrono::nanoseconds>(result.observedAt.time_since_epoch()).count() / 100,
-          result.frame->i420Width, result.frame->i420Height, result.i420Shared);
+          result.frame->i420Width, result.frame->i420Height, result.i420Shared, job.preparationLifetime);
       if (job.probeLumaRange && result.i420Shared->size() >=
                                     static_cast<std::size_t>(job.width) * job.height) {
         result.lumaRange = probeLumaRange(result.i420Shared->data(), job.width, job.height,

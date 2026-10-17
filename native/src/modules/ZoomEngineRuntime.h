@@ -312,6 +312,7 @@ class ZoomEngineRuntime {
     std::uint32_t participantId = 0;
     std::uint64_t sourceGeneration = 0;
     std::uint64_t sourceEpoch = 0;
+    std::uint64_t preparationLifetime = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t lastSequence = 0;

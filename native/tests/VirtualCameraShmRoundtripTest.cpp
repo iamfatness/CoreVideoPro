@@ -21,6 +21,7 @@
 
 #include "SharedFrameReader.h"  // native/virtualcam-dll (on the test include path)
 #include "modules/VirtualCameraPublisher.h"
+#include "modules/VirtualCameraReadRetry.h"
 #include "modules/VirtualCameraShm.h"
 
 using corevideo::modules::VirtualCameraShmHeader;
@@ -234,6 +235,35 @@ TEST(VirtualCameraShmRoundtrip, PublicationWaitSharesOnePayloadCopyBudgetAcrossR
   EXPECT_EQ(reader.evidence().lastResult, corevideo::modules::VirtualCameraReadResult::Contended);
 }
 
+TEST(VirtualCameraShmRoundtrip, OriginalDeadlineWaitRecoversActualOddMappedPublication) {
+  using namespace corevideo::modules;
+  ShmWriter writer;
+  ASSERT_TRUE(writer.open());
+  std::vector<uint8_t> pixels(1920 * 1080 * 3 / 2, 42), out;
+  writer.write(pixels, 1920, 1080);
+  SharedFrameReader reader;
+  int w = 0, h = 0; unsigned budget = 2, retries = 0; int64_t now = 0;
+  ++writer.header->seq;
+  const auto read = [&](bool reopen) {
+    reader.readLatest(out, w, h, reopen, &budget);
+    return reader.evidence().lastResult;
+  };
+  // Exact same mapped write window: the immediate negative control cannot
+  // obtain pixels; the bounded wait succeeds only when the writer completes.
+  EXPECT_FALSE(readCameraUntilDeadline(read, [&] { return now; },
+      [&](int64_t) { return false; }, false, retries, 2000));
+  EXPECT_EQ(reader.evidence().writerActiveObservations, 2u);
+  EXPECT_EQ(budget, 2u);
+  EXPECT_TRUE(readCameraUntilDeadline(read, [&] { return now; }, [&](int64_t) {
+    now += 250;
+    ++writer.header->seq; // controlled publisher completes while yielding
+    return true;
+  }, true, retries, 2000));
+  EXPECT_EQ(retries, 1u); EXPECT_EQ(budget, 1u);
+  EXPECT_EQ(out, pixels); EXPECT_EQ(w, 1920); EXPECT_EQ(h, 1080);
+  EXPECT_EQ(reader.evidence().changedDuringCopy, 0u);
+}
+
 #if COREVIDEO_WITH_VIRTUALCAM
 // Load this build's DLL directly. No camera registration or Frame Server restart;
 // both pixels and diagnostics remain in the isolated per-test-process directory.
@@ -327,7 +357,10 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
   const std::string emittedLog((std::istreambuf_iterator<char>(log)), {});
   log.close(); // Windows readers can deny the DLL's subsequent append opens.
   EXPECT_NE(emittedLog.find("emitted=61 fresh=1 held=30 slate=30 failed=0"), std::string::npos);
-  EXPECT_NE(emittedLog.find("readFresh=1 unchanged=60 contended=0"), std::string::npos);
+  // Read-attempt totals include bounded retries. Emission totals above still
+  // require every missed sample to remain truthfully held/slate.
+  EXPECT_NE(emittedLog.find("readFresh=1 unchanged="), std::string::npos);
+  EXPECT_NE(emittedLog.find(" contended=0"), std::string::npos);
   EXPECT_NE(emittedLog.find("programIdentityVerified=0 receiverVerified=0"), std::string::npos);
   // Resume with a changing synthetic identity. This catches held/duplicated
   // sample contents despite successful requests and advancing event counters.

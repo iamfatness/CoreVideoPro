@@ -19,6 +19,7 @@ struct CpuSourcePreparation::Impl {
   struct Source {
     std::string id;
     uint64_t epoch = 0;
+    uint64_t continuityLifetime = 0;
     int64_t lastOfferedFrameId = -1;
     int width = 0, height = 0;
     bool bgra = false;
@@ -383,8 +384,8 @@ CpuSourcePreparation::~CpuSourcePreparation() = default;
 CpuSourcePreparation::Stats CpuSourcePreparation::stats() const { std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->measured; }
 std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offer(const std::string& id, uint64_t epoch,
     int64_t frameId, int64_t captureTimestamp100ns, int width, int height,
-    const std::shared_ptr<const std::vector<uint8_t>>& cpu) {
-  return offerCpu(id, epoch, frameId, captureTimestamp100ns, width, height, 0, false, cpu);
+    const std::shared_ptr<const std::vector<uint8_t>>& cpu, uint64_t continuityLifetime) {
+  return offerCpu(id, epoch, frameId, captureTimestamp100ns, width, height, 0, false, cpu, continuityLifetime);
 }
 std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerBgra(const std::string& id, uint64_t epoch,
     int64_t frameId, int64_t captureTimestamp100ns, int width, int height, int stride,
@@ -393,7 +394,7 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerBgra(const std::str
 }
 std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::string& id, uint64_t epoch,
     int64_t frameId, int64_t captureTimestamp100ns, int width, int height, int stride, bool bgra,
-    const std::shared_ptr<const std::vector<uint8_t>>& cpu) {
+    const std::shared_ptr<const std::vector<uint8_t>>& cpu, uint64_t continuityLifetime) {
 #if defined(_WIN32) && COREVIDEO_WITH_D3D11 && !COREVIDEO_STUB
   std::lock_guard<std::mutex> lock(impl_->mutex);
   if (!impl_->measured.requested || !cpu) return {};
@@ -409,6 +410,7 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
       ++impl_->measured.refused;
       auto token = std::make_shared<CpuSourceGpuView>();
       token->sourceId = id; token->sourceEpoch = epoch; token->frameId = frameId;
+      token->continuityLifetime = continuityLifetime;
       token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
       token->cpuStride = stride; token->cpu = cpu;
       token->demand = std::make_shared<CpuSourceGpuDemand>();
@@ -433,6 +435,10 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
     auto found = impl_->sources.find(id);
     std::shared_ptr<Impl::Source> source = found == impl_->sources.end() ? nullptr : found->second;
     if (source && source->epoch > epoch) { ++impl_->measured.superseded; return {}; }
+    if (source && source->continuityLifetime != continuityLifetime) {
+      source->demand->stopped.store(true);
+      for (const auto& old : impl_->retiring) if (old->id == id) old->demand->stopped.store(true);
+    }
     if (source && source->epoch == epoch && !source->demand->stopped.load() &&
         (source->width != width || source->height != height || source->bgra != bgra || frameId <= source->lastOfferedFrameId)) {
       ++impl_->measured.refused; return {};
@@ -445,10 +451,19 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
         })) return refused(CpuPreparationCapacity::RetiringGenerations); // one charged retiring generation per source
       auto replacement = std::make_shared<Impl::Source>();
       replacement->id = id; replacement->epoch = epoch; replacement->width = width; replacement->height = height;
+      replacement->continuityLifetime = continuityLifetime;
       replacement->bgra = bgra;
       if (source) {
-        source->demand->stopped.store(true);
-        if (source->pool || source->building) impl_->retiring.push_back(source);
+        const bool formatReplacement = continuityLifetime && source->continuityLifetime == continuityLifetime &&
+            !source->demand->stopped.load() && !source->demand->failed.load();
+        if (formatReplacement) replacement->demand->predecessor = source->demand;
+        else {
+          source->demand->stopped.store(true);
+          // A participant/process lifetime change invalidates all earlier
+          // format generations, including one already draining.
+          for (const auto& old : impl_->retiring) if (old->id == id) old->demand->stopped.store(true);
+        }
+        if (formatReplacement || source->pool || source->building) impl_->retiring.push_back(source);
       }
       source = std::move(replacement); impl_->sources.insert_or_assign(id, source);
     }
@@ -459,6 +474,7 @@ std::shared_ptr<CpuSourceGpuView> CpuSourcePreparation::offerCpu(const std::stri
     if (source->queued.size() >= kPendingPerSource) return refused(CpuPreparationCapacity::PendingTokens);
     auto token = std::make_shared<CpuSourceGpuView>();
     token->sourceId = id; token->sourceEpoch = epoch; token->frameId = frameId;
+    token->continuityLifetime = continuityLifetime;
     token->captureTimestamp100ns = captureTimestamp100ns; token->width = width; token->height = height;
     token->cpuStride = stride;
     token->cpu = cpu; token->demand = source->demand; source->queued.push_back(token);

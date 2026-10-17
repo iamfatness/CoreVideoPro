@@ -1,9 +1,93 @@
 #include "modules/VirtualCameraDeliveryEvidence.h"
 #include "modules/VirtualCameraReadRetry.h"
+#include "modules/VirtualCameraCadence.h"
 #include "modules/VirtualCameraCorrelation.h"
 #include <gtest/gtest.h>
 
 using namespace corevideo::modules;
+
+TEST(VirtualCameraCadence, WholeHourHasNoFractionalFrameClockDrift) {
+  for (uint32_t fps : {24u, 30u, 60u}) {
+    VirtualCameraCadence cadence(fps); int64_t elapsed = 0;
+    for (uint32_t frame = 0; frame < fps * 3600u; ++frame) {
+      const auto interval = cadence.nextInterval100ns();
+      EXPECT_TRUE(interval == 10000000u / fps || interval == 10000000u / fps + 1);
+      elapsed += interval;
+    }
+    EXPECT_EQ(elapsed, 3600LL * 10000000);
+    if (fps == 60) EXPECT_EQ(elapsed - int64_t(10000000u / fps) * fps * 3600, 144000);
+  }
+}
+
+TEST(VirtualCameraCadence, ReanchorResetsFractionAndZeroRateKeepsThirtyFpsDefault) {
+  VirtualCameraCadence cadence(60);
+  EXPECT_EQ(cadence.nextInterval100ns(), 166666);
+  EXPECT_EQ(cadence.nextInterval100ns(), 166667);
+  cadence.reset(60); EXPECT_EQ(cadence.nextInterval100ns(), 166666);
+  cadence.reset(0); int64_t total = 0;
+  for (int frame = 0; frame < 30; ++frame) total += cadence.nextInterval100ns();
+  EXPECT_EQ(total, 10000000);
+}
+
+TEST(VirtualCameraReadRetry, ColdFirstPayloadCopyDoesNotConsumeTheBoundedRecoveryWindow) {
+  const auto run = [](bool oldEntryClamp) {
+    int64_t now = 0; unsigned retries = 0; unsigned copies = 0;
+    const int64_t sampleDeadline = 14000;
+    const bool got = readCameraUntilDeadline([&](bool first) {
+      ++copies;
+      if (first) { now += 3000; return VirtualCameraReadResult::Contended; }
+      now += 500; return VirtualCameraReadResult::Fresh;
+    }, [&] { return now; }, [&](int64_t remaining) {
+      EXPECT_TRUE(remaining > 0 && remaining <= sampleDeadline); now += 250; return true;
+    }, true, retries, oldEntryClamp ? 2000 : sampleDeadline);
+    EXPECT_TRUE(now < sampleDeadline);
+    EXPECT_EQ(copies, oldEntryClamp ? 1u : 2u);
+    EXPECT_EQ(retries, oldEntryClamp ? 0u : 1u);
+    return got;
+  };
+  EXPECT_FALSE(run(true)); // The former entry-relative clamp loses a recoverable first sample.
+  EXPECT_TRUE(run(false));
+}
+
+TEST(VirtualCameraReadRetry, EarlyUnchangedConsumerWaitsForPublicationWithinOriginalSampleWindow) {
+  const auto run = [](int64_t deadline) {
+    int64_t now = 0; unsigned retries = 0;
+    return readCameraUntilDeadline([&](bool) {
+      return now >= 3500 ? VirtualCameraReadResult::Fresh : VirtualCameraReadResult::Unchanged;
+    }, [&] { return now; }, [&](int64_t remaining) {
+      now += (std::min)(int64_t(retries ? 2000 : 250), (std::max)(int64_t(1), remaining / 2));
+      return true;
+    }, true, retries, deadline);
+  };
+  EXPECT_FALSE(run(2000));
+  EXPECT_TRUE(run(14000));
+}
+
+TEST(VirtualCameraReadRetry, OriginalDeadlineIsNotRenewedByLateEntryOrOversleptWait) {
+  for (int64_t start : {int64_t{1990}, int64_t{2100}}) {
+    int64_t now = start; unsigned retries = 0; int reads = 0, waits = 0;
+    EXPECT_FALSE(readCameraUntilDeadline([&](bool) {
+      ++reads; return VirtualCameraReadResult::Contended;
+    }, [&] { return now; }, [&](int64_t remaining) {
+      EXPECT_EQ(remaining, 10); ++waits; now += 100; return true;
+    }, true, retries, 2000));
+    EXPECT_EQ(reads, 1); EXPECT_EQ(retries, 0u);
+    EXPECT_EQ(waits, start < 2000 ? 1 : 0);
+  }
+}
+
+TEST(VirtualCameraReadRetry, DeadlineWaitRecoversWriteAndBoundsAttemptsWithoutReopen) {
+  int64_t now = 0; unsigned retries = 0; int reopen = 0;
+  EXPECT_TRUE(readCameraUntilDeadline([&](bool allowReopen) {
+    if (allowReopen) ++reopen;
+    return now < 750 ? VirtualCameraReadResult::Contended : VirtualCameraReadResult::Fresh;
+  }, [&] { return now; }, [&](int64_t) { now += 250; return true; }, true, retries, 2000));
+  EXPECT_EQ(reopen, 1); EXPECT_EQ(retries, 3u);
+  now = 0;
+  EXPECT_FALSE(readCameraUntilDeadline([](bool) { return VirtualCameraReadResult::Contended; },
+      [&] { return now; }, [&](int64_t) { ++now; return true; }, true, retries, 2000));
+  EXPECT_EQ(retries, 8u);
+}
 
 TEST(VirtualCameraDeliveryEvidence, FailedEventsNeverCountAsDeliveredOrAdvanceTheClock) {
   VirtualCameraDeliveryEvidence evidence;
