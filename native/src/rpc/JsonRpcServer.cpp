@@ -7,6 +7,7 @@
 #include "rpc/JsonRpcServer.h"
 
 #include "core/LockHoldGuardrail.h"
+#include "core/ScopedVideoScheduling.h"
 #include "core/AnchoredFrameDeadlineTracker.h"
 #include "rpc/CommandMailbox.h"
 #include "contracts/Lifecycle.h"
@@ -612,6 +613,7 @@ void JsonRpcServer::run(std::istream& input, std::ostream& output) {
   // path so neither can stall the on-screen program. The blocking GPU readback is
   // already skipped on this path, so the lock is held only ~1ms per frame.
   std::thread renderThread([&] {
+    core::ScopedVideoScheduling scheduling("program-render");
     mediaCore_.reportRenderWorkerStarted();
     long long frames = 0;
     long long lockWaitUs = 0;

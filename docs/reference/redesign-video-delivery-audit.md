@@ -134,7 +134,7 @@ with zero underruns/overflows. It drains the submitted tail instead of counting
 intentional idle time after the producer stops. It is still a short regression,
 not full-workload qualification.
 
-Program preparation, scheduled delivery and asynchronous camera publication
+Program rendering, preparation, scheduled delivery and asynchronous camera publication
 register their own threads with Windows MMCSS under `Playback`. Audio retains
 its existing `Pro Audio` registration. The video registration is scoped to the
 worker lifetime and logs success/failure; it does not change process priority,
