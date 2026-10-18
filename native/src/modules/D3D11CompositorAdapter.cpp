@@ -183,7 +183,7 @@ class D3D11Compositor final : public ICompositor {
           if (*backend && (*backend)->gpuReadLeases_)
             result.pending = (*backend)->gpuReadLeases_->retire();
           return result;
-        });
+        }, true, MonitorRenderWorker::DeadlineRole::Monitor);
         auto copyOwner = std::make_shared<std::unique_ptr<D3DProgramCopyOwner>>();
         auto* auxiliary = auxiliaryMonitorWorker_.get();
         monitorWorker_ = std::make_unique<MonitorRenderWorker>(
@@ -209,7 +209,7 @@ class D3D11Compositor final : public ICompositor {
             result.programDisplay = (*copyOwner)->observation();
           }
           return result;
-        }, false);
+        }, false, MonitorRenderWorker::DeadlineRole::ProgramCopy);
         core::nativeLogf("[monitor-worker] isolation=enabled pending_capacity=1\n");
       }
       if (!monitorBackend) {

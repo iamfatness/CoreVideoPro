@@ -4,9 +4,11 @@
 #include "modules/MonitorInputCache.h"
 #include "core/BoundedAsyncLog.h"
 #include "core/ComApartmentLifetime.h"
+#include "core/ScopedVideoScheduling.h"
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 namespace corevideo::modules {
@@ -16,15 +18,17 @@ namespace corevideo::modules {
 // and old leases are released outside the mailbox lock.
 class MonitorRenderWorker {
  public:
+  enum class DeadlineRole { None, Monitor, ProgramCopy };
   using Render = std::function<MonitorRenderResult(const MonitorRenderRequest&)>;
   struct MaintenanceResult {
     bool pending = false;
     std::optional<ProgramDisplayObservation> programDisplay;
   };
   using Maintenance = std::function<MaintenanceResult()>;
-  explicit MonitorRenderWorker(Render render, std::function<void()> initialize = {}, Maintenance maintenance = {}, bool prepareInputs = true)
-      : thread_([this, render = std::move(render), initialize = std::move(initialize), maintenance = std::move(maintenance), prepareInputs]() mutable {
-          run(render, initialize, maintenance, prepareInputs);
+  explicit MonitorRenderWorker(Render render, std::function<void()> initialize = {}, Maintenance maintenance = {}, bool prepareInputs = true,
+                               DeadlineRole deadlineRole = DeadlineRole::None)
+      : thread_([this, render = std::move(render), initialize = std::move(initialize), maintenance = std::move(maintenance), prepareInputs, deadlineRole]() mutable {
+          run(render, initialize, maintenance, prepareInputs, deadlineRole);
         }) {}
   ~MonitorRenderWorker() {
     cancellation_->stopped.store(true, std::memory_order_relaxed);
@@ -109,7 +113,7 @@ class MonitorRenderWorker {
       return false;
     }
   }
-  void run(Render& render, std::function<void()>& initialize, Maintenance& maintenance, bool prepareInputs) {
+  void run(Render& render, std::function<void()>& initialize, Maintenance& maintenance, bool prepareInputs, DeadlineRole deadlineRole) {
     core::ComApartmentLifetime apartment;
     struct ReleaseBackend {
       Render& render; Maintenance& maintenance;
@@ -132,6 +136,12 @@ class MonitorRenderWorker {
       std::lock_guard<std::mutex> lock(mutex_);
       if (failed_ == 0) readiness_ = "ready";
     }
+    // Device/shader setup is outside the production cadence. Register only the
+    // deadline-bearing owner threads before announcing readiness; grade previews
+    // keep ordinary scheduling. Teardown reverts on this same owner thread.
+    std::optional<core::ScopedVideoScheduling> scheduling;
+    if (deadlineRole != DeadlineRole::None)
+      scheduling.emplace(deadlineRole == DeadlineRole::ProgramCopy ? "program-monitor-copy" : "monitor-presentation");
     { std::lock_guard<std::mutex> lock(mutex_); initializationComplete_ = true; }
     initialized_.notify_all();
     auto lastLog = std::chrono::steady_clock::now();

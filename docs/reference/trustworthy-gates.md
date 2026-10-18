@@ -63,6 +63,17 @@ repeat/gap requirements remain unchanged.
 
 ### Phase timing interpretation and retained failure (#898)
 
+The October 18 #947 follow-up uses the newer absolute frame-boundary assertion,
+not the historical relative ten-millisecond wait below. The fresh production
+suite retained 1,774 passes and one failure: depth 3, isolated phase 14 ms,
+tick 52 observed request sequence 52 instead of 53 at the anchored boundary.
+The early Program-copy observation passed; this is a later monitor-result
+publication failure, not proof of missing Program-copy pixels. The two
+deadline-bearing monitor owners now use the same scoped Playback scheduling as
+other video workers; optional grade previews retain ordinary scheduling.
+Keep the failed log and validate the unchanged phase/pixel/deadline assertions.
+A later scoped pass does not establish full-workload or display acceptance.
+
 The explicit-mode full Release run at `706a446` with incoming isolation `0`
 retained 1,599 passes and one failure: the isolated phase fixture timed out
 waiting ten milliseconds for the next worker sequence. This is a different
