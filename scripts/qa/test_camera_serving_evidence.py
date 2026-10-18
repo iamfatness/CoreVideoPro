@@ -168,6 +168,7 @@ class CameraServingEvidenceTest(unittest.TestCase):
         old = self.root / "old" / self.expected.name
         old.parent.mkdir(); old.write_bytes(b"old DLL")
         class FakeCore:
+            launcher_context = {"packaged": False, "status": 15700, "executable": "unpacked-test-python"}
             def __init__(self, *unused):
                 source.write_text(f"[16:00:00.123 pid=123] Serving module path={old}\n")
             def sync(self, *unused):
@@ -192,6 +193,7 @@ class CameraServingEvidenceTest(unittest.TestCase):
              patch.object(harness, "judge", return_value={"programBufferVerdict": "PASS"}):
             self.assertEqual(harness.main(), 1)
         report = json.loads((output / "report.json").read_text())
+        self.assertEqual(report["qaLauncherContext"]["executable"], "unpacked-test-python")
         self.assertTrue(report["cameraPixels"]["osCameraContinuityVerified"])
         self.assertFalse(report["servingIdentityVerified"])
         self.assertEqual(report["result"], "INVALID")

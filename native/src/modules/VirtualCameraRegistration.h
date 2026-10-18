@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include "core/BoundedAsyncLog.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -60,11 +61,19 @@ inline VirtualCameraRegistrationResult ensureVirtualCameraRegistrationForRoots(
   if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
     return {false, false, "CAMERA_RUNTIME_MISSING: Reinstall the virtual camera from this installation."};
   }
-  const auto user = cameraRegistrationString(userRoot, kServer);
+  const auto readUser = [&](const wchar_t* name, LONG& status, DWORD& type) {
+    std::vector<wchar_t> data(32768); DWORD bytes = static_cast<DWORD>(data.size()*sizeof(wchar_t));
+    status = ::RegGetValueW(userRoot,kServer,name,RRF_RT_REG_SZ|RRF_SUBKEY_WOW6464KEY,&type,data.data(),&bytes);
+    return status==ERROR_SUCCESS ? std::wstring(data.data()) : std::wstring{};
+  };
+  LONG userStatus=0, roleStatus=0, ownerStatus=0; DWORD userType=0,roleType=0,ownerType=0;
+  const auto user = readUser(nullptr,userStatus,userType);
   if (!user.empty()) {
-    const auto userRole = cameraRegistrationString(userRoot, kServer, L"CoreVideoOwnerRole");
-    const auto userOwner = cameraRegistrationString(userRoot, kServer, L"CoreVideoOwnerAppDirectory");
+    const auto userRole = readUser(L"CoreVideoOwnerRole",roleStatus,roleType);
+    const auto userOwner = readUser(L"CoreVideoOwnerAppDirectory",ownerStatus,ownerType);
     if (userRole != kRole || _wcsicmp(userOwner.c_str(), app.c_str()) != 0) {
+      ::corevideo::core::nativeLogf("[camera-registration-read] pid=%lu thread=%lu app=[%ls] expected_role=[%ls] user=[%ls] user_status=%ld user_type=%lu role=[%ls] role_status=%ld role_type=%lu owner=[%ls] owner_status=%ld owner_type=%lu\n",
+          ::GetCurrentProcessId(),::GetCurrentThreadId(),app.c_str(),kRole,user.c_str(),userStatus,userType,userRole.c_str(),roleStatus,roleType,userOwner.c_str(),ownerStatus,ownerType);
       return {false, false, "CAMERA_USER_REGISTRATION_CONFLICT: A per-user camera key has different ownership. Run Register-VirtualCamera.cmd to inspect/migrate it."};
     }
     if (_wcsicmp(user.c_str(), machine.c_str()) == 0) return {true, false, {}};

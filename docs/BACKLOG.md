@@ -1,5 +1,10 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 18:** identify and fix the causal #857 webcam ownership
+failure before publication. Then merge #945 and install the complete Graphics
+redesign for review. Use the API/background diagnostics. Keep failed trials and
+the later passing trial distinct; no publication based only on recovery.
+
 **Owner approval, October 17 — #942:** implement the approved 1080p/100%
 Graphics workspace and explicit Use in Studio assignment. In Studio, add only
 the assigned-look label beside the existing lower-third toggle; preserve all
@@ -239,6 +244,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 | Volt dependent — after consumers/#761 | B | [#929](https://github.com/iamfatness/CoreVideoPro/issues/929) | Scoped participant automation, rehearsal and manual override with native outcome evidence. |
 | Specification merged; implementation ranked above | B | [#924](https://github.com/iamfatness/CoreVideoPro/issues/924) | Approved graphics specification merged through #925; implementation follows #926–#929 and their individual acceptance gates. |
 
+| Owner first — October 18 release blocker | B | [#857](https://github.com/iamfatness/CoreVideoPro/issues/857) | Capture the failing worker read, fix its cause, validate installed activation and same-process recovery before publication; then integrate #945. |
 | Owner current — October 16 incident | B | [#930](https://github.com/iamfatness/CoreVideoPro/issues/930) | Remove UI-paced media dependencies and reject false performance passes; validate all requested live inputs with recording and virtual camera. |
 | Owner current — October 16 | B | [#922](https://github.com/iamfatness/CoreVideoPro/issues/922) | Add validated, persisted RTMP/SRT control actions with no restart, secret echo, automatic stream start or change to an active output. |
 | Owner current — October 15 | B | [#916](https://github.com/iamfatness/CoreVideoPro/issues/916) | Diagnose select-to-first-present latency, reproduce the exact cause and fix it with API/offscreen evidence; keep the installed app/session untouched. |
