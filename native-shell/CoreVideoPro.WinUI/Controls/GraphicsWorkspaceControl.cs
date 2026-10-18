@@ -11,7 +11,7 @@ namespace CoreVideoPro.WinUI.Controls;
 
 /// <summary>Native Graphics operator workspace. This view never renders media,
 /// controls Program by editing a form, or replaces the existing legacy controls.</summary>
-public sealed class GraphicsWorkspaceControl : UserControl
+public sealed partial class GraphicsWorkspaceControl : UserControl
 {
     public static readonly DependencyProperty StudioProperty = DependencyProperty.Register(nameof(Studio), typeof(StudioViewModel),
         typeof(GraphicsWorkspaceControl), new PropertyMetadata(null, (d, _) => ((GraphicsWorkspaceControl)d).Attach()));
@@ -25,20 +25,21 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private ColorGradeEditorViewModel? _editor;
     private GradePreviewCoordinator? _previewOwner;
     private readonly Grid _body = new() { ColumnSpacing = 12, RowSpacing = 12 };
-    private readonly StackPanel _libraryPanel = new() { Spacing = 8 }, _inspector = new() { Spacing = 10 };
+    private readonly StackPanel _libraryPanel = new() { Spacing = 8 };
+    private StackPanel _inspector => _inspectorTarget;
     private readonly ListView _library = new() { MaxHeight = 260, SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled=true }, _cues = new() { MaxHeight = 230, SelectionMode = ListViewSelectionMode.Single };
     private readonly ComboBox _libraryView=new() {ItemsSource=new[] {"Cards","Compact list"},SelectedIndex=0,HorizontalAlignment=HorizontalAlignment.Stretch};
     private readonly TextBox _search = new() { PlaceholderText = "Search looks" };
     private readonly ComboBox _scope=new() {Header="New cue scope",HorizontalAlignment=HorizontalAlignment.Stretch};
     private readonly ComboBox _family = new() { ItemsSource = new[] { "All", "lower-third", "title", "bug", "clock", "countdown" }, SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly GraphicsTemplateLayerEditor _layersEditor=new();
-    private readonly GraphicsAuthoringCanvas _canvas = new() { Height = 330 };
+    private readonly GraphicsAuthoringCanvas _canvas = new();
     private readonly TextBlock _status = Copy("Choose a look, create a cue, then edit privately."), _native = Copy("Native authoring canvas"), _facts = Copy("");
     private readonly ComboBox _samples=new() {Header="Private preview copy",ItemsSource=new[] {"Your draft","Short text","Long text","Blank secondary","Unicode example"},SelectedIndex=0,HorizontalAlignment=HorizontalAlignment.Stretch};
     private readonly ToggleSwitch _compare = new() { Header = "Compare Original / Edited" };
     private readonly List<Button> _actions = [], _inspectorActions = [];
-    private readonly Button _cueButton, _showButton, _updateButton, _hideButton, _deleteButton, _undoButton;
-    private readonly Button _packageImportButton;
+    private Button _cueButton = null!, _showButton = null!, _updateButton = null!, _hideButton = null!, _deleteButton = null!, _undoButton = null!;
+    private Button _packageImportButton = null!;
     private readonly TextBlock _importStatus = Copy("");
     private readonly List<NativeGraphicsTemplate> _templateRows = [];
     private readonly List<string> _cueIds = [];
@@ -54,79 +55,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private string _thumbnailEpoch="";
     public GraphicsWorkspaceControl()
     {
-        _body.ColumnDefinitions.Add(new() { Width = new GridLength(250) });
-        _body.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star), MinWidth = 320 });
-        _body.ColumnDefinitions.Add(new() { Width = new GridLength(300) });
-        _body.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        _body.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        var heading = new StackPanel { Spacing = 5 };
-        heading.Children.Add(new TextBlock { Text = "Graphics", FontSize = 22, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        heading.Children.Add(Copy("Private draft → accepted Cue → explicit Show. Video Takes remain separate."));
-        heading.Children.Add(_status); Grid.SetColumnSpan(heading, 3); _body.Children.Add(heading);
-        _libraryPanel.Children.Add(new TextBlock { Text = "LIBRARY", FontSize = 11, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        _libraryPanel.Children.Add(_search); _libraryPanel.Children.Add(_family);_libraryPanel.Children.Add(_libraryView);_libraryPanel.Children.Add(Action("Refresh library",async()=>{if(_session is not null) await _session.RefreshCatalogAsync();})); _libraryPanel.Children.Add(_library);
-        _libraryPanel.Children.Add(_scope);
-        _libraryPanel.Children.Add(Action("Create hidden cue", async () => { if (_library.SelectedIndex >= 0 && _session is not null && _scope.SelectedItem is ComboBoxItem {Tag:string scene}) await _session.CreateAsync(_session.Selected is null && _session.Template is { } draftTemplate ? draftTemplate : _templateRows[_library.SelectedIndex],scene.Length==0?"global":"scene",scene); }));
-        _libraryPanel.Children.Add(new TextBlock { Text = "CUE RACK", FontSize = 11, Margin = new Thickness(0, 12, 0, 0) });
-        _libraryPanel.Children.Add(_cues); _deleteButton = Action("Delete hidden cue", async () => { if (_session is not null) await _session.RemoveAsync(); }); _libraryPanel.Children.Add(_deleteButton);
-        _libraryPanel.Children.Add(Action("Duplicate into hidden cue", async () => { if (_session is not null) await _session.DuplicateAsync(); }));
-        _libraryPanel.Children.Add(_saveName);
-        _libraryPanel.Children.Add(Action("Rename selected cue",async()=>{if(_session is not null) await _session.RenameCueAsync(_saveName.Text);}));
-        _libraryPanel.Children.Add(Action("Move cue earlier / behind",async()=>{if(_session is not null) await _session.MoveCueAsync(-1);}));
-        _libraryPanel.Children.Add(Action("Move cue later / in front",async()=>{if(_session is not null) await _session.MoveCueAsync(1);}));
-        _libraryPanel.Children.Add(Action("Save cue", async () => { if (Studio is not null) await Studio.SaveGraphicsCueAsync(_saveName.Text); }));
-        _libraryPanel.Children.Add(new TextBlock { Text = "SAVED CUES", FontSize = 11, Margin = new Thickness(0, 12, 0, 0) });
-        _libraryPanel.Children.Add(_savedCues);
-        _libraryPanel.Children.Add(Action("Restore as hidden cue", async () => { if (_savedLibrary is not null && _savedCues.SelectedIndex >= 0) await _savedLibrary.RestoreAsync(_savedLibrary.Document.Cues[_savedCues.SelectedIndex],_session?.Draft?.Binding); }));
-        var savedActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        savedActions.Children.Add(Action("Move up", async () => { if (_savedLibrary is not null && _savedCues.SelectedIndex >= 0) await _savedLibrary.MoveSavedAsync(_savedLibrary.Document.Cues[_savedCues.SelectedIndex].Id, -1); }));
-        savedActions.Children.Add(Action("Move down", async () => { if (_savedLibrary is not null && _savedCues.SelectedIndex >= 0) await _savedLibrary.MoveSavedAsync(_savedLibrary.Document.Cues[_savedCues.SelectedIndex].Id, 1); }));
-        _libraryPanel.Children.Add(savedActions);
-        _libraryPanel.Children.Add(Action("Delete saved copy", async () => { if (_savedLibrary is not null && _savedCues.SelectedIndex >= 0) await _savedLibrary.RemoveSavedAsync(_savedLibrary.Document.Cues[_savedCues.SelectedIndex].Id); }));
-        _libraryPanel.Children.Add(_saveStatus);
-        var migration=new StackPanel {Spacing=8};
-        migration.Children.Add(Copy("Showing a Volt lower third selects its instance authority and suppresses the legacy family. Hide/Clear does not reveal the old key. Existing lower-third API and key controls address the managed cues."));
-        migration.Children.Add(Action("Copy existing look and overrides",async()=>{if(Studio is not null) await Studio.CopyLegacyGraphicsToLibraryAsync();}));
-        migration.Children.Add(Action("Use legacy lower-thirds",async()=>{if(_session is not null) await _session.SetAuthorityAsync("lower-third","legacy");}));
-        migration.Children.Add(Copy("Returning to legacy explicitly clears managed lower thirds. Captions and unrelated overlays keep their owners. Saved source-bound cues require choosing their current subject in the inspector before Restore."));
-        _libraryPanel.Children.Add(new Expander {Header="Existing show compatibility",Content=migration,HorizontalAlignment=HorizontalAlignment.Stretch});
-        var import = new TextBox { Header = "Import declarative template", PlaceholderText = "Paste template.json", AcceptsReturn = true, Height = 110, MaxLength = 262144 };
-        var importPanel = new StackPanel { Spacing = 8 }; importPanel.Children.Add(import);
-        importPanel.Children.Add(Copy("Local declarations only. Validation is asynchronous; the previous version and on-air graphics remain intact."));
-        importPanel.Children.Add(Action("Validate and import", async () => { if (_session is not null) await _session.ImportAsync(import.Text); }));
-        _libraryPanel.Children.Add(new Expander { Header = "Import template", Content = importPanel, HorizontalAlignment = HorizontalAlignment.Stretch });
-        _packageImportButton = Action("Import graphics package…", PickPackageAsync); _libraryPanel.Children.Add(_packageImportButton); _libraryPanel.Children.Add(_importStatus);
-        _libraryPanel.Children.Add(Action("Export selected template package…",ExportPackageAsync));
-        var libraryScroll = new ScrollViewer { Content = _libraryPanel, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = 780 };
-        var libraryDrawer = new Expander { Header = "Library and cue rack", Content = libraryScroll, IsExpanded = true, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
-        Grid.SetRow(libraryDrawer, 1); _body.Children.Add(libraryDrawer);
-        var center = new StackPanel { Spacing = 10 };
-        var wholeGraphic=new ToggleSwitch {Header="Move or scale whole graphic"};wholeGraphic.Toggled+=(_,_)=>_canvas.WholeGraphic=wholeGraphic.IsOn;center.Children.Add(wholeGraphic);
-        center.Children.Add(_samples);center.Children.Add(Copy("Samples change only the private preview. Return to Your draft before Cue or Update."));
-        center.Children.Add(_facts); center.Children.Add(_canvas); center.Children.Add(_native); center.Children.Add(_compare); center.Children.Add(_layersEditor);
-        var transport = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        _cueButton = Action("Cue to Preview", async () => { if (_session is not null) await _session.CueAsync(); });
-        _showButton = Action("Show on Program", async () => { if (_session is not null) await _session.ShowAsync(); });
-        _hideButton = Action("Hide", async () => { if (_session is not null) await _session.HideAsync(); });
-        transport.Children.Add(_cueButton); transport.Children.Add(_showButton); transport.Children.Add(_hideButton); center.Children.Add(transport);
-        var editActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        _updateButton = Action("Update on air", async () => { if (_session is not null) await _session.UpdateProgramAsync(); });
-        _undoButton = Action("Undo draft", () => { _session?.Undo(); return Task.CompletedTask; });
-        editActions.Children.Add(_updateButton); editActions.Children.Add(_undoButton);
-        editActions.Children.Add(Action("Cancel draft", () => { _session?.CancelDraft(); return Task.CompletedTask; })); center.Children.Add(editActions);
-        center.Children.Add(Action("Clear Program graphics", async () => { if (_session is not null) await _session.ClearAsync(); }));
-        center.Children.Add(Copy("Clear removes managed Volt graphics. Captions, clean source recordings and webcam-only guides keep their own controls."));
-        var savedStyles = new StackPanel { Spacing = 8 }; savedStyles.Children.Add(_styles); savedStyles.Children.Add(_styleName);
-        savedStyles.Children.Add(Action("Save style preset", async () => { if (_savedLibrary is not null) await _savedLibrary.SaveStyleAsync(_styleName.Text); }));
-        savedStyles.Children.Add(Action("Use selected saved style in draft", () => { if (_styles.SelectedItem is string name) _savedLibrary?.ApplyStyle(name); return Task.CompletedTask; }));
-        savedStyles.Children.Add(Action("Use current brand look in draft", () => { if (Studio is not null) _session?.SetStyle(Studio.Overlays.AppliedAppearance); return Task.CompletedTask; }));
-        center.Children.Add(new Expander { Header = "Style presets", Content = savedStyles, HorizontalAlignment = HorizontalAlignment.Stretch });
-        center.Children.Add(_automationDrawer);
-        Grid.SetColumn(center, 1); Grid.SetRow(center, 1); _body.Children.Add(center);
-        var inspectorScroll = new ScrollViewer { Content = _inspector, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = 780 };
-        var inspectorDrawer = new Expander { Header = "Selected cue controls", Content = inspectorScroll, IsExpanded = true, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
-        Grid.SetColumn(inspectorDrawer, 2); Grid.SetRow(inspectorDrawer, 1); _body.Children.Add(inspectorDrawer);
-        Content = _body;
+        BuildWorkspace();
         _libraryView.SelectionChanged+=(_,_)=>RefreshLibrary();
         _search.TextChanged += (_, _) => RefreshLibrary(); _family.SelectionChanged += (_, _) => RefreshLibrary();
         _library.ItemClick += (_,e)=>{var index=_library.Items.IndexOf(e.ClickedItem);if(!_loading && index>=0 && index<_templateRows.Count) _session?.Browse(_templateRows[index]);};
@@ -135,21 +64,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
         _samples.SelectionChanged+=(_,_)=>{if(!_loading && _samples.SelectedIndex>=0) _session?.SetPreviewSample(new[] {"current","short","long","blank","unicode"}[_samples.SelectedIndex]);};
         _compare.Toggled += (_, _) => { if (!_loading) _session?.SetCompare(_compare.IsOn); };
         Loaded += (_, _) => Attach(); Unloaded += (_, _) => Detach();
-        bool? wasNarrow = null;
-        SizeChanged += (_, e) => {
-            // Stack the same selected panels on small windows; never force an
-            // endless horizontal strip or discard an edit to change layout.
-            var narrow = e.NewSize.Width < 1000;
-            if (wasNarrow == narrow) return;
-            wasNarrow = narrow;
-            libraryDrawer.IsExpanded = inspectorDrawer.IsExpanded = !narrow;
-            while (_body.RowDefinitions.Count < 4) _body.RowDefinitions.Add(new() { Height = GridLength.Auto });
-            Grid.SetColumn(libraryDrawer, 0); Grid.SetRow(libraryDrawer, narrow ? 2 : 1); Grid.SetColumnSpan(libraryDrawer, narrow ? 3 : 1);
-            Grid.SetColumn(inspectorDrawer, narrow ? 0 : 2); Grid.SetRow(inspectorDrawer, narrow ? 3 : 1); Grid.SetColumnSpan(inspectorDrawer, narrow ? 3 : 1);
-            Grid.SetColumn(center, narrow ? 0 : 1); Grid.SetColumnSpan(center, narrow ? 3 : 1);
-            _body.ColumnDefinitions[0].Width = narrow ? new GridLength(0) : new GridLength(250);
-            _body.ColumnDefinitions[2].Width = narrow ? new GridLength(0) : new GridLength(300);
-        };
+        SizeChanged += (_, e) => ApplyWorkspaceSize(e.NewSize.Width);
     }
     private void Attach()
     {
@@ -188,6 +103,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private void OnStudioProperty(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(StudioViewModel.IsOverlaysTab)) UpdatePreviewLease();
+        if (e.PropertyName is nameof(StudioViewModel.ActiveSceneId) or nameof(StudioViewModel.StudioAssignedLowerThirdLabel) or nameof(StudioViewModel.StudioLowerThirdBusy)) Refresh();
     }
     public void SuspendPreview() { _previewSuspended = true; UpdatePreviewLease(); }
     public void ResumePreview() { _previewSuspended = false; UpdatePreviewLease(); }
@@ -241,6 +157,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
             _samples.SelectedIndex=Array.IndexOf(new[] {"current","short","long","blank","unicode"},_session.PreviewSample);
             _facts.Text = item is null ? "Choose or create a cue. No Program action occurs while browsing." :
                 $"{item.TemplateId} v{item.TemplateVersion} · {item.Scope}\nDraft r{item.Revision} / look v{item.TemplateVersion} ({item.Preparation}) · Cue r{item.CueRevision} / look v{item.CueTemplateVersion}{(item.CuePending ? " preparing replacement" : "")} · Program r{item.ProgramRevision} / look v{item.ProgramTemplateVersion} ({item.Visibility}; {(item.CurrentlyComposed ? "draw submitted" : "not composed on latest frame")})\n{item.SourceId} {item.BindingState} {item.Warning} {item.CueWarning}";
+            ToolTipService.SetToolTip(_status, _session.Status);
             var scopeKey=string.Join('|',Studio?.Scenes.Select(s=>s.Id+":"+s.Name) ?? []);
             if(_scope.Tag as string!=scopeKey || _scope.Items.Count==0) {
                 var prior=(_scope.SelectedItem as ComboBoxItem)?.Tag as string;_scope.Tag=scopeKey;_scope.Items.Clear();
@@ -249,16 +166,22 @@ public sealed class GraphicsWorkspaceControl : UserControl
                 _scope.SelectedItem=_scope.Items.OfType<ComboBoxItem>().FirstOrDefault(i=>i.Tag as string==prior) ?? _scope.Items[0];
             }
             RefreshLibrary();
-            var key = string.Join('|', _session.State?.Instances.Select(i => $"{i.InstanceId}:{i.Label}:{i.RackOrder}:{i.TemplateId}:{i.Visibility}:{i.ProgramRevision}:{i.CueRevision}") ?? []);
+            var cueRows = (_session.State?.Instances ?? []).Where(i =>
+                (_cueScopeFilter.SelectedIndex != 1 || i.Scope == "global" || i.SceneId == Studio?.ActiveSceneId) &&
+                (_cueSearch.Text.Length == 0 || (i.Label + " " + i.Fields.Name + " " + i.TemplateId).Contains(_cueSearch.Text, StringComparison.OrdinalIgnoreCase))).ToArray();
+            var key = string.Join('|', cueRows.Select(i => $"{i.InstanceId}:{i.Label}:{i.Fields.Name}:{i.Revision}:{i.RackOrder}:{i.TemplateId}:{i.Visibility}:{i.ProgramRevision}:{i.CueRevision}"));
             if (key != _cueKey) {
                 _cueKey = key; _cueIds.Clear(); _cues.Items.Clear();
-                foreach (var cue in _session.State?.Instances ?? []) { _cueIds.Add(cue.InstanceId); _cues.Items.Add($"{(cue.Label.Length>0?cue.Label:cue.TemplateId)} · {cue.Fields.Name}\n{cue.Visibility} · Cue {cue.CueRevision} / Program {cue.ProgramRevision}"); }
+                foreach (var cue in cueRows) { _cueIds.Add(cue.InstanceId); _cues.Items.Add($"{(cue.Label.Length>0?cue.Label:cue.TemplateId)}\n{cue.Fields.Name} - {(cue.ProgramRevision>0?"On air":cue.CueRevision>0?"Cued":"Draft")}"); }
                 _cues.SelectedIndex = _cueIds.IndexOf(_session.SelectedId);
             }
             var inspectorKey = _session.Selected?.ClockConfigurationRevision + ":" + _session.SelectedId + ":" + _session.Draft?.TemplateId + ":" + _session.Draft?.TemplateVersion;
             if (_inspectorKey != inspectorKey) { _inspectorKey = inspectorKey; BuildInspector(); }
+            RefreshWorkspaceChrome();
+            RefreshLayerList();
             foreach (var refresh in _refreshFields) refresh();
-            foreach (var child in _inspector.Children.OfType<Microsoft.UI.Xaml.Controls.Control>()) child.IsEnabled = !_session.Busy;
+            foreach (var panel in new[] { _contentControls, _styleControls, _layoutControls, _motionControls })
+                foreach (var child in panel.Children.OfType<Microsoft.UI.Xaml.Controls.Control>()) child.IsEnabled = !_session.Busy;
         } finally { _loading = false; }
     }
     private void RefreshLibrary()
@@ -283,7 +206,9 @@ public sealed class GraphicsWorkspaceControl : UserControl
     private void BuildInspector()
     {
         foreach(var button in _inspectorActions) _actions.Remove(button); _inspectorActions.Clear();
-        _inspector.Children.Clear();
+        if (_studioFollowSource.Parent is Panel followParent) followParent.Children.Remove(_studioFollowSource);
+        foreach (var panel in new[] { _contentControls, _styleControls, _layoutControls, _motionControls }) panel.Children.Clear();
+        _inspectorTarget = _contentControls;
         _refreshFields.Clear();
         if (_session?.Draft is not { } draft) { _inspector.Children.Add(Copy("Select a cue to edit its private fields and style.")); return; }
         if(Studio is not null) {var binding=new GraphicsSourceBindingControl(_session,Studio);_inspector.Children.Add(binding);_refreshFields.Add(binding.Refresh);}
@@ -350,12 +275,14 @@ public sealed class GraphicsWorkspaceControl : UserControl
             }
         }
         BuildClockControls();
-        _inspector.Children.Add(Copy("An empty secondary line stays empty. Source text remains available in Sources."));
+        _inspector.Children.Add(_studioFollowSource);
         if (Compatibility || UsesToken("brand.fontBody") || UsesToken("brand.fontHeading")) {
+        _inspectorTarget = _styleControls;
         var font = new TextBox { Header = "Font family", Text = draft.Style.FontFamily, MaxLength = 128 };
         font.LostFocus += (_, _) => { if (_session?.Draft is { } d) _session.SetStyle(d.Style with { FontFamily = font.Text }); }; _inspector.Children.Add(font);
         _refreshFields.Add(() => { if (font.FocusState == FocusState.Unfocused && _session?.Draft is { } d) font.Text = d.Style.FontFamily; });
         }
+        _inspectorTarget = _layoutControls;
         var placement = draft.Placement ?? new NativeGraphicsPlacement {
             Anchor=draft.Style.Anchor, X=draft.Style.Anchor.Contains("right",StringComparison.Ordinal) ? -draft.Style.SafeOffsetX*1920 : draft.Style.SafeOffsetX*1920,
             Y=draft.Style.Anchor.Contains("upper",StringComparison.Ordinal) ? draft.Style.SafeOffsetY*1080 : -draft.Style.SafeOffsetY*1080 };
@@ -365,6 +292,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
         AddPlacement("Horizontal offset",-3840,3840,0,1,"px",1,placement,p=>p.X,(p,v)=>p with { X=v });
         AddPlacement("Vertical offset",-2160,2160,0,1,"px",1,placement,p=>p.Y,(p,v)=>p with { Y=v });
         AddPlacement("Scale",.1,4,1,.01,"%",100,placement,p=>p.Scale,(p,v)=>p with { Scale=v });
+        _inspectorTarget = _styleControls;
         if (_session.Template?.Runtime != "declarative") {
             var image=new GraphicsImageControl(_session);_inspector.Children.Add(image);_refreshFields.Add(image.Refresh);
             AddStyle("Logo scale", .5, 2, 1, .05, "%", 100, d => d.LogoScale, (d,n) => d with {LogoScale=n});
@@ -379,7 +307,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
         if (Compatibility || UsesToken("brand.onPrimaryMuted") || UsesToken("brand.secondary")) AddColor("Secondary foreground", d => d.TitleColor, (d, c) => d with { TitleColor = c });
         if (Compatibility || UsesToken("brand.primary") || UsesToken("brand.background")) AddColor("Plate", d => d.BackgroundColor, (d, c) => d with { BackgroundColor = c });
         if (Compatibility || UsesToken("brand.accent")) AddColor("Accent", d => d.AccentColor, (d, c) => d with { AccentColor = c });
-        _inspector.Children.Add(Copy("Colors, fonts and placement affect this draft. Cue or Update on air sends an explicit native revision."));
+        BuildMotionControls();
     }
     private static ComboBox ClockChoice(string header,string value,params (string Id,string Label)[] choices)
     {
@@ -470,7 +398,7 @@ public sealed class GraphicsWorkspaceControl : UserControl
     }
     private Button Action(string label, Func<Task> action)
     {
-        var button = new Button { Content = label }; button.Click += async (_, _) => await action(); _actions.Add(button); return button;
+        var button = ChromeButton(label); button.Click += async (_, _) => await action(); _actions.Add(button); return button;
     }
     private async Task PickPackageAsync()
     {

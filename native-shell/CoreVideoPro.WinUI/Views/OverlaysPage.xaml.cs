@@ -23,6 +23,18 @@ public sealed partial class OverlaysPage : UserControl
             typeof(StudioViewModel),
             typeof(OverlaysPage),
             new PropertyMetadata(null));
+    private void OnExistingControlsRequested(object? sender, EventArgs e) {
+        ExistingOverlayDrawer.IsPaneOpen = true;
+        if (LegacyDesignerExpander.IsExpanded) { GraphicsWorkspace.SuspendPreview(); LowerThirdDesigner.ActivatePreview(); }
+    }
+    private void OnCloseExistingControls(object sender, RoutedEventArgs e) {
+        ExistingOverlayDrawer.IsPaneOpen = false;
+        LowerThirdDesigner.DeactivatePreview(); GraphicsWorkspace.ResumePreview();
+    }
+    private void OnExistingPaneClosed(SplitView sender, object args) {
+        LowerThirdDesigner.DeactivatePreview(); GraphicsWorkspace.ResumePreview();
+    }
+
     private void OnDesignerExpanding(Expander sender,ExpanderExpandingEventArgs args) { GraphicsWorkspace.SuspendPreview(); LowerThirdDesigner.ActivatePreview(); }
     private void OnDesignerCollapsed(Expander sender,ExpanderCollapsedEventArgs args) { LowerThirdDesigner.DeactivatePreview(); GraphicsWorkspace.ResumePreview(); }
 
