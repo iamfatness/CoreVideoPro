@@ -55,6 +55,7 @@ def main():
     raw_path = output / "receiver.ndjson"
     try:
         core = Core(str(args.core.resolve()), flags, output / "core.stderr.log")
+        report["qaLauncherContext"] = core.launcher_context
         commands = [{"type": "set-output-profile", "width": 1920, "height": 1080, "fps": 60},
                     {"type": "sync-virtual-camera", "on": True, "mirror": False,
                      "deviceName": "CoreVideo Pro Camera"},

@@ -2,8 +2,26 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from monitor_evidence import COUNTERS, Core, judge, judge_recording, SourceAdmissionJudge, NativeCaptureInputJudge
+from monitor_evidence import COUNTERS, Core, judge, judge_recording, SourceAdmissionJudge, NativeCaptureInputJudge, require_unpacked_qa_launcher
+
+
+class LauncherContextTests(unittest.TestCase):
+    def test_packaged_interpreter_cannot_start_a_native_qualification(self):
+        context={"packaged":True,"package":"PythonSoftwareFoundation.Python.3.12_test"}
+        with patch('monitor_evidence.windows_package_context',return_value=context), patch('monitor_evidence.subprocess.Popen') as start:
+            with self.assertRaisesRegex(RuntimeError,'redirected registry/filesystem view'):
+                Core('candidate.exe',{},'unused.log')
+            start.assert_not_called()
+    def test_unpacked_launcher_context_is_retained(self):
+        context={"packaged":False,"status":15700,"executable":"portable-python.exe"}
+        with patch('monitor_evidence.windows_package_context',return_value=context):
+            self.assertEqual(require_unpacked_qa_launcher(),context)
+    def test_unknown_context_is_not_silently_qualified(self):
+        with patch('monitor_evidence.windows_package_context',side_effect=RuntimeError('query failed')):
+            with self.assertRaisesRegex(RuntimeError,'query failed'):
+                require_unpacked_qa_launcher()
 
 
 class NativeCaptureInputTests(unittest.TestCase):

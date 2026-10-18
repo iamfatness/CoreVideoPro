@@ -6,12 +6,45 @@ import os
 import subprocess
 import threading
 import time
+import sys
+
+
+def windows_package_context():
+    """Query the QA interpreter, not its child (which can report no identity
+    while still inheriting the interpreter's redirected registry view)."""
+    if sys.platform != "win32":
+        return {"platform": sys.platform, "packaged": False}
+    import ctypes
+    api = ctypes.WinDLL("kernel32", use_last_error=True).GetCurrentPackageFullName
+    api.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.c_wchar_p]
+    api.restype = ctypes.c_long
+    length = ctypes.c_uint32(0)
+    status = api(ctypes.byref(length), None)
+    if status == 15700:  # APPMODEL_ERROR_NO_PACKAGE
+        return {"platform": "win32", "packaged": False, "status": status, "executable": sys.executable}
+    if status != 122:  # ERROR_INSUFFICIENT_BUFFER
+        raise RuntimeError(f"Cannot verify Windows QA registry context (GetCurrentPackageFullName={status})")
+    name = ctypes.create_unicode_buffer(length.value)
+    status = api(ctypes.byref(length), name)
+    if status != 0:
+        raise RuntimeError(f"Cannot verify Windows QA package identity ({status})")
+    return {"platform": "win32", "packaged": True, "status": status, "package": name.value, "executable": sys.executable}
+
+
+def require_unpacked_qa_launcher():
+    context = windows_package_context()
+    if context["packaged"]:
+        raise RuntimeError("Packaged Windows QA launcher has a redirected registry/filesystem view: "
+            + context["package"] + ". Use unpackaged Python from an unpackaged shell; "
+            "do not repair the installed camera based on this view. Native process was not started.")
+    return context
 
 
 class Core:
     """One outstanding request; no event backlog or retained response history."""
 
     def __init__(self, path, env, stderr_path, event_observer=None):
+        self.launcher_context = require_unpacked_qa_launcher()
         self.condition = threading.Condition()
         self.pending = None
         self.response = None

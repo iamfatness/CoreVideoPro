@@ -25,6 +25,14 @@ are removed by the shared owned-process driver. No real meeting, streaming or
 operator settings are used. Preserve and identify any temporary installed-file
 transaction separately; this script never performs one.
 
+Use an unpackaged Python interpreter from an unpackaged shell. Microsoft Store
+Python can expose a private older camera alias and pass that registry view to its
+child even when the child reports no package identity. The driver refuses a
+packaged interpreter before spawning a native process and retains interpreter
+context in the report. A no-package result alone does not prove the entire launch
+ancestry or serving registry view; installed ownership and Frame Server module
+checks remain mandatory. Do not repair a real registration from a redirected view.
+
 Activation must succeed before measurement. A fixed two-second setup settle
 allows the OS endpoint notification to follow camera Start, then the receiver
 runs its full fixed 30-second warmup. There is no retry that discards a failed

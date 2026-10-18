@@ -135,6 +135,13 @@ TEST(VirtualCamRegistration, StartupRepairsOnlyAliasOfOwnedMachineRuntime) {
   EXPECT_TRUE(result.ready) << result.warning;
   EXPECT_FALSE(result.repaired);
   EXPECT_TRUE(result.warning.empty());
+  // A matching product role does not authorize overwriting another installation's
+  // alias. Store-packaged QA launchers can expose an older private registry view.
+  ASSERT_EQ(set(user, kServer, L"CoreVideoOwnerAppDirectory", L"C:\\older-install"), ERROR_SUCCESS);
+  result = check();
+  EXPECT_FALSE(result.ready);
+  EXPECT_EQ(corevideo::modules::cameraRegistrationString(user,kServer,L"CoreVideoOwnerAppDirectory"),L"C:\\older-install");
+  EXPECT_NE(result.warning.find("CAMERA_USER_REGISTRATION_CONFLICT"),std::string::npos);
   ASSERT_EQ(::RegDeleteTreeW(machine, kServer), ERROR_SUCCESS);
   result = check();
   EXPECT_FALSE(result.ready);
