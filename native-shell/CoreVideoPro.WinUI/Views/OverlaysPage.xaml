@@ -14,10 +14,15 @@
         </ResourceDictionary>
     </UserControl.Resources>
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-      <StackPanel Spacing="16">
-        <controls:GraphicsWorkspaceControl x:Name="GraphicsWorkspace" Studio="{x:Bind ViewModel, Mode=OneWay}" />
-        <Expander Header="Existing lower thirds, captions, brand and browser overlays" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+    <SplitView x:Name="ExistingOverlayDrawer" DisplayMode="Overlay" PanePlacement="Right" OpenPaneLength="820" PaneClosed="OnExistingPaneClosed">
+      <SplitView.Content>
+        <controls:GraphicsWorkspaceControl x:Name="GraphicsWorkspace" Studio="{x:Bind ViewModel, Mode=OneWay}" ExistingControlsRequested="OnExistingControlsRequested" />
+      </SplitView.Content>
+      <SplitView.Pane>
+       <Grid Padding="12" RowSpacing="10">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <Button Content="Close existing overlay controls" Click="OnCloseExistingControls" />
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <Grid Padding="0,0,8,16" ColumnSpacing="12" RowSpacing="12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.05*" MinWidth="360" />
@@ -33,7 +38,7 @@
             <Border Grid.Column="0" Style="{StaticResource OperatorSectionBorder}">
                 <StackPanel Spacing="10">
                     <TextBlock Text="Live keyer" Style="{StaticResource OperatorSectionTitle}" />
-                    <Expander Header="Design lower thirds" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Expanding="OnDesignerExpanding" Collapsed="OnDesignerCollapsed">
+                    <Expander x:Name="LegacyDesignerExpander" Header="Design lower thirds" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Expanding="OnDesignerExpanding" Collapsed="OnDesignerCollapsed">
                         <controls:LowerThirdDesignerControl x:Name="LowerThirdDesigner" Studio="{x:Bind ViewModel, Mode=OneWay}" />
                     </Expander>
                     <Border Style="{StaticResource OperatorReadoutBorder}">
@@ -556,7 +561,8 @@
                 </StackPanel>
             </Border>
         </Grid>
-        </Expander>
-      </StackPanel>
-    </ScrollViewer>
+        </ScrollViewer>
+       </Grid>
+      </SplitView.Pane>
+    </SplitView>
 </UserControl>

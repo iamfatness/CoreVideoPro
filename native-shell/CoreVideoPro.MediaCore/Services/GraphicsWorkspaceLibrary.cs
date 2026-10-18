@@ -5,7 +5,7 @@ namespace CoreVideoPro.MediaCore.Services;
 
 /// <summary>Saved workspace consumer. Loading has no native side effects. Only
 /// explicit restore imports a pinned definition and creates a hidden instance.</summary>
-public sealed class GraphicsWorkspaceLibrary
+public sealed partial class GraphicsWorkspaceLibrary
 {
     private readonly GraphicsDocumentStore _store;
     private readonly GraphicsWorkspaceSession _session;

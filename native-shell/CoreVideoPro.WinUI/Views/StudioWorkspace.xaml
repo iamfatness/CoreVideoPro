@@ -967,6 +967,16 @@
                         </Button>
                     </StackPanel>
 
+                    <Border Padding="10,6" Width="150" CornerRadius="6"
+                            BorderThickness="1" BorderBrush="{StaticResource StudioBorderBrush}"
+                            ToolTipService.ToolTip="{x:Bind ViewModel.StudioAssignedLowerThirdDetail, Mode=OneWay}">
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="Assigned look" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
+                            <TextBlock Text="{x:Bind ViewModel.StudioAssignedLowerThirdLabel, Mode=OneWay}"
+                                       FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </Border>
+
                     <StackPanel Orientation="Horizontal" Spacing="3">
                         <Button Style="{StaticResource AutomationToggleButton}"
                                 Padding="9,8"
