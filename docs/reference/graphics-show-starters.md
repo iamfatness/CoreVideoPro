@@ -29,6 +29,8 @@ drafts and exact template/image pins in the separate Graphics document, and
 selects the guest introduction. Nothing is cued, shown, assigned to Studio or
 armed automatically. Cue/Show/Hide/Update remain explicit. **Use in Studio**
 assigns the guest introduction to the existing Studio lower-thirds toggle.
+Cue labels include the show-template name (for example, `Interview · Guest
+introduction`), which also carries through to Studio's assigned-look label.
 The disabled assignment button explains when adding/selecting a lower third is
 required. Studio's layout is unchanged.
 

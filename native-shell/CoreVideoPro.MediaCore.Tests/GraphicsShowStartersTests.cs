@@ -53,7 +53,7 @@ public sealed class GraphicsShowStartersTests
         Assert.Equal(existing, state.Instances[0]); Assert.Equal(5, state.Instances.Count);
         Assert.All(state.Instances.Skip(1), i => { Assert.Equal(0, i.ProgramRevision); Assert.Equal(0, i.CueRevision); Assert.NotEmpty(i.Label); });
         Assert.All(commands, c => Assert.Contains(c, new[] { "graphics.instance.create", "graphics.instance.update" }));
-        Assert.Equal("Guest introduction", session.Selected!.Label);
+        Assert.Equal("Interview · Guest introduction", session.Selected!.Label);
         Assert.Equal(4,session.LastAddedStarterIds.Count);Assert.DoesNotContain("existing",session.LastAddedStarterIds);
     }
 

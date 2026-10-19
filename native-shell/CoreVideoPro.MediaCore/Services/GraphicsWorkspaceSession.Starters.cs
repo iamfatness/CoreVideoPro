@@ -46,7 +46,7 @@ public sealed partial class GraphicsWorkspaceSession
             LastAddedStarterIds = added.ToArray();
             var item = State?.Instances.FirstOrDefault(i => i.InstanceId == id);
             if (item is null || !await Send("graphics.instance.update", new() { ["instanceId"] = id, ["expectedRevision"] = item.Revision,
-                ["target"] = "cue", ["label"] = graphic.Name }, cancellation)) {
+                ["target"] = "cue", ["label"] = graphic.ShowName.Length == 0 ? graphic.Name : graphic.ShowName + " · " + graphic.Name }, cancellation)) {
                 Status = $"The new graphic was added hidden, but its label could not be set. Nothing was shown. {Status}";
                 return false;
             }

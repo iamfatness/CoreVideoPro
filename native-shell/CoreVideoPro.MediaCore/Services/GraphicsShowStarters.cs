@@ -4,7 +4,7 @@ using CoreVideoPro.MediaCore.Models;
 namespace CoreVideoPro.MediaCore.Services;
 
 public sealed record GraphicsShowStarter(string Id, string Name, string Description, string LowerThird, string Accent, string Heading, string Secondary);
-public sealed record GraphicsStarterGraphic(string Name, string Purpose, NativeGraphicsTemplate Template, NativeGraphicsDraft Draft);
+public sealed record GraphicsStarterGraphic(string Name, string Purpose, NativeGraphicsTemplate Template, NativeGraphicsDraft Draft, string ShowName = "");
 
 /// <summary>Coordinated examples built from shipped native templates, never shell pixels.</summary>
 public static class GraphicsShowStarters
@@ -63,7 +63,7 @@ public static class GraphicsShowStarters
                 Out = new() { Type = "fade", DurationMs = 200, Easing = "ease-in" }
             };
             return new GraphicsStarterGraphic(request.Item2, request.Item3, template,
-                new(template.TemplateId, template.TemplateVersion, JsonSerializer.SerializeToElement(fields), style, motion, template.DefaultPlacement));
+                new(template.TemplateId, template.TemplateVersion, JsonSerializer.SerializeToElement(fields), style, motion, template.DefaultPlacement), starter.Name);
         }).ToArray();
     }
 }

@@ -137,7 +137,8 @@ public sealed partial class GraphicsWorkspaceControl
             var saved = library is not null;
             if (library is not null) foreach (var item in added) {
                 session.Select(item.InstanceId);
-                if (!await library.SaveCueAsync(starter.Name + " · " + item.Label)) { saved = false; break; }
+                if(session.SelectedId!=item.InstanceId || session.Selected is null) {saved=false;break;}
+                if (!await library.SaveCueAsync(item.Label)) { saved = false; break; }
             }
             session.Select(firstId);
             _starterNotice.Text = saved ? "Your show template is saved. Choose a graphic to customize; Show remains explicit." : "The hidden graphics were added, but saving failed. Use Manage to save them before closing.";

@@ -80,9 +80,14 @@ try {
         if(state!.Instances.Count!=4 || state.Instances.Any(i=>i.CueRevision!=0 || i.ProgramRevision!=0))throw new InvalidOperationException("Starter was not added hidden.");
         var store=new GraphicsDocumentStore(Path.Combine(Path.GetDirectoryName(reportPath)!,starter.Id+".json"));
         var library=new GraphicsWorkspaceLibrary(store,session);
-        foreach(var item in state.Instances.ToArray()) {session.Select(item.InstanceId);if(!await library.SaveCueAsync(starter.Name+" · "+item.Label))throw new InvalidOperationException(library.Status);}
+        foreach(var item in state.Instances.ToArray()) {session.Select(item.InstanceId);if(!await library.SaveCueAsync(item.Label))throw new InvalidOperationException(library.Status);}
         var loaded=await store.LoadAsync();if(loaded.Document.Cues.Count!=4 || loaded.Document.StudioLowerThird is not null)throw new InvalidOperationException("Starter persistence or assignment guard failed.");
         checks.Add(starter.Name+": four named hidden cues saved with exact pins; no Cue, Show or Studio assignment");
+        session.Select(state.Instances.First(i=>i.TemplateId==graphics[0].Template.TemplateId).InstanceId);
+        if(!await library.AssignStudioLowerThirdAsync(false) || library.Document.StudioLowerThird?.Cue.Name!=starter.Name+" · Guest introduction" || state.Instances.Any(i=>i.ProgramRevision>0))
+            throw new InvalidOperationException("Explicit Studio assignment lost the show-look name or changed Program.");
+        checks.Add(starter.Name+": explicit Studio assignment retains the show-look name without showing anything");
+        if(!await library.ClearStudioLowerThirdAsync())throw new InvalidOperationException(library.Status);
         foreach(var item in state.Instances.ToArray()) {session.Select(item.InstanceId);if(!await session.RemoveAsync())throw new InvalidOperationException(session.Status);}
         foreach(var cue in loaded.Document.Cues)if(!await library.RestoreAsync(cue))throw new InvalidOperationException(library.Status);
         if(state!.Instances.Count!=4 || state.Instances.Any(i=>i.CueRevision!=0 || i.ProgramRevision!=0))throw new InvalidOperationException("Saved show did not restore hidden.");
