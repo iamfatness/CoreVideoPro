@@ -113,7 +113,9 @@
                 <Setter Property="Foreground" Value="{StaticResource StudioDimBrush}" />
             </Style>
 
-            <Style x:Key="OutputStatValue" TargetType="TextBlock" BasedOn="{StaticResource StudioMonoValue}" />
+            <Style x:Key="OutputStatValue" TargetType="TextBlock" BasedOn="{StaticResource StudioMonoValue}">
+                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            </Style>
 
             <Style x:Key="RecordButton" TargetType="Button" BasedOn="{StaticResource TransportButton}">
                 <Setter Property="Background" Value="#4A2020" />
@@ -209,11 +211,12 @@
                             Foreground="{x:Bind ViewModel.RoutingTabChrome.Foreground, Mode=OneWay}"
                             Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="routing"
                             ToolTipService.ToolTip="Manage audio and video routing" />
-                    <Button Content="Overlays" Style="{StaticResource GhostButton}"
+                    <Button Content="Graphics" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.OverlaysTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.OverlaysTabChrome.BorderBrush, Mode=OneWay}"
                             Foreground="{x:Bind ViewModel.OverlaysTabChrome.Foreground, Mode=OneWay}"
-                            Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="overlays" />
+                            Command="{x:Bind ViewModel.SelectTabCommand}" CommandParameter="overlays"
+                            ToolTipService.ToolTip="Show looks, lower thirds and other graphics" />
                     <Button Content="Audio" Style="{StaticResource GhostButton}"
                             Background="{x:Bind ViewModel.AudioTabChrome.Background, Mode=OneWay}"
                             BorderBrush="{x:Bind ViewModel.AudioTabChrome.BorderBrush, Mode=OneWay}"
@@ -820,20 +823,11 @@
 
         <Border x:Name="ProductionFooter" Grid.Row="3" Padding="10,8" BorderBrush="{StaticResource StudioBorderBrush}" BorderThickness="0,1,0,0"
                 Background="#11161A">
-            <Grid ColumnSpacing="8" RowSpacing="6">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
+            <cvcontrols:StudioFooterLayoutPanel>
 
                 <!-- Left: Magic Scene + Set & Forget -->
-                <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                    <Button Style="{StaticResource MagicSceneButton}"
+                <StackPanel x:Name="FooterAutomation" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                    <Button Style="{StaticResource MagicSceneButton}" Width="128"
                             Command="{x:Bind ViewModel.RunMagicSceneCommand}"
                             IsEnabled="{x:Bind ViewModel.Transport.MagicSceneEnabled, Mode=OneWay}">
                         <StackPanel Orientation="Horizontal" Spacing="10">
@@ -845,7 +839,7 @@
                         </StackPanel>
                     </Button>
 
-                    <Button Style="{StaticResource AutomationToggleButton}"
+                    <Button Style="{StaticResource AutomationToggleButton}" Width="190"
                             Command="{x:Bind ViewModel.ToggleAutomationCommand}"
                             IsEnabled="{x:Bind ViewModel.Transport.SetAndForgetCanToggle, Mode=OneWay}"
                             Background="{x:Bind ViewModel.Transport.SetAndForgetButtonBackground, Mode=OneWay}"
@@ -854,10 +848,10 @@
                             <FontIcon Glyph="&#xE945;" FontSize="18" />
                             <StackPanel Spacing="1">
                                 <TextBlock Text="Set &amp; Forget" FontWeight="Bold" FontSize="12" />
-                                <TextBlock FontSize="10" FontWeight="Bold" Foreground="{StaticResource StudioMutedBrush}">
-                                    <Run Text="Automation " />
-                                    <Run Text="{x:Bind ViewModel.Transport.AutomationStatusLabel, Mode=OneWay}" />
-                                </TextBlock>
+                                <TextBlock x:Name="AutomationStatusText" Text="{x:Bind ViewModel.Transport.AutomationStatusLabel, Mode=OneWay}"
+                                           FontSize="10" FontWeight="Bold" MaxWidth="82" TextTrimming="CharacterEllipsis"
+                                           ToolTipService.ToolTip="{x:Bind ViewModel.Transport.AutomationStatusLabel, Mode=OneWay}"
+                                           Foreground="{StaticResource StudioMutedBrush}" />
                             </StackPanel>
                             <Border Width="32" Height="18" CornerRadius="9"
                                     Background="{x:Bind ViewModel.Transport.SetAndForgetToggleBackground, Mode=OneWay}"
@@ -972,13 +966,14 @@
                             ToolTipService.ToolTip="{x:Bind ViewModel.StudioAssignedLowerThirdDetail, Mode=OneWay}">
                         <StackPanel Spacing="3">
                             <TextBlock Text="Assigned look" FontSize="10" Foreground="{StaticResource StudioMutedBrush}" />
-                            <TextBlock Text="{x:Bind ViewModel.StudioAssignedLowerThirdLabel, Mode=OneWay}"
+                            <TextBlock x:Name="AssignedLookLabel" Text="{x:Bind ViewModel.StudioAssignedLowerThirdLabel, Mode=OneWay}"
                                        FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                         </StackPanel>
                     </Border>
 
                     <StackPanel Orientation="Horizontal" Spacing="3">
                         <Button Style="{StaticResource AutomationToggleButton}"
+                                Width="80"
                                 Padding="9,8"
                                 Command="{x:Bind ViewModel.TogglePrimaryBrowserOverlayPreviewCommand}"
                                 IsEnabled="{x:Bind ViewModel.HasBrowserCaptureDevices, Mode=OneWay}"
@@ -993,6 +988,7 @@
                         </Button>
 
                         <Button Style="{StaticResource AutomationToggleButton}"
+                                Width="100"
                                 Padding="9,8"
                                 Command="{x:Bind ViewModel.TogglePrimaryBrowserOverlayCommand}"
                                 IsEnabled="{x:Bind ViewModel.HasBrowserCaptureDevices, Mode=OneWay}"
@@ -1014,7 +1010,7 @@
 
                 <!-- Status has its own reserved row; content and error visibility cannot
                      change the transport group's width or move an on-air control. -->
-                <Grid Grid.Column="1" Width="718" RowSpacing="4"
+                <Grid x:Name="FooterTransport" Width="718" RowSpacing="4"
                       HorizontalAlignment="Center" VerticalAlignment="Center">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="28" />
@@ -1421,7 +1417,7 @@
                 </Grid>
 
                 <!-- Right: OUTPUTS stats, mini-stats, clock, master audio -->
-                <ScrollViewer Grid.Row="1" Grid.ColumnSpan="3" HorizontalScrollBarVisibility="Auto"
+                <ScrollViewer x:Name="FooterTelemetry" HorizontalScrollBarVisibility="Auto"
                               VerticalScrollBarVisibility="Disabled" VerticalAlignment="Center">
                     <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
@@ -1431,40 +1427,43 @@
                                        FontSize="11" Foreground="#8FDCC8" CharacterSpacing="60" />
                         </StackPanel>
 
-                        <StackPanel Spacing="2" MinWidth="56">
+                        <StackPanel Spacing="2" Width="96">
                             <TextBlock Text="PROGRAM" Style="{StaticResource OutputStatLabel}" />
                             <TextBlock Text="{x:Bind ViewModel.Transport.ProgramStatValue, Mode=OneWay}"
                                        Style="{StaticResource OutputStatValue}" />
-                            <TextBlock Text="{x:Bind ViewModel.Transport.ProgramStatHealthLabel, Mode=OneWay}"
+                            <TextBlock x:Name="ProgramOutputHealth" Text="{x:Bind ViewModel.Transport.ProgramStatHealthLabel, Mode=OneWay}"
+                                       TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind ViewModel.Transport.ProgramStatHealthLabel, Mode=OneWay}"
                                        FontSize="10" FontWeight="ExtraBold"
                                        Foreground="{x:Bind ViewModel.Transport.ProgramStatHealthBrush, Mode=OneWay}" />
                         </StackPanel>
 
-                        <StackPanel Spacing="2" MinWidth="72">
+                        <StackPanel Spacing="2" Width="110">
                             <TextBlock Text="STREAM" Style="{StaticResource OutputStatLabel}" />
                             <TextBlock Text="{x:Bind ViewModel.Transport.StreamStatValue, Mode=OneWay}"
                                        Style="{StaticResource OutputStatValue}" />
-                            <TextBlock Text="{x:Bind ViewModel.Transport.StreamStatHealthLabel, Mode=OneWay}"
+                            <TextBlock x:Name="StreamOutputHealth" Text="{x:Bind ViewModel.Transport.StreamStatHealthLabel, Mode=OneWay}"
+                                       TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind ViewModel.Transport.StreamStatHealthLabel, Mode=OneWay}"
                                        FontSize="10" FontWeight="ExtraBold"
                                        Foreground="{x:Bind ViewModel.Transport.StreamStatHealthBrush, Mode=OneWay}" />
                         </StackPanel>
 
-                        <StackPanel Spacing="2" MinWidth="56">
+                        <StackPanel Spacing="2" Width="110">
                             <TextBlock Text="RECORD" Style="{StaticResource OutputStatLabel}" />
                             <TextBlock Text="{x:Bind ViewModel.Transport.RecordStatValue, Mode=OneWay}"
                                        Style="{StaticResource OutputStatValue}" />
-                            <TextBlock Text="{x:Bind ViewModel.Transport.RecordStatHealthLabel, Mode=OneWay}"
+                            <TextBlock x:Name="RecordOutputHealth" Text="{x:Bind ViewModel.Transport.RecordStatHealthLabel, Mode=OneWay}"
+                                       TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind ViewModel.Transport.RecordStatHealthLabel, Mode=OneWay}"
                                        FontSize="10" FontWeight="ExtraBold"
                                        Foreground="{x:Bind ViewModel.Transport.RecordStatHealthBrush, Mode=OneWay}" />
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                            <StackPanel Spacing="2" MinWidth="72">
+                            <StackPanel Spacing="2" Width="98">
                                 <TextBlock Text="FRAME DROPS" Style="{StaticResource OutputStatLabel}" />
                                 <TextBlock Text="{x:Bind ViewModel.Transport.FrameDropsLabel, Mode=OneWay}"
                                            Style="{StaticResource OutputStatValue}" />
                             </StackPanel>
-                            <StackPanel Spacing="2" MinWidth="48"
+                            <StackPanel Spacing="2" Width="60"
                                         ToolTipService.ToolTip="Elapsed output session since recording or streaming first produced media. Includes retries; resets when all outputs end. Receiver playback is not verified.">
                                 <TextBlock Text="LIVE" Style="{StaticResource OutputStatLabel}" />
                                 <TextBlock Text="{x:Bind ViewModel.Transport.LiveClockLabel, Mode=OneWay}"
@@ -1546,7 +1545,7 @@
                         </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
-            </Grid>
+            </cvcontrols:StudioFooterLayoutPanel>
         </Border>
 
         <controls:InfoBar Grid.Row="4"

@@ -177,7 +177,6 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
             }
             var inspectorKey = _session.Selected?.ClockConfigurationRevision + ":" + _session.SelectedId + ":" + _session.Draft?.TemplateId + ":" + _session.Draft?.TemplateVersion;
             if (_inspectorKey != inspectorKey) { _inspectorKey = inspectorKey; BuildInspector(); }
-            RefreshWorkspaceChrome();
             RefreshStarterCards(); RefreshStarterChrome();
             RefreshLayerList();
             foreach (var refresh in _refreshFields) refresh();

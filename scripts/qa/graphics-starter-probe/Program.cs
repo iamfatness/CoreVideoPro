@@ -76,17 +76,16 @@ try {
             request["enabled"]=false;await Request(request);
             checks.Add($"{starter.Name}/{graphic.Name}: managed wire accepted, native private texture ready, no instances");
         }
-        session.Observe(state);if(!await session.AddStarterAsync(graphics))throw new InvalidOperationException(session.Status);
-        if(state!.Instances.Count!=4 || state.Instances.Any(i=>i.CueRevision!=0 || i.ProgramRevision!=0))throw new InvalidOperationException("Starter was not added hidden.");
         var store=new GraphicsDocumentStore(Path.Combine(Path.GetDirectoryName(reportPath)!,starter.Id+".json"));
         var library=new GraphicsWorkspaceLibrary(store,session);
-        foreach(var item in state.Instances.ToArray()) {session.Select(item.InstanceId);if(!await library.SaveCueAsync(item.Label))throw new InvalidOperationException(library.Status);}
-        var loaded=await store.LoadAsync();if(loaded.Document.Cues.Count!=4 || loaded.Document.StudioLowerThird is not null)throw new InvalidOperationException("Starter persistence or assignment guard failed.");
-        checks.Add(starter.Name+": four named hidden cues saved with exact pins; no Cue, Show or Studio assignment");
-        session.Select(state.Instances.First(i=>i.TemplateId==graphics[0].Template.TemplateId).InstanceId);
-        if(!await library.AssignStudioLowerThirdAsync(false) || library.Document.StudioLowerThird?.Cue.Name!=starter.Name+" · Guest introduction" || state.Instances.Any(i=>i.ProgramRevision>0))
+        session.Observe(state);var adoption=await GraphicsStarterWorkflow.AddAsync(session,library,graphics,true,true);
+        if(!adoption.Added || !adoption.Saved || !adoption.StudioAssigned)throw new InvalidOperationException(adoption.Message);
+        if(state!.Instances.Count!=4 || state.Instances.Any(i=>i.CueRevision!=0 || i.ProgramRevision!=0))throw new InvalidOperationException("Starter was not added hidden.");
+        var loaded=await store.LoadAsync();if(loaded.Document.Cues.Count!=4 || loaded.Document.StudioLowerThird is null)throw new InvalidOperationException("Starter persistence or assignment failed.");
+        checks.Add(starter.Name+": one explicit action saves four named hidden cues and assigns the lower-third look");
+        if(library.Document.StudioLowerThird?.Cue.Name!=starter.Name+" · Guest introduction" || !library.Document.StudioLowerThird.FollowProgramSource || state.Instances.Any(i=>i.ProgramRevision>0))
             throw new InvalidOperationException("Explicit Studio assignment lost the show-look name or changed Program.");
-        checks.Add(starter.Name+": explicit Studio assignment retains the show-look name without showing anything");
+        checks.Add(starter.Name+": assigned show name and Program guest-text policy retained without showing anything");
         if(!await library.ClearStudioLowerThirdAsync())throw new InvalidOperationException(library.Status);
         foreach(var item in state.Instances.ToArray()) {session.Select(item.InstanceId);if(!await session.RemoveAsync())throw new InvalidOperationException(session.Status);}
         foreach(var cue in loaded.Document.Cues)if(!await library.RestoreAsync(cue))throw new InvalidOperationException(library.Status);
@@ -94,6 +93,11 @@ try {
         checks.Add(starter.Name+": saved cues restored hidden with no live assignment or automation activation");
         foreach(var item in state.Instances.ToArray()) {session.Select(item.InstanceId);if(!await session.RemoveAsync())throw new InvalidOperationException(session.Status);}
     }
+    session.Observe(state);
+    var saveOnlyLibrary=new GraphicsWorkspaceLibrary(new GraphicsDocumentStore(Path.Combine(Path.GetDirectoryName(reportPath)!,"save-only.json")),session);
+    var saveOnly=await GraphicsStarterWorkflow.AddAsync(session,saveOnlyLibrary,GraphicsShowStarters.Prepare(GraphicsShowStarters.All[0],state!),false,true);
+    if(!saveOnly.Saved || saveOnly.StudioAssigned || saveOnlyLibrary.Document.StudioLowerThird is not null || state!.Instances.Any(i=>i.ProgramRevision!=0))throw new InvalidOperationException("Save graphics only assigned or showed a look.");
+    checks.Add("Save graphics only remains explicit and does not assign Studio or put anything on air");
     await File.WriteAllTextAsync(reportPath,JsonSerializer.Serialize(new {success=true,nativeExecutable=start.FileName,nativeSha256=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(start.FileName))).ToLowerInvariant(),customBranding=true,customLogo=logo is not null,checks,physicalDisplayVerified=false,outputPerformanceVerified=false},new JsonSerializerOptions {WriteIndented=true}));
     Console.WriteLine($"PASS: {checks.Count} native starter workflow checks; no camera or output enabled.");
 } catch(Exception ex) {

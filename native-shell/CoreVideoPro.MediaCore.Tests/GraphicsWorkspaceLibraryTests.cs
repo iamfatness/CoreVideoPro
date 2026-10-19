@@ -98,5 +98,34 @@ public sealed class GraphicsWorkspaceLibraryTests : IDisposable
         state=state with {CoreEpoch="replacement",Instances=[]};session.Observe(state);
         Assert.False(await library.RestoreAutomationRulesAsync(rules=>new() {Rules=rules}));Assert.Single(commands);
     }
+    [Fact]
+    public async Task StarterWorkflowDoesNotReplaceTheStudioLookWhenSavingTheSetFails()
+    {
+        // Deliberately omit the declarative definitions: adoption succeeds but
+        // persistence must refuse the missing pin before assigning anything.
+        var state=State with {Templates=new[] {"compact-solid","centered-title","corner-logo","clock-panel"}.Select(id=>new NativeGraphicsTemplate {
+            TemplateId=id,TemplateVersion=1,Runtime=id=="compact-solid"?"compatibility":"declarative",
+            Family=id=="compact-solid"?"lower-third":id=="centered-title"?"title":id=="corner-logo"?"bug":"clock"
+        }).ToArray(),Instances=[State.Instances[0] with {ProgramRevision=7}]};
+        var commands=new List<string>();
+        var session=new GraphicsWorkspaceSession((action,json,_)=>{
+            commands.Add(action);var body=JsonDocument.Parse(json).RootElement;var id=body.GetProperty("instanceId").GetString()!;
+            if(action=="graphics.instance.create")state=state with {Instances=[..state.Instances,new() {
+                InstanceId=id,Revision=1,TemplateId=body.GetProperty("templateId").GetString()!,TemplateVersion=1,
+                Fields=JsonSerializer.Deserialize<NativeGraphicsFields>(body.GetProperty("fields"),new JsonSerializerOptions(JsonSerializerDefaults.Web))!
+            }]};
+            else state=state with {Instances=state.Instances.Select(i=>i.InstanceId==id?i with {Label=body.GetProperty("label").GetString()!}:i).ToArray()};
+            return Task.FromResult(new NativeGraphicsOperationResult {Accepted=true,InstanceId=id,CurrentRevision=1});
+        },()=>state);
+        session.Observe(state);session.Select("featured");
+        var library=new GraphicsWorkspaceLibrary(new GraphicsDocumentStore(DocumentPath),session);
+        Assert.True(await library.AssignStudioLowerThirdAsync(true));
+        var previous=library.Document.StudioLowerThird;
+        var result=await GraphicsStarterWorkflow.AddAsync(session,library,GraphicsShowStarters.Prepare(GraphicsShowStarters.All[2],state),true,true);
+        Assert.True(result.Added);Assert.False(result.Saved);Assert.False(result.StudioAssigned);
+        Assert.Equal(previous,library.Document.StudioLowerThird);
+        Assert.Equal(7,state.Instances.Single(i=>i.InstanceId=="featured").ProgramRevision);
+        Assert.All(commands,c=>Assert.Contains(c,new[] {"graphics.instance.create","graphics.instance.update"}));
+    }
     public void Dispose() { if (Directory.Exists(_directory)) Directory.Delete(_directory, true); }
 }

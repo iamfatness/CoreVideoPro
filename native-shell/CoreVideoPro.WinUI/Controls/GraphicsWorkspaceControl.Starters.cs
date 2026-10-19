@@ -35,8 +35,8 @@ public sealed partial class GraphicsWorkspaceControl
         _starterHome.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         _starterHome.RowDefinitions.Add(new() { Height = GridLength.Auto });
         var welcome = new StackPanel { Spacing = 6 };
-        welcome.Children.Add(new TextBlock { Text = "Start with a show template", FontSize = 26 });
-        welcome.Children.Add(Copy("Choose a coordinated look. Try its sample graphics privately, then make it yours."));
+        welcome.Children.Add(new TextBlock { Text = "1. Choose a show look", FontSize = 26 });
+        welcome.Children.Add(Copy("Choose a look → personalize its colors and logo → Use this look in Studio. Nothing goes on air while you experiment."));
         _starterHome.Children.Add(welcome);
         for (var i = 0; i < 2; i++) { _starterCards.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); _starterCards.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); }
         Grid.SetRow(_starterCards, 1); _starterHome.Children.Add(_starterCards);
@@ -51,11 +51,17 @@ public sealed partial class GraphicsWorkspaceControl
 
         var back = ChromeButton("← Show templates"); back.Click += (_, _) => OpenShowTemplates(); _starterBanner.Children.Add(back);
         _starterBanner.Children.Add(_starterHeading);
-        _addStarter = ChromeButton("Add this show template"); _addStarter.Background = Brush(0x91, 0xE3, 0xBC); _addStarter.Foreground = Brush(0x10, 0x23, 0x1A);
+        _addStarter = ChromeButton("Save graphics only");
         _addStarter.Click += async (_, _) => await AddStarterToShowAsync(); _starterBanner.Children.Add(_addStarter);
-        _starterBanner.Children.Add(Copy("Private sample · nothing is on air"));
         _starterBrandTools.Children.Add(_starterShowTitle); _starterBrandTools.Children.Add(_starterBrandAccent);
-        var branding = ChromeButton("Apply branding to set"); branding.VerticalAlignment=VerticalAlignment.Bottom; branding.Click+=(_,_)=>ApplyStarterBranding(); _starterBrandTools.Children.Add(branding);
+        _starterShowTitle.TextChanged += (_,_) => ApplyValidStarterBranding();
+        _starterBrandAccent.TextChanged += (_,_) => ApplyValidStarterBranding();
+        var color = ChromeButton("Pick color…"); color.VerticalAlignment=VerticalAlignment.Bottom;
+        var picker = new ColorPicker { IsAlphaEnabled=false, Color=Windows.UI.Color.FromArgb(255,68,193,161), MaxWidth=300 };
+        picker.ColorChanged += (_, e) => { if (!_starterAdding) _starterBrandAccent.Text=$"#{e.NewColor.R:X2}{e.NewColor.G:X2}{e.NewColor.B:X2}"; };
+        color.Flyout=new Flyout {Content=picker};
+        color.Flyout.Opening+=(_,_)=>{var hex=_starterBrandAccent.Text.Trim();if(hex.Length==7 && hex[0]=='#' && hex.Skip(1).All(Uri.IsHexDigit))picker.Color=Windows.UI.Color.FromArgb(255,Convert.ToByte(hex.Substring(1,2),16),Convert.ToByte(hex.Substring(3,2),16),Convert.ToByte(hex.Substring(5,2),16));};
+        _starterBrandTools.Children.Add(color);
         var logo = ChromeButton("Use my logo…"); logo.VerticalAlignment=VerticalAlignment.Bottom; logo.Click+=async(_,_)=>await PickStarterLogoAsync(); _starterBrandTools.Children.Add(logo);
         Grid.SetRow(_starterBanner, 0); // Inserted by the workspace's preview header, below its title.
         _starterGraphics.SelectionChanged += (_, _) => {
@@ -106,9 +112,9 @@ public sealed partial class GraphicsWorkspaceControl
             _starterDrafts = GraphicsShowStarters.Prepare(starter, _session.State ?? throw new InvalidOperationException("Graphics is starting. Try this template again in a moment."));
             _activeStarter = starter; _starterHomeOpen = false; _starterInitialSelectionApplied = true; _starterEpoch = _session.State!.CoreEpoch; _starterPreviewIndex = 0;
             _starterFeedback.Text = "";
-            _starterShowTitle.Text=starter.Heading; _starterBrandAccent.Text=starter.Accent;
             var loading = _loading; _loading = true;
             try {
+                _starterShowTitle.Text=starter.Heading; _starterBrandAccent.Text=starter.Accent;
                 _starterGraphics.Items.Clear();
                 foreach(var graphic in _starterDrafts) {
                     var row=new StackPanel {Spacing=3}; row.Children.Add(new TextBlock {Text=graphic.Name,TextWrapping=TextWrapping.Wrap});
@@ -122,28 +128,20 @@ public sealed partial class GraphicsWorkspaceControl
         } catch (InvalidOperationException ex) { _starterNotice.Text = ex.Message; }
     }
 
-    private async Task AddStarterToShowAsync()
+    private async Task AddStarterToShowAsync(bool useInStudio = false)
     {
         if (_session is null || _activeStarter is null || _starterAdding || _starterLogoImporting) return;
         // Retain edits to the currently previewed sample when adopting the set.
         RememberStarterEdits();
         if (_savedLibrary is { ReadOnly: true }) { _status.Text = "Your Graphics document is read-only. Use a supported document before adding a show template."; return; }
-        var session=_session;var library=_savedLibrary;var starter=_activeStarter;
+        var session=_session;var library=_savedLibrary;
+        _starterFeedback.Text=useInStudio?"Saving your look and assigning it to Studio…":"Saving graphics…";
         _starterAdding = true; RefreshStarterChrome();
         try {
-            if (!await session.AddStarterAsync(_starterDrafts)) { _starterFeedback.Text = session.Status; return; }
-            var added = (session.State?.Instances ?? []).Where(i => session.LastAddedStarterIds.Contains(i.InstanceId,StringComparer.Ordinal)).ToArray();
-            var firstId = session.SelectedId;
-            var saved = library is not null;
-            if (library is not null) foreach (var item in added) {
-                session.Select(item.InstanceId);
-                if(session.SelectedId!=item.InstanceId || session.Selected is null) {saved=false;break;}
-                if (!await library.SaveCueAsync(item.Label)) { saved = false; break; }
-            }
-            session.Select(firstId);
-            _starterNotice.Text = saved ? "Your show template is saved. Choose a graphic to customize; Show remains explicit." : "The hidden graphics were added, but saving failed. Use Manage to save them before closing.";
-            _starterFeedback.Text = saved ? "Your show is ready. Edit the sample text, Cue to Preview, then Show on Program. Use in Studio assigns the guest introduction to Studio’s lower thirds toggle." : _starterNotice.Text;
-            _activeStarter = null;
+            if(library is null){_starterFeedback.Text="The Graphics document is unavailable. Your private edits were kept.";return;}
+            var result=await GraphicsStarterWorkflow.AddAsync(session,library,_starterDrafts,useInStudio,_studioFollowSource.IsChecked==true);
+            _starterNotice.Text=_starterFeedback.Text=result.Message;
+            if(result.Added)_activeStarter=null;
         } catch(Exception ex) when(ex is not OutOfMemoryException) {
             _starterFeedback.Text="The show template could not be completed: "+ex.Message+". Any added graphics remain hidden.";
         } finally { _starterAdding = false; Refresh(); RefreshStarterChrome(); }
@@ -166,14 +164,15 @@ public sealed partial class GraphicsWorkspaceControl
         foreach(var control in _starterBrandTools.Children.OfType<Microsoft.UI.Xaml.Controls.Control>()) control.IsEnabled = !_starterAdding && !_starterLogoImporting;
         _cues.IsEnabled=_starterGraphics.IsEnabled=_samples.IsEnabled=_compare.IsEnabled=_canvas.IsEnabled=_customizeGraphic.IsEnabled=!_starterAdding;
         foreach(var scroll in _inspectorScrolls)scroll.IsEnabled=!_starterAdding;
-        _starterHeading.Text = (_activeStarter?.Name ?? "") + " · Try and customize";
+        _starterHeading.Text = "2. Personalize · " + (_activeStarter?.Name ?? "");
         _starterGraphics.Visibility = trying ? Visibility.Visible : Visibility.Collapsed;
         _cues.Visibility = trying ? Visibility.Collapsed : Visibility.Visible;
         _continueShow.IsEnabled = !_starterAdding && (_session?.State?.Instances.Count > 0 || _savedLibrary?.Document.Cues.Count > 0);
         _addStarter.IsEnabled = !_starterAdding && !_starterLogoImporting && _session is { Busy: false };
         foreach (var choice in _starterChoices) choice.IsEnabled = !_starterAdding && _session is { Busy: false };
-        _assignmentHelp.Text = trying ? "Add this show template first to enable Use in Studio." : _session?.Template?.Family != "lower-third" ? "Studio's lower thirds toggle uses a guest introduction. Select that graphic to assign its look." : _session?.Selected is null ? "Add this graphic to your show before assigning its look to Studio." : "Assign this look, then use Studio's existing lower thirds toggle.";
+        _assignmentHelp.Text = trying ? "3. Use this look in Studio saves the set and assigns its guest-introduction look. Then Go to Studio and use LT in. Names come from the Program source when enabled." : _session?.Template?.Family != "lower-third" ? "Studio's lower thirds toggle uses a guest introduction. Select that graphic to assign its look." : _session?.Selected is null ? "Add this graphic to your show before assigning its look to Studio." : "Use in Studio assigns the look. Go to Studio, then use LT in when you want names on air.";
         _starterFeedback.Visibility = _starterFeedback.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        RefreshWorkspaceChrome();
     }
 
     private void RememberStarterEdits()
@@ -215,7 +214,13 @@ public sealed partial class GraphicsWorkspaceControl
         RememberStarterEdits();
         try {_starterDrafts=GraphicsShowStarters.WithBranding(_starterDrafts,_starterShowTitle.Text,_starterBrandAccent.Text.Trim());}
         catch(InvalidOperationException ex) {_starterFeedback.Text=ex.Message;RefreshStarterChrome();return;}
-        _session.PreviewStarter(_starterDrafts[_starterPreviewIndex]); _starterFeedback.Text="Branding applied to your private sample set. Program is unchanged."; RefreshStarterChrome();
+        _session.PreviewStarter(_starterDrafts[_starterPreviewIndex]); _starterFeedback.Text="Private preview updated."; RefreshStarterChrome();
+    }
+
+    private void ApplyValidStarterBranding()
+    {
+        var color=_starterBrandAccent.Text.Trim();
+        if(!_loading && !string.IsNullOrWhiteSpace(_starterShowTitle.Text) && color.Length==7 && color[0]=='#' && color.Skip(1).All(Uri.IsHexDigit)) ApplyStarterBranding();
     }
 
     private async Task PickStarterLogoAsync()

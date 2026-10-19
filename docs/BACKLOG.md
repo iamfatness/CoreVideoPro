@@ -1,5 +1,11 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner review follow-up, October 19 — #951/#927:** Studio's bottom controls do
+not fit at 1080p and the template workflow is still unclear. Restore complete
+Studio control fit with full-workspace compiled geometry and renders; preserve
+Studio behavior. Clarify the template-to-Studio workflow against the owner's
+review feedback. Use API/offscreen checks and preserve the installed review app.
+
 **Owner direction, October 19 — #927:** fix the rejected Graphics private-preview
 request and replace the editor-first entry with populated, coordinated show
 starters. Let operators choose, experiment privately, customize and explicitly
@@ -245,9 +251,8 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
-| Owner current — October 19 Graphics feedback | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927) | Repair private preview requests; deliver populated show starters, private experimentation, shared branding and hidden adoption/restore with native evidence. |
-| Required #927 asset consumer dependency | B | [#949](https://github.com/iamfatness/CoreVideoPro/issues/949) | Generated local-logo manifests omit required animations; preserve native validation and qualify the corrected import in the approved starter workflow. |
-| Owner current — approved Graphics redesign | B | [#942](https://github.com/iamfatness/CoreVideoPro/issues/942) | Bounded Graphics workspace, explicit pinned Studio look, existing Studio toggle/label only; isolated 1080p validation. |
+| Owner review regression — October 19 | B | [#951](https://github.com/iamfatness/CoreVideoPro/issues/951) | Reproduce full Studio footer clipping at 1080p; restore visible, non-overlapping production actions with compiled full-workspace geometry and renders. |
+| Owner current — October 19 Graphics feedback | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927) | Preview/starters merged in #950; review follow-up makes personalization live and joins saved starter adoption to explicit Studio assignment and navigation without putting graphics on air. |
 | Owner current — Volt implementation | A | [#926](https://github.com/iamfatness/CoreVideoPro/issues/926) | Native template/instance consumer and bounded preparation with compatibility lower-third pixels. |
 | Volt dependent — after #926 | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927), [#928](https://github.com/iamfatness/CoreVideoPro/issues/928) | Complete workspace/migration and actual title/bug/clock consumers; activate only as dependency gates pass. |
 | Volt dependent — after consumers/#761 | B | [#929](https://github.com/iamfatness/CoreVideoPro/issues/929) | Scoped participant automation, rehearsal and manual override with native outcome evidence. |
@@ -463,6 +468,8 @@ These rows record specific fixes, not blanket production or fleet reliability.
 
 | Issue | Merged fix / acceptance |
 |---|---|
+| [#949](https://github.com/iamfatness/CoreVideoPro/issues/949) | Merged #950 adds the required animation defaults to imported static logos; actual PNG native import/create/save/restore qualified. |
+| [#942](https://github.com/iamfatness/CoreVideoPro/issues/942) | Graphics workspace and explicit Studio assignment merged. Complete Studio footer fit is a separate owner-reported review regression under #951; Graphics-only bounds did not qualify the whole page. |
 | [#869](https://github.com/iamfatness/CoreVideoPro/issues/869) | Explicit, scoped GPU fixture modes and independent isolated pixel/label coverage merged in #895; exact-head CI/CodeQL green. Retained timing failures remain under #898/#517; closure is limited to mode-assumption hardening. |
 | [#870](https://github.com/iamfatness/CoreVideoPro/issues/870) | GitHub issue closed after merged immutable owner observations and off-lock response assembly. Broader initiating-stall attribution and per-output installed delivery qualification remain under #517/#823; closure is not a blanket zero-miss claim. |
 | [#891](https://github.com/iamfatness/CoreVideoPro/issues/891) | Closed by merged #892: inspector selection index tracks tab membership/movement before page reentry. Compiled/installed review probes and page entry passed in the October 13 beta. |

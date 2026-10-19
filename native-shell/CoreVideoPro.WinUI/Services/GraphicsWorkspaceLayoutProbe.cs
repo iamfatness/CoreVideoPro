@@ -52,10 +52,10 @@ internal static class GraphicsWorkspaceLayoutProbe
             Invoke(Button(workspace,"Interview"));await Task.Delay(100);page.UpdateLayout();
             Require(studio.GraphicsWorkspace.Selected is null && studio.GraphicsWorkspace.Preview?.Fields.GetProperty("name").GetString()=="Alex Rivera","Show template did not provide private sample content");
             Require(studio.GraphicsWorkspace.State?.Instances.Count==0 && studio.GraphicsLibrary.Document.StudioLowerThird is null,"Trying a template mutated the show or Studio assignment");
-            Require(Button(workspace,"Add this show template").ActualHeight>0 && !Button(workspace,"Use in Studio").IsEnabled,"Sample adoption or Studio guard is missing");
+            Require(Button(workspace,"Save graphics only").ActualHeight>0 && Button(workspace,"Use this look in Studio").IsEnabled,"The direct sample-to-Studio action is unavailable");
             Descendants(workspace).OfType<TextBox>().Single(t=>t.Header as string=="Show title").Text="My weekly show";
             Descendants(workspace).OfType<TextBox>().Single(t=>t.Header as string=="Brand color").Text="#2873AA";
-            Invoke(Button(workspace,"Apply branding to set"));
+            await Eventually(()=>studio.GraphicsWorkspace.Draft?.Style.AccentColor=="#2873AA");
             Require(studio.GraphicsWorkspace.Draft?.Style.AccentColor=="#2873AA","Shared branding did not update the private draft");
             studio.GraphicsWorkspace.SetField("name",System.Text.Json.JsonSerializer.SerializeToElement("My guest"));
             var sampleList=Descendants(workspace).OfType<ListView>().Single(l=>Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(l)=="Show template sample graphics");
@@ -120,6 +120,8 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(studio.StudioAssignedLowerThirdLabel=="Guest introduction","Assigned look label did not update after explicit assignment");
             studio.GraphicsWorkspace.Select("fixture-2");
             Require(studio.StudioAssignedLowerThirdLabel=="Guest introduction","Browsing changed the assigned look label");
+            Invoke(Button(workspace,"Go to Studio"));
+            Require(studio.ActiveTab==CoreVideoPro.WinUI.Models.StudioTab.Studio,"Go to Studio did not select the existing Studio workspace");
             checks.Add("Use in Studio saves the selected look and updates the bound Studio label; later cue selection preserves assignment");
             var unavailable = await control.InvokeAsync("graphics.lowerThird.set", new object?[] { true });
             Require(!unavailable.Ok && unavailable.Error?.Contains("Native Graphics is unavailable",StringComparison.Ordinal)==true,"Assigned API Show fell through to a legacy cue or falsely reported success");

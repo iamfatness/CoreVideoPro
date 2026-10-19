@@ -1,5 +1,6 @@
 using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
+using CoreVideoPro.WinUI.Models;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -21,7 +22,7 @@ public sealed partial class GraphicsWorkspaceControl
         _assignmentCaption = new() { FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis },
         _layerHeading = new() { Text = "LAYERS · top is front", FontSize = 11 };
     private readonly Dictionary<string, FrameworkElement> _toolPanels = new(StringComparer.Ordinal);
-    private readonly CheckBox _studioFollowSource = new() { Content = "Use Program source text in Studio", IsChecked = true };
+    private readonly CheckBox _studioFollowSource = new() { Content = "Use each guest's name and title in Studio", IsChecked = true };
     private readonly TextBox _cueSearch = new() { PlaceholderText = "Find a cue" };
     private readonly TextBlock _cueRackTitle = new() { Text="Show cues", FontSize=16 };
     private readonly ComboBox _cueScopeFilter = new() { Header="Scope", ItemsSource=new[] {"All scenes","Current Program scene"}, SelectedIndex=0, HorizontalAlignment=HorizontalAlignment.Stretch };
@@ -36,6 +37,7 @@ public sealed partial class GraphicsWorkspaceControl
     private readonly Button _customizeGraphic = ChromeButton("Customize layout & motion");
     private readonly RowDefinition _layerPanelRow = new() { Height = new GridLength(0) };
     private Button _useInStudioButton = null!;
+    private Button _goToStudioButton = null!;
     private readonly Grid _transport = new() { ColumnSpacing = 8, Padding = new Thickness(12, 8, 12, 8) };
 
     private void BuildWorkspace()
@@ -109,8 +111,20 @@ public sealed partial class GraphicsWorkspaceControl
         Grid.SetRow(tabs, 1); inspector.Children.Add(tabs); Grid.SetRow(_inspectorBodies, 2); inspector.Children.Add(_inspectorBodies); SelectInspectorTab(0);
         var assignment = new StackPanel { Spacing = 4 };
         assignment.Children.Add(_assignmentCaption);
-        _useInStudioButton = Action("Use in Studio", async () => { if (Studio is not null) await Studio.AssignGraphicsLookToStudioAsync(_studioFollowSource.IsChecked == true); }); assignment.Children.Add(_useInStudioButton);
+        _useInStudioButton = Action("Use in Studio", async () => {
+            if(_starterAdding || Studio is null)return;
+            if(_activeStarter is not null)await AddStarterToShowAsync(useInStudio:true);
+            else {
+                var assigned=await Studio.AssignGraphicsLookToStudioAsync(_studioFollowSource.IsChecked==true);
+                _starterFeedback.Text=assigned?"Look assigned. Go to Studio and use LT in when you want names on air.":Studio.GraphicsLibrary.Status;
+                Refresh();
+            }
+        });
+        _useInStudioButton.Background=Brush(0x91,0xE3,0xBC);_useInStudioButton.Foreground=Brush(0x10,0x23,0x1A);
+        assignment.Children.Add(_useInStudioButton);
         assignment.Children.Add(_assignmentHelp);
+        _goToStudioButton=Action("Go to Studio",()=>{if(Studio is not null)Studio.ActiveTab=StudioTab.Studio;return Task.CompletedTask;});
+        assignment.Children.Add(_goToStudioButton);
         ToolTipService.SetToolTip(_useInStudioButton, "Pin this draft for Studio's next Show. Current Program is unchanged.");
         Grid.SetRow(assignment, 3); inspector.Children.Add(assignment);
         _undoButton = Action("Undo draft", () => { _session?.Undo(); return Task.CompletedTask; }); Grid.SetRow(_undoButton, 4); inspector.Children.Add(_undoButton);
@@ -184,7 +198,11 @@ public sealed partial class GraphicsWorkspaceControl
         _selectionTitle.Text = _activeStarter is not null && _starterPreviewIndex>=0 && _starterPreviewIndex<_starterDrafts.Count ? _starterDrafts[_starterPreviewIndex].Name : _session?.Selected?.Label is { Length: > 0 } name ? name : _session?.Template?.Name ?? "Choose a graphic";
         _selectionSummary.Text = _activeStarter is not null ? "Private sample · not added to your show" : _session?.Draft is not null ? (_session.Dirty ? "Private edits · not applied" : "Your graphic") : "Choose a show template or an existing graphic";
         _assignmentCaption.Text = "Studio look: " + (Studio?.StudioAssignedLowerThirdLabel ?? "Not assigned");
-        _useInStudioButton.IsEnabled = _session is { Busy: false, Selected: not null, Draft: not null, PreviewSample: "current" } && _session.Template?.Family == "lower-third" && Studio?.StudioLowerThirdBusy == false;
+        _useInStudioButton.Content=_activeStarter is not null?"Use this look in Studio":"Use in Studio";
+        _useInStudioButton.IsEnabled = !_starterAdding && !_starterLogoImporting && Studio?.StudioLowerThirdBusy==false &&
+            (_activeStarter is not null ? _session is {Busy:false} : _session is { Busy: false, Selected: not null, Draft: not null, PreviewSample: "current" } && _session.Template?.Family == "lower-third");
+        _goToStudioButton.Visibility=_activeStarter is null && Studio?.StudioLowerThird.Assignment is not null?Visibility.Visible:Visibility.Collapsed;
+        ToolTipService.SetToolTip(_useInStudioButton,_activeStarter is not null?"Save the four graphics and assign the guest-introduction look to Studio. Nothing is shown on Program.":"Assign this draft to Studio's next LT in. Current Program is unchanged.");
     }
     private void RefreshLayerList()
     {
