@@ -28,9 +28,10 @@ internal static class StudioWorkspaceLayoutProbe
             var watch = Stopwatch.StartNew();
             while (!page.IsLoaded && watch.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(30);
             if (!page.IsLoaded) throw new InvalidOperationException("Studio did not load");
+            if (Math.Abs(page.XamlRoot.RasterizationScale-1)>0.001) throw new InvalidOperationException("Studio fit qualification requires 100% scaling; observed " + page.XamlRoot.RasterizationScale);
             var failures = new List<string>();
             var metrics = new List<object>();
-            foreach (var (width, height) in new[] { (1904, 1000), (1600, 900), (1360, 768) })
+            foreach (var (width, height) in new[] { (1904, 1000), (1600, 900), (1424, 860), (1360, 768) })
             {
                 page.Width = width; page.Height = height;
                 page.HorizontalAlignment = HorizontalAlignment.Left; page.VerticalAlignment = VerticalAlignment.Top;
@@ -64,7 +65,7 @@ internal static class StudioWorkspaceLayoutProbe
                 await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"studio-{width}x{height}.png"));
                 checks.Add($"Full Studio: {controls.Length} footer actions contained, automation/transport disjoint, long assigned label bounded at {width}x{height}; raster scale {page.XamlRoot.RasterizationScale}; native video pixels excluded");
             }
-            foreach(var (width,height) in new[] {(1904,1000),(1360,768)})
+            foreach(var (width,height) in new[] {(1904,1000),(1424,860),(1360,768)})
             {
                 page.Width=width;page.Height=height;
                 studio.ActiveTab=CoreVideoPro.WinUI.Models.StudioTab.Overlays;

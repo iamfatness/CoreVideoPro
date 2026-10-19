@@ -7,6 +7,9 @@ That group could neither shrink nor reflow. At a 1360-pixel client width the
 compiled view clipped Virtual camera/options and Details and overlapped Take
 with the graphics controls. An idle 1904-pixel client fit. Display resolution
 alone therefore did not establish whether a window's available content fit.
+`App.BringMainWindowToForeground` explicitly opens a 1440x900 window, even on a
+1920x1080 display. Its client width is below the former footer's combined
+minimum; it cannot be qualified by checking only a maximized 1080p canvas.
 
 `StudioFooterLayoutPanel` measures the existing groups and puts transport on a
 separate row when their combined width does not fit. Wider views retain the
@@ -21,7 +24,13 @@ scrolling at the tested client sizes.
 `--verify-studio-layout <report.json>` creates a separate offscreen compiled
 Studio using in-memory production preferences and an isolated Graphics document.
 It checks containment, overlap, long labels/statuses and fixed-window control
-stability at 1904x1000, 1600x900 and 1360x768 with raster-scale evidence. It also
+stability at 1904x1000, 1600x900, a conservative default-startup client budget of
+1424x860, and 1360x768 with raster-scale evidence. It also
 checks Graphics inside the complete shell, private-authoring footer visibility,
 and restoration on return to Studio. These are geometry/UI checks, not native
 video-presentation or output-performance acceptance.
+
+`scripts/test-studio-layout.ps1` runs the Studio and Graphics probes against the
+prepared build, rejects old/missing/failed reports, and is part of the Windows
+CI job. Qualification requires 100% raster scaling and never changes the host's
+display settings. The normal Windows results artifact retains reports and PNGs.
