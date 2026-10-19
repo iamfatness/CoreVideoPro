@@ -11,6 +11,89 @@
 #include <thread>
 
 #if COREVIDEO_WITH_D3D11
+#include <d3d11.h>
+#include "compositor/ComPtrLite.h"
+#include "compositor/CompositorOverlayRaster.h"
+#include <filesystem>
+#include <fstream>
+#include <cstdlib>
+
+TEST(GraphicsRpcPixel, PrivateGraphicsPreviewRequiresExplicitNullAppearanceAndProducesChangingPixels) {
+  using corevideo::rpc::Json;
+  using corevideo::modules::ComPtrLite;
+  ComPtrLite<ID3D11Device> device; ComPtrLite<ID3D11DeviceContext> context;
+  ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+      nullptr,0,D3D11_SDK_VERSION,device.put(),nullptr,context.put())));
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
+  // Optional authoring artifact generation from managed starter fixtures. This
+  // does not replace the unconditional RPC/shared-pixel assertions below.
+  if(const auto* fixturePath=std::getenv("COREVIDEO_GRAPHICS_STARTER_FIXTURES")) {
+    const auto* outputPath=std::getenv("COREVIDEO_GRAPHICS_STARTER_ASSET_DIR");ASSERT_TRUE(outputPath);
+    std::ifstream input(fixturePath,std::ios::binary);ASSERT_TRUE(input.good());
+    const std::string text((std::istreambuf_iterator<char>(input)),std::istreambuf_iterator<char>());
+    const auto rows=Json::parse(text);ASSERT_TRUE(rows && rows->isArray());ASSERT_EQ(rows->asArray().size(),4u);
+    std::filesystem::create_directories(outputPath);
+    corevideo::graphics::GraphicsInstances graphics{"starter-artifacts"};
+    for(const auto& row:rows->asArray()) {
+      const auto id=row.getString("id");ASSERT_TRUE(id=="interview" || id=="panel" || id=="webinar" || id=="branded");
+      ASSERT_TRUE(row.get("graphics"));const auto overlay=graphics.authoringPreview(*row.get("graphics"));ASSERT_TRUE(overlay);
+      const auto& a=overlay->appearance;const auto scale=320./(a.width*1920.);
+      const int height=std::max(1,int(std::lround((a.nameSize+a.titleSize+a.padding*3)*scale)));
+      corevideo::modules::CompositorOverlayRaster raster;std::string warning;
+      const auto png=raster.thumbnailPng(*overlay,320,height,warning);ASSERT_GT(png.size(),100u) << warning;
+      std::ofstream output(std::filesystem::path(outputPath)/(id+".png"),std::ios::binary|std::ios::trunc);
+      output.write(reinterpret_cast<const char*>(png.data()),png.size());ASSERT_TRUE(output.good());
+    }
+  }
+#endif
+  for (const auto& templateId : {"minimal-accent", "centered-title"}) {
+    auto modules=corevideo::modules::createStubModules(); modules.compositor=corevideo::modules::createD3D11Compositor();
+    ASSERT_TRUE(modules.compositor && modules.compositor->supportsGradePreview());
+    corevideo::core::MediaCore core(std::move(modules)); corevideo::rpc::JsonRpcServer server(core);
+    const auto capture=[&](int revision,const std::string& text) {
+      const bool title=std::string(templateId)=="centered-title";
+      Json::Object fields=title?Json::Object{{"heading",text},{"subtitle","Private sample"}}:Json::Object{{"name",text},{"title","Host"}};
+      Json::Object preview{{"graphics",Json::Object{{"templateId",templateId},{"templateVersion",1},{"fields",std::move(fields)},{"style",Json::Object{}}}}};
+      Json::Object request{{"id","private-preview"},{"type","set-grade-preview"},{"instanceId","private-canvas"},
+          {"sourceId","preview:lower-third"},{"revision",revision},{"enabled",true},{"lowerThirdPreview",preview}};
+      // The old shell transport dropped this null. Native correctly refuses
+      // that incomplete envelope; do not weaken identity/revision validation.
+      EXPECT_FALSE(server.handle(request).get("ok")->asBool());
+      preview["appearance"]=Json{}; request["lowerThirdPreview"]=std::move(preview);
+      ASSERT_TRUE(server.handle(request).get("ok")->asBool());
+      Json event;
+      const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+      do {
+        const auto response=server.handle(Json::Object{{"id","preview-tick"},{"type","media-core-sync"},{"commands",Json::Array{}}});
+        ASSERT_TRUE(response.get("ok")->asBool());
+        ASSERT_TRUE(response.get("snapshot")->get("graphics")->get("instances")->asArray().empty());
+        for (const auto& item:core.drainGradePreviewEvents())
+          if(item.getString("status")=="ready" && item.getNumber("revision")==revision && item.get("texture")) event=item;
+        if(event.get("texture")) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      } while(std::chrono::steady_clock::now()<limit);
+      ASSERT_TRUE(event.get("texture")!=nullptr) << templateId;
+      const auto handle=event.get("texture")->getString("sharedHandleHex"); ASSERT_FALSE(handle.empty());
+      ComPtrLite<ID3D11Texture2D> texture,staging; ComPtrLite<IDXGIKeyedMutex> mutex;
+      ASSERT_TRUE(SUCCEEDED(device->OpenSharedResource(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::stoull(handle,nullptr,0))),
+          __uuidof(ID3D11Texture2D),reinterpret_cast<void**>(texture.put()))));
+      ASSERT_TRUE(SUCCEEDED(texture->QueryInterface(__uuidof(IDXGIKeyedMutex),reinterpret_cast<void**>(mutex.put()))));
+      ASSERT_EQ(mutex->AcquireSync(1,100),S_OK);
+      D3D11_TEXTURE2D_DESC desc{};texture->GetDesc(&desc);desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=desc.MiscFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+      ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&desc,nullptr,staging.put())));
+      context->CopyResource(staging.get(),texture.get());context->Flush();mutex->ReleaseSync(0);
+      D3D11_MAPPED_SUBRESOURCE mapped{};ASSERT_TRUE(SUCCEEDED(context->Map(staging.get(),0,D3D11_MAP_READ,0,&mapped)));
+      std::vector<uint8_t> pixels(size_t(desc.Width)*desc.Height*4);
+      for(unsigned y=0;y<desc.Height;++y) std::copy_n(static_cast<const uint8_t*>(mapped.pData)+y*mapped.RowPitch,desc.Width*4,pixels.data()+size_t(y)*desc.Width*4);
+      context->Unmap(staging.get(),0);return pixels;
+    };
+    const auto first=capture(1,"Alex Rivera"); const auto edited=capture(2,"MMMMMMMMMMMM");
+    ASSERT_EQ(first.size(),edited.size()); size_t changed=0;
+    for(size_t i=0;i<first.size();i+=4) if(!std::equal(first.begin()+i,first.begin()+i+3,edited.begin()+i))++changed;
+    EXPECT_GT(changed,32u) << templateId;
+  }
+}
+
 TEST(GraphicsCompositionPixel, EveryCuratedLookReachesActualNativeProgramPixels) {
   using corevideo::rpc::Json;
   for (const auto& definition:corevideo::graphics::GraphicsTemplate::curated()) {

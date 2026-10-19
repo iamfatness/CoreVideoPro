@@ -33,6 +33,8 @@ public sealed class GraphicsPackageReaderTests : IDisposable
         var a=await GraphicsImageImport.StageAsync(first,Cache);var b=await GraphicsImageImport.StageAsync(second,Cache);
         Assert.Equal(a,b);Assert.Single(Directory.GetFiles(Path.Combine(Cache,"assets")));
         using var manifest=JsonDocument.Parse(a.Package.Manifest);
+        Assert.Equal("none",manifest.RootElement.GetProperty("animations").GetProperty("in").GetProperty("type").GetString());
+        Assert.Equal("none",manifest.RootElement.GetProperty("animations").GetProperty("out").GetProperty("type").GetString());
         Assert.Equal(Hash,manifest.RootElement.GetProperty("assets")[0].GetProperty("sha256").GetString());
         await File.WriteAllBytesAsync(Path.Combine(Cache,"assets",Hash+".png"),new byte[32]);
         await Assert.ThrowsAsync<InvalidDataException>(()=>GraphicsImageImport.StageAsync(first,Cache));

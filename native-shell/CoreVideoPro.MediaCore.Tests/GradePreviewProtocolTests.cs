@@ -3,6 +3,19 @@ using Xunit;
 namespace CoreVideoPro.MediaCore.Tests;
 public sealed class GradePreviewProtocolTests
 {
+    [Fact] public void GraphicsPreviewRetainsExplicitNullAppearanceWithTheActualTransportSerializer()
+    {
+        var draft = new CoreVideoPro.MediaCore.Models.NativeGraphicsDraft("minimal-accent", 1,
+            System.Text.Json.JsonSerializer.SerializeToElement(new { name = "Alex Rivera", title = "Host" }),
+            new(), new());
+        var wire = System.Text.Json.JsonSerializer.SerializeToElement(
+            new { lowerThirdPreview = new CoreVideoPro.MediaCore.Models.LowerThirdPreview(null, Graphics: draft.ForPreview()) },
+            CoreVideoPro.MediaCore.Json.MediaCoreJson.Options);
+        var preview = wire.GetProperty("lowerThirdPreview");
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, preview.GetProperty("appearance").ValueKind);
+        Assert.Equal("minimal-accent", preview.GetProperty("graphics").GetProperty("templateId").GetString());
+        Assert.False(preview.GetProperty("graphics").TryGetProperty("placement", out _));
+    }
     [Fact] public void CircleResponseRequiresMaskedSampleCountAndKnownShape()
     {
         var line="""{"type":"grade-preview","instanceId":"a","sourceId":"p1","revision":2,"sourceEpoch":8,"status":"ready","texture":{"width":64,"height":64,"sharedHandleHex":"0x1234"},"scopes":{"status":"ready","revision":2,"sourceEpoch":8,"view":1,"roi":{"enabled":true,"shape":"circle","width":1,"height":1},"sampleWidth":256,"sampleHeight":144,"sampleCount":28960,"colorSpace":"rec709-sdr-assumed","texture":{"width":1536,"height":512,"sharedHandleHex":"0x5678"}}}""";

@@ -32,11 +32,49 @@ internal static class GraphicsWorkspaceLayoutProbe
             // than pretending Graphics can consume the entire display.
             page.Width = 1840; page.Height = 820; page.HorizontalAlignment = HorizontalAlignment.Left; page.VerticalAlignment = VerticalAlignment.Top;
             var template = new NativeGraphicsTemplate { TemplateId="compact-solid", TemplateVersion=1, Name="Compact solid", Family="lower-third", Runtime="compatibility" };
-            var state = new NativeGraphicsState { CoreEpoch="isolated-layout", SchemaVersion=1, Templates=[template],
+            var catalog = new[] { template, template with { TemplateId="minimal-accent",Name="Minimal accent" }, template with { TemplateId="broadcast",Name="Broadcast" },
+                new NativeGraphicsTemplate {TemplateId="centered-title",TemplateVersion=1,Name="Centered title",Family="title",Runtime="declarative",Fields=[new() {Id="heading",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("Welcome")},new() {Id="subtitle",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("Your show")}]},
+                new NativeGraphicsTemplate {TemplateId="corner-logo",TemplateVersion=1,Name="Logo",Family="bug",Runtime="declarative"},
+                new NativeGraphicsTemplate {TemplateId="clock-panel",TemplateVersion=1,Name="Clock",Family="clock",Runtime="declarative",Fields=[new() {Id="label",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("LIVE")},new() {Id="time",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("12:34:56")}]} };
+            // Optional catalog collected from a separate native QA process.
+            // This opt-in probe still never attaches to the running application.
+            if(Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_PROBE_CATALOG") is {Length:>0} catalogPath)
+                catalog=System.Text.Json.JsonSerializer.Deserialize<NativeGraphicsState>(await File.ReadAllTextAsync(catalogPath),new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))!.Templates.ToArray();
+            studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=catalog});
+            await Task.Delay(150);page.UpdateLayout();
+            var workspace = Descendants(page).OfType<GraphicsWorkspaceControl>().Single();
+            await Eventually(()=>Descendants(workspace).OfType<Image>().Count(i=>Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(i).StartsWith("Show template reference: ",StringComparison.Ordinal) && i.Source is Microsoft.UI.Xaml.Media.Imaging.BitmapImage {PixelWidth:320})==4);
+            foreach(var name in GraphicsShowStarters.All.Select(s=>s.Name)) {
+                var card=Button(workspace,name);var point=card.TransformToVisual(workspace).TransformPoint(new(0,0));
+                Require(card.ActualHeight>100 && point.Y>=0 && point.Y+card.ActualHeight<=workspace.ActualHeight+1,"Show template card is clipped: "+name);
+            }
+            await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,"graphics-show-templates-1080.png"));
+            Invoke(Button(workspace,"Interview"));await Task.Delay(100);page.UpdateLayout();
+            Require(studio.GraphicsWorkspace.Selected is null && studio.GraphicsWorkspace.Preview?.Fields.GetProperty("name").GetString()=="Alex Rivera","Show template did not provide private sample content");
+            Require(studio.GraphicsWorkspace.State?.Instances.Count==0 && studio.GraphicsLibrary.Document.StudioLowerThird is null,"Trying a template mutated the show or Studio assignment");
+            Require(Button(workspace,"Add this show template").ActualHeight>0 && !Button(workspace,"Use in Studio").IsEnabled,"Sample adoption or Studio guard is missing");
+            Descendants(workspace).OfType<TextBox>().Single(t=>t.Header as string=="Show title").Text="My weekly show";
+            Descendants(workspace).OfType<TextBox>().Single(t=>t.Header as string=="Brand color").Text="#2873AA";
+            Invoke(Button(workspace,"Apply branding to set"));
+            Require(studio.GraphicsWorkspace.Draft?.Style.AccentColor=="#2873AA","Shared branding did not update the private draft");
+            studio.GraphicsWorkspace.SetField("name",System.Text.Json.JsonSerializer.SerializeToElement("My guest"));
+            var sampleList=Descendants(workspace).OfType<ListView>().Single(l=>Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(l)=="Show template sample graphics");
+            sampleList.SelectedIndex=1;
+            Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("heading").GetString()=="My weekly show","Shared show title was lost when choosing another graphic");
+            sampleList.SelectedIndex=0;
+            Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("name").GetString()=="My guest","Switching sample graphics lost private edits");
+            await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,"graphics-try-interview-1080.png"));
+            checks.Add("Four visible show-template starters; Interview opens populated private samples; branding and per-graphic edits survive navigation without creating native instances or assigning Studio");
+            Invoke(Button(workspace,"Show templates"));Invoke(Button(workspace,"Browse individual graphics"));await Task.Delay(80);
+            var individualLibrary=Descendants(workspace).OfType<ListView>().Single(l=>l.IsItemClickEnabled);
+            individualLibrary.SelectedIndex=0;Invoke(Button(workspace,"Close"));await Task.Delay(80);
+            Require(sampleList.Visibility==Visibility.Collapsed && studio.GraphicsWorkspace.Selected is null && studio.GraphicsWorkspace.Draft?.TemplateId==catalog[0].TemplateId,"Individual library browsing retained the show-starter mode or hid the editor");
+            checks.Add("Returning to individual graphics from a starter exits sample-set mode and preserves the original library workflow");
+            var state = new NativeGraphicsState { CoreEpoch="isolated-layout", SchemaVersion=1, Templates=catalog,
                 Instances=Enumerable.Range(1,8).Select(n=>new NativeGraphicsInstance { InstanceId=$"fixture-{n}", Label=n==1?"Guest introduction":$"Show cue {n}", TemplateId=template.TemplateId, TemplateVersion=1, Scope=n==8?"scene":"global", SceneId=n==8?"other-scene":"", Revision=1, Fields=new() { Name="Alex Rivera",Title="Producer · Office Hours" } }).ToArray() };
             studio.GraphicsWorkspace.Observe(state); studio.GraphicsWorkspace.Select("fixture-1");
+            Invoke(Button(workspace,"Show templates")); Invoke(Button(workspace,"Continue my show"));
             await Task.Delay(250); page.UpdateLayout();
-            var workspace = Descendants(page).OfType<GraphicsWorkspaceControl>().Single();
             Require(workspace.ActualHeight <= 821 && workspace.ActualWidth <= 1841, "Graphics exceeded the 1080p content budget");
             var canvas = Descendants(workspace).OfType<GraphicsAuthoringCanvas>().Single();
             await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,"graphics-942-initial-1080.png"));
@@ -46,6 +84,7 @@ internal static class GraphicsWorkspaceLayoutProbe
                 Require(button.ActualHeight>0 && point.Y>=0 && point.Y+button.ActualHeight<=workspace.ActualHeight+1 && point.X+button.ActualWidth<=workspace.ActualWidth+1, $"{title} is clipped or below the workspace");
             }
             checks.Add("1840 x 820 shell content budget on 1920 x 1080: native canvas, inspector and all fixed actions stay visible; eight cue rows bounded");
+            Invoke(Button(workspace,"Customize layout & motion"));
             foreach(var tab in new[] {"Content","Style","Layout","Motion"}) {
                 Invoke(Button(workspace,tab)); await Task.Delay(80); page.UpdateLayout();
                 Require(Descendants(workspace).OfType<ScrollViewer>().Any(s=>s.Visibility==Visibility.Visible && s.ActualHeight>100), "Inspector has no bounded scroll area");
@@ -87,7 +126,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             checks.Add("API Hide remains idempotent; assigned API Show refuses unavailable native Graphics without legacy fallback or false success");
         } finally { Environment.SetEnvironmentVariable("COREVIDEO_GRAPHICS_DOCUMENT_PATH",previousPath); }
     }
-    private static Button Button(DependencyObject root,string name)=>Descendants(root).OfType<Button>().Single(b=>b.Content?.ToString()==name);
+    private static Button Button(DependencyObject root,string name)=>Descendants(root).OfType<Button>().Single(b=>b.Content?.ToString()==name || Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(b)==name);
     private static void Invoke(Button button)=>((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke();
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root) { for(var i=0;i<VisualTreeHelper.GetChildrenCount(root);i++) {var child=VisualTreeHelper.GetChild(root,i);yield return child;foreach(var descendant in Descendants(child))yield return descendant;} }
     private static void Require(bool value,string reason) {if(!value)throw new InvalidOperationException(reason);}
