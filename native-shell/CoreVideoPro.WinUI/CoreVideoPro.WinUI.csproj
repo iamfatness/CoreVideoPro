@@ -63,6 +63,7 @@
 
   <ItemGroup>
     <Content Include="Assets\*.png" />
+    <Content Include="Assets\GraphicsStarters\*.png" />
     <!-- Ship the icon next to the exe so AppWindow.SetIcon can load it at runtime. -->
     <Content Include="Assets\AppIcon.ico" />
     <!-- Design-system fonts (bundled, OFL): Space Grotesk (UI) + IBM Plex Mono (labels). -->

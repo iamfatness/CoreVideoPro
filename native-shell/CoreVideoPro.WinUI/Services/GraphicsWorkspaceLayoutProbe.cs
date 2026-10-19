@@ -43,6 +43,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             studio.GraphicsWorkspace.Observe(new() {CoreEpoch="isolated-layout",SchemaVersion=1,Templates=catalog});
             await Task.Delay(150);page.UpdateLayout();
             var workspace = Descendants(page).OfType<GraphicsWorkspaceControl>().Single();
+            await Eventually(()=>Descendants(workspace).OfType<Image>().Count(i=>Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(i).StartsWith("Show template reference: ",StringComparison.Ordinal) && i.Source is Microsoft.UI.Xaml.Media.Imaging.BitmapImage {PixelWidth:320})==4);
             foreach(var name in GraphicsShowStarters.All.Select(s=>s.Name)) {
                 var card=Button(workspace,name);var point=card.TransformToVisual(workspace).TransformPoint(new(0,0));
                 Require(card.ActualHeight>100 && point.Y>=0 && point.Y+card.ActualHeight<=workspace.ActualHeight+1,"Show template card is clipped: "+name);

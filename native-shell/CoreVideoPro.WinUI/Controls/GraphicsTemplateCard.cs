@@ -13,19 +13,16 @@ public sealed class GraphicsTemplateCard : UserControl
     private readonly TextBlock _status=new() {TextWrapping=TextWrapping.Wrap,FontSize=11};
     private readonly NativeGraphicsTemplate _template;
     private bool _decoded;
-    public GraphicsTemplateCard(NativeGraphicsTemplate template,bool compact,bool showMetadata = true)
+    public GraphicsTemplateCard(NativeGraphicsTemplate template,bool compact)
     {
         _template=template;
         var panel=new StackPanel {Spacing=5,MaxWidth=215};
-        if (!showMetadata) { panel.MaxWidth=double.PositiveInfinity; _image.MaxWidth=640; _image.Height=100; }
-        if (showMetadata) {
-            panel.Children.Add(new TextBlock {Text=template.Name,TextWrapping=TextWrapping.Wrap,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold});
-            panel.Children.Add(new TextBlock {Text=$"{template.Family} · v{template.TemplateVersion}",FontSize=11});
-        }
+        panel.Children.Add(new TextBlock {Text=template.Name,TextWrapping=TextWrapping.Wrap,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold});
+        panel.Children.Add(new TextBlock {Text=$"{template.Family} · v{template.TemplateVersion}",FontSize=11});
         if(!compact) {
             panel.Children.Add(new Border {Background=new SolidColorBrush(Windows.UI.Color.FromArgb(255,26,30,37)),Child=_image,Padding=new Thickness(4)});
             _status.Text=template.Thumbnail is {State:"ready"}?"Native render · reference appearance":template.Thumbnail?.Reason is {Length:>0} reason?reason:"Native thumbnail preparing…";
-            if (showMetadata) panel.Children.Add(_status);
+            panel.Children.Add(_status);
             var tokens=template.BrandTokens.Count==0?"Compatibility look":string.Join(", ",template.BrandTokens);
             ToolTipService.SetToolTip(panel,"Brand roles: "+tokens+". Open the private canvas for your current style, text and asset diagnostics.");
             Loaded+=async(_,_)=>await DecodeAsync();

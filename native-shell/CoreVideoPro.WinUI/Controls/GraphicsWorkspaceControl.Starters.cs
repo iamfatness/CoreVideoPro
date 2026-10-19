@@ -2,6 +2,8 @@ using CoreVideoPro.MediaCore.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace CoreVideoPro.WinUI.Controls;
 
@@ -25,7 +27,7 @@ public sealed partial class GraphicsWorkspaceControl
     private bool _starterAdding, _starterLogoImporting, _starterHomeOpen = true;
     private bool _starterInitialSelectionApplied;
     private int _starterPreviewIndex = -1;
-    private string _starterCatalogKey = "", _starterEpoch = "";
+    private string _starterEpoch = "";
 
     private void BuildStarters(Grid root)
     {
@@ -74,15 +76,13 @@ public sealed partial class GraphicsWorkspaceControl
 
     private void RefreshStarterCards()
     {
-        var key = string.Join('|', (_session?.State?.Templates ?? []).Select(t => $"{t.TemplateId}:{t.TemplateVersion}:{t.Thumbnail?.State}"));
-        if (_starterCards.Children.Count > 0 && key == _starterCatalogKey) return;
-        _starterCatalogKey = key; _starterCards.Children.Clear(); _starterChoices.Clear();
+        if (_starterCards.Children.Count > 0) return;
         foreach (var (starter, index) in GraphicsShowStarters.All.Select((s, i) => (s, i))) {
             var content = new StackPanel { Spacing = 8, HorizontalAlignment = HorizontalAlignment.Stretch };
             content.Children.Add(new TextBlock { Text = starter.Name, FontSize = 20 });
             content.Children.Add(Copy(starter.Description));
-            var template = _session?.State?.Templates.FirstOrDefault(t => t.TemplateId == starter.LowerThird);
-            if (template is not null) content.Children.Add(new GraphicsTemplateCard(template, false, showMetadata: false));
+            var reference=new Image {Source=new BitmapImage(new Uri($"ms-appx:///Assets/GraphicsStarters/{starter.Id}.png")),Height=110,MaxWidth=640,Stretch=Stretch.Uniform};
+            AutomationProperties.SetName(reference,"Show template reference: "+starter.Id);content.Children.Add(reference);
             content.Children.Add(Copy("Guest introduction · Welcome title · Show logo · Live clock"));
             content.Children.Add(new TextBlock { Text = "Try this template →", FontSize = 14 });
             var button = ChromeButton(starter.Name); button.Content = content; button.HorizontalAlignment = HorizontalAlignment.Stretch; button.VerticalAlignment = VerticalAlignment.Stretch; button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
@@ -149,7 +149,7 @@ public sealed partial class GraphicsWorkspaceControl
         }
         _starterHome.Visibility = _starterHomeOpen ? Visibility.Visible : Visibility.Collapsed;
         _body.Visibility = _starterHomeOpen ? Visibility.Collapsed : Visibility.Visible;
-        _transport.Visibility = _starterHomeOpen ? Visibility.Collapsed : Visibility.Visible;
+        _transport.Visibility = _starterHomeOpen || _activeStarter is not null ? Visibility.Collapsed : Visibility.Visible;
         var trying = !_starterHomeOpen && _activeStarter is not null;
         _starterBanner.Visibility = trying ? Visibility.Visible : Visibility.Collapsed;
         _starterBrandTools.Visibility = trying ? Visibility.Visible : Visibility.Collapsed;

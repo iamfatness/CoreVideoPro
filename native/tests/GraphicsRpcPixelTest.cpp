@@ -13,6 +13,10 @@
 #if COREVIDEO_WITH_D3D11
 #include <d3d11.h>
 #include "compositor/ComPtrLite.h"
+#include "compositor/CompositorOverlayRaster.h"
+#include <filesystem>
+#include <fstream>
+#include <cstdlib>
 
 TEST(GraphicsRpcPixel, PrivateGraphicsPreviewRequiresExplicitNullAppearanceAndProducesChangingPixels) {
   using corevideo::rpc::Json;
@@ -20,6 +24,28 @@ TEST(GraphicsRpcPixel, PrivateGraphicsPreviewRequiresExplicitNullAppearanceAndPr
   ComPtrLite<ID3D11Device> device; ComPtrLite<ID3D11DeviceContext> context;
   ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,
       nullptr,0,D3D11_SDK_VERSION,device.put(),nullptr,context.put())));
+#if !COREVIDEO_STUB && COREVIDEO_ENABLE_DEV_ADAPTERS
+  // Optional authoring artifact generation from managed starter fixtures. This
+  // does not replace the unconditional RPC/shared-pixel assertions below.
+  if(const auto* fixturePath=std::getenv("COREVIDEO_GRAPHICS_STARTER_FIXTURES")) {
+    const auto* outputPath=std::getenv("COREVIDEO_GRAPHICS_STARTER_ASSET_DIR");ASSERT_TRUE(outputPath);
+    std::ifstream input(fixturePath,std::ios::binary);ASSERT_TRUE(input.good());
+    const std::string text((std::istreambuf_iterator<char>(input)),std::istreambuf_iterator<char>());
+    const auto rows=Json::parse(text);ASSERT_TRUE(rows && rows->isArray());ASSERT_EQ(rows->asArray().size(),4u);
+    std::filesystem::create_directories(outputPath);
+    corevideo::graphics::GraphicsInstances graphics{"starter-artifacts"};
+    for(const auto& row:rows->asArray()) {
+      const auto id=row.getString("id");ASSERT_TRUE(id=="interview" || id=="panel" || id=="webinar" || id=="branded");
+      ASSERT_TRUE(row.get("graphics"));const auto overlay=graphics.authoringPreview(*row.get("graphics"));ASSERT_TRUE(overlay);
+      const auto& a=overlay->appearance;const auto scale=320./(a.width*1920.);
+      const int height=std::max(1,int(std::lround((a.nameSize+a.titleSize+a.padding*3)*scale)));
+      corevideo::modules::CompositorOverlayRaster raster;std::string warning;
+      const auto png=raster.thumbnailPng(*overlay,320,height,warning);ASSERT_GT(png.size(),100u) << warning;
+      std::ofstream output(std::filesystem::path(outputPath)/(id+".png"),std::ios::binary|std::ios::trunc);
+      output.write(reinterpret_cast<const char*>(png.data()),png.size());ASSERT_TRUE(output.good());
+    }
+  }
+#endif
   for (const auto& templateId : {"minimal-accent", "centered-title"}) {
     auto modules=corevideo::modules::createStubModules(); modules.compositor=corevideo::modules::createD3D11Compositor();
     ASSERT_TRUE(modules.compositor && modules.compositor->supportsGradePreview());

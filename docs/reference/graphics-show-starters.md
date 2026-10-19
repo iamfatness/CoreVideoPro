@@ -4,6 +4,9 @@ Graphics starts with four coordinated examples: Interview, Panel discussion,
 Webinar and Simple branded show. They use the shipped native template catalog;
 they are Graphics sets, not replacements for scenes, audio or output settings.
 Each set contains a guest introduction, welcome title, show logo and live clock.
+The card images are bundled reference PNGs rendered by the native typography
+path from the managed starter drafts, including each set's actual colors. They
+remain visible before the core connects; they are not a shell production renderer.
 
 ## Operator workflow
 
@@ -71,3 +74,11 @@ assignment. Its optional `COREVIDEO_GRAPHICS_PROBE_CATALOG` accepts a catalog
 collected by the separate native probe for real native thumbnail bytes. RenderTargetBitmap
 screenshots do not capture SwapChainPanel video. Neither these tests nor ready
 surface counters establish physical-display continuity or output performance.
+
+For reference-asset regeneration, the managed native probe writes
+`starter-thumbnails.json` beside its report. Set `COREVIDEO_GRAPHICS_STARTER_FIXTURES`
+to that file and `COREVIDEO_GRAPHICS_STARTER_ASSET_DIR` to the repository's
+`native-shell/CoreVideoPro.WinUI/Assets/GraphicsStarters` directory, then run the
+focused `GraphicsRpcPixel.PrivateGraphicsPreviewRequiresExplicitNullAppearanceAndProducesChangingPixels`
+Release test. It renders the four reference PNGs within the existing bounded
+thumbnail limits and still runs its unconditional RPC/shared-pixel assertions.

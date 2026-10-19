@@ -41,6 +41,8 @@ try {
     var thumbnails=Stopwatch.StartNew();
     while(thumbnails.Elapsed<TimeSpan.FromSeconds(5) && state!.Templates.Any(t=>t.Thumbnail?.State!="ready")) {await Task.Delay(100);await Sync();}
     await File.WriteAllTextAsync(Path.Combine(Path.GetDirectoryName(reportPath)!,"catalog.json"),JsonSerializer.Serialize(state,json));
+    await File.WriteAllTextAsync(Path.Combine(Path.GetDirectoryName(reportPath)!,"starter-thumbnails.json"),JsonSerializer.Serialize(
+        GraphicsShowStarters.All.Select(s=>new {id=s.Id,graphics=GraphicsShowStarters.Prepare(s,state!)[0].Draft.ForPreview()}),json));
     var session=new GraphicsWorkspaceSession(async(action,body,_)=>{
         await Request(new() {["type"]=action.Replace('.','-'),["graphics"]=JsonDocument.Parse(body).RootElement.Clone()});
         return state?.LastResult ?? throw new InvalidOperationException("Native graphics result missing.");
