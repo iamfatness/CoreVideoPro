@@ -35,6 +35,7 @@ public static class GraphicsImageImport
         const string nodeType="type";
         var manifest=JsonSerializer.Serialize(new {schemaVersion=1,templateId=id,templateVersion=1,name="Imported logo "+hash[..8],family="bug",
             canvas=new {width=1920,height=1080},bounds=new {width=192,height=192},brandTokens=Array.Empty<string>(),fields=Array.Empty<object>(),
+            animations=new { @in=new {type="none",durationMs=0,easing="linear"}, @out=new {type="none",durationMs=0,easing="linear"} },
             layers=new[] {new Dictionary<string,object> { ["id"]="logo-image",[nodeType]="image",["asset"]="logo",["x"]=0,["y"]=0,["width"]=192,["height"]=192,["fit"]="contain"}},
             assets=new[] {new {id="logo",file=fileName,sha256=hash}}});
         return new GraphicsImportedImage(new(manifest,root),new(id,1,"logo"));

@@ -1,5 +1,12 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner direction, October 19 — #927:** fix the rejected Graphics private-preview
+request and replace the editor-first entry with populated, coordinated show
+starters. Let operators choose, experiment privately, customize and explicitly
+add a show look without changing Program or Studio's layout. Validate actual
+native preview pixels as well as the bounded 1080p controls. Preserve the running
+installed app and use API/offscreen candidate tests.
+
 **Owner direction, October 18:** identify and fix the causal #857 webcam ownership
 failure before publication. Then merge #945 and install the complete Graphics
 redesign for review. Use the API/background diagnostics. Keep failed trials and
@@ -238,6 +245,8 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner current — October 19 Graphics feedback | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927) | Repair private preview requests; deliver populated show starters, private experimentation, shared branding and hidden adoption/restore with native evidence. |
+| Required #927 asset consumer dependency | B | [#949](https://github.com/iamfatness/CoreVideoPro/issues/949) | Generated local-logo manifests omit required animations; preserve native validation and qualify the corrected import in the approved starter workflow. |
 | Owner current — approved Graphics redesign | B | [#942](https://github.com/iamfatness/CoreVideoPro/issues/942) | Bounded Graphics workspace, explicit pinned Studio look, existing Studio toggle/label only; isolated 1080p validation. |
 | Owner current — Volt implementation | A | [#926](https://github.com/iamfatness/CoreVideoPro/issues/926) | Native template/instance consumer and bounded preparation with compatibility lower-third pixels. |
 | Volt dependent — after #926 | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927), [#928](https://github.com/iamfatness/CoreVideoPro/issues/928) | Complete workspace/migration and actual title/bug/clock consumers; activate only as dependency gates pass. |

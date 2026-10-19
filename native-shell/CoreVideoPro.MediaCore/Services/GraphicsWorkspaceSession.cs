@@ -7,7 +7,7 @@ namespace CoreVideoPro.MediaCore.Services;
 /// <summary>Operator-owned private edit session. Commands share the HTTP/OSC
 /// boundary; native snapshots alone establish accepted Cue and Program state.
 /// Call on one operator dispatcher. No timer, renderer or preference-file writes.</summary>
-public sealed class GraphicsWorkspaceSession
+public sealed partial class GraphicsWorkspaceSession
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly Func<string, string, CancellationToken, Task<NativeGraphicsOperationResult>> _invoke;

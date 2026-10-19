@@ -145,7 +145,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         _loading = true;
         try {
             _status.Text = _session.Status;
-            foreach (var button in _actions) button.IsEnabled = !_session.Busy;
+            foreach (var button in _actions) button.IsEnabled = !_session.Busy && !_starterAdding;
             _packageImportButton.IsEnabled &= !_session.ImportBusy;
             _importStatus.Text = _session.ImportBusy ? _session.ImportStatus : string.Join("\n", (_session.State?.TemplateInstalls ?? []).TakeLast(3)
                 .Select(i => "Template import: " + i.State + (i.Reason.Length == 0 ? "" : " — " + i.Reason.Replace('-', ' '))));
@@ -178,6 +178,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
             var inspectorKey = _session.Selected?.ClockConfigurationRevision + ":" + _session.SelectedId + ":" + _session.Draft?.TemplateId + ":" + _session.Draft?.TemplateVersion;
             if (_inspectorKey != inspectorKey) { _inspectorKey = inspectorKey; BuildInspector(); }
             RefreshWorkspaceChrome();
+            RefreshStarterCards(); RefreshStarterChrome();
             RefreshLayerList();
             foreach (var refresh in _refreshFields) refresh();
             foreach (var panel in new[] { _contentControls, _styleControls, _layoutControls, _motionControls })
@@ -211,7 +212,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         _inspectorTarget = _contentControls;
         _refreshFields.Clear();
         if (_session?.Draft is not { } draft) { _inspector.Children.Add(Copy("Select a cue to edit its private fields and style.")); return; }
-        if(Studio is not null) {var binding=new GraphicsSourceBindingControl(_session,Studio);_inspector.Children.Add(binding);_refreshFields.Add(binding.Refresh);}
+        if(Studio is not null) {var binding=new GraphicsSourceBindingControl(_session,Studio);_inspector.Children.Add(new Expander { Header="Use names from a source", Content=binding, HorizontalAlignment=HorizontalAlignment.Stretch });_refreshFields.Add(binding.Refresh);}
         _inspector.Children.Add(new TextBlock { Text = "FIELDS", FontSize = 11 });
         var fields = _session.Template?.Fields ?? [];
         if (fields.Count == 0) fields = [new() { Id = "name", Type = "string", MaxLength = 256 }, new() { Id = "title", Type = "string", MaxLength = 512 }];

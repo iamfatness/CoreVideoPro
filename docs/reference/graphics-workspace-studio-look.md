@@ -1,6 +1,7 @@
 # Graphics workspace and Studio look assignment
 
-The Graphics workspace keeps show cues, native authoring preview and the selected
+The Graphics workspace opens with [populated show templates](graphics-show-starters.md)
+for private experimentation, or **Continue my show** for existing cues. Its editor keeps show cues, native authoring preview and the selected
 cue inspector side by side. Content, Style, Layout and Motion have independent
 scroll areas. Cue, Show, Hide, Update, Cancel and Clear remain in the fixed bottom
 bar. Templates, saved cues/packages, automation and existing overlay controls are

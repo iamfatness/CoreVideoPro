@@ -31,6 +31,9 @@ public sealed partial class GraphicsWorkspaceControl
     private readonly List<Button> _inspectorTabs = [];
     private readonly List<ScrollViewer> _inspectorScrolls = [];
     private int _activeInspectorTab;
+    private bool _advancedGraphicsControls;
+    private readonly Button _customizeGraphic = ChromeButton("Customize layout & motion");
+    private readonly RowDefinition _layerPanelRow = new() { Height = new GridLength(0) };
     private Button _useInStudioButton = null!;
     private readonly Grid _transport = new() { ColumnSpacing = 8, Padding = new Thickness(12, 8, 12, 8) };
 
@@ -51,6 +54,7 @@ public sealed partial class GraphicsWorkspaceControl
         heading.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         heading.Children.Add(new TextBlock { Text = "Graphics", FontSize = 24, VerticalAlignment = VerticalAlignment.Center });
         var headerActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        headerActions.Children.Add(Action("Show templates", () => { OpenShowTemplates(); return Task.CompletedTask; }));
         headerActions.Children.Add(Action("Automation", () => { OpenTools("automation", "Graphics automation"); return Task.CompletedTask; }));
         headerActions.Children.Add(Action("＋ Add graphic", () => { OpenTools("library", "Templates and saved cues"); return Task.CompletedTask; }));
         headerActions.Children.Add(Action("Manage", () => { OpenTools("manage", "Styles and cue management"); return Task.CompletedTask; }));
@@ -64,6 +68,7 @@ public sealed partial class GraphicsWorkspaceControl
         Grid.SetRow(_cueSearch,1); rack.Children.Add(_cueSearch);
         _cueSearch.TextChanged += (_,_) => Refresh(); _cueScopeFilter.SelectionChanged += (_,_) => Refresh();
         AutomationProperties.SetName(_cues, "Graphics show cues"); Grid.SetRow(_cues, 2); rack.Children.Add(_cues);
+        Grid.SetRow(_starterGraphics, 2); rack.Children.Add(_starterGraphics);
         var browse = Action("Templates and saved cues", () => { OpenTools("library", "Templates and saved cues"); return Task.CompletedTask; });
         var cueFooter = new StackPanel { Spacing=8 }; cueFooter.Children.Add(_cueScopeFilter); cueFooter.Children.Add(browse); Grid.SetRow(cueFooter, 3); rack.Children.Add(cueFooter); _body.Children.Add(Panel(rack));
 
@@ -71,13 +76,14 @@ public sealed partial class GraphicsWorkspaceControl
         center.RowDefinitions.Add(new() { Height = GridLength.Auto });
         center.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         center.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        center.RowDefinitions.Add(new() { Height = new GridLength(118) });
+        center.RowDefinitions.Add(_layerPanelRow);
         var previewBar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         previewBar.Children.Add(new TextBlock { Text = "PRIVATE PREVIEW", FontSize = 11, VerticalAlignment = VerticalAlignment.Center });
         _samples.Header = null; _samples.Width = 150; _compare.Header = null; _compare.OnContent = _compare.OffContent = "Compare";
         previewBar.Children.Add(_samples); previewBar.Children.Add(_compare);
         var whole = new ToggleButton { Content = "Move graphic" }; whole.Checked += (_, _) => _canvas.WholeGraphic = true; whole.Unchecked += (_, _) => _canvas.WholeGraphic = false;
-        previewBar.Children.Add(whole); center.Children.Add(previewBar);
+        previewBar.Children.Add(whole);
+        var previewHeading = new StackPanel { Spacing = 8 }; previewHeading.Children.Add(previewBar); previewHeading.Children.Add(_starterBanner); previewHeading.Children.Add(_starterBrandTools); previewHeading.Children.Add(_starterFeedback); center.Children.Add(previewHeading);
         var canvasPanel = Panel(_canvas); Grid.SetRow(canvasPanel, 1); center.Children.Add(canvasPanel);
         var previewStatus = new Grid(); previewStatus.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); previewStatus.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         _native.TextTrimming = TextTrimming.CharacterEllipsis; _native.TextWrapping = TextWrapping.NoWrap; previewStatus.Children.Add(_native);
@@ -90,7 +96,8 @@ public sealed partial class GraphicsWorkspaceControl
 
         var inspector = new Grid { RowSpacing = 8, Padding = new Thickness(12) };
         foreach (var height in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto }) inspector.RowDefinitions.Add(new() { Height = height });
-        var selection = new StackPanel { Spacing = 4 }; selection.Children.Add(_selectionTitle); selection.Children.Add(_selectionSummary); inspector.Children.Add(selection);
+        var selection = new StackPanel { Spacing = 4 }; selection.Children.Add(_selectionTitle); selection.Children.Add(_selectionSummary); selection.Children.Add(_customizeGraphic); inspector.Children.Add(selection);
+        _customizeGraphic.Click += (_, _) => { SetGraphicsCustomization(!_advancedGraphicsControls); };
         var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
         var panels = new[] { _contentControls, _styleControls, _layoutControls, _motionControls };
         foreach (var (name, index) in new[] { ("Content", 0), ("Style", 1), ("Layout", 2), ("Motion", 3) }) {
@@ -102,6 +109,7 @@ public sealed partial class GraphicsWorkspaceControl
         var assignment = new StackPanel { Spacing = 4 };
         assignment.Children.Add(_assignmentCaption);
         _useInStudioButton = Action("Use in Studio", async () => { if (Studio is not null) await Studio.AssignGraphicsLookToStudioAsync(_studioFollowSource.IsChecked == true); }); assignment.Children.Add(_useInStudioButton);
+        assignment.Children.Add(_assignmentHelp);
         ToolTipService.SetToolTip(_useInStudioButton, "Pin this draft for Studio's next Show. Current Program is unchanged.");
         Grid.SetRow(assignment, 3); inspector.Children.Add(assignment);
         _undoButton = Action("Undo draft", () => { _session?.Undo(); return Task.CompletedTask; }); Grid.SetRow(_undoButton, 4); inspector.Children.Add(_undoButton);
@@ -137,6 +145,7 @@ public sealed partial class GraphicsWorkspaceControl
         help.Children.Add(Copy("Choose or create a cue. Content, Style, Layout and Motion edit a private draft. Cue prepares Preview; Show reveals a prepared cue; Update changes an on-air graphic. Hide affects the selected graphic; Clear removes managed graphics and inhibits automation."));
         help.Children.Add(Copy("Use in Studio saves an independent copy for the existing Studio lower-third toggle. Browsing or editing another cue never changes that assignment. Reassigning while on air takes effect at the next Show. Loading an assignment never starts an output or arms automation."));
         help.Children.Add(Copy("Native revision and resource details")); help.Children.Add(_facts); _toolPanels["help"] = help;
+        BuildStarters(root); SetGraphicsCustomization(false);
         var pane = new Grid { Padding = new Thickness(16), RowSpacing = 12 }; pane.RowDefinitions.Add(new() { Height = GridLength.Auto }); pane.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
         var drawerHeader = new Grid(); drawerHeader.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); drawerHeader.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); drawerHeader.Children.Add(_toolTitle);
         var close = ChromeButton("Close"); close.Click += (_, _) => _tools.IsPaneOpen = false; Grid.SetColumn(close, 1); drawerHeader.Children.Add(close); pane.Children.Add(drawerHeader);
@@ -152,6 +161,15 @@ public sealed partial class GraphicsWorkspaceControl
         _activeInspectorTab = index;
         for (var i = 0; i < _inspectorScrolls.Count; i++) { _inspectorScrolls[i].Visibility = i == index ? Visibility.Visible : Visibility.Collapsed; _inspectorTabs[i].Opacity = i == index ? 1 : .65; }
     }
+    private void SetGraphicsCustomization(bool advanced)
+    {
+        _advancedGraphicsControls = advanced;
+        _customizeGraphic.Content = advanced ? "Use simple controls" : "Customize layout & motion";
+        for (var i = 2; i < _inspectorTabs.Count; ++i) _inspectorTabs[i].Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
+        _layerPanelRow.Height = new GridLength(advanced ? 118 : 0);
+        _layerHeading.Visibility = _layerList.Visibility = advanced ? Visibility.Visible : Visibility.Collapsed;
+        if (!advanced) SelectInspectorTab(0);
+    }
     private void ApplyWorkspaceSize(double width)
     {
         // Keep the selected inspector beside the work, never below an unbounded
@@ -162,8 +180,8 @@ public sealed partial class GraphicsWorkspaceControl
     }
     private void RefreshWorkspaceChrome()
     {
-        _selectionTitle.Text = _session?.Selected?.Label is { Length: > 0 } name ? name : _session?.Template?.Name ?? "Choose a cue";
-        _selectionSummary.Text = _session?.Draft is { } draft ? $"{draft.TemplateId} · {(_session.Dirty ? "Private draft" : "Saved revision")}" : "Browse looks to create a hidden cue";
+        _selectionTitle.Text = _activeStarter is not null && _starterPreviewIndex>=0 && _starterPreviewIndex<_starterDrafts.Count ? _starterDrafts[_starterPreviewIndex].Name : _session?.Selected?.Label is { Length: > 0 } name ? name : _session?.Template?.Name ?? "Choose a graphic";
+        _selectionSummary.Text = _activeStarter is not null ? "Private sample · not added to your show" : _session?.Draft is not null ? (_session.Dirty ? "Private edits · not applied" : "Your graphic") : "Choose a show template or an existing graphic";
         _assignmentCaption.Text = "Studio look: " + (Studio?.StudioAssignedLowerThirdLabel ?? "Not assigned");
         _useInStudioButton.IsEnabled = _session is { Busy: false, Selected: not null, Draft: not null, PreviewSample: "current" } && _session.Template?.Family == "lower-third" && Studio?.StudioLowerThirdBusy == false;
     }
@@ -184,7 +202,7 @@ public sealed partial class GraphicsWorkspaceControl
         _inspectorTarget = _motionControls;
         foreach (var phase in new[] { "in", "out" }) {
             var transition = phase == "in" ? _session!.Draft!.Animations.In : _session!.Draft!.Animations.Out;
-            var kind = new ComboBox { Header = phase == "in" ? "Build in" : "Build out", ItemsSource = new[] { "none", "fade", "slide" }, SelectedItem = transition.Type, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var kind = new ComboBox { Header = phase == "in" ? "Animate in" : "Animate out", ItemsSource = new[] { "none", "fade", "slide" }, SelectedItem = transition.Type, HorizontalAlignment = HorizontalAlignment.Stretch };
             var direction = new ComboBox { Header = "Direction", ItemsSource = new[] { "left", "right", "up", "down" }, SelectedItem = transition.Direction, HorizontalAlignment = HorizontalAlignment.Stretch };
             var duration = new SliderValueControl { Header = "Duration", Unit = "ms", Minimum = 0, Maximum = 2000, DefaultValue = phase == "in" ? 250 : 200, StepFrequency = 25, Value = transition.DurationMs };
             void Edit() { if (_loading || _session?.Draft is not { } d) return; var value = (phase == "in" ? d.Animations.In : d.Animations.Out) with { Type = kind.SelectedItem as string ?? "fade", Direction = direction.SelectedItem as string ?? "down", DurationMs = (int)duration.Value }; _session.Edit(d with { Animations = phase == "in" ? d.Animations with { In = value } : d.Animations with { Out = value } }); }
