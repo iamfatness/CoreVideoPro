@@ -23,6 +23,7 @@ public sealed partial class GraphicsWorkspaceControl
     private readonly Dictionary<string, FrameworkElement> _toolPanels = new(StringComparer.Ordinal);
     private readonly CheckBox _studioFollowSource = new() { Content = "Use Program source text in Studio", IsChecked = true };
     private readonly TextBox _cueSearch = new() { PlaceholderText = "Find a cue" };
+    private readonly TextBlock _cueRackTitle = new() { Text="Show cues", FontSize=16 };
     private readonly ComboBox _cueScopeFilter = new() { Header="Scope", ItemsSource=new[] {"All scenes","Current Program scene"}, SelectedIndex=0, HorizontalAlignment=HorizontalAlignment.Stretch };
     private readonly ListView _layerList = new() { SelectionMode = ListViewSelectionMode.Single };
     private IReadOnlyList<GraphicsEditorLayer> _layerRows = [];
@@ -63,7 +64,7 @@ public sealed partial class GraphicsWorkspaceControl
 
         var rack = new Grid { RowSpacing = 10, Padding = new Thickness(12) };
         rack.RowDefinitions.Add(new() { Height = GridLength.Auto }); rack.RowDefinitions.Add(new() { Height = GridLength.Auto }); rack.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); rack.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        rack.Children.Add(new TextBlock { Text = "Show cues", FontSize = 16 });
+        rack.Children.Add(_cueRackTitle);
         _cues.MaxHeight = double.PositiveInfinity; _cues.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         Grid.SetRow(_cueSearch,1); rack.Children.Add(_cueSearch);
         _cueSearch.TextChanged += (_,_) => Refresh(); _cueScopeFilter.SelectionChanged += (_,_) => Refresh();

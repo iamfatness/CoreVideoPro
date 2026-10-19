@@ -103,7 +103,7 @@ public sealed partial class GraphicsWorkspaceControl
     {
         if (_session is null || _session.Busy || _starterAdding) return;
         try {
-            _starterDrafts = GraphicsShowStarters.Prepare(starter, _session.State ?? throw new InvalidOperationException("Connect to the media core to try these templates."));
+            _starterDrafts = GraphicsShowStarters.Prepare(starter, _session.State ?? throw new InvalidOperationException("Graphics is starting. Try this template again in a moment."));
             _activeStarter = starter; _starterHomeOpen = false; _starterInitialSelectionApplied = true; _starterEpoch = _session.State!.CoreEpoch; _starterPreviewIndex = 0;
             _starterFeedback.Text = "";
             _starterShowTitle.Text=starter.Heading; _starterBrandAccent.Text=starter.Accent;
@@ -158,6 +158,8 @@ public sealed partial class GraphicsWorkspaceControl
         _body.Visibility = _starterHomeOpen ? Visibility.Collapsed : Visibility.Visible;
         _transport.Visibility = _starterHomeOpen || _activeStarter is not null ? Visibility.Collapsed : Visibility.Visible;
         var trying = !_starterHomeOpen && _activeStarter is not null;
+        _cueRackTitle.Text=trying?"Sample graphics":"Show cues";
+        _cueSearch.Visibility=_cueScopeFilter.Visibility=trying?Visibility.Collapsed:Visibility.Visible;
         _starterBanner.Visibility = trying ? Visibility.Visible : Visibility.Collapsed;
         _starterBrandTools.Visibility = trying ? Visibility.Visible : Visibility.Collapsed;
         foreach(var control in _starterBrandTools.Children.OfType<Microsoft.UI.Xaml.Controls.Control>()) control.IsEnabled = !_starterAdding && !_starterLogoImporting;

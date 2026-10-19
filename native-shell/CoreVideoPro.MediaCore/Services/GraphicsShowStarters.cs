@@ -49,7 +49,7 @@ public static class GraphicsShowStarters
         };
         return requests.Select(request => {
             var template = state.Templates.Where(t => t.TemplateId == request.Item1).OrderByDescending(t => t.TemplateVersion).FirstOrDefault()
-                ?? throw new InvalidOperationException($"{starter.Name} needs the built-in {request.Item1} template. Connect to the updated media core and try again.");
+                ?? throw new InvalidOperationException($"{starter.Name} is unavailable in this version of CoreVideo. Update the app and try again.");
             var fields = template.Runtime == "declarative"
                 ? template.Fields.ToDictionary(f => f.Id, f => f.Default?.Clone() ?? JsonSerializer.SerializeToElement(""), StringComparer.Ordinal)
                 : new Dictionary<string, JsonElement>(StringComparer.Ordinal) { ["name"] = JsonSerializer.SerializeToElement("Alex Rivera"), ["title"] = JsonSerializer.SerializeToElement("Host · " + starter.Name) };
