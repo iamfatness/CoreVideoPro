@@ -13,8 +13,9 @@ remain visible before the core connects; they are not a shell production rendere
 Choose **Try this template** to open a populated private sample. Select one of
 the four sample graphics at the left, change its Content or Style, and see the
 native authoring preview. Changes are retained while switching samples. The
-shared show title and brand color update the private set immediately; a color
-picker and exact hex entry are both available. **Use my logo**
+brand color updates the private set immediately; a color picker and exact hex
+entry are both available. Text is edited on its selected graphic, so recoloring
+does not overwrite a customized welcome title. **Use my logo**
 validates a local PNG/JPEG through the existing immutable image-package loader,
 uses it for the logo graphic and references its verified bytes in the compatible
 lower third. No Program, output or automation command is sent by browsing.

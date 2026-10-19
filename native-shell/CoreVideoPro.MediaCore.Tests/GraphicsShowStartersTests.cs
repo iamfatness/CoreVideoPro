@@ -64,6 +64,9 @@ public sealed class GraphicsShowStartersTests
         Assert.Equal("My weekly show",branded[1].Draft.Fields.GetProperty("heading").GetString());
         Assert.Equal("Alex Rivera",branded[0].Draft.Fields.GetProperty("name").GetString());
         Assert.Equal("In conversation",original[1].Draft.Fields.GetProperty("heading").GetString());
+        var recolored=GraphicsShowStarters.WithAccentColor(branded,"#C17844");
+        Assert.Equal("My weekly show",recolored[1].Draft.Fields.GetProperty("heading").GetString());
+        Assert.Equal("Alex Rivera",recolored[0].Draft.Fields.GetProperty("name").GetString());
         var image=new NativeGraphicsImageReference("image-test",1,"logo");
         var imported=new NativeGraphicsTemplate {TemplateId=image.TemplateId,TemplateVersion=1,Family="bug",Runtime="declarative"};
         var result=GraphicsShowStarters.WithLogo(branded,imported,image);

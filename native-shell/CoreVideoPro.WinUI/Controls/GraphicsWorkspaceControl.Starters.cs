@@ -16,7 +16,6 @@ public sealed partial class GraphicsWorkspaceControl
     private readonly TextBlock _starterNotice = Copy("");
     private readonly TextBlock _starterFeedback = Copy("");
     private readonly StackPanel _starterBrandTools = new() { Orientation=Orientation.Horizontal, Spacing=8, Visibility=Visibility.Collapsed };
-    private readonly TextBox _starterShowTitle = new() { Header="Show title", Width=205, MaxLength=100 };
     private readonly TextBox _starterBrandAccent = new() { Header="Brand color", Width=100, MaxLength=7 };
     private readonly TextBlock _starterHeading = new() { FontSize = 16, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _assignmentHelp = Copy("");
@@ -53,8 +52,7 @@ public sealed partial class GraphicsWorkspaceControl
         _starterBanner.Children.Add(_starterHeading);
         _addStarter = ChromeButton("Save graphics only");
         _addStarter.Click += async (_, _) => await AddStarterToShowAsync(); _starterBanner.Children.Add(_addStarter);
-        _starterBrandTools.Children.Add(_starterShowTitle); _starterBrandTools.Children.Add(_starterBrandAccent);
-        _starterShowTitle.TextChanged += (_,_) => ApplyValidStarterBranding();
+        _starterBrandTools.Children.Add(_starterBrandAccent);
         _starterBrandAccent.TextChanged += (_,_) => ApplyValidStarterBranding();
         var color = ChromeButton("Pick color…"); color.VerticalAlignment=VerticalAlignment.Bottom;
         var picker = new ColorPicker { IsAlphaEnabled=false, Color=Windows.UI.Color.FromArgb(255,68,193,161), MaxWidth=300 };
@@ -114,7 +112,7 @@ public sealed partial class GraphicsWorkspaceControl
             _starterFeedback.Text = "";
             var loading = _loading; _loading = true;
             try {
-                _starterShowTitle.Text=starter.Heading; _starterBrandAccent.Text=starter.Accent;
+                _starterBrandAccent.Text=starter.Accent;
                 _starterGraphics.Items.Clear();
                 foreach(var graphic in _starterDrafts) {
                     var row=new StackPanel {Spacing=3}; row.Children.Add(new TextBlock {Text=graphic.Name,TextWrapping=TextWrapping.Wrap});
@@ -212,7 +210,7 @@ public sealed partial class GraphicsWorkspaceControl
     {
         if (_session is null || _activeStarter is null || _starterAdding || _starterLogoImporting) return;
         RememberStarterEdits();
-        try {_starterDrafts=GraphicsShowStarters.WithBranding(_starterDrafts,_starterShowTitle.Text,_starterBrandAccent.Text.Trim());}
+        try {_starterDrafts=GraphicsShowStarters.WithAccentColor(_starterDrafts,_starterBrandAccent.Text.Trim());}
         catch(InvalidOperationException ex) {_starterFeedback.Text=ex.Message;RefreshStarterChrome();return;}
         _session.PreviewStarter(_starterDrafts[_starterPreviewIndex]); _starterFeedback.Text="Private preview updated."; RefreshStarterChrome();
     }
@@ -220,7 +218,7 @@ public sealed partial class GraphicsWorkspaceControl
     private void ApplyValidStarterBranding()
     {
         var color=_starterBrandAccent.Text.Trim();
-        if(!_loading && !string.IsNullOrWhiteSpace(_starterShowTitle.Text) && color.Length==7 && color[0]=='#' && color.Skip(1).All(Uri.IsHexDigit)) ApplyStarterBranding();
+        if(!_loading && color.Length==7 && color[0]=='#' && color.Skip(1).All(Uri.IsHexDigit)) ApplyStarterBranding();
     }
 
     private async Task PickStarterLogoAsync()
