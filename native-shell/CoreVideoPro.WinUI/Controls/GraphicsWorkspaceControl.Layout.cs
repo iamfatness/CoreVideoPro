@@ -56,7 +56,7 @@ public sealed partial class GraphicsWorkspaceControl
         var headerActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         headerActions.Children.Add(Action("Show templates", () => { OpenShowTemplates(); return Task.CompletedTask; }));
         headerActions.Children.Add(Action("Automation", () => { OpenTools("automation", "Graphics automation"); return Task.CompletedTask; }));
-        headerActions.Children.Add(Action("＋ Add graphic", () => { OpenTools("library", "Templates and saved cues"); return Task.CompletedTask; }));
+        headerActions.Children.Add(Action("＋ Add graphic", () => { OpenIndividualGraphics(); return Task.CompletedTask; }));
         headerActions.Children.Add(Action("Manage", () => { OpenTools("manage", "Styles and cue management"); return Task.CompletedTask; }));
         headerActions.Children.Add(Action("Help", () => { OpenTools("help", "Graphics workflow"); return Task.CompletedTask; }));
         Grid.SetColumn(headerActions, 1); heading.Children.Add(headerActions); root.Children.Add(heading);
@@ -69,7 +69,7 @@ public sealed partial class GraphicsWorkspaceControl
         _cueSearch.TextChanged += (_,_) => Refresh(); _cueScopeFilter.SelectionChanged += (_,_) => Refresh();
         AutomationProperties.SetName(_cues, "Graphics show cues"); Grid.SetRow(_cues, 2); rack.Children.Add(_cues);
         Grid.SetRow(_starterGraphics, 2); rack.Children.Add(_starterGraphics);
-        var browse = Action("Templates and saved cues", () => { OpenTools("library", "Templates and saved cues"); return Task.CompletedTask; });
+        var browse = Action("Templates and saved cues", () => { OpenIndividualGraphics(); return Task.CompletedTask; });
         var cueFooter = new StackPanel { Spacing=8 }; cueFooter.Children.Add(_cueScopeFilter); cueFooter.Children.Add(browse); Grid.SetRow(cueFooter, 3); rack.Children.Add(cueFooter); _body.Children.Add(Panel(rack));
 
         var center = new Grid { RowSpacing = 8 };
@@ -136,7 +136,7 @@ public sealed partial class GraphicsWorkspaceControl
         manage.Children.Add(Action("Save style preset", async () => { if (_savedLibrary is not null) await _savedLibrary.SaveStyleAsync(_styleName.Text); }));
         manage.Children.Add(Action("Use selected saved style in draft", () => { if (_styles.SelectedItem is string name) _savedLibrary?.ApplyStyle(name); return Task.CompletedTask; }));
         manage.Children.Add(Action("Use current brand look in draft", () => { if (Studio is not null) _session?.SetStyle(Studio.Overlays.AppliedAppearance); return Task.CompletedTask; }));
-        manage.Children.Add(Action("Cue and package management", () => { OpenTools("library", "Templates, saved cues and packages"); return Task.CompletedTask; }));
+        manage.Children.Add(Action("Cue and package management", () => { OpenIndividualGraphics(); return Task.CompletedTask; }));
         manage.Children.Add(Action("Existing overlay controls", () => { _tools.IsPaneOpen = false; ExistingControlsRequested?.Invoke(this, EventArgs.Empty); return Task.CompletedTask; }));
         manage.Children.Add(Action("Remove Studio assignment", async () => { if (_savedLibrary is not null) await _savedLibrary.ClearStudioLowerThirdAsync(); }));
         _toolPanels["manage"] = manage; _toolPanels["automation"] = _automationDrawer; _automationDrawer.IsExpanded = true;

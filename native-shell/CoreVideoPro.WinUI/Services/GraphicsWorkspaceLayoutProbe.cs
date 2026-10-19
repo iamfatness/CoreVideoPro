@@ -65,6 +65,11 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("name").GetString()=="My guest","Switching sample graphics lost private edits");
             await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,"graphics-try-interview-1080.png"));
             checks.Add("Four visible show-template starters; Interview opens populated private samples; branding and per-graphic edits survive navigation without creating native instances or assigning Studio");
+            Invoke(Button(workspace,"Show templates"));Invoke(Button(workspace,"Browse individual graphics"));await Task.Delay(80);
+            var individualLibrary=Descendants(workspace).OfType<ListView>().Single(l=>l.IsItemClickEnabled);
+            individualLibrary.SelectedIndex=0;Invoke(Button(workspace,"Close"));await Task.Delay(80);
+            Require(sampleList.Visibility==Visibility.Collapsed && studio.GraphicsWorkspace.Selected is null && studio.GraphicsWorkspace.Draft?.TemplateId==catalog[0].TemplateId,"Individual library browsing retained the show-starter mode or hid the editor");
+            checks.Add("Returning to individual graphics from a starter exits sample-set mode and preserves the original library workflow");
             var state = new NativeGraphicsState { CoreEpoch="isolated-layout", SchemaVersion=1, Templates=catalog,
                 Instances=Enumerable.Range(1,8).Select(n=>new NativeGraphicsInstance { InstanceId=$"fixture-{n}", Label=n==1?"Guest introduction":$"Show cue {n}", TemplateId=template.TemplateId, TemplateVersion=1, Scope=n==8?"scene":"global", SceneId=n==8?"other-scene":"", Revision=1, Fields=new() { Name="Alex Rivera",Title="Producer · Office Hours" } }).ToArray() };
             studio.GraphicsWorkspace.Observe(state); studio.GraphicsWorkspace.Select("fixture-1");

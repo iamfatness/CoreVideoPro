@@ -45,7 +45,7 @@ public sealed partial class GraphicsWorkspaceControl
         var options = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         _continueShow = ChromeButton("Continue my show"); _continueShow.Click += async (_, _) => await ContinueShowAsync();
         options.Children.Add(_continueShow);
-        var individual = ChromeButton("Browse individual graphics"); individual.Click += (_, _) => { _starterHomeOpen = false; RefreshStarterChrome(); OpenTools("library", "Templates and saved cues"); };
+        var individual = ChromeButton("Browse individual graphics"); individual.Click += (_, _) => OpenIndividualGraphics();
         options.Children.Add(individual); footer.Children.Add(options); Grid.SetRow(footer, 2); _starterHome.Children.Add(footer);
         Grid.SetRow(_starterHome, 1); root.Children.Add(_starterHome);
 
@@ -72,6 +72,13 @@ public sealed partial class GraphicsWorkspaceControl
     {
         if (_starterAdding) return;
         _starterHomeOpen = true; _starterInitialSelectionApplied = true; _tools.IsPaneOpen = false; RefreshStarterCards(); RefreshStarterChrome();
+    }
+
+    private void OpenIndividualGraphics()
+    {
+        if (_starterAdding) return;
+        RememberStarterEdits(); _activeStarter=null; _starterHomeOpen=false; _starterInitialSelectionApplied=true;
+        RefreshStarterChrome(); OpenTools("library","Templates and saved cues");
     }
 
     private void RefreshStarterCards()
