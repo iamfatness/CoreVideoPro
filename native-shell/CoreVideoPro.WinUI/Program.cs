@@ -16,7 +16,8 @@ public static class Program
             var runtimeProbe = args.Length == 2 && args[0] == "--verify-runtime";
             var destinationProbe = args.Length == 2 && args[0] == "--verify-stream-destinations";
             var graphicsProbe = args.Length == 2 && args[0] == "--verify-graphics-workspace";
-            var settingsProbe = graphicsProbe || destinationProbe || (args.Length == 2 && args[0] == "--verify-operator-settings");
+            var studioProbe = args.Length == 2 && args[0] == "--verify-studio-layout";
+            var settingsProbe = studioProbe || graphicsProbe || destinationProbe || (args.Length == 2 && args[0] == "--verify-operator-settings");
             var gradeProbe = args.Length == 3 && args[0] == "--verify-source-grade";
             var meterProbe = args.Length == 3 && args[0] == "--verify-audio-meters";
             if (runtimeProbe || settingsProbe || gradeProbe || meterProbe || inspectProbe || inspectNativeProbe)
@@ -49,7 +50,7 @@ public static class Program
                 SynchronizationContext.SetSynchronizationContext(context);
                 if (inspectNativeProbe) new App(null, inspectProbe: new Services.SourceInspectVideoProbe(args[2], args[1]));
                 else if (inspectProbe) new App(null,inspectProbe: new Services.SourceInspectVideoProbe(args[1]));
-                else if (settingsProbe) new App(null, new Services.OperatorSettingsProbe(args[1], destinationProbe, graphicsProbe));
+                else if (settingsProbe) new App(null, new Services.OperatorSettingsProbe(args[1], destinationProbe, graphicsProbe, studioProbe));
                 else if (gradeProbe) new App(null,gradeProbe: new Services.SourceGradeWorkspaceProbe(args[1],args[2]));
                 else if (meterProbe) new App(new Services.AudioMeterStressProbe(probeSeconds, args[2]));
                 else new App();

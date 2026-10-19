@@ -1,6 +1,6 @@
 # Graphics show templates
 
-Graphics starts with four coordinated examples: Interview, Panel discussion,
+The **Graphics** navigation tab starts with four coordinated examples: Interview, Panel discussion,
 Webinar and Simple branded show. They use the shipped native template catalog;
 they are Graphics sets, not replacements for scenes, audio or output settings.
 Each set contains a guest introduction, welcome title, show logo and live clock.
@@ -13,7 +13,9 @@ remain visible before the core connects; they are not a shell production rendere
 Choose **Try this template** to open a populated private sample. Select one of
 the four sample graphics at the left, change its Content or Style, and see the
 native authoring preview. Changes are retained while switching samples. The
-shared show title and brand color can be applied to the set. **Use my logo**
+brand color updates the private set immediately; a color picker and exact hex
+entry are both available. Text is edited on its selected graphic, so recoloring
+does not overwrite a customized welcome title. **Use my logo**
 validates a local PNG/JPEG through the existing immutable image-package loader,
 uses it for the logo graphic and references its verified bytes in the compatible
 lower third. No Program, output or automation command is sent by browsing.
@@ -24,15 +26,24 @@ saved cues, styles, packages, the layer editor, automation and existing overlays
 remain reachable through their existing drawers. Source-name binding is an
 optional expander rather than the first expanded control.
 
-**Add this show template** adds four named, global, hidden cues, saves their
-drafts and exact template/image pins in the separate Graphics document, and
-selects the guest introduction. Nothing is cued, shown, assigned to Studio or
-armed automatically. Cue/Show/Hide/Update remain explicit. **Use in Studio**
-assigns the guest introduction to the existing Studio lower-thirds toggle.
+**Use this look in Studio** is the primary action while trying a show look.
+It adds four named, global, hidden cues, saves their drafts and exact
+template/image pins, then assigns the guest-introduction look to the existing
+Studio lower-thirds toggle. **Go to Studio** takes the operator to that existing
+workspace; **LT in** remains the explicit on-air action. Guest names and titles
+follow the Program source when that option is enabled. A save failure prevents
+assignment and retains the current Studio look. Assignment never sends Cue,
+Show, output-enable or automation commands.
+
+**Save graphics only** retains the separate manual-cue workflow without Studio
+assignment. Cue/Show/Hide/Update remain explicit. Existing saved cues still use
+**Use in Studio** to assign an independent pinned copy of the selected draft.
 Cue labels include the show-template name (for example, `Interview · Guest
 introduction`), which also carries through to Studio's assigned-look label.
-The disabled assignment button explains when adding/selecting a lower third is
-required. Studio's layout is unchanged.
+Graphics hides the live production footer while authoring; its explicit Studio
+handoff restores the existing production controls. Studio's controls and commands
+are preserved; their responsive footer arrangement is described in
+[Studio layout fit](studio-layout-fit.md).
 
 **Continue my show** returns to active cues. When no active cues exist, the
 operator's click restores saved, unbound cues hidden. Bound cues require a current

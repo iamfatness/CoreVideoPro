@@ -298,6 +298,9 @@ jobs:
           dotnet build native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -p:Platform=x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/test-audio-meter-stability.ps1 -Seconds 60 -Report artifacts/test-results/meter-stability.json
+      - name: Full Studio and Graphics layout regression
+        timeout-minutes: 4
+        run: ./scripts/test-studio-layout.ps1
       - name: Retain native test diagnostics
         if: always()
         uses: actions/upload-artifact@v4

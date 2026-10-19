@@ -198,6 +198,7 @@ phrase they quote.
 | [`docs/reference/trustworthy-gates.md`](docs/reference/trustworthy-gates.md) | QA gates you rely on: drill latency budget, GPU-encode path evidence, the meter gate |
 | [`docs/reference/virtual-camera.md`](docs/reference/virtual-camera.md) | the virtual camera DLL, vcam SHM, Frame Server |
 | [`docs/reference/winui-crash-class-0xc000027b.md`](docs/reference/winui-crash-class-0xc000027b.md) | **any WinUI/XAML change** — bound collections, selectors, UI-thread callbacks |
+| [`docs/reference/studio-layout-fit.md`](docs/reference/studio-layout-fit.md) | full Studio footer geometry, stable production controls and offscreen fit qualification |
 | [`docs/reference/zoom-capture-on-off.md`](docs/reference/zoom-capture-on-off.md) | Zoom raw-media start/stop |
 | [`docs/reference/zoom-join-prompts.md`](docs/reference/zoom-join-prompts.md) | Zoom join flow and SDK prompts |
 | [`docs/reference/history-current-state-2026-07.md`](docs/reference/history-current-state-2026-07.md) | history only: the July 2026 state notes (audio war, zero-audio recording bug) |

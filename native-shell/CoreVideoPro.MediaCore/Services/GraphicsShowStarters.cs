@@ -13,13 +13,18 @@ public static class GraphicsShowStarters
     {
         if (string.IsNullOrWhiteSpace(title) || System.Text.Encoding.UTF8.GetByteCount(title)>256 || color.Length!=7 || color[0]!='#' || !color.AsSpan(1).ToArray().All(Uri.IsHexDigit))
             throw new InvalidOperationException("Enter a show title of up to 256 UTF-8 bytes and a color such as #44C1A1.");
-        return graphics.Select(g=> {
+        return WithAccentColor(graphics,color).Select(g=> {
             var fields=g.Draft.Fields.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value.Clone());
             if(fields.ContainsKey("heading"))fields["heading"]=JsonSerializer.SerializeToElement(title.Trim());
-            var style=g.Draft.Style with {AccentColor=color};
-            if(g.Draft.Declarative)style=style with {BackgroundColor=color};
-            return g with {Draft=g.Draft with {Fields=JsonSerializer.SerializeToElement(fields),Style=style}};
+            return g with {Draft=g.Draft with {Fields=JsonSerializer.SerializeToElement(fields)}};
         }).ToArray();
+    }
+
+    public static IReadOnlyList<GraphicsStarterGraphic> WithAccentColor(IReadOnlyList<GraphicsStarterGraphic> graphics, string color)
+    {
+        if(color.Length!=7 || color[0]!='#' || !color.Skip(1).All(Uri.IsHexDigit))throw new InvalidOperationException("Choose a valid color or enter a value such as #44C1A1.");
+        return graphics.Select(g=>g with {Draft=g.Draft with {Style=g.Draft.Declarative
+            ?g.Draft.Style with {AccentColor=color,BackgroundColor=color}:g.Draft.Style with {AccentColor=color}}}).ToArray();
     }
 
     public static IReadOnlyList<GraphicsStarterGraphic> WithLogo(IReadOnlyList<GraphicsStarterGraphic> graphics, NativeGraphicsTemplate template, NativeGraphicsImageReference image)
