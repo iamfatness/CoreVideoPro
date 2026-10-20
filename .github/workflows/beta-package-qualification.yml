@@ -117,6 +117,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $work = Join-Path $PWD 'artifacts/camera-setup-diagnostics'
           New-Item -ItemType Directory $work -Force | Out-Null
+          $installerLogs = Join-Path $env:LOCALAPPDATA 'CoreVideoPro/installer-logs'
+          if (Test-Path $installerLogs) { Copy-Item $installerLogs (Join-Path $work 'installer-logs') -Recurse }
           Expand-Archive "artifacts/beta-package/CoreVideoPro-win-x64-$env:BETA_TAG.zip" (Join-Path $work 'payload')
           $app = Join-Path $work 'payload/CoreVideoPro-Beta'
           # NSIS is 32-bit: reproduce its actual PowerShell host on the disposable
@@ -137,6 +139,7 @@ jobs:
             artifacts/beta-prerequisites/*.log
             artifacts/beta-prerequisites/*.json
             artifacts/camera-setup-diagnostics/*.txt
+            artifacts/camera-setup-diagnostics/installer-logs/**
             artifacts/beta-package/*.json
             artifacts/beta-package/*.sha256
           retention-days: 14

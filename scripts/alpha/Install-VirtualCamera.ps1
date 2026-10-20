@@ -2,8 +2,25 @@
 param([ValidateSet('Install','Uninstall','Rollback','Inspect')][string]$Action = 'Install',
     [Parameter(Mandatory=$true)][string]$AppDirectory, [switch]$AllowElevation,
     [switch]$MachineOnly,
+    [switch]$Quiet,
     [string]$OwnerSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
 $ErrorActionPreference = 'Stop'
+# Preserve a failure outside the destination: NSIS rolls that directory back.
+# Registration metadata has no meeting credentials; retain the actual error and
+# call stack rather than reporting every camera failure as missing elevation.
+trap {
+    $cameraFailure = $_
+    try {
+        $logRoot = Join-Path $env:LOCALAPPDATA 'CoreVideoPro/installer-logs'
+        $null = New-Item -ItemType Directory $logRoot -Force
+        $identity = [IO.Path]::GetFileName($AppDirectory.TrimEnd('\'))
+        if ($identity -notmatch '^[a-zA-Z0-9._-]+$') { $identity = 'camera-setup' }
+        [ordered]@{ timeUtc=[DateTime]::UtcNow.ToString('o'); action=$Action; appDirectory=$AppDirectory;
+            message=$cameraFailure.Exception.Message; scriptStackTrace=$cameraFailure.ScriptStackTrace } |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logRoot ($identity + '-camera-error.json'))
+    } catch { }
+    throw $cameraFailure
+}
 # A PowerShell 7 parent can export its module path to NSIS's Windows PowerShell
 # child. Load the host's built-in ACL commands explicitly, rather than finding
 # an incompatible Microsoft.PowerShell.Security module through that path.
@@ -141,5 +158,9 @@ if (-not $MachineOnly) {
         throw $userFailure
     }
 }
-[ordered]@{ schema='camera-installation-v1'; action=$Action; registration=$machine; desktopUser=$(if (-not $MachineOnly) {$desktopUser} else {$null}); runtimeCleanup=$runtimeCleanup; servingIdentityVerified=$false;
-    note='Registration verified; camera activation and actual loaded-module inspection are required. Close camera consumers or restart Windows if an older DLL remains loaded.' } | ConvertTo-Json -Depth 5
+if ($Quiet) {
+    Write-Output "Camera $Action registration verified; camera delivery remains unverified."
+} else {
+    [ordered]@{ schema='camera-installation-v1'; action=$Action; registration=$machine; desktopUser=$(if (-not $MachineOnly) {$desktopUser} else {$null}); runtimeCleanup=$runtimeCleanup; servingIdentityVerified=$false;
+        note='Registration verified; camera activation and actual loaded-module inspection are required. Close camera consumers or restart Windows if an older DLL remains loaded.' } | ConvertTo-Json -Depth 7
+}
