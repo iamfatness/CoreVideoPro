@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner Sources regression, October 19 — [#956](https://github.com/iamfatness/CoreVideoPro/issues/956):** Unassign leaves the input row dead. Keep the empty row's unified source picker reachable and verify repeated same-row source reuse through compiled controls without restarting or changing other inputs/Program.
+
 **Owner review follow-up, October 19 — #951/#927:** Studio's bottom controls do
 not fit at 1080p and the template workflow is still unclear. Restore complete
 Studio control fit with full-workspace compiled geometry and renders; preserve
@@ -252,6 +254,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
 | Owner review regression — October 19 | B | [#951](https://github.com/iamfatness/CoreVideoPro/issues/951) | Reproduce full Studio footer clipping at 1080p; restore visible, non-overlapping production actions with compiled full-workspace geometry and renders. |
+| Owner Sources regression — October 19 | B | [#956](https://github.com/iamfatness/CoreVideoPro/issues/956) | Keep an unassigned input's unified picker enabled; prove repeated source reassignment restores its controls on the retained row without restart or unintended routing/output changes. |
 | Owner current — October 19 Graphics feedback | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927) | Preview/starters merged in #950; review follow-up makes personalization live and joins saved starter adoption to explicit Studio assignment and navigation without putting graphics on air. |
 | Owner current — Volt implementation | A | [#926](https://github.com/iamfatness/CoreVideoPro/issues/926) | Native template/instance consumer and bounded preparation with compatibility lower-third pixels. |
 | Volt dependent — after #926 | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927), [#928](https://github.com/iamfatness/CoreVideoPro/issues/928) | Complete workspace/migration and actual title/bug/clock consumers; activate only as dependency gates pass. |

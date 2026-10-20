@@ -70,6 +70,37 @@ internal static class SourcesWorkspaceIntegrationProbe
         slots[0].SelectedUnifiedSourceId = "zoom:synthetic-a";
         foreach (var input in slots) input.RefreshSourceOptions([alice], [camera], mediaAssets: [clip]);
         checks.Add("inline categorized picker patches the retained row without Inspect, rejects stale choices and preserves other inputs/Program; roster refresh never rebuilds its open menu");
+        var screen = new CaptureDevice { Id = "screen:synthetic-reuse", Name = "Synthetic display", NativeDeviceId = "synthetic-screen", Vendor = "windows", Inputs = [], SelectedInputId = "", ConnectionState = CaptureConnectionState.Connected };
+        studio.CaptureDevices.Add(screen);
+        foreach (var sourceId in new[] { "zoom:synthetic-a", "capture:synthetic-camera", "capture:screen:synthetic-reuse", "media:synthetic-clip" })
+        {
+            for (var cycle = 0; cycle < 2; cycle++)
+            {
+                slots[0].RefreshSourceOptions([alice], [camera, screen], mediaAssets: [clip]);
+                slots[0].SelectedUnifiedSourceId = sourceId;
+                studio.UnassignShowInputCommand.Execute(slots[0]);
+                slots[0].RefreshSourceOptions([alice], [camera, screen], mediaAssets: [clip]);
+                await Task.Delay(30);
+                Require(slots[0].SourceId is null && !slots[0].InShow, "Unassign did not detach the source");
+                Require(quickPicker.IsEnabled, $"Unassign made input 1's unified picker dead ({sourceId}, cycle {cycle})");
+                Require(ReferenceEquals(rows[0], Descendants(workspace).OfType<SourcesTableRowControl>().Single(row => row.Input.SlotNumber == 1)), "Unassign recreated the input row");
+                quickPicker.SourceMenu.ShowAt(quickPicker); await Task.Delay(30);
+                var label = slots[0].UnifiedSourceOptions.Single(option => option.Value == sourceId).Label;
+                InvokeChoice(Choices(quickPicker).Single(item => item.Text == label));
+                quickPicker.SourceMenu.Hide(); await Task.Delay(30);
+                Require(slots[0].SourceId == sourceId && slots[0].IsAssigned, "Source could not be reassigned through the retained picker");
+                Require(!slots[0].InShow && !slots[0].IsoEnabled, "Reassign silently enabled Multiview or ISO");
+                Require(Descendants(rows[0]).OfType<CheckBox>().Single(box => AutomationProperties.GetName(box) == "Input 1 in Multiview").IsEnabled, "Reassign did not restore the row's source controls");
+                Require(untouched.SequenceEqual(slots.Skip(1).Select(input => (input.SourceId, input.InShow, input.IsoEnabled))) && studio.ActiveSceneId == sceneBeforePatch, "Input reuse changed another input or Program");
+            }
+        }
+        var retired = new SourceAssignmentPicker { Input = slots[0] };
+        retired.Retire(); retired.Input = slots[0]; retired.PrepareMenu();
+        Require(!retired.IsEnabled && retired.SourceMenu.Items.Count == 0, "A retired source picker became interactive again");
+        studio.CaptureDevices.Remove(screen);
+        slots[0].SelectedUnifiedSourceId = "zoom:synthetic-a";
+        foreach (var input in slots) input.RefreshSourceOptions([alice], [camera], mediaAssets: [clip]);
+        checks.Add("same retained input survives repeated camera/screen/Zoom/media unassign and menu reassignment without restart; other inputs, Program, MV/ISO intent and retired-control safety are preserved");
         var before = slots.Select(s => (s.SourceId, s.InShow, s.IsoEnabled)).ToArray();
         var program = studio.ActiveSceneId;
         Invoke(Descendants(rows[1]).OfType<Button>().Single(b => AutomationProperties.GetName(b) == "Inspect input 2"));
