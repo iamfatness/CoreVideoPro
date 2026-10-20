@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Release preparation dependency — [#966](https://github.com/iamfatness/CoreVideoPro/issues/966):** two main CI runs lost a Graphics heading edit before its callback committed. Reproduce through compiled controls, preserve pending edits across model refresh and retire stale bindings; keep the real edit assertion. This blocks the #857/#956 candidate's green-source gate and remains source/hosted-CI work during the owner's show.
+
 **Owner release order, October 19 — #956/#857:** include #957 and the desktop-user camera registration repair in the next beta. Preserve the running show: no local install, shortcut/profile/registry change, app launch/restart or live camera/input test until the owner ends the show. Prepare source, remote CI and candidate packaging meanwhile. Release acceptance remains pending until the installed app launched from the owner's regular desktop shortcut delivers camera frames and reuses an Unassigned input through its real controls. Source/fixture/clean-runner checks alone do not satisfy that gate.
 
 **Owner Sources regression, October 19 — [#956](https://github.com/iamfatness/CoreVideoPro/issues/956):** Unassign leaves the input row dead. Keep the empty row's unified source picker reachable and verify repeated same-row source reuse through compiled controls without restarting or changing other inputs/Program.

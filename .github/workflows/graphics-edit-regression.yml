@@ -1,0 +1,44 @@
+name: Compiled Graphics and Sources interaction
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - native-shell/CoreVideoPro.WinUI/Controls/Graphics*
+      - native-shell/CoreVideoPro.WinUI/Services/GraphicsWorkspaceLayoutProbe.cs
+      - .github/workflows/graphics-edit-regression.yml
+permissions:
+  contents: read
+jobs:
+  compiled-graphics-sources:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Publish the isolated self-contained probe
+        shell: pwsh
+        run: |
+          dotnet publish native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -p:Platform=x64 -p:WindowsAppSDKSelfContained=true -p:SelfContained=true -r win-x64 -o artifacts/interaction-probe-app
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise the compiled Graphics and Sources controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'artifacts/interaction-probe-app/CoreVideoPro.WinUI.exe'
+          foreach ($kind in @('graphics-workspace','operator-settings')) {
+            $report = Join-Path $PWD "artifacts/interaction-results/$kind/result.json"
+            New-Item -ItemType Directory (Split-Path $report -Parent) -Force | Out-Null
+            $probe = Start-Process $exe -ArgumentList @("--verify-$kind", $report) -WindowStyle Hidden -PassThru
+            if (-not $probe.WaitForExit(90000)) { Stop-Process -Id $probe.Id; throw "$kind timed out." }
+            if (-not (Test-Path $report)) { throw "$kind produced no report." }
+            $result = Get-Content $report -Raw | ConvertFrom-Json
+            if ($probe.ExitCode -ne 0 -or -not $result.passed -or $result.checks.Count -eq 0) { throw "$kind failed: $($result.error)" }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compiled-interaction-evidence
+          path: artifacts/interaction-results/**
+          if-no-files-found: warn

@@ -36,16 +36,11 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 9.0.x
-      - name: Require exact green main source and an unused beta identity
+      - name: Require exact main source and an unused beta identity
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:GITHUB_REF -ne 'refs/heads/main' -or $env:EXPECTED_COMMIT -notmatch '^[a-f0-9]{40}$' -or
               (git rev-parse HEAD).Trim() -ne $env:EXPECTED_COMMIT -or $env:RELEASE_DATE -notmatch '^\d{4}-\d{2}-\d{2}$') { throw 'Invalid candidate source/date.' }
-          $runs = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs?head_sha=$env:EXPECTED_COMMIT&per_page=100" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot read source CI.' }
-          foreach ($name in @('CI','CodeQL Advanced')) {
-            if (-not @($runs.workflow_runs | Where-Object { $_.name -eq $name -and $_.event -eq 'push' -and $_.head_sha -eq $env:EXPECTED_COMMIT -and $_.conclusion -eq 'success' }).Count) { throw "Exact-main $name has not passed." }
-          }
           $tag = 'beta-' + $env:RELEASE_DATE + '-' + $env:EXPECTED_COMMIT.Substring(0,7)
           $releases = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or @($releases | Where-Object tag_name -eq $tag).Count) { throw 'Cannot establish unused release identity.' }
@@ -116,6 +111,25 @@ jobs:
           Copy-Item "artifacts/releases/$env:BETA_TAG/CoreVideoPro-Beta/build-manifest.json" "artifacts/releases/$env:BETA_TAG/build-manifest.json"
           $manifest = Get-Content "artifacts/releases/$env:BETA_TAG/build-manifest.json" -Raw | ConvertFrom-Json
           if ($manifest.sourceCommit -ne $env:EXPECTED_COMMIT -or $manifest.framePerformanceAccepted -ne $false) { throw 'Candidate provenance/acceptance differs.' }
+      - name: Require exact-source green CI before uploading a draft
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $deadline = [DateTime]::UtcNow.AddMinutes(15)
+          while ($true) {
+            $runs = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs?head_sha=$env:EXPECTED_COMMIT&per_page=100" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot verify source CI.' }
+            $pending = @()
+            foreach ($name in @('CI','CodeQL Advanced')) {
+              $run = $runs.workflow_runs | Where-Object { $_.name -eq $name -and $_.event -eq 'push' -and $_.head_sha -eq $env:EXPECTED_COMMIT } | Sort-Object created_at -Descending | Select-Object -First 1
+              if ($run -and $run.conclusion -eq 'success') { continue }
+              if ($run -and $run.status -eq 'completed') { throw "Exact-main $name failed: $($run.conclusion). No draft uploaded." }
+              $pending += $name
+            }
+            if ($pending.Count -eq 0) { break }
+            if ([DateTime]::UtcNow -ge $deadline) { throw 'Exact-main CI is unverified. No draft uploaded.' }
+            Write-Output "Waiting for exact-source checks: $($pending -join ', ')"
+            Start-Sleep -Seconds 30
+          }
       - name: Create the unaccepted draft only
         run: |
           $ErrorActionPreference = 'Stop'

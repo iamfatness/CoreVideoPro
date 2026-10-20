@@ -27,7 +27,8 @@ unrelated Program/ISO changes. Both must pass before installed acceptance; these
 functional checks do not replace full-workload frame-delivery qualification.
 
 `Build draft beta candidate` runs only on GitHub's Windows runner against an
-exact green main SHA. It builds the production payload, probes compiled Sources
+exact main SHA. Its build can run beside main CI, but the exact-source CI and
+CodeQL must pass before any draft upload. It builds the production payload, probes compiled Sources
 controls and packages the six immutable beta assets into an unaccepted draft.
 The owner PC is not an installer/QA runner during a show. Draft notes and the
 candidate evidence keep both desktop acceptance results unverified; run the
