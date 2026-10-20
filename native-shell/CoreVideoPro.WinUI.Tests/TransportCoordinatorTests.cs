@@ -166,6 +166,88 @@ public sealed class TransportCoordinatorTests
         Assert.StartsWith("Recording start failed:", host.OutputStatus);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task RecordingRetryOnlyRollsBackForTheNewSessionFailure(bool newSessionFailure, bool backpressure)
+    {
+        var (coordinator, bridge, host) = Build(recordingSyncRetryDelayMs: 1);
+        NativeMediaCoreStateSnapshot Failed(string id) => new()
+        {
+            Recording = new NativeMediaCoreRecordingSession
+            {
+                SessionId = id, Status = "failed", WriterStatus = "failed", TargetFolder = @"D:\recordings",
+                FilenamePrefix = "show", Format = "mp4", Quality = "high", ProgramPath = @"D:\recordings\Program.mp4",
+                Lifecycle = new CoreVideoPro.MediaCore.Contracts.OutputLifecycle
+                {
+                    SessionId = id, DesiredActive = false, State = "failed", Health = "failed",
+                    Finalized = false, Error = "Previous empty container failed to finalize"
+                }
+            }
+        };
+        bridge.LastSnapshot = Failed("previous-take");
+        host.SyncResult = Failed(newSessionFailure ? "new-take" : "previous-take");
+        host.SyncFailuresRemaining = backpressure ? 1 : 0;
+        await coordinator.SetRecordingAsync(true);
+        Assert.Equal(!newSessionFailure, host.Recording);
+        Assert.False(coordinator.RecordingToggleInFlight);
+        if (newSessionFailure) Assert.StartsWith("Recording start failed:", host.OutputStatus);
+        else Assert.Equal("Recording start requested.", host.OutputStatus);
+        Assert.True(coordinator.IsSupersededRecordingSession("previous-take"));
+        Assert.False(coordinator.IsSupersededRecordingSession("new-take"));
+        Assert.False(coordinator.IsSupersededRecordingSession(null)); // Missing identity is never proof of an old failure.
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecordingRetryDisarmsRetainedFailedRequestBeforeStarting(bool backpressure)
+    {
+        var (coordinator, bridge, host) = Build(recordingSyncRetryDelayMs: 1);
+        bridge.LastSnapshot = new NativeMediaCoreStateSnapshot
+        {
+            Recording = new NativeMediaCoreRecordingSession
+            {
+                SessionId = "old", Status = "failed", WriterStatus = "failed", TargetFolder = @"D:\recordings",
+                FilenamePrefix = "show", Format = "mp4", Quality = "high", ProgramPath = @"D:\recordings\Program.mp4",
+                Lifecycle = new CoreVideoPro.MediaCore.Contracts.OutputLifecycle
+                { SessionId = "old", DesiredActive = true, State = "failed", Health = "failed", Finalized = false }
+            }
+        };
+        host.SyncFailuresRemaining = backpressure ? 1 : 0;
+        await coordinator.SetRecordingAsync(true);
+        Assert.Equal(new[] { false, true }, host.AppliedRecordingIntents);
+        Assert.True(host.Recording);
+        Assert.False(coordinator.RecordingToggleInFlight);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedTakeCleanupFailureNeverSendsNewStart(bool busy)
+    {
+        var (coordinator, bridge, host) = Build(recordingSyncRetryAttempts: 2, recordingSyncRetryDelayMs: 1);
+        bridge.LastSnapshot = new NativeMediaCoreStateSnapshot
+        {
+            Recording = new NativeMediaCoreRecordingSession
+            {
+                SessionId = "old", Status = "failed", WriterStatus = "failed", TargetFolder = @"D:\recordings",
+                FilenamePrefix = "show", Format = "mp4", Quality = "high", ProgramPath = @"D:\recordings\Program.mp4",
+                Lifecycle = new CoreVideoPro.MediaCore.Contracts.OutputLifecycle
+                { SessionId = "old", DesiredActive = true, State = "failed", Health = "failed", Finalized = false }
+            }
+        };
+        if (busy) host.SyncFailuresRemaining = 100;
+        else host.SyncThrows = new InvalidOperationException("cleanup unavailable");
+        await coordinator.SetRecordingAsync(true);
+        Assert.Empty(host.AppliedRecordingIntents);
+        Assert.False(host.Recording);
+        Assert.False(coordinator.RecordingToggleInFlight);
+        Assert.StartsWith("Recording start failed:", host.OutputStatus);
+    }
+
     [Fact]
     public async Task ToggleRecording_StopWaitsForBusyStartAndKeepsCommandGuarded()
     {
@@ -904,6 +986,7 @@ public sealed class TransportCoordinatorTests
         // --- observed counters ---
         public int SyncCallCount { get; private set; }
         public List<string> SyncedProgramIds { get; } = [];
+        public List<bool> AppliedRecordingIntents { get; } = [];
 
         public int PromoteCallCount { get; private set; }
 
@@ -1093,6 +1176,7 @@ public sealed class TransportCoordinatorTests
                 throw SyncThrows;
             }
 
+            AppliedRecordingIntents.Add(Recording);
             return SyncResult;
         }
 

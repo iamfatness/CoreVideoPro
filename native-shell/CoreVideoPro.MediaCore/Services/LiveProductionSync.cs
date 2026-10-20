@@ -52,6 +52,7 @@ public static class LiveProductionSync
         public string? LowerThirdOrg { get; init; }
         public bool? Recording { get; init; }
         public bool? RecordingRequested { get; init; }
+        public string? RecordingSessionId { get; init; }
         public bool? Streaming { get; init; }
         public string? OutputStatus { get; init; }
         public string? OutputSessionStatus { get; init; }
@@ -89,6 +90,7 @@ public static class LiveProductionSync
             LowerThirdOrg = lowerThird.Org,
             Recording = recording,
             RecordingRequested = snapshot.Recording?.Lifecycle?.State is "failed" or "interrupted" ? false : null,
+            RecordingSessionId = snapshot.Recording?.Lifecycle?.SessionId,
             Streaming = streaming,
             OutputStatus = outputStatus,
             OutputSessionStatus = outputSessionStatus,
