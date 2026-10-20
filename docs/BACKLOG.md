@@ -2,6 +2,15 @@
 
 **Owner Sources regression, October 19 — [#956](https://github.com/iamfatness/CoreVideoPro/issues/956):** Unassign leaves the input row dead. Keep the empty row's unified source picker reachable and verify repeated same-row source reuse through compiled controls without restarting or changing other inputs/Program.
 
+**Owner planning direction, October 19 — engine survival:** turn the architecture
+review into an executable plan, starting with production surviving a WinUI crash.
+Track the outcome under [#959](https://github.com/iamfatness/CoreVideoPro/issues/959)
+and the [implementation contract](reference/engine-ui-crash-survival-plan.md).
+The scoped dependency sequence is recorded in Next below. This authorizes the
+plan/backlog intake; it does not start four development items, supersede unrelated
+Now work, enable the feature, or change the installed app. Maximum three active
+development items remains. #930/#517 delivery acceptance is not waived.
+
 **Owner review follow-up, October 19 — #951/#927:** Studio's bottom controls do
 not fit at 1080p and the template workflow is still unclear. Restore complete
 Studio control fit with full-workspace compiled geometry and renders; preserve
@@ -303,6 +312,22 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 | [#618](https://github.com/iamfatness/CoreVideoPro/issues/618) | Owner paused private Zoom SDK CI provisioning pending research. The non-stub Windows adapter compile lane passed in #643; real Zoom CI compile still reports `MISSING_EVIDENCE`. Keep open. |
 
 ## Next — in this order
+
+Owner-selected first outcome within the stability initiative: **UI-crash survival**.
+Run its slices sequentially once that development lane is activated; existing Now
+work and the previously ranked Next rows below retain their relative order.
+
+| Stability dependency | Issue | Remaining work |
+|---|---|---|
+| Outcome / acceptance parent | [#959](https://github.com/iamfatness/CoreVideoPro/issues/959) | Keep the committed show running across UI failure; close only after all child gates, not on a plan or a process staying alive. |
+| First slice | [#960](https://github.com/iamfatness/CoreVideoPro/issues/960) | On-demand EngineHost, bounded reconnectable control and real opt-in WinUI/native consumer; preserve epochs and output sessions across UI termination. |
+| Depends on #960 | [#961](https://github.com/iamfatness/CoreVideoPro/issues/961) | Move live synchronization, committed state, control ingress and recovery authority outside WinUI; reuse #657 contracts. |
+| Depends on #960/#961 | [#962](https://github.com/iamfatness/CoreVideoPro/issues/962) | Move compatibility camera capture into a host-owned helper and prove actual fallback media survives UI death. |
+| Depends on #960–#962 | [#963](https://github.com/iamfatness/CoreVideoPro/issues/963) | Matched packaging, safe stop/update/rollback and receiver-verified full-workload crash qualification; cross-gate #930/#517/#904/#908/#857. |
+
+Live issue reconciliation for this plan: #873, #870 and #947 are closed and are
+retained groundwork, not new implementation dependencies. Older historical rows
+remain historical evidence; GitHub carries authoritative issue status.
 
 October 14 follow-through: [#873](https://github.com/iamfatness/CoreVideoPro/issues/873). The bounded pre-drain staging and off-lock grade annotation follow-through is staged in #901. Complete merge/CI and installed full-load acceptance, then return to the remaining order below.
 
