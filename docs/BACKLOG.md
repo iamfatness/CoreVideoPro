@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner-approved UIUX batch, October 20 — [#978](https://github.com/iamfatness/CoreVideoPro/issues/978):** audit shipped Graphics/starter/source-text behavior, then finish template-to-Studio guidance, default/custom/hidden guest text and guarded automation editing under #927/#593/#929. Preserve the installed app, GPU, profile and camera registration while the other chat validates #975. Source work, CPU-only tests and hosted CI only; installed/native output acceptance stays separate. #955 owns footer status/alignment.
+
 **Owner priority, October 20 — [#974](https://github.com/iamfatness/CoreVideoPro/issues/974):** fix camera ISO re-arm synchronization after Unassign, then complete the eight-Zoom/webcam/screen workload with Multiview, Preview, local recording and virtual camera. Retain failed runs and require per-frame delivery evidence before calling qualification passed. Only then build, publish and install the corrected beta using the established local process.
 
 **Current beta installation dependency — [#971](https://github.com/iamfatness/CoreVideoPro/issues/971):** the owner ended the show and authorized local build, installation and desktop-shortcut camera/Unassign acceptance. Retain the failed exact-asset installer trials, enforce one worker reply, preserve setup errors through rollback and remove owned retry artifacts. Normal installer and actual desktop camera/Unassign checks must succeed before acceptance; per-frame workload qualification remains separate and unverified.
@@ -270,6 +272,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
+| Owner current — October 20 UIUX | B | [#978](https://github.com/iamfatness/CoreVideoPro/issues/978) | Graphics workflow clarity and preserved automation drafts; source/CPU-only and hosted checks during #975's quiet GPU window. Companion acceptance under #927/#593/#929 remains independent. |
 | Owner review regression — October 19 | B | [#951](https://github.com/iamfatness/CoreVideoPro/issues/951) | Reproduce full Studio footer clipping at 1080p; restore visible, non-overlapping production actions with compiled full-workspace geometry and renders. |
 | Owner Sources regression — October 19 | B | [#956](https://github.com/iamfatness/CoreVideoPro/issues/956) | Keep an unassigned input's unified picker enabled; prove repeated source reassignment restores its controls on the retained row without restart or unintended routing/output changes. |
 | Owner current — October 19 Graphics feedback | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927) | Preview/starters merged in #950; review follow-up makes personalization live and joins saved starter adoption to explicit Studio assignment and navigation without putting graphics on air. |
