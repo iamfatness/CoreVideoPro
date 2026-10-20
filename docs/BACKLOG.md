@@ -2,6 +2,8 @@
 
 **Owner release order, October 19 — #956/#857:** include #957 and the desktop-user camera registration repair in the next beta. Preserve the running show: no local install, shortcut/profile/registry change, app launch/restart or live camera/input test until the owner ends the show. Prepare source, remote CI and candidate packaging meanwhile. Release acceptance remains pending until the installed app launched from the owner's regular desktop shortcut delivers camera frames and reuses an Unassigned input through its real controls. Source/fixture/clean-runner checks alone do not satisfy that gate.
 
+**Owner Sources regression, October 19 — [#956](https://github.com/iamfatness/CoreVideoPro/issues/956):** Unassign leaves the input row dead. Keep the empty row's unified source picker reachable and verify repeated same-row source reuse through compiled controls without restarting or changing other inputs/Program.
+
 **Owner review follow-up, October 19 — #951/#927:** Studio's bottom controls do
 not fit at 1080p and the template workflow is still unclear. Restore complete
 Studio control fit with full-workspace compiled geometry and renders; preserve
@@ -254,6 +256,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
 | Owner review regression — October 19 | B | [#951](https://github.com/iamfatness/CoreVideoPro/issues/951) | Reproduce full Studio footer clipping at 1080p; restore visible, non-overlapping production actions with compiled full-workspace geometry and renders. |
+| Owner Sources regression — October 19 | B | [#956](https://github.com/iamfatness/CoreVideoPro/issues/956) | Keep an unassigned input's unified picker enabled; prove repeated source reassignment restores its controls on the retained row without restart or unintended routing/output changes. |
 | Owner current — October 19 Graphics feedback | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927) | Preview/starters merged in #950; review follow-up makes personalization live and joins saved starter adoption to explicit Studio assignment and navigation without putting graphics on air. |
 | Owner current — Volt implementation | A | [#926](https://github.com/iamfatness/CoreVideoPro/issues/926) | Native template/instance consumer and bounded preparation with compatibility lower-third pixels. |
 | Volt dependent — after #926 | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927), [#928](https://github.com/iamfatness/CoreVideoPro/issues/928) | Complete workspace/migration and actual title/bug/clock consumers; activate only as dependency gates pass. |
@@ -519,3 +522,4 @@ These rows record specific fixes, not blanket production or fleet reliability.
 | [#574](https://github.com/iamfatness/CoreVideoPro/issues/574) | GPU readiness moved before publication in #566. Hardware pixel tests and 30m16s installed candidate soak passed with zero new CVP delivery failures. Workload limits remain under #517/#569. |
 | [#529](https://github.com/iamfatness/CoreVideoPro/issues/529), [#533](https://github.com/iamfatness/CoreVideoPro/issues/533) | ISO drops/timeline fixes merged and validated in the earlier 24-minute six-ISO recording; shipped September 18. |
 | [#516](https://github.com/iamfatness/CoreVideoPro/issues/516), [#526](https://github.com/iamfatness/CoreVideoPro/issues/526), [#518](https://github.com/iamfatness/CoreVideoPro/issues/518) | Earlier render-stall, Program-buffer startup/busy-loop, and audio-log fixes merged and validated; shipped September 18. Later distinct defects retain their own issues. |
+

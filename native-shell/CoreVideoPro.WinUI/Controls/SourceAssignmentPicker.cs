@@ -42,7 +42,7 @@ internal sealed class SourceAssignmentPicker : DropDownButton
 
     private void BindInput()
     {
-        if (Input is not { } input)
+        if (_retired || Input is not { } input)
         {
             _label.ClearValue(TextBlock.TextProperty); _label.Text = "";
             ClearValue(IsEnabledProperty); IsEnabled = false;
@@ -50,7 +50,9 @@ internal sealed class SourceAssignmentPicker : DropDownButton
         }
         SourcesTableRowControl.Bind(_label, TextBlock.TextProperty, input,
             _compact ? "OverviewName" : "SelectedUnifiedSourceLabel");
-        SourcesTableRowControl.Bind(this, IsEnabledProperty, input, "IsSourcePickerEnabled");
+        // This picker chooses the kind as well as the source. The legacy per-kind
+        // gate disables Unassigned slots and strands their only assignment control.
+        ClearValue(IsEnabledProperty); IsEnabled = true;
     }
 
     // Build only on explicit opening. Roster updates cannot replace an open popup.
