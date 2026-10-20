@@ -308,6 +308,18 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
 
 For an explicitly selected synthetic QA run only, `COREVIDEO_QA_PROGRAM_COUNTER=1` adds complementary binary Program-sequence markers at the top and bottom of the Program image. This changes output pixels and must never be enabled for a live show. It defaults off. GPU ClearView writes the markers before the normal Program-buffer/NV12 path; a hardware test decodes the resulting delivered NV12 packet and matches its Program identity.
 
+When another OS camera consumer is open, build the opt-in native target
+`corevideo-shared-camera-receiver` and invoke it with the registered Windows
+device ID and a bounded capture duration (1–7500 seconds). It activates that
+device with WinRT MediaCapture SharedReadOnly and reads delivered NV12 guard-row
+pixels, without opening the publisher mapping or directly loading its DLL.
+The existing camera pixel judge checks its original arrival timestamps and
+identities. Realtime/latest acquisition may drop frames; those remain missing
+identities and fail rather than being interpolated. Callback records are bounded
+in memory and written after capture. Acquisition/capacity failures, missing
+markers and incomplete captures cannot pass. This receiver does not prove display
+presentation, recording content or third-party consumer scheduling.
+
 Build `corevideo-vcam-receiver` and run `corevideo-vcam-receiver 90 > receiver.ndjson` while the candidate camera is enabled. The probe enumerates the OS camera and negotiates 1920x1080 NV12 at 60/1 through Media Foundation. It reads no publisher mapping. The header anchors receiver-monotonic arrivals to UTC with `startUnixUs`, and the judge derives post-warmup coverage from actual first/last measured arrivals. Each sample records monotonic arrival, media PTS and decoded pixel identity; malformed/complement-mismatched patterns are null. An independent watchdog ends a stalled receiver with incomplete evidence.
 
 `node scripts/qa/camera-pixel-receiver.mjs receiver.ndjson` excludes the first 30 seconds, requires at least 30 measured seconds, rejects incomplete captures, resets, duplicates, gaps, reordering, invalid markers and unexplained arrival intervals over 33.4 ms. This proves only the tested OS receiver pixels, not another application's presentation, audio alignment or the full-workload qualification.

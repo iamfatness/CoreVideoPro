@@ -33,6 +33,13 @@ if(WIN32)
   set_target_properties(corevideo-vcam-receiver PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
+  add_executable(corevideo-shared-camera-receiver EXCLUDE_FROM_ALL ../tools/shared-camera-receiver.cpp)
+  target_compile_features(corevideo-shared-camera-receiver PRIVATE cxx_std_20)
+  target_include_directories(corevideo-shared-camera-receiver PRIVATE src)
+  target_link_libraries(corevideo-shared-camera-receiver PRIVATE windowsapp ole32)
+  set_target_properties(corevideo-shared-camera-receiver PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR})
   # #652: independent endpoint loopback timestamps for the live A/V clap rig.
   add_executable(corevideo-loopback-rec ../tools/audio/loopback-rec.cpp)
   target_link_libraries(corevideo-loopback-rec PRIVATE ole32 uuid)
