@@ -50,6 +50,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
     private readonly TextBox _styleName = new() { Header = "Save style as", MaxLength = 80 };
     private readonly TextBlock _saveStatus = Copy("");
     private readonly List<System.Action> _refreshFields = [];
+    private readonly List<GraphicsTextFieldBinding> _textFields = [];
     private string _inspectorKey = "", _libraryKey = "", _cueKey = "", _savedKey = "";
     private bool _loading;
     private string _thumbnailEpoch="";
@@ -80,6 +81,7 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
     }
     private void Detach()
     {
+        RetireTextFields(); _inspectorKey = "";
         if (_session is not null) { _session.Changed -= OnChanged; _session.PreviewChanged -= OnPreviewChanged; }
         if (_savedLibrary is not null) _savedLibrary.Changed -= OnLibraryChanged;
         if (_attachedStudio is not null) _attachedStudio.PropertyChanged -= OnStudioProperty;
@@ -203,8 +205,14 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
             _library.SelectedIndex=index;
         } finally {_loading=loading;}
     }
+    private void RetireTextFields()
+    {
+        foreach (var binding in _textFields) binding.Dispose();
+        _textFields.Clear();
+    }
     private void BuildInspector()
     {
+        RetireTextFields();
         foreach(var button in _inspectorActions) _actions.Remove(button); _inspectorActions.Clear();
         if (_studioFollowSource.Parent is Panel followParent) followParent.Children.Remove(_studioFollowSource);
         foreach (var panel in new[] { _contentControls, _styleControls, _layoutControls, _motionControls }) panel.Children.Clear();
@@ -269,9 +277,17 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
                 _refreshFields.Add(() => { if (_session?.Draft?.Fields.TryGetProperty(field.Id, out var current) == true && current.ValueKind == JsonValueKind.Number) slider.Value = current.GetDouble(); });
             } else {
                 var text = new TextBox { Header = FieldLabel(field) + (field.Required ? " *" : ""), Text = value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "", MaxLength = field.MaxLength ?? 512 };
-                text.TextChanged += (_, _) => { if (!_loading) _session?.SetField(field.Id, JsonSerializer.SerializeToElement(text.Text)); }; _inspector.Children.Add(text);
-                text.GotFocus += (_, _) => _session?.BeginGesture(); text.LostFocus += (_, _) => _session?.EndGesture();
-                _refreshFields.Add(() => { if (text.FocusState == FocusState.Unfocused && _session?.Draft?.Fields.TryGetProperty(field.Id, out var current) == true && current.ValueKind == JsonValueKind.String) text.Text = current.GetString() ?? ""; });
+                var fieldSession = _session;
+                var binding = new GraphicsTextFieldBinding(text,
+                    () => fieldSession?.Draft?.Fields.TryGetProperty(field.Id, out var current) == true && current.ValueKind == JsonValueKind.String ? current.GetString() ?? "" : null,
+                    value => {
+                        if (fieldSession is null || fieldSession.Busy) return false;
+                        fieldSession.SetField(field.Id, JsonSerializer.SerializeToElement(value));
+                        return fieldSession.Draft?.Fields.TryGetProperty(field.Id, out var current)==true && current.ValueKind==JsonValueKind.String && current.GetString()==value;
+                    },
+                    () => fieldSession?.BeginGesture(), () => fieldSession?.EndGesture());
+                _textFields.Add(binding); _inspector.Children.Add(text);
+                _refreshFields.Add(binding.Refresh);
             }
         }
         BuildClockControls();

@@ -175,6 +175,7 @@ public sealed partial class GraphicsWorkspaceControl
 
     private void RememberStarterEdits()
     {
+        foreach (var binding in _textFields.ToArray()) binding.CommitPending();
         var selected = _starterPreviewIndex;
         if (selected >= 0 && selected < _starterDrafts.Count && _session is { Selected: null, Draft: { } edited } &&
             edited.TemplateId == _starterDrafts[selected].Draft.TemplateId && edited.TemplateVersion == _starterDrafts[selected].Draft.TemplateVersion)
