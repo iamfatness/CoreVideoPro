@@ -65,7 +65,7 @@ public sealed class GraphicsAutomationControl : UserControl
         _removeRule=Button("Remove selected rule",RemoveRule);overrides.Children.Add(_removeRule);
         panel.Children.Add(new Expander {Header="Manual overrides and rule removal",Content=overrides,HorizontalAlignment=HorizontalAlignment.Stretch});
         var persistence=new StackPanel {Spacing=8};
-        _saveRules=Button("Save rule configuration",()=>_library.SaveAutomationRulesAsync());persistence.Children.Add(_saveRules);
+        _saveRules=Button("Save rule configuration",()=>_library.SaveAutomationRulesAsync(),"Applied rule configuration saved. Activation is unchanged.");persistence.Children.Add(_saveRules);
         _restore=Button("Restore saved rules — unarmed",()=>_library.RestoreAutomationRulesAsync(_studio.GraphicsAutomationConfiguration));persistence.Children.Add(_restore);
         panel.Children.Add(new Expander {Header="Save and restore applied rules",Content=persistence,HorizontalAlignment=HorizontalAlignment.Stretch});
         panel.Children.Add(_status);panel.Children.Add(new Expander {Header="Native decision trace",Content=_trace,HorizontalAlignment=HorizontalAlignment.Stretch});
