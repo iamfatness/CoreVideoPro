@@ -131,10 +131,14 @@ if (-not $MachineOnly) {
     try {
         $desktopUser = Invoke-CameraUserSession -Action $Action -AppDirectory $app -OwnerSid $OwnerSid
     } catch {
+        $userFailure = $_
         if ($Action -eq 'Install') {
-            & $PSCommandPath -Action Rollback -AppDirectory $app -AllowElevation:$AllowElevation -MachineOnly
+            # A worker may have applied the alias before a reply/transport error.
+            # Restore it in the same independent context before machine rollback.
+            try { $null = Invoke-CameraUserSession -Action Rollback -AppDirectory $app -OwnerSid $OwnerSid }
+            finally { & $PSCommandPath -Action Rollback -AppDirectory $app -AllowElevation:$AllowElevation -MachineOnly }
         }
-        throw
+        throw $userFailure
     }
 }
 [ordered]@{ schema='camera-installation-v1'; action=$Action; registration=$machine; desktopUser=$(if (-not $MachineOnly) {$desktopUser} else {$null}); runtimeCleanup=$runtimeCleanup; servingIdentityVerified=$false;

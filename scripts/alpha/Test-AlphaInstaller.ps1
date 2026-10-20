@@ -119,6 +119,7 @@ $manifestLines += @('..\escape-attempt.txt', 'C:\Windows\System32\absolute-attem
 $escapeTarget = Join-Path (Split-Path -Parent $installRoot) 'escape-attempt.txt'
 [IO.File]::WriteAllText($escapeTarget, 'must survive')
 if ((Invoke-OwnedProcess $uninstaller @('/S', "_?=$installRoot")) -ne 0) { throw 'Uninstall failed.' }
+if (Test-Path -LiteralPath (Join-Path $installRoot '.camera-desktop-registration-before.json')) { throw 'Uninstall left its desktop camera backup.' }
 foreach ($relative in $runtimeFiles) {
     if (Test-Path -LiteralPath (Join-Path $installRoot $relative)) {
         throw "First-run media runtime remained after uninstall: $relative"
