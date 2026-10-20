@@ -55,8 +55,13 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(Button(workspace,"Save graphics only").ActualHeight>0 && Button(workspace,"Use this look in Studio").IsEnabled,"The direct sample-to-Studio action is unavailable");
             var sampleList=Descendants(workspace).OfType<ListView>().Single(l=>Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(l)=="Show template sample graphics");
             sampleList.SelectedIndex=1;
-            Descendants(workspace).OfType<TextBox>().Single(t=>t.Text=="In conversation").Text="My weekly show";
-            await Eventually(()=>studio.GraphicsWorkspace.Draft?.Fields.GetProperty("heading").GetString()=="My weekly show");
+            var heading = Descendants(workspace).OfType<TextBox>().Single(t=>t.Text=="In conversation");
+            Require(heading.FocusState==FocusState.Unfocused,"Pending-edit regression requires an unfocused editor");
+            heading.Text="My weekly show";
+            // Force the real refresh path before asynchronous TextChanged. A
+            // model echo must not overwrite input waiting to reach the model.
+            studio.GraphicsWorkspace.SetCompare(true);
+            await Eventually(()=>studio.GraphicsWorkspace.Draft?.Fields.GetProperty("heading").GetString()=="My weekly show", "Pending Graphics heading was overwritten before commit");
             sampleList.SelectedIndex=0;
             Descendants(workspace).OfType<TextBox>().Single(t=>t.Header as string=="Brand color").Text="#2873AA";
             await Eventually(()=>studio.GraphicsWorkspace.Draft?.Style.AccentColor=="#2873AA");
@@ -135,5 +140,5 @@ internal static class GraphicsWorkspaceLayoutProbe
     private static void Invoke(Button button)=>((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke();
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root) { for(var i=0;i<VisualTreeHelper.GetChildrenCount(root);i++) {var child=VisualTreeHelper.GetChild(root,i);yield return child;foreach(var descendant in Descendants(child))yield return descendant;} }
     private static void Require(bool value,string reason) {if(!value)throw new InvalidOperationException(reason);}
-    private static async Task Eventually(Func<bool> predicate) {var watch=Stopwatch.StartNew();while(!predicate()&&watch.Elapsed<TimeSpan.FromSeconds(10))await Task.Delay(30);Require(predicate(),"Compiled Graphics controls did not load");}
+    private static async Task Eventually(Func<bool> predicate, string reason="Compiled Graphics controls did not load") {var watch=Stopwatch.StartNew();while(!predicate()&&watch.Elapsed<TimeSpan.FromSeconds(10))await Task.Delay(30);Require(predicate(),reason);}
 }
