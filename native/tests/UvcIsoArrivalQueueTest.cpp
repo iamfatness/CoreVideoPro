@@ -57,9 +57,10 @@ TEST(UvcIsoArrivalQueue, OverflowIsBoundedAndEveryEvictionIsVisible) {
 TEST(UvcIsoArrivalQueue, ResizeAndReconnectKeepOriginalEpochsAndNeverRelabelFrames) {
   UvcIsoArrivalQueue queue; queue.require(true);
   auto cpu = std::make_shared<const std::vector<uint8_t>>(128 * 64 * 3 / 2, 128);
-  I420CaptureArrival first("capture:camera", {}), reconnected("capture:camera", {});
+  I420CaptureArrival first("capture:camera", {});
   queue.offer(first.publish(cpu, 64, 64, false, false));
   queue.offer(first.publish(cpu, 128, 64, false, false));
+  I420CaptureArrival reconnected("capture:camera", {});
   queue.offer(reconnected.publish(cpu, 64, 64, false, false));
   auto batch = queue.take(); ASSERT_EQ(batch.size(), 3u);
   EXPECT_LT(batch[0].sourceEpoch, batch[1].sourceEpoch);
