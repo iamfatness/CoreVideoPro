@@ -5,6 +5,8 @@ using CoreVideoPro.WinUI.ViewModels;
 using CoreVideoPro.WinUI.ViewModels.Transport;
 using CoreVideoPro.WinUI.Views;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation.Peers;
+using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
 using Windows.Graphics;
 
@@ -180,6 +182,16 @@ internal static class SceneWorkspaceIntegrationProbe
         studio.WorkspaceRasterizeGraphic=graphic=>"fixture-"+Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(graphic))));
         workspace.AddGraphic("text");
         var graphicId=workspace.Selected!.ItemId;
+        // Hosted Windows can constrain this offscreen window to a compact
+        // viewport. Open its real Properties drawer, as an operator would,
+        // before expecting Pivot to realize a newly selected editor.
+        var dock=(FrameworkElement)page.FindName("InspectorDock");
+        if (dock.Visibility==Visibility.Collapsed) {
+            var properties=(Button)page.FindName("PropertiesButton");
+            Require(properties.Visibility==Visibility.Visible && properties.IsEnabled,"Compact inspector has no usable Properties action");
+            ((IInvokeProvider)new ButtonAutomationPeer(properties).GetPattern(PatternInterface.Invoke)).Invoke();
+        }
+        await Eventually(()=>dock.Visibility==Visibility.Visible && dock.IsLoaded);
         tabs.SelectedIndex=tabs.Items.IndexOf(tabs.Items.Cast<PivotItem>().Single(i=>i.Name=="SourceInspectorTab"));
         try {
             await Eventually(()=>Descendants(page).OfType<TextBox>().Any(t=>t.Tag?.ToString()==graphicId&&t.Header?.ToString()=="Text"));
