@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace CoreVideoPro.MediaCore.Services;
 
-// All access is serialized by the server's command lane. Retained outcomes are
+// All access is serialized by the server's state gate. Retained outcomes are
 // bounded by count AND bytes; an expired ID is never automatically executed again.
 public sealed class EngineHostSession
 {

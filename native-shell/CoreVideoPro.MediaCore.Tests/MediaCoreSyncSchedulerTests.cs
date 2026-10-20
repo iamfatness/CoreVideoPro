@@ -6,6 +6,29 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class MediaCoreSyncSchedulerTests
 {
     [Fact]
+    public async Task HostedStopLaneBypassesOrdinaryReplyButRemainsBounded()
+    {
+        var scheduler = new MediaCoreSyncScheduler();
+        var release = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ordinary = scheduler.RunCommandAsync(() => release.Task, default);
+        try
+        {
+            Assert.Equal(7, await scheduler.RunCommandAsync(() => Task.FromResult(7), default,
+                stopCommand: true, independentStopLane: true).WaitAsync(TimeSpan.FromSeconds(1)));
+            Assert.False(ordinary.IsCompleted);
+            var heldStop = scheduler.RunCommandAsync(() => release.Task, default, true, true);
+            var queued = Enumerable.Range(0, MediaCoreSyncScheduler.ReservedStopCommands)
+                .Select(_ => scheduler.RunCommandAsync(() => Task.FromResult(1), default, true, true)).ToArray();
+            await Assert.ThrowsAsync<MediaCoreCommandOverloadedException>(() =>
+                scheduler.RunCommandAsync(() => Task.FromResult(9), default, true, true));
+            release.SetResult(0);
+            await heldStop;
+            await Task.WhenAll(queued);
+        }
+        finally { release.TrySetResult(0); await ordinary; }
+    }
+
+    [Fact]
     public async Task CommandPressureRejectsBeforeSendAndPreservesAdmittedOrder()
     {
         var scheduler = new MediaCoreSyncScheduler();

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.ComponentModel;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -19,6 +20,13 @@ public static class EngineHostEndpoint
 
     public static void VerifyServer(NamedPipeClientStream pipe, string expectedExecutable)
     {
+        try { VerifyServerIdentity(pipe, expectedExecutable); }
+        catch (Exception ex) when (ex is ArgumentException or Win32Exception or InvalidOperationException)
+        { throw new IOException("Engine host exited or its identity is unavailable.", ex); }
+    }
+
+    private static void VerifyServerIdentity(NamedPipeClientStream pipe, string expectedExecutable)
+    {
         if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out var pid))
             throw new IOException("Cannot verify engine host identity.");
         using var process = Process.GetProcessById(checked((int)pid));
@@ -28,6 +36,13 @@ public static class EngineHostEndpoint
     }
 
     public static void VerifyClient(NamedPipeServerStream pipe)
+    {
+        try { VerifyClientIdentity(pipe); }
+        catch (Exception ex) when (ex is ArgumentException or Win32Exception or InvalidOperationException)
+        { throw new IOException("Client exited during identity verification.", ex); }
+    }
+
+    private static void VerifyClientIdentity(NamedPipeServerStream pipe)
     {
         var machine = new StringBuilder(256);
         var hasComputerName = GetNamedPipeClientComputerName(pipe.SafePipeHandle.DangerousGetHandle(), machine, (uint)machine.Capacity);

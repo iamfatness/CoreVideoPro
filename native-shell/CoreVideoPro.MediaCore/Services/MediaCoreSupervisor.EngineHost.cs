@@ -8,6 +8,7 @@ public sealed partial class MediaCoreSupervisor
     private int _hostBufferFrames = 3;
     private readonly object _hostResourcesGate = new();
     private readonly Dictionary<string, string> _hostResources = new();
+    public string? HostedEpoch => _hostClient?.Epoch;
     public bool Hosted => _hostClient is not null;
     public bool HostedReadOnly => _hostClient?.ReadOnly == true;
     public int HostedProcessId => _hostClient?.CorePid ?? _process?.Id ?? 0;
@@ -29,11 +30,9 @@ public sealed partial class MediaCoreSupervisor
         {
             using var document = JsonDocument.Parse(line);
             var root = document.RootElement;
-            if (root.TryGetProperty("id", out _) || !root.TryGetProperty("type", out var kind)) return;
-            var type = kind.GetString();
-            if (type is not ("program-shared-texture" or "preview-shared-texture" or
-                "multiview-shared-texture" or "participant-shared-texture")) return;
-            var key = type + (root.TryGetProperty("participantId", out var id) ? ":" + id.GetString() : "");
+            if (root.TryGetProperty("id", out _)) return;
+            var key = EngineHostWire.ResourceKey(root);
+            if (key is null) return;
             lock (_hostResourcesGate)
             {
                 if (_hostResources.Count >= 32 && !_hostResources.ContainsKey(key)) return;

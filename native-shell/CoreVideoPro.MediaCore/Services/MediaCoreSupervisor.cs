@@ -749,7 +749,8 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
     {
         // UI submissions and the polling timer can arrive concurrently. Acquire
         // the slot atomically so both cannot pass a check-then-set boolean gate.
-        if (Interlocked.CompareExchange(ref _syncInFlight, 1, 0) != 0)
+        var hostedUrgent = Hosted && commands.Count > 0 && commands.All(command => EngineHostWire.IsUrgentType(command.Type));
+        if (!hostedUrgent && Interlocked.CompareExchange(ref _syncInFlight, 1, 0) != 0)
         {
             throw new MediaCoreSyncInFlightException();
         }
@@ -785,7 +786,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
                 var wire = CoreProtocolParser.TryParseWireState(response);
                 if (wire is not null)
                 {
-                    _syncFrameNumber += 1;
+                    var syncFrameNumber = Interlocked.Increment(ref _syncFrameNumber);
                     // The wire path maps onto a neutral base snapshot, so the mapped record
                     // is a projection by construction. Tag it with the core's own JSON so an
                     // observer can still see every node the mapping drops (encoder evidence,
@@ -793,7 +794,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
                     // path on a real core — the typed branch above is the stub/test one.
                     return NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(
                         elapsedMs,
-                        _syncFrameNumber,
+                        syncFrameNumber,
                         wire) with
                     {
                         RawJson = CoreProtocolParser.TryGetStateJson(response),
@@ -806,7 +807,7 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
         }
         finally
         {
-            Interlocked.Exchange(ref _syncInFlight, 0);
+            if (!hostedUrgent) Interlocked.Exchange(ref _syncInFlight, 0);
         }
     }
 

@@ -9,6 +9,8 @@ namespace CoreVideoPro.MediaCore.Services;
 public sealed class EngineHostServer(MediaCoreSupervisor supervisor, string endpoint)
 {
     private readonly SemaphoreSlim _commands = new(1, 1);
+    private readonly SemaphoreSlim _urgent = new(1, 1);
+    private readonly object _state = new();
     private readonly EngineHostSession _session = new();
     private readonly long _started = Stopwatch.GetTimestamp();
     private readonly Dictionary<string, long> _sequences = new();
@@ -16,35 +18,46 @@ public sealed class EngineHostServer(MediaCoreSupervisor supervisor, string endp
     private readonly CancellationTokenSource _exit = new();
     private int _corePid = supervisor.HostedProcessId;
     private long _lastClientLog;
+    private bool _stopping;
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _exit.Token);
-        // Four bounded admission slots. Slow readers cannot occupy the command lane.
-        await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => ListenAsync(lifetime.Token)));
+        // Separate endpoint reserves admission even when all ordinary clients stop reading/writing.
+        await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => ListenAsync(false, lifetime.Token))
+            .Concat(Enumerable.Range(0, 2).Select(_ => ListenAsync(true, lifetime.Token))));
     }
 
-    private async Task ListenAsync(CancellationToken lifetime)
+    private async Task ListenAsync(bool reserved, CancellationToken lifetime)
     {
         while (!lifetime.IsCancellationRequested)
         {
-            using var pipe = new NamedPipeServerStream(endpoint, PipeDirection.InOut, 4,
+            using var pipe = new NamedPipeServerStream(endpoint + (reserved ? ".urgent" : ""), PipeDirection.InOut, reserved ? 2 : 4,
                 PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             try
             {
                 await pipe.WaitForConnectionAsync(lifetime);
                 EngineHostEndpoint.VerifyClient(pipe);
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
-                deadline.CancelAfter(TimeSpan.FromSeconds(10));
-                var request = await EngineHostWire.ReadAsync<EngineHostRequest>(pipe, deadline.Token);
+                deadline.CancelAfter(TimeSpan.FromSeconds(reserved ? 2 : 10));
+                var request = await EngineHostWire.ReadAsync<EngineHostRequest>(pipe, deadline.Token,
+                    reserved ? EngineHostWire.MaxUrgentBytes : EngineHostWire.MaxBytes);
+                if (reserved && !EngineHostWire.UsesReservedLane(request))
+                    throw new IOException("Ordinary work cannot use reserved admission.");
+                var lane = reserved ? _urgent : _commands;
                 // Limit queue wait; after admission client disconnect cannot cancel an action.
-                if (!await _commands.WaitAsync(TimeSpan.FromSeconds(2), deadline.Token))
+                if (!await lane.WaitAsync(TimeSpan.FromSeconds(2), deadline.Token))
                     throw new IOException("Engine host is busy; reconcile before retrying.");
                 EngineHostReply reply;
-                try { reply = await HandleAsync(request, lifetime); }
+                try
+                {
+                    Task<EngineHostReply> action;
+                    lock (_state) action = HandleAsync(request, lifetime);
+                    reply = await action;
+                }
                 catch (Exception ex) when (ex is InvalidOperationException or TimeoutException or IOException)
-                { reply = Reply(request, false, error: "operation-outcome-unknown: " + ex.GetType().Name); }
-                finally { _commands.Release(); }
+                { lock (_state) reply = Reply(request, false, error: "operation-outcome-unknown: " + ex.GetType().Name); }
+                finally { lane.Release(); }
                 // Output serialization/write never holds the media or command lane.
                 using var writeDeadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
                 writeDeadline.CancelAfter(TimeSpan.FromSeconds(2));
@@ -70,6 +83,7 @@ public sealed class EngineHostServer(MediaCoreSupervisor supervisor, string endp
 
     private async Task<EngineHostReply> HandleAsync(EngineHostRequest request, CancellationToken lifetime)
     {
+        if (_stopping) return Reply(request, false, error: "host-stopping");
         if (_corePid != supervisor.HostedProcessId)
         {
             _corePid = supervisor.HostedProcessId;
@@ -111,8 +125,11 @@ public sealed class EngineHostServer(MediaCoreSupervisor supervisor, string endp
         {
             if (_session.Validate(request) is { } denied) return Reply(request, false, error: denied);
             // Explicit administrative action only, never called on client disposal.
-            supervisor.StopForAppExit(TimeSpan.FromSeconds(10));
-            return Reply(request, true);
+            _stopping = true;
+            await Task.Run(() => supervisor.StopForAppExit(TimeSpan.FromSeconds(10)), lifetime);
+            // Shutdown is committed independently of the client reading its ACK.
+            _exit.CancelAfter(TimeSpan.FromSeconds(3));
+            lock (_state) return Reply(request, true);
         }
         if (request.Operation != "command" || request.Payload is not { ValueKind: JsonValueKind.Object } payload)
             return Reply(request, false, error: "invalid-operation");
@@ -139,7 +156,10 @@ public sealed class EngineHostServer(MediaCoreSupervisor supervisor, string endp
         command["elapsedMs"] = Stopwatch.GetElapsedTime(_started).TotalMilliseconds;
         using var response = await supervisor.ForwardHostedCommandAsync(command, lifetime);
         var result = response.RootElement.Clone();
-        if (!observation) _session.Commit(request.ClientId + ":" + request.Fence, request.CommandId!, fingerprint, result);
-        return Reply(request, true, result);
+        lock (_state)
+        {
+            if (!observation) _session.Commit(request.ClientId + ":" + request.Fence, request.CommandId!, fingerprint, result);
+            return Reply(request, true, result);
+        }
     }
 }

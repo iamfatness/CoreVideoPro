@@ -1496,7 +1496,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // roster load/projection so the same-named forwarders route through it.
         _showInputsCoordinator = new global::CoreVideoPro.WinUI.ViewModels.ShowInputs.ShowInputsCoordinator(
             _bridge, startup.StartInteractiveServices ? CreateShowInputRosterStore() : new InMemoryShowInputRosterStore(), this);
-        _rtmpIngestCoordinator = new global::CoreVideoPro.WinUI.ViewModels.ShowInputs.RtmpIngestSourcesCoordinator(CreateRtmpIngestSourceStore());
+        _rtmpIngestCoordinator = new global::CoreVideoPro.WinUI.ViewModels.ShowInputs.RtmpIngestSourcesCoordinator(startup.StartInteractiveServices ? CreateRtmpIngestSourceStore() : new InMemoryRtmpIngestSourceStore());
         _rtmpIngestCoordinator.Changed += OnRtmpIngestSourcesChanged;
         LoadShowInputRoster();
         InitializeShowInputEditors();
@@ -6236,7 +6236,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task TrySyncMediaCoreAsync()
     {
-        if (!_startupBootstrap.StartInteractiveServices) return;
+        if (!_startupBootstrap.AllowMediaCore || _bridge.Supervisor.HostedReadOnly) return;
         // Don't re-sync in response to a sync's OWN snapshot patch. ApplyLiveProductionPatch
         // applies the snapshot to bound state, which (on a structural change) rebuilds the
         // roster/multiview/show-input collections; some of those paths call TrySyncMediaCoreAsync,
@@ -6360,7 +6360,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         return false;
     }
 
-    private async Task StartMediaCoreOnLaunchAsync()
+    internal async Task StartMediaCoreOnLaunchAsync()
     {
         Exception? failure = null;
         try
@@ -6405,7 +6405,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private async Task EnsureMediaCoreRunningAsync(string startingStatus)
     {
-        if (!_startupBootstrap.StartInteractiveServices)
+        if (!_startupBootstrap.AllowMediaCore)
             throw new InvalidOperationException("Native startup is disabled for this isolated editor probe.");
         _syncShutdownCancellation.Token.ThrowIfCancellationRequested();
         // Process creation precedes protocol readiness. A second startup edit

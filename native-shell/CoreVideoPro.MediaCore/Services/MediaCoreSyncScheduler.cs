@@ -10,6 +10,7 @@ internal sealed class MediaCoreSyncScheduler
     internal const int MaxWaitingCommands = 32;
     internal const int ReservedStopCommands = 4;
     private readonly SemaphoreSlim _slot = new(1, 1);
+    private readonly SemaphoreSlim _stopSlot = new(1, 1);
     private int _waitingCommands;
     private int _waitingNormalCommands;
     private int _waitingStopCommands;
@@ -21,9 +22,10 @@ internal sealed class MediaCoreSyncScheduler
     public long CoalescedPollCount => Interlocked.Read(ref _coalescedPollCount);
 
     public async Task<T> RunCommandAsync<T>(Func<Task<T>> send, CancellationToken cancellationToken,
-        bool stopCommand = false)
+        bool stopCommand = false, bool independentStopLane = false)
     {
         ArgumentNullException.ThrowIfNull(send);
+        var slot = stopCommand && independentStopLane ? _stopSlot : _slot;
         var limit = stopCommand ? ReservedStopCommands : MaxWaitingCommands;
         var admitted = stopCommand
             ? Interlocked.Increment(ref _waitingStopCommands)
@@ -37,7 +39,7 @@ internal sealed class MediaCoreSyncScheduler
         Interlocked.Increment(ref _waitingCommands);
         try
         {
-            await _slot.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await slot.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -52,7 +54,7 @@ internal sealed class MediaCoreSyncScheduler
         }
         finally
         {
-            _slot.Release();
+            slot.Release();
         }
     }
 

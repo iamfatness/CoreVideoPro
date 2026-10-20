@@ -2,14 +2,17 @@ param(
     [Parameter(Mandatory=$true)][string]$NativeCore,
     [Parameter(Mandatory=$true)][string]$Pattern,
     [string]$OutputDirectory = 'artifacts/engine-host-960/drill',
-    [int]$Port = 19379
+    [int]$Port = 19379,
+    [switch]$FullStudio
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $out = [IO.Path]::GetFullPath((Join-Path $repo $OutputDirectory))
+if ((Test-Path -LiteralPath $out) -and @(Get-ChildItem -LiteralPath $out -Force).Count) { throw 'Use a new empty output directory; stale reports are not evidence.' }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $hostExe = Join-Path $repo 'native-shell/CoreVideoPro.EngineHost/bin/Release/net9.0/CoreVideoPro.EngineHost.exe'
 $ui = Join-Path $repo 'native-shell/CoreVideoPro.WinUI/bin/x64/Release/net9.0-windows10.0.19041.0/win-x64/CoreVideoPro.WinUI.exe'
+$probeMode = if ($FullStudio) { '--verify-engine-host-studio' } else { '--verify-engine-host' }
 $profile = 'qa-' + [Guid]::NewGuid().ToString('N')
 $native = (Resolve-Path -LiteralPath $NativeCore).Path
 $fixture = (Resolve-Path -LiteralPath $Pattern).Path
@@ -42,7 +45,7 @@ function WaitReport([string]$Name, [Diagnostics.Process]$Process) {
     }
     return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
 }
-$receiver = $null; $first = $null; $second = $null; $stopper = $null
+$seed = $null; $receiver = $null; $first = $null; $second = $null; $stopper = $null
 try {
     $receiver = Launch (Get-Command ffmpeg).Source @('-y','-hide_banner','-listen','1','-i',"rtmp://127.0.0.1:$Port/live/probe",'-c','copy',(Join-Path $out 'receiver.flv')) (Join-Path $out 'receiver.log')
     $commands = @(
@@ -54,24 +57,49 @@ try {
         @{type='set-recording-targets';targetFolder=$out;filenamePrefix='host-crash';format='mp4';quality='high';isoParticipantIds=@()},
         @{type='start-recording-session';sessionId=$profile;targetFolder=$out;filenamePrefix='host-crash';format='mp4';quality='high';isoParticipantIds=@()}
     )
-    $firstConfig = Config 'first' @(@{type='media-core-sync';commands=$commands}) 120 $false $false
-    $first = Launch $ui @('--verify-engine-host',$firstConfig) ''
+    $initialCommands = @(@{type='media-core-sync';commands=$commands})
+    if ($FullStudio) {
+        # Stage production before reconnecting Studio. Never inject a foreign
+        # editable model behind the first Studio writer's ordinary state sync.
+        $seedConfig = Config 'seed' $initialCommands 2 $false $false
+        $seed = Launch $ui @('--verify-engine-host',$seedConfig) ''
+        $null = WaitReport 'seed' $seed
+        if (!$seed.WaitForExit(15000) -or $seed.ExitCode -ne 0) { throw 'Show staging failed' }
+        $initialCommands = @()
+    }
+    $firstConfig = Config 'first' $initialCommands 120 $false $false
+    $first = Launch $ui @($probeMode,$firstConfig) ''
     $null = WaitReport 'first' $first
     Start-Sleep -Seconds 8
     $before = Get-Content (Join-Path $out 'first-report.json') -Raw | ConvertFrom-Json
     $before | ConvertTo-Json -Depth 70 | Set-Content (Join-Path $out 'before-kill.json')
+    if ($FullStudio -and !@($before.gpuSurfaces | Where-Object { $_.SurfaceKey -eq 'program' -and $_.IsGpuPathActive }).Count) { throw 'Program GPU monitor was not active before crash' }
+    $beforeState = $before.snapshot.snapshot
+    if (!$beforeState.recording.active -or $beforeState.recording.proof.programFrameCount -lt 100) { throw 'Recording was not producing before the crash' }
+    $beforeSender = @($beforeState.outputSenderSession.senders | Where-Object destination -eq 'rtmp')[0]
+    if ($beforeSender.status -ne 'live') { throw 'Local RTMP was not live before the crash' }
     $killAt = [DateTimeOffset]::UtcNow
     $first.Kill() # Deliberately kill ONLY this owned WinUI process, never its host/core.
     $first.WaitForExit()
     Start-Sleep -Seconds 5
     $secondConfig = Config 'second' @() 5 $false $false
-    $second = Launch $ui @('--verify-engine-host',$secondConfig) ''
+    $second = Launch $ui @($probeMode,$secondConfig) ''
     $null = WaitReport 'second' $second
     if (!$second.WaitForExit(15000)) { throw 'Replacement console did not finish' }
+    if ($second.ExitCode -ne 0) { throw 'Replacement Studio exited unsuccessfully' }
     $after = Get-Content (Join-Path $out 'second-report.json') -Raw | ConvertFrom-Json
+    if ($before.hostEpoch -ne $after.hostEpoch) { throw 'Host epoch changed' }
+    if ($FullStudio -and (!$before.workspaceLoaded -or !$after.workspaceLoaded)) { throw 'Full Studio did not load' }
     if ($before.corePid -ne $after.corePid) { throw 'Native core restarted' }
     if (!$after.readOnly) { throw 'Replacement console was not observation-only' }
-    @{scope='compiled WinUI bridge probe; generated media; local recording/RTMP';killAt=$killAt;
+    if ($FullStudio -and !@($after.gpuSurfaces | Where-Object { $_.SurfaceKey -eq 'program' -and $_.IsGpuPathActive }).Count) { throw 'Program GPU monitor did not reattach' }
+    $afterState = $after.snapshot.snapshot
+    if (!$afterState.recording.active -or $beforeState.recording.sessionId -ne $afterState.recording.sessionId -or
+        $afterState.recording.proof.programFrameCount -le $beforeState.recording.proof.programFrameCount) { throw 'Recording did not survive in the same session' }
+    $afterSender = @($afterState.outputSenderSession.senders | Where-Object destination -eq 'rtmp')[0]
+    if ($afterSender.status -ne 'live' -or $afterSender.retryCount -ne $beforeSender.retryCount -or
+        $afterSender.framesSent -le $beforeSender.framesSent) { throw 'RTMP did not keep producing' }
+    @{scope= $(if ($FullStudio) { 'full compiled Studio workspace/view model; generated media; local recording/RTMP; isolated preferences' } else { 'compiled WinUI bridge probe; generated media; local recording/RTMP' });killAt=$killAt;
       before=$before;after=$after;processSurvived=$true;framePerformancePassed=$false;
       note='Receiver/file analysis required; process survival alone is not continuity acceptance.'} |
         ConvertTo-Json -Depth 80 | Set-Content (Join-Path $out 'report.json')
@@ -81,9 +109,9 @@ try {
     try {
         $stopper = Launch $ui @('--verify-engine-host',$stopConfig) ''
         if (!$stopper.WaitForExit(30000)) { throw 'Owned host shutdown timed out' }
-        if ($stopper.ExitCode -ne 0) { Write-Warning 'Owned host shutdown failed; inspect logs and exact QA profile before cleanup.' }
+        if ($stopper.ExitCode -ne 0) { throw 'Owned host shutdown failed; inspect logs and exact QA profile before cleanup.' }
     } finally {
-        foreach ($process in @($first,$second,$stopper)) {
+        foreach ($process in @($seed,$first,$second,$stopper)) {
             if ($process -and !$process.HasExited) { $process.Kill(); $process.WaitForExit(5000) | Out-Null }
         }
         if ($receiver) {

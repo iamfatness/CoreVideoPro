@@ -24,8 +24,9 @@ public sealed class StudioStartupBootstrap
     public Exception? LoadError { get; }
     public int ProgramBufferFrames { get; }
     public bool StartInteractiveServices { get; private set; } = true;
+    public bool AllowMediaCore { get; private set; } = true;
 
-    public static StudioStartupBootstrap Create(IProductionOutputPreferencesStore store, MediaCoreBridgeService? bridge = null,bool startInteractiveServices=true)
+    public static StudioStartupBootstrap Create(IProductionOutputPreferencesStore store, MediaCoreBridgeService? bridge = null,bool startInteractiveServices=true, bool allowMediaCore=false)
     {
         ProductionPreferencesLoadResult loaded;
         Exception? error = null;
@@ -39,7 +40,7 @@ public sealed class StudioStartupBootstrap
             error = ex;
             loaded = new ProductionPreferencesLoadResult(ProductionPreferencesLoadStatus.Unreadable, null);
         }
-        return new StudioStartupBootstrap(store, bridge ?? EngineHostBootstrap.CreateBridge(startInteractiveServices), loaded, error) {StartInteractiveServices=startInteractiveServices};
+        return new StudioStartupBootstrap(store, bridge ?? EngineHostBootstrap.CreateBridge(startInteractiveServices), loaded, error) {StartInteractiveServices=startInteractiveServices, AllowMediaCore=startInteractiveServices || allowMediaCore};
     }
 
     public void Restore(Action<ProductionOutputPreferences> apply)

@@ -351,6 +351,8 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 ## Unranked — show survival and operator findings
 
+- [#968](https://github.com/iamfatness/CoreVideoPro/issues/968): intermittent decoded PCM gaps found during #960 full Studio crash qualification; blocks its audio-continuity evidence. Owner ranking required; retain failed trials.
+
 | [#908](https://github.com/iamfatness/CoreVideoPro/issues/908) | Owner-ranked October 14: follows the #517 camera-reader repair in the active delivery lane. Retained Program frames report unavailable/preparation-stopped source pixels during real SDK epoch transitions; preserve pixels through replacement readiness without retaining removed/reassigned guests. |
 
 | [#906](https://github.com/iamfatness/CoreVideoPro/issues/906) | Attribute the Windows GradePreviewCoordinator disposal-test timeout; preserve the failed gate and verify the initiating condition. Owner rank pending. |
