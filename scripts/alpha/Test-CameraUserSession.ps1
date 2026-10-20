@@ -6,6 +6,16 @@ if ($Action -ne 'Install' -or $AppDirectory -ne 'unchanged-app' -or $OwnerSid -n
 $count = 1
 function Assert-True($Value, [string]$Message) { if (-not $Value) { throw $Message }; $script:count++ }
 function Assert-Refused([scriptblock]$Call) { $refused=$false; try { & $Call | Out-Null } catch { $refused=$true }; Assert-True $refused 'Expected refusal.' }
+$script:completionReads=0
+$completionTask=[pscustomobject]@{LastTaskResult=0}
+$completionTask|Add-Member ScriptProperty State { $script:completionReads++; if($script:completionReads -eq 1){4}else{3} }
+$completionTask|Add-Member ScriptMethod Refresh { throw 'The completed running-instance object is gone.' }
+Assert-True (Wait-CameraUserTaskExit -Task $completionTask -Deadline ([DateTime]::UtcNow.AddSeconds(2))) 'A worker completing during observation did not settle.'
+Assert-True ($completionReads -ge 2 -and $completionTask.LastTaskResult -eq 0) 'Registered completion evidence was not retained.'
+Assert-True (Wait-CameraUserTaskExit -Task ([pscustomobject]@{State=3;LastTaskResult=1}) -Deadline ([DateTime]::UtcNow.AddSeconds(1))) 'Terminal failure must reach the caller result check.'
+foreach($pendingState in @(2,4)) {
+    Assert-True (-not (Wait-CameraUserTaskExit -Task ([pscustomobject]@{State=$pendingState}) -Deadline ([DateTime]::UtcNow.AddSeconds(-1)))) 'Pending worker was accepted after the deadline.'
+}
 $root = Join-Path ([IO.Path]::GetTempPath()) ('CoreVideoUserAliasTest-' + [Guid]::NewGuid().ToString('N'))
 $app = Join-Path $root 'app'; $runtimeRoot = Join-Path $root 'protected'
 $appDll = Join-Path $app 'corevideo-virtualcam.dll'

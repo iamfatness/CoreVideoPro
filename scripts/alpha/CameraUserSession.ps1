@@ -54,6 +54,18 @@ function Assert-CameraUserAppStopped {
     }
 }
 
+function Wait-CameraUserTaskExit {
+    param([Parameter(Mandatory=$true)]$Task, [Parameter(Mandatory=$true)][DateTime]$Deadline)
+    # IRunningTask.Refresh throws SCHED_E_TASK_NOT_RUNNING when a fast worker
+    # exits between the state read and Refresh. The registered task survives
+    # completion and still exposes State and LastTaskResult for this request.
+    while ($Task.State -in @(2,4)) {
+        if ([DateTime]::UtcNow -ge $Deadline) { return $false }
+        Start-Sleep -Milliseconds 100
+    }
+    return $true
+}
+
 function Invoke-CameraUserSession {
     param([ValidateSet('Preflight','Inspect','Install','Uninstall','Rollback')][string]$Action,
         [Parameter(Mandatory=$true)][string]$AppDirectory,
@@ -106,11 +118,9 @@ function Invoke-CameraUserSession {
         if (-not $reply.IsCompleted) { $instance.Stop(); throw 'Desktop camera worker evidence timed out.' }
         $json = $reply.GetAwaiter().GetResult()
         if (-not $json -or $json.Length -gt 1048576) { throw 'Desktop camera worker evidence is empty or oversized.' }
-        while ($instance.State -in @(2,4) -and [DateTime]::UtcNow -lt $deadline) {
-            $instance.Refresh()
-            Start-Sleep -Milliseconds 100
+        if (-not (Wait-CameraUserTaskExit -Task $task -Deadline $deadline)) {
+            $instance.Stop(); throw 'Desktop camera worker timed out; registration is unverified.'
         }
-        if ($instance.State -in @(2,4)) { $instance.Stop(); throw 'Desktop camera worker timed out; registration is unverified.' }
         $result = $json | ConvertFrom-Json
         if ($result.requestId -ne $id -or $result.ownerSid -ne $OwnerSid -or $result.appDirectory -ne $AppDirectory -or $result.action -ne $Action -or $result.boundary -ne 'independent-interactive-user' -or $result.workerPid -le 0 -or $result.workerPid -eq $PID) { throw 'Desktop camera worker evidence identity differs.' }
         if (-not $result.ok -or $task.LastTaskResult -ne 0) { throw "Desktop camera worker failed: $($result.error)" }
