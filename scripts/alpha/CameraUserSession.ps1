@@ -77,8 +77,17 @@ function Invoke-CameraUserSession {
     $exec = $definition.Actions.Create(0)
     $exec.Path = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $exec.Arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $workerPath + '" -Worker -WorkerAction ' + $Action + ' -WorkerAppDirectory "' + $AppDirectory + '" -WorkerOwnerSid ' + $OwnerSid + ' -WorkerPipeName ' + $name + ' -WorkerRequestId ' + $id
+    # NSIS can be elevated while the independent worker is limited. Grant the
+    # installing account explicitly, rather than relying on an elevated token's
+    # default creator/administrator ACL to admit its limited counterpart.
+    $security = [IO.Pipes.PipeSecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @($OwnerSid,'S-1-5-18')) {
+        $security.AddAccessRule([IO.Pipes.PipeAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),
+            [IO.Pipes.PipeAccessRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow))
+    }
     $pipe = [IO.Pipes.NamedPipeServerStream]::new($name, [IO.Pipes.PipeDirection]::In, 1,
-        [IO.Pipes.PipeTransmissionMode]::Byte, [IO.Pipes.PipeOptions]::Asynchronous)
+        [IO.Pipes.PipeTransmissionMode]::Byte, [IO.Pipes.PipeOptions]::Asynchronous, 4096, 4096, $security)
     $registered = $false
     try {
         $task = $folder.RegisterTaskDefinition($name, $definition, 2, $OwnerSid, $null, 3, $null)
@@ -118,17 +127,27 @@ if ($Worker) {
     $result = [ordered]@{requestId=$WorkerRequestId;ownerSid=$WorkerOwnerSid;appDirectory=$WorkerAppDirectory;action=$WorkerAction;
         boundary='independent-interactive-user';workerPid=$PID;workerSessionId=[Diagnostics.Process]::GetCurrentProcess().SessionId;
         observedAtUtc=[DateTime]::UtcNow.ToString('o');ok=$false;error='';userSession=$null}
-    try {
-        Import-Module (Join-Path $PSScriptRoot 'VirtualCameraRegistration.psm1') -Force
-        $result.userSession = Invoke-CameraUserRegistration -Action $WorkerAction -AppDirectory $WorkerAppDirectory
-        $result.ok = $true
-    } catch { $result.error = $_.Exception.Message }
     $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $WorkerPipeName, [IO.Pipes.PipeDirection]::Out)
     try {
+        # Refuse before touching the alias if the installer's reply channel is
+        # unavailable. A disconnected caller must not leave an unreported write.
         $pipe.Connect(5000)
+        try {
+            Import-Module (Join-Path $PSScriptRoot 'VirtualCameraRegistration.psm1') -Force
+            $result.userSession = Invoke-CameraUserRegistration -Action $WorkerAction -AppDirectory $WorkerAppDirectory
+            $result.ok = $true
+        } catch { $result.error = $_.Exception.Message }
         $writer = [IO.StreamWriter]::new($pipe)
         $writer.WriteLine(($result | ConvertTo-Json -Depth 7 -Compress))
         $writer.Flush()
+    } catch {
+        if ($result.ok -and $WorkerAction -eq 'Install') {
+            $current = Get-CameraMachineRegistration -CurrentUser
+            if ($current.Role -eq 'CoreVideoPro.VirtualCamera.v1' -and $current.AppDirectory -eq $WorkerAppDirectory) {
+                Set-CameraMachineRegistration $result.userSession.before -CurrentUser
+            }
+        }
+        throw
     } finally { $pipe.Dispose() }
     if (-not $result.ok) { exit 1 }
     exit 0
