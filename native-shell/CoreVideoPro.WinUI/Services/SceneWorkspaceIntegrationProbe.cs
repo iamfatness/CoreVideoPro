@@ -79,11 +79,15 @@ internal static class SceneWorkspaceIntegrationProbe
         await Eventually(()=>tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}));
         Require(studio.GalleryBackgroundColor=="#102030","Color hydration changed the selected scene's authored color");
         Require(tabs.Items.Contains(transformTab),"Tab reconciliation replaced the shared transform control");
-        Require(tabs.SelectedIndex==tabs.Items.IndexOf(tabs.SelectedItem),"Inspector selection index differs from the retained selected tab");
+        RequireInspectorSelection(tabs,"Inspector selection index differs from the retained selected tab");
         page.Visibility=Visibility.Collapsed;
-        studio.SelectSceneCommand.Execute(ordinarySceneId);await Task.Delay(30);
-        studio.SelectSceneCommand.Execute(id);await Task.Delay(30);
-        Require(tabs.SelectedIndex==tabs.Items.IndexOf(tabs.SelectedItem),"Collapsed inspector retained a stale selected index");
+        for(var cycle=0;cycle<16;cycle++)
+        {
+            studio.SelectSceneCommand.Execute(ordinarySceneId);await Task.Delay(30);
+            RequireInspectorSelection(tabs,$"Collapsed source inspector retained a stale selected index, cycle {cycle}");
+            studio.SelectSceneCommand.Execute(id);await Task.Delay(30);
+            RequireInspectorSelection(tabs,$"Collapsed wall inspector retained a stale selected index, cycle {cycle}");
+        }
         page.Visibility=Visibility.Visible;await Task.Delay(50);page.UpdateLayout();
         // A burst must reconcile the latest scene rather than a captured old selection.
         studio.SelectSceneCommand.Execute(ordinarySceneId);
@@ -241,6 +245,12 @@ internal static class SceneWorkspaceIntegrationProbe
         checks.Add("compiled Settings enables optional navigation, safely exits the selected workspace on disable and persists without changing saved scenes; Health remains reachable");
         Require(!startup.Bridge.Running,"Isolated workspace probe started a native core");
         window.Content=null;
+    }
+    private static void RequireInspectorSelection(Pivot tabs,string phase)
+    {
+        var expected=tabs.Items.IndexOf(tabs.SelectedItem);
+        Require(expected>=0 && tabs.SelectedIndex==expected,
+            $"{phase}: actual={tabs.SelectedIndex}, expected={expected}, selected={(tabs.SelectedItem as PivotItem)?.Header}, items={string.Join(',',tabs.Items.Cast<PivotItem>().Select(item=>item.Header))}");
     }
     private static async Task Eventually(Func<bool> ready)
     {

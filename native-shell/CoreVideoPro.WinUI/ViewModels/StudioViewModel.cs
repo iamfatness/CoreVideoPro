@@ -6765,7 +6765,9 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             {
                 try
                 {
-                    await _bridge.DisconnectNativeCaptureDeviceAsync(device.Id).ConfigureAwait(false);
+                    // Connect may have resolved the OS link because the shell and
+                    // core hashes differ. Release that resolved device, not its routing alias.
+                    await _bridge.DisconnectNativeCaptureDeviceAsync(match.Id).ConfigureAwait(false);
                 }
                 catch (Exception disconnectEx)
                 {
