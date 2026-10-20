@@ -4,6 +4,7 @@
 #include "modules/PeriodicDeviceDiscovery.h"
 #include "modules/UvcCaptureSupport.h"
 #include "modules/I420CaptureArrival.h"
+#include "modules/UvcIsoArrivalQueue.h"
 
 #include <memory>
 #include <cstdlib>
@@ -160,6 +161,10 @@ class UvcCaptureSession {
       thread_.join();
     }
   }
+
+  void requireCpu(bool demanded) { isoArrivals_.require(demanded); }
+  std::vector<VideoFrame> takeCpuFrames() { return isoArrivals_.take(); }
+  UvcIsoArrivalQueue::Stats isoArrivalStats() const { return isoArrivals_.stats(); }
 
   struct Snapshot {
     VideoFrame arrival;
@@ -509,6 +514,7 @@ class UvcCaptureSession {
       // The render/ISO consumers retain the authoritative CPU representation.
       auto arrival = arrival_.publish(frame, width, height, fullRange_, bt601_);
       if (!arrival.hasContent()) continue;
+      isoArrivals_.offer(arrival);
       {
         std::lock_guard<std::mutex> lock(mutex_);
         latestArrival_ = std::move(arrival);
@@ -526,6 +532,7 @@ class UvcCaptureSession {
   const std::wstring symbolicLink_;
   const int64_t noFirstFrameTimeoutMs_;
   I420CaptureArrival arrival_;
+  UvcIsoArrivalQueue isoArrivals_;
   std::thread thread_;
   std::atomic<bool> stop_{false};
 
@@ -625,6 +632,8 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       entry.session.reset();
       entry.session = std::make_unique<UvcCaptureSession>(entry.info.id, entry.info.name, entry.symbolicLink,
           "capture:" + (outputSourceId.empty() ? entry.info.id : outputSourceId), preparation_);
+      entry.session->requireCpu(sourceNeedsCpuVideo(demands_,
+          "capture:" + (outputSourceId.empty() ? entry.info.id : outputSourceId)));
       // Emit frames keyed by the shell's routing id when it supplied one (WinRT vs
       // Media Foundation stable-id reconciliation), else the adapter's own id.
       entry.outputSourceId = outputSourceId;
@@ -659,6 +668,23 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       break;
     }
     return snapshotLocked();
+  }
+
+  void setVideoConsumerDemand(const std::vector<SourceVideoDemand>& demands) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    demands_ = demands;
+    for (auto& entry : devices_) if (entry.session)
+      entry.session->requireCpu(sourceNeedsCpuVideo(demands_, "capture:" +
+          (entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId)));
+  }
+  std::vector<VideoFrame> takeCpuVideoFrames() override {
+    std::vector<VideoFrame> result;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& entry : devices_) if (entry.session) {
+      auto batch = entry.session->takeCpuFrames();
+      result.insert(result.end(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
+    }
+    return result;
   }
 
   void captureVideoTick(int64_t timestampMs) override {
@@ -722,6 +748,15 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
     result.reserve(devices_.size());
     for (const auto& entry : devices_) {
       result.push_back(entry.info);
+      if (entry.session) {
+        auto& info = result.back();
+        const auto arrivals = entry.session->isoArrivalStats();
+        info.isoCpuArrivals = arrivals;
+        info.isoCpuArrivals->sourceId = "capture:" + (entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId);
+        info.droppedFrames += static_cast<int64_t>(arrivals.overflowed);
+        info.decodedFrames = entry.session->snapshot().arrival.frameId;
+        if (arrivals.overflowed) info.warning = "Camera ISO arrival queue overflowed; recording lost source frames.";
+      }
     }
     return result;
   }
@@ -852,6 +887,7 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
 
   mutable std::mutex mutex_;
   std::shared_ptr<I420SourcePreparation> preparation_;
+  std::vector<SourceVideoDemand> demands_;
   mutable std::vector<DeviceEntry> devices_;
   mutable PeriodicDeviceDiscovery<std::vector<DeviceEntry>> discovery_;
 };

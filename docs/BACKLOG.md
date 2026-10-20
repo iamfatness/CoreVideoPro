@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Full-workload qualification dependency — [#984](https://github.com/iamfatness/CoreVideoPro/issues/984):** the owner's requested full-workload checks exposed 1,668 camera arrivals skipped before ISO admission while recording drop counters stayed zero. Preserve actual selected camera arrivals through a bounded ref-only CPU branch, account for pre-ingest loss and rerun the installed workload. Passing Program counter bands cannot substitute for camera source fidelity. This is part of the authorized keep-fixing-failures qualification work; publication remains blocked.
+
 **Owner priority, October 20 — [#974](https://github.com/iamfatness/CoreVideoPro/issues/974):** fix camera ISO re-arm synchronization after Unassign, then complete the eight-Zoom/webcam/screen workload with Multiview, Preview, local recording and virtual camera. Retain failed runs and require per-frame delivery evidence before calling qualification passed. Only then build, publish and install the corrected beta using the established local process.
 
 **Qualification dependency — [#976](https://github.com/iamfatness/CoreVideoPro/issues/976):** recording retry reaches a new requested/preparing session then is cancelled before any frame is written after an earlier failed take. Scope terminal observations to the explicit request's native session; preserve real new-session failure reporting and verify actual Program/ISO progress before resuming #974 combined qualification.

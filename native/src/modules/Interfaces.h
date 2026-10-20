@@ -1002,6 +1002,12 @@ struct OutputDestinationSettings {
 };
 
 struct CaptureDeviceInfo {
+  struct CpuArrivalEvidence {
+    std::string sourceId;
+    bool demanded = false;
+    uint64_t observed = 0, accepted = 0, drained = 0, overflowed = 0, released = 0;
+    size_t pending = 0, bytes = 0;
+  };
   std::string id;
   std::string name;
   std::string kind;
@@ -1031,6 +1037,7 @@ struct CaptureDeviceInfo {
   std::optional<int64_t> codecDecodeErrors;
   std::optional<int64_t> packetDecodeErrors;
   std::optional<double> rttMs;
+  std::optional<CpuArrivalEvidence> isoCpuArrivals;
 };
 
 struct CaptureAudioSourceConfig {

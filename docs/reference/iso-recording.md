@@ -1,5 +1,31 @@
 # ISO recording
 
+## Native UVC arrival branch (#984)
+
+Native camera ISO video uses `UvcIsoArrivalQueue` at the MF decoded-arrival
+boundary, before `latestArrival_` is replaced. The existing
+`setVideoConsumerDemand` / `takeCpuVideoFrames` contract enables and drains
+this ref-only branch. Program and monitor polling still selects the latest
+picture; its polling count is not the camera's arrival count. No new pixel
+copy, conversion, encoder call or core callback runs on capture arrival.
+
+The branch holds at most four existing I420 references and 32 MiB per camera.
+It releases queued references immediately when CPU demand ends. Oldest-frame
+evictions and oversized-frame refusals increment `overflowed` and the device's
+`droppedFrames`; they are never a successful recording qualification.
+`captureDevices[].isoCpuArrivals` identifies the actual routing source and
+reports coherent observed/accepted/drained/overflowed/released/pending/byte
+counts. Observed arrivals continue while demand is off; accepted counts only
+demanded admissions. A fresh recording interval must show active demand, equal
+observed/admitted deltas, no overflow or release, and downstream file evidence.
+Snapshots alone remain insufficient to prove every output deadline or pixels.
+
+The October 20 d550a5d run exposed 1,668 camera arrivals lost before this branch
+existed, despite zero ISO writer drops. Program frame-counter continuity did
+not prove source-content continuity. Keep that failed source-fidelity result;
+only a fresh installed workload can qualify the correction. Zoom's separate
+shared-memory latest-frame sampling is not changed by this UVC fix.
+
 ## Windows recording queue ownership (#814, October 8, 2026)
 
 When wrapped by `AsyncEncoderSink`, Media Foundation gives Program its own

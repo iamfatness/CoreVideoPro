@@ -21,6 +21,7 @@ export function judgeRedesignWorkload(report) {
   const counters = new Map();
   const progress = new Map();
   const additionalGenerations = new Map();
+  const arrivalBaselines = new Map();
   let previous;
   for (const [index, row] of samples.entries()) {
     const s = row?.snapshot ?? {};
@@ -82,6 +83,28 @@ export function judgeRedesignWorkload(report) {
       if (track?.readiness !== 'ready') errors.push(`${index}: ISO ${id} is not ready.`);
       metrics['isoVideoDropped:' + id] = track?.droppedFrames;
       metrics['isoAudioDropped:' + id] = track?.droppedAudioPackets;
+      if (id.startsWith('capture:')) {
+        const matches = s.captureDevices?.filter(device => device.isoCpuArrivals?.sourceId === id) ?? [];
+        const a = matches.length === 1 ? matches[0].isoCpuArrivals : null;
+        const fields = ['observed', 'accepted', 'drained', 'overflowed', 'released', 'pending', 'bytes'];
+        if (!a || a.demanded !== true || fields.some(field => !Number.isSafeInteger(a[field]) || a[field] < 0)) {
+          errors.push(`${index}: ISO ${id} lacks actual capture-arrival evidence.`);
+        } else {
+          metrics['isoArrivalOverflowed:' + id] = a.overflowed;
+          metrics['isoArrivalReleased:' + id] = a.released;
+          const prior = arrivalBaselines.get(id);
+          // Overflow includes evictions of admitted refs and refusals of an
+          // oversized arrival. Only the former contributes to accepted.
+          const evicted = a.accepted - a.drained - a.released - a.pending;
+          if (a.pending > 4 || a.bytes > 32 * 1024 * 1024 || a.drained > a.accepted ||
+              evicted < 0 || evicted > a.overflowed)
+            errors.push(`${index}: ISO ${id} capture-arrival accounting is inconsistent.`);
+          if (prior && (a.observed < prior.observed || a.accepted < prior.accepted || a.drained < prior.drained ||
+              a.observed - prior.observed !== a.accepted - prior.accepted))
+            errors.push(`${index}: ISO ${id} lost arrivals before recording admission.`);
+          arrivalBaselines.set(id, a);
+        }
+      }
     }
     for (const [name, value] of Object.entries(metrics)) {
       if (!Number.isSafeInteger(value) || value < 0) errors.push(`${index}: missing ${name}.`);

@@ -274,6 +274,15 @@ rpc::Json captureDeviceJson(const modules::CaptureDeviceInfo& device) {
     result.emplace("warning", device.warning);
   }
   if (device.decodedFrames) result.emplace("decodedFrames", static_cast<double>(*device.decodedFrames));
+  if (device.isoCpuArrivals) {
+    const auto& a = *device.isoCpuArrivals;
+    result.emplace("isoCpuArrivals", rpc::Json::Object{
+        {"sourceId", a.sourceId}, {"observed", static_cast<double>(a.observed)},
+        {"demanded", a.demanded}, {"accepted", static_cast<double>(a.accepted)},
+        {"drained", static_cast<double>(a.drained)}, {"overflowed", static_cast<double>(a.overflowed)},
+        {"released", static_cast<double>(a.released)}, {"pending", static_cast<double>(a.pending)},
+        {"bytes", static_cast<double>(a.bytes)}});
+  }
   if (device.decodedAudioSamples) result.emplace("decodedAudioSamples", static_cast<double>(*device.decodedAudioSamples));
   if (device.lastFrameAgeMs) result.emplace("lastFrameAgeMs", static_cast<double>(*device.lastFrameAgeMs));
   if (device.decoderFailures) result.emplace("decoderFailures", static_cast<double>(*device.decoderFailures));

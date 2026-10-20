@@ -790,6 +790,7 @@ if(BUILD_TESTING)
     tests/BrowserHostExitMessageTest.cpp
     tests/IsoFrameConformTest.cpp
     tests/IsoVideoIngressTest.cpp
+    tests/UvcIsoArrivalQueueTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp

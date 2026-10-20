@@ -58,6 +58,7 @@ do {
     $row=[ordered]@{collectedAtMs=$clock.Elapsed.TotalMilliseconds;processGeneration=$generation;displayState=$display;additionalProcesses=$additional;snapshot=[ordered]@{
       outputProfile=$s.outputProfile;meetingState=$s.meetingState;programBuffer=$s.programBuffer
       realtimeEvidence=$s.realtimeEvidence;encoderEvidence=$s.encoderEvidence;virtualCamera=$s.virtualCamera
+      captureDevices=$s.captureDevices
       recording=[ordered]@{active=$s.recording.active;lifecycle=$s.recording.lifecycle;proof=$s.recording.proof;artifactPath=$s.recording.artifactPath
         streams=@($s.recording.streams | Select-Object kind,sourceId,status,framesWritten,droppedFrames,droppedAudioPackets,missingFrames,readiness,writeQueue)}
     }}

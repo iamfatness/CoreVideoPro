@@ -4,6 +4,7 @@ import { judgeRedesignWorkload } from './redesign-workload-verdict.mjs';
 
 function completeEvidence() {
   const requiredInputIds = Array.from({ length: 10 }, (_, i) => 'input-' + i);
+  requiredInputIds[7] = 'capture:camera';
   const requiredIsoIds = requiredInputIds.slice(0, 8);
   const startTime = '2026-10-16T12:00:00Z', endTime = '2026-10-16T12:30:00Z';
   const enabledOutputs = ['recording:program', 'virtual-camera:program', ...requiredIsoIds.map(id => 'recording:iso:' + id)];
@@ -20,6 +21,9 @@ function completeEvidence() {
     samples: Array.from({ length: 181 }, (_, i) => ({ collectedAtMs: i * 10000, processGeneration: 'one',
       displayState: { visible: true, minimized: false, desktopUnlocked: true }, snapshot: {
       outputProfile: { width: 1920, height: 1080, fps: 60 }, meetingState: 'in_meeting',
+      captureDevices: [{ isoCpuArrivals: { sourceId: 'capture:camera', demanded: true,
+        observed: i * 600 + 1, accepted: i * 600 + 1, drained: i * 600 + 1,
+        overflowed: 0, released: 0, pending: 0, bytes: 0 } }],
       realtimeEvidence: { audio: { audioLostSamples: 0, pacerReanchors: 0 }, monitorWorker: { inputs: { sources: requiredInputIds.map(sourceId => ({ sourceId, state: 'ready', frameId: i * 600 + 1 })) } } },
       recording: { active: true, lifecycle: { state: 'producing' },
         streams: [{ kind: 'program', framesWritten: i * 600 + 1 }, ...requiredIsoIds.map(sourceId => ({ sourceId, framesWritten: i * 600 + 1, readiness: 'ready', droppedFrames: 0, droppedAudioPackets: 0 }))],
@@ -35,6 +39,21 @@ function completeEvidence() {
     } },
   };
 }
+
+test('advancing outputs cannot hide sampled capture arrivals or missing arrival evidence', () => {
+  for (const change of [
+    s => { delete s.captureDevices; },
+    s => { s.captureDevices[0].isoCpuArrivals.demanded = false; },
+    s => { s.captureDevices[0].isoCpuArrivals.observed += 2; },
+    s => { s.captureDevices[0].isoCpuArrivals.overflowed++; },
+    s => { s.captureDevices[0].isoCpuArrivals.released++; },
+    s => { s.captureDevices[0].isoCpuArrivals.pending = 5; },
+    s => { s.captureDevices[0].isoCpuArrivals.bytes = 32 * 1024 * 1024 + 1; },
+  ]) {
+    const report = completeEvidence(); change(report.samples[10].snapshot);
+    assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
+});
 
 test('recording counters cannot replace finalized pixels or pixels from the measured interval', () => {
   for (const change of [
