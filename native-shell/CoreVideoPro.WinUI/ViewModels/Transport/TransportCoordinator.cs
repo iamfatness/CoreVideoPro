@@ -293,6 +293,9 @@ public sealed class TransportCoordinator
             _recordingPreviousSessionId = _bridge.LastSnapshot?.Recording?.Lifecycle?.SessionId;
         _host.NotifyRecordingCommandCanExecuteChanged();
         var previousRecording = _host.Recording;
+        var previousLifecycle = _bridge.LastSnapshot?.Recording?.Lifecycle;
+        var needsFailedTakeStop = starting && previousLifecycle?.DesiredActive == true &&
+            previousLifecycle.State is "failed" or "interrupted";
         LaunchLog.Write(
             $"recording: toggle requested action={(starting ? "start" : "stop")} " +
             $"format={_host.RecordingLogFormat} " +
@@ -351,6 +354,15 @@ public sealed class TransportCoordinator
         try
         {
             await _host.EnsureMediaCoreRunningAsync(starting ? "Starting media core for recording..." : "Updating media core...").ConfigureAwait(false);
+            if (needsFailedTakeStop)
+            {
+                // The core deduplicates the repeated session request even after its
+                // writer fails. Admit Stop before reasserting Start, rather than
+                // leaving the old failed request armed forever.
+                _dispatcher.RunOnUiThread(() => _host.Recording = false);
+                await SyncFailedTakeStopBeforeRetryAsync().ConfigureAwait(false);
+                _dispatcher.RunOnUiThread(() => _host.Recording = true);
+            }
             var snapshot = await _host.SyncActiveSceneAsync(starting ? "record-start" : "record-stop").ConfigureAwait(false);
             if (starting && !IsSupersededRecordingSession(snapshot.Recording?.Lifecycle?.SessionId) &&
                 TransportStatusFormatter.TryFormatRecordingStartHealthFailure(snapshot, out var healthFailureStatus))
@@ -415,6 +427,23 @@ public sealed class TransportCoordinator
                 _host.NotifyRecordingCommandCanExecuteChanged();
             });
         }
+    }
+
+    private async Task SyncFailedTakeStopBeforeRetryAsync()
+    {
+        for (var attempt = 0; attempt < _recordingSyncRetryAttempts; attempt++)
+        {
+            try
+            {
+                await _host.SyncActiveSceneAsync("record-retry-cleanup").ConfigureAwait(false);
+                return;
+            }
+            catch (MediaCoreSyncInFlightException)
+            {
+                await Task.Delay(_recordingSyncRetryDelayMs).ConfigureAwait(false);
+            }
+        }
+        throw new InvalidOperationException("Previous failed recording cleanup could not reach the media core. Retry recording.");
     }
 
     private async Task SyncFailedRecordingStartRollbackAsync(string failureStatus)
