@@ -56,7 +56,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "transport.engine.toggle", "transport.engine.set",
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
         "transport.virtualcam.name.set",
-        "scene.select", "scene.dynamicGallery.create", "view.setMode",
+        "scene.select", "scene.cueWithRoutes", "scene.route.set", "scene.dynamicGallery.create", "view.setMode",
         "input.assign", "input.name", "input.inShow.set", "source.dropout.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
@@ -250,6 +250,15 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             case "scene.select":
                 _vm.SelectSceneCommand.Execute(Str(args, 0));
                 return ControlInvokeResult.Success;
+            case "scene.cueWithRoutes":
+                if (!SceneCueWithRoutesArgs.TryParseRoutes(Str(args, 1), out var parsedRoutes, out var parseError))
+                {
+                    return ControlInvokeResult.Fail(parseError ?? "routes is not valid JSON.");
+                }
+                return CuePreviewWithRoutes(Str(args, 0), parsedRoutes);
+            case "scene.route.set":
+                return CuePreviewWithRoutes(Str(args, 0),
+                    new Dictionary<string, int?>(StringComparer.Ordinal) { [Str(args, 1)] = Int(args, 2) });
             case "scene.dynamicGallery.create":
                 _vm.NewDynamicGalleryCommand.Execute(null);
                 return ControlInvokeResult.Success;
@@ -461,6 +470,36 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             default:
                 return ControlInvokeResult.Fail($"Action '{actionId}' is not implemented by the WinUI surface.");
         }
+    }
+
+    private ControlInvokeResult CuePreviewWithRoutes(string sceneId, IReadOnlyDictionary<string, int?> routes)
+    {
+        if (!_vm.TryGetSceneRouteIds(sceneId, out var routeIds))
+        {
+            return ControlInvokeResult.Fail($"Unknown scene '{sceneId}'.");
+        }
+
+        var knownScenes = _vm.Scenes.Select(scene => scene.Id).ToList();
+        var slots = _vm.ShowInputs.Select(input => input.SlotNumber).ToList();
+        var error = SceneCueWithRoutesArgs.Refuse(sceneId, knownScenes, routeIds, slots, routes);
+        if (error is not null)
+        {
+            return ControlInvokeResult.Fail(error);
+        }
+
+        _vm.SelectSceneCommand.Execute(sceneId);
+        if (!string.Equals(_vm.PreviewSceneId, sceneId, StringComparison.Ordinal))
+        {
+            return ControlInvokeResult.Fail($"Scene '{sceneId}' was not queued on Preview.");
+        }
+
+        var missing = _vm.SetPreviewRouteSlots(routes);
+        if (missing.Count > 0)
+        {
+            return ControlInvokeResult.Fail($"Unknown route '{missing[0]}' on scene '{sceneId}'.");
+        }
+
+        return ControlInvokeResult.AppliedPreview(_vm.PreviewSceneId);
     }
 
     private ControlInvokeResult AssignInput(int slot, string sourceId)

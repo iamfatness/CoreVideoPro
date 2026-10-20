@@ -34,6 +34,8 @@ public sealed class HttpControlRouterTests
 
         Assert.Equal(200, response.Status);
         Assert.Contains("transport.take", response.Body);
+        Assert.Contains("scene.cueWithRoutes", response.Body);
+        Assert.Contains("scene.route.set", response.Body);
         Assert.Contains("automation.magic", response.Body);
         Assert.Contains("/cvp/transport/take", response.Body);
     }
@@ -81,6 +83,24 @@ public sealed class HttpControlRouterTests
         Assert.Equal("input.assign", actionId);
         Assert.Equal(3, args[0]);
         Assert.Equal("zoom:p-1", args[1]);
+    }
+
+    [Fact]
+    public async Task Post_Invoke_ReportsPreviewSceneWhenTheSurfaceAppliedOne()
+    {
+        var surface = new FakeControlSurface
+        {
+            Handler = (_, _) => ControlInvokeResult.AppliedPreview("interview")
+        };
+        var router = new HttpControlRouter(surface);
+
+        var response = await router.HandleAsync("POST", "/invoke",
+            """{"action":"scene.cueWithRoutes","args":["interview","{\"ohg-host\":1}"]}""");
+
+        Assert.Equal(200, response.Status);
+        using var doc = JsonDocument.Parse(response.Body);
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Equal("interview", doc.RootElement.GetProperty("previewSceneId").GetString());
     }
 
     [Fact]
