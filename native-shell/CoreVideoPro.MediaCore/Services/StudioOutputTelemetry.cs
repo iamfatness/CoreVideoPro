@@ -23,7 +23,16 @@ public static class StudioOutputTelemetry
 
     public static Readout Streaming(NativeMediaCoreStateSnapshot snapshot)
     {
-        var readout = Streaming(snapshot.OutputSenderSession.Senders);
+        var senders = CurrentSenders(snapshot.OutputSenderSession.Senders);
+        var readout = Streaming(senders);
+        // Modern destination lifecycles are authoritative. Historical aggregate
+        // health must not turn an intentionally ended destination into a current failure.
+        if (senders.Count > 0 && senders.All(sender => sender.Lifecycle is not null))
+        {
+            if (readout.Health == "live" && StreamDegradationReadout.Format(snapshot) is not null)
+                return readout with { State = "Degraded", Health = "warning" };
+            return readout;
+        }
         var aggregateHealth = LiveProductionSync.ResolveStreamHealthStatus(snapshot, streaming: false);
         if (aggregateHealth == "failed") return readout with { State = readout.State == "Partial" ? "Partial" : "Failed", Health = "warning" };
         if (aggregateHealth == "warning" && readout.Health != "warning") return readout with { State = "Degraded", Health = "warning" };
@@ -32,6 +41,7 @@ public static class StudioOutputTelemetry
 
     public static Readout Streaming(IReadOnlyList<NativeMediaCoreOutputSender> senders)
     {
+        senders = CurrentSenders(senders);
         if (senders.Count == 0) return new("—", "Idle", "idle");
         var readouts = senders.Select(sender => Map(sender.Lifecycle, Math.Max(0, sender.FramesSent),
             "Streaming", sender.Status is not "idle" and not "stopped", sender.Status)).ToArray();
@@ -39,6 +49,14 @@ public static class StudioOutputTelemetry
         if (readouts.Any(item => item.Health == "live") && readouts.Any(item => item.Health != "live"))
             selected = new("", "Partial", "warning");
         return selected with { Progress = Frames(senders.Sum(sender => (long)Math.Max(0, sender.FramesSent))) };
+    }
+
+    private static IReadOnlyList<NativeMediaCoreOutputSender> CurrentSenders(IReadOnlyList<NativeMediaCoreOutputSender> senders)
+    {
+        var current = senders.Where(sender => sender.Lifecycle is { } lifecycle
+            ? lifecycle.DesiredActive || lifecycle.State is "producing" or "live" or "preparing" or "starting" or "stopping" or "finalizing"
+            : sender.Status is "live" or "starting" or "warning").ToArray();
+        return current.Length > 0 ? current : senders;
     }
 
     private static Readout Map(OutputLifecycle? lifecycle, long? frames, string producing, bool requested, string? legacyStatus)

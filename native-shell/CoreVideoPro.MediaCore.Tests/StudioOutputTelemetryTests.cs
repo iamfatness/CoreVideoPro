@@ -97,6 +97,18 @@ public sealed class StudioOutputTelemetryTests
         Assert.Equal("Starting", StudioOutputTelemetry.Program(snapshot).State);
     }
 
+    [Fact]
+    public void AnIntentionallyEndedDestinationDoesNotTurnTheCurrentStreamIntoPartialFailure()
+    {
+        var ended = Sender(Lifecycle("completed", finalized: true) with { DesiredActive = false }, 400);
+        var active = Sender(Lifecycle("producing"), 120);
+        var snapshot = new NativeMediaCoreStateSnapshot { OutputSenderSession = new() { Status = "live", Senders = [ended, active] } };
+        var readout = StudioOutputTelemetry.Streaming(snapshot);
+        Assert.Equal("Streaming", readout.State);
+        Assert.Equal("live", readout.Health);
+        Assert.Equal($"{120:N0} frames", readout.Progress);
+    }
+
     internal static OutputLifecycle Lifecycle(string state, string health = "healthy", bool finalized = false) => new()
     { SessionId = "test-session", DesiredActive = true, State = state, Health = health, Finalized = finalized };
 
