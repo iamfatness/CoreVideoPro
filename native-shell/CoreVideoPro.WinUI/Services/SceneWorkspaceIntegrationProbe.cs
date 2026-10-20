@@ -180,8 +180,13 @@ internal static class SceneWorkspaceIntegrationProbe
         studio.WorkspaceRasterizeGraphic=graphic=>"fixture-"+Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(graphic))));
         workspace.AddGraphic("text");
         var graphicId=workspace.Selected!.ItemId;
-        tabs.SelectedItem=tabs.Items.Cast<PivotItem>().Single(i=>i.Name=="SourceInspectorTab");
-        await Task.Delay(100);page.UpdateLayout();
+        tabs.SelectedIndex=tabs.Items.IndexOf(tabs.Items.Cast<PivotItem>().Single(i=>i.Name=="SourceInspectorTab"));
+        try {
+            await Eventually(()=>Descendants(page).OfType<TextBox>().Any(t=>t.Tag?.ToString()==graphicId&&t.Header?.ToString()=="Text"));
+        } catch (Exception ex) {
+            throw new InvalidOperationException($"Authored text inspector did not become ready: expected={graphicId}; {page.GraphicEditProbeState}; tab={tabs.SelectedIndex}/{(tabs.SelectedItem as PivotItem)?.Name}",ex);
+        }
+        page.UpdateLayout();
         var titleField=Descendants(page).OfType<TextBox>().Single(t=>t.Tag?.ToString()==graphicId&&t.Header?.ToString()=="Text");
         titleField.Focus(FocusState.Programmatic);await Eventually(()=>titleField.FocusState!=FocusState.Unfocused);
         titleField.Text="Edited title survives refresh";
