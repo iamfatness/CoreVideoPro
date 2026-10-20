@@ -259,13 +259,16 @@ public sealed class ShowInputsCoordinator
         }
 
         var changed = enabled ? IsoSelectedSourceIds.Add(sourceId) : IsoSelectedSourceIds.Remove(sourceId);
-        if (!changed)
+        if (changed)
         {
-            return;
+            _host.SaveProductionOutputPreferences();
+            _host.RefreshIsoReadouts();
         }
 
-        _host.SaveProductionOutputPreferences();
-        _host.RefreshIsoReadouts();
+        // A remembered selection is not proof that the engine still has this target:
+        // Unassign removes it from the eligible targets while preserving source intent.
+        // An explicit re-arm must deliver the current targets even when Add is a no-op.
+        // Passive row projection uses SetIsoSelected and suppresses this callback.
         _ = _host.TrySyncMediaCoreAsync();
     }
 

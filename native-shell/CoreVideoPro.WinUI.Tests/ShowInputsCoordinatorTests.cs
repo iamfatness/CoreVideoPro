@@ -843,6 +843,53 @@ public sealed class ShowInputsCoordinatorTests
 
     // ---------------------------------------------------------------- ISO × ShowInputs integration
 
+    [Theory]
+    [InlineData("capture:cam")]
+    [InlineData("zoom:p1")]
+    public void ExplicitIsoRearmAfterUnassignDeliversTargetWithoutAnotherUiAction(string sourceId)
+    {
+        var (coordinator, host) = Build();
+        host.IsoRecordingEnabled = true;
+        host.RoomParticipantsForInputs = [new Participant { Id = "p1", Name = "Guest", Health = FeedHealth.Live }];
+        host.CaptureDevices.Add(new CaptureDevice
+        {
+            Id = "cam", NativeDeviceId = "cam", Name = "Camera", Vendor = "test",
+            Inputs = [], SelectedInputId = "cam"
+        });
+        coordinator.RefreshShowInputEditors(force: true);
+        IReadOnlyList<string> deliveredTargets = [];
+        host.SyncRequested = () => deliveredTargets = coordinator.BuildIsoSourceTargets().SourceIds.ToArray();
+        var editor = coordinator.ShowInputEditors[0];
+        editor.SelectedUnifiedSourceId = sourceId;
+        editor.IsoEnabled = true;
+        Assert.Contains(sourceId, deliveredTargets);
+
+        for (var cycle = 0; cycle < 3; cycle++)
+        {
+            coordinator.UnassignShowInput(editor);
+            Assert.DoesNotContain(sourceId, deliveredTargets);
+            Assert.Contains(sourceId, coordinator.IsoSelectedSourceIds); // Retained preference is not applied state.
+            editor.SelectedUnifiedSourceId = sourceId;
+            Assert.False(editor.IsoEnabled);
+            editor.IsoEnabled = true;
+            Assert.Contains(sourceId, deliveredTargets); // No Preview cue or unrelated sync to repair it.
+        }
+    }
+
+    [Fact]
+    public void PassiveIsoProjectionDoesNotRequestEngineSync()
+    {
+        var (coordinator, host) = Build();
+        host.RoomParticipantsForInputs = [new Participant { Id = "p1", Name = "Guest" }];
+        coordinator.RefreshShowInputEditors(force: true);
+        var editor = coordinator.ShowInputEditors[0];
+        editor.SelectedUnifiedSourceId = "zoom:p1";
+        coordinator.IsoSelectedSourceIds.Add("zoom:p1");
+        host.SyncRequested = () => Assert.Fail("Passive projection must not create a sync feedback loop.");
+        coordinator.ApplyIsoSelectionToEditors();
+        Assert.True(editor.IsoEnabled);
+    }
+
     [Fact]
     public void IsoSelection_SurvivesARosterRefresh_ViaInPlaceReProjection()
     {
@@ -1106,7 +1153,12 @@ public sealed class ShowInputsCoordinatorTests
 
         public void RefreshCaptureFleetSummary() { }
 
-        public Task TrySyncMediaCoreAsync() => Task.CompletedTask;
+        public Action? SyncRequested { get; set; }
+        public Task TrySyncMediaCoreAsync()
+        {
+            SyncRequested?.Invoke();
+            return Task.CompletedTask;
+        }
 
         public void SaveProductionOutputPreferences() { }
 
