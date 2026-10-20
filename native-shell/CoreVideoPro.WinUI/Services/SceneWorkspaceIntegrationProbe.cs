@@ -184,7 +184,9 @@ internal static class SceneWorkspaceIntegrationProbe
         try {
             await Eventually(()=>Descendants(page).OfType<TextBox>().Any(t=>t.Tag?.ToString()==graphicId&&t.Header?.ToString()=="Text"));
         } catch (Exception ex) {
-            throw new InvalidOperationException($"Authored text inspector did not become ready: expected={graphicId}; {page.GraphicEditProbeState}; tab={tabs.SelectedIndex}/{(tabs.SelectedItem as PivotItem)?.Name}",ex);
+            var named=page.FindName("GraphicTextField") as TextBox;
+            var observed=string.Join(" | ",Descendants(page).OfType<TextBox>().Select(t=>$"{t.Name}:{t.Tag}:{t.Header}:{t.IsLoaded}:{t.Visibility}"));
+            throw new InvalidOperationException($"Authored text inspector did not become ready: expected={graphicId}; {page.GraphicEditProbeState}; tab={tabs.SelectedIndex}/{(tabs.SelectedItem as PivotItem)?.Name}; size={page.ActualWidth}x{page.ActualHeight}; pivot={tabs.ActualWidth}x{tabs.ActualHeight}; named={named?.Tag}:{named?.Header}:{named?.IsLoaded}:{named?.Visibility}; fields={observed}",ex);
         }
         page.UpdateLayout();
         var titleField=Descendants(page).OfType<TextBox>().Single(t=>t.Tag?.ToString()==graphicId&&t.Header?.ToString()=="Text");
