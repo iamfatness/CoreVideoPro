@@ -1,5 +1,11 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner implementation direction, October 19 — #960:** merge #964 and start the
+reconnectable EngineHost vertical slice. #960 is the active stability item;
+#961–#963 remain dependent. Keep the installed app and live show untouched and
+use isolated candidate validation. Planning-only language below is superseded
+for #960, not for default enablement or production rollout.
+
 **Owner Sources regression, October 19 — [#956](https://github.com/iamfatness/CoreVideoPro/issues/956):** Unassign leaves the input row dead. Keep the empty row's unified source picker reachable and verify repeated same-row source reuse through compiled controls without restarting or changing other inputs/Program.
 
 **Owner planning direction, October 19 — engine survival:** turn the architecture
@@ -210,6 +216,10 @@ Preserve the existing session while building; restart/rejoin for candidate valid
 
 ## Now — owner-accepted order (2026-10-08)
 
+Owner-directed active stability work: [#960](https://github.com/iamfatness/CoreVideoPro/issues/960),
+reconnectable EngineHost with real opt-in WinUI/native consumer. This is one active
+item; dependent #961–#963 do not start concurrently.
+
 Owner approved the [cross-subsystem isolation plan](reference/realtime-isolation-audit.md)
 on October 12. Start its first real status/observation consumer under #870,
 then the focused #872/#873 crossings. Keep the existing #517/#823 installed
@@ -320,7 +330,7 @@ work and the previously ranked Next rows below retain their relative order.
 | Stability dependency | Issue | Remaining work |
 |---|---|---|
 | Outcome / acceptance parent | [#959](https://github.com/iamfatness/CoreVideoPro/issues/959) | Keep the committed show running across UI failure; close only after all child gates, not on a plan or a process staying alive. |
-| First slice | [#960](https://github.com/iamfatness/CoreVideoPro/issues/960) | On-demand EngineHost, bounded reconnectable control and real opt-in WinUI/native consumer; preserve epochs and output sessions across UI termination. |
+| Active in Now by October 19 owner direction | [#960](https://github.com/iamfatness/CoreVideoPro/issues/960) | On-demand EngineHost, bounded reconnectable control and real opt-in WinUI/native consumer; preserve epochs and output sessions across UI termination. |
 | Depends on #960 | [#961](https://github.com/iamfatness/CoreVideoPro/issues/961) | Move live synchronization, committed state, control ingress and recovery authority outside WinUI; reuse #657 contracts. |
 | Depends on #960/#961 | [#962](https://github.com/iamfatness/CoreVideoPro/issues/962) | Move compatibility camera capture into a host-owned helper and prove actual fallback media survives UI death. |
 | Depends on #960–#962 | [#963](https://github.com/iamfatness/CoreVideoPro/issues/963) | Matched packaging, safe stop/update/rollback and receiver-verified full-workload crash qualification; cross-gate #930/#517/#904/#908/#857. |

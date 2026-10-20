@@ -15,5 +15,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CoreVideoPro.MediaCore\CoreVideoPro.MediaCore.csproj" />
+    <ProjectReference Include="..\CoreVideoPro.EngineHost\CoreVideoPro.EngineHost.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

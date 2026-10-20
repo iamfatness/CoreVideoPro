@@ -127,6 +127,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
     {
         var profile = await _supervisor.StartAsync(cancellationToken).ConfigureAwait(false);
         lock (_gate) { _sessionStartedAt ??= _time.GetTimestamp(); }
+        if (_supervisor.Hosted) await PollSnapshotAsync(cancellationToken).ConfigureAwait(false);
         StartPolling();
         return profile;
     }

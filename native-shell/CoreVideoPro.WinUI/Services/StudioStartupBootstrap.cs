@@ -39,7 +39,7 @@ public sealed class StudioStartupBootstrap
             error = ex;
             loaded = new ProductionPreferencesLoadResult(ProductionPreferencesLoadStatus.Unreadable, null);
         }
-        return new StudioStartupBootstrap(store, bridge ?? new MediaCoreBridgeService(), loaded, error) {StartInteractiveServices=startInteractiveServices};
+        return new StudioStartupBootstrap(store, bridge ?? EngineHostBootstrap.CreateBridge(startInteractiveServices), loaded, error) {StartInteractiveServices=startInteractiveServices};
     }
 
     public void Restore(Action<ProductionOutputPreferences> apply)

@@ -6366,6 +6366,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         try
         {
             await EnsureMediaCoreRunningAsync("Starting media core...").ConfigureAwait(false);
+            if (ObserveExistingHostedShow()) return;
             await SyncActiveSceneAsync().ConfigureAwait(false);
             // Re-apply the saved multiviewer preferences so the core matches the operator's choice.
             await ConfigureMultiviewerAsync().ConfigureAwait(false);
@@ -10001,6 +10002,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         {
             OnPropertyChanged(nameof(NativeCoreRuntimeStatus));
             OnPropertyChanged(nameof(NativeAudioRuntimeStatus));
+            if (_bridge.Supervisor.HostedReadOnly) return;
             ScheduleMultiviewerConfigResend();
             ReannounceCaptureShmToNewCore();
         });
@@ -14463,6 +14465,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
 
     private void ForceShutdownMediaCore(TimeSpan exitGrace)
     {
+        if (DetachHostedEngineOnExit()) return;
         try
         {
             _bridge.ConfigureZoomSpineSync(null);
