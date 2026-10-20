@@ -187,7 +187,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
             if (restarts == _rosterBarrierRestartCount) return;
             _rosterBarrierRestartCount = restarts;
             if (_lastSnapshot is not null)
-                _lastSnapshot = _lastSnapshot with { RosterEpoch = null, RosterRevision = 0 };
+                _lastSnapshot = _lastSnapshot with { RosterEpoch = null, RosterRevision = 0, RawMediaActive = null };
             _controlRecovery.ResetProcess();
             _rosterRecoveryGeneration++;
             _rosterRecoveryInFlight = false;
@@ -814,6 +814,7 @@ public sealed class MediaCoreBridgeService : IMediaCoreBridge, IGradePreviewTran
                     MeetingState = priorRoster.MeetingState,
                     RosterEpoch = priorRoster.RosterEpoch,
                     RosterRevision = priorRoster.RosterRevision,
+                    RawMediaActive = priorRoster.RawMediaActive,
                     ActiveSpeakerId = priorRoster.ActiveSpeakerId,
                     Participants = priorRoster.Participants,
                     ZoomSubscriptions = priorRoster.ZoomSubscriptions

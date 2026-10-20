@@ -10836,7 +10836,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // Tell the operator exactly what is being waited on, and clear it
             // the moment raw media goes live. Scalar prop, changes at state
             // transitions only — no snapshot-rate churn (0xc000027b rules).
-            var rawMediaActive = Settings.RawMediaActive;
+            var rawMediaActive = snapshot.RawMediaActive;
             if (ZoomCaptureSubscribed && rawMediaActive != true)
             {
                 if (!_awaitingRecordingPrivilege)
@@ -10857,7 +10857,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MfT("transcript");
             var participants = LiveProductionSync.MapSnapshotParticipants(snapshot);
             MfT("mapParticipants");
-            Settings.ApplyMeetingStateLabel(meetingState, participants?.Count ?? snapshot.Participants.Count);
+            Settings.ApplyMeetingStateLabel(meetingState, participants?.Count ?? snapshot.Participants.Count, snapshot.RawMediaActive);
             if (participants is { } && (participants.Count > 0 || snapshot.RosterRevision > 0))
             {
                 NoteParticipantApply("meeting-fields", snapshot);

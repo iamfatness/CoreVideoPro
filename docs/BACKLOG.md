@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Full-workload readout dependency — [#987](https://github.com/iamfatness/CoreVideoPro/issues/987):** explicit ISO re-arm after Unassign must refresh the armed count even when persisted intent is unchanged. Preserve engine-reported raw-media facts through the spine/read model so recording preflight follows confirmed capture start/stop instead of a stale join-time warning. Validate the installed controls before publication; do not infer capture from toggle intent.
+
 **Full-workload qualification dependency — [#984](https://github.com/iamfatness/CoreVideoPro/issues/984):** the owner's requested full-workload checks exposed 1,668 camera arrivals skipped before ISO admission while recording drop counters stayed zero. Preserve actual selected camera arrivals through a bounded ref-only CPU branch, account for pre-ingest loss and rerun the installed workload. Passing Program counter bands cannot substitute for camera source fidelity. This is part of the authorized keep-fixing-failures qualification work; publication remains blocked.
 
 **Owner priority, October 20 — [#974](https://github.com/iamfatness/CoreVideoPro/issues/974):** fix camera ISO re-arm synchronization after Unassign, then complete the eight-Zoom/webcam/screen workload with Multiview, Preview, local recording and virtual camera. Retain failed runs and require per-frame delivery evidence before calling qualification passed. Only then build, publish and install the corrected beta using the established local process.

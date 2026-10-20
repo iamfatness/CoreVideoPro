@@ -1111,7 +1111,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowRecentMeetings));
     }
 
-    public void ApplyMeetingStateLabel(string? meetingStateLabel, int participantCount = 0)
+    public void ApplyMeetingStateLabel(string? meetingStateLabel, int participantCount = 0, bool? rawMediaActive = null)
     {
         if (string.IsNullOrWhiteSpace(meetingStateLabel))
         {
@@ -1119,6 +1119,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
 
         MeetingState = ParseMeetingState(meetingStateLabel);
+        RawMediaActive = rawMediaActive;
         if (participantCount > 0)
         {
             LiveParticipantCount = participantCount;

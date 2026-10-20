@@ -74,9 +74,16 @@ public static class ZoomMediaSpineSnapshotMerger
                 Participants = existing.Participants,
                 RosterEpoch = existing.RosterEpoch,
                 RosterRevision = existing.RosterRevision,
+                RawMediaActive = existing.RawMediaActive,
                 ZoomSubscriptions = existing.ZoomSubscriptions
             };
         }
+        // Ordinary session-state polls omit this engine fact. Retain it only in
+        // the same meeting authority; a reconnect must not inherit old capture.
+        if (incoming.RawMediaActive is null && existing is not null &&
+            incoming.RosterEpoch == existing.RosterEpoch &&
+            NormalizeMeetingState(incoming.MeetingState) == "in_meeting")
+            incoming = incoming with { RawMediaActive = existing.RawMediaActive };
         if (incoming.ZoomSubscriptions.Count > 0 || existing is null || existing.ZoomSubscriptions.Count == 0)
         {
             return incoming;
@@ -96,6 +103,7 @@ public static class ZoomMediaSpineSnapshotMerger
         var meetingState = meetingStateOverride ?? NormalizeMeetingState(spine.MeetingState);
         return new RawCaptureSnapshot
         {
+            RawMediaActive = spine.RawMediaActive,
             MeetingState = meetingState,
             RosterEpoch = spine.RosterEpoch,
             RosterRevision = spine.RosterRevision,

@@ -48,6 +48,7 @@ public static class ZoomCaptureSnapshotMerger
         return baseSnapshot with
         {
             MeetingState = meetingState,
+            RawMediaActive = capture.RawMediaActive,
             RosterEpoch = capture.RosterEpoch,
             RosterRevision = capture.RosterRevision,
             ActiveSpeakerId = inMeeting ? capture.ActiveSpeakerId : null,

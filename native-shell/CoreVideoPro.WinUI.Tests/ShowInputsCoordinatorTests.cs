@@ -871,8 +871,10 @@ public sealed class ShowInputsCoordinatorTests
             Assert.Contains(sourceId, coordinator.IsoSelectedSourceIds); // Retained preference is not applied state.
             editor.SelectedUnifiedSourceId = sourceId;
             Assert.False(editor.IsoEnabled);
+            var readoutsBeforeRearm = host.IsoReadoutRefreshes;
             editor.IsoEnabled = true;
             Assert.Contains(sourceId, deliveredTargets); // No Preview cue or unrelated sync to repair it.
+            Assert.True(host.IsoReadoutRefreshes > readoutsBeforeRearm);
         }
     }
 
@@ -1141,7 +1143,8 @@ public sealed class ShowInputsCoordinatorTests
 
         public void NotifyShowReadinessChanged() => NotifyShowReadinessCount++;
 
-        public void RefreshIsoReadouts() { }
+        public int IsoReadoutRefreshes { get; private set; }
+        public void RefreshIsoReadouts() => IsoReadoutRefreshes++;
 
         public void RaiseShowInputReadoutsChanged() { }
 

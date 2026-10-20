@@ -1,5 +1,15 @@
 # ISO recording
 
+## Operator readouts (#987)
+
+Explicit ISO re-arm refreshes eligibility-based readouts even when the saved
+selection is unchanged after Unassign. Saving preferences remains change-only.
+Zoom capture preflight follows the engine's `rawMediaActive` fact from the
+spine response through the admitted bridge read model. Ordinary same-meeting
+polls that omit the fact retain it; leave, reconnect and core restart must not
+carry the previous meeting's value. Never replace that observation with Engine
+toggle intent or clear a real capture-off warning merely because a writer starts.
+
 ## Native UVC arrival branch (#984)
 
 Native camera ISO video uses `UvcIsoArrivalQueue` at the MF decoded-arrival

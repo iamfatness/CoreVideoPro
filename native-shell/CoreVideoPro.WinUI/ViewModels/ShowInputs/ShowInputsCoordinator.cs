@@ -262,8 +262,9 @@ public sealed class ShowInputsCoordinator
         if (changed)
         {
             _host.SaveProductionOutputPreferences();
-            _host.RefreshIsoReadouts();
         }
+        // Eligibility can change after Unassign even when saved intent did not.
+        _host.RefreshIsoReadouts();
 
         // A remembered selection is not proof that the engine still has this target:
         // Unassign removes it from the eligible targets while preserving source intent.

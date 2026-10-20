@@ -878,6 +878,8 @@ public sealed record NativeZoomGuestAvSyncAck
 
 public sealed record NativeMediaCoreStateSnapshot
 {
+    /// <summary>Latest admitted engine capture observation; absent peers remain unknown.</summary>
+    public bool? RawMediaActive { get; init; }
     public AudioOwnerObservation? AudioObservation { get; init; }
     public long AppliedControlRevision { get; init; }
     public IReadOnlyList<NativeCaptureDeviceStatus> CaptureDevices { get; init; } = [];
