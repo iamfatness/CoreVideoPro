@@ -2,6 +2,37 @@
 
 ## Registration failure recovery (#857)
 
+### Desktop-user installation boundary (October 19)
+
+The installed desktop launch read an October 15 user alias while the installing
+Codex/PowerShell context read the current alias for the same SID. Explicit HKU
+reads and a child with no package identity were insufficient independent controls.
+A limited interactive Task Scheduler worker reproduced the real desktop view.
+
+Camera setup now preflights, backs up, changes and reads back the user alias in
+that independent user context. The machine phase still owns the protected DLL,
+hash and machine key. The user worker verifies that exact protected/installed DLL
+identity, refuses unknown registrations and refuses mutation while CoreVideo is
+running. A fresh private pipe carries its correlated result rather than another
+potentially redirected AppData file. The temporary task is removed; a failed or
+missing worker prevents setup from reporting success. Native ownership guards
+remain unchanged. Uninstall preserves another installation's user alias.
+
+Clean-runner installer qualification inspects that independent user boundary.
+It explicitly leaves camera delivery and Unassign acceptance unverified. After
+installation, launch the owner's regular desktop shortcut, verify the actual
+shell/core paths and obtain OS-consumer camera frames. Through the retained
+Sources control, Unassign and reuse the input immediately without restart or
+unrelated Program/ISO changes. Both must pass before installed acceptance; these
+functional checks do not replace full-workload frame-delivery qualification.
+
+`Build draft beta candidate` runs only on GitHub's Windows runner against an
+exact green main SHA. It builds the production payload, probes compiled Sources
+controls and packages the six immutable beta assets into an unaccepted draft.
+The owner PC is not an installer/QA runner during a show. Draft notes and the
+candidate evidence keep both desktop acceptance results unverified; run the
+separate exact-asset installer qualification before post-show local acceptance.
+
 Webcam enable is desired state, not proof that Windows accepted startup. The
 asynchronous owner formerly marked a failed start as applied and never tried
 again while enable remained true. Repairing the registry alone therefore left

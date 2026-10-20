@@ -52,6 +52,15 @@ try {
     }
 } finally { Set-CameraMachineRegistration $priorUserCamera -CurrentUser }
 if ((Invoke-OwnedProcess $installerPath @('/S', "/D=$installRoot")) -ne 0) { throw "Silent installation failed. Evidence: $work" }
+$inspectHost = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$inspectionJson = & $inspectHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installRoot 'Install-VirtualCamera.ps1') -Action Inspect -AppDirectory $installRoot
+if ($LASTEXITCODE -ne 0) { throw 'Installed desktop-user camera inspection failed.' }
+$inspection = $inspectionJson | ConvertFrom-Json
+$inspection | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $work 'desktop-user-camera-registration.json')
+if (-not $inspection.desktopUser.ok -or $inspection.desktopUser.boundary -ne 'independent-interactive-user' -or
+    -not $inspection.desktopUser.userSession.matchesMachine -or -not $inspection.registeredFileMatchesManifest) {
+    throw 'The independently observed desktop-user camera alias does not match the installed machine runtime.'
+}
 $registration = Get-ItemProperty $registryPath
 if ($registration.InstallLocation -ne $installRoot) { throw 'Uninstall registration points at the wrong directory.' }
 $manifest = Get-Content -LiteralPath (Join-Path $installRoot 'build-manifest.json') -Raw | ConvertFrom-Json
@@ -110,6 +119,7 @@ $manifestLines += @('..\escape-attempt.txt', 'C:\Windows\System32\absolute-attem
 $escapeTarget = Join-Path (Split-Path -Parent $installRoot) 'escape-attempt.txt'
 [IO.File]::WriteAllText($escapeTarget, 'must survive')
 if ((Invoke-OwnedProcess $uninstaller @('/S', "_?=$installRoot")) -ne 0) { throw 'Uninstall failed.' }
+if (Test-Path -LiteralPath (Join-Path $installRoot '.camera-desktop-registration-before.json')) { throw 'Uninstall left its desktop camera backup.' }
 foreach ($relative in $runtimeFiles) {
     if (Test-Path -LiteralPath (Join-Path $installRoot $relative)) {
         throw "First-run media runtime remained after uninstall: $relative"
@@ -129,5 +139,6 @@ if ((Get-Content -LiteralPath $sentinel -Raw) -ne 'preserve this user file') { t
     silentInstall=$true; runtimeProbe=$true; shortcutTargets=$true; duplicateInstallRejected=$true
     invalidMarkerRejected=$true; silentUninstall=$true; userFilePreserved=$true
     stableShortcutOnly=$true; mediaRuntimeRemoved=$true; manifestEscapeRefused=$true; evidence=$work
-    failedInstallRetry=$true; failedInstallCameraPreserved=$true
+    failedInstallRetry=$true; failedInstallCameraPreserved=$true; independentDesktopRegistration=$true
+    desktopShortcutCameraDelivery='unverified'; desktopShortcutUnassign='unverified'
 } | ConvertTo-Json | Tee-Object -FilePath (Join-Path $work 'result.json')

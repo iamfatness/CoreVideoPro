@@ -1,0 +1,143 @@
+name: Build draft beta candidate
+
+# Remote-only preparation for #857/#956 while the owner's show is running.
+# This builds a draft. It never installs on a self-hosted rig or publishes it.
+on:
+  workflow_dispatch:
+    inputs:
+      expectedCommit:
+        description: Exact green main commit to package
+        required: true
+      releaseDate:
+        description: Owner-local release date (YYYY-MM-DD)
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  draft-windows-beta:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_COMMIT: ${{ inputs.expectedCommit }}
+      RELEASE_DATE: ${{ inputs.releaseDate }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Require exact green main source and an unused beta identity
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF -ne 'refs/heads/main' -or $env:EXPECTED_COMMIT -notmatch '^[a-f0-9]{40}$' -or
+              (git rev-parse HEAD).Trim() -ne $env:EXPECTED_COMMIT -or $env:RELEASE_DATE -notmatch '^\d{4}-\d{2}-\d{2}$') { throw 'Invalid candidate source/date.' }
+          $runs = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs?head_sha=$env:EXPECTED_COMMIT&per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read source CI.' }
+          foreach ($name in @('CI','CodeQL Advanced')) {
+            if (-not @($runs.workflow_runs | Where-Object { $_.name -eq $name -and $_.event -eq 'push' -and $_.head_sha -eq $env:EXPECTED_COMMIT -and $_.conclusion -eq 'success' }).Count) { throw "Exact-main $name has not passed." }
+          }
+          $tag = 'beta-' + $env:RELEASE_DATE + '-' + $env:EXPECTED_COMMIT.Substring(0,7)
+          $releases = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or @($releases | Where-Object tag_name -eq $tag).Count) { throw 'Cannot establish unused release identity.' }
+          $refs = @(git ls-remote --tags origin "refs/tags/$tag")
+          if ($LASTEXITCODE -ne 0 -or $refs.Count) { throw 'Candidate tag exists or its absence could not be verified.' }
+          Add-Content $env:GITHUB_ENV "BETA_TAG=$tag"
+      - run: npm ci
+      - name: Stage the private Zoom SDK
+        env:
+          ZOOM_SDK_URL: ${{ secrets.ZOOM_SDK_URL }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:ZOOM_SDK_URL) { throw 'The private Zoom SDK is required.' }
+          $archive = Join-Path $env:RUNNER_TEMP 'zoom-sdk.zip'
+          $extract = Join-Path $env:RUNNER_TEMP 'zoom-sdk'
+          Invoke-WebRequest $env:ZOOM_SDK_URL -OutFile $archive
+          Expand-Archive $archive $extract
+          $header = Get-ChildItem $extract -Recurse -Filter zoom_sdk.h | Where-Object { $_.Directory.Name -eq 'h' } | Select-Object -First 1
+          if (-not $header) { throw 'Private SDK layout is invalid.' }
+          Add-Content $env:GITHUB_ENV "ZOOM_SDK_DIR=$($header.Directory.Parent.FullName)"
+      - name: Build the production native payload
+        run: |
+          & scripts/build-native-dev.ps1 -ZoomSdkDir $env:ZOOM_SDK_DIR -Config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Production native tests
+        run: ctest --test-dir native/build-dev -C Release --output-on-failure
+      - name: Build the self-contained shell and show engine
+        run: |
+          dotnet publish native-shell/CoreVideoPro.WinUI/CoreVideoPro.WinUI.csproj -c Release -p:Platform=x64 -p:WindowsAppSDKSelfContained=true -p:SelfContained=true -p:SourceRevisionId=$env:EXPECTED_COMMIT -r win-x64 -o artifacts/beta-publish
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:show-engine
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify bundled runtime and compiled Sources controls
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'artifacts/beta-publish/CoreVideoPro.WinUI.exe'
+          if ((Get-Item artifacts/beta-publish/CoreVideoPro.WinUI.pri).Length -lt 2000000) { throw 'Incomplete WinUI resources.' }
+          foreach ($probe in @('runtime','operator-settings','studio-layout','graphics-workspace')) {
+            $report = Join-Path $PWD "artifacts/beta-probes/$probe/result.json"
+            New-Item -ItemType Directory (Split-Path $report -Parent) -Force | Out-Null
+            $process = Start-Process $exe -ArgumentList @("--verify-$probe",$report) -WindowStyle Hidden -PassThru
+            if (-not $process.WaitForExit(120000)) { Stop-Process -Id $process.Id; throw "$probe timed out." }
+            if ($process.ExitCode -ne 0) { throw "$probe failed." }
+            $result = Get-Content $report -Raw | ConvertFrom-Json
+            if ($probe -eq 'runtime') {
+              if (-not $result.success -or $result.windowOpened -or @($result.modules | Where-Object { -not $_.bundled }).Count) { throw 'Runtime provenance failed.' }
+            } elseif (-not $result.passed) { throw "$probe verdict failed." }
+          }
+      - name: Package the immutable beta and installer
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pin = Get-Content scripts/alpha/node-runtime.json -Raw | ConvertFrom-Json
+          $node = Join-Path $env:RUNNER_TEMP 'beta-node.exe'
+          Invoke-WebRequest $pin.url -OutFile $node
+          if ((Get-FileHash $node).Hash -ne $pin.sha256) { throw 'Pinned Node identity differs.' }
+          choco install nsis --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((git status --porcelain) -or (git rev-parse HEAD).Trim() -ne $env:EXPECTED_COMMIT) { throw 'Source changed during build.' }
+          & scripts/package-alpha.ps1 -ReleaseId $env:BETA_TAG -PublishDirectory artifacts/beta-publish -NativeBuildDirectory native/build-dev -NodeExe $node
+          if (-not $?) { throw 'Beta packaging failed.' }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vsRoot = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $redist = Get-ChildItem (Join-Path $vsRoot 'VC/Redist/MSVC') -Recurse -Filter vc_redist.x64.exe | Select-Object -First 1
+          if (-not $redist) { throw 'Microsoft VC redistributable is missing.' }
+          $zip = "artifacts/releases/$env:BETA_TAG/CoreVideoPro-win-x64-$env:BETA_TAG.zip"
+          & scripts/package-alpha-installer.ps1 -Archive $zip -VcRedist $redist.FullName
+          if (-not $?) { throw 'Installer packaging failed.' }
+          Copy-Item "artifacts/releases/$env:BETA_TAG/CoreVideoPro-Beta/build-manifest.json" "artifacts/releases/$env:BETA_TAG/build-manifest.json"
+          $manifest = Get-Content "artifacts/releases/$env:BETA_TAG/build-manifest.json" -Raw | ConvertFrom-Json
+          if ($manifest.sourceCommit -ne $env:EXPECTED_COMMIT -or $manifest.framePerformanceAccepted -ne $false) { throw 'Candidate provenance/acceptance differs.' }
+      - name: Create the unaccepted draft only
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((git status --porcelain) -or (git rev-parse HEAD).Trim() -ne $env:EXPECTED_COMMIT) { throw 'Source changed during packaging.' }
+          $root = "artifacts/releases/$env:BETA_TAG"
+          $assets = @("$root/CoreVideoPro-win-x64-$env:BETA_TAG.zip","$root/CoreVideoPro-win-x64-$env:BETA_TAG.zip.sha256",
+            "$root/CoreVideoPro-Setup-$env:BETA_TAG.exe","$root/CoreVideoPro-Setup-$env:BETA_TAG.exe.sha256",
+            "$root/CoreVideoPro-Setup-$env:BETA_TAG.exe.manifest.json","$root/build-manifest.json")
+          $notes = 'Draft candidate containing #957 and #857 camera registration repair. Installed desktop-shortcut camera delivery and Unassign acceptance: UNVERIFIED. Full-workload frame delivery: UNVERIFIED. Do not install during the owner''s show. Clean-runner installer qualification and post-show installed acceptance remain required before publication.'
+          [ordered]@{sourceCommit=$env:EXPECTED_COMMIT;releaseId=$env:BETA_TAG;
+            desktopShortcutCameraDelivery='unverified';desktopShortcutUnassign='unverified';
+            fullWorkloadFrameDelivery='unverified';publicationAllowed=$false} | ConvertTo-Json | Set-Content artifacts/beta-acceptance.json
+          gh release create $env:BETA_TAG @assets --draft --prerelease --target $env:EXPECTED_COMMIT --title $env:BETA_TAG --notes $notes
+          if ($LASTEXITCODE -ne 0) { throw 'Draft upload failed; preserve this exact immutable identity for recovery.' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: beta-candidate-evidence
+          path: |
+            artifacts/beta-acceptance.json
+            artifacts/beta-probes/**
+            artifacts/releases/**/*.json
+            artifacts/releases/**/*.sha256
+            native/build-dev/Testing/Temporary/**
+          if-no-files-found: warn

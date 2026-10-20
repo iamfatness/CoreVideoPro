@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner release order, October 19 — #956/#857:** include #957 and the desktop-user camera registration repair in the next beta. Preserve the running show: no local install, shortcut/profile/registry change, app launch/restart or live camera/input test until the owner ends the show. Prepare source, remote CI and candidate packaging meanwhile. Release acceptance remains pending until the installed app launched from the owner's regular desktop shortcut delivers camera frames and reuses an Unassigned input through its real controls. Source/fixture/clean-runner checks alone do not satisfy that gate.
+
 **Owner Sources regression, October 19 — [#956](https://github.com/iamfatness/CoreVideoPro/issues/956):** Unassign leaves the input row dead. Keep the empty row's unified source picker reachable and verify repeated same-row source reuse through compiled controls without restarting or changing other inputs/Program.
 
 **Owner planning direction, October 19 — engine survival:** turn the architecture
@@ -545,3 +547,4 @@ These rows record specific fixes, not blanket production or fleet reliability.
 | [#574](https://github.com/iamfatness/CoreVideoPro/issues/574) | GPU readiness moved before publication in #566. Hardware pixel tests and 30m16s installed candidate soak passed with zero new CVP delivery failures. Workload limits remain under #517/#569. |
 | [#529](https://github.com/iamfatness/CoreVideoPro/issues/529), [#533](https://github.com/iamfatness/CoreVideoPro/issues/533) | ISO drops/timeline fixes merged and validated in the earlier 24-minute six-ISO recording; shipped September 18. |
 | [#516](https://github.com/iamfatness/CoreVideoPro/issues/516), [#526](https://github.com/iamfatness/CoreVideoPro/issues/526), [#518](https://github.com/iamfatness/CoreVideoPro/issues/518) | Earlier render-stall, Program-buffer startup/busy-loop, and audio-log fixes merged and validated; shipped September 18. Later distinct defects retain their own issues. |
+
