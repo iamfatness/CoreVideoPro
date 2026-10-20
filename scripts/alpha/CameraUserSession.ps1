@@ -97,7 +97,9 @@ function Invoke-CameraUserSession {
         $deadline = [DateTime]::UtcNow.AddSeconds(45)
         while (-not $connected.IsCompleted -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
         if (-not $connected.IsCompleted) { $instance.Stop(); throw 'Desktop camera worker did not connect; registration is unverified.' }
-        $connected.GetAwaiter().GetResult()
+        # Windows PowerShell emits VoidTaskResult as an extra pipeline object.
+        # The transport contract is exactly one correlated reply, not an array.
+        $null = $connected.GetAwaiter().GetResult()
         $reader = [IO.StreamReader]::new($pipe)
         $reply = $reader.ReadLineAsync()
         while (-not $reply.IsCompleted -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
