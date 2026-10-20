@@ -5241,6 +5241,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
           "recording", modules::SourceVideoRepresentation::Cpu});
   }
   modules_.captureDevice->setVideoConsumerDemand(captureDemands);
+  if (engineLive) zoomEngineRuntime_->setVideoConsumerDemand(captureDemands);
   modules_.captureDevice->deliverVideo(captureVideo, frameTimestampMs);
   std::vector<modules::VideoFrame> browserFrames;
   if (!browserSources_->empty()) {
@@ -5363,9 +5364,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   // Conversion has its own bounded arrival stream. Metadata/ref transfers only:
   // no readback or conversion may run on this gather/Program thread.
   auto captureCpuFrames = modules_.captureDevice->takeCpuVideoFrames();
+  if (engineLive) zoomEngineRuntime_->appendCpuVideoFrames(captureCpuFrames);
   if ((recordingStatus_ == "recording" || recordingStatus_ == "warning") &&
       !recordingIsoParticipantIds_.empty()) {
-    isoVideoIngress_.observe(recordingIsoParticipantIds_, videoFrames, captureCpuFrames, monotonic100ns());
+    isoVideoIngress_.observe(recordingIsoParticipantIds_, videoFrames, captureCpuFrames, monotonic100ns(),
+        engineLive && modules::ZoomEngineRuntime::independentIsoVideoSupported());
   } else { isoVideoIngress_.clear(); }
   markStage(s_stageIngestUs, 0);
 

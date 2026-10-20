@@ -4,6 +4,7 @@ import { judgeRedesignWorkload } from './redesign-workload-verdict.mjs';
 
 function completeEvidence() {
   const requiredInputIds = Array.from({ length: 10 }, (_, i) => 'input-' + i);
+  for (let i = 0; i < 7; ++i) requiredInputIds[i] = 'zoom:guest-' + i;
   requiredInputIds[7] = 'capture:camera';
   const requiredIsoIds = requiredInputIds.slice(0, 8);
   const startTime = '2026-10-16T12:00:00Z', endTime = '2026-10-16T12:30:00Z';
@@ -24,6 +25,11 @@ function completeEvidence() {
       captureDevices: [{ isoCpuArrivals: { sourceId: 'capture:camera', demanded: true,
         observed: i * 600 + 1, accepted: i * 600 + 1, drained: i * 600 + 1,
         overflowed: 0, released: 0, pending: 0, bytes: 0 } }],
+      zoomSubscriptionChurn: { sources: requiredIsoIds.filter(id => id.startsWith('zoom:')).map(sourceId => ({
+        isoCpuArrivals: { sourceId, demanded: true, observed: i * 600 + 1, accepted: i * 600 + 1,
+          drained: i * 600 + 1, overflowed: 0, released: 0, pending: 0, bytes: 0 },
+        isoRing: { observed: true, epoch: 1, written: i * 600 + 1, next: i * 600 + 1, lost: 0 },
+      })) },
       realtimeEvidence: { audio: { audioLostSamples: 0, pacerReanchors: 0 }, monitorWorker: { inputs: { sources: requiredInputIds.map(sourceId => ({ sourceId, state: 'ready', frameId: i * 600 + 1 })) } } },
       recording: { active: true, lifecycle: { state: 'producing' },
         streams: [{ kind: 'program', framesWritten: i * 600 + 1 }, ...requiredIsoIds.map(sourceId => ({ sourceId, framesWritten: i * 600 + 1, readiness: 'ready', droppedFrames: 0, droppedAudioPackets: 0 }))],
@@ -49,6 +55,23 @@ test('advancing outputs cannot hide sampled capture arrivals or missing arrival 
     s => { s.captureDevices[0].isoCpuArrivals.released++; },
     s => { s.captureDevices[0].isoCpuArrivals.pending = 5; },
     s => { s.captureDevices[0].isoCpuArrivals.bytes = 32 * 1024 * 1024 + 1; },
+  ]) {
+    const report = completeEvidence(); change(report.samples[10].snapshot);
+    assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
+});
+
+test('advancing files and clean Program pixels cannot hide Zoom helper or playout losses', () => {
+  for (const change of [
+    s => { delete s.zoomSubscriptionChurn; },
+    s => { delete s.zoomSubscriptionChurn.sources[0].isoRing; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoRing.observed = false; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoRing.lost++; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoRing.epoch++; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoRing.next += 2; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoRing.written += 5; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoCpuArrivals.observed += 2; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoCpuArrivals.overflowed++; },
   ]) {
     const report = completeEvidence(); change(report.samples[10].snapshot);
     assert.equal(judgeRedesignWorkload(report).passed, false);

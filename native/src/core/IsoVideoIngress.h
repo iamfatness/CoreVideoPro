@@ -20,7 +20,7 @@ class IsoVideoIngress {
   void observe(const std::vector<std::string>& selected,
                const std::vector<modules::VideoFrame>& frames,
                const std::vector<modules::VideoFrame>& cpuArrivals,
-               int64_t arrival100ns) {
+               int64_t arrival100ns, bool independentZoom = false) {
     std::unordered_set<std::string> ids;
     for (const auto& id : selected) ids.insert(canonical(id));
     std::unordered_set<std::string> liveIds;
@@ -62,7 +62,10 @@ class IsoVideoIngress {
     // it with the newer GPU image's identity or collapse a batch to one slot.
     std::unordered_set<std::string> independentIds;
     for (const auto& frame : cpuArrivals) independentIds.insert(canonical(frame.participantId));
-    for (const auto& frame : frames) if (!independentIds.count(canonical(frame.participantId))) admit(frame);
+    for (const auto& frame : frames) {
+      const auto id = canonical(frame.participantId);
+      if (!independentIds.count(id) && !(independentZoom && id.rfind("zoom:", 0) == 0)) admit(frame);
+    }
     for (const auto& frame : cpuArrivals) admit(frame);
   }
   std::vector<modules::IsoSourceVideoFrame> latest(const std::vector<std::string>& selected) const {

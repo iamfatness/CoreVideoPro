@@ -2,6 +2,7 @@
 #include "rpc/Json.h"
 
 #include "engine-ipc.h"
+#include "iso-video-ring.h"
 
 #include <gtest/gtest.h>
 
@@ -10,6 +11,57 @@
 #include <vector>
 
 namespace {
+
+struct IsoRingFixture {
+  std::vector<uint64_t> storage = std::vector<uint64_t>((zoom_iso::bytes + 7) / 8);
+  void* view() { return storage.data(); }
+  void write(uint32_t id, uint32_t epoch = 7) {
+    uint8_t y[4] = {uint8_t(id), uint8_t(id), uint8_t(id), uint8_t(id)};
+    uint8_t u = 128, v = 128;
+    EXPECT_TRUE(zoom_iso::write(view(), storage.size() * 8, epoch, id, 2, 2, y, &u, &v, id * 1000));
+  }
+};
+
+TEST(ZoomIsoVideoRing, CatchupPreservesEverySourceIdentityPixelsAndCaptureTime) {
+  IsoRingFixture ring;
+  ring.write(100); ring.write(102); ring.write(104);
+  uint32_t next = 0;
+  std::vector<corevideo::modules::ZoomIsoVideoArrival> out;
+  EXPECT_EQ(corevideo::modules::readZoomEngineIsoVideoRing(ring.view(), zoom_iso::bytes, 7, next, "camera", 42, false, out), 0u);
+  ASSERT_EQ(out.size(), 3u); EXPECT_EQ(next, 3u);
+  for (size_t i = 0; i < out.size(); ++i) {
+    EXPECT_EQ(out[i].frame.frameId, 100u + i * 2); EXPECT_EQ(out[i].captured100ns, (100u + i * 2) * 1000);
+    EXPECT_EQ(out[i].frame.i420[0], 100u + i * 2); EXPECT_EQ(out[i].frame.i420Width, 2u);
+  }
+  out.clear();
+  EXPECT_EQ(corevideo::modules::readZoomEngineIsoVideoRing(ring.view(), zoom_iso::bytes, 7, next, "camera", 42, false, out), 0u);
+  EXPECT_TRUE(out.empty());
+}
+
+TEST(ZoomIsoVideoRing, OverflowAndUnfinishedSlotsAreLossNotSuccessfulFrames) {
+  IsoRingFixture ring;
+  for (uint32_t i = 2; i <= 12; i += 2) ring.write(i);
+  uint32_t next = 0;
+  std::vector<corevideo::modules::ZoomIsoVideoArrival> out;
+  EXPECT_EQ(corevideo::modules::readZoomEngineIsoVideoRing(ring.view(), zoom_iso::bytes, 7, next, "camera", 42, false, out), 2u);
+  ASSERT_EQ(out.size(), 4u); EXPECT_EQ(out.front().frame.frameId, 6u); EXPECT_EQ(out.back().frame.frameId, 12u);
+  ring.write(14);
+  zoom_iso::store(zoom_iso::slot(ring.view(), 6)->publication, 13);
+  out.clear();
+  EXPECT_EQ(corevideo::modules::readZoomEngineIsoVideoRing(ring.view(), zoom_iso::bytes, 7, next, "camera", 42, false, out), 1u);
+  EXPECT_TRUE(out.empty()); EXPECT_EQ(next, 7u);
+}
+
+TEST(ZoomIsoVideoRing, ReArmRequiresTheRequestedEpochAndRejectsOldPixels) {
+  IsoRingFixture ring; ring.write(20);
+  uint32_t next = 0;
+  std::vector<corevideo::modules::ZoomIsoVideoArrival> out;
+  EXPECT_EQ(corevideo::modules::readZoomEngineIsoVideoRing(ring.view(), zoom_iso::bytes, 8, next, "camera", 42, false, out), 0u);
+  EXPECT_TRUE(out.empty()); EXPECT_EQ(next, 0u);
+  ring.write(24, 8);
+  EXPECT_EQ(corevideo::modules::readZoomEngineIsoVideoRing(ring.view(), zoom_iso::bytes, 8, next, "camera", 42, false, out), 0u);
+  ASSERT_EQ(out.size(), 1u); EXPECT_EQ(out[0].frame.frameId, 24u);
+}
 
 corevideo::rpc::Json parseCommand(const std::string& line) {
   auto parsed = corevideo::rpc::Json::parse(line);

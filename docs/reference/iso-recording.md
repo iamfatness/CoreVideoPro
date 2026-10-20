@@ -36,6 +36,27 @@ not prove source-content continuity. Keep that failed source-fidelity result;
 only a fresh installed workload can qualify the correction. Zoom's separate
 shared-memory latest-frame sampling is not changed by this UVC fix.
 
+## Zoom ISO arrivals (#989)
+
+The Windows/Linux SDK helper accepts an ISO-only `iso_video` demand carrying a
+nonzero request epoch. At most eight sources have an additive four-slot I420
+shared-memory ring, sized once for 1920×1088. Ordinary latest-picture mappings
+and Program/multiview selection keep their existing ABI and behavior. The
+separate macOS helper retains its existing path and is not qualified by this fix.
+
+The ingest owner drains the requested epoch into a bounded ref-only CPU queue,
+separately from its latest-picture job and before ISO encoding. A missing ring
+cannot freeze Program and cannot silently fall back to sampled pictures for ISO.
+Demand re-arm fences old epochs; per-slot publication checks reject overwritten
+or unfinished copies. Ring loss, queue overflow and release remain observable.
+Empty ISO arrival batches must not replay an older render-picture identity.
+
+`zoomSubscriptionChurn.sources[].isoRing` reports observed epoch, actual helper
+write count, drained cursor and loss. Its `isoCpuArrivals` reports the subsequent
+admission queue. Qualification checks both boundaries and rejects missing facts,
+epoch changes, cursor/admission disagreement, loss, overflow or unsupported
+backlog. Source/recording counters alone cannot establish display deadlines.
+
 ## Windows recording queue ownership (#814, October 8, 2026)
 
 When wrapped by `AsyncEncoderSink`, Media Foundation gives Program its own

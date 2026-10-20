@@ -83,8 +83,9 @@ export function judgeRedesignWorkload(report) {
       if (track?.readiness !== 'ready') errors.push(`${index}: ISO ${id} is not ready.`);
       metrics['isoVideoDropped:' + id] = track?.droppedFrames;
       metrics['isoAudioDropped:' + id] = track?.droppedAudioPackets;
-      if (id.startsWith('capture:')) {
-        const matches = s.captureDevices?.filter(device => device.isoCpuArrivals?.sourceId === id) ?? [];
+      if (id.startsWith('capture:') || id.startsWith('zoom:')) {
+        const owners = id.startsWith('zoom:') ? s.zoomSubscriptionChurn?.sources : s.captureDevices;
+        const matches = owners?.filter(device => device.isoCpuArrivals?.sourceId === id) ?? [];
         const a = matches.length === 1 ? matches[0].isoCpuArrivals : null;
         const fields = ['observed', 'accepted', 'drained', 'overflowed', 'released', 'pending', 'bytes'];
         if (!a || a.demanded !== true || fields.some(field => !Number.isSafeInteger(a[field]) || a[field] < 0)) {
@@ -103,6 +104,21 @@ export function judgeRedesignWorkload(report) {
               a.observed - prior.observed !== a.accepted - prior.accepted))
             errors.push(`${index}: ISO ${id} lost arrivals before recording admission.`);
           arrivalBaselines.set(id, a);
+          if (id.startsWith('zoom:')) {
+            const ring = matches[0].isoRing;
+            const priorRing = arrivalBaselines.get('ring:' + id);
+            if (!ring || ring.observed !== true || !Number.isSafeInteger(ring.epoch) || ring.epoch <= 0 ||
+                ['written', 'next', 'lost'].some(field => !Number.isSafeInteger(ring[field]) || ring[field] < 0) ||
+                ring.next > ring.written || ring.written - ring.next > 4)
+              errors.push(`${index}: ISO ${id} lacks coherent helper arrival-ring evidence.`);
+            else {
+              metrics['isoRingLost:' + id] = ring.lost;
+              if (priorRing && (ring.epoch !== priorRing.epoch || ring.next < priorRing.next ||
+                  ring.written < priorRing.written || ring.next - priorRing.next !== a.accepted - prior.accepted))
+                errors.push(`${index}: ISO ${id} lost helper arrivals before CPU admission.`);
+              arrivalBaselines.set('ring:' + id, ring);
+            }
+          }
         }
       }
     }

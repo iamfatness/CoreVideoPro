@@ -1,6 +1,7 @@
 #include "engine-ipc.h"
 #include "engine-writer.h"
 #include "engine-video.h"
+#include "iso-video-demand.h"
 #include "engine-share.h"
 #include "engine-audio.h"
 #include <zoom_sdk.h>
@@ -1533,6 +1534,11 @@ int main(int argc, char **argv)
                                              isolate_audio, audience_audio);
             }
 
+        } else if (ipc_command_is(line, "iso_video")) {
+            const auto uuid = json_str(line, "source_uuid");
+            const auto epoch = json_uint(line, "epoch");
+            if (is_valid_source_uuid(uuid) && !IsoVideoDemand::instance().set(uuid, epoch))
+                EngineIpc::write("{\"cmd\":\"error\",\"stage\":\"iso_video\",\"reason\":\"arrival_ring_capacity\"}");
         } else if (ipc_command_is(line, IPC_CMD_UNSUBSCRIBE)) {
             std::string uuid = json_str(line, "source_uuid");
             if (is_valid_source_uuid(uuid)) {
