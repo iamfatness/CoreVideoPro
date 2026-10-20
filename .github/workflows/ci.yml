@@ -283,6 +283,8 @@ jobs:
         with:
           dotnet-version: "9.0.x"
       - run: npm ci
+      - name: Camera ownership and independent desktop-user installer boundary
+        run: node --test scripts/tests/camera-installation.test.mjs
       - name: Native media-core stub gate
         run: npm run test:native-media-core
       - name: Restore and provision WinUI test runtime

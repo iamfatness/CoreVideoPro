@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner release order, October 19 — #956/#857:** include #957 and the desktop-user camera registration repair in the next beta. Preserve the running show: no local install, shortcut/profile/registry change, app launch/restart or live camera/input test until the owner ends the show. Prepare source, remote CI and candidate packaging meanwhile. Release acceptance remains pending until the installed app launched from the owner's regular desktop shortcut delivers camera frames and reuses an Unassigned input through its real controls. Source/fixture/clean-runner checks alone do not satisfy that gate.
+
 **Owner review follow-up, October 19 — #951/#927:** Studio's bottom controls do
 not fit at 1080p and the template workflow is still unclear. Restore complete
 Studio control fit with full-workspace compiled geometry and renders; preserve
