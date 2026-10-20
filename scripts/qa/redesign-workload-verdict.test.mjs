@@ -22,7 +22,7 @@ function completeEvidence() {
       outputProfile: { width: 1920, height: 1080, fps: 60 }, meetingState: 'in_meeting',
       realtimeEvidence: { audio: { audioLostSamples: 0, pacerReanchors: 0 }, monitorWorker: { inputs: { sources: requiredInputIds.map(sourceId => ({ sourceId, state: 'ready', frameId: i * 600 + 1 })) } } },
       recording: { active: true, lifecycle: { state: 'producing' },
-        streams: [{ kind: 'program', framesWritten: i * 600 + 1 }, ...requiredIsoIds.map(sourceId => ({ sourceId, framesWritten: i * 600 + 1 }))],
+        streams: [{ kind: 'program', framesWritten: i * 600 + 1 }, ...requiredIsoIds.map(sourceId => ({ sourceId, framesWritten: i * 600 + 1, readiness: 'ready', droppedFrames: 0, droppedAudioPackets: 0 }))],
         proof: { programMissingFrames: 0, encoderQueueDroppedVideoFrames: 0, encoderQueueDroppedAudioPackets: 0 } },
       programBuffer: { underruns: 0 },
       virtualCamera: { enabled: true, status: 'live', framesPublished: i * 600 + 1, pendingFramesReplaced: 0, publicationExceptions: 0 },
@@ -56,6 +56,20 @@ test('clean video cannot conceal lost recording audio or a discarded audio clock
     s => { s.realtimeEvidence.audio.pacerReanchors++; },
   ]) {
     const report = completeEvidence(); change(report.samples[10].snapshot);
+    assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
+});
+
+test('advancing Program and ISO counters cannot hide an ISO output losing video or audio', () => {
+  for (const change of [
+    track => { track.droppedFrames++; },
+    track => { track.droppedAudioPackets++; },
+    track => { delete track.droppedFrames; },
+    track => { delete track.droppedAudioPackets; },
+    track => { track.readiness = 'missing'; },
+  ]) {
+    const report = completeEvidence();
+    change(report.samples[10].snapshot.recording.streams[1]);
     assert.equal(judgeRedesignWorkload(report).passed, false);
   }
 });

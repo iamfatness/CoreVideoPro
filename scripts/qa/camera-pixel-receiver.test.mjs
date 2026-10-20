@@ -9,6 +9,15 @@ const fixture = () => [
 const judge = rows => judgeCameraPixels(rows.map(JSON.stringify).join('\n'), { warmupSeconds: 0, minimumSeconds: 2 });
 test('accepts a complete rational 60/1 identity sequence', () => assert.equal(judge(fixture()).receiverPixelContinuityPassed, true));
 
+test('a complete sequence cannot conceal frame acquisition failures', () => {
+  for (const frameFailures of [1, -1, null, '0']) {
+    const rows = fixture(); rows.at(-1).frameFailures = frameFailures;
+    assert.equal(judge(rows).receiverPixelContinuityPassed, false);
+  }
+  const rows = fixture(); rows.at(-1).frameFailures = 0;
+  assert.equal(judge(rows).receiverPixelContinuityPassed, true);
+});
+
 test('coverage comes from actual receiver arrivals after warmup, not capture duration alone', () => {
   const rows = fixture();
   assert.equal(judge(rows).coverage.complete, false);

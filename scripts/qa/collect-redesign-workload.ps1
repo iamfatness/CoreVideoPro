@@ -59,7 +59,7 @@ do {
       outputProfile=$s.outputProfile;meetingState=$s.meetingState;programBuffer=$s.programBuffer
       realtimeEvidence=$s.realtimeEvidence;encoderEvidence=$s.encoderEvidence;virtualCamera=$s.virtualCamera
       recording=[ordered]@{active=$s.recording.active;lifecycle=$s.recording.lifecycle;proof=$s.recording.proof;artifactPath=$s.recording.artifactPath
-        streams=@($s.recording.streams | Select-Object kind,sourceId,status,framesWritten,droppedFrames,readiness)}
+        streams=@($s.recording.streams | Select-Object kind,sourceId,status,framesWritten,droppedFrames,droppedAudioPackets,missingFrames,readiness,writeQueue)}
     }}
     $rows.Add($row)
     ($row | ConvertTo-Json -Depth 24 -Compress) | Add-Content -LiteralPath (Join-Path $OutputDirectory 'workload-samples.ndjson')
