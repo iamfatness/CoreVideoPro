@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner Studio review follow-up, October 19 — [#954](https://github.com/iamfatness/CoreVideoPro/issues/954):** correct stale output status text, distinguish observed output progress from configuration, remove redundant footer summary text and align production/telemetry baselines. Validate state transitions and compiled bindings as well as fit; preserve the running review app.
+
 **Owner review follow-up, October 19 — #951/#927:** Studio's bottom controls do
 not fit at 1080p and the template workflow is still unclear. Restore complete
 Studio control fit with full-workspace compiled geometry and renders; preserve
@@ -252,6 +254,7 @@ and acceptance contract linked from #835. New live incidents may still preempt t
 | Order | Lane | Issue | Remaining work |
 |---|---|---|---|
 | Owner review regression — October 19 | B | [#951](https://github.com/iamfatness/CoreVideoPro/issues/951) | Reproduce full Studio footer clipping at 1080p; restore visible, non-overlapping production actions with compiled full-workspace geometry and renders. |
+| Owner review follow-up — October 19 | B | [#954](https://github.com/iamfatness/CoreVideoPro/issues/954) | Correct stuck output status text and misleading configured readouts; remove redundant summary and align action/telemetry rows. Prove observed recording/local-stream progress reaches compiled controls. |
 | Owner current — October 19 Graphics feedback | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927) | Preview/starters merged in #950; review follow-up makes personalization live and joins saved starter adoption to explicit Studio assignment and navigation without putting graphics on air. |
 | Owner current — Volt implementation | A | [#926](https://github.com/iamfatness/CoreVideoPro/issues/926) | Native template/instance consumer and bounded preparation with compatibility lower-third pixels. |
 | Volt dependent — after #926 | B | [#927](https://github.com/iamfatness/CoreVideoPro/issues/927), [#928](https://github.com/iamfatness/CoreVideoPro/issues/928) | Complete workspace/migration and actual title/bug/clock consumers; activate only as dependency gates pass. |

@@ -10346,7 +10346,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             programResolutionLabel,
             MasterLimiterEnabled);
         Tm("transport");
-        ApplyConfiguredOutputReadouts(snapshot);
         Tm("outputReadouts");
         RefreshAudioParticipantRows();
         Tm("audioRows");
@@ -12825,40 +12824,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 LiveProductionSync.IsStreamingLive(snapshot),
                 ResolveProgramResolutionLabel(snapshot),
                 MasterLimiterEnabled);
-            ApplyConfiguredOutputReadouts(snapshot);
             NotifyShowReadinessChanged();
             return;
         }
 
         Transport.ApplyIdleState(Recording, Streaming, ProgramResolutionLabel);
-        ApplyConfiguredOutputReadouts();
         NotifyShowReadinessChanged();
     }
-
-    private void ApplyConfiguredOutputReadouts(NativeMediaCoreStateSnapshot? snapshot = null)
-    {
-        if (!Streaming &&
-            (snapshot is null ||
-             (!LiveProductionSync.IsStreamingLive(snapshot) &&
-              LiveProductionSync.ResolveStreamHealthStatus(snapshot, streaming: false).Equals("idle", StringComparison.OrdinalIgnoreCase))))
-        {
-            Transport.StreamStatValue = FormatTransportStreamConfigLabel();
-        }
-
-        if (!Recording &&
-            (snapshot is null ||
-             (snapshot.Recording?.Active != true &&
-              LiveProductionSync.ResolveRecordHealthStatus(snapshot, recording: false).Equals("idle", StringComparison.OrdinalIgnoreCase))))
-        {
-            Transport.RecordStatValue = FormatTransportRecordingConfigLabel();
-        }
-    }
-
-    private string FormatTransportStreamConfigLabel() =>
-        FormatTransportStreamConfigLabel(StreamTargetBitrateMbps);
-
-    private string FormatTransportRecordingConfigLabel() =>
-        FormatTransportRecordingConfigLabel(RecordingFormat, RecordingTargetBitrateMbps);
 
     private void NotifyShowReadinessChanged()
     {
