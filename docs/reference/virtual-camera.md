@@ -26,6 +26,13 @@ Sources control, Unassign and reuse the input immediately without restart or
 unrelated Program/ISO changes. Both must pass before installed acceptance; these
 functional checks do not replace full-workload frame-delivery qualification.
 
+`Build draft beta candidate` runs only on GitHub's Windows runner against an
+exact green main SHA. It builds the production payload, probes compiled Sources
+controls and packages the six immutable beta assets into an unaccepted draft.
+The owner PC is not an installer/QA runner during a show. Draft notes and the
+candidate evidence keep both desktop acceptance results unverified; run the
+separate exact-asset installer qualification before post-show local acceptance.
+
 Webcam enable is desired state, not proof that Windows accepted startup. The
 asynchronous owner formerly marked a failed start as applied and never tried
 again while enable remained true. Repairing the registry alone therefore left
