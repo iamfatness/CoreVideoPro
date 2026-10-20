@@ -13,6 +13,9 @@
 #include <vector>
 #include <fstream>
 #include <iterator>
+#include <thread>
+#include <array>
+#include <latch>
 #if COREVIDEO_WITH_VIRTUALCAM
 #include <mfapi.h>
 #include <mfidl.h>
@@ -417,6 +420,35 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
   EXPECT_NE(lastLine.find("formatMismatch=1"), std::string::npos);
   EXPECT_NE(lastLine.find("lastProgramSequence=238"), std::string::npos);
   EXPECT_NE(lastLine.find("lastReadProgramSequence=999"), std::string::npos);
+
+  // MF callers may queue multiple tokens. They share a stream clock and timer;
+  // concurrent requests must each deliver one event with increasing PTS, and
+  // shutdown must drain the request owner without closing a timer in use.
+  pixels[0] = 239; writer.write(pixels, 1920, 1080);
+  std::latch startRequests(1);
+  std::array<HRESULT, 3> requested{E_FAIL, E_FAIL, E_FAIL};
+  std::vector<std::jthread> callers;
+  for (size_t i = 0; i < requested.size(); ++i) callers.emplace_back([&, i] {
+    const auto com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    startRequests.wait(); requested[i] = stream->RequestSample(nullptr);
+    if (SUCCEEDED(com)) CoUninitialize();
+  });
+  startRequests.count_down(); callers.clear();
+  for (const auto hr : requested) ASSERT_TRUE(SUCCEEDED(hr));
+  size_t received = 0;
+  for (int i = 0; i < 6 && received < requested.size(); ++i) {
+    ComPtr<IMFMediaEvent> event;
+    ASSERT_TRUE(SUCCEEDED(stream->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event)));
+    MediaEventType type{}; ASSERT_TRUE(SUCCEEDED(event->GetType(&type)));
+    if (type != MEMediaSample) continue;
+    PROPVARIANT payload{}; ASSERT_TRUE(SUCCEEDED(event->GetValue(&payload)));
+    ComPtr<IMFSample> sample;
+    const auto hr = payload.punkVal->QueryInterface(IID_PPV_ARGS(&sample));
+    PropVariantClear(&payload); ASSERT_TRUE(SUCCEEDED(hr));
+    LONGLONG pts = 0; ASSERT_TRUE(SUCCEEDED(sample->GetSampleTime(&pts)));
+    EXPECT_GT(pts, lastPts); lastPts = pts; ++received;
+  }
+  EXPECT_EQ(received, requested.size());
 }
 #endif
 

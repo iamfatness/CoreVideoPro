@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Full-workload camera repeat dependency — [#991](https://github.com/iamfatness/CoreVideoPro/issues/991):** registered OS camera pixels exposed one held identity after 27 minutes while native Program counters stayed clean. Preserve that failed run, establish cadence from the first actual fresh emission without extending issued read deadlines, serialize request ownership and test restart fences. Require fresh installed recording/OS-pixel and full-workload evidence before publication.
+
 **Full-workload Zoom fidelity dependency — [#989](https://github.com/iamfatness/CoreVideoPro/issues/989):** unchanged source epochs exposed hundreds of Zoom frames omitted before ISO recording despite zero writer drops. Preserve selected ISO ingest arrivals before latest-picture playout, reject fallback to older render frames during empty batches, and separately repair/account shared-memory reader loss. Actual source/reader/recorded identities and fresh installed workload evidence are required; the current qualification run cannot pass overall.
 
 **Full-workload readout dependency — [#987](https://github.com/iamfatness/CoreVideoPro/issues/987):** explicit ISO re-arm after Unassign must refresh the armed count even when persisted intent is unchanged. Preserve engine-reported raw-media facts through the spine/read model so recording preflight follows confirmed capture start/stop instead of a stale join-time warning. Validate the installed controls before publication; do not infer capture from toggle intent.

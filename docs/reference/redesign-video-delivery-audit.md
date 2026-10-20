@@ -211,3 +211,25 @@ display or real-time delivery deadlines. Run decoding after the live capture.
 Supply its result as `recordingPixelVerdict` in the combined report. Its first
 and last identities and sample count must match the camera receiver's measured
 interval; an unrelated clean recording cannot qualify the run.
+
+## Camera request phase and ownership (#991)
+
+The MF stream establishes its rational cadence once at the first successfully
+queued fresh sample. Cold allocation and mapping work can finish after the first
+request's read deadline; retaining that pre-allocation phase left following read
+windows near the publisher boundary. The original issued deadline remains
+unchanged and its diagnostic miss remains visible. Later fresh samples cannot
+rebase the clock. The existing two-millisecond delivery reserve, retry bound and
+two-payload-copy limit remain in force.
+
+One request owns pacing, the shared timer, read deadline, copy and event delivery
+under a separate request mutex. Stream-state operations retain their own mutex.
+Shutdown takes request ownership before stream state so it cannot close a timer
+being waited on. A request reserved in an earlier Start generation cannot emit
+into a later Start. This avoids treating queued MF tokens as independent clocks.
+
+The retained October 20 trial decoded every recorded Program identity while the
+registered OS receiver observed one held duplicate, confirmed by FrameServer's
+held/unrecovered counters. Program file continuity therefore cannot substitute
+for camera pixel acceptance. The scheduling regression and direct-DLL MF tests
+are necessary checks; only a fresh installed OS-camera workload can qualify it.
