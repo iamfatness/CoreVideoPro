@@ -58,7 +58,8 @@ public sealed partial class StudioViewModel : ITransportHost, ITransportDispatch
     {
         // Observed snapshots never overwrite operator intent. Terminal failure
         // disarms future syncs once the active command has settled.
-        if (patch.RecordingRequested == false && !_transportCoordinator.RecordingToggleInFlight)
+        if (patch.RecordingRequested == false && !_transportCoordinator.RecordingToggleInFlight &&
+            !_transportCoordinator.IsSupersededRecordingSession(patch.RecordingSessionId))
         {
             RecordingRequested = false;
         }

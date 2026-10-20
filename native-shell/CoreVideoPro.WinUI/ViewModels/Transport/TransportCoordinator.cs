@@ -34,6 +34,13 @@ public sealed class TransportCoordinator
     private bool _recordingToggleInFlight;
     private bool _streamToggleInFlight;
     private bool _takeInFlight;
+    private string? _recordingPreviousSessionId;
+
+    // Native observations can retain the previous take's terminal result while
+    // a new Start is being admitted. It must not cancel the new operator intent.
+    internal bool IsSupersededRecordingSession(string? sessionId) =>
+        !string.IsNullOrEmpty(_recordingPreviousSessionId) &&
+        string.Equals(sessionId, _recordingPreviousSessionId, StringComparison.Ordinal);
 
     public TransportCoordinator(
         IMediaCoreBridge bridge,
@@ -282,6 +289,8 @@ public sealed class TransportCoordinator
         }
 
         _recordingToggleInFlight = true;
+        if (starting)
+            _recordingPreviousSessionId = _bridge.LastSnapshot?.Recording?.Lifecycle?.SessionId;
         _host.NotifyRecordingCommandCanExecuteChanged();
         var previousRecording = _host.Recording;
         LaunchLog.Write(
@@ -343,7 +352,8 @@ public sealed class TransportCoordinator
         {
             await _host.EnsureMediaCoreRunningAsync(starting ? "Starting media core for recording..." : "Updating media core...").ConfigureAwait(false);
             var snapshot = await _host.SyncActiveSceneAsync(starting ? "record-start" : "record-stop").ConfigureAwait(false);
-            if (starting && TransportStatusFormatter.TryFormatRecordingStartHealthFailure(snapshot, out var healthFailureStatus))
+            if (starting && !IsSupersededRecordingSession(snapshot.Recording?.Lifecycle?.SessionId) &&
+                TransportStatusFormatter.TryFormatRecordingStartHealthFailure(snapshot, out var healthFailureStatus))
             {
                 _dispatcher.RunOnUiThread(() =>
                 {
@@ -448,7 +458,8 @@ public sealed class TransportCoordinator
             try
             {
                 var snapshot = await _host.SyncActiveSceneAsync().ConfigureAwait(false);
-                if (starting && TransportStatusFormatter.TryFormatRecordingStartHealthFailure(snapshot, out var healthFailureStatus))
+                if (starting && !IsSupersededRecordingSession(snapshot.Recording?.Lifecycle?.SessionId) &&
+                    TransportStatusFormatter.TryFormatRecordingStartHealthFailure(snapshot, out var healthFailureStatus))
                 {
                     _dispatcher.RunOnUiThread(() =>
                     {

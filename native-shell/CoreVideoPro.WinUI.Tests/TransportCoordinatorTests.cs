@@ -166,6 +166,40 @@ public sealed class TransportCoordinatorTests
         Assert.StartsWith("Recording start failed:", host.OutputStatus);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task RecordingRetryOnlyRollsBackForTheNewSessionFailure(bool newSessionFailure, bool backpressure)
+    {
+        var (coordinator, bridge, host) = Build(recordingSyncRetryDelayMs: 1);
+        NativeMediaCoreStateSnapshot Failed(string id) => new()
+        {
+            Recording = new NativeMediaCoreRecordingSession
+            {
+                SessionId = id, Status = "failed", WriterStatus = "failed", TargetFolder = @"D:\recordings",
+                FilenamePrefix = "show", Format = "mp4", Quality = "high", ProgramPath = @"D:\recordings\Program.mp4",
+                Lifecycle = new CoreVideoPro.MediaCore.Contracts.OutputLifecycle
+                {
+                    SessionId = id, DesiredActive = false, State = "failed", Health = "failed",
+                    Finalized = false, Error = "Previous empty container failed to finalize"
+                }
+            }
+        };
+        bridge.LastSnapshot = Failed("previous-take");
+        host.SyncResult = Failed(newSessionFailure ? "new-take" : "previous-take");
+        host.SyncFailuresRemaining = backpressure ? 1 : 0;
+        await coordinator.SetRecordingAsync(true);
+        Assert.Equal(!newSessionFailure, host.Recording);
+        Assert.False(coordinator.RecordingToggleInFlight);
+        if (newSessionFailure) Assert.StartsWith("Recording start failed:", host.OutputStatus);
+        else Assert.Equal("Recording start requested.", host.OutputStatus);
+        Assert.True(coordinator.IsSupersededRecordingSession("previous-take"));
+        Assert.False(coordinator.IsSupersededRecordingSession("new-take"));
+        Assert.False(coordinator.IsSupersededRecordingSession(null)); // Missing identity is never proof of an old failure.
+    }
+
     [Fact]
     public async Task ToggleRecording_StopWaitsForBusyStartAndKeepsCommandGuarded()
     {
