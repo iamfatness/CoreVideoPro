@@ -22,12 +22,13 @@ class IsoPixelsTest(unittest.TestCase):
             with self.subTest(decoded=decoded):
                 self.assertFalse(iso.compare_identities([100, 102, 108, 110], decoded)['isoPixelArrivalFidelityPassed'])
 
-    def write_trace(self, path, *, lost=0, complete=1, second_epoch=5, source='zoom:1000', dimensions=(1920, 1080)):
+    def write_trace(self, path, *, lost=0, complete=1, second_epoch=5, source='zoom:1000', dimensions=(1920, 1080), v2=False):
         tag = iso.source_tag(source, 777)
         records = [iso.EVENT.pack(777, tag, epoch, -1, frame, at, at * 10000,
                                   dimensions[0] << 32 | dimensions[1], 11, 0)
                    for epoch, frame, at in [(5, 100, 1500), (second_epoch, 102, 2500), (5, 108, 3500)]]
-        path.write_bytes(iso.HEADER.pack(b'CVTRACE1', 1, iso.EVENT.size, 1000, 777,
+        if v2: records = [iso.EVENT_V2.pack(*iso.EVENT.unpack(record), 0, 0) for record in records]
+        path.write_bytes(iso.HEADER.pack(b'CVTRACE2' if v2 else b'CVTRACE1', 2 if v2 else 1, iso.EVENT_V2.size if v2 else iso.EVENT.size, 1000, 777,
                                        len(records), lost, 0, complete, 1000, 4000) + b''.join(records))
 
     def test_trace_requires_complete_nonlossy_same_owner_1080p_source(self):
@@ -37,6 +38,8 @@ class IsoPixelsTest(unittest.TestCase):
             frames, coverage = iso.expected_arrivals(path, 'zoom:1000', 1000, 4000, 3)
             self.assertEqual(frames, [100, 102, 108])
             self.assertEqual(coverage['sourceArrivalFps'], 1)
+            self.write_trace(path, v2=True)
+            self.assertEqual(iso.expected_arrivals(path, 'zoom:1000', 1000, 4000, 3)[0], frames)
             for mutation in ({'lost': 1}, {'complete': 0}, {'second_epoch': 6},
                              {'source': 'zoom:2000'}, {'dimensions': (320, 180)}):
                 self.write_trace(path, **mutation)

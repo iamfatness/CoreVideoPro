@@ -25,8 +25,18 @@ explicit, and an incomplete file never qualifies. Shutdown waits at most two
 seconds; a blocked exporter retains only its owned state until it completes.
 No new camera-DLL thread is introduced.
 
-V1 uses the 80-byte `DeliveryTraceHeader` and 72-byte `DeliveryTraceEvent` in
+V2 uses the 80-byte `DeliveryTraceHeader` and 88-byte `DeliveryTraceEvent` in
 little-endian form, pinned by native layout assertions and the Python structs.
+The judges still read retained V1 captures with their 72-byte events. V2 appends
+`programGpuReadyNs` and `programDeadlineNs` to Program GPU-ready records. These
+are both steady-clock nanoseconds: the observed completion query time and the
+original buffered production slot's scheduled delivery target. The observer
+does not move that deadline or infer it from a later delivery timestamp. A late
+observation is conservative failure evidence; it does not establish the GPU's
+exact earlier completion time. Other event kinds leave both fields zero.
+Use `delivery-trace.py --require-program-deadlines` for this proof; missing V1
+fields cannot pass it. Ordinary boundary-only diagnostics remain separately
+labeled and never imply release qualification.
 Windows event timestamps are raw QPC ticks with the host frequency in the
 header; other hosts use steady-clock nanoseconds. The judge also reports requested-versus-drawn source observation age; this is
 selection lag, not actual acquisition-to-receiver content latency. Source observation timestamps

@@ -40,13 +40,15 @@ TEST(DeliveryTrace, CompletedExportPreservesEveryAcceptedIdentityAndClock) {
   for (int i = 0; i < 1500; ++i) {
     DeliveryTraceEvent event; event.programSequence = i; event.sourceEpoch = 7;
     event.sourceFrameId = i * 2; event.sourceObservation100ns = 123 + i;
-    event.layoutTag = 12; event.stage = DeliveryStage::ProgramDelivered;
+    event.layoutTag = 12; event.stage = DeliveryStage::ProgramGpuReady;
+    event.programGpuReadyNs = 1000000000LL + i; event.programDeadlineNs = 1001000000LL + i;
     ASSERT_TRUE(capture.trace.record(event));
   }
   ASSERT_TRUE(capture.trace.close());
   const auto header = readHeader(capture.path);
   EXPECT_EQ(header.complete, 1); EXPECT_EQ(header.exported, 1500); EXPECT_EQ(header.lost, 0);
   EXPECT_GT(header.clockFrequency, 0); EXPECT_GT(header.sessionEpoch, 0);
+  EXPECT_EQ(header.version, 2u); EXPECT_EQ(header.eventBytes, 88u);
   EXPECT_EQ(std::filesystem::file_size(capture.path), sizeof(header) + 1500 * sizeof(DeliveryTraceEvent));
   std::ifstream input(capture.path, std::ios::binary); input.seekg(sizeof(header));
   for (int i = 0; i < 1500; ++i) {
@@ -55,6 +57,7 @@ TEST(DeliveryTrace, CompletedExportPreservesEveryAcceptedIdentityAndClock) {
     EXPECT_EQ(event.sourceObservation100ns, 123 + i); EXPECT_EQ(event.sourceEpoch, 7);
     EXPECT_EQ(event.sessionEpoch, header.sessionEpoch); EXPECT_GE(event.timestamp, header.started);
     EXPECT_LE(event.timestamp, header.ended); EXPECT_EQ(event.layoutTag, 12);
+    EXPECT_EQ(event.programGpuReadyNs, 1000000000LL + i); EXPECT_EQ(event.programDeadlineNs, 1001000000LL + i);
   }
 }
 TEST(DeliveryTrace, ConcurrentWritersNeverTearAndAccountForEveryRefusal) {

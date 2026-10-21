@@ -149,11 +149,13 @@ class D3DProgramBuffer {
  private:
   uint64_t traceEpoch_ = 0;
   void trace(const ProgramFrame& frame, core::DeliveryStage stage,
-                    core::DeliveryReason reason = core::DeliveryReason::None) {
+                    core::DeliveryReason reason = core::DeliveryReason::None,
+                    int64_t gpuReadyNs = 0, int64_t deadlineNs = 0) {
     core::DeliveryTraceEvent event;
     event.stage = stage; event.reason = reason; event.programSequence = frame.frameNumber;
     event.sourceEpoch = traceEpoch_; // Process-unique Program-buffer instance.
     event.layoutTag = frame.renderPlanSignature;
+    event.programGpuReadyNs = gpuReadyNs; event.programDeadlineNs = deadlineNs;
     core::recordDeliveryTrace(event);
   }
   void fail(const char* stage) {
@@ -512,7 +514,9 @@ class D3DProgramBuffer {
         ++diagnostics_.prepared;
         submitted_.pop_front();
         slot->readyAt = std::chrono::steady_clock::now();
-        if (ready) trace(slot->frame, core::DeliveryStage::ProgramGpuReady);
+        if (ready) trace(slot->frame, core::DeliveryStage::ProgramGpuReady, core::DeliveryReason::None,
+            std::chrono::duration_cast<std::chrono::nanoseconds>(gpuAt.time_since_epoch()).count(),
+            timeline_ ? timeline_->deadlineNs(slot->productionSlot) : 0);
         else trace(slot->frame, core::DeliveryStage::ProgramMiss, core::DeliveryReason::Failed);
         slot->state = State::Ready;
         // Delivery also retires expired ready slots, returning key 0 exactly once.

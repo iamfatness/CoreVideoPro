@@ -24,11 +24,14 @@ struct DeliveryTraceEvent {
   std::uint64_t layoutTag = 0;
   DeliveryStage stage = DeliveryStage::ProgramSubmitted;
   DeliveryReason reason = DeliveryReason::None;
+  // v2: same steady-clock nanosecond domain, not QPC ticks. On ProgramGpuReady,
+  // record the actual observed GPU completion and its original scheduled target.
+  std::int64_t programGpuReadyNs = 0, programDeadlineNs = 0;
 };
-static_assert(sizeof(DeliveryTraceEvent) == 72);
+static_assert(sizeof(DeliveryTraceEvent) == 88);
 struct DeliveryTraceHeader {
-  char magic[8] = {'C','V','T','R','A','C','E','1'};
-  std::uint32_t version = 1, eventBytes = sizeof(DeliveryTraceEvent);
+  char magic[8] = {'C','V','T','R','A','C','E','2'};
+  std::uint32_t version = 2, eventBytes = sizeof(DeliveryTraceEvent);
   std::uint64_t clockFrequency = 0, sessionEpoch = 0, exported = 0, lost = 0;
   std::uint64_t failures = 0, complete = 0;
   std::int64_t started = 0, ended = 0;

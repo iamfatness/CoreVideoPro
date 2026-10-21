@@ -39,7 +39,7 @@ std::int64_t deliveryTraceNow() noexcept {
 }
 struct DeliveryTraceCapture::State {
   struct Slot { std::atomic<std::uint64_t> sequence{0}; DeliveryTraceEvent event; };
-  static_assert(sizeof(Slot) == 80);
+  static_assert(sizeof(Slot) == 96);
   static constexpr std::size_t capacity = kStorageBytes / sizeof(Slot);
   static constexpr std::uint64_t maxExportBytes = 256 * 1024 * 1024;
   std::unique_ptr<Slot[]> slots = std::make_unique<Slot[]>(capacity);
@@ -197,6 +197,7 @@ rpc::Json DeliveryTraceCapture::snapshot() const {
         state_->selection == DeliveryTraceSelection::ProgramAndIso ? "program-and-iso" : "all"},
     {"intentionallyFilteredEvents", static_cast<double>(state_->filtered.load())},
     {"isoArrivalEvidence", "file-only QA identities; not included in ten boundary aggregates"},
+    {"binaryVersion", 2}, {"programDeadlineClock", "steady-clock-nanoseconds"},
     {"accepting", state_->accepting.load()}, {"captureComplete", state_->completed.load()},
 #if defined(_WIN32)
     {"stopEvent", state_->stopEventName},
