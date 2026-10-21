@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner follow-up, October 21 — #968 within #960:** diagnose and fix the decoded audio gaps, then rerun full Studio crash-survival validation for PR #965. This is a blocker in the active #960 lane, not an additional WIP item. Retain failed evidence and require decoded recording and received-stream continuity.
+
 **Owner implementation direction, October 19 — #960:** merge #964 and start the
 reconnectable EngineHost vertical slice. #960 is the active stability item;
 #961–#963 remain dependent. Keep the installed app and live show untouched and
@@ -351,7 +353,7 @@ Owner rulings outstanding: [#743](https://github.com/iamfatness/CoreVideoPro/iss
 
 ## Unranked — show survival and operator findings
 
-- [#968](https://github.com/iamfatness/CoreVideoPro/issues/968): intermittent decoded PCM gaps found during #960 full Studio crash qualification; blocks its audio-continuity evidence. Owner ranking required; retain failed trials.
+- [#968](https://github.com/iamfatness/CoreVideoPro/issues/968): intermittent decoded PCM gaps found during #960 full Studio crash qualification; blocks its audio-continuity evidence. Owner-authorized October 21 within active #960; retain failed trials.
 
 | [#908](https://github.com/iamfatness/CoreVideoPro/issues/908) | Owner-ranked October 14: follows the #517 camera-reader repair in the active delivery lane. Retained Program frames report unavailable/preparation-stopped source pixels during real SDK epoch transitions; preserve pixels through replacement readiness without retaining removed/reassigned guests. |
 

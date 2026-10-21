@@ -55,7 +55,8 @@ inline std::vector<modules::AudioFrame> ingestSourceAudio(
     SourceBus& bus, std::vector<modules::AudioFrame> zoom,
     modules::IAudioCaptureSource* capture, modules::ICaptureDevice* transport,
     MediaTransports* media, const std::vector<modules::CaptureAudioSourceConfig>& configs,
-    int64_t timestampMs, int64_t programTime100ns, int64_t nowNs) {
+    int64_t timestampMs, int64_t programTime100ns, int64_t nowNs,
+    int64_t scheduledTime100ns = 0) {
   stageZoomAudioSources(bus, std::move(zoom));
   std::unordered_set<std::string> configured;
   if (capture) for (const auto& c : configs) {
@@ -76,7 +77,12 @@ inline std::vector<modules::AudioFrame> ingestSourceAudio(
   // MediaTransports demand slots use steady_clock wall time, the same clock
   // its decoder worker uses. `timestampMs` is the render-frame timeline and
   // starts near zero; using it here strands the media PCM behind that clock.
-  stageMediaAudioSources(bus, media ? media->popAudio(nowNs / 1'000'000) : std::vector<modules::AudioFrame>{});
+  // Demand follows the worker's fixed grid, including catch-up ticks. Actual
+  // wake time jitters across slot boundaries and can otherwise omit one PCM
+  // block and discard the next as expired (#968). Both clocks share the same
+  // steady epoch; unscheduled callers retain the wall-time fallback.
+  const auto demandMs = scheduledTime100ns > 0 ? scheduledTime100ns / 10'000 : nowNs / 1'000'000;
+  stageMediaAudioSources(bus, media ? media->popAudio(demandMs) : std::vector<modules::AudioFrame>{});
   return bus.ingestAudio(programTime100ns, nowNs);
 }
 } // namespace corevideo::core
