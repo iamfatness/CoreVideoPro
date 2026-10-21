@@ -26,6 +26,7 @@
 #include "modules/VirtualCameraPublisher.h"
 #include "modules/VirtualCameraReadRetry.h"
 #include "modules/VirtualCameraShm.h"
+#include "modules/VirtualCameraHistory.h"
 
 using corevideo::modules::VirtualCameraShmHeader;
 using corevideo::modules::kVirtualCameraMagic;
@@ -68,6 +69,7 @@ struct VcamShmTestIsolation {
     ::DeleteFileA((dir + "\\vcam-frame.shm").c_str());
     ::DeleteFileA((dir + "\\vcam-serve.log").c_str());
     ::DeleteFileA((dir + "\\vcam-correlation-v1.shm").c_str());
+    ::DeleteFileA((dir + "\\vcam-history-v1.shm").c_str());
     ::RemoveDirectoryA(dir.c_str());
     _putenv_s("COREVIDEO_VCAM_SHM_DIR", "");
   }
@@ -89,6 +91,12 @@ struct ShmWriter {
   void* view = nullptr;
   VirtualCameraShmHeader* header = nullptr;
   bool deleteOnClose = true;
+  std::unique_ptr<corevideo::modules::VirtualCameraHistoryWriter> history;
+
+  bool retainPublications() {
+    history = std::make_unique<corevideo::modules::VirtualCameraHistoryWriter>();
+    return history->start(file);
+  }
 
   bool open() {
     corevideo::modules::VirtualCameraCorrelationMapping invalidateOldCorrelation;
@@ -117,10 +125,13 @@ struct ShmWriter {
     header->height = h;
     header->byteLen = static_cast<std::uint32_t>(nv12.size());
     header->frameNumber += 1;
+    if (history) history->publish(nv12.data(), w, h, header->frameNumber,
+        (header->seq | 1u) + 1u, header->frameNumber, 1);
     header->seq = header->seq + 1;  // even
   }
 
   void closeHandles() {
+    history.reset();
     if (view) UnmapViewOfFile(view);
     if (mapping) CloseHandle(mapping);
     if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
@@ -139,6 +150,108 @@ struct ShmWriter {
 };
 
 }  // namespace
+
+TEST(VirtualCameraShmRoundtrip, PublicationPhaseCrossingRetainsTheNextPicture) {
+  ShmWriter writer; ASSERT_TRUE(writer.open()); ASSERT_TRUE(writer.retainPublications());
+  std::vector<uint8_t> pixels(64 * 36 * 3 / 2, 1), out;
+  SharedFrameReader reader; int width = 0, height = 0;
+  writer.write(pixels, 64, 36); ASSERT_TRUE(reader.readLatest(out, width, height));
+  EXPECT_EQ(out[0], 1);
+  // The producer crosses the consumer's phase once. Every picture was
+  // published; latest-only consumption nevertheless loses picture two.
+  pixels[0] = 2; writer.write(pixels, 64, 36);
+  pixels[0] = 3; writer.write(pixels, 64, 36);
+  ASSERT_TRUE(reader.readLatest(out, width, height)); EXPECT_EQ(out[0], 2);
+  ASSERT_TRUE(reader.readLatest(out, width, height)); EXPECT_EQ(out[0], 3);
+  EXPECT_EQ(reader.evidence().historyRetainedReads, 1u);
+  EXPECT_EQ(reader.evidence().historyOverflows, 0u);
+}
+
+TEST(VirtualCameraShmRoundtrip, RetainedPublicationOverflowIsExplicitAndBounded) {
+  ShmWriter writer; ASSERT_TRUE(writer.open()); ASSERT_TRUE(writer.retainPublications());
+  std::vector<uint8_t> pixels(64 * 36 * 3 / 2, 1), out;
+  SharedFrameReader reader; int width = 0, height = 0;
+  writer.write(pixels, 64, 36); ASSERT_TRUE(reader.readLatest(out, width, height));
+  for (int i = 2; i <= 7; ++i) { pixels[0] = i; writer.write(pixels, 64, 36); }
+  ASSERT_TRUE(reader.readLatest(out, width, height)); EXPECT_EQ(out[0], 7);
+  EXPECT_EQ(reader.evidence().historyOverflows, 1u);
+  EXPECT_EQ(reader.evidence().historySkippedPublications, 5u);
+  EXPECT_EQ(reader.evidence().unobservedProgramFrames, 5u);
+  EXPECT_FALSE(reader.readLatest(out, width, height)); // No unbounded replay.
+}
+
+TEST(VirtualCameraShmRoundtrip, RetainedReaderCannotAdvanceWithoutItsPayloadCopyBudget) {
+  ShmWriter writer; ASSERT_TRUE(writer.open()); ASSERT_TRUE(writer.retainPublications());
+  std::vector<uint8_t> pixels(64 * 36 * 3 / 2, 1), out;
+  SharedFrameReader reader; int width = 0, height = 0;
+  writer.write(pixels, 64, 36); ASSERT_TRUE(reader.readLatest(out, width, height));
+  pixels[0] = 2; writer.write(pixels, 64, 36); pixels[0] = 3; writer.write(pixels, 64, 36);
+  unsigned budget = 0;
+  EXPECT_FALSE(reader.readLatest(out, width, height, true, &budget));
+  EXPECT_EQ(reader.evidence().copyBudgetExhaustions, 1u);
+  EXPECT_EQ(reader.evidence().lastPublication, 1u);
+  budget = 1; ASSERT_TRUE(reader.readLatest(out, width, height, true, &budget));
+  EXPECT_EQ(budget, 0u); EXPECT_EQ(out[0], 2);
+}
+
+TEST(VirtualCameraShmRoundtrip, RetainedReaderFencesRestartOnTheSameBackingFile) {
+  ShmWriter writer; ASSERT_TRUE(writer.open()); ASSERT_TRUE(writer.retainPublications());
+  std::vector<uint8_t> pixels(64 * 36 * 3 / 2, 1), out;
+  SharedFrameReader reader; int width = 0, height = 0;
+  writer.write(pixels, 64, 36); ASSERT_TRUE(reader.readLatest(out, width, height));
+  const auto oldEpoch = reader.evidence().lastEpochHigh;
+  writer.header->seq |= 1u; writer.header->frameNumber = 0;
+  ASSERT_TRUE(writer.history->start(writer.file));
+  writer.header->seq = (writer.header->seq | 1u) + 1u;
+  pixels[0] = 9; writer.write(pixels, 64, 36);
+  ASSERT_TRUE(reader.readLatest(out, width, height)); EXPECT_EQ(out[0], 9);
+  EXPECT_NE(reader.evidence().lastEpochHigh, oldEpoch);
+  EXPECT_EQ(reader.evidence().programEpochChanges, 1u);
+  EXPECT_EQ(reader.evidence().historyOverflows, 0u);
+}
+
+TEST(VirtualCameraShmRoundtrip, AnOlderPublisherCannotServeStaleRetainedPictures) {
+  ShmWriter writer; ASSERT_TRUE(writer.open()); ASSERT_TRUE(writer.retainPublications());
+  std::vector<uint8_t> pixels(64 * 36 * 3 / 2, 1), out;
+  SharedFrameReader reader; int width = 0, height = 0;
+  writer.write(pixels, 64, 36); ASSERT_TRUE(reader.readLatest(out, width, height));
+  pixels[0] = 2; writer.write(pixels, 64, 36); pixels[0] = 3; writer.write(pixels, 64, 36);
+  // Simulate an interrupted history writer, then an older publisher resuming
+  // on the same legacy file without knowing that the sidecar exists.
+  auto staleHistory = std::move(writer.history);
+  pixels[0] = 4; writer.write(pixels, 64, 36);
+  ASSERT_TRUE(reader.readLatest(out, width, height)); EXPECT_EQ(out[0], 4);
+  EXPECT_EQ(reader.evidence().historyReads, 1u);
+  EXPECT_FALSE(reader.evidence().programIdentityVerified);
+}
+
+TEST(VirtualCameraShmRoundtrip, AForeignPixelFileCannotAuthorizeRetainedPictures) {
+  ShmWriter writer; ASSERT_TRUE(writer.open()); ASSERT_TRUE(writer.retainPublications());
+  std::vector<uint8_t> pixels(64 * 36 * 3 / 2, 1), out;
+  SharedFrameReader reader; int width = 0, height = 0;
+  writer.write(pixels, 64, 36); ASSERT_TRUE(reader.readLatest(out, width, height));
+  pixels[0] = 2; writer.write(pixels, 64, 36); pixels[0] = 3; writer.write(pixels, 64, 36);
+  corevideo::modules::CameraHistoryMapping mapping; ASSERT_TRUE(mapping.open(true));
+  auto* header = static_cast<corevideo::modules::CameraHistoryHeader*>(mapping.view);
+  header->sequence |= 1u; MemoryBarrier(); ++header->pixelFileIdentity;
+  MemoryBarrier(); header->sequence = (header->sequence | 1u) + 1u;
+  ASSERT_TRUE(reader.readLatest(out, width, height)); EXPECT_EQ(out[0], 3);
+  EXPECT_EQ(reader.evidence().historyReads, 1u);
+  EXPECT_FALSE(reader.evidence().programIdentityVerified);
+}
+
+TEST(VirtualCameraShmRoundtrip, AnAbandonedOddHistoryCannotFreezeAnOlderPublisher) {
+  ShmWriter writer; ASSERT_TRUE(writer.open()); ASSERT_TRUE(writer.retainPublications());
+  std::vector<uint8_t> pixels(64 * 36 * 3 / 2, 1), out;
+  SharedFrameReader reader; int width = 0, height = 0;
+  writer.write(pixels, 64, 36); ASSERT_TRUE(reader.readLatest(out, width, height));
+  auto staleHistory = std::move(writer.history);
+  corevideo::modules::CameraHistoryMapping mapping; ASSERT_TRUE(mapping.open(true));
+  static_cast<corevideo::modules::CameraHistoryHeader*>(mapping.view)->sequence |= 1u;
+  pixels[0] = 2; writer.write(pixels, 64, 36);
+  ASSERT_TRUE(reader.readLatest(out, width, height)); EXPECT_EQ(out[0], 2);
+  EXPECT_EQ(reader.evidence().historyReads, 1u);
+}
 
 // REGRESSION (2026-09-20 incident, see VcamShmTestIsolation above): with the
 // isolation environment armed, the slot path every test in this binary resolves
@@ -449,6 +562,15 @@ TEST(VirtualCameraShmRoundtrip, RealDllCountsEmittedFreshHeldAndSlateSamples) {
     EXPECT_GT(pts, lastPts); lastPts = pts; ++received;
   }
   EXPECT_EQ(received, requested.size());
+  // Exercise the actual compiled DLL/event stream, not just the C++ reader:
+  // one producer phase crossing must deliver both original pixel identities.
+  ASSERT_TRUE(writer.retainPublications());
+  pixels[0] = 240; writer.write(pixels, 1920, 1080); EXPECT_EQ(receive(), 240);
+  pixels[0] = 241; writer.write(pixels, 1920, 1080);
+  pixels[0] = 242; writer.write(pixels, 1920, 1080);
+  const auto retainedStarted = std::chrono::steady_clock::now();
+  EXPECT_EQ(receive(), 241); EXPECT_EQ(receive(), 242);
+  EXPECT_GE(std::chrono::steady_clock::now() - retainedStarted, std::chrono::milliseconds(10));
 }
 #endif
 

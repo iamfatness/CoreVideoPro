@@ -159,14 +159,15 @@ void MediaStream::LogDeliveryEvidence() {
   if ((deliveryLogAttempts_++ % 60) != 0) return;
   using Result = corevideo::modules::VirtualCameraReadResult;
   const auto& read = reader_.evidence();
-  char b[1024];
+  char b[1800];
   _snprintf_s(b, sizeof(b), _TRUNCATE,
       "[vcam-delivery-v2] stream=%p run=%llu emitted=%llu fresh=%llu held=%llu slate=%llu failed=%llu "
       "formatMismatch=%llu readFresh=%llu unchanged=%llu contended=%llu unavailable=%llu uninitialized=%llu "
       "invalidHeader=%llu publicationObserved=%d lastPublication=%llu lastSeq=%lu maxIntervalHns=%llu "
       "programIdentityVerified=%d receiverVerified=0 correlatedReads=%llu uncorrelatedReads=%llu "
       "unobservedProgramFrames=%llu programEpochChanges=%llu programRegressions=%llu "
-      "lastProgramSequence=%lld epoch=%016llx%016llx lastReadProgramSequence=%lld logDropped=%llu logFailures=%llu",
+      "lastProgramSequence=%lld epoch=%016llx%016llx lastReadProgramSequence=%lld logDropped=%llu logFailures=%llu "
+      "historyReads=%llu historyRetainedReads=%llu historyOverflows=%llu historySkippedPublications=%llu historyMaximumLag=%llu",
       static_cast<void*>(this), deliveryRun_, delivery_.emitted, delivery_.fresh, delivery_.held, delivery_.slate,
       delivery_.failed, delivery_.formatMismatches, read.count(Result::Fresh), read.count(Result::Unchanged),
       read.count(Result::Contended), read.count(Result::Unavailable), read.count(Result::Uninitialized),
@@ -175,7 +176,8 @@ void MediaStream::LogDeliveryEvidence() {
       emittedIdentity_.verified ? 1 : 0, read.correlatedReads, read.uncorrelatedReads,
       read.unobservedProgramFrames, read.programEpochChanges, read.programRegressions,
       static_cast<long long>(emittedIdentity_.sequence), emittedIdentity_.epochHigh, emittedIdentity_.epochLow,
-      static_cast<long long>(read.lastProgramSequence), VcamServeLogQueue().dropped(), VcamServeLogQueue().failures());
+      static_cast<long long>(read.lastProgramSequence), VcamServeLogQueue().dropped(), VcamServeLogQueue().failures(),
+      read.historyReads, read.historyRetainedReads, read.historyOverflows, read.historySkippedPublications, read.historyMaximumLag);
   VcamServeLog(b);
   if (retryTransientRead_) {
     _snprintf_s(b, sizeof(b), _TRUNCATE, "[vcam-read-retry] attemptedSamples=%llu recoveredSamples=%llu readDeadlineMisses=%llu writerActive=%llu changedDuringCopy=%llu copyBudgetExhausted=%llu timerTimeouts=%llu timerFailures=%llu unrecoveredTransientSamples=%llu waitMaxUs=250 deadlineReserveUs=2000 maxRetries=64 maxPayloadCopies=2",
