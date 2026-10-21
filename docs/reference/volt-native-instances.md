@@ -95,7 +95,7 @@ invalid preview requests.
 
 Declarative fields follow advertised types/ranges/choices. The style boundary
 accepts only consumed placement/color/font values; compatibility-only width,
-typography-size, padding and logo controls are not forwarded to these templates.
+typography-size, padding and legacy logo-scale/visibility style values are not forwarded to these templates. Declared logo slots use the separate verified image reference described below.
 The brand adapter supplies the declared color and font vocabulary. A field patch
 has at most 32 values, 4,096 UTF-8 bytes per string and a 32 KiB aggregate bound;
 the transport also bounds the complete non-import request. Required blank fields
@@ -449,3 +449,26 @@ clients can exercise the real clear/reuse lifecycle rather than erase row fields
 Connect/Take Offline commands. Offline also unassigns that device's inputs,
 matching the operator action. A connected device is not proof of video; verify
 actual source generations, admissions and pixels independently.
+
+
+### Uploading a logo into a graphic
+
+Select a logo-capable graphic, such as Corner logo bug or Logo accent lower third,
+and use **Content -> Upload logo PNG / JPEG**. The existing compatibility-logo
+inspector uses the same import service. Declarative templates need a declared
+`logo` asset slot; unrelated image fields are not silently replaced. Upload installs
+a verified immutable image package and selects it in the private draft. It preserves
+PNG alpha and contain aspect ratio, enables the existing logo visibility field,
+and never implicitly creates, Cues, Shows or Updates a live instance. Choosing
+Use template logo restores the template's own asset. Newer edits/navigation during
+an upload remain authoritative. A saved cue/Studio look pins both template and
+uploaded image package; explicit restore remains hidden until Cue and Show.
+
+`graphics.logo.import [path]` calls that same guarded uploader service.
+`graphics.cue.select [instanceId]`, `graphics.cue.action [cue|show|hide|update]`,
+`graphics.cue.save [name]` and `graphics.saved.restore [savedId]` exercise the real
+workspace/library actions. Commands observe the current bridge snapshot before
+checking native preparation, so a completed Cue does not depend on the next UI
+observation. Readiness and revision guards still apply. The advanced image-source
+selector edits the existing immutable scratch asset binding and honors layer locks;
+its template still requires native validation and explicit immutable-version save.
