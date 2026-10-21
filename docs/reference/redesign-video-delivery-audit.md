@@ -104,6 +104,17 @@ identities, trace loss, source retirement or non-1080p payloads fail this proof.
 Shorter diagnostic intervals must be labeled partial. Decode after the live
 interval so verification does not contend with the workload.
 
+Each `recording:iso:SOURCE_ID` performance path uses
+`measurement: "source-arrival-fidelity"` with the unmodified ISO pixel verdict
+in `proof`. The top-level `performanceEvidence.intervalTicks` declares string
+QPC `start`/`end` and numeric `frequency`; those bounds must match the workload's
+first/last observed `qpcTicks` samples and the pixel verdict exactly. The
+collector records the corresponding UTC pair for human-readable coverage.
+The pixel proof must refer to the same finalized track path inspected for
+dimensions/packet counts. Synthetic 60-fps slot counts cannot replace ISO proof.
+Program, GPU readiness, presentation and fixed-rate outputs retain their
+anchored 60-fps completion/deadline checks.
+
 The frame report must inventory `recording:program`, `virtual-camera:program`,
 and `recording:iso:SOURCE_ID` for each selected ISO, plus
 `preview-presentation` and `multiview-presentation` in its required paths.

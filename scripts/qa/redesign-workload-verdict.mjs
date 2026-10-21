@@ -150,6 +150,17 @@ export function judgeRedesignWorkload(report) {
   const durationSeconds = samples.length > 1 ? (samples.at(-1)?.collectedAtMs - samples[0]?.collectedAtMs) / 1000 : 0;
   if (!Number.isFinite(durationSeconds) || durationSeconds < 1800) errors.push('Less than 30 minutes of simultaneous full-workload coverage.');
   const frameVerdict = validateFramePerformance(report?.framePerformanceReport);
+  const frameEvidence = report?.framePerformanceReport?.performanceEvidence;
+  const interval = frameEvidence?.intervalTicks;
+  if (!interval || interval.start !== samples[0]?.qpcTicks || interval.end !== samples.at(-1)?.qpcTicks ||
+      interval.frequency !== report?.qpcFrequency)
+    errors.push('ISO pixel evidence does not use the observed workload clock bounds.');
+  for (const id of Array.isArray(iso) ? iso : []) {
+    const path = Array.isArray(frameEvidence?.paths) ? frameEvidence.paths.find(path => path?.id === 'recording:iso:' + id) : null;
+    const file = isoFiles.find(file => file?.sourceId === id);
+    if (!file || path?.proof?.path !== file.path)
+      errors.push(`ISO ${id} pixel proof is not from the finalized measured recording.`);
+  }
   const start = Date.parse(report?.startTime), end = Date.parse(report?.endTime);
   const frameStart = Date.parse(report?.framePerformanceReport?.startTime);
   const frameEnd = Date.parse(report?.framePerformanceReport?.endTime);
