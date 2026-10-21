@@ -227,6 +227,26 @@ public sealed class Direct3D11InteropService : IDisposable
     private long _chainRevision;
     internal long ChainRevision => _chainRevision;
     internal ulong LastPresentedHandle => _lastPresentedHandle;
+    private NativeMonitorPresentation? _nativeOwner;
+    internal long? IndependentPresentedFramesForProbe =>
+        TryNativeSnapshot(out var owner, out var stats) ? owner.CountOffset + (long)stats.Presents : null;
+    internal uint? ReadIndependentPixelForProbe() => Volatile.Read(ref _nativeOwner)?.ReadPixel();
+    internal bool HasIndependentOwner => Volatile.Read(ref _nativeOwner) is not null;
+    internal ulong IndependentHandleForProbe => Volatile.Read(ref _nativeOwner)?.SharedHandle ?? 0;
+    internal void SuspendIndependentOwner() => Volatile.Read(ref _nativeOwner)?.SetActive(false);
+    private bool TryNativeSnapshot(out NativeMonitorPresentation owner, out NativeMonitorPresentation.Stats stats)
+    {
+        owner = Volatile.Read(ref _nativeOwner)!;
+        stats = default;
+        return owner is not null && owner.TrySnapshot(out stats) && ReferenceEquals(owner, Volatile.Read(ref _nativeOwner));
+    }
+    private void RetireIndependentOwner()
+    {
+        var owner = Interlocked.Exchange(ref _nativeOwner, null);
+        if (owner is null) return;
+        if (owner.TrySnapshot(out var stats)) _presentCount = Math.Max(_presentCount, owner.CountOffset + (long)stats.Presents);
+        owner.Dispose();
+    }
     internal void AttachWorkerPresenter(Action<IDXGISwapChain1, long> chainCreated)
     {
         _workerChainCreated = chainCreated;
@@ -297,19 +317,38 @@ public sealed class Direct3D11InteropService : IDisposable
     internal bool WantsPresentationRetry { get; private set; }
     private long _probeLastCommit;
     private double _probeMaxGapMs;
-    internal long LastPresentationProbeCommit => _probeLastCommit;
+    internal long LastPresentationProbeCommit => TryNativeSnapshot(out _, out var stats) ? stats.LastCommitQpc : _probeLastCommit;
     internal void BeginPresentationProbeInterval()
     {
+        Volatile.Read(ref _nativeOwner)?.ResetProbe();
         _probeLastCommit = System.Diagnostics.Stopwatch.GetTimestamp();
         _probeMaxGapMs = 0;
     }
-    internal double MaximumPresentationProbeGapMs => _probeLastCommit == 0 ? 0 : Math.Max(_probeMaxGapMs,
-        System.Diagnostics.Stopwatch.GetElapsedTime(_probeLastCommit).TotalMilliseconds);
+    internal double MaximumPresentationProbeGapMs
+    {
+        get
+        {
+            if (TryNativeSnapshot(out _, out var native) && native.LastCommitQpc != 0)
+                return Math.Max(native.MaximumGapQpc * (1000.0 / System.Diagnostics.Stopwatch.Frequency),
+                    System.Diagnostics.Stopwatch.GetElapsedTime(native.LastCommitQpc).TotalMilliseconds);
+            return _probeLastCommit == 0 ? 0 : Math.Max(_probeMaxGapMs,
+                System.Diagnostics.Stopwatch.GetElapsedTime(_probeLastCommit).TotalMilliseconds);
+        }
+    }
     private double _probeCopyMs, _probeCopyMaxMs, _probePresentMs, _probePresentMaxMs, _probeIngestMs, _probeTotalMs;
     internal object DiagnosticsForProbe
     {
         get
         {
+            if (TryNativeSnapshot(out var owner, out var native))
+                return new { label = Label, backend = "native-independent", attempts = native.Attempts,
+                    retryAttempts = native.RetryAttempts, presents = owner.CountOffset + (long)native.Presents,
+                    maxGapMs = MaximumPresentationProbeGapMs, notReady = native.NotReady, presentBusy = native.PresentBusy,
+                    presentMs = native.PresentMs, presentMaxMs = native.PresentMaximumMs,
+                    ingestMs = native.IngestMs, totalMs = native.TotalMs, copyMs = native.CopyMs,
+                    copyMaxMs = native.CopyMaximumMs, ingested = native.Ingested,
+                    acquireAttempts = native.AcquireAttempts, acquireBusy = native.AcquireBusy,
+                    hresult = native.HResult, displayPresentationVerified = false };
             lock (CreationGate)
             {
                 s_ingests.TryGetValue(_ingestHandle, out var ingest);
@@ -324,6 +363,8 @@ public sealed class Direct3D11InteropService : IDisposable
     // Explicit offscreen QA only. Never used by the production presentation loop.
     internal uint? ReadPixelForProbe()
     {
+        if (Volatile.Read(ref _nativeOwner) is { } native) return native.ReadPixel();
+        if (_workerChainCreated is not null && NativeMonitorPresentation.Available) return null;
         if (s_sharedDevice is null || s_sharedContext is null || _backBuffer is null || _presentCount == 0) return null;
         var desc = _backBuffer.Description;
         desc.Usage = ResourceUsage.Staging; desc.BindFlags = BindFlags.None;
@@ -422,6 +463,7 @@ public sealed class Direct3D11InteropService : IDisposable
             SharedTextureInteropRules.IsStubHandle(handle.NtHandle) ||
             IsHandleInvalidated(handle.NtHandle))
         {
+            RetireIndependentOwner();
             LaunchLog.Write($"d3d: present skip (disposed={_disposed} valid={handle.IsValid} " +
                 $"stub={SharedTextureInteropRules.IsStubHandle(handle.NtHandle)} invalidated={IsHandleInvalidated(handle.NtHandle)}) 0x{handle.NtHandle:X}");
             SetPresentationPath(PresentationPath.CpuFallback);
@@ -431,6 +473,7 @@ public sealed class Direct3D11InteropService : IDisposable
         _stageWatchdog?.Mark("ensure-device");
         if (!EnsureDevice())
         {
+            RetireIndependentOwner();
             // Throttled: after a loss this is a DURABLE state (waiting out the backoff, or the
             // ladder gave up), and this runs every vsync — an unthrottled line would be 60
             // log entries a second and would roll the loss diagnosis out of the bundle.
@@ -454,6 +497,30 @@ public sealed class Direct3D11InteropService : IDisposable
 
         try
         {
+            if (_workerChainCreated is not null && NativeMonitorPresentation.Available)
+            {
+                _stageWatchdog?.Mark("native-owner-configuration");
+                if (PresentationFaultInjection.Armed) PresentationFaultInjection.BeforePresent();
+                var owner = Volatile.Read(ref _nativeOwner);
+                if (owner is null || owner.SharedHandle != handle.NtHandle || owner.ChainRevision != _chainRevision)
+                {
+                    RetireIndependentOwner();
+                    owner = new NativeMonitorPresentation(s_sharedDevice!.NativePointer, s_sharedContext!.NativePointer,
+                        _swapChain!.NativePointer, _backBuffer!.NativePointer, handle.NtHandle, _frameReady,
+                        _chainRevision, _presentCount);
+                    Volatile.Write(ref _nativeOwner, owner);
+                }
+                owner.SetActive(true);
+                if (owner.TrySnapshot(out var native))
+                {
+                    if (native.HResult < 0) Marshal.ThrowExceptionForHR(native.HResult);
+                    _presentCount = owner.CountOffset + (long)native.Presents;
+                    _lastPresentedHandle = native.Presents > 0 ? handle.NtHandle : 0;
+                    _probeLastCommit = native.LastCommitQpc;
+                    SetPresentationPath(native.Presents > 0 ? PresentationPath.GpuActive : PresentationPath.DeviceReady);
+                }
+                return _path == PresentationPath.GpuActive;
+            }
             // Resolve (and ref) the process-wide ingest for this handle. When the presented
             // handle changes, release the old ref so an unused ingest can be reclaimed.
             if (_ingestHandle != handle.NtHandle)
@@ -595,6 +662,7 @@ public sealed class Direct3D11InteropService : IDisposable
                 $"d3d: present FAILED 0x{handle.NtHandle:X} {handle.Width}x{handle.Height}: {ex.GetType().Name}: " +
                 $"{ex.Message} hr=0x{ex.HResult:X8} deviceLoss={deviceLost}");
 
+            RetireIndependentOwner();
             ReleaseIngestRef(_ingestHandle);
             _ingestHandle = 0;
             _lastPresentedGeneration = -1;
@@ -846,6 +914,7 @@ public sealed class Direct3D11InteropService : IDisposable
         }
 
         _invalidHandles.Add(ntHandle);
+        if (Volatile.Read(ref _nativeOwner)?.SharedHandle == ntHandle) RetireIndependentOwner();
         if (_lastPresentedHandle == ntHandle)
         {
             _lastPresentedHandle = 0;
@@ -1268,6 +1337,7 @@ public sealed class Direct3D11InteropService : IDisposable
 
     private void ResetSwapChain()
     {
+        RetireIndependentOwner();
         _chainRevision++;
         // COM RCW disposes can throw E_NOINTERFACE during teardown — never let that
         // escape (it fail-fasts the app when a tile/host unloads). The shared device,

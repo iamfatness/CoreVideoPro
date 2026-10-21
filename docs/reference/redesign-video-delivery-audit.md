@@ -342,3 +342,31 @@ it, and preservation of raw diagnostic payloads omitted by the typed view.
 These tests cannot qualify display delivery. Fresh simultaneous local recording,
 registered OS-camera pixels, eight actual live remotes, physical monitor timing
 and installed desktop-shortcut acceptance remain release gates.
+
+### Presentation ownership after the controlled pause experiment
+
+Reducing control-plane allocation did not remove the runtime dependency: a
+fresh 1080p recording/camera comparison still observed a 52 ms all-managed
+pause. A compiled WinUI experiment deliberately paused all managed render
+control workers for 750 ms while the independent GPU producer continued.
+Both monitor aliases stopped. This proves an ownership defect independently
+of attributing any individual production delay to garbage collection.
+
+Persistent monitor hosts now lease their device, immediate context, chain,
+back buffer and duplicated frame-credit handle to a native presentation owner.
+There is one native worker per immediate context, one keyed-mutex ingest per
+shared handle, and a private latest GPU texture shared by aliases. The worker
+releases the producer key before presentation. UI and managed workers configure
+leases and read bounded observations; neither drives steady-state GPU delivery.
+Retirement queues resource release to the native owner without a UI join.
+Suspension, handle replacement, chain revision and device failure retain their
+existing managed lifecycle boundaries. No managed callback crosses the ABI.
+
+The same compiled pause experiment now observes 46 inspector and 45 Preview
+commits in 750 ms, with actual changing-pixel and alias checks passing. Native
+tests also exercise no-control-call progress, suspension/resume, alias retirement
+and cross-device rejection. The offscreen/compiled probes explicitly report
+physical display delivery as unverified; accepted Present calls cannot qualify
+scanout. The production package requires corevideo-monitor-presenter.dll, and
+the package validator rejects its omission. A missing DLL retains the legacy
+managed fallback and logs it as unqualified.

@@ -138,6 +138,16 @@ internal sealed partial class SourceInspectVideoProbe(string reportPath, string?
                 presented = blockedFrames, previewPresented = aliasFrames });
             if (blockedFrames < 20 || aliasFrames < 20)
                 throw new InvalidOperationException("Video presentation depended on UI callbacks during a 750ms stall");
+            var controlStart = inspector.PresentedFramesForProbe;
+            var controlAliasStart = previewAlias.PresentedFramesForProbe;
+            VideoSurfaceRenderPresenter.PauseControlPollingForProbe(750);
+            Thread.Sleep(750); // Producer continues; managed render-control threads cannot pump.
+            var independentFrames = inspector.PresentedFramesForProbe - controlStart;
+            var independentAliasFrames = previewAlias.PresentedFramesForProbe - controlAliasStart;
+            samples.Add(new { continuity = "managed render control paused; independent presentation required",
+                durationMs = 750, presented = independentFrames, previewPresented = independentAliasFrames });
+            if (independentFrames < 20 || independentAliasFrames < 20)
+                throw new InvalidOperationException("Monitor cadence still depends on managed render-control polling");
             for (var i = 0; i < 20; i++)
             {
                 var startCount = inspector.PresentedFramesForProbe;
