@@ -1,6 +1,7 @@
 #include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineClient.h"
+#include "modules/ZoomIsoReadProfile.h"
 
 #include "rpc/Json.h"
 
@@ -29,6 +30,7 @@ std::size_t readZoomEngineIsoVideoRing(const void* view, std::size_t size,
     std::uint32_t epoch, std::uint32_t& next, const std::string& uuid,
     std::uint32_t participantId, bool thumbnail, std::vector<ZoomIsoVideoArrival>& out,
     ZoomIsoRingReadEvidence* evidence) {
+  iso_profile::IsoReadScope isoRead;
   if (!view || size < zoom_iso::bytes || !epoch) return 0;
   const auto& header = *static_cast<const zoom_iso::Header*>(view);
   if (zoom_iso::load(header.epoch) != epoch || header.magicValue != zoom_iso::magic ||
@@ -362,11 +364,17 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
   const std::size_t planeBytes = yLength + (yLength / 4) * 2;
   static core::FrameAllocationFailures allocationFailures("zoom-shm-read");
   std::vector<std::uint8_t> planes;
-  if (!core::tryResizeFrameBuffer(planes, planeBytes)) {
+  iso_profile::Scope allocation(iso_profile::sourceLabel(participantId), iso_profile::Allocate, planeBytes, before.sequence);
+  const auto allocated = core::tryResizeFrameBuffer(planes, planeBytes);
+  allocation.finish();
+  if (!allocated) {
     allocationFailures.note(planeBytes);
     return std::nullopt;  // #728: dropped like a torn read; the caller retries next tick
   }
-  std::memcpy(planes.data(), bytes + sizeof(ShmFrameHeader), planeBytes);
+  {
+    iso_profile::Scope copying(iso_profile::sourceLabel(participantId), iso_profile::Copy, planeBytes, before.sequence);
+    std::memcpy(planes.data(), bytes + sizeof(ShmFrameHeader), planeBytes);
+  }
 
   ShmFrameHeader afterCopy{};
   std::memcpy(&afterCopy, sharedMemory, sizeof(afterCopy));

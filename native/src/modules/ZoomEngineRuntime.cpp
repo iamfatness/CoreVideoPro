@@ -1,6 +1,7 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineRuntime.h"
 #include "modules/ZoomHandoffCpuScope.h"
+#include "modules/ZoomIsoReadProfile.h"
 #include "modules/ZoomMeetingId.h"
 #include "modules/I420SourcePreparation.h"
 
@@ -42,6 +43,17 @@ int envInt(const char* name, int fallback) {
 
 std::string participantIdString(std::uint32_t id) {
   return id == 0 ? std::string{} : std::to_string(id);
+}
+
+// Diagnostic comparison only: same binary, payloads and buffer bounds, with
+// either the former combined batch or shared ISO worker retained as controls.
+std::string isoReaderMode() {
+  static const auto mode = [] {
+    if (!iso_profile::enabled()) return std::string("per-source");
+    const auto value = envString("COREVIDEO_QA_ISO_READER_MODE");
+    return value == "combined" || value == "shared-iso" ? value : std::string("per-source");
+  }();
+  return mode;
 }
 
 std::uint64_t monotonicMs() {
@@ -1218,6 +1230,12 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
               {"maximumBacklog", static_cast<double>(ring->second.reads.maximumBacklog)},
               {"maximumDispatchUs", static_cast<double>(ring->second.maximumDispatchUs)},
               {"maximumCopyUs", static_cast<double>(ring->second.maximumCopyUs)}});
+          source.emplace("readProfile", iso_profile::snapshot(entry.participantId + ":iso"));
+          source.emplace("latestCopyProfile", iso_profile::snapshot(entry.participantId + ":latest"));
+          source.emplace("readerMode", isoReaderMode());
+          source.emplace("readerProfile", iso_profile::snapshot(isoReaderMode() == "combined" ? "latest" :
+              "iso-worker:" + std::to_string(isoReaderMode() == "shared-iso" ? -1 : static_cast<int>(ring->second.worker))));
+          source.emplace("latestReaderProfile", iso_profile::snapshot("latest"));
         }
       }
       const std::string sourceId = sourceUuid;
@@ -1422,6 +1440,12 @@ void ZoomEngineRuntime::ensureVideoIngestThreadLocked() {
   }
   videoIngestRun_.store(true, std::memory_order_release);
   videoIngestThread_ = std::thread([this] { videoIngestLoop(); });
+  const auto mode = isoReaderMode();
+  if (mode == "combined") return;
+  if (mode == "shared-iso") {
+    isoIngestThreads_[0] = std::thread([this] { isoIngestLoop(-1); });
+    return;
+  }
   for (size_t worker = 0; worker < isoIngestThreads_.size(); ++worker)
     isoIngestThreads_[worker] = std::thread([this, worker] { isoIngestLoop(static_cast<int>(worker)); });
 }
@@ -1436,14 +1460,19 @@ void ZoomEngineRuntime::videoIngestLoop() {
   // render cost, ingest stage stays ~0.05ms).
   constexpr auto kVideoIngestPollMs = std::chrono::milliseconds(2);
   while (videoIngestRun_.load(std::memory_order_acquire)) {
-    drainVideoStreamsThreePhase({}, {}, VideoDrain::Latest);
+    iso_profile::Scope iteration("latest", iso_profile::Iteration);
+    drainVideoStreamsThreePhase({}, {}, isoReaderMode() == "combined" ? VideoDrain::Both : VideoDrain::Latest);
+    iso_profile::Scope sleeping("latest", iso_profile::Sleep);
     std::this_thread::sleep_for(kVideoIngestPollMs);
   }
 }
 
 void ZoomEngineRuntime::isoIngestLoop(int worker) {
+  const auto label = "iso-worker:" + std::to_string(worker);
   while (videoIngestRun_.load(std::memory_order_acquire)) {
+    iso_profile::Scope iteration(label, iso_profile::Iteration);
     drainVideoStreamsThreePhase({}, {}, VideoDrain::Iso, worker);
+    iso_profile::Scope sleeping(label, iso_profile::Sleep);
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
 }
@@ -1475,8 +1504,12 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
   // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
   constexpr std::int64_t kThumbnailEmitIntervalMs = 500;
   std::vector<SnapshotJob> jobs;
+  const auto profileLabel = branch == VideoDrain::Iso ? "iso-worker:" + std::to_string(isoWorker) : "latest";
   {
+    iso_profile::Scope waiting(profileLabel, iso_profile::CaptureWait);
     std::lock_guard<std::mutex> lock(mutex_);
+    waiting.finish();
+    iso_profile::Scope holding(profileLabel, iso_profile::CaptureHold);
     for (auto& [uuid, ref] : videoStreams_) {
       if (branch == VideoDrain::Iso && isoWorker >= 0) {
         const auto reader = isoRingReaders_.find(std::to_string(ref.participantId));
@@ -1609,10 +1642,13 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     if (result.frame && !result.frame->i420.empty()) {
       result.i420Shared =
           std::make_shared<const std::vector<std::uint8_t>>(std::move(result.frame->i420));
-      if (i420Preparation_ && !job.ringHolder) result.preparedGpu = i420Preparation_->offer(result.frame->participantId,
+      if (i420Preparation_ && !job.ringHolder) {
+        iso_profile::Scope preparing(profileLabel, iso_profile::Prepare);
+        result.preparedGpu = i420Preparation_->offer(result.frame->participantId,
           job.sourceEpoch, result.frame->frameId,
           std::chrono::duration_cast<std::chrono::nanoseconds>(result.observedAt.time_since_epoch()).count() / 100,
           result.frame->i420Width, result.frame->i420Height, result.i420Shared, job.preparationLifetime);
+      }
       if (job.probeLumaRange && result.i420Shared->size() >=
                                     static_cast<std::size_t>(job.width) * job.height) {
         result.lumaRange = probeLumaRange(result.i420Shared->data(), job.width, job.height,
@@ -1625,7 +1661,10 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
   if (beforePublish) beforePublish();
   // Phase 3 (locked, cheap): publish only into the captured stream generation.
   ZoomHandoffCpuScope timing(profileVideoHandoff_, "publish-batch");
+  iso_profile::Scope waiting(profileLabel, iso_profile::PublishWait);
   std::lock_guard<std::mutex> lock(mutex_);
+  waiting.finish();
+  iso_profile::Scope holding(profileLabel, iso_profile::PublishHold);
   timing.acquired();
   const auto rejectStale = [&] {
     ++staleVideoPublications_;
