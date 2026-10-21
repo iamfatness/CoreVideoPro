@@ -871,6 +871,7 @@ struct ZoomEngineRuntimeTestAccess {
     stream.width = width;
     stream.height = height;
     stream.sourceEpoch = 5;
+    stream.preparationLifetime = 5;
     stream.sourceGeneration = 3;
     stream.lumaRangeProbed = true;
     runtime.frameSyncEnabled_ = false;
@@ -882,8 +883,20 @@ struct ZoomEngineRuntimeTestAccess {
   static void drainLatest(ZoomEngineRuntime& runtime, const std::function<void()>& afterCapture) {
     runtime.drainVideoStreamsThreePhase(afterCapture, {}, ZoomEngineRuntime::VideoDrain::Latest);
   }
-  static void drainIso(ZoomEngineRuntime& runtime) {
-    runtime.drainVideoStreamsThreePhase({}, {}, ZoomEngineRuntime::VideoDrain::Iso);
+  static void drainIso(ZoomEngineRuntime& runtime, const std::function<void()>& afterCapture = {}) {
+    runtime.drainVideoStreamsThreePhase(afterCapture, {}, ZoomEngineRuntime::VideoDrain::Iso);
+  }
+  static void formatBeaconWithoutBackgroundReader(ZoomEngineRuntime& runtime) {
+    std::lock_guard lock(runtime.mutex_);
+    // Keep the production event path synchronous for this deterministic fixture.
+    runtime.videoIngestThread_ = std::thread([] {});
+    ZoomEngineEvent event; event.kind = ZoomEngineEventKind::Frame;
+    event.sourceUuid = "test-camera"; event.participantId = 42; event.width = 8; event.height = 4;
+    runtime.enqueueFrameEventLocked(event);
+  }
+  static void alignGenerationForBeacon(ZoomEngineRuntime& runtime) {
+    std::lock_guard lock(runtime.mutex_);
+    runtime.videoStreams_.at("test-camera").sourceGeneration = runtime.state_.sourceGenerationForParticipant(42);
   }
   static void installSecondVideoRegion(ZoomEngineRuntime& runtime, std::shared_ptr<void> region) {
     std::lock_guard lock(runtime.mutex_);
@@ -946,6 +959,8 @@ struct ZoomEngineRuntimeTestAccess {
       case 5: runtime.shuttingDown_ = true; break;
       case 6: runtime.restartBeforeJoin_ = true; break;
       case 7: ++stream.sourceEpoch; break;
+      case 8: ++stream.sourceGeneration; break;
+      case 9: ++stream.preparationLifetime; break;
     }
   }
   static void markInitialized(ZoomEngineRuntime& runtime) {
@@ -990,9 +1005,9 @@ struct InMemoryIsoVideoRegion {
   std::vector<uint64_t> bytes = std::vector<uint64_t>((zoom_iso::bytes + 7) / 8);
   ShmRegion region{};
   InMemoryIsoVideoRegion() { region.ptr = bytes.data(); region.size = bytes.size() * 8; }
-  void write(uint32_t id, uint32_t epoch) {
-    uint8_t y[16] = {}, u[4] = {}, v[4] = {};
-    EXPECT_TRUE(zoom_iso::write(region.ptr, region.size, epoch, id, 4, 4, y, u, v, id * 1000));
+  void write(uint32_t id, uint32_t epoch, uint32_t width = 4, uint32_t height = 4) {
+    std::vector<uint8_t> y(width * height), u(width * height / 4), v(width * height / 4);
+    EXPECT_TRUE(zoom_iso::write(region.ptr, region.size, epoch, id, width, height, y.data(), u.data(), v.data(), id * 1000));
   }
   static std::shared_ptr<void> holder(const std::shared_ptr<InMemoryIsoVideoRegion>& owner) {
     return std::shared_ptr<void>(owner, &owner->region);
@@ -1020,6 +1035,62 @@ TEST(ZoomEngineRuntime, DisablingUnusedCpuThumbnailsPreservesMediaAndFallbackCan
 }
 
 #if !defined(__APPLE__)
+TEST(ZoomEngineRuntime, IsoUsesItsOwnFormatAndSurvivesLatestPictureRemaps) {
+  using namespace corevideo::modules;
+  for (const int mutation : {0, 2, 3, 7}) {
+    ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+    auto latest = std::make_shared<InMemoryVideoRegion>();
+    auto replacement = std::make_shared<InMemoryVideoRegion>();
+    ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(latest));
+    runtime.setVideoConsumerDemand({{"zoom:42", SourceVideoConsumer::Iso, "recording", SourceVideoRepresentation::Cpu}});
+    auto ring = std::make_shared<InMemoryIsoVideoRegion>();
+    const auto epoch = ZoomEngineRuntimeTestAccess::installIsoRegion(runtime, InMemoryIsoVideoRegion::holder(ring));
+    ring->write(2, epoch, 8, 4); // A valid new format can precede its discovery beacon.
+    ZoomEngineRuntimeTestAccess::drainIso(runtime, [&] {
+      ZoomEngineRuntimeTestAccess::invalidateVideo(runtime, mutation, InMemoryVideoRegion::holder(replacement));
+    });
+    std::vector<VideoFrame> arrivals; runtime.appendCpuVideoFrames(arrivals);
+    ASSERT_EQ(arrivals.size(), 1u);
+    EXPECT_EQ(arrivals[0].frameId, 2); EXPECT_EQ(arrivals[0].i420Width, 8);
+    EXPECT_EQ(arrivals[0].i420Height, 4); EXPECT_EQ(arrivals[0].sourceEpoch, 5u);
+  }
+}
+
+TEST(ZoomEngineRuntime, IsoFormatBeaconPreservesAlreadyAdmittedFrames) {
+  using namespace corevideo::modules;
+  ZoomEngineRuntime runtime;
+  runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+  auto latest = std::make_shared<InMemoryVideoRegion>();
+  ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(latest));
+  ZoomEngineRuntimeTestAccess::alignGenerationForBeacon(runtime);
+  runtime.setVideoConsumerDemand({{"zoom:42", SourceVideoConsumer::Iso, "recording", SourceVideoRepresentation::Cpu}});
+  auto ring = std::make_shared<InMemoryIsoVideoRegion>();
+  const auto epoch = ZoomEngineRuntimeTestAccess::installIsoRegion(runtime, InMemoryIsoVideoRegion::holder(ring));
+  ring->write(2, epoch); ZoomEngineRuntimeTestAccess::drainIso(runtime);
+  ASSERT_EQ(ZoomEngineRuntimeTestAccess::isoStats(runtime, "42").pending, 1u);
+  ZoomEngineRuntimeTestAccess::formatBeaconWithoutBackgroundReader(runtime);
+  EXPECT_EQ(ZoomEngineRuntimeTestAccess::isoStats(runtime, "42").pending, 1u);
+  EXPECT_EQ(ZoomEngineRuntimeTestAccess::isoStats(runtime, "42").released, 0u);
+}
+
+TEST(ZoomEngineRuntime, IsoStillRejectsRetiredSourceOwners) {
+  using namespace corevideo::modules;
+  for (const int mutation : {1, 4, 5, 6, 8, 9}) {
+    ZoomEngineRuntime runtime;
+    runtime.installEngineProcessForTest(std::make_shared<FakeZoomEngineProcessClient>());
+    auto latest = std::make_shared<InMemoryVideoRegion>();
+    ZoomEngineRuntimeTestAccess::installVideoRegion(runtime, InMemoryVideoRegion::holder(latest));
+    runtime.setVideoConsumerDemand({{"zoom:42", SourceVideoConsumer::Iso, "recording", SourceVideoRepresentation::Cpu}});
+    auto ring = std::make_shared<InMemoryIsoVideoRegion>();
+    const auto epoch = ZoomEngineRuntimeTestAccess::installIsoRegion(runtime, InMemoryIsoVideoRegion::holder(ring));
+    ring->write(2, epoch);
+    ZoomEngineRuntimeTestAccess::drainIso(runtime, [&] { ZoomEngineRuntimeTestAccess::invalidateVideo(runtime, mutation, {}); });
+    std::vector<VideoFrame> arrivals; runtime.appendCpuVideoFrames(arrivals);
+    EXPECT_TRUE(arrivals.empty());
+  }
+}
+
 TEST(ZoomEngineRuntime, SlowIsoReaderCannotDelayOrConsumeAnotherSourcesCursor) {
   using namespace corevideo::modules;
   ZoomEngineRuntime runtime;

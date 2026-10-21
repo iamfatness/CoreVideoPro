@@ -83,6 +83,9 @@ struct Row {
   std::array<uint64_t, 9> histogram{}; // <= .25,.5,1,2,4,8,16,32ms, >32ms
   Stamp start, end;
   uint64_t bytes = 0, frame = 0;
+  uint64_t lastBytes = 0, lastFrame = 0;
+  std::array<std::pair<uint64_t, uint64_t>, 8> payloadSizes{};
+  uint64_t payloadSizeOverflow = 0;
   uint64_t dispatchSamples = 0, switchedSamples = 0, switches = 0;
   std::array<uint64_t, 64> waitReasons{};
 };
@@ -107,6 +110,14 @@ class Scope {
     const auto ns = static_cast<uint64_t>((end.ticks - begin_.ticks) * 1000000000.0 / frequency());
     std::lock_guard lock(owner_->mutex);
     auto& row = owner_->rows[stage_]; ++row.count; row.totalNs += ns;
+    row.lastBytes = bytes_; row.lastFrame = frame_;
+    if (bytes_) {
+      bool recorded = false;
+      for (auto& [size, count] : row.payloadSizes) if (!count || size == bytes_) {
+        size = bytes_; ++count; recorded = true; break;
+      }
+      if (!recorded) ++row.payloadSizeOverflow;
+    }
     if (begin_.dispatchKnown && end.dispatchKnown) {
       ++row.dispatchSamples;
       const auto switches = static_cast<uint32_t>(end.switches - begin_.switches);
@@ -149,12 +160,17 @@ inline rpc::Json snapshot(const std::string& id) {
     if (row.start.cpuKnown && row.end.cpuKnown) worst.emplace("cpu100ns", static_cast<double>(row.end.cpu100ns - row.start.cpu100ns));
     if (row.start.cyclesKnown && row.end.cyclesKnown) worst.emplace("cycles", std::to_string(row.end.cycles - row.start.cycles));
     rpc::Json::Array waits;
+    rpc::Json::Array payloadSizes;
+    for (const auto& [size, count] : row.payloadSizes) if (count)
+      payloadSizes.emplace_back(rpc::Json::Object{{"bytes", static_cast<double>(size)}, {"samples", static_cast<double>(count)}});
     if (i != Iteration) for (size_t bit = 0; bit < 64; ++bit) if (row.waitReasons[bit])
       waits.emplace_back(rpc::Json::Object{{"bit", static_cast<int>(bit)}, {"samples", static_cast<double>(row.waitReasons[bit])}});
     stages.emplace_back(rpc::Json::Object{{"stage", names[i]}, {"samples", static_cast<double>(row.count)},
         {"totalNs", static_cast<double>(row.totalNs)}, {"maxNs", static_cast<double>(row.maxNs)},
         {"switchedSamples", static_cast<double>(row.switchedSamples)}, {"contextSwitches", static_cast<double>(row.switches)},
         {"dispatchSamples", static_cast<double>(row.dispatchSamples)},
+        {"lastBytes", static_cast<double>(row.lastBytes)}, {"lastFrameId", static_cast<double>(row.lastFrame)},
+        {"payloadSizes", std::move(payloadSizes)}, {"payloadSizeOverflow", static_cast<double>(row.payloadSizeOverflow)},
         {"waitReasons", std::move(waits)},
         {"histogram", std::move(histogram)}, {"worst", std::move(worst)}});
   }
