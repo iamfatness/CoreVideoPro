@@ -26,7 +26,7 @@ restore. These are disclosed boundaries, not evidence of those workflows passing
 
 Evidence is retained under `artifacts/graphics-1007*`. The initial shell test
 resource-copy failure and native test-fixture output-size mismatch are retained
-alongside corrected reruns. Installed checks are pending until recorded below.
+alongside corrected reruns. Installed functional checks are recorded below; workload acceptance stays separate.
 
 
 Installed trial 1 (358d0baf): package installed and normal-shortcut app
@@ -104,3 +104,58 @@ native take-in layers before applying its sticky preference. Tests cover an
 incoming screen, incoming Zoom picture and the outgoing-only boundary. Original
 failed snapshots and the short timing study remain in graphics-1007-03; installed
 acceptance of this repair is pending.
+
+
+## Final installed functional acceptance
+
+Installed `beta-2026-10-21-g10074a795bd`, source
+`4a795bd0375b7ac580ffa538697b7bb886aed6da`, through the established local NSIS
+installer (exit 0). All 864 manifest-listed files matched. The regular desktop
+shortcut opened that exact installation with no arguments, normal user SID,
+non-elevated session 1, and no QA video/renderer overrides. Registration Inspect
+matched the desktop user's camera registration to the installed candidate.
+
+Actual installed Studio services completed Create hidden cue -> Use in Studio ->
+LT in for webcam and screen while Zoom was offline. Four independent ordinary OS
+camera consumers each delivered 180 frames (720 total); decoded webcam, screen,
+automatic reconnect and PNG images were inspected. Eight alternating camera/screen
+Take -> LT in trials all started during active fades (progress 0.57-0.91), used no
+fixed delay before Show, bound the incoming subject and remained correctly
+composed after the Take completed. This resolves the retained #1011 failed trial.
+
+The final candidate repeated the actual local-screen automatic suppression /
+explicit opt-out and offline/online reconnect checks: generation 1 -> 3 in the
+same core, friendly native label retained, old text binding rejected, unchanged
+rule configuration. Operator Unassign/reassign reused camera input 10 without
+restart through its real command/API; this is not a claim of physical mouse-click
+retesting. Compiled controls separately cover empty-row picker reachability.
+
+Standalone image import -> hidden cue -> Cue -> Show reached actual Program
+composition. Decoded opaque-red, half-green-over-blue, transparent hidden-red and
+transparent corner samples were [253,0,0], [0,126,126], [0,0,253], [0,0,253], within
+the original tolerance of 8. Exact PNG bytes/package roundtrip and the historical
+square-logo manifest remain covered by regressions.
+
+Validation: 1,829 full production native tests; MediaCore 2,596, WinUI 1,722 and
+Control 102 managed tests; 54 compiled Studio/Graphics/settings checks and bundled
+runtime probe. The final native binary's SHA256 matches the full native test
+candidate (a164ad12698c8a8f7b720a69ae6f2e7ac61e62434f833a730930d79e2c41a693);
+only the managed Take resolver changed afterward. Hosted checks must still be
+read from the PR; local results do not imply all hosted jobs have completed.
+
+Evidence: `artifacts/graphics-1007-04/installed-functional-acceptance.json`,
+`rapid-take-result.json`, `automatic-reconnect-result.json`,
+`camera-reuse-result.json`, `png-alpha-acceptance.json`, four `*-os` captures,
+`installed-payload-verification.json`, `installed-camera-registration.json` and
+`final-camera-progress.json`. Earlier failed candidate evidence is retained.
+The initial final-candidate API request preceded server readiness and was refused;
+the successful ready-state rerun is saved separately.
+
+Owned test graphics/outputs were cleared, the five original profile files were
+restored with matching hashes, and the regular shortcut reopened the final app.
+Program was then routed to the webcam for review: eight successive samples show
+camera ingest and actual Program advancing. Recording/streaming are off; the
+original saved virtual-camera enabled state is restored. No public beta was
+published. Full-workload/per-frame/display acceptance remains false and #1009
+is still open. This completes the installed Graphics functional checks, not the
+independent stuttering/recording qualification or future hardware acceptance.
