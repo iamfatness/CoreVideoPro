@@ -1006,8 +1006,9 @@ struct InMemoryIsoVideoRegion {
   ShmRegion region{};
   InMemoryIsoVideoRegion() { region.ptr = bytes.data(); region.size = bytes.size() * 8; }
   void write(uint32_t id, uint32_t epoch, uint32_t width = 4, uint32_t height = 4) {
-    std::vector<uint8_t> y(width * height), u(width * height / 4), v(width * height / 4);
-    EXPECT_TRUE(zoom_iso::write(region.ptr, region.size, epoch, id, width, height, y.data(), u.data(), v.data(), id * 1000));
+    const auto pixels = static_cast<size_t>(width) * height;
+    std::vector<uint8_t> y(pixels), u(pixels / 4), v(pixels / 4);
+    EXPECT_TRUE(zoom_iso::write(region.ptr, region.size, epoch, id, width, height, y.data(), u.data(), v.data(), int64_t{id} * 1000));
   }
   static std::shared_ptr<void> holder(const std::shared_ptr<InMemoryIsoVideoRegion>& owner) {
     return std::shared_ptr<void>(owner, &owner->region);

@@ -776,7 +776,16 @@ TEST(GraphicsInstances, ClockControlIsQualifiedAndDoesNotRevealOrDriftLogicalRev
   GraphicsInstances state{"test-core"};
   ASSERT_TRUE(state.apply(request("graphics-instance-create",{{"templateId","clock-panel"},{"templateVersion",1},{"scope","global"}})));
   corevideo::graphics::GraphicsClockConfig config; config.mode="countdown"; config.durationSeconds=3;
-  ASSERT_TRUE(state.apply(request("graphics-clock-control",{{"action","configure"},{"configuration",config.json()},{"expectedClockRevision",1}})));
+  const auto control=[&](const Json::Object& fields) {
+    const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    do {
+      if(state.apply(request("graphics-clock-control",fields))) return true;
+      if(state.snapshot().get("lastResult")->getString("reason")!="clock-controller-busy") return false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while(std::chrono::steady_clock::now()<until);
+    return false;
+  };
+  ASSERT_TRUE(control({{"action","configure"},{"configuration",config.json()},{"expectedClockRevision",1}}));
   const auto wait=[&](const std::string& expected) {
     const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(3);
     do { state.observe({}); const auto* clock=row(state).get("clock"); if(clock && clock->getString("state")==expected) return true;
@@ -787,14 +796,32 @@ TEST(GraphicsInstances, ClockControlIsQualifiedAndDoesNotRevealOrDriftLogicalRev
   EXPECT_EQ(2,row(state).getNumber("clockConfigurationRevision"));
   EXPECT_FALSE(state.apply(request("graphics-clock-control",{{"action","configure"},{"configuration",config.json()},{"expectedClockRevision",1}})));
   EXPECT_EQ("clock-configuration-conflict",state.snapshot().get("lastResult")->getString("reason"));
-  ASSERT_TRUE(state.apply(request("graphics-clock-control",{{"action","start"}}))); ASSERT_TRUE(wait("running"));
+  ASSERT_TRUE(control({{"action","start"}})); ASSERT_TRUE(wait("running"));
   EXPECT_EQ(1,row(state).getNumber("revision")); EXPECT_EQ(0,row(state).getNumber("programRevision"));
-  ASSERT_TRUE(state.apply(request("graphics-clock-control",{{"action","configure"},{"configuration",config.json()},{"expectedClockRevision",2}})));
+  ASSERT_TRUE(control({{"action","configure"},{"configuration",config.json()},{"expectedClockRevision",2}}));
   EXPECT_EQ("unchanged",state.snapshot().get("lastResult")->getString("reason"));
   EXPECT_EQ(2,row(state).getNumber("clockConfigurationRevision")); ASSERT_TRUE(wait("running"));
-  ASSERT_TRUE(state.apply(request("graphics-clock-control",{{"action","pause"}}))); ASSERT_TRUE(wait("paused"));
+  ASSERT_TRUE(control({{"action","pause"}})); ASSERT_TRUE(wait("paused"));
   EXPECT_FALSE(state.apply(request("graphics-instance-update",{{"target","cue"},{"fields",Json::Object{{"time","FAKE"}}}})));
   EXPECT_EQ("clock-time-controlled",state.snapshot().get("lastResult")->getString("reason"));
+}
+
+TEST(GraphicsClockController, FirstPublicationSurvivesConstructionAndWorkerRetirement) {
+  for(int iteration=0;iteration<64;++iteration) {
+    std::shared_ptr<const Json> publication;
+    {
+      corevideo::graphics::GraphicsClockController controller;
+      const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(1);
+      do {
+        publication=controller.sample();
+        if(publication) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      } while(std::chrono::steady_clock::now()<until);
+      ASSERT_NE(nullptr,publication);
+    }
+    EXPECT_EQ("wall",publication->getString("state"));
+    EXPECT_FALSE(publication->getString("text").empty());
+  }
 }
 
 TEST(GraphicsInstances, EmptyAndOtherScopePassesPreserveAuthoredOrderExactly) {
