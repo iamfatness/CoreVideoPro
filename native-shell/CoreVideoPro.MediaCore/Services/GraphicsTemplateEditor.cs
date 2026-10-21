@@ -49,7 +49,7 @@ public static class GraphicsTemplateEditor
         var root=Read(scratch); var row=Walk(root["layers"]!.AsArray()).FirstOrDefault(r=>r.Node["id"]?.GetValue<string>()==id);
         if(row.Node is null) throw new InvalidDataException("Layer was removed.");
         if(row.Locked) throw new InvalidOperationException("Unlock the layer or its parent before editing.");
-        if(property is not ("x" or "y" or "width" or "height" or "opacity" or "visible" or "fill" or "cornerRadius" or "font" or "fontSize" or "fontWeight" or "lineHeight" or "color" or "text" or "align" or "maxLines" or "overflow" or "gap" or "padding" or "fit" or "flow"))
+        if(property is not ("x" or "y" or "width" or "height" or "opacity" or "visible" or "fill" or "cornerRadius" or "font" or "fontSize" or "fontWeight" or "lineHeight" or "color" or "text" or "align" or "maxLines" or "overflow" or "gap" or "padding" or "fit" or "flow" or "asset"))
             throw new InvalidDataException("This layer property is not editable.");
         var replacement=JsonNode.Parse(value.GetRawText()); if(JsonNode.DeepEquals(row.Node[property],replacement)) return scratch;
         row.Node[property]=replacement;

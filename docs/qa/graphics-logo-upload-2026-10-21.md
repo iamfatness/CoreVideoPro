@@ -37,3 +37,10 @@ same guards and revision checks. A deterministic test supplies native readiness
 before a UI observation and checks the exact Cue revision consumed by Show.
 Original installer/launch/hash receipts and the failed API run are retained in
 `artifacts/graphics-logo-1012/trial-06fdb17`; repeat installed acceptance is pending.
+
+
+The connected advanced image selector also called Set(asset, ...) while the
+managed editable-property list omitted asset. That slot is now editable through
+the existing immutable scratch path, including brand-token declaration and layer
+locks. Native template validation and explicit immutable-version save still gate
+Cue/Update; no asset path or live template is rewritten by selecting a source.
