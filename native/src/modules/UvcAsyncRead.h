@@ -76,7 +76,10 @@ class UvcAsyncRead final : public IMFSourceReaderCallback {
       if (retired_) return MF_E_SHUTDOWN;
       if (!ready_) return S_FALSE;
       status = status_; *flags = flags_; *pts = pts_; *sample = sample_; sample_ = nullptr; ready_ = false;
-      if (SUCCEEDED(status) && !(flags_ & MF_SOURCE_READERF_ENDOFSTREAM)) { pending_ = true; prime = true; }
+      // A format-change reply must be inspected before another request can
+      // advance the reader's current type beyond the sample just delivered.
+      constexpr DWORD noPrime = MF_SOURCE_READERF_ENDOFSTREAM | MF_SOURCE_READERF_ERROR | MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED;
+      if (SUCCEEDED(status) && !(flags_ & noPrime)) { pending_ = true; prime = true; }
     }
     // Keep decode/conversion off the request cadence: prime one next sample.
     if (prime) {

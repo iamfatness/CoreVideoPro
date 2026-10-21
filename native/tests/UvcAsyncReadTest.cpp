@@ -56,6 +56,19 @@ TEST(UvcAsyncRead, FlushCancelsPendingRequestAndNextPollCanRearm) {
   callback->cancel(); callback->Release();
 }
 
+TEST(UvcAsyncRead, FormatChangeIsInspectedBeforeAnotherReadCanChangeTheCurrentType) {
+  auto* callback = new UvcAsyncRead();
+  int requests = 0; DWORD flags; LONGLONG pts; IMFSample* sample = nullptr;
+  const auto request = [&] { ++requests; return S_OK; };
+  EXPECT_EQ(callback->take(request, std::chrono::milliseconds(0), &flags, &pts, &sample), S_FALSE);
+  callback->OnReadSample(S_OK, 0, MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED, 123, nullptr);
+  EXPECT_EQ(callback->take(request, std::chrono::milliseconds(0), &flags, &pts, &sample), S_OK);
+  EXPECT_EQ(flags, MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED); EXPECT_EQ(requests, 1);
+  EXPECT_EQ(callback->take(request, std::chrono::milliseconds(0), &flags, &pts, &sample), S_FALSE);
+  EXPECT_EQ(requests, 2);
+  callback->cancel(); callback->Release();
+}
+
 TEST(UvcAsyncRead, SampleReferenceSurvivesCallbackRetirementAndImmediatePrimeFailureIsRetained) {
   ASSERT_TRUE(SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)));
   auto* callback = new UvcAsyncRead();
