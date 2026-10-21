@@ -27,3 +27,13 @@ accepted Program retention across private replacement. The first pixel trial
 sampled the curated entrance fade; its failure is retained. The alpha test now
 explicitly selects no entrance/out transition to isolate alpha from animation;
 production transitions are unchanged. Installed acceptance is pending.
+
+
+Installed trial 06fdb17 exited setup at the first workspace Show: native Cue
+preparation was ready, while the workspace's last UI observation still had no
+accepted Cue. This was a refusal, not a passed logo check. Command execution now
+observes the current bridge snapshot before evaluating readiness, retaining the
+same guards and revision checks. A deterministic test supplies native readiness
+before a UI observation and checks the exact Cue revision consumed by Show.
+Original installer/launch/hash receipts and the failed API run are retained in
+`artifacts/graphics-logo-1012/trial-06fdb17`; repeat installed acceptance is pending.

@@ -420,7 +420,7 @@ public sealed partial class GraphicsWorkspaceSession
     {
         if (Busy) return false;
         Busy = true; Changed?.Invoke(this, EventArgs.Empty);
-        try { return await action(); }
+        try { Observe(_observe()); return await action(); }
         catch (Exception ex) when (ex is not OutOfMemoryException) { Status = ex.Message; return false; }
         finally { Busy = false; Changed?.Invoke(this, EventArgs.Empty); }
     }

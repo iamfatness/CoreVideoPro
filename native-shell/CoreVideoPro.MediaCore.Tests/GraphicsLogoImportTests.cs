@@ -49,5 +49,21 @@ public sealed class GraphicsLogoImportTests : IDisposable
         Assert.False(GraphicsWorkspaceSession.SupportsLogo(Logo with {Definition=JsonSerializer.SerializeToElement(new {assets=new[] {new {id="photograph"}}})}));
         Assert.True(GraphicsWorkspaceSession.SupportsLogo(new() {TemplateId="compact-solid",Runtime="compatibility"}));
     }
+    [Fact]
+    public async Task ShowUsesCurrentNativePreparationWithoutWaitingForUiObservation()
+    {
+        var selected=new NativeGraphicsInstance {InstanceId="logo",TemplateId="corner-logo",TemplateVersion=1,Revision=2,CueRevision=0};
+        var state=new NativeGraphicsState {CoreEpoch="logo-test",Instances=[selected]};
+        JsonElement request=default;
+        var session=new GraphicsWorkspaceSession((action,body,_)=>{
+            Assert.Equal("graphics.instance.trigger",action);request=JsonDocument.Parse(body).RootElement.Clone();
+            return Task.FromResult(new NativeGraphicsOperationResult {Accepted=true});
+        },()=>state);
+        session.Observe(state);session.Select("logo");
+        state=state with {Instances=[selected with {CueRevision=2}]}; // native ready before the next UI observation
+        Assert.True(await session.ShowAsync());
+        Assert.Equal(2,request.GetProperty("expectedRevision").GetInt64());
+        Assert.Equal("show",request.GetProperty("action").GetString());
+    }
     public void Dispose() {if(Directory.Exists(_root)) Directory.Delete(_root,true);}
 }
