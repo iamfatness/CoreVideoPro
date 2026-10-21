@@ -5,6 +5,8 @@ using CoreVideoPro.WinUI.ViewModels;
 using CoreVideoPro.WinUI.ViewModels.Transport;
 using CoreVideoPro.WinUI.Views;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation.Peers;
+using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
 using Windows.Graphics;
 
@@ -77,11 +79,15 @@ internal static class SceneWorkspaceIntegrationProbe
         await Eventually(()=>tabs.Items.Cast<PivotItem>().Select(i=>i.Header?.ToString()).SequenceEqual(new[]{"Layout","Style","Members","Transform"}));
         Require(studio.GalleryBackgroundColor=="#102030","Color hydration changed the selected scene's authored color");
         Require(tabs.Items.Contains(transformTab),"Tab reconciliation replaced the shared transform control");
-        Require(tabs.SelectedIndex==tabs.Items.IndexOf(tabs.SelectedItem),"Inspector selection index differs from the retained selected tab");
+        RequireInspectorSelection(tabs,"Inspector selection index differs from the retained selected tab");
         page.Visibility=Visibility.Collapsed;
-        studio.SelectSceneCommand.Execute(ordinarySceneId);await Task.Delay(30);
-        studio.SelectSceneCommand.Execute(id);await Task.Delay(30);
-        Require(tabs.SelectedIndex==tabs.Items.IndexOf(tabs.SelectedItem),"Collapsed inspector retained a stale selected index");
+        for(var cycle=0;cycle<16;cycle++)
+        {
+            studio.SelectSceneCommand.Execute(ordinarySceneId);await Task.Delay(30);
+            RequireInspectorSelection(tabs,$"Collapsed source inspector retained a stale selected index, cycle {cycle}");
+            studio.SelectSceneCommand.Execute(id);await Task.Delay(30);
+            RequireInspectorSelection(tabs,$"Collapsed wall inspector retained a stale selected index, cycle {cycle}");
+        }
         page.Visibility=Visibility.Visible;await Task.Delay(50);page.UpdateLayout();
         // A burst must reconcile the latest scene rather than a captured old selection.
         studio.SelectSceneCommand.Execute(ordinarySceneId);
@@ -180,8 +186,25 @@ internal static class SceneWorkspaceIntegrationProbe
         studio.WorkspaceRasterizeGraphic=graphic=>"fixture-"+Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(graphic))));
         workspace.AddGraphic("text");
         var graphicId=workspace.Selected!.ItemId;
-        tabs.SelectedItem=tabs.Items.Cast<PivotItem>().Single(i=>i.Name=="SourceInspectorTab");
-        await Task.Delay(100);page.UpdateLayout();
+        // Hosted Windows can constrain this offscreen window to a compact
+        // viewport. Open its real Properties drawer, as an operator would,
+        // before expecting Pivot to realize a newly selected editor.
+        var dock=(FrameworkElement)page.FindName("InspectorDock");
+        if (dock.Visibility==Visibility.Collapsed) {
+            var properties=(Button)page.FindName("PropertiesButton");
+            Require(properties.Visibility==Visibility.Visible && properties.IsEnabled,"Compact inspector has no usable Properties action");
+            ((IInvokeProvider)new ButtonAutomationPeer(properties).GetPattern(PatternInterface.Invoke)).Invoke();
+        }
+        await Eventually(()=>dock.Visibility==Visibility.Visible && dock.IsLoaded);
+        tabs.SelectedIndex=tabs.Items.IndexOf(tabs.Items.Cast<PivotItem>().Single(i=>i.Name=="SourceInspectorTab"));
+        try {
+            await Eventually(()=>Descendants(page).OfType<TextBox>().Any(t=>t.Tag?.ToString()==graphicId&&t.Header?.ToString()=="Text"));
+        } catch (Exception ex) {
+            var named=page.FindName("GraphicTextField") as TextBox;
+            var observed=string.Join(" | ",Descendants(page).OfType<TextBox>().Select(t=>$"{t.Name}:{t.Tag}:{t.Header}:{t.IsLoaded}:{t.Visibility}"));
+            throw new InvalidOperationException($"Authored text inspector did not become ready: expected={graphicId}; {page.GraphicEditProbeState}; tab={tabs.SelectedIndex}/{(tabs.SelectedItem as PivotItem)?.Name}; size={page.ActualWidth}x{page.ActualHeight}; pivot={tabs.ActualWidth}x{tabs.ActualHeight}; named={named?.Tag}:{named?.Header}:{named?.IsLoaded}:{named?.Visibility}; fields={observed}",ex);
+        }
+        page.UpdateLayout();
         var titleField=Descendants(page).OfType<TextBox>().Single(t=>t.Tag?.ToString()==graphicId&&t.Header?.ToString()=="Text");
         titleField.Focus(FocusState.Programmatic);await Eventually(()=>titleField.FocusState!=FocusState.Unfocused);
         titleField.Text="Edited title survives refresh";
@@ -222,6 +245,12 @@ internal static class SceneWorkspaceIntegrationProbe
         checks.Add("compiled Settings enables optional navigation, safely exits the selected workspace on disable and persists without changing saved scenes; Health remains reachable");
         Require(!startup.Bridge.Running,"Isolated workspace probe started a native core");
         window.Content=null;
+    }
+    private static void RequireInspectorSelection(Pivot tabs,string phase)
+    {
+        var expected=tabs.Items.IndexOf(tabs.SelectedItem);
+        Require(expected>=0 && tabs.SelectedIndex==expected,
+            $"{phase}: actual={tabs.SelectedIndex}, expected={expected}, selected={(tabs.SelectedItem as PivotItem)?.Header}, items={string.Join(',',tabs.Items.Cast<PivotItem>().Select(item=>item.Header))}");
     }
     private static async Task Eventually(Func<bool> ready)
     {

@@ -16,7 +16,7 @@ public sealed record HttpControlResponse(int Status, string ContentType, string 
 ///   GET  /manifest        → the full action/feedback contract (ControlManifest JSON)
 ///   GET  /state           → the current ControlState (camelCase JSON)
 ///   GET  /snapshot        → the last media-core session snapshot, verbatim (see below)
-///   POST /invoke          → { "action": "&lt;id&gt;", "args": [ ... ] } → { "ok": bool, "error"?: string }
+///   POST /invoke          → { "action": "&lt;id&gt;", "args": [ ... ] } → { "ok": bool, "error"?: string, "previewSceneId"?: string }
 ///
 /// <c>GET /snapshot</c> is read-only observability: it serves the snapshot the shell ALREADY
 /// received on its existing cadence, so an external judge can watch the core the operator is
@@ -221,6 +221,11 @@ public sealed class HttpControlRouter
         if (!result.Ok)
         {
             return Fail(422, result.Error ?? "Invocation failed.");
+        }
+
+        if (result.PreviewSceneId is { Length: > 0 } preview)
+        {
+            return HttpControlResponse.Json(200, JsonSerializer.Serialize(new { ok = true, previewSceneId = preview }, JsonOptions));
         }
 
         return HttpControlResponse.Json(200, "{\"ok\":true}");

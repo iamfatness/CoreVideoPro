@@ -8,6 +8,14 @@ All notable changes to CoreVideo Pro are documented here. The format follows
 
 ### Added
 
+- **Control API `scene.cueWithRoutes` / `scene.route.set` (#861).** A controller can cue a
+  scene to Preview and point named routes at Show Input slots over `POST /invoke` (JSON
+  `{routeId: slot|null}`, or one `sceneId, routeId, slot` triple). Unknown scene, route or
+  slot is `422` and changes nothing. A successful invoke reports `previewSceneId` of the
+  Preview scene actually queued. `input.assign` still only fills a slot; `transport.take`
+  still swaps Preview to Program. GET `/snapshot` `programFrame.videoSources[]` remains
+  the Program proof.
+
 - **One version, stamped everywhere (beta D1).** `scripts/stamp-version.mjs` makes
   `package.json` the single version source of truth: it rewrites the appxmanifest
   `Identity Version` (x.y.z.0) and the csproj `ApplicationDisplayVersion` /

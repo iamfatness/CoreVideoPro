@@ -139,13 +139,13 @@ Section "CoreVideo Pro" SEC_APP
     ; The Windows Frame Server loads the machine runtime as LocalService.
     ; Silent setup must already be elevated; never prompt from /S.
     IfSilent camera_silent
-    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-VirtualCamera.ps1" -Action Install -AppDirectory "$INSTDIR" -AllowElevation'
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-VirtualCamera.ps1" -Action Install -AppDirectory "$INSTDIR" -AllowElevation -Quiet'
     Pop $1
     Pop $2
     DetailPrint "$2"
     Goto camera_result
     camera_silent:
-    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-VirtualCamera.ps1" -Action Install -AppDirectory "$INSTDIR"'
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-VirtualCamera.ps1" -Action Install -AppDirectory "$INSTDIR" -Quiet'
     Pop $1
     Pop $2
     DetailPrint "$2"
@@ -158,6 +158,7 @@ Section "CoreVideo Pro" SEC_APP
     ; T2.1: create the recording folder so the first Record has somewhere to go.
     ; Must match RecordingFolderPolicy.Resolve's default (Videos\CoreVideo Pro).
     CreateDirectory "$PROFILE\Videos\${STABLE_SHORTCUT_NAME}"
+    StrCpy $FailureReason "Writing application uninstall registration failed."
     ClearErrors
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "CoreVideo Pro ${RELEASE_ID}"
     WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${RELEASE_ID}"
@@ -184,9 +185,15 @@ Section "CoreVideo Pro" SEC_APP
     Delete "$DESKTOP\CoreVideo Pro beta-*.lnk"
     Goto installed
     camera_failed:
-        StrCpy $FailureReason "Virtual-camera installation failed. Administrator approval is required; unknown camera registrations are preserved. Silent setup must already be elevated."
+        StrCpy $FailureReason "Virtual-camera installation failed (exit $1). See $LOCALAPPDATA\CoreVideoPro\installer-logs for the retained error. Unknown camera registrations are preserved."
         DetailPrint "Virtual-camera installation failed. Administrator approval is required; unknown registrations are preserved."
     install_failed:
+        ; Record before rollback removes the destination and helper. This is
+        ; already a failure branch; logging cannot turn failure into success.
+        CreateDirectory "$LOCALAPPDATA\CoreVideoPro\installer-logs"
+        FileOpen $R8 "$LOCALAPPDATA\CoreVideoPro\installer-logs\${RELEASE_ID}-setup.log" w
+        FileWrite $R8 "$FailureReason$\r$\nCameraChanged=$CameraChanged ChildExit=$1$\r$\n$2$\r$\n"
+        FileClose $R8
         ${If} $CameraChanged == 1
             IfSilent rollback_silent
             nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Install-VirtualCamera.ps1" -Action Rollback -AppDirectory "$INSTDIR" -AllowElevation'
@@ -219,6 +226,7 @@ Section "CoreVideo Pro" SEC_APP
 
         DeleteRegKey HKCU "${UNINSTALL_KEY}"
         Delete "$INSTDIR\.camera-registration-before.json"
+        Delete "$INSTDIR\.camera-desktop-registration-before.json"
         Delete "$INSTDIR\.corevideo-prerelease-install"
         Delete "$INSTDIR\Uninstall.exe"
         RMDir "$INSTDIR"
@@ -353,6 +361,7 @@ Section "Uninstall"
     Delete "$DESKTOP\${SHORTCUT_NAME}.lnk"
     DeleteRegKey HKCU "${UNINSTALL_KEY}"
     Delete "$INSTDIR\.camera-registration-before.json"
+    Delete "$INSTDIR\.camera-desktop-registration-before.json"
     Delete "$INSTDIR\previous-installations-cleanup.json"
     Delete "$INSTDIR\.corevideo-prerelease-install"
     Delete "$INSTDIR\Uninstall.exe"

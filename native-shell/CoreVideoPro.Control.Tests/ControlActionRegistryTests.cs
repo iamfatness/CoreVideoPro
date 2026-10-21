@@ -47,6 +47,13 @@ public sealed class ControlActionRegistryTests
     {
         Assert.False(ControlActionRegistry.TryBind("scene.select", System.Array.Empty<object?>(), out _, out var error));
         Assert.Contains("sceneId", error);
+        Assert.True(ControlActionRegistry.TryBind("scene.cueWithRoutes",
+            new object?[] { "interview", """{"ohg-host":1}""" }, out var cue, out _));
+        Assert.Equal("interview", cue[0]);
+        Assert.Equal("""{"ohg-host":1}""", cue[1]);
+        Assert.True(ControlActionRegistry.TryBind("scene.route.set",
+            new object?[] { "interview", "ohg-host", 2 }, out var one, out _));
+        Assert.Equal(2, one[2]);
     }
 
     [Fact]
@@ -122,6 +129,7 @@ public sealed class ControlActionRegistryTests
         foreach (var id in new[]
         {
             "zoom.join", "zoom.leave", "transport.take", "transport.record.toggle", "transport.stream.set", "scene.select",
+            "scene.cueWithRoutes", "scene.route.set",
             "scene.dynamicGallery.create",
             "input.assign", "input.name", "source.dropout.set", "graphics.lowerThird.toggle", "audio.zoomMode.set", "audio.monitor.set",
             "multiview.layout.set", "automation.autoAssignInputs.set"

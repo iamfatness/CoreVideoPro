@@ -2,6 +2,38 @@
 
 ## Registration failure recovery (#857)
 
+### Desktop-user installation boundary (October 19)
+
+The installed desktop launch read an October 15 user alias while the installing
+Codex/PowerShell context read the current alias for the same SID. Explicit HKU
+reads and a child with no package identity were insufficient independent controls.
+A limited interactive Task Scheduler worker reproduced the real desktop view.
+
+Camera setup now preflights, backs up, changes and reads back the user alias in
+that independent user context. The machine phase still owns the protected DLL,
+hash and machine key. The user worker verifies that exact protected/installed DLL
+identity, refuses unknown registrations and refuses mutation while CoreVideo is
+running. A fresh private pipe carries its correlated result rather than another
+potentially redirected AppData file. The temporary task is removed; a failed or
+missing worker prevents setup from reporting success. Native ownership guards
+remain unchanged. Uninstall preserves another installation's user alias.
+
+Clean-runner installer qualification inspects that independent user boundary.
+It explicitly leaves camera delivery and Unassign acceptance unverified. After
+installation, launch the owner's regular desktop shortcut, verify the actual
+shell/core paths and obtain OS-consumer camera frames. Through the retained
+Sources control, Unassign and reuse the input immediately without restart or
+unrelated Program/ISO changes. Both must pass before installed acceptance; these
+functional checks do not replace full-workload frame-delivery qualification.
+
+`Build draft beta candidate` runs only on GitHub's Windows runner against an
+exact main SHA. Its build can run beside main CI, but the exact-source CI and
+CodeQL must pass before any draft upload. It builds the production payload, probes compiled Sources
+controls and packages the six immutable beta assets into an unaccepted draft.
+The owner PC is not an installer/QA runner during a show. Draft notes and the
+candidate evidence keep both desktop acceptance results unverified; run the
+separate exact-asset installer qualification before post-show local acceptance.
+
 Webcam enable is desired state, not proof that Windows accepted startup. The
 asynchronous owner formerly marked a failed start as applied and never tried
 again while enable remained true. Repairing the registry alone therefore left
@@ -275,6 +307,18 @@ Pipeline: **core → cross-session shared memory → DLL → Frame Server → ap
 ## Independent camera pixel receiver
 
 For an explicitly selected synthetic QA run only, `COREVIDEO_QA_PROGRAM_COUNTER=1` adds complementary binary Program-sequence markers at the top and bottom of the Program image. This changes output pixels and must never be enabled for a live show. It defaults off. GPU ClearView writes the markers before the normal Program-buffer/NV12 path; a hardware test decodes the resulting delivered NV12 packet and matches its Program identity.
+
+When another OS camera consumer is open, build the opt-in native target
+`corevideo-shared-camera-receiver` and invoke it with the registered Windows
+device ID and a bounded capture duration (1–7500 seconds). It activates that
+device with WinRT MediaCapture SharedReadOnly and reads delivered NV12 guard-row
+pixels, without opening the publisher mapping or directly loading its DLL.
+The existing camera pixel judge checks its original arrival timestamps and
+identities. Realtime/latest acquisition may drop frames; those remain missing
+identities and fail rather than being interpolated. Callback records are bounded
+in memory and written after capture. Acquisition/capacity failures, missing
+markers and incomplete captures cannot pass. This receiver does not prove display
+presentation, recording content or third-party consumer scheduling.
 
 Build `corevideo-vcam-receiver` and run `corevideo-vcam-receiver 90 > receiver.ndjson` while the candidate camera is enabled. The probe enumerates the OS camera and negotiates 1920x1080 NV12 at 60/1 through Media Foundation. It reads no publisher mapping. The header anchors receiver-monotonic arrivals to UTC with `startUnixUs`, and the judge derives post-warmup coverage from actual first/last measured arrivals. Each sample records monotonic arrival, media PTS and decoded pixel identity; malformed/complement-mismatched patterns are null. An independent watchdog ends a stalled receiver with incomplete evidence.
 

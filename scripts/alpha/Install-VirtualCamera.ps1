@@ -2,33 +2,40 @@
 param([ValidateSet('Install','Uninstall','Rollback','Inspect')][string]$Action = 'Install',
     [Parameter(Mandatory=$true)][string]$AppDirectory, [switch]$AllowElevation,
     [switch]$MachineOnly,
+    [switch]$Quiet,
     [string]$OwnerSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
 $ErrorActionPreference = 'Stop'
+# Preserve a failure outside the destination: NSIS rolls that directory back.
+# Registration metadata has no meeting credentials; retain the actual error and
+# call stack rather than reporting every camera failure as missing elevation.
+trap {
+    $cameraFailure = $_
+    try {
+        $logRoot = Join-Path $env:LOCALAPPDATA 'CoreVideoPro/installer-logs'
+        $null = New-Item -ItemType Directory $logRoot -Force
+        $identity = [IO.Path]::GetFileName($AppDirectory.TrimEnd('\'))
+        if ($identity -notmatch '^[a-zA-Z0-9._-]+$') { $identity = 'camera-setup' }
+        [ordered]@{ timeUtc=[DateTime]::UtcNow.ToString('o'); action=$Action; appDirectory=$AppDirectory;
+            message=$cameraFailure.Exception.Message; scriptStackTrace=$cameraFailure.ScriptStackTrace } |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logRoot ($identity + '-camera-error.json'))
+    } catch { }
+    throw $cameraFailure
+}
 # A PowerShell 7 parent can export its module path to NSIS's Windows PowerShell
 # child. Load the host's built-in ACL commands explicitly, rather than finding
 # an incompatible Microsoft.PowerShell.Security module through that path.
 Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 Import-Module (Join-Path $PSScriptRoot 'VirtualCameraRegistration.psm1') -Force
+. (Join-Path $PSScriptRoot 'CameraUserSession.ps1')
 $app = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $AppDirectory).Path).TrimEnd('\')
 $serverKey = 'SOFTWARE\Classes\CLSID\{8B4B2C9E-2C4A-4E1D-9C7A-CDEF01234567}\InprocServer32'
 $machine = Get-CameraMachineRegistration
 $runtimeCleanup = 'not_requested'
 if ($Action -eq 'Install' -and -not $MachineOnly) {
-    $currentUser = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
-    try {
-        $existingUser = $currentUser.OpenSubKey($serverKey)
-        try {
-            if ($existingUser) {
-                $userPath = [string]$existingUser.GetValue('')
-                $userRole = [string]$existingUser.GetValue('CoreVideoOwnerRole')
-                if ($userPath -and $userRole -ne 'CoreVideoPro.VirtualCamera.v1' -and -not (Test-OwnedLegacyCamera $userPath)) {
-                    throw 'A per-user camera registration with unknown ownership exists; inspect it before migration.'
-                }
-            }
-        } finally { if ($existingUser) { $existingUser.Dispose() } }
-    } finally { $currentUser.Dispose() }
+    $null = Invoke-CameraUserSession -Action Preflight -AppDirectory $app -OwnerSid $OwnerSid
 }
 if ($Action -eq 'Inspect') {
+    $desktopUser = Invoke-CameraUserSession -Action Inspect -AppDirectory $app -OwnerSid $OwnerSid
     $actualHash = if ($machine.Path -and (Test-Path -LiteralPath $machine.Path -PathType Leaf)) { (Get-CameraPayloadSha256 $machine.Path) } else { '' }
     $loaded = @()
     $moduleInspection = 'unverified'
@@ -41,18 +48,11 @@ if ($Action -eq 'Inspect') {
         }
         $moduleInspection = 'observed'
     } catch { $moduleInspection = 'unverified' }
-    [ordered]@{ schema='camera-installation-v1'; registration=$machine; registeredFileSha256=$actualHash;
+    [ordered]@{ schema='camera-installation-v1'; registration=$machine; desktopUser=$desktopUser; registeredFileSha256=$actualHash;
         registeredFileMatchesManifest=($actualHash -and $actualHash -eq $machine.Sha256); moduleInspection=$moduleInspection;
         loadedModules=$loaded; loadedIdentityMatchesRegistration=($moduleInspection -eq 'observed' -and $loaded.Count -gt 0 -and @($loaded | Where-Object { $_.FileName -ne $machine.Path }).Count -eq 0);
         servingIdentityVerified=$false } | ConvertTo-Json -Depth 5
     exit 0
-}
-$userBackupPath = Join-Path $app '.camera-registration-before.json'
-if ($Action -eq 'Install' -and -not $MachineOnly) {
-    $priorUser = Get-CameraMachineRegistration -CurrentUser
-    if ($priorUser.AppDirectory -ne $app) {
-        $priorUser | ConvertTo-Json | Set-Content -LiteralPath $userBackupPath
-    }
 }
 $ownershipAction = if ($Action -eq 'Rollback') { 'Uninstall' } else { $Action }
 $initialDecision = Get-CameraOwnershipDecision -Action $ownershipAction -RegisteredPath $machine.Path -OwnerRole $machine.Role -OwnerAppDirectory $machine.AppDirectory -AppDirectory $app -OwnedLegacy (Test-OwnedLegacyCamera $machine.Path $OwnerSid)
@@ -145,21 +145,22 @@ if (-not $admin -and $machineChangeNeeded) {
     } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
 }
 if (-not $MachineOnly) {
-    $currentUser = Get-CameraMachineRegistration -CurrentUser
-    if ($Action -eq 'Install') {
-        if ($machine.AppDirectory -ne $app -or $machine.Role -ne 'CoreVideoPro.VirtualCamera.v1') { throw 'Another installation replaced camera ownership; retry setup.' }
-        try { Set-CameraMachineRegistration $machine -CurrentUser }
-        catch {
-            Set-CameraMachineRegistration $currentUser -CurrentUser
-            & $PSCommandPath -Action Rollback -AppDirectory $app -AllowElevation:$AllowElevation -MachineOnly
-            throw
+    try {
+        $desktopUser = Invoke-CameraUserSession -Action $Action -AppDirectory $app -OwnerSid $OwnerSid
+    } catch {
+        $userFailure = $_
+        if ($Action -eq 'Install') {
+            # A worker may have applied the alias before a reply/transport error.
+            # Restore it in the same independent context before machine rollback.
+            try { $null = Invoke-CameraUserSession -Action Rollback -AppDirectory $app -OwnerSid $OwnerSid }
+            finally { & $PSCommandPath -Action Rollback -AppDirectory $app -AllowElevation:$AllowElevation -MachineOnly }
         }
-    } elseif ($currentUser.Role -eq 'CoreVideoPro.VirtualCamera.v1' -and [string]::Equals($currentUser.AppDirectory, $app, [StringComparison]::OrdinalIgnoreCase)) {
-        if ($Action -eq 'Rollback') {
-            $savedUser = Get-Content -LiteralPath $userBackupPath -Raw | ConvertFrom-Json
-            Set-CameraMachineRegistration $savedUser -CurrentUser
-        } else { Set-CameraMachineRegistration ([ordered]@{Path=''}) -CurrentUser }
+        throw $userFailure
     }
 }
-[ordered]@{ schema='camera-installation-v1'; action=$Action; registration=$machine; runtimeCleanup=$runtimeCleanup; servingIdentityVerified=$false;
-    note='Registration verified; camera activation and actual loaded-module inspection are required. Close camera consumers or restart Windows if an older DLL remains loaded.' } | ConvertTo-Json -Depth 5
+if ($Quiet) {
+    Write-Output "Camera $Action registration verified; camera delivery remains unverified."
+} else {
+    [ordered]@{ schema='camera-installation-v1'; action=$Action; registration=$machine; desktopUser=$(if (-not $MachineOnly) {$desktopUser} else {$null}); runtimeCleanup=$runtimeCleanup; servingIdentityVerified=$false;
+        note='Registration verified; camera activation and actual loaded-module inspection are required. Close camera consumers or restart Windows if an older DLL remains loaded.' } | ConvertTo-Json -Depth 7
+}

@@ -77,6 +77,12 @@ export function judgeRedesignWorkload(report) {
       cameraReplaced: s.virtualCamera?.pendingFramesReplaced,
       cameraExceptions: s.virtualCamera?.publicationExceptions,
     };
+    for (const id of Array.isArray(iso) ? iso : []) {
+      const track = streams.find(x => x.sourceId === id);
+      if (track?.readiness !== 'ready') errors.push(`${index}: ISO ${id} is not ready.`);
+      metrics['isoVideoDropped:' + id] = track?.droppedFrames;
+      metrics['isoAudioDropped:' + id] = track?.droppedAudioPackets;
+    }
     for (const [name, value] of Object.entries(metrics)) {
       if (!Number.isSafeInteger(value) || value < 0) errors.push(`${index}: missing ${name}.`);
       else if (counters.has(name) && value !== counters.get(name))

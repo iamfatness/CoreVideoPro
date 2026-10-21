@@ -55,9 +55,19 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(Button(workspace,"Save graphics only").ActualHeight>0 && Button(workspace,"Use this look in Studio").IsEnabled,"The direct sample-to-Studio action is unavailable");
             var sampleList=Descendants(workspace).OfType<ListView>().Single(l=>Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(l)=="Show template sample graphics");
             sampleList.SelectedIndex=1;
-            Descendants(workspace).OfType<TextBox>().Single(t=>t.Text=="In conversation").Text="My weekly show";
-            await Eventually(()=>studio.GraphicsWorkspace.Draft?.Fields.GetProperty("heading").GetString()=="My weekly show");
+            var heading = Descendants(workspace).OfType<TextBox>().Single(t=>t.Text=="In conversation");
+            Require(heading.FocusState==FocusState.Unfocused,"Pending-edit regression requires an unfocused editor");
+            heading.Text="My weekly show";
+            // Force the real refresh path before asynchronous TextChanged. A
+            // model echo must not overwrite input waiting to reach the model.
+            studio.GraphicsWorkspace.SetCompare(true);
+            await Eventually(()=>studio.GraphicsWorkspace.Draft?.Fields.GetProperty("heading").GetString()=="My weekly show", "Pending Graphics heading was overwritten before commit");
             sampleList.SelectedIndex=0;
+            var currentFields = studio.GraphicsWorkspace.Draft!.Fields.GetRawText();
+            heading.Text="Late event from a retired editor";
+            await Task.Delay(50);
+            Require(studio.GraphicsWorkspace.Draft.Fields.GetRawText()==currentFields,"Retired Graphics editor changed the new sample");
+            checks.Add("pending text survives model refresh and retired text callbacks cannot alter the next sample");
             Descendants(workspace).OfType<TextBox>().Single(t=>t.Header as string=="Brand color").Text="#2873AA";
             await Eventually(()=>studio.GraphicsWorkspace.Draft?.Style.AccentColor=="#2873AA");
             Require(studio.GraphicsWorkspace.Draft?.Style.AccentColor=="#2873AA","Shared branding did not update the private draft");
@@ -129,11 +139,33 @@ internal static class GraphicsWorkspaceLayoutProbe
             var unavailable = await control.InvokeAsync("graphics.lowerThird.set", new object?[] { true });
             Require(!unavailable.Ok && unavailable.Error?.Contains("Native Graphics is unavailable",StringComparison.Ordinal)==true,"Assigned API Show fell through to a legacy cue or falsely reported success");
             checks.Add("API Hide remains idempotent; assigned API Show refuses unavailable native Graphics without legacy fallback or false success");
+            await CheckBusyTextBindingAsync(window, checks);
         } finally { Environment.SetEnvironmentVariable("COREVIDEO_GRAPHICS_DOCUMENT_PATH",previousPath); }
+    }
+    private static async Task CheckBusyTextBindingAsync(Window window, List<string> checks)
+    {
+        var text = new TextBox { Text="Before", Header="Isolated pending edit" };
+        window.Content = new StackPanel { Children = { text } };
+        await Eventually(()=>text.IsLoaded);
+        var stored = "Before"; var editable = false; var writes = 0;
+        using var binding = new GraphicsTextFieldBinding(text, ()=>stored, value=> {
+            if (!editable) return false;
+            stored=value; writes++; return true;
+        }, ()=>{}, ()=>{});
+        text.Text="Pending user edit";
+        binding.Refresh(); await Task.Delay(50);
+        Require(stored=="Before" && text.Text=="Pending user edit","A busy model discarded pending text");
+        editable=true; binding.Refresh();
+        await Eventually(()=>stored=="Pending user edit","Pending text did not commit after the model became editable");
+        binding.Refresh(); await Task.Delay(50);
+        Require(writes==1,"Model refresh echoed text back as another edit");
+        binding.Dispose(); text.Text="Retired callback"; await Task.Delay(50);
+        Require(stored=="Pending user edit","Disposed text binding wrote into the model");
+        checks.Add("busy sessions retain pending input, retry once editable, avoid model echo and reject disposed callbacks");
     }
     private static Button Button(DependencyObject root,string name)=>Descendants(root).OfType<Button>().Single(b=>b.Content?.ToString()==name || Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(b)==name);
     private static void Invoke(Button button)=>((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke();
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root) { for(var i=0;i<VisualTreeHelper.GetChildrenCount(root);i++) {var child=VisualTreeHelper.GetChild(root,i);yield return child;foreach(var descendant in Descendants(child))yield return descendant;} }
     private static void Require(bool value,string reason) {if(!value)throw new InvalidOperationException(reason);}
-    private static async Task Eventually(Func<bool> predicate) {var watch=Stopwatch.StartNew();while(!predicate()&&watch.Elapsed<TimeSpan.FromSeconds(10))await Task.Delay(30);Require(predicate(),"Compiled Graphics controls did not load");}
+    private static async Task Eventually(Func<bool> predicate, string reason="Compiled Graphics controls did not load") {var watch=Stopwatch.StartNew();while(!predicate()&&watch.Elapsed<TimeSpan.FromSeconds(10))await Task.Delay(30);Require(predicate(),reason);}
 }

@@ -7,8 +7,8 @@ if (-not $ReportDirectory) { $ReportDirectory = Join-Path $repoRoot 'artifacts/t
 $ReportDirectory = [IO.Path]::GetFullPath($ReportDirectory)
 if (Test-Path -LiteralPath $ReportDirectory) { throw 'Use a new layout report directory; old successes must not mask a failed probe.' }
 New-Item -ItemType Directory -Path $ReportDirectory | Out-Null
-foreach ($kind in @('studio','graphics')) {
-    $flag = if ($kind -eq 'studio') { '--verify-studio-layout' } else { '--verify-graphics-workspace' }
+foreach ($kind in @('studio','graphics','operator-settings')) {
+    $flag = switch ($kind) { 'studio' { '--verify-studio-layout' } 'graphics' { '--verify-graphics-workspace' } default { '--verify-operator-settings' } }
     $report = Join-Path $ReportDirectory ($kind + '.json')
     $probe = Start-Process -FilePath $Executable -ArgumentList @($flag, ('"' + $report + '"')) -WindowStyle Hidden -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(90)

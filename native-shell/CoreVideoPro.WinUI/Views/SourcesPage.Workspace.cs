@@ -135,10 +135,11 @@ public sealed partial class SourcesPage
             if (current >= 0) InspectorTabs.Items.RemoveAt(current);
             InspectorTabs.Items.Insert(index, tabs[index]);
         }
-        // A retained item can move to another index while this page is collapsed.
-        // Assigning the same SelectedItem does not repair Pivot's cached index;
-        // its next template application rejects that inconsistent pair.
+        // Restore both halves. A retained item can move to a different index;
+        // conversely a removed item can leave the desired numeric index cached.
+        // Either setter alone can therefore be a no-op on a collapsed Pivot.
         var selection = tabs.Contains(selected) ? selected : tabs[0];
+        InspectorTabs.SelectedItem = selection;
         InspectorTabs.SelectedIndex = InspectorTabs.Items.IndexOf(selection);
     }
     private void OnSourceListSelectionChanged(object sender,SelectionChangedEventArgs e)

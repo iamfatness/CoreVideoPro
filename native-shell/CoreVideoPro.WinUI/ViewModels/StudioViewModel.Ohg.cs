@@ -77,6 +77,20 @@ public sealed partial class StudioViewModel
             OhgEngineStartedAtLaunch);
     }
 
+    /// <summary>Route ids stored on a scene, without cueing it. False when the scene is unknown.</summary>
+    internal bool TryGetSceneRouteIds(string sceneId, out IReadOnlyList<string> routeIds)
+    {
+        if (string.IsNullOrEmpty(sceneId) ||
+            !Scenes.Any(scene => string.Equals(scene.Id, sceneId, StringComparison.Ordinal)))
+        {
+            routeIds = Array.Empty<string>();
+            return false;
+        }
+
+        routeIds = GetMutableRoutes(sceneId).Select(route => route.Id).ToList();
+        return true;
+    }
+
     /// <summary>
     /// Point the named PREVIEW routes at Show Input slots. Semantics (the Task 10 adapter
     /// contract):

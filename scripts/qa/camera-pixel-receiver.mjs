@@ -21,6 +21,9 @@ export function judgeCameraPixels(text, { warmupSeconds = 30, minimumSeconds = 3
   if (header?.schema !== 'camera-pixel-receiver-v1' || header.width !== 1920 || header.height !== 1080 ||
       header.fpsNumerator !== 60 || header.fpsDenominator !== 1) errors.push('Missing negotiated 1080p60 evidence.');
   if (!completion || completion.samples !== rows.length) errors.push('Incomplete capture.');
+  if (completion?.frameFailures !== undefined &&
+      (!Number.isSafeInteger(completion.frameFailures) || completion.frameFailures !== 0))
+    errors.push('Receiver reported frame acquisition or evidence-capacity failures.');
   const receiverMode = header?.receiverMode ?? 'os-camera';
   if (!['os-camera', 'direct-dll'].includes(receiverMode)) errors.push('Unknown receiver mode.');
   let previous;
