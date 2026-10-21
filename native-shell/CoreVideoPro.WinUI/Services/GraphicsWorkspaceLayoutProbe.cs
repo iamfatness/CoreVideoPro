@@ -97,6 +97,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             await Task.Delay(100); Invoke(Button(workspace,"Customize layout & motion")); Invoke(Button(workspace,"Content")); await Task.Delay(80);page.UpdateLayout();
             Require(Button(workspace,"Upload logo PNG / JPEG…").IsEnabled,"Declarative logo uploader is missing or disabled");
             Require(Descendants(workspace).OfType<GraphicsImageControl>().Any(),"Logo template only offers bundled asset IDs");
+            Require(Descendants(workspace).OfType<ComboBox>().Count(c=>c.Header as string == "Logo")==1,"Logo uploader is duplicated by an asset-ID-only selector");
             Require(studio.GraphicsWorkspace.Selected is null && studio.GraphicsLibrary.Document.StudioLowerThird is null,"Logo editing implicitly created or assigned a cue");
             checks.Add("Declarative logo template exposes an enabled PNG/JPEG uploader in Content without creating or showing a cue");
             studio.GraphicsWorkspace.Browse(catalog[0]);

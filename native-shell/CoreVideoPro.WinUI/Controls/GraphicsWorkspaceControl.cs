@@ -232,6 +232,8 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
                 continue;
             }
 
+            // The logo uploader owns this slot; do not offer a second bundled-ID-only selector.
+            if (field.Type == "image" && field.Id == "logo" && GraphicsWorkspaceSession.SupportsLogo(_session.Template)) continue;
             var value = draft.Fields.TryGetProperty(field.Id, out var v) ? v : field.Default ?? JsonSerializer.SerializeToElement("");
             if (!Compatibility && _session.Template?.Layers is { } layers && !HasReference(layers,"field",field.Id)) {
                 _inspector.Children.Add(Copy(field.Id + " — this field is not used by the template's layers.")); continue;
