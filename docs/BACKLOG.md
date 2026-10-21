@@ -521,6 +521,7 @@ issue exists yet for this row; one will be filed, labeled `backlog`, when the
 
 | Issue | Item |
 |---|---|
+| [#1009](https://github.com/iamfatness/CoreVideoPro/issues/1009) | Local Program recording remains gated on a Zoom meeting; audit finding from #1007, needs owner ranking and installed output validation. |
 | [#539](https://github.com/iamfatness/CoreVideoPro/issues/539) | MXL / ZoomISO Cloud / Kubernetes; parked until the source bus and plant I/O exist. |
 
 Parked from the 2026-09-24 architecture review (do not start from that document):

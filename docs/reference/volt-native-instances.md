@@ -431,6 +431,7 @@ and half-alpha pixels must blend without black mattes. Import completion cannot
 discard a newer private selection or edit.
 
 Remote actions `graphics.template.select [id, version]`,
+`graphics.cue.create [id, version, scope, sceneId]`,
 `graphics.studio.assign [followProgramSource]` and `graphics.image.import [path]`
-call these same private selection/assignment/import services. They do not Show;
+call these same private selection/assignment/import services. Studio assignment requires an actual hidden cue, matching the UI; browsing alone cannot assign. They do not Show;
 Studio's existing `graphics.lowerThird.set` performs the explicit reveal.

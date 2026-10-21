@@ -61,7 +61,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
         "graphics.clock.control", "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
-        "graphics.template.select", "graphics.studio.assign", "graphics.image.import",
+        "graphics.template.select", "graphics.cue.create", "graphics.studio.assign", "graphics.image.import",
         "graphics.template.install", "graphics.template.list", "graphics.authority.set", "graphics.automation.configure", "graphics.automation.control",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
@@ -319,6 +319,17 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
                 var template = workspace.State?.Templates.FirstOrDefault(t => t.TemplateId == Str(args,0) && t.TemplateVersion == Int(args,1));
                 if (template is null) return ControlInvokeResult.Fail("The requested template version is unavailable.");
                 workspace.Browse(template); return ControlInvokeResult.Success;
+            }
+            case "graphics.cue.create":
+            {
+                var workspace = _vm.GraphicsWorkspace;
+                var template = workspace.State?.Templates.FirstOrDefault(t => t.TemplateId == Str(args,0) && t.TemplateVersion == Int(args,1));
+                if (template is null) return ControlInvokeResult.Fail("The requested template version is unavailable.");
+                var scope = Str(args,2); var sceneId = Str(args,3);
+                if (scope is not ("global" or "scene") || (scope == "scene" && !_vm.Scenes.Any(s => s.Id == sceneId)))
+                    return ControlInvokeResult.Fail("Choose a global scope or an existing scene.");
+                return await workspace.CreateAsync(template,scope,scope == "global" ? "" : sceneId)
+                    ? ControlInvokeResult.Success : ControlInvokeResult.Fail(workspace.Status);
             }
             case "graphics.studio.assign":
                 return await _vm.AssignGraphicsLookToStudioAsync(Bool(args,0)) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);

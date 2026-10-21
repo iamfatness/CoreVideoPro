@@ -177,6 +177,8 @@ public static class ControlActionRegistry
 
             new("graphics.template.select", "Select private graphics template", "Browse an installed template without creating a cue or changing Program.",
                 new[] { new ControlParam("templateId", s, true), new ControlParam("version", i, true) }),
+            new("graphics.cue.create", "Create hidden graphics cue", "Create and select a hidden cue from an installed template and its current private draft. Does not Show.",
+                new[] { new ControlParam("templateId", s, true), new ControlParam("version", i, true), new ControlParam("scope", s, true, "global | scene"), new ControlParam("sceneId", s, false) }),
             new("graphics.studio.assign", "Assign lower third to Studio", "Pin the current private lower-third draft for the next Studio Show.",
                 new[] { new ControlParam("followProgramSource", b, true) }),
             new("graphics.image.import", "Import local graphics image", "Verify a PNG/JPEG and browse it privately as a full-canvas graphic. Does not create a cue or show it.",

@@ -27,3 +27,28 @@ restore. These are disclosed boundaries, not evidence of those workflows passing
 Evidence is retained under `artifacts/graphics-1007*`. The initial shell test
 resource-copy failure and native test-fixture output-size mismatch are retained
 alongside corrected reruns. Installed checks are pending until recorded below.
+
+
+Installed trial 1 (358d0baf): package installed and normal-shortcut app
+started with native capture identities for webcam and screen while Zoom was
+offline. The first direct launcher did not stay up; an independent normal-user
+shortcut launcher succeeded. An attempted Zoom-engine toggle was refused while
+offline (unneeded for local capture). The Studio handoff correctly rejected a
+browsed template without a hidden cue. This trial is not accepted. Complete the
+same Create hidden cue -> Use in Studio -> LT in workflow through its service
+API, then repackage and repeat installed checks. Do not weaken assignment guards.
+
+
+A separate output workflow defect was found: local recording controls still
+require `Settings.IsInMeeting`, although actual local Program and registered OS
+camera pixels work offline. Tracked in [#1009](https://github.com/iamfatness/CoreVideoPro/issues/1009)
+for owner ranking; no offline recording acceptance is claimed by this Graphics
+repair. Engine On is intentionally the Zoom media-subscription toggle and is
+not required to render local capture. Do not join a meeting merely to hide the
+local recording control dependency during qualification.
+
+The first candidate independently submitted actual source-bound webcam and
+screen graphics; cutting to screen stopped composing the webcam label. An
+ordinary registered OS camera consumer delivered 180 frames and its decoded
+image showed the screen picture and lower-third caption. The final candidate
+must still repeat installed Studio Create/Assign/Show and PNG checks.
