@@ -281,3 +281,29 @@ registered OS receiver observed one held duplicate, confirmed by FrameServer's
 held/unrecovered counters. Program file continuity therefore cannot substitute
 for camera pixel acceptance. The scheduling regression and direct-DLL MF tests
 are necessary checks; only a fresh installed OS-camera workload can qualify it.
+
+## Dispatch the monitor payload before current Program work (#995)
+
+An early buffered Program copy alone does not isolate the complete multiview
+canvas. The auxiliary monitor owner also needs its scene, current source refs,
+Preview plan and bounded inspector export demand. Dispatching that payload after
+the current Program render leaves a hidden dependency: a late render can consume
+almost the entire monitor slot before the independent worker receives any job.
+
+MediaCore now submits the same tick's immutable monitor payload before calling
+the current Program renderer. A focused assembly method retains the existing
+source selection, Preview and inspector demand rules. The buffered Program
+image still comes from its earlier scheduled slot and copy owner; no output
+deadline is extended. The caller-order regression first fails against the old
+ordering. The real D3D pixel test uses the new ordering while injecting a current
+Program stall and retains the original absolute canvas-publication deadline.
+Correct pixels published after that boundary remain a failure.
+
+For live qualification, enabling virtual camera or launching a receiver process
+is insufficient. The registered OS consumer must negotiate 1920x1080 60/1 and
+receive an actual decodable first frame before measurement starts. The shared
+receiver flushes its setup header and reports its first frame once; per-frame
+evidence stays buffered to avoid file I/O on the measured cadence. A receiver
+startup error, failed exit or missing finalized evidence invalidates the run.
+Final pixel continuity, whole-interval coverage and every other enabled output
+must still pass independently.

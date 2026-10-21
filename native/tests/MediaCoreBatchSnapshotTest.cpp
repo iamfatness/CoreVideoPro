@@ -9,6 +9,7 @@
 #include <future>
 #include <latch>
 #include <thread>
+#include <functional>
 #include "rpc/JsonRpcServer.h"
 
 namespace {
@@ -113,13 +114,18 @@ class SourcePreviewRequestProbe final : public corevideo::modules::ICompositor {
       : inner_(std::move(inner)) {}
   std::string rendererName() const override { return inner_->rendererName(); }
   corevideo::modules::ProgramFrame render(const corevideo::modules::CompositorRenderPlan& plan,
-      const std::vector<corevideo::modules::VideoFrame>& frames) override { return inner_->render(plan, frames); }
+      const std::vector<corevideo::modules::VideoFrame>& frames) override {
+    if (beforeRender) beforeRender(plan, frames);
+    return inner_->render(plan, frames);
+  }
   bool hasIsolatedMonitors() const override { return true; }
   bool supportsGradePreview() const override { return true; }
   void submitMonitors(corevideo::modules::MonitorRenderRequest request) override { monitors = std::move(request); ++monitorCalls; }
   void submitGradePreviews(corevideo::modules::MonitorRenderRequest request) override { grade = std::move(request); }
   corevideo::modules::MonitorRenderRequest monitors, grade;
   int monitorCalls = 0;
+  std::function<void(const corevideo::modules::CompositorRenderPlan&,
+      const std::vector<corevideo::modules::VideoFrame>&)> beforeRender;
  private:
   std::unique_ptr<corevideo::modules::ICompositor> inner_;
 };
@@ -281,4 +287,32 @@ TEST(SourcePreviewRequestIntegration, PublicRpcRejectsMissingOrNonBooleanInteres
   EXPECT_FALSE(invalidWhileActive.get("ok")->asBool());
   rig.core->renderDisplayTick();
   EXPECT_EQ(rig.observed->monitors.sourceExports.size(), 10u);
+}
+
+TEST(SourcePreviewRequestIntegration, CurrentMonitorPayloadDoesNotWaitForProgramRendering) {
+  SourcePreviewRequestRig rig; rig.assign(); rig.compositePreview();
+  ASSERT_TRUE(rig.interest(true));
+  for (int tick = 0; tick < 2; ++tick) {
+    const int previousCalls = rig.observed->monitorCalls;
+    bool rendered = false;
+    rig.observed->beforeRender = [&](const auto& plan, const auto& frames) {
+      rendered = true;
+      // A stalled Program render must already have handed this tick's immutable
+      // payload to the independent monitor owner, not last tick's fallback.
+      EXPECT_EQ(rig.observed->monitorCalls, previousCalls + 1);
+      EXPECT_EQ(rig.observed->monitors.programPlan.renderPlanId, plan.renderPlanId);
+      EXPECT_TRUE(rig.observed->monitors.multiviewActive);
+      EXPECT_TRUE(rig.observed->monitors.previewActive);
+      ASSERT_EQ(rig.observed->monitors.frames.size(), frames.size());
+      for (size_t i = 0; i < frames.size(); ++i) {
+        EXPECT_EQ(rig.observed->monitors.frames[i].participantId, frames[i].participantId);
+        EXPECT_EQ(rig.observed->monitors.frames[i].frameId, frames[i].frameId);
+        EXPECT_EQ(rig.observed->monitors.frames[i].sourceEpoch, frames[i].sourceEpoch);
+      }
+    };
+    rig.core->renderDisplayTick();
+    EXPECT_TRUE(rendered);
+    EXPECT_EQ(rig.observed->monitorCalls, previousCalls + 1);
+  }
+  rig.observed->beforeRender = {};
 }

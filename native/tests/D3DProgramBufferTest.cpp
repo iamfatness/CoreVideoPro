@@ -1051,35 +1051,38 @@ TEST(D3DProgramBuffer, MultiviewProgramPixelsAdvanceAtFixedConsumerPhases) {
       compositor->setProgramProductionTiming(n,
           std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count());
       compositor->beginMonitorTick(true);
-      if (isolated && phaseMs == 14 && n >= 20) {
-        // Reproduce a 15 ms current-frame stall. The buffered Program copy
-        // must already complete; waiting for submitMonitors() would leave
-        // less than 1.667 ms for its GPU query, as in the retained live miss.
-        timer.waitUntil(tick + std::chrono::milliseconds(15));
-        const auto early = compositor->latestMonitors();
-        ASSERT_TRUE(early != nullptr);
-        EXPECT_EQ(early->programDisplayReader.copiedSequence, static_cast<uint64_t>(n - depth));
-        EXPECT_EQ(early->programDisplayReader.gpuReadinessDeadlineMisses, 0u);
-        EXPECT_EQ(early->programDisplayReader.completedCopies, early->programDisplayReader.copies);
-      }
       VideoFrame source;
       source.participantId = "test"; source.width = source.pixelWidth = 64; source.height = source.pixelHeight = 64;
       source.pixelStride = 256; source.frameId = n + 1; source.timestampMs = n * 17;
       auto sourcePixels = std::make_shared<std::vector<uint8_t>>(64u * 64u * 4u, static_cast<uint8_t>(30 + n));
       for (size_t alpha = 3; alpha < sourcePixels->size(); alpha += 4) (*sourcePixels)[alpha] = 255;
       source.pixels = std::move(sourcePixels);
-      (void)compositor->render(program, {source});
-      const auto productionReturned = std::chrono::steady_clock::now();
-      timer.waitUntil(tick + std::chrono::milliseconds(phaseMs));
       auto monitorSubmitted = std::chrono::steady_clock::now();
-      ProgramFrameSharedTexture exported;
       if (isolated) {
-        ASSERT_TRUE(compositor->hasIsolatedMonitors());
+        // Match MediaCore's #995 dispatch: this tick's immutable monitor payload
+        // goes to its owner before current Program rendering can stall. The
+        // MediaCore integration regression separately enforces that caller order.
+        timer.waitUntil(tick + std::chrono::milliseconds(phaseMs));
         MonitorRenderRequest request;
         request.sequence = n + 1; request.programPlan = program; request.multiviewPlan = multiview;
         request.multiviewActive = true; request.frames = {source};
         monitorSubmitted = std::chrono::steady_clock::now();
         compositor->submitMonitors(std::move(request));
+        if (phaseMs == 14 && n >= 20) {
+          timer.waitUntil(tick + std::chrono::milliseconds(15));
+          const auto early = compositor->latestMonitors();
+          ASSERT_TRUE(early != nullptr);
+          EXPECT_EQ(early->programDisplayReader.copiedSequence, static_cast<uint64_t>(n - depth));
+          EXPECT_EQ(early->programDisplayReader.gpuReadinessDeadlineMisses, 0u);
+          EXPECT_EQ(early->programDisplayReader.completedCopies, early->programDisplayReader.copies);
+        }
+      }
+      (void)compositor->render(program, {source});
+      const auto productionReturned = std::chrono::steady_clock::now();
+      if (!isolated) timer.waitUntil(tick + std::chrono::milliseconds(phaseMs));
+      ProgramFrameSharedTexture exported;
+      if (isolated) {
+        ASSERT_TRUE(compositor->hasIsolatedMonitors());
         const auto waitStarted = std::chrono::steady_clock::now();
         // Use the original absolute frame boundary. A new relative 10 ms
         // timeout can expire before the declared deadline at early phases.

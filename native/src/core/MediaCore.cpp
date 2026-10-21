@@ -1,6 +1,7 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/RecordingQueuePolicy.h"
 #include "core/MediaCore.h"
+#include "core/MultiviewFeed.h"
 #include "core/CoreStateCapture.h"
 #include "core/AudioObservationFootprint.h"
 #include "core/DeliveryTrace.h"
@@ -3735,42 +3736,6 @@ bool MediaCore::applyPreviewScene(const rpc::Json& previewScene) {
 
 namespace {
 
-// The feed-resolution result for one multiview source: the same source-id
-// conventions the program plan uses so resolveLayers/frameForParticipant match
-// the same decoded frames.
-struct ResolvedMultiviewFeed {
-  std::string kind;
-  std::string sourceId;
-  std::string participantId;
-  std::string mediaAssetId;
-};
-
-ResolvedMultiviewFeed resolveMultiviewFeed(
-    const std::string& srcKind,
-    const std::string& sourceId,
-    const std::string& participantId,
-    const std::string& captureDeviceId,
-    const std::string& mediaAssetId) {
-  ResolvedMultiviewFeed feed;
-  if (srcKind == "media" && !mediaAssetId.empty()) {
-    feed.kind = "media-video";
-    feed.sourceId = "media:" + mediaAssetId;
-    feed.mediaAssetId = mediaAssetId;
-  } else if (srcKind == "capture" && !captureDeviceId.empty()) {
-    feed.kind = "participant-video";
-    feed.participantId = "capture:" + captureDeviceId;
-    feed.sourceId = feed.participantId;
-  } else if (!participantId.empty()) {
-    feed.kind = "participant-video";
-    feed.participantId = participantId;
-    feed.sourceId = "zoom:" + participantId;
-  } else {
-    feed.kind = "participant-video";
-    feed.sourceId = sourceId;
-  }
-  return feed;
-}
-
 // #535 slice 4a final review, R3: the "black" dropout policy is a PROGRAM-only
 // cut. Preview and multiview must keep showing the held (last) frame for a
 // stalled source regardless of its stored policy, so the operator can watch
@@ -5767,6 +5732,11 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   if (pendingTakeRecord_ && !takeTransition_.waitingForColdMedia) {
     completeTakeRecord(renderPlan, wallContinuous, videoFrames);
   }
+  // The independent monitor owner needs this tick's immutable input/plan
+  // payload before current Program work can stall. Its buffered Program image
+  // is acquired by beginMonitorTick(), from the earlier scheduled slot.
+  if (modules_.compositor->hasIsolatedMonitors())
+    submitIsolatedMonitorTick(renderPlan, videoFrames, lastProducedFrameNumber_ + 1);
   markStage(s_stagePlanUs, 1);
   auto producedFrame = modules_.compositor->render(renderPlan, videoFrames);
   graphicsInstances_.observe(producedFrame);
@@ -5860,49 +5830,6 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
   markStage(s_stageProgramUs, 2);
   const auto monitorStartTp = std::chrono::steady_clock::now();
   if (modules_.compositor->hasIsolatedMonitors()) {
-    modules::MonitorRenderRequest request;
-    request.sequence = lastProducedFrameNumber_;
-    request.programPlan = renderPlan;
-    request.frames = videoFrames;
-    request.multiviewActive = !multiviewSources_.empty() || multiviewLayoutMode_ != "grid";
-    request.previewActive = hasPreviewScene();
-    // WinUI presents Program/Preview/Multiview composites. Its only individual
-    // GPU-source consumer is the legacy Preview fallback before a scene sync;
-    // scene-editor layers consume CPU thumbnails. Keep that compatibility
-    // demand until a composite Preview takes ownership, then stop those exports.
-    if (!request.previewActive) {
-      for (const auto& frame : videoFrames)
-        request.sourceExports.push_back({frame.participantId,
-            modules::SourceMonitorConsumer::PreviewFallback, "preview-fallback"});
-    }
-    // Sources inspectors need identity-safe full-source exports even while
-    // composite Preview is active. Bound demand to ten assigned input rows;
-    // never export every participant. programPlan carries off-air source grades.
-    int inspectorRows = 0;
-    for (const auto& source : multiviewSources_) {
-      if (!sourcePreviewDemand_.active() || inspectorRows++ >= 10) break;
-      const auto feed = resolveMultiviewFeed(source.kind, source.sourceId, source.participantId,
-          source.captureDeviceId, source.mediaAssetId);
-      const auto nativeId = feed.participantId.empty() ? feed.sourceId : feed.participantId;
-      if (nativeId.empty()) continue;
-      if (std::none_of(request.sourceExports.begin(), request.sourceExports.end(),
-          [&](const auto& demand) { return demand.sourceId == nativeId; }))
-        request.sourceExports.push_back({nativeId, modules::SourceMonitorConsumer::Inspector,
-            "source-thumbnail:" + feed.sourceId});
-    }
-    if (request.multiviewActive) {
-      request.multiviewPlan = buildMultiviewRenderPlan(videoFrames);
-      request.multiviewPlan.skipCpuReadback = true;
-      request.tiles = buildMultiviewTiles(zoomSnapshot().getString("activeSpeakerId"));
-    }
-    if (request.previewActive) {
-      request.previewPlan = buildPreviewCompositorRenderPlan(videoFrames);
-      if (const auto* wall = tilesWallSources_.find(previewTilesLayer_.layerId))
-        wall->applyLatest(request.previewPlan, previewTilesLayer_.layerId);
-      request.previewPlan.skipCpuReadback = true;
-      lastPreviewPlanLayerCount_ = static_cast<int>(request.previewPlan.layers.size());
-    }
-    modules_.compositor->submitMonitors(std::move(request));
     if (const auto result = modules_.compositor->latestMonitors()) {
       lastProgramFrame_.participantSharedTextures = result->sources;
       lastProgramFrame_.multiviewSharedTexture = result->multiview;

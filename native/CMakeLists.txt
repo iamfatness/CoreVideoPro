@@ -123,6 +123,7 @@ add_library(corevideo_native
   src/graphics/GraphicsAutomation.cpp
   src/graphics/GraphicsClock.cpp
   src/core/MediaCore.cpp
+  src/core/MediaCoreMonitors.cpp
   src/core/CoreStateCapture.cpp
   src/core/ComApartmentLifetime.cpp
   src/core/SourceRegistry.cpp
