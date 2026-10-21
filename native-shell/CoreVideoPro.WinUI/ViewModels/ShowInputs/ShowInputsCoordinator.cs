@@ -34,6 +34,7 @@ public sealed class ShowInputsCoordinator
     private readonly SourcePreviewDemandController _previewDemand;
     private bool _previewVisible;
     private bool _previewEngineAvailable = true;
+    private bool? _captureReadoutState;
 
     private bool _showInputRosterLoaded;
     private string _showInputEditorsSignature = "";
@@ -106,6 +107,15 @@ public sealed class ShowInputsCoordinator
         _previewVisible = visible;
         MultiviewInputRows.SetPreviewConsumerActive(visible && _previewEngineAvailable);
         _ = _previewDemand.SetVisibleAsync(visible);
+    }
+
+    // Capture can start/stop without changing any roster row. Invalidate the
+    // computed ISO warning after its settings read model has been applied.
+    public void ApplyCaptureReadout(bool? observedActive)
+    {
+        if (_captureReadoutState == observedActive) return;
+        _captureReadoutState = observedActive;
+        _host.RefreshIsoReadouts();
     }
 
     public MultiviewInputRowsProjection MultiviewInputRows { get; }

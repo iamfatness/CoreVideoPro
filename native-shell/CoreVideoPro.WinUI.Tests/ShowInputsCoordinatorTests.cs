@@ -22,6 +22,29 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class ShowInputsCoordinatorTests
 {
     [Fact]
+    public void CaptureReadoutChangesInvalidateIsoWarningWithoutRosterRebuildOrEngineSync()
+    {
+        var bridge = new FakeMediaCoreBridge();
+        var host = new FakeShowInputsHost();
+        var coordinator = new ShowInputsCoordinator(bridge, new InMemoryShowInputRosterStore(), host);
+        coordinator.RefreshShowInputEditors();
+        var rows = coordinator.ShowInputEditors.ToArray();
+        var before = host.IsoReadoutRefreshes;
+
+        coordinator.ApplyCaptureReadout(false); // joined, capture not started
+        Assert.Equal(before + 1, host.IsoReadoutRefreshes);
+        coordinator.ApplyCaptureReadout(true); // same roster; actual capture starts
+        Assert.Equal(before + 2, host.IsoReadoutRefreshes);
+        for (var i = 0; i < 1000; i++) coordinator.ApplyCaptureReadout(true);
+        Assert.Equal(before + 2, host.IsoReadoutRefreshes);
+        coordinator.ApplyCaptureReadout(false);
+        coordinator.ApplyCaptureReadout(null); // leave/reconnect loses authority
+        Assert.Equal(before + 4, host.IsoReadoutRefreshes);
+        Assert.Equal(rows, coordinator.ShowInputEditors);
+        Assert.Equal(0, bridge.SyncCalls);
+    }
+
+    [Fact]
     public void SnapshotFloodWhileUiIsBlockedAppliesOnlyLatestSourceHealth()
     {
         var bridge = new FakeMediaCoreBridge();
