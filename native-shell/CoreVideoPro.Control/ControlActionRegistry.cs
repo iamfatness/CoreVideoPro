@@ -121,6 +121,10 @@ public static class ControlActionRegistry
                     new ControlParam("slot", i, true, "1-10"),
                     new ControlParam("sourceId", s, true, "zoom:<pid> | capture:<id> | media:<id>")
                 }),
+            new("source.capture.online.set", "Connect or take capture offline", "Use the existing capture device controls. Taking a device offline unassigns its inputs; native video readiness remains separately observed.",
+                new[] { new ControlParam("sourceId", s, true, "capture:<deviceId>"), new ControlParam("online", b, true) }),
+            new("input.unassign", "Unassign show input", "Clear only this input through the same operator command; the source remains available for reassignment.",
+                new[] { new ControlParam("slot", i, true) }),
             new("input.name", "Name input source", "Set the display name override for a Show Input's source (blank resets).",
                 new[]
                 {

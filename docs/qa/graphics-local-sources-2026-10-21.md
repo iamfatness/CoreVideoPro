@@ -52,3 +52,29 @@ screen graphics; cutting to screen stopped composing the webcam label. An
 ordinary registered OS camera consumer delivered 180 frames and its decoded
 image showed the screen picture and lower-third caption. The final candidate
 must still repeat installed Studio Create/Assign/Show and PNG checks.
+
+
+## Installed functional evidence and reconnect follow-up
+
+Candidate b78be7b8 was installed from its immutable package and launched through
+the regular desktop shortcut in the normal user session. All 864 manifest-listed
+files matched. Create hidden cue -> Use in Studio -> LT in succeeded for the
+physical webcam and local screen capture, retaining source names/secondary text.
+Independent registered Windows-camera consumers captured 180 frames for each
+source and 180 for the imported full-canvas PNG; decoded actual images were
+inspected. Transparent and half-alpha PNG patches matched expected blended pixel
+values within 8 RGB levels. The first analysis decode used BT.709 incorrectly;
+that failed evidence is retained. Matching the documented BT.601 studio-swing
+camera encoding passed without widening the tolerance.
+
+The same audit identified #1010: automatic local introductions could use a raw
+capture ID after reconnect when old incarnation-specific text was correctly
+rejected. The repair now projects the core's existing accepted source-policy
+labels into the capture catalog without device enumeration or UI polling. New
+regressions retain exact incarnation fences, reject stale person overrides and
+prove metadata-only changes do not replace source identity or republish unchanged
+rows. Final installed reconnect acceptance remains pending for this follow-up.
+
+No full-workload/per-frame/physical-display pass is established. #1009 remains a
+separate recording-control dependency. Media-file bindings, nested scenes/Tiles
+and real NDI/AJA/Blackmagic hardware workflows are not qualified by these checks.

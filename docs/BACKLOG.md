@@ -517,6 +517,8 @@ issue exists yet for this row; one will be filed, labeled `backlog`, when the
 |---|---|
 | (pending — file on PR) | 1080P flip live acceptance (mac): owner-meeting soak per [`docs/mac-parity-plan.md`](mac-parity-plan.md) §7 Task 3 Step 6 — (a) subscriptions at 1920-wide delivery for camera-on sources, (b) `zoomSubscriptionChurn.fullResolutionDemoted == 0` at ≤8 cameras, (c) camera off→on re-subscribe within one spine sync, (d) sustained render holds frame rate; fallback = revert the one-line kind flip in `spineSubscriptionPayloads` (restores the 720P fence; budget machinery stays). Evidence source: the core snapshot export (`AppModel.swift` dumps `lastSnapshot`/`lastZoomSnapshot` carrying `zoomSubscriptionChurn`) — NOT the Diagnostics pane, which doesn't render subscriptions; the stub reports 1280×720 for `participant-video`, so this is verifiable against the REAL engine only. |
 
+**Graphics qualification dependency — [#1010](https://github.com/iamfatness/CoreVideoPro/issues/1010):** local automatic introductions must read accepted native source labels after video reincarnation while refusing stale instance text. This is within the owner-requested #1007 local-source Graphics audit and fix; qualify the actual reconnect, not only a manual Show.
+
 ## Later — parked
 
 | Issue | Item |

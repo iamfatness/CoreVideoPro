@@ -6,6 +6,8 @@
 #include <map>
 #include <optional>
 #include <algorithm>
+#include <functional>
+#include <string_view>
 
 namespace corevideo::graphics {
 // A binding projection of authoritative Zoom and source-bus incarnations, not another participant
@@ -15,7 +17,8 @@ class GraphicsSourceCatalog {
  public:
   explicit GraphicsSourceCatalog(std::string coreEpoch) : coreEpoch_(std::move(coreEpoch)) {}
   bool observeSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
-                   const std::vector<modules::VideoFrame>& frames) {
+                   const std::vector<modules::VideoFrame>& frames,
+                   const std::function<std::string_view(const std::string&)>& captureLabel = {}) {
     bool changed = false;
     if (sessionEpoch_ != sessionEpoch) {
       sessionEpoch_ = sessionEpoch; eraseZoom(); changed = true;
@@ -84,7 +87,11 @@ class GraphicsSourceCatalog {
                           coreEpoch_ + ":capture", int64_t(frame.sourceGeneration)};
         changed = true;
       }
-      if (entry.displayName != id || !entry.videoOn) { entry.displayName = id; entry.videoOn = true; changed = true; }
+      // Native accepted source policy owns the stable device/route label; an
+      // obsolete incarnation-specific person override is never reused here.
+      auto name = captureLabel ? captureLabel(id) : std::string_view(id);
+      if (name.empty() || name.size() > 4096) name = id;
+      if (entry.displayName != name || !entry.videoOn) { entry.displayName = name; entry.videoOn = true; changed = true; }
       entry.seen = sweep_; status = "available";
     }
     for (auto it = entries_.begin(); it != entries_.end();) {

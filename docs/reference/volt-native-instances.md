@@ -435,3 +435,17 @@ Remote actions `graphics.template.select [id, version]`,
 `graphics.studio.assign [followProgramSource]` and `graphics.image.import [path]`
 call these same private selection/assignment/import services. Studio assignment requires an actual hidden cue, matching the UI; browsing alone cannot assign. They do not Show;
 Studio's existing `graphics.lowerThird.set` performs the explicit reveal.
+
+
+Capture catalog display names project already-accepted native `set-source-policy`
+metadata. They survive video reincarnation without polling/enumerating devices
+or waiting for a shell refresh. Source identity remains exact; old generation
+`sourceTexts` is ignored after reconnect. Automatic fallback uses the current
+native label and a blank secondary line, never an obsolete person override.
+`input.unassign [slot]` uses the existing operator Unassign method so control
+clients can exercise the real clear/reuse lifecycle rather than erase row fields.
+
+`source.capture.online.set [capture:<deviceId>, online]` calls the existing
+Connect/Take Offline commands. Offline also unassigns that device's inputs,
+matching the operator action. A connected device is not proof of video; verify
+actual source generations, admissions and pixels independently.

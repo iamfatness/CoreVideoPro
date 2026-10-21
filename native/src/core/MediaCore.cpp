@@ -5268,11 +5268,19 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
             return frame.participantId == id && frame.hasContent();
           });
     };
+    // Read already-accepted native metadata, never enumerate devices or consult
+    // the shell on the render path. A reconnect changes video identity, not the
+    // stable source label. The view is copied only if catalog metadata changes.
+    const auto captureLabel = [this](const std::string& id) -> std::string_view {
+      const auto found = sourcePolicies_.find(id);
+      return found != sourcePolicies_.end() && !found->second.displayName.empty()
+          ? std::string_view(found->second.displayName) : std::string_view(id);
+    };
     if (engineLive) {
       const auto graphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
       const auto roster = zoomEngineRuntime_->floorParticipants();
       const auto confirmedGraphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
-      graphicsInstances_.observeSources(roster, graphicsSourceEpoch == confirmedGraphicsSourceEpoch ? graphicsSourceEpoch : 0, videoFrames);
+      graphicsInstances_.observeSources(roster, graphicsSourceEpoch == confirmedGraphicsSourceEpoch ? graphicsSourceEpoch : 0, videoFrames, captureLabel);
       // A manual trim belongs to this participant incarnation, not to a
       // numeric SDK id that a later join could reuse inside the same meeting.
       if (!zoomGuestAvOffsets_.empty()) {
@@ -5298,7 +5306,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
             hasContent(id), participant.isTalking});
       }
     } else {
-      graphicsInstances_.observeSources({}, 0, videoFrames);
+      graphicsInstances_.observeSources({}, 0, videoFrames, captureLabel);
       const auto capture = zoomSnapshot();
       const auto* roster = capture.get("participants");
       if (roster && roster->isArray()) for (const auto& participant : roster->asArray()) {

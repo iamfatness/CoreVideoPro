@@ -767,10 +767,11 @@ void GraphicsInstances::append(modules::CompositorRenderPlan& plan, bool preview
 }
 
 void GraphicsInstances::observeSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
-                                         const std::vector<modules::VideoFrame>& frames) {
+                                         const std::vector<modules::VideoFrame>& frames,
+                                         const std::function<std::string_view(const std::string&)>& captureLabel) {
   automation_.observeEpoch(sessionEpoch);
 
-  if (!sources_->observeSources(roster, sessionEpoch, frames)) return;
+  if (!sources_->observeSources(roster, sessionEpoch, frames, captureLabel)) return;
   for (auto& [_, instance] : instances_) {
     if (instance.pendingCue && instance.pendingCue->binding && !sources_->contains(*instance.pendingCue->binding)) {
       instance.pendingCue.reset(); instance.cuePreparation = "failed"; instance.cueWarning = "source-identity-changed";

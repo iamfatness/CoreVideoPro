@@ -1018,3 +1018,39 @@ TEST(GraphicsLocalSources, AutomaticIntroductionUsesLocalDrawFactsAndHonorsScree
     if(!suppress) EXPECT_EQ("capture:screen:2",row(state).get("binding")->getString("sourceId"));
   }
 }
+
+TEST(GraphicsLocalSources, AutomaticReconnectUsesNativeLabelAndNeverStaleIncarnationText) {
+  double now=0;GraphicsInstances state{"test-core",[&]{return now;}};ASSERT_TRUE(create(state));
+  auto frames=sourceFrames();frames[0].participantId="capture:camera";
+  std::string label="Presenter camera";
+  const auto sourceLabel=[&](const std::string&) -> std::string_view {return label;};
+  state.observeSources({},0,frames,sourceLabel);const auto old=binding(state);
+  Json config=Json::Object{{"rules",Json::Array{Json::Object{{"id","intro"},{"instanceId","featured"},{"dwellMs",0}}}},
+    {"sourceTexts",Json::Object{{"capture:camera",Json::Object{{"binding",old},{"name","Old person"},{"secondary","Old title"}}}}}};
+  ASSERT_TRUE(state.apply(request("graphics-automation-configure",{{"configuration",config},{"expectedAutomationRevision",1}})));
+  ASSERT_TRUE(state.apply(request("graphics-automation-control",{{"action","set-mode"},{"mode","automatic"}})));
+  ASSERT_TRUE(state.apply(armRequest(state)));
+  state.observeSources({},0,{},sourceLabel);
+  frames[0].sourceGeneration=2;state.observeSources({},0,frames,sourceLabel);
+  ProgramFrame frame;frame.frameNumber=1;frame.gpuComposed=true;frame.graphicsFacts.push_back({"source:capture:camera",2,"source-draw-submitted",""});state.observe(frame);
+  EXPECT_TRUE(row(state).get("showPending")->asBool());
+  EXPECT_EQ("Presenter camera",row(state).get("fields")->getString("name"));
+  EXPECT_EQ("",row(state).get("fields")->getString("title"));
+  EXPECT_EQ(2,row(state).get("binding")->getNumber("generation"));
+  EXPECT_TRUE(state.snapshot().get("automation")->get("armed")->asBool());
+  label="Renamed camera";state.observeSources({},0,frames,sourceLabel);
+  EXPECT_EQ("Renamed camera",state.snapshot().get("sources")->asArray().front().getString("displayName"));
+}
+
+TEST(GraphicsSourceCatalog, LocalMetadataChangePublishesWithoutChangingSourceIdentity) {
+  corevideo::graphics::GraphicsSourceCatalog catalog{"test-core"};
+  auto frames=sourceFrames();frames[0].participantId="capture:camera";
+  std::string label="Camera A";const auto name=[&](const std::string&) -> std::string_view {return label;};
+  EXPECT_TRUE(catalog.observeSources({},0,frames,name));
+  const auto identity=catalog.rows().asArray().front().get("identity")->stringify();
+  EXPECT_FALSE(catalog.observeSources({},0,frames,name));
+  label="Camera B";EXPECT_TRUE(catalog.observeSources({},0,frames,name));
+  EXPECT_EQ(identity,catalog.rows().asArray().front().get("identity")->stringify());
+  EXPECT_EQ("Camera B",catalog.rows().asArray().front().getString("displayName"));
+  EXPECT_FALSE(catalog.observeSources({},0,frames,name));
+}

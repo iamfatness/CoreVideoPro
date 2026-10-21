@@ -57,7 +57,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "transport.virtualcam.toggle", "transport.virtualcam.set", "transport.virtualcam.mirror.set",
         "transport.virtualcam.name.set",
         "scene.select", "scene.cueWithRoutes", "scene.route.set", "scene.dynamicGallery.create", "view.setMode",
-        "input.assign", "input.name", "input.inShow.set", "source.dropout.set",
+        "source.capture.online.set", "input.assign", "input.unassign", "input.name", "input.inShow.set", "source.dropout.set",
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
         "graphics.clock.control", "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
@@ -291,6 +291,25 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             // ---- Show inputs --------------------------------------------------------
             case "input.assign":
                 return AssignInput(Int(args, 0), Str(args, 1));
+            case "source.capture.online.set":
+            {
+                var sourceId = Str(args,0);
+                if (!sourceId.StartsWith("capture:",StringComparison.Ordinal)) return ControlInvokeResult.Fail("Choose a capture source ID.");
+                var id = sourceId["capture:".Length..];
+                if (!_vm.CaptureDevices.Any(d => d.Id == id)) return ControlInvokeResult.Fail("The capture device is unavailable.");
+                var online = Bool(args,1);
+                if (online) await _vm.ConnectCaptureDeviceCommand.ExecuteAsync(id);
+                else await _vm.TakeCaptureDeviceOfflineCommand.ExecuteAsync(id);
+                var device = _vm.CaptureDevices.FirstOrDefault(d => d.Id == id);
+                return device is not null && (device.ConnectionState == CaptureConnectionState.Connected) == online
+                    ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);
+            }
+            case "input.unassign":
+            {
+                if (!TryGetEditor(Int(args,0),out var editor)) return ControlInvokeResult.Fail("Show input slot is out of range.");
+                using var write = ShowInputWriteScope.Enter("control-api.unassign");
+                editor.Unassign(); return ControlInvokeResult.Success;
+            }
             case "input.name":
                 return NameInput(Int(args, 0), args.Count > 1 ? args[1] as string : null);
             case "input.inShow.set":
