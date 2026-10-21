@@ -27,7 +27,8 @@ namespace corevideo::modules {
 std::size_t zoomEngineIsoVideoRingByteSize() { return zoom_iso::bytes; }
 std::size_t readZoomEngineIsoVideoRing(const void* view, std::size_t size,
     std::uint32_t epoch, std::uint32_t& next, const std::string& uuid,
-    std::uint32_t participantId, bool thumbnail, std::vector<ZoomIsoVideoArrival>& out) {
+    std::uint32_t participantId, bool thumbnail, std::vector<ZoomIsoVideoArrival>& out,
+    ZoomIsoRingReadEvidence* evidence) {
   if (!view || size < zoom_iso::bytes || !epoch) return 0;
   const auto& header = *static_cast<const zoom_iso::Header*>(view);
   if (zoom_iso::load(header.epoch) != epoch || header.magicValue != zoom_iso::magic ||
@@ -35,17 +36,34 @@ std::size_t readZoomEngineIsoVideoRing(const void* view, std::size_t size,
   const auto written = zoom_iso::load(header.written);
   if (written < next || written >= UINT32_MAX / 2) return 0;
   size_t lost = 0;
-  if (written - next > zoom_iso::slots) { lost += written - next - zoom_iso::slots; next = written - zoom_iso::slots; }
+  if (evidence) evidence->maximumBacklog = (std::max)(evidence->maximumBacklog, written - next);
+  if (written - next > zoom_iso::slots) {
+    const auto overwritten = written - next - zoom_iso::slots;
+    lost += overwritten;
+    if (evidence) evidence->overwritten += overwritten;
+    next = written - zoom_iso::slots;
+  }
   for (; next < written; ++next) {
     const auto* slot = zoom_iso::slot(view, next);
     const auto expected = next * 2 + 2;
-    if (zoom_iso::load(slot->publication) != expected) { ++lost; continue; }
+    if (zoom_iso::load(slot->publication) != expected) {
+      ++lost;
+      if (evidence) ++evidence->publicationChanged;
+      continue;
+    }
     const auto captured = slot->captured100ns;
     auto frame = readZoomEngineI420FrameSnapshot(&slot->frame,
         zoom_iso::stride - offsetof(zoom_iso::Slot, frame), uuid, participantId, 640, 360,
         thumbnail && next + 1 == written);
-    if (!frame || captured <= 0 || zoom_iso::load(slot->publication) != expected || zoom_iso::load(header.epoch) != epoch) {
-      ++lost; continue;
+    if (zoom_iso::load(slot->publication) != expected || zoom_iso::load(header.epoch) != epoch) {
+      ++lost;
+      if (evidence) ++evidence->publicationChanged;
+      continue;
+    }
+    if (!frame || captured <= 0) {
+      ++lost;
+      if (evidence) ++evidence->invalidPayload;
+      continue;
     }
     out.push_back({std::move(*frame), captured});
   }

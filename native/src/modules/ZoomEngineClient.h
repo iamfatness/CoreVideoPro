@@ -182,10 +182,15 @@ struct ZoomIsoVideoArrival {
   ZoomEngineRgbaFrame frame;
   std::int64_t captured100ns = 0;
 };
+struct ZoomIsoRingReadEvidence {
+  std::uint64_t overwritten = 0, publicationChanged = 0, invalidPayload = 0;
+  std::uint32_t maximumBacklog = 0;
+};
 std::size_t zoomEngineIsoVideoRingByteSize();
 std::size_t readZoomEngineIsoVideoRing(const void* view, std::size_t size,
     std::uint32_t epoch, std::uint32_t& next, const std::string& uuid,
-    std::uint32_t participantId, bool thumbnail, std::vector<ZoomIsoVideoArrival>& out);
+    std::uint32_t participantId, bool thumbnail, std::vector<ZoomIsoVideoArrival>& out,
+    ZoomIsoRingReadEvidence* evidence = nullptr);
 
 // Per-source pending-PCM accumulator for the runtime's audio ingest. Chunks
 // append in arrival order; the mixer drains the whole buffer once per audio

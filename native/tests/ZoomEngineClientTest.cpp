@@ -63,6 +63,26 @@ TEST(ZoomIsoVideoRing, ReArmRequiresTheRequestedEpochAndRejectsOldPixels) {
   ASSERT_EQ(out.size(), 1u); EXPECT_EQ(out[0].frame.frameId, 24u);
 }
 
+TEST(ZoomIsoVideoRing, LossReasonsDistinguishReaderLagPublicationAndInvalidPayload) {
+  IsoRingFixture ring;
+  for (uint32_t id = 2; id <= 12; id += 2) ring.write(id);
+  zoom_iso::store(zoom_iso::slot(ring.view(), 2)->publication, 5); // write in progress
+  zoom_iso::slot(ring.view(), 3)->captured100ns = 0; // stable but invalid
+  uint32_t next = 0;
+  std::vector<corevideo::modules::ZoomIsoVideoArrival> out;
+  corevideo::modules::ZoomIsoRingReadEvidence evidence;
+  EXPECT_EQ(corevideo::modules::readZoomEngineIsoVideoRing(ring.view(), zoom_iso::bytes,
+      7, next, "camera", 42, false, out, &evidence), 4u);
+  EXPECT_EQ(evidence.overwritten, 2u);
+  EXPECT_EQ(evidence.publicationChanged, 1u);
+  EXPECT_EQ(evidence.invalidPayload, 1u);
+  EXPECT_EQ(evidence.maximumBacklog, 6u);
+  ASSERT_EQ(out.size(), 2u);
+  EXPECT_EQ(out[0].frame.frameId, 10u);
+  EXPECT_EQ(out[1].frame.frameId, 12u);
+  EXPECT_EQ(next, 6u);
+}
+
 corevideo::rpc::Json parseCommand(const std::string& line) {
   auto parsed = corevideo::rpc::Json::parse(line);
   EXPECT_TRUE(parsed.has_value());

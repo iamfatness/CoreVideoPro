@@ -1201,7 +1201,14 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
           source.emplace("isoRing", rpc::Json::Object{
               {"observed", observed}, {"epoch", static_cast<double>(ring->second.epoch)},
               {"written", observed ? static_cast<double>(zoom_iso::load(header->written)) : 0.0},
-              {"next", static_cast<double>(ring->second.next)}, {"lost", static_cast<double>(ring->second.lost)}});
+              {"next", static_cast<double>(ring->second.next)}, {"lost", static_cast<double>(ring->second.lost)},
+              {"lostOverwritten", static_cast<double>(ring->second.reads.overwritten)},
+              {"lostPublicationChanged", static_cast<double>(ring->second.reads.publicationChanged)},
+              {"lostInvalidPayload", static_cast<double>(ring->second.reads.invalidPayload)},
+              {"lostFormatRejected", static_cast<double>(ring->second.formatRejected)},
+              {"maximumBacklog", static_cast<double>(ring->second.reads.maximumBacklog)},
+              {"maximumDispatchUs", static_cast<double>(ring->second.maximumDispatchUs)},
+              {"maximumCopyUs", static_cast<double>(ring->second.maximumCopyUs)}});
         }
       }
       const std::string sourceId = sourceUuid;
@@ -1443,6 +1450,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     std::uint64_t preparationLifetime = 0;
     std::shared_ptr<void> ringHolder;
     uint32_t ringEpoch = 0, ringNext = 0;
+    std::chrono::steady_clock::time_point ringCapturedAt{};
   };
   // Thumbnail-event pace: ~2/s per participant is plenty for the shell's roster
   // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
@@ -1499,6 +1507,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
         jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
                         false, false, processGeneration_, ref.sourceEpoch, ref.preparationLifetime});
         jobs.back().ringHolder = ring.region; jobs.back().ringEpoch = ring.epoch; jobs.back().ringNext = ring.next;
+        jobs.back().ringCapturedAt = std::chrono::steady_clock::now();
       }
     }
   }
@@ -1516,6 +1525,8 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     rpc::Json thumbnailEvent;
     uint32_t ringNext = 0;
     size_t ringLost = 0;
+    ZoomIsoRingReadEvidence ringReads;
+    uint64_t ringDispatchUs = 0, ringCopyUs = 0;
   };
   std::vector<SnapshotResult> results;
   results.reserve(jobs.size());
@@ -1525,8 +1536,11 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
       const auto* region = static_cast<const ShmRegion*>(job.ringHolder.get());
       std::vector<ZoomIsoVideoArrival> arrivals;
       auto next = job.ringNext;
+      ZoomIsoRingReadEvidence reads;
+      const auto copyStarted = std::chrono::steady_clock::now();
       const auto lost = readZoomEngineIsoVideoRing(region->ptr, region->size, job.ringEpoch,
-          next, job.uuid, job.participantId, job.buildThumbnail, arrivals);
+          next, job.uuid, job.participantId, job.buildThumbnail, arrivals, &reads);
+      const auto copyFinished = std::chrono::steady_clock::now();
       if (arrivals.empty() && !lost) continue; // awaiting the requested helper epoch
       for (auto& arrival : arrivals) {
         results.push_back({job, std::move(arrival.frame)});
@@ -1536,6 +1550,9 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
       if (results.size() == firstResult) results.push_back({job, std::nullopt});
       for (auto i = firstResult; i < results.size(); ++i) results[i].ringNext = next;
       results[firstResult].ringLost = lost;
+      results[firstResult].ringReads = reads;
+      results[firstResult].ringDispatchUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(copyStarted - job.ringCapturedAt).count());
+      results[firstResult].ringCopyUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(copyFinished - copyStarted).count());
     } else {
       results.push_back({job, readZoomEngineI420FrameSnapshot(job.region->ptr, job.region->size, job.uuid,
           job.participantId, 640, 360, job.buildThumbnail)});
@@ -1609,6 +1626,12 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
       }
       it->second.next = result.ringNext;
       it->second.lost += result.ringLost;
+      it->second.reads.overwritten += result.ringReads.overwritten;
+      it->second.reads.publicationChanged += result.ringReads.publicationChanged;
+      it->second.reads.invalidPayload += result.ringReads.invalidPayload;
+      it->second.reads.maximumBacklog = (std::max)(it->second.reads.maximumBacklog, result.ringReads.maximumBacklog);
+      it->second.maximumDispatchUs = (std::max)(it->second.maximumDispatchUs, result.ringDispatchUs);
+      it->second.maximumCopyUs = (std::max)(it->second.maximumCopyUs, result.ringCopyUs);
     }
     if (!result.frame) {
       state_.recordFrameIngestFailure(result.job.uuid, result.job.participantId,
@@ -1617,7 +1640,10 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     }
     if (result.frame->i420Width != result.job.width || result.frame->i420Height != result.job.height ||
         result.frame->participantId != participantIdString(result.job.participantId)) {
-      if (result.job.ringHolder) ++isoRingReaders_.at(std::to_string(result.job.participantId)).lost;
+      if (result.job.ringHolder) {
+        auto& ring = isoRingReaders_.at(std::to_string(result.job.participantId));
+        ++ring.lost; ++ring.formatRejected;
+      }
       rejectStale();
       continue; // A resized SHM header arrived before its matching stream beacon.
     }

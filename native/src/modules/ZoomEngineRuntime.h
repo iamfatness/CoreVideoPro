@@ -281,6 +281,8 @@ class ZoomEngineRuntime {
   struct IsoRingReader {
     uint32_t epoch = 0, next = 0;
     uint64_t lost = 0;
+    ZoomIsoRingReadEvidence reads;
+    uint64_t formatRejected = 0, maximumDispatchUs = 0, maximumCopyUs = 0;
     std::shared_ptr<void> region;
   };
   std::map<std::string, IsoRingReader> isoRingReaders_;
