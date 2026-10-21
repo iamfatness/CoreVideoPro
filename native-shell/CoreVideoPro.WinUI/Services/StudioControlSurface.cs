@@ -308,7 +308,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             {
                 if (!TryGetEditor(Int(args,0),out var editor)) return ControlInvokeResult.Fail("Show input slot is out of range.");
                 using var write = ShowInputWriteScope.Enter("control-api.unassign");
-                editor.Unassign(); return ControlInvokeResult.Success;
+                _vm.UnassignShowInputCommand.Execute(editor); return ControlInvokeResult.Success;
             }
             case "input.name":
                 return NameInput(Int(args, 0), args.Count > 1 ? args[1] as string : null);

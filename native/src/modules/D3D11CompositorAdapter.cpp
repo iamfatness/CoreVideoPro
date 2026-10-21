@@ -1770,7 +1770,13 @@ class D3D11Compositor final : public ICompositor {
       recordGraphicsSourceDraw(*layer.frame);
     if(traceFrame && renderPlan.observeGraphicsSubjects && textured && layer.frame && layerAlpha>0 &&
         (layer.plan.kind=="participant-video"||layer.plan.kind=="screen-share") && traceFrame->graphicsFacts.size()<128) {
-      const auto state=layer.plan.kind=="screen-share"?"share-draw-submitted":"source-draw-submitted";
+      // Local screens/windows use the generic capture-input video layer. Their
+      // actual drawn frame selector, not only Zoom's screen-share layer kind,
+      // identifies presentation content for the explicit suppression policy.
+      const bool sharing = layer.plan.kind == "screen-share" ||
+          layer.frame->participantId.rfind("capture:screen:", 0) == 0 ||
+          layer.frame->participantId.rfind("capture:window:", 0) == 0;
+      const auto state=sharing?"share-draw-submitted":"source-draw-submitted";
       const auto identity="source:"+layer.frame->participantId;
       if(std::none_of(traceFrame->graphicsFacts.begin(),traceFrame->graphicsFacts.end(),[&](const auto& fact){return fact.state==state&&fact.instanceId==identity&&fact.revision==layer.frame->sourceGeneration;}))
         traceFrame->graphicsFacts.push_back({identity,layer.frame->sourceGeneration,state,""});

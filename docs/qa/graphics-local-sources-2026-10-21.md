@@ -78,3 +78,11 @@ rows. Final installed reconnect acceptance remains pending for this follow-up.
 No full-workload/per-frame/physical-display pass is established. #1009 remains a
 separate recording-control dependency. Media-file bindings, nested scenes/Tiles
 and real NDI/AJA/Blackmagic hardware workflows are not qualified by these checks.
+
+
+The actual local screen route uses the generic `participant-video` layer, unlike
+Zoom's `screen-share` layer. Native draw-fact classification now recognizes the
+actual drawn `capture:screen:` / `capture:window:` selectors as presentation
+content, so default screen suppression also applies to local capture. Explicit
+manual Show remains available; an automatic rule can opt out of suppression.
+A D3D pixel/draw-fact regression exercises the real capture-input layer kind.

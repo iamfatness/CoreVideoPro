@@ -95,6 +95,20 @@ TEST(GraphicsRpcPixel, PrivateGraphicsPreviewRequiresExplicitNullAppearanceAndPr
   }
 }
 
+TEST(GraphicsCompositionPixel, LocalScreenCaptureDrawFactsHonorPresentationSuppression) {
+  auto compositor=corevideo::modules::createD3D11Compositor();ASSERT_TRUE(compositor);
+  corevideo::modules::VideoFrame image;image.participantId="capture:screen:0";image.sourceGeneration=7;
+  image.width=image.pixelWidth=image.height=image.pixelHeight=1;image.pixelStride=4;
+  image.pixels=std::make_shared<const std::vector<uint8_t>>(std::vector<uint8_t>{20,40,100,255});
+  corevideo::modules::CompositorRenderPlan plan;plan.width=320;plan.height=180;plan.observeGraphicsSubjects=true;
+  corevideo::modules::CompositorRenderPlanLayer video;video.kind="participant-video";video.sourceId=image.participantId;video.participantId=image.participantId;plan.layers.push_back(video);
+  const auto output=compositor->render(plan,{image});
+  EXPECT_TRUE(std::any_of(output.graphicsFacts.begin(),output.graphicsFacts.end(),[](const auto& fact){
+    return fact.instanceId=="source:capture:screen:0" && fact.revision==7 && fact.state=="share-draw-submitted";
+  }));
+  EXPECT_FALSE(std::any_of(output.graphicsFacts.begin(),output.graphicsFacts.end(),[](const auto& fact){return fact.state=="source-draw-submitted";}));
+}
+
 TEST(GraphicsCompositionPixel, LocalCameraAndScreenLowerThirdsDrawAndRejectStaleSourcePixels) {
   using corevideo::rpc::Json;
   for (const auto& id : {"capture:camera", "capture:screen:2"}) {
