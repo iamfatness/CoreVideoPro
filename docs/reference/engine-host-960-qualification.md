@@ -6,13 +6,13 @@ PR: [#965](https://github.com/iamfatness/CoreVideoPro/pull/965). Audio fix: `cdd
 
 ## October 21: #968 diagnosis and repair
 
-The audio worker already owns a fixed 20 ms steady-clock deadline grid and runs catch-up ticks after late wakes. Source ingress incorrectly asked MediaTransports for the slot due at the actual wake time instead. Its demand clock anchored at the first wake; subsequent wakes on either side of that phase boundary could return no block, then skip a source window as expired. Both output encoders received the resulting missing PCM, so continuous packet timestamps did not imply continuous content.
+The audio worker already owns a fixed 20 ms steady-clock deadline grid and runs catch-up ticks after late wakes. Source ingress incorrectly asked `MediaTransports` for the slot due at the actual wake time instead. Its demand clock anchored at the first wake; subsequent wakes on either side of that phase boundary could return no block, then skip a source window as expired. Both output encoders received the resulting missing PCM, so continuous packet timestamps did not imply continuous content.
 
-The retained studio-staged native log reports udio_windows_expired reaching 100, 200 and 300. The studio-gpu failure also reports expiry; the clean ridge-control and studio-69df85fc controls do not. This accounts for the intermittent start-of-session behavior without attributing it to UI death.
+The retained `studio-staged` native log reports `audio_windows_expired` reaching 100, 200 and 300. The `studio-gpu` failure also reports expiry; the clean `bridge-control` and `studio-69df85fc` controls do not. This accounts for the intermittent start-of-session behavior without attributing it to UI death.
 
 Source ingress now selects media PCM using the worker's scheduled timestamp. Actual observation time remains unchanged for source health and other capture adapters. Unscheduled callers retain their wall-time fallback; genuine deadline reanchors still advance the demand clock. No audio padding, decoder change, quality reduction or analyzer threshold change is involved.
 
-SourceAudioIngress.ScheduledMediaDemandPreservesEveryBlockThroughWakeJitterAndCatchup checks exact sample payloads through a late first wake, phase-crossing jitter and two catch-up ticks at the same wall time. The previous wall-time selection fails the first expected block in that sequence.
+`SourceAudioIngress.ScheduledMediaDemandPreservesEveryBlockThroughWakeJitterAndCatchup` checks exact sample payloads through a late first wake, phase-crossing jitter and two catch-up ticks at the same wall time. The previous wall-time selection fails the first expected block in that sequence.
 
 The first October 21 trial (`studio-968-a`) is rejected as post-fix qualification: the initial native compile overlapped editing, and the harness still used the older x64 Studio output. It retained 76 recording / 87 receiver quiet intervals. The affected native translation units and the explicit `Platform=x64` Studio target were rebuilt before trials b/c/d. The final committed-build trial records all three executable hashes and rejects binaries that change during a run.
 
@@ -22,8 +22,6 @@ All trials below preserved host epoch, native PID and recording session; recordi
 
 | Trial | Native PID unchanged | Recording / RTMP decoded frames | Interior audio gaps, both files | Interior frame anomalies, both files | Recording final held frames / writer counter | Startup video drops |
 |---|---:|---:|---:|---:|---:|---:|
-
-
 | `studio-968-b` | 56592 | 1390 / 1575 | 0 / 0 | 0 / 0 | 1 / 1 | 22 |
 | `studio-968-c` | 45844 | 1388 / 1575 | 0 / 0 | 0 / 0 | 1 / 1 | 23 |
 | `studio-968-d` | 41848 | 1385 / 1568 | 0 / 0 | 0 / 0 | 1 / 1 | 23 |
