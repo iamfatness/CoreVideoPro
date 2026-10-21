@@ -16,6 +16,9 @@ $probeMode = if ($FullStudio) { '--verify-engine-host-studio' } else { '--verify
 $profile = 'qa-' + [Guid]::NewGuid().ToString('N')
 $native = (Resolve-Path -LiteralPath $NativeCore).Path
 $fixture = (Resolve-Path -LiteralPath $Pattern).Path
+$binaries = @($native, $hostExe, $ui) | ForEach-Object {
+    @{path=$_;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash}
+}
 function Launch([string]$Executable, [string[]]$Arguments, [string]$Log) {
     $info = [Diagnostics.ProcessStartInfo]::new($Executable)
     $info.UseShellExecute = $false
@@ -99,7 +102,12 @@ try {
     $afterSender = @($afterState.outputSenderSession.senders | Where-Object destination -eq 'rtmp')[0]
     if ($afterSender.status -ne 'live' -or $afterSender.retryCount -ne $beforeSender.retryCount -or
         $afterSender.framesSent -le $beforeSender.framesSent) { throw 'RTMP did not keep producing' }
-    @{scope= $(if ($FullStudio) { 'full compiled Studio workspace/view model; generated media; local recording/RTMP; isolated preferences' } else { 'compiled WinUI bridge probe; generated media; local recording/RTMP' });killAt=$killAt;
+    foreach ($binary in $binaries) {
+        if ((Get-FileHash -LiteralPath $binary.path -Algorithm SHA256).Hash -ne $binary.sha256) {
+            throw "Candidate binary changed during the drill: $($binary.path)"
+        }
+    }
+    @{binaries=$binaries;scope= $(if ($FullStudio) { 'full compiled Studio workspace/view model; generated media; local recording/RTMP; isolated preferences' } else { 'compiled WinUI bridge probe; generated media; local recording/RTMP' });killAt=$killAt;
       before=$before;after=$after;processSurvived=$true;framePerformancePassed=$false;
       note='Receiver/file analysis required; process survival alone is not continuity acceptance.'} |
         ConvertTo-Json -Depth 80 | Set-Content (Join-Path $out 'report.json')
