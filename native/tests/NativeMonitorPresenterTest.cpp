@@ -114,6 +114,10 @@ TEST(NativeMonitorPresenter, ActualPixelsAdvanceWithoutControlPolling) {
   rig.beginBlue();
   std::this_thread::sleep_for(std::chrono::milliseconds(300)); // No control calls drive this interval.
   EXPECT_TRUE(rig.stats().presents >= before + 8);
+  const auto observed = rig.stats();
+  EXPECT_TRUE(observed.gaps >= 8);
+  EXPECT_EQ(observed.gaps, observed.presents - 1);
+  EXPECT_TRUE(observed.gapsOver50Ms <= observed.gapsOver33Ms && observed.gapsOver33Ms <= observed.gapsOver25Ms);
   EXPECT_TRUE(rig.pixel(0xff0000ff));
 }
 TEST(NativeMonitorPresenter, SuspensionStopsAndResumeUsesActualLatestPixels) {

@@ -370,3 +370,8 @@ physical display delivery as unverified; accepted Present calls cannot qualify
 scanout. The production package requires corevideo-monitor-presenter.dll, and
 the package validator rejects its omission. A missing DLL retains the legacy
 managed fallback and logs it as unqualified.
+
+Native observations also count accepted-commit intervals over 25, 33 and 50 ms.
+Qualification compares cumulative endpoint deltas inside the measured interval,
+so a near-60 average cannot hide occasional long gaps. Missing counter fields
+are unknown evidence. These counters do not establish physical scanout.

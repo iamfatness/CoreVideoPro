@@ -15,6 +15,7 @@ internal sealed class NativeMonitorPresentation : IDisposable
         public double IngestMs, CopyMs, CopyMaximumMs, PresentMs, PresentMaximumMs, TotalMs;
         public int HResult;
         public uint Active, Pixel, PixelValid;
+        public ulong Gaps, GapsOver25Ms, GapsOver33Ms, GapsOver50Ms;
     }
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate uint SizeFn();
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate nint CreateFn(nint device, nint context, nint chain, nint backBuffer, ulong handle, nint ready, uint flags);

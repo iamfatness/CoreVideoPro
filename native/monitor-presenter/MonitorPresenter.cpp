@@ -210,7 +210,14 @@ struct Group : std::enable_shared_from_this<Group> {
     }
     if (FAILED(result)) { surface.stats.hresult = result; surface.pending = false; finish(); return; }
     const auto committed = qpc();
-    if (surface.stats.lastCommitQpc) surface.stats.maximumGapQpc = std::max(surface.stats.maximumGapQpc, committed - surface.stats.lastCommitQpc);
+    if (surface.stats.lastCommitQpc) {
+      const auto gap = committed - surface.stats.lastCommitQpc;
+      surface.stats.maximumGapQpc = std::max(surface.stats.maximumGapQpc, gap);
+      ++surface.stats.gaps;
+      if (gap * 1000 > frequency() * 25) ++surface.stats.gapsOver25Ms;
+      if (gap * 1000 > frequency() * 33) ++surface.stats.gapsOver33Ms;
+      if (gap * 1000 > frequency() * 50) ++surface.stats.gapsOver50Ms;
+    }
     surface.stats.lastCommitQpc = committed;
     ++surface.stats.presents;
     surface.presentedGeneration = source.generation;

@@ -17,6 +17,9 @@ struct CvMonitorStats {
   double ingestMs = 0, copyMs = 0, copyMaximumMs = 0, presentMs = 0, presentMaximumMs = 0, totalMs = 0;
   std::int32_t hresult = 0;
   std::uint32_t active = 0, pixel = 0, pixelValid = 0;
+  // Cumulative accepted-commit intervals. Take endpoint deltas; a lifetime
+  // maximum or average cannot qualify an interval containing occasional stalls.
+  std::uint64_t gaps = 0, gapsOver25Ms = 0, gapsOver33Ms = 0, gapsOver50Ms = 0;
 };
 CV_MONITOR_API std::uint32_t cv_monitor_stats_size();
 CV_MONITOR_API void* cv_monitor_create(void* device, void* context, void* chain,

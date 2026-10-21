@@ -348,6 +348,8 @@ public sealed class Direct3D11InteropService : IDisposable
                     ingestMs = native.IngestMs, totalMs = native.TotalMs, copyMs = native.CopyMs,
                     copyMaxMs = native.CopyMaximumMs, ingested = native.Ingested,
                     acquireAttempts = native.AcquireAttempts, acquireBusy = native.AcquireBusy,
+                    commitIntervals = native.Gaps, gapsOver25Ms = native.GapsOver25Ms,
+                    gapsOver33Ms = native.GapsOver33Ms, gapsOver50Ms = native.GapsOver50Ms,
                     hresult = native.HResult, displayPresentationVerified = false };
             lock (CreationGate)
             {
