@@ -52,4 +52,3 @@ class CpuIsoArrivalQueue {
   size_t head_ = 0, size_ = 0;
 };
 }
-

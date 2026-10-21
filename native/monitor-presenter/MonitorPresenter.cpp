@@ -410,4 +410,3 @@ std::int32_t cv_monitor_snapshot(void* value, CvMonitorStats* result) {
   result->active = lease->surface->active.load() && !lease->surface->retired.load();
   return 1;
 }
-
