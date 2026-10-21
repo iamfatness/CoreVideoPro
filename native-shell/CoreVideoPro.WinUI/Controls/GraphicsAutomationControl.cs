@@ -32,7 +32,7 @@ public sealed class GraphicsAutomationControl : UserControl
     {
         _studio=studio;_session=studio.GraphicsWorkspace;_library=studio.GraphicsLibrary;
         var panel=new StackPanel {Spacing=8};
-        panel.Children.Add(Copy("Introduce the guest currently visible on Program. Choose a mode, configure a guest-introduction cue, then Arm when ready. Video Takes remain separate."));
+        panel.Children.Add(Copy("Introduce the source currently visible on Program. Choose a mode, configure a guest-introduction cue, then Arm when ready. Video Takes remain separate."));
         panel.Children.Add(_state);panel.Children.Add(new TextBlock {Text="1. Choose behavior",FontSize=16});panel.Children.Add(_mode);
         panel.Children.Add(_modeHelp);
         _applyMode=Button("Apply mode",async()=> {
@@ -48,7 +48,7 @@ public sealed class GraphicsAutomationControl : UserControl
         panel.Children.Add(Button("Discard edits and reload current settings",()=> { _ruleEdits.Reload();_modeEdits.Reload();Refresh();return Task.FromResult(true); },"Current settings reloaded. No native request was sent."));
         panel.Children.Add(new TextBlock {Text="2. Configure an introduction",FontSize=16});
         panel.Children.Add(_target);panel.Children.Add(_scope);panel.Children.Add(_source);panel.Children.Add(_enabled);
-        panel.Children.Add(Copy("Only uniquely drawn guest follows the single eligible guest visible on Program. For a panel with several visible guests, choose a specific subject."));
+        panel.Children.Add(Copy("Only uniquely drawn source follows the single eligible source visible on Program. For a layout with several sources, choose a specific subject."));
         var timing=new StackPanel {Spacing=8};timing.Children.Add(_share);timing.Children.Add(_dwell);timing.Children.Add(_duration);timing.Children.Add(_cooldown);
         timing.Children.Add(Copy("Auto-hide 0 holds until departure, suppression or Hide. Each guest incarnation reveals once; returning to the same guest does not replay the entrance."));
         panel.Children.Add(new Expander {Header="Timing and screen-share behavior",Content=timing,HorizontalAlignment=HorizontalAlignment.Stretch});
@@ -129,7 +129,7 @@ public sealed class GraphicsAutomationControl : UserControl
     }
     private void SelectSource(string id)
     {
-        if(!_sources.Contains(id)) {_sources.Add(id);_source.Items.Add("Unavailable guest · "+id);}
+        if(!_sources.Contains(id)) {_sources.Add(id);_source.Items.Add("Unavailable source · "+id);}
         _source.SelectedIndex=_sources.IndexOf(id);
     }
     private void RefreshEnabled()
@@ -155,15 +155,15 @@ public sealed class GraphicsAutomationControl : UserControl
         try {
             var targets=(state?.Instances ?? []).Where(i=>i.TemplateId is "compact-solid" or "minimal-accent" or "broadcast" || state!.Templates.Any(t=>t.TemplateId==i.TemplateId && t.TemplateVersion==i.TemplateVersion && t.Family=="lower-third")).ToArray();
             var sources=(state?.Sources ?? []).Where(s=>s.Identity is not null && s.VideoOn).ToArray();
-            var catalog=string.Join('|',targets.Select(i=>i.InstanceId+":"+i.TemplateId+":"+i.Label+":"+i.Scope+":"+i.SceneId))+"/"+string.Join('|',sources.Select(s=>s.Identity+":"+s.DisplayName));
+            var catalog=string.Join('|',targets.Select(i=>i.InstanceId+":"+i.TemplateId+":"+i.Label+":"+i.Scope+":"+i.SceneId))+"/"+string.Join('|',sources.Select(s=>s.Identity+":"+_studio.GraphicsSourceText(s.Identity!.SourceId,s.DisplayName).Name));
             if(catalog!=_catalog) {
                 _catalog=catalog;var selected=Target;_targets.Clear();_target.Items.Clear();
                 foreach(var target in targets) {_targets.Add(target.InstanceId);_target.Items.Add((target.Label.Length>0?target.Label:target.TemplateId)+" · "+(target.Scope=="global"?"Global":target.SceneId));}
                 if(_ruleEdits.Dirty && selected.Length>0 && !_targets.Contains(selected)) {_targets.Add(selected);_target.Items.Add("Unavailable cue · "+selected);}
                 _target.SelectedIndex=Math.Max(0,_targets.IndexOf(selected));
                 var priorSource=_source.SelectedIndex>=0 && _source.SelectedIndex<_sources.Count?_sources[_source.SelectedIndex]:"";
-                _sources.Clear();_sources.Add("");_source.Items.Clear();_source.Items.Add("Only uniquely drawn guest");
-                foreach(var source in sources) {_sources.Add(source.Identity!.SourceId);_source.Items.Add(source.DisplayName+" · "+source.Identity.SourceId);}
+                _sources.Clear();_sources.Add("");_source.Items.Clear();_source.Items.Add("Only uniquely drawn source");
+                foreach(var source in sources) {_sources.Add(source.Identity!.SourceId);_source.Items.Add(_studio.GraphicsSourceText(source.Identity.SourceId,source.DisplayName).Name+" · "+source.Identity.SourceId);}
                 SelectSource(priorSource);
             }
             if(_ruleEdits.Observe(state?.CoreEpoch ?? "",Target,automation is null?null:automation with {Mode="manual"})) LoadRule();

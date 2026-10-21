@@ -8,27 +8,23 @@
 #include <algorithm>
 
 namespace corevideo::graphics {
-// A binding projection of the authoritative roster, not another participant
+// A binding projection of authoritative Zoom and source-bus incarnations, not another participant
 // lifecycle owner. Pixel sourceEpoch is deliberately absent: it also changes
 // on resolution upgrades within one participant incarnation.
 class GraphicsSourceCatalog {
  public:
   explicit GraphicsSourceCatalog(std::string coreEpoch) : coreEpoch_(std::move(coreEpoch)) {}
-  bool observeZoom(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
+  bool observeSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
                    const std::vector<modules::VideoFrame>& frames) {
     bool changed = false;
     if (sessionEpoch_ != sessionEpoch) {
-      sessionEpoch_ = sessionEpoch; entries_.clear(); changed = true;
+      sessionEpoch_ = sessionEpoch; eraseZoom(); changed = true;
       processEpoch_ = coreEpoch_ + ":zoom:" + std::to_string(sessionEpoch);
     }
     std::string status = sessionEpoch ? "available" : "unavailable";
-    if (!sessionEpoch) {
-      if (!entries_.empty()) { entries_.clear(); changed = true; }
-      if (status_ != status) { status_ = status; changed = true; }
-      return publish(changed);
-    }
     ++sweep_;
     for (const auto& participant : roster) {
+      if (!sessionEpoch) break;
       if (!participant.id) continue;
       if (participant.sourceGeneration == 0 || participant.sourceGeneration > 9007199254740991ULL || participant.displayName.size() > 4096) {
         status = "unqualified-source-identity";
@@ -45,7 +41,7 @@ class GraphicsSourceCatalog {
       const auto id = "zoom:" + std::to_string(participant.id);
       auto found = entries_.find(id);
       if (found != entries_.end() && found->second.seen == sweep_) {
-        entries_.clear(); status_ = "ambiguous-roster"; return publish(true);
+        eraseZoom(); status_ = "ambiguous-roster"; return publish(true);
       }
       if (found == entries_.end()) {
         if (entries_.size() >= 256) { status = "source-catalog-capacity"; continue; }
@@ -67,6 +63,30 @@ class GraphicsSourceCatalog {
       }
       entry.seen = sweep_;
     }
+    // CaptureDeviceSource stamps its authoritative video lifetime on frame refs.
+    // Neither a device label nor a pixel-format epoch can qualify a binding.
+    for (const auto& frame : frames) {
+      if (frame.participantId.rfind("capture:", 0) != 0 || frame.participantId.size() > 512 ||
+          !frame.hasContent() || frame.sourceGeneration == 0 || frame.sourceGeneration > 9007199254740991ULL) continue;
+      const auto& id = frame.participantId;
+      auto found = entries_.find(id);
+      if (found == entries_.end()) {
+        if (entries_.size() >= 256) { status = "source-catalog-capacity"; continue; }
+        found = entries_.emplace(id, Entry{}).first; changed = true;
+      }
+      auto& entry = found->second;
+      if (entry.seen == sweep_ && entry.identity.generation != int64_t(frame.sourceGeneration)) {
+        // Conflicting representations must not select an arbitrary subject.
+        entry.identity.generation = 0; status = "ambiguous-source-generation"; changed = true; continue;
+      }
+      if (entry.identity.generation != int64_t(frame.sourceGeneration)) {
+        entry.identity = {id, id + "-generation-" + std::to_string(frame.sourceGeneration),
+                          coreEpoch_ + ":capture", int64_t(frame.sourceGeneration)};
+        changed = true;
+      }
+      if (entry.displayName != id || !entry.videoOn) { entry.displayName = id; entry.videoOn = true; changed = true; }
+      entry.seen = sweep_; status = "available";
+    }
     for (auto it = entries_.begin(); it != entries_.end();) {
       if (it->second.seen != sweep_) { it = entries_.erase(it); changed = true; }
       else ++it;
@@ -75,6 +95,12 @@ class GraphicsSourceCatalog {
     return publish(changed);
   }
 
+  static std::string frameId(const std::string& sourceId) {
+    return sourceId.rfind("zoom:", 0) == 0 ? sourceId.substr(5) : sourceId;
+  }
+  static std::string sourceId(const std::string& frameId) {
+    return frameId.rfind("capture:", 0) == 0 ? frameId : "zoom:" + frameId;
+  }
   static bool same(const contracts::SourceInstanceIdentity& a, const contracts::SourceInstanceIdentity& b) {
     return a.sourceId == b.sourceId && a.instanceId == b.instanceId && a.processEpoch == b.processEpoch && a.generation == b.generation;
   }
@@ -94,11 +120,15 @@ class GraphicsSourceCatalog {
   const rpc::Json& rows() const { return rows_; }
   const std::string& status() const { return status_; }
  private:
+  void eraseZoom() {
+    for (auto it = entries_.begin(); it != entries_.end();)
+      if (it->first.rfind("zoom:", 0) == 0) it = entries_.erase(it); else ++it;
+  }
   bool publish(bool changed) {
     if (!changed) return false;
     rpc::Json::Array rows;
     for (const auto& [_, entry] : entries_)
-      rows.emplace_back(rpc::Json::Object{{"identity", contracts::toJson(entry.identity)},
+      if (entry.identity.generation > 0) rows.emplace_back(rpc::Json::Object{{"identity", contracts::toJson(entry.identity)},
           {"displayName", entry.displayName}, {"videoOn", entry.videoOn}});
     rows_ = std::move(rows);
     return true;

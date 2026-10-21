@@ -175,6 +175,13 @@ public static class ControlActionRegistry
             new("graphics.template.list", "Observe graphics templates", "Read the native versioned catalog and import results without changing graphics.",
                 new[] { new ControlParam("request", s, true, "Versioned JSON graphics request") }),
 
+            new("graphics.template.select", "Select private graphics template", "Browse an installed template without creating a cue or changing Program.",
+                new[] { new ControlParam("templateId", s, true), new ControlParam("version", i, true) }),
+            new("graphics.studio.assign", "Assign lower third to Studio", "Pin the current private lower-third draft for the next Studio Show.",
+                new[] { new ControlParam("followProgramSource", b, true) }),
+            new("graphics.image.import", "Import local graphics image", "Verify a PNG/JPEG and browse it privately as a full-canvas graphic. Does not create a cue or show it.",
+                new[] { new ControlParam("path", s, true) }),
+
             // ---- Audio ------------------------------------------------------------------
             new("audio.zoomMode.set", "Zoom audio mode", "Choose independently routed ISO stems or Zoom's combined fallback mix.",
                 new[] { new ControlParam("mode", s, true, "perGuestIso | programMix") }),

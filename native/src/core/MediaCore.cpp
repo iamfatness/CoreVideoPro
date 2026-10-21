@@ -5272,7 +5272,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
       const auto graphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
       const auto roster = zoomEngineRuntime_->floorParticipants();
       const auto confirmedGraphicsSourceEpoch = zoomEngineRuntime_->speakerEpoch();
-      graphicsInstances_.observeZoomSources(roster, graphicsSourceEpoch == confirmedGraphicsSourceEpoch ? graphicsSourceEpoch : 0, videoFrames);
+      graphicsInstances_.observeSources(roster, graphicsSourceEpoch == confirmedGraphicsSourceEpoch ? graphicsSourceEpoch : 0, videoFrames);
       // A manual trim belongs to this participant incarnation, not to a
       // numeric SDK id that a later join could reuse inside the same meeting.
       if (!zoomGuestAvOffsets_.empty()) {
@@ -5298,7 +5298,7 @@ void MediaCore::renderSyntheticTick(bool videoOnly, int64_t mediaPresentationTim
             hasContent(id), participant.isTalking});
       }
     } else {
-      graphicsInstances_.observeZoomSources({}, 0);
+      graphicsInstances_.observeSources({}, 0, videoFrames);
       const auto capture = zoomSnapshot();
       const auto* roster = capture.get("participants");
       if (roster && roster->isArray()) for (const auto& participant : roster->asArray()) {

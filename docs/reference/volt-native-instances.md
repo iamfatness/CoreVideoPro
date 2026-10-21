@@ -312,8 +312,7 @@ Composition requires the exact source generation, an explicit matching camera
 layer selector and actual textured source draw submission in the current pass;
 metadata alone, a slate, or a different routed participant does not qualify.
 This observes draw submission, not receiver continuity. Current source binding
-supports direct Zoom cameras; Tiles and nested scene membership remain to be
-qualified. Automatic introductions consume these native source-draw facts, rather than roster names or director recommendations.
+supports direct Zoom cameras and source-bus capture cameras/screens. Capture bindings carry the source-bus video incarnation, independent of pixel-format epochs and Zoom meeting state. Tiles and nested scene membership remain to be qualified. Automatic introductions consume these native source-draw facts, rather than roster names or director recommendations.
 
 Scene filtering, direct-camera bindings and independent accepted Cue are present.
 The workspace, verified image migration, title/bug/clock consumers and qualified introduction controller use this authority. Functional implementation does not establish complete output/installed acceptance. Metal does not announce this instance
@@ -405,3 +404,33 @@ The capture also exposes an epoch-specific local `stopEvent`; signaling it drain
 and finalizes the trace while media stays running, avoiding reliance on the shell's
 exit grace. `captureComplete` and the finalized header must both be observed before
 decoding. Neither mode measures camera or physical display completion.
+
+
+### Local sources and transparent art (#1007)
+
+The Graphics catalog projects the existing Zoom roster and capture source-bus
+lifetimes; it does not own a second ingest lifecycle. `CaptureDeviceSource`
+stamps a video incarnation once, preserves it across pixel-format changes, and
+allocates a new incarnation after clear/removal. A disappeared source retires its
+bound Cue/Program copies; reconnect never silently rebinds or reveals old text.
+The frame selector strips `zoom:` only for Zoom; capture selectors retain their
+full canonical ID. Preparation, plan membership and the actual textured draw
+must all agree on source identity. Native introductions read the same draw facts
+for cameras/screens. Screen suppression remains the default; disabling it is
+explicit. Meeting epoch changes continue to disarm automation as a conservative
+operator policy; they do not retire valid local manually shown graphics.
+
+Graphics Library offers **Import PNG / JPEG graphic** for standalone artwork.
+The immutable import uses a full 1920x1080 canvas, contain fit and upper-left
+origin; it creates no cue or on-air layer. The existing image inspector import
+continues to provide a square logo asset. Both retain the exact encoded bytes,
+including PNG alpha, and use the existing verified package/export mechanism.
+Native WIC converts to premultiplied BGRA for Direct2D; the compositor blends
+premultiplied alpha. Transparent pixels must reveal the actual video/background,
+and half-alpha pixels must blend without black mattes. Import completion cannot
+discard a newer private selection or edit.
+
+Remote actions `graphics.template.select [id, version]`,
+`graphics.studio.assign [followProgramSource]` and `graphics.image.import [path]`
+call these same private selection/assignment/import services. They do not Show;
+Studio's existing `graphics.lowerThird.set` performs the explicit reveal.

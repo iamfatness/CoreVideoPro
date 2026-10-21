@@ -1766,7 +1766,7 @@ class D3D11Compositor final : public ICompositor {
       event.reason = textured ? traceReason : core::DeliveryReason::Unavailable;
       core::recordDeliveryTrace(event);
     }
-    if (textured && layer.frame && layer.frame->sourceGeneration && layer.plan.kind == "participant-video" && layerAlpha > 0)
+    if (textured && layer.frame && layer.frame->sourceGeneration && (layer.plan.kind == "participant-video" || layer.plan.kind == "screen-share") && layerAlpha > 0)
       recordGraphicsSourceDraw(*layer.frame);
     if(traceFrame && renderPlan.observeGraphicsSubjects && textured && layer.frame && layerAlpha>0 &&
         (layer.plan.kind=="participant-video"||layer.plan.kind=="screen-share") && traceFrame->graphicsFacts.size()<128) {

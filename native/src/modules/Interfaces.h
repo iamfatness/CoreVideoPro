@@ -76,7 +76,7 @@ struct VideoFrame {
   // Native capture identity/time, retained across independent representations.
   // Zero means a legacy source whose timeline is stamped at gather.
   uint64_t sourceEpoch = 0;
-  uint64_t sourceGeneration = 0;  // Zoom roster incarnation carried with these pixels.
+  uint64_t sourceGeneration = 0;  // Authoritative Zoom roster or source-bus video incarnation.
   int64_t captureTimestamp100ns = 0;
   [[nodiscard]] bool hasGpuPixels() const {
     return gpuPixels && gpuPixels->width > 0 && gpuPixels->height > 0;

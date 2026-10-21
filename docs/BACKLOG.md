@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner priority, October 21 — [#1007](https://github.com/iamfatness/CoreVideoPro/issues/1007):** audit Graphics for Zoom-only assumptions and incomplete workflows. Generalize source-bound lower thirds to webcams and screen capture, qualify transparent PNG import/composition and verify the installed desktop-shortcut app before completion. Preserve source lifetime fences, private Cue/Program isolation and independent full-workload performance gates.
+
 **Owner beta release direction, October 21 — [#974](https://github.com/iamfatness/CoreVideoPro/issues/974):** the owner explicitly authorized a new beta containing the completed fixes before full-workload qualification passes. This supersedes the historical publication holds below for this release only. Preserve failed and missing evidence, keep `framePerformanceAccepted=false`, disclose the remaining screen/display and installed-shortcut acceptance gaps, and retain the normal clean-build, CI and exact-package installer gates. Publication does not close performance acceptance or establish that stuttering is fixed.
 
 **Beta CI dependency — [#1006](https://github.com/iamfatness/CoreVideoPro/issues/1006):** initialize clock publication storage before launching its worker. Keep strict revision/visibility checks while distinguishing bounded controller-busy admission from configuration errors; validate the retained macOS failure and thread-sanitized clock lifetime before releasing #974.

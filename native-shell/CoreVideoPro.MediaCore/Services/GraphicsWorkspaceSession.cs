@@ -344,13 +344,13 @@ public sealed partial class GraphicsWorkspaceSession
         catch (Exception ex) when (ex is not OutOfMemoryException) { ImportStatus = ex.Message; return false; }
         finally { ImportBusy = false; Changed?.Invoke(this, EventArgs.Empty); }
     }
-    public async Task<NativeGraphicsImageReference?> ImportImageAsync(string path,CancellationToken cancellation=default)
+    public async Task<NativeGraphicsImageReference?> ImportImageAsync(string path,CancellationToken cancellation=default,bool fullCanvas=false)
     {
         if(ImportBusy) return null;ImportBusy=true;ImportStatus="Verifying local image package. Program is unchanged.";Changed?.Invoke(this,EventArgs.Empty);
         var epoch=State?.CoreEpoch;
         try {
             var root=Environment.GetEnvironmentVariable("COREVIDEO_GRAPHICS_ASSET_ROOT") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"CoreVideoPro","graphics");
-            var staged=await GraphicsImageImport.StageAsync(path,root,cancellation);
+            var staged=await GraphicsImageImport.StageAsync(path,root,cancellation,fullCanvas);
             if(State?.CoreEpoch!=epoch) {ImportStatus="Native core restarted; image import cancelled.";return null;}
             if(!await Send("graphics.template.install",new() {["manifest"]=staged.Package.Manifest,["packageRoot"]=staged.Package.PackageRoot},cancellation)) {ImportStatus=Status;return null;}
             var until=DateTime.UtcNow.AddSeconds(5);

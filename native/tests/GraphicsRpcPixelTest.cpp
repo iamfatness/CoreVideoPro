@@ -1,4 +1,5 @@
 #include "core/MediaCore.h"
+#include "core/CaptureDeviceSource.h"
 #include "rpc/JsonRpcServer.h"
 #include "gtest/gtest.h"
 #include "contracts/Lifecycle.h"
@@ -91,6 +92,50 @@ TEST(GraphicsRpcPixel, PrivateGraphicsPreviewRequiresExplicitNullAppearanceAndPr
     ASSERT_EQ(first.size(),edited.size()); size_t changed=0;
     for(size_t i=0;i<first.size();i+=4) if(!std::equal(first.begin()+i,first.begin()+i+3,edited.begin()+i))++changed;
     EXPECT_GT(changed,32u) << templateId;
+  }
+}
+
+TEST(GraphicsCompositionPixel, LocalCameraAndScreenLowerThirdsDrawAndRejectStaleSourcePixels) {
+  using corevideo::rpc::Json;
+  for (const auto& id : {"capture:camera", "capture:screen:2"}) {
+    corevideo::graphics::GraphicsInstances state{"test-core"};
+    corevideo::core::CaptureDeviceSource source(id, 2, 2);
+    corevideo::modules::VideoFrame image; image.participantId=id; image.width=image.pixelWidth=2; image.height=image.pixelHeight=2; image.pixelStride=8;
+    image.pixels=std::make_shared<const std::vector<uint8_t>>(std::vector<uint8_t>{100,40,20,255,100,40,20,255,100,40,20,255,100,40,20,255});
+    source.setLatest(image); auto frames=source.poll(0).video; state.observeSources({},0,frames);
+    auto compositor=corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor); int sequence=0;
+    auto basePlan=[&] {
+      corevideo::modules::CompositorRenderPlan plan;plan.width=320;plan.height=180;
+      corevideo::modules::CompositorRenderPlanLayer video;video.layerId="camera";video.sourceId=id;video.participantId=id;
+      video.kind=std::string(id).find("screen:")!=std::string::npos?"screen-share":"participant-video";plan.layers.push_back(video);return plan;
+    };
+    auto render=[&](bool preview) {
+      auto plan=basePlan();state.append(plan,preview,frames);auto result=compositor->render(plan,frames);if(!preview)state.observe(result);return result.preview.bgra;
+    };
+    const auto baseline=render(false); ASSERT_EQ(320u*180*4,baseline.size());
+    auto command=[&](const std::string& type,Json::Object fields) {
+      fields["schemaVersion"]=1;fields["coreEpoch"]="test-core";fields["clientId"]="local-pixel";fields["instanceId"]="local";
+      fields["requestId"]="local-"+std::to_string(++sequence);fields["expectedRevision"]=1;
+      return state.apply(Json::Object{{"type",type},{"graphics",std::move(fields)}});
+    };
+    const auto binding=*state.snapshot().get("sources")->asArray().front().get("identity");
+    ASSERT_TRUE(command("graphics-instance-create",{{"templateId","compact-solid"},{"templateVersion",1},{"scope","global"},
+      {"binding",binding},{"fields",Json::Object{{"name","LOCAL CAMERA"},{"title","Operator text"}}},
+      {"animations",Json::Object{{"in",Json::Object{{"type","none"}}}}}}));
+    ASSERT_TRUE(command("graphics-instance-cue",{})); ASSERT_TRUE(command("graphics-instance-trigger",{{"action","show"}}));
+    const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(state.snapshot().get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame")==0 && std::chrono::steady_clock::now()<until) {render(false);std::this_thread::sleep_for(std::chrono::milliseconds(2));}
+    ASSERT_GT(state.snapshot().get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame"),0) << id;
+    EXPECT_NE(baseline,render(false)); EXPECT_NE(baseline,render(true));
+    auto wrong=frames;wrong.front().sourceGeneration++;
+    auto plan=basePlan();state.append(plan,false,wrong);
+    EXPECT_EQ(baseline,compositor->render(plan,wrong).preview.bgra);
+    // A late replacement after plan assembly must also fail the actual textured-draw fence.
+    plan=basePlan();state.append(plan,false,frames);
+    EXPECT_EQ(baseline,compositor->render(plan,wrong).preview.bgra);
+    source.clearVideo();source.setLatest(image);frames=source.poll(0).video;state.observeSources({},0,frames);
+    EXPECT_EQ(0,state.snapshot().get("instances")->asArray().front().getNumber("programRevision"));
+    EXPECT_EQ(baseline,render(false));
   }
 }
 
@@ -208,6 +253,43 @@ TEST(GraphicsCompositionPixel, VerifiedPackageImagePreservesAlphaAndAcceptedByte
   const auto pixels = render(); ASSERT_EQ(size_t(320*180*4),pixels.size());
   const auto left = (154*320+23)*4, right = (154*320+68)*4;
   EXPECT_GT(unsigned(pixels[left+2]),240u); EXPECT_LT(unsigned(pixels[left]),20u);
+  EXPECT_LT(unsigned(pixels[right+2]),20u); EXPECT_NEAR(128.,double(pixels[right+1]),8.); EXPECT_NEAR(127.,double(pixels[right]),8.);
+  { std::ofstream changed(package.file,std::ios::binary|std::ios::trunc); changed << "invalid replacement"; }
+  EXPECT_EQ(pixels,render());
+  EXPECT_GT(graphics.snapshot().getNumber("encodedTemplateAssetBytes"),0.);
+}
+
+TEST(GraphicsCompositionPixel, FullyTransparentPngRevealsBackgroundAndKeepsPartialAlpha) {
+  using corevideo::rpc::Json;
+  std::string error;
+  const auto asset = corevideo::graphics::graphicsAssetFromBytes("logo", graphicsTest::png(0), error); ASSERT_TRUE(asset);
+  graphicsTest::Package package(asset); const auto rootBytes = package.root.u8string(); const std::string root(rootBytes.begin(),rootBytes.end());
+  corevideo::graphics::GraphicsInstances graphics{"test-core"};
+  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor);
+  int sequence = 0;
+  const auto command = [&](const std::string& type, Json::Object payload) {
+    payload["schemaVersion"] = 1; payload["requestId"] = "image-request-" + std::to_string(++sequence);
+    payload["clientId"] = "image-qa"; payload["coreEpoch"] = "test-core"; payload["instanceId"] = "logo";
+    return graphics.apply(Json::Object{{"type",type},{"graphics",std::move(payload)}});
+  };
+  const auto render = [&] {
+    corevideo::modules::CompositorRenderPlan plan; plan.width = 320; plan.height = 180;
+    corevideo::modules::CompositorRenderPlanLayer background; background.kind = "background"; background.hasFillColor = true; background.fillColor = "#0000FF";
+    plan.layers.push_back(background); graphics.append(plan,false);
+    auto frame = compositor->render(plan,{}); graphics.observe(frame); return frame.preview.bgra;
+  };
+  ASSERT_TRUE(command("graphics-template-install", {{"manifest",graphicsTest::imageDocument(asset).stringify()},{"packageRoot",root}}));
+  const auto importLimit = std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  while (graphics.snapshot().get("templates")->asArray().size() != 10 && std::chrono::steady_clock::now()<importLimit) { render(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+  ASSERT_EQ(10u,graphics.snapshot().get("templates")->asArray().size());
+  ASSERT_TRUE(command("graphics-instance-create", {{"templateId","packaged-logo"},{"templateVersion",1},{"scope","global"}}));
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"expectedRevision",1},{"action","show"}}));
+  const auto limit = std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  while (graphics.snapshot().get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame") == 0 && std::chrono::steady_clock::now()<limit) { render(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+  ASSERT_GT(graphics.snapshot().get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame"),0.);
+  const auto pixels = render(); ASSERT_EQ(size_t(320*180*4),pixels.size());
+  const auto left = (154*320+23)*4, right = (154*320+68)*4;
+  EXPECT_LT(unsigned(pixels[left+2]),5u); EXPECT_GT(unsigned(pixels[left]),250u); EXPECT_LT(unsigned(pixels[left+1]),5u);
   EXPECT_LT(unsigned(pixels[right+2]),20u); EXPECT_NEAR(128.,double(pixels[right+1]),8.); EXPECT_NEAR(127.,double(pixels[right]),8.);
   { std::ofstream changed(package.file,std::ios::binary|std::ios::trunc); changed << "invalid replacement"; }
   EXPECT_EQ(pixels,render());
@@ -396,7 +478,7 @@ TEST(GraphicsCompositionPixel, AutomaticIntroductionUsesActualSourceDrawAndClear
   video.participantId = "44"; video.sourceGeneration = 1; video.sourceEpoch = 1; video.frameId = 1;
   video.width = video.pixelWidth = video.height = video.pixelHeight = 1; video.pixelStride = 4;
   video.pixels = std::make_shared<const std::vector<uint8_t>>(std::vector<uint8_t>{20, 30, 170, 255});
-  graphics.observeZoomSources({participant}, 7, {video});
+  graphics.observeSources({participant}, 7, {video});
   const auto binding = [&] { return *graphics.snapshot().get("sources")->asArray().front().get("identity"); };
   int sequence = 0;
   const auto command = [&](const std::string& type, Json::Object payload) {
@@ -449,7 +531,7 @@ TEST(GraphicsCompositionPixel, SourceGenerationReplacementCannotBurnThePreviousG
   video.participantId = "44"; video.sourceGeneration = 1; video.sourceEpoch = 1; video.frameId = 1;
   video.width = video.pixelWidth = video.height = video.pixelHeight = 1; video.pixelStride = 4;
   video.pixels = std::make_shared<const std::vector<uint8_t>>(std::vector<uint8_t>{20, 30, 170, 255});
-  graphics.observeZoomSources({participant}, 7, {video});
+  graphics.observeSources({participant}, 7, {video});
   const auto binding = [&] { return *graphics.snapshot().get("sources")->asArray().front().get("identity"); };
   int sequence = 0;
   const auto command = [&](const std::string& type, Json::Object payload) {
@@ -492,12 +574,12 @@ TEST(GraphicsCompositionPixel, SourceGenerationReplacementCannotBurnThePreviousG
   EXPECT_EQ(slate, compositor->render(qualifiedPlan, {metadataOnly}).preview.bgra);
   EXPECT_EQ(first, render()); // no source draw from a prior pass can qualify this pass
   video.sourceEpoch = UINT64_MAX; // format/texture epoch is not the subject identity
-  graphics.observeZoomSources({participant}, 7, {video});
+  graphics.observeSources({participant}, 7, {video});
   EXPECT_EQ(first, render());
   participant.sourceGeneration = 2; participant.displayName = "Second guest";
   video.sourceGeneration = 2; video.sourceEpoch = 9; video.frameId = 2;
   video.pixels = std::make_shared<const std::vector<uint8_t>>(std::vector<uint8_t>{40, 170, 30, 255});
-  graphics.observeZoomSources({participant}, 7, {video});
+  graphics.observeSources({participant}, 7, {video});
   const auto cleanReplacement = compositor->render(basePlan(), {video}).preview.bgra;
   EXPECT_EQ(cleanReplacement, render()); // no old subject text over the replacement pixels
   EXPECT_EQ("hidden", row().getString("visibility"));

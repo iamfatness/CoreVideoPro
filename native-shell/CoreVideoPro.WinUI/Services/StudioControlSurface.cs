@@ -61,6 +61,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
         "graphics.clock.control", "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
+        "graphics.template.select", "graphics.studio.assign", "graphics.image.import",
         "graphics.template.install", "graphics.template.list", "graphics.authority.set", "graphics.automation.configure", "graphics.automation.control",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
@@ -311,6 +312,26 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             }
 
             // ---- Graphics -----------------------------------------------------------
+            case "graphics.template.select":
+            {
+                var workspace = _vm.GraphicsWorkspace;
+                if (workspace.Busy) return ControlInvokeResult.Fail("Graphics is busy; private selection was kept.");
+                var template = workspace.State?.Templates.FirstOrDefault(t => t.TemplateId == Str(args,0) && t.TemplateVersion == Int(args,1));
+                if (template is null) return ControlInvokeResult.Fail("The requested template version is unavailable.");
+                workspace.Browse(template); return ControlInvokeResult.Success;
+            }
+            case "graphics.studio.assign":
+                return await _vm.AssignGraphicsLookToStudioAsync(Bool(args,0)) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);
+            case "graphics.image.import":
+            {
+                var workspace = _vm.GraphicsWorkspace;
+                var selected = workspace.SelectedId; var draft = workspace.Draft;
+                var image = await workspace.ImportImageAsync(Str(args,0),fullCanvas:true);
+                var template = image is null ? null : workspace.State?.Templates.FirstOrDefault(t => t.TemplateId == image.TemplateId && t.TemplateVersion == image.TemplateVersion);
+                if (template is null) return ControlInvokeResult.Fail(workspace.ImportStatus);
+                if (workspace.SelectedId != selected || workspace.Draft != draft) return ControlInvokeResult.Fail("Graphic imported; a newer private selection or edit was preserved.");
+                workspace.Browse(template); return ControlInvokeResult.Success;
+            }
             case "graphics.instance.create":
             case "graphics.instance.update":
             case "graphics.instance.cue":

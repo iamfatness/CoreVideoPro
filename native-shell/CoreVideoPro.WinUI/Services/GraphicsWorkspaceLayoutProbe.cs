@@ -76,11 +76,11 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("heading").GetString()=="My weekly show","Edited welcome title was lost while recoloring or choosing another graphic");
             sampleList.SelectedIndex=0;
             Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("name").GetString()=="My guest","Switching sample graphics lost private edits");
-            var sourceText = Descendants(workspace).OfType<CheckBox>().Single(c => c.Content as string == "Use each guest's name and title in Studio");
+            var sourceText = Descendants(workspace).OfType<CheckBox>().Single(c => c.Content as string == "Use the Program source name and title in Studio");
             sourceText.IsChecked = false;
             Require(Descendants(workspace).OfType<TextBlock>().Any(t => t.Text.Contains("including the sample name")), "Fixed sample text has no Studio warning");
             sourceText.IsChecked = true;
-            Invoke(Button(workspace,"Edit guest names in Sources →"));
+            Invoke(Button(workspace,"Edit source names in Sources →"));
             Require(studio.ActiveTab == CoreVideoPro.WinUI.Models.StudioTab.Sources, "Guest text shortcut did not navigate to existing Sources");
             Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("name").GetString()=="My guest", "Guest text handoff lost the private sample draft");
             studio.ActiveTab = CoreVideoPro.WinUI.Models.StudioTab.Overlays;
@@ -113,6 +113,10 @@ internal static class GraphicsWorkspaceLayoutProbe
                 await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,$"graphics-942-{tab.ToLowerInvariant()}-1080.png"));
             }
             checks.Add("Content, Style, Layout and Motion switch independently; compiled-control screenshots exclude native video pixels");
+            Invoke(Button(workspace,"Templates and saved cues")); await Task.Delay(80);
+            Require(Button(workspace,"Import PNG / JPEG graphic…").IsEnabled,"Standalone transparent artwork import is unreachable");
+            Invoke(Button(workspace,"Close"));
+            checks.Add("Standalone PNG/JPEG graphic import is available in the library without changing the current cue");
             Invoke(Button(workspace,"Manage")); await Task.Delay(80);
             Invoke(Button(workspace,"Existing overlay controls")); await Task.Delay(80);
             var legacyDrawer=Descendants(page).OfType<SplitView>().Single(s=>s.Name=="ExistingOverlayDrawer");
@@ -180,14 +184,14 @@ internal static class GraphicsWorkspaceLayoutProbe
         dwell.Value=3.5;
         state=state with {Sources=[]};
         studio.GraphicsWorkspace.Observe(state);control.Refresh();
-        Require(dwell.Value==3.5 && subject.SelectedItem?.ToString()=="Unavailable guest · guest-a", "Roster refresh erased pending dwell or silently substituted an automatic subject");
+        Require(dwell.Value==3.5 && subject.SelectedItem?.ToString()=="Unavailable source · guest-a", "Roster refresh erased pending dwell or silently substituted an automatic subject");
         Require(!Button(control,"Arm").IsEnabled && !Button(control,"Save rule configuration").IsEnabled,"Pending form edits can be mistaken for saved or armed rules");
         state=state with {Automation=state.Automation! with {Revision=2,Configuration=new() {Rules=[rule with {DwellMs=5000}]}}};
         studio.GraphicsWorkspace.Observe(state);control.Refresh();
         Require(dwell.Value==3.5 && !Button(control,"Apply rule — disarmed").IsEnabled,"Concurrent rule edit was overwritten or pending conflicting edits can be applied");
         Invoke(Button(control,"Discard edits and reload current settings"));
         await Eventually(()=>dwell.Value==5);
-        Require(subject.SelectedItem?.ToString()=="Unavailable guest · guest-a", "Reload lost the explicit unavailable guest binding");
+        Require(subject.SelectedItem?.ToString()=="Unavailable source · guest-a", "Reload lost the explicit unavailable guest binding");
         checks.Add("compiled automation editor follows native mode, retains unsent mode/rule edits and missing guest identity, blocks conflicts/arming/save, and explicitly reloads newer settings without sending media commands");
     }
     private static async Task CheckBusyTextBindingAsync(Window window, List<string> checks)

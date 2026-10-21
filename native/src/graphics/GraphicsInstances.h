@@ -28,7 +28,7 @@ class GraphicsInstances {
   void append(modules::CompositorRenderPlan& plan, bool preview,
               const std::vector<modules::VideoFrame>& frames = {}, ScopePass scope = ScopePass::All) const;
   void observe(const modules::ProgramFrame& frame);
-  void observeZoomSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
+  void observeSources(const std::vector<modules::ZoomEngineParticipant>& roster, uint64_t sessionEpoch,
                           const std::vector<modules::VideoFrame>& frames = {});
   const rpc::Json& snapshot() const { return snapshot_; }
   bool hasCue() const;

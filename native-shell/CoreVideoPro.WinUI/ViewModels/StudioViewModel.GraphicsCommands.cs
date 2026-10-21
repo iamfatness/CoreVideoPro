@@ -11,7 +11,8 @@ public sealed partial class StudioViewModel
     public (string Name, string Title) GraphicsSourceText(string sourceId, string fallback)
     {
         var participant = RoomVideoParticipants.FirstOrDefault(p => "zoom:" + p.Id == sourceId);
-        var name = ResolveSourceDisplayName(sourceId, participant?.Name ?? fallback);
+        var capture = CaptureDevices.FirstOrDefault(d => "capture:" + d.Id == sourceId);
+        var name = ResolveSourceDisplayName(sourceId, participant?.Name ?? capture?.Name ?? fallback);
         var title = participant is null ? "" : string.IsNullOrWhiteSpace(participant.Title) ? participant.RoleLabel : participant.Title;
         var org = participant is null ? "" : string.IsNullOrWhiteSpace(participant.BreakoutRoomName) ? participant.RoleLabel : participant.BreakoutRoomName;
         var resolved = Services.SourceLowerThirdText.Resolve(_sourceSecondaryLines, sourceId, title, org);
@@ -23,7 +24,7 @@ public sealed partial class StudioViewModel
         foreach(var source in GraphicsWorkspace.State?.Sources ?? []) {
             if(source.Identity is not { } identity || !source.VideoOn) continue;
             var text=GraphicsSourceText(identity.SourceId,source.DisplayName);
-            texts[identity.SourceId]=new() {Binding=identity,Name=_sourceDisplayNames.TryGetValue(identity.SourceId,out var name)?name:null,Secondary=text.Title};
+            texts[identity.SourceId]=new() {Binding=identity,Name=identity.SourceId.StartsWith("capture:",StringComparison.Ordinal)?text.Name:_sourceDisplayNames.TryGetValue(identity.SourceId,out var name)?name:null,Secondary=text.Title};
         }
         return new() {Rules=rules,SourceTexts=texts};
     }

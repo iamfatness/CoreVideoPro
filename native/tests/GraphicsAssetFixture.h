@@ -10,7 +10,7 @@ namespace graphicsTest {
 // A standalone PNG encoder fixture: two known RGBA pixels (opaque red and
 // half-alpha green), stored deflate block, standard PNG CRC/Adler. Native WIC
 // decoding and GPU composition must reproduce these independent source values.
-inline std::shared_ptr<const std::vector<uint8_t>> png() {
+inline std::shared_ptr<const std::vector<uint8_t>> png(uint8_t redAlpha = 255) {
   std::vector<uint8_t> b{137,80,78,71,13,10,26,10};
   const auto be = [](std::vector<uint8_t>& out, uint32_t n) { out.push_back(uint8_t(n>>24)); out.push_back(uint8_t(n>>16)); out.push_back(uint8_t(n>>8)); out.push_back(uint8_t(n)); };
   const auto chunk = [&](const char* type, const std::vector<uint8_t>& data) {
@@ -21,7 +21,7 @@ inline std::shared_ptr<const std::vector<uint8_t>> png() {
     be(b, crc ^ 0xffffffff);
   };
   chunk("IHDR", {0,0,0,2,0,0,0,1,8,6,0,0,0});
-  const std::vector<uint8_t> raw{0,255,0,0,255,0,255,0,128};
+  const std::vector<uint8_t> raw{0,255,0,0,redAlpha,0,255,0,128};
   std::vector<uint8_t> z{0x78,0x01,0x01,9,0,0xf6,0xff}; z.insert(z.end(), raw.begin(), raw.end());
   uint32_t a=1,c=0; for (auto byte:raw) { a=(a+byte)%65521; c=(c+a)%65521; } be(z,(c<<16)|a);
   chunk("IDAT",z); chunk("IEND",{}); return std::make_shared<const std::vector<uint8_t>>(std::move(b));
