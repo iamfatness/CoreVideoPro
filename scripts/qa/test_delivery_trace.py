@@ -19,11 +19,36 @@ class DeliveryTraceJudgeTests(unittest.TestCase):
             len(events), lost, 0, complete, 1000, 2100000)
         return header, events
 
-    def judge(self, header, events):
+    def judge(self, header, events, **kwargs):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "trace.bin"
             path.write_bytes(header + b"".join(events))
-            return module.judge(path, 0, 2)
+            return module.judge(path, 0, 2, **kwargs)
+
+    def deadline_fixture(self, late=False, missing=False):
+        header, old = self.fixture()
+        values = list(module.HEADER.unpack(header)); values[0] = b'CVTRACE2'; values[1] = 2; values[2] = module.EVENT_V2.size
+        events = []
+        for record in old:
+            row = list(module.EVENT.unpack(record))
+            ready_ns = 1000000000 + row[3] * 16666667
+            deadline_ns = ready_ns + 5000000
+            if late and row[3] == 60: ready_ns = deadline_ns + 1
+            pair = (ready_ns, deadline_ns) if row[8] == 4 and not missing else (0, 0)
+            events.append(module.EVENT_V2.pack(*row, *pair))
+        return module.HEADER.pack(*values), events
+
+    def test_actual_deadline_is_required_not_just_ready_before_delivery(self):
+        good = self.judge(*self.deadline_fixture(), require_program_deadlines=True)
+        self.assertEqual(good['result'], 'PASS')
+        self.assertTrue(good['programGpuReadinessDeadlineVerified'])
+        late = self.judge(*self.deadline_fixture(late=True), require_program_deadlines=True)
+        self.assertEqual(late['result'], 'FAIL')
+        self.assertEqual(late['programGpuReadinessObservedLate'], 1)
+        for fixture in (self.fixture(), self.deadline_fixture(missing=True)):
+            result = self.judge(*fixture, require_program_deadlines=True)
+            self.assertEqual(result['result'], 'FAIL')
+            self.assertFalse(result['programGpuReadinessDeadlineVerified'])
 
     def test_accepts_exact_program_boundary_join(self):
         self.assertEqual(self.judge(*self.fixture())["result"], "PASS")

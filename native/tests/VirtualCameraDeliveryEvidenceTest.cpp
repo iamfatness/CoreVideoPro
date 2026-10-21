@@ -1,10 +1,44 @@
 #include "modules/VirtualCameraDeliveryEvidence.h"
 #include "modules/VirtualCameraReadRetry.h"
 #include "modules/VirtualCameraCadence.h"
+#include "modules/VirtualCameraRequestSchedule.h"
 #include "modules/VirtualCameraCorrelation.h"
 #include <gtest/gtest.h>
 
 using namespace corevideo::modules;
+
+TEST(VirtualCameraRequestSchedule, ColdFirstEmissionDoesNotLeaveTheNextReadWindowBehindThePublisher) {
+  VirtualCameraRequestSchedule legacy, corrected;
+  legacy.reset(60); corrected.reset(60);
+  const auto first = corrected.begin(0);
+  legacy.begin(0);
+  EXPECT_EQ(first.readDeadlineUs, 14666);
+  // Allocation/open makes the first fresh emission late. The publisher's next
+  // picture arrives 16.6666ms after its first picture at 19ms.
+  constexpr int64_t firstEmission = 200000, nextPublication = 356666;
+  EXPECT_TRUE(corrected.firstFreshEmission(firstEmission));
+  const auto oldWindow = legacy.begin(firstEmission + 10);
+  const auto next = corrected.begin(firstEmission + 10);
+  EXPECT_TRUE(oldWindow.readDeadlineUs * 10 < nextPublication); // old phase must hold
+  EXPECT_TRUE(next.target100ns > nextPublication); // next picture is already due
+  EXPECT_EQ(next.wait100ns, 166656);
+  EXPECT_EQ(first.readDeadlineUs, 14666); // no extension of an issued window
+}
+
+TEST(VirtualCameraRequestSchedule, FreshPicturesCannotContinuouslyRebaseOrExtendTheClock) {
+  VirtualCameraRequestSchedule schedule;
+  schedule.reset(60); schedule.begin(1000000);
+  EXPECT_TRUE(schedule.firstFreshEmission(1200000));
+  const auto second = schedule.begin(1366666);
+  EXPECT_EQ(second.target100ns, 1366666);
+  EXPECT_FALSE(schedule.firstFreshEmission(1390000));
+  const auto third = schedule.begin(1400000);
+  EXPECT_EQ(third.target100ns, 1533333);
+  EXPECT_EQ(second.readDeadlineUs, 151333);
+  schedule.reset(60);
+  EXPECT_TRUE(schedule.firstFreshEmission(3000000));
+  EXPECT_EQ(schedule.begin(3000000).target100ns, 3166666);
+}
 
 TEST(VirtualCameraCadence, WholeHourHasNoFractionalFrameClockDrift) {
   for (uint32_t fps : {24u, 30u, 60u}) {

@@ -76,6 +76,15 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("heading").GetString()=="My weekly show","Edited welcome title was lost while recoloring or choosing another graphic");
             sampleList.SelectedIndex=0;
             Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("name").GetString()=="My guest","Switching sample graphics lost private edits");
+            var sourceText = Descendants(workspace).OfType<CheckBox>().Single(c => c.Content as string == "Use each guest's name and title in Studio");
+            sourceText.IsChecked = false;
+            Require(Descendants(workspace).OfType<TextBlock>().Any(t => t.Text.Contains("including the sample name")), "Fixed sample text has no Studio warning");
+            sourceText.IsChecked = true;
+            Invoke(Button(workspace,"Edit guest names in Sources →"));
+            Require(studio.ActiveTab == CoreVideoPro.WinUI.Models.StudioTab.Sources, "Guest text shortcut did not navigate to existing Sources");
+            Require(studio.GraphicsWorkspace.Draft?.Fields.GetProperty("name").GetString()=="My guest", "Guest text handoff lost the private sample draft");
+            studio.ActiveTab = CoreVideoPro.WinUI.Models.StudioTab.Overlays;
+            checks.Add("Studio text choice explains sample versus Program guest text; Sources handoff retains private draft and never assigns or shows it");
             await ReviewImageWriter.SaveAsync(page,Path.Combine(directory,"graphics-try-interview-1080.png"));
             checks.Add("Four visible show-template starters; Interview opens populated private samples; branding and per-graphic edits survive navigation without creating native instances or assigning Studio");
             Invoke(Button(workspace,"Show templates"));Invoke(Button(workspace,"Browse individual graphics"));await Task.Delay(80);
@@ -140,7 +149,46 @@ internal static class GraphicsWorkspaceLayoutProbe
             Require(!unavailable.Ok && unavailable.Error?.Contains("Native Graphics is unavailable",StringComparison.Ordinal)==true,"Assigned API Show fell through to a legacy cue or falsely reported success");
             checks.Add("API Hide remains idempotent; assigned API Show refuses unavailable native Graphics without legacy fallback or false success");
             await CheckBusyTextBindingAsync(window, checks);
+            await CheckAutomationEditingAsync(window, studio, checks);
         } finally { Environment.SetEnvironmentVariable("COREVIDEO_GRAPHICS_DOCUMENT_PATH",previousPath); }
+    }
+    private static async Task CheckAutomationEditingAsync(Window window, StudioViewModel studio, List<string> checks)
+    {
+        var rule = new GraphicsAutomationRule { Id="rule-a", InstanceId="intro", SourceId="guest-a" };
+        var state = new NativeGraphicsState { CoreEpoch="automation-ui", Instances=[new() {InstanceId="intro",TemplateId="compact-solid",Label="Introduction"}],
+            Automation=new() {Mode="automatic",Configuration=new() {Rules=[rule]}},
+            Sources=[new() {DisplayName="Alice",VideoOn=true,Identity=new() {SourceId="guest-a",InstanceId="camera-a",ProcessEpoch="automation-ui",Generation=1}}] };
+        studio.GraphicsWorkspace.Observe(state);
+        var control = new GraphicsAutomationControl(studio);
+        window.Content = new ScrollViewer {Content=control};
+        await Eventually(()=>control.IsLoaded);
+        foreach(var expander in Descendants(control).OfType<Expander>().ToArray())expander.IsExpanded=true;
+        await Eventually(()=>Descendants(control).OfType<SliderValueControl>().Any(s=>s.Header=="Subject dwell"));
+        var mode=Descendants(control).OfType<ComboBox>().Single(c=>c.Header as string=="Mode");
+        var subject=Descendants(control).OfType<ComboBox>().Single(c=>c.Header as string=="Subject");
+        var dwell=Descendants(control).OfType<SliderValueControl>().Single(s=>s.Header=="Subject dwell");
+        Require(mode.SelectedItem as string=="Automatic", "Mode selector did not reflect observed native Automatic mode");
+        state=state with {Automation=state.Automation! with {Mode="rehearsal"}};
+        studio.GraphicsWorkspace.Observe(state);control.Refresh();
+        Require(mode.SelectedItem as string=="Rehearsal", "External native mode change did not refresh clean selector");
+        mode.SelectedIndex=0;
+        state=state with {Automation=state.Automation! with {Armed=true}};
+        studio.GraphicsWorkspace.Observe(state);control.Refresh();
+        Require(mode.SelectedItem as string=="Manual", "Runtime refresh erased unsent mode selection");
+        Invoke(Button(control,"Discard edits and reload current settings"));
+        await Eventually(()=>mode.SelectedItem as string=="Rehearsal");
+        dwell.Value=3.5;
+        state=state with {Sources=[]};
+        studio.GraphicsWorkspace.Observe(state);control.Refresh();
+        Require(dwell.Value==3.5 && subject.SelectedItem?.ToString()=="Unavailable guest · guest-a", "Roster refresh erased pending dwell or silently substituted an automatic subject");
+        Require(!Button(control,"Arm").IsEnabled && !Button(control,"Save rule configuration").IsEnabled,"Pending form edits can be mistaken for saved or armed rules");
+        state=state with {Automation=state.Automation! with {Revision=2,Configuration=new() {Rules=[rule with {DwellMs=5000}]}}};
+        studio.GraphicsWorkspace.Observe(state);control.Refresh();
+        Require(dwell.Value==3.5 && !Button(control,"Apply rule — disarmed").IsEnabled,"Concurrent rule edit was overwritten or pending conflicting edits can be applied");
+        Invoke(Button(control,"Discard edits and reload current settings"));
+        await Eventually(()=>dwell.Value==5);
+        Require(subject.SelectedItem?.ToString()=="Unavailable guest · guest-a", "Reload lost the explicit unavailable guest binding");
+        checks.Add("compiled automation editor follows native mode, retains unsent mode/rule edits and missing guest identity, blocks conflicts/arming/save, and explicitly reloads newer settings without sending media commands");
     }
     private static async Task CheckBusyTextBindingAsync(Window window, List<string> checks)
     {

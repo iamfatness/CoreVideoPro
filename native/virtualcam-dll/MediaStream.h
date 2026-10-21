@@ -6,7 +6,7 @@
 // sample from the shared-memory slot (or a standby slate when the core is not
 // publishing), timestamped on a fixed frame cadence.
 
-#include "modules/VirtualCameraCadence.h"
+#include "modules/VirtualCameraRequestSchedule.h"
 #include <windows.h>
 #include <mfapi.h>
 #include <mfidl.h>
@@ -69,6 +69,9 @@ class MediaStream
   } lastGoodIdentity_, sampleIdentity_, emittedIdentity_;
   std::uint64_t deliveryLogAttempts_ = 0, deliveryRun_ = 0;
   std::mutex mutex_;
+  // MF may request more than one token concurrently. A request owns its timer
+  // and original deadline through event delivery, not only during reservation.
+  std::mutex requestMutex_;
   std::vector<std::uint8_t> scratch_;
   // Last complete frame we served, held so a transient read miss (seqlock
   // collision / a tick the core didn't publish) re-serves the previous frame
@@ -83,8 +86,7 @@ class MediaStream
   LONGLONG frameDuration_ = 166667;  // 100ns units, set from fps (60fps default)
   // Delivery pacing (see RequestSample): when the NEXT sample is due, in
   // MFGetSystemTime units. 0 = un-anchored (first sample delivers immediately).
-  LONGLONG nextDueHns_ = 0;
-  corevideo::modules::VirtualCameraCadence cadence_;
+  corevideo::modules::VirtualCameraRequestSchedule schedule_;
   HANDLE pacerTimer_ = nullptr;  // high-resolution waitable timer (lazy)
   bool running_ = false;
   bool shutdown_ = false;

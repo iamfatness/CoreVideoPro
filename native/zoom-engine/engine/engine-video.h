@@ -47,6 +47,8 @@ private:
         explicit SourceTarget(IpcFd e2p) : e2p_fd(e2p) {}
         IpcFd e2p_fd;
         ShmRegion shm;
+        ShmRegion iso_shm;
+        uint64_t iso_failures = 0;
         uint64_t frame_count = 0;
         // Consecutive ensure_shm failures, for rate-limited loud logging; reset
         // by the first successful write. See onRawDataFrameReceived.

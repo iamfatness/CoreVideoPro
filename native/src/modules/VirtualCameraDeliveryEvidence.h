@@ -23,6 +23,8 @@ struct VirtualCameraReadEvidence {
   uint64_t lastEpochHigh = 0, lastEpochLow = 0;
   int64_t lastProgramSequence = 0;
   bool programIdentityVerified = false;
+  uint64_t historyReads = 0, historyRetainedReads = 0, historyOverflows = 0;
+  uint64_t historySkippedPublications = 0, historyMaximumLag = 0;
 
   void record(VirtualCameraReadResult result) {
     lastResult = result;

@@ -215,6 +215,8 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         RetireTextFields();
         foreach(var button in _inspectorActions) _actions.Remove(button); _inspectorActions.Clear();
         if (_studioFollowSource.Parent is Panel followParent) followParent.Children.Remove(_studioFollowSource);
+        if (_studioTextHelp.Parent is Panel helpParent) helpParent.Children.Remove(_studioTextHelp);
+        if (_editGuestText.Parent is Panel guestParent) guestParent.Children.Remove(_editGuestText);
         foreach (var panel in new[] { _contentControls, _styleControls, _layoutControls, _motionControls }) panel.Children.Clear();
         _inspectorTarget = _contentControls;
         _refreshFields.Clear();
@@ -292,6 +294,8 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
         }
         BuildClockControls();
         _inspector.Children.Add(_studioFollowSource);
+        _inspector.Children.Add(_studioTextHelp);
+        _inspector.Children.Add(_editGuestText);
         if (Compatibility || UsesToken("brand.fontBody") || UsesToken("brand.fontHeading")) {
         _inspectorTarget = _styleControls;
         var font = new TextBox { Header = "Font family", Text = draft.Style.FontFamily, MaxLength = 128 };

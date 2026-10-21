@@ -63,9 +63,57 @@ every 10 seconds, after every required output is actually producing, for at
 least 30 minutes. Include the independent `cameraPixelVerdict`, the blocked-UI
 `monitorProbeVerdict`, and a `framePerformanceReport` following
 [the strict evidence schema](../../scripts/qa/frame-performance-evidence.md).
-`scripts/qa/collect-redesign-workload.ps1 -AppProcessId PID -OutputDirectory DIR`
-collects the workload observations into a fresh directory. It deliberately leaves
+`scripts/qa/collect-redesign-workload.ps1 -AppProcessId PID -OutputDirectory DIR
+-ExpectedZoomParticipantId ID1,ID2,ID3,ID4,ID5,ID6,ID7,ID8
+-ExpectedWebcamSourceId capture:CAMERA -ExpectedScreenSourceId capture:screen:DISPLAY
+-ExpectedIsoSourceId zoom:ID1,zoom:ID2,zoom:ID3,zoom:ID4,zoom:ID5,zoom:ID6,zoom:ID7,capture:CAMERA`
+collects the workload observations into a fresh directory. Supply the eight real
+remote participant IDs from the intended show, including any unavailable feed;
+the collector must not derive expectations from whichever sources currently
+deliver frames. Background media cannot substitute for a remote participant.
+It deliberately leaves
 uncollected pixel/display evidence absent; its report cannot pass by itself.
+
+Wait for actual Zoom video to reach 1080p before starting the recording: an ISO
+writer retains the dimensions of its first source frame. A subsequent 1080p
+input does not prove a 1080p ISO file. After finalization, supply `isoFileEvidence`
+for every selected ISO, with `measurement: "ffprobe-count-packets"`, the measured
+track's `sourceId` and `path`, actual encoded `width`/`height`, observed `packets`,
+and the final writer's `muxVideoFrameCount`. The gate requires 1920x1080 and matching
+positive packet counts. This file accounting supplements source-arrival and
+pixel/deadline proof; it does not replace them.
+
+For direct ISO arrival-to-file proof, explicitly enable `COREVIDEO_QA_ISO_COUNTER=1`
+and `COREVIDEO_DELIVERY_TRACE_STAGES=program-and-iso` together with a fresh
+`COREVIDEO_DELIVERY_TRACE_PATH`. This QA mode changes visible picture bands.
+Zoom stamps its privately copied ISO buffer; UVC stamps its mutable capture
+buffer before publication/preparation. Shared buffer owners are preserved.
+Normal launches leave this flag unset and do not paint or export ISO identities.
+The completed bounded binary trace includes stage 11, `iso-arrival-offered`,
+tagged by `iso:SOURCE_ID`, with source owner, actual frame identity, observed
+timestamp and actual geometry. It observes offers, so ring/FIFO losses still
+fail separately. The existing ten live cadence aggregates remain unchanged;
+ISO identity evidence is file-only, not an inferred aggregate success.
+
+After recording and capture finalize, run `scripts/qa/iso-pixel-verdict.py` with
+the ISO path, trace, source ID, explicit measured QPC bounds and the ffmpeg/
+ffprobe paths. Its default minimum is 1,800 seconds. It compares the decoded
+pictures with the exact ordered source-arrival identities, preserving source
+cadence rather than inventing 60-fps ISO slots. Missing/repeated/reordered/wrong
+identities, trace loss, source retirement or non-1080p payloads fail this proof.
+Shorter diagnostic intervals must be labeled partial. Decode after the live
+interval so verification does not contend with the workload.
+
+Each `recording:iso:SOURCE_ID` performance path uses
+`measurement: "source-arrival-fidelity"` with the unmodified ISO pixel verdict
+in `proof`. The top-level `performanceEvidence.intervalTicks` declares string
+QPC `start`/`end` and numeric `frequency`; those bounds must match the workload's
+first/last observed `qpcTicks` samples and the pixel verdict exactly. The
+collector records the corresponding UTC pair for human-readable coverage.
+The pixel proof must refer to the same finalized track path inspected for
+dimensions/packet counts. Synthetic 60-fps slot counts cannot replace ISO proof.
+Program, GPU readiness, presentation and fixed-rate outputs retain their
+anchored 60-fps completion/deadline checks.
 
 The frame report must inventory `recording:program`, `virtual-camera:program`,
 and `recording:iso:SOURCE_ID` for each selected ISO, plus
@@ -211,3 +259,119 @@ display or real-time delivery deadlines. Run decoding after the live capture.
 Supply its result as `recordingPixelVerdict` in the combined report. Its first
 and last identities and sample count must match the camera receiver's measured
 interval; an unrelated clean recording cannot qualify the run.
+
+## Camera request phase and ownership (#991)
+
+The MF stream establishes its rational cadence once at the first successfully
+queued fresh sample. Cold allocation and mapping work can finish after the first
+request's read deadline; retaining that pre-allocation phase left following read
+windows near the publisher boundary. The original issued deadline remains
+unchanged and its diagnostic miss remains visible. Later fresh samples cannot
+rebase the clock. The existing two-millisecond delivery reserve, retry bound and
+two-payload-copy limit remain in force.
+
+One request owns pacing, the shared timer, read deadline, copy and event delivery
+under a separate request mutex. Stream-state operations retain their own mutex.
+Shutdown takes request ownership before stream state so it cannot close a timer
+being waited on. A request reserved in an earlier Start generation cannot emit
+into a later Start. This avoids treating queued MF tokens as independent clocks.
+
+The retained October 20 trial decoded every recorded Program identity while the
+registered OS receiver observed one held duplicate, confirmed by FrameServer's
+held/unrecovered counters. Program file continuity therefore cannot substitute
+for camera pixel acceptance. The scheduling regression and direct-DLL MF tests
+are necessary checks; only a fresh installed OS-camera workload can qualify it.
+
+## Dispatch the monitor payload before current Program work (#995)
+
+An early buffered Program copy alone does not isolate the complete multiview
+canvas. The auxiliary monitor owner also needs its scene, current source refs,
+Preview plan and bounded inspector export demand. Dispatching that payload after
+the current Program render leaves a hidden dependency: a late render can consume
+almost the entire monitor slot before the independent worker receives any job.
+
+MediaCore now submits the same tick's immutable monitor payload before calling
+the current Program renderer. A focused assembly method retains the existing
+source selection, Preview and inspector demand rules. The buffered Program
+image still comes from its earlier scheduled slot and copy owner; no output
+deadline is extended. The caller-order regression first fails against the old
+ordering. The real D3D pixel test uses the new ordering while injecting a current
+Program stall and retains the original absolute canvas-publication deadline.
+Correct pixels published after that boundary remain a failure.
+
+For live qualification, enabling virtual camera or launching a receiver process
+is insufficient. The registered OS consumer must negotiate 1920x1080 60/1 and
+receive an actual decodable first frame before measurement starts. The shared
+receiver flushes its setup header and reports its first frame once; per-frame
+evidence stays buffered to avoid file I/O on the measured cadence. A receiver
+startup error, failed exit or missing finalized evidence invalidates the run.
+Final pixel continuity, whole-interval coverage and every other enabled output
+must still pass independently.
+
+## Managed monitor readiness and diagnostic projection (#997)
+
+A nonblocking keyed-mutex or swap-chain readiness poll means only that the image
+cannot be consumed at that instant. Waiting another entire 60 Hz period can
+miss a producer that finishes immediately after every poll. Persistent workers
+now retry only pending hosts, at most once per millisecond inside the original
+slot. The next periodic slot takes precedence; stalls do not create a backlog
+or extend an earlier deadline. A committed host does not participate in further
+retries for that slot. Unsuccessful retries do not allocate UI snapshots.
+
+The shell's managed render workers remain subject to runtime GC pauses. In the
+controlled live diagnostic, native Program/ISO/OS-camera pixel proofs passed
+while UI commits were below 60/sec and a matched 1080p output-enabled trace
+recorded all-managed-stopped windows up to 50 ms. Sampled allocation stacks
+identified repeated full diagnostic JSON projection on the UI feedback timer,
+plus a typed snapshot deserialization that the native-wire path discarded.
+These runtime observations are separate from physical display evidence.
+
+Control feedback now captures the immutable snapshot and defers complete,
+redacted observation projection until it is actually read or serialized. Record
+copies share a thread-safe single evaluation; replacing or clearing the source
+snapshot cannot retain an older observation. The native wire mapper no longer
+first parses a typed stub snapshot. Typed projection borrows the parsed response
+only during its synchronous projection, omitting diagnostic fields before
+copying; the original raw observation remains available. Egress projection
+applies the existing field policy and recursive redaction in one pass. Unknown
+fields and secret-name filtering retain their prior behavior.
+
+Regressions require low allocation when ordinary feedback does not request the
+large observation, exact diagnostic facts and redaction when HTTP does request
+it, and preservation of raw diagnostic payloads omitted by the typed view.
+These tests cannot qualify display delivery. Fresh simultaneous local recording,
+registered OS-camera pixels, eight actual live remotes, physical monitor timing
+and installed desktop-shortcut acceptance remain release gates.
+
+### Presentation ownership after the controlled pause experiment
+
+Reducing control-plane allocation did not remove the runtime dependency: a
+fresh 1080p recording/camera comparison still observed a 52 ms all-managed
+pause. A compiled WinUI experiment deliberately paused all managed render
+control workers for 750 ms while the independent GPU producer continued.
+Both monitor aliases stopped. This proves an ownership defect independently
+of attributing any individual production delay to garbage collection.
+
+Persistent monitor hosts now lease their device, immediate context, chain,
+back buffer and duplicated frame-credit handle to a native presentation owner.
+There is one native worker per immediate context, one keyed-mutex ingest per
+shared handle, and a private latest GPU texture shared by aliases. The worker
+releases the producer key before presentation. UI and managed workers configure
+leases and read bounded observations; neither drives steady-state GPU delivery.
+Retirement queues resource release to the native owner without a UI join.
+Suspension, handle replacement, chain revision and device failure retain their
+existing managed lifecycle boundaries. No managed callback crosses the ABI.
+
+The same compiled pause experiment now observes 46 inspector and 45 Preview
+commits in 750 ms, with actual changing-pixel and alias checks passing. Native
+tests also exercise no-control-call progress, suspension/resume, alias retirement
+and cross-device rejection. The offscreen/compiled probes explicitly report
+physical display delivery as unverified; accepted Present calls cannot qualify
+scanout. The production package requires corevideo-monitor-presenter.dll, and
+the package validator rejects its omission. A missing DLL retains the legacy
+managed fallback and logs it as unqualified.
+
+Native observations also count accepted-commit intervals over 25, 33 and 50 ms.
+Qualification compares cumulative endpoint deltas inside the measured interval,
+so a near-60 average cannot hide occasional long gaps. Missing counter fields
+are unknown evidence. These counters do not establish physical scanout.

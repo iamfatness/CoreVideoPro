@@ -1,6 +1,7 @@
 #include "core/FrameAllocation.h"
 #include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineClient.h"
+#include "modules/ZoomIsoReadProfile.h"
 
 #include "rpc/Json.h"
 
@@ -8,6 +9,7 @@
 #define NOMINMAX
 #endif
 #include "engine-ipc.h"
+#include "iso-video-ring.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,6 +25,52 @@
 #endif
 
 namespace corevideo::modules {
+std::size_t zoomEngineIsoVideoRingByteSize() { return zoom_iso::bytes; }
+std::size_t readZoomEngineIsoVideoRing(const void* view, std::size_t size,
+    std::uint32_t epoch, std::uint32_t& next, const std::string& uuid,
+    std::uint32_t participantId, bool thumbnail, std::vector<ZoomIsoVideoArrival>& out,
+    ZoomIsoRingReadEvidence* evidence) {
+  iso_profile::IsoReadScope isoRead;
+  if (!view || size < zoom_iso::bytes || !epoch) return 0;
+  const auto& header = *static_cast<const zoom_iso::Header*>(view);
+  if (zoom_iso::load(header.epoch) != epoch || header.magicValue != zoom_iso::magic ||
+      header.version != 1 || header.slotCount != zoom_iso::slots) return 0;
+  const auto written = zoom_iso::load(header.written);
+  if (written < next || written >= UINT32_MAX / 2) return 0;
+  size_t lost = 0;
+  if (evidence) evidence->maximumBacklog = (std::max)(evidence->maximumBacklog, written - next);
+  if (written - next > zoom_iso::slots) {
+    const auto overwritten = written - next - zoom_iso::slots;
+    lost += overwritten;
+    if (evidence) evidence->overwritten += overwritten;
+    next = written - zoom_iso::slots;
+  }
+  for (; next < written; ++next) {
+    const auto* slot = zoom_iso::slot(view, next);
+    const auto expected = next * 2 + 2;
+    if (zoom_iso::load(slot->publication) != expected) {
+      ++lost;
+      if (evidence) ++evidence->publicationChanged;
+      continue;
+    }
+    const auto captured = slot->captured100ns;
+    auto frame = readZoomEngineI420FrameSnapshot(&slot->frame,
+        zoom_iso::stride - offsetof(zoom_iso::Slot, frame), uuid, participantId, 640, 360,
+        thumbnail && next + 1 == written);
+    if (zoom_iso::load(slot->publication) != expected || zoom_iso::load(header.epoch) != epoch) {
+      ++lost;
+      if (evidence) ++evidence->publicationChanged;
+      continue;
+    }
+    if (!frame || captured <= 0) {
+      ++lost;
+      if (evidence) ++evidence->invalidPayload;
+      continue;
+    }
+    out.push_back({std::move(*frame), captured});
+  }
+  return lost;
+}
 namespace {
 
 using corevideo::rpc::Json;
@@ -316,11 +364,17 @@ std::optional<ZoomEngineRgbaFrame> readZoomEngineI420FrameSnapshot(
   const std::size_t planeBytes = yLength + (yLength / 4) * 2;
   static core::FrameAllocationFailures allocationFailures("zoom-shm-read");
   std::vector<std::uint8_t> planes;
-  if (!core::tryResizeFrameBuffer(planes, planeBytes)) {
+  iso_profile::Scope allocation(iso_profile::sourceLabel(participantId), iso_profile::Allocate, planeBytes, before.sequence);
+  const auto allocated = core::tryResizeFrameBuffer(planes, planeBytes);
+  allocation.finish();
+  if (!allocated) {
     allocationFailures.note(planeBytes);
     return std::nullopt;  // #728: dropped like a torn read; the caller retries next tick
   }
-  std::memcpy(planes.data(), bytes + sizeof(ShmFrameHeader), planeBytes);
+  {
+    iso_profile::Scope copying(iso_profile::sourceLabel(participantId), iso_profile::Copy, planeBytes, before.sequence);
+    std::memcpy(planes.data(), bytes + sizeof(ShmFrameHeader), planeBytes);
+  }
 
   ShmFrameHeader afterCopy{};
   std::memcpy(&afterCopy, sharedMemory, sizeof(afterCopy));

@@ -40,13 +40,15 @@ TEST(DeliveryTrace, CompletedExportPreservesEveryAcceptedIdentityAndClock) {
   for (int i = 0; i < 1500; ++i) {
     DeliveryTraceEvent event; event.programSequence = i; event.sourceEpoch = 7;
     event.sourceFrameId = i * 2; event.sourceObservation100ns = 123 + i;
-    event.layoutTag = 12; event.stage = DeliveryStage::ProgramDelivered;
+    event.layoutTag = 12; event.stage = DeliveryStage::ProgramGpuReady;
+    event.programGpuReadyNs = 1000000000LL + i; event.programDeadlineNs = 1001000000LL + i;
     ASSERT_TRUE(capture.trace.record(event));
   }
   ASSERT_TRUE(capture.trace.close());
   const auto header = readHeader(capture.path);
   EXPECT_EQ(header.complete, 1); EXPECT_EQ(header.exported, 1500); EXPECT_EQ(header.lost, 0);
   EXPECT_GT(header.clockFrequency, 0); EXPECT_GT(header.sessionEpoch, 0);
+  EXPECT_EQ(header.version, 2u); EXPECT_EQ(header.eventBytes, 88u);
   EXPECT_EQ(std::filesystem::file_size(capture.path), sizeof(header) + 1500 * sizeof(DeliveryTraceEvent));
   std::ifstream input(capture.path, std::ios::binary); input.seekg(sizeof(header));
   for (int i = 0; i < 1500; ++i) {
@@ -55,6 +57,7 @@ TEST(DeliveryTrace, CompletedExportPreservesEveryAcceptedIdentityAndClock) {
     EXPECT_EQ(event.sourceObservation100ns, 123 + i); EXPECT_EQ(event.sourceEpoch, 7);
     EXPECT_EQ(event.sessionEpoch, header.sessionEpoch); EXPECT_GE(event.timestamp, header.started);
     EXPECT_LE(event.timestamp, header.ended); EXPECT_EQ(event.layoutTag, 12);
+    EXPECT_EQ(event.programGpuReadyNs, 1000000000LL + i); EXPECT_EQ(event.programDeadlineNs, 1001000000LL + i);
   }
 }
 TEST(DeliveryTrace, ConcurrentWritersNeverTearAndAccountForEveryRefusal) {
@@ -222,6 +225,26 @@ TEST(DeliveryTrace, ProgramOnlyRetainsAllProgramBoundariesWithoutCallingSourceEx
   const auto& stages = snapshot.get("aggregate")->get("stages")->asArray();
   for (std::size_t index = 0; index < stages.size(); ++index)
     EXPECT_EQ(stages[index].get("observed")->asBool(), index >= 2 && index <= 5);
+  std::error_code error; std::filesystem::remove(path, error);
+}
+
+TEST(DeliveryTrace, ProgramAndIsoSelectionPreservesIsoIdentityAndFiltersOnlyUnrequestedStages) {
+  const auto path = newPath();
+  DeliveryTraceCapture trace(path.string(), {}, DeliveryTraceSelection::ProgramAndIso);
+  for (int stage = 1; stage <= 11; ++stage) {
+    DeliveryTraceEvent event; event.stage = static_cast<DeliveryStage>(stage);
+    event.sourceTag = 123; event.sourceEpoch = 456; event.sourceFrameId = 789;
+    EXPECT_EQ(trace.record(event), (stage >= 3 && stage <= 6) || stage == 11);
+  }
+  ASSERT_TRUE(trace.close());
+  const auto header = readHeader(path);
+  EXPECT_EQ(header.exported, 5u); EXPECT_EQ(header.lost, 0u);
+  EXPECT_EQ(trace.snapshot().getString("stageSelection"), "program-and-iso");
+  std::ifstream input(path, std::ios::binary); input.seekg(sizeof(header));
+  DeliveryTraceEvent last;
+  for (int i = 0; i < 5; ++i) input.read(reinterpret_cast<char*>(&last), sizeof(last));
+  EXPECT_EQ(last.stage, DeliveryStage::IsoArrivalOffered);
+  EXPECT_EQ(last.sourceTag, 123u); EXPECT_EQ(last.sourceEpoch, 456u); EXPECT_EQ(last.sourceFrameId, 789);
   std::error_code error; std::filesystem::remove(path, error);
 }
 

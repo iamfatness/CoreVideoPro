@@ -295,7 +295,22 @@ struct CpuSourcePreparation::Impl {
     {
       std::lock_guard<std::mutex> lock(mutex);
       const auto released = [](const auto& source) { return source->demand->stopped.load() && !source->pool && !source->building; };
-      retiring.erase(std::remove_if(retiring.begin(), retiring.end(), released), retiring.end());
+      retiring.erase(std::remove_if(retiring.begin(), retiring.end(), [&](const auto& source) {
+        if (released(source)) return true;
+        // Unselected format generations may never have allocated a pool or
+        // received a demand timestamp. Once their weak CPU descriptors expire,
+        // no caller can select them again; waiting for stopped/idle would keep
+        // these empty generations charged forever. Live descriptors, resource
+        // construction, submitted writes and GPU image leases retain the same
+        // bounded retirement/fence rules.
+        if (source->pool || source->building || source->pending ||
+            std::any_of(source->queued.begin(), source->queued.end(),
+                [](const auto& token) { return !token.expired(); }) ||
+            std::any_of(source->ready.begin(), source->ready.end(),
+                [](const auto& ready) { return ready.image || !ready.token.expired(); })) return false;
+        source->demand->stopped.store(true);
+        return true;
+      }), retiring.end());
       for (auto it = sources.begin(); it != sources.end();) it = released(it->second) ? sources.erase(it) : std::next(it);
       measured.sources = sources.size();
     }

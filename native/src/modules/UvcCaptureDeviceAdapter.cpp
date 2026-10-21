@@ -4,6 +4,7 @@
 #include "modules/PeriodicDeviceDiscovery.h"
 #include "modules/UvcCaptureSupport.h"
 #include "modules/I420CaptureArrival.h"
+#include "modules/UvcIsoArrivalQueue.h"
 
 #include <memory>
 #include <cstdlib>
@@ -34,6 +35,7 @@
 #include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include "modules/UvcAsyncRead.h"
 
 #include <algorithm>
 #include <atomic>
@@ -150,7 +152,7 @@ class UvcCaptureSession {
         deviceName_(std::move(deviceName)),
         symbolicLink_(std::move(symbolicLink)),
         noFirstFrameTimeoutMs_(noFirstFrameTimeoutMs),
-        arrival_(std::move(sourceId), std::move(preparation)) {
+        arrival_(std::move(sourceId), std::move(preparation), qaIsoCounterEnabled()) {
     thread_ = std::thread([this] { run(); });
   }
 
@@ -160,6 +162,10 @@ class UvcCaptureSession {
       thread_.join();
     }
   }
+
+  void requireCpu(bool demanded) { isoArrivals_.require(demanded); }
+  std::vector<VideoFrame> takeCpuFrames() { return isoArrivals_.take(); }
+  UvcIsoArrivalQueue::Stats isoArrivalStats() const { return isoArrivals_.stats(); }
 
   struct Snapshot {
     VideoFrame arrival;
@@ -260,18 +266,24 @@ class UvcCaptureSession {
       if (FAILED(hr) || !source) {
         fail("Camera could not be opened (in use by another app, or unplugged). " + describeHr(hr));
       } else {
+        ComPtrLite<UvcAsyncRead> callback;
+        *callback.put() = new UvcAsyncRead();
         ComPtrLite<IMFAttributes> readerAttributes;
-        if (SUCCEEDED(MFCreateAttributes(readerAttributes.put(), 2))) {
+        hr = MFCreateAttributes(readerAttributes.put(), 3);
+        if (SUCCEEDED(hr)) {
           // Advanced video processing gives us MJPG decode + YUY2->NV12
           // conversion inside Media Foundation, on this capture thread.
           readerAttributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
+          hr = readerAttributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, callback.get());
         }
-        hr = MFCreateSourceReaderFromMediaSource(source.get(), readerAttributes.get(), reader.put());
+        if (SUCCEEDED(hr)) hr = MFCreateSourceReaderFromMediaSource(source.get(), readerAttributes.get(), reader.put());
         if (FAILED(hr) || !reader) {
           fail("Source reader creation failed. " + describeHr(hr));
         } else if (negotiate(reader.get())) {
-          readLoop(reader.get());
+          readLoop(reader.get(), *callback.get());
         }
+        callback->cancel();
+        if (reader) reader->Flush(MF_SOURCE_READER_ALL_STREAMS);
       }
       // COM objects release here, before MFShutdown.
     }
@@ -389,7 +401,7 @@ class UvcCaptureSession {
     return true;
   }
 
-  void readLoop(IMFSourceReader* reader) {
+  void readLoop(IMFSourceReader* reader, UvcAsyncRead& callback) {
     const auto stream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
     std::vector<uint8_t> converted;
     bool loggedFirstFrame = false;
@@ -398,8 +410,7 @@ class UvcCaptureSession {
     // no signal) can now deliver zero samples forever. Give it a bounded window
     // to produce its first frame; past that, fail LOUD and release the device
     // so the shell can fall back to the WinUI MediaCapture bridge. (Fires on any
-    // iteration where MF returns — a stream tick / gap / any ReadSample return —
-    // which is the shape a no-signal capture card presents.)
+    // bounded callback wait, even when the device never returns a stream tick.)
     const auto streamStart = std::chrono::steady_clock::now();
 
     while (!stop_.load()) {
@@ -415,11 +426,12 @@ class UvcCaptureSession {
           return;  // ends the read loop; MF source/reader release below → device freed.
         }
       }
-      DWORD actualStream = 0;
       DWORD flags = 0;
       LONGLONG timestamp = 0;
       ComPtrLite<IMFSample> sample;
-      const HRESULT hr = reader->ReadSample(stream, 0, &actualStream, &flags, &timestamp, sample.put());
+      const HRESULT hr = callback.take([&] { return reader->ReadSample(stream, 0, nullptr, nullptr, nullptr, nullptr); },
+          std::chrono::milliseconds(50), &flags, &timestamp, sample.put());
+      if (stop_.load()) return;
       if (FAILED(hr)) {
         fail(hr == MF_E_VIDEO_RECORDING_DEVICE_INVALIDATED
                  ? std::string("Camera was removed or reset (device invalidated).")
@@ -507,8 +519,12 @@ class UvcCaptureSession {
       converted = std::vector<uint8_t>();
       // Offer once at the actual capture arrival, outside the snapshot lock.
       // The render/ISO consumers retain the authoritative CPU representation.
-      auto arrival = arrival_.publish(frame, width, height, fullRange_, bt601_);
+      auto arrival = arrival_.publishMutable(std::move(frame), width, height, fullRange_, bt601_);
       if (!arrival.hasContent()) continue;
+      isoArrivals_.offer(arrival);
+      if (qaIsoCounterEnabled() && isoArrivals_.stats().demanded)
+        traceQaIsoArrival(arrival.participantId, arrival.sourceEpoch, arrival.frameId,
+            arrival.captureTimestamp100ns, arrival.width, arrival.height);
       {
         std::lock_guard<std::mutex> lock(mutex_);
         latestArrival_ = std::move(arrival);
@@ -526,6 +542,7 @@ class UvcCaptureSession {
   const std::wstring symbolicLink_;
   const int64_t noFirstFrameTimeoutMs_;
   I420CaptureArrival arrival_;
+  UvcIsoArrivalQueue isoArrivals_;
   std::thread thread_;
   std::atomic<bool> stop_{false};
 
@@ -625,6 +642,8 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       entry.session.reset();
       entry.session = std::make_unique<UvcCaptureSession>(entry.info.id, entry.info.name, entry.symbolicLink,
           "capture:" + (outputSourceId.empty() ? entry.info.id : outputSourceId), preparation_);
+      entry.session->requireCpu(sourceNeedsCpuVideo(demands_,
+          "capture:" + (outputSourceId.empty() ? entry.info.id : outputSourceId)));
       // Emit frames keyed by the shell's routing id when it supplied one (WinRT vs
       // Media Foundation stable-id reconciliation), else the adapter's own id.
       entry.outputSourceId = outputSourceId;
@@ -645,10 +664,8 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       if (!matchesDeviceId(entry, deviceId)) {
         continue;
       }
-      // Stop the reader (joins its pull thread in ~UvcCaptureSession). Safe: the
-      // no-first-frame watchdog guarantees a starved reader has already exited
-      // its ReadSample loop, and a live reader returns from ReadSample on its
-      // next frame, so the join never blocks on a wedged device.
+      // The callback wait is bounded even when a device sends no samples/ticks;
+      // retiring it fences late replies before the MF reader is flushed/released.
       entry.session.reset();
       entry.outputSourceId.clear();
       entry.info.connectionState = "detected";
@@ -659,6 +676,23 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
       break;
     }
     return snapshotLocked();
+  }
+
+  void setVideoConsumerDemand(const std::vector<SourceVideoDemand>& demands) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    demands_ = demands;
+    for (auto& entry : devices_) if (entry.session)
+      entry.session->requireCpu(sourceNeedsCpuVideo(demands_, "capture:" +
+          (entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId)));
+  }
+  std::vector<VideoFrame> takeCpuVideoFrames() override {
+    std::vector<VideoFrame> result;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& entry : devices_) if (entry.session) {
+      auto batch = entry.session->takeCpuFrames();
+      result.insert(result.end(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
+    }
+    return result;
   }
 
   void captureVideoTick(int64_t timestampMs) override {
@@ -722,6 +756,15 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
     result.reserve(devices_.size());
     for (const auto& entry : devices_) {
       result.push_back(entry.info);
+      if (entry.session) {
+        auto& info = result.back();
+        const auto arrivals = entry.session->isoArrivalStats();
+        info.isoCpuArrivals = arrivals;
+        info.isoCpuArrivals->sourceId = "capture:" + (entry.outputSourceId.empty() ? entry.info.id : entry.outputSourceId);
+        info.droppedFrames += static_cast<int64_t>(arrivals.overflowed);
+        info.decodedFrames = entry.session->snapshot().arrival.frameId;
+        if (arrivals.overflowed) info.warning = "Camera ISO arrival queue overflowed; recording lost source frames.";
+      }
     }
     return result;
   }
@@ -852,6 +895,7 @@ class UvcCaptureDeviceAdapter final : public ICaptureDevice {
 
   mutable std::mutex mutex_;
   std::shared_ptr<I420SourcePreparation> preparation_;
+  std::vector<SourceVideoDemand> demands_;
   mutable std::vector<DeviceEntry> devices_;
   mutable PeriodicDeviceDiscovery<std::vector<DeviceEntry>> discovery_;
 };

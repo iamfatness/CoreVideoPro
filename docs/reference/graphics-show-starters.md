@@ -10,6 +10,9 @@ remain visible before the core connects; they are not a shell production rendere
 
 ## Operator workflow
 
+The [guest-text and automation workflow](graphics-operator-workflow.md) explains
+the Sources handoff, default/custom/hidden text choices and guarded rule editing.
+
 Choose **Try this template** to open a populated private sample. Select one of
 the four sample graphics at the left, change its Content or Style, and see the
 native authoring preview. Changes are retained while switching samples. The

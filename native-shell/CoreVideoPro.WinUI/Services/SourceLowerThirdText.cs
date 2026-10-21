@@ -1,7 +1,19 @@
 namespace CoreVideoPro.WinUI.Services;
 
+public enum SecondaryLineMode { SourceDefault, Custom, Hidden }
+
 public static class SourceLowerThirdText
 {
+    public static SecondaryLineMode Mode(bool usesDefault, string text) => usesDefault
+        ? SecondaryLineMode.SourceDefault : string.IsNullOrWhiteSpace(text) ? SecondaryLineMode.Hidden : SecondaryLineMode.Custom;
+
+    public static string? Value(SecondaryLineMode mode, string custom) => mode switch
+    {
+        SecondaryLineMode.SourceDefault => null,
+        SecondaryLineMode.Hidden => "",
+        _ => custom.Trim()
+    };
+
     // Missing = source default; an explicitly saved empty string = hide the
     // entire secondary line, including any legacy organization/role fallback.
     public static (string Title, string Org) Resolve(IReadOnlyDictionary<string, string> overrides,

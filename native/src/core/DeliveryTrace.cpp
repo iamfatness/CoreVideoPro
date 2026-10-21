@@ -39,7 +39,7 @@ std::int64_t deliveryTraceNow() noexcept {
 }
 struct DeliveryTraceCapture::State {
   struct Slot { std::atomic<std::uint64_t> sequence{0}; DeliveryTraceEvent event; };
-  static_assert(sizeof(Slot) == 80);
+  static_assert(sizeof(Slot) == 96);
   static constexpr std::size_t capacity = kStorageBytes / sizeof(Slot);
   static constexpr std::uint64_t maxExportBytes = 256 * 1024 * 1024;
   std::unique_ptr<Slot[]> slots = std::make_unique<Slot[]>(capacity);
@@ -153,8 +153,9 @@ DeliveryTraceCapture::~DeliveryTraceCapture() {
 bool DeliveryTraceCapture::record(DeliveryTraceEvent event) noexcept {
   auto& state = *state_;
   if (!state.accepting.load()) return false;
-  if (state.selection == DeliveryTraceSelection::ProgramOnly &&
-      (event.stage < DeliveryStage::ProgramSubmitted || event.stage > DeliveryStage::ProgramMiss)) {
+  const bool program = event.stage >= DeliveryStage::ProgramSubmitted && event.stage <= DeliveryStage::ProgramMiss;
+  if ((state.selection == DeliveryTraceSelection::ProgramOnly && !program) ||
+      (state.selection == DeliveryTraceSelection::ProgramAndIso && !program && event.stage != DeliveryStage::IsoArrivalOffered)) {
     ++state.filtered; return false;
   }
   ++state.writers;
@@ -192,8 +193,11 @@ bool DeliveryTraceCapture::close() {
 rpc::Json DeliveryTraceCapture::snapshot() const {
   return rpc::Json::Object{{"schemaVersion", "delivery-evidence-v1"}, {"enabled", true},
     {"sessionEpoch", std::to_string(state_->header.sessionEpoch)},
-    {"stageSelection", state_->selection == DeliveryTraceSelection::ProgramOnly ? "program-only" : "all"},
+    {"stageSelection", state_->selection == DeliveryTraceSelection::ProgramOnly ? "program-only" :
+        state_->selection == DeliveryTraceSelection::ProgramAndIso ? "program-and-iso" : "all"},
     {"intentionallyFilteredEvents", static_cast<double>(state_->filtered.load())},
+    {"isoArrivalEvidence", "file-only QA identities; not included in ten boundary aggregates"},
+    {"binaryVersion", 2}, {"programDeadlineClock", "steady-clock-nanoseconds"},
     {"accepting", state_->accepting.load()}, {"captureComplete", state_->completed.load()},
 #if defined(_WIN32)
     {"stopEvent", state_->stopEventName},
@@ -216,16 +220,19 @@ rpc::Json DeliveryTraceCapture::snapshot() const {
     {"cameraReaderObserved", false}, {"displayObserved", false}, {"sourceAcquisitionObserved", false},
     {"boundaries", state_->selection == DeliveryTraceSelection::ProgramOnly
         ? "program-submitted/program-gpu-ready/program-delivered/program-miss"
-        : "source-gpu-ready/source-requested/source-draw-submitted/program-submitted/program-gpu-ready/program-delivered"}};
+        : state_->selection == DeliveryTraceSelection::ProgramAndIso
+            ? "program-submitted/program-gpu-ready/program-delivered/program-miss/iso-arrival-offered"
+            : "source-gpu-ready/source-requested/source-draw-submitted/program-submitted/program-gpu-ready/program-delivered/iso-arrival-offered"}};
 }
 std::unique_ptr<DeliveryTraceCapture> startDeliveryTraceFromEnvironment() {
   const char* path = std::getenv("COREVIDEO_DELIVERY_TRACE_PATH");
   if (!path || !*path) return {};
   const char* selected = std::getenv("COREVIDEO_DELIVERY_TRACE_STAGES");
-  if (selected && *selected && std::string_view(selected) != "all" && std::string_view(selected) != "program-only")
-    throw std::runtime_error("trace stages must be all or program-only");
+  if (selected && *selected && std::string_view(selected) != "all" && std::string_view(selected) != "program-only" && std::string_view(selected) != "program-and-iso")
+    throw std::runtime_error("trace stages must be all, program-only or program-and-iso");
   const auto selection = selected && std::string_view(selected) == "program-only"
-      ? DeliveryTraceSelection::ProgramOnly : DeliveryTraceSelection::All;
+      ? DeliveryTraceSelection::ProgramOnly : selected && std::string_view(selected) == "program-and-iso"
+          ? DeliveryTraceSelection::ProgramAndIso : DeliveryTraceSelection::All;
   auto capture = std::make_unique<DeliveryTraceCapture>(path, std::function<void()>{}, selection);
   active.store(capture.get()); return capture;
 }

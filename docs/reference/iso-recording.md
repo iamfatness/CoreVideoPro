@@ -1,5 +1,62 @@
 # ISO recording
 
+## Operator readouts (#987)
+
+Explicit ISO re-arm refreshes eligibility-based readouts even when the saved
+selection is unchanged after Unassign. Saving preferences remains change-only.
+Zoom capture preflight follows the engine's `rawMediaActive` fact from the
+spine response through the admitted bridge read model. Ordinary same-meeting
+polls that omit the fact retain it; leave, reconnect and core restart must not
+carry the previous meeting's value. Never replace that observation with Engine
+toggle intent or clear a real capture-off warning merely because a writer starts.
+
+## Native UVC arrival branch (#984)
+
+Native camera ISO video uses `UvcIsoArrivalQueue` at the MF decoded-arrival
+boundary, before `latestArrival_` is replaced. The existing
+`setVideoConsumerDemand` / `takeCpuVideoFrames` contract enables and drains
+this ref-only branch. Program and monitor polling still selects the latest
+picture; its polling count is not the camera's arrival count. No new pixel
+copy, conversion, encoder call or core callback runs on capture arrival.
+
+The branch holds at most four existing I420 references and 32 MiB per camera.
+It releases queued references immediately when CPU demand ends. Oldest-frame
+evictions and oversized-frame refusals increment `overflowed` and the device's
+`droppedFrames`; they are never a successful recording qualification.
+`captureDevices[].isoCpuArrivals` identifies the actual routing source and
+reports coherent observed/accepted/drained/overflowed/released/pending/byte
+counts. Observed arrivals continue while demand is off; accepted counts only
+demanded admissions. A fresh recording interval must show active demand, equal
+observed/admitted deltas, no overflow or release, and downstream file evidence.
+Snapshots alone remain insufficient to prove every output deadline or pixels.
+
+The October 20 d550a5d run exposed 1,668 camera arrivals lost before this branch
+existed, despite zero ISO writer drops. Program frame-counter continuity did
+not prove source-content continuity. Keep that failed source-fidelity result;
+only a fresh installed workload can qualify the correction. Zoom's separate
+shared-memory latest-frame sampling is not changed by this UVC fix.
+
+## Zoom ISO arrivals (#989)
+
+The Windows/Linux SDK helper accepts an ISO-only `iso_video` demand carrying a
+nonzero request epoch. At most eight sources have an additive four-slot I420
+shared-memory ring, sized once for 1920×1088. Ordinary latest-picture mappings
+and Program/multiview selection keep their existing ABI and behavior. The
+separate macOS helper retains its existing path and is not qualified by this fix.
+
+The ingest owner drains the requested epoch into a bounded ref-only CPU queue,
+separately from its latest-picture job and before ISO encoding. A missing ring
+cannot freeze Program and cannot silently fall back to sampled pictures for ISO.
+Demand re-arm fences old epochs; per-slot publication checks reject overwritten
+or unfinished copies. Ring loss, queue overflow and release remain observable.
+Empty ISO arrival batches must not replay an older render-picture identity.
+
+`zoomSubscriptionChurn.sources[].isoRing` reports observed epoch, actual helper
+write count, drained cursor and loss. Its `isoCpuArrivals` reports the subsequent
+admission queue. Qualification checks both boundaries and rejects missing facts,
+epoch changes, cursor/admission disagreement, loss, overflow or unsupported
+backlog. Source/recording counters alone cannot establish display deadlines.
+
 ## Windows recording queue ownership (#814, October 8, 2026)
 
 When wrapped by `AsyncEncoderSink`, Media Foundation gives Program its own

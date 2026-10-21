@@ -14,6 +14,11 @@ visible in the action bar.
 
 ## Assigning a lower third
 
+The Content inspector explains whether Studio will use Program guest text from
+Sources or fixed text from the graphic. Its **Edit guest names in Sources** action
+opens the existing Sources page; it neither assigns nor shows a graphic. See the
+[operator workflow contract](graphics-operator-workflow.md).
+
 Select a lower-third cue, edit its private draft, then choose **Use in Studio**.
 This saves an independent copy of the fields, appearance, placement, motion and
 exact template/image pins. Browsing, deleting or editing the original cue does

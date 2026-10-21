@@ -1,4 +1,5 @@
 // Read-only adapter for captured native sessionState snapshots. Never calls an API.
+import { assessProgramSourceAdmissions } from './program-source-admission-verdict.mjs';
 const count = x => Number.isSafeInteger(x) && x >= 0;
 const age = x => typeof x === 'number' && Number.isFinite(x) && x >= 0;
 export const DEFAULT_RUNTIME_POLICY = Object.freeze({ staleWorkerMs: 250, encoderQueueAgeMs: 1000, operationAgeMs: 5000, finalizeAgeMs: 10000 });
@@ -38,6 +39,9 @@ export function assessRuntimeSnapshots(capture) {
     }
     previous = row;
     const s = row.snapshot ?? {}, rt = s.realtimeEvidence;
+    const sourceImages = assessProgramSourceAdmissions(s, row.expectedProgramSourceIds ?? capture.expectedProgramSourceIds);
+    for (const issue of sourceImages.issues) add(index, 'programSourceAdmission', issue.reason, { sourceId: issue.sourceId, state: issue.state });
+    for (const absent of sourceImages.missingEvidence) missing.push(`${index}:${absent}`);
     if (rt?.metricVersion !== 'realtime-worker-evidence-v1') missing.push(`${index}: realtimeEvidence version`);
     for (const name of ['render', 'audio', 'videoOutput']) {
       const w = rt?.[name];

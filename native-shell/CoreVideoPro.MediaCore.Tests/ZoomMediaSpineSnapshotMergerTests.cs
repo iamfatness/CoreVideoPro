@@ -7,6 +7,46 @@ namespace CoreVideoPro.MediaCore.Tests;
 public sealed class ZoomMediaSpineSnapshotMergerTests
 {
     [Fact]
+    public void EngineCaptureFactsSurviveOrdinaryPollsAndFollowStartStopWithoutRosterChanges()
+    {
+        NativeMediaCoreStateSnapshot? state = null;
+        foreach (var active in new[] { false, true, false, true })
+        {
+            using var response = System.Text.Json.JsonDocument.Parse(
+                "{\"ok\":true,\"type\":\"zoom-media-spine-sync\",\"spineSnapshot\":{" +
+                "\"meetingState\":\"in-meeting\",\"rosterEpoch\":\"1:1:test\",\"rosterRevision\":2," +
+                "\"rawMediaActive\":" + (active ? "true" : "false") + "}}");
+            var fact = CoreProtocolParser.TryParseZoomMediaSpineSnapshot(response)!;
+            state = ZoomMediaSpineSnapshotMerger.Merge(state, fact);
+            Assert.Equal(active, state.RawMediaActive);
+            var poll = new NativeMediaCoreStateSnapshot
+            {
+                MeetingState = "in_meeting", RosterEpoch = "1:1:test", RosterRevision = 2
+            };
+            state = ZoomMediaSpineSnapshotMerger.CarrySubscriptions(state, poll);
+            Assert.Equal(active, state.RawMediaActive);
+            Assert.Equal(!active, IsoCapturePreflight.Describe(true, 7, state.RawMediaActive) is not null);
+        }
+        var rejoined = new NativeMediaCoreStateSnapshot
+        {
+            MeetingState = "in_meeting", RosterEpoch = "1:2:test", RosterRevision = 1
+        };
+        Assert.Null(ZoomMediaSpineSnapshotMerger.CarrySubscriptions(state, rejoined).RawMediaActive);
+        Assert.Null(ZoomMediaSpineSnapshotMerger.CarrySubscriptions(state,
+            new NativeMediaCoreStateSnapshot { MeetingState = "idle", RosterEpoch = "1:1:test", RosterRevision = 3 }).RawMediaActive);
+        var confirmedOff = state! with { RawMediaActive = false, RosterRevision = 3 };
+        var staleOn = state with { RawMediaActive = true, RosterRevision = 2 };
+        Assert.False(ZoomMediaSpineSnapshotMerger.CarrySubscriptions(confirmedOff, staleOn).RawMediaActive);
+        Assert.Same(confirmedOff, ZoomMediaSpineSnapshotMerger.Merge(confirmedOff,
+            new ZoomMediaSpineNativeSnapshot
+            {
+                MeetingState = "in-meeting", RosterEpoch = "1:1:test", RosterRevision = 2, RawMediaActive = true
+            }));
+        Assert.Null(ZoomMediaSpineSnapshotMerger.Merge(null,
+            new ZoomMediaSpineNativeSnapshot { MeetingState = "in-meeting" }).RawMediaActive);
+    }
+
+    [Fact]
     public void MergeNormalizesMeetingStateAndParticipants()
     {
         var spine = new ZoomMediaSpineNativeSnapshot

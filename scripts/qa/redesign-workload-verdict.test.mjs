@@ -3,12 +3,25 @@ import assert from 'node:assert/strict';
 import { judgeRedesignWorkload } from './redesign-workload-verdict.mjs';
 
 function completeEvidence() {
-  const requiredInputIds = Array.from({ length: 10 }, (_, i) => 'input-' + i);
-  const requiredIsoIds = requiredInputIds.slice(0, 8);
+  const requiredInputIds = [...Array.from({ length: 8 }, (_, i) => 'zoom:' + (1000 + i)), 'capture:camera', 'capture:screen:2'];
+  const requiredIsoIds = [...requiredInputIds.slice(0, 7), 'capture:camera'];
   const startTime = '2026-10-16T12:00:00Z', endTime = '2026-10-16T12:30:00Z';
   const enabledOutputs = ['recording:program', 'virtual-camera:program', ...requiredIsoIds.map(id => 'recording:iso:' + id)];
   const requiredPaths = ['cpu-submission', 'program-gpu', 'program-presentation', 'preview-presentation', 'multiview-presentation', ...enabledOutputs];
+  const intervalTicks = { start: '1000000', end: String(1000000 + 1800 * 10000000), frequency: 10000000 };
+  const perSample = id => id.startsWith('zoom:') ? 450 : 600;
+  const isoCount = id => perSample(id) * 180 + 1;
+  const pixelProof = sourceId => ({ schema: 'iso-pixel-arrival-verdict-v1', sourceId,
+    path: 'fixture/' + sourceId + '.mp4', trace: 'fixture/arrival-trace.bin',
+    startTicks: intervalTicks.start, endTicks: intervalTicks.end,
+    isoPixelArrivalFidelityPassed: true, decoderComplete: true, decoderErrors: '',
+    expectedSamples: isoCount(sourceId), recordedSamples: isoCount(sourceId),
+    invalid: 0, rangeViolations: 0, firstMismatchIndex: null,
+    coverage: { sourceEpoch: 1, durationSeconds: 1800 } });
   return { startTime, endTime, requiredInputIds, requiredIsoIds, monitorProbeVerdict: { functionalPassed: true },
+    qpcFrequency: intervalTicks.frequency,
+    isoFileEvidence: requiredIsoIds.map(sourceId => ({ sourceId, path: 'fixture/' + sourceId + '.mp4',
+      measurement: 'ffprobe-count-packets', width: 1920, height: 1080, packets: isoCount(sourceId), muxVideoFrameCount: isoCount(sourceId) })),
     candidateCameraSha256: 'a'.repeat(64),
     cameraInstallation: { moduleInspection: 'observed', loadedIdentityMatchesRegistration: true,
       registeredFileMatchesManifest: true, registeredFileSha256: 'a'.repeat(64) },
@@ -17,24 +30,109 @@ function completeEvidence() {
     recordingPixelVerdict: { recordedPixelContinuityPassed: true, identityRangeComplete: true,
       firstIdentity: 1, lastIdentity: 108001, samples: 108001 },
     cameraPixelCoverage: { complete: true, startTime, endTime },
-    samples: Array.from({ length: 181 }, (_, i) => ({ collectedAtMs: i * 10000, processGeneration: 'one',
+    samples: Array.from({ length: 181 }, (_, i) => ({ collectedAtMs: i * 10000, qpcTicks: String(1000000 + i * 100000000), processGeneration: 'one',
       displayState: { visible: true, minimized: false, desktopUnlocked: true }, snapshot: {
       outputProfile: { width: 1920, height: 1080, fps: 60 }, meetingState: 'in_meeting',
+      captureDevices: [{ isoCpuArrivals: { sourceId: 'capture:camera', demanded: true,
+        observed: i * 600 + 1, accepted: i * 600 + 1, drained: i * 600 + 1,
+        overflowed: 0, released: 0, pending: 0, bytes: 0 } }],
+      zoomSubscriptionChurn: { sources: requiredIsoIds.filter(id => id.startsWith('zoom:')).map(sourceId => ({
+        isoCpuArrivals: { sourceId, demanded: true, observed: i * perSample(sourceId) + 1, accepted: i * perSample(sourceId) + 1,
+          drained: i * perSample(sourceId) + 1, overflowed: 0, released: 0, pending: 0, bytes: 0 },
+        isoRing: { observed: true, epoch: 1, written: i * perSample(sourceId) + 1, next: i * perSample(sourceId) + 1, lost: 0 },
+      })) },
       realtimeEvidence: { audio: { audioLostSamples: 0, pacerReanchors: 0 }, monitorWorker: { inputs: { sources: requiredInputIds.map(sourceId => ({ sourceId, state: 'ready', frameId: i * 600 + 1 })) } } },
       recording: { active: true, lifecycle: { state: 'producing' },
-        streams: [{ kind: 'program', framesWritten: i * 600 + 1 }, ...requiredIsoIds.map(sourceId => ({ sourceId, framesWritten: i * 600 + 1, readiness: 'ready', droppedFrames: 0, droppedAudioPackets: 0 }))],
+        streams: [{ kind: 'program', framesWritten: i * 600 + 1 }, ...requiredIsoIds.map(sourceId => ({ sourceId, path: 'fixture/' + sourceId + '.mp4', framesWritten: i * perSample(sourceId) + 1, readiness: 'ready', droppedFrames: 0, droppedAudioPackets: 0 }))],
         proof: { programMissingFrames: 0, encoderQueueDroppedVideoFrames: 0, encoderQueueDroppedAudioPackets: 0 } },
       programBuffer: { underruns: 0 },
       virtualCamera: { enabled: true, status: 'live', framesPublished: i * 600 + 1, pendingFramesReplaced: 0, publicationExceptions: 0 },
     } })),
     framePerformanceReport: { startTime, endTime, soakPassed: true, errorMatches: [], performanceEvidence: {
-      metricVersion: 'anchored-deadline-v1', targetFps: 60, clock: 'monotonic', requiredPaths, enabledOutputs,
-      paths: requiredPaths.map(id => ({ id, measurement: 'completion-deadlines', errors: [],
+      metricVersion: 'anchored-deadline-v1', targetFps: 60, clock: 'monotonic', requiredPaths, enabledOutputs, intervalTicks,
+      paths: requiredPaths.map(id => id.startsWith('recording:iso:') ? ({ id, measurement: 'source-arrival-fidelity',
+        coverage: { complete: true, startTime, endTime }, proof: pixelProof(id.slice('recording:iso:'.length)) }) : ({ id, measurement: 'completion-deadlines', errors: [],
         coverage: { complete: true, startTime, endTime }, firstSlot: 1, lastSlot: 108000, expectedSlots: 108000,
         completedSlots: 108000, uniqueCompletedSlots: 108000, deadlineMisses: 0, skippedSlots: 0 })),
     } },
   };
 }
+
+test('ISO arrival fidelity requires decoded pictures over the exact workload clock interval', () => {
+  for (const change of [
+    path => { path.measurement = 'completion-deadlines'; },
+    path => { path.proof.isoPixelArrivalFidelityPassed = false; },
+    path => { path.proof.recordedSamples--; },
+    path => { path.proof.startTicks = '999999'; },
+    path => { path.proof.path = 'another-recording.mp4'; },
+  ]) {
+    const report = completeEvidence();
+    const path = report.framePerformanceReport.performanceEvidence.paths.find(path => path.id.startsWith('recording:iso:'));
+    change(path);
+    assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
+});
+
+test('seven Zoom feeds plus background media cannot qualify as eight remote feeds', () => {
+  const report = completeEvidence();
+  report.requiredInputIds[7] = 'background:media-show';
+  for (const row of report.samples) row.snapshot.realtimeEvidence.monitorWorker.inputs.sources[7].sourceId = 'background:media-show';
+  const result = judgeRedesignWorkload(report);
+  assert.equal(result.passed, false);
+  assert.ok(result.errors.some(error => error.includes('eight distinct Zoom')));
+});
+
+test('an unavailable declared eighth feed fails even when replacement background frames advance', () => {
+  const report = completeEvidence();
+  for (const row of report.samples) row.snapshot.realtimeEvidence.monitorWorker.inputs.sources[7].sourceId = 'background:media-show';
+  const result = judgeRedesignWorkload(report);
+  assert.equal(result.passed, false);
+  assert.ok(result.errors.some(error => error.includes('required input is not ready')));
+});
+
+test('1080p inputs and clean counters cannot conceal low-resolution or unmatched ISO files', () => {
+  for (const change of [
+    report => { delete report.isoFileEvidence; },
+    report => { report.isoFileEvidence[0].width = 320; report.isoFileEvidence[0].height = 180; },
+    report => { report.isoFileEvidence[0].packets--; },
+    report => { report.isoFileEvidence[0].path = 'another-run.mp4'; },
+  ]) {
+    const report = completeEvidence(); change(report);
+    assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
+});
+
+test('advancing outputs cannot hide sampled capture arrivals or missing arrival evidence', () => {
+  for (const change of [
+    s => { delete s.captureDevices; },
+    s => { s.captureDevices[0].isoCpuArrivals.demanded = false; },
+    s => { s.captureDevices[0].isoCpuArrivals.observed += 2; },
+    s => { s.captureDevices[0].isoCpuArrivals.overflowed++; },
+    s => { s.captureDevices[0].isoCpuArrivals.released++; },
+    s => { s.captureDevices[0].isoCpuArrivals.pending = 5; },
+    s => { s.captureDevices[0].isoCpuArrivals.bytes = 32 * 1024 * 1024 + 1; },
+  ]) {
+    const report = completeEvidence(); change(report.samples[10].snapshot);
+    assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
+});
+
+test('advancing files and clean Program pixels cannot hide Zoom helper or playout losses', () => {
+  for (const change of [
+    s => { delete s.zoomSubscriptionChurn; },
+    s => { delete s.zoomSubscriptionChurn.sources[0].isoRing; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoRing.observed = false; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoRing.lost++; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoRing.epoch++; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoRing.next += 2; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoRing.written += 5; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoCpuArrivals.observed += 2; },
+    s => { s.zoomSubscriptionChurn.sources[0].isoCpuArrivals.overflowed++; },
+  ]) {
+    const report = completeEvidence(); change(report.samples[10].snapshot);
+    assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
+});
 
 test('recording counters cannot replace finalized pixels or pixels from the measured interval', () => {
   for (const change of [

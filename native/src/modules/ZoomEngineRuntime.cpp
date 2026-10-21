@@ -1,11 +1,14 @@
 #include "core/BoundedAsyncLog.h"
 #include "modules/ZoomEngineRuntime.h"
 #include "modules/ZoomHandoffCpuScope.h"
+#include "modules/ZoomIsoReadProfile.h"
+#include "modules/QaIsoIdentity.h"
 #include "modules/ZoomMeetingId.h"
 #include "modules/I420SourcePreparation.h"
 
 #include "config/ZoomMeetingSdkConfig.h"
 #include "engine-ipc.h"
+#include "iso-video-ring.h"
 #include "modules/LumaRangeProbe.h"
 #include "modules/ProgramFramePreview.h"
 #include "modules/ZoomSubscriptionResolutionPolicy.h"
@@ -15,6 +18,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <set>
+#include <unordered_set>
+#include <iterator>
 #include <thread>
 
 namespace corevideo::modules {
@@ -39,6 +44,17 @@ int envInt(const char* name, int fallback) {
 
 std::string participantIdString(std::uint32_t id) {
   return id == 0 ? std::string{} : std::to_string(id);
+}
+
+// Diagnostic comparison only: same binary, payloads and buffer bounds, with
+// either the former combined batch or shared ISO worker retained as controls.
+std::string isoReaderMode() {
+  static const auto mode = [] {
+    if (!iso_profile::enabled()) return std::string("per-source");
+    const auto value = envString("COREVIDEO_QA_ISO_READER_MODE");
+    return value == "combined" || value == "shared-iso" ? value : std::string("per-source");
+  }();
+  return mode;
 }
 
 std::uint64_t monotonicMs() {
@@ -80,6 +96,8 @@ ZoomEngineRuntime::~ZoomEngineRuntime() {
   if (videoIngestThread_.joinable()) {
     videoIngestThread_.join();
   }
+  for (auto& reader : isoIngestThreads_)
+    if (reader.joinable()) reader.join();
   // Order matters: (1) stop the sender and drop anything still queued (the
   // process is going away — plan semantics: drop + log, never replay), but do
   // NOT join yet; (2) stopReader() terminates the engine process, which breaks
@@ -146,6 +164,8 @@ void ZoomEngineRuntime::applyJoinCredentialsFromPayload(const rpc::Json& payload
     initialized_ = false;
     mediaStarted_ = false;
     latestDecodedFrames_.clear();
+  isoArrivalQueues_.clear();
+  isoRingReaders_.clear();
     frameSync_.clear();
     pendingAudio_.clear();
     closeAudioStreamsLocked();
@@ -358,6 +378,8 @@ rpc::Json ZoomEngineRuntime::leave() {
   state_.apply({ZoomEngineEventKind::Left});
   mediaStarted_ = false;
   latestDecodedFrames_.clear();
+  isoArrivalQueues_.clear();
+  isoRingReaders_.clear();
   frameSync_.clear();
   pendingAudio_.clear();
   closeAudioStreamsLocked();
@@ -602,6 +624,12 @@ rpc::Json ZoomEngineRuntime::syncSpine(const rpc::Json& payload, double elapsedM
           });
       if (!hasActiveVideoStream) {
         latestDecodedFrames_.erase(participantId);
+        if (const auto queue = isoArrivalQueues_.find(participantId); queue != isoArrivalQueues_.end()) {
+          queue->second->require(false); queue->second->require(true);
+        }
+        if (const auto ring = isoRingReaders_.find(participantId); ring != isoRingReaders_.end()) {
+          ring->second.region.reset(); ring->second.next = 0;
+        }
         frameSync_.erase(participantId);
       }
     }
@@ -675,6 +703,50 @@ std::vector<rpc::Json> ZoomEngineRuntime::drainFrameEvents() {
     pendingRosterFact_.reset();
   }
   return events;
+}
+
+void ZoomEngineRuntime::setVideoConsumerDemand(const std::vector<SourceVideoDemand>& demands) {
+  if (!independentIsoVideoSupported()) return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::unordered_set<std::string> ids;
+  for (const auto& demand : demands)
+    if (demand.representation == SourceVideoRepresentation::Cpu && demand.sourceId.rfind("zoom:", 0) == 0)
+      ids.insert(demand.sourceId.substr(5));
+  for (auto it = isoArrivalQueues_.begin(); it != isoArrivalQueues_.end();) {
+    if (!ids.count(it->first)) {
+      enqueueEngineSendLocked("iso_video", rpc::Json(rpc::Json::Object{{"cmd", "iso_video"}, {"source_uuid", "participant-video-" + it->first + "-camera"}, {"epoch", 0}}).stringify());
+      isoRingReaders_.erase(it->first); it = isoArrivalQueues_.erase(it);
+    } else ++it;
+  }
+  for (const auto& id : ids) {
+    if (!isoArrivalQueues_.contains(id) && isoArrivalQueues_.size() >= kIsoReaderCount) {
+      ::corevideo::core::nativeLogf("[zoom-iso] refused CPU arrival demand beyond eight sources\n");
+      continue;
+    }
+    auto& queue = isoArrivalQueues_[id];
+    if (!queue) {
+      queue = std::make_unique<CpuIsoArrivalQueue>();
+      static std::atomic<uint32_t> nextEpoch{0};
+      auto& ring = isoRingReaders_[id]; ring.epoch = ++nextEpoch;
+      // Stable ownership until demand is retired. Re-sorting participants on
+      // each poll could let two workers race the same cursor during re-arm.
+      uint32_t worker = 0;
+      while (std::any_of(isoRingReaders_.begin(), isoRingReaders_.end(), [&](const auto& entry) {
+        return entry.first != id && entry.second.worker == worker;
+      })) ++worker;
+      ring.worker = worker;
+      enqueueEngineSendLocked("iso_video", rpc::Json(rpc::Json::Object{{"cmd", "iso_video"}, {"source_uuid", "participant-video-" + id + "-camera"}, {"epoch", static_cast<double>(ring.epoch)}}).stringify());
+    }
+    queue->require(true);
+  }
+}
+
+void ZoomEngineRuntime::appendCpuVideoFrames(std::vector<VideoFrame>& destination) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto& [_, queue] : isoArrivalQueues_) {
+    auto frames = queue->take();
+    destination.insert(destination.end(), std::make_move_iterator(frames.begin()), std::make_move_iterator(frames.end()));
+  }
 }
 
 std::vector<VideoFrame> ZoomEngineRuntime::latestDecodedVideoFrames(int64_t timestampMs) {
@@ -873,6 +945,8 @@ void ZoomEngineRuntime::reportEngineLossLocked(const std::string& message) {
   mediaStarted_ = false;
   ++processGeneration_; // reject video/audio work captured before helper loss
   latestDecodedFrames_.clear();
+  isoArrivalQueues_.clear();
+  isoRingReaders_.clear();
   frameSync_.clear();
   pendingAudio_.clear();
   closeAudioStreamsLocked();
@@ -1134,6 +1208,41 @@ rpc::Json ZoomEngineRuntime::subscriptionChurnState() {
         {"lastChangeMs", entry.lastChangeMs},
     };
     if (entry.kind == "participant-video") {
+      if (const auto stream = videoStreams_.find(sourceUuid); stream != videoStreams_.end()) {
+        source.emplace("receivedWidth", static_cast<int>(stream->second.width));
+        source.emplace("receivedHeight", static_cast<int>(stream->second.height));
+      }
+      if (const auto queue = isoArrivalQueues_.find(entry.participantId); queue != isoArrivalQueues_.end()) {
+        const auto q = queue->second->stats();
+        source.emplace("isoCpuArrivals", rpc::Json::Object{
+            {"sourceId", "zoom:" + entry.participantId}, {"demanded", q.demanded},
+            {"observed", static_cast<double>(q.observed)}, {"accepted", static_cast<double>(q.accepted)},
+            {"drained", static_cast<double>(q.drained)}, {"overflowed", static_cast<double>(q.overflowed)},
+            {"released", static_cast<double>(q.released)}, {"pending", static_cast<double>(q.pending)},
+            {"bytes", static_cast<double>(q.bytes)}});
+        if (const auto ring = isoRingReaders_.find(entry.participantId); ring != isoRingReaders_.end()) {
+          const auto* region = static_cast<const ShmRegion*>(ring->second.region.get());
+          const auto* header = region ? static_cast<const zoom_iso::Header*>(region->ptr) : nullptr;
+          const bool observed = header && zoom_iso::load(header->epoch) == ring->second.epoch;
+          source.emplace("isoRing", rpc::Json::Object{
+              {"observed", observed}, {"epoch", static_cast<double>(ring->second.epoch)},
+              {"written", observed ? static_cast<double>(zoom_iso::load(header->written)) : 0.0},
+              {"next", static_cast<double>(ring->second.next)}, {"lost", static_cast<double>(ring->second.lost)},
+              {"lostOverwritten", static_cast<double>(ring->second.reads.overwritten)},
+              {"lostPublicationChanged", static_cast<double>(ring->second.reads.publicationChanged)},
+              {"lostInvalidPayload", static_cast<double>(ring->second.reads.invalidPayload)},
+              {"lostFormatRejected", static_cast<double>(ring->second.formatRejected)},
+              {"maximumBacklog", static_cast<double>(ring->second.reads.maximumBacklog)},
+              {"maximumDispatchUs", static_cast<double>(ring->second.maximumDispatchUs)},
+              {"maximumCopyUs", static_cast<double>(ring->second.maximumCopyUs)}});
+          source.emplace("readProfile", iso_profile::snapshot(entry.participantId + ":iso"));
+          source.emplace("latestCopyProfile", iso_profile::snapshot(entry.participantId + ":latest"));
+          source.emplace("readerMode", isoReaderMode());
+          source.emplace("readerProfile", iso_profile::snapshot(isoReaderMode() == "combined" ? "latest" :
+              "iso-worker:" + std::to_string(isoReaderMode() == "shared-iso" ? -1 : static_cast<int>(ring->second.worker))));
+          source.emplace("latestReaderProfile", iso_profile::snapshot("latest"));
+        }
+      }
       const std::string sourceId = sourceUuid;
       const auto stats = std::find_if(runtime.subscriptions.begin(), runtime.subscriptions.end(),
                                      [&sourceId](const auto& item) { return item.sourceUuid == sourceId; });
@@ -1310,7 +1419,8 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
   // (zoom-media-spine-sync queueWait 3.7s in soak run 10).
   auto& ref = videoStreams_[event.sourceUuid];
   const auto sourceGeneration = state_.sourceGenerationForParticipant(event.participantId);
-  if (!ref.preparationLifetime || ref.sourceGeneration != sourceGeneration || ref.participantId != event.participantId)
+  const bool retiredSource = ref.sourceGeneration != sourceGeneration || ref.participantId != event.participantId;
+  if (!ref.preparationLifetime || retiredSource)
     ref.preparationLifetime = nextVideoSourceEpoch.fetch_add(1);
   if (ref.width != event.width || ref.height != event.height ||
       ref.sourceGeneration != sourceGeneration || ref.participantId != event.participantId) {
@@ -1318,6 +1428,12 @@ void ZoomEngineRuntime::enqueueFrameEventLocked(const ZoomEngineEvent& event) {
     ref.lastSequence = 0;
     ref.frameRateBudget = {};
     ref.sourceEpoch = nextVideoSourceEpoch.fetch_add(1);
+    if (retiredSource) {
+      if (const auto queue = isoArrivalQueues_.find(std::to_string(event.participantId)); queue != isoArrivalQueues_.end()) {
+        queue->second->require(false);
+        queue->second->require(true);
+      }
+    }
   }
   ref.participantId = event.participantId;
   ref.sourceGeneration = sourceGeneration;
@@ -1332,6 +1448,14 @@ void ZoomEngineRuntime::ensureVideoIngestThreadLocked() {
   }
   videoIngestRun_.store(true, std::memory_order_release);
   videoIngestThread_ = std::thread([this] { videoIngestLoop(); });
+  const auto mode = isoReaderMode();
+  if (mode == "combined") return;
+  if (mode == "shared-iso") {
+    isoIngestThreads_[0] = std::thread([this] { isoIngestLoop(-1); });
+    return;
+  }
+  for (size_t worker = 0; worker < isoIngestThreads_.size(); ++worker)
+    isoIngestThreads_[worker] = std::thread([this, worker] { isoIngestLoop(static_cast<int>(worker)); });
 }
 
 void ZoomEngineRuntime::videoIngestLoop() {
@@ -1344,13 +1468,26 @@ void ZoomEngineRuntime::videoIngestLoop() {
   // render cost, ingest stage stays ~0.05ms).
   constexpr auto kVideoIngestPollMs = std::chrono::milliseconds(2);
   while (videoIngestRun_.load(std::memory_order_acquire)) {
-    drainVideoStreamsThreePhase();
+    iso_profile::Scope iteration("latest", iso_profile::Iteration);
+    drainVideoStreamsThreePhase({}, {}, isoReaderMode() == "combined" ? VideoDrain::Both : VideoDrain::Latest);
+    iso_profile::Scope sleeping("latest", iso_profile::Sleep);
     std::this_thread::sleep_for(kVideoIngestPollMs);
   }
 }
 
+void ZoomEngineRuntime::isoIngestLoop(int worker) {
+  const auto label = "iso-worker:" + std::to_string(worker);
+  while (videoIngestRun_.load(std::memory_order_acquire)) {
+    iso_profile::Scope iteration(label, iso_profile::Iteration);
+    drainVideoStreamsThreePhase({}, {}, VideoDrain::Iso, worker);
+    iso_profile::Scope sleeping(label, iso_profile::Sleep);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+}
+
 void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>& afterCapture,
-                                                  const std::function<void()>& beforePublish) {
+                                                  const std::function<void()>& beforePublish,
+                                                  VideoDrain branch, int isoWorker) {
   // Phase 1 (locked, cheap): open missing regions, peek sequences, collect
   // the streams that have a NEW complete frame. shared_ptr region holders let
   // phase 2 read safely even if a leave/reset drops the stream meanwhile.
@@ -1367,18 +1504,30 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     std::uint64_t generation = 0;
     std::uint64_t sourceEpoch = 0;
     std::uint64_t preparationLifetime = 0;
+    std::uint64_t sourceGeneration = 0;
+    std::shared_ptr<void> ringHolder;
+    uint32_t ringEpoch = 0, ringNext = 0;
+    std::chrono::steady_clock::time_point ringCapturedAt{};
   };
   // Thumbnail-event pace: ~2/s per participant is plenty for the shell's roster
   // thumbs; the full-res I420 tap below feeds the compositor EVERY frame.
   constexpr std::int64_t kThumbnailEmitIntervalMs = 500;
   std::vector<SnapshotJob> jobs;
+  const auto profileLabel = branch == VideoDrain::Iso ? "iso-worker:" + std::to_string(isoWorker) : "latest";
   {
+    iso_profile::Scope waiting(profileLabel, iso_profile::CaptureWait);
     std::lock_guard<std::mutex> lock(mutex_);
+    waiting.finish();
+    iso_profile::Scope holding(profileLabel, iso_profile::CaptureHold);
     for (auto& [uuid, ref] : videoStreams_) {
-      if (ref.width == 0 || ref.height == 0 || ref.participantId == 0) {
+      if (branch == VideoDrain::Iso && isoWorker >= 0) {
+        const auto reader = isoRingReaders_.find(std::to_string(ref.participantId));
+        if (reader == isoRingReaders_.end() || reader->second.worker != static_cast<uint32_t>(isoWorker)) continue;
+      }
+      if (ref.participantId == 0 || (branch == VideoDrain::Iso ? !ref.preparationLifetime : (ref.width == 0 || ref.height == 0))) {
         continue;
       }
-      if (!ref.regionOpaque) {
+      if (branch != VideoDrain::Iso && !ref.regionOpaque) {
         auto* opened = new ShmRegion();
         if (!shm_region_open_read(*opened, zoomEngineVideoSharedMemoryName(uuid, instanceToken_),
                                   zoomEngineI420FrameByteSize(ref.width, ref.height))) {
@@ -1402,15 +1551,30 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
         });
       }
       auto* region = static_cast<ShmRegion*>(ref.regionOpaque.get());
-      const auto sequence = readZoomEngineI420FrameSequence(region->ptr, region->size);
-      if (sequence == 0 || (sequence & 1u) != 0 || sequence == ref.lastSequence) {
-        continue;  // never written, mid-write, or unchanged: 16-byte cost
-      }
+      const auto sequence = branch != VideoDrain::Iso && region
+          ? readZoomEngineI420FrameSequence(region->ptr, region->size) : 0;
       const auto nowMs = runtimeElapsedMs();
       const bool buildThumbnail = thumbnailDemand_.load(std::memory_order_relaxed) &&
           (ref.lastThumbnailEmitMs < 0 || nowMs - ref.lastThumbnailEmitMs >= kThumbnailEmitIntervalMs);
-      jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
-                      buildThumbnail, !ref.lumaRangeProbed, processGeneration_, ref.sourceEpoch, ref.preparationLifetime});
+      if (sequence && !(sequence & 1u) && sequence != ref.lastSequence)
+        jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
+                        buildThumbnail, !ref.lumaRangeProbed, processGeneration_, ref.sourceEpoch, ref.preparationLifetime, ref.sourceGeneration});
+      // ISO has its own job/cursor. Missing or slow ISO must never freeze Program.
+      if (branch != VideoDrain::Latest && process_ && isoArrivalQueues_.contains(std::to_string(ref.participantId))) {
+        auto& ring = isoRingReaders_.at(std::to_string(ref.participantId));
+        if (!ring.region) {
+          auto opened = std::make_unique<ShmRegion>();
+          if (shm_region_open_read(*opened, zoomEngineVideoSharedMemoryName(uuid, instanceToken_) + "-iso", zoomEngineIsoVideoRingByteSize()))
+            ring.region = std::shared_ptr<void>(opened.release(), [](void* p) { auto* r = static_cast<ShmRegion*>(p); shm_region_destroy(*r); delete r; });
+        }
+        if (!ring.region) continue;
+        const auto* header = static_cast<const zoom_iso::Header*>(static_cast<const ShmRegion*>(ring.region.get())->ptr);
+        if (zoom_iso::load(header->epoch) != ring.epoch || zoom_iso::load(header->written) == ring.next) continue;
+        jobs.push_back({uuid, ref.regionOpaque, region, ref.participantId, ref.width, ref.height, sequence,
+                        false, false, processGeneration_, ref.sourceEpoch, ref.preparationLifetime, ref.sourceGeneration});
+        jobs.back().ringHolder = ring.region; jobs.back().ringEpoch = ring.epoch; jobs.back().ringNext = ring.next;
+        jobs.back().ringCapturedAt = std::chrono::steady_clock::now();
+      }
     }
   }
 
@@ -1425,15 +1589,43 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     LumaRangeProbe lumaRange;
     std::shared_ptr<CpuSourceGpuView> preparedGpu;
     rpc::Json thumbnailEvent;
+    uint32_t ringNext = 0;
+    size_t ringLost = 0;
+    ZoomIsoRingReadEvidence ringReads;
+    uint64_t ringDispatchUs = 0, ringCopyUs = 0;
   };
   std::vector<SnapshotResult> results;
   results.reserve(jobs.size());
   for (auto& job : jobs) {
-    results.push_back({job, readZoomEngineI420FrameSnapshot(job.region->ptr, job.region->size, job.uuid,
-                                                            job.participantId, 640, 360,
-                                                            job.buildThumbnail)});
-    auto& thumbnailResult = results.back();
-    thumbnailResult.observedAt = std::chrono::steady_clock::now();
+    const auto firstResult = results.size();
+    if (job.ringHolder) {
+      const auto* region = static_cast<const ShmRegion*>(job.ringHolder.get());
+      std::vector<ZoomIsoVideoArrival> arrivals;
+      auto next = job.ringNext;
+      ZoomIsoRingReadEvidence reads;
+      const auto copyStarted = std::chrono::steady_clock::now();
+      const auto lost = readZoomEngineIsoVideoRing(region->ptr, region->size, job.ringEpoch,
+          next, job.uuid, job.participantId, job.buildThumbnail, arrivals, &reads);
+      const auto copyFinished = std::chrono::steady_clock::now();
+      if (arrivals.empty() && !lost) continue; // awaiting the requested helper epoch
+      for (auto& arrival : arrivals) {
+        results.push_back({job, std::move(arrival.frame)});
+        results.back().observedAt = std::chrono::steady_clock::time_point(
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::nanoseconds(arrival.captured100ns * 100)));
+      }
+      if (results.size() == firstResult) results.push_back({job, std::nullopt});
+      for (auto i = firstResult; i < results.size(); ++i) results[i].ringNext = next;
+      results[firstResult].ringLost = lost;
+      results[firstResult].ringReads = reads;
+      results[firstResult].ringDispatchUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(copyStarted - job.ringCapturedAt).count());
+      results[firstResult].ringCopyUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(copyFinished - copyStarted).count());
+    } else {
+      results.push_back({job, readZoomEngineI420FrameSnapshot(job.region->ptr, job.region->size, job.uuid,
+          job.participantId, 640, 360, job.buildThumbnail)});
+      results.back().observedAt = std::chrono::steady_clock::now();
+    }
+    for (auto index = firstResult; index < results.size(); ++index) {
+    auto& thumbnailResult = results[index];
     if (thumbnailResult.frame && !thumbnailResult.frame->rgba.empty()) {
       ZoomHandoffCpuScope thumbnailTiming(profileVideoHandoff_, "thumbnail-package-off-lock");
       const auto thumbnailStarted = thumbnailTiming.thumbnailStarted();
@@ -1455,26 +1647,37 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
     // it blocked behind that memcpy — ~7ms of a 10x1080p tick, 12ms while
     // recording. Moving it out leaves the publish phase a pointer store, which
     // is what "Phase 3 (locked, cheap)" always claimed to be.
-    auto& result = results.back();
+    auto& result = thumbnailResult;
     if (result.frame && !result.frame->i420.empty()) {
+      if (job.ringHolder && qaIsoCounterEnabled())
+        paintDeliveryCounter(result.frame->i420.data(), result.frame->i420.size(),
+            result.frame->i420Width, result.frame->i420Height, result.frame->i420Width,
+            static_cast<uint32_t>(result.frame->frameId));
       result.i420Shared =
           std::make_shared<const std::vector<std::uint8_t>>(std::move(result.frame->i420));
-      if (i420Preparation_) result.preparedGpu = i420Preparation_->offer(result.frame->participantId,
+      if (i420Preparation_ && !job.ringHolder) {
+        iso_profile::Scope preparing(profileLabel, iso_profile::Prepare);
+        result.preparedGpu = i420Preparation_->offer(result.frame->participantId,
           job.sourceEpoch, result.frame->frameId,
           std::chrono::duration_cast<std::chrono::nanoseconds>(result.observedAt.time_since_epoch()).count() / 100,
           result.frame->i420Width, result.frame->i420Height, result.i420Shared, job.preparationLifetime);
+      }
       if (job.probeLumaRange && result.i420Shared->size() >=
                                     static_cast<std::size_t>(job.width) * job.height) {
         result.lumaRange = probeLumaRange(result.i420Shared->data(), job.width, job.height,
                                           job.width, 8);
       }
     }
+    }
   }
 
   if (beforePublish) beforePublish();
   // Phase 3 (locked, cheap): publish only into the captured stream generation.
   ZoomHandoffCpuScope timing(profileVideoHandoff_, "publish-batch");
+  iso_profile::Scope waiting(profileLabel, iso_profile::PublishWait);
   std::lock_guard<std::mutex> lock(mutex_);
+  waiting.finish();
+  iso_profile::Scope holding(profileLabel, iso_profile::PublishHold);
   timing.acquired();
   const auto rejectStale = [&] {
     ++staleVideoPublications_;
@@ -1484,27 +1687,51 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
   };
   for (auto& result : results) {
     auto stream = videoStreams_.find(result.job.uuid);
+    const bool iso = bool(result.job.ringHolder);
     if (shuttingDown_ || restartBeforeJoin_ || result.job.generation != processGeneration_ ||
-        stream == videoStreams_.end() || stream->second.regionOpaque != result.job.holder ||
+        stream == videoStreams_.end() ||
         stream->second.participantId != result.job.participantId ||
-        stream->second.sourceEpoch != result.job.sourceEpoch ||
-        stream->second.width != result.job.width || stream->second.height != result.job.height) {
+        (iso ? (stream->second.preparationLifetime != result.job.preparationLifetime ||
+                stream->second.sourceGeneration != result.job.sourceGeneration) :
+               (stream->second.regionOpaque != result.job.holder ||
+                stream->second.sourceEpoch != result.job.sourceEpoch ||
+                stream->second.width != result.job.width || stream->second.height != result.job.height))) {
       rejectStale();
       continue;  // leave, resize, remap, or helper retirement while copying
+    }
+    if (result.job.ringHolder) {
+      const auto it = isoRingReaders_.find(std::to_string(result.job.participantId));
+      if (it == isoRingReaders_.end() || it->second.epoch != result.job.ringEpoch || it->second.region != result.job.ringHolder) {
+        rejectStale(); continue;
+      }
+      it->second.next = result.ringNext;
+      it->second.lost += result.ringLost;
+      it->second.reads.overwritten += result.ringReads.overwritten;
+      it->second.reads.publicationChanged += result.ringReads.publicationChanged;
+      it->second.reads.invalidPayload += result.ringReads.invalidPayload;
+      it->second.reads.maximumBacklog = (std::max)(it->second.reads.maximumBacklog, result.ringReads.maximumBacklog);
+      it->second.maximumDispatchUs = (std::max)(it->second.maximumDispatchUs, result.ringDispatchUs);
+      it->second.maximumCopyUs = (std::max)(it->second.maximumCopyUs, result.ringCopyUs);
     }
     if (!result.frame) {
       state_.recordFrameIngestFailure(result.job.uuid, result.job.participantId,
                                       "shared memory snapshot was incomplete, stale, or malformed");
       continue;
     }
-    if (result.frame->i420Width != result.job.width || result.frame->i420Height != result.job.height ||
+    // ISO frames have a validated, self-describing header. A latest-picture
+    // remap/format beacon cannot invalidate the same participant's arrivals.
+    if ((!iso && (result.frame->i420Width != result.job.width || result.frame->i420Height != result.job.height)) ||
         result.frame->participantId != participantIdString(result.job.participantId)) {
+      if (result.job.ringHolder) {
+        auto& ring = isoRingReaders_.at(std::to_string(result.job.participantId));
+        ++ring.lost; ++ring.formatRejected;
+      }
       rejectStale();
       continue; // A resized SHM header arrived before its matching stream beacon.
     }
     // The writer may advance between the cheap peek and the validated copy.
     // Consume the sequence we actually copied, never the earlier peek.
-    stream->second.lastSequence = static_cast<std::uint32_t>(result.frame->frameId);
+    if (!result.job.ringHolder) stream->second.lastSequence = static_cast<std::uint32_t>(result.frame->frameId);
     if (result.job.probeLumaRange && result.lumaRange.sampled > 0) {
       stream->second.lumaRangeProbed = true;
       ::corevideo::core::nativeLogf("[zoom-color] source=%s participant=%u requested=bt709-full "
@@ -1516,7 +1743,7 @@ void ZoomEngineRuntime::drainVideoStreamsThreePhase(const std::function<void()>&
                    result.lumaRange.sampled);
     }
     publishVideoFrameLocked(result.job.uuid, stream->second, *result.frame,
-                            std::move(result.i420Shared), result.observedAt, std::move(result.preparedGpu), std::move(result.thumbnailEvent), &timing);
+                            std::move(result.i420Shared), result.observedAt, std::move(result.preparedGpu), std::move(result.thumbnailEvent), &timing, bool(result.job.ringHolder));
     ++videoPublishedSinceLog_;
   }
   const auto now = std::chrono::steady_clock::now();
@@ -1533,7 +1760,25 @@ void ZoomEngineRuntime::publishVideoFrameLocked(
     const std::string& uuid, VideoStreamRef& ref, const ZoomEngineRgbaFrame& frame,
     std::shared_ptr<const std::vector<std::uint8_t>> i420,
     std::chrono::steady_clock::time_point observedAt, std::shared_ptr<CpuSourceGpuView> preparedGpu,
-    rpc::Json thumbnailEvent, ZoomHandoffCpuScope* timing) {
+    rpc::Json thumbnailEvent, ZoomHandoffCpuScope* timing, bool isoOnly) {
+  if (isoOnly) {
+    if (auto it = isoArrivalQueues_.find(frame.participantId); it != isoArrivalQueues_.end()) {
+      VideoFrame arrival;
+      arrival.participantId = frame.participantId;
+      arrival.width = arrival.i420Width = static_cast<int>(frame.i420Width);
+      arrival.height = arrival.i420Height = static_cast<int>(frame.i420Height);
+      // Recording identity follows the participant lifetime, independently of
+      // texture generations created for latest-picture format changes.
+      arrival.frameId = frame.frameId; arrival.sourceEpoch = ref.preparationLifetime;
+      arrival.sourceGeneration = ref.sourceGeneration; arrival.i420 = std::move(i420);
+      arrival.captureTimestamp100ns = std::chrono::duration_cast<std::chrono::nanoseconds>(observedAt.time_since_epoch()).count() / 100;
+      if (qaIsoCounterEnabled())
+        traceQaIsoArrival("zoom:" + arrival.participantId, arrival.sourceEpoch, arrival.frameId,
+            arrival.captureTimestamp100ns, arrival.width, arrival.height);
+      it->second->offer(arrival);
+    }
+    return;
+  }
   state_.recordFrameIngestSuccess(uuid, ref.participantId, ref.width, ref.height, frame.frameId,
                                   runtimeElapsedMs(), ref.sourceGeneration);
 

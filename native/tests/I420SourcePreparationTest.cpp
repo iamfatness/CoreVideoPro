@@ -637,6 +637,69 @@ TEST(I420SourcePreparation, FormatReplacementDrainsSelectedOldPixelsUntilSuccess
   ASSERT_TRUE(await([&] { return bool(reconnect.preparedGpu->acquire(true)); }));
 }
 
+TEST(I420SourcePreparation, ExpiredUnselectedFormatGenerationsDoNotPermanentlyRefuseLivePixels) {
+  PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  std::atomic<bool> blocked{false}, release{false};
+  I420SourcePreparation owner(true, {}, [&](const std::string& id) {
+    if (id != "blocker") return;
+    blocked.store(true);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!release.load() && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  });
+  struct ReleaseOnExit { std::atomic<bool>& value; ~ReleaseOnExit() { value.store(true); } } unblock{release};
+  auto blocker = sourceFrame("blocker", 1, 1, 50); offer(owner, blocker);
+  blocker.preparedGpu->acquire(true);
+  ASSERT_TRUE(await([&] { return blocked.load(); }));
+  VideoFrame current;
+  const auto offerCurrent = [&] {
+    current.preparedGpu = owner.offer(current.participantId, current.sourceEpoch, current.frameId,
+        current.captureTimestamp100ns, current.i420Width, current.i420Height, current.i420, 99);
+  };
+  for (uint64_t epoch = 1; epoch <= CpuSourcePreparation::kMaxSources + 2; ++epoch) {
+    current = sourceFrame("guest", epoch, static_cast<int64_t>(epoch), 190);
+    if (!(epoch & 1)) {
+      current.width = current.naturalWidth = current.i420Width = 128;
+      auto cpu = std::make_shared<std::vector<uint8_t>>(128 * 64 * 3 / 2, 128);
+      std::fill(cpu->begin(), cpu->begin() + 128 * 64, 190); current.i420 = std::move(cpu);
+    }
+    offerCurrent(); ASSERT_TRUE(current.preparedGpu);
+  }
+  ASSERT_EQ(current.preparedGpu->demand->capacity.load(), CpuPreparationCapacity::RetiringGenerations);
+  EXPECT_EQ(owner.stats().active, 1u); // no guest generation ever owned GPU storage
+  release.store(true);
+  ASSERT_TRUE(await([&] {
+    offerCurrent();
+    return current.preparedGpu && !current.preparedGpu->demand->stopped.load();
+  }));
+  ASSERT_TRUE(await([&] { return bool(current.preparedGpu->acquire(true)); }));
+  auto pixels = compositor->render(planFor("guest"), {current});
+  ASSERT_EQ(pixels.sourceAdmissions.size(), 1u);
+  EXPECT_EQ(pixels.sourceAdmissions.front().state, "ready");
+  EXPECT_EQ(pixels.sourceAdmissions.front().actualEpoch, current.sourceEpoch);
+  ASSERT_FALSE(pixels.preview.bgra.empty());
+  EXPECT_NEAR(pixels.preview.bgra[(32 * 64 + 32) * 4], 190, 1);
+  EXPECT_LE(owner.stats().active, 2u);
+}
+
+TEST(I420SourcePreparation, UnselectedOldFormatRemainsPreparableWhileItsCpuDescriptorIsLive) {
+  PreparationFlags flags; auto compositor = createD3D11Compositor(); ASSERT_TRUE(compositor);
+  I420SourcePreparation owner(true);
+  auto old = sourceFrame("guest", 1, 1, 60);
+  old.preparedGpu = owner.offer("guest", 1, 1, old.captureTimestamp100ns, 64, 64, old.i420, 99);
+  auto fresh = sourceFrame("guest", 2, 2, 210);
+  fresh.preparedGpu = owner.offer("guest", 2, 2, fresh.captureTimestamp100ns, 64, 64, fresh.i420, 99);
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  ASSERT_FALSE(old.preparedGpu->demand->stopped.load());
+  ASSERT_TRUE(await([&] { return bool(old.preparedGpu->acquire(true)); }));
+  const auto pixels = compositor->render(planFor("guest"), {old});
+  ASSERT_EQ(pixels.sourceAdmissions.size(), 1u);
+  EXPECT_EQ(pixels.sourceAdmissions.front().actualEpoch, 1u);
+  ASSERT_FALSE(pixels.preview.bgra.empty());
+  EXPECT_NEAR(pixels.preview.bgra[(32 * 64 + 32) * 4], 60, 1);
+  EXPECT_EQ(owner.stats().active, 1u);
+}
+
 namespace {
 class PreparedStillDecoder final : public IStillImageDecoder {
  public:

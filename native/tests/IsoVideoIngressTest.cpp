@@ -25,6 +25,20 @@ TEST(IsoVideoIngress, CpuBatchKeepsItsOwnIdentitiesAndCaptureTimes) {
   EXPECT_EQ(result[1].timelineTimestamp100ns, converted[1].captureTimestamp100ns);
 }
 
+TEST(IsoVideoIngress, IndependentZoomNeverFallsBackToAnOlderRenderPictureBetweenArrivalBatches) {
+  corevideo::core::IsoVideoIngress ingress;
+  auto delayedRender = picture("42", 2);
+  ingress.observe({"zoom:42"}, {delayedRender}, {picture("42", 10), picture("42", 12)}, 1, true);
+  auto first = ingress.drain(std::chrono::milliseconds(0));
+  ASSERT_EQ(first.size(), 2u);
+  EXPECT_EQ(first[0].frame.frameId, 10); EXPECT_EQ(first[1].frame.frameId, 12);
+  ingress.observe({"zoom:42"}, {delayedRender}, {}, 2, true);
+  EXPECT_TRUE(ingress.drain(std::chrono::milliseconds(0)).empty());
+  ingress.observe({"zoom:42"}, {delayedRender}, {picture("42", 14)}, 3, true);
+  const auto next = ingress.drain(std::chrono::milliseconds(0));
+  ASSERT_EQ(next.size(), 1u); EXPECT_EQ(next[0].frame.frameId, 14);
+}
+
 TEST(IsoVideoIngress, BoundIsPerSourceAndCountsEveryEviction) {
   corevideo::core::IsoVideoIngress ingress;
   std::vector<corevideo::modules::VideoFrame> converted;

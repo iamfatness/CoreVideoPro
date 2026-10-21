@@ -6,6 +6,7 @@
 #include "modules/VirtualCameraFrame.h"
 #include "modules/VirtualCameraShm.h"
 #include "modules/VirtualCameraCorrelationMapping.h"
+#include "modules/VirtualCameraHistory.h"
 #include "modules/VirtualCameraRegistration.h"
 
 #include <cstdio>
@@ -91,6 +92,10 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     header_->magic = kVirtualCameraMagic;
     ::MemoryBarrier();
     header_->seq = (header_->seq | 1u) + 1u;  // even = complete
+    if (!history_.start(shmFile_)) {
+      fail("CAMERA_HISTORY_UNAVAILABLE: could not prepare bounded camera publication history.");
+      return false;
+    }
     ensureVirtualCameraServeLogFile();  // serving processes can append diagnostics
 
     // 2) Register the OS virtual camera (Win11 MFCreateVirtualCamera). The DLL
@@ -190,6 +195,8 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     header_->height = h;
     header_->byteLen = static_cast<std::uint32_t>(bytes);
     header_->frameNumber = frame.frameNumber;
+    history_.publish(payload, w, h, header_->frameNumber, (header_->seq | 1u) + 1u,
+        frame.frameNumber, frame.deliveredAt100ns);
     ::MemoryBarrier();
     header_->seq = (header_->seq | 1u) + 1u;  // even = complete
     correlation_.finish(header_->seq, header_->frameNumber, frame.frameNumber, frame.deliveredAt100ns);
@@ -245,6 +252,7 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     if (publishThread_.joinable()) publishThread_.join();
 
     std::lock_guard<std::mutex> lock(mutex_);
+    history_.stop();
     if (camera_ != nullptr) {
       camera_->Stop();
       camera_->Remove();
@@ -337,6 +345,8 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
     header_->height = h;
     header_->byteLen = static_cast<std::uint32_t>(bytes);
     header_->frameNumber = header_->frameNumber + 1;
+    history_.publish(payload, w, h, header_->frameNumber, (header_->seq | 1u) + 1u,
+        programSequence, deliveredAt100ns);
     ::MemoryBarrier();
     header_->seq = (header_->seq | 1u) + 1u;
     correlation_.finish(header_->seq, header_->frameNumber, programSequence, deliveredAt100ns);
@@ -351,6 +361,7 @@ class WindowsVirtualCameraPublisher final : public IVirtualCameraPublisher {
 
   mutable std::mutex mutex_;
   VirtualCameraCorrelationMapping correlation_;
+  VirtualCameraHistoryWriter history_;
   std::atomic<bool> acceptNv12_{false};
   std::mutex publishQueueMutex_;
   std::condition_variable publishQueueCv_;

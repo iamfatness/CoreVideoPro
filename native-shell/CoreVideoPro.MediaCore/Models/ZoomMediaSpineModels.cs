@@ -44,6 +44,7 @@ public sealed class ZoomMediaSpineSubscription
 
 public sealed class ZoomMediaSpineNativeSnapshot
 {
+    public bool? RawMediaActive { get; init; }
     public string? RosterEpoch { get; init; }
     public long RosterRevision { get; init; }
     public string MeetingState { get; init; } = "idle";

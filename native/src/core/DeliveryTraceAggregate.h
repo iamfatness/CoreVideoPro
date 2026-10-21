@@ -66,6 +66,7 @@ class DeliveryTraceAggregate {
     std::array<std::uint64_t, kUpperBoundsMs.size() + 1> intervals{};
     DeliveryTraceEvent last;
   };
+  // ISO arrival identities are file-only QA evidence, not cadence aggregates.
   std::array<Row, 10> rows_;
 };
 }

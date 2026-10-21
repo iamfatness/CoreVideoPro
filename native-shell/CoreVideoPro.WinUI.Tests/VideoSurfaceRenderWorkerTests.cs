@@ -6,6 +6,51 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class VideoSurfaceRenderWorkerTests
 {
     [Fact]
+    public void ProducerReleaseBetweenPollsIsConsumedBeforeOriginalNextSlot()
+    {
+        var cadence = new PresentationCadence();
+        const long frequency = 6_000_000, period = 100_000, releaseDelay = 6_000;
+        var commits = new List<int>();
+        var pending = false;
+        var attempts = 0;
+        // The producer owns its texture at each 60 Hz tick, releases it 1 ms
+        // later, and starts the next frame at the next tick. A periodic-only
+        // consumer misses every image despite a perfect average polling rate.
+        for (long now = 1; now < 600 * period; now += 600)
+        {
+            if (!cadence.TrySubmit(now, frequency, 60, pending, out var retry)) continue;
+            attempts++;
+            if (!retry) pending = true;
+            var frame = (int)((now - 1) / period);
+            if ((now - 1) % period < releaseDelay) continue;
+            commits.Add(frame);
+            pending = false; // A committed sibling must not be repumped this slot.
+        }
+        Assert.Equal(Enumerable.Range(0, 600), commits);
+        Assert.InRange(attempts, 1200, 1800);
+    }
+
+    [Fact]
+    public void ReadinessRetriesArePacedAndCannotExtendOrReplayMissedSlots()
+    {
+        var cadence = new PresentationCadence();
+        const long frequency = 6_000_000;
+        Assert.True(cadence.TrySubmit(1, frequency, 60, false, out var retry));
+        Assert.False(retry);
+        Assert.Equal(10_000, cadence.Delay100ns(1, frequency, true));
+        Assert.False(cadence.TrySubmit(6000, frequency, 60, true, out _));
+        Assert.True(cadence.TrySubmit(6001, frequency, 60, true, out retry));
+        Assert.True(retry);
+        Assert.False(cadence.TrySubmit(6002, frequency, 60, true, out _));
+        Assert.False(cadence.TrySubmit(12001, frequency, 60, false, out _));
+        Assert.True(cadence.TrySubmit(100001, frequency, 60, true, out retry));
+        Assert.False(retry); // The old slot was not granted extra time.
+        Assert.True(cadence.TrySubmit(6_000_001, frequency, 60, true, out retry));
+        Assert.False(retry); // A long stall starts one fresh slot, without backlog.
+        Assert.False(cadence.TrySubmit(6_000_002, frequency, 60, true, out _));
+    }
+
+    [Fact]
     public void RenderClockKeepsSixtyHzWithoutUiWakeupsAndSkipsMissedDeadlines()
     {
         var cadence = new PresentationCadence();

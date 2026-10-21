@@ -584,6 +584,8 @@ class MediaCore {
   // current activeSpeakerId. Reuses the same source-id conventions as the
   // program plan so resolveLayers/frameForParticipant match the same frames.
   [[nodiscard]] modules::CompositorRenderPlan buildMultiviewRenderPlan(const std::vector<modules::VideoFrame>& videoFrames) const;
+  void submitIsolatedMonitorTick(const modules::CompositorRenderPlan& renderPlan,
+      const std::vector<modules::VideoFrame>& videoFrames, int64_t sequence);
   // Builds the per-tile rect list (geometry + role + tally + label) for the
   // current multiview layout mode, matching the geometry buildMultiviewRenderPlan
   // places its layers into. Includes the PGM/PVW cells for the pgmPvw modes.

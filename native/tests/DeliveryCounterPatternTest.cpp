@@ -20,3 +20,18 @@ TEST(DeliveryCounterPattern, DecodesIdentityAndRejectsTearsAndShortBuffers) {
   image[(height - 16) * stride + 4 * cellWidth + cellWidth / 2] = image[16 * stride + 4 * cellWidth + cellWidth / 2];
   EXPECT_FALSE(decode().has_value());
 }
+
+TEST(DeliveryCounterPattern, PaintedBandsPreservePictureChromaAndStridePadding) {
+  constexpr int width = 1920, height = 1080, stride = 2048;
+  std::vector<uint8_t> image(stride * height * 3 / 2, 128);
+  ASSERT_TRUE(corevideo::modules::paintDeliveryCounter(image.data(), image.size(), width, height, stride, 0xfedcba98));
+  EXPECT_EQ(*corevideo::modules::decodeDeliveryCounter(image.data(), image.size(), width, height, stride), 0xfedcba98u);
+  for (int row = 32; row < height - 32; ++row)
+    for (int x = 0; x < stride; ++x) EXPECT_EQ(image[row * stride + x], 128);
+  for (int row = 0; row < height; ++row)
+    for (int x = width; x < stride; ++x) EXPECT_EQ(image[row * stride + x], 128);
+  for (size_t i = stride * height; i < image.size(); ++i) EXPECT_EQ(image[i], 128);
+  const auto before = image;
+  EXPECT_FALSE(corevideo::modules::paintDeliveryCounter(image.data(), 10, width, height, stride, 1));
+  EXPECT_EQ(image, before);
+}

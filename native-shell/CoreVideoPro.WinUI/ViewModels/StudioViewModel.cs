@@ -10335,6 +10335,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
         // early-return so meeting status keeps updating even when capture is unsubscribed.
         ApplyMeetingFieldsFromSnapshot(snapshot);
         Tm("meetingFields");
+        _showInputsCoordinator.ApplyCaptureReadout(Settings.RawMediaActive);
         // A final core fact can arrive after the Zoom-off transition. Keep a
         // departed meeting's numeric participant settings out of the UI.
         if (ZoomOnline)
@@ -10348,7 +10349,6 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             programResolutionLabel,
             MasterLimiterEnabled);
         Tm("transport");
-        ApplyConfiguredOutputReadouts(snapshot);
         Tm("outputReadouts");
         RefreshAudioParticipantRows();
         Tm("audioRows");
@@ -10836,7 +10836,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             // Tell the operator exactly what is being waited on, and clear it
             // the moment raw media goes live. Scalar prop, changes at state
             // transitions only — no snapshot-rate churn (0xc000027b rules).
-            var rawMediaActive = Settings.RawMediaActive;
+            var rawMediaActive = snapshot.RawMediaActive;
             if (ZoomCaptureSubscribed && rawMediaActive != true)
             {
                 if (!_awaitingRecordingPrivilege)
@@ -10857,7 +10857,7 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
             MfT("transcript");
             var participants = LiveProductionSync.MapSnapshotParticipants(snapshot);
             MfT("mapParticipants");
-            Settings.ApplyMeetingStateLabel(meetingState, participants?.Count ?? snapshot.Participants.Count);
+            Settings.ApplyMeetingStateLabel(meetingState, participants?.Count ?? snapshot.Participants.Count, snapshot.RawMediaActive);
             if (participants is { } && (participants.Count > 0 || snapshot.RosterRevision > 0))
             {
                 NoteParticipantApply("meeting-fields", snapshot);
@@ -12827,40 +12827,13 @@ public sealed partial class StudioViewModel : ObservableObject, IAsyncDisposable
                 LiveProductionSync.IsStreamingLive(snapshot),
                 ResolveProgramResolutionLabel(snapshot),
                 MasterLimiterEnabled);
-            ApplyConfiguredOutputReadouts(snapshot);
             NotifyShowReadinessChanged();
             return;
         }
 
         Transport.ApplyIdleState(Recording, Streaming, ProgramResolutionLabel);
-        ApplyConfiguredOutputReadouts();
         NotifyShowReadinessChanged();
     }
-
-    private void ApplyConfiguredOutputReadouts(NativeMediaCoreStateSnapshot? snapshot = null)
-    {
-        if (!Streaming &&
-            (snapshot is null ||
-             (!LiveProductionSync.IsStreamingLive(snapshot) &&
-              LiveProductionSync.ResolveStreamHealthStatus(snapshot, streaming: false).Equals("idle", StringComparison.OrdinalIgnoreCase))))
-        {
-            Transport.StreamStatValue = FormatTransportStreamConfigLabel();
-        }
-
-        if (!Recording &&
-            (snapshot is null ||
-             (snapshot.Recording?.Active != true &&
-              LiveProductionSync.ResolveRecordHealthStatus(snapshot, recording: false).Equals("idle", StringComparison.OrdinalIgnoreCase))))
-        {
-            Transport.RecordStatValue = FormatTransportRecordingConfigLabel();
-        }
-    }
-
-    private string FormatTransportStreamConfigLabel() =>
-        FormatTransportStreamConfigLabel(StreamTargetBitrateMbps);
-
-    private string FormatTransportRecordingConfigLabel() =>
-        FormatTransportRecordingConfigLabel(RecordingFormat, RecordingTargetBitrateMbps);
 
     private void NotifyShowReadinessChanged()
     {

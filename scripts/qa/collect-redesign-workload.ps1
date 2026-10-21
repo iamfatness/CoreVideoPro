@@ -2,6 +2,10 @@ param(
   [ValidateRange(30,7200)][int]$Seconds=1800,
   [Parameter(Mandatory=$true)][string]$OutputDirectory,
   [Parameter(Mandatory=$true)][int]$AppProcessId,
+  [Parameter(Mandatory=$true)][ValidateCount(8,8)][ValidatePattern('^[1-9][0-9]*$')][string[]]$ExpectedZoomParticipantId,
+  [Parameter(Mandatory=$true)][ValidatePattern('^capture:(?!screen:).+')][string]$ExpectedWebcamSourceId,
+  [Parameter(Mandatory=$true)][ValidatePattern('^capture:screen:.+')][string]$ExpectedScreenSourceId,
+  [Parameter(Mandatory=$true)][ValidateCount(1,8)][string[]]$ExpectedIsoSourceId,
   [string[]]$AdditionalProcessName=@()
 )
 $ErrorActionPreference='Stop'
@@ -38,8 +42,10 @@ if (-not $initial.recording.active -or $initial.recording.lifecycle.state -ne 'p
 $app=Get-Process -Id $AppProcessId
 if ($app.ProcessName -ne 'CoreVideoPro.WinUI') {throw 'Select the tested CoreVideo Pro app process'}
 $generation="$($app.Id):$($app.StartTime.ToUniversalTime().ToString('o'))"
-$inputs=@($initial.realtimeEvidence.monitorWorker.inputs.sources | ForEach-Object sourceId)
-$iso=@($initial.recording.streams | Where-Object kind -eq iso | ForEach-Object sourceId)
+# Expectations come from the declared show, never from whichever inputs happen to deliver.
+if (@($ExpectedZoomParticipantId | Select-Object -Unique).Count -ne 8) {throw 'Declare eight distinct remote Zoom participants.'}
+$inputs=@($ExpectedZoomParticipantId) + @($ExpectedWebcamSourceId,$ExpectedScreenSourceId)
+$iso=@($ExpectedIsoSourceId)
 $started=[DateTime]::UtcNow.ToString('o')
 $clock=[Diagnostics.Stopwatch]::StartNew()
 do {
@@ -55,11 +61,15 @@ do {
         [ordered]@{name=$_.ProcessName;processGeneration="$($_.Id):$($_.StartTime.ToUniversalTime().ToString('o'))";cpuSeconds=$_.CPU}
       }
     })
-    $row=[ordered]@{collectedAtMs=$clock.Elapsed.TotalMilliseconds;processGeneration=$generation;displayState=$display;additionalProcesses=$additional;snapshot=[ordered]@{
+    $qpcTicks=[Diagnostics.Stopwatch]::GetTimestamp().ToString()
+    $collectedAtUtc=[DateTime]::UtcNow.ToString('o')
+    $row=[ordered]@{collectedAtMs=$clock.Elapsed.TotalMilliseconds;collectedAtUtc=$collectedAtUtc;qpcTicks=$qpcTicks;processGeneration=$generation;displayState=$display;additionalProcesses=$additional;snapshot=[ordered]@{
       outputProfile=$s.outputProfile;meetingState=$s.meetingState;programBuffer=$s.programBuffer
       realtimeEvidence=$s.realtimeEvidence;encoderEvidence=$s.encoderEvidence;virtualCamera=$s.virtualCamera
+      captureDevices=$s.captureDevices
+      zoomSubscriptionChurn=$s.zoomSubscriptionChurn
       recording=[ordered]@{active=$s.recording.active;lifecycle=$s.recording.lifecycle;proof=$s.recording.proof;artifactPath=$s.recording.artifactPath
-        streams=@($s.recording.streams | Select-Object kind,sourceId,status,framesWritten,droppedFrames,droppedAudioPackets,missingFrames,readiness,writeQueue)}
+        streams=@($s.recording.streams | Select-Object kind,sourceId,path,status,framesWritten,muxVideoFrameCount,droppedFrames,droppedAudioPackets,missingFrames,readiness,writeQueue)}
     }}
     $rows.Add($row)
     ($row | ConvertTo-Json -Depth 24 -Compress) | Add-Content -LiteralPath (Join-Path $OutputDirectory 'workload-samples.ndjson')
@@ -78,10 +88,13 @@ do {
   if ($clock.Elapsed.TotalSeconds -ge $Seconds) {break}
   Start-Sleep -Seconds 5
 } while ($true)
-$report=[ordered]@{startTime=$started;endTime=[DateTime]::UtcNow.ToString('o');appPath=$app.Path;requiredInputIds=$inputs;requiredIsoIds=$iso;requiredAdditionalProcesses=$AdditionalProcessName;samples=$rows
+$measuredStart=if($rows.Count){$rows[0].collectedAtUtc}else{$started}
+$measuredEnd=if($rows.Count){$rows[$rows.Count-1].collectedAtUtc}else{[DateTime]::UtcNow.ToString('o')}
+$report=[ordered]@{startTime=$measuredStart;endTime=$measuredEnd;qpcFrequency=[Diagnostics.Stopwatch]::Frequency;appPath=$app.Path;requiredInputIds=$inputs;requiredIsoIds=$iso;requiredAdditionalProcesses=$AdditionalProcessName;samples=$rows
   errors=$errors;monitorProbeVerdict=$null;cameraPixelVerdict=$null
-  framePerformanceReport=@{startTime=$started;endTime=[DateTime]::UtcNow.ToString('o');soakPassed=$false;errorMatches=$errors
+  framePerformanceReport=@{startTime=$measuredStart;endTime=$measuredEnd;soakPassed=$false;errorMatches=$errors
     performanceEvidence=@{metricVersion='anchored-deadline-v1';targetFps=60;clock='monotonic'
+      intervalTicks=@{start=$(if($rows.Count){$rows[0].qpcTicks}else{$null});end=$(if($rows.Count){$rows[$rows.Count-1].qpcTicks}else{$null});frequency=[Diagnostics.Stopwatch]::Frequency}
       requiredPaths=@('cpu-submission','program-gpu','program-presentation','preview-presentation','multiview-presentation','recording:program','virtual-camera:program')+@($iso | ForEach-Object {'recording:iso:'+$_})
       enabledOutputs=@('recording:program','virtual-camera:program')+@($iso | ForEach-Object {'recording:iso:'+$_});paths=@()}}
 }

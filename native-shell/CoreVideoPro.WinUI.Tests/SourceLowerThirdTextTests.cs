@@ -8,6 +8,19 @@ namespace CoreVideoPro.WinUI.Tests;
 public sealed class SourceLowerThirdTextTests
 {
     [Fact]
+    public void DefaultCustomAndHiddenRemainDistinctAndHideDoesNotEraseCustomDraft()
+    {
+        const string typed = "  Presenter  ";
+        Assert.Null(SourceLowerThirdText.Value(SecondaryLineMode.SourceDefault, typed));
+        Assert.Equal("Presenter", SourceLowerThirdText.Value(SecondaryLineMode.Custom, typed));
+        Assert.Equal("", SourceLowerThirdText.Value(SecondaryLineMode.Hidden, typed));
+        Assert.Equal("Presenter", SourceLowerThirdText.Value(SecondaryLineMode.Custom, typed));
+        Assert.Equal(SecondaryLineMode.SourceDefault, SourceLowerThirdText.Mode(true, ""));
+        Assert.Equal(SecondaryLineMode.Hidden, SourceLowerThirdText.Mode(false, ""));
+        Assert.Equal(SecondaryLineMode.Custom, SourceLowerThirdText.Mode(false, "Presenter"));
+    }
+
+    [Fact]
     public void SavedBlankSuppressesAllMetadataFallbackUntilExplicitReset()
     {
         var names = new Dictionary<string, string>(); var secondary = new Dictionary<string, string>();
@@ -52,7 +65,11 @@ public sealed class SourceLowerThirdTextTests
             usesDefaultSecondary: id => id is null || !secondary.ContainsKey(id),
             applyText: (id, name, text) => { SourceLowerThirdText.Apply(names, secondary, id!, name, text); saves++; });
         editor.RefreshSourceOptions([new Participant { Id = "a", Name = "Alice" }, new Participant { Id = "b", Name = "Bob", Title = "Reader" }], []);
+        var notifications = new List<string?>();
+        editor.PropertyChanged += (_, args) => notifications.Add(args.PropertyName);
         editor.ApplyLowerThirdText("Alice Smith", "", false);
+        Assert.Contains(nameof(editor.SecondaryLine), notifications);
+        Assert.Contains(nameof(editor.UsesDefaultSecondaryLine), notifications);
         Assert.Equal(1, saves);
         Assert.Equal("", editor.SecondaryLine);
         Assert.False(editor.UsesDefaultSecondaryLine);

@@ -65,6 +65,9 @@ int wmain(int argc, wchar_t** argv) {
         std::chrono::system_clock::now().time_since_epoch()).count();
     std::printf("{\"schema\":\"camera-pixel-receiver-v1\",\"receiverMode\":\"os-camera\",\"activation\":\"shared-readonly\",\"receiverScheduling\":\"ordinary\",\"startUnixUs\":%lld,\"width\":%u,\"height\":%u,\"fpsNumerator\":%u,\"fpsDenominator\":%u}\n",
         unixUs, format.VideoFormat().Width(), format.VideoFormat().Height(), rate.Numerator(), rate.Denominator());
+    // Setup evidence is available before the live interval. Keep per-frame
+    // rows buffered so console/file I/O does not run on the measured cadence.
+    std::fflush(stdout);
     auto reader = capture.CreateFrameReaderAsync(source,
         Windows::Media::MediaProperties::MediaEncodingSubtypes::Nv12()).get();
     // Realtime/Latest drops are deliberately visible as missing pixel identities.
@@ -92,6 +95,10 @@ int wmain(int argc, wchar_t** argv) {
         rows.push_back({std::chrono::duration_cast<std::chrono::microseconds>(arrived - start).count(),
             std::chrono::duration_cast<std::chrono::microseconds>(arrived.time_since_epoch()).count(),
             frame.SystemRelativeTime().Value().count(), identity ? static_cast<int64_t>(*identity) : -1});
+        if (rows.size() == 1) {
+          std::fprintf(stderr, "[receiver] first-frame identity=%lld\n", rows.back().identity);
+          std::fflush(stderr);
+        }
       } catch (hresult_error const&) { ++failures; }
     });
     if (reader.StartAsync().get() != MediaFrameReaderStartStatus::Success)
