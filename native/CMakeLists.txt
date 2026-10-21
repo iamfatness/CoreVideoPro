@@ -791,6 +791,7 @@ if(BUILD_TESTING)
     tests/IsoFrameConformTest.cpp
     tests/IsoVideoIngressTest.cpp
     tests/UvcIsoArrivalQueueTest.cpp
+    tests/UvcAsyncReadTest.cpp
     tests/BrowserSourceTest.cpp
     tests/AudioMasteringTest.cpp
     tests/VirtualCameraFrameTest.cpp
