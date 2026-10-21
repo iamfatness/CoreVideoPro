@@ -214,9 +214,9 @@ struct Group : std::enable_shared_from_this<Group> {
       const auto gap = committed - surface.stats.lastCommitQpc;
       surface.stats.maximumGapQpc = std::max(surface.stats.maximumGapQpc, gap);
       ++surface.stats.gaps;
-      if (gap * 1000 > frequency() * 25) ++surface.stats.gapsOver25Ms;
-      if (gap * 1000 > frequency() * 33) ++surface.stats.gapsOver33Ms;
-      if (gap * 1000 > frequency() * 50) ++surface.stats.gapsOver50Ms;
+      if (gap > frequency() * 25 / 1000) ++surface.stats.gapsOver25Ms;
+      if (gap > frequency() * 33 / 1000) ++surface.stats.gapsOver33Ms;
+      if (gap > frequency() * 50 / 1000) ++surface.stats.gapsOver50Ms;
     }
     surface.stats.lastCommitQpc = committed;
     ++surface.stats.presents;
@@ -372,3 +372,4 @@ std::int32_t cv_monitor_snapshot(void* value, CvMonitorStats* result) {
   result->active = lease->surface->active.load() && !lease->surface->retired.load();
   return 1;
 }
+
