@@ -14,6 +14,7 @@ from fractions import Fraction
 
 HEADER = struct.Struct('<8sIIQQQQQQqq')
 EVENT = struct.Struct('<QQQqqqqQII')
+EVENT_V2 = struct.Struct('<QQQqqqqQIIqq')
 
 
 def source_tag(source_id, epoch):
@@ -31,11 +32,12 @@ def expected_arrivals(path, source_id, start, end, minimum_seconds):
         if len(raw) != HEADER.size:
             raise ValueError('Partial trace header')
         magic, version, size, frequency, epoch, count, lost, failures, complete, began, ended = HEADER.unpack(raw)
-        if magic != b'CVTRACE1' or version != 1 or size != EVENT.size or not frequency or not epoch:
+        event_format = EVENT if (magic, version) == (b'CVTRACE1', 1) else EVENT_V2 if (magic, version) == (b'CVTRACE2', 2) else None
+        if event_format is None or size != event_format.size or not frequency or not epoch:
             raise ValueError('Unsupported trace format/clock')
         if complete != 1 or lost or failures or not began <= start < end <= ended:
             raise ValueError('Trace incomplete, lossy or outside measured interval')
-        if pathlib.Path(path).stat().st_size != HEADER.size + count * EVENT.size or count * EVENT.size > 256 * 1024 * 1024:
+        if pathlib.Path(path).stat().st_size != HEADER.size + count * event_format.size or count * event_format.size > 256 * 1024 * 1024:
             raise ValueError('Truncated or oversized trace')
         if (end - start) / frequency < minimum_seconds:
             raise ValueError('Source interval is too short')
@@ -43,8 +45,8 @@ def expected_arrivals(path, source_id, start, end, minimum_seconds):
         found = []
         epochs = set()
         for _ in range(count):
-            event = EVENT.unpack(stream.read(EVENT.size))
-            event_epoch, source, generation, _, frame, at, observed, layout, stage, reason = event
+            event = event_format.unpack(stream.read(event_format.size))
+            event_epoch, source, generation, _, frame, at, observed, layout, stage, reason = event[:10]
             if event_epoch != epoch or not 1 <= stage <= 11 or not 0 <= reason <= 4 or not began <= at <= ended:
                 raise ValueError('Malformed trace identity, clock or stage')
             if stage != 11 or source != tag or not start <= at <= end:
