@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
+using CoreVideoPro.MediaCore.Contracts;
+using CoreVideoPro.MediaCore.Models;
 using CoreVideoPro.MediaCore.Services;
 using CoreVideoPro.WinUI.ViewModels;
 using CoreVideoPro.WinUI.Views;
@@ -53,6 +55,16 @@ internal static class StudioWorkspaceLayoutProbe
                 if(Math.Abs(after.X-t.X)>1 || Math.Abs(after.Y-t.Y)>1)failures.Add($"{width}x{height}: live status text moved the transport controls");
                 if(((Microsoft.UI.Xaml.Controls.ScrollViewer)page.FindName("FooterTelemetry")).ScrollableWidth>1)failures.Add($"{width}x{height}: output health or audio controls need horizontal scrolling");
                 var controls = Descendants(footer).OfType<ButtonBase>().Where(Visible).Where(e => e.ActualWidth > 0 && e.ActualHeight > 0).ToArray();
+                var actionRow = (FrameworkElement)page.FindName("FooterOutputActions");
+                var actionTop = actionRow.TransformToVisual(page).TransformPoint(new(0, 0)).Y;
+                if (Math.Abs(actionRow.ActualHeight - 48) > 1) failures.Add($"{width}x{height}: output actions are not a single 48px row");
+                if (Math.Abs(a.Y - t.Y) < 1 && Math.Abs(a.Y - actionTop) > 1) failures.Add($"{width}x{height}: adjacent automation and output action baselines differ");
+                var telemetry = (FrameworkElement)page.FindName("FooterTelemetry");
+                var headings = Descendants(telemetry).OfType<Microsoft.UI.Xaml.Controls.TextBlock>()
+                    .Where(text => text.Text is "PROGRAM" or "STREAM" or "RECORD" or "FRAME DROPS" or "ELAPSED").ToArray();
+                var headingTops = headings.Select(text => text.TransformToVisual(page).TransformPoint(new(0, 0)).Y).ToArray();
+                if (headings.Length != 5 || headingTops.Max() - headingTops.Min() > 1) failures.Add($"{width}x{height}: telemetry headings have inconsistent baselines");
+                if (Descendants(footer).OfType<Microsoft.UI.Xaml.Controls.TextBlock>().Any(text => text.Text == "Outputs idle")) failures.Add("Redundant persistent output summary returned");
                 foreach (var control in controls)
                 {
                     var point = control.TransformToVisual(page).TransformPoint(new(0, 0));
@@ -64,6 +76,59 @@ internal static class StudioWorkspaceLayoutProbe
                 }
                 await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"studio-{width}x{height}.png"));
                 checks.Add($"Full Studio: {controls.Length} footer actions contained, automation/transport disjoint, long assigned label bounded at {width}x{height}; raster scale {page.XamlRoot.RasterizationScale}; native video pixels excluded");
+            }
+            page.Width = 1424; page.Height = 860;
+            foreach (var state in new[] { "preparing", "producing", "interrupted", "failed", "finalizing", "completed", "idle" })
+            {
+                var lifecycle = new OutputLifecycle { SessionId = "isolated-status", DesiredActive = true, State = state, Health = state is "failed" or "interrupted" ? "failed" : "healthy", Finalized = state == "completed" };
+                var snapshot = new NativeMediaCoreStateSnapshot
+                {
+                    Recording = new NativeMediaCoreRecordingSession { SessionId = "isolated-status", Active = true, Status = "recording", WriterStatus = "writing", Lifecycle = lifecycle, TargetFolder = "isolated", FilenamePrefix = "test", Format = "mp4", Quality = "high", ProgramPath = "isolated/Program.mp4", TotalFramesWritten = 120 },
+                    OutputSenderSession = new NativeMediaCoreOutputSenderSession { Status = "live", Senders = [new NativeMediaCoreOutputSender { SenderId = "isolated-status", Destination = "rtmp", Status = "live", Lifecycle = lifecycle, FramesSent = 180 }] }
+                };
+                studio.Transport.ApplySnapshot(snapshot, true, true, "1080p60", true);
+                await Task.Delay(30); page.UpdateLayout();
+                var record = StudioOutputTelemetry.Recording(snapshot.Recording);
+                var stream = StudioOutputTelemetry.Streaming(snapshot);
+                if (((Microsoft.UI.Xaml.Controls.TextBlock)page.FindName("RecordOutputHealth")).Text != record.State ||
+                    ((Microsoft.UI.Xaml.Controls.TextBlock)page.FindName("StreamOutputHealth")).Text != stream.State)
+                    failures.Add($"{state}: observed output lifecycle did not reach compiled footer labels");
+                if (((Microsoft.UI.Xaml.Controls.TextBlock)page.FindName("ProgramOutputHealth")).Text != "Idle") failures.Add($"{state}: Program health label retained its old text");
+                var textBlocks = Descendants((FrameworkElement)page.FindName("FooterTelemetry")).OfType<Microsoft.UI.Xaml.Controls.TextBlock>().ToArray();
+                if (!textBlocks.Any(text => text.Text == record.Progress) || !textBlocks.Any(text => text.Text == stream.Progress))
+                    failures.Add($"{state}: recording frame progress did not reach the footer");
+                await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, $"studio-output-{state}.png"));
+            }
+            checks.Add("Compiled recording and sender labels/progress follow preparing, producing, interrupted, failed, finalizing, completed and idle despite contradictory active flags");
+            var capturedPath = Environment.GetEnvironmentVariable("COREVIDEO_OUTPUT_TELEMETRY_FIXTURES");
+            if (!string.IsNullOrWhiteSpace(capturedPath))
+            {
+                var observed = new List<object>();
+                var recordCounts = new HashSet<string>(); var streamCounts = new HashSet<string>();
+                foreach (var line in await File.ReadAllLinesAsync(capturedPath))
+                {
+                    using var response = JsonDocument.Parse("{\"ok\":true,\"snapshot\":" + line + "}");
+                    var wire = CoreProtocolParser.TryParseWireState(response) ?? throw new InvalidOperationException("Captured native state did not parse through the production protocol parser");
+                    var snapshot = NativeMediaCoreStateMapper.MapNativeWireStateToSnapshot(0, 0, wire);
+                    studio.Transport.ApplySnapshot(snapshot, false, false, "1080p60", true);
+                    await Task.Delay(10); page.UpdateLayout();
+                    var record = StudioOutputTelemetry.Recording(snapshot.Recording);
+                    var stream = StudioOutputTelemetry.Streaming(snapshot);
+                    if (((Microsoft.UI.Xaml.Controls.TextBlock)page.FindName("RecordOutputHealth")).Text != record.State ||
+                        ((Microsoft.UI.Xaml.Controls.TextBlock)page.FindName("StreamOutputHealth")).Text != stream.State)
+                        failures.Add("Captured native state did not reach compiled output labels");
+                    var labels = Descendants((FrameworkElement)page.FindName("FooterTelemetry")).OfType<Microsoft.UI.Xaml.Controls.TextBlock>().ToArray();
+                    if (!labels.Any(text => text.Text == record.Progress) || !labels.Any(text => text.Text == stream.Progress)) failures.Add("Captured native frame counts did not reach compiled output labels");
+                    observed.Add(new { recording = record, streaming = stream });
+                    if (record.State == "Recording" && stream.State == "Streaming")
+                    {
+                        recordCounts.Add(record.Progress); streamCounts.Add(stream.Progress);
+                        await ReviewImageWriter.SaveAsync(page, Path.Combine(directory, "studio-real-output-producing.png"));
+                    }
+                }
+                if (recordCounts.Count < 2 || streamCounts.Count < 2) failures.Add("Captured writer and local sender did not each show progressing frame counts while producing");
+                await File.WriteAllTextAsync(Path.Combine(directory, "rendered-real-output-readouts.json"), JsonSerializer.Serialize(observed, new JsonSerializerOptions { WriteIndented = true }));
+                checks.Add("Real isolated native recording and localhost sender snapshots pass through the production parser/mapper into rendered status and progressing frame counts");
             }
             foreach(var (width,height) in new[] {(1904,1000),(1424,860),(1360,768)})
             {
