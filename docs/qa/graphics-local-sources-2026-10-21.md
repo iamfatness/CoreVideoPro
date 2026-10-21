@@ -86,3 +86,21 @@ actual drawn `capture:screen:` / `capture:window:` selectors as presentation
 content, so default screen suppression also applies to local capture. Explicit
 manual Show remains available; an automatic rule can opt out of suppression.
 A D3D pixel/draw-fact regression exercises the real capture-input layer kind.
+
+
+Candidate 2aad1f93 verified automatic local-screen suppression, explicit opt-out,
+and a real capture offline/online incarnation change through the installed app.
+The new incarnation used the accepted friendly label while rejecting an old
+incarnation-specific text override. Operator Unassign/reassign of the camera
+also succeeded without restart. Evidence: graphics-1007-03/automatic-reconnect-result.json
+and camera-reuse-result.json.
+
+That candidate failed an immediate Take -> LT in comparison (#1011). Actual native
+fade attribution contained both outgoing webcam and incoming screen, and the
+shell's sticky subject preference selected the outgoing webcam. The native exact
+source fence prevented a wrong caption being drawn after the fade, but the Show
+workflow was still broken. The resolver now limits a Take's subjects to actual
+native take-in layers before applying its sticky preference. Tests cover an
+incoming screen, incoming Zoom picture and the outgoing-only boundary. Original
+failed snapshots and the short timing study remain in graphics-1007-03; installed
+acceptance of this repair is pending.

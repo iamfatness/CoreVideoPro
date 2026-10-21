@@ -15,6 +15,22 @@ public sealed class RenderedLowerThirdSourceResolverTests
         new() { FrameNumber = 10, SceneId = "interview", RenderPlanId = "interview:2:0", Health = "live", VideoSources = sources };
 
     [Fact]
+    public void TakeSelectsIncomingCameraOrScreenInsteadOfStickyOutgoingSubject()
+    {
+        var camera=new CaptureDevice {Id="camera",NativeDeviceId="camera",Name="Camera",Vendor="UVC",Inputs=[],SelectedInputId=""};
+        var screen=new CaptureDevice {Id="screen:0",NativeDeviceId="screen:0",Name="Display",Vendor="screen",Inputs=[],SelectedInputId=""};
+        var outgoing=new NativeMediaCoreRenderedVideoSource {LayerId="take-out:route:intro-1",SourceId="capture:camera",ParticipantId="capture:camera",Kind="participant-video"};
+        var incoming=new NativeMediaCoreRenderedVideoSource {LayerId="take-in:route:intro-1",SourceId="capture:screen:0",ParticipantId="capture:screen:0",Kind="participant-video"};
+        var frame=Frame(outgoing,incoming) with {RenderPlanId="take:operation:21:interview:1:0"};
+        Assert.Equal(incoming,RenderedLowerThirdSourceResolver.Resolve("interview",frame,"capture:camera",Participants,[camera,screen]));
+        Assert.Null(RenderedLowerThirdSourceResolver.Resolve("interview",frame with {VideoSources=[outgoing]},"capture:camera",Participants,[camera,screen]));
+        var zoom=Source("anika") with {LayerId="take-in:guest"};
+        Assert.Equal(zoom,RenderedLowerThirdSourceResolver.Resolve("interview",frame with {VideoSources=[outgoing,zoom]},"capture:camera",Participants,[camera,screen]));
+        // The normal non-transition sticky selection remains unchanged.
+        Assert.Equal(outgoing,RenderedLowerThirdSourceResolver.Resolve("interview",frame with {RenderPlanId="interview:2:0"},"capture:camera",Participants,[camera,screen]));
+    }
+
+    [Fact]
     public void SilentRoomUsesActualRenderedFallbackAndKeepsStickyOnlyWhilePresent()
     {
         Assert.All(Participants, participant => Assert.False(participant.IsActiveSpeaker));

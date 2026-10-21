@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Graphics installed dependency — [#1011](https://github.com/iamfatness/CoreVideoPro/issues/1011):** fast Take/LT in chose a valid outgoing camera from mixed fade attribution. Prefer actual incoming `take-in:` layers and refuse outgoing-only transition attribution; preserve the failed installed trial and verify immediate camera/screen handoff without sleeping through the failure.
+
 **Owner priority, October 21 — [#1007](https://github.com/iamfatness/CoreVideoPro/issues/1007):** audit Graphics for Zoom-only assumptions and incomplete workflows. Generalize source-bound lower thirds to webcams and screen capture, qualify transparent PNG import/composition and verify the installed desktop-shortcut app before completion. Preserve source lifetime fences, private Cue/Program isolation and independent full-workload performance gates.
 
 **Owner beta release direction, October 21 — [#974](https://github.com/iamfatness/CoreVideoPro/issues/974):** the owner explicitly authorized a new beta containing the completed fixes before full-workload qualification passes. This supersedes the historical publication holds below for this release only. Preserve failed and missing evidence, keep `framePerformanceAccepted=false`, disclose the remaining screen/display and installed-shortcut acceptance gaps, and retain the normal clean-build, CI and exact-package installer gates. Publication does not close performance acceptance or establish that stuttering is fixed.
