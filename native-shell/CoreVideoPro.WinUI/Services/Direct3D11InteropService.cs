@@ -350,6 +350,17 @@ public sealed class Direct3D11InteropService : IDisposable
                     acquireAttempts = native.AcquireAttempts, acquireBusy = native.AcquireBusy,
                     commitIntervals = native.Gaps, gapsOver25Ms = native.GapsOver25Ms,
                     gapsOver33Ms = native.GapsOver33Ms, gapsOver50Ms = native.GapsOver50Ms,
+                    periodicWakes = native.PeriodicWakes, wakesOver1Ms = native.WakesOver1Ms,
+                    wakesOver4Ms = native.WakesOver4Ms, wakesOver8Ms = native.WakesOver8Ms,
+                    maximumWakeLatenessQpc = native.MaximumWakeLatenessQpc,
+                    workerThreadId = native.WorkerThreadId, timingQpcFrequency = System.Diagnostics.Stopwatch.Frequency,
+                    lastGap = new { sequence = native.LastGapSequence, generation = native.LastGapSourceGeneration,
+                        acquireBusy = native.LastGapAcquireBusy, notReady = native.LastGapNotReady,
+                        previousCommitQpc = native.LastGapPreviousCommitQpc, dueQpc = native.LastGapDueQpc, wakeQpc = native.LastGapWakeQpc,
+                        startQpc = native.LastGapStartQpc, acquiredQpc = native.LastGapAcquiredQpc,
+                        creditQpc = native.LastGapCreditQpc, presentQpc = native.LastGapPresentQpc,
+                        commitQpc = native.LastGapCommitQpc, cpuCycles = native.LastGapCpuCycles,
+                        waitResult = native.LastGapWaitResult },
                     hresult = native.HResult, displayPresentationVerified = false };
             lock (CreationGate)
             {

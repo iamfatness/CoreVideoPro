@@ -20,6 +20,15 @@ struct CvMonitorStats {
   // Cumulative accepted-commit intervals. Take endpoint deltas; a lifetime
   // maximum or average cannot qualify an interval containing occasional stalls.
   std::uint64_t gaps = 0, gapsOver25Ms = 0, gapsOver33Ms = 0, gapsOver50Ms = 0;
+  // Observation only: original slot target, actual native wake, and GPU-call
+  // boundaries for the latest >25 ms commit interval. Never re-time a slot.
+  std::uint64_t periodicWakes = 0, wakesOver1Ms = 0, wakesOver4Ms = 0, wakesOver8Ms = 0;
+  std::int64_t maximumWakeLatenessQpc = 0;
+  std::uint64_t lastGapSequence = 0, lastGapSourceGeneration = 0, lastGapAcquireBusy = 0, lastGapNotReady = 0;
+  std::int64_t lastGapPreviousCommitQpc = 0, lastGapStartQpc = 0, lastGapDueQpc = 0, lastGapWakeQpc = 0;
+  std::int64_t lastGapAcquiredQpc = 0, lastGapCreditQpc = 0, lastGapPresentQpc = 0, lastGapCommitQpc = 0;
+  std::uint64_t lastGapCpuCycles = 0;
+  std::uint32_t workerThreadId = 0, lastGapWaitResult = 0;
 };
 CV_MONITOR_API std::uint32_t cv_monitor_stats_size();
 CV_MONITOR_API void* cv_monitor_create(void* device, void* context, void* chain,

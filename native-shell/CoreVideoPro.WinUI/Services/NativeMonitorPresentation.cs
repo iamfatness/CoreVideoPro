@@ -16,6 +16,12 @@ internal sealed class NativeMonitorPresentation : IDisposable
         public int HResult;
         public uint Active, Pixel, PixelValid;
         public ulong Gaps, GapsOver25Ms, GapsOver33Ms, GapsOver50Ms;
+        public ulong PeriodicWakes, WakesOver1Ms, WakesOver4Ms, WakesOver8Ms;
+        public long MaximumWakeLatenessQpc;
+        public ulong LastGapSequence, LastGapSourceGeneration, LastGapAcquireBusy, LastGapNotReady;
+        public long LastGapPreviousCommitQpc, LastGapStartQpc, LastGapDueQpc, LastGapWakeQpc, LastGapAcquiredQpc, LastGapCreditQpc, LastGapPresentQpc, LastGapCommitQpc;
+        public ulong LastGapCpuCycles;
+        public uint WorkerThreadId, LastGapWaitResult;
     }
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate uint SizeFn();
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate nint CreateFn(nint device, nint context, nint chain, nint backBuffer, ulong handle, nint ready, uint flags);

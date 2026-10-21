@@ -76,6 +76,7 @@ struct Surface {
   std::uint64_t handle = 0, presentedGeneration = UINT64_MAX;
   std::uint32_t flags = 0;
   bool credit = false, pending = true;
+  std::uint64_t commitAcquireBusy = 0, commitNotReady = 0;
   CvMonitorStats stats;
   StatsExchange exchange;
 };
@@ -130,9 +131,20 @@ struct Group : std::enable_shared_from_this<Group> {
     } else surface.stats.hresult = result;
     return {};
   }
-  void pump(Surface& surface, bool retry) {
+  void pump(Surface& surface, bool retry, std::int64_t slotDue, std::int64_t wokeAt, DWORD waitResult) {
     if (surface.retired.load() || !surface.active.load()) return;
     const auto started = qpc();
+    ULONG64 startedCycles = 0;
+    QueryThreadCycleTime(GetCurrentThread(), &startedCycles);
+    surface.stats.workerThreadId = GetCurrentThreadId();
+    if (!retry) {
+      const auto late = std::max<std::int64_t>(0, started - slotDue);
+      ++surface.stats.periodicWakes;
+      surface.stats.maximumWakeLatenessQpc = std::max(surface.stats.maximumWakeLatenessQpc, late);
+      if (late > frequency() / 1000) ++surface.stats.wakesOver1Ms;
+      if (late > frequency() * 4 / 1000) ++surface.stats.wakesOver4Ms;
+      if (late > frequency() * 8 / 1000) ++surface.stats.wakesOver8Ms;
+    }
     ++surface.stats.attempts;
     if (retry) ++surface.stats.retryAttempts;
     if (surface.resetProbe.exchange(false)) {
@@ -181,6 +193,7 @@ struct Group : std::enable_shared_from_this<Group> {
       }
     }
     surface.stats.ingestMs += milliseconds(ingestStart);
+    const auto acquiredAt = qpc();
     surface.stats.ingested = source.generation;
     surface.stats.acquireAttempts = source.attempts; surface.stats.acquireBusy = source.busy;
     surface.pending = true;
@@ -192,6 +205,7 @@ struct Group : std::enable_shared_from_this<Group> {
       if (!surface.credit) { ++surface.stats.notReady; finish(); return; }
     }
     if (surface.retired.load() || !surface.active.load()) { finish(); return; }
+    const auto creditAt = qpc();
     const auto copyStart = qpc();
     context->CopyResource(surface.backBuffer.Get(), source.latest.Get());
     const auto copyMs = milliseconds(copyStart);
@@ -214,12 +228,32 @@ struct Group : std::enable_shared_from_this<Group> {
       const auto gap = committed - surface.stats.lastCommitQpc;
       surface.stats.maximumGapQpc = std::max(surface.stats.maximumGapQpc, gap);
       ++surface.stats.gaps;
-      if (gap > frequency() * 25 / 1000) ++surface.stats.gapsOver25Ms;
+      if (gap > frequency() * 25 / 1000) {
+        ++surface.stats.gapsOver25Ms;
+        surface.stats.lastGapSequence = surface.stats.presents + 1;
+        surface.stats.lastGapSourceGeneration = source.generation;
+        surface.stats.lastGapAcquireBusy = source.busy - surface.commitAcquireBusy;
+        surface.stats.lastGapNotReady = surface.stats.notReady - surface.commitNotReady;
+        surface.stats.lastGapPreviousCommitQpc = surface.stats.lastCommitQpc;
+        surface.stats.lastGapStartQpc = started;
+        surface.stats.lastGapDueQpc = slotDue;
+        surface.stats.lastGapWakeQpc = wokeAt;
+        surface.stats.lastGapAcquiredQpc = acquiredAt;
+        surface.stats.lastGapCreditQpc = creditAt;
+        surface.stats.lastGapPresentQpc = presentStart;
+        surface.stats.lastGapCommitQpc = committed;
+        surface.stats.lastGapWaitResult = waitResult;
+        ULONG64 cycles = 0;
+        if (QueryThreadCycleTime(GetCurrentThread(), &cycles) && cycles >= startedCycles)
+          surface.stats.lastGapCpuCycles = cycles - startedCycles;
+      }
       if (gap > frequency() * 33 / 1000) ++surface.stats.gapsOver33Ms;
       if (gap > frequency() * 50 / 1000) ++surface.stats.gapsOver50Ms;
     }
     surface.stats.lastCommitQpc = committed;
     ++surface.stats.presents;
+    surface.commitAcquireBusy = source.busy;
+    surface.commitNotReady = surface.stats.notReady;
     surface.presentedGeneration = source.generation;
     surface.credit = false; surface.pending = false;
     if (observedPixel) { surface.stats.pixel = *observedPixel; surface.stats.pixelValid = 1; }
@@ -230,6 +264,8 @@ struct Group : std::enable_shared_from_this<Group> {
     const auto period = frequency() / 60;
     const auto retryPeriod = std::max<std::int64_t>(1, frequency() / 1000);
     std::int64_t next = 0, retryAt = 0, emptySince = 0;
+    std::int64_t slotDue = 0, wokeAt = qpc();
+    DWORD waitResult = WAIT_OBJECT_0;
     std::vector<std::shared_ptr<Surface>> current;
     current.reserve(64);
     for (;;) {
@@ -252,13 +288,14 @@ struct Group : std::enable_shared_from_this<Group> {
       const bool periodic = active && now >= next;
       bool retry = false;
       if (periodic) {
+        slotDue = next ? next : now;
         next = !next || now - next >= period ? now + period : next + period;
         retryAt = now + retryPeriod;
       } else if (active && now >= retryAt && now < next) {
         retry = true; retryAt = now + retryPeriod;
       }
       if (periodic || retry) for (const auto& surface : current) {
-        if (periodic || surface->pending) pump(*surface, retry);
+        if (periodic || surface->pending) pump(*surface, retry, slotDue, wokeAt, waitResult);
       }
       const bool pending = std::any_of(current.begin(), current.end(), [](const auto& surface) {
         return surface->active.load() && (surface->pending || surface->readPixel.load()); });
@@ -267,7 +304,8 @@ struct Group : std::enable_shared_from_this<Group> {
       due.QuadPart = -std::max<std::int64_t>(1, (dueAt - qpc()) * 10'000'000 / frequency());
       SetWaitableTimer(timer.value, &due, 0, nullptr, nullptr, FALSE);
       const HANDLE waits[]{wake.value, timer.value};
-      WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+      waitResult = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+      wokeAt = qpc();
     }
   }
   void failAndDrain() {
