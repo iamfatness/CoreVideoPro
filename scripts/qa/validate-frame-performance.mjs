@@ -9,6 +9,7 @@ const MAX_REPORT_BYTES = 4 * 1024 * 1024;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const count = value => Number.isSafeInteger(value) && value >= 0;
 const stamp = value => typeof value === 'string' && /(?:Z|[+-]\d\d:\d\d)$/.test(value) ? Date.parse(value) : NaN;
+const tick = value => typeof value === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(value);
 
 export function validateFramePerformance(report) {
   const issues = [], missingEvidence = [], diagnostics = [];
@@ -52,6 +53,27 @@ export function validateFramePerformance(report) {
             !Number.isFinite(stamp(coverage.startTime)) || !Number.isFinite(stamp(coverage.endTime)) ||
             stamp(coverage.startTime) > start || stamp(coverage.endTime) < end)
           missing(prefix + 'incomplete interval coverage, including boundary/partial windows.');
+        if (path.id.startsWith('recording:iso:')) {
+          const proof = path.proof, interval = evidence.intervalTicks;
+          if (path.measurement !== 'source-arrival-fidelity' || !object(proof) ||
+              proof.schema !== 'iso-pixel-arrival-verdict-v1' || proof.sourceId !== path.id.slice('recording:iso:'.length) ||
+              typeof proof.path !== 'string' || !proof.path || typeof proof.trace !== 'string' || !proof.trace ||
+              proof.isoPixelArrivalFidelityPassed !== true || proof.decoderComplete !== true || proof.decoderErrors !== '' ||
+              !count(proof.expectedSamples) || proof.expectedSamples === 0 || proof.recordedSamples !== proof.expectedSamples ||
+              proof.invalid !== 0 || proof.rangeViolations !== 0 || proof.firstMismatchIndex !== null ||
+              !count(proof.coverage?.sourceEpoch) || proof.coverage.sourceEpoch === 0)
+            missing(prefix + 'requires finalized ISO pixels matched to exact offered source arrivals; 60 FPS slot counts cannot substitute.');
+          if (!object(interval) || !tick(interval.start) || !tick(interval.end) || !count(interval.frequency) || !interval.frequency ||
+              !tick(proof?.startTicks) || !tick(proof?.endTicks) || proof.startTicks !== interval.start || proof.endTicks !== interval.end ||
+              BigInt(interval.end) <= BigInt(interval.start))
+            missing(prefix + 'source pixel proof must cover the exact declared monotonic interval.');
+          else {
+            const seconds = Number(BigInt(interval.end) - BigInt(interval.start)) / interval.frequency;
+            if (!Number.isFinite(proof?.coverage?.durationSeconds) || Math.abs(proof.coverage.durationSeconds - seconds) > 1 / interval.frequency)
+              fail(prefix + 'source pixel duration differs from its actual monotonic bounds.');
+          }
+          continue;
+        }
         for (const field of ['firstSlot', 'lastSlot', 'expectedSlots', 'completedSlots', 'uniqueCompletedSlots', 'deadlineMisses', 'skippedSlots'])
           if (!count(path[field])) missing(prefix + `missing/invalid ${field}.`);
         if (path.id === 'cpu-submission') {

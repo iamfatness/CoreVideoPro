@@ -61,7 +61,9 @@ do {
         [ordered]@{name=$_.ProcessName;processGeneration="$($_.Id):$($_.StartTime.ToUniversalTime().ToString('o'))";cpuSeconds=$_.CPU}
       }
     })
-    $row=[ordered]@{collectedAtMs=$clock.Elapsed.TotalMilliseconds;processGeneration=$generation;displayState=$display;additionalProcesses=$additional;snapshot=[ordered]@{
+    $qpcTicks=[Diagnostics.Stopwatch]::GetTimestamp().ToString()
+    $collectedAtUtc=[DateTime]::UtcNow.ToString('o')
+    $row=[ordered]@{collectedAtMs=$clock.Elapsed.TotalMilliseconds;collectedAtUtc=$collectedAtUtc;qpcTicks=$qpcTicks;processGeneration=$generation;displayState=$display;additionalProcesses=$additional;snapshot=[ordered]@{
       outputProfile=$s.outputProfile;meetingState=$s.meetingState;programBuffer=$s.programBuffer
       realtimeEvidence=$s.realtimeEvidence;encoderEvidence=$s.encoderEvidence;virtualCamera=$s.virtualCamera
       captureDevices=$s.captureDevices
@@ -86,10 +88,13 @@ do {
   if ($clock.Elapsed.TotalSeconds -ge $Seconds) {break}
   Start-Sleep -Seconds 5
 } while ($true)
-$report=[ordered]@{startTime=$started;endTime=[DateTime]::UtcNow.ToString('o');appPath=$app.Path;requiredInputIds=$inputs;requiredIsoIds=$iso;requiredAdditionalProcesses=$AdditionalProcessName;samples=$rows
+$measuredStart=if($rows.Count){$rows[0].collectedAtUtc}else{$started}
+$measuredEnd=if($rows.Count){$rows[$rows.Count-1].collectedAtUtc}else{[DateTime]::UtcNow.ToString('o')}
+$report=[ordered]@{startTime=$measuredStart;endTime=$measuredEnd;qpcFrequency=[Diagnostics.Stopwatch]::Frequency;appPath=$app.Path;requiredInputIds=$inputs;requiredIsoIds=$iso;requiredAdditionalProcesses=$AdditionalProcessName;samples=$rows
   errors=$errors;monitorProbeVerdict=$null;cameraPixelVerdict=$null
-  framePerformanceReport=@{startTime=$started;endTime=[DateTime]::UtcNow.ToString('o');soakPassed=$false;errorMatches=$errors
+  framePerformanceReport=@{startTime=$measuredStart;endTime=$measuredEnd;soakPassed=$false;errorMatches=$errors
     performanceEvidence=@{metricVersion='anchored-deadline-v1';targetFps=60;clock='monotonic'
+      intervalTicks=@{start=$(if($rows.Count){$rows[0].qpcTicks}else{$null});end=$(if($rows.Count){$rows[$rows.Count-1].qpcTicks}else{$null});frequency=[Diagnostics.Stopwatch]::Frequency}
       requiredPaths=@('cpu-submission','program-gpu','program-presentation','preview-presentation','multiview-presentation','recording:program','virtual-camera:program')+@($iso | ForEach-Object {'recording:iso:'+$_})
       enabledOutputs=@('recording:program','virtual-camera:program')+@($iso | ForEach-Object {'recording:iso:'+$_});paths=@()}}
 }
