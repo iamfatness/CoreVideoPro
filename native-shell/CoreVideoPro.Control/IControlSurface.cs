@@ -1,11 +1,13 @@
 namespace CoreVideoPro.Control;
 
 /// <summary>Outcome of a control action invocation.</summary>
-public sealed record ControlInvokeResult(bool Ok, string? Error = null)
+public sealed record ControlInvokeResult(bool Ok, string? Error = null, string? PreviewSceneId = null)
 {
     public static ControlInvokeResult Success { get; } = new(true);
 
     public static ControlInvokeResult Fail(string error) => new(false, error);
+
+    public static ControlInvokeResult AppliedPreview(string previewSceneId) => new(true, null, previewSceneId);
 }
 
 /// <summary>The seam between the transport-agnostic control layer (registry + OSC/HTTP) and the

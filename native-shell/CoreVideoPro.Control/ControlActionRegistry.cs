@@ -80,6 +80,21 @@ public static class ControlActionRegistry
             // ---- Scenes / view ----------------------------------------------------------
             new("scene.select", "Select scene", "Cue a scene to Preview by id.",
                 new[] { new ControlParam("sceneId", s, true) }),
+            new("scene.cueWithRoutes", "Cue scene with routes",
+                "Cue a scene to Preview and point named routes at Show Input slots. JSON object: routeId → slot number or null (empty box). Unknown scene, route or slot fails and changes nothing. Reply includes previewSceneId when applied.",
+                new[]
+                {
+                    new ControlParam("sceneId", s, true),
+                    new ControlParam("routes", s, true, "JSON object {\"ohg-host\":1,\"ohg-box-1\":null}")
+                }),
+            new("scene.route.set", "Set scene route",
+                "Cue a scene to Preview and point one named route at a Show Input slot. Unknown scene, route or slot fails and changes nothing. Reply includes previewSceneId when applied.",
+                new[]
+                {
+                    new ControlParam("sceneId", s, true),
+                    new ControlParam("routeId", s, true, "Route id on that scene (for example ohg-host)"),
+                    new ControlParam("slot", i, true, "Show Input slot 1-10")
+                }),
             new("scene.dynamicGallery.create", "Create CoreVideo Tiles",
                 "Create a dynamic CoreVideo Tiles scene and cue it to Preview."),
             new("scene.tiles.autofill.set", "Tiles automatic fill", "Set automatic roster fill for the Tiles scene in Preview.",
