@@ -307,3 +307,38 @@ evidence stays buffered to avoid file I/O on the measured cadence. A receiver
 startup error, failed exit or missing finalized evidence invalidates the run.
 Final pixel continuity, whole-interval coverage and every other enabled output
 must still pass independently.
+
+## Managed monitor readiness and diagnostic projection (#997)
+
+A nonblocking keyed-mutex or swap-chain readiness poll means only that the image
+cannot be consumed at that instant. Waiting another entire 60 Hz period can
+miss a producer that finishes immediately after every poll. Persistent workers
+now retry only pending hosts, at most once per millisecond inside the original
+slot. The next periodic slot takes precedence; stalls do not create a backlog
+or extend an earlier deadline. A committed host does not participate in further
+retries for that slot. Unsuccessful retries do not allocate UI snapshots.
+
+The shell's managed render workers remain subject to runtime GC pauses. In the
+controlled live diagnostic, native Program/ISO/OS-camera pixel proofs passed
+while UI commits were below 60/sec and a matched 1080p output-enabled trace
+recorded all-managed-stopped windows up to 50 ms. Sampled allocation stacks
+identified repeated full diagnostic JSON projection on the UI feedback timer,
+plus a typed snapshot deserialization that the native-wire path discarded.
+These runtime observations are separate from physical display evidence.
+
+Control feedback now captures the immutable snapshot and defers complete,
+redacted observation projection until it is actually read or serialized. Record
+copies share a thread-safe single evaluation; replacing or clearing the source
+snapshot cannot retain an older observation. The native wire mapper no longer
+first parses a typed stub snapshot. Typed projection borrows the parsed response
+only during its synchronous projection, omitting diagnostic fields before
+copying; the original raw observation remains available. Egress projection
+applies the existing field policy and recursive redaction in one pass. Unknown
+fields and secret-name filtering retain their prior behavior.
+
+Regressions require low allocation when ordinary feedback does not request the
+large observation, exact diagnostic facts and redaction when HTTP does request
+it, and preservation of raw diagnostic payloads omitted by the typed view.
+These tests cannot qualify display delivery. Fresh simultaneous local recording,
+registered OS-camera pixels, eight actual live remotes, physical monitor timing
+and installed desktop-shortcut acceptance remain release gates.

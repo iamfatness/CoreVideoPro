@@ -741,11 +741,13 @@ public sealed partial class MediaCoreSupervisor : IAsyncDisposable
                         $"media-core sync failed: {CoreProtocolParser.TryParseErrorMessage(response)}");
                 }
 
-                var snapshot = CoreProtocolParser.TryParseSyncSnapshot(response);
-                if (snapshot is not null &&
-                    !IsWireSnapshotResponse(response))
+                // Real native responses use the wire mapper. Do not first
+                // deserialize the same large diagnostic document as a typed
+                // stub snapshot and discard it immediately afterward.
+                if (!IsWireSnapshotResponse(response))
                 {
-                    return snapshot;
+                    var snapshot = CoreProtocolParser.TryParseSyncSnapshot(response);
+                    if (snapshot is not null) return snapshot;
                 }
 
                 var wire = CoreProtocolParser.TryParseWireState(response);
