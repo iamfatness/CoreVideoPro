@@ -39,7 +39,7 @@ export function assessRuntimeSnapshots(capture) {
     }
     previous = row;
     const s = row.snapshot ?? {}, rt = s.realtimeEvidence;
-    const sourceImages = assessProgramSourceAdmissions(s, row.expectedProgramSourceIds);
+    const sourceImages = assessProgramSourceAdmissions(s, row.expectedProgramSourceIds ?? capture.expectedProgramSourceIds);
     for (const issue of sourceImages.issues) add(index, 'programSourceAdmission', issue.reason, { sourceId: issue.sourceId, state: issue.state });
     for (const absent of sourceImages.missingEvidence) missing.push(`${index}:${absent}`);
     if (rt?.metricVersion !== 'realtime-worker-evidence-v1') missing.push(`${index}: realtimeEvidence version`);

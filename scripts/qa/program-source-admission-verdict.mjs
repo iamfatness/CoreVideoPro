@@ -6,7 +6,8 @@ export function assessProgramSourceAdmissions(snapshot, expectedSourceIds) {
   const issues = [], missingEvidence = [];
   const observed = snapshot?.programFrame?.videoSources;
   const expected = expectedSourceIds ?? (Array.isArray(observed) ? observed.map(s => s.sourceId) : null);
-  if (!Array.isArray(expected) || expected.length > 64 || expected.some(id => !canonical(id))) {
+  if (!Array.isArray(expected) || expected.length > 64 || expected.some(id => !canonical(id)) ||
+      new Set(expected.map(canonical)).size !== expected.length) {
     return { sourceAdmissionsVerified: false, issues, missingEvidence: ['Explicit bounded Program source identities required'] };
   }
   if (!expected.length) return { sourceAdmissionsVerified: true, issues, missingEvidence };
