@@ -1,10 +1,52 @@
-# EngineHost #960 qualification — October 19, 2026
+# EngineHost #960 qualification
 
-PR: [#965](https://github.com/iamfatness/CoreVideoPro/pull/965). Implementation tested: `69df85fc86489d0f8e6d496e100246dc5f74e738`.
+PR: [#965](https://github.com/iamfatness/CoreVideoPro/pull/965). Audio fix: `cdd010ed`; final implementation and diagnostic/harness changes tested: `e6226296` (includes current-main integration).
 
-**Decision: keep draft.** Process/session survival and reserved control admission pass the scoped checks. Full continuity qualification remains blocked by [#968](https://github.com/iamfatness/CoreVideoPro/issues/968). A later passing audio trial does not waive the earlier failures. #960 remains open; no installed app or production settings were changed.
+**October 21 decision: scoped #960 crash-survival content checks pass; #968 is corrected.** Four consecutive corrected-build full Studio trials have no decoded interior audio gaps or frame-ID anomalies in recording or received RTMP. Host/native/session identity survives UI termination and read-only reconnect. Merge checks remain visible on the PR. This does not qualify zero-loss startup/shutdown, physical presentation, editable reconnect or a full production workload; #959/#961–#963/#930 remain open. No installed app or production settings were changed.
 
-## Implementation and regression evidence
+## October 21: #968 diagnosis and repair
+
+The audio worker already owns a fixed 20 ms steady-clock deadline grid and runs catch-up ticks after late wakes. Source ingress incorrectly asked MediaTransports for the slot due at the actual wake time instead. Its demand clock anchored at the first wake; subsequent wakes on either side of that phase boundary could return no block, then skip a source window as expired. Both output encoders received the resulting missing PCM, so continuous packet timestamps did not imply continuous content.
+
+The retained studio-staged native log reports udio_windows_expired reaching 100, 200 and 300. The studio-gpu failure also reports expiry; the clean ridge-control and studio-69df85fc controls do not. This accounts for the intermittent start-of-session behavior without attributing it to UI death.
+
+Source ingress now selects media PCM using the worker's scheduled timestamp. Actual observation time remains unchanged for source health and other capture adapters. Unscheduled callers retain their wall-time fallback; genuine deadline reanchors still advance the demand clock. No audio padding, decoder change, quality reduction or analyzer threshold change is involved.
+
+SourceAudioIngress.ScheduledMediaDemandPreservesEveryBlockThroughWakeJitterAndCatchup checks exact sample payloads through a late first wake, phase-crossing jitter and two catch-up ticks at the same wall time. The previous wall-time selection fails the first expected block in that sequence.
+
+The first October 21 trial (`studio-968-a`) is rejected as post-fix qualification: the initial native compile overlapped editing, and the harness still used the older x64 Studio output. It retained 76 recording / 87 receiver quiet intervals. The affected native translation units and the explicit `Platform=x64` Studio target were rebuilt before trials b/c/d. The final committed-build trial records all three executable hashes and rejects binaries that change during a run.
+
+### Repeated full Studio evidence
+
+All trials below preserved host epoch, native PID and recording session; recording/RTMP continued advancing without a stream retry, and the replacement read-only Studio Program GPU surface became active. Source preflight (`source-analysis-968.json`) independently passed frame-ID and continuous-tone checks. No analyzer thresholds changed.
+
+| Trial | Native PID unchanged | Recording / RTMP decoded frames | Interior audio gaps, both files | Interior frame anomalies, both files | Recording final held frames / writer counter | Startup video drops |
+|---|---:|---:|---:|---:|---:|---:|
+
+
+| `studio-968-b` | 56592 | 1390 / 1575 | 0 / 0 | 0 / 0 | 1 / 1 | 22 |
+| `studio-968-c` | 45844 | 1388 / 1575 | 0 / 0 | 0 / 0 | 1 / 1 | 23 |
+| `studio-968-d` | 41848 | 1385 / 1568 | 0 / 0 | 0 / 0 | 1 / 1 | 23 |
+| `studio-e6226296` | 43724 | 1387 / 1571 | 0 / 0 | 0 / 0 | 1 / 1 | 22 |
+
+The strict recording analyzer still exits 1 for the single final duplicate; the receiver analyzer exits 0. This duplicate is the existing `MediaFoundationEncoderAdapter::reconcileTail` stop-time policy, which holds the final real video buffer to the audio endpoint without cutting speech. In every trial, `recordingVideoTailFrameCount == 1` accounts exactly for the decoded duplicate. It occurs at explicit finalization, after the crash/reconnect interval. It is not silently trimmed into a strict whole-file pass. The source-window expiry/missing-window logs are absent in all four corrected trials. `framePerformancePassed` remains false, and startup drops remain reported separately.
+
+Final trial executable SHA256:
+
+- `corevideo-native.exe`: `68722c550db41ba77439452a023e39431f938a7405cc9a1b955a2d58887c8791`
+- `CoreVideoPro.EngineHost.exe`: `b1a55313cf2e6bc9395a43d1e83c58d5d883f84b798c90014c37e2c4e3708366`
+- `CoreVideoPro.WinUI.exe`: `80762176b022765a0cd7c6f02722ce9b3de4dbbd15e275c3dc68b92323c6376c`
+
+Final output SHA256:
+
+- recording-analysis.json: `19e6749f1665c17d5023fcdfe10e1c9c35185f0d669eec61c41504c53acb25bc`
+- receiver-analysis.json: `6494f517aecb53c48c3863d7279191717a5301f055a440fd562b94d98eadc2a1`
+
+Validation: Release native core/tests and x64 Studio build succeeded (Studio: 491 existing warnings, 0 errors). Merged-branch MediaCore/host tests: **2,586 passed**; relevant Studio startup/transport/shutdown tests: **88 passed**. The focused native ingress run executed all **10 tests**, including exact PCM under wake jitter/catch-up. The initial full Windows native run had **1,776 pass / 1 fail**: `D3DProgramBuffer.MultiviewProgramPixelsAdvanceAtFixedConsumerPhases` published at 16.782 ms against 16.667 ms (depth 3, phase 14 ms, tick 112). This retained display-deadline failure is separate from #968 and remains evidence for #930; no threshold was relaxed. Final native rerun and hosted CI outcomes are recorded on PR #965 / issue #968 so the mutable merge gate is not inferred from this historical snapshot.
+
+Evidence is retained locally under `artifacts/engine-host-960/`; generated media files are not uploaded CI artifacts. The same scoped workload and exclusions described below apply. The following October 19 results are history, retained unchanged.
+
+## October 19 implementation and regression evidence
 
 - Reserved control endpoint: two admission slots, 64 KiB frames, two-second incomplete-request deadline. Ordinary endpoint: four slots, 8 MiB frames, ten-second incomplete-request deadline. Admission and reply writes are bounded separately.
 - Stop/Cancel/Leave-only batches and explicit host administration use reserved admission. Pure urgent syncs also bypass ordinary bridge/supervisor sync waits. Mixed state batches retain ordinary ordering. Native execution and a blocked native stdin remain bounded by their existing mechanisms; host priority does not preempt native execution.

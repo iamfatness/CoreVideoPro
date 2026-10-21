@@ -15,7 +15,7 @@ The first attached console is the writer. A replacement console is deliberately
 read-only: it observes live snapshots/shared resources, and the host rejects its
 saved startup state. Full editable model reconstruction and autonomous shell-owned
 spine sync/automation belong to #961. Camera fallback still belongs to WinUI until
-#962. The broader #959 production gate remains open. #960 qualification is currently blocked by intermittent audio-content failure #968.
+#962. The broader #959 production gate remains open. Media-file PCM follows the audio worker's scheduled deadline grid (#968), so wake jitter cannot expire otherwise valid windows. Qualification evidence and retained failures are recorded in [the report](../../docs/reference/engine-host-960-qualification.md).
 
 There is no automatic replay after a lost acknowledgement. Epoch, fencing token,
 expected command revision and a monotonically increasing command ID protect writes.
@@ -91,7 +91,8 @@ process, then explicitly stops the unique QA host. It opens no operator window,
 does not load production preferences or join Zoom, and does not prove Studio display
 continuity. FFmpeg/ffprobe must be on PATH; a free local port is required.
 
-Reports preserve before/after snapshots, files, logs and the fault timestamp.
+Reports preserve before/after snapshots, files, logs, the fault timestamp and SHA256 hashes of all three executables. A binary changing during the drill fails validation.
+The recording writer may append one held video sample during explicit stop-time A/V reconciliation; its published tail counter must be checked against the decoded file. The strict analyzer still reports that repeat and does not turn it into a whole-file frame-performance pass.
 `framePerformancePassed` remains false until independent receiver/content/audio and
 full-workload evidence qualifies the actual requirement; timestamps or a surviving
 PID alone cannot establish that. Keep startup drops separate and visible.
