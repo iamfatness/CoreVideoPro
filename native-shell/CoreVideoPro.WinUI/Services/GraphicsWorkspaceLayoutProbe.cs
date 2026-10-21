@@ -34,7 +34,7 @@ internal static class GraphicsWorkspaceLayoutProbe
             var template = new NativeGraphicsTemplate { TemplateId="compact-solid", TemplateVersion=1, Name="Compact solid", Family="lower-third", Runtime="compatibility" };
             var catalog = new[] { template, template with { TemplateId="minimal-accent",Name="Minimal accent" }, template with { TemplateId="broadcast",Name="Broadcast" },
                 new NativeGraphicsTemplate {TemplateId="centered-title",TemplateVersion=1,Name="Centered title",Family="title",Runtime="declarative",Fields=[new() {Id="heading",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("Welcome")},new() {Id="subtitle",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("Your show")}]},
-                new NativeGraphicsTemplate {TemplateId="corner-logo",TemplateVersion=1,Name="Logo",Family="bug",Runtime="declarative"},
+                new NativeGraphicsTemplate {TemplateId="corner-logo",TemplateVersion=1,Name="Logo",Family="bug",Runtime="declarative",Definition=System.Text.Json.JsonSerializer.SerializeToElement(new {assets=new[] {new {id="logo"}}})},
                 new NativeGraphicsTemplate {TemplateId="clock-panel",TemplateVersion=1,Name="Clock",Family="clock",Runtime="declarative",Fields=[new() {Id="label",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("LIVE")},new() {Id="time",Type="string",Default=System.Text.Json.JsonSerializer.SerializeToElement("12:34:56")}]} };
             // Optional catalog collected from a separate native QA process.
             // This opt-in probe still never attaches to the running application.
@@ -92,6 +92,13 @@ internal static class GraphicsWorkspaceLayoutProbe
             individualLibrary.SelectedIndex=0;Invoke(Button(workspace,"Close"));await Task.Delay(80);
             Require(sampleList.Visibility==Visibility.Collapsed && studio.GraphicsWorkspace.Selected is null && studio.GraphicsWorkspace.Draft?.TemplateId==catalog[0].TemplateId,"Individual library browsing retained the show-starter mode or hid the editor");
             checks.Add("Returning to individual graphics from a starter exits sample-set mode and preserves the original library workflow");
+            studio.GraphicsWorkspace.Browse(catalog.Single(t=>t.TemplateId=="corner-logo"));
+            await Task.Delay(100); Invoke(Button(workspace,"Customize layout & motion")); Invoke(Button(workspace,"Content")); await Task.Delay(80);page.UpdateLayout();
+            Require(Button(workspace,"Upload logo PNG / JPEG…").IsEnabled,"Declarative logo uploader is missing or disabled");
+            Require(Descendants(workspace).OfType<GraphicsImageControl>().Any(),"Logo template only offers bundled asset IDs");
+            Require(studio.GraphicsWorkspace.Selected is null && studio.GraphicsLibrary.Document.StudioLowerThird is null,"Logo editing implicitly created or assigned a cue");
+            checks.Add("Declarative logo template exposes an enabled PNG/JPEG uploader in Content without creating or showing a cue");
+            studio.GraphicsWorkspace.Browse(catalog[0]);
             var state = new NativeGraphicsState { CoreEpoch="isolated-layout", SchemaVersion=1, Templates=catalog,
                 Instances=Enumerable.Range(1,8).Select(n=>new NativeGraphicsInstance { InstanceId=$"fixture-{n}", Label=n==1?"Guest introduction":$"Show cue {n}", TemplateId=template.TemplateId, TemplateVersion=1, Scope=n==8?"scene":"global", SceneId=n==8?"other-scene":"", Revision=1, Fields=new() { Name="Alex Rivera",Title="Producer · Office Hours" } }).ToArray() };
             studio.GraphicsWorkspace.Observe(state); studio.GraphicsWorkspace.Select("fixture-1");

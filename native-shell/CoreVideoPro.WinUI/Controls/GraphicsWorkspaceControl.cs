@@ -292,6 +292,9 @@ public sealed partial class GraphicsWorkspaceControl : UserControl
                 _refreshFields.Add(binding.Refresh);
             }
         }
+        if (_session.Template?.Runtime == "declarative" && GraphicsWorkspaceSession.SupportsLogo(_session.Template)) {
+            var logo = new GraphicsImageControl(_session); _inspector.Children.Add(logo); _refreshFields.Add(logo.Refresh);
+        }
         BuildClockControls();
         _inspector.Children.Add(_studioFollowSource);
         _inspector.Children.Add(_studioTextHelp);

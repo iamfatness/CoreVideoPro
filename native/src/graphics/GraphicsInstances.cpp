@@ -114,7 +114,7 @@ std::optional<modules::CompositorOverlayContent> GraphicsInstances::authoringPre
     authoringKey_=key;
     authoringInput_=Json::Object{{"templateId",templateId},{"templateVersion",int(version)},{"manifestHash",expected},{"fields",revision.templateFields},
       {"style",draft.get("style") ? *draft.get("style") : Json{Json::Object{}}}};
-    auto input=std::make_shared<GraphicsTemplateInput>(); input->definition=revision.definition;
+    auto input=std::make_shared<GraphicsTemplateInput>(); input->definition=revision.definition; input->logo=revision.image;
     input->fields=revision.templateInput->fields; input->brand=revision.templateInput->brand; input->placement=revision.placement;
     input->draft=authoringCompiler_; input->draftKey=key; revision.templateInput=std::move(input);
     if(scratch && !scratch->isNull()) {
@@ -132,7 +132,8 @@ bool GraphicsInstances::readRevision(const Json& request, Revision& revision) {
   if(const auto* image=request.get("image")) {
     if(image->isNull()) {revision.image.reset();revision.imageReference=Json{};}
     else {
-      if(revision.definition || !image->isObject() || image->asObject().size()!=3) return false;
+      if(!image->isObject() || image->asObject().size()!=3 ||
+          (revision.definition && !revision.definition->assets().count("logo"))) return false;
       const auto version=image->getNumber("templateVersion");
       if(version<1 || version>std::numeric_limits<int>::max() || std::floor(version)!=version) return false;
       const auto package=templatesPublication_->definitions.find({image->getString("templateId"),int(version)});
@@ -237,7 +238,7 @@ void GraphicsInstances::hashRevision(const std::string& templateId, Revision& re
     const auto& a = revision.appearance;
     const auto alpha = unsigned(std::lround(a.backgroundOpacity * 255)); static constexpr char hex[] = "0123456789ABCDEF";
     const auto background = a.backgroundColor + hex[alpha >> 4] + hex[alpha & 15];
-    auto input = std::make_shared<GraphicsTemplateInput>(); input->definition = revision.definition; input->fields = revision.templateFields; input->placement=revision.placement;
+    auto input = std::make_shared<GraphicsTemplateInput>(); input->definition = revision.definition; input->logo = revision.image; input->fields = revision.templateFields; input->placement=revision.placement;
     input->brand = Json::Object{{"brand.primary", background}, {"brand.onPrimary", a.nameColor},
         {"brand.onPrimaryMuted", a.titleColor}, {"brand.fontBody", a.fontFamily},
         {"brand.secondary", a.titleColor}, {"brand.accent", a.accentColor},

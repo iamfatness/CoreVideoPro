@@ -61,7 +61,7 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
         "graphics.lowerThird.toggle", "graphics.lowerThird.set", "graphics.caption.set", "graphics.graphic.toggle",
         "graphics.instance.create", "graphics.instance.update", "graphics.instance.cue",
         "graphics.clock.control", "graphics.instance.trigger", "graphics.instance.remove", "graphics.program.clear",
-        "graphics.template.select", "graphics.cue.create", "graphics.studio.assign", "graphics.image.import",
+        "graphics.template.select", "graphics.cue.create", "graphics.studio.assign", "graphics.image.import", "graphics.logo.import", "graphics.cue.select", "graphics.cue.action", "graphics.cue.save", "graphics.saved.restore",
         "graphics.template.install", "graphics.template.list", "graphics.authority.set", "graphics.automation.configure", "graphics.automation.control",
         "audio.zoomMode.set", "audio.monitor.set", "audio.monitor.volume", "audio.route.set", "audio.masterLimiter.set",
         "audio.mastering.set", "audio.mastering.target", "audio.vst.scan",
@@ -352,6 +352,31 @@ public sealed class StudioControlSurface : IControlSurface, INativeSnapshotObser
             }
             case "graphics.studio.assign":
                 return await _vm.AssignGraphicsLookToStudioAsync(Bool(args,0)) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.CommandStatus);
+            case "graphics.cue.select":
+                if (_vm.GraphicsWorkspace.Busy || _vm.GraphicsWorkspace.State?.Instances.Any(i=>i.InstanceId==Str(args,0)) != true)
+                    return ControlInvokeResult.Fail("The cue is unavailable or busy.");
+                _vm.GraphicsWorkspace.Select(Str(args,0)); return ControlInvokeResult.Success;
+            case "graphics.cue.action":
+            {
+                var workspace=_vm.GraphicsWorkspace;
+                var accepted=Str(args,0) switch {
+                    "cue" => await workspace.CueAsync(), "show" => await workspace.ShowAsync(),
+                    "hide" => await workspace.HideAsync(), "update" => await workspace.UpdateProgramAsync(), _ => false
+                };
+                return accepted ? ControlInvokeResult.Success : ControlInvokeResult.Fail(workspace.Status);
+            }
+            case "graphics.cue.save":
+                return await _vm.GraphicsLibrary.SaveCueAsync(Str(args,0)) ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.GraphicsLibrary.Status);
+            case "graphics.saved.restore":
+            {
+                await _vm.GraphicsLibrary.LoadAsync();
+                var saved=_vm.GraphicsLibrary.Document.Cues.FirstOrDefault(c=>c.Id==Str(args,0));
+                return saved is not null && await _vm.GraphicsLibrary.RestoreAsync(saved)
+                    ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.GraphicsLibrary.Status);
+            }
+            case "graphics.logo.import":
+                return await _vm.GraphicsWorkspace.ImportLogoAsync(Str(args,0))
+                    ? ControlInvokeResult.Success : ControlInvokeResult.Fail(_vm.GraphicsWorkspace.ImportStatus);
             case "graphics.image.import":
             {
                 var workspace = _vm.GraphicsWorkspace;

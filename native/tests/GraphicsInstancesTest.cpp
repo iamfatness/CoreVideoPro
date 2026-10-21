@@ -97,6 +97,24 @@ TEST(GraphicsInstances, CompatibilityImageUsesOnlyVerifiedPackageBytesAndPrivate
   EXPECT_EQ(row(state).getNumber("programRevision"),1);
   EXPECT_EQ(row(state).get("programImage")->getString("assetId"),"logo");
 }
+TEST(GraphicsInstances, DeclarativeLogoIsVerifiedPrivateAndRetainsAcceptedProgramUntilExplicitUpdate) {
+  GraphicsInstances state{"test-core"};
+  const auto image=Json::Object{{"templateId","corner-logo"},{"templateVersion",1},{"assetId","logo"}};
+  ASSERT_TRUE(state.apply(request("graphics-instance-create",{{"templateId","logo-accent"},{"templateVersion",1},{"scope","global"},{"image",image}})));
+  ready(state,1);ASSERT_TRUE(state.apply(request("graphics-instance-trigger",{{"action","show"}})));
+  CompositorRenderPlan plan;plan.width=1920;plan.height=1080;state.append(plan,false);ASSERT_EQ(plan.layers.size(),1u);
+  ASSERT_TRUE(plan.layers[0].overlay.graphicsTemplate);ASSERT_TRUE(plan.layers[0].overlay.graphicsTemplate->logo);
+  const auto preview=state.authoringPreview(Json::Object{{"templateId","logo-accent"},{"templateVersion",1},{"image",image}});
+  ASSERT_TRUE(preview);ASSERT_TRUE(preview->graphicsTemplate);
+  EXPECT_EQ(preview->graphicsTemplate->logo,plan.layers[0].overlay.graphicsTemplate->logo);
+  auto missing=image;missing["assetId"]="absent";
+  EXPECT_FALSE(state.apply(request("graphics-instance-update",{{"target","program"},{"image",missing}})));
+  EXPECT_EQ(row(state).getNumber("programRevision"),1);
+  ASSERT_TRUE(state.apply(request("graphics-instance-update",{{"target","cue"},{"image",Json{}}})));
+  EXPECT_EQ(row(state).getNumber("programRevision"),1);
+  EXPECT_TRUE(row(state).get("programImage")->isObject());
+  EXPECT_TRUE(row(state).get("image")->isNull());
+}
 corevideo::modules::ZoomEngineParticipant guest(uint64_t generation = 1) {
   corevideo::modules::ZoomEngineParticipant participant;
   participant.id = 44; participant.displayName = "Guest"; participant.hasVideo = true;

@@ -1,5 +1,7 @@
 # CoreVideo Pro — ranked backlog
 
+**Owner Graphics follow-up, October 21 — [#1012](https://github.com/iamfatness/CoreVideoPro/issues/1012):** finish local logo upload for the declarative logo templates as a dependency of #1007; verify private Preview, explicit Cue/Show and installed camera pixels before acceptance.
+
 **Graphics installed dependency — [#1011](https://github.com/iamfatness/CoreVideoPro/issues/1011):** fast Take/LT in chose a valid outgoing camera from mixed fade attribution. Prefer actual incoming `take-in:` layers and refuse outgoing-only transition attribution; preserve the failed installed trial and verify immediate camera/screen handoff without sleeping through the failure.
 
 **Owner priority, October 21 — [#1007](https://github.com/iamfatness/CoreVideoPro/issues/1007):** audit Graphics for Zoom-only assumptions and incomplete workflows. Generalize source-bound lower thirds to webcams and screen capture, qualify transparent PNG import/composition and verify the installed desktop-shortcut app before completion. Preserve source lifetime fences, private Cue/Program isolation and independent full-workload performance gates.

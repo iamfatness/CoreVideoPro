@@ -188,6 +188,18 @@ public static class ControlActionRegistry
             new("graphics.image.import", "Import local graphics image", "Verify a PNG/JPEG and browse it privately as a full-canvas graphic. Does not create a cue or show it.",
                 new[] { new ControlParam("path", s, true) }),
 
+            new("graphics.logo.import", "Upload graphic logo", "Verify a PNG/JPEG and apply it to the selected private logo draft. Does not Cue, Show or Update Program.",
+                new[] { new ControlParam("path", s, true) }),
+
+            new("graphics.cue.select", "Select graphics cue", "Select an existing cue for private editing.",
+                new[] { new ControlParam("instanceId", s, true) }),
+            new("graphics.cue.action", "Apply graphics cue action", "Use the selected workspace cue: cue, show, hide, or update. Each is explicit.",
+                new[] { new ControlParam("action", s, true, "cue | show | hide | update") }),
+            new("graphics.cue.save", "Save graphics cue", "Save the selected private cue with pinned template and image references.",
+                new[] { new ControlParam("name", s, true) }),
+            new("graphics.saved.restore", "Restore saved graphics cue", "Restore an unbound saved cue hidden; Cue and Show remain explicit.",
+                new[] { new ControlParam("savedId", s, true) }),
+
             // ---- Audio ------------------------------------------------------------------
             new("audio.zoomMode.set", "Zoom audio mode", "Choose independently routed ISO stems or Zoom's combined fallback mix.",
                 new[] { new ControlParam("mode", s, true, "perGuestIso | programMix") }),

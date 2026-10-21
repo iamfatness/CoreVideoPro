@@ -159,3 +159,8 @@ original saved virtual-camera enabled state is restored. No public beta was
 published. Full-workload/per-frame/display acceptance remains false and #1009
 is still open. This completes the installed Graphics functional checks, not the
 independent stuttering/recording qualification or future hardware acceptance.
+
+
+Owner follow-up #1012 exposed an unqualified embedded-logo workflow: standalone
+PNG import acceptance above did not prove local-logo replacement in declarative
+logo templates. See [logo upload evidence](graphics-logo-upload-2026-10-21.md).

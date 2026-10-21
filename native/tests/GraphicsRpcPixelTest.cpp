@@ -310,6 +310,56 @@ TEST(GraphicsCompositionPixel, FullyTransparentPngRevealsBackgroundAndKeepsParti
   EXPECT_GT(graphics.snapshot().getNumber("encodedTemplateAssetBytes"),0.);
 }
 
+TEST(GraphicsCompositionPixel, UploadedDeclarativeLogoPreservesAlphaAspectAndAcceptedProgram) {
+  using corevideo::rpc::Json;
+  std::string error;
+  const auto asset = corevideo::graphics::graphicsAssetFromBytes("logo", graphicsTest::png(0), error); ASSERT_TRUE(asset);
+  graphicsTest::Package package(asset); const auto rootBytes = package.root.u8string(); const std::string root(rootBytes.begin(),rootBytes.end());
+  corevideo::graphics::GraphicsInstances graphics{"test-core"};
+  auto compositor = corevideo::modules::createD3D11Compositor(); ASSERT_TRUE(compositor);
+  int sequence = 0;
+  const auto command = [&](const std::string& type, Json::Object payload) {
+    payload["schemaVersion"] = 1; payload["requestId"] = "image-request-" + std::to_string(++sequence);
+    payload["clientId"] = "image-qa"; payload["coreEpoch"] = "test-core"; payload["instanceId"] = "logo";
+    return graphics.apply(Json::Object{{"type",type},{"graphics",std::move(payload)}});
+  };
+  const auto render = [&] {
+    corevideo::modules::CompositorRenderPlan plan; plan.width = 320; plan.height = 180;
+    corevideo::modules::CompositorRenderPlanLayer background; background.kind = "background"; background.hasFillColor = true; background.fillColor = "#0000FF";
+    plan.layers.push_back(background); graphics.append(plan,false);
+    auto frame = compositor->render(plan,{}); graphics.observe(frame); return frame.preview.bgra;
+  };
+  ASSERT_TRUE(command("graphics-template-install", {{"manifest",graphicsTest::imageDocument(asset).stringify()},{"packageRoot",root}}));
+  const auto importLimit = std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  while (graphics.snapshot().get("templates")->asArray().size() != 10 && std::chrono::steady_clock::now()<importLimit) { render(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+  ASSERT_EQ(10u,graphics.snapshot().get("templates")->asArray().size());
+  ASSERT_TRUE(command("graphics-instance-create", {{"templateId","corner-logo"},{"templateVersion",1},{"scope","global"},{"animations",Json::Object{{"in",Json::Object{{"type","none"}}},{"out",Json::Object{{"type","none"}}}}},{"image",Json::Object{{"templateId","packaged-logo"},{"templateVersion",1},{"assetId","logo"}}}}));
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"expectedRevision",1},{"action","show"}}));
+  const auto limit = std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  while (graphics.snapshot().get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame") == 0 && std::chrono::steady_clock::now()<limit) { render(); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+  ASSERT_GT(graphics.snapshot().get("instances")->asArray().front().getNumber("firstDrawSubmittedFrame"),0.);
+  const auto pixels = render(); ASSERT_EQ(size_t(320*180*4),pixels.size());
+  const auto left = (24*320+286)*4, right = (24*320+300)*4;
+  EXPECT_LT(unsigned(pixels[left+2]),5u); EXPECT_GT(unsigned(pixels[left]),250u); EXPECT_LT(unsigned(pixels[left+1]),5u);
+  EXPECT_LT(unsigned(pixels[right+2]),20u); EXPECT_NEAR(128.,double(pixels[right+1]),8.); EXPECT_NEAR(127.,double(pixels[right]),8.);
+  const auto letterbox = (12*320+300)*4;
+  EXPECT_GT(unsigned(pixels[letterbox]),250u); EXPECT_LT(unsigned(pixels[letterbox+1]),5u);
+  ASSERT_TRUE(command("graphics-instance-update", {{"expectedRevision",1},{"target","cue"},{"image",Json{}}}));
+  EXPECT_EQ(pixels,render()); // private replacement cannot mutate accepted Program
+  ASSERT_TRUE(command("graphics-instance-cue", {{"expectedRevision",2}}));
+  const auto cueLimit=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  while(graphics.snapshot().get("instances")->asArray().front().getNumber("cueRevision")!=2 && std::chrono::steady_clock::now()<cueLimit) {render();std::this_thread::sleep_for(std::chrono::milliseconds(2));}
+  ASSERT_EQ(graphics.snapshot().get("instances")->asArray().front().getNumber("cueRevision"),2.);
+  ASSERT_TRUE(command("graphics-instance-trigger", {{"expectedRevision",2},{"action","show"}}));
+  const auto changedLimit=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  while(render()==pixels && std::chrono::steady_clock::now()<changedLimit) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  EXPECT_NE(pixels,render());
+  const auto accepted=render();
+  { std::ofstream changed(package.file,std::ios::binary|std::ios::trunc); changed << "invalid replacement"; }
+  EXPECT_EQ(accepted,render());
+  EXPECT_GT(graphics.snapshot().getNumber("encodedTemplateAssetBytes"),0.);
+}
+
 TEST(GraphicsRpcPixel, CommandsReachCoreStateAndActualProgramPixels) {
   auto modules = corevideo::modules::createStubModules();
   modules.compositor = corevideo::modules::createD3D11Compositor();
