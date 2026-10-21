@@ -10,6 +10,7 @@
 #include "modules/ZoomSubscriptionChurnPolicy.h"
 #include "rpc/Json.h"
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -280,6 +281,7 @@ class ZoomEngineRuntime {
   std::map<std::string, std::unique_ptr<CpuIsoArrivalQueue>> isoArrivalQueues_;
   struct IsoRingReader {
     uint32_t epoch = 0, next = 0;
+    uint32_t worker = 0;
     uint64_t lost = 0;
     ZoomIsoRingReadEvidence reads;
     uint64_t formatRejected = 0, maximumDispatchUs = 0, maximumCopyUs = 0;
@@ -369,15 +371,22 @@ class ZoomEngineRuntime {
   // unlocked on seqlock-protected regions.
   // Private hooks let tests deterministically interleave stream replacement at
   // either unlocked boundary; production callers supply neither hook.
+  enum class VideoDrain { Both, Latest, Iso };
   void drainVideoStreamsThreePhase(const std::function<void()>& afterCapture = {},
-                                  const std::function<void()>& beforePublish = {});
+                                  const std::function<void()>& beforePublish = {},
+                                  VideoDrain branch = VideoDrain::Both, int isoWorker = -1);
   // Dedicated ingest thread: runs the three phases on its OWN ~120Hz cadence
   // so neither the render tick nor the audio worker ever carries pixel work
   // (run-15: phase 2 inside the render tick collapsed the audio worker to
   // 8 ticks/s via coreMutex contention).
   std::thread videoIngestThread_;
+  // ISO arrival admission must not wait behind latest-picture preparation or
+  // thumbnail copies: its bounded helper ring can otherwise wrap unread.
+  static constexpr size_t kIsoReaderCount = 8;
+  std::array<std::thread, kIsoReaderCount> isoIngestThreads_;
   std::atomic<bool> videoIngestRun_{false};
   void videoIngestLoop();
+  void isoIngestLoop(int worker);
   void ensureVideoIngestThreadLocked();
   // `i420` is the decoded plane set, already owned by a shared buffer built in
   // the UNLOCKED snapshot phase — publishing must never copy pixels under mutex_
