@@ -9,6 +9,8 @@ function completeEvidence() {
   const enabledOutputs = ['recording:program', 'virtual-camera:program', ...requiredIsoIds.map(id => 'recording:iso:' + id)];
   const requiredPaths = ['cpu-submission', 'program-gpu', 'program-presentation', 'preview-presentation', 'multiview-presentation', ...enabledOutputs];
   return { startTime, endTime, requiredInputIds, requiredIsoIds, monitorProbeVerdict: { functionalPassed: true },
+    isoFileEvidence: requiredIsoIds.map(sourceId => ({ sourceId, path: 'fixture/' + sourceId + '.mp4',
+      measurement: 'ffprobe-count-packets', width: 1920, height: 1080, packets: 108001, muxVideoFrameCount: 108001 })),
     candidateCameraSha256: 'a'.repeat(64),
     cameraInstallation: { moduleInspection: 'observed', loadedIdentityMatchesRegistration: true,
       registeredFileMatchesManifest: true, registeredFileSha256: 'a'.repeat(64) },
@@ -30,7 +32,7 @@ function completeEvidence() {
       })) },
       realtimeEvidence: { audio: { audioLostSamples: 0, pacerReanchors: 0 }, monitorWorker: { inputs: { sources: requiredInputIds.map(sourceId => ({ sourceId, state: 'ready', frameId: i * 600 + 1 })) } } },
       recording: { active: true, lifecycle: { state: 'producing' },
-        streams: [{ kind: 'program', framesWritten: i * 600 + 1 }, ...requiredIsoIds.map(sourceId => ({ sourceId, framesWritten: i * 600 + 1, readiness: 'ready', droppedFrames: 0, droppedAudioPackets: 0 }))],
+        streams: [{ kind: 'program', framesWritten: i * 600 + 1 }, ...requiredIsoIds.map(sourceId => ({ sourceId, path: 'fixture/' + sourceId + '.mp4', framesWritten: i * 600 + 1, readiness: 'ready', droppedFrames: 0, droppedAudioPackets: 0 }))],
         proof: { programMissingFrames: 0, encoderQueueDroppedVideoFrames: 0, encoderQueueDroppedAudioPackets: 0 } },
       programBuffer: { underruns: 0 },
       virtualCamera: { enabled: true, status: 'live', framesPublished: i * 600 + 1, pendingFramesReplaced: 0, publicationExceptions: 0 },
@@ -59,6 +61,18 @@ test('an unavailable declared eighth feed fails even when replacement background
   const result = judgeRedesignWorkload(report);
   assert.equal(result.passed, false);
   assert.ok(result.errors.some(error => error.includes('required input is not ready')));
+});
+
+test('1080p inputs and clean counters cannot conceal low-resolution or unmatched ISO files', () => {
+  for (const change of [
+    report => { delete report.isoFileEvidence; },
+    report => { report.isoFileEvidence[0].width = 320; report.isoFileEvidence[0].height = 180; },
+    report => { report.isoFileEvidence[0].packets--; },
+    report => { report.isoFileEvidence[0].path = 'another-run.mp4'; },
+  ]) {
+    const report = completeEvidence(); change(report);
+    assert.equal(judgeRedesignWorkload(report).passed, false);
+  }
 });
 
 test('advancing outputs cannot hide sampled capture arrivals or missing arrival evidence', () => {

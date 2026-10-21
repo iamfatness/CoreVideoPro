@@ -21,6 +21,15 @@ export function judgeRedesignWorkload(report) {
     errors.push('Required workload must contain eight distinct Zoom participant IDs, one webcam and one screen; background media cannot substitute.');
   if (!Array.isArray(iso) || new Set(iso).size !== iso.length)
     errors.push('Declare the actual selected ISO outputs.');
+  const isoFiles = Array.isArray(report?.isoFileEvidence) ? report.isoFileEvidence : [];
+  for (const id of Array.isArray(iso) ? iso : []) {
+    const files = isoFiles.filter(file => file?.sourceId === id);
+    const file = files[0];
+    if (files.length !== 1 || file?.measurement !== 'ffprobe-count-packets' || !file.path ||
+        file.width !== 1920 || file.height !== 1080 || !Number.isSafeInteger(file.packets) || file.packets <= 0 ||
+        file.packets !== file.muxVideoFrameCount)
+      errors.push(`ISO ${id} lacks finalized 1080p file packet evidence; requested input resolution is insufficient.`);
+  }
   if (!Array.isArray(rows) || rows.length < 2 || rows.length > 100000)
     errors.push('Bounded workload samples are required.');
   const samples = Array.isArray(rows) && rows.length <= 100000 ? rows : [];
@@ -86,6 +95,9 @@ export function judgeRedesignWorkload(report) {
     };
     for (const id of Array.isArray(iso) ? iso : []) {
       const track = streams.find(x => x.sourceId === id);
+      const file = isoFiles.find(x => x?.sourceId === id);
+      if (!track?.path || track.path !== file?.path)
+        errors.push(`${index}: ISO ${id} finalized file does not match the measured track.`);
       if (track?.readiness !== 'ready') errors.push(`${index}: ISO ${id} is not ready.`);
       metrics['isoVideoDropped:' + id] = track?.droppedFrames;
       metrics['isoAudioDropped:' + id] = track?.droppedAudioPackets;

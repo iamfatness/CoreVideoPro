@@ -67,7 +67,7 @@ do {
       captureDevices=$s.captureDevices
       zoomSubscriptionChurn=$s.zoomSubscriptionChurn
       recording=[ordered]@{active=$s.recording.active;lifecycle=$s.recording.lifecycle;proof=$s.recording.proof;artifactPath=$s.recording.artifactPath
-        streams=@($s.recording.streams | Select-Object kind,sourceId,status,framesWritten,droppedFrames,droppedAudioPackets,missingFrames,readiness,writeQueue)}
+        streams=@($s.recording.streams | Select-Object kind,sourceId,path,status,framesWritten,muxVideoFrameCount,droppedFrames,droppedAudioPackets,missingFrames,readiness,writeQueue)}
     }}
     $rows.Add($row)
     ($row | ConvertTo-Json -Depth 24 -Compress) | Add-Content -LiteralPath (Join-Path $OutputDirectory 'workload-samples.ndjson')

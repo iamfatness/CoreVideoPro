@@ -74,6 +74,15 @@ deliver frames. Background media cannot substitute for a remote participant.
 It deliberately leaves
 uncollected pixel/display evidence absent; its report cannot pass by itself.
 
+Wait for actual Zoom video to reach 1080p before starting the recording: an ISO
+writer retains the dimensions of its first source frame. A subsequent 1080p
+input does not prove a 1080p ISO file. After finalization, supply `isoFileEvidence`
+for every selected ISO, with `measurement: "ffprobe-count-packets"`, the measured
+track's `sourceId` and `path`, actual encoded `width`/`height`, observed `packets`,
+and the final writer's `muxVideoFrameCount`. The gate requires 1920x1080 and matching
+positive packet counts. This file accounting supplements source-arrival and
+pixel/deadline proof; it does not replace them.
+
 The frame report must inventory `recording:program`, `virtual-camera:program`,
 and `recording:iso:SOURCE_ID` for each selected ISO, plus
 `preview-presentation` and `multiview-presentation` in its required paths.
