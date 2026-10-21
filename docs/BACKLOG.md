@@ -1,6 +1,8 @@
 # CoreVideo Pro — ranked backlog
 
-**Full-workload UI delivery dependency — [#997](https://github.com/iamfatness/CoreVideoPro/issues/997):** native Program deadlines and actual recording/OS-camera/ISO pixels passed the retained 30-minute component run, while UI Present commits remained below 60 per second. Measure readiness between periodic polls, preserve existing deadlines and bounded ownership, and require real UI delivery evidence before publication. This is part of the owner's ongoing root-cause and full-workload qualification request; seven live remotes still cannot satisfy the eight-remote workload.
+**Full-workload UI delivery dependency — [#997](https://github.com/iamfatness/CoreVideoPro/issues/997):** native Program deadlines and actual recording/OS-camera/ISO pixels passed the retained 30-minute component run, while UI Present commits remained below 60 per second. Measure readiness between periodic polls, preserve existing deadlines and bounded ownership, and require real UI delivery evidence before publication. This is part of the owner's ongoing root-cause and full-workload qualification request; the replacement eighth remote is now available, but the new eight-remote run failed OS-camera continuity and remains unqualified.
+
+**Full-workload camera dependency — [#1000](https://github.com/iamfatness/CoreVideoPro/issues/1000):** the eight-live-1080p run skipped one Program identity inside the Windows camera source, while its matched recording retained it. Reproduce the consumer/publication phase crossing and preserve bounded ownership and original request deadlines before rerunning the owner-requested full workload. No beta publication.
 
 **Unranked finding — [#998](https://github.com/iamfatness/CoreVideoPro/issues/998):** investigate slow redaction of one long diagnostic string. Retain the aborted synthetic regression separately from the actual workload allocation evidence; this is not established as the live failure's cause.
 
@@ -567,4 +569,5 @@ These rows record specific fixes, not blanket production or fleet reliability.
 | [#574](https://github.com/iamfatness/CoreVideoPro/issues/574) | GPU readiness moved before publication in #566. Hardware pixel tests and 30m16s installed candidate soak passed with zero new CVP delivery failures. Workload limits remain under #517/#569. |
 | [#529](https://github.com/iamfatness/CoreVideoPro/issues/529), [#533](https://github.com/iamfatness/CoreVideoPro/issues/533) | ISO drops/timeline fixes merged and validated in the earlier 24-minute six-ISO recording; shipped September 18. |
 | [#516](https://github.com/iamfatness/CoreVideoPro/issues/516), [#526](https://github.com/iamfatness/CoreVideoPro/issues/526), [#518](https://github.com/iamfatness/CoreVideoPro/issues/518) | Earlier render-stall, Program-buffer startup/busy-loop, and audio-log fixes merged and validated; shipped September 18. Later distinct defects retain their own issues. |
+
 
